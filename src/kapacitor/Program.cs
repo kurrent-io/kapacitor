@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -6,7 +7,7 @@ using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 
-const string baseUrl = "http://localhost:5108";
+var baseUrl = Environment.GetEnvironmentVariable("KAPACITOR_URL") ?? "http://localhost:5108";
 
 string[] hookCommands = [
     "session-start",
@@ -30,16 +31,20 @@ if (command is "--help" or "-h" or "help") {
 }
 
 void PrintUsage() {
-    Console.WriteLine("kapacitor— Claude Code hook forwarder for Kurrent.Capacitor");
+    Console.WriteLine("kapacitor — Claude Code hook forwarder for Kurrent.Capacitor");
     Console.WriteLine();
     Console.WriteLine("Usage:");
-    Console.WriteLine("  kapacitor <hook-command>              Forward a hook payload (reads JSON from stdin)");
-    Console.WriteLine("  kapacitor errors [--chain] <id>       List tool call errors for a session");
-    Console.WriteLine("  kapacitor --help                      Show this help");
+    Console.WriteLine("  kapacitor <hook-command>                                      Forward a hook payload (reads JSON from stdin)");
+    Console.WriteLine("  kapacitor watch <sessionId> <path> [--agent-id <agentId>]     Watch a transcript file and POST lines to server");
+    Console.WriteLine("  kapacitor errors [--chain] <id>                               List tool call errors for a session");
+    Console.WriteLine("  kapacitor --help                                              Show this help");
     Console.WriteLine();
     Console.WriteLine("Hook commands:");
     foreach (var h in hookCommands)
         Console.WriteLine($"  {h}");
+    Console.WriteLine();
+    Console.WriteLine("Environment:");
+    Console.WriteLine("  KAPACITOR_URL    Server URL (default: http://localhost:5108)");
 }
 
 if (command == "errors") {
@@ -52,6 +57,25 @@ if (command == "errors") {
     return await HandleErrors(errSessionId, useChain);
 }
 
+if (command == "watch") {
+    if (args.Length < 3) {
+        Console.Error.WriteLine("Usage: kapacitor watch <sessionId> <transcriptPath> [--agent-id <agentId>] [--cwd <cwd>]");
+        return 1;
+    }
+    var watchSessionId    = args[1];
+    var watchPath         = args[2];
+    string? watchAgentId  = null;
+    string? watchCwd      = null;
+    var agentIdIdx        = Array.IndexOf(args, "--agent-id");
+    if (agentIdIdx >= 0 && agentIdIdx + 1 < args.Length)
+        watchAgentId = args[agentIdIdx + 1];
+    var cwdIdx = Array.IndexOf(args, "--cwd");
+    if (cwdIdx >= 0 && cwdIdx + 1 < args.Length)
+        watchCwd = args[cwdIdx + 1];
+
+    return await RunWatch(watchSessionId, watchPath, watchAgentId, watchCwd);
+}
+
 if (!hookCommands.Contains(command)) {
     Console.Error.WriteLine($"Unknown command: {command}");
     return 1;
@@ -61,6 +85,22 @@ var body = await Console.In.ReadToEndAsync();
 
 // Enrich all hook payloads with repository info
 body = await EnrichWithRepositoryInfo(body);
+
+// For session-end and subagent-stop: kill watcher BEFORE posting hook
+// so transcript is fully drained before server computes stats
+if (command is "session-end") {
+    var node = JsonNode.Parse(body);
+    var sessionId = node?["session_id"]?.GetValue<string>();
+    if (sessionId is not null)
+        await KillWatcher(sessionId);
+}
+else if (command is "subagent-stop") {
+    var node = JsonNode.Parse(body);
+    var sessionId = node?["session_id"]?.GetValue<string>();
+    var agentId = node?["agent_id"]?.GetValue<string>();
+    if (sessionId is not null && agentId is not null)
+        await KillWatcher($"{sessionId}-{agentId}");
+}
 
 using var client = new HttpClient();
 using var content = new StringContent(body, Encoding.UTF8, "application/json");
@@ -72,7 +112,214 @@ if (!response.IsSuccessStatusCode) {
     return 1;
 }
 
+// For session-start and subagent-start: spawn watcher AFTER posting hook
+if (command is "session-start") {
+    var node = JsonNode.Parse(body);
+    var sessionId      = node?["session_id"]?.GetValue<string>();
+    var transcriptPath = node?["transcript_path"]?.GetValue<string>();
+    var sessionCwd     = node?["cwd"]?.GetValue<string>();
+    if (sessionId is not null && transcriptPath is not null)
+        SpawnWatcher(sessionId, transcriptPath, agentId: null, cwd: sessionCwd);
+}
+else if (command is "subagent-start") {
+    var node = JsonNode.Parse(body);
+    var sessionId      = node?["session_id"]?.GetValue<string>();
+    var agentId        = node?["agent_id"]?.GetValue<string>();
+    var transcriptPath = node?["transcript_path"]?.GetValue<string>();
+    if (sessionId is not null && agentId is not null && transcriptPath is not null) {
+        var sessionDir          = Path.ChangeExtension(transcriptPath, null);
+        var agentTranscriptPath = Path.Combine(sessionDir, "subagents", $"agent-{agentId}.jsonl");
+        SpawnWatcher($"{sessionId}-{agentId}", agentTranscriptPath, agentId, sessionId);
+    }
+}
+
 return 0;
+
+// --- Watch command ---
+
+async Task<int> RunWatch(string sessionId, string transcriptPath, string? agentId, string? cwd) {
+    using var cts = new CancellationTokenSource();
+
+    // Handle SIGTERM/SIGINT for graceful shutdown
+    Console.CancelKeyPress += (_, e) => {
+        e.Cancel = true;
+        cts.Cancel();
+    };
+    PosixSignalRegistration.Create(PosixSignal.SIGTERM, _ => cts.Cancel());
+
+    using var httpClient = new HttpClient();
+    var state = new WatchState();
+
+    // Detect repository info upfront if cwd is provided (session watchers only, not agents)
+    if (cwd is not null) {
+        state.Repository = await DetectRepositoryAsync(cwd);
+        state.LastRepoDetection = DateTimeOffset.UtcNow;
+    }
+
+    Console.Error.WriteLine($"[watch] Watching {transcriptPath} for session {sessionId}" + (agentId is not null ? $" agent {agentId}" : ""));
+
+    try {
+        while (!cts.Token.IsCancellationRequested) {
+            // Periodically refresh repository info (every 60s)
+            if (cwd is not null && DateTimeOffset.UtcNow - state.LastRepoDetection > TimeSpan.FromSeconds(60)) {
+                state.Repository = await DetectRepositoryAsync(cwd);
+                state.LastRepoDetection = DateTimeOffset.UtcNow;
+            }
+
+            await DrainNewLines(httpClient, sessionId, transcriptPath, agentId, state);
+
+            try {
+                await Task.Delay(TimeSpan.FromSeconds(1), cts.Token);
+            } catch (OperationCanceledException) {
+                break;
+            }
+        }
+    } catch (OperationCanceledException) {
+        // Expected
+    }
+
+    // Final drain before exit
+    Console.Error.WriteLine($"[watch] Draining remaining lines...");
+    await DrainNewLines(httpClient, sessionId, transcriptPath, agentId, state);
+    Console.Error.WriteLine($"[watch] Done. {state.LinesProcessed} total lines processed.");
+
+    return 0;
+}
+
+async Task DrainNewLines(HttpClient httpClient, string sessionId, string transcriptPath, string? agentId, WatchState state) {
+    try {
+        if (!File.Exists(transcriptPath)) return;
+
+        var newLines = new List<string>();
+
+        await using var stream = new FileStream(
+            transcriptPath,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.ReadWrite
+        );
+        using var reader = new StreamReader(stream);
+
+        var lineIndex = 0;
+        while (await reader.ReadLineAsync() is { } line) {
+            if (lineIndex++ < state.LinesProcessed) continue;
+            if (string.IsNullOrWhiteSpace(line)) continue;
+            newLines.Add(line);
+        }
+        state.LinesProcessed = lineIndex;
+
+        if (newLines.Count == 0) return;
+
+        // POST batch to server
+        var batch = new TranscriptBatch {
+            SessionId  = sessionId,
+            AgentId    = agentId,
+            Lines      = newLines.ToArray(),
+            Repository = state.Repository
+        };
+
+        var json = JsonSerializer.Serialize(batch, KapacitorJsonContext.Default.TranscriptBatch);
+        using var httpContent = new StringContent(json, Encoding.UTF8, "application/json");
+
+        try {
+            var resp = await httpClient.PostAsync($"{baseUrl}/hooks/transcript", httpContent);
+            Console.Error.WriteLine(resp.IsSuccessStatusCode ? $"[watch] Posted {newLines.Count} line(s)" : $"[watch] Server returned HTTP {(int)resp.StatusCode} for {newLines.Count} line(s)");
+        } catch (HttpRequestException ex) {
+            Console.Error.WriteLine($"[watch] Server unreachable: {ex.Message}");
+        }
+    } catch (IOException ex) {
+        Console.Error.WriteLine($"[watch] Error reading file: {ex.Message}");
+    }
+}
+
+// --- Watcher spawning/killing ---
+
+string GetWatcherDir() {
+    var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+    return Path.Combine(home, ".config", "kapacitor", "watchers");
+}
+
+string GetPidFilePath(string key) => Path.Combine(GetWatcherDir(), $"{key}.pid");
+
+void SpawnWatcher(string key, string transcriptPath, string? agentId, string? sessionIdOverride = null, string? cwd = null) {
+    try {
+        var watcherDir = GetWatcherDir();
+        Directory.CreateDirectory(watcherDir);
+
+        // Resolve kapacitor binary path (same as current process)
+        var kapacitorPath = Environment.ProcessPath ?? "kapacitor";
+        var sessionId = sessionIdOverride ?? key;
+
+        var arguments = agentId is not null
+            ? $"watch {sessionId} \"{transcriptPath}\" --agent-id {agentId}"
+            : $"watch {key} \"{transcriptPath}\"";
+
+        if (cwd is not null)
+            arguments += $" --cwd \"{cwd}\"";
+
+        var psi = new ProcessStartInfo(kapacitorPath, arguments) {
+            RedirectStandardOutput = false,
+            RedirectStandardInput  = false,
+            RedirectStandardError  = false,
+            UseShellExecute        = false,
+            CreateNoWindow         = true,
+            Environment = {
+                ["KAPACITOR_URL"] = baseUrl
+            }
+        };
+
+        var process = Process.Start(psi);
+        if (process is null) {
+            Console.Error.WriteLine($"Failed to spawn watcher for {key}");
+            return;
+        }
+
+        File.WriteAllText(GetPidFilePath(key), process.Id.ToString());
+        Console.Error.WriteLine($"Spawned watcher for {key} (PID {process.Id})");
+    } catch (Exception ex) {
+        Console.Error.WriteLine($"Failed to spawn watcher for {key}: {ex.Message}");
+    }
+}
+
+async Task KillWatcher(string key) {
+    var pidFile = GetPidFilePath(key);
+    if (!File.Exists(pidFile)) return;
+
+    try {
+        var pidText = File.ReadAllText(pidFile).Trim();
+        if (!int.TryParse(pidText, out var pid)) {
+            File.Delete(pidFile);
+            return;
+        }
+
+        try {
+            var process = Process.GetProcessById(pid);
+
+            // Send SIGTERM
+            process.Kill(entireProcessTree: false);
+
+            // Wait up to 5 seconds for graceful exit
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            try {
+                await process.WaitForExitAsync(cts.Token);
+                Console.Error.WriteLine($"Watcher {key} (PID {pid}) exited gracefully");
+            } catch (OperationCanceledException) {
+                // Force kill if it didn't exit in time
+                process.Kill(entireProcessTree: true);
+                Console.Error.WriteLine($"Watcher {key} (PID {pid}) force-killed after timeout");
+            }
+        } catch (ArgumentException) {
+            // Process already exited
+            Console.Error.WriteLine($"Watcher {key} (PID {pid}) already exited");
+        }
+    } catch (Exception ex) {
+        Console.Error.WriteLine($"Error killing watcher {key}: {ex.Message}");
+    } finally {
+        try { File.Delete(pidFile); } catch { /* ignore */ }
+    }
+}
+
+// --- Repository detection ---
 
 async Task<string> EnrichWithRepositoryInfo(string json) {
     try {
@@ -189,9 +436,9 @@ async Task<RepositoryPayload?> DetectRepositoryAsync(string cwd) {
     }
 }
 
-async Task<string?> RunCommandAsync(string command, string arguments, string cwd, TimeSpan timeout) {
+async Task<string?> RunCommandAsync(string cmd, string arguments, string cwd, TimeSpan timeout) {
     try {
-        var psi = new ProcessStartInfo(command, arguments) {
+        var psi = new ProcessStartInfo(cmd, arguments) {
             WorkingDirectory       = cwd,
             RedirectStandardOutput = true,
             RedirectStandardError  = true,
@@ -211,6 +458,8 @@ async Task<string?> RunCommandAsync(string command, string arguments, string cwd
     }
 }
 
+// --- Git cache ---
+
 string GetCachePath(string cwd) {
     var hash = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(cwd)))[..16];
     var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
@@ -223,7 +472,7 @@ GitCacheEntry? LoadCache(string cwd) {
         if (!File.Exists(path)) return null;
 
         var json  = File.ReadAllText(path);
-        var entry = JsonSerializer.Deserialize(json, CrCliJsonContext.Default.GitCacheEntry);
+        var entry = JsonSerializer.Deserialize(json, KapacitorJsonContext.Default.GitCacheEntry);
 
         if (entry is null) return null;
 
@@ -242,29 +491,31 @@ void SaveCache(string cwd, GitCacheEntry entry) {
         var path = GetCachePath(cwd);
         var dir  = Path.GetDirectoryName(path)!;
         Directory.CreateDirectory(dir);
-        File.WriteAllText(path, JsonSerializer.Serialize(entry, CrCliJsonContext.Default.GitCacheEntry));
+        File.WriteAllText(path, JsonSerializer.Serialize(entry, KapacitorJsonContext.Default.GitCacheEntry));
     } catch {
         // Cache write failure is non-critical
     }
 }
 
+// --- Errors command ---
+
 async Task<int> HandleErrors(string sessionId, bool chain) {
     using var httpClient = new HttpClient();
     var query = chain ? "?chain=true" : "";
-    var response = await httpClient.GetAsync($"{baseUrl}/api/sessions/{sessionId}/errors{query}");
+    var resp = await httpClient.GetAsync($"{baseUrl}/api/sessions/{sessionId}/errors{query}");
 
-    if (response.StatusCode == System.Net.HttpStatusCode.NotFound) {
+    if (resp.StatusCode == System.Net.HttpStatusCode.NotFound) {
         Console.Error.WriteLine($"Session not found: {sessionId}");
         return 1;
     }
 
-    if (!response.IsSuccessStatusCode) {
-        Console.Error.WriteLine($"HTTP {(int)response.StatusCode}");
+    if (!resp.IsSuccessStatusCode) {
+        Console.Error.WriteLine($"HTTP {(int)resp.StatusCode}");
         return 1;
     }
 
-    var json = await response.Content.ReadAsStringAsync();
-    var errors = JsonSerializer.Deserialize(json, CrCliJsonContext.Default.ListErrorEntry);
+    var json = await resp.Content.ReadAsStringAsync();
+    var errors = JsonSerializer.Deserialize(json, KapacitorJsonContext.Default.ListErrorEntry);
 
     if (errors is null || errors.Count == 0) {
         Console.WriteLine("No errors found.");
@@ -283,6 +534,30 @@ async Task<int> HandleErrors(string sessionId, bool chain) {
     }
 
     return 0;
+}
+
+// --- Helper classes ---
+
+class WatchState {
+    public int                LinesProcessed    { get; set; }
+    public RepositoryPayload? Repository        { get; set; }
+    public DateTimeOffset     LastRepoDetection { get; set; }
+}
+
+// --- Records ---
+
+record TranscriptBatch {
+    [JsonPropertyName("session_id")]
+    public required string SessionId { get; init; }
+
+    [JsonPropertyName("agent_id")]
+    public string? AgentId { get; init; }
+
+    [JsonPropertyName("lines")]
+    public required string[] Lines { get; init; }
+
+    [JsonPropertyName("repository")]
+    public RepositoryPayload? Repository { get; init; }
 }
 
 record ErrorEntry(
@@ -370,5 +645,6 @@ static partial class GitUrlParser {
 [JsonSerializable(typeof(List<ErrorEntry>))]
 [JsonSerializable(typeof(RepositoryPayload))]
 [JsonSerializable(typeof(GitCacheEntry))]
+[JsonSerializable(typeof(TranscriptBatch))]
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.SnakeCaseLower)]
-partial class CrCliJsonContext : JsonSerializerContext;
+partial class KapacitorJsonContext : JsonSerializerContext;
