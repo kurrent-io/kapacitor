@@ -87,19 +87,31 @@ var body = await Console.In.ReadToEndAsync();
 body = await EnrichWithRepositoryInfo(body);
 
 // For session-end and subagent-stop: kill watcher BEFORE posting hook
-// so transcript is fully drained before server computes stats
+// so transcript is fully drained before server computes stats.
+// If watcher was already dead, do an inline drain to catch up.
 if (command is "session-end") {
     var node = JsonNode.Parse(body);
     var sessionId = node?["session_id"]?.GetValue<string>();
-    if (sessionId is not null)
-        await KillWatcher(sessionId);
+    var transcriptPath = node?["transcript_path"]?.GetValue<string>();
+    if (sessionId is not null) {
+        var wasRunning = await KillWatcher(sessionId);
+        if (!wasRunning && transcriptPath is not null)
+            await InlineDrainAsync(sessionId, transcriptPath, agentId: null);
+    }
 }
 else if (command is "subagent-stop") {
     var node = JsonNode.Parse(body);
     var sessionId = node?["session_id"]?.GetValue<string>();
     var agentId = node?["agent_id"]?.GetValue<string>();
-    if (sessionId is not null && agentId is not null)
-        await KillWatcher($"{sessionId}-{agentId}");
+    var transcriptPath = node?["transcript_path"]?.GetValue<string>();
+    if (sessionId is not null && agentId is not null) {
+        var wasRunning = await KillWatcher($"{sessionId}-{agentId}");
+        if (!wasRunning && transcriptPath is not null) {
+            var sessionDir = Path.ChangeExtension(transcriptPath, null);
+            var agentTranscriptPath = Path.Combine(sessionDir, "subagents", $"agent-{agentId}.jsonl");
+            await InlineDrainAsync(sessionId, agentTranscriptPath, agentId);
+        }
+    }
 }
 
 using var client = new HttpClient();
@@ -112,24 +124,41 @@ if (!response.IsSuccessStatusCode) {
     return 1;
 }
 
-// For session-start and subagent-start: spawn watcher AFTER posting hook
-if (command is "session-start") {
-    var node = JsonNode.Parse(body);
-    var sessionId      = node?["session_id"]?.GetValue<string>();
-    var transcriptPath = node?["transcript_path"]?.GetValue<string>();
-    var sessionCwd     = node?["cwd"]?.GetValue<string>();
-    if (sessionId is not null && transcriptPath is not null)
-        SpawnWatcher(sessionId, transcriptPath, agentId: null, cwd: sessionCwd);
-}
-else if (command is "subagent-start") {
-    var node = JsonNode.Parse(body);
-    var sessionId      = node?["session_id"]?.GetValue<string>();
-    var agentId        = node?["agent_id"]?.GetValue<string>();
-    var transcriptPath = node?["transcript_path"]?.GetValue<string>();
-    if (sessionId is not null && agentId is not null && transcriptPath is not null) {
-        var sessionDir          = Path.ChangeExtension(transcriptPath, null);
-        var agentTranscriptPath = Path.Combine(sessionDir, "subagents", $"agent-{agentId}.jsonl");
-        SpawnWatcher($"{sessionId}-{agentId}", agentTranscriptPath, agentId, sessionId);
+switch (command) {
+    // For session-start and subagent-start: ensure watcher is running AFTER posting hook
+    case "session-start": {
+        var node           = JsonNode.Parse(body);
+        var sessionId      = node?["session_id"]?.GetValue<string>();
+        var transcriptPath = node?["transcript_path"]?.GetValue<string>();
+        var sessionCwd     = node?["cwd"]?.GetValue<string>();
+        if (sessionId is not null && transcriptPath is not null)
+            EnsureWatcherRunning(sessionId, transcriptPath, agentId: null, cwd: sessionCwd);
+
+        break;
+    }
+    case "subagent-start": {
+        var node           = JsonNode.Parse(body);
+        var sessionId      = node?["session_id"]?.GetValue<string>();
+        var agentId        = node?["agent_id"]?.GetValue<string>();
+        var transcriptPath = node?["transcript_path"]?.GetValue<string>();
+        if (sessionId is not null && agentId is not null && transcriptPath is not null) {
+            var sessionDir          = Path.ChangeExtension(transcriptPath, null);
+            var agentTranscriptPath = Path.Combine(sessionDir, "subagents", $"agent-{agentId}.jsonl");
+            EnsureWatcherRunning($"{sessionId}-{agentId}", agentTranscriptPath, agentId, sessionId);
+        }
+
+        break;
+    }
+    case "notification" or "stop": {
+        // Check watcher liveness on every notification/stop hook
+        var node           = JsonNode.Parse(body);
+        var sessionId      = node?["session_id"]?.GetValue<string>();
+        var transcriptPath = node?["transcript_path"]?.GetValue<string>();
+        var sessionCwd     = node?["cwd"]?.GetValue<string>();
+        if (sessionId is not null && transcriptPath is not null)
+            EnsureWatcherRunning(sessionId, transcriptPath, agentId: null, cwd: sessionCwd);
+
+        break;
     }
 }
 
@@ -138,6 +167,15 @@ return 0;
 // --- Watch command ---
 
 async Task<int> RunWatch(string sessionId, string transcriptPath, string? agentId, string? cwd) {
+    // Redirect all output to a log file so we don't hold parent's pipe FDs open
+    var logDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".config", "kapacitor", "logs");
+    Directory.CreateDirectory(logDir);
+    var logKey = agentId is not null ? $"{sessionId}-{agentId}" : sessionId;
+    var logPath = Path.Combine(logDir, $"{logKey}.log");
+    var logWriter = new StreamWriter(logPath, append: true) { AutoFlush = true };
+    Console.SetOut(logWriter);
+    Console.SetError(logWriter);
+
     using var cts = new CancellationTokenSource();
 
     // Handle SIGTERM/SIGINT for graceful shutdown
@@ -156,7 +194,11 @@ async Task<int> RunWatch(string sessionId, string transcriptPath, string? agentI
         state.LastRepoDetection = DateTimeOffset.UtcNow;
     }
 
-    Console.Error.WriteLine($"[watch] Watching {transcriptPath} for session {sessionId}" + (agentId is not null ? $" agent {agentId}" : ""));
+    Log($"Watching {transcriptPath} for session {sessionId}" + (agentId is not null ? $" agent {agentId}" : ""));
+
+    // Resume from server's last recorded position to avoid re-sending lines
+    state.LinesProcessed = await GetResumePosition(httpClient, sessionId, agentId, transcriptPath);
+    Log($"Resuming from line {state.LinesProcessed}");
 
     try {
         while (!cts.Token.IsCancellationRequested) {
@@ -179,10 +221,11 @@ async Task<int> RunWatch(string sessionId, string transcriptPath, string? agentI
     }
 
     // Final drain before exit
-    Console.Error.WriteLine($"[watch] Draining remaining lines...");
+    Log("Draining remaining lines...");
     await DrainNewLines(httpClient, sessionId, transcriptPath, agentId, state);
-    Console.Error.WriteLine($"[watch] Done. {state.LinesProcessed} total lines processed.");
+    Log($"Done. {state.LinesProcessed} total lines processed.");
 
+    logWriter.Dispose();
     return 0;
 }
 
@@ -190,7 +233,8 @@ async Task DrainNewLines(HttpClient httpClient, string sessionId, string transcr
     try {
         if (!File.Exists(transcriptPath)) return;
 
-        var newLines = new List<string>();
+        var newLines      = new List<string>();
+        var newLineNumbers = new List<int>();
 
         await using var stream = new FileStream(
             transcriptPath,
@@ -202,9 +246,12 @@ async Task DrainNewLines(HttpClient httpClient, string sessionId, string transcr
 
         var lineIndex = 0;
         while (await reader.ReadLineAsync() is { } line) {
-            if (lineIndex++ < state.LinesProcessed) continue;
-            if (string.IsNullOrWhiteSpace(line)) continue;
-            newLines.Add(line);
+            if (lineIndex < state.LinesProcessed) { lineIndex++; continue; }
+            if (!string.IsNullOrWhiteSpace(line)) {
+                newLines.Add(line);
+                newLineNumbers.Add(lineIndex);
+            }
+            lineIndex++;
         }
         state.LinesProcessed = lineIndex;
 
@@ -212,10 +259,11 @@ async Task DrainNewLines(HttpClient httpClient, string sessionId, string transcr
 
         // POST batch to server
         var batch = new TranscriptBatch {
-            SessionId  = sessionId,
-            AgentId    = agentId,
-            Lines      = newLines.ToArray(),
-            Repository = state.Repository
+            SessionId   = sessionId,
+            AgentId     = agentId,
+            Lines       = newLines.ToArray(),
+            LineNumbers = newLineNumbers.ToArray(),
+            Repository  = state.Repository
         };
 
         var json = JsonSerializer.Serialize(batch, KapacitorJsonContext.Default.TranscriptBatch);
@@ -223,12 +271,48 @@ async Task DrainNewLines(HttpClient httpClient, string sessionId, string transcr
 
         try {
             var resp = await httpClient.PostAsync($"{baseUrl}/hooks/transcript", httpContent);
-            Console.Error.WriteLine(resp.IsSuccessStatusCode ? $"[watch] Posted {newLines.Count} line(s)" : $"[watch] Server returned HTTP {(int)resp.StatusCode} for {newLines.Count} line(s)");
+            Log(resp.IsSuccessStatusCode ? $"Posted {newLines.Count} line(s)" : $"Server returned HTTP {(int)resp.StatusCode} for {newLines.Count} line(s)");
         } catch (HttpRequestException ex) {
-            Console.Error.WriteLine($"[watch] Server unreachable: {ex.Message}");
+            Log($"Server unreachable: {ex.Message}");
         }
     } catch (IOException ex) {
-        Console.Error.WriteLine($"[watch] Error reading file: {ex.Message}");
+        Log($"Error reading file: {ex.Message}");
+    }
+}
+
+void Log(string message) => Console.Error.WriteLine($"[{DateTimeOffset.Now:HH:mm:ss.fff}] [watch] {message}");
+
+async Task<int> GetResumePosition(HttpClient httpClient, string sessionId, string? agentId, string transcriptPath) {
+    try {
+        var query = agentId is not null ? $"?agentId={agentId}" : "";
+        var resp = await httpClient.GetAsync($"{baseUrl}/api/sessions/{sessionId}/last-line{query}");
+
+        if (resp.IsSuccessStatusCode && resp.StatusCode != System.Net.HttpStatusCode.NoContent) {
+            var json = await resp.Content.ReadAsStringAsync();
+            var doc = JsonDocument.Parse(json);
+            if (doc.RootElement.TryGetProperty("last_line_number", out var prop) && prop.ValueKind == JsonValueKind.Number)
+                return prop.GetInt32() + 1; // resume from the line after the last recorded one
+        }
+    } catch (HttpRequestException) {
+        // Server unreachable — fall through to file-based skip
+    } catch {
+        // Parse error or other issue — fall through
+    }
+
+    // No line numbers from server (old data or unreachable): skip to current end of file
+    return CountFileLines(transcriptPath);
+}
+
+int CountFileLines(string path) {
+    try {
+        if (!File.Exists(path)) return 0;
+        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+        using var reader = new StreamReader(stream);
+        var count = 0;
+        while (reader.ReadLine() is not null) count++;
+        return count;
+    } catch {
+        return 0;
     }
 }
 
@@ -258,9 +342,9 @@ void SpawnWatcher(string key, string transcriptPath, string? agentId, string? se
             arguments += $" --cwd \"{cwd}\"";
 
         var psi = new ProcessStartInfo(kapacitorPath, arguments) {
-            RedirectStandardOutput = false,
-            RedirectStandardInput  = false,
-            RedirectStandardError  = false,
+            RedirectStandardOutput = true,
+            RedirectStandardInput  = true,
+            RedirectStandardError  = true,
             UseShellExecute        = false,
             CreateNoWindow         = true,
             Environment = {
@@ -274,6 +358,12 @@ void SpawnWatcher(string key, string transcriptPath, string? agentId, string? se
             return;
         }
 
+        // Close redirected streams from parent side so the child doesn't
+        // hold the hook process's pipe FDs open (which would block Claude Code)
+        process.StandardInput.Close();
+        process.StandardOutput.Close();
+        process.StandardError.Close();
+
         File.WriteAllText(GetPidFilePath(key), process.Id.ToString());
         Console.Error.WriteLine($"Spawned watcher for {key} (PID {process.Id})");
     } catch (Exception ex) {
@@ -281,15 +371,19 @@ void SpawnWatcher(string key, string transcriptPath, string? agentId, string? se
     }
 }
 
-async Task KillWatcher(string key) {
+/// <summary>
+/// Kills the watcher process for the given key. Returns true if the watcher was running and was killed,
+/// false if it was already dead or no PID file existed.
+/// </summary>
+async Task<bool> KillWatcher(string key) {
     var pidFile = GetPidFilePath(key);
-    if (!File.Exists(pidFile)) return;
+    if (!File.Exists(pidFile)) return false;
 
     try {
         var pidText = File.ReadAllText(pidFile).Trim();
         if (!int.TryParse(pidText, out var pid)) {
             File.Delete(pidFile);
-            return;
+            return false;
         }
 
         try {
@@ -308,14 +402,114 @@ async Task KillWatcher(string key) {
                 process.Kill(entireProcessTree: true);
                 Console.Error.WriteLine($"Watcher {key} (PID {pid}) force-killed after timeout");
             }
+
+            return true;
         } catch (ArgumentException) {
             // Process already exited
             Console.Error.WriteLine($"Watcher {key} (PID {pid}) already exited");
+            return false;
         }
     } catch (Exception ex) {
         Console.Error.WriteLine($"Error killing watcher {key}: {ex.Message}");
+        return false;
     } finally {
         try { File.Delete(pidFile); } catch { /* ignore */ }
+    }
+}
+
+bool IsWatcherAlive(string key) {
+    var pidFile = GetPidFilePath(key);
+    if (!File.Exists(pidFile)) return false;
+
+    try {
+        var pidText = File.ReadAllText(pidFile).Trim();
+        if (!int.TryParse(pidText, out var pid)) return false;
+
+        try {
+            var process = Process.GetProcessById(pid);
+            return !process.HasExited;
+        } catch (ArgumentException) {
+            return false;
+        }
+    } catch {
+        return false;
+    }
+}
+
+void EnsureWatcherRunning(string key, string transcriptPath, string? agentId, string? sessionIdOverride = null, string? cwd = null) {
+    if (IsWatcherAlive(key)) return;
+
+    // Watcher is dead or missing — respawn
+    Console.Error.WriteLine($"Watcher {key} not running, respawning...");
+    SpawnWatcher(key, transcriptPath, agentId, sessionIdOverride, cwd);
+}
+
+async Task InlineDrainAsync(string sessionId, string transcriptPath, string? agentId) {
+    try {
+        using var httpClient = new HttpClient();
+
+        // Get server's last recorded position
+        int startLine;
+        try {
+            var query = agentId is not null ? $"?agentId={agentId}" : "";
+            var resp = await httpClient.GetAsync($"{baseUrl}/api/sessions/{sessionId}/last-line{query}");
+
+            if (resp.IsSuccessStatusCode && resp.StatusCode != System.Net.HttpStatusCode.NoContent) {
+                var json = await resp.Content.ReadAsStringAsync();
+                var doc = JsonDocument.Parse(json);
+                startLine = doc.RootElement.TryGetProperty("last_line_number", out var prop) && prop.ValueKind == JsonValueKind.Number
+                    ? prop.GetInt32() + 1
+                    : CountFileLines(transcriptPath);
+            } else {
+                startLine = CountFileLines(transcriptPath);
+            }
+        } catch {
+            startLine = CountFileLines(transcriptPath);
+        }
+
+        if (!File.Exists(transcriptPath)) return;
+
+        var newLines      = new List<string>();
+        var newLineNumbers = new List<int>();
+
+        await using var stream = new FileStream(transcriptPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+        using var reader = new StreamReader(stream);
+
+        var lineIndex = 0;
+        while (await reader.ReadLineAsync() is { } line) {
+            if (lineIndex < startLine) { lineIndex++; continue; }
+            if (!string.IsNullOrWhiteSpace(line)) {
+                newLines.Add(line);
+                newLineNumbers.Add(lineIndex);
+            }
+            lineIndex++;
+        }
+
+        if (newLines.Count == 0) {
+            Console.Error.WriteLine($"Inline drain for {sessionId}: no new lines to send");
+            return;
+        }
+
+        var batch = new TranscriptBatch {
+            SessionId   = sessionId,
+            AgentId     = agentId,
+            Lines       = newLines.ToArray(),
+            LineNumbers = newLineNumbers.ToArray()
+        };
+
+        var batchJson = JsonSerializer.Serialize(batch, KapacitorJsonContext.Default.TranscriptBatch);
+        using var content = new StringContent(batchJson, Encoding.UTF8, "application/json");
+
+        try {
+            var resp = await httpClient.PostAsync($"{baseUrl}/hooks/transcript", content);
+            Console.Error.WriteLine(resp.IsSuccessStatusCode
+                ? $"Inline drain for {sessionId}: sent {newLines.Count} line(s)"
+                : $"Inline drain for {sessionId}: server returned HTTP {(int)resp.StatusCode}");
+        } catch (HttpRequestException ex) {
+            Console.Error.WriteLine($"Inline drain for {sessionId}: server unreachable — {ex.Message}");
+        }
+    } catch (Exception ex) {
+        Console.Error.WriteLine($"Inline drain for {sessionId} failed: {ex.Message}");
     }
 }
 
@@ -555,6 +749,9 @@ record TranscriptBatch {
 
     [JsonPropertyName("lines")]
     public required string[] Lines { get; init; }
+
+    [JsonPropertyName("line_numbers")]
+    public int[]? LineNumbers { get; init; }
 
     [JsonPropertyName("repository")]
     public RepositoryPayload? Repository { get; init; }
