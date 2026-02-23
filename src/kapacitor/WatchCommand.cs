@@ -2,13 +2,15 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
 
+namespace kapacitor;
+
 static class WatchCommand {
     public static async Task<int> RunWatch(string baseUrl, string sessionId, string transcriptPath, string? agentId, string? cwd) {
         // Redirect all output to a log file so we don't hold parent's pipe FDs open
         var logDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".config", "kapacitor", "logs");
         Directory.CreateDirectory(logDir);
-        var logKey = agentId is not null ? $"{sessionId}-{agentId}" : sessionId;
-        var logPath = Path.Combine(logDir, $"{logKey}.log");
+        var logKey    = agentId is not null ? $"{sessionId}-{agentId}" : sessionId;
+        var logPath   = Path.Combine(logDir, $"{logKey}.log");
         var logWriter = new StreamWriter(logPath, append: true) { AutoFlush = true };
         Console.SetOut(logWriter);
         Console.SetError(logWriter);
@@ -23,11 +25,11 @@ static class WatchCommand {
         PosixSignalRegistration.Create(PosixSignal.SIGTERM, _ => cts.Cancel());
 
         using var httpClient = new HttpClient();
-        var state = new WatchState();
+        var       state      = new WatchState();
 
         // Detect repository info upfront if cwd is provided (session watchers only, not agents)
         if (cwd is not null) {
-            state.Repository = await RepositoryDetection.DetectRepositoryAsync(cwd);
+            state.Repository        = await RepositoryDetection.DetectRepositoryAsync(cwd);
             state.LastRepoDetection = DateTimeOffset.UtcNow;
         }
 
@@ -41,7 +43,7 @@ static class WatchCommand {
             while (!cts.Token.IsCancellationRequested) {
                 // Periodically refresh repository info (every 60s)
                 if (cwd is not null && DateTimeOffset.UtcNow - state.LastRepoDetection > TimeSpan.FromSeconds(60)) {
-                    state.Repository = await RepositoryDetection.DetectRepositoryAsync(cwd);
+                    state.Repository        = await RepositoryDetection.DetectRepositoryAsync(cwd);
                     state.LastRepoDetection = DateTimeOffset.UtcNow;
                 }
 
@@ -70,7 +72,7 @@ static class WatchCommand {
         try {
             if (!File.Exists(transcriptPath)) return;
 
-            var newLines      = new List<string>();
+            var newLines       = new List<string>();
             var newLineNumbers = new List<int>();
 
             await using var stream = new FileStream(
@@ -103,7 +105,7 @@ static class WatchCommand {
                 Repository  = state.Repository
             };
 
-            var json = JsonSerializer.Serialize(batch, KapacitorJsonContext.Default.TranscriptBatch);
+            var       json        = JsonSerializer.Serialize(batch, kapacitor.KapacitorJsonContext.Default.TranscriptBatch);
             using var httpContent = new StringContent(json, Encoding.UTF8, "application/json");
 
             try {
@@ -122,11 +124,11 @@ static class WatchCommand {
     public static async Task<int> GetResumePosition(string baseUrl, HttpClient httpClient, string sessionId, string? agentId, string transcriptPath) {
         try {
             var query = agentId is not null ? $"?agentId={agentId}" : "";
-            var resp = await httpClient.GetAsync($"{baseUrl}/api/sessions/{sessionId}/last-line{query}");
+            var resp  = await httpClient.GetAsync($"{baseUrl}/api/sessions/{sessionId}/last-line{query}");
 
             if (resp.IsSuccessStatusCode && resp.StatusCode != System.Net.HttpStatusCode.NoContent) {
                 var json = await resp.Content.ReadAsStringAsync();
-                var doc = JsonDocument.Parse(json);
+                var doc  = JsonDocument.Parse(json);
                 if (doc.RootElement.TryGetProperty("last_line_number", out var prop) && prop.ValueKind == JsonValueKind.Number)
                     return prop.GetInt32() + 1; // resume from the line after the last recorded one
             }
@@ -145,7 +147,7 @@ static class WatchCommand {
             if (!File.Exists(path)) return 0;
             using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
             using var reader = new StreamReader(stream);
-            var count = 0;
+            var       count  = 0;
             while (reader.ReadLine() is not null) count++;
             return count;
         } catch {

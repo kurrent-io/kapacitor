@@ -2,13 +2,15 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 
+namespace kapacitor;
+
 static class HistoryCommand {
     public static async Task<int> HandleHistory(string baseUrl, string? filterCwd, string? filterSession = null) {
         using var httpClient = new HttpClient();
 
         Console.WriteLine("Discovering sessions...");
 
-        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        var home        = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
         var projectsDir = Path.Combine(home, ".claude", "projects");
 
         if (!Directory.Exists(projectsDir)) {
@@ -52,7 +54,7 @@ static class HistoryCommand {
                 .Where(t => {
                     var extractedCwd = ExtractCwdFromTranscript(t.FilePath);
                     return extractedCwd is not null &&
-                           extractedCwd.TrimEnd('/').Equals(normalizedFilter, StringComparison.Ordinal);
+                        extractedCwd.TrimEnd('/').Equals(normalizedFilter, StringComparison.Ordinal);
                 })
                 .ToList();
         }
@@ -69,7 +71,7 @@ static class HistoryCommand {
         foreach (var (sessionId, filePath, encodedCwd) in transcriptFiles) {
             // Check server status via last-line API
             HistorySessionStatus status;
-            int resumeFromLine = 0;
+            int                  resumeFromLine = 0;
 
             try {
                 var resp = await httpClient.GetAsync($"{baseUrl}/api/sessions/{sessionId}/last-line");
@@ -83,10 +85,10 @@ static class HistoryCommand {
                 } else if (resp.IsSuccessStatusCode) {
                     // 200 = has line numbers, can resume
                     var json = await resp.Content.ReadAsStringAsync();
-                    var doc = JsonDocument.Parse(json);
+                    var doc  = JsonDocument.Parse(json);
                     if (doc.RootElement.TryGetProperty("last_line_number", out var prop) && prop.ValueKind == JsonValueKind.Number) {
                         resumeFromLine = prop.GetInt32() + 1;
-                        status = HistorySessionStatus.Partial;
+                        status         = HistorySessionStatus.Partial;
                     } else {
                         status = HistorySessionStatus.AlreadyLoaded;
                     }
@@ -129,7 +131,7 @@ static class HistoryCommand {
                 if (startCwd is not null) {
                     var repo = await RepositoryDetection.DetectRepositoryAsync(startCwd);
                     if (repo is not null) {
-                        var repoNode = new JsonObject();
+                        var repoNode                                           = new JsonObject();
                         if (repo.UserName is not null)  repoNode["user_name"]  = repo.UserName;
                         if (repo.UserEmail is not null) repoNode["user_email"] = repo.UserEmail;
                         if (repo.RemoteUrl is not null) repoNode["remote_url"] = repo.RemoteUrl;
@@ -142,7 +144,7 @@ static class HistoryCommand {
 
                 try {
                     using var startContent = new StringContent(startHook.ToJsonString(), Encoding.UTF8, "application/json");
-                    var startResp = await httpClient.PostAsync($"{baseUrl}/hooks/session-start", startContent);
+                    var       startResp    = await httpClient.PostAsync($"{baseUrl}/hooks/session-start", startContent);
                     if (!startResp.IsSuccessStatusCode) {
                         Console.WriteLine($"Skipping {sessionId} [session-start failed: HTTP {(int)startResp.StatusCode}]");
                         errored++;
@@ -246,13 +248,13 @@ static class HistoryCommand {
     static async Task<int> SendTranscriptBatches(HttpClient httpClient, string baseUrl, string sessionId, string filePath, string? agentId, int startLine) {
         if (!File.Exists(filePath)) return 0;
 
-        var totalSent = 0;
-        var batchLines      = new List<string>();
-        var batchLineNumbers = new List<int>();
-        const int batchSize = 100;
+        var       totalSent        = 0;
+        var       batchLines       = new List<string>();
+        var       batchLineNumbers = new List<int>();
+        const int batchSize        = 100;
 
         await using var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
-        using var reader = new StreamReader(stream);
+        using var       reader = new StreamReader(stream);
 
         var lineIndex = 0;
         while (await reader.ReadLineAsync() is { } line) {
@@ -289,7 +291,7 @@ static class HistoryCommand {
             LineNumbers = lineNumbers.ToArray()
         };
 
-        var json = JsonSerializer.Serialize(batch, KapacitorJsonContext.Default.TranscriptBatch);
+        var       json    = JsonSerializer.Serialize(batch, kapacitor.KapacitorJsonContext.Default.TranscriptBatch);
         using var content = new StringContent(json, Encoding.UTF8, "application/json");
 
         try {
@@ -312,7 +314,7 @@ static class HistoryCommand {
                 if (string.IsNullOrWhiteSpace(line)) continue;
 
                 try {
-                    var doc = JsonDocument.Parse(line);
+                    var doc  = JsonDocument.Parse(line);
                     var root = doc.RootElement;
 
                     // Skip file-history-snapshot entries
@@ -324,7 +326,7 @@ static class HistoryCommand {
                         meta.Cwd = cwdProp.GetString();
 
                     // Extract model from assistant message
-                    if (meta.Model is null &&
+                    if (meta.Model is null                              &&
                         root.TryGetProperty("message", out var msgProp) &&
                         msgProp.TryGetProperty("model", out var modelProp))
                         meta.Model = modelProp.GetString();
@@ -385,8 +387,8 @@ static class HistoryCommand {
     }
 
     static List<(string AgentId, string Path)> DiscoverAgentTranscripts(string sessionTranscriptPath) {
-        var results = new List<(string, string)>();
-        var sessionDir = Path.ChangeExtension(sessionTranscriptPath, null);
+        var results      = new List<(string, string)>();
+        var sessionDir   = Path.ChangeExtension(sessionTranscriptPath, null);
         var subagentsDir = Path.Combine(sessionDir, "subagents");
 
         if (!Directory.Exists(subagentsDir)) return results;
