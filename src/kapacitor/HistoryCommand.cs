@@ -1,0 +1,405 @@
+using System.Text;
+using System.Text.Json;
+using System.Text.Json.Nodes;
+
+static class HistoryCommand {
+    public static async Task<int> HandleHistory(string baseUrl, string? filterCwd, string? filterSession = null) {
+        using var httpClient = new HttpClient();
+
+        Console.WriteLine("Discovering sessions...");
+
+        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        var projectsDir = Path.Combine(home, ".claude", "projects");
+
+        if (!Directory.Exists(projectsDir)) {
+            Console.WriteLine("No Claude Code projects directory found.");
+            return 0;
+        }
+
+        // Discover transcript files: ~/.claude/projects/{encoded-cwd}/{sessionId}.jsonl
+        // Skip files inside subagent directories
+        var transcriptFiles = new List<(string SessionId, string FilePath, string EncodedCwd)>();
+
+        foreach (var cwdDir in Directory.GetDirectories(projectsDir)) {
+            var encodedCwd = Path.GetFileName(cwdDir);
+            foreach (var jsonlFile in Directory.GetFiles(cwdDir, "*.jsonl")) {
+                var sessionId = Path.GetFileNameWithoutExtension(jsonlFile);
+                transcriptFiles.Add((sessionId, jsonlFile, encodedCwd));
+            }
+        }
+
+        if (transcriptFiles.Count == 0) {
+            Console.WriteLine("No transcript files found.");
+            return 0;
+        }
+
+        // Filter by session ID if specified
+        if (filterSession is not null) {
+            transcriptFiles = transcriptFiles
+                .Where(t => t.SessionId == filterSession)
+                .ToList();
+
+            if (transcriptFiles.Count == 0) {
+                Console.Error.WriteLine($"Session not found: {filterSession}");
+                return 1;
+            }
+        }
+
+        // Filter by cwd if specified
+        if (filterCwd is not null) {
+            var normalizedFilter = filterCwd.TrimEnd('/');
+            transcriptFiles = transcriptFiles
+                .Where(t => {
+                    var extractedCwd = ExtractCwdFromTranscript(t.FilePath);
+                    return extractedCwd is not null &&
+                           extractedCwd.TrimEnd('/').Equals(normalizedFilter, StringComparison.Ordinal);
+                })
+                .ToList();
+        }
+
+        var projectCount = transcriptFiles.Select(t => t.EncodedCwd).Distinct().Count();
+        Console.WriteLine($"Found {transcriptFiles.Count} session{(transcriptFiles.Count == 1 ? "" : "s")} in {projectCount} project{(projectCount == 1 ? "" : "s")}");
+        Console.WriteLine();
+
+        var loaded  = 0;
+        var resumed = 0;
+        var skipped = 0;
+        var errored = 0;
+
+        foreach (var (sessionId, filePath, encodedCwd) in transcriptFiles) {
+            // Check server status via last-line API
+            HistorySessionStatus status;
+            int resumeFromLine = 0;
+
+            try {
+                var resp = await httpClient.GetAsync($"{baseUrl}/api/sessions/{sessionId}/last-line");
+
+                if (resp.StatusCode == System.Net.HttpStatusCode.NotFound) {
+                    // 404 = stream doesn't exist, full load needed
+                    status = HistorySessionStatus.New;
+                } else if (resp.StatusCode == System.Net.HttpStatusCode.NoContent) {
+                    // 204 = stream exists but no line numbers, skip
+                    status = HistorySessionStatus.AlreadyLoaded;
+                } else if (resp.IsSuccessStatusCode) {
+                    // 200 = has line numbers, can resume
+                    var json = await resp.Content.ReadAsStringAsync();
+                    var doc = JsonDocument.Parse(json);
+                    if (doc.RootElement.TryGetProperty("last_line_number", out var prop) && prop.ValueKind == JsonValueKind.Number) {
+                        resumeFromLine = prop.GetInt32() + 1;
+                        status = HistorySessionStatus.Partial;
+                    } else {
+                        status = HistorySessionStatus.AlreadyLoaded;
+                    }
+                } else {
+                    Console.WriteLine($"Skipping {sessionId} [server error: HTTP {(int)resp.StatusCode}]");
+                    errored++;
+                    continue;
+                }
+            } catch (HttpRequestException ex) {
+                Console.WriteLine($"Skipping {sessionId} [server unreachable: {ex.Message}]");
+                errored++;
+                continue;
+            }
+
+            if (status == HistorySessionStatus.AlreadyLoaded) {
+                Console.WriteLine($"Skipping {sessionId} [already loaded]");
+                skipped++;
+                continue;
+            }
+
+            // Count total lines for progress display
+            var totalLines = WatchCommand.CountFileLines(filePath);
+
+            if (status == HistorySessionStatus.New) {
+                // Extract metadata from transcript for session-start hook
+                var meta = ExtractSessionMetadata(filePath);
+
+                // POST synthesized session-start hook
+                var startHook = new JsonObject {
+                    ["session_id"]      = sessionId,
+                    ["transcript_path"] = filePath,
+                    ["cwd"]             = meta.Cwd ?? DecodeCwdFromDirName(encodedCwd),
+                    ["source"]          = "Startup",
+                    ["hook_event_name"] = "session_start",
+                    ["model"]           = meta.Model
+                };
+
+                // Enrich with repository info if we have a cwd
+                var startCwd = meta.Cwd ?? DecodeCwdFromDirName(encodedCwd);
+                if (startCwd is not null) {
+                    var repo = await RepositoryDetection.DetectRepositoryAsync(startCwd);
+                    if (repo is not null) {
+                        var repoNode = new JsonObject();
+                        if (repo.UserName is not null)  repoNode["user_name"]  = repo.UserName;
+                        if (repo.UserEmail is not null) repoNode["user_email"] = repo.UserEmail;
+                        if (repo.RemoteUrl is not null) repoNode["remote_url"] = repo.RemoteUrl;
+                        if (repo.Owner is not null)     repoNode["owner"]      = repo.Owner;
+                        if (repo.RepoName is not null)  repoNode["repo_name"]  = repo.RepoName;
+                        if (repo.Branch is not null)    repoNode["branch"]     = repo.Branch;
+                        startHook["repository"] = repoNode;
+                    }
+                }
+
+                try {
+                    using var startContent = new StringContent(startHook.ToJsonString(), Encoding.UTF8, "application/json");
+                    var startResp = await httpClient.PostAsync($"{baseUrl}/hooks/session-start", startContent);
+                    if (!startResp.IsSuccessStatusCode) {
+                        Console.WriteLine($"Skipping {sessionId} [session-start failed: HTTP {(int)startResp.StatusCode}]");
+                        errored++;
+                        continue;
+                    }
+                } catch (HttpRequestException ex) {
+                    Console.WriteLine($"Skipping {sessionId} [server unreachable: {ex.Message}]");
+                    errored++;
+                    continue;
+                }
+
+                // Discover and start agents
+                var agentTranscripts = DiscoverAgentTranscripts(filePath);
+                foreach (var (agentId, agentPath) in agentTranscripts) {
+                    var agentStartHook = new JsonObject {
+                        ["session_id"]      = sessionId,
+                        ["transcript_path"] = filePath,
+                        ["cwd"]             = startCwd ?? "",
+                        ["hook_event_name"] = "subagent_start",
+                        ["agent_id"]        = agentId,
+                        ["agent_type"]      = "task"
+                    };
+
+                    try {
+                        using var agentStartContent = new StringContent(agentStartHook.ToJsonString(), Encoding.UTF8, "application/json");
+                        await httpClient.PostAsync($"{baseUrl}/hooks/subagent-start", agentStartContent);
+                    } catch {
+                        // Best effort for agent starts
+                    }
+                }
+
+                Console.Write($"Loading {sessionId}... ");
+
+                // Send all transcript lines in batches
+                var linesSent = await SendTranscriptBatches(httpClient, baseUrl, sessionId, filePath, agentId: null, startLine: 0);
+                Console.WriteLine($"{linesSent} lines [new]");
+
+                // Send agent transcript lines
+                foreach (var (agentId, agentPath) in agentTranscripts) {
+                    Console.Write($"  Loading agent {agentId}... ");
+                    var agentLinesSent = await SendTranscriptBatches(httpClient, baseUrl, sessionId, agentPath, agentId, startLine: 0);
+                    Console.WriteLine($"{agentLinesSent} lines");
+                }
+
+                // Stop agents
+                foreach (var (agentId, agentPath) in agentTranscripts) {
+                    var agentStopHook = new JsonObject {
+                        ["session_id"]             = sessionId,
+                        ["transcript_path"]        = filePath,
+                        ["cwd"]                    = startCwd ?? "",
+                        ["hook_event_name"]        = "subagent_stop",
+                        ["agent_id"]               = agentId,
+                        ["agent_type"]             = "task",
+                        ["stop_hook_active"]       = false,
+                        ["agent_transcript_path"]  = agentPath,
+                        ["last_assistant_message"] = ""
+                    };
+
+                    try {
+                        using var agentStopContent = new StringContent(agentStopHook.ToJsonString(), Encoding.UTF8, "application/json");
+                        await httpClient.PostAsync($"{baseUrl}/hooks/subagent-stop", agentStopContent);
+                    } catch {
+                        // Best effort for agent stops
+                    }
+                }
+
+                // POST synthesized session-end hook
+                var endHook = new JsonObject {
+                    ["session_id"]      = sessionId,
+                    ["transcript_path"] = filePath,
+                    ["cwd"]             = startCwd ?? "",
+                    ["reason"]          = "Other",
+                    ["hook_event_name"] = "session_end"
+                };
+
+                try {
+                    using var endContent = new StringContent(endHook.ToJsonString(), Encoding.UTF8, "application/json");
+                    await httpClient.PostAsync($"{baseUrl}/hooks/session-end", endContent);
+                } catch {
+                    // Best effort for session end
+                }
+
+                loaded++;
+            } else {
+                // Partial load — resume from where we left off
+                Console.Write($"Loading {sessionId}... ");
+                var linesSent = await SendTranscriptBatches(httpClient, baseUrl, sessionId, filePath, agentId: null, startLine: resumeFromLine);
+                Console.WriteLine($"{linesSent} lines [resuming from line {resumeFromLine}]");
+                resumed++;
+            }
+        }
+
+        Console.WriteLine();
+        Console.Write($"Done: {loaded} loaded, {resumed} resumed, {skipped} skipped");
+        if (errored > 0) Console.Write($", {errored} errored");
+        Console.WriteLine();
+
+        return 0;
+    }
+
+    static async Task<int> SendTranscriptBatches(HttpClient httpClient, string baseUrl, string sessionId, string filePath, string? agentId, int startLine) {
+        if (!File.Exists(filePath)) return 0;
+
+        var totalSent = 0;
+        var batchLines      = new List<string>();
+        var batchLineNumbers = new List<int>();
+        const int batchSize = 100;
+
+        await using var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+        using var reader = new StreamReader(stream);
+
+        var lineIndex = 0;
+        while (await reader.ReadLineAsync() is { } line) {
+            if (lineIndex < startLine) { lineIndex++; continue; }
+
+            if (!string.IsNullOrWhiteSpace(line)) {
+                batchLines.Add(line);
+                batchLineNumbers.Add(lineIndex);
+            }
+            lineIndex++;
+
+            if (batchLines.Count >= batchSize) {
+                await PostTranscriptBatch(httpClient, baseUrl, sessionId, agentId, batchLines, batchLineNumbers);
+                totalSent += batchLines.Count;
+                batchLines.Clear();
+                batchLineNumbers.Clear();
+            }
+        }
+
+        // Send remaining lines
+        if (batchLines.Count > 0) {
+            await PostTranscriptBatch(httpClient, baseUrl, sessionId, agentId, batchLines, batchLineNumbers);
+            totalSent += batchLines.Count;
+        }
+
+        return totalSent;
+    }
+
+    static async Task PostTranscriptBatch(HttpClient httpClient, string baseUrl, string sessionId, string? agentId, List<string> lines, List<int> lineNumbers) {
+        var batch = new TranscriptBatch {
+            SessionId   = sessionId,
+            AgentId     = agentId,
+            Lines       = lines.ToArray(),
+            LineNumbers = lineNumbers.ToArray()
+        };
+
+        var json = JsonSerializer.Serialize(batch, KapacitorJsonContext.Default.TranscriptBatch);
+        using var content = new StringContent(json, Encoding.UTF8, "application/json");
+
+        try {
+            await httpClient.PostAsync($"{baseUrl}/hooks/transcript", content);
+        } catch (HttpRequestException) {
+            // Log but continue — don't abort the whole history load for one failed batch
+        }
+    }
+
+    static SessionMetadata ExtractSessionMetadata(string filePath) {
+        var meta = new SessionMetadata();
+
+        try {
+            using var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            using var reader = new StreamReader(stream);
+
+            var linesChecked = 0;
+            while (reader.ReadLine() is { } line && linesChecked < 50) {
+                linesChecked++;
+                if (string.IsNullOrWhiteSpace(line)) continue;
+
+                try {
+                    var doc = JsonDocument.Parse(line);
+                    var root = doc.RootElement;
+
+                    // Skip file-history-snapshot entries
+                    if (root.TryGetProperty("type", out var typeProp) && typeProp.GetString() == "file-history-snapshot")
+                        continue;
+
+                    // Extract cwd from metadata
+                    if (meta.Cwd is null && root.TryGetProperty("cwd", out var cwdProp))
+                        meta.Cwd = cwdProp.GetString();
+
+                    // Extract model from assistant message
+                    if (meta.Model is null &&
+                        root.TryGetProperty("message", out var msgProp) &&
+                        msgProp.TryGetProperty("model", out var modelProp))
+                        meta.Model = modelProp.GetString();
+
+                    // Extract slug from metadata
+                    if (meta.Slug is null && root.TryGetProperty("slug", out var slugProp) &&
+                        slugProp.ValueKind == JsonValueKind.String)
+                        meta.Slug = slugProp.GetString();
+
+                    // Extract sessionId
+                    if (meta.SessionId is null && root.TryGetProperty("sessionId", out var sidProp))
+                        meta.SessionId = sidProp.GetString();
+
+                    // Stop early once we have all metadata
+                    if (meta.Cwd is not null && meta.Model is not null)
+                        break;
+                } catch (JsonException) {
+                    continue;
+                }
+            }
+        } catch {
+            // Best effort metadata extraction
+        }
+
+        return meta;
+    }
+
+    static string? ExtractCwdFromTranscript(string filePath) {
+        try {
+            using var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            using var reader = new StreamReader(stream);
+
+            var linesChecked = 0;
+            while (reader.ReadLine() is { } line && linesChecked < 20) {
+                linesChecked++;
+                if (string.IsNullOrWhiteSpace(line)) continue;
+
+                try {
+                    var doc = JsonDocument.Parse(line);
+                    if (doc.RootElement.TryGetProperty("cwd", out var cwdProp))
+                        return cwdProp.GetString();
+                } catch (JsonException) {
+                    continue;
+                }
+            }
+        } catch {
+            // Best effort
+        }
+
+        return null;
+    }
+
+    static string? DecodeCwdFromDirName(string encodedCwd) {
+        // Encoded cwd has / replaced with - (e.g., -Users-alexey-dev-myproject)
+        // Reverse: replace leading - with /, then interior - with /
+        if (string.IsNullOrEmpty(encodedCwd)) return null;
+        return encodedCwd.Replace('-', '/');
+    }
+
+    static List<(string AgentId, string Path)> DiscoverAgentTranscripts(string sessionTranscriptPath) {
+        var results = new List<(string, string)>();
+        var sessionDir = Path.ChangeExtension(sessionTranscriptPath, null);
+        var subagentsDir = Path.Combine(sessionDir, "subagents");
+
+        if (!Directory.Exists(subagentsDir)) return results;
+
+        foreach (var agentFile in Directory.GetFiles(subagentsDir, "agent-*.jsonl")) {
+            var fileName = Path.GetFileNameWithoutExtension(agentFile);
+            // agent-{agentId}.jsonl -> strip "agent-" prefix
+            if (fileName.StartsWith("agent-")) {
+                var agentId = fileName["agent-".Length..];
+                results.Add((agentId, agentFile));
+            }
+        }
+
+        return results;
+    }
+}
