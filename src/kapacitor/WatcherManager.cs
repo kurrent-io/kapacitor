@@ -2,6 +2,8 @@ using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 
+namespace kapacitor;
+
 static class WatcherManager {
     static string GetWatcherDir() {
         var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
@@ -17,7 +19,7 @@ static class WatcherManager {
 
             // Resolve kapacitor binary path (same as current process)
             var kapacitorPath = Environment.ProcessPath ?? "kapacitor";
-            var sessionId = sessionIdOverride ?? key;
+            var sessionId     = sessionIdOverride       ?? key;
 
             var arguments = agentId is not null
                 ? $"watch {sessionId} \"{transcriptPath}\" --agent-id {agentId}"
@@ -137,11 +139,11 @@ static class WatcherManager {
             int startLine;
             try {
                 var query = agentId is not null ? $"?agentId={agentId}" : "";
-                var resp = await httpClient.GetAsync($"{baseUrl}/api/sessions/{sessionId}/last-line{query}");
+                var resp  = await httpClient.GetAsync($"{baseUrl}/api/sessions/{sessionId}/last-line{query}");
 
                 if (resp.IsSuccessStatusCode && resp.StatusCode != System.Net.HttpStatusCode.NoContent) {
                     var json = await resp.Content.ReadAsStringAsync();
-                    var doc = JsonDocument.Parse(json);
+                    var doc  = JsonDocument.Parse(json);
                     startLine = doc.RootElement.TryGetProperty("last_line_number", out var prop) && prop.ValueKind == JsonValueKind.Number
                         ? prop.GetInt32() + 1
                         : WatchCommand.CountFileLines(transcriptPath);
@@ -154,11 +156,11 @@ static class WatcherManager {
 
             if (!File.Exists(transcriptPath)) return;
 
-            var newLines      = new List<string>();
+            var newLines       = new List<string>();
             var newLineNumbers = new List<int>();
 
             await using var stream = new FileStream(transcriptPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
-            using var reader = new StreamReader(stream);
+            using var       reader = new StreamReader(stream);
 
             var lineIndex = 0;
             while (await reader.ReadLineAsync() is { } line) {
@@ -182,8 +184,8 @@ static class WatcherManager {
                 LineNumbers = newLineNumbers.ToArray()
             };
 
-            var batchJson = JsonSerializer.Serialize(batch, KapacitorJsonContext.Default.TranscriptBatch);
-            using var content = new StringContent(batchJson, Encoding.UTF8, "application/json");
+            var       batchJson = JsonSerializer.Serialize(batch, kapacitor.KapacitorJsonContext.Default.TranscriptBatch);
+            using var content   = new StringContent(batchJson, Encoding.UTF8, "application/json");
 
             try {
                 var resp = await httpClient.PostAsync($"{baseUrl}/hooks/transcript", content);

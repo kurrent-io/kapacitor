@@ -1,6 +1,8 @@
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 
+namespace kapacitor;
+
 record TranscriptBatch {
     [JsonPropertyName("session_id")]
     public required string SessionId { get; init; }
@@ -19,12 +21,12 @@ record TranscriptBatch {
 }
 
 record ErrorEntry(
-    string SessionId,
-    string? SessionSlug,
-    string? AgentId,
-    int EventNumber,
-    string? ToolName,
-    string Error,
+    string         SessionId,
+    string?        SessionSlug,
+    string?        AgentId,
+    int            EventNumber,
+    string?        ToolName,
+    string         Error,
     DateTimeOffset Timestamp);
 
 record RepositoryPayload {

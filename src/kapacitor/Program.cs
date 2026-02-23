@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json.Nodes;
+using kapacitor;
 
 var baseUrl = Environment.GetEnvironmentVariable("KAPACITOR_URL") ?? "http://localhost:5108";
 
