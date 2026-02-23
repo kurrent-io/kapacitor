@@ -15,6 +15,7 @@ string[] hookCommands = [
 
 if (args.Length < 1) {
     PrintUsage();
+
     return 1;
 }
 
@@ -22,71 +23,60 @@ var command = args[0];
 
 if (command is "--help" or "-h" or "help") {
     PrintUsage();
+
     return 0;
 }
 
-void PrintUsage() {
-    Console.WriteLine("kapacitor — Claude Code hook forwarder for Kurrent.Capacitor");
-    Console.WriteLine();
-    Console.WriteLine("Usage:");
-    Console.WriteLine("  kapacitor <hook-command>                                      Forward a hook payload (reads JSON from stdin)");
-    Console.WriteLine("  kapacitor watch <sessionId> <path> [--agent-id <agentId>]     Watch a transcript file and POST lines to server");
-    Console.WriteLine("  kapacitor history [--cwd <path>] [--session <id>]              Load historical transcript files into server");
-    Console.WriteLine("  kapacitor errors [--chain] <id>                               List tool call errors for a session");
-    Console.WriteLine("  kapacitor --help                                              Show this help");
-    Console.WriteLine();
-    Console.WriteLine("Hook commands:");
-    foreach (var h in hookCommands)
-        Console.WriteLine($"  {h}");
-    Console.WriteLine();
-    Console.WriteLine("Environment:");
-    Console.WriteLine("  KAPACITOR_URL    Server URL (default: http://localhost:5108)");
-}
-
-if (command == "errors") {
-    if (args.Length < 2) {
+switch (command) {
+    case "errors" when args.Length < 2:
         Console.Error.WriteLine("Usage: kapacitor errors [--chain] <sessionId>");
+
         return 1;
+    case "errors": {
+        var useChain     = args.Contains("--chain");
+        var errSessionId = args.Skip(1).First(a => a != "--chain");
+
+        return await ErrorsCommand.HandleErrors(baseUrl, errSessionId, useChain);
     }
-    var useChain = args.Contains("--chain");
-    var errSessionId = args.Skip(1).First(a => a != "--chain");
-    return await ErrorsCommand.HandleErrors(baseUrl, errSessionId, useChain);
-}
+    case "history": {
+        string? filterCwd     = null;
+        string? filterSession = null;
+        var     cwdArgIdx     = Array.IndexOf(args, "--cwd");
 
-if (command == "history") {
-    string? filterCwd = null;
-    string? filterSession = null;
-    var cwdArgIdx = Array.IndexOf(args, "--cwd");
-    if (cwdArgIdx >= 0 && cwdArgIdx + 1 < args.Length)
-        filterCwd = args[cwdArgIdx + 1];
-    var sessionArgIdx = Array.IndexOf(args, "--session");
-    if (sessionArgIdx >= 0 && sessionArgIdx + 1 < args.Length)
-        filterSession = args[sessionArgIdx + 1];
+        if (cwdArgIdx >= 0 && cwdArgIdx + 1 < args.Length)
+            filterCwd = args[cwdArgIdx + 1];
+        var sessionArgIdx = Array.IndexOf(args, "--session");
 
-    return await HistoryCommand.HandleHistory(baseUrl, filterCwd, filterSession);
-}
+        if (sessionArgIdx >= 0 && sessionArgIdx + 1 < args.Length)
+            filterSession = args[sessionArgIdx + 1];
 
-if (command == "watch") {
-    if (args.Length < 3) {
+        return await HistoryCommand.HandleHistory(baseUrl, filterCwd, filterSession);
+    }
+    case "watch" when args.Length < 3:
         Console.Error.WriteLine("Usage: kapacitor watch <sessionId> <transcriptPath> [--agent-id <agentId>] [--cwd <cwd>]");
-        return 1;
-    }
-    var watchSessionId    = args[1];
-    var watchPath         = args[2];
-    string? watchAgentId  = null;
-    string? watchCwd      = null;
-    var agentIdIdx        = Array.IndexOf(args, "--agent-id");
-    if (agentIdIdx >= 0 && agentIdIdx + 1 < args.Length)
-        watchAgentId = args[agentIdIdx + 1];
-    var cwdIdx = Array.IndexOf(args, "--cwd");
-    if (cwdIdx >= 0 && cwdIdx + 1 < args.Length)
-        watchCwd = args[cwdIdx + 1];
 
-    return await WatchCommand.RunWatch(baseUrl, watchSessionId, watchPath, watchAgentId, watchCwd);
+        return 1;
+    case "watch": {
+        var     watchSessionId = args[1];
+        var     watchPath      = args[2];
+        string? watchAgentId   = null;
+        string? watchCwd       = null;
+        var     agentIdIdx     = Array.IndexOf(args, "--agent-id");
+
+        if (agentIdIdx >= 0 && agentIdIdx + 1 < args.Length)
+            watchAgentId = args[agentIdIdx + 1];
+        var cwdIdx = Array.IndexOf(args, "--cwd");
+
+        if (cwdIdx >= 0 && cwdIdx + 1 < args.Length)
+            watchCwd = args[cwdIdx + 1];
+
+        return await WatchCommand.RunWatch(baseUrl, watchSessionId, watchPath, watchAgentId, watchCwd);
+    }
 }
 
 if (!hookCommands.Contains(command)) {
     Console.Error.WriteLine($"Unknown command: {command}");
+
     return 1;
 }
 
@@ -95,41 +85,53 @@ var body = await Console.In.ReadToEndAsync();
 // Enrich all hook payloads with repository info
 body = await RepositoryDetection.EnrichWithRepositoryInfo(body);
 
+switch (command) {
 // For session-end and subagent-stop: kill watcher BEFORE posting hook
+
 // so transcript is fully drained before server computes stats.
 // If watcher was already dead, do an inline drain to catch up.
-if (command is "session-end") {
-    var node = JsonNode.Parse(body);
-    var sessionId = node?["session_id"]?.GetValue<string>();
-    var transcriptPath = node?["transcript_path"]?.GetValue<string>();
-    if (sessionId is not null) {
-        var wasRunning = await WatcherManager.KillWatcher(sessionId);
-        if (!wasRunning && transcriptPath is not null)
-            await WatcherManager.InlineDrainAsync(baseUrl, sessionId, transcriptPath, agentId: null);
-    }
-}
-else if (command is "subagent-stop") {
-    var node = JsonNode.Parse(body);
-    var sessionId = node?["session_id"]?.GetValue<string>();
-    var agentId = node?["agent_id"]?.GetValue<string>();
-    var transcriptPath = node?["transcript_path"]?.GetValue<string>();
-    if (sessionId is not null && agentId is not null) {
-        var wasRunning = await WatcherManager.KillWatcher($"{sessionId}-{agentId}");
-        if (!wasRunning && transcriptPath is not null) {
-            var sessionDir = Path.ChangeExtension(transcriptPath, null);
-            var agentTranscriptPath = Path.Combine(sessionDir, "subagents", $"agent-{agentId}.jsonl");
-            await WatcherManager.InlineDrainAsync(baseUrl, sessionId, agentTranscriptPath, agentId);
+    case "session-end": {
+        var node           = JsonNode.Parse(body);
+        var sessionId      = node?["session_id"]?.GetValue<string>();
+        var transcriptPath = node?["transcript_path"]?.GetValue<string>();
+
+        if (sessionId is not null) {
+            var wasRunning = await WatcherManager.KillWatcher(sessionId);
+
+            if (!wasRunning && transcriptPath is not null)
+                await WatcherManager.InlineDrainAsync(baseUrl, sessionId, transcriptPath, agentId: null);
         }
+
+        break;
+    }
+    case "subagent-stop": {
+        var node           = JsonNode.Parse(body);
+        var sessionId      = node?["session_id"]?.GetValue<string>();
+        var agentId        = node?["agent_id"]?.GetValue<string>();
+        var transcriptPath = node?["transcript_path"]?.GetValue<string>();
+
+        if (sessionId is not null && agentId is not null) {
+            var wasRunning = await WatcherManager.KillWatcher($"{sessionId}-{agentId}");
+
+            if (!wasRunning && transcriptPath is not null) {
+                var sessionDir          = Path.ChangeExtension(transcriptPath, null);
+                var agentTranscriptPath = Path.Combine(sessionDir, "subagents", $"agent-{agentId}.jsonl");
+                await WatcherManager.InlineDrainAsync(baseUrl, sessionId, agentTranscriptPath, agentId);
+            }
+        }
+
+        break;
     }
 }
 
-using var client = new HttpClient();
+using var client  = new HttpClient();
 using var content = new StringContent(body, Encoding.UTF8, "application/json");
 
 var response = await client.PostAsync($"{baseUrl}/hooks/{command}", content);
 
 if (!response.IsSuccessStatusCode) {
     Console.Error.WriteLine($"HTTP {(int)response.StatusCode}");
+
     return 1;
 }
 
@@ -140,6 +142,7 @@ switch (command) {
         var sessionId      = node?["session_id"]?.GetValue<string>();
         var transcriptPath = node?["transcript_path"]?.GetValue<string>();
         var sessionCwd     = node?["cwd"]?.GetValue<string>();
+
         if (sessionId is not null && transcriptPath is not null)
             WatcherManager.EnsureWatcherRunning(baseUrl, sessionId, transcriptPath, agentId: null, cwd: sessionCwd);
 
@@ -150,6 +153,7 @@ switch (command) {
         var sessionId      = node?["session_id"]?.GetValue<string>();
         var agentId        = node?["agent_id"]?.GetValue<string>();
         var transcriptPath = node?["transcript_path"]?.GetValue<string>();
+
         if (sessionId is not null && agentId is not null && transcriptPath is not null) {
             var sessionDir          = Path.ChangeExtension(transcriptPath, null);
             var agentTranscriptPath = Path.Combine(sessionDir, "subagents", $"agent-{agentId}.jsonl");
@@ -164,6 +168,7 @@ switch (command) {
         var sessionId      = node?["session_id"]?.GetValue<string>();
         var transcriptPath = node?["transcript_path"]?.GetValue<string>();
         var sessionCwd     = node?["cwd"]?.GetValue<string>();
+
         if (sessionId is not null && transcriptPath is not null)
             WatcherManager.EnsureWatcherRunning(baseUrl, sessionId, transcriptPath, agentId: null, cwd: sessionCwd);
 
@@ -172,3 +177,22 @@ switch (command) {
 }
 
 return 0;
+
+void PrintUsage() {
+    Console.WriteLine("kapacitor — Claude Code hook forwarder for Kurrent.Capacitor");
+    Console.WriteLine();
+    Console.WriteLine("Usage:");
+    Console.WriteLine("  kapacitor <hook-command>                                      Forward a hook payload (reads JSON from stdin)");
+    Console.WriteLine("  kapacitor watch <sessionId> <path> [--agent-id <agentId>]     Watch a transcript file and POST lines to server");
+    Console.WriteLine("  kapacitor history [--cwd <path>] [--session <id>]              Load historical transcript files into server");
+    Console.WriteLine("  kapacitor errors [--chain] <id>                               List tool call errors for a session");
+    Console.WriteLine("  kapacitor --help                                              Show this help");
+    Console.WriteLine();
+    Console.WriteLine("Hook commands:");
+
+    foreach (var h in hookCommands)
+        Console.WriteLine($"  {h}");
+    Console.WriteLine();
+    Console.WriteLine("Environment:");
+    Console.WriteLine("  KAPACITOR_URL    Server URL (default: http://localhost:5108)");
+}
