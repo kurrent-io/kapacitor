@@ -1,0 +1,5 @@
+{
+  "name": "kapacitor",
+  "version": "1.1.1",
+  "description": "Records and visualizes Claude Code sessions via kapacitor CLI hooks"
+}
