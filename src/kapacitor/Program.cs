@@ -137,7 +137,13 @@ switch (command) {
 using var client  = new HttpClient();
 using var content = new StringContent(body, Encoding.UTF8, "application/json");
 
-var response = await client.PostAsync($"{baseUrl}/hooks/{command}", content);
+HttpResponseMessage response;
+try {
+    response = await client.PostWithRetryAsync($"{baseUrl}/hooks/{command}", content);
+} catch (HttpRequestException ex) {
+    HttpClientExtensions.WriteUnreachableError(baseUrl, ex);
+    return 1;
+}
 
 if (!response.IsSuccessStatusCode) {
     Console.Error.WriteLine($"HTTP {(int)response.StatusCode}");

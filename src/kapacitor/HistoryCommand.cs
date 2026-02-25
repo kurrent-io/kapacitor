@@ -74,7 +74,7 @@ static class HistoryCommand {
             int                  resumeFromLine = 0;
 
             try {
-                var resp = await httpClient.GetAsync($"{baseUrl}/api/sessions/{sessionId}/last-line");
+                var resp = await httpClient.GetWithRetryAsync($"{baseUrl}/api/sessions/{sessionId}/last-line");
 
                 if (resp.StatusCode == System.Net.HttpStatusCode.NotFound) {
                     // 404 = stream doesn't exist, full load needed
@@ -144,7 +144,7 @@ static class HistoryCommand {
 
                 try {
                     using var startContent = new StringContent(startHook.ToJsonString(), Encoding.UTF8, "application/json");
-                    var       startResp    = await httpClient.PostAsync($"{baseUrl}/hooks/session-start", startContent);
+                    var       startResp    = await httpClient.PostWithRetryAsync($"{baseUrl}/hooks/session-start", startContent);
                     if (!startResp.IsSuccessStatusCode) {
                         Console.WriteLine($"Skipping {sessionId} [session-start failed: HTTP {(int)startResp.StatusCode}]");
                         errored++;
@@ -170,7 +170,7 @@ static class HistoryCommand {
 
                     try {
                         using var agentStartContent = new StringContent(agentStartHook.ToJsonString(), Encoding.UTF8, "application/json");
-                        await httpClient.PostAsync($"{baseUrl}/hooks/subagent-start", agentStartContent);
+                        await httpClient.PostWithRetryAsync($"{baseUrl}/hooks/subagent-start", agentStartContent);
                     } catch {
                         // Best effort for agent starts
                     }
@@ -205,7 +205,7 @@ static class HistoryCommand {
 
                     try {
                         using var agentStopContent = new StringContent(agentStopHook.ToJsonString(), Encoding.UTF8, "application/json");
-                        await httpClient.PostAsync($"{baseUrl}/hooks/subagent-stop", agentStopContent);
+                        await httpClient.PostWithRetryAsync($"{baseUrl}/hooks/subagent-stop", agentStopContent);
                     } catch {
                         // Best effort for agent stops
                     }
@@ -222,7 +222,7 @@ static class HistoryCommand {
 
                 try {
                     using var endContent = new StringContent(endHook.ToJsonString(), Encoding.UTF8, "application/json");
-                    await httpClient.PostAsync($"{baseUrl}/hooks/session-end", endContent);
+                    await httpClient.PostWithRetryAsync($"{baseUrl}/hooks/session-end", endContent);
                 } catch {
                     // Best effort for session end
                 }
@@ -295,7 +295,7 @@ static class HistoryCommand {
         using var content = new StringContent(json, Encoding.UTF8, "application/json");
 
         try {
-            await httpClient.PostAsync($"{baseUrl}/hooks/transcript", content);
+            await httpClient.PostWithRetryAsync($"{baseUrl}/hooks/transcript", content);
         } catch (HttpRequestException) {
             // Log but continue — don't abort the whole history load for one failed batch
         }
