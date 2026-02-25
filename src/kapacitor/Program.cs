@@ -38,6 +38,16 @@ switch (command) {
 
         return await ErrorsCommand.HandleErrors(baseUrl, errSessionId, useChain);
     }
+    case "recap" when args.Length < 2:
+        Console.Error.WriteLine("Usage: kapacitor recap [--chain] <sessionId>");
+
+        return 1;
+    case "recap": {
+        var useChain        = args.Contains("--chain");
+        var recapSessionId  = args.Skip(1).First(a => a != "--chain");
+
+        return await RecapCommand.HandleRecap(baseUrl, recapSessionId, useChain);
+    }
     case "history": {
         string? filterCwd     = null;
         string? filterSession = null;
@@ -186,6 +196,7 @@ void PrintUsage() {
     Console.WriteLine("  kapacitor watch <sessionId> <path> [--agent-id <agentId>]     Watch a transcript file and POST lines to server");
     Console.WriteLine("  kapacitor history [--cwd <path>] [--session <id>]              Load historical transcript files into server");
     Console.WriteLine("  kapacitor errors [--chain] <id>                               List tool call errors for a session");
+    Console.WriteLine("  kapacitor recap [--chain] <id>                                Session recap for context handoff");
     Console.WriteLine("  kapacitor --help                                              Show this help");
     Console.WriteLine();
     Console.WriteLine("Hook commands:");

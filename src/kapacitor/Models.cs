@@ -29,6 +29,15 @@ record ErrorEntry(
     string         Error,
     DateTimeOffset Timestamp);
 
+record RecapEntry(
+    string         Type,
+    string?        SessionId,
+    string?        AgentId,
+    string?        AgentType,
+    string         Content,
+    string?        FilePath,
+    DateTimeOffset Timestamp);
+
 record RepositoryPayload {
     [JsonPropertyName("user_name")]
     public string? UserName { get; init; }
@@ -117,6 +126,7 @@ static partial class GitUrlParser {
     internal static partial Regex SshRegex();
 }
 
+[JsonSerializable(typeof(List<RecapEntry>))]
 [JsonSerializable(typeof(List<ErrorEntry>))]
 [JsonSerializable(typeof(RepositoryPayload))]
 [JsonSerializable(typeof(GitCacheEntry))]
