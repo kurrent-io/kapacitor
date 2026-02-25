@@ -109,10 +109,10 @@ static class WatchCommand {
             using var httpContent = new StringContent(json, Encoding.UTF8, "application/json");
 
             try {
-                var resp = await httpClient.PostAsync($"{baseUrl}/hooks/transcript", httpContent);
+                var resp = await httpClient.PostWithRetryAsync($"{baseUrl}/hooks/transcript", httpContent);
                 Log(resp.IsSuccessStatusCode ? $"Posted {newLines.Count} line(s)" : $"Server returned HTTP {(int)resp.StatusCode} for {newLines.Count} line(s)");
             } catch (HttpRequestException ex) {
-                Log($"Server unreachable: {ex.Message}");
+                Log($"Server unreachable after retries: {ex.Message}");
             }
         } catch (IOException ex) {
             Log($"Error reading file: {ex.Message}");
@@ -124,7 +124,7 @@ static class WatchCommand {
     public static async Task<int> GetResumePosition(string baseUrl, HttpClient httpClient, string sessionId, string? agentId, string transcriptPath) {
         try {
             var query = agentId is not null ? $"?agentId={agentId}" : "";
-            var resp  = await httpClient.GetAsync($"{baseUrl}/api/sessions/{sessionId}/last-line{query}");
+            var resp  = await httpClient.GetWithRetryAsync($"{baseUrl}/api/sessions/{sessionId}/last-line{query}");
 
             if (resp.IsSuccessStatusCode && resp.StatusCode != System.Net.HttpStatusCode.NoContent) {
                 var json = await resp.Content.ReadAsStringAsync();

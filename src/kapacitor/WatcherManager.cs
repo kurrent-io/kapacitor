@@ -139,7 +139,7 @@ static class WatcherManager {
             int startLine;
             try {
                 var query = agentId is not null ? $"?agentId={agentId}" : "";
-                var resp  = await httpClient.GetAsync($"{baseUrl}/api/sessions/{sessionId}/last-line{query}");
+                var resp  = await httpClient.GetWithRetryAsync($"{baseUrl}/api/sessions/{sessionId}/last-line{query}");
 
                 if (resp.IsSuccessStatusCode && resp.StatusCode != System.Net.HttpStatusCode.NoContent) {
                     var json = await resp.Content.ReadAsStringAsync();
@@ -188,12 +188,12 @@ static class WatcherManager {
             using var content   = new StringContent(batchJson, Encoding.UTF8, "application/json");
 
             try {
-                var resp = await httpClient.PostAsync($"{baseUrl}/hooks/transcript", content);
+                var resp = await httpClient.PostWithRetryAsync($"{baseUrl}/hooks/transcript", content);
                 Console.Error.WriteLine(resp.IsSuccessStatusCode
                     ? $"Inline drain for {sessionId}: sent {newLines.Count} line(s)"
                     : $"Inline drain for {sessionId}: server returned HTTP {(int)resp.StatusCode}");
             } catch (HttpRequestException ex) {
-                Console.Error.WriteLine($"Inline drain for {sessionId}: server unreachable — {ex.Message}");
+                Console.Error.WriteLine($"Inline drain for {sessionId}: server unreachable after retries — {ex.Message}");
             }
         } catch (Exception ex) {
             Console.Error.WriteLine($"Inline drain for {sessionId} failed: {ex.Message}");

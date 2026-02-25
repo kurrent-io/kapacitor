@@ -6,7 +6,14 @@ static class RecapCommand {
     public static async Task<int> HandleRecap(string baseUrl, string sessionId, bool chain) {
         using var httpClient = new HttpClient();
         var       query      = chain ? "?chain=true" : "";
-        var       resp       = await httpClient.GetAsync($"{baseUrl}/api/sessions/{sessionId}/recap{query}");
+
+        HttpResponseMessage resp;
+        try {
+            resp = await httpClient.GetWithRetryAsync($"{baseUrl}/api/sessions/{sessionId}/recap{query}");
+        } catch (HttpRequestException ex) {
+            HttpClientExtensions.WriteUnreachableError(baseUrl, ex);
+            return 1;
+        }
 
         if (resp.StatusCode == System.Net.HttpStatusCode.NotFound) {
             Console.Error.WriteLine($"Session not found: {sessionId}");

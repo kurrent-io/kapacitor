@@ -6,7 +6,14 @@ static class ErrorsCommand {
     public static async Task<int> HandleErrors(string baseUrl, string sessionId, bool chain) {
         using var httpClient = new HttpClient();
         var       query      = chain ? "?chain=true" : "";
-        var       resp       = await httpClient.GetAsync($"{baseUrl}/api/sessions/{sessionId}/errors{query}");
+
+        HttpResponseMessage resp;
+        try {
+            resp = await httpClient.GetWithRetryAsync($"{baseUrl}/api/sessions/{sessionId}/errors{query}");
+        } catch (HttpRequestException ex) {
+            HttpClientExtensions.WriteUnreachableError(baseUrl, ex);
+            return 1;
+        }
 
         if (resp.StatusCode == System.Net.HttpStatusCode.NotFound) {
             Console.Error.WriteLine($"Session not found: {sessionId}");
