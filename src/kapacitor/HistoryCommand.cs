@@ -63,6 +63,13 @@ static class HistoryCommand {
         Console.WriteLine($"Found {transcriptFiles.Count} session{(transcriptFiles.Count == 1 ? "" : "s")} in {projectCount} project{(projectCount == 1 ? "" : "s")}");
         Console.WriteLine();
 
+        // Build continuation map: group sessions by slug and order by timestamp
+        // so we can link continuations during migration
+        var continuationMap = BuildContinuationMap(transcriptFiles);
+
+        // Sort transcript files so continuation chains are processed in order
+        SortByContinuationOrder(transcriptFiles, continuationMap);
+
         var loaded  = 0;
         var resumed = 0;
         var skipped = 0;
@@ -117,6 +124,8 @@ static class HistoryCommand {
                 var meta = ExtractSessionMetadata(filePath);
 
                 // POST synthesized session-start hook
+                continuationMap.TryGetValue(sessionId, out var prevSessionId);
+
                 var startHook = new JsonObject {
                     ["session_id"]      = sessionId,
                     ["transcript_path"] = filePath,
@@ -125,6 +134,13 @@ static class HistoryCommand {
                     ["hook_event_name"] = "session_start",
                     ["model"]           = meta.Model
                 };
+
+                // Pass continuation info directly (bypasses pending continuation mechanism)
+                if (prevSessionId is not null)
+                    startHook["previous_session_id"] = prevSessionId;
+
+                if (meta.Slug is not null)
+                    startHook["slug"] = meta.Slug;
 
                 // Enrich with repository info if we have a cwd
                 var startCwd = meta.Cwd ?? DecodeCwdFromDirName(encodedCwd);
@@ -340,8 +356,14 @@ static class HistoryCommand {
                     if (meta.SessionId is null && root.TryGetProperty("sessionId", out var sidProp))
                         meta.SessionId = sidProp.GetString();
 
+                    // Extract first timestamp for continuation ordering
+                    if (meta.FirstTimestamp is null && root.TryGetProperty("timestamp", out var tsProp) &&
+                        tsProp.ValueKind == JsonValueKind.String &&
+                        DateTimeOffset.TryParse(tsProp.GetString(), out var ts))
+                        meta.FirstTimestamp = ts;
+
                     // Stop early once we have all metadata
-                    if (meta.Cwd is not null && meta.Model is not null)
+                    if (meta.Cwd is not null && meta.Model is not null && meta.Slug is not null)
                         break;
                 } catch (JsonException) {
                     continue;
@@ -403,5 +425,70 @@ static class HistoryCommand {
         }
 
         return results;
+    }
+
+    /// <summary>
+    /// Groups sessions by slug, sorts by timestamp within each group, and builds
+    /// a map of sessionId → previousSessionId for sessions that are continuations.
+    /// </summary>
+    static Dictionary<string, string> BuildContinuationMap(
+            List<(string SessionId, string FilePath, string EncodedCwd)> transcriptFiles
+        ) {
+        var continuationMap = new Dictionary<string, string>();
+
+        // Extract slug and timestamp from each session
+        var metaBySession = new Dictionary<string, (string? Slug, DateTimeOffset Timestamp)>();
+
+        foreach (var (sessionId, filePath, _) in transcriptFiles) {
+            var meta = ExtractSessionMetadata(filePath);
+
+            // Use file modification time as fallback when transcript has no timestamp
+            var timestamp = meta.FirstTimestamp ?? new DateTimeOffset(File.GetLastWriteTimeUtc(filePath), TimeSpan.Zero);
+            metaBySession[sessionId] = (meta.Slug, timestamp);
+        }
+
+        // Group by slug and sort by timestamp within each group
+        var bySlug = metaBySession
+            .Where(kv => kv.Value.Slug is not null)
+            .GroupBy(kv => kv.Value.Slug!)
+            .ToDictionary(g => g.Key, g => g.OrderBy(kv => kv.Value.Timestamp).Select(kv => kv.Key).ToList());
+
+        foreach (var (_, chain) in bySlug) {
+            for (var i = 1; i < chain.Count; i++)
+                continuationMap[chain[i]] = chain[i - 1];
+        }
+
+        return continuationMap;
+    }
+
+    /// <summary>
+    /// Sorts transcript files so that within each continuation chain,
+    /// earlier sessions are processed before their continuations.
+    /// </summary>
+    static void SortByContinuationOrder(
+            List<(string SessionId, string FilePath, string EncodedCwd)> transcriptFiles,
+            Dictionary<string, string> continuationMap
+        ) {
+        // Build a depth map: sessions with no predecessor = depth 0, their continuations = depth 1, etc.
+        var depth = new Dictionary<string, int>();
+
+        int GetDepth(string sessionId) {
+            if (depth.TryGetValue(sessionId, out var d)) return d;
+
+            d = continuationMap.TryGetValue(sessionId, out var prev) ? GetDepth(prev) + 1 : 0;
+            depth[sessionId] = d;
+
+            return d;
+        }
+
+        foreach (var (sessionId, _, _) in transcriptFiles)
+            GetDepth(sessionId);
+
+        transcriptFiles.Sort((a, b) => {
+            var da = depth.GetValueOrDefault(a.SessionId);
+            var db = depth.GetValueOrDefault(b.SessionId);
+
+            return da != db ? da.CompareTo(db) : string.Compare(a.SessionId, b.SessionId, StringComparison.Ordinal);
+        });
     }
 }

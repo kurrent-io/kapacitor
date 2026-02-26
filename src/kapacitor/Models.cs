@@ -96,15 +96,14 @@ class WatchState {
     public DateTimeOffset     LastRepoDetection { get; set; }
 }
 
-record ApiError(string Error, string Message, string Hint, string Url);
-
 enum HistorySessionStatus { New, Partial, AlreadyLoaded }
 
 class SessionMetadata {
-    public string? Cwd       { get; set; }
-    public string? Model     { get; set; }
-    public string? Slug      { get; set; }
-    public string? SessionId { get; set; }
+    public string?         Cwd            { get; set; }
+    public string?         Model          { get; set; }
+    public string?         Slug           { get; set; }
+    public string?         SessionId      { get; set; }
+    public DateTimeOffset? FirstTimestamp { get; set; }
 }
 
 static partial class GitUrlParser {
@@ -128,7 +127,6 @@ static partial class GitUrlParser {
     internal static partial Regex SshRegex();
 }
 
-[JsonSerializable(typeof(ApiError))]
 [JsonSerializable(typeof(List<RecapEntry>))]
 [JsonSerializable(typeof(List<ErrorEntry>))]
 [JsonSerializable(typeof(RepositoryPayload))]
