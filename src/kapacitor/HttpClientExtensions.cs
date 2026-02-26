@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Text.Json;
 
 namespace kapacitor;
 
@@ -8,9 +7,10 @@ static class HttpClientExtensions {
     static readonly TimeSpan MaxDelay       = TimeSpan.FromSeconds(4);
 
     const string UnreachableHint =
-        "Kurrent Capacitor API cannot be reached, is it running? "               +
-        "Make sure the URL is correctly configured and the service is running. " +
-        "Check https://github.com/kurrent-io/claude-remember#setup for instructions.";
+        "Kurrent Capacitor API cannot be reached, is it running? "                    +
+        "Make sure the URL is correctly configured and the service is running. "      +
+        "Check https://github.com/kurrent-io/claude-remember#setup for instructions." +
+        "\rError connecting to: ";
 
     extension(HttpClient client) {
         public Task<HttpResponseMessage> PostWithRetryAsync(
@@ -33,9 +33,7 @@ static class HttpClientExtensions {
     /// Writes a structured JSON error to stderr for when the API is unreachable after all retries.
     /// </summary>
     public static void WriteUnreachableError(string baseUrl, HttpRequestException ex) {
-        Console.Error.WriteLine($"{baseUrl} {ex.Message}");
-        // var error = new ApiError("connection_failed", ex.Message, UnreachableHint, baseUrl);
-        // Console.Error.WriteLine(JsonSerializer.Serialize(error, KapacitorJsonContext.Default.ApiError));
+        Console.Error.WriteLine($"{UnreachableHint} {baseUrl} {ex.Message}");
     }
 
     static async Task<HttpResponseMessage> SendWithRetryAsync(
