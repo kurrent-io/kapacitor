@@ -15,7 +15,8 @@ string[] hookCommands = [
     "subagent-start",
     "subagent-stop",
     "notification",
-    "stop"
+    "stop",
+    "pre-compact"
 ];
 
 if (args.Length < 1) {
