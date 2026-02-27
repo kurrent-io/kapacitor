@@ -91,9 +91,39 @@ record GitCacheEntry {
 }
 
 class WatchState {
-    public int                LinesProcessed    { get; set; }
-    public RepositoryPayload? Repository        { get; set; }
-    public DateTimeOffset     LastRepoDetection { get; set; }
+    public int                LinesProcessed     { get; set; }
+    public RepositoryPayload? Repository         { get; set; }
+    public RepositoryPayload? LastSentRepository  { get; set; }
+    public DateTimeOffset     LastRepoDetection  { get; set; }
+    public bool               TitleGenerated     { get; set; }
+    public int                TitleAttempts       { get; set; }
+    public bool               TitleInFlight       { get; set; }
+    public string?            FirstUserText       { get; set; }
+    public bool               IsSlashCommand      { get; set; }
+    public string?            SlashCommandName    { get; set; }
+}
+
+record SessionTitlePayload {
+    [JsonPropertyName("session_id")]
+    public required string SessionId { get; init; }
+
+    [JsonPropertyName("title")]
+    public required string Title { get; init; }
+
+    [JsonPropertyName("model")]
+    public string? Model { get; init; }
+
+    [JsonPropertyName("input_tokens")]
+    public long InputTokens { get; init; }
+
+    [JsonPropertyName("output_tokens")]
+    public long OutputTokens { get; init; }
+
+    [JsonPropertyName("cache_read_tokens")]
+    public long CacheReadTokens { get; init; }
+
+    [JsonPropertyName("cache_write_tokens")]
+    public long CacheWriteTokens { get; init; }
 }
 
 enum HistorySessionStatus { New, Partial, AlreadyLoaded }
@@ -132,5 +162,6 @@ static partial class GitUrlParser {
 [JsonSerializable(typeof(RepositoryPayload))]
 [JsonSerializable(typeof(GitCacheEntry))]
 [JsonSerializable(typeof(TranscriptBatch))]
+[JsonSerializable(typeof(SessionTitlePayload))]
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.SnakeCaseLower)]
 partial class KapacitorJsonContext : JsonSerializerContext;

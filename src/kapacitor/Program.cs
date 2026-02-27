@@ -2,6 +2,11 @@ using System.Text;
 using System.Text.Json.Nodes;
 using kapacitor;
 
+// Skip all processing when spawned inside a headless claude invocation (e.g., title generation)
+// to prevent infinite hook loops
+if (Environment.GetEnvironmentVariable("KAPACITOR_SKIP") is "1")
+    return 0;
+
 var baseUrl = Environment.GetEnvironmentVariable("KAPACITOR_URL") ?? "http://localhost:5108";
 
 string[] hookCommands = [

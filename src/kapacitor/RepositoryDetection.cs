@@ -18,6 +18,11 @@ static class RepositoryDetection {
             var repo = await DetectRepositoryAsync(cwd);
             if (repo is null) return json;
 
+            // Skip enrichment if repo info hasn't changed since last emit for this cwd
+            var lastEmitted = LoadLastEmitted(cwd);
+            if (lastEmitted is not null && RepoPayloadEquals(repo, lastEmitted))
+                return json;
+
             var repoNode                                              = new JsonObject();
             if (repo.UserName is not null)    repoNode["user_name"]   = repo.UserName;
             if (repo.UserEmail is not null)   repoNode["user_email"]  = repo.UserEmail;
@@ -32,11 +37,23 @@ static class RepositoryDetection {
 
             obj["repository"] = repoNode;
 
+            SaveLastEmitted(cwd, repo);
+
             return obj.ToJsonString();
         } catch {
             return json; // on any error, forward original payload
         }
     }
+
+    static bool RepoPayloadEquals(RepositoryPayload a, RepositoryPayload b) =>
+        a.Owner     == b.Owner
+     && a.RepoName  == b.RepoName
+     && a.Branch    == b.Branch
+     && a.PrNumber  == b.PrNumber
+     && a.PrUrl     == b.PrUrl
+     && a.PrTitle   == b.PrTitle
+     && a.UserName  == b.UserName
+     && a.UserEmail == b.UserEmail;
 
     public static async Task<RepositoryPayload?> DetectRepositoryAsync(string cwd) {
         try {
@@ -176,6 +193,34 @@ static class RepositoryDetection {
             var dir  = Path.GetDirectoryName(path)!;
             Directory.CreateDirectory(dir);
             File.WriteAllText(path, JsonSerializer.Serialize(entry, kapacitor.KapacitorJsonContext.Default.GitCacheEntry));
+        } catch {
+            // Cache write failure is non-critical
+        }
+    }
+
+    static string GetLastEmittedPath(string cwd) {
+        var hash = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(cwd)))[..16];
+        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        return Path.Combine(home, ".config", "kapacitor", "cache", $"{hash}.repo-emitted.json");
+    }
+
+    static RepositoryPayload? LoadLastEmitted(string cwd) {
+        try {
+            var path = GetLastEmittedPath(cwd);
+            if (!File.Exists(path)) return null;
+            var json = File.ReadAllText(path);
+            return JsonSerializer.Deserialize(json, KapacitorJsonContext.Default.RepositoryPayload);
+        } catch {
+            return null;
+        }
+    }
+
+    static void SaveLastEmitted(string cwd, RepositoryPayload payload) {
+        try {
+            var path = GetLastEmittedPath(cwd);
+            var dir  = Path.GetDirectoryName(path)!;
+            Directory.CreateDirectory(dir);
+            File.WriteAllText(path, JsonSerializer.Serialize(payload, KapacitorJsonContext.Default.RepositoryPayload));
         } catch {
             // Cache write failure is non-critical
         }
