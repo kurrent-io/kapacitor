@@ -34,9 +34,11 @@ static class ValidatePlanCommand {
         }
 
         // Plans can come from any session in the chain (continuation planContent or ExitPlanMode write)
-        var plans = entries.Where(e => e.Type == "plan").ToList();
+        var plans     = entries.Where(e => e.Type == "plan").ToList();
         // Work done: only from the current session being validated
-        var work  = entries.Where(e => e.Type is "write" or "edit" && e.SessionId == sessionId).ToList();
+        var work      = entries.Where(e => e.Type is "write" or "edit" && e.SessionId == sessionId).ToList();
+        // AI-generated summaries
+        var summaries = entries.Where(e => e.Type == "whats_done").ToList();
 
         if (plans.Count == 0) {
             Console.WriteLine("No plan found for this session.");
@@ -50,8 +52,19 @@ static class ValidatePlanCommand {
             Console.WriteLine(plan.Content);
         Console.WriteLine();
 
-        // Output work done
-        Console.WriteLine("## Work Done");
+        // Output what's done
+        Console.WriteLine("## What's Done");
+        Console.WriteLine();
+
+        if (summaries.Count > 0) {
+            Console.WriteLine("### Summary");
+            Console.WriteLine();
+            foreach (var summary in summaries)
+                Console.WriteLine(summary.Content);
+            Console.WriteLine();
+        }
+
+        Console.WriteLine("### Details");
         Console.WriteLine();
         if (work.Count == 0) {
             Console.WriteLine("No file writes or edits recorded.");
@@ -68,7 +81,7 @@ static class ValidatePlanCommand {
         // Verification instruction
         Console.WriteLine("## Instructions");
         Console.WriteLine();
-        Console.WriteLine("Compare the plan above against the list of files created and modified. Identify any planned items that were NOT completed. If everything is done, confirm that. If there are gaps, list them and complete the remaining work now.");
+        Console.WriteLine("Compare the plan above against the summary and file list under \"What's Done\". Identify any planned items that were NOT completed. If everything is done, confirm that. If there are gaps, list them and complete the remaining work now.");
 
         return 0;
     }

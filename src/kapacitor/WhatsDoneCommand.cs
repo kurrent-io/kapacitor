@@ -185,6 +185,11 @@ static class WhatsDoneCommand {
                     sb.AppendLine(entry.Content);
                     sb.AppendLine();
                     break;
+                case "whats_done":
+                    sb.AppendLine("## What's Done (previous summary)");
+                    sb.AppendLine(entry.Content);
+                    sb.AppendLine();
+                    break;
             }
         }
 

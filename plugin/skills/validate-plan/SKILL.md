@@ -11,28 +11,46 @@ description: >-
 
 Verify that all items in the current session's plan have been completed. Plans come from either a continuation (`SessionStarted.planContent`) or an in-session `ExitPlanMode` write to `~/.claude/plans/`.
 
-## Usage
+## Finding the current session ID
 
-Run `kapacitor validate-plan` via the Bash tool with the **current session ID**:
+Derive the session ID from the transcript file on disk:
+
+1. Take the current working directory (e.g. `/Users/alexey/dev/eventstore/kapacitor`)
+2. Replace `/` with `-` to get the project directory name (e.g. `-Users-alexey-dev-eventstore-kapacitor`)
+3. Find the most recently modified `.jsonl` file in `~/.claude/projects/<dirname>/`
+4. The filename (without `.jsonl`) is the session ID
+
+One-liner to get it:
 
 ```bash
-kapacitor validate-plan <sessionId>
+ls -t ~/.claude/projects/$(pwd | tr '/' '-')/*.jsonl 2>/dev/null | head -1 | xargs -I{} basename {} .jsonl
 ```
 
-The current session ID is available as your session identifier — use it directly.
+The `tr` converts `/Users/foo/bar` → `-Users-foo-bar` (the leading `/` becomes `-`).
+
+## Usage
+
+Run `kapacitor validate-plan` via the Bash tool with the discovered session ID:
+
+```bash
+SESSION_ID=$(ls -t ~/.claude/projects/$(pwd | tr '/' '-')/*.jsonl 2>/dev/null | head -1 | xargs -I{} basename {} .jsonl)
+kapacitor validate-plan "$SESSION_ID"
+```
 
 ## What It Returns
 
 The command outputs three sections:
 
 - **`## Plan`** — the full plan text
-- **`## Work Done`** — list of files created (`Write`) and modified (`Edit`) during the session
-- **`## Instructions`** — asks you to compare the plan against the work done
+- **`## What's Done`** — two sub-sections:
+  - **Summary** — AI-generated summary of what was accomplished (from `WhatsDoneGenerated` events, if available)
+  - **Details** — list of files created (`Write`) and modified (`Edit`) during the session
+- **`## Instructions`** — asks you to compare the plan against the summary and file list
 
 ## What To Do With The Output
 
 1. Read the plan carefully and identify each distinct planned item
-2. Compare each item against the files listed under "Work Done"
+2. Compare each item against the summary and file list under "What's Done"
 3. If all items are complete, confirm to the user that the plan is fully implemented
 4. If there are gaps, list the missing items and complete them now
 
