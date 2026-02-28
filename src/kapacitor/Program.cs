@@ -54,6 +54,15 @@ switch (command) {
 
         return await RecapCommand.HandleRecap(baseUrl, recapSessionId, useChain);
     }
+    case "validate-plan" when args.Length < 2:
+        Console.Error.WriteLine("Usage: kapacitor validate-plan <sessionId>");
+
+        return 1;
+    case "validate-plan": {
+        var vpSessionId = args[1];
+
+        return await ValidatePlanCommand.Handle(baseUrl, vpSessionId);
+    }
     case "history": {
         string? filterCwd     = null;
         string? filterSession = null;
@@ -220,6 +229,7 @@ void PrintUsage() {
     Console.WriteLine("  kapacitor history [--cwd <path>] [--session <id>]              Load historical transcript files into server");
     Console.WriteLine("  kapacitor errors [--chain] <id>                               List tool call errors for a session");
     Console.WriteLine("  kapacitor recap [--chain] <id>                                Session recap for context handoff");
+    Console.WriteLine("  kapacitor validate-plan <id>                                  Validate plan completion for a session");
     Console.WriteLine("  kapacitor --help                                              Show this help");
     Console.WriteLine();
     Console.WriteLine("Hook commands:");
