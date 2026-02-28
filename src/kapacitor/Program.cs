@@ -98,6 +98,17 @@ if (!hookCommands.Contains(command)) {
 
 var body = await Console.In.ReadToEndAsync();
 
+// Inject home_dir into all hook payloads
+try {
+    var node = JsonNode.Parse(body);
+    if (node is not null) {
+        node["home_dir"] = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        body = node.ToJsonString();
+    }
+} catch {
+    // Best effort — don't fail the hook if JSON parsing fails
+}
+
 // Enrich all hook payloads with repository info
 body = await RepositoryDetection.EnrichWithRepositoryInfo(body);
 
