@@ -331,13 +331,17 @@ static class WatchCommand {
                 if (doc.RootElement.TryGetProperty("last_line_number", out var prop) && prop.ValueKind == JsonValueKind.Number)
                     return prop.GetInt32() + 1; // resume from the line after the last recorded one
             }
+
+            // Stream exists but no line numbers yet — start from beginning
+            if (resp.StatusCode == System.Net.HttpStatusCode.NoContent)
+                return 0;
         } catch (HttpRequestException) {
             // Server unreachable — fall through to file-based skip
         } catch {
             // Parse error or other issue — fall through
         }
 
-        // No line numbers from server (old data or unreachable): skip to current end of file
+        // Server unreachable or non-success response: skip to current end of file
         return CountFileLines(transcriptPath);
     }
 
