@@ -5,7 +5,7 @@ using System.Text.Json.Nodes;
 namespace kapacitor;
 
 static class HistoryCommand {
-    public static async Task<int> HandleHistory(string baseUrl, string? filterCwd, string? filterSession = null) {
+    public static async Task<int> HandleHistory(string baseUrl, string? filterCwd, string? filterSession = null, int minLines = 10) {
         using var httpClient = new HttpClient();
 
         Console.WriteLine("Discovering sessions...");
@@ -118,6 +118,13 @@ static class HistoryCommand {
 
             // Count total lines for progress display
             var totalLines = WatchCommand.CountFileLines(filePath);
+
+            // Skip short transcripts (likely trivial sessions with no meaningful work)
+            if (status == HistorySessionStatus.New && minLines > 0 && totalLines < minLines) {
+                Console.WriteLine($"Skipping {sessionId} [too short: {totalLines} lines < {minLines} minimum]");
+                skipped++;
+                continue;
+            }
 
             if (status == HistorySessionStatus.New) {
                 // Extract metadata from transcript for session-start hook

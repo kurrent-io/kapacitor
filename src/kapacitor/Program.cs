@@ -75,6 +75,7 @@ switch (command) {
     case "history": {
         string? filterCwd     = null;
         string? filterSession = null;
+        int     minLines      = 10;
         var     cwdArgIdx     = Array.IndexOf(args, "--cwd");
 
         if (cwdArgIdx >= 0 && cwdArgIdx + 1 < args.Length)
@@ -83,8 +84,12 @@ switch (command) {
 
         if (sessionArgIdx >= 0 && sessionArgIdx + 1 < args.Length)
             filterSession = args[sessionArgIdx + 1];
+        var minLinesIdx = Array.IndexOf(args, "--min-lines");
 
-        return await HistoryCommand.HandleHistory(baseUrl, filterCwd, filterSession);
+        if (minLinesIdx >= 0 && minLinesIdx + 1 < args.Length && int.TryParse(args[minLinesIdx + 1], out var parsed))
+            minLines = parsed;
+
+        return await HistoryCommand.HandleHistory(baseUrl, filterCwd, filterSession, minLines);
     }
     case "watch" when args.Length < 3:
         Console.Error.WriteLine("Usage: kapacitor watch <sessionId> <transcriptPath> [--agent-id <agentId>] [--cwd <cwd>]");
@@ -253,7 +258,7 @@ void PrintUsage() {
     Console.WriteLine("Usage:");
     Console.WriteLine("  kapacitor <hook-command>                                      Forward a hook payload (reads JSON from stdin)");
     Console.WriteLine("  kapacitor watch <sessionId> <path> [--agent-id <agentId>]     Watch a transcript file and POST lines to server");
-    Console.WriteLine("  kapacitor history [--cwd <path>] [--session <id>]              Load historical transcript files into server");
+    Console.WriteLine("  kapacitor history [--cwd <path>] [--session <id>] [--min-lines <n>]  Load historical transcript files into server");
     Console.WriteLine("  kapacitor errors [--chain] <id>                               List tool call errors for a session");
     Console.WriteLine("  kapacitor recap [--chain] <id>                                Session recap for context handoff");
     Console.WriteLine("  kapacitor validate-plan <id>                                  Validate plan completion for a session");
