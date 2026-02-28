@@ -13,6 +13,8 @@ static class WhatsDoneCommand {
         Console.SetOut(logWriter);
         Console.SetError(logWriter);
 
+        try {
+
         Log($"Generating what's-done summary for session {sessionId}");
 
         using var httpClient = new HttpClient();
@@ -85,8 +87,11 @@ static class WhatsDoneCommand {
             return 1;
         }
 
-        logWriter.Dispose();
         return 0;
+
+        } finally {
+            logWriter.Dispose();
+        }
     }
 
     static string FormatRecapAsText(List<RecapEntry> entries) {

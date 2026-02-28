@@ -135,7 +135,7 @@ static class WatcherManager {
         try {
             var kapacitorPath = Environment.ProcessPath ?? "kapacitor";
 
-            var psi = new ProcessStartInfo(kapacitorPath, $"generate-whats-done {sessionId}") {
+            var psi = new ProcessStartInfo(kapacitorPath) {
                 RedirectStandardOutput = true,
                 RedirectStandardInput  = true,
                 RedirectStandardError  = true,
@@ -145,6 +145,8 @@ static class WatcherManager {
                     ["KAPACITOR_URL"] = baseUrl
                 }
             };
+            psi.ArgumentList.Add("generate-whats-done");
+            psi.ArgumentList.Add(sessionId);
 
             var process = Process.Start(psi);
             if (process is null) {
