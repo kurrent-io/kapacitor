@@ -1,5 +1,3 @@
-using System.Diagnostics;
-using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
 
@@ -55,99 +53,35 @@ static class WhatsDoneCommand {
                      "Use bullet points. Focus on concrete changes and outcomes, not process details. " +
                      "Keep it under 500 words.\n\n" + recapText;
 
-        var psi = new ProcessStartInfo {
-            FileName               = "claude",
-            RedirectStandardOutput = true,
-            RedirectStandardError  = true,
-            UseShellExecute        = false,
-            CreateNoWindow         = true
-        };
-        psi.Environment["KAPACITOR_SKIP"] = "1";
-        psi.ArgumentList.Add("-p");
-        psi.ArgumentList.Add(prompt);
-        psi.ArgumentList.Add("--output-format");
-        psi.ArgumentList.Add("json");
-        psi.ArgumentList.Add("--max-turns");
-        psi.ArgumentList.Add("1");
-        psi.ArgumentList.Add("--model");
-        psi.ArgumentList.Add("haiku");
-
-        using var process = Process.Start(psi);
-        if (process is null) {
-            Log("Failed to start claude process");
+        var result = await ClaudeCliRunner.RunAsync(prompt, TimeSpan.FromSeconds(30), Log);
+        if (result is null) {
+            Log("Claude returned empty or failed");
             return 1;
         }
 
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        Log($"Summary generated ({result.Result.Length} chars), model={result.Model}, input={result.InputTokens}, output={result.OutputTokens}");
+
+        // 3. POST result back to server
+        var payload = new WhatsDonePayload {
+            SessionId        = sessionId,
+            Content          = result.Result,
+            Model            = result.Model,
+            InputTokens      = result.InputTokens,
+            OutputTokens     = result.OutputTokens,
+            CacheReadTokens  = result.CacheReadTokens,
+            CacheWriteTokens = result.CacheWriteTokens
+        };
+
+        var payloadJson = JsonSerializer.Serialize(payload, KapacitorJsonContext.Default.WhatsDonePayload);
+        using var httpContent = new StringContent(payloadJson, Encoding.UTF8, "application/json");
+
         try {
-            var stdoutTask = process.StandardOutput.ReadToEndAsync(cts.Token);
-            var stderrTask = process.StandardError.ReadToEndAsync(cts.Token);
-
-            await process.WaitForExitAsync(cts.Token);
-            var stdout = await stdoutTask;
-            var stderr = await stderrTask;
-
-            if (process.ExitCode != 0) {
-                var stderrPreview = stderr.Length > 200 ? stderr[..200] : stderr;
-                Log($"Claude exited with code {process.ExitCode}: {stderrPreview}");
-                return 1;
-            }
-
-            // 3. Parse JSON response
-            string? content = null;
-            string? model   = null;
-            long inputTokens = 0, outputTokens = 0, cacheReadTokens = 0, cacheWriteTokens = 0;
-
-            try {
-                using var doc  = JsonDocument.Parse(stdout);
-                var       root = doc.RootElement;
-
-                content = root.TryGetProperty("result", out var r) ? r.GetString()?.Trim() : null;
-                model   = root.TryGetProperty("model", out var m) ? m.GetString() : null;
-
-                if (root.TryGetProperty("usage", out var usage)) {
-                    inputTokens      = usage.TryGetProperty("input_tokens", out var inp) ? inp.GetInt64() : 0;
-                    outputTokens     = usage.TryGetProperty("output_tokens", out var outp) ? outp.GetInt64() : 0;
-                    cacheReadTokens  = usage.TryGetProperty("cache_read_input_tokens", out var cr) ? cr.GetInt64() : 0;
-                    cacheWriteTokens = usage.TryGetProperty("cache_creation_input_tokens", out var cw) ? cw.GetInt64() : 0;
-                }
-            } catch (JsonException) {
-                content = stdout.Trim();
-            }
-
-            if (string.IsNullOrWhiteSpace(content)) {
-                Log("Claude returned empty content");
-                return 1;
-            }
-
-            Log($"Summary generated ({content.Length} chars), model={model}, input={inputTokens}, output={outputTokens}");
-
-            // 4. POST result back to server
-            var payload = new WhatsDonePayload {
-                SessionId        = sessionId,
-                Content          = content,
-                Model            = model,
-                InputTokens      = inputTokens,
-                OutputTokens     = outputTokens,
-                CacheReadTokens  = cacheReadTokens,
-                CacheWriteTokens = cacheWriteTokens
-            };
-
-            var payloadJson = JsonSerializer.Serialize(payload, KapacitorJsonContext.Default.WhatsDonePayload);
-            using var httpContent = new StringContent(payloadJson, Encoding.UTF8, "application/json");
-
-            try {
-                var postResp = await httpClient.PostWithRetryAsync($"{baseUrl}/hooks/whats-done", httpContent);
-                Log(postResp.IsSuccessStatusCode
-                    ? "Successfully posted what's-done summary"
-                    : $"POST failed: HTTP {(int)postResp.StatusCode}");
-            } catch (HttpRequestException ex) {
-                Log($"Server unreachable for POST: {ex.Message}");
-                return 1;
-            }
-        } catch (OperationCanceledException) {
-            Log("Claude process timed out (30s), killing");
-            try { process.Kill(entireProcessTree: true); } catch { /* ignore */ }
+            var postResp = await httpClient.PostWithRetryAsync($"{baseUrl}/hooks/whats-done", httpContent);
+            Log(postResp.IsSuccessStatusCode
+                ? "Successfully posted what's-done summary"
+                : $"POST failed: HTTP {(int)postResp.StatusCode}");
+        } catch (HttpRequestException ex) {
+            Log($"Server unreachable for POST: {ex.Message}");
             return 1;
         }
 

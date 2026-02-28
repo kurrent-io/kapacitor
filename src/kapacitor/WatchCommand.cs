@@ -185,90 +185,23 @@ static class WatchCommand {
             var truncated = userText.Length > 500 ? userText[..500] : userText;
             var prompt = $"Generate a short descriptive title (max 10 words, no quotes, no period) for a coding session. The user's request: {truncated}";
 
-            var psi = new System.Diagnostics.ProcessStartInfo {
-                FileName               = "claude",
-                RedirectStandardOutput = true,
-                RedirectStandardError  = true,
-                UseShellExecute        = false,
-                CreateNoWindow         = true
-            };
-            // Prevent the headless claude session from triggering kapacitor hooks (avoids infinite loop)
-            psi.Environment["KAPACITOR_SKIP"] = "1";
-            psi.ArgumentList.Add("-p");
-            psi.ArgumentList.Add(prompt);
-            psi.ArgumentList.Add("--output-format");
-            psi.ArgumentList.Add("json");
-            psi.ArgumentList.Add("--max-turns");
-            psi.ArgumentList.Add("1");
-            psi.ArgumentList.Add("--model");
-            psi.ArgumentList.Add("haiku");
-
-            using var process = System.Diagnostics.Process.Start(psi);
-            if (process is null) {
-                Log("Failed to start claude process for title generation");
+            var result = await ClaudeCliRunner.RunAsync(prompt, TimeSpan.FromSeconds(15), Log);
+            if (result is null) {
                 state.TitleInFlight = false;
                 return;
             }
 
-            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
-            try {
-                var stdoutTask = process.StandardOutput.ReadToEndAsync(cts.Token);
-                var stderrTask = process.StandardError.ReadToEndAsync(cts.Token);
+            var title = result.Result;
 
-                await process.WaitForExitAsync(cts.Token);
-                var stdout = await stdoutTask;
-                var stderr = await stderrTask;
+            // Sanity-check: limit to 120 chars
+            if (title.Length > 120)
+                title = title[..120];
 
-                if (process.ExitCode != 0) {
-                    var stderrPreview = stderr.Length > 200 ? stderr[..200] : stderr;
-                    Log($"Claude exited with code {process.ExitCode}: {stderrPreview}");
-                    state.TitleInFlight = false;
-                    return;
-                }
+            Log($"Title usage: model={result.Model} input={result.InputTokens} output={result.OutputTokens} cost=${result.CostUsd:F4}");
 
-                // Parse JSON output: { "result": "...", "model": "...", "usage": { ... }, "cost_usd": ... }
-                string? title = null;
-                string? model = null;
-                long inputTokens = 0, outputTokens = 0, cacheReadTokens = 0, cacheWriteTokens = 0;
-                double? costUsd = null;
-
-                try {
-                    using var doc = JsonDocument.Parse(stdout);
-                    var root = doc.RootElement;
-
-                    title = root.TryGetProperty("result", out var r) ? r.GetString()?.Trim() : null;
-                    model = root.TryGetProperty("model", out var m) ? m.GetString() : null;
-                    costUsd = root.TryGetProperty("cost_usd", out var c) && c.ValueKind == JsonValueKind.Number ? c.GetDouble() : null;
-
-                    if (root.TryGetProperty("usage", out var usage)) {
-                        inputTokens      = usage.TryGetProperty("input_tokens", out var inp) ? inp.GetInt64() : 0;
-                        outputTokens     = usage.TryGetProperty("output_tokens", out var outp) ? outp.GetInt64() : 0;
-                        cacheReadTokens  = usage.TryGetProperty("cache_read_input_tokens", out var cr) ? cr.GetInt64() : 0;
-                        cacheWriteTokens = usage.TryGetProperty("cache_creation_input_tokens", out var cw) ? cw.GetInt64() : 0;
-                    }
-                } catch (JsonException) {
-                    // Fallback: treat stdout as plain text title
-                    title = stdout.Trim();
-                }
-
-                if (string.IsNullOrWhiteSpace(title)) {
-                    Log("Claude returned empty title");
-                    state.TitleInFlight = false;
-                    return;
-                }
-
-                // Sanity-check: limit to 120 chars
-                if (title.Length > 120)
-                    title = title[..120];
-
-                Log($"Title usage: model={model} input={inputTokens} output={outputTokens} cost=${costUsd:F4}");
-
-                await PostTitleAsync(baseUrl, httpClient, sessionId, title, model, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, state);
-            } catch (OperationCanceledException) {
-                Log("Title generation timed out (15s), killing process");
-                try { process.Kill(entireProcessTree: true); } catch { /* ignore */ }
-                state.TitleInFlight = false;
-            }
+            await PostTitleAsync(baseUrl, httpClient, sessionId, title,
+                result.Model, result.InputTokens, result.OutputTokens,
+                result.CacheReadTokens, result.CacheWriteTokens, state);
         } catch (Exception ex) {
             Log($"Title generation failed: {ex.Message}");
             state.TitleInFlight = false;
