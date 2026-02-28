@@ -168,11 +168,22 @@ static class WatchCommand {
             if (!root.TryGetProperty("type", out var typeProp) || typeProp.GetString() != "user")
                 return null;
 
+            // Skip system-injected meta messages (e.g. <local-command-caveat>)
+            if (root.TryGetProperty("isMeta", out var metaProp) && metaProp.ValueKind == JsonValueKind.True)
+                return null;
+
             if (!root.TryGetProperty("message", out var msg) || !msg.TryGetProperty("content", out var content))
                 return null;
 
-            if (content.ValueKind == JsonValueKind.String)
-                return content.GetString();
+            if (content.ValueKind == JsonValueKind.String) {
+                var text = content.GetString();
+
+                // Skip local command output — not real user input
+                if (text is not null && text.StartsWith("<local-command-stdout>"))
+                    return null;
+
+                return text;
+            }
         } catch {
             // ignore parse errors
         }
