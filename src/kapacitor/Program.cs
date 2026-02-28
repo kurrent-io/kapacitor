@@ -135,6 +135,27 @@ try {
 // Enrich all hook payloads with repository info
 body = await RepositoryDetection.EnrichWithRepositoryInfo(body);
 
+// For session-start: read plan file if slug is known and inject plan_content into payload
+var planContentInjected = false;
+if (command == "session-start") {
+    try {
+        var node = JsonNode.Parse(body);
+        var slug = node?["slug"]?.GetValue<string>();
+
+        if (slug is not null) {
+            var planContent = ReadPlanFile(slug);
+
+            if (planContent is not null) {
+                node!["plan_content"] = planContent;
+                body                  = node.ToJsonString();
+                planContentInjected   = true;
+            }
+        }
+    } catch {
+        // Best effort — don't fail the hook if plan reading fails
+    }
+}
+
 switch (command) {
 // For session-end and subagent-stop: kill watcher BEFORE posting hook
 
@@ -217,6 +238,24 @@ switch (command) {
         var transcriptPath = node?["transcript_path"]?.GetValue<string>();
         var sessionCwd     = node?["cwd"]?.GetValue<string>();
 
+        // If CLI didn't inject plan_content, check if server resolved a slug (pending continuation)
+        if (!planContentInjected && sessionId is not null) {
+            try {
+                var responseBody = await response.Content.ReadAsStringAsync();
+                var responseNode = JsonNode.Parse(responseBody);
+                var resolvedSlug = responseNode?["slug"]?.GetValue<string>();
+
+                if (resolvedSlug is not null) {
+                    var planContent = ReadPlanFile(resolvedSlug);
+
+                    if (planContent is not null)
+                        await PostPlanContentAsync(client, baseUrl, sessionId, planContent);
+                }
+            } catch {
+                // Best effort — don't fail the hook if plan posting fails
+            }
+        }
+
         if (sessionId is not null && transcriptPath is not null)
             WatcherManager.EnsureWatcherRunning(baseUrl, sessionId, transcriptPath, agentId: null, cwd: sessionCwd);
 
@@ -251,6 +290,24 @@ switch (command) {
 }
 
 return 0;
+
+string? ReadPlanFile(string slug) {
+    var home     = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+    var planPath = Path.Combine(home, ".claude", "plans", $"{slug}.md");
+
+    try {
+        return File.Exists(planPath) ? File.ReadAllText(planPath) : null;
+    } catch (Exception ex) {
+        Console.Error.WriteLine($"[kapacitor] Failed to read plan file at {planPath}: {ex.Message}");
+        return null;
+    }
+}
+
+async Task PostPlanContentAsync(HttpClient httpClient, string url, string sessionId, string planContent) {
+    var obj = new JsonObject { ["plan_content"] = planContent };
+    using var planPayload = new StringContent(obj.ToJsonString(), Encoding.UTF8, "application/json");
+    await httpClient.PostWithRetryAsync($"{url}/api/sessions/{sessionId}/plan", planPayload);
+}
 
 void PrintUsage() {
     Console.WriteLine("kapacitor — Claude Code hook forwarder for Kurrent.Capacitor");
