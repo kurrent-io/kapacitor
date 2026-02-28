@@ -131,6 +131,38 @@ static class WatcherManager {
         SpawnWatcher(baseUrl, key, transcriptPath, agentId, sessionIdOverride, cwd);
     }
 
+    public static void SpawnWhatsDoneGenerator(string baseUrl, string sessionId) {
+        try {
+            var kapacitorPath = Environment.ProcessPath ?? "kapacitor";
+
+            var psi = new ProcessStartInfo(kapacitorPath, $"generate-whats-done {sessionId}") {
+                RedirectStandardOutput = true,
+                RedirectStandardInput  = true,
+                RedirectStandardError  = true,
+                UseShellExecute        = false,
+                CreateNoWindow         = true,
+                Environment = {
+                    ["KAPACITOR_URL"] = baseUrl
+                }
+            };
+
+            var process = Process.Start(psi);
+            if (process is null) {
+                Console.Error.WriteLine($"Failed to spawn what's-done generator for {sessionId}");
+                return;
+            }
+
+            // Close redirected streams from parent side so the child doesn't hold pipe FDs open
+            process.StandardInput.Close();
+            process.StandardOutput.Close();
+            process.StandardError.Close();
+
+            Console.Error.WriteLine($"Spawned what's-done generator for {sessionId} (PID {process.Id})");
+        } catch (Exception ex) {
+            Console.Error.WriteLine($"Failed to spawn what's-done generator for {sessionId}: {ex.Message}");
+        }
+    }
+
     public static async Task InlineDrainAsync(string baseUrl, string sessionId, string transcriptPath, string? agentId) {
         try {
             using var httpClient = new HttpClient();

@@ -63,6 +63,15 @@ switch (command) {
 
         return await ValidatePlanCommand.Handle(baseUrl, vpSessionId);
     }
+    case "generate-whats-done" when args.Length < 2:
+        Console.Error.WriteLine("Usage: kapacitor generate-whats-done <sessionId>");
+
+        return 1;
+    case "generate-whats-done": {
+        var wdSessionId = args[1];
+
+        return await WhatsDoneCommand.HandleGenerateWhatsDone(baseUrl, wdSessionId);
+    }
     case "history": {
         string? filterCwd     = null;
         string? filterSession = null;
@@ -177,6 +186,24 @@ if (!response.IsSuccessStatusCode) {
     return 1;
 }
 
+// Check session-end response for generate_whats_done flag
+if (command == "session-end") {
+    try {
+        var responseBody = await response.Content.ReadAsStringAsync();
+        var responseNode = JsonNode.Parse(responseBody);
+
+        if (responseNode?["generate_whats_done"]?.GetValue<bool>() == true) {
+            var node      = JsonNode.Parse(body);
+            var sessionId = node?["session_id"]?.GetValue<string>();
+
+            if (sessionId is not null)
+                WatcherManager.SpawnWhatsDoneGenerator(baseUrl, sessionId);
+        }
+    } catch {
+        // Best effort — don't fail the hook if response parsing fails
+    }
+}
+
 switch (command) {
     // For session-start and subagent-start: ensure watcher is running AFTER posting hook
     case "session-start": {
@@ -230,6 +257,7 @@ void PrintUsage() {
     Console.WriteLine("  kapacitor errors [--chain] <id>                               List tool call errors for a session");
     Console.WriteLine("  kapacitor recap [--chain] <id>                                Session recap for context handoff");
     Console.WriteLine("  kapacitor validate-plan <id>                                  Validate plan completion for a session");
+    Console.WriteLine("  kapacitor generate-whats-done <id>                            Generate what's-done summary for a session");
     Console.WriteLine("  kapacitor --help                                              Show this help");
     Console.WriteLine();
     Console.WriteLine("Hook commands:");
