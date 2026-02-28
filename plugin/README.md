@@ -29,13 +29,24 @@ Each hook pipes its JSON payload through the `kapacitor` CLI, which enriches it 
 
 ## Installation
 
-### Option A: Plugin directory flag
+### Option A: Interactive plugin manager (recommended)
+
+From inside a Claude Code session:
+
+```
+/plugin marketplace add /path/to/kapacitor
+/plugin install kapacitor@kurrent
+```
+
+Or run `/plugin` and browse the **Discover** tab to install interactively.
+
+### Option B: Plugin directory flag (one-time)
 
 ```bash
 claude --plugin-dir /path/to/kapacitor/plugin
 ```
 
-### Option B: Local marketplace (persistent)
+### Option C: Settings file (persistent, no CLI needed)
 
 Add to `.claude/settings.local.json` or `~/.claude/settings.json`:
 
