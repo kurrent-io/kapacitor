@@ -132,8 +132,14 @@ try {
     // Best effort — don't fail the hook if JSON parsing fails
 }
 
-// Enrich all hook payloads with repository info
-body = await RepositoryDetection.EnrichWithRepositoryInfo(body);
+// Enrich hook payloads with repository info.
+// For session-end and subagent-stop, defer enrichment to run in parallel with watcher kill.
+Task<string>? deferredRepoTask = null;
+
+if (command is "session-end" or "subagent-stop")
+    deferredRepoTask = RepositoryDetection.EnrichWithRepositoryInfo(body);
+else
+    body = await RepositoryDetection.EnrichWithRepositoryInfo(body);
 
 // For session-start: read plan file if slug is known and inject plan_content into payload
 var planContentInjected = false;
@@ -156,41 +162,51 @@ if (command == "session-start") {
     }
 }
 
-switch (command) {
 // For session-end and subagent-stop: kill watcher BEFORE posting hook
-
 // so transcript is fully drained before server computes stats.
 // If watcher was already dead, do an inline drain to catch up.
+// Repo enrichment runs concurrently (started above).
+switch (command) {
     case "session-end": {
-        var node           = JsonNode.Parse(body);
-        var sessionId      = node?["session_id"]?.GetValue<string>();
-        var transcriptPath = node?["transcript_path"]?.GetValue<string>();
+        try {
+            var node           = JsonNode.Parse(body);
+            var sessionId      = node?["session_id"]?.GetValue<string>();
+            var transcriptPath = node?["transcript_path"]?.GetValue<string>();
 
-        if (sessionId is not null) {
-            var wasRunning = await WatcherManager.KillWatcher(sessionId);
+            if (sessionId is not null) {
+                var wasRunning = await WatcherManager.KillWatcher(sessionId);
 
-            if (!wasRunning && transcriptPath is not null)
-                await WatcherManager.InlineDrainAsync(baseUrl, sessionId, transcriptPath, agentId: null);
+                if (!wasRunning && transcriptPath is not null)
+                    await WatcherManager.InlineDrainAsync(baseUrl, sessionId, transcriptPath, agentId: null);
+            }
+        } catch (Exception ex) {
+            Console.Error.WriteLine($"[kapacitor] session-end pre-hook failed: {ex.Message}");
         }
 
+        body = await deferredRepoTask!;
         break;
     }
     case "subagent-stop": {
-        var node           = JsonNode.Parse(body);
-        var sessionId      = node?["session_id"]?.GetValue<string>();
-        var agentId        = node?["agent_id"]?.GetValue<string>();
-        var transcriptPath = node?["transcript_path"]?.GetValue<string>();
+        try {
+            var node           = JsonNode.Parse(body);
+            var sessionId      = node?["session_id"]?.GetValue<string>();
+            var agentId        = node?["agent_id"]?.GetValue<string>();
+            var transcriptPath = node?["transcript_path"]?.GetValue<string>();
 
-        if (sessionId is not null && agentId is not null) {
-            var wasRunning = await WatcherManager.KillWatcher($"{sessionId}-{agentId}");
+            if (sessionId is not null && agentId is not null) {
+                var wasRunning = await WatcherManager.KillWatcher($"{sessionId}-{agentId}");
 
-            if (!wasRunning && transcriptPath is not null) {
-                var sessionDir          = Path.ChangeExtension(transcriptPath, null);
-                var agentTranscriptPath = Path.Combine(sessionDir, "subagents", $"agent-{agentId}.jsonl");
-                await WatcherManager.InlineDrainAsync(baseUrl, sessionId, agentTranscriptPath, agentId);
+                if (!wasRunning && transcriptPath is not null) {
+                    var sessionDir          = Path.ChangeExtension(transcriptPath, null);
+                    var agentTranscriptPath = Path.Combine(sessionDir, "subagents", $"agent-{agentId}.jsonl");
+                    await WatcherManager.InlineDrainAsync(baseUrl, sessionId, agentTranscriptPath, agentId);
+                }
             }
+        } catch (Exception ex) {
+            Console.Error.WriteLine($"[kapacitor] subagent-stop pre-hook failed: {ex.Message}");
         }
 
+        body = await deferredRepoTask!;
         break;
     }
 }

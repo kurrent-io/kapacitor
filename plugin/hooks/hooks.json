@@ -19,7 +19,7 @@
           {
             "type": "command",
             "command": "kapacitor session-end",
-            "timeout": 5
+            "timeout": 15
           }
         ]
       }
