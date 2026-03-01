@@ -10,4 +10,7 @@
         <DebuggerSupport>false</DebuggerSupport>
         <TrimMode>full</TrimMode>
     </PropertyGroup>
+    <ItemGroup>
+        <PackageReference Include="Microsoft.AspNetCore.SignalR.Client" Version="10.*" />
+    </ItemGroup>
 </Project>

@@ -1,6 +1,7 @@
 using System.Runtime.InteropServices;
-using System.Text;
 using System.Text.Json;
+using Microsoft.AspNetCore.SignalR.Client;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace kapacitor;
 
@@ -24,8 +25,7 @@ static class WatchCommand {
         };
         PosixSignalRegistration.Create(PosixSignal.SIGTERM, _ => cts.Cancel());
 
-        using var httpClient = new HttpClient();
-        var       state      = new WatchState();
+        var state = new WatchState();
 
         // Detect repository info upfront if cwd is provided (session watchers only, not agents)
         if (cwd is not null) {
@@ -35,9 +35,81 @@ static class WatchCommand {
 
         Log($"Watching {transcriptPath} for session {sessionId}" + (agentId is not null ? $" agent {agentId}" : ""));
 
-        // Resume from server's last recorded position to avoid re-sending lines
-        state.LinesProcessed = await GetResumePosition(baseUrl, httpClient, sessionId, agentId, transcriptPath);
-        Log($"Resuming from line {state.LinesProcessed}");
+        // Build SignalR hub connection
+        var hubUrl = $"{baseUrl}/hubs/sessions";
+        var hubConnection = new HubConnectionBuilder()
+            .WithUrl(hubUrl)
+            .WithAutomaticReconnect([TimeSpan.Zero, TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(10), TimeSpan.FromSeconds(30)])
+            .AddJsonProtocol(options => {
+                options.PayloadSerializerOptions.TypeInfoResolverChain
+                    .Insert(0, KapacitorJsonContext.Default);
+                options.PayloadSerializerOptions.PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower;
+            })
+            .Build();
+
+        // Register StopWatcher handler — server sends this to tell us to shut down
+        hubConnection.On<string>("StopWatcher", reason => {
+            Log($"Received StopWatcher signal: {reason}");
+            cts.Cancel();
+        });
+
+        hubConnection.Reconnecting += ex => {
+            Log($"SignalR reconnecting: {ex?.Message}");
+            return Task.CompletedTask;
+        };
+
+        hubConnection.Reconnected += async connectionId => {
+            Log($"SignalR reconnected: {connectionId}");
+            // Re-register with server (get updated resume position but don't change ours)
+            try {
+                await hubConnection.InvokeAsync<int>("WatcherConnect", sessionId, agentId);
+            } catch (Exception ex) {
+                Log($"Re-register after reconnect failed: {ex.Message}");
+            }
+        };
+
+        hubConnection.Closed += ex => {
+            Log($"SignalR connection closed permanently: {ex?.Message}");
+            // All reconnect attempts exhausted — self-terminate
+            cts.Cancel();
+            return Task.CompletedTask;
+        };
+
+        // Connect with retry (server may not be up yet) — try for up to 5 minutes
+        var connectRetryDelay = TimeSpan.FromSeconds(1);
+        var connectStartTime  = DateTimeOffset.UtcNow;
+        while (!cts.Token.IsCancellationRequested) {
+            try {
+                await hubConnection.StartAsync(cts.Token);
+                break;
+            } catch (OperationCanceledException) {
+                // SIGTERM/SIGINT during connect — exit gracefully
+                break;
+            } catch (Exception ex) when (DateTimeOffset.UtcNow - connectStartTime < TimeSpan.FromMinutes(5)) {
+                Log($"SignalR connect failed, retrying in {connectRetryDelay.TotalSeconds}s: {ex.Message}");
+                try {
+                    await Task.Delay(connectRetryDelay, cts.Token);
+                } catch (OperationCanceledException) {
+                    break;
+                }
+                connectRetryDelay = TimeSpan.FromSeconds(Math.Min(connectRetryDelay.TotalSeconds * 2, 30));
+            } catch (Exception ex) {
+                // Timeout exhausted — give up
+                Log($"SignalR connect failed after 5 minutes, giving up: {ex.Message}");
+                await hubConnection.DisposeAsync();
+                logWriter.Dispose();
+                return 0;
+            }
+        }
+        if (cts.Token.IsCancellationRequested) {
+            await hubConnection.DisposeAsync();
+            logWriter.Dispose();
+            return 0;
+        }
+
+        // Register with server and get resume position
+        state.LinesProcessed = await hubConnection.InvokeAsync<int>("WatcherConnect", sessionId, agentId, cts.Token);
+        Log($"Connected via SignalR, resuming from line {state.LinesProcessed}");
 
         try {
             while (!cts.Token.IsCancellationRequested) {
@@ -47,7 +119,7 @@ static class WatchCommand {
                     state.LastRepoDetection = DateTimeOffset.UtcNow;
                 }
 
-                await DrainNewLines(baseUrl, httpClient, sessionId, transcriptPath, agentId, state);
+                await DrainNewLines(hubConnection, sessionId, transcriptPath, agentId, state, cts.Token);
 
                 try {
                     await Task.Delay(TimeSpan.FromSeconds(1), cts.Token);
@@ -61,16 +133,28 @@ static class WatchCommand {
 
         // Final drain before exit
         Log("Draining remaining lines...");
-        await DrainNewLines(baseUrl, httpClient, sessionId, transcriptPath, agentId, state);
+        await DrainNewLines(hubConnection, sessionId, transcriptPath, agentId, state, CancellationToken.None);
+
+        // Signal drain complete to server
+        try {
+            if (hubConnection.State == HubConnectionState.Connected) {
+                await hubConnection.InvokeAsync("WatcherDrainComplete", sessionId, agentId);
+                Log("Drain complete signaled to server");
+            }
+        } catch (Exception ex) {
+            Log($"Failed to signal drain complete: {ex.Message}");
+        }
+
         Log($"Done. {state.LinesProcessed} total lines processed.");
 
+        await hubConnection.DisposeAsync();
         logWriter.Dispose();
         return 0;
     }
 
     static readonly System.Text.RegularExpressions.Regex CommandNameRegex = new(@"<command-name>(.*?)</command-name>", System.Text.RegularExpressions.RegexOptions.Compiled);
 
-    static async Task DrainNewLines(string baseUrl, HttpClient httpClient, string sessionId, string transcriptPath, string? agentId, WatchState state) {
+    static async Task DrainNewLines(HubConnection hubConnection, string sessionId, string transcriptPath, string? agentId, WatchState state, CancellationToken ct) {
         try {
             if (!File.Exists(transcriptPath)) return;
 
@@ -86,7 +170,7 @@ static class WatchCommand {
             using var reader = new StreamReader(stream);
 
             var lineIndex = 0;
-            while (await reader.ReadLineAsync() is { } line) {
+            while (await reader.ReadLineAsync(ct) is { } line) {
                 if (lineIndex < state.LinesProcessed) { lineIndex++; continue; }
                 if (!string.IsNullOrWhiteSpace(line)) {
                     newLines.Add(line);
@@ -96,67 +180,60 @@ static class WatchCommand {
             }
             state.LinesProcessed = lineIndex;
 
-            if (newLines.Count == 0) return;
+            // Capture first user text from new lines (needed for title generation)
+            if (!state.TitleGenerated && state.FirstUserText is null && agentId is null && newLines.Count > 0) {
+                foreach (var line in newLines) {
+                    var userText = TryExtractUserText(line);
+                    if (userText is null) continue;
 
-            // Detect first user text for title generation (session watchers only, not agents)
-            if (!state.TitleGenerated && !state.TitleInFlight && agentId is null && state.TitleAttempts < 3) {
-                // Capture user text on first sight
-                if (state.FirstUserText is null) {
-                    foreach (var line in newLines) {
-                        var userText = TryExtractUserText(line);
-                        if (userText is null) continue;
-
-                        var cmdMatch = CommandNameRegex.Match(userText);
-                        if (cmdMatch.Success) {
-                            state.IsSlashCommand  = true;
-                            state.SlashCommandName = cmdMatch.Groups[1].Value;
-                        }
-                        state.FirstUserText = userText;
-                        break;
+                    var cmdMatch = CommandNameRegex.Match(userText);
+                    if (cmdMatch.Success) {
+                        state.IsSlashCommand  = true;
+                        state.SlashCommandName = cmdMatch.Groups[1].Value;
                     }
-                }
-
-                // Fire title generation (or retry after previous failure)
-                if (state.FirstUserText is not null) {
-                    state.TitleInFlight = true;
-                    state.TitleAttempts++;
-
-                    if (state.IsSlashCommand) {
-                        _ = PostTitleAsync(baseUrl, httpClient, sessionId, $"Slash command: {state.SlashCommandName}", null, 0, 0, 0, 0, state);
-                    } else {
-                        _ = GenerateTitleAsync(baseUrl, httpClient, sessionId, state.FirstUserText, state);
-                    }
+                    state.FirstUserText = userText;
+                    break;
                 }
             }
+
+            // Fire or retry title generation (runs even when no new lines arrive)
+            if (!state.TitleGenerated && !state.TitleInFlight && agentId is null && state.TitleAttempts < 3 && state.FirstUserText is not null) {
+                state.TitleInFlight = true;
+                state.TitleAttempts++;
+
+                if (state.IsSlashCommand) {
+                    _ = PostTitleAsync(hubConnection, sessionId, $"Slash command: {state.SlashCommandName}", null, 0, 0, 0, 0, state);
+                } else {
+                    _ = GenerateTitleAsync(hubConnection, sessionId, state.FirstUserText, state);
+                }
+            }
+
+            if (newLines.Count == 0) return;
 
             // Only include repository info when it has changed since last send
             var repoToSend = RepoPayloadChanged(state.Repository, state.LastSentRepository)
                 ? state.Repository
                 : null;
 
-            // POST batch to server
-            var batch = new TranscriptBatch {
-                SessionId   = sessionId,
-                AgentId     = agentId,
-                Lines       = newLines.ToArray(),
-                LineNumbers = newLineNumbers.ToArray(),
-                Repository  = repoToSend
-            };
-
-            var       json        = JsonSerializer.Serialize(batch, kapacitor.KapacitorJsonContext.Default.TranscriptBatch);
-            using var httpContent = new StringContent(json, Encoding.UTF8, "application/json");
+            // Serialize repository payload to JSON string for the hub method
+            var repoJson = repoToSend is not null
+                ? JsonSerializer.Serialize(repoToSend, KapacitorJsonContext.Default.RepositoryPayload)
+                : null;
 
             try {
-                var resp = await httpClient.PostWithRetryAsync($"{baseUrl}/hooks/transcript", httpContent);
-                Log(resp.IsSuccessStatusCode ? $"Posted {newLines.Count} line(s)" : $"Server returned HTTP {(int)resp.StatusCode} for {newLines.Count} line(s)");
+                await hubConnection.InvokeAsync("SendTranscriptBatch", sessionId, agentId,
+                    newLines.ToArray(), newLineNumbers.ToArray(), repoJson, ct);
+                Log($"Sent {newLines.Count} line(s) via SignalR");
 
-                if (resp.IsSuccessStatusCode && repoToSend is not null)
+                if (repoToSend is not null)
                     state.LastSentRepository = repoToSend;
-            } catch (HttpRequestException ex) {
-                Log($"Server unreachable after retries: {ex.Message}");
+            } catch (Exception ex) when (ex is not OperationCanceledException) {
+                Log($"SendTranscriptBatch failed: {ex.Message}");
             }
         } catch (IOException ex) {
             Log($"Error reading file: {ex.Message}");
+        } catch (OperationCanceledException) {
+            // Expected during shutdown
         }
     }
 
@@ -191,7 +268,7 @@ static class WatchCommand {
         return null;
     }
 
-    static async Task GenerateTitleAsync(string baseUrl, HttpClient httpClient, string sessionId, string userText, WatchState state) {
+    static async Task GenerateTitleAsync(HubConnection hubConnection, string sessionId, string userText, WatchState state) {
         try {
             var truncated = userText.Length > 500 ? userText[..500] : userText;
             var prompt = $"Generate a short descriptive title (max 10 words, no quotes, no period) for a coding session. The user's request: {truncated}";
@@ -202,7 +279,8 @@ static class WatchCommand {
                 return;
             }
 
-            var title = result.Result;
+            // Strip markdown formatting (bold, italic, code) from generated title
+            var title = StripMarkdown(result.Result);
 
             // Sanity-check: limit to 120 chars
             if (title.Length > 120)
@@ -210,7 +288,7 @@ static class WatchCommand {
 
             Log($"Title usage: model={result.Model} input={result.InputTokens} output={result.OutputTokens} cost=${result.CostUsd:F4}");
 
-            await PostTitleAsync(baseUrl, httpClient, sessionId, title,
+            await PostTitleAsync(hubConnection, sessionId, title,
                 result.Model, result.InputTokens, result.OutputTokens,
                 result.CacheReadTokens, result.CacheWriteTokens, state);
         } catch (Exception ex) {
@@ -220,31 +298,16 @@ static class WatchCommand {
     }
 
     static async Task PostTitleAsync(
-            string baseUrl, HttpClient httpClient, string sessionId, string title,
+            HubConnection hubConnection, string sessionId, string title,
             string? model, long inputTokens, long outputTokens, long cacheReadTokens, long cacheWriteTokens,
             WatchState state) {
         try {
-            var payload = new SessionTitlePayload {
-                SessionId       = sessionId,
-                Title           = title,
-                Model           = model,
-                InputTokens     = inputTokens,
-                OutputTokens    = outputTokens,
-                CacheReadTokens = cacheReadTokens,
-                CacheWriteTokens = cacheWriteTokens
-            };
-            var json    = JsonSerializer.Serialize(payload, KapacitorJsonContext.Default.SessionTitlePayload);
-            using var content = new StringContent(json, Encoding.UTF8, "application/json");
-            var resp = await httpClient.PostWithRetryAsync($"{baseUrl}/hooks/session-title", content);
-
-            if (resp.IsSuccessStatusCode) {
-                Log($"Title generated: {title}");
-                state.TitleGenerated = true;
-            } else {
-                Log($"Title POST failed: HTTP {(int)resp.StatusCode}");
-            }
+            await hubConnection.InvokeAsync("SendTitle", sessionId, title,
+                model, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens);
+            Log($"Title generated: {title}");
+            state.TitleGenerated = true;
         } catch (Exception ex) {
-            Log($"Title POST failed: {ex.Message}");
+            Log($"Title send failed: {ex.Message}");
         }
 
         state.TitleInFlight = false;
@@ -260,6 +323,12 @@ static class WatchCommand {
             || current.PrNumber  != lastSent.PrNumber
             || current.PrUrl     != lastSent.PrUrl
             || current.PrTitle   != lastSent.PrTitle;
+    }
+
+    static string StripMarkdown(string text) {
+        // Strip bold/italic markers, inline code backticks, and heading prefixes
+        text = System.Text.RegularExpressions.Regex.Replace(text, @"[*_`#]+", "");
+        return text.Trim();
     }
 
     public static void Log(string message) => Console.Error.WriteLine($"[{DateTimeOffset.Now:HH:mm:ss.fff}] [watch] {message}");

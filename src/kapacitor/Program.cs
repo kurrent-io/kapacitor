@@ -72,6 +72,8 @@ switch (command) {
 
         return await WhatsDoneCommand.HandleGenerateWhatsDone(baseUrl, wdSessionId);
     }
+    case "cleanup":
+        return await CleanupCommand.HandleCleanup();
     case "history": {
         string? filterCwd     = null;
         string? filterSession = null;
@@ -336,6 +338,7 @@ void PrintUsage() {
     Console.WriteLine("  kapacitor recap [--chain] <id>                                Session recap for context handoff");
     Console.WriteLine("  kapacitor validate-plan <id>                                  Validate plan completion for a session");
     Console.WriteLine("  kapacitor generate-whats-done <id>                            Generate what's-done summary for a session");
+    Console.WriteLine("  kapacitor cleanup                                             Kill all orphaned watcher processes");
     Console.WriteLine("  kapacitor --help                                              Show this help");
     Console.WriteLine();
     Console.WriteLine("Hook commands:");
