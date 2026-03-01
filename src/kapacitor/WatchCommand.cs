@@ -60,9 +60,13 @@ static class WatchCommand {
 
         hubConnection.Reconnected += async connectionId => {
             Log($"SignalR reconnected: {connectionId}");
-            // Re-register with server (get updated resume position but don't change ours)
+            // Re-register with server and check if it's behind us (gap recovery)
             try {
-                await hubConnection.InvokeAsync<int>("WatcherConnect", sessionId, agentId);
+                var serverPosition = await hubConnection.InvokeAsync<int>("WatcherConnect", sessionId, agentId);
+                if (serverPosition < state.LinesProcessed) {
+                    Log($"Server behind ({serverPosition} vs {state.LinesProcessed}), rewinding to resend gap");
+                    state.LinesProcessed = serverPosition;
+                }
             } catch (Exception ex) {
                 Log($"Re-register after reconnect failed: {ex.Message}");
             }
@@ -178,7 +182,7 @@ static class WatchCommand {
                 }
                 lineIndex++;
             }
-            state.LinesProcessed = lineIndex;
+            var linesRead = lineIndex;
 
             // Capture first user text from new lines (needed for title generation)
             if (!state.TitleGenerated && state.FirstUserText is null && agentId is null && newLines.Count > 0) {
@@ -208,7 +212,11 @@ static class WatchCommand {
                 }
             }
 
-            if (newLines.Count == 0) return;
+            if (newLines.Count == 0) {
+                // No content lines to send — safe to advance past blank/whitespace lines
+                state.LinesProcessed = linesRead;
+                return;
+            }
 
             // Only include repository info when it has changed since last send
             var repoToSend = RepoPayloadChanged(state.Repository, state.LastSentRepository)
@@ -225,10 +233,16 @@ static class WatchCommand {
                     newLines.ToArray(), newLineNumbers.ToArray(), repoJson, ct);
                 Log($"Sent {newLines.Count} line(s) via SignalR");
 
+                // Only advance position after successful send — if send fails,
+                // the next drain cycle will re-read and resend the same lines.
+                // KurrentDB event IDs are deterministic (from transcript UUIDs),
+                // so re-sending is idempotent.
+                state.LinesProcessed = linesRead;
+
                 if (repoToSend is not null)
                     state.LastSentRepository = repoToSend;
             } catch (Exception ex) when (ex is not OperationCanceledException) {
-                Log($"SendTranscriptBatch failed: {ex.Message}");
+                Log($"SendTranscriptBatch failed, will retry from line {state.LinesProcessed}: {ex.Message}");
             }
         } catch (IOException ex) {
             Log($"Error reading file: {ex.Message}");
