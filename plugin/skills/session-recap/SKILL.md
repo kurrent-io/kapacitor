@@ -16,7 +16,7 @@ Retrieve the history of a Claude Code session recorded by Kurrent Capacitor. The
 
 ## Usage
 
-Run `kapacitor recap` via the Bash tool to fetch a session recap:
+**IMPORTANT:** Always use the `kapacitor recap` CLI command. Do NOT call the HTTP API directly via `curl`, `WebFetch`, or `HttpClient` — the CLI handles formatting, error handling, and server URL resolution.
 
 ```bash
 # Single session
