@@ -76,6 +76,17 @@
           }
         ]
       }
+    ],
+    "PermissionRequest": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "kapacitor permission-request",
+            "timeout": 360
+          }
+        ]
+      }
     ]
   }
 }

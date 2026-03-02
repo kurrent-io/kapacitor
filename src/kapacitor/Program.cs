@@ -119,6 +119,8 @@ switch (command) {
 
         return await WatchCommand.RunWatch(baseUrl, watchSessionId, watchPath, watchAgentId, watchCwd);
     }
+    case "permission-request":
+        return await PermissionRequestCommand.Handle(baseUrl);
 }
 
 if (!hookCommands.Contains(command)) {
@@ -353,6 +355,7 @@ void PrintUsage() {
     Console.WriteLine("  kapacitor recap [--chain] [id]                                Session recap for context handoff");
     Console.WriteLine("  kapacitor validate-plan [id]                                  Validate plan completion for a session");
     Console.WriteLine("  kapacitor generate-whats-done <id>                            Generate what's-done summary for a session");
+    Console.WriteLine("  kapacitor permission-request                                  Handle PermissionRequest hook (reads JSON from stdin)");
     Console.WriteLine("  kapacitor cleanup                                             Kill all orphaned watcher processes");
     Console.WriteLine("  kapacitor --help                                              Show this help");
     Console.WriteLine();
