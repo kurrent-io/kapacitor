@@ -15,20 +15,19 @@ Extract tool call errors from a Claude Code session recorded by Kurrent Capacito
 
 ## Usage
 
-Run `kapacitor errors` via the Bash tool to fetch errors from a session:
+Run `kapacitor errors` via the Bash tool. The session ID is automatically set by the `KAPACITOR_SESSION_ID` environment variable (persisted at session start).
 
 ```bash
-# Errors from a single session
-kapacitor errors <sessionId>
+# Errors from the current session
+kapacitor errors
 
-# Errors from the full continuation chain (all linked sessions)
+# Errors from the full continuation chain
+kapacitor errors --chain
+
+# Explicit session ID (overrides env var)
+kapacitor errors <sessionId>
 kapacitor errors --chain <sessionId>
 ```
-
-The session ID is a UUID like `7d309c69-0fcd-41ae-962d-1a23162ff088`. Find session IDs from:
-- The Kurrent Capacitor web UI at http://localhost:5108
-- The user providing one directly
-- The current session ID (available in hook payloads)
 
 ## Output Format
 
@@ -43,8 +42,8 @@ When using `--chain`, errors from all sessions in the continuation chain are inc
 
 ## When to Use Each Flag
 
-- **No flag** (`kapacitor errors <id>`) — reviewing errors from a single session
-- **`--chain`** (`kapacitor errors --chain <id>`) — reviewing errors across a full task that spanned multiple sessions
+- **No flag** (`kapacitor errors`) — reviewing errors from the current session
+- **`--chain`** (`kapacitor errors --chain`) — reviewing errors across a full task that spanned multiple sessions
 
 ## Practical Applications
 

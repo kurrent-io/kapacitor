@@ -19,17 +19,18 @@ Retrieve the history of a Claude Code session recorded by Kurrent Capacitor. The
 **IMPORTANT:** Always use the `kapacitor recap` CLI command. Do NOT call the HTTP API directly via `curl`, `WebFetch`, or `HttpClient` — the CLI handles formatting, error handling, and server URL resolution.
 
 ```bash
-# Single session
-kapacitor recap <sessionId>
+# Current session recap
+kapacitor recap
 
 # Full continuation chain (all linked sessions, oldest first)
+kapacitor recap --chain
+
+# Explicit session ID (overrides env var)
+kapacitor recap <sessionId>
 kapacitor recap --chain <sessionId>
 ```
 
-The session ID is a UUID like `7d309c69-0fcd-41ae-962d-1a23162ff088`. Find session IDs from:
-- The Kurrent Capacitor web UI at http://localhost:5108
-- The user providing one directly
-- The current session ID (available in hook payloads)
+The session ID is automatically set by the `KAPACITOR_SESSION_ID` environment variable (persisted at session start). You can pass an explicit ID to review a different session.
 
 ## Output Format
 
@@ -45,8 +46,8 @@ When using `--chain`, sessions are separated by `# Session <id>` headers, and ag
 
 ## When to Use Each Flag
 
-- **No flag** (`kapacitor recap <id>`) — reviewing a single known session
-- **`--chain`** (`kapacitor recap --chain <id>`) — understanding the full history of a task that spanned multiple sessions, or resuming work that was continued across sessions
+- **No flag** (`kapacitor recap`) — reviewing the current session
+- **`--chain`** (`kapacitor recap --chain`) — understanding the full history of a task that spanned multiple sessions, or resuming work that was continued across sessions
 
 ## Environment
 

@@ -11,6 +11,15 @@
             "async": true
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/persist-session-id.sh",
+            "timeout": 3
+          }
+        ]
       }
     ],
     "SessionEnd": [

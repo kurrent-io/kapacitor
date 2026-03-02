@@ -34,32 +34,38 @@ if (command is "--help" or "-h" or "help") {
 }
 
 switch (command) {
-    case "errors" when args.Length < 2:
-        Console.Error.WriteLine("Usage: kapacitor errors [--chain] <sessionId>");
-
-        return 1;
     case "errors": {
         var useChain     = args.Contains("--chain");
-        var errSessionId = args.Skip(1).First(a => a != "--chain");
+        var errSessionId = ResolveSessionId(args, skipCount: 1, skipFlag: "--chain");
+
+        if (errSessionId is null) {
+            Console.Error.WriteLine("Usage: kapacitor errors [--chain] [sessionId]");
+            Console.Error.WriteLine("  No session ID provided and KAPACITOR_SESSION_ID not set.");
+            return 1;
+        }
 
         return await ErrorsCommand.HandleErrors(baseUrl, errSessionId, useChain);
     }
-    case "recap" when args.Length < 2:
-        Console.Error.WriteLine("Usage: kapacitor recap [--chain] <sessionId>");
-
-        return 1;
     case "recap": {
-        var useChain        = args.Contains("--chain");
-        var recapSessionId  = args.Skip(1).First(a => a != "--chain");
+        var useChain       = args.Contains("--chain");
+        var recapSessionId = ResolveSessionId(args, skipCount: 1, skipFlag: "--chain");
+
+        if (recapSessionId is null) {
+            Console.Error.WriteLine("Usage: kapacitor recap [--chain] [sessionId]");
+            Console.Error.WriteLine("  No session ID provided and KAPACITOR_SESSION_ID not set.");
+            return 1;
+        }
 
         return await RecapCommand.HandleRecap(baseUrl, recapSessionId, useChain);
     }
-    case "validate-plan" when args.Length < 2:
-        Console.Error.WriteLine("Usage: kapacitor validate-plan <sessionId>");
-
-        return 1;
     case "validate-plan": {
-        var vpSessionId = args[1];
+        var vpSessionId = ResolveSessionId(args);
+
+        if (vpSessionId is null) {
+            Console.Error.WriteLine("Usage: kapacitor validate-plan [sessionId]");
+            Console.Error.WriteLine("  No session ID provided and KAPACITOR_SESSION_ID not set.");
+            return 1;
+        }
 
         return await ValidatePlanCommand.Handle(baseUrl, vpSessionId);
     }
@@ -327,6 +333,15 @@ async Task PostPlanContentAsync(HttpClient httpClient, string url, string sessio
     await httpClient.PostWithRetryAsync($"{url}/api/sessions/{sessionId}/plan", planPayload);
 }
 
+string? ResolveSessionId(string[] args, int skipCount = 1, string? skipFlag = null) {
+    // Try argument first
+    var fromArg = args.Skip(skipCount).FirstOrDefault(a => skipFlag == null || a != skipFlag);
+    if (fromArg is not null)
+        return fromArg;
+    // Fall back to env var
+    return Environment.GetEnvironmentVariable("KAPACITOR_SESSION_ID");
+}
+
 void PrintUsage() {
     Console.WriteLine("kapacitor — Claude Code hook forwarder for Kurrent.Capacitor");
     Console.WriteLine();
@@ -334,9 +349,9 @@ void PrintUsage() {
     Console.WriteLine("  kapacitor <hook-command>                                      Forward a hook payload (reads JSON from stdin)");
     Console.WriteLine("  kapacitor watch <sessionId> <path> [--agent-id <agentId>]     Watch a transcript file and POST lines to server");
     Console.WriteLine("  kapacitor history [--cwd <path>] [--session <id>] [--min-lines <n>]  Load historical transcript files into server");
-    Console.WriteLine("  kapacitor errors [--chain] <id>                               List tool call errors for a session");
-    Console.WriteLine("  kapacitor recap [--chain] <id>                                Session recap for context handoff");
-    Console.WriteLine("  kapacitor validate-plan <id>                                  Validate plan completion for a session");
+    Console.WriteLine("  kapacitor errors [--chain] [id]                               List tool call errors for a session");
+    Console.WriteLine("  kapacitor recap [--chain] [id]                                Session recap for context handoff");
+    Console.WriteLine("  kapacitor validate-plan [id]                                  Validate plan completion for a session");
     Console.WriteLine("  kapacitor generate-whats-done <id>                            Generate what's-done summary for a session");
     Console.WriteLine("  kapacitor cleanup                                             Kill all orphaned watcher processes");
     Console.WriteLine("  kapacitor --help                                              Show this help");
@@ -347,5 +362,6 @@ void PrintUsage() {
         Console.WriteLine($"  {h}");
     Console.WriteLine();
     Console.WriteLine("Environment:");
-    Console.WriteLine("  KAPACITOR_URL    Server URL (default: http://localhost:5108)");
+    Console.WriteLine("  KAPACITOR_URL           Server URL (default: http://localhost:5108)");
+    Console.WriteLine("  KAPACITOR_SESSION_ID    Session ID (set automatically by SessionStart hook)");
 }

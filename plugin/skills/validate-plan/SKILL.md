@@ -11,30 +11,16 @@ description: >-
 
 Verify that all items in the current session's plan have been completed. Plans come from either a continuation (`SessionStarted.planContent`) or an in-session `ExitPlanMode` write to `~/.claude/plans/`.
 
-## Finding the current session ID
-
-Derive the session ID from the transcript file on disk:
-
-1. Take the current working directory (e.g. `/Users/alexey/dev/eventstore/kapacitor`)
-2. Replace `/` with `-` to get the project directory name (e.g. `-Users-alexey-dev-eventstore-kapacitor`)
-3. Find the most recently modified `.jsonl` file in `~/.claude/projects/<dirname>/`
-4. The filename (without `.jsonl`) is the session ID
-
-One-liner to get it:
-
-```bash
-ls -t ~/.claude/projects/$(pwd | tr '/' '-')/*.jsonl 2>/dev/null | head -1 | xargs -I{} basename {} .jsonl
-```
-
-The `tr` converts `/Users/foo/bar` → `-Users-foo-bar` (the leading `/` becomes `-`).
-
 ## Usage
 
-Run `kapacitor validate-plan` via the Bash tool with the discovered session ID:
+Run `kapacitor validate-plan` via the Bash tool. The session ID is automatically set by the `KAPACITOR_SESSION_ID` environment variable (persisted at session start).
 
 ```bash
-SESSION_ID=$(ls -t ~/.claude/projects/$(pwd | tr '/' '-')/*.jsonl 2>/dev/null | head -1 | xargs -I{} basename {} .jsonl)
-kapacitor validate-plan "$SESSION_ID"
+# Validate the current session's plan
+kapacitor validate-plan
+
+# Explicit session ID (overrides env var)
+kapacitor validate-plan <sessionId>
 ```
 
 ## What It Returns
