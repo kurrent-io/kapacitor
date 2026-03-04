@@ -33,7 +33,7 @@ static class PermissionRequestCommand {
         var suggestions = node["permission_suggestions"];
 
         // POST to server and wait for response (server blocks until user decides)
-        using var client = new HttpClient { Timeout = TimeSpan.FromMinutes(6) };
+        using var client = new HttpClient { Timeout = TimeSpan.FromHours(10) + TimeSpan.FromMinutes(1) };
         var payload = new JsonObject {
             ["session_id"] = sessionId,
             ["tool_name"] = toolName,
