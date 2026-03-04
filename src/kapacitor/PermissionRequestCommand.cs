@@ -29,13 +29,6 @@ static class PermissionRequestCommand {
         }
 
         var toolName = node["tool_name"]?.GetValue<string>() ?? "Unknown";
-
-        // Auto-allow tools that are handled via other UI mechanisms (elicitation cards, etc.)
-        if (toolName is "AskUserQuestion") {
-            Console.Write("{\"hookSpecificOutput\":{\"hookEventName\":\"PermissionRequest\",\"decision\":{\"behavior\":\"allow\",\"applyPermissions\":null}}}");
-            return 0;
-        }
-
         var toolInput = node["tool_input"];
         var suggestions = node["permission_suggestions"];
 
