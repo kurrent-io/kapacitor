@@ -50,12 +50,13 @@ static class WhatsDoneCommand {
 
         // 2. Call claude -p to generate the summary
         Log("Calling claude to generate summary...");
+        Log($"Recap text: {recapText.Length} chars");
 
         var prompt = "Based on the following session transcript, write a concise summary of what was accomplished. " +
                      "Use bullet points. Focus on concrete changes and outcomes, not process details. " +
                      "Keep it under 500 words.\n\n" + recapText;
 
-        var result = await ClaudeCliRunner.RunAsync(prompt, TimeSpan.FromSeconds(30), Log);
+        var result = await ClaudeCliRunner.RunAsync(prompt, TimeSpan.FromSeconds(90), Log);
         if (result is null) {
             Log("Claude returned empty or failed");
             return 1;
@@ -115,14 +116,10 @@ static class WhatsDoneCommand {
                     sb.AppendLine();
                     break;
                 case "write":
-                    sb.AppendLine($"## Write {entry.FilePath ?? "unknown"}");
-                    sb.AppendLine("(file content omitted for brevity)");
-                    sb.AppendLine();
+                    sb.AppendLine($"- Write: {entry.FilePath ?? "unknown"}");
                     break;
                 case "edit":
-                    sb.AppendLine($"## Edit {entry.FilePath ?? "unknown"}");
-                    sb.AppendLine(entry.Content);
-                    sb.AppendLine();
+                    sb.AppendLine($"- Edit: {entry.FilePath ?? "unknown"}");
                     break;
                 case "whats_done":
                     sb.AppendLine("## What's Done (previous summary)");
@@ -134,7 +131,7 @@ static class WhatsDoneCommand {
 
         // Truncate to avoid exceeding claude's input limits
         var text = sb.ToString();
-        return text.Length > 50_000 ? text[..50_000] : text;
+        return text.Length > 30_000 ? text[..30_000] : text;
     }
 
     static void Log(string message) => Console.Error.WriteLine($"[{DateTimeOffset.Now:HH:mm:ss.fff}] [whats-done] {message}");
