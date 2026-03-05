@@ -28,7 +28,7 @@ static class ClaudeCliRunner {
         };
         // Prevent the headless claude session from triggering kapacitor hooks (avoids infinite loop)
         psi.Environment["KAPACITOR_SKIP"] = "1";
-        psi.Environment["CLAUDECODE"] = null;
+        psi.Environment.Remove("CLAUDECODE");
         psi.ArgumentList.Add("-p");
         psi.ArgumentList.Add(prompt);
         psi.ArgumentList.Add("--output-format");

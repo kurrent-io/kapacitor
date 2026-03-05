@@ -131,7 +131,7 @@ static class WhatsDoneCommand {
 
         // Truncate to avoid exceeding claude's input limits
         var text = sb.ToString();
-        return text.Length > 30_000 ? text[..30_000] : text;
+        return text.Length > 30_000 ? text[^30_000..] : text;
     }
 
     static void Log(string message) => Console.Error.WriteLine($"[{DateTimeOffset.Now:HH:mm:ss.fff}] [whats-done] {message}");
