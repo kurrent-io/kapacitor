@@ -1,11 +1,12 @@
 using System.Runtime.InteropServices;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Microsoft.AspNetCore.SignalR.Client;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace kapacitor;
 
-static class WatchCommand {
+static partial class WatchCommand {
     public static async Task<int> RunWatch(string baseUrl, string sessionId, string transcriptPath, string? agentId, string? cwd) {
         // Redirect all output to a log file so we don't hold parent's pipe FDs open
         var logDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".config", "kapacitor", "logs");
@@ -62,7 +63,7 @@ static class WatchCommand {
             Log($"SignalR reconnected: {connectionId}");
             // Re-register with server and check if it's behind us (gap recovery)
             try {
-                var serverPosition = await hubConnection.InvokeAsync<int>("WatcherConnect", sessionId, agentId);
+                var serverPosition = await hubConnection.InvokeAsync<int>("WatcherConnect", sessionId, agentId, cancellationToken: cts.Token);
                 if (serverPosition < state.LinesProcessed) {
                     Log($"Server behind ({serverPosition} vs {state.LinesProcessed}), rewinding to resend gap");
                     state.LinesProcessed = serverPosition;
@@ -152,11 +153,12 @@ static class WatchCommand {
         Log($"Done. {state.LinesProcessed} total lines processed.");
 
         await hubConnection.DisposeAsync();
-        logWriter.Dispose();
+        await logWriter.DisposeAsync();
         return 0;
     }
 
-    static readonly System.Text.RegularExpressions.Regex CommandNameRegex = new(@"<command-name>(.*?)</command-name>", System.Text.RegularExpressions.RegexOptions.Compiled);
+    static readonly Regex CommandNameRegex = CommandNameRx();
+    static bool parseErrorLogged;
 
     static async Task DrainNewLines(HubConnection hubConnection, string sessionId, string transcriptPath, string? agentId, WatchState state, CancellationToken ct) {
         try {
@@ -184,32 +186,48 @@ static class WatchCommand {
             }
             var linesRead = lineIndex;
 
-            // Capture first user text from new lines (needed for title generation)
-            if (!state.TitleGenerated && state.FirstUserText is null && agentId is null && newLines.Count > 0) {
-                foreach (var line in newLines) {
-                    var userText = TryExtractUserText(line);
-                    if (userText is null) continue;
-
-                    var cmdMatch = CommandNameRegex.Match(userText);
-                    if (cmdMatch.Success) {
-                        state.IsSlashCommand  = true;
-                        state.SlashCommandName = cmdMatch.Groups[1].Value;
+            // Capture first user text (needed for title generation)
+            if (state is { TitleGenerated: false, FirstUserText: null } && agentId is null) {
+                // If we resumed from a later position, scan from the beginning of the file
+                if (state.LinesProcessed > 0 && !state.FullFileScanDone) {
+                    Log("Scanning full file for first user text (resumed from later position)");
+                    try {
+                        await using var scanStream = new FileStream(transcriptPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+                        using var scanReader = new StreamReader(scanStream);
+                        while (await scanReader.ReadLineAsync(ct) is { } scanLine) {
+                            if (string.IsNullOrWhiteSpace(scanLine)) continue;
+                            var userText = TryExtractUserText(scanLine);
+                            if (userText is null) continue;
+                            SetFirstUserText(state, userText);
+                            break;
+                        }
+                        state.FullFileScanDone = true;
+                    } catch (Exception ex) {
+                        Log($"Full file scan for user text failed: {ex.Message}");
                     }
-                    state.FirstUserText = userText;
-                    break;
                 }
+
+                // Also check new lines (normal path)
+                if (state.FirstUserText is null && newLines.Count > 0) {
+                    foreach (var line in newLines) {
+                        var userText = TryExtractUserText(line);
+                        if (userText is null) continue;
+                        SetFirstUserText(state, userText);
+                        break;
+                    }
+                }
+
+                if (state.FirstUserText is not null)
+                    Log($"First user text captured ({state.FirstUserText.Length} chars){(state.IsSlashCommand ? $", slash command: {state.SlashCommandName}" : "")}");
             }
 
             // Fire or retry title generation (runs even when no new lines arrive)
-            if (!state.TitleGenerated && !state.TitleInFlight && agentId is null && state.TitleAttempts < 3 && state.FirstUserText is not null) {
+            if (state is { TitleGenerated: false, TitleInFlight: false } && agentId is null && state is { TitleAttempts: < 3, FirstUserText: not null }) {
+                Log($"Triggering title generation (attempt {state.TitleAttempts + 1}/3)");
                 state.TitleInFlight = true;
                 state.TitleAttempts++;
 
-                if (state.IsSlashCommand) {
-                    _ = PostTitleAsync(hubConnection, sessionId, $"Slash command: {state.SlashCommandName}", null, 0, 0, 0, 0, state);
-                } else {
-                    _ = GenerateTitleAsync(hubConnection, sessionId, state.FirstUserText, state);
-                }
+                _ = state.IsSlashCommand ? PostTitleAsync(hubConnection, sessionId, $"Slash command: {state.SlashCommandName}", null, 0, 0, 0, 0, state) : GenerateTitleAsync(hubConnection, sessionId, state.FirstUserText, state);
             }
 
             if (newLines.Count == 0) {
@@ -251,6 +269,15 @@ static class WatchCommand {
         }
     }
 
+    static void SetFirstUserText(WatchState state, string userText) {
+        var cmdMatch = CommandNameRegex.Match(userText);
+        if (cmdMatch.Success) {
+            state.IsSlashCommand   = true;
+            state.SlashCommandName = cmdMatch.Groups[1].Value;
+        }
+        state.FirstUserText = userText;
+    }
+
     static string? TryExtractUserText(string line) {
         try {
             using var doc = JsonDocument.Parse(line);
@@ -266,17 +293,36 @@ static class WatchCommand {
             if (!root.TryGetProperty("message", out var msg) || !msg.TryGetProperty("content", out var content))
                 return null;
 
-            if (content.ValueKind == JsonValueKind.String) {
-                var text = content.GetString();
+            switch (content.ValueKind) {
+                case JsonValueKind.String: {
+                    var text = content.GetString();
 
-                // Skip local command output — not real user input
-                if (text is not null && text.StartsWith("<local-command-stdout>"))
-                    return null;
+                    // Skip local command output — not real user input
+                    if (text is not null && text.StartsWith("<local-command-stdout>"))
+                        return null;
 
-                return text;
+                    return text;
+                }
+                // Handle array content (e.g., tool results with [{type:"text", text:"..."}])
+                case JsonValueKind.Array: {
+                    foreach (var element in content.EnumerateArray()) {
+                        if (element.ValueKind                                            == JsonValueKind.Object
+                         && element.TryGetProperty("type", out var t)   && t.GetString() == "text"
+                         && element.TryGetProperty("text", out var txt) && txt.ValueKind == JsonValueKind.String) {
+                            var text = txt.GetString();
+                            if (text is not null && !text.StartsWith("<local-command-stdout>"))
+                                return text;
+                        }
+                    }
+
+                    break;
+                }
             }
-        } catch {
-            // ignore parse errors
+        } catch (Exception ex) {
+            if (!parseErrorLogged) {
+                parseErrorLogged = true;
+                Log($"TryExtractUserText parse error (further errors suppressed): {ex.Message}");
+            }
         }
 
         return null;
@@ -345,32 +391,7 @@ static class WatchCommand {
         return text.Trim();
     }
 
-    public static void Log(string message) => Console.Error.WriteLine($"[{DateTimeOffset.Now:HH:mm:ss.fff}] [watch] {message}");
-
-    public static async Task<int> GetResumePosition(string baseUrl, HttpClient httpClient, string sessionId, string? agentId, string transcriptPath) {
-        try {
-            var query = agentId is not null ? $"?agentId={agentId}" : "";
-            var resp  = await httpClient.GetWithRetryAsync($"{baseUrl}/api/sessions/{sessionId}/last-line{query}");
-
-            if (resp.IsSuccessStatusCode && resp.StatusCode != System.Net.HttpStatusCode.NoContent) {
-                var json = await resp.Content.ReadAsStringAsync();
-                var doc  = JsonDocument.Parse(json);
-                if (doc.RootElement.TryGetProperty("last_line_number", out var prop) && prop.ValueKind == JsonValueKind.Number)
-                    return prop.GetInt32() + 1; // resume from the line after the last recorded one
-            }
-
-            // Stream exists but no line numbers yet — start from beginning
-            if (resp.StatusCode == System.Net.HttpStatusCode.NoContent)
-                return 0;
-        } catch (HttpRequestException) {
-            // Server unreachable — fall through to file-based skip
-        } catch {
-            // Parse error or other issue — fall through
-        }
-
-        // Server unreachable or non-success response: skip to current end of file
-        return CountFileLines(transcriptPath);
-    }
+    static void Log(string message) => Console.Error.WriteLine($"[{DateTimeOffset.Now:HH:mm:ss.fff}] [watch] {message}");
 
     public static int CountFileLines(string path) {
         try {
@@ -384,4 +405,7 @@ static class WatchCommand {
             return 0;
         }
     }
+
+    [GeneratedRegex(@"<command-name>(.*?)</command-name>", RegexOptions.Compiled)]
+    private static partial Regex CommandNameRx();
 }
