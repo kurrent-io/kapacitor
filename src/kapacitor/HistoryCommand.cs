@@ -15,6 +15,7 @@ static class HistoryCommand {
 
         if (!Directory.Exists(projectsDir)) {
             Console.WriteLine("No Claude Code projects directory found.");
+
             return 0;
         }
 
@@ -24,14 +25,17 @@ static class HistoryCommand {
 
         foreach (var cwdDir in Directory.GetDirectories(projectsDir)) {
             var encodedCwd = Path.GetFileName(cwdDir);
-            foreach (var jsonlFile in Directory.GetFiles(cwdDir, "*.jsonl")) {
-                var sessionId = Path.GetFileNameWithoutExtension(jsonlFile);
-                transcriptFiles.Add((sessionId, jsonlFile, encodedCwd));
-            }
+
+            transcriptFiles.AddRange(
+                from jsonlFile in Directory.GetFiles(cwdDir, "*.jsonl")
+                let sessionId = Path.GetFileNameWithoutExtension(jsonlFile)
+                select (sessionId, jsonlFile, encodedCwd)
+            );
         }
 
         if (transcriptFiles.Count == 0) {
             Console.WriteLine("No transcript files found.");
+
             return 0;
         }
 
@@ -42,7 +46,8 @@ static class HistoryCommand {
                 .ToList();
 
             if (transcriptFiles.Count == 0) {
-                Console.Error.WriteLine($"Session not found: {filterSession}");
+                await Console.Error.WriteLineAsync($"Session not found: {filterSession}");
+
                 return 1;
             }
         }
@@ -50,12 +55,15 @@ static class HistoryCommand {
         // Filter by cwd if specified
         if (filterCwd is not null) {
             var normalizedFilter = filterCwd.TrimEnd('/');
+
             transcriptFiles = transcriptFiles
                 .Where(t => {
-                    var extractedCwd = ExtractCwdFromTranscript(t.FilePath);
-                    return extractedCwd is not null &&
-                        extractedCwd.TrimEnd('/').Equals(normalizedFilter, StringComparison.Ordinal);
-                })
+                        var extractedCwd = ExtractCwdFromTranscript(t.FilePath);
+
+                        return extractedCwd is not null &&
+                            extractedCwd.TrimEnd('/').Equals(normalizedFilter, StringComparison.Ordinal);
+                    }
+                )
                 .ToList();
         }
 
@@ -86,33 +94,41 @@ static class HistoryCommand {
                 if (resp.StatusCode == System.Net.HttpStatusCode.NotFound) {
                     // 404 = stream doesn't exist, full load needed
                     status = HistorySessionStatus.New;
-                } else if (resp.StatusCode == System.Net.HttpStatusCode.NoContent) {
+                }
+                else if (resp.StatusCode == System.Net.HttpStatusCode.NoContent) {
                     // 204 = stream exists but no line numbers, skip
                     status = HistorySessionStatus.AlreadyLoaded;
-                } else if (resp.IsSuccessStatusCode) {
+                }
+                else if (resp.IsSuccessStatusCode) {
                     // 200 = has line numbers, can resume
                     var json = await resp.Content.ReadAsStringAsync();
                     var doc  = JsonDocument.Parse(json);
+
                     if (doc.RootElement.TryGetProperty("last_line_number", out var prop) && prop.ValueKind == JsonValueKind.Number) {
                         resumeFromLine = prop.GetInt32() + 1;
                         status         = HistorySessionStatus.Partial;
-                    } else {
+                    }
+                    else {
                         status = HistorySessionStatus.AlreadyLoaded;
                     }
-                } else {
+                }
+                else {
                     Console.WriteLine($"Skipping {sessionId} [server error: HTTP {(int)resp.StatusCode}]");
                     errored++;
+
                     continue;
                 }
             } catch (HttpRequestException ex) {
                 Console.WriteLine($"Skipping {sessionId} [server unreachable: {ex.Message}]");
                 errored++;
+
                 continue;
             }
 
             if (status == HistorySessionStatus.AlreadyLoaded) {
                 Console.WriteLine($"Skipping {sessionId} [already loaded]");
                 skipped++;
+
                 continue;
             }
 
@@ -123,6 +139,7 @@ static class HistoryCommand {
             if (status == HistorySessionStatus.New && minLines > 0 && totalLines < minLines) {
                 Console.WriteLine($"Skipping {sessionId} [too short: {totalLines} lines < {minLines} minimum]");
                 skipped++;
+
                 continue;
             }
 
@@ -151,16 +168,18 @@ static class HistoryCommand {
 
                 // Enrich with repository info if we have a cwd
                 var startCwd = meta.Cwd ?? DecodeCwdFromDirName(encodedCwd);
+
                 if (startCwd is not null) {
                     var repo = await RepositoryDetection.DetectRepositoryAsync(startCwd);
+
                     if (repo is not null) {
                         var repoNode                                           = new JsonObject();
-                        if (repo.UserName is not null)  repoNode["user_name"]  = repo.UserName;
+                        if (repo.UserName is not null) repoNode["user_name"]   = repo.UserName;
                         if (repo.UserEmail is not null) repoNode["user_email"] = repo.UserEmail;
                         if (repo.RemoteUrl is not null) repoNode["remote_url"] = repo.RemoteUrl;
-                        if (repo.Owner is not null)     repoNode["owner"]      = repo.Owner;
-                        if (repo.RepoName is not null)  repoNode["repo_name"]  = repo.RepoName;
-                        if (repo.Branch is not null)    repoNode["branch"]     = repo.Branch;
+                        if (repo.Owner is not null) repoNode["owner"]          = repo.Owner;
+                        if (repo.RepoName is not null) repoNode["repo_name"]   = repo.RepoName;
+                        if (repo.Branch is not null) repoNode["branch"]        = repo.Branch;
                         startHook["repository"] = repoNode;
                     }
                 }
@@ -168,19 +187,23 @@ static class HistoryCommand {
                 try {
                     using var startContent = new StringContent(startHook.ToJsonString(), Encoding.UTF8, "application/json");
                     var       startResp    = await httpClient.PostWithRetryAsync($"{baseUrl}/hooks/session-start", startContent);
+
                     if (!startResp.IsSuccessStatusCode) {
                         Console.WriteLine($"Skipping {sessionId} [session-start failed: HTTP {(int)startResp.StatusCode}]");
                         errored++;
+
                         continue;
                     }
                 } catch (HttpRequestException ex) {
                     Console.WriteLine($"Skipping {sessionId} [server unreachable: {ex.Message}]");
                     errored++;
+
                     continue;
                 }
 
                 // Discover and start agents
                 var agentTranscripts = DiscoverAgentTranscripts(filePath);
+
                 foreach (var (agentId, agentPath) in agentTranscripts) {
                     var agentStartHook = new JsonObject {
                         ["session_id"]      = sessionId,
@@ -251,7 +274,8 @@ static class HistoryCommand {
                 }
 
                 loaded++;
-            } else {
+            }
+            else {
                 // Partial load — resume from where we left off
                 Console.Write($"Loading {sessionId}... ");
                 var linesSent = await SendTranscriptBatches(httpClient, baseUrl, sessionId, filePath, agentId: null, startLine: resumeFromLine);
@@ -268,7 +292,14 @@ static class HistoryCommand {
         return 0;
     }
 
-    static async Task<int> SendTranscriptBatches(HttpClient httpClient, string baseUrl, string sessionId, string filePath, string? agentId, int startLine) {
+    static async Task<int> SendTranscriptBatches(
+            HttpClient httpClient,
+            string     baseUrl,
+            string     sessionId,
+            string     filePath,
+            string?    agentId,
+            int        startLine
+        ) {
         if (!File.Exists(filePath)) return 0;
 
         var       totalSent        = 0;
@@ -280,13 +311,19 @@ static class HistoryCommand {
         using var       reader = new StreamReader(stream);
 
         var lineIndex = 0;
+
         while (await reader.ReadLineAsync() is { } line) {
-            if (lineIndex < startLine) { lineIndex++; continue; }
+            if (lineIndex < startLine) {
+                lineIndex++;
+
+                continue;
+            }
 
             if (!string.IsNullOrWhiteSpace(line)) {
                 batchLines.Add(line);
                 batchLineNumbers.Add(lineIndex);
             }
+
             lineIndex++;
 
             if (batchLines.Count >= batchSize) {
@@ -306,7 +343,14 @@ static class HistoryCommand {
         return totalSent;
     }
 
-    static async Task PostTranscriptBatch(HttpClient httpClient, string baseUrl, string sessionId, string? agentId, List<string> lines, List<int> lineNumbers) {
+    static async Task PostTranscriptBatch(
+            HttpClient   httpClient,
+            string       baseUrl,
+            string       sessionId,
+            string?      agentId,
+            List<string> lines,
+            List<int>    lineNumbers
+        ) {
         var batch = new TranscriptBatch {
             SessionId   = sessionId,
             AgentId     = agentId,
@@ -332,8 +376,10 @@ static class HistoryCommand {
             using var reader = new StreamReader(stream);
 
             var linesChecked = 0;
+
             while (reader.ReadLine() is { } line && linesChecked < 50) {
                 linesChecked++;
+
                 if (string.IsNullOrWhiteSpace(line)) continue;
 
                 try {
@@ -364,7 +410,7 @@ static class HistoryCommand {
                         meta.SessionId = sidProp.GetString();
 
                     // Extract first timestamp for continuation ordering
-                    if (meta.FirstTimestamp is null && root.TryGetProperty("timestamp", out var tsProp) &&
+                    if (meta.FirstTimestamp is null              && root.TryGetProperty("timestamp", out var tsProp) &&
                         tsProp.ValueKind == JsonValueKind.String &&
                         DateTimeOffset.TryParse(tsProp.GetString(), out var ts))
                         meta.FirstTimestamp = ts;
@@ -389,12 +435,15 @@ static class HistoryCommand {
             using var reader = new StreamReader(stream);
 
             var linesChecked = 0;
+
             while (reader.ReadLine() is { } line && linesChecked < 20) {
                 linesChecked++;
+
                 if (string.IsNullOrWhiteSpace(line)) continue;
 
                 try {
                     var doc = JsonDocument.Parse(line);
+
                     if (doc.RootElement.TryGetProperty("cwd", out var cwdProp))
                         return cwdProp.GetString();
                 } catch (JsonException) {
@@ -411,8 +460,7 @@ static class HistoryCommand {
     static string? DecodeCwdFromDirName(string encodedCwd) {
         // Encoded cwd has / replaced with - (e.g., -Users-alexey-dev-myproject)
         // Reverse: replace leading - with /, then interior - with /
-        if (string.IsNullOrEmpty(encodedCwd)) return null;
-        return encodedCwd.Replace('-', '/');
+        return string.IsNullOrEmpty(encodedCwd) ? null : encodedCwd.Replace('-', '/');
     }
 
     static List<(string AgentId, string Path)> DiscoverAgentTranscripts(string sessionTranscriptPath) {
@@ -422,14 +470,13 @@ static class HistoryCommand {
 
         if (!Directory.Exists(subagentsDir)) return results;
 
-        foreach (var agentFile in Directory.GetFiles(subagentsDir, "agent-*.jsonl")) {
-            var fileName = Path.GetFileNameWithoutExtension(agentFile);
-            // agent-{agentId}.jsonl -> strip "agent-" prefix
-            if (fileName.StartsWith("agent-")) {
-                var agentId = fileName["agent-".Length..];
-                results.Add((agentId, agentFile));
-            }
-        }
+        results.AddRange(
+            from agentFile in Directory.GetFiles(subagentsDir, "agent-*.jsonl")
+            let fileName = Path.GetFileNameWithoutExtension(agentFile)
+            where fileName.StartsWith("agent-")
+            let agentId = fileName["agent-".Length..]
+            select (agentId, agentFile)
+        );
 
         return results;
     }
@@ -474,28 +521,32 @@ static class HistoryCommand {
     /// </summary>
     static void SortByContinuationOrder(
             List<(string SessionId, string FilePath, string EncodedCwd)> transcriptFiles,
-            Dictionary<string, string> continuationMap
+            Dictionary<string, string>                                   continuationMap
         ) {
         // Build a depth map: sessions with no predecessor = depth 0, their continuations = depth 1, etc.
         var depth = new Dictionary<string, int>();
-
-        int GetDepth(string sessionId) {
-            if (depth.TryGetValue(sessionId, out var d)) return d;
-
-            d = continuationMap.TryGetValue(sessionId, out var prev) ? GetDepth(prev) + 1 : 0;
-            depth[sessionId] = d;
-
-            return d;
-        }
 
         foreach (var (sessionId, _, _) in transcriptFiles)
             GetDepth(sessionId);
 
         transcriptFiles.Sort((a, b) => {
-            var da = depth.GetValueOrDefault(a.SessionId);
-            var db = depth.GetValueOrDefault(b.SessionId);
+                var da = depth.GetValueOrDefault(a.SessionId);
+                var db = depth.GetValueOrDefault(b.SessionId);
 
-            return da != db ? da.CompareTo(db) : string.Compare(a.SessionId, b.SessionId, StringComparison.Ordinal);
-        });
+                return da != db ? da.CompareTo(db) : string.Compare(a.SessionId, b.SessionId, StringComparison.Ordinal);
+            }
+        );
+
+        return;
+
+        int GetDepth(string sessionId) {
+            if (depth.TryGetValue(sessionId, out var d)) return d;
+
+            d = continuationMap.TryGetValue(sessionId, out var prev) ? GetDepth(prev) + 1 : 0;
+
+            depth[sessionId] = d;
+
+            return d;
+        }
     }
 }

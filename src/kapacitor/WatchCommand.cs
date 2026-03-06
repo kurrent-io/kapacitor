@@ -102,13 +102,13 @@ static partial class WatchCommand {
                 // Timeout exhausted — give up
                 Log($"SignalR connect failed after 5 minutes, giving up: {ex.Message}");
                 await hubConnection.DisposeAsync();
-                logWriter.Dispose();
+                await logWriter.DisposeAsync();
                 return 0;
             }
         }
         if (cts.Token.IsCancellationRequested) {
             await hubConnection.DisposeAsync();
-            logWriter.Dispose();
+            await logWriter.DisposeAsync();
             return 0;
         }
 
@@ -362,8 +362,7 @@ static partial class WatchCommand {
             string? model, long inputTokens, long outputTokens, long cacheReadTokens, long cacheWriteTokens,
             WatchState state) {
         try {
-            await hubConnection.InvokeAsync("SendTitle", sessionId, title,
-                model, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens);
+            await hubConnection.InvokeAsync("SendTitle", sessionId, title, model, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens);
             Log($"Title generated: {title}");
             state.TitleGenerated = true;
         } catch (Exception ex) {
@@ -387,7 +386,7 @@ static partial class WatchCommand {
 
     static string StripMarkdown(string text) {
         // Strip bold/italic markers, inline code backticks, and heading prefixes
-        text = System.Text.RegularExpressions.Regex.Replace(text, @"[*_`#]+", "");
+        text = MarkdownRegex().Replace(text, "");
         return text.Trim();
     }
 
@@ -406,6 +405,8 @@ static partial class WatchCommand {
         }
     }
 
-    [GeneratedRegex(@"<command-name>(.*?)</command-name>", RegexOptions.Compiled)]
+    [GeneratedRegex("<command-name>(.*?)</command-name>", RegexOptions.Compiled)]
     private static partial Regex CommandNameRx();
+    [GeneratedRegex("[*_`#]+")]
+    private static partial Regex MarkdownRegex();
 }

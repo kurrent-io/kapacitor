@@ -16,12 +16,12 @@ static class RecapCommand {
         }
 
         if (resp.StatusCode == System.Net.HttpStatusCode.NotFound) {
-            Console.Error.WriteLine($"Session not found: {sessionId}");
+            await Console.Error.WriteLineAsync($"Session not found: {sessionId}");
             return 1;
         }
 
         if (!resp.IsSuccessStatusCode) {
-            Console.Error.WriteLine($"HTTP {(int)resp.StatusCode}");
+            await Console.Error.WriteLineAsync($"HTTP {(int)resp.StatusCode}");
             return 1;
         }
 

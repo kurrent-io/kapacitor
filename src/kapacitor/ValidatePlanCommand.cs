@@ -8,20 +8,24 @@ static class ValidatePlanCommand {
 
         // Fetch chain recap to find plans from previous sessions (e.g. ExitPlanMode in parent)
         HttpResponseMessage resp;
+
         try {
             resp = await httpClient.GetWithRetryAsync($"{baseUrl}/api/sessions/{sessionId}/recap?chain=true");
         } catch (HttpRequestException ex) {
             HttpClientExtensions.WriteUnreachableError(baseUrl, ex);
+
             return 1;
         }
 
         if (resp.StatusCode == System.Net.HttpStatusCode.NotFound) {
             Console.Error.WriteLine($"Session not found: {sessionId}");
+
             return 1;
         }
 
         if (!resp.IsSuccessStatusCode) {
             Console.Error.WriteLine($"HTTP {(int)resp.StatusCode}");
+
             return 1;
         }
 
@@ -30,24 +34,27 @@ static class ValidatePlanCommand {
 
         if (entries is null || entries.Count == 0) {
             Console.WriteLine("No plan found for this session.");
+
             return 0;
         }
 
         // Plans can come from any session in the chain (continuation planContent or ExitPlanMode write)
-        var plans     = entries.Where(e => e.Type == "plan").ToList();
+        var plans = entries.Where(e => e.Type == "plan").ToList();
         // Work done: only from the current session being validated
-        var work      = entries.Where(e => e.Type is "write" or "edit" && e.SessionId == sessionId).ToList();
+        var work = entries.Where(e => e.Type is "write" or "edit" && e.SessionId == sessionId).ToList();
         // AI-generated summaries
         var summaries = entries.Where(e => e.Type == "whats_done").ToList();
 
         if (plans.Count == 0) {
             Console.WriteLine("No plan found for this session.");
+
             return 0;
         }
 
         // Output plan(s)
         Console.WriteLine("## Plan");
         Console.WriteLine();
+
         foreach (var plan in plans)
             Console.WriteLine(plan.Content);
         Console.WriteLine();
@@ -59,6 +66,7 @@ static class ValidatePlanCommand {
         if (summaries.Count > 0) {
             Console.WriteLine("### Summary");
             Console.WriteLine();
+
             foreach (var summary in summaries)
                 Console.WriteLine(summary.Content);
             Console.WriteLine();
@@ -66,6 +74,7 @@ static class ValidatePlanCommand {
 
         Console.WriteLine("### Details");
         Console.WriteLine();
+
         if (work.Count == 0) {
             Console.WriteLine("No file writes or edits recorded.");
         }
@@ -76,12 +85,16 @@ static class ValidatePlanCommand {
                 Console.WriteLine($"- {label}: {path}");
             }
         }
+
         Console.WriteLine();
 
         // Verification instruction
         Console.WriteLine("## Instructions");
         Console.WriteLine();
-        Console.WriteLine("Compare the plan above against the summary and file list under \"What's Done\". Identify any planned items that were NOT completed. If everything is done, confirm that. If there are gaps, list them and complete the remaining work now.");
+
+        Console.WriteLine(
+            "Compare the plan above against the summary and file list under \"What's Done\". Identify any planned items that were NOT completed. If everything is done, confirm that. If there are gaps, list them and complete the remaining work now."
+        );
 
         return 0;
     }

@@ -10,30 +10,34 @@ static class RepositoryDetection {
     public static async Task<string> EnrichWithRepositoryInfo(string json) {
         try {
             var node = JsonNode.Parse(json);
+
             if (node is not JsonObject obj) return json;
 
             var cwd = obj["cwd"]?.GetValue<string>();
+
             if (cwd is null) return json;
 
             var repo = await DetectRepositoryAsync(cwd);
+
             if (repo is null) return json;
 
             // Skip enrichment if repo info hasn't changed since last emit for this cwd
             var lastEmitted = LoadLastEmitted(cwd);
+
             if (lastEmitted is not null && RepoPayloadEquals(repo, lastEmitted))
                 return json;
 
-            var repoNode                                              = new JsonObject();
-            if (repo.UserName is not null)    repoNode["user_name"]   = repo.UserName;
-            if (repo.UserEmail is not null)   repoNode["user_email"]  = repo.UserEmail;
-            if (repo.RemoteUrl is not null)   repoNode["remote_url"]  = repo.RemoteUrl;
-            if (repo.Owner is not null)       repoNode["owner"]       = repo.Owner;
-            if (repo.RepoName is not null)    repoNode["repo_name"]   = repo.RepoName;
-            if (repo.Branch is not null)      repoNode["branch"]      = repo.Branch;
-            if (repo.PrNumber is not null)    repoNode["pr_number"]   = repo.PrNumber;
-            if (repo.PrTitle is not null)     repoNode["pr_title"]    = repo.PrTitle;
-            if (repo.PrUrl is not null)       repoNode["pr_url"]      = repo.PrUrl;
-            if (repo.PrHeadRef is not null)   repoNode["pr_head_ref"] = repo.PrHeadRef;
+            var repoNode                                            = new JsonObject();
+            if (repo.UserName is not null) repoNode["user_name"]    = repo.UserName;
+            if (repo.UserEmail is not null) repoNode["user_email"]  = repo.UserEmail;
+            if (repo.RemoteUrl is not null) repoNode["remote_url"]  = repo.RemoteUrl;
+            if (repo.Owner is not null) repoNode["owner"]           = repo.Owner;
+            if (repo.RepoName is not null) repoNode["repo_name"]    = repo.RepoName;
+            if (repo.Branch is not null) repoNode["branch"]         = repo.Branch;
+            if (repo.PrNumber is not null) repoNode["pr_number"]    = repo.PrNumber;
+            if (repo.PrTitle is not null) repoNode["pr_title"]      = repo.PrTitle;
+            if (repo.PrUrl is not null) repoNode["pr_url"]          = repo.PrUrl;
+            if (repo.PrHeadRef is not null) repoNode["pr_head_ref"] = repo.PrHeadRef;
 
             obj["repository"] = repoNode;
 
@@ -72,7 +76,8 @@ static class RepositoryDetection {
                 owner     = cache.Owner;
                 repoName  = cache.RepoName;
                 branch    = await branchTask;
-            } else {
+            }
+            else {
                 // Run git commands in parallel
                 var userNameTask  = RunCommandAsync("git", "config user.name", cwd, TimeSpan.FromSeconds(5));
                 var userEmailTask = RunCommandAsync("git", "config user.email", cwd, TimeSpan.FromSeconds(5));
@@ -92,14 +97,17 @@ static class RepositoryDetection {
                 (owner, repoName) = kapacitor.GitUrlParser.ParseRemoteUrl(remoteUrl);
 
                 // Save to cache (without branch — it's always detected fresh)
-                SaveCache(cwd, new GitCacheEntry {
-                    UserName  = userName,
-                    UserEmail = userEmail,
-                    RemoteUrl = remoteUrl,
-                    Owner     = owner,
-                    RepoName  = repoName,
-                    CachedAt  = DateTimeOffset.UtcNow
-                });
+                SaveCache(
+                    cwd,
+                    new GitCacheEntry {
+                        UserName  = userName,
+                        UserEmail = userEmail,
+                        RemoteUrl = remoteUrl,
+                        Owner     = owner,
+                        RepoName  = repoName,
+                        CachedAt  = DateTimeOffset.UtcNow
+                    }
+                );
             }
 
             // Always try fresh PR detection (not cached)
@@ -111,6 +119,7 @@ static class RepositoryDetection {
 
                 if (prJson is not null) {
                     var prNode = JsonNode.Parse(prJson);
+
                     if (prNode is JsonObject prObj) {
                         prNumber  = prObj["number"]?.GetValue<int>();
                         prTitle   = prObj["title"]?.GetValue<string>();
@@ -149,6 +158,7 @@ static class RepositoryDetection {
                 CreateNoWindow         = true
             };
             using var process = Process.Start(psi);
+
             if (process is null) return null;
 
             using var cts    = new CancellationTokenSource(timeout);
@@ -164,12 +174,14 @@ static class RepositoryDetection {
     static string GetCachePath(string cwd) {
         var hash = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(cwd)))[..16];
         var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+
         return Path.Combine(home, ".config", "kapacitor", "cache", $"{hash}.json");
     }
 
     static GitCacheEntry? LoadCache(string cwd) {
         try {
             var path = GetCachePath(cwd);
+
             if (!File.Exists(path)) return null;
 
             var json  = File.ReadAllText(path);
@@ -201,14 +213,18 @@ static class RepositoryDetection {
     static string GetLastEmittedPath(string cwd) {
         var hash = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(cwd)))[..16];
         var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+
         return Path.Combine(home, ".config", "kapacitor", "cache", $"{hash}.repo-emitted.json");
     }
 
     static RepositoryPayload? LoadLastEmitted(string cwd) {
         try {
             var path = GetLastEmittedPath(cwd);
+
             if (!File.Exists(path)) return null;
+
             var json = File.ReadAllText(path);
+
             return JsonSerializer.Deserialize(json, KapacitorJsonContext.Default.RepositoryPayload);
         } catch {
             return null;

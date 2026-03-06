@@ -24,10 +24,12 @@ static class ClaudeCliRunner {
             RedirectStandardOutput = true,
             RedirectStandardError  = true,
             UseShellExecute        = false,
-            CreateNoWindow         = true
+            CreateNoWindow         = true,
+            Environment            = {
+                // Prevent the headless claude session from triggering kapacitor hooks (avoids infinite loop)
+                ["KAPACITOR_SKIP"] = "1"
+            }
         };
-        // Prevent the headless claude session from triggering kapacitor hooks (avoids infinite loop)
-        psi.Environment["KAPACITOR_SKIP"] = "1";
         psi.Environment.Remove("CLAUDECODE");
         psi.Environment.Remove("CLAUDE_CODE_ENTRYPOINT");
         psi.ArgumentList.Add("-p");

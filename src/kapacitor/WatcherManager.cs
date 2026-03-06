@@ -7,12 +7,20 @@ namespace kapacitor;
 static class WatcherManager {
     static string GetWatcherDir() {
         var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+
         return Path.Combine(home, ".config", "kapacitor", "watchers");
     }
 
     static string GetPidFilePath(string key) => Path.Combine(GetWatcherDir(), $"{key}.pid");
 
-    public static void SpawnWatcher(string baseUrl, string key, string transcriptPath, string? agentId, string? sessionIdOverride = null, string? cwd = null) {
+    public static void SpawnWatcher(
+            string  baseUrl,
+            string  key,
+            string  transcriptPath,
+            string? agentId,
+            string? sessionIdOverride = null,
+            string? cwd               = null
+        ) {
         try {
             var watcherDir = GetWatcherDir();
             Directory.CreateDirectory(watcherDir);
@@ -40,8 +48,10 @@ static class WatcherManager {
             };
 
             var process = Process.Start(psi);
+
             if (process is null) {
                 Console.Error.WriteLine($"Failed to spawn watcher for {key}");
+
                 return;
             }
 
@@ -64,12 +74,15 @@ static class WatcherManager {
     /// </summary>
     public static async Task<bool> KillWatcher(string key) {
         var pidFile = GetPidFilePath(key);
+
         if (!File.Exists(pidFile)) return false;
 
         try {
             var pidText = File.ReadAllText(pidFile).Trim();
+
             if (!int.TryParse(pidText, out var pid)) {
                 File.Delete(pidFile);
+
                 return false;
             }
 
@@ -81,39 +94,47 @@ static class WatcherManager {
 
                 // Wait up to 5 seconds for graceful exit
                 using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+
                 try {
                     await process.WaitForExitAsync(cts.Token);
-                    Console.Error.WriteLine($"Watcher {key} (PID {pid}) exited gracefully");
+                    await Console.Error.WriteLineAsync($"Watcher {key} (PID {pid}) exited gracefully");
                 } catch (OperationCanceledException) {
                     // Force kill if it didn't exit in time
                     process.Kill(entireProcessTree: true);
-                    Console.Error.WriteLine($"Watcher {key} (PID {pid}) force-killed after timeout");
+                    await Console.Error.WriteLineAsync($"Watcher {key} (PID {pid}) force-killed after timeout");
                 }
 
                 return true;
             } catch (ArgumentException) {
                 // Process already exited
-                Console.Error.WriteLine($"Watcher {key} (PID {pid}) already exited");
+                await Console.Error.WriteLineAsync($"Watcher {key} (PID {pid}) already exited");
+
                 return false;
             }
         } catch (Exception ex) {
-            Console.Error.WriteLine($"Error killing watcher {key}: {ex.Message}");
+            await Console.Error.WriteLineAsync($"Error killing watcher {key}: {ex.Message}");
+
             return false;
         } finally {
-            try { File.Delete(pidFile); } catch { /* ignore */ }
+            try { File.Delete(pidFile); } catch {
+                /* ignore */
+            }
         }
     }
 
     static bool IsWatcherAlive(string key) {
         var pidFile = GetPidFilePath(key);
+
         if (!File.Exists(pidFile)) return false;
 
         try {
             var pidText = File.ReadAllText(pidFile).Trim();
+
             if (!int.TryParse(pidText, out var pid)) return false;
 
             try {
                 var process = Process.GetProcessById(pid);
+
                 return !process.HasExited;
             } catch (ArgumentException) {
                 return false;
@@ -123,7 +144,14 @@ static class WatcherManager {
         }
     }
 
-    public static void EnsureWatcherRunning(string baseUrl, string key, string transcriptPath, string? agentId, string? sessionIdOverride = null, string? cwd = null) {
+    public static void EnsureWatcherRunning(
+            string  baseUrl,
+            string  key,
+            string  transcriptPath,
+            string? agentId,
+            string? sessionIdOverride = null,
+            string? cwd               = null
+        ) {
         if (IsWatcherAlive(key)) return;
 
         // Watcher is dead or missing — respawn
@@ -149,8 +177,10 @@ static class WatcherManager {
             psi.ArgumentList.Add(sessionId);
 
             var process = Process.Start(psi);
+
             if (process is null) {
                 Console.Error.WriteLine($"Failed to spawn what's-done generator for {sessionId}");
+
                 return;
             }
 
@@ -171,6 +201,7 @@ static class WatcherManager {
 
             // Get server's last recorded position
             int startLine;
+
             try {
                 var query = agentId is not null ? $"?agentId={agentId}" : "";
                 var resp  = await httpClient.GetWithRetryAsync($"{baseUrl}/api/sessions/{sessionId}/last-line{query}");
@@ -178,10 +209,12 @@ static class WatcherManager {
                 if (resp.IsSuccessStatusCode && resp.StatusCode != System.Net.HttpStatusCode.NoContent) {
                     var json = await resp.Content.ReadAsStringAsync();
                     var doc  = JsonDocument.Parse(json);
+
                     startLine = doc.RootElement.TryGetProperty("last_line_number", out var prop) && prop.ValueKind == JsonValueKind.Number
                         ? prop.GetInt32() + 1
                         : WatchCommand.CountFileLines(transcriptPath);
-                } else {
+                }
+                else {
                     startLine = WatchCommand.CountFileLines(transcriptPath);
                 }
             } catch {
@@ -197,17 +230,25 @@ static class WatcherManager {
             using var       reader = new StreamReader(stream);
 
             var lineIndex = 0;
+
             while (await reader.ReadLineAsync() is { } line) {
-                if (lineIndex < startLine) { lineIndex++; continue; }
+                if (lineIndex < startLine) {
+                    lineIndex++;
+
+                    continue;
+                }
+
                 if (!string.IsNullOrWhiteSpace(line)) {
                     newLines.Add(line);
                     newLineNumbers.Add(lineIndex);
                 }
+
                 lineIndex++;
             }
 
             if (newLines.Count == 0) {
                 Console.Error.WriteLine($"Inline drain for {sessionId}: no new lines to send");
+
                 return;
             }
 
@@ -223,14 +264,17 @@ static class WatcherManager {
 
             try {
                 var resp = await httpClient.PostWithRetryAsync($"{baseUrl}/hooks/transcript", content);
-                Console.Error.WriteLine(resp.IsSuccessStatusCode
-                    ? $"Inline drain for {sessionId}: sent {newLines.Count} line(s)"
-                    : $"Inline drain for {sessionId}: server returned HTTP {(int)resp.StatusCode}");
+
+                await Console.Error.WriteLineAsync(
+                    resp.IsSuccessStatusCode
+                        ? $"Inline drain for {sessionId}: sent {newLines.Count} line(s)"
+                        : $"Inline drain for {sessionId}: server returned HTTP {(int)resp.StatusCode}"
+                );
             } catch (HttpRequestException ex) {
-                Console.Error.WriteLine($"Inline drain for {sessionId}: server unreachable after retries — {ex.Message}");
+                await Console.Error.WriteLineAsync($"Inline drain for {sessionId}: server unreachable after retries — {ex.Message}");
             }
         } catch (Exception ex) {
-            Console.Error.WriteLine($"Inline drain for {sessionId} failed: {ex.Message}");
+            await Console.Error.WriteLineAsync($"Inline drain for {sessionId} failed: {ex.Message}");
         }
     }
 }

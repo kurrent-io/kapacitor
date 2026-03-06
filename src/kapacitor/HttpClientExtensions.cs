@@ -21,11 +21,7 @@ static class HttpClientExtensions {
             )
             => SendWithRetryAsync(() => client.PostAsync(url, content, ct), timeout ?? DefaultTimeout, ct);
 
-        public Task<HttpResponseMessage> GetWithRetryAsync(
-                string            url,
-                TimeSpan?         timeout = null,
-                CancellationToken ct      = default
-            )
+        public Task<HttpResponseMessage> GetWithRetryAsync(string url, TimeSpan? timeout = null, CancellationToken ct = default)
             => SendWithRetryAsync(() => client.GetAsync(url, ct), timeout ?? DefaultTimeout, ct);
     }
 
@@ -36,11 +32,7 @@ static class HttpClientExtensions {
         Console.Error.WriteLine($"{UnreachableHint} {baseUrl} {ex.Message}");
     }
 
-    static async Task<HttpResponseMessage> SendWithRetryAsync(
-            Func<Task<HttpResponseMessage>> send,
-            TimeSpan                        timeout,
-            CancellationToken               ct
-        ) {
+    static async Task<HttpResponseMessage> SendWithRetryAsync(Func<Task<HttpResponseMessage>> send, TimeSpan timeout, CancellationToken ct) {
         var sw      = Stopwatch.StartNew();
         var delayMs = 250;
 

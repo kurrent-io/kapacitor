@@ -21,22 +21,24 @@ record TranscriptBatch {
 }
 
 record ErrorEntry(
-    string         SessionId,
-    string?        SessionSlug,
-    string?        AgentId,
-    int            EventNumber,
-    string?        ToolName,
-    string         Error,
-    DateTimeOffset Timestamp);
+        string         SessionId,
+        string?        SessionSlug,
+        string?        AgentId,
+        int            EventNumber,
+        string?        ToolName,
+        string         Error,
+        DateTimeOffset Timestamp
+    );
 
 record RecapEntry(
-    string         Type,
-    string?        SessionId,
-    string?        AgentId,
-    string?        AgentType,
-    string         Content,
-    string?        FilePath,
-    DateTimeOffset Timestamp);
+        string         Type,
+        string?        SessionId,
+        string?        AgentId,
+        string?        AgentType,
+        string         Content,
+        string?        FilePath,
+        DateTimeOffset Timestamp
+    );
 
 record RepositoryPayload {
     [JsonPropertyName("user_name")]
@@ -93,15 +95,15 @@ record GitCacheEntry {
 class WatchState {
     public int                LinesProcessed     { get; set; }
     public RepositoryPayload? Repository         { get; set; }
-    public RepositoryPayload? LastSentRepository  { get; set; }
+    public RepositoryPayload? LastSentRepository { get; set; }
     public DateTimeOffset     LastRepoDetection  { get; set; }
     public bool               TitleGenerated     { get; set; }
-    public int                TitleAttempts       { get; set; }
-    public bool               TitleInFlight       { get; set; }
-    public string?            FirstUserText       { get; set; }
-    public bool               IsSlashCommand      { get; set; }
-    public string?            SlashCommandName    { get; set; }
-    public bool               FullFileScanDone    { get; set; }
+    public int                TitleAttempts      { get; set; }
+    public bool               TitleInFlight      { get; set; }
+    public string?            FirstUserText      { get; set; }
+    public bool               IsSlashCommand     { get; set; }
+    public string?            SlashCommandName   { get; set; }
+    public bool               FullFileScanDone   { get; set; }
 }
 
 record SessionTitlePayload {
@@ -165,10 +167,12 @@ static partial class GitUrlParser {
         if (url is null) return (null, null);
 
         var sshMatch = SshRegex().Match(url);
+
         if (sshMatch.Success)
             return (sshMatch.Groups["owner"].Value, sshMatch.Groups["repo"].Value);
 
         var httpsMatch = HttpsRegex().Match(url);
+
         return httpsMatch.Success
             ? (httpsMatch.Groups["owner"].Value, httpsMatch.Groups["repo"].Value)
             : (null, null);

@@ -41,6 +41,7 @@ switch (command) {
         if (errSessionId is null) {
             Console.Error.WriteLine("Usage: kapacitor errors [--chain] [sessionId]");
             Console.Error.WriteLine("  No session ID provided and KAPACITOR_SESSION_ID not set.");
+
             return 1;
         }
 
@@ -53,6 +54,7 @@ switch (command) {
         if (recapSessionId is null) {
             Console.Error.WriteLine("Usage: kapacitor recap [--chain] [sessionId]");
             Console.Error.WriteLine("  No session ID provided and KAPACITOR_SESSION_ID not set.");
+
             return 1;
         }
 
@@ -64,6 +66,7 @@ switch (command) {
         if (vpSessionId is null) {
             Console.Error.WriteLine("Usage: kapacitor validate-plan [sessionId]");
             Console.Error.WriteLine("  No session ID provided and KAPACITOR_SESSION_ID not set.");
+
             return 1;
         }
 
@@ -134,9 +137,10 @@ var body = await Console.In.ReadToEndAsync();
 // Inject home_dir into all hook payloads
 try {
     var node = JsonNode.Parse(body);
+
     if (node is not null) {
         node["home_dir"] = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        body = node.ToJsonString();
+        body             = node.ToJsonString();
     }
 } catch {
     // Best effort — don't fail the hook if JSON parsing fails
@@ -153,6 +157,7 @@ else
 
 // For session-start: read plan file if slug is known and inject plan_content into payload
 var planContentInjected = false;
+
 if (command == "session-start") {
     try {
         var node = JsonNode.Parse(body);
@@ -194,6 +199,7 @@ switch (command) {
         }
 
         body = await deferredRepoTask!;
+
         break;
     }
     case "subagent-stop": {
@@ -217,6 +223,7 @@ switch (command) {
         }
 
         body = await deferredRepoTask!;
+
         break;
     }
 }
@@ -225,10 +232,12 @@ using var client  = new HttpClient();
 using var content = new StringContent(body, Encoding.UTF8, "application/json");
 
 HttpResponseMessage response;
+
 try {
     response = await client.PostWithRetryAsync($"{baseUrl}/hooks/{command}", content);
 } catch (HttpRequestException ex) {
     HttpClientExtensions.WriteUnreachableError(baseUrl, ex);
+
     return 1;
 }
 
@@ -325,12 +334,13 @@ string? ReadPlanFile(string slug) {
         return File.Exists(planPath) ? File.ReadAllText(planPath) : null;
     } catch (Exception ex) {
         Console.Error.WriteLine($"[kapacitor] Failed to read plan file at {planPath}: {ex.Message}");
+
         return null;
     }
 }
 
 async Task PostPlanContentAsync(HttpClient httpClient, string url, string sessionId, string planContent) {
-    var obj = new JsonObject { ["plan_content"] = planContent };
+    var       obj         = new JsonObject { ["plan_content"] = planContent };
     using var planPayload = new StringContent(obj.ToJsonString(), Encoding.UTF8, "application/json");
     await httpClient.PostWithRetryAsync($"{url}/api/sessions/{sessionId}/plan", planPayload);
 }
@@ -338,8 +348,10 @@ async Task PostPlanContentAsync(HttpClient httpClient, string url, string sessio
 string? ResolveSessionId(string[] args, int skipCount = 1, string? skipFlag = null) {
     // Try argument first
     var fromArg = args.Skip(skipCount).FirstOrDefault(a => skipFlag == null || a != skipFlag);
+
     if (fromArg is not null)
         return fromArg;
+
     // Fall back to env var
     return Environment.GetEnvironmentVariable("KAPACITOR_SESSION_ID");
 }
