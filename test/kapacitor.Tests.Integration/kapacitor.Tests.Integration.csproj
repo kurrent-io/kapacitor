@@ -8,11 +8,9 @@
     </PropertyGroup>
     <ItemGroup>
         <ProjectReference Include="../../src/kapacitor/kapacitor.csproj" />
-        <ProjectReference Include="../../src/Kurrent.Capacitor/Kurrent.Capacitor.csproj" />
+        <ProjectReference Include="../Kurrent.Capacitor.TestHelpers/Kurrent.Capacitor.TestHelpers.csproj" />
     </ItemGroup>
     <ItemGroup>
         <PackageReference Include="TUnit" Version="1.18.37" />
-        <PackageReference Include="Testcontainers.KurrentDb" Version="4.10.0" />
-        <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" Version="10.0.0-*" />
     </ItemGroup>
 </Project>

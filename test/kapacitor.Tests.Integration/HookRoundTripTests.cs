@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using Kurrent.Capacitor.TestHelpers.Fixtures;
 
 namespace kapacitor.Tests.Integration;
 
