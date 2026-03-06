@@ -5,7 +5,10 @@ using System.Text.Json;
 namespace kapacitor;
 
 static class WatcherManager {
-    static string GetWatcherDir() {
+    internal static string GetWatcherDir() {
+        var overrideDir = Environment.GetEnvironmentVariable("KAPACITOR_WATCHER_DIR");
+        if (overrideDir is not null) return overrideDir;
+
         var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
 
         return Path.Combine(home, ".config", "kapacitor", "watchers");

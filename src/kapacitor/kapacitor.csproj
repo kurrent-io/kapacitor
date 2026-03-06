@@ -11,6 +11,10 @@
         <TrimMode>full</TrimMode>
     </PropertyGroup>
     <ItemGroup>
+        <InternalsVisibleTo Include="kapacitor.Tests.Unit" />
+        <InternalsVisibleTo Include="kapacitor.Tests.Integration" />
+    </ItemGroup>
+    <ItemGroup>
         <PackageReference Include="Microsoft.AspNetCore.SignalR.Client" Version="10.*" />
     </ItemGroup>
 </Project>

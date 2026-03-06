@@ -70,7 +70,7 @@ static class ClaudeCliRunner {
         }
     }
 
-    static ClaudeCliResult? ParseResponse(string stdout) {
+    internal static ClaudeCliResult? ParseResponse(string stdout) {
         try {
             using var doc = JsonDocument.Parse(stdout);
             var root = doc.RootElement;

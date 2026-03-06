@@ -278,7 +278,7 @@ static partial class WatchCommand {
         state.FirstUserText = userText;
     }
 
-    static string? TryExtractUserText(string line) {
+    internal static string? TryExtractUserText(string line) {
         try {
             using var doc = JsonDocument.Parse(line);
             var root = doc.RootElement;
@@ -372,7 +372,7 @@ static partial class WatchCommand {
         state.TitleInFlight = false;
     }
 
-    static bool RepoPayloadChanged(RepositoryPayload? current, RepositoryPayload? lastSent) {
+    internal static bool RepoPayloadChanged(RepositoryPayload? current, RepositoryPayload? lastSent) {
         if (current is null) return false;
         if (lastSent is null) return true;
 
@@ -384,7 +384,7 @@ static partial class WatchCommand {
             || current.PrTitle   != lastSent.PrTitle;
     }
 
-    static string StripMarkdown(string text) {
+    internal static string StripMarkdown(string text) {
         // Strip bold/italic markers, inline code backticks, and heading prefixes
         text = MarkdownRegex().Replace(text, "");
         return text.Trim();
