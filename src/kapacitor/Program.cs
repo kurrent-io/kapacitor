@@ -134,13 +134,19 @@ if (!hookCommands.Contains(command)) {
 
 var body = await Console.In.ReadToEndAsync();
 
-// Inject home_dir into all hook payloads
+// Inject home_dir and agent_host_id into all hook payloads
 try {
     var node = JsonNode.Parse(body);
 
     if (node is not null) {
         node["home_dir"] = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        body             = node.ToJsonString();
+
+        // If running inside a daemon-spawned agent, inject the agent ID
+        var agentHostId = Environment.GetEnvironmentVariable("KAPACITOR_AGENT_ID");
+        if (agentHostId is not null)
+            node["agent_host_id"] = agentHostId;
+
+        body = node.ToJsonString();
     }
 } catch {
     // Best effort — don't fail the hook if JSON parsing fails
