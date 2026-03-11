@@ -1,6 +1,5 @@
 using System.Text;
 using System.Text.Json;
-using kapacitor;
 using WireMock.RequestBuilders;
 using WireMock.ResponseBuilders;
 using WireMock.Server;

@@ -1,5 +1,3 @@
-using kapacitor;
-
 namespace kapacitor.Tests.Integration;
 
 [NotInParallel]

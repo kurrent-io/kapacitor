@@ -1,5 +1,3 @@
-using kapacitor;
-
 namespace kapacitor.Tests.Unit;
 
 public class TryExtractUserTextTests {
@@ -118,7 +116,7 @@ public class CountFileLinesTests {
     public async Task CountsLines(string content, int expected) {
         var path = Path.GetTempFileName();
         try {
-            File.WriteAllText(path, content);
+            await File.WriteAllTextAsync(path, content);
             await Assert.That(WatchCommand.CountFileLines(path)).IsEqualTo(expected);
         } finally {
             File.Delete(path);
