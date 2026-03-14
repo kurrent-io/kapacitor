@@ -65,7 +65,7 @@ static class WatcherManager {
             process.StandardError.Close();
 
             File.WriteAllText(GetPidFilePath(key), process.Id.ToString());
-            Console.Error.WriteLine($"Spawned watcher for {key} (PID {process.Id})");
+            Console.WriteLine($"Spawned watcher for {key} (PID {process.Id})");
         } catch (Exception ex) {
             Console.Error.WriteLine($"Failed to spawn watcher for {key}: {ex.Message}");
         }
@@ -100,7 +100,7 @@ static class WatcherManager {
 
                 try {
                     await process.WaitForExitAsync(cts.Token);
-                    await Console.Error.WriteLineAsync($"Watcher {key} (PID {pid}) exited gracefully");
+                    await Console.Out.WriteLineAsync($"Watcher {key} (PID {pid}) exited gracefully");
                 } catch (OperationCanceledException) {
                     // Force kill if it didn't exit in time
                     process.Kill(entireProcessTree: true);
@@ -110,7 +110,7 @@ static class WatcherManager {
                 return true;
             } catch (ArgumentException) {
                 // Process already exited
-                await Console.Error.WriteLineAsync($"Watcher {key} (PID {pid}) already exited");
+                await Console.Out.WriteLineAsync($"Watcher {key} (PID {pid}) already exited");
 
                 return false;
             }
@@ -158,7 +158,7 @@ static class WatcherManager {
         if (IsWatcherAlive(key)) return;
 
         // Watcher is dead or missing — respawn
-        Console.Error.WriteLine($"Watcher {key} not running, respawning...");
+        Console.WriteLine($"Watcher {key} not running, respawning...");
         SpawnWatcher(baseUrl, key, transcriptPath, agentId, sessionIdOverride, cwd);
     }
 
@@ -192,7 +192,7 @@ static class WatcherManager {
             process.StandardOutput.Close();
             process.StandardError.Close();
 
-            Console.Error.WriteLine($"Spawned what's-done generator for {sessionId} (PID {process.Id})");
+            Console.WriteLine($"Spawned what's-done generator for {sessionId} (PID {process.Id})");
         } catch (Exception ex) {
             Console.Error.WriteLine($"Failed to spawn what's-done generator for {sessionId}: {ex.Message}");
         }
@@ -250,7 +250,7 @@ static class WatcherManager {
             }
 
             if (newLines.Count == 0) {
-                Console.Error.WriteLine($"Inline drain for {sessionId}: no new lines to send");
+                Console.WriteLine($"Inline drain for {sessionId}: no new lines to send");
 
                 return;
             }
@@ -268,11 +268,10 @@ static class WatcherManager {
             try {
                 var resp = await httpClient.PostWithRetryAsync($"{baseUrl}/hooks/transcript", content);
 
-                await Console.Error.WriteLineAsync(
-                    resp.IsSuccessStatusCode
-                        ? $"Inline drain for {sessionId}: sent {newLines.Count} line(s)"
-                        : $"Inline drain for {sessionId}: server returned HTTP {(int)resp.StatusCode}"
-                );
+                if (resp.IsSuccessStatusCode)
+                    await Console.Out.WriteLineAsync($"Inline drain for {sessionId}: sent {newLines.Count} line(s)");
+                else
+                    await Console.Error.WriteLineAsync($"Inline drain for {sessionId}: server returned HTTP {(int)resp.StatusCode}");
             } catch (HttpRequestException ex) {
                 await Console.Error.WriteLineAsync($"Inline drain for {sessionId}: server unreachable after retries — {ex.Message}");
             }
