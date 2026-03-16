@@ -5,4 +5,5 @@ riderModule.iml
 /_ReSharper.Caches/
 .worktrees/
 logs/
-.publish/*.DS_Store
+.publish/
+**/.DS_Store
