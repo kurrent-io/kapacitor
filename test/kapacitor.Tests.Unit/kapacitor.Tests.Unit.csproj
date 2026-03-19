@@ -10,6 +10,10 @@
         <ProjectReference Include="../../src/kapacitor/kapacitor.csproj" />
     </ItemGroup>
     <ItemGroup>
+        <PackageReference Include="Roslynator.Analyzers" Version="4.15.0">
+          <PrivateAssets>all</PrivateAssets>
+          <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+        </PackageReference>
         <PackageReference Include="TUnit" Version="1.18.37" />
         <PackageReference Include="WireMock.Net" Version="1.7.0" />
     </ItemGroup>
