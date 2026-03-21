@@ -103,7 +103,7 @@ switch (command) {
         return await HistoryCommand.HandleHistory(baseUrl, filterCwd, filterSession, minLines);
     }
     case "watch" when args.Length < 3:
-        Console.Error.WriteLine("Usage: kapacitor watch <sessionId> <transcriptPath> [--agent-id <agentId>] [--cwd <cwd>]");
+        Console.Error.WriteLine("Usage: kapacitor watch <sessionId> <transcriptPath> [--agent-id <agentId>] [--cwd <cwd>] [--skip-title]");
 
         return 1;
     case "watch": {
@@ -120,7 +120,9 @@ switch (command) {
         if (cwdIdx >= 0 && cwdIdx + 1 < args.Length)
             watchCwd = args[cwdIdx + 1];
 
-        return await WatchCommand.RunWatch(baseUrl, watchSessionId, watchPath, watchAgentId, watchCwd);
+        var watchSkipTitle = Array.IndexOf(args, "--skip-title") >= 0;
+
+        return await WatchCommand.RunWatch(baseUrl, watchSessionId, watchPath, watchAgentId, watchCwd, watchSkipTitle);
     }
     case "permission-request":
         return await PermissionRequestCommand.Handle(baseUrl);
@@ -297,8 +299,13 @@ switch (command) {
             }
         }
 
+        var source = node?["source"]?.GetValue<string>();
+        var isResumeOrCompact = source is not null
+            && (source.Equals("resume", StringComparison.OrdinalIgnoreCase)
+             || source.Equals("compact", StringComparison.OrdinalIgnoreCase));
+
         if (sessionId is not null && transcriptPath is not null)
-            WatcherManager.EnsureWatcherRunning(baseUrl, sessionId, transcriptPath, agentId: null, cwd: sessionCwd);
+            WatcherManager.EnsureWatcherRunning(baseUrl, sessionId, transcriptPath, agentId: null, cwd: sessionCwd, skipTitle: isResumeOrCompact);
 
         break;
     }

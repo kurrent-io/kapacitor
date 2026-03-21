@@ -41,6 +41,95 @@ public class TryExtractUserTextTests {
     }
 }
 
+public class StripSystemInstructionsTests {
+    [Test]
+    [Arguments(
+        "Hello <system_instructions>secret stuff</system_instructions> world",
+        "Hello  world"
+    )]
+    [Arguments(
+        "<system-instructions>block</system-instructions>actual prompt",
+        "actual prompt"
+    )]
+    [Arguments(
+        "<system-reminder>reminder content</system-reminder>do the thing",
+        "do the thing"
+    )]
+    [Arguments(
+        "<system_reminder>stuff</system_reminder>real text",
+        "real text"
+    )]
+    [Arguments(
+        "<SYSTEM_INSTRUCTIONS>loud</SYSTEM_INSTRUCTIONS>quiet",
+        "quiet"
+    )]
+    public async Task Strips_KnownSystemTags(string input, string expected) {
+        var result = WatchCommand.StripSystemInstructions(input);
+        await Assert.That(result).IsEqualTo(expected);
+    }
+
+    [Test]
+    public async Task PreservesText_WithNoSystemTags() {
+        var result = WatchCommand.StripSystemInstructions("just a normal prompt");
+        await Assert.That(result).IsEqualTo("just a normal prompt");
+    }
+
+    [Test]
+    public async Task ReturnsNull_WhenOnlySystemInstructions() {
+        var result = WatchCommand.StripSystemInstructions("<system_instructions>everything is instructions</system_instructions>");
+        await Assert.That(result).IsNull();
+    }
+
+    [Test]
+    public async Task ReturnsNull_ForNullInput() {
+        var result = WatchCommand.StripSystemInstructions(null);
+        await Assert.That(result).IsNull();
+    }
+
+    [Test]
+    public async Task Strips_MultipleBlocks() {
+        var input = "<system_instructions>first</system_instructions>middle<system-reminder>second</system-reminder>end";
+        var result = WatchCommand.StripSystemInstructions(input);
+        await Assert.That(result).IsEqualTo("middleend");
+    }
+
+    [Test]
+    public async Task Strips_MultilineContent() {
+        var input = "<system_instructions>\nline1\nline2\nline3\n</system_instructions>actual request";
+        var result = WatchCommand.StripSystemInstructions(input);
+        await Assert.That(result).IsEqualTo("actual request");
+    }
+
+    [Test]
+    public async Task CaseInsensitive_MixedCase() {
+        var result = WatchCommand.StripSystemInstructions("<System_Instructions>stuff</System_Instructions>prompt");
+        await Assert.That(result).IsEqualTo("prompt");
+    }
+}
+
+public class TryExtractUserTextWithSystemInstructionsTests {
+    [Test]
+    public async Task Strips_SystemInstructions_FromStringContent() {
+        var line = """{"type":"user","message":{"content":"<system_instructions>secret</system_instructions>fix the bug"}}""";
+        var result = WatchCommand.TryExtractUserText(line);
+        await Assert.That(result).IsEqualTo("fix the bug");
+    }
+
+    [Test]
+    public async Task ReturnsNull_WhenOnlySystemInstructions_InContent() {
+        var line = """{"type":"user","message":{"content":"<system_instructions>only instructions here</system_instructions>"}}""";
+        var result = WatchCommand.TryExtractUserText(line);
+        await Assert.That(result).IsNull();
+    }
+
+    [Test]
+    public async Task Strips_SystemInstructions_FromArrayContent() {
+        var line = """{"type":"user","message":{"content":[{"type":"text","text":"<system-reminder>reminder</system-reminder>do stuff"}]}}""";
+        var result = WatchCommand.TryExtractUserText(line);
+        await Assert.That(result).IsEqualTo("do stuff");
+    }
+}
+
 public class StripMarkdownTests {
     [Test]
     [Arguments("**bold**", "bold")]

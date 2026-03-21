@@ -22,7 +22,8 @@ static class WatcherManager {
             string  transcriptPath,
             string? agentId,
             string? sessionIdOverride = null,
-            string? cwd               = null
+            string? cwd               = null,
+            bool    skipTitle         = false
         ) {
         try {
             var watcherDir = GetWatcherDir();
@@ -38,6 +39,9 @@ static class WatcherManager {
 
             if (cwd is not null)
                 arguments += $" --cwd \"{cwd}\"";
+
+            if (skipTitle)
+                arguments += " --skip-title";
 
             var psi = new ProcessStartInfo(kapacitorPath, arguments) {
                 RedirectStandardOutput = true,
@@ -153,13 +157,14 @@ static class WatcherManager {
             string  transcriptPath,
             string? agentId,
             string? sessionIdOverride = null,
-            string? cwd               = null
+            string? cwd               = null,
+            bool    skipTitle         = false
         ) {
         if (IsWatcherAlive(key)) return;
 
         // Watcher is dead or missing — respawn
         Console.WriteLine($"Watcher {key} not running, respawning...");
-        SpawnWatcher(baseUrl, key, transcriptPath, agentId, sessionIdOverride, cwd);
+        SpawnWatcher(baseUrl, key, transcriptPath, agentId, sessionIdOverride, cwd, skipTitle);
     }
 
     public static void SpawnWhatsDoneGenerator(string baseUrl, string sessionId) {

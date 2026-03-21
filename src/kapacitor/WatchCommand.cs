@@ -7,7 +7,7 @@ using Microsoft.Extensions.DependencyInjection;
 namespace kapacitor;
 
 static partial class WatchCommand {
-    public static async Task<int> RunWatch(string baseUrl, string sessionId, string transcriptPath, string? agentId, string? cwd) {
+    public static async Task<int> RunWatch(string baseUrl, string sessionId, string transcriptPath, string? agentId, string? cwd, bool skipTitle = false) {
         // Redirect all output to a log file so we don't hold parent's pipe FDs open
         var logDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".config", "kapacitor", "logs");
         Directory.CreateDirectory(logDir);
@@ -27,6 +27,9 @@ static partial class WatchCommand {
         PosixSignalRegistration.Create(PosixSignal.SIGTERM, _ => cts.Cancel());
 
         var state = new WatchState();
+
+        if (skipTitle)
+            state.TitleGenerated = true;
 
         // Detect repository info upfront if cwd is provided (session watchers only, not agents)
         if (cwd is not null) {
@@ -301,7 +304,7 @@ static partial class WatchCommand {
                     if (text is not null && text.StartsWith("<local-command-stdout>"))
                         return null;
 
-                    return text;
+                    return StripSystemInstructions(text);
                 }
                 // Handle array content (e.g., tool results with [{type:"text", text:"..."}])
                 case JsonValueKind.Array: {
@@ -311,7 +314,7 @@ static partial class WatchCommand {
                          && element.TryGetProperty("text", out var txt) && txt.ValueKind == JsonValueKind.String) {
                             var text = txt.GetString();
                             if (text is not null && !text.StartsWith("<local-command-stdout>"))
-                                return text;
+                                return StripSystemInstructions(text);
                         }
                     }
 
@@ -327,6 +330,22 @@ static partial class WatchCommand {
 
         return null;
     }
+
+    /// <summary>
+    /// Strips XML-like system instruction blocks from user text so they don't pollute title generation.
+    /// Removes content between tags like &lt;system_instructions&gt;, &lt;system-reminder&gt;, etc.
+    /// </summary>
+    internal static string? StripSystemInstructions(string? text) {
+        if (text is null) return null;
+
+        var stripped = SystemInstructionsRegex.Replace(text, "").Trim();
+
+        return stripped.Length > 0 ? stripped : null;
+    }
+
+    [GeneratedRegex(@"<(system_instructions|system-instructions|system-reminder|system_reminder|SYSTEM_INSTRUCTIONS)\b[^>]*>[\s\S]*?</\1>", RegexOptions.IgnoreCase)]
+    private static partial Regex SystemInstructionsRx();
+    static readonly Regex SystemInstructionsRegex = SystemInstructionsRx();
 
     static async Task GenerateTitleAsync(HubConnection hubConnection, string sessionId, string userText, WatchState state) {
         try {
