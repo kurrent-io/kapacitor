@@ -202,7 +202,7 @@ static partial class WatchCommand {
                             var userText = TryExtractUserText(scanLine);
                             if (userText is null) continue;
                             SetFirstUserText(state, userText);
-                            break;
+                            if (state.FirstUserText is not null) break;
                         }
                         state.FullFileScanDone = true;
                     } catch (Exception ex) {
@@ -216,12 +216,12 @@ static partial class WatchCommand {
                         var userText = TryExtractUserText(line);
                         if (userText is null) continue;
                         SetFirstUserText(state, userText);
-                        break;
+                        if (state.FirstUserText is not null) break;
                     }
                 }
 
                 if (state.FirstUserText is not null)
-                    Log($"First user text captured ({state.FirstUserText.Length} chars){(state.IsSlashCommand ? $", slash command: {state.SlashCommandName}" : "")}");
+                    Log($"First user text captured ({state.FirstUserText.Length} chars)");
             }
 
             // Fire or retry title generation (runs even when no new lines arrive)
@@ -230,7 +230,7 @@ static partial class WatchCommand {
                 state.TitleInFlight = true;
                 state.TitleAttempts++;
 
-                _ = state.IsSlashCommand ? PostTitleAsync(hubConnection, sessionId, $"Slash command: {state.SlashCommandName}", null, 0, 0, 0, 0, state) : GenerateTitleAsync(hubConnection, sessionId, state.FirstUserText, state);
+                _ = GenerateTitleAsync(hubConnection, sessionId, state.FirstUserText, state);
             }
 
             if (newLines.Count == 0) {
@@ -275,8 +275,9 @@ static partial class WatchCommand {
     static void SetFirstUserText(WatchState state, string userText) {
         var cmdMatch = CommandNameRegex.Match(userText);
         if (cmdMatch.Success) {
-            state.IsSlashCommand   = true;
-            state.SlashCommandName = cmdMatch.Groups[1].Value;
+            // Skip slash commands — wait for the next real user prompt to generate the title
+            Log($"Skipping slash command /{cmdMatch.Groups[1].Value} for title generation");
+            return;
         }
         state.FirstUserText = userText;
     }

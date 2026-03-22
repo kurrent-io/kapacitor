@@ -101,8 +101,6 @@ class WatchState {
     public int                TitleAttempts      { get; set; }
     public bool               TitleInFlight      { get; set; }
     public string?            FirstUserText      { get; set; }
-    public bool               IsSlashCommand     { get; set; }
-    public string?            SlashCommandName   { get; set; }
     public bool               FullFileScanDone   { get; set; }
 }
 
