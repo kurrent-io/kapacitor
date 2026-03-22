@@ -1,0 +1,6 @@
+<Project>
+    <PropertyGroup>
+        <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+        <NoWarn>IDE0055</NoWarn>
+    </PropertyGroup>
+</Project>

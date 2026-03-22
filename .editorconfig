@@ -7,11 +7,16 @@ max_line_length = 200
 brace_style = end_of_line
 trim_trailing_whitespace = true
 
+int_align_variables = true
+int_align_assignments = true
+int_align_switch_expressions = true
+
 # IntelliJ IDEA properties
 ij_any_block_brace_style = end_of_line
 
 # Microsoft .NET properties
 csharp_indent_braces = false
+csharp_new_line_before_else = false
 csharp_new_line_before_open_brace = none
 csharp_preferred_modifier_order = protected, private, public, internal, file, new, sealed, override, abstract, virtual, static, readonly, extern, unsafe, volatile, async, required:suggestion
 csharp_style_expression_bodied_accessors = true:suggestion
@@ -133,6 +138,8 @@ resharper_outdent_binary_ops = true
 file_header_template = Copyright (C) Eventuous HQ OÜ. All rights reserved\nLicensed under the Apache License, Version 2.0.
 
 # ReSharper properties
+resharper_braces_for_ifelse = required
+resharper_instance_members_qualify_declared_in = base_class
 resharper_redundant_using_directive_highlighting = error
 resharper_align_linq_query = true
 resharper_align_multiline_binary_expressions_chain = false
@@ -194,7 +201,7 @@ resharper_place_accessor_with_attrs_holder_on_single_line = true
 resharper_place_constructor_initializer_on_same_line = true
 resharper_place_simple_accessorholder_on_single_line = true
 resharper_place_simple_case_statement_on_same_line = true
-resharper_place_simple_embedded_block_on_same_line = true
+resharper_place_simple_embedded_block_on_same_line = false
 resharper_place_simple_enum_on_single_line = true
 resharper_show_autodetect_configure_formatting_tip = false
 resharper_simple_case_statement_style = line_break
@@ -255,148 +262,148 @@ tab_width = 4
 ; --- Roslynator Rules ---
 
 ; Resource can be disposed asynchronously
-dotnet_diagnostic.RCS1261.severity = warning
+dotnet_diagnostic.rcs1261.severity = warning
 ; File contains no code
-dotnet_diagnostic.RCS1093.severity = error
+dotnet_diagnostic.rcs1093.severity = error
 ; Implement exception constructors (noisy — disabled)
-dotnet_diagnostic.RCS1194.severity = none
+dotnet_diagnostic.rcs1194.severity = none
 ; Add parentheses when necessary (noisy — disabled)
-dotnet_diagnostic.RCS1123.severity = none
+dotnet_diagnostic.rcs1123.severity = none
 ; Unused parameter
-dotnet_diagnostic.RCS1163.severity = warning
+dotnet_diagnostic.rcs1163.severity = warning
 ; Unused type parameter
-dotnet_diagnostic.RCS1164.severity = warning
+dotnet_diagnostic.rcs1164.severity = warning
 ; Unused 'this' parameter
-dotnet_diagnostic.RCS1175.severity = warning
+dotnet_diagnostic.rcs1175.severity = warning
 ; Remove unused member declaration
-dotnet_diagnostic.RCS1213.severity = warning
+dotnet_diagnostic.rcs1213.severity = warning
 
 ; --- Meziantou Rules ---
 
 ; Use explicit enum value instead of 0
-dotnet_diagnostic.MA0099.severity = warning
+dotnet_diagnostic.ma0099.severity = warning
 ; Local variables should not hide other symbols
-dotnet_diagnostic.MA0084.severity = warning
+dotnet_diagnostic.ma0084.severity = warning
 ; Specify the parameter name in ArgumentException
-dotnet_diagnostic.MA0015.severity = warning
+dotnet_diagnostic.ma0015.severity = warning
 ; Method is too long
-dotnet_diagnostic.MA0051.severity = warning
+dotnet_diagnostic.ma0051.severity = warning
 ; Use String.Equals instead of equality operator
-dotnet_diagnostic.MA0006.severity = warning
+dotnet_diagnostic.ma0006.severity = warning
 ; Avoid implicit culture-sensitive methods
-dotnet_diagnostic.MA0074.severity = warning
+dotnet_diagnostic.ma0074.severity = warning
 ; IEqualityComparer<string> or IComparer<string> is missing
-dotnet_diagnostic.MA0002.severity = warning
+dotnet_diagnostic.ma0002.severity = warning
 
 ; --- IDE Rules ---
 
 ; Remove unnecessary usings
-dotnet_diagnostic.IDE0005.severity = none
+dotnet_diagnostic.ide0005.severity = none
 ; Add braces
-dotnet_diagnostic.IDE0011.severity = warning
+dotnet_diagnostic.ide0011.severity = warning
 ; Use pattern matching
-dotnet_diagnostic.IDE0020.severity = warning
+dotnet_diagnostic.ide0020.severity = warning
 ; Use coalesce expression (non-nullable)
-dotnet_diagnostic.IDE0029.severity = warning
+dotnet_diagnostic.ide0029.severity = warning
 ; Use coalesce expression (nullable)
-dotnet_diagnostic.IDE0030.severity = warning
+dotnet_diagnostic.ide0030.severity = warning
 ; Use null propagation
-dotnet_diagnostic.IDE0031.severity = warning
+dotnet_diagnostic.ide0031.severity = warning
 ; Remove unreachable code
-dotnet_diagnostic.IDE0035.severity = warning
+dotnet_diagnostic.ide0035.severity = warning
 ; Order modifiers
-dotnet_diagnostic.IDE0036.severity = warning
+dotnet_diagnostic.ide0036.severity = warning
 ; Use pattern matching
-dotnet_diagnostic.IDE0038.severity = warning
+dotnet_diagnostic.ide0038.severity = warning
 ; Format string contains invalid placeholder
-dotnet_diagnostic.IDE0043.severity = warning
+dotnet_diagnostic.ide0043.severity = warning
 ; Make field readonly
-dotnet_diagnostic.IDE0044.severity = warning
+dotnet_diagnostic.ide0044.severity = warning
 ; Remove unused private members
-dotnet_diagnostic.IDE0051.severity = warning
+dotnet_diagnostic.ide0051.severity = warning
 ; Fix formatting
-dotnet_diagnostic.IDE0055.severity = suggestion
+dotnet_diagnostic.ide0055.severity = suggestion
 ; Unnecessary assignment
-dotnet_diagnostic.IDE0059.severity = warning
+dotnet_diagnostic.ide0059.severity = warning
 ; Make local function static
-dotnet_diagnostic.IDE0062.severity = warning
+dotnet_diagnostic.ide0062.severity = warning
 ; Convert to file-scoped namespace
-dotnet_diagnostic.IDE0161.severity = warning
+dotnet_diagnostic.ide0161.severity = warning
 ; Remove unnecessary lambda expression
-dotnet_diagnostic.IDE0200.severity = warning
+dotnet_diagnostic.ide0200.severity = warning
 
 ; --- Compiler Warnings ---
 
 ; Unreachable code detected
-dotnet_diagnostic.CS0162.severity = warning
+dotnet_diagnostic.cs0162.severity = warning
 ; Field is never used
-dotnet_diagnostic.CS0169.severity = warning
+dotnet_diagnostic.cs0169.severity = warning
 
 ; --- Microsoft Code Analysis (CA) Rules ---
 
 ; Performance
-dotnet_diagnostic.CA1822.severity = warning
-dotnet_code_quality.CA1822.api_surface = private, internal
-dotnet_diagnostic.CA1825.severity = warning
-dotnet_diagnostic.CA1826.severity = warning
-dotnet_diagnostic.CA1827.severity = warning
-dotnet_diagnostic.CA1828.severity = warning
-dotnet_diagnostic.CA1829.severity = warning
-dotnet_diagnostic.CA1830.severity = warning
-dotnet_diagnostic.CA1831.severity = warning
-dotnet_diagnostic.CA1832.severity = warning
-dotnet_diagnostic.CA1833.severity = warning
-dotnet_diagnostic.CA1834.severity = warning
-dotnet_diagnostic.CA1835.severity = warning
-dotnet_diagnostic.CA1836.severity = warning
-dotnet_diagnostic.CA1837.severity = warning
-dotnet_diagnostic.CA1838.severity = warning
-dotnet_diagnostic.CA1839.severity = warning
-dotnet_diagnostic.CA1840.severity = warning
-dotnet_diagnostic.CA1841.severity = warning
-dotnet_diagnostic.CA1842.severity = warning
-dotnet_diagnostic.CA1843.severity = warning
-dotnet_diagnostic.CA1844.severity = warning
-dotnet_diagnostic.CA1845.severity = warning
-dotnet_diagnostic.CA1846.severity = warning
-dotnet_diagnostic.CA1847.severity = warning
-dotnet_diagnostic.CA1852.severity = warning
-dotnet_diagnostic.CA1854.severity = warning
-dotnet_diagnostic.CA1855.severity = warning
-dotnet_diagnostic.CA1856.severity = error
-dotnet_diagnostic.CA1857.severity = warning
-dotnet_diagnostic.CA1858.severity = warning
+dotnet_diagnostic.ca1822.severity = warning
+dotnet_code_quality.ca1822.api_surface = private, internal
+dotnet_diagnostic.ca1825.severity = warning
+dotnet_diagnostic.ca1826.severity = warning
+dotnet_diagnostic.ca1827.severity = warning
+dotnet_diagnostic.ca1828.severity = warning
+dotnet_diagnostic.ca1829.severity = warning
+dotnet_diagnostic.ca1830.severity = warning
+dotnet_diagnostic.ca1831.severity = warning
+dotnet_diagnostic.ca1832.severity = warning
+dotnet_diagnostic.ca1833.severity = warning
+dotnet_diagnostic.ca1834.severity = warning
+dotnet_diagnostic.ca1835.severity = warning
+dotnet_diagnostic.ca1836.severity = warning
+dotnet_diagnostic.ca1837.severity = warning
+dotnet_diagnostic.ca1838.severity = warning
+dotnet_diagnostic.ca1839.severity = warning
+dotnet_diagnostic.ca1840.severity = warning
+dotnet_diagnostic.ca1841.severity = warning
+dotnet_diagnostic.ca1842.severity = warning
+dotnet_diagnostic.ca1843.severity = warning
+dotnet_diagnostic.ca1844.severity = warning
+dotnet_diagnostic.ca1845.severity = warning
+dotnet_diagnostic.ca1846.severity = warning
+dotnet_diagnostic.ca1847.severity = warning
+dotnet_diagnostic.ca1852.severity = warning
+dotnet_diagnostic.ca1854.severity = warning
+dotnet_diagnostic.ca1855.severity = warning
+dotnet_diagnostic.ca1856.severity = error
+dotnet_diagnostic.ca1857.severity = warning
+dotnet_diagnostic.ca1858.severity = warning
 
 ; Unused code
-dotnet_diagnostic.CA1801.severity = warning
-dotnet_diagnostic.CA1811.severity = warning
-dotnet_diagnostic.CA1823.severity = warning
-dotnet_diagnostic.CA1802.severity = warning
-dotnet_diagnostic.CA1805.severity = warning
-dotnet_diagnostic.CA1810.severity = warning
-dotnet_diagnostic.CA1821.severity = warning
+dotnet_diagnostic.ca1801.severity = warning
+dotnet_diagnostic.ca1811.severity = warning
+dotnet_diagnostic.ca1823.severity = warning
+dotnet_diagnostic.ca1802.severity = warning
+dotnet_diagnostic.ca1805.severity = warning
+dotnet_diagnostic.ca1810.severity = warning
+dotnet_diagnostic.ca1821.severity = warning
 
 ; Correctness
-dotnet_diagnostic.CA1018.severity = warning
-dotnet_diagnostic.CA1047.severity = warning
-dotnet_diagnostic.CA1305.severity = warning
-dotnet_diagnostic.CA1507.severity = warning
-dotnet_diagnostic.CA1510.severity = warning
-dotnet_diagnostic.CA1511.severity = warning
-dotnet_diagnostic.CA1512.severity = warning
-dotnet_diagnostic.CA1513.severity = warning
-dotnet_diagnostic.CA1725.severity = suggestion
-dotnet_diagnostic.CA2008.severity = warning
-dotnet_diagnostic.CA2009.severity = warning
-dotnet_diagnostic.CA2011.severity = warning
-dotnet_diagnostic.CA2012.severity = warning
-dotnet_diagnostic.CA2013.severity = warning
-dotnet_diagnostic.CA2014.severity = warning
-dotnet_diagnostic.CA2016.severity = warning
-dotnet_diagnostic.CA2022.severity = warning
-dotnet_diagnostic.CA2200.severity = warning
-dotnet_diagnostic.CA2201.severity = warning
-dotnet_diagnostic.CA2208.severity = warning
-dotnet_diagnostic.CA2245.severity = warning
-dotnet_diagnostic.CA2246.severity = warning
-dotnet_diagnostic.CA2249.severity = warning
+dotnet_diagnostic.ca1018.severity = warning
+dotnet_diagnostic.ca1047.severity = warning
+dotnet_diagnostic.ca1305.severity = warning
+dotnet_diagnostic.ca1507.severity = warning
+dotnet_diagnostic.ca1510.severity = warning
+dotnet_diagnostic.ca1511.severity = warning
+dotnet_diagnostic.ca1512.severity = warning
+dotnet_diagnostic.ca1513.severity = warning
+dotnet_diagnostic.ca1725.severity = suggestion
+dotnet_diagnostic.ca2008.severity = warning
+dotnet_diagnostic.ca2009.severity = warning
+dotnet_diagnostic.ca2011.severity = warning
+dotnet_diagnostic.ca2012.severity = warning
+dotnet_diagnostic.ca2013.severity = warning
+dotnet_diagnostic.ca2014.severity = warning
+dotnet_diagnostic.ca2016.severity = warning
+dotnet_diagnostic.ca2022.severity = warning
+dotnet_diagnostic.ca2200.severity = warning
+dotnet_diagnostic.ca2201.severity = warning
+dotnet_diagnostic.ca2208.severity = warning
+dotnet_diagnostic.ca2245.severity = warning
+dotnet_diagnostic.ca2246.severity = warning
+dotnet_diagnostic.ca2249.severity = warning
