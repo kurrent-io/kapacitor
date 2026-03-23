@@ -222,15 +222,39 @@ static partial class WatchCommand {
 
                 if (state.FirstUserText is not null)
                     Log($"First user text captured ({state.FirstUserText.Length} chars)");
+
+                // Send truncated user text as the initial title immediately
+                if (state is { InitialTitleSent: false, FirstUserText: not null } && agentId is null) {
+                    state.InitialTitleSent = true;
+                    _ = SendInitialTitleAsync(hubConnection, sessionId, TruncateForTitle(state.FirstUserText, 80));
+                }
             }
 
-            // Fire or retry title generation (runs even when no new lines arrive)
-            if (state is { TitleGenerated: false, TitleInFlight: false } && agentId is null && state is { TitleAttempts: < 3, FirstUserText: not null }) {
-                Log($"Triggering title generation (attempt {state.TitleAttempts + 1}/3)");
+            // Count events and capture assistant context for LLM title generation
+            if (state is { TitleGenerated: false } && agentId is null && newLines.Count > 0) {
+                foreach (var line in newLines) {
+                    if (IsEvent(line))
+                        state.EventCount++;
+
+                    if (state.FirstAssistantText is null) {
+                        var assistantText = TryExtractAssistantText(line);
+                        if (assistantText is not null) {
+                            state.FirstAssistantText = assistantText.Length > 300 ? assistantText[..300] : assistantText;
+                            Log($"First assistant text captured ({state.FirstAssistantText.Length} chars)");
+                        }
+                    }
+                }
+            }
+
+            // Generate LLM title after enough events have accumulated
+            if (state is { TitleGenerated: false, TitleInFlight: false, TitleAttempts: < 3 }
+                && agentId is null
+                && state.FirstUserText is not null
+                && state.EventCount >= 5) {
+                Log($"Triggering LLM title generation (attempt {state.TitleAttempts + 1}/3, events: {state.EventCount})");
                 state.TitleInFlight = true;
                 state.TitleAttempts++;
-
-                _ = GenerateTitleAsync(hubConnection, sessionId, state.FirstUserText, state);
+                _ = GenerateTitleAsync(hubConnection, sessionId, state);
             }
 
             if (newLines.Count == 0) {
@@ -280,6 +304,44 @@ static partial class WatchCommand {
             return;
         }
         state.FirstUserText = userText;
+    }
+
+    internal static string? TryExtractAssistantText(string line) {
+        try {
+            using var doc = JsonDocument.Parse(line);
+            var root = doc.RootElement;
+
+            if (!root.TryGetProperty("type", out var typeProp) || typeProp.GetString() != "assistant")
+                return null;
+
+            if (!root.TryGetProperty("message", out var msg) || !msg.TryGetProperty("content", out var content))
+                return null;
+
+            if (content.ValueKind != JsonValueKind.Array) return null;
+
+            foreach (var block in content.EnumerateArray()) {
+                var blockType = block.TryGetProperty("type", out var btProp) ? btProp.GetString() : null;
+                if (blockType == "text" && block.TryGetProperty("text", out var txt)) {
+                    var text = txt.GetString()?.Trim();
+                    if (!string.IsNullOrEmpty(text)) return text;
+                }
+            }
+        } catch {
+            // Ignore parse errors
+        }
+
+        return null;
+    }
+
+    internal static bool IsEvent(string line) {
+        try {
+            using var doc = JsonDocument.Parse(line);
+            var root = doc.RootElement;
+            var type = root.TryGetProperty("type", out var typeProp) ? typeProp.GetString() : null;
+            return type is "user" or "assistant";
+        } catch {
+            return false;
+        }
     }
 
     internal static string? TryExtractUserText(string line) {
@@ -348,12 +410,21 @@ static partial class WatchCommand {
     private static partial Regex SystemInstructionsRx();
     static readonly Regex SystemInstructionsRegex = SystemInstructionsRx();
 
-    static async Task GenerateTitleAsync(HubConnection hubConnection, string sessionId, string userText, WatchState state) {
+    static async Task GenerateTitleAsync(HubConnection hubConnection, string sessionId, WatchState state) {
         try {
-            var truncated = userText.Length > 500 ? userText[..500] : userText;
-            var prompt = $"Generate a short descriptive title (max 10 words, no quotes, no period) for a coding session. The user's request: {truncated}";
+            var userText = state.FirstUserText!;
+            var truncatedUser = userText.Length > 500 ? userText[..500] : userText;
 
-            var result = await ClaudeCliRunner.RunAsync(prompt, TimeSpan.FromSeconds(15), Log);
+            var promptBuilder = new System.Text.StringBuilder();
+            promptBuilder.Append("Generate a short descriptive title (max 10 words, no quotes, no period) for a coding session. ");
+            promptBuilder.Append("NEVER ask a question. NEVER include a question mark. Always produce a title, even if context is limited.");
+            promptBuilder.Append($"\n\nThe user's request: {truncatedUser}");
+
+            if (state.FirstAssistantText is not null) {
+                promptBuilder.Append($"\n\nThe assistant's initial response: {state.FirstAssistantText}");
+            }
+
+            var result = await ClaudeCliRunner.RunAsync(promptBuilder.ToString(), TimeSpan.FromSeconds(15), Log);
             if (result is null) {
                 state.TitleInFlight = false;
                 return;
@@ -361,6 +432,9 @@ static partial class WatchCommand {
 
             // Strip markdown formatting (bold, italic, code) from generated title
             var title = StripMarkdown(result.Result);
+
+            // Strip trailing question mark if the model still produced one
+            title = title.TrimEnd('?').TrimEnd();
 
             // Sanity-check: limit to 120 chars
             if (title.Length > 120)
@@ -377,16 +451,25 @@ static partial class WatchCommand {
         }
     }
 
+    static async Task SendInitialTitleAsync(HubConnection hubConnection, string sessionId, string title) {
+        try {
+            await hubConnection.InvokeAsync("SendTitle", sessionId, title, null, 0L, 0L, 0L, 0L);
+            Log($"Initial title sent: {title}");
+        } catch (Exception ex) {
+            Log($"Initial title send failed: {ex.Message}");
+        }
+    }
+
     static async Task PostTitleAsync(
             HubConnection hubConnection, string sessionId, string title,
             string? model, long inputTokens, long outputTokens, long cacheReadTokens, long cacheWriteTokens,
             WatchState state) {
         try {
-            await hubConnection.InvokeAsync("SendTitle", sessionId, title, model, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens);
-            Log($"Title generated: {title}");
+            await hubConnection.InvokeAsync("UpdateTitle", sessionId, title, model, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens);
+            Log($"LLM title generated: {title}");
             state.TitleGenerated = true;
         } catch (Exception ex) {
-            Log($"Title send failed: {ex.Message}");
+            Log($"LLM title send failed: {ex.Message}");
         }
 
         state.TitleInFlight = false;
@@ -402,6 +485,25 @@ static partial class WatchCommand {
             || current.PrNumber  != lastSent.PrNumber
             || current.PrUrl     != lastSent.PrUrl
             || current.PrTitle   != lastSent.PrTitle;
+    }
+
+    internal static string TruncateForTitle(string text, int maxLength) {
+        // Take first line only, then truncate
+        var firstLine = text.AsSpan();
+        var newlineIdx = firstLine.IndexOfAny('\r', '\n');
+        if (newlineIdx >= 0)
+            firstLine = firstLine[..newlineIdx];
+
+        if (firstLine.Length <= maxLength)
+            return firstLine.ToString().Trim();
+
+        // Find last word boundary before maxLength
+        var truncated = firstLine[..maxLength];
+        var lastSpace = truncated.LastIndexOf(' ');
+        if (lastSpace > maxLength / 2)
+            truncated = truncated[..lastSpace];
+
+        return $"{truncated.ToString().Trim()}...";
     }
 
     internal static string StripMarkdown(string text) {

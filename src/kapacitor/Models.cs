@@ -97,11 +97,14 @@ class WatchState {
     public RepositoryPayload? Repository         { get; set; }
     public RepositoryPayload? LastSentRepository { get; set; }
     public DateTimeOffset     LastRepoDetection  { get; set; }
+    public bool               InitialTitleSent   { get; set; }
     public bool               TitleGenerated     { get; set; }
     public int                TitleAttempts      { get; set; }
     public bool               TitleInFlight      { get; set; }
     public string?            FirstUserText      { get; set; }
     public bool               FullFileScanDone   { get; set; }
+    public string?            FirstAssistantText { get; set; }
+    public int                EventCount         { get; set; }
 }
 
 record SessionTitlePayload {
