@@ -257,16 +257,16 @@ static partial class WatchCommand {
                 _ = GenerateTitleAsync(hubConnection, sessionId, state);
             }
 
-            if (newLines.Count == 0) {
-                // No content lines to send — safe to advance past blank/whitespace lines
-                state.LinesProcessed = linesRead;
-                return;
-            }
-
             // Only include repository info when it has changed since last send
             var repoToSend = RepoPayloadChanged(state.Repository, state.LastSentRepository)
                 ? state.Repository
                 : null;
+
+            if (newLines.Count == 0 && repoToSend is null) {
+                // No content lines and no repo changes — safe to advance past blank/whitespace lines
+                state.LinesProcessed = linesRead;
+                return;
+            }
 
             // Serialize repository payload to JSON string for the hub method
             var repoJson = repoToSend is not null
@@ -276,7 +276,11 @@ static partial class WatchCommand {
             try {
                 await hubConnection.InvokeAsync("SendTranscriptBatch", sessionId, agentId,
                     newLines.ToArray(), newLineNumbers.ToArray(), repoJson, ct);
-                Log($"Sent {newLines.Count} line(s) via SignalR");
+
+                if (newLines.Count > 0)
+                    Log($"Sent {newLines.Count} line(s) via SignalR");
+                if (repoToSend is not null)
+                    Log("Sent updated repository info via SignalR");
 
                 // Only advance position after successful send — if send fails,
                 // the next drain cycle will re-read and resend the same lines.
@@ -287,7 +291,15 @@ static partial class WatchCommand {
                 if (repoToSend is not null)
                     state.LastSentRepository = repoToSend;
             } catch (Exception ex) when (ex is not OperationCanceledException) {
-                Log($"SendTranscriptBatch failed, will retry from line {state.LinesProcessed}: {ex.Message}");
+                if (newLines.Count > 0) {
+                    Log($"SendTranscriptBatch failed, will retry from line {state.LinesProcessed}: {ex.Message}");
+                } else {
+                    // Repo-only batch failed — no transcript lines at risk, so advance
+                    // position and defer retry to the next 60s repo detection cycle
+                    state.LinesProcessed    = linesRead;
+                    state.LastRepoDetection = DateTimeOffset.UtcNow;
+                    Log($"Repo info send failed, will retry in 60s: {ex.Message}");
+                }
             }
         } catch (IOException ex) {
             Log($"Error reading file: {ex.Message}");
@@ -479,12 +491,15 @@ static partial class WatchCommand {
         if (current is null) return false;
         if (lastSent is null) return true;
 
-        return current.Owner     != lastSent.Owner
-            || current.RepoName  != lastSent.RepoName
-            || current.Branch    != lastSent.Branch
-            || current.PrNumber  != lastSent.PrNumber
-            || current.PrUrl     != lastSent.PrUrl
-            || current.PrTitle   != lastSent.PrTitle;
+        return current.Owner      != lastSent.Owner
+            || current.RepoName   != lastSent.RepoName
+            || current.Branch     != lastSent.Branch
+            || current.PrNumber   != lastSent.PrNumber
+            || current.PrUrl      != lastSent.PrUrl
+            || current.PrTitle    != lastSent.PrTitle
+            || current.PrHeadRef  != lastSent.PrHeadRef
+            || current.UserName   != lastSent.UserName
+            || current.UserEmail  != lastSent.UserEmail;
     }
 
     internal static string TruncateForTitle(string text, int maxLength) {
