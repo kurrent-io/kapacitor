@@ -8,3 +8,6 @@ logs/
 .publish/
 **/.DS_Store
 .superpowers/
+**/data/capacitor.db
+**/data/capacitor.db-wal
+**/data/capacitor.db-shm
