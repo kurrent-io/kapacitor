@@ -362,11 +362,9 @@ string? ResolveSessionId(string[] args, int skipCount = 1, string? skipFlag = nu
     // Try argument first
     var fromArg = args.Skip(skipCount).FirstOrDefault(a => skipFlag == null || a != skipFlag);
 
-    if (fromArg is not null)
-        return fromArg;
-
-    // Fall back to env var
-    return Environment.GetEnvironmentVariable("KAPACITOR_SESSION_ID");
+    return fromArg ??
+        // Fall back to env var
+        Environment.GetEnvironmentVariable("KAPACITOR_SESSION_ID");
 }
 
 void PrintUsage() {

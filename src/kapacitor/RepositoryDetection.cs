@@ -94,7 +94,7 @@ static class RepositoryDetection {
                 if (branch is null && remoteUrl is null)
                     return null;
 
-                (owner, repoName) = kapacitor.GitUrlParser.ParseRemoteUrl(remoteUrl);
+                (owner, repoName) = GitUrlParser.ParseRemoteUrl(remoteUrl);
 
                 // Save to cache (without branch — it's always detected fresh)
                 SaveCache(
@@ -185,15 +185,14 @@ static class RepositoryDetection {
             if (!File.Exists(path)) return null;
 
             var json  = File.ReadAllText(path);
-            var entry = JsonSerializer.Deserialize(json, kapacitor.KapacitorJsonContext.Default.GitCacheEntry);
+            var entry = JsonSerializer.Deserialize(json, KapacitorJsonContext.Default.GitCacheEntry);
 
-            if (entry is null) return null;
+            if (entry is null) {
+                return null;
+            }
 
             // 1-hour TTL
-            if (DateTimeOffset.UtcNow - entry.CachedAt > TimeSpan.FromHours(1))
-                return null;
-
-            return entry;
+            return DateTimeOffset.UtcNow - entry.CachedAt > TimeSpan.FromHours(1) ? null : entry;
         } catch {
             return null;
         }
@@ -204,7 +203,7 @@ static class RepositoryDetection {
             var path = GetCachePath(cwd);
             var dir  = Path.GetDirectoryName(path)!;
             Directory.CreateDirectory(dir);
-            File.WriteAllText(path, JsonSerializer.Serialize(entry, kapacitor.KapacitorJsonContext.Default.GitCacheEntry));
+            File.WriteAllText(path, JsonSerializer.Serialize(entry, KapacitorJsonContext.Default.GitCacheEntry));
         } catch {
             // Cache write failure is non-critical
         }

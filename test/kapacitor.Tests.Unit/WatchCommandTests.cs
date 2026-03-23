@@ -110,21 +110,21 @@ public class StripSystemInstructionsTests {
 public class TryExtractUserTextWithSystemInstructionsTests {
     [Test]
     public async Task Strips_SystemInstructions_FromStringContent() {
-        var line = """{"type":"user","message":{"content":"<system_instructions>secret</system_instructions>fix the bug"}}""";
+        const string line = """{"type":"user","message":{"content":"<system_instructions>secret</system_instructions>fix the bug"}}""";
         var result = WatchCommand.TryExtractUserText(line);
         await Assert.That(result).IsEqualTo("fix the bug");
     }
 
     [Test]
     public async Task ReturnsNull_WhenOnlySystemInstructions_InContent() {
-        var line = """{"type":"user","message":{"content":"<system_instructions>only instructions here</system_instructions>"}}""";
+        const string line = """{"type":"user","message":{"content":"<system_instructions>only instructions here</system_instructions>"}}""";
         var result = WatchCommand.TryExtractUserText(line);
         await Assert.That(result).IsNull();
     }
 
     [Test]
     public async Task Strips_SystemInstructions_FromArrayContent() {
-        var line = """{"type":"user","message":{"content":[{"type":"text","text":"<system-reminder>reminder</system-reminder>do stuff"}]}}""";
+        const string line = """{"type":"user","message":{"content":[{"type":"text","text":"<system-reminder>reminder</system-reminder>do stuff"}]}}""";
         var result = WatchCommand.TryExtractUserText(line);
         await Assert.That(result).IsEqualTo("do stuff");
     }

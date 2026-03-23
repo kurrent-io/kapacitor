@@ -53,7 +53,7 @@ static class PermissionRequestCommand {
             var response = await client.PostAsync($"{baseUrl}/hooks/permission-request", content);
 
             if (!response.IsSuccessStatusCode) {
-                Console.Error.WriteLine($"[kapacitor] permission-request failed: HTTP {(int)response.StatusCode}");
+                await Console.Error.WriteLineAsync($"[kapacitor] permission-request failed: HTTP {(int)response.StatusCode}");
 
                 return 2; // Deny on server error
             }

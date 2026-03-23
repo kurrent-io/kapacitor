@@ -85,7 +85,7 @@ static class WatcherManager {
         if (!File.Exists(pidFile)) return false;
 
         try {
-            var pidText = File.ReadAllText(pidFile).Trim();
+            var pidText = (await File.ReadAllTextAsync(pidFile)).Trim();
 
             if (!int.TryParse(pidText, out var pid)) {
                 File.Delete(pidFile);
@@ -267,16 +267,17 @@ static class WatcherManager {
                 LineNumbers = newLineNumbers.ToArray()
             };
 
-            var       batchJson = JsonSerializer.Serialize(batch, kapacitor.KapacitorJsonContext.Default.TranscriptBatch);
+            var       batchJson = JsonSerializer.Serialize(batch, KapacitorJsonContext.Default.TranscriptBatch);
             using var content   = new StringContent(batchJson, Encoding.UTF8, "application/json");
 
             try {
                 var resp = await httpClient.PostWithRetryAsync($"{baseUrl}/hooks/transcript", content);
 
-                if (resp.IsSuccessStatusCode)
+                if (resp.IsSuccessStatusCode) {
                     await Console.Out.WriteLineAsync($"Inline drain for {sessionId}: sent {newLines.Count} line(s)");
-                else
+                } else {
                     await Console.Error.WriteLineAsync($"Inline drain for {sessionId}: server returned HTTP {(int)resp.StatusCode}");
+                }
             } catch (HttpRequestException ex) {
                 await Console.Error.WriteLineAsync($"Inline drain for {sessionId}: server unreachable after retries — {ex.Message}");
             }

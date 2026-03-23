@@ -16,14 +16,14 @@ public class WatcherLifecycleTests {
         try { Directory.Delete(TempDir, recursive: true); } catch { /* best effort */ }
     }
 
-    (string key, string transcriptPath, string pidFile) SetUpWatcher() {
+    static (string key, string transcriptPath, string pidFile) SetUpWatcher() {
         var key            = $"test-watcher-{Guid.NewGuid():N}";
         var transcriptPath = Path.Combine(Path.GetTempPath(), $"{key}.jsonl");
         File.WriteAllText(transcriptPath, "");
         return (key, transcriptPath, Path.Combine(TempDir, $"{key}.pid"));
     }
 
-    async Task AssertPidFileValid(string pidFile) {
+    static async Task AssertPidFileValid(string pidFile) {
         await Assert.That(File.Exists(pidFile)).IsTrue();
         var pidText = await File.ReadAllTextAsync(pidFile);
         await Assert.That(int.TryParse(pidText.Trim(), out _)).IsTrue();

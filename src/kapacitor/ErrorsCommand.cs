@@ -26,7 +26,7 @@ static class ErrorsCommand {
         }
 
         var json   = await resp.Content.ReadAsStringAsync();
-        var errors = JsonSerializer.Deserialize(json, kapacitor.KapacitorJsonContext.Default.ListErrorEntry);
+        var errors = JsonSerializer.Deserialize(json, KapacitorJsonContext.Default.ListErrorEntry);
 
         if (errors is null || errors.Count == 0) {
             Console.WriteLine("No errors found.");

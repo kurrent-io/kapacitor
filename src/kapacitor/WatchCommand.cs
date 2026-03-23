@@ -7,7 +7,14 @@ using Microsoft.Extensions.DependencyInjection;
 namespace kapacitor;
 
 static partial class WatchCommand {
-    public static async Task<int> RunWatch(string baseUrl, string sessionId, string transcriptPath, string? agentId, string? cwd, bool skipTitle = false) {
+    public static async Task<int> RunWatch(
+            string  baseUrl,
+            string  sessionId,
+            string  transcriptPath,
+            string? agentId,
+            string? cwd,
+            bool    skipTitle = false
+        ) {
         // Redirect all output to a log file so we don't hold parent's pipe FDs open
         var logDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".config", "kapacitor", "logs");
         Directory.CreateDirectory(logDir);
@@ -41,32 +48,40 @@ static partial class WatchCommand {
 
         // Build SignalR hub connection
         var hubUrl = $"{baseUrl}/hubs/sessions";
+
         var hubConnection = new HubConnectionBuilder()
             .WithUrl(hubUrl)
             .WithAutomaticReconnect([TimeSpan.Zero, TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(10), TimeSpan.FromSeconds(30)])
             .AddJsonProtocol(options => {
-                options.PayloadSerializerOptions.TypeInfoResolverChain
-                    .Insert(0, KapacitorJsonContext.Default);
-                options.PayloadSerializerOptions.PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower;
-            })
+                    options.PayloadSerializerOptions.TypeInfoResolverChain
+                        .Insert(0, KapacitorJsonContext.Default);
+                    options.PayloadSerializerOptions.PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower;
+                }
+            )
             .Build();
 
         // Register StopWatcher handler — server sends this to tell us to shut down
-        hubConnection.On<string>("StopWatcher", reason => {
-            Log($"Received StopWatcher signal: {reason}");
-            cts.Cancel();
-        });
+        hubConnection.On<string>(
+            "StopWatcher",
+            reason => {
+                Log($"Received StopWatcher signal: {reason}");
+                cts.Cancel();
+            }
+        );
 
         hubConnection.Reconnecting += ex => {
             Log($"SignalR reconnecting: {ex?.Message}");
+
             return Task.CompletedTask;
         };
 
         hubConnection.Reconnected += async connectionId => {
             Log($"SignalR reconnected: {connectionId}");
+
             // Re-register with server and check if it's behind us (gap recovery)
             try {
                 var serverPosition = await hubConnection.InvokeAsync<int>("WatcherConnect", sessionId, agentId, cancellationToken: cts.Token);
+
                 if (serverPosition < state.LinesProcessed) {
                     Log($"Server behind ({serverPosition} vs {state.LinesProcessed}), rewinding to resend gap");
                     state.LinesProcessed = serverPosition;
@@ -80,38 +95,46 @@ static partial class WatchCommand {
             Log($"SignalR connection closed permanently: {ex?.Message}");
             // All reconnect attempts exhausted — self-terminate
             cts.Cancel();
+
             return Task.CompletedTask;
         };
 
         // Connect with retry (server may not be up yet) — try for up to 5 minutes
         var connectRetryDelay = TimeSpan.FromSeconds(1);
         var connectStartTime  = DateTimeOffset.UtcNow;
+
         while (!cts.Token.IsCancellationRequested) {
             try {
                 await hubConnection.StartAsync(cts.Token);
+
                 break;
             } catch (OperationCanceledException) {
                 // SIGTERM/SIGINT during connect — exit gracefully
                 break;
             } catch (Exception ex) when (DateTimeOffset.UtcNow - connectStartTime < TimeSpan.FromMinutes(5)) {
                 Log($"SignalR connect failed, retrying in {connectRetryDelay.TotalSeconds}s: {ex.Message}");
+
                 try {
                     await Task.Delay(connectRetryDelay, cts.Token);
                 } catch (OperationCanceledException) {
                     break;
                 }
+
                 connectRetryDelay = TimeSpan.FromSeconds(Math.Min(connectRetryDelay.TotalSeconds * 2, 30));
             } catch (Exception ex) {
                 // Timeout exhausted — give up
                 Log($"SignalR connect failed after 5 minutes, giving up: {ex.Message}");
                 await hubConnection.DisposeAsync();
                 await logWriter.DisposeAsync();
+
                 return 0;
             }
         }
+
         if (cts.Token.IsCancellationRequested) {
             await hubConnection.DisposeAsync();
             await logWriter.DisposeAsync();
+
             return 0;
         }
 
@@ -146,7 +169,7 @@ static partial class WatchCommand {
         // Signal drain complete to server
         try {
             if (hubConnection.State == HubConnectionState.Connected) {
-                await hubConnection.InvokeAsync("WatcherDrainComplete", sessionId, agentId);
+                await hubConnection.InvokeAsync("WatcherDrainComplete", sessionId, agentId, cancellationToken: cts.Token);
                 Log("Drain complete signaled to server");
             }
         } catch (Exception ex) {
@@ -157,13 +180,21 @@ static partial class WatchCommand {
 
         await hubConnection.DisposeAsync();
         await logWriter.DisposeAsync();
+
         return 0;
     }
 
     static readonly Regex CommandNameRegex = CommandNameRx();
-    static bool parseErrorLogged;
+    static          bool  parseErrorLogged;
 
-    static async Task DrainNewLines(HubConnection hubConnection, string sessionId, string transcriptPath, string? agentId, WatchState state, CancellationToken ct) {
+    static async Task DrainNewLines(
+            HubConnection     hubConnection,
+            string            sessionId,
+            string            transcriptPath,
+            string?           agentId,
+            WatchState        state,
+            CancellationToken ct
+        ) {
         try {
             if (!File.Exists(transcriptPath)) return;
 
@@ -179,31 +210,46 @@ static partial class WatchCommand {
             using var reader = new StreamReader(stream);
 
             var lineIndex = 0;
+
             while (await reader.ReadLineAsync(ct) is { } line) {
-                if (lineIndex < state.LinesProcessed) { lineIndex++; continue; }
+                if (lineIndex < state.LinesProcessed) {
+                    lineIndex++;
+
+                    continue;
+                }
+
                 if (!string.IsNullOrWhiteSpace(line)) {
                     newLines.Add(line);
                     newLineNumbers.Add(lineIndex);
                 }
+
                 lineIndex++;
             }
+
             var linesRead = lineIndex;
 
             // Capture first user text (needed for title generation)
             if (state is { TitleGenerated: false, FirstUserText: null } && agentId is null) {
                 // If we resumed from a later position, scan from the beginning of the file
-                if (state.LinesProcessed > 0 && !state.FullFileScanDone) {
+                if (state is { LinesProcessed: > 0, FullFileScanDone: false }) {
                     Log("Scanning full file for first user text (resumed from later position)");
+
                     try {
                         await using var scanStream = new FileStream(transcriptPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
-                        using var scanReader = new StreamReader(scanStream);
+                        using var       scanReader = new StreamReader(scanStream);
+
                         while (await scanReader.ReadLineAsync(ct) is { } scanLine) {
                             if (string.IsNullOrWhiteSpace(scanLine)) continue;
+
                             var userText = TryExtractUserText(scanLine);
+
                             if (userText is null) continue;
+
                             SetFirstUserText(state, userText);
+
                             if (state.FirstUserText is not null) break;
                         }
+
                         state.FullFileScanDone = true;
                     } catch (Exception ex) {
                         Log($"Full file scan for user text failed: {ex.Message}");
@@ -214,8 +260,11 @@ static partial class WatchCommand {
                 if (state.FirstUserText is null && newLines.Count > 0) {
                     foreach (var line in newLines) {
                         var userText = TryExtractUserText(line);
+
                         if (userText is null) continue;
+
                         SetFirstUserText(state, userText);
+
                         if (state.FirstUserText is not null) break;
                     }
                 }
@@ -226,7 +275,7 @@ static partial class WatchCommand {
                 // Send truncated user text as the initial title immediately
                 if (state is { InitialTitleSent: false, FirstUserText: not null } && agentId is null) {
                     state.InitialTitleSent = true;
-                    _ = SendInitialTitleAsync(hubConnection, sessionId, TruncateForTitle(state.FirstUserText, 80));
+                    _                      = SendInitialTitleAsync(hubConnection, sessionId, TruncateForTitle(state.FirstUserText, 80));
                 }
             }
 
@@ -238,6 +287,7 @@ static partial class WatchCommand {
 
                     if (state.FirstAssistantText is null) {
                         var assistantText = TryExtractAssistantText(line);
+
                         if (assistantText is not null) {
                             state.FirstAssistantText = assistantText.Length > 300 ? assistantText[..300] : assistantText;
                             Log($"First assistant text captured ({state.FirstAssistantText.Length} chars)");
@@ -248,9 +298,9 @@ static partial class WatchCommand {
 
             // Generate LLM title after enough events have accumulated
             if (state is { TitleGenerated: false, TitleInFlight: false, TitleAttempts: < 3 }
-                && agentId is null
-                && state.FirstUserText is not null
-                && state.EventCount >= 5) {
+             && agentId is null
+             && state.FirstUserText is not null
+             && state.EventCount >= 5) {
                 Log($"Triggering LLM title generation (attempt {state.TitleAttempts + 1}/3, events: {state.EventCount})");
                 state.TitleInFlight = true;
                 state.TitleAttempts++;
@@ -265,6 +315,7 @@ static partial class WatchCommand {
             if (newLines.Count == 0 && repoToSend is null) {
                 // No content lines and no repo changes — safe to advance past blank/whitespace lines
                 state.LinesProcessed = linesRead;
+
                 return;
             }
 
@@ -274,11 +325,19 @@ static partial class WatchCommand {
                 : null;
 
             try {
-                await hubConnection.InvokeAsync("SendTranscriptBatch", sessionId, agentId,
-                    newLines.ToArray(), newLineNumbers.ToArray(), repoJson, ct);
+                await hubConnection.InvokeAsync(
+                    "SendTranscriptBatch",
+                    sessionId,
+                    agentId,
+                    newLines.ToArray(),
+                    newLineNumbers.ToArray(),
+                    repoJson,
+                    ct
+                );
 
                 if (newLines.Count > 0)
                     Log($"Sent {newLines.Count} line(s) via SignalR");
+
                 if (repoToSend is not null)
                     Log("Sent updated repository info via SignalR");
 
@@ -310,18 +369,21 @@ static partial class WatchCommand {
 
     static void SetFirstUserText(WatchState state, string userText) {
         var cmdMatch = CommandNameRegex.Match(userText);
+
         if (cmdMatch.Success) {
             // Skip slash commands — wait for the next real user prompt to generate the title
             Log($"Skipping slash command /{cmdMatch.Groups[1].Value} for title generation");
+
             return;
         }
+
         state.FirstUserText = userText;
     }
 
     internal static string? TryExtractAssistantText(string line) {
         try {
-            using var doc = JsonDocument.Parse(line);
-            var root = doc.RootElement;
+            using var doc  = JsonDocument.Parse(line);
+            var       root = doc.RootElement;
 
             if (!root.TryGetProperty("type", out var typeProp) || typeProp.GetString() != "assistant")
                 return null;
@@ -333,8 +395,10 @@ static partial class WatchCommand {
 
             foreach (var block in content.EnumerateArray()) {
                 var blockType = block.TryGetProperty("type", out var btProp) ? btProp.GetString() : null;
+
                 if (blockType == "text" && block.TryGetProperty("text", out var txt)) {
                     var text = txt.GetString()?.Trim();
+
                     if (!string.IsNullOrEmpty(text)) return text;
                 }
             }
@@ -347,9 +411,10 @@ static partial class WatchCommand {
 
     internal static bool IsEvent(string line) {
         try {
-            using var doc = JsonDocument.Parse(line);
-            var root = doc.RootElement;
-            var type = root.TryGetProperty("type", out var typeProp) ? typeProp.GetString() : null;
+            using var doc  = JsonDocument.Parse(line);
+            var       root = doc.RootElement;
+            var       type = root.TryGetProperty("type", out var typeProp) ? typeProp.GetString() : null;
+
             return type is "user" or "assistant";
         } catch {
             return false;
@@ -358,8 +423,8 @@ static partial class WatchCommand {
 
     internal static string? TryExtractUserText(string line) {
         try {
-            using var doc = JsonDocument.Parse(line);
-            var root = doc.RootElement;
+            using var doc  = JsonDocument.Parse(line);
+            var       root = doc.RootElement;
 
             if (!root.TryGetProperty("type", out var typeProp) || typeProp.GetString() != "user")
                 return null;
@@ -376,10 +441,7 @@ static partial class WatchCommand {
                     var text = content.GetString();
 
                     // Skip local command output — not real user input
-                    if (text is not null && text.StartsWith("<local-command-stdout>"))
-                        return null;
-
-                    return StripSystemInstructions(text);
+                    return text?.StartsWith("<local-command-stdout>") == true ? null : StripSystemInstructions(text);
                 }
                 // Handle array content (e.g., tool results with [{type:"text", text:"..."}])
                 case JsonValueKind.Array: {
@@ -388,8 +450,10 @@ static partial class WatchCommand {
                          && element.TryGetProperty("type", out var t)   && t.GetString() == "text"
                          && element.TryGetProperty("text", out var txt) && txt.ValueKind == JsonValueKind.String) {
                             var text = txt.GetString();
-                            if (text is not null && !text.StartsWith("<local-command-stdout>"))
+
+                            if (text?.StartsWith("<local-command-stdout>") == false) {
                                 return StripSystemInstructions(text);
+                            }
                         }
                     }
 
@@ -420,11 +484,12 @@ static partial class WatchCommand {
 
     [GeneratedRegex(@"<(system_instructions|system-instructions|system-reminder|system_reminder|SYSTEM_INSTRUCTIONS)\b[^>]*>[\s\S]*?</\1>", RegexOptions.IgnoreCase)]
     private static partial Regex SystemInstructionsRx();
+
     static readonly Regex SystemInstructionsRegex = SystemInstructionsRx();
 
     static async Task GenerateTitleAsync(HubConnection hubConnection, string sessionId, WatchState state) {
         try {
-            var userText = state.FirstUserText!;
+            var userText      = state.FirstUserText!;
             var truncatedUser = userText.Length > 500 ? userText[..500] : userText;
 
             var promptBuilder = new System.Text.StringBuilder();
@@ -437,8 +502,10 @@ static partial class WatchCommand {
             }
 
             var result = await ClaudeCliRunner.RunAsync(promptBuilder.ToString(), TimeSpan.FromSeconds(15), Log);
+
             if (result is null) {
                 state.TitleInFlight = false;
+
                 return;
             }
 
@@ -454,9 +521,17 @@ static partial class WatchCommand {
 
             Log($"Title usage: model={result.Model} input={result.InputTokens} output={result.OutputTokens} cost=${result.CostUsd:F4}");
 
-            await PostTitleAsync(hubConnection, sessionId, title,
-                result.Model, result.InputTokens, result.OutputTokens,
-                result.CacheReadTokens, result.CacheWriteTokens, state);
+            await PostTitleAsync(
+                hubConnection,
+                sessionId,
+                title,
+                result.Model,
+                result.InputTokens,
+                result.OutputTokens,
+                result.CacheReadTokens,
+                result.CacheWriteTokens,
+                state
+            );
         } catch (Exception ex) {
             Log($"Title generation failed: {ex.Message}");
             state.TitleInFlight = false;
@@ -473,9 +548,16 @@ static partial class WatchCommand {
     }
 
     static async Task PostTitleAsync(
-            HubConnection hubConnection, string sessionId, string title,
-            string? model, long inputTokens, long outputTokens, long cacheReadTokens, long cacheWriteTokens,
-            WatchState state) {
+            HubConnection hubConnection,
+            string        sessionId,
+            string        title,
+            string?       model,
+            long          inputTokens,
+            long          outputTokens,
+            long          cacheReadTokens,
+            long          cacheWriteTokens,
+            WatchState    state
+        ) {
         try {
             await hubConnection.InvokeAsync("UpdateTitle", sessionId, title, model, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens);
             Log($"LLM title generated: {title}");
@@ -491,21 +573,22 @@ static partial class WatchCommand {
         if (current is null) return false;
         if (lastSent is null) return true;
 
-        return current.Owner      != lastSent.Owner
-            || current.RepoName   != lastSent.RepoName
-            || current.Branch     != lastSent.Branch
-            || current.PrNumber   != lastSent.PrNumber
-            || current.PrUrl      != lastSent.PrUrl
-            || current.PrTitle    != lastSent.PrTitle
-            || current.PrHeadRef  != lastSent.PrHeadRef
-            || current.UserName   != lastSent.UserName
-            || current.UserEmail  != lastSent.UserEmail;
+        return current.Owner  != lastSent.Owner
+         || current.RepoName  != lastSent.RepoName
+         || current.Branch    != lastSent.Branch
+         || current.PrNumber  != lastSent.PrNumber
+         || current.PrUrl     != lastSent.PrUrl
+         || current.PrTitle   != lastSent.PrTitle
+         || current.PrHeadRef != lastSent.PrHeadRef
+         || current.UserName  != lastSent.UserName
+         || current.UserEmail != lastSent.UserEmail;
     }
 
     internal static string TruncateForTitle(string text, int maxLength) {
         // Take first line only, then truncate
-        var firstLine = text.AsSpan();
+        var firstLine  = text.AsSpan();
         var newlineIdx = firstLine.IndexOfAny('\r', '\n');
+
         if (newlineIdx >= 0)
             firstLine = firstLine[..newlineIdx];
 
@@ -515,6 +598,7 @@ static partial class WatchCommand {
         // Find last word boundary before maxLength
         var truncated = firstLine[..maxLength];
         var lastSpace = truncated.LastIndexOf(' ');
+
         if (lastSpace > maxLength / 2)
             truncated = truncated[..lastSpace];
 
@@ -524,6 +608,7 @@ static partial class WatchCommand {
     internal static string StripMarkdown(string text) {
         // Strip bold/italic markers, inline code backticks, and heading prefixes
         text = MarkdownRegex().Replace(text, "");
+
         return text.Trim();
     }
 
@@ -532,10 +617,12 @@ static partial class WatchCommand {
     public static int CountFileLines(string path) {
         try {
             if (!File.Exists(path)) return 0;
+
             using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
             using var reader = new StreamReader(stream);
             var       count  = 0;
             while (reader.ReadLine() is not null) count++;
+
             return count;
         } catch {
             return 0;
@@ -544,6 +631,7 @@ static partial class WatchCommand {
 
     [GeneratedRegex("<command-name>(.*?)</command-name>", RegexOptions.Compiled)]
     private static partial Regex CommandNameRx();
+
     [GeneratedRegex("[*_`#]+")]
     private static partial Regex MarkdownRegex();
 }

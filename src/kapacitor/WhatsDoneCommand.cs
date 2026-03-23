@@ -100,7 +100,7 @@ static class WhatsDoneCommand {
 
             return 0;
         } finally {
-            logWriter.Dispose();
+            await logWriter.DisposeAsync();
         }
     }
 
