@@ -126,6 +126,45 @@ switch (command) {
     }
     case "permission-request":
         return await PermissionRequestCommand.Handle(baseUrl);
+    case "set-title" when args.Length < 2:
+        Console.Error.WriteLine("Usage: kapacitor set-title <title>");
+        Console.Error.WriteLine("  KAPACITOR_SESSION_ID must be set.");
+        return 1;
+    case "set-title": {
+        var stSessionId = Environment.GetEnvironmentVariable("KAPACITOR_SESSION_ID");
+        if (stSessionId is null) {
+            Console.Error.WriteLine("KAPACITOR_SESSION_ID not set");
+            return 1;
+        }
+
+        // Join all remaining args as the title (supports unquoted multi-word titles)
+        var title = string.Join(' ', args.Skip(1)).Trim();
+        if (string.IsNullOrWhiteSpace(title)) {
+            Console.Error.WriteLine("Title cannot be empty");
+            return 1;
+        }
+
+        // Limit to 120 chars
+        if (title.Length > 120)
+            title = title[..120];
+
+        using var stClient  = new HttpClient();
+        var       payload   = new JsonObject { ["session_id"] = stSessionId, ["title"] = title };
+        using var stContent = new StringContent(payload.ToJsonString(), Encoding.UTF8, "application/json");
+
+        try {
+            var resp = await stClient.PostWithRetryAsync($"{baseUrl}/hooks/set-title", stContent);
+            if (!resp.IsSuccessStatusCode) {
+                Console.Error.WriteLine($"Server returned HTTP {(int)resp.StatusCode}");
+                return 1;
+            }
+        } catch (HttpRequestException ex) {
+            HttpClientExtensions.WriteUnreachableError(baseUrl, ex);
+            return 1;
+        }
+
+        return 0;
+    }
 }
 
 if (!hookCommands.Contains(command)) {
@@ -379,6 +418,7 @@ void PrintUsage() {
     Console.WriteLine("  kapacitor validate-plan [id]                                  Validate plan completion for a session");
     Console.WriteLine("  kapacitor generate-whats-done <id>                            Generate what's-done summary for a session");
     Console.WriteLine("  kapacitor permission-request                                  Handle PermissionRequest hook (reads JSON from stdin)");
+    Console.WriteLine("  kapacitor set-title <title>                                   Set session title (uses KAPACITOR_SESSION_ID)");
     Console.WriteLine("  kapacitor cleanup                                             Kill all orphaned watcher processes");
     Console.WriteLine("  kapacitor --help                                              Show this help");
     Console.WriteLine();

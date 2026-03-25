@@ -297,11 +297,11 @@ static partial class WatchCommand {
             }
 
             // Generate LLM title after enough events have accumulated
-            if (state is { TitleGenerated: false, TitleInFlight: false, TitleAttempts: < 3 }
+            if (state is { TitleGenerated: false, TitleInFlight: false, TitleAttempts: < 5 }
              && agentId is null
              && state.FirstUserText is not null
              && state.EventCount >= 5) {
-                Log($"Triggering LLM title generation (attempt {state.TitleAttempts + 1}/3, events: {state.EventCount})");
+                Log($"Triggering LLM title generation (attempt {state.TitleAttempts + 1}/5, events: {state.EventCount})");
                 state.TitleInFlight = true;
                 state.TitleAttempts++;
                 _ = GenerateTitleAsync(hubConnection, sessionId, state);
@@ -504,6 +504,7 @@ static partial class WatchCommand {
             var result = await ClaudeCliRunner.RunAsync(promptBuilder.ToString(), TimeSpan.FromSeconds(15), Log);
 
             if (result is null) {
+                Log($"Title generation attempt {state.TitleAttempts}/5 returned no result (empty response from claude CLI)");
                 state.TitleInFlight = false;
 
                 return;

@@ -87,6 +87,17 @@
           }
         ]
       }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/set-title-prompt.sh",
+            "timeout": 2
+          }
+        ]
+      }
     ]
   }
 }
