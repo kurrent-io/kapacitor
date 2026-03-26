@@ -7,7 +7,10 @@ namespace kapacitor;
 static class WatcherManager {
     internal static string GetWatcherDir() {
         var overrideDir = Environment.GetEnvironmentVariable("KAPACITOR_WATCHER_DIR");
-        if (overrideDir is not null) return overrideDir;
+
+        if (overrideDir is not null) {
+            return overrideDir;
+        }
 
         var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
 
@@ -37,11 +40,13 @@ static class WatcherManager {
                 ? $"watch {sessionId} \"{transcriptPath}\" --agent-id {agentId}"
                 : $"watch {key} \"{transcriptPath}\"";
 
-            if (cwd is not null)
+            if (cwd is not null) {
                 arguments += $" --cwd \"{cwd}\"";
+            }
 
-            if (skipTitle)
+            if (skipTitle) {
                 arguments += " --skip-title";
+            }
 
             var psi = new ProcessStartInfo(kapacitorPath, arguments) {
                 RedirectStandardOutput = true,
@@ -82,7 +87,9 @@ static class WatcherManager {
     public static async Task<bool> KillWatcher(string key) {
         var pidFile = GetPidFilePath(key);
 
-        if (!File.Exists(pidFile)) return false;
+        if (!File.Exists(pidFile)) {
+            return false;
+        }
 
         try {
             var pidText = (await File.ReadAllTextAsync(pidFile)).Trim();
@@ -132,12 +139,16 @@ static class WatcherManager {
     static bool IsWatcherAlive(string key) {
         var pidFile = GetPidFilePath(key);
 
-        if (!File.Exists(pidFile)) return false;
+        if (!File.Exists(pidFile)) {
+            return false;
+        }
 
         try {
             var pidText = File.ReadAllText(pidFile).Trim();
 
-            if (!int.TryParse(pidText, out var pid)) return false;
+            if (!int.TryParse(pidText, out var pid)) {
+                return false;
+            }
 
             try {
                 var process = Process.GetProcessById(pid);
@@ -160,7 +171,9 @@ static class WatcherManager {
             string? cwd               = null,
             bool    skipTitle         = false
         ) {
-        if (IsWatcherAlive(key)) return;
+        if (IsWatcherAlive(key)) {
+            return;
+        }
 
         // Watcher is dead or missing — respawn
         Console.WriteLine($"Watcher {key} not running, respawning...");
@@ -221,15 +234,16 @@ static class WatcherManager {
                     startLine = doc.RootElement.TryGetProperty("last_line_number", out var prop) && prop.ValueKind == JsonValueKind.Number
                         ? prop.GetInt32() + 1
                         : WatchCommand.CountFileLines(transcriptPath);
-                }
-                else {
+                } else {
                     startLine = WatchCommand.CountFileLines(transcriptPath);
                 }
             } catch {
                 startLine = WatchCommand.CountFileLines(transcriptPath);
             }
 
-            if (!File.Exists(transcriptPath)) return;
+            if (!File.Exists(transcriptPath)) {
+                return;
+            }
 
             var newLines       = new List<string>();
             var newLineNumbers = new List<int>();

@@ -36,8 +36,9 @@ static partial class WatchCommand {
 
         var state = new WatchState();
 
-        if (skipTitle)
+        if (skipTitle) {
             state.TitleGenerated = true;
+        }
 
         // Detect repository info upfront if cwd is provided (session watchers only, not agents)
         if (cwd is not null) {
@@ -202,7 +203,9 @@ static partial class WatchCommand {
             CancellationToken ct
         ) {
         try {
-            if (!File.Exists(transcriptPath)) return;
+            if (!File.Exists(transcriptPath)) {
+                return;
+            }
 
             var newLines       = new List<string>();
             var newLineNumbers = new List<int>();
@@ -245,15 +248,21 @@ static partial class WatchCommand {
                         using var       scanReader = new StreamReader(scanStream);
 
                         while (await scanReader.ReadLineAsync(ct) is { } scanLine) {
-                            if (string.IsNullOrWhiteSpace(scanLine)) continue;
+                            if (string.IsNullOrWhiteSpace(scanLine)) {
+                                continue;
+                            }
 
                             var userText = TryExtractUserText(scanLine);
 
-                            if (userText is null) continue;
+                            if (userText is null) {
+                                continue;
+                            }
 
                             SetFirstUserText(state, userText);
 
-                            if (state.FirstUserText is not null) break;
+                            if (state.FirstUserText is not null) {
+                                break;
+                            }
                         }
 
                         state.FullFileScanDone = true;
@@ -264,19 +273,18 @@ static partial class WatchCommand {
 
                 // Also check new lines (normal path)
                 if (state.FirstUserText is null && newLines.Count > 0) {
-                    foreach (var line in newLines) {
-                        var userText = TryExtractUserText(line);
-
-                        if (userText is null) continue;
-
+                    foreach (var userText in newLines.Select(TryExtractUserText).OfType<string>()) {
                         SetFirstUserText(state, userText);
 
-                        if (state.FirstUserText is not null) break;
+                        if (state.FirstUserText is not null) {
+                            break;
+                        }
                     }
                 }
 
-                if (state.FirstUserText is not null)
+                if (state.FirstUserText is not null) {
                     Log($"First user text captured ({state.FirstUserText.Length} chars)");
+                }
 
                 // Send truncated user text as the initial title immediately
                 if (state is { InitialTitleSent: false, FirstUserText: not null } && agentId is null) {
@@ -288,8 +296,9 @@ static partial class WatchCommand {
             // Count events and capture assistant context for LLM title generation
             if (state is { TitleGenerated: false } && agentId is null && newLines.Count > 0) {
                 foreach (var line in newLines) {
-                    if (IsEvent(line))
+                    if (IsEvent(line)) {
                         state.EventCount++;
+                    }
 
                     if (state.FirstAssistantText is null) {
                         var assistantText = TryExtractAssistantText(line);
@@ -341,11 +350,13 @@ static partial class WatchCommand {
                     ct
                 );
 
-                if (newLines.Count > 0)
+                if (newLines.Count > 0) {
                     Log($"Sent {newLines.Count} line(s) via SignalR");
+                }
 
-                if (repoToSend is not null)
+                if (repoToSend is not null) {
                     Log("Sent updated repository info via SignalR");
+                }
 
                 // Only advance position after successful send — if send fails,
                 // the next drain cycle will re-read and resend the same lines.
@@ -353,8 +364,9 @@ static partial class WatchCommand {
                 // so re-sending is idempotent.
                 state.LinesProcessed = linesRead;
 
-                if (repoToSend is not null)
+                if (repoToSend is not null) {
                     state.LastSentRepository = repoToSend;
+                }
             } catch (Exception ex) when (ex is not OperationCanceledException) {
                 if (newLines.Count > 0) {
                     Log($"SendTranscriptBatch failed, will retry from line {state.LinesProcessed}: {ex.Message}");
@@ -386,18 +398,22 @@ static partial class WatchCommand {
         state.FirstUserText = userText;
     }
 
-    internal static string? TryExtractAssistantText(string line) {
+    static string? TryExtractAssistantText(string line) {
         try {
             using var doc  = JsonDocument.Parse(line);
             var       root = doc.RootElement;
 
-            if (!root.TryGetProperty("type", out var typeProp) || typeProp.GetString() != "assistant")
+            if (!root.TryGetProperty("type", out var typeProp) || typeProp.GetString() != "assistant") {
                 return null;
+            }
 
-            if (!root.TryGetProperty("message", out var msg) || !msg.TryGetProperty("content", out var content))
+            if (!root.TryGetProperty("message", out var msg) || !msg.TryGetProperty("content", out var content)) {
                 return null;
+            }
 
-            if (content.ValueKind != JsonValueKind.Array) return null;
+            if (content.ValueKind != JsonValueKind.Array) {
+                return null;
+            }
 
             foreach (var block in content.EnumerateArray()) {
                 var blockType = block.TryGetProperty("type", out var btProp) ? btProp.GetString() : null;
@@ -405,7 +421,9 @@ static partial class WatchCommand {
                 if (blockType == "text" && block.TryGetProperty("text", out var txt)) {
                     var text = txt.GetString()?.Trim();
 
-                    if (!string.IsNullOrEmpty(text)) return text;
+                    if (!string.IsNullOrEmpty(text)) {
+                        return text;
+                    }
                 }
             }
         } catch {
@@ -415,7 +433,7 @@ static partial class WatchCommand {
         return null;
     }
 
-    internal static bool IsEvent(string line) {
+    static bool IsEvent(string line) {
         try {
             using var doc  = JsonDocument.Parse(line);
             var       root = doc.RootElement;
@@ -432,15 +450,18 @@ static partial class WatchCommand {
             using var doc  = JsonDocument.Parse(line);
             var       root = doc.RootElement;
 
-            if (!root.TryGetProperty("type", out var typeProp) || typeProp.GetString() != "user")
+            if (!root.TryGetProperty("type", out var typeProp) || typeProp.GetString() != "user") {
                 return null;
+            }
 
             // Skip system-injected meta messages (e.g. <local-command-caveat>)
-            if (root.TryGetProperty("isMeta", out var metaProp) && metaProp.ValueKind == JsonValueKind.True)
+            if (root.TryGetProperty("isMeta", out var metaProp) && metaProp.ValueKind == JsonValueKind.True) {
                 return null;
+            }
 
-            if (!root.TryGetProperty("message", out var msg) || !msg.TryGetProperty("content", out var content))
+            if (!root.TryGetProperty("message", out var msg) || !msg.TryGetProperty("content", out var content)) {
                 return null;
+            }
 
             switch (content.ValueKind) {
                 case JsonValueKind.String: {
@@ -481,7 +502,9 @@ static partial class WatchCommand {
     /// Removes content between tags like &lt;system_instructions&gt;, &lt;system-reminder&gt;, etc.
     /// </summary>
     internal static string? StripSystemInstructions(string? text) {
-        if (text is null) return null;
+        if (text is null) {
+            return null;
+        }
 
         var stripped = SystemInstructionsRegex.Replace(text, "").Trim();
 
@@ -523,8 +546,9 @@ static partial class WatchCommand {
             title = title.TrimEnd('?').TrimEnd();
 
             // Sanity-check: limit to 120 chars
-            if (title.Length > 120)
+            if (title.Length > 120) {
                 title = title[..120];
+            }
 
             Log($"Title usage: model={result.Model} input={result.InputTokens} output={result.OutputTokens} cost=${result.CostUsd:F4}");
 
@@ -577,8 +601,13 @@ static partial class WatchCommand {
     }
 
     internal static bool RepoPayloadChanged(RepositoryPayload? current, RepositoryPayload? lastSent) {
-        if (current is null) return false;
-        if (lastSent is null) return true;
+        if (current is null) {
+            return false;
+        }
+
+        if (lastSent is null) {
+            return true;
+        }
 
         return current.Owner  != lastSent.Owner
          || current.RepoName  != lastSent.RepoName
@@ -591,23 +620,26 @@ static partial class WatchCommand {
          || current.UserEmail != lastSent.UserEmail;
     }
 
-    internal static string TruncateForTitle(string text, int maxLength) {
+    static string TruncateForTitle(string text, int maxLength) {
         // Take first line only, then truncate
         var firstLine  = text.AsSpan();
         var newlineIdx = firstLine.IndexOfAny('\r', '\n');
 
-        if (newlineIdx >= 0)
+        if (newlineIdx >= 0) {
             firstLine = firstLine[..newlineIdx];
+        }
 
-        if (firstLine.Length <= maxLength)
+        if (firstLine.Length <= maxLength) {
             return firstLine.ToString().Trim();
+        }
 
         // Find last word boundary before maxLength
         var truncated = firstLine[..maxLength];
         var lastSpace = truncated.LastIndexOf(' ');
 
-        if (lastSpace > maxLength / 2)
+        if (lastSpace > maxLength / 2) {
             truncated = truncated[..lastSpace];
+        }
 
         return $"{truncated.ToString().Trim()}...";
     }
@@ -623,12 +655,16 @@ static partial class WatchCommand {
 
     public static int CountFileLines(string path) {
         try {
-            if (!File.Exists(path)) return 0;
+            if (!File.Exists(path)) {
+                return 0;
+            }
 
             using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
             using var reader = new StreamReader(stream);
             var       count  = 0;
-            while (reader.ReadLine() is not null) count++;
+            while (reader.ReadLine() is not null) {
+                count++;
+            }
 
             return count;
         } catch {

@@ -55,8 +55,10 @@ static class ValidatePlanCommand {
         Console.WriteLine("## Plan");
         Console.WriteLine();
 
-        foreach (var plan in plans)
+        foreach (var plan in plans) {
             Console.WriteLine(plan.Content);
+        }
+
         Console.WriteLine();
 
         // Output what's done
@@ -67,8 +69,10 @@ static class ValidatePlanCommand {
             Console.WriteLine("### Summary");
             Console.WriteLine();
 
-            foreach (var summary in summaries)
+            foreach (var summary in summaries) {
                 Console.WriteLine(summary.Content);
+            }
+
             Console.WriteLine();
         }
 

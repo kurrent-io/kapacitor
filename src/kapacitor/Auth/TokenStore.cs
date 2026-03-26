@@ -32,12 +32,18 @@ public record StoredTokens {
 public static class TokenStore {
     static readonly string TokenPath = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-        ".config", "kapacitor", "tokens.json"
+        ".config",
+        "kapacitor",
+        "tokens.json"
     );
 
     public static StoredTokens? Load() {
-        if (!File.Exists(TokenPath)) return null;
+        if (!File.Exists(TokenPath)) {
+            return null;
+        }
+
         var json = File.ReadAllText(TokenPath);
+
         return JsonSerializer.Deserialize(json, KapacitorJsonContext.Default.StoredTokens);
     }
 
@@ -54,17 +60,26 @@ public static class TokenStore {
     }
 
     public static void Delete() {
-        if (File.Exists(TokenPath)) File.Delete(TokenPath);
+        if (File.Exists(TokenPath)) {
+            File.Delete(TokenPath);
+        }
     }
 
     public static async Task<StoredTokens?> GetValidTokensAsync() {
         var tokens = Load();
-        if (tokens is null) return null;
-        if (!tokens.IsExpired) return tokens;
+
+        if (tokens is null) {
+            return null;
+        }
+
+        if (!tokens.IsExpired) {
+            return tokens;
+        }
 
         // Only Auth0 supports token refresh
-        if (tokens.Provider == "Auth0" && tokens.RefreshToken is not null && tokens.Auth0Domain is not null && tokens.ClientId is not null)
+        if (tokens.Provider == "Auth0" && tokens.RefreshToken is not null && tokens.Auth0Domain is not null && tokens.ClientId is not null) {
             return await RefreshAsync(tokens);
+        }
 
         // GitHub tokens can't be refreshed
         return null;
@@ -72,18 +87,24 @@ public static class TokenStore {
 
     static async Task<StoredTokens?> RefreshAsync(StoredTokens tokens) {
         using var http = new HttpClient();
+
         var response = await http.PostAsync(
             $"https://{tokens.Auth0Domain}/oauth/token",
-            new FormUrlEncodedContent(new Dictionary<string, string> {
-                ["grant_type"] = "refresh_token",
-                ["client_id"] = tokens.ClientId!,
-                ["refresh_token"] = tokens.RefreshToken!
-            })
+            new FormUrlEncodedContent(
+                new Dictionary<string, string> {
+                    ["grant_type"]    = "refresh_token",
+                    ["client_id"]     = tokens.ClientId!,
+                    ["refresh_token"] = tokens.RefreshToken!
+                }
+            )
         );
 
-        if (!response.IsSuccessStatusCode) return null;
+        if (!response.IsSuccessStatusCode) {
+            return null;
+        }
 
         var json = (await response.Content.ReadFromJsonAsync(KapacitorJsonContext.Default.Auth0TokenResponse))!;
+
         var refreshed = tokens with {
             AccessToken = json.AccessToken,
             ExpiresAt = DateTimeOffset.UtcNow.AddSeconds(json.ExpiresIn),
@@ -91,6 +112,7 @@ public static class TokenStore {
         };
 
         Save(refreshed);
+
         return refreshed;
     }
 }

@@ -17,23 +17,25 @@ static class HttpClientExtensions {
         var baseUrl = Environment.GetEnvironmentVariable("KAPACITOR_URL") ?? "http://localhost:5108";
         var provider = await DiscoverProviderAsync(baseUrl);
 
-        if (provider == "None")
+        if (provider == "None") {
             return client; // No auth needed
+        }
 
         var tokens = await TokenStore.GetValidTokensAsync();
 
         if (tokens is not null) {
-            client.DefaultRequestHeaders.Authorization =
-                new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", tokens.AccessToken);
+            client.DefaultRequestHeaders.Authorization = new("Bearer", tokens.AccessToken);
         }
 
         return client;
     }
 
-    static string? _cachedProvider;
+    static string? cachedProvider;
 
     public static async Task<string> DiscoverProviderAsync(string baseUrl) {
-        if (_cachedProvider is not null) return _cachedProvider;
+        if (cachedProvider is not null) {
+            return cachedProvider;
+        }
 
         using var http = new HttpClient();
         try {
@@ -41,7 +43,7 @@ static class HttpClientExtensions {
             if (response.IsSuccessStatusCode) {
                 var config = await response.Content.ReadFromJsonAsync(KapacitorJsonContext.Default.AuthDiscoveryResponse);
                 var provider = config?.Provider ?? "None";
-                _cachedProvider = provider; // Only cache successful discovery
+                cachedProvider = provider; // Only cache successful discovery
                 return provider;
             }
         } catch {

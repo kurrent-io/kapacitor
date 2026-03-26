@@ -6,8 +6,9 @@ namespace kapacitor;
 static class PermissionRequestCommand {
     public static async Task<int> Handle(string baseUrl) {
         // If not a rendered agent session, exit immediately (no-op)
-        if (Environment.GetEnvironmentVariable("KAPACITOR_RENDERED_AGENT") is not "1")
+        if (Environment.GetEnvironmentVariable("KAPACITOR_RENDERED_AGENT") is not "1") {
             return 0;
+        }
 
         var body = await Console.In.ReadToEndAsync();
 
@@ -22,7 +23,9 @@ static class PermissionRequestCommand {
             return 0; // Don't block Claude Code on parse errors
         }
 
-        if (node is null) return 0;
+        if (node is null) {
+            return 0;
+        }
 
         var sessionId = node["session_id"]?.GetValue<string>();
 

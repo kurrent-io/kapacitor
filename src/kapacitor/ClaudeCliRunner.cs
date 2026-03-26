@@ -67,7 +67,9 @@ static class ClaudeCliRunner {
             }
 
             var result = ParseResponse(stdout);
-            if (result is not null) return result;
+            if (result is not null) {
+                return result;
+            }
 
             // Fallback: CLI returned empty result (extended thinking bug).
             // Try reading the actual response from the session transcript file.
@@ -91,9 +93,7 @@ static class ClaudeCliRunner {
             var root = doc.RootElement;
 
             var result = root.TryGetProperty("result", out var r) ? r.GetString()?.Trim() : null;
-            if (string.IsNullOrWhiteSpace(result)) return null;
-
-            return BuildResult(root, result);
+            return string.IsNullOrWhiteSpace(result) ? null : BuildResult(root, result);
         } catch (JsonException) {
             // Fallback: treat stdout as plain text result
             var trimmed = stdout.Trim();
@@ -111,7 +111,9 @@ static class ClaudeCliRunner {
             var root = doc.RootElement;
 
             var sessionId = root.TryGetProperty("session_id", out var sid) ? sid.GetString() : null;
-            if (string.IsNullOrEmpty(sessionId)) return null;
+            if (string.IsNullOrEmpty(sessionId)) {
+                return null;
+            }
 
             var transcriptPath = FindTranscriptFile(sessionId);
             if (transcriptPath is null) {
@@ -139,7 +141,9 @@ static class ClaudeCliRunner {
         var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
         var projectsDir = Path.Combine(home, ".claude", "projects");
 
-        if (!Directory.Exists(projectsDir)) return null;
+        if (!Directory.Exists(projectsDir)) {
+            return null;
+        }
 
         var fileName = $"{sessionId}.jsonl";
 
@@ -158,7 +162,9 @@ static class ClaudeCliRunner {
         string? lastText = null;
 
         foreach (var line in File.ReadLines(transcriptPath)) {
-            if (string.IsNullOrWhiteSpace(line)) continue;
+            if (string.IsNullOrWhiteSpace(line)) {
+                continue;
+            }
 
             try {
                 using var doc  = JsonDocument.Parse(line);
@@ -171,8 +177,9 @@ static class ClaudeCliRunner {
                         if (block.TryGetProperty("type", out var bt) && bt.GetString() == "text"
                          && block.TryGetProperty("text", out var txt)) {
                             var text = txt.GetString()?.Trim();
-                            if (!string.IsNullOrEmpty(text))
+                            if (!string.IsNullOrEmpty(text)) {
                                 lastText = text;
+                            }
                         }
                     }
                 }

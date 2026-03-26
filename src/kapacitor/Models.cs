@@ -165,12 +165,15 @@ class SessionMetadata {
 
 static partial class GitUrlParser {
     public static (string? Owner, string? RepoName) ParseRemoteUrl(string? url) {
-        if (url is null) return (null, null);
+        if (url is null) {
+            return (null, null);
+        }
 
         var sshMatch = SshRegex().Match(url);
 
-        if (sshMatch.Success)
+        if (sshMatch.Success) {
             return (sshMatch.Groups["owner"].Value, sshMatch.Groups["repo"].Value);
+        }
 
         var httpsMatch = HttpsRegex().Match(url);
 

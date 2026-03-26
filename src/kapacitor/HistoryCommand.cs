@@ -41,9 +41,7 @@ static class HistoryCommand {
 
         // Filter by session ID if specified
         if (filterSession is not null) {
-            transcriptFiles = transcriptFiles
-                .Where(t => t.SessionId == filterSession)
-                .ToList();
+            transcriptFiles = [.. transcriptFiles.Where(t => t.SessionId == filterSession)];
 
             if (transcriptFiles.Count == 0) {
                 await Console.Error.WriteLineAsync($"Session not found: {filterSession}");
@@ -56,13 +54,15 @@ static class HistoryCommand {
         if (filterCwd is not null) {
             var normalizedFilter = filterCwd.TrimEnd('/');
 
-            transcriptFiles = [.. transcriptFiles
-                .Where(t => {
-                        var extractedCwd = ExtractCwdFromTranscript(t.FilePath);
+            transcriptFiles = [
+                .. transcriptFiles
+                    .Where(t => {
+                            var extractedCwd = ExtractCwdFromTranscript(t.FilePath);
 
-                        return extractedCwd?.TrimEnd('/').Equals(normalizedFilter, StringComparison.Ordinal) == true;
-                    }
-                )];
+                            return extractedCwd?.TrimEnd('/').Equals(normalizedFilter, StringComparison.Ordinal) == true;
+                        }
+                    )
+            ];
         }
 
         var projectCount = transcriptFiles.Select(t => t.EncodedCwd).Distinct().Count();
@@ -105,12 +105,10 @@ static class HistoryCommand {
                             if (doc.RootElement.TryGetProperty("last_line_number", out var prop) && prop.ValueKind == JsonValueKind.Number) {
                                 resumeFromLine = prop.GetInt32() + 1;
                                 status         = HistorySessionStatus.Partial;
-                            }
-                            else {
+                            } else {
                                 status = HistorySessionStatus.AlreadyLoaded;
                             }
-                        }
-                        else {
+                        } else {
                             Console.WriteLine($"Skipping {sessionId} [server error: HTTP {(int)resp.StatusCode}]");
                             errored++;
 
@@ -161,11 +159,13 @@ static class HistoryCommand {
                     };
 
                     // Pass continuation info directly (bypasses pending continuation mechanism)
-                    if (prevSessionId is not null)
+                    if (prevSessionId is not null) {
                         startHook["previous_session_id"] = prevSessionId;
+                    }
 
-                    if (meta.Slug is not null)
+                    if (meta.Slug is not null) {
                         startHook["slug"] = meta.Slug;
+                    }
 
                     // Enrich with repository info if we have a cwd
                     var startCwd = meta.Cwd ?? DecodeCwdFromDirName(encodedCwd);
@@ -174,20 +174,23 @@ static class HistoryCommand {
                         var repo = await RepositoryDetection.DetectRepositoryAsync(startCwd);
 
                         if (repo is not null) {
-                            var repoNode                                           = new JsonObject();
+                            var repoNode = new JsonObject();
+#pragma warning disable IDE0011
                             if (repo.UserName is not null) repoNode["user_name"]   = repo.UserName;
                             if (repo.UserEmail is not null) repoNode["user_email"] = repo.UserEmail;
                             if (repo.RemoteUrl is not null) repoNode["remote_url"] = repo.RemoteUrl;
                             if (repo.Owner is not null) repoNode["owner"]          = repo.Owner;
                             if (repo.RepoName is not null) repoNode["repo_name"]   = repo.RepoName;
                             if (repo.Branch is not null) repoNode["branch"]        = repo.Branch;
+#pragma warning restore IDE0011
                             startHook["repository"] = repoNode;
                         }
                     }
 
                     try {
                         using var startContent = new StringContent(startHook.ToJsonString(), Encoding.UTF8, "application/json");
-                        var       startResp    = await httpClient.PostWithRetryAsync($"{baseUrl}/hooks/session-start", startContent);
+
+                        var startResp = await httpClient.PostWithRetryAsync($"{baseUrl}/hooks/session-start", startContent);
 
                         if (!startResp.IsSuccessStatusCode) {
                             Console.WriteLine($"Skipping {sessionId} [session-start failed: HTTP {(int)startResp.StatusCode}]");
@@ -386,47 +389,54 @@ static class HistoryCommand {
             while (reader.ReadLine() is { } line && linesChecked < 50) {
                 linesChecked++;
 
-                if (string.IsNullOrWhiteSpace(line)) continue;
+                if (string.IsNullOrWhiteSpace(line)) {
+                    continue;
+                }
 
                 try {
                     var doc  = JsonDocument.Parse(line);
                     var root = doc.RootElement;
 
                     // Skip file-history-snapshot entries
-                    if (root.TryGetProperty("type", out var typeProp) && typeProp.GetString() == "file-history-snapshot")
+                    if (root.TryGetProperty("type", out var typeProp) && typeProp.GetString() == "file-history-snapshot") {
                         continue;
+                    }
 
                     // Extract cwd from metadata
-                    if (meta.Cwd is null && root.TryGetProperty("cwd", out var cwdProp))
+                    if (meta.Cwd is null && root.TryGetProperty("cwd", out var cwdProp)) {
                         meta.Cwd = cwdProp.GetString();
+                    }
 
                     // Extract model from assistant message
                     if (meta.Model is null                              &&
                         root.TryGetProperty("message", out var msgProp) &&
-                        msgProp.TryGetProperty("model", out var modelProp))
+                        msgProp.TryGetProperty("model", out var modelProp)) {
                         meta.Model = modelProp.GetString();
+                    }
 
                     // Extract slug from metadata
                     if (meta.Slug is null && root.TryGetProperty("slug", out var slugProp) &&
-                        slugProp.ValueKind == JsonValueKind.String)
+                        slugProp.ValueKind == JsonValueKind.String) {
                         meta.Slug = slugProp.GetString();
+                    }
 
                     // Extract sessionId
-                    if (meta.SessionId is null && root.TryGetProperty("sessionId", out var sidProp))
+                    if (meta.SessionId is null && root.TryGetProperty("sessionId", out var sidProp)) {
                         meta.SessionId = sidProp.GetString();
+                    }
 
                     // Extract first timestamp for continuation ordering
                     if (meta.FirstTimestamp is null              && root.TryGetProperty("timestamp", out var tsProp) &&
                         tsProp.ValueKind == JsonValueKind.String &&
-                        DateTimeOffset.TryParse(tsProp.GetString(), out var ts))
+                        DateTimeOffset.TryParse(tsProp.GetString(), out var ts)) {
                         meta.FirstTimestamp = ts;
+                    }
 
                     // Stop early once we have all metadata
-                    if (meta.Cwd is not null && meta.Model is not null && meta.Slug is not null)
+                    if (meta.Cwd is not null && meta.Model is not null && meta.Slug is not null) {
                         break;
-                } catch (JsonException) {
-                    continue;
-                }
+                    }
+                } catch (JsonException) { }
             }
         } catch {
             // Best effort metadata extraction
@@ -445,13 +455,16 @@ static class HistoryCommand {
             while (reader.ReadLine() is { } line && linesChecked < 20) {
                 linesChecked++;
 
-                if (string.IsNullOrWhiteSpace(line)) continue;
+                if (string.IsNullOrWhiteSpace(line)) {
+                    continue;
+                }
 
                 try {
                     var doc = JsonDocument.Parse(line);
 
-                    if (doc.RootElement.TryGetProperty("cwd", out var cwdProp))
+                    if (doc.RootElement.TryGetProperty("cwd", out var cwdProp)) {
                         return cwdProp.GetString();
+                    }
                 } catch (JsonException) { }
             }
         } catch {
@@ -472,7 +485,9 @@ static class HistoryCommand {
         var sessionDir   = Path.ChangeExtension(sessionTranscriptPath, null);
         var subagentsDir = Path.Combine(sessionDir, "subagents");
 
-        if (!Directory.Exists(subagentsDir)) return results;
+        if (!Directory.Exists(subagentsDir)) {
+            return results;
+        }
 
         results.AddRange(
             from agentFile in Directory.GetFiles(subagentsDir, "agent-*.jsonl")
@@ -489,9 +504,7 @@ static class HistoryCommand {
     /// Groups sessions by slug, sorts by timestamp within each group, and builds
     /// a map of sessionId → previousSessionId for sessions that are continuations.
     /// </summary>
-    static Dictionary<string, string> BuildContinuationMap(
-            List<(string SessionId, string FilePath, string EncodedCwd)> transcriptFiles
-        ) {
+    static Dictionary<string, string> BuildContinuationMap(List<(string SessionId, string FilePath, string EncodedCwd)> transcriptFiles) {
         var continuationMap = new Dictionary<string, string>();
 
         // Extract slug and timestamp from each session
@@ -512,8 +525,9 @@ static class HistoryCommand {
             .ToDictionary(g => g.Key, g => g.OrderBy(kv => kv.Value.Timestamp).Select(kv => kv.Key).ToList());
 
         foreach (var (_, chain) in bySlug) {
-            for (var i = 1; i < chain.Count; i++)
+            for (var i = 1; i < chain.Count; i++) {
                 continuationMap[chain[i]] = chain[i - 1];
+            }
         }
 
         return continuationMap;
@@ -545,7 +559,9 @@ static class HistoryCommand {
         return;
 
         int GetDepth(string sessionId) {
-            if (depth.TryGetValue(sessionId, out var d)) return d;
+            if (depth.TryGetValue(sessionId, out var d)) {
+                return d;
+            }
 
             d = continuationMap.TryGetValue(sessionId, out var prev) ? GetDepth(prev) + 1 : 0;
 

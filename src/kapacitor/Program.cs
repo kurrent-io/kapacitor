@@ -5,8 +5,9 @@ using kapacitor.Auth;
 
 // Skip all processing when spawned inside a headless claude invocation (e.g., title generation)
 // to prevent infinite hook loops
-if (Environment.GetEnvironmentVariable("KAPACITOR_SKIP") is "1")
+if (Environment.GetEnvironmentVariable("KAPACITOR_SKIP") is "1") {
     return 0;
+}
 
 var baseUrl = Environment.GetEnvironmentVariable("KAPACITOR_URL") ?? "http://localhost:5108";
 
@@ -88,6 +89,7 @@ switch (command) {
     case "logout": {
         TokenStore.Delete();
         Console.WriteLine("Logged out.");
+
         return 0;
     }
     case "whoami": {
@@ -96,6 +98,7 @@ switch (command) {
         if (provider == "None") {
             Console.WriteLine("Provider: None (no authentication)");
             Console.WriteLine($"Server:   {baseUrl}");
+
             return 0;
         }
 
@@ -103,6 +106,7 @@ switch (command) {
 
         if (tokens is null) {
             Console.Error.WriteLine("Not authenticated. Run `kapacitor login`.");
+
             return 1;
         }
 
@@ -111,6 +115,7 @@ switch (command) {
         Console.WriteLine($"Expires:  {tokens.ExpiresAt:u}");
         Console.WriteLine($"Server:   {baseUrl}");
         Console.WriteLine($"Expired:  {(tokens.IsExpired ? "yes" : "no")}");
+
         return 0;
     }
     case "cleanup":
@@ -118,19 +123,24 @@ switch (command) {
     case "history": {
         string? filterCwd     = null;
         string? filterSession = null;
-        int     minLines      = 10;
+        var     minLines      = 10;
         var     cwdArgIdx     = Array.IndexOf(args, "--cwd");
 
-        if (cwdArgIdx >= 0 && cwdArgIdx + 1 < args.Length)
+        if (cwdArgIdx >= 0 && cwdArgIdx + 1 < args.Length) {
             filterCwd = args[cwdArgIdx + 1];
+        }
+
         var sessionArgIdx = Array.IndexOf(args, "--session");
 
-        if (sessionArgIdx >= 0 && sessionArgIdx + 1 < args.Length)
+        if (sessionArgIdx >= 0 && sessionArgIdx + 1 < args.Length) {
             filterSession = args[sessionArgIdx + 1];
+        }
+
         var minLinesIdx = Array.IndexOf(args, "--min-lines");
 
-        if (minLinesIdx >= 0 && minLinesIdx + 1 < args.Length && int.TryParse(args[minLinesIdx + 1], out var parsed))
+        if (minLinesIdx >= 0 && minLinesIdx + 1 < args.Length && int.TryParse(args[minLinesIdx + 1], out var parsed)) {
             minLines = parsed;
+        }
 
         return await HistoryCommand.HandleHistory(baseUrl, filterCwd, filterSession, minLines);
     }
@@ -145,12 +155,15 @@ switch (command) {
         string? watchCwd       = null;
         var     agentIdIdx     = Array.IndexOf(args, "--agent-id");
 
-        if (agentIdIdx >= 0 && agentIdIdx + 1 < args.Length)
+        if (agentIdIdx >= 0 && agentIdIdx + 1 < args.Length) {
             watchAgentId = args[agentIdIdx + 1];
+        }
+
         var cwdIdx = Array.IndexOf(args, "--cwd");
 
-        if (cwdIdx >= 0 && cwdIdx + 1 < args.Length)
+        if (cwdIdx >= 0 && cwdIdx + 1 < args.Length) {
             watchCwd = args[cwdIdx + 1];
+        }
 
         var watchSkipTitle = Array.IndexOf(args, "--skip-title") >= 0;
 
@@ -161,24 +174,30 @@ switch (command) {
     case "set-title" when args.Length < 2:
         Console.Error.WriteLine("Usage: kapacitor set-title <title>");
         Console.Error.WriteLine("  KAPACITOR_SESSION_ID must be set.");
+
         return 1;
     case "set-title": {
         var stSessionId = Environment.GetEnvironmentVariable("KAPACITOR_SESSION_ID");
+
         if (stSessionId is null) {
             Console.Error.WriteLine("KAPACITOR_SESSION_ID not set");
+
             return 1;
         }
 
         // Join all remaining args as the title (supports unquoted multi-word titles)
         var title = string.Join(' ', args.Skip(1)).Trim();
+
         if (string.IsNullOrWhiteSpace(title)) {
             Console.Error.WriteLine("Title cannot be empty");
+
             return 1;
         }
 
         // Limit to 120 chars
-        if (title.Length > 120)
+        if (title.Length > 120) {
             title = title[..120];
+        }
 
         using var stClient  = await HttpClientExtensions.CreateAuthenticatedClientAsync();
         var       payload   = new JsonObject { ["session_id"] = stSessionId, ["title"] = title };
@@ -186,12 +205,15 @@ switch (command) {
 
         try {
             var resp = await stClient.PostWithRetryAsync($"{baseUrl}/hooks/set-title", stContent);
+
             if (!resp.IsSuccessStatusCode) {
                 Console.Error.WriteLine($"Server returned HTTP {(int)resp.StatusCode}");
+
                 return 1;
             }
         } catch (HttpRequestException ex) {
             HttpClientExtensions.WriteUnreachableError(baseUrl, ex);
+
             return 1;
         }
 
@@ -216,8 +238,10 @@ try {
 
         // If running inside a daemon-spawned agent, inject the agent ID
         var agentHostId = Environment.GetEnvironmentVariable("KAPACITOR_AGENT_ID");
-        if (agentHostId is not null)
+
+        if (agentHostId is not null) {
             node["agent_host_id"] = agentHostId;
+        }
 
         body = node.ToJsonString();
     }
@@ -229,10 +253,11 @@ try {
 // For session-end and subagent-stop, defer enrichment to run in parallel with watcher kill.
 Task<string>? deferredRepoTask = null;
 
-if (command is "session-end" or "subagent-stop")
+if (command is "session-end" or "subagent-stop") {
     deferredRepoTask = RepositoryDetection.EnrichWithRepositoryInfo(body);
-else
+} else {
     body = await RepositoryDetection.EnrichWithRepositoryInfo(body);
+}
 
 // For session-start: read plan file if slug is known and inject plan_content into payload
 var planContentInjected = false;
@@ -270,8 +295,9 @@ switch (command) {
             if (sessionId is not null) {
                 var wasRunning = await WatcherManager.KillWatcher(sessionId);
 
-                if (!wasRunning && transcriptPath is not null)
+                if (!wasRunning && transcriptPath is not null) {
                     await WatcherManager.InlineDrainAsync(baseUrl, sessionId, transcriptPath, agentId: null);
+                }
             }
         } catch (Exception ex) {
             Console.Error.WriteLine($"[kapacitor] session-end pre-hook failed: {ex.Message}");
@@ -336,8 +362,9 @@ if (command == "session-end") {
             var node      = JsonNode.Parse(body);
             var sessionId = node?["session_id"]?.GetValue<string>();
 
-            if (sessionId is not null)
+            if (sessionId is not null) {
                 WatcherManager.SpawnWhatsDoneGenerator(baseUrl, sessionId);
+            }
         }
     } catch {
         // Best effort — don't fail the hook if response parsing fails
@@ -362,8 +389,9 @@ switch (command) {
                 if (resolvedSlug is not null) {
                     var planContent = ReadPlanFile(resolvedSlug);
 
-                    if (planContent is not null)
+                    if (planContent is not null) {
                         await PostPlanContentAsync(client, baseUrl, sessionId, planContent);
+                    }
                 }
             } catch {
                 // Best effort — don't fail the hook if plan posting fails
@@ -371,12 +399,14 @@ switch (command) {
         }
 
         var source = node?["source"]?.GetValue<string>();
+
         var isResumeOrCompact = source is not null
-            && (source.Equals("resume", StringComparison.OrdinalIgnoreCase)
+         && (source.Equals("resume", StringComparison.OrdinalIgnoreCase)
              || source.Equals("compact", StringComparison.OrdinalIgnoreCase));
 
-        if (sessionId is not null && transcriptPath is not null)
+        if (sessionId is not null && transcriptPath is not null) {
             WatcherManager.EnsureWatcherRunning(baseUrl, sessionId, transcriptPath, agentId: null, cwd: sessionCwd, skipTitle: isResumeOrCompact);
+        }
 
         break;
     }
@@ -401,8 +431,9 @@ switch (command) {
         var transcriptPath = node?["transcript_path"]?.GetValue<string>();
         var sessionCwd     = node?["cwd"]?.GetValue<string>();
 
-        if (sessionId is not null && transcriptPath is not null)
+        if (sessionId is not null && transcriptPath is not null) {
             WatcherManager.EnsureWatcherRunning(baseUrl, sessionId, transcriptPath, agentId: null, cwd: sessionCwd);
+        }
 
         break;
     }
@@ -459,8 +490,10 @@ void PrintUsage() {
     Console.WriteLine();
     Console.WriteLine("Hook commands:");
 
-    foreach (var h in hookCommands)
+    foreach (var h in hookCommands) {
         Console.WriteLine($"  {h}");
+    }
+
     Console.WriteLine();
     Console.WriteLine("Environment:");
     Console.WriteLine("  KAPACITOR_URL               Server URL (default: http://localhost:5108)");
