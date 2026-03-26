@@ -4,7 +4,7 @@ namespace kapacitor;
 
 static class ErrorsCommand {
     public static async Task<int> HandleErrors(string baseUrl, string sessionId, bool chain) {
-        using var httpClient = new HttpClient();
+        using var httpClient = await HttpClientExtensions.CreateAuthenticatedClientAsync();
         var       query      = chain ? "?chain=true" : "";
 
         HttpResponseMessage resp;

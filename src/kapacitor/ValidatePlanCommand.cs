@@ -4,7 +4,7 @@ namespace kapacitor;
 
 static class ValidatePlanCommand {
     public static async Task<int> Handle(string baseUrl, string sessionId) {
-        using var httpClient = new HttpClient();
+        using var httpClient = await HttpClientExtensions.CreateAuthenticatedClientAsync();
 
         // Fetch chain recap to find plans from previous sessions (e.g. ExitPlanMode in parent)
         HttpResponseMessage resp;

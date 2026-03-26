@@ -15,6 +15,7 @@
         <InternalsVisibleTo Include="kapacitor.Tests.Integration" />
     </ItemGroup>
     <ItemGroup>
+        <PackageReference Include="IdentityModel.OidcClient" Version="6.0.0" />
         <PackageReference Include="Microsoft.AspNetCore.SignalR.Client" Version="10.*" />
         <PackageReference Include="Roslynator.Analyzers" Version="4.15.0">
           <PrivateAssets>all</PrivateAssets>

@@ -4,7 +4,7 @@ namespace kapacitor;
 
 static class RecapCommand {
     public static async Task<int> HandleRecap(string baseUrl, string sessionId, bool chain) {
-        using var httpClient = new HttpClient();
+        using var httpClient = await HttpClientExtensions.CreateAuthenticatedClientAsync();
         var       query      = chain ? "?chain=true" : "";
 
         HttpResponseMessage resp;

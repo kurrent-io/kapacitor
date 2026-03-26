@@ -6,7 +6,7 @@ namespace kapacitor;
 
 static class HistoryCommand {
     public static async Task<int> HandleHistory(string baseUrl, string? filterCwd, string? filterSession = null, int minLines = 10) {
-        using var httpClient = new HttpClient();
+        using var httpClient = await HttpClientExtensions.CreateAuthenticatedClientAsync();
 
         Console.WriteLine("Discovering sessions...");
 

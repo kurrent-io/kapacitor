@@ -205,7 +205,7 @@ static class WatcherManager {
 
     public static async Task InlineDrainAsync(string baseUrl, string sessionId, string transcriptPath, string? agentId) {
         try {
-            using var httpClient = new HttpClient();
+            using var httpClient = await HttpClientExtensions.CreateAuthenticatedClientAsync();
 
             // Get server's last recorded position
             int startLine;

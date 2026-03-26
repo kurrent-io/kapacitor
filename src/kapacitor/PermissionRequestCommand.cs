@@ -37,7 +37,7 @@ static class PermissionRequestCommand {
         var suggestions = node["permission_suggestions"];
 
         // POST to server and wait for response (server blocks until user decides)
-        using var client = new HttpClient();
+        using var client = await HttpClientExtensions.CreateAuthenticatedClientAsync();
         client.Timeout = TimeSpan.FromHours(10) + TimeSpan.FromMinutes(1);
 
         var payload = new JsonObject {

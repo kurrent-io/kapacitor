@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.Json.Nodes;
 using kapacitor;
+using kapacitor.Auth;
 
 // Skip all processing when spawned inside a headless claude invocation (e.g., title generation)
 // to prevent infinite hook loops
@@ -81,6 +82,37 @@ switch (command) {
 
         return await WhatsDoneCommand.HandleGenerateWhatsDone(baseUrl, wdSessionId);
     }
+    case "login": {
+        var domain   = Environment.GetEnvironmentVariable("KAPACITOR_AUTH0_DOMAIN") ?? "";
+        var clientId = Environment.GetEnvironmentVariable("KAPACITOR_AUTH0_CLIENT_ID") ?? "";
+        var audience = Environment.GetEnvironmentVariable("KAPACITOR_AUTH0_AUDIENCE") ?? "";
+
+        if (string.IsNullOrEmpty(domain) || string.IsNullOrEmpty(clientId)) {
+            Console.Error.WriteLine("Error: Set KAPACITOR_AUTH0_DOMAIN and KAPACITOR_AUTH0_CLIENT_ID environment variables.");
+            return 1;
+        }
+
+        return await OAuthLoginFlow.LoginAsync(domain, clientId, audience);
+    }
+    case "logout": {
+        TokenStore.Delete();
+        Console.WriteLine("Logged out.");
+        return 0;
+    }
+    case "whoami": {
+        var tokens = TokenStore.Load();
+
+        if (tokens is null) {
+            Console.Error.WriteLine("Not authenticated. Run `kapacitor login`.");
+            return 1;
+        }
+
+        Console.WriteLine($"Username: {tokens.GitHubUsername}");
+        Console.WriteLine($"Expires:  {tokens.ExpiresAt:u}");
+        Console.WriteLine($"Server:   {Environment.GetEnvironmentVariable("KAPACITOR_URL") ?? "http://localhost:5108"}");
+        Console.WriteLine($"Expired:  {(tokens.IsExpired ? "yes" : "no")}");
+        return 0;
+    }
     case "cleanup":
         return await CleanupCommand.HandleCleanup();
     case "history": {
@@ -148,7 +180,7 @@ switch (command) {
         if (title.Length > 120)
             title = title[..120];
 
-        using var stClient  = new HttpClient();
+        using var stClient  = await HttpClientExtensions.CreateAuthenticatedClientAsync();
         var       payload   = new JsonObject { ["session_id"] = stSessionId, ["title"] = title };
         using var stContent = new StringContent(payload.ToJsonString(), Encoding.UTF8, "application/json");
 
@@ -277,6 +309,14 @@ switch (command) {
 
 using var client  = new HttpClient();
 using var content = new StringContent(body, Encoding.UTF8, "application/json");
+
+var hookTokens = await TokenStore.GetValidTokensAsync();
+if (hookTokens is null) {
+    Console.Error.WriteLine("Not authenticated. Run `kapacitor login`.");
+    return 1;
+}
+client.DefaultRequestHeaders.Authorization =
+    new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", hookTokens.AccessToken);
 
 HttpResponseMessage response;
 
@@ -420,6 +460,9 @@ void PrintUsage() {
     Console.WriteLine("  kapacitor permission-request                                  Handle PermissionRequest hook (reads JSON from stdin)");
     Console.WriteLine("  kapacitor set-title <title>                                   Set session title (uses KAPACITOR_SESSION_ID)");
     Console.WriteLine("  kapacitor cleanup                                             Kill all orphaned watcher processes");
+    Console.WriteLine("  kapacitor login                                               Authenticate via OAuth (browser)");
+    Console.WriteLine("  kapacitor logout                                              Remove stored credentials");
+    Console.WriteLine("  kapacitor whoami                                              Show current authenticated user");
     Console.WriteLine("  kapacitor --help                                              Show this help");
     Console.WriteLine();
     Console.WriteLine("Hook commands:");
@@ -428,6 +471,9 @@ void PrintUsage() {
         Console.WriteLine($"  {h}");
     Console.WriteLine();
     Console.WriteLine("Environment:");
-    Console.WriteLine("  KAPACITOR_URL           Server URL (default: http://localhost:5108)");
-    Console.WriteLine("  KAPACITOR_SESSION_ID    Session ID (set automatically by SessionStart hook)");
+    Console.WriteLine("  KAPACITOR_URL               Server URL (default: http://localhost:5108)");
+    Console.WriteLine("  KAPACITOR_SESSION_ID        Session ID (set automatically by SessionStart hook)");
+    Console.WriteLine("  KAPACITOR_AUTH0_DOMAIN      Auth0 domain (required for login)");
+    Console.WriteLine("  KAPACITOR_AUTH0_CLIENT_ID   Auth0 client ID (required for login)");
+    Console.WriteLine("  KAPACITOR_AUTH0_AUDIENCE    Auth0 API audience (optional, for login)");
 }

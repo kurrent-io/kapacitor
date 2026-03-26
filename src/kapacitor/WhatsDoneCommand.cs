@@ -16,7 +16,7 @@ static class WhatsDoneCommand {
         try {
             Log($"Generating what's-done summary for session {sessionId}");
 
-            using var httpClient = new HttpClient();
+            using var httpClient = await HttpClientExtensions.CreateAuthenticatedClientAsync();
 
             // 1. Fetch session recap
             string recapText;

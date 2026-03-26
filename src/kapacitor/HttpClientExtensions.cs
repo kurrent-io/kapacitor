@@ -1,8 +1,26 @@
 using System.Diagnostics;
+using kapacitor.Auth;
 
 namespace kapacitor;
 
 static class HttpClientExtensions {
+    /// <summary>
+    /// Creates an HttpClient with a Bearer token from the local token store.
+    /// All CLI commands that call the Capacitor server should use this
+    /// instead of <c>new HttpClient()</c>.
+    /// </summary>
+    public static async Task<HttpClient> CreateAuthenticatedClientAsync() {
+        var client = new HttpClient();
+        var tokens = await TokenStore.GetValidTokensAsync();
+
+        if (tokens is not null) {
+            client.DefaultRequestHeaders.Authorization =
+                new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", tokens.AccessToken);
+        }
+
+        return client;
+    }
+
     static readonly TimeSpan DefaultTimeout = TimeSpan.FromSeconds(30);
     static readonly TimeSpan MaxDelay       = TimeSpan.FromSeconds(4);
 
