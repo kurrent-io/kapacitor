@@ -24,14 +24,13 @@ public static class OAuthLoginFlow {
             return 1;
         }
 
-        var config = await configResponse.Content.ReadFromJsonAsync<JsonElement>();
-        var provider = config.GetProperty("provider").GetString()!;
+        var config = (await configResponse.Content.ReadFromJsonAsync(KapacitorJsonContext.Default.AuthDiscoveryResponse))!;
 
-        return provider switch {
+        return config.Provider switch {
             "None" => HandleNoneLogin(),
             "GitHub" => await HandleGitHubLogin(serverUrl, config),
             "Auth0" => await HandleAuth0Login(config),
-            _ => HandleUnknownProvider(provider)
+            _ => HandleUnknownProvider(config.Provider)
         };
     }
 
@@ -45,8 +44,8 @@ public static class OAuthLoginFlow {
         return 1;
     }
 
-    static async Task<int> HandleGitHubLogin(string serverUrl, JsonElement config) {
-        var clientId = config.GetProperty("github_client_id").GetString()!;
+    static async Task<int> HandleGitHubLogin(string serverUrl, AuthDiscoveryResponse config) {
+        var clientId = config.GithubClientId!;
 
         using var http = new HttpClient();
         http.DefaultRequestHeaders.Accept.Add(
@@ -63,18 +62,15 @@ public static class OAuthLoginFlow {
             return 1;
         }
 
-        var device = await deviceResponse.Content.ReadFromJsonAsync<JsonElement>();
-        var deviceCode = device.GetProperty("device_code").GetString()!;
-        var userCode = device.GetProperty("user_code").GetString()!;
-        var verificationUri = device.GetProperty("verification_uri").GetString()!;
-        var interval = device.TryGetProperty("interval", out var intervalProp) ? intervalProp.GetInt32() : 5;
+        var device = (await deviceResponse.Content.ReadFromJsonAsync(KapacitorJsonContext.Default.GitHubDeviceCodeResponse))!;
+        var interval = device.Interval;
 
         Console.WriteLine();
-        Console.WriteLine($"  Enter code: {userCode}");
-        Console.WriteLine($"  at: {verificationUri}");
+        Console.WriteLine($"  Enter code: {device.UserCode}");
+        Console.WriteLine($"  at: {device.VerificationUri}");
         Console.WriteLine();
 
-        try { Process.Start(new ProcessStartInfo(verificationUri) { UseShellExecute = true }); }
+        try { Process.Start(new ProcessStartInfo(device.VerificationUri) { UseShellExecute = true }); }
         catch { /* Browser open is best-effort */ }
 
         Console.Write("Waiting for authorization...");
@@ -87,25 +83,24 @@ public static class OAuthLoginFlow {
             var tokenResponse = await http.PostAsync("https://github.com/login/oauth/access_token",
                 new FormUrlEncodedContent(new Dictionary<string, string> {
                     ["client_id"] = clientId,
-                    ["device_code"] = deviceCode,
+                    ["device_code"] = device.DeviceCode,
                     ["grant_type"] = "urn:ietf:params:oauth:grant-type:device_code"
                 }));
 
-            var tokenJson = await tokenResponse.Content.ReadFromJsonAsync<JsonElement>();
+            var tokenResult = (await tokenResponse.Content.ReadFromJsonAsync(KapacitorJsonContext.Default.GitHubTokenResponse))!;
 
-            if (tokenJson.TryGetProperty("access_token", out var at)) {
-                accessToken = at.GetString();
-            } else if (tokenJson.TryGetProperty("error", out var error)) {
-                var errorCode = error.GetString();
-                if (errorCode == "authorization_pending") {
+            if (tokenResult.AccessToken is not null) {
+                accessToken = tokenResult.AccessToken;
+            } else if (tokenResult.Error is not null) {
+                if (tokenResult.Error == "authorization_pending") {
                     Console.Write(".");
                     continue;
                 }
-                if (errorCode == "slow_down") {
+                if (tokenResult.Error == "slow_down") {
                     interval += 5;
                     continue;
                 }
-                Console.Error.WriteLine($"\nError: {errorCode}");
+                Console.Error.WriteLine($"\nError: {tokenResult.Error}");
                 return 1;
             }
         }
@@ -113,7 +108,8 @@ public static class OAuthLoginFlow {
         Console.WriteLine(" done!");
 
         var exchangeResponse = await http.PostAsJsonAsync($"{serverUrl}/auth/token",
-            new { github_access_token = accessToken });
+            new TokenExchangeRequest { GithubAccessToken = accessToken },
+            KapacitorJsonContext.Default.TokenExchangeRequest);
 
         if (!exchangeResponse.IsSuccessStatusCode) {
             var errorBody = await exchangeResponse.Content.ReadAsStringAsync();
@@ -121,28 +117,21 @@ public static class OAuthLoginFlow {
             return 1;
         }
 
-        var exchange = await exchangeResponse.Content.ReadFromJsonAsync<JsonElement>();
-        var capacitorToken = exchange.GetProperty("access_token").GetString()!;
-        var expiresIn = exchange.GetProperty("expires_in").GetInt32();
-        var username = exchange.GetProperty("username").GetString()!;
+        var exchange = (await exchangeResponse.Content.ReadFromJsonAsync(KapacitorJsonContext.Default.TokenExchangeResponse))!;
 
         TokenStore.Save(new StoredTokens {
-            AccessToken = capacitorToken,
-            ExpiresAt = DateTimeOffset.UtcNow.AddSeconds(expiresIn),
-            GitHubUsername = username,
+            AccessToken = exchange.AccessToken,
+            ExpiresAt = DateTimeOffset.UtcNow.AddSeconds(exchange.ExpiresIn),
+            GitHubUsername = exchange.Username,
             Provider = "GitHub"
         });
 
-        Console.WriteLine($"Logged in as {username}");
+        Console.WriteLine($"Logged in as {exchange.Username}");
         return 0;
     }
 
-    static async Task<int> HandleAuth0Login(JsonElement config) {
-        var domain = config.GetProperty("auth0_domain").GetString()!;
-        var clientId = config.GetProperty("client_id").GetString()!;
-        var audience = config.TryGetProperty("audience", out var aud) ? aud.GetString()! : "";
-
-        return await LoginAsync(domain, clientId, audience);
+    static async Task<int> HandleAuth0Login(AuthDiscoveryResponse config) {
+        return await LoginAsync(config.Auth0Domain!, config.ClientId!, config.Audience ?? "");
     }
 
     /// <summary>
@@ -201,21 +190,20 @@ public static class OAuthLoginFlow {
             return 1;
         }
 
-        var json         = JsonSerializer.Deserialize<JsonElement>(await tokenResponse.Content.ReadAsStringAsync());
-        var accessToken  = json.GetProperty("access_token").GetString()!;
-        var refreshToken = json.GetProperty("refresh_token").GetString()!;
-        var expiresIn    = json.GetProperty("expires_in").GetInt32();
+        var json = (await tokenResponse.Content.ReadFromJsonAsync(KapacitorJsonContext.Default.Auth0TokenResponse))!;
 
-        var idToken = json.GetProperty("id_token").GetString()!;
-        var payload = idToken.Split('.')[1];
-        payload = payload.PadRight(payload.Length + (4 - payload.Length % 4) % 4, '=');
-        var claims   = JsonSerializer.Deserialize<JsonElement>(Convert.FromBase64String(payload));
-        var username = claims.GetProperty("nickname").GetString() ?? "unknown";
+        var username = "unknown";
+        if (json.IdToken is not null) {
+            var payload = json.IdToken.Split('.')[1];
+            payload = payload.PadRight(payload.Length + (4 - payload.Length % 4) % 4, '=');
+            var claims = JsonSerializer.Deserialize(Convert.FromBase64String(payload), KapacitorJsonContext.Default.Auth0IdTokenClaims);
+            username = claims?.Nickname ?? "unknown";
+        }
 
         TokenStore.Save(new StoredTokens {
-            AccessToken    = accessToken,
-            RefreshToken   = refreshToken,
-            ExpiresAt      = DateTimeOffset.UtcNow.AddSeconds(expiresIn),
+            AccessToken    = json.AccessToken,
+            RefreshToken   = json.RefreshToken,
+            ExpiresAt      = DateTimeOffset.UtcNow.AddSeconds(json.ExpiresIn),
             GitHubUsername = username,
             Provider       = "Auth0",
             Auth0Domain    = auth0Domain,

@@ -1,3 +1,4 @@
+using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -37,14 +38,14 @@ public static class TokenStore {
     public static StoredTokens? Load() {
         if (!File.Exists(TokenPath)) return null;
         var json = File.ReadAllText(TokenPath);
-        return JsonSerializer.Deserialize<StoredTokens>(json);
+        return JsonSerializer.Deserialize(json, KapacitorJsonContext.Default.StoredTokens);
     }
 
     public static void Save(StoredTokens tokens) {
         var dir = Path.GetDirectoryName(TokenPath)!;
         Directory.CreateDirectory(dir);
         var tempPath = TokenPath + ".tmp";
-        File.WriteAllText(tempPath, JsonSerializer.Serialize(tokens, new JsonSerializerOptions { WriteIndented = true }));
+        File.WriteAllText(tempPath, JsonSerializer.Serialize(tokens, KapacitorJsonContext.Default.StoredTokens));
         File.Move(tempPath, TokenPath, overwrite: true);
 
         if (!OperatingSystem.IsWindows()) {
@@ -82,12 +83,11 @@ public static class TokenStore {
 
         if (!response.IsSuccessStatusCode) return null;
 
-        var responseBody = await response.Content.ReadAsStringAsync();
-        var json = JsonSerializer.Deserialize<JsonElement>(responseBody);
+        var json = (await response.Content.ReadFromJsonAsync(KapacitorJsonContext.Default.Auth0TokenResponse))!;
         var refreshed = tokens with {
-            AccessToken = json.GetProperty("access_token").GetString()!,
-            ExpiresAt = DateTimeOffset.UtcNow.AddSeconds(json.GetProperty("expires_in").GetInt32()),
-            RefreshToken = json.TryGetProperty("refresh_token", out var rt) ? rt.GetString()! : tokens.RefreshToken
+            AccessToken = json.AccessToken,
+            ExpiresAt = DateTimeOffset.UtcNow.AddSeconds(json.ExpiresIn),
+            RefreshToken = json.RefreshToken ?? tokens.RefreshToken
         };
 
         Save(refreshed);

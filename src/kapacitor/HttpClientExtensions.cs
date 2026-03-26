@@ -1,6 +1,5 @@
 using System.Diagnostics;
 using System.Net.Http.Json;
-using System.Text.Json;
 using kapacitor.Auth;
 
 namespace kapacitor;
@@ -40,8 +39,8 @@ static class HttpClientExtensions {
         try {
             var response = await http.GetAsync($"{baseUrl}/auth/config");
             if (response.IsSuccessStatusCode) {
-                var json = await response.Content.ReadFromJsonAsync<JsonElement>();
-                var provider = json.GetProperty("provider").GetString() ?? "None";
+                var config = await response.Content.ReadFromJsonAsync(KapacitorJsonContext.Default.AuthDiscoveryResponse);
+                var provider = config?.Provider ?? "None";
                 _cachedProvider = provider; // Only cache successful discovery
                 return provider;
             }
