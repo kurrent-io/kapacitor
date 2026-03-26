@@ -11,3 +11,4 @@ logs/
 **/data/capacitor.db
 **/data/capacitor.db-wal
 **/data/capacitor.db-shm
+**/data/signing-key.bin

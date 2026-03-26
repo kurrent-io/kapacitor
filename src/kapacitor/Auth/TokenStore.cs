@@ -8,7 +8,7 @@ public record StoredTokens {
     public required string AccessToken { get; init; }
 
     [JsonPropertyName("refresh_token")]
-    public required string RefreshToken { get; init; }
+    public string? RefreshToken { get; init; }
 
     [JsonPropertyName("expires_at")]
     public required DateTimeOffset ExpiresAt { get; init; }
@@ -16,11 +16,14 @@ public record StoredTokens {
     [JsonPropertyName("github_username")]
     public required string GitHubUsername { get; init; }
 
+    [JsonPropertyName("provider")]
+    public string Provider { get; init; } = "Auth0";
+
     [JsonPropertyName("auth0_domain")]
-    public required string Auth0Domain { get; init; }
+    public string? Auth0Domain { get; init; }
 
     [JsonPropertyName("client_id")]
-    public required string ClientId { get; init; }
+    public string? ClientId { get; init; }
 
     public bool IsExpired => DateTimeOffset.UtcNow >= ExpiresAt - TimeSpan.FromSeconds(30);
 }
@@ -44,7 +47,6 @@ public static class TokenStore {
         File.WriteAllText(tempPath, JsonSerializer.Serialize(tokens, new JsonSerializerOptions { WriteIndented = true }));
         File.Move(tempPath, TokenPath, overwrite: true);
 
-        // Set file permissions to 0600 on Unix
         if (!OperatingSystem.IsWindows()) {
             File.SetUnixFileMode(TokenPath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
         }
@@ -58,7 +60,13 @@ public static class TokenStore {
         var tokens = Load();
         if (tokens is null) return null;
         if (!tokens.IsExpired) return tokens;
-        return await RefreshAsync(tokens);
+
+        // Only Auth0 supports token refresh
+        if (tokens.Provider == "Auth0" && tokens.RefreshToken is not null && tokens.Auth0Domain is not null && tokens.ClientId is not null)
+            return await RefreshAsync(tokens);
+
+        // GitHub tokens can't be refreshed
+        return null;
     }
 
     static async Task<StoredTokens?> RefreshAsync(StoredTokens tokens) {
@@ -67,8 +75,8 @@ public static class TokenStore {
             $"https://{tokens.Auth0Domain}/oauth/token",
             new FormUrlEncodedContent(new Dictionary<string, string> {
                 ["grant_type"] = "refresh_token",
-                ["client_id"] = tokens.ClientId,
-                ["refresh_token"] = tokens.RefreshToken
+                ["client_id"] = tokens.ClientId!,
+                ["refresh_token"] = tokens.RefreshToken!
             })
         );
 

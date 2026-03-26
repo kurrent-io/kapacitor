@@ -1,4 +1,6 @@
 using System.Diagnostics;
+using System.Net.Http.Json;
+using System.Text.Json;
 using kapacitor.Auth;
 
 namespace kapacitor;
@@ -6,11 +8,19 @@ namespace kapacitor;
 static class HttpClientExtensions {
     /// <summary>
     /// Creates an HttpClient with a Bearer token from the local token store.
+    /// Checks auth discovery first — if the server uses "None" provider, skips auth entirely.
     /// All CLI commands that call the Capacitor server should use this
     /// instead of <c>new HttpClient()</c>.
     /// </summary>
     public static async Task<HttpClient> CreateAuthenticatedClientAsync() {
         var client = new HttpClient();
+
+        var baseUrl = Environment.GetEnvironmentVariable("KAPACITOR_URL") ?? "http://localhost:5108";
+        var provider = await DiscoverProviderAsync(baseUrl);
+
+        if (provider == "None")
+            return client; // No auth needed
+
         var tokens = await TokenStore.GetValidTokensAsync();
 
         if (tokens is not null) {
@@ -19,6 +29,28 @@ static class HttpClientExtensions {
         }
 
         return client;
+    }
+
+    static string? _cachedProvider;
+
+    public static async Task<string> DiscoverProviderAsync(string baseUrl) {
+        if (_cachedProvider is not null) return _cachedProvider;
+
+        using var http = new HttpClient();
+        try {
+            var response = await http.GetAsync($"{baseUrl}/auth/config");
+            if (response.IsSuccessStatusCode) {
+                var json = await response.Content.ReadFromJsonAsync<JsonElement>();
+                var provider = json.GetProperty("provider").GetString() ?? "None";
+                _cachedProvider = provider; // Only cache successful discovery
+                return provider;
+            }
+        } catch {
+            // Server unreachable — don't cache, try tokens as fallback
+        }
+
+        // Fallback: try existing tokens (don't cache — allow re-discovery next time)
+        return TokenStore.Load()?.Provider ?? "None";
     }
 
     static readonly TimeSpan DefaultTimeout = TimeSpan.FromSeconds(30);

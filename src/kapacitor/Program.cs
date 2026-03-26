@@ -83,16 +83,7 @@ switch (command) {
         return await WhatsDoneCommand.HandleGenerateWhatsDone(baseUrl, wdSessionId);
     }
     case "login": {
-        var domain   = Environment.GetEnvironmentVariable("KAPACITOR_AUTH0_DOMAIN") ?? "";
-        var clientId = Environment.GetEnvironmentVariable("KAPACITOR_AUTH0_CLIENT_ID") ?? "";
-        var audience = Environment.GetEnvironmentVariable("KAPACITOR_AUTH0_AUDIENCE") ?? "";
-
-        if (string.IsNullOrEmpty(domain) || string.IsNullOrEmpty(clientId)) {
-            Console.Error.WriteLine("Error: Set KAPACITOR_AUTH0_DOMAIN and KAPACITOR_AUTH0_CLIENT_ID environment variables.");
-            return 1;
-        }
-
-        return await OAuthLoginFlow.LoginAsync(domain, clientId, audience);
+        return await OAuthLoginFlow.LoginWithDiscoveryAsync(baseUrl);
     }
     case "logout": {
         TokenStore.Delete();
@@ -100,6 +91,14 @@ switch (command) {
         return 0;
     }
     case "whoami": {
+        var provider = await HttpClientExtensions.DiscoverProviderAsync(baseUrl);
+
+        if (provider == "None") {
+            Console.WriteLine("Provider: None (no authentication)");
+            Console.WriteLine($"Server:   {baseUrl}");
+            return 0;
+        }
+
         var tokens = TokenStore.Load();
 
         if (tokens is null) {
@@ -108,8 +107,9 @@ switch (command) {
         }
 
         Console.WriteLine($"Username: {tokens.GitHubUsername}");
+        Console.WriteLine($"Provider: {tokens.Provider}");
         Console.WriteLine($"Expires:  {tokens.ExpiresAt:u}");
-        Console.WriteLine($"Server:   {Environment.GetEnvironmentVariable("KAPACITOR_URL") ?? "http://localhost:5108"}");
+        Console.WriteLine($"Server:   {baseUrl}");
         Console.WriteLine($"Expired:  {(tokens.IsExpired ? "yes" : "no")}");
         return 0;
     }
@@ -307,16 +307,8 @@ switch (command) {
     }
 }
 
-using var client  = new HttpClient();
+using var client  = await HttpClientExtensions.CreateAuthenticatedClientAsync();
 using var content = new StringContent(body, Encoding.UTF8, "application/json");
-
-var hookTokens = await TokenStore.GetValidTokensAsync();
-if (hookTokens is null) {
-    Console.Error.WriteLine("Not authenticated. Run `kapacitor login`.");
-    return 1;
-}
-client.DefaultRequestHeaders.Authorization =
-    new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", hookTokens.AccessToken);
 
 HttpResponseMessage response;
 
@@ -473,7 +465,4 @@ void PrintUsage() {
     Console.WriteLine("Environment:");
     Console.WriteLine("  KAPACITOR_URL               Server URL (default: http://localhost:5108)");
     Console.WriteLine("  KAPACITOR_SESSION_ID        Session ID (set automatically by SessionStart hook)");
-    Console.WriteLine("  KAPACITOR_AUTH0_DOMAIN      Auth0 domain (required for login)");
-    Console.WriteLine("  KAPACITOR_AUTH0_CLIENT_ID   Auth0 client ID (required for login)");
-    Console.WriteLine("  KAPACITOR_AUTH0_AUDIENCE    Auth0 API audience (optional, for login)");
 }
