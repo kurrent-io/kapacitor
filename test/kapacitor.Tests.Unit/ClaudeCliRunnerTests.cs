@@ -3,7 +3,7 @@ namespace kapacitor.Tests.Unit;
 public class ClaudeCliRunnerTests {
     [Test]
     public async Task ParseResponse_ValidJsonWithAllFields_ParsesCorrectly() {
-        var json = """
+        const string json = """
             {
                 "result": "Hello, world!",
                 "total_cost_usd": 0.0042,
@@ -48,7 +48,7 @@ public class ClaudeCliRunnerTests {
 
     [Test]
     public async Task ParseResponse_PlainText_FallsBackToTextResult() {
-        var plainText = "This is not JSON, just plain text.";
+        const string plainText = "This is not JSON, just plain text.";
 
         var result = ClaudeCliRunner.ParseResponse(plainText);
 

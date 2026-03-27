@@ -11,15 +11,15 @@ public class TryExtractUserTextTests {
 
     [Test]
     public async Task ArrayContent_ReturnsFirstTextElement() {
-        var line = """{"type":"user","message":{"content":[{"type":"text","text":"from array"}]}}""";
-        var result = WatchCommand.TryExtractUserText(line);
+        const string line   = """{"type":"user","message":{"content":[{"type":"text","text":"from array"}]}}""";
+        var          result = WatchCommand.TryExtractUserText(line);
         await Assert.That(result).IsEqualTo("from array");
     }
 
     [Test]
     public async Task ArrayContent_SkipsNonTextElements() {
-        var line = """{"type":"user","message":{"content":[{"type":"image","url":"x"},{"type":"text","text":"second"}]}}""";
-        var result = WatchCommand.TryExtractUserText(line);
+        const string line   = """{"type":"user","message":{"content":[{"type":"image","url":"x"},{"type":"text","text":"second"}]}}""";
+        var          result = WatchCommand.TryExtractUserText(line);
         await Assert.That(result).IsEqualTo("second");
     }
 
@@ -43,26 +43,11 @@ public class TryExtractUserTextTests {
 
 public class StripSystemInstructionsTests {
     [Test]
-    [Arguments(
-        "Hello <system_instructions>secret stuff</system_instructions> world",
-        "Hello  world"
-    )]
-    [Arguments(
-        "<system-instructions>block</system-instructions>actual prompt",
-        "actual prompt"
-    )]
-    [Arguments(
-        "<system-reminder>reminder content</system-reminder>do the thing",
-        "do the thing"
-    )]
-    [Arguments(
-        "<system_reminder>stuff</system_reminder>real text",
-        "real text"
-    )]
-    [Arguments(
-        "<SYSTEM_INSTRUCTIONS>loud</SYSTEM_INSTRUCTIONS>quiet",
-        "quiet"
-    )]
+    [Arguments("Hello <system_instructions>secret stuff</system_instructions> world", "Hello  world")]
+    [Arguments("<system-instructions>block</system-instructions>actual prompt", "actual prompt")]
+    [Arguments("<system-reminder>reminder content</system-reminder>do the thing", "do the thing")]
+    [Arguments("<system_reminder>stuff</system_reminder>real text", "real text")]
+    [Arguments("<SYSTEM_INSTRUCTIONS>loud</SYSTEM_INSTRUCTIONS>quiet", "quiet")]
     public async Task Strips_KnownSystemTags(string input, string expected) {
         var result = WatchCommand.StripSystemInstructions(input);
         await Assert.That(result).IsEqualTo(expected);
@@ -88,15 +73,15 @@ public class StripSystemInstructionsTests {
 
     [Test]
     public async Task Strips_MultipleBlocks() {
-        var input = "<system_instructions>first</system_instructions>middle<system-reminder>second</system-reminder>end";
-        var result = WatchCommand.StripSystemInstructions(input);
+        const string input  = "<system_instructions>first</system_instructions>middle<system-reminder>second</system-reminder>end";
+        var          result = WatchCommand.StripSystemInstructions(input);
         await Assert.That(result).IsEqualTo("middleend");
     }
 
     [Test]
     public async Task Strips_MultilineContent() {
-        var input = "<system_instructions>\nline1\nline2\nline3\n</system_instructions>actual request";
-        var result = WatchCommand.StripSystemInstructions(input);
+        const string input  = "<system_instructions>\nline1\nline2\nline3\n</system_instructions>actual request";
+        var          result = WatchCommand.StripSystemInstructions(input);
         await Assert.That(result).IsEqualTo("actual request");
     }
 
@@ -110,22 +95,22 @@ public class StripSystemInstructionsTests {
 public class TryExtractUserTextWithSystemInstructionsTests {
     [Test]
     public async Task Strips_SystemInstructions_FromStringContent() {
-        const string line = """{"type":"user","message":{"content":"<system_instructions>secret</system_instructions>fix the bug"}}""";
-        var result = WatchCommand.TryExtractUserText(line);
+        const string line   = """{"type":"user","message":{"content":"<system_instructions>secret</system_instructions>fix the bug"}}""";
+        var          result = WatchCommand.TryExtractUserText(line);
         await Assert.That(result).IsEqualTo("fix the bug");
     }
 
     [Test]
     public async Task ReturnsNull_WhenOnlySystemInstructions_InContent() {
-        const string line = """{"type":"user","message":{"content":"<system_instructions>only instructions here</system_instructions>"}}""";
-        var result = WatchCommand.TryExtractUserText(line);
+        const string line   = """{"type":"user","message":{"content":"<system_instructions>only instructions here</system_instructions>"}}""";
+        var          result = WatchCommand.TryExtractUserText(line);
         await Assert.That(result).IsNull();
     }
 
     [Test]
     public async Task Strips_SystemInstructions_FromArrayContent() {
-        const string line = """{"type":"user","message":{"content":[{"type":"text","text":"<system-reminder>reminder</system-reminder>do stuff"}]}}""";
-        var result = WatchCommand.TryExtractUserText(line);
+        const string line   = """{"type":"user","message":{"content":[{"type":"text","text":"<system-reminder>reminder</system-reminder>do stuff"}]}}""";
+        var          result = WatchCommand.TryExtractUserText(line);
         await Assert.That(result).IsEqualTo("do stuff");
     }
 }
@@ -148,9 +133,13 @@ public class StripMarkdownTests {
 
 public class RepoPayloadChangedTests {
     static RepositoryPayload MakePayload(
-        string owner = "o", string repo = "r", string branch = "main",
-        int? prNumber = 1, string prUrl = "u", string prTitle = "t"
-    ) => new() { Owner = owner, RepoName = repo, Branch = branch, PrNumber = prNumber, PrUrl = prUrl, PrTitle = prTitle };
+            string owner    = "o",
+            string repo     = "r",
+            string branch   = "main",
+            int?   prNumber = 1,
+            string prUrl    = "u",
+            string prTitle  = "t"
+        ) => new() { Owner = owner, RepoName = repo, Branch = branch, PrNumber = prNumber, PrUrl = prUrl, PrTitle = prTitle };
 
     [Test]
     public async Task NullCurrent_ReturnsFalse() =>
@@ -177,6 +166,7 @@ public class RepoPayloadChangedTests {
     [Arguments("PrTitle")]
     public async Task DifferentField_ReturnsTrue(string field) {
         var a = MakePayload();
+
         var b = field switch {
             "Owner"    => a with { Owner = "x" },
             "RepoName" => a with { RepoName = "x" },
@@ -204,6 +194,7 @@ public class CountFileLinesTests {
     [Arguments("", 0)]
     public async Task CountsLines(string content, int expected) {
         var path = Path.GetTempFileName();
+
         try {
             await File.WriteAllTextAsync(path, content);
             await Assert.That(WatchCommand.CountFileLines(path)).IsEqualTo(expected);

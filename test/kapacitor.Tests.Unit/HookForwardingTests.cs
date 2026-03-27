@@ -16,9 +16,9 @@ public class PostWithRetryTests : IDisposable {
         _server.Given(Request.Create().WithPath("/hooks/session-start").UsingPost())
             .RespondWith(Response.Create().WithStatusCode(200).WithBody("ok"));
 
-        using var client  = new HttpClient();
-        using var content = new StringContent("{}", Encoding.UTF8, "application/json");
-        var response = await client.PostWithRetryAsync($"{_server.Url}/hooks/session-start", content);
+        using var client   = new HttpClient();
+        using var content  = new StringContent("{}", Encoding.UTF8, "application/json");
+        var       response = await client.PostWithRetryAsync($"{_server.Url}/hooks/session-start", content);
 
         await Assert.That((int)response.StatusCode).IsEqualTo(200);
     }
@@ -31,17 +31,20 @@ public class PostWithRetryTests : IDisposable {
         tempServer.Stop();
 
         WireMockServer? restartedServer = null;
+
         _ = Task.Run(async () => {
-            await Task.Delay(600);
-            restartedServer = WireMockServer.Start(port);
-            restartedServer.Given(Request.Create().WithPath("/hooks/test").UsingPost())
-                .RespondWith(Response.Create().WithStatusCode(200).WithBody("recovered"));
-        });
+                await Task.Delay(600);
+                restartedServer = WireMockServer.Start(port);
+
+                restartedServer.Given(Request.Create().WithPath("/hooks/test").UsingPost())
+                    .RespondWith(Response.Create().WithStatusCode(200).WithBody("recovered"));
+            }
+        );
 
         try {
-            using var client  = new HttpClient();
-            using var content = new StringContent("{}", Encoding.UTF8, "application/json");
-            var response = await client.PostWithRetryAsync(url, content, timeout: TimeSpan.FromSeconds(15));
+            using var client   = new HttpClient();
+            using var content  = new StringContent("{}", Encoding.UTF8, "application/json");
+            var       response = await client.PostWithRetryAsync(url, content, timeout: TimeSpan.FromSeconds(15));
 
             await Assert.That((int)response.StatusCode).IsEqualTo(200);
             await Assert.That(await response.Content.ReadAsStringAsync()).IsEqualTo("recovered");
@@ -61,10 +64,12 @@ public class InlineDrainTests : IDisposable {
         const string sessionId = "test-session-drain";
 
         _server.Given(Request.Create().WithPath($"/api/sessions/{sessionId}/last-line").UsingGet())
-            .RespondWith(Response.Create()
-                .WithStatusCode(200)
-                .WithHeader("Content-Type", "application/json")
-                .WithBody("""{"last_line_number": -1}"""));
+            .RespondWith(
+                Response.Create()
+                    .WithStatusCode(200)
+                    .WithHeader("Content-Type", "application/json")
+                    .WithBody("""{"last_line_number": -1}""")
+            );
 
         _server.Given(Request.Create().WithPath("/hooks/transcript").UsingPost())
             .RespondWith(Response.Create().WithStatusCode(200));
@@ -74,14 +79,15 @@ public class InlineDrainTests : IDisposable {
         Directory.CreateDirectory(dir);
 
         try {
-            await File.WriteAllTextAsync(transcriptPath,
-                """{"type":"user","message":{"content":"hello"}}""" + "\n" +
-                """{"type":"assistant","message":{"content":"hi back"}}""" + "\n");
+            await File.WriteAllTextAsync(
+                transcriptPath,
+                """{"type":"user","message":{"content":"hello"}}"""        + "\n" +
+                """{"type":"assistant","message":{"content":"hi back"}}""" + "\n"
+            );
 
             await WatcherManager.InlineDrainAsync(_server.Url!, sessionId, transcriptPath, null);
 
-            var requests = _server.FindLogEntries(
-                Request.Create().WithPath("/hooks/transcript").UsingPost());
+            var requests = _server.FindLogEntries(Request.Create().WithPath("/hooks/transcript").UsingPost());
 
             await Assert.That(requests.Count).IsEqualTo(1);
 
