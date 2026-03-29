@@ -249,6 +249,20 @@ try {
     // Best effort — don't fail the hook if JSON parsing fails
 }
 
+// On session-start, clear the last-emitted repo cache so this session always gets a
+// RepositoryDetected event (the dedup cache is per-cwd, but each session needs its own link).
+if (command == "session-start") {
+    try {
+        var cwdNode = JsonNode.Parse(body)?["cwd"]?.GetValue<string>();
+
+        if (cwdNode is not null) {
+            RepositoryDetection.ClearLastEmitted(cwdNode);
+        }
+    } catch {
+        // Best effort
+    }
+}
+
 // Enrich hook payloads with repository info.
 // For session-end and subagent-stop, defer enrichment to run in parallel with watcher kill.
 Task<string>? deferredRepoTask = null;

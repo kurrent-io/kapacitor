@@ -246,6 +246,22 @@ static class RepositoryDetection {
         }
     }
 
+    /// <summary>
+    /// Clear the last-emitted cache for a cwd so the next enrichment always includes repo info.
+    /// Must be called on session-start — each new session needs its own RepositoryDetected event.
+    /// </summary>
+    public static void ClearLastEmitted(string cwd) {
+        try {
+            var path = GetLastEmittedPath(cwd);
+
+            if (File.Exists(path)) {
+                File.Delete(path);
+            }
+        } catch {
+            // Non-critical
+        }
+    }
+
     static void SaveLastEmitted(string cwd, RepositoryPayload payload) {
         try {
             var path = GetLastEmittedPath(cwd);
