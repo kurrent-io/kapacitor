@@ -27,7 +27,7 @@ static class PermissionRequestCommand {
             return 0;
         }
 
-        var sessionId = node["session_id"]?.GetValue<string>();
+        var sessionId = node["session_id"]?.GetValue<string>()?.Replace("-", "");
 
         if (sessionId is null) {
             await Console.Error.WriteLineAsync("[kapacitor] No session_id in permission-request");

@@ -79,7 +79,7 @@ switch (command) {
 
         return 1;
     case "generate-whats-done": {
-        var wdSessionId = args[1];
+        var wdSessionId = args[1].Replace("-", "");
 
         return await WhatsDoneCommand.HandleGenerateWhatsDone(baseUrl, wdSessionId);
     }
@@ -149,14 +149,14 @@ switch (command) {
 
         return 1;
     case "watch": {
-        var     watchSessionId = args[1];
+        var     watchSessionId = args[1].Replace("-", "");
         var     watchPath      = args[2];
         string? watchAgentId   = null;
         string? watchCwd       = null;
         var     agentIdIdx     = Array.IndexOf(args, "--agent-id");
 
         if (agentIdIdx >= 0 && agentIdIdx + 1 < args.Length) {
-            watchAgentId = args[agentIdIdx + 1];
+            watchAgentId = args[agentIdIdx + 1].Replace("-", "");
         }
 
         var cwdIdx = Array.IndexOf(args, "--cwd");
@@ -177,7 +177,7 @@ switch (command) {
 
         return 1;
     case "set-title": {
-        var stSessionId = Environment.GetEnvironmentVariable("KAPACITOR_SESSION_ID");
+        var stSessionId = Environment.GetEnvironmentVariable("KAPACITOR_SESSION_ID")?.Replace("-", "");
 
         if (stSessionId is null) {
             Console.Error.WriteLine("KAPACITOR_SESSION_ID not set");
@@ -229,11 +229,15 @@ if (!hookCommands.Contains(command)) {
 
 var body = await Console.In.ReadToEndAsync();
 
-// Inject home_dir and agent_host_id into all hook payloads
+// Inject home_dir and agent_host_id into all hook payloads, and normalize IDs
 try {
     var node = JsonNode.Parse(body);
 
     if (node is not null) {
+        // Normalize session_id and agent_id to dashless GUIDs
+        NormalizeGuidField(node, "session_id");
+        NormalizeGuidField(node, "agent_id");
+
         node["home_dir"] = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
 
         // If running inside a daemon-spawned agent, inject the agent ID
@@ -478,9 +482,16 @@ string? ResolveSessionId(string[] args, int skipCount = 1, string? skipFlag = nu
     // Try argument first
     var fromArg = args.Skip(skipCount).FirstOrDefault(a => skipFlag == null || a != skipFlag);
 
-    return fromArg ??
-        // Fall back to env var
-        Environment.GetEnvironmentVariable("KAPACITOR_SESSION_ID");
+    return (fromArg ?? Environment.GetEnvironmentVariable("KAPACITOR_SESSION_ID"))
+        ?.Replace("-", "");
+}
+
+void NormalizeGuidField(JsonNode node, string fieldName) {
+    var value = node[fieldName]?.GetValue<string>();
+
+    if (value is not null && value.Contains('-')) {
+        node[fieldName] = value.Replace("-", "");
+    }
 }
 
 void PrintUsage() {
