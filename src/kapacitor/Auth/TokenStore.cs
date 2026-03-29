@@ -77,7 +77,7 @@ public static class TokenStore {
         }
 
         // Only Auth0 supports token refresh
-        if (tokens.Provider == "Auth0" && tokens.RefreshToken is not null && tokens.Auth0Domain is not null && tokens.ClientId is not null) {
+        if (tokens is { Provider: "Auth0", RefreshToken: not null, Auth0Domain: not null, ClientId: not null }) {
             return await RefreshAsync(tokens);
         }
 

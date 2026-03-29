@@ -11,10 +11,6 @@
         <ProjectReference Include="../Kurrent.Capacitor.TestHelpers/Kurrent.Capacitor.TestHelpers.csproj" />
     </ItemGroup>
     <ItemGroup>
-        <PackageReference Include="Roslynator.Analyzers" Version="4.15.0">
-          <PrivateAssets>all</PrivateAssets>
-          <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
-        </PackageReference>
         <PackageReference Include="TUnit" Version="1.18.37" />
     </ItemGroup>
 </Project>
