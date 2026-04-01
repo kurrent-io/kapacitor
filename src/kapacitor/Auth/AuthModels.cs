@@ -85,3 +85,9 @@ public record Auth0IdTokenClaims {
     [JsonPropertyName("nickname")]
     public string? Nickname { get; init; }
 }
+
+// POST /auth/refresh request
+public record RefreshTokenRequest {
+    [JsonPropertyName("access_token")]
+    public required string AccessToken { get; init; }
+}

@@ -1,5 +1,7 @@
 using System.Diagnostics;
+using System.Net;
 using System.Net.Http.Json;
+using System.Text.Json;
 using kapacitor.Auth;
 
 namespace kapacitor;
@@ -25,6 +27,14 @@ static class HttpClientExtensions {
 
         if (tokens is not null) {
             client.DefaultRequestHeaders.Authorization = new("Bearer", tokens.AccessToken);
+        } else {
+            var stored = TokenStore.Load();
+
+            if (stored is not null) {
+                await Console.Error.WriteLineAsync("Authentication token has expired. Run 'kapacitor login' to re-authenticate.");
+            } else {
+                await Console.Error.WriteLineAsync("Not authenticated. Run 'kapacitor login' to authenticate.");
+            }
         }
 
         return client;
@@ -81,6 +91,28 @@ static class HttpClientExtensions {
     /// </summary>
     public static void WriteUnreachableError(string baseUrl, HttpRequestException ex) {
         Console.Error.WriteLine($"{UnreachableHint} {baseUrl} {ex.Message}");
+    }
+
+    /// <summary>
+    /// Checks if the response is a 401 and prints the server's error message.
+    /// Returns true if the response was a 401 (caller should return early).
+    /// </summary>
+    public static async Task<bool> HandleUnauthorizedAsync(HttpResponseMessage response) {
+        if (response.StatusCode != HttpStatusCode.Unauthorized) {
+            return false;
+        }
+
+        var body = await response.Content.ReadAsStringAsync();
+
+        try {
+            using var doc = JsonDocument.Parse(body);
+            var message = doc.RootElement.TryGetProperty("message", out var msg) ? msg.GetString() : null;
+            await Console.Error.WriteLineAsync(message ?? "Authentication failed. Run 'kapacitor login' to re-authenticate.");
+        } catch {
+            await Console.Error.WriteLineAsync("Authentication failed. Run 'kapacitor login' to re-authenticate.");
+        }
+
+        return true;
     }
 
     static async Task<HttpResponseMessage> SendWithRetryAsync(Func<Task<HttpResponseMessage>> send, TimeSpan timeout, CancellationToken ct) {

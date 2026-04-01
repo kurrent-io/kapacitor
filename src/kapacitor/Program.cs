@@ -482,8 +482,7 @@ string? ResolveSessionId(string[] args, int skipCount = 1, string? skipFlag = nu
     // Try argument first
     var fromArg = args.Skip(skipCount).FirstOrDefault(a => skipFlag == null || a != skipFlag);
 
-    return (fromArg ?? Environment.GetEnvironmentVariable("KAPACITOR_SESSION_ID"))
-        ?.Replace("-", "");
+    return fromArg ?? Environment.GetEnvironmentVariable("KAPACITOR_SESSION_ID");
 }
 
 void NormalizeGuidField(JsonNode node, string fieldName) {

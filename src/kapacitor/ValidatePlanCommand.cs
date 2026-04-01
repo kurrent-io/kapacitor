@@ -17,6 +17,10 @@ static class ValidatePlanCommand {
             return 1;
         }
 
+        if (await HttpClientExtensions.HandleUnauthorizedAsync(resp)) {
+            return 1;
+        }
+
         if (resp.StatusCode == System.Net.HttpStatusCode.NotFound) {
             await Console.Error.WriteLineAsync($"Session not found: {sessionId}");
 

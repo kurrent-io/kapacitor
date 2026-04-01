@@ -76,16 +76,56 @@ public static class TokenStore {
             return tokens;
         }
 
-        // Only Auth0 supports token refresh
+        // Auth0: use refresh token
         if (tokens is { Provider: "Auth0", RefreshToken: not null, Auth0Domain: not null, ClientId: not null }) {
-            return await RefreshAsync(tokens);
+            return await RefreshAuth0Async(tokens);
         }
 
-        // GitHub tokens can't be refreshed
+        // GitHub: refresh via server's /auth/refresh endpoint
+        if (tokens.Provider == "GitHub") {
+            return await RefreshGitHubAsync(tokens);
+        }
+
         return null;
     }
 
-    static async Task<StoredTokens?> RefreshAsync(StoredTokens tokens) {
+    static async Task<StoredTokens?> RefreshGitHubAsync(StoredTokens tokens) {
+        var baseUrl = Environment.GetEnvironmentVariable("KAPACITOR_URL") ?? "http://localhost:5108";
+        using var http = new HttpClient();
+
+        var requestBody = JsonSerializer.Serialize(
+            new RefreshTokenRequest { AccessToken = tokens.AccessToken },
+            KapacitorJsonContext.Default.RefreshTokenRequest
+        );
+        var payload = new StringContent(requestBody, System.Text.Encoding.UTF8, "application/json");
+
+        try {
+            var response = await http.PostAsync($"{baseUrl}/auth/refresh", payload);
+
+            if (!response.IsSuccessStatusCode) {
+                return null;
+            }
+
+            var json = await response.Content.ReadFromJsonAsync(KapacitorJsonContext.Default.TokenExchangeResponse);
+
+            if (json is null) {
+                return null;
+            }
+
+            var refreshed = tokens with {
+                AccessToken = json.AccessToken,
+                ExpiresAt   = DateTimeOffset.UtcNow.AddSeconds(json.ExpiresIn)
+            };
+
+            Save(refreshed);
+
+            return refreshed;
+        } catch {
+            return null;
+        }
+    }
+
+    static async Task<StoredTokens?> RefreshAuth0Async(StoredTokens tokens) {
         using var http = new HttpClient();
 
         var response = await http.PostAsync(

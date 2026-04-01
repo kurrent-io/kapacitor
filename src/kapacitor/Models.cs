@@ -200,6 +200,7 @@ static partial class GitUrlParser {
 [JsonSerializable(typeof(Auth.AuthDiscoveryResponse))]
 [JsonSerializable(typeof(Auth.TokenExchangeRequest))]
 [JsonSerializable(typeof(Auth.TokenExchangeResponse))]
+[JsonSerializable(typeof(Auth.RefreshTokenRequest))]
 [JsonSerializable(typeof(Auth.GitHubDeviceCodeResponse))]
 [JsonSerializable(typeof(Auth.GitHubTokenResponse))]
 [JsonSerializable(typeof(Auth.Auth0TokenResponse))]
