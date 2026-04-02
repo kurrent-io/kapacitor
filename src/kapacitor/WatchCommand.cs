@@ -615,9 +615,7 @@ static partial class WatchCommand {
          || current.PrNumber  != lastSent.PrNumber
          || current.PrUrl     != lastSent.PrUrl
          || current.PrTitle   != lastSent.PrTitle
-         || current.PrHeadRef != lastSent.PrHeadRef
-         || current.UserName  != lastSent.UserName
-         || current.UserEmail != lastSent.UserEmail;
+         || current.PrHeadRef != lastSent.PrHeadRef;
     }
 
     static string TruncateForTitle(string text, int maxLength) {

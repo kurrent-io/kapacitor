@@ -1,0 +1,9 @@
+{
+  "name": "@kurrent/kapacitor-darwin-arm64",
+  "version": "0.1.0",
+  "description": "kapacitor native binary for macOS ARM64",
+  "license": "UNLICENSED",
+  "os": ["darwin"],
+  "cpu": ["arm64"],
+  "files": ["bin/"]
+}

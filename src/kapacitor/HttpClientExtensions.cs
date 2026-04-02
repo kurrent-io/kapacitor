@@ -3,6 +3,7 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
 using kapacitor.Auth;
+using kapacitor.Config;
 
 namespace kapacitor;
 
@@ -13,10 +14,12 @@ static class HttpClientExtensions {
     /// All CLI commands that call the Capacitor server should use this
     /// instead of <c>new HttpClient()</c>.
     /// </summary>
-    public static async Task<HttpClient> CreateAuthenticatedClientAsync() {
+    public static async Task<HttpClient> CreateAuthenticatedClientAsync(string? baseUrl = null) {
         var client = new HttpClient();
 
-        var baseUrl = Environment.GetEnvironmentVariable("KAPACITOR_URL") ?? "http://localhost:5108";
+        baseUrl ??= AppConfig.ResolvedServerUrl
+                 ?? Environment.GetEnvironmentVariable("KAPACITOR_URL")
+                 ?? "http://localhost:5108";
         var provider = await DiscoverProviderAsync(baseUrl);
 
         if (provider == "None") {

@@ -1,0 +1,9 @@
+{
+  "name": "@kurrent/kapacitor-linux-x64",
+  "version": "0.1.0",
+  "description": "kapacitor native binary for Linux x64",
+  "license": "UNLICENSED",
+  "os": ["linux"],
+  "cpu": ["x64"],
+  "files": ["bin/"]
+}

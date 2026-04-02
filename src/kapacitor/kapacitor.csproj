@@ -2,6 +2,7 @@
     <PropertyGroup>
         <OutputType>Exe</OutputType>
         <TargetFramework>net10.0</TargetFramework>
+        <Version>0.1.0</Version>
         <ImplicitUsings>enable</ImplicitUsings>
         <Nullable>enable</Nullable>
         <PublishAot>true</PublishAot>
@@ -9,6 +10,7 @@
         <InvariantGlobalization>true</InvariantGlobalization>
         <DebuggerSupport>false</DebuggerSupport>
         <TrimMode>full</TrimMode>
+        <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     </PropertyGroup>
     <ItemGroup>
         <InternalsVisibleTo Include="kapacitor.Tests.Unit" />
@@ -17,5 +19,15 @@
     <ItemGroup>
         <PackageReference Include="IdentityModel.OidcClient" Version="6.0.0" />
         <PackageReference Include="Microsoft.AspNetCore.SignalR.Client" Version="10.*" />
+        <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.*" />
+        <PackageReference Include="Microsoft.Extensions.Http" Version="10.*" />
+    </ItemGroup>
+
+    <!-- Compile the PTY shim on macOS (needed for ARM64 variadic ioctl workaround) -->
+    <Target Name="CompilePtyShim" BeforeTargets="Build" Condition="$([MSBuild]::IsOSPlatform('OSX'))">
+        <Exec Command="cc -shared -o $(OutputPath)libpty_shim.dylib Daemon/Native/pty_shim.c" />
+    </Target>
+    <ItemGroup Condition="$([MSBuild]::IsOSPlatform('OSX'))">
+        <None Include="$(OutputPath)libpty_shim.dylib" CopyToOutputDirectory="PreserveNewest" Link="libpty_shim.dylib" />
     </ItemGroup>
 </Project>
