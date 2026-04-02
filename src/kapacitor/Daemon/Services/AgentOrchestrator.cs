@@ -57,9 +57,9 @@ public partial class AgentOrchestrator : IAsyncDisposable {
     readonly IPtyProcessFactory                          _ptyFactory;
     readonly IHttpClientFactory                          _httpClientFactory;
     readonly ILogger<AgentOrchestrator>                  _logger;
-    readonly PeriodicTimer                               _heartbeatTimer      = new(TimeSpan.FromSeconds(30));
-    readonly PeriodicTimer                               _daemonHeartbeat     = new(TimeSpan.FromMinutes(1));
-    readonly CancellationTokenSource                     _shutdownCts         = new();
+    readonly PeriodicTimer                               _heartbeatTimer  = new(TimeSpan.FromSeconds(30));
+    readonly PeriodicTimer                               _daemonHeartbeat = new(TimeSpan.FromMinutes(1));
+    readonly CancellationTokenSource                     _shutdownCts     = new();
 
     public AgentOrchestrator(
             DaemonConfig               config,
@@ -89,9 +89,17 @@ public partial class AgentOrchestrator : IAsyncDisposable {
         _ = RunDaemonHeartbeatLoopAsync(_shutdownCts.Token);
     }
 
-    public int ActiveCount => _agents.Count(a => a.Value.Status is "Starting" or "Running");
+    int ActiveCount => _agents.Count(a => a.Value.Status is "Starting" or "Running");
 
-    async Task HandleLaunchAgent(string agentId, string? prompt, string model, string? effort, string repoPath, string[]? tools, string[]? attachmentIds) {
+    async Task HandleLaunchAgent(
+            string    agentId,
+            string?   prompt,
+            string    model,
+            string?   effort,
+            string    repoPath,
+            string[]? tools,
+            string[]? attachmentIds
+        ) {
         WorktreeInfo? worktree = null;
 
         try {
@@ -125,8 +133,13 @@ public partial class AgentOrchestrator : IAsyncDisposable {
                 return;
             }
 
-            _logger.LogInformation("Launching agent {AgentId} for {Repo} (effort={Effort}, model={Model})",
-                agentId, repoPath, effort ?? "default", model);
+            _logger.LogInformation(
+                "Launching agent {AgentId} for {Repo} (effort={Effort}, model={Model})",
+                agentId,
+                repoPath,
+                effort ?? "default",
+                model
+            );
 
             worktree = await _worktreeManager.CreateAsync(repoPath);
 
@@ -206,7 +219,11 @@ public partial class AgentOrchestrator : IAsyncDisposable {
 
             _logger.LogInformation(
                 "Agent {AgentId} spawned (PID={Pid}, worktree={Worktree}, claude={ClaudePath})",
-                agentId, process.Pid, worktree.Path, _config.ClaudePath);
+                agentId,
+                process.Pid,
+                worktree.Path,
+                _config.ClaudePath
+            );
 
             var cts   = new CancellationTokenSource();
             var agent = new AgentInstance(agentId, prompt, model, effort, repoPath, process, worktree, cts);
@@ -219,7 +236,7 @@ public partial class AgentOrchestrator : IAsyncDisposable {
                 agentId,
                 "AgentRunStarted",
                 new System.Text.Json.Nodes.JsonObject {
-                    ["prompt"] = prompt, ["model"] = model, ["effort"] = effort,
+                    ["prompt"]    = prompt, ["model"]           = model, ["effort"] = effort,
                     ["repo_path"] = repoPath, ["worktree_path"] = worktree.Path
                 }
             );
@@ -269,7 +286,8 @@ public partial class AgentOrchestrator : IAsyncDisposable {
                 await agent.Process.WaitForExitAsync(TimeSpan.FromSeconds(5));
 
                 var exitCode = agent.Process.ExitCode;
-                var status   = agent.Process.HasExited
+
+                var status = agent.Process.HasExited
                     ? exitCode is null or 0 ? "Completed" : "Failed"
                     : "Failed";
                 var isEarlyExit = DateTime.UtcNow - agent.CreatedAt < EarlyExitWindow;
@@ -283,6 +301,7 @@ public partial class AgentOrchestrator : IAsyncDisposable {
                     // chunk flips status to "Running" before the process exits.
                     if (isEarlyExit) {
                         var output = ExtractTerminalText(agent.OutputBuffer);
+
                         var reason = !string.IsNullOrWhiteSpace(output)
                             ? output
                             : exitCode is null or 0
@@ -293,7 +312,10 @@ public partial class AgentOrchestrator : IAsyncDisposable {
 
                         _logger.LogWarning(
                             "Agent {AgentId} failed during startup (exit code {ExitCode}): {Reason}",
-                            agent.Id, exitCode, reason);
+                            agent.Id,
+                            exitCode,
+                            reason
+                        );
 
                         _ = _server.LaunchFailedAsync(agent.Id, reason);
                     }
@@ -306,8 +328,8 @@ public partial class AgentOrchestrator : IAsyncDisposable {
                     _ = _server.AppendAgentRunEventAsync(
                         agent.Id,
                         "AgentRunStopped",
-                        new System.Text.Json.Nodes.JsonObject {
-                            ["reason"] = stopReason,
+                        new() {
+                            ["reason"]    = stopReason,
                             ["exit_code"] = exitCode
                         }
                     );
@@ -401,6 +423,7 @@ public partial class AgentOrchestrator : IAsyncDisposable {
                 using var httpClient = _httpClientFactory.CreateClient("Attachments");
 
                 var tokens = await TokenStore.GetValidTokensAsync();
+
                 if (tokens is not null) {
                     httpClient.DefaultRequestHeaders.Authorization = new("Bearer", tokens.AccessToken);
                 }
@@ -419,17 +442,21 @@ public partial class AgentOrchestrator : IAsyncDisposable {
 
                 // Sanitize: strip path separators to prevent directory traversal
                 var fileName = Path.GetFileName(rawFileName);
+
                 if (string.IsNullOrWhiteSpace(fileName))
                     fileName = $"attachment-{id[..8]}";
 
-                var             filePath = GetUniqueFilePath(attachDir, fileName);
-                var             fullPath = Path.GetFullPath(filePath);
-                var             safeDir  = Path.GetFullPath(attachDir) + Path.DirectorySeparatorChar;
+                var filePath = GetUniqueFilePath(attachDir, fileName);
+                var fullPath = Path.GetFullPath(filePath);
+                var safeDir  = Path.GetFullPath(attachDir) + Path.DirectorySeparatorChar;
+
                 if (!fullPath.StartsWith(safeDir)) {
                     _logger.LogWarning("Attachment filename would escape directory: {FileName}", rawFileName);
+
                     continue;
                 }
-                await using var fs       = File.Create(filePath);
+
+                await using var fs = File.Create(filePath);
                 await response.Content.CopyToAsync(fs);
 
                 paths.Add($".attached/{Path.GetFileName(filePath)}");
@@ -516,9 +543,7 @@ public partial class AgentOrchestrator : IAsyncDisposable {
                 _ = _server.AppendAgentRunEventAsync(
                     agent.Id,
                     "AgentRunHeartbeat",
-                    new System.Text.Json.Nodes.JsonObject {
-                        ["session_id"] = agent.SessionId
-                    }
+                    new() { ["session_id"] = agent.SessionId }
                 );
             }
         }
@@ -592,7 +617,7 @@ public partial class AgentOrchestrator : IAsyncDisposable {
         }
 
         if (rootObj["permissions"] is not JsonObject permissions) {
-            permissions = [];
+            permissions            = [];
             rootObj["permissions"] = permissions;
         }
 

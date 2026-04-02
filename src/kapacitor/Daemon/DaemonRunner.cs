@@ -1,4 +1,3 @@
-using kapacitor.Auth;
 using kapacitor.Config;
 using kapacitor.Daemon.Pty;
 using kapacitor.Daemon.Services;
@@ -11,12 +10,14 @@ namespace kapacitor.Daemon;
 public static class DaemonRunner {
     public static readonly string LogPath = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-        ".config", "kapacitor", "agent.log"
+        ".config",
+        "kapacitor",
+        "agent.log"
     );
 
     public static async Task<int> RunAsync(string[] args) {
         string? logFile = null;
-        var config = new DaemonConfig();
+        var     config  = new DaemonConfig();
 
         // Resolve server URL from AppConfig
         var serverUrl = AppConfig.ResolvedServerUrl;
@@ -24,33 +25,37 @@ public static class DaemonRunner {
         // CLI arg overrides for daemon-specific settings — parse before host builder
         for (var i = 0; i < args.Length - 1; i++) {
             switch (args[i]) {
-                case "--name":       config.Name                = args[++i]; break;
-                case "--server":     config.ServerUrl           = args[++i]; break;
-                case "--server-url": config.ServerUrl           = args[++i]; break;
-                case "--log-file":   logFile                    = args[++i]; break;
+                case "--name": config.Name = args[++i]; break;
+                case "--server":
+                case "--server-url": config.ServerUrl = args[++i]; break;
+                case "--log-file": logFile = args[++i]; break;
                 case "--max-agents" when int.TryParse(args[i + 1], out var n) && n >= 1:
                     config.MaxConcurrentAgents = n;
                     i++;
+
                     break;
                 case "--max-agents":
-                    Console.Error.WriteLine($"Invalid --max-agents value: {args[i + 1]} (must be a positive integer)");
+                    await Console.Error.WriteLineAsync($"Invalid --max-agents value: {args[i + 1]} (must be a positive integer)");
+
                     return 1;
             }
         }
 
         // Strip our custom args before passing to host builder
         var hostArgs = Array.Empty<string>();
-        var builder = Host.CreateApplicationBuilder(hostArgs);
+        var builder  = Host.CreateApplicationBuilder(hostArgs);
 
         // Configure logging: file when detached, console when foreground
         builder.Logging.ClearProviders();
+
         if (logFile is not null) {
             builder.Logging.AddProvider(new RollingFileLoggerProvider(logFile));
         } else {
             builder.Logging.AddSimpleConsole(opts => {
-                opts.TimestampFormat = "yyyy-MM-dd HH:mm:ss.fff ";
-                opts.UseUtcTimestamp = false;
-            });
+                    opts.TimestampFormat = "yyyy-MM-dd HH:mm:ss.fff ";
+                    opts.UseUtcTimestamp = false;
+                }
+            );
         }
 
         // If server URL wasn't set by CLI arg, use resolved URL
@@ -71,14 +76,16 @@ public static class DaemonRunner {
             if (int.TryParse(maxAgents, out var n) && n >= 1)
                 config.MaxConcurrentAgents = n;
             else
-                Console.Error.WriteLine($"Warning: ignoring invalid KAPACITOR_MAX_AGENTS={maxAgents}");
+                await Console.Error.WriteLineAsync($"Warning: ignoring invalid KAPACITOR_MAX_AGENTS={maxAgents}");
         }
 
         // Also load daemon settings from config file
         var appConfig = AppConfig.Load();
+
         if (appConfig?.Daemon is { } daemonSettings) {
             if (string.IsNullOrEmpty(config.Name) && !string.IsNullOrEmpty(daemonSettings.Name))
                 config.Name = daemonSettings.Name;
+
             if (config.MaxConcurrentAgents == 5 && daemonSettings.MaxAgents != 5)
                 config.MaxConcurrentAgents = daemonSettings.MaxAgents;
         }
@@ -86,6 +93,7 @@ public static class DaemonRunner {
         // Fall back to OS username, then machine name, then a static default
         if (string.IsNullOrEmpty(config.Name)) {
             var userName = Environment.UserName;
+
             config.Name = !string.IsNullOrEmpty(userName)
                 ? userName.ToLowerInvariant()
                 : !string.IsNullOrEmpty(Environment.MachineName)
@@ -94,11 +102,14 @@ public static class DaemonRunner {
         }
 
         var errors = config.Validate();
+
         if (errors.Count > 0) {
-            Console.Error.WriteLine("Configuration errors:");
+            await Console.Error.WriteLineAsync("Configuration errors:");
+
             foreach (var e in errors) {
-                Console.Error.WriteLine($"  - {e}");
+                await Console.Error.WriteLineAsync($"  - {e}");
             }
+
             return 1;
         }
 
@@ -106,20 +117,24 @@ public static class DaemonRunner {
         builder.Services.AddSingleton<ServerConnection>();
 
         if (OperatingSystem.IsWindows()) {
-            builder.Services.AddSingleton<IPtyProcessFactory, kapacitor.Daemon.Pty.Windows.WinPtyProcessFactory>();
+            builder.Services.AddSingleton<IPtyProcessFactory, Pty.Windows.WinPtyProcessFactory>();
         } else {
-            builder.Services.AddSingleton<IPtyProcessFactory, kapacitor.Daemon.Pty.Unix.UnixPtyProcessFactory>();
+            builder.Services.AddSingleton<IPtyProcessFactory, Pty.Unix.UnixPtyProcessFactory>();
         }
 
         builder.Services.AddSingleton<WorktreeManager>();
-        builder.Services.AddHttpClient("Attachments",
-            client => client.BaseAddress = new Uri(config.ServerUrl));
+
+        builder.Services.AddHttpClient("Attachments", client => client.BaseAddress = new Uri(config.ServerUrl));
         builder.Services.AddSingleton<AgentOrchestrator>();
 
         var host   = builder.Build();
         var logger = host.Services.GetRequiredService<ILoggerFactory>().CreateLogger("kapacitor.Daemon");
-        logger.LogInformation("kapacitor agent '{Name}' starting, connecting to {ServerUrl}",
-            config.Name, config.ServerUrl);
+
+        logger.LogInformation(
+            "kapacitor agent '{Name}' starting, connecting to {ServerUrl}",
+            config.Name,
+            config.ServerUrl
+        );
 
         var lifetime   = host.Services.GetRequiredService<IHostApplicationLifetime>();
         var connection = host.Services.GetRequiredService<ServerConnection>();

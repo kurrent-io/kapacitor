@@ -9,17 +9,18 @@ namespace kapacitor.Daemon;
 sealed class RollingFileLoggerProvider : ILoggerProvider {
     readonly string _path;
     readonly long   _maxSize;
-    readonly object _lock = new();
+    readonly Lock   _lock = new();
     StreamWriter?   _writer;
 
-    public const long DefaultMaxSize = 10 * 1024 * 1024; // 10 MB
+    const long DefaultMaxSize = 10 * 1024 * 1024; // 10 MB
 
     public RollingFileLoggerProvider(string path, long maxSize = DefaultMaxSize) {
         _path    = path;
         _maxSize = maxSize;
 
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-        _writer = new StreamWriter(new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.Read)) {
+
+        _writer = new(new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.Read)) {
             AutoFlush = true
         };
     }
@@ -45,7 +46,8 @@ sealed class RollingFileLoggerProvider : ILoggerProvider {
                 var backup = _path + ".1";
                 File.Delete(backup);
                 File.Move(_path, backup);
-                _writer = new StreamWriter(new FileStream(_path, FileMode.Create, FileAccess.Write, FileShare.Read)) {
+
+                _writer = new(new FileStream(_path, FileMode.Create, FileAccess.Write, FileShare.Read)) {
                     AutoFlush = true
                 };
             }
@@ -53,7 +55,7 @@ sealed class RollingFileLoggerProvider : ILoggerProvider {
             // Best-effort rotation — if it fails, try to reopen so logging continues
             if (_writer is null) {
                 try {
-                    _writer = new StreamWriter(new FileStream(_path, FileMode.Append, FileAccess.Write, FileShare.Read)) {
+                    _writer = new(new FileStream(_path, FileMode.Append, FileAccess.Write, FileShare.Read)) {
                         AutoFlush = true
                     };
                 } catch (IOException) {
@@ -82,11 +84,12 @@ sealed class RollingFileLoggerProvider : ILoggerProvider {
 
     sealed class FileLogger(RollingFileLoggerProvider provider, string category) : ILogger {
         public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
-        public bool IsEnabled(LogLevel logLevel) => logLevel >= LogLevel.Information;
+        public bool         IsEnabled(LogLevel        logLevel)                     => logLevel >= LogLevel.Information;
 
         public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter) {
             if (!IsEnabled(logLevel)) return;
-            var msg = formatter(state, exception);
+
+            var msg                        = formatter(state, exception);
             if (exception is not null) msg += Environment.NewLine + exception;
             provider.Write(category, logLevel, msg);
         }

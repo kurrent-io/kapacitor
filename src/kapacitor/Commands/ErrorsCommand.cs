@@ -1,6 +1,6 @@
 using System.Text.Json;
 
-namespace kapacitor;
+namespace kapacitor.Commands;
 
 static class ErrorsCommand {
     public static async Task<int> HandleErrors(string baseUrl, string sessionId, bool chain) {
@@ -8,10 +8,12 @@ static class ErrorsCommand {
         var       query      = chain ? "?chain=true" : "";
 
         HttpResponseMessage resp;
+
         try {
             resp = await httpClient.GetWithRetryAsync($"{baseUrl}/api/sessions/{sessionId}/errors{query}");
         } catch (HttpRequestException ex) {
             HttpClientExtensions.WriteUnreachableError(baseUrl, ex);
+
             return 1;
         }
 
@@ -21,11 +23,13 @@ static class ErrorsCommand {
 
         if (resp.StatusCode == System.Net.HttpStatusCode.NotFound) {
             await Console.Error.WriteLineAsync($"Session not found: {sessionId}");
+
             return 1;
         }
 
         if (!resp.IsSuccessStatusCode) {
             await Console.Error.WriteLineAsync($"HTTP {(int)resp.StatusCode}");
+
             return 1;
         }
 
@@ -34,6 +38,7 @@ static class ErrorsCommand {
 
         if (errors is null || errors.Count == 0) {
             Console.WriteLine("No errors found.");
+
             return 0;
         }
 

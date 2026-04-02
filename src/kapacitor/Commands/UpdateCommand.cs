@@ -1,5 +1,4 @@
 using System.Reflection;
-using System.Text.Json;
 using System.Text.Json.Nodes;
 using kapacitor.Config;
 
@@ -8,7 +7,9 @@ namespace kapacitor.Commands;
 public static class UpdateCommand {
     static readonly string CachePath = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-        ".config", "kapacitor", "update-check.json"
+        ".config",
+        "kapacitor",
+        "update-check.json"
     );
 
     public static async Task<int> HandleAsync() {
@@ -16,11 +17,13 @@ public static class UpdateCommand {
 
         if (latest is null) {
             Console.Error.WriteLine("Could not check for updates.");
+
             return 1;
         }
 
         if (latest == current) {
             Console.WriteLine($"Already up to date: {current}");
+
             return 0;
         }
 
@@ -38,14 +41,16 @@ public static class UpdateCommand {
     /// </summary>
     public static async Task PrintUpdateHintIfAvailable() {
         var config = AppConfig.Load();
+
         if (config?.UpdateCheck == false) return;
 
         try {
             var (latest, current) = await CheckForUpdateAsync(forceCheck: false);
+
             if (latest is not null && current is not null && latest != current) {
-                Console.Error.WriteLine();
-                Console.Error.WriteLine($"Update available: {current} → {latest}");
-                Console.Error.WriteLine("Run `npm update -g @kurrent/kapacitor` to update");
+                await Console.Error.WriteLineAsync();
+                await Console.Error.WriteLineAsync($"Update available: {current} → {latest}");
+                await Console.Error.WriteLineAsync("Run `npm update -g @kurrent/kapacitor` to update");
             }
         } catch {
             // Best effort — never break the CLI for update checks
@@ -59,14 +64,14 @@ public static class UpdateCommand {
             // Check cache
             if (File.Exists(CachePath)) {
                 try {
-                    var cacheJson = File.ReadAllText(CachePath);
-                    var cache = JsonNode.Parse(cacheJson);
-                    var checkedAt = cache?["checked_at"]?.GetValue<DateTimeOffset>();
+                    var cacheJson     = await File.ReadAllTextAsync(CachePath);
+                    var cache         = JsonNode.Parse(cacheJson);
+                    var checkedAt     = cache?["checked_at"]?.GetValue<DateTimeOffset>();
                     var cachedVersion = cache?["latest_version"]?.GetValue<string>();
 
                     if (checkedAt is not null
-                        && DateTimeOffset.UtcNow - checkedAt.Value < TimeSpan.FromHours(24)
-                        && cachedVersion is not null) {
+                     && DateTimeOffset.UtcNow - checkedAt.Value < TimeSpan.FromHours(24)
+                     && cachedVersion is not null) {
                         return (cachedVersion, current);
                     }
                 } catch {
@@ -76,27 +81,30 @@ public static class UpdateCommand {
         }
 
         // Query npm registry
-        using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+        using var http = new HttpClient();
+        http.Timeout = TimeSpan.FromSeconds(5);
         http.DefaultRequestHeaders.Add("User-Agent", "kapacitor-cli");
 
         try {
             var resp = await http.GetAsync("https://registry.npmjs.org/@kurrent/kapacitor/latest");
+
             if (!resp.IsSuccessStatusCode) return (null, current);
 
-            var body = await resp.Content.ReadAsStringAsync();
-            var json = JsonNode.Parse(body);
+            var body   = await resp.Content.ReadAsStringAsync();
+            var json   = JsonNode.Parse(body);
             var latest = json?["version"]?.GetValue<string>();
 
             // Cache result
             if (latest is not null) {
                 var dir = Path.GetDirectoryName(CachePath)!;
                 Directory.CreateDirectory(dir);
+
                 var cacheObj = new JsonObject {
                     ["latest_version"] = latest,
-                    ["checked_at"] = DateTimeOffset.UtcNow
+                    ["checked_at"]     = DateTimeOffset.UtcNow
                 };
-                var tempPath = CachePath + ".tmp";
-                File.WriteAllText(tempPath, cacheObj.ToJsonString());
+                var tempPath = $"{CachePath}.tmp";
+                await File.WriteAllTextAsync(tempPath, cacheObj.ToJsonString());
                 File.Move(tempPath, CachePath, overwrite: true);
             }
 
@@ -106,9 +114,5 @@ public static class UpdateCommand {
         }
     }
 
-    static string? GetCurrentVersion() {
-        return typeof(UpdateCommand).Assembly
-            .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?
-            .InformationalVersion;
-    }
+    static string? GetCurrentVersion() => typeof(UpdateCommand).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion;
 }

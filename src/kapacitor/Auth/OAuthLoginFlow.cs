@@ -21,7 +21,7 @@ public static class OAuthLoginFlow {
         }
 
         if (!configResponse.IsSuccessStatusCode) {
-            Console.Error.WriteLine($"Error: Failed to fetch auth config from {serverUrl}/auth/config");
+            await Console.Error.WriteLineAsync($"Error: Failed to fetch auth config from {serverUrl}/auth/config");
 
             return 1;
         }

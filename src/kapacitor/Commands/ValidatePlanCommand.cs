@@ -1,6 +1,6 @@
 using System.Text.Json;
 
-namespace kapacitor;
+namespace kapacitor.Commands;
 
 static class ValidatePlanCommand {
     public static async Task<int> Handle(string baseUrl, string sessionId) {
@@ -85,8 +85,7 @@ static class ValidatePlanCommand {
 
         if (work.Count == 0) {
             Console.WriteLine("No file writes or edits recorded.");
-        }
-        else {
+        } else {
             foreach (var entry in work) {
                 var label = entry.Type == "write" ? "Write" : "Edit";
                 var path  = entry.FilePath ?? "unknown";

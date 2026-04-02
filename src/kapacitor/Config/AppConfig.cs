@@ -32,7 +32,9 @@ internal partial class ConfigJsonContextIndented : JsonSerializerContext;
 public static class AppConfig {
     static readonly string ConfigPath = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-        ".config", "kapacitor", "config.json"
+        ".config",
+        "kapacitor",
+        "config.json"
     );
 
     public static string? ResolvedServerUrl { get; private set; }
@@ -40,27 +42,34 @@ public static class AppConfig {
     public static string? ResolveServerUrl(string[] args) {
         // 1. CLI arg: --server-url <url>
         var idx = Array.IndexOf(args, "--server-url");
+
         if (idx >= 0 && idx + 1 < args.Length) {
             ResolvedServerUrl = args[idx + 1];
+
             return ResolvedServerUrl;
         }
 
         // 2. Env var
         var envUrl = Environment.GetEnvironmentVariable("KAPACITOR_URL");
+
         if (!string.IsNullOrEmpty(envUrl)) {
             ResolvedServerUrl = envUrl;
+
             return ResolvedServerUrl;
         }
 
         // 3. Config file
         var config = Load();
+
         if (!string.IsNullOrEmpty(config?.ServerUrl)) {
             ResolvedServerUrl = config.ServerUrl;
+
             return ResolvedServerUrl;
         }
 
         // 4. No default
         ResolvedServerUrl = null;
+
         return null;
     }
 
@@ -70,9 +79,11 @@ public static class AppConfig {
 
         try {
             var json = File.ReadAllText(ConfigPath);
+
             return JsonSerializer.Deserialize(json, ConfigJsonContext.Default.KapacitorConfig);
         } catch (Exception ex) when (ex is JsonException or IOException or UnauthorizedAccessException) {
             Console.Error.WriteLine($"Warning: could not read config at {ConfigPath}: {ex.Message}");
+
             return null;
         }
     }
@@ -81,6 +92,7 @@ public static class AppConfig {
         var dir = Path.GetDirectoryName(ConfigPath)!;
         Directory.CreateDirectory(dir);
         var tempPath = ConfigPath + ".tmp";
+
         File.WriteAllBytes(
             tempPath,
             JsonSerializer.SerializeToUtf8Bytes(config, ConfigJsonContextIndented.Default.KapacitorConfig)

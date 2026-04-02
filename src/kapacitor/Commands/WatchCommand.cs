@@ -5,7 +5,7 @@ using kapacitor.Auth;
 using Microsoft.AspNetCore.SignalR.Client;
 using Microsoft.Extensions.DependencyInjection;
 
-namespace kapacitor;
+namespace kapacitor.Commands;
 
 static partial class WatchCommand {
     public static async Task<int> RunWatch(
@@ -52,12 +52,16 @@ static partial class WatchCommand {
         var hubUrl = $"{baseUrl}/hubs/sessions";
 
         var hubConnection = new HubConnectionBuilder()
-            .WithUrl(hubUrl, options => {
-                options.AccessTokenProvider = async () => {
-                    var t = await TokenStore.GetValidTokensAsync();
-                    return t?.AccessToken;
-                };
-            })
+            .WithUrl(
+                hubUrl,
+                options => {
+                    options.AccessTokenProvider = async () => {
+                        var t = await TokenStore.GetValidTokensAsync();
+
+                        return t?.AccessToken;
+                    };
+                }
+            )
             .WithAutomaticReconnect([TimeSpan.Zero, TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(10), TimeSpan.FromSeconds(30)])
             .AddJsonProtocol(options => {
                     options.PayloadSerializerOptions.TypeInfoResolverChain
@@ -660,6 +664,7 @@ static partial class WatchCommand {
             using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
             using var reader = new StreamReader(stream);
             var       count  = 0;
+
             while (reader.ReadLine() is not null) {
                 count++;
             }

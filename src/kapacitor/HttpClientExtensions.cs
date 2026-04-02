@@ -17,9 +17,7 @@ static class HttpClientExtensions {
     public static async Task<HttpClient> CreateAuthenticatedClientAsync(string? baseUrl = null) {
         var client = new HttpClient();
 
-        baseUrl ??= AppConfig.ResolvedServerUrl
-                 ?? Environment.GetEnvironmentVariable("KAPACITOR_URL")
-                 ?? "http://localhost:5108";
+        baseUrl ??= AppConfig.ResolvedServerUrl ?? Environment.GetEnvironmentVariable("KAPACITOR_URL") ?? "http://localhost:5108";
         var provider = await DiscoverProviderAsync(baseUrl);
 
         if (provider == "None") {
@@ -51,12 +49,15 @@ static class HttpClientExtensions {
         }
 
         using var http = new HttpClient();
+
         try {
             var response = await http.GetAsync($"{baseUrl}/auth/config");
+
             if (response.IsSuccessStatusCode) {
-                var config = await response.Content.ReadFromJsonAsync(KapacitorJsonContext.Default.AuthDiscoveryResponse);
+                var config   = await response.Content.ReadFromJsonAsync(KapacitorJsonContext.Default.AuthDiscoveryResponse);
                 var provider = config?.Provider ?? "None";
                 cachedProvider = provider; // Only cache successful discovery
+
                 return provider;
             }
         } catch {
@@ -108,8 +109,8 @@ static class HttpClientExtensions {
         var body = await response.Content.ReadAsStringAsync();
 
         try {
-            using var doc = JsonDocument.Parse(body);
-            var message = doc.RootElement.TryGetProperty("message", out var msg) ? msg.GetString() : null;
+            using var doc     = JsonDocument.Parse(body);
+            var       message = doc.RootElement.TryGetProperty("message", out var msg) ? msg.GetString() : null;
             await Console.Error.WriteLineAsync(message ?? "Authentication failed. Run 'kapacitor login' to re-authenticate.");
         } catch {
             await Console.Error.WriteLineAsync("Authentication failed. Run 'kapacitor login' to re-authenticate.");

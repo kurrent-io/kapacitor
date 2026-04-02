@@ -1,7 +1,7 @@
 using System.Text;
 using System.Text.Json;
 
-namespace kapacitor;
+namespace kapacitor.Commands;
 
 static class WhatsDoneCommand {
     public static async Task<int> HandleGenerateWhatsDone(string baseUrl, string sessionId) {

@@ -6,21 +6,23 @@ namespace kapacitor.Commands;
 public static class SetupCommand {
     public static async Task<int> HandleAsync(string[] args) {
         var serverUrlArg = GetArg(args, "--server-url");
-        var noPrompt = args.Contains("--no-prompt");
+        var noPrompt     = args.Contains("--no-prompt");
 
         Console.WriteLine();
         Console.WriteLine("Welcome to Kapacitor!");
         Console.WriteLine();
 
         // Check if already configured
-        var existing = AppConfig.Load();
+        var existing       = AppConfig.Load();
         var existingTokens = TokenStore.Load();
 
         if (existing?.ServerUrl is not null && existingTokens is not null && !noPrompt) {
             Console.Write($"Already configured for {existing.ServerUrl} as {existingTokens.GitHubUsername}. Re-run setup? [y/N] ");
             var answer = Console.ReadLine()?.Trim().ToLowerInvariant();
+
             if (answer is not "y" and not "yes") {
                 Console.WriteLine("Setup cancelled.");
+
                 return 0;
             }
         }
@@ -33,14 +35,16 @@ public static class SetupCommand {
             serverUrl = serverUrlArg;
             Console.WriteLine($"  Server URL: {serverUrl}");
         } else if (noPrompt) {
-            Console.Error.WriteLine("  --server-url is required with --no-prompt");
+            await Console.Error.WriteLineAsync("  --server-url is required with --no-prompt");
+
             return 1;
         } else {
             Console.Write("  Enter your Capacitor server URL: ");
             serverUrl = Console.ReadLine()?.Trim() ?? "";
 
             if (string.IsNullOrEmpty(serverUrl)) {
-                Console.Error.WriteLine("  Server URL is required.");
+                await Console.Error.WriteLineAsync("  Server URL is required.");
+
                 return 1;
             }
         }
@@ -48,11 +52,13 @@ public static class SetupCommand {
         // Validate server reachability
         Console.Write("  Checking server... ");
         string provider;
+
         try {
             provider = await HttpClientExtensions.DiscoverProviderAsync(serverUrl);
             Console.WriteLine($"✓ Reachable. Auth provider: {provider}");
         } catch (Exception ex) {
-            Console.Error.WriteLine($"✗ Cannot reach server: {ex.Message}");
+            await Console.Error.WriteLineAsync($"✗ Cannot reach server: {ex.Message}");
+
             return 1;
         }
 
@@ -65,8 +71,10 @@ public static class SetupCommand {
             Console.WriteLine("  Auth provider is None — no login required.");
         } else {
             var loginResult = await OAuthLoginFlow.LoginWithDiscoveryAsync(serverUrl);
+
             if (loginResult != 0) {
-                Console.Error.WriteLine("  Login failed.");
+                await Console.Error.WriteLineAsync("  Login failed.");
+
                 return 1;
             }
 
@@ -108,7 +116,7 @@ public static class SetupCommand {
         // Step 4: Daemon name
         Console.WriteLine("Step 4/5: Agent Daemon");
 
-        var defaultName = Environment.UserName.ToLowerInvariant();
+        var    defaultName = Environment.UserName.ToLowerInvariant();
         string daemonName;
 
         if (noPrompt) {
@@ -126,6 +134,7 @@ public static class SetupCommand {
         Console.WriteLine("Step 5/5: Done");
 
         var config = existing ?? new KapacitorConfig();
+
         config = config with {
             ServerUrl = serverUrl,
             Daemon = (config.Daemon ?? new DaemonSettings()) with { Name = daemonName }
@@ -135,9 +144,11 @@ public static class SetupCommand {
         var finalTokens = TokenStore.Load();
         Console.WriteLine($"  ✓ Server:  {serverUrl}");
         Console.WriteLine($"  ✓ Daemon:  {daemonName}");
+
         if (finalTokens is not null) {
             Console.WriteLine($"  ✓ Auth:    {finalTokens.GitHubUsername} ({finalTokens.Provider})");
         }
+
         Console.WriteLine($"  Config saved to {AppConfig.GetConfigPath()}");
         Console.WriteLine();
         Console.WriteLine("  Optional: start the agent daemon with `kapacitor agent start -d`");
@@ -147,23 +158,28 @@ public static class SetupCommand {
 
     static string? ResolvePluginPath() {
         var exePath = Environment.ProcessPath;
+
         if (exePath is null) return null;
 
         var exeDir = Path.GetDirectoryName(exePath);
+
         if (exeDir is null) return null;
 
         // Try: <exe_dir>/../../kapacitor/plugin  (npm layout)
         var npmPluginPath = Path.GetFullPath(Path.Combine(exeDir, "..", "..", "kapacitor", "plugin"));
+
         if (Directory.Exists(npmPluginPath))
             return npmPluginPath;
 
         // Try: <exe_dir>/../plugin  (wrapper package direct layout)
         var wrapperPluginPath = Path.GetFullPath(Path.Combine(exeDir, "..", "plugin"));
+
         if (Directory.Exists(wrapperPluginPath))
             return wrapperPluginPath;
 
         // Try: repo root layout (dev mode)
         var repoPlugin = Path.GetFullPath(Path.Combine(exeDir, "..", "..", "plugin"));
+
         if (Directory.Exists(repoPlugin))
             return repoPlugin;
 
@@ -171,16 +187,18 @@ public static class SetupCommand {
     }
 
     static async Task<bool> WaitForHookAsync(string serverUrl) {
-        using var client = await HttpClientExtensions.CreateAuthenticatedClientAsync(serverUrl);
-        var timeout = TimeSpan.FromMinutes(5);
-        var interval = TimeSpan.FromSeconds(5);
-        var elapsed = TimeSpan.Zero;
+        using var client   = await HttpClientExtensions.CreateAuthenticatedClientAsync(serverUrl);
+        var       timeout  = TimeSpan.FromMinutes(5);
+        var       interval = TimeSpan.FromSeconds(5);
+        var       elapsed  = TimeSpan.Zero;
 
         while (elapsed < timeout) {
             try {
                 var resp = await client.GetAsync($"{serverUrl}/api/sessions?limit=1");
+
                 if (resp.IsSuccessStatusCode) {
                     var body = await resp.Content.ReadAsStringAsync();
+
                     if (body.Contains("\"id\"")) {
                         return true;
                     }
@@ -198,6 +216,7 @@ public static class SetupCommand {
 
     static string? GetArg(string[] args, string name) {
         var idx = Array.IndexOf(args, name);
+
         return idx >= 0 && idx + 1 < args.Length ? args[idx + 1] : null;
     }
 }

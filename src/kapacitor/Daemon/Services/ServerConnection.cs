@@ -13,11 +13,11 @@ public class ServerConnection : IAsyncDisposable {
     readonly ILogger<ServerConnection> _logger;
 
     // Events for incoming commands from server
-    public event Func<string, string?, string, string?, string, string[]?, string[]?, Task>? OnLaunchAgent;       // agentId, prompt, model, effort, repoPath, tools, attachmentIds
-    public event Func<string, Task>?                                                         OnStopAgent;         // agentId
-    public event Func<string, string, string[]?, Task>?                                      OnSendInput;         // agentId, text, attachmentIds
-    public event Func<string, string, Task>?                                                 OnSendSpecialKey;    // agentId, key
-    public event Action<string, int, int>?                                                   OnResizeTerminal;    // agentId, cols, rows
+    public event Func<string, string?, string, string?, string, string[]?, string[]?, Task>? OnLaunchAgent;    // agentId, prompt, model, effort, repoPath, tools, attachmentIds
+    public event Func<string, Task>?                                                         OnStopAgent;      // agentId
+    public event Func<string, string, string[]?, Task>?                                      OnSendInput;      // agentId, text, attachmentIds
+    public event Func<string, string, Task>?                                                 OnSendSpecialKey; // agentId, key
+    public event Action<string, int, int>?                                                   OnResizeTerminal; // agentId, cols, rows
 
     public ServerConnection(DaemonConfig config, ILogger<ServerConnection> logger) {
         _config = config;
@@ -36,10 +36,11 @@ public class ServerConnection : IAsyncDisposable {
             )
             .WithAutomaticReconnect(new RetryPolicy())
             .AddJsonProtocol(options => {
-                options.PayloadSerializerOptions.TypeInfoResolverChain
-                    .Insert(0, KapacitorJsonContext.Default);
-                options.PayloadSerializerOptions.PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower;
-            })
+                    options.PayloadSerializerOptions.TypeInfoResolverChain
+                        .Insert(0, KapacitorJsonContext.Default);
+                    options.PayloadSerializerOptions.PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower;
+                }
+            )
             .Build();
 
         _hub.On<string, string?, string, string?, string, string[]?, string[]?>(
@@ -70,7 +71,6 @@ public class ServerConnection : IAsyncDisposable {
             "SendSpecialKey",
             (agentId, key) => OnSendSpecialKey?.Invoke(agentId, key) ?? Task.CompletedTask
         );
-
 
         _hub.On<string, int, int>(
             "ResizeTerminal",
@@ -191,7 +191,7 @@ public class ServerConnection : IAsyncDisposable {
 
             var payloadObj = new System.Text.Json.Nodes.JsonObject {
                 ["event_type"] = eventType,
-                ["data"] = data
+                ["data"]       = data
             };
             var payload = payloadObj.ToJsonString();
             await _httpClient.PostAsync(url, new StringContent(payload, System.Text.Encoding.UTF8, "application/json"), _ct);

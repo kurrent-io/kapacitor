@@ -2,7 +2,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 
-namespace kapacitor;
+namespace kapacitor.Commands;
 
 static class HistoryCommand {
     public static async Task<int> HandleHistory(string baseUrl, string? filterCwd, string? filterSession = null, int minLines = 10) {
@@ -363,8 +363,8 @@ static class HistoryCommand {
         var batch = new TranscriptBatch {
             SessionId   = sessionId,
             AgentId     = agentId,
-            Lines       = lines.ToArray(),
-            LineNumbers = lineNumbers.ToArray()
+            Lines       = [.. lines],
+            LineNumbers = [.. lineNumbers]
         };
 
         var       json    = JsonSerializer.Serialize(batch, KapacitorJsonContext.Default.TranscriptBatch);

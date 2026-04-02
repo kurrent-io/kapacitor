@@ -233,12 +233,12 @@ static class WatcherManager {
 
                     startLine = doc.RootElement.TryGetProperty("last_line_number", out var prop) && prop.ValueKind == JsonValueKind.Number
                         ? prop.GetInt32() + 1
-                        : WatchCommand.CountFileLines(transcriptPath);
+                        : Commands.WatchCommand.CountFileLines(transcriptPath);
                 } else {
-                    startLine = WatchCommand.CountFileLines(transcriptPath);
+                    startLine = Commands.WatchCommand.CountFileLines(transcriptPath);
                 }
             } catch {
-                startLine = WatchCommand.CountFileLines(transcriptPath);
+                startLine = Commands.WatchCommand.CountFileLines(transcriptPath);
             }
 
             if (!File.Exists(transcriptPath)) {

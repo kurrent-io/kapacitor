@@ -5,6 +5,7 @@ using kapacitor;
 using kapacitor.Auth;
 using kapacitor.Commands;
 using kapacitor.Config;
+using WatchCommand = kapacitor.Commands.WatchCommand;
 
 // Skip all processing when spawned inside a headless claude invocation (e.g., title generation)
 // to prevent infinite hook loops

@@ -1,6 +1,6 @@
 using System.Text.Json;
 
-namespace kapacitor;
+namespace kapacitor.Commands;
 
 static class RecapCommand {
     public static async Task<int> HandleRecap(string baseUrl, string sessionId, bool chain) {
@@ -8,10 +8,12 @@ static class RecapCommand {
         var       query      = chain ? "?chain=true" : "";
 
         HttpResponseMessage resp;
+
         try {
             resp = await httpClient.GetWithRetryAsync($"{baseUrl}/api/sessions/{sessionId}/recap{query}");
         } catch (HttpRequestException ex) {
             HttpClientExtensions.WriteUnreachableError(baseUrl, ex);
+
             return 1;
         }
 
@@ -21,11 +23,13 @@ static class RecapCommand {
 
         if (resp.StatusCode == System.Net.HttpStatusCode.NotFound) {
             await Console.Error.WriteLineAsync($"Session not found: {sessionId}");
+
             return 1;
         }
 
         if (!resp.IsSuccessStatusCode) {
             await Console.Error.WriteLineAsync($"HTTP {(int)resp.StatusCode}");
+
             return 1;
         }
 
@@ -34,6 +38,7 @@ static class RecapCommand {
 
         if (entries is null || entries.Count == 0) {
             Console.WriteLine("No recap entries found.");
+
             return 0;
         }
 
@@ -55,8 +60,7 @@ static class RecapCommand {
                 var agentLabel = entry.AgentType is not null ? $"Agent ({entry.AgentType})" : $"Agent {entry.AgentId}";
                 Console.WriteLine($"### {agentLabel}");
                 Console.WriteLine();
-            }
-            else if (entry.AgentId is null && currentAgentId is not null) {
+            } else if (entry.AgentId is null && currentAgentId is not null) {
                 currentAgentId = null;
             }
 
@@ -65,18 +69,21 @@ static class RecapCommand {
                     Console.WriteLine("## Plan");
                     Console.WriteLine(entry.Content);
                     Console.WriteLine();
+
                     break;
 
                 case "user_prompt":
                     Console.WriteLine("## User Prompt");
                     Console.WriteLine(entry.Content);
                     Console.WriteLine();
+
                     break;
 
                 case "assistant_text":
                     Console.WriteLine("## Assistant");
                     Console.WriteLine(entry.Content);
                     Console.WriteLine();
+
                     break;
 
                 case "write":
@@ -87,6 +94,7 @@ static class RecapCommand {
                     Console.WriteLine(entry.Content);
                     Console.WriteLine("```");
                     Console.WriteLine();
+
                     break;
 
                 case "edit":
@@ -96,6 +104,7 @@ static class RecapCommand {
                     Console.WriteLine(entry.Content);
                     Console.WriteLine("```");
                     Console.WriteLine();
+
                     break;
             }
         }
@@ -107,34 +116,34 @@ static class RecapCommand {
         var ext = Path.GetExtension(filePath).ToLowerInvariant();
 
         return ext switch {
-            ".cs"    => "csharp",
-            ".js"    => "javascript",
-            ".ts"    => "typescript",
-            ".tsx"   => "tsx",
-            ".jsx"   => "jsx",
-            ".py"    => "python",
-            ".rb"    => "ruby",
-            ".go"    => "go",
-            ".rs"    => "rust",
-            ".java"  => "java",
-            ".kt"    => "kotlin",
-            ".swift" => "swift",
-            ".md"    => "markdown",
-            ".json"  => "json",
-            ".yaml"  => "yaml",
-            ".yml"   => "yaml",
-            ".xml"   => "xml",
-            ".html"  => "html",
-            ".css"   => "css",
-            ".scss"  => "scss",
-            ".sql"   => "sql",
-            ".sh"    => "bash",
-            ".bash"  => "bash",
-            ".zsh"   => "bash",
-            ".razor" => "razor",
-            ".toml"  => "toml",
+            ".cs"         => "csharp",
+            ".js"         => "javascript",
+            ".ts"         => "typescript",
+            ".tsx"        => "tsx",
+            ".jsx"        => "jsx",
+            ".py"         => "python",
+            ".rb"         => "ruby",
+            ".go"         => "go",
+            ".rs"         => "rust",
+            ".java"       => "java",
+            ".kt"         => "kotlin",
+            ".swift"      => "swift",
+            ".md"         => "markdown",
+            ".json"       => "json",
+            ".yaml"       => "yaml",
+            ".yml"        => "yaml",
+            ".xml"        => "xml",
+            ".html"       => "html",
+            ".css"        => "css",
+            ".scss"       => "scss",
+            ".sql"        => "sql",
+            ".sh"         => "bash",
+            ".bash"       => "bash",
+            ".zsh"        => "bash",
+            ".razor"      => "razor",
+            ".toml"       => "toml",
             ".dockerfile" => "dockerfile",
-            _        => ""
+            _             => ""
         };
     }
 }

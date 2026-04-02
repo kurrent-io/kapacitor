@@ -19,8 +19,7 @@ public class DaemonConfig {
 
         if (string.IsNullOrWhiteSpace(ServerUrl)) {
             errors.Add("ServerUrl is required");
-        } else if (!Uri.TryCreate(ServerUrl, UriKind.Absolute, out var uri)
-                   || uri.Scheme is not ("http" or "https")) {
+        } else if (!Uri.TryCreate(ServerUrl, UriKind.Absolute, out var uri) || uri.Scheme is not ("http" or "https")) {
             errors.Add($"ServerUrl must be a valid http/https URL, got: {ServerUrl}");
         }
 
@@ -44,8 +43,7 @@ public class DaemonConfig {
                 if (pattern.EndsWith("/*")) {
                     var prefix = pattern[..^1]; // keep trailing slash: "/allowed/"
 
-                    return repoPath.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)
-                        || string.Equals(repoPath, pattern[..^2], StringComparison.OrdinalIgnoreCase);
+                    return repoPath.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) || string.Equals(repoPath, pattern[..^2], StringComparison.OrdinalIgnoreCase);
                 }
 
                 return string.Equals(repoPath, pattern, StringComparison.OrdinalIgnoreCase);

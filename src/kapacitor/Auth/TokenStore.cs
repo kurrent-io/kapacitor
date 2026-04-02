@@ -90,11 +90,11 @@ public static class TokenStore {
     }
 
     static async Task<StoredTokens?> RefreshGitHubAsync(StoredTokens tokens) {
-        var baseUrl = Environment.GetEnvironmentVariable("KAPACITOR_URL") ?? "http://localhost:5108";
-        using var http = new HttpClient();
+        var       baseUrl = Environment.GetEnvironmentVariable("KAPACITOR_URL") ?? "http://localhost:5108";
+        using var http    = new HttpClient();
 
         var requestBody = JsonSerializer.Serialize(
-            new RefreshTokenRequest { AccessToken = tokens.AccessToken },
+            new() { AccessToken = tokens.AccessToken },
             KapacitorJsonContext.Default.RefreshTokenRequest
         );
         var payload = new StringContent(requestBody, System.Text.Encoding.UTF8, "application/json");
@@ -114,7 +114,7 @@ public static class TokenStore {
 
             var refreshed = tokens with {
                 AccessToken = json.AccessToken,
-                ExpiresAt   = DateTimeOffset.UtcNow.AddSeconds(json.ExpiresIn)
+                ExpiresAt = DateTimeOffset.UtcNow.AddSeconds(json.ExpiresIn)
             };
 
             Save(refreshed);
