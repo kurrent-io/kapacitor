@@ -595,7 +595,7 @@ public partial class AgentOrchestrator : IAsyncDisposable {
 
         foreach (var tool in tools) {
             if (!existing.Contains(tool)) {
-                allow.Add(JsonValue.Create(tool));
+                allow.Add((JsonNode)JsonValue.Create(tool)!);
                 existing.Add(tool);
             }
         }

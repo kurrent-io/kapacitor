@@ -1,6 +1,8 @@
 using System.Runtime.InteropServices;
+using System.Text.Json;
 using kapacitor.Auth;
 using Microsoft.AspNetCore.SignalR.Client;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
 namespace kapacitor.Daemon.Services;
@@ -33,6 +35,11 @@ public class ServerConnection : IAsyncDisposable {
                 }
             )
             .WithAutomaticReconnect(new RetryPolicy())
+            .AddJsonProtocol(options => {
+                options.PayloadSerializerOptions.TypeInfoResolverChain
+                    .Insert(0, KapacitorJsonContext.Default);
+                options.PayloadSerializerOptions.PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower;
+            })
             .Build();
 
         _hub.On<string, string?, string, string?, string, string[]?, string[]?>(

@@ -207,5 +207,6 @@ static partial class GitUrlParser {
 [JsonSerializable(typeof(Auth.Auth0IdTokenClaims))]
 [JsonSerializable(typeof(int))]
 [JsonSerializable(typeof(string))]
+[JsonSerializable(typeof(string[]))]
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.SnakeCaseLower)]
 partial class KapacitorJsonContext : JsonSerializerContext;

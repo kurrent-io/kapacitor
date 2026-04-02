@@ -9,25 +9,25 @@ using Microsoft.Extensions.Logging;
 namespace kapacitor.Daemon;
 
 public static class DaemonRunner {
+    public static readonly string LogPath = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+        ".config", "kapacitor", "agent.log"
+    );
+
     public static async Task<int> RunAsync(string[] args) {
-        var builder = Host.CreateApplicationBuilder(args);
-
-        builder.Logging.AddSimpleConsole(opts => {
-            opts.TimestampFormat = "yyyy-MM-dd HH:mm:ss.fff ";
-            opts.UseUtcTimestamp = false;
-        });
-
+        string? logFile = null;
         var config = new DaemonConfig();
 
         // Resolve server URL from AppConfig
         var serverUrl = AppConfig.ResolvedServerUrl;
 
-        // CLI arg overrides for daemon-specific settings
+        // CLI arg overrides for daemon-specific settings — parse before host builder
         for (var i = 0; i < args.Length - 1; i++) {
             switch (args[i]) {
                 case "--name":       config.Name                = args[++i]; break;
                 case "--server":     config.ServerUrl           = args[++i]; break;
                 case "--server-url": config.ServerUrl           = args[++i]; break;
+                case "--log-file":   logFile                    = args[++i]; break;
                 case "--max-agents" when int.TryParse(args[i + 1], out var n) && n >= 1:
                     config.MaxConcurrentAgents = n;
                     i++;
@@ -36,6 +36,21 @@ public static class DaemonRunner {
                     Console.Error.WriteLine($"Invalid --max-agents value: {args[i + 1]} (must be a positive integer)");
                     return 1;
             }
+        }
+
+        // Strip our custom args before passing to host builder
+        var hostArgs = Array.Empty<string>();
+        var builder = Host.CreateApplicationBuilder(hostArgs);
+
+        // Configure logging: file when detached, console when foreground
+        builder.Logging.ClearProviders();
+        if (logFile is not null) {
+            builder.Logging.AddProvider(new RollingFileLoggerProvider(logFile));
+        } else {
+            builder.Logging.AddSimpleConsole(opts => {
+                opts.TimestampFormat = "yyyy-MM-dd HH:mm:ss.fff ";
+                opts.UseUtcTimestamp = false;
+            });
         }
 
         // If server URL wasn't set by CLI arg, use resolved URL
@@ -66,6 +81,16 @@ public static class DaemonRunner {
                 config.Name = daemonSettings.Name;
             if (config.MaxConcurrentAgents == 5 && daemonSettings.MaxAgents != 5)
                 config.MaxConcurrentAgents = daemonSettings.MaxAgents;
+        }
+
+        // Fall back to OS username, then machine name, then a static default
+        if (string.IsNullOrEmpty(config.Name)) {
+            var userName = Environment.UserName;
+            config.Name = !string.IsNullOrEmpty(userName)
+                ? userName.ToLowerInvariant()
+                : !string.IsNullOrEmpty(Environment.MachineName)
+                    ? Environment.MachineName.ToLowerInvariant()
+                    : "daemon";
         }
 
         var errors = config.Validate();

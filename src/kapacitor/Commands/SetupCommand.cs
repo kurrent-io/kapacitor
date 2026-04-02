@@ -26,7 +26,7 @@ public static class SetupCommand {
         }
 
         // Step 1: Server URL
-        Console.WriteLine("Step 1/4: Server");
+        Console.WriteLine("Step 1/5: Server");
         string serverUrl;
 
         if (serverUrlArg is not null) {
@@ -59,7 +59,7 @@ public static class SetupCommand {
         Console.WriteLine();
 
         // Step 2: Login
-        Console.WriteLine("Step 2/4: Login");
+        Console.WriteLine("Step 2/5: Login");
 
         if (provider == "None") {
             Console.WriteLine("  Auth provider is None — no login required.");
@@ -77,7 +77,7 @@ public static class SetupCommand {
         Console.WriteLine();
 
         // Step 3: Plugin
-        Console.WriteLine("Step 3/4: Claude Code Plugin");
+        Console.WriteLine("Step 3/5: Claude Code Plugin");
 
         var pluginPath = ResolvePluginPath();
 
@@ -105,15 +105,36 @@ public static class SetupCommand {
 
         Console.WriteLine();
 
-        // Step 4: Save config
-        Console.WriteLine("Step 4/4: Done");
+        // Step 4: Daemon name
+        Console.WriteLine("Step 4/5: Agent Daemon");
+
+        var defaultName = Environment.UserName.ToLowerInvariant();
+        string daemonName;
+
+        if (noPrompt) {
+            daemonName = GetArg(args, "--daemon-name") ?? defaultName;
+            Console.WriteLine($"  Daemon name: {daemonName}");
+        } else {
+            Console.Write($"  Daemon name [{defaultName}]: ");
+            var input = Console.ReadLine()?.Trim();
+            daemonName = string.IsNullOrEmpty(input) ? defaultName : input;
+        }
+
+        Console.WriteLine();
+
+        // Step 5: Save config
+        Console.WriteLine("Step 5/5: Done");
 
         var config = existing ?? new KapacitorConfig();
-        config = config with { ServerUrl = serverUrl };
+        config = config with {
+            ServerUrl = serverUrl,
+            Daemon = (config.Daemon ?? new DaemonSettings()) with { Name = daemonName }
+        };
         AppConfig.Save(config);
 
         var finalTokens = TokenStore.Load();
         Console.WriteLine($"  ✓ Server:  {serverUrl}");
+        Console.WriteLine($"  ✓ Daemon:  {daemonName}");
         if (finalTokens is not null) {
             Console.WriteLine($"  ✓ Auth:    {finalTokens.GitHubUsername} ({finalTokens.Provider})");
         }

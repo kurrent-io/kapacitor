@@ -16,9 +16,6 @@ public class DaemonConfig {
 
     public List<string> Validate() {
         var errors = new List<string>();
-        if (string.IsNullOrWhiteSpace(Name)) {
-            errors.Add("Name is required");
-        }
 
         if (string.IsNullOrWhiteSpace(ServerUrl)) {
             errors.Add("ServerUrl is required");
