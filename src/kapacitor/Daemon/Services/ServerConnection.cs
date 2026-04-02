@@ -150,6 +150,9 @@ public class ServerConnection : IAsyncDisposable {
 
     public event Action? OnReconnectedCallback;
 
+    public Task SendHeartbeatAsync()
+        => _hub.SendAsync("DaemonHeartbeat", cancellationToken: _ct);
+
     // Outgoing messages to server
     public Task AgentRegisteredAsync(string agentId, string? prompt, string? model, string? effort, string? repoPath)
         => _hub.InvokeAsync("AgentRegistered", agentId, prompt, model, effort, repoPath, cancellationToken: _ct);

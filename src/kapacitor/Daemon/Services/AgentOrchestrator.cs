@@ -57,8 +57,9 @@ public partial class AgentOrchestrator : IAsyncDisposable {
     readonly IPtyProcessFactory                          _ptyFactory;
     readonly IHttpClientFactory                          _httpClientFactory;
     readonly ILogger<AgentOrchestrator>                  _logger;
-    readonly PeriodicTimer                               _heartbeatTimer = new(TimeSpan.FromSeconds(30));
-    readonly CancellationTokenSource                     _shutdownCts    = new();
+    readonly PeriodicTimer                               _heartbeatTimer      = new(TimeSpan.FromSeconds(30));
+    readonly PeriodicTimer                               _daemonHeartbeat     = new(TimeSpan.FromMinutes(1));
+    readonly CancellationTokenSource                     _shutdownCts         = new();
 
     public AgentOrchestrator(
             DaemonConfig               config,
@@ -83,8 +84,9 @@ public partial class AgentOrchestrator : IAsyncDisposable {
         _server.OnResizeTerminal      += HandleResizeTerminal;
         _server.OnReconnectedCallback += ReRegisterAgents;
 
-        // Start heartbeat
+        // Start heartbeat loops
         _ = RunHeartbeatLoopAsync(_shutdownCts.Token);
+        _ = RunDaemonHeartbeatLoopAsync(_shutdownCts.Token);
     }
 
     public int ActiveCount => _agents.Count(a => a.Value.Status is "Starting" or "Running");
@@ -522,6 +524,16 @@ public partial class AgentOrchestrator : IAsyncDisposable {
         }
     }
 
+    async Task RunDaemonHeartbeatLoopAsync(CancellationToken ct) {
+        while (await _daemonHeartbeat.WaitForNextTickAsync(ct)) {
+            try {
+                await _server.SendHeartbeatAsync();
+            } catch (Exception ex) {
+                _logger.LogDebug(ex, "Daemon heartbeat failed");
+            }
+        }
+    }
+
     async Task CleanupAgentAsync(string agentId) {
         if (!_agents.TryRemove(agentId, out var agent)) {
             return;
@@ -554,6 +566,7 @@ public partial class AgentOrchestrator : IAsyncDisposable {
         }
 
         _heartbeatTimer.Dispose();
+        _daemonHeartbeat.Dispose();
     }
 
     /// <summary>
