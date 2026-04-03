@@ -1,6 +1,6 @@
 {
   "name": "@kurrent/kapacitor-win-x64",
-  "version": "0.1.0",
+  "version": "0.0.0",
   "description": "kapacitor native binary for Windows x64",
   "license": "UNLICENSED",
   "os": ["win32"],

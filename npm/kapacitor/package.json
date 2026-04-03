@@ -1,17 +1,19 @@
 {
   "name": "@kurrent/kapacitor",
-  "version": "0.1.0",
+  "version": "0.0.0",
   "description": "CLI companion for Kurrent Capacitor — records and visualizes Claude Code sessions",
   "license": "UNLICENSED",
   "bin": {
     "kapacitor": "bin/kapacitor.js"
   },
   "optionalDependencies": {
-    "@kurrent/kapacitor-darwin-arm64": "0.1.0",
-    "@kurrent/kapacitor-darwin-x64": "0.1.0",
-    "@kurrent/kapacitor-linux-x64": "0.1.0",
-    "@kurrent/kapacitor-linux-arm64": "0.1.0",
-    "@kurrent/kapacitor-win-x64": "0.1.0"
+    "@kurrent/kapacitor-darwin-arm64": "0.0.0",
+    "@kurrent/kapacitor-darwin-x64": "0.0.0",
+    "@kurrent/kapacitor-linux-x64": "0.0.0",
+    "@kurrent/kapacitor-linux-arm64": "0.0.0",
+    "@kurrent/kapacitor-linux-musl-x64": "0.0.0",
+    "@kurrent/kapacitor-linux-musl-arm64": "0.0.0",
+    "@kurrent/kapacitor-win-x64": "0.0.0"
   },
   "files": [
     "bin/",

@@ -1,0 +1,10 @@
+{
+  "name": "@kurrent/kapacitor-linux-musl-x64",
+  "version": "0.0.0",
+  "description": "kapacitor native binary for Linux musl x64 (Alpine)",
+  "license": "UNLICENSED",
+  "os": ["linux"],
+  "cpu": ["x64"],
+  "libc": ["musl"],
+  "files": ["bin/"]
+}
