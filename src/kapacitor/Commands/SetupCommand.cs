@@ -236,15 +236,15 @@ public static class SetupCommand {
 
             // Build kapacitor hook entries per event type
             MergeHookEvent(existingHooks, "SessionStart", BuildSessionStartHooks(persistScript));
-            MergeHookEvent(existingHooks, "SessionEnd", [MakeHookGroup("kapacitor session-end", timeout: 15)]);
-            MergeHookEvent(existingHooks, "SubagentStart", [MakeHookGroup("kapacitor subagent-start", timeout: 5)]);
-            MergeHookEvent(existingHooks, "SubagentStop", [MakeHookGroup("kapacitor subagent-stop", timeout: 5)]);
-            MergeHookEvent(existingHooks, "Notification", [MakeHookGroup("kapacitor notification", timeout: 5)]);
-            MergeHookEvent(existingHooks, "Stop", [MakeHookGroup("kapacitor stop", timeout: 5)]);
-            MergeHookEvent(existingHooks, "PermissionRequest", [MakeHookGroup("kapacitor permission-request", timeout: 36000)]);
+            MergeHookEvent(existingHooks, "SessionEnd", [(JsonNode)MakeHookGroup("kapacitor session-end", timeout: 15)]);
+            MergeHookEvent(existingHooks, "SubagentStart", [(JsonNode)MakeHookGroup("kapacitor subagent-start", timeout: 5)]);
+            MergeHookEvent(existingHooks, "SubagentStop", [(JsonNode)MakeHookGroup("kapacitor subagent-stop", timeout: 5)]);
+            MergeHookEvent(existingHooks, "Notification", [(JsonNode)MakeHookGroup("kapacitor notification", timeout: 5)]);
+            MergeHookEvent(existingHooks, "Stop", [(JsonNode)MakeHookGroup("kapacitor stop", timeout: 5)]);
+            MergeHookEvent(existingHooks, "PermissionRequest", [(JsonNode)MakeHookGroup("kapacitor permission-request", timeout: 36000)]);
 
             if (titleScript is not null) {
-                MergeHookEvent(existingHooks, "UserPromptSubmit", [MakeHookGroup(titleScript, timeout: 2)]);
+                MergeHookEvent(existingHooks, "UserPromptSubmit", [(JsonNode)MakeHookGroup(titleScript, timeout: 2)]);
             }
 
             settings["hooks"] = existingHooks;

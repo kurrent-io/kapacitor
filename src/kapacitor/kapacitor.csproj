@@ -23,6 +23,15 @@
         <PackageReference Include="Microsoft.Extensions.Http" Version="10.*" />
     </ItemGroup>
 
+    <!-- NativeAOT on macOS needs Homebrew library paths for keg-only packages (openssl, brotli) -->
+    <ItemGroup Condition="$([MSBuild]::IsOSPlatform('OSX'))">
+        <LinkerArg Condition="Exists('/opt/homebrew/opt/openssl@3/lib')" Include="-L/opt/homebrew/opt/openssl@3/lib" />
+        <LinkerArg Condition="Exists('/opt/homebrew/opt/brotli/lib')" Include="-L/opt/homebrew/opt/brotli/lib" />
+        <!-- Intel Mac Homebrew paths -->
+        <LinkerArg Condition="Exists('/usr/local/opt/openssl@3/lib')" Include="-L/usr/local/opt/openssl@3/lib" />
+        <LinkerArg Condition="Exists('/usr/local/opt/brotli/lib')" Include="-L/usr/local/opt/brotli/lib" />
+    </ItemGroup>
+
     <!-- Compile the PTY shim on macOS (needed for ARM64 variadic ioctl workaround) -->
     <Target Name="CompilePtyShim" BeforeTargets="Build" Condition="$([MSBuild]::IsOSPlatform('OSX'))">
         <Exec Command="cc -shared -o $(OutputPath)libpty_shim.dylib Daemon/Native/pty_shim.c" />
