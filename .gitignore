@@ -13,3 +13,4 @@ logs/
 **/data/capacitor.db-shm
 **/data/signing-key.bin
 **/appsettings.Development.json
+deploy/Pulumi.*.yaml

@@ -143,11 +143,14 @@ public static class DaemonRunner {
         var worktreeManager = host.Services.GetRequiredService<WorktreeManager>();
         await worktreeManager.CleanupOrphanedAsync();
 
-        await host.RunAsync();
-
         var orchestrator = host.Services.GetRequiredService<AgentOrchestrator>();
-        await orchestrator.DisposeAsync();
-        await connection.DisposeAsync();
+
+        try {
+            await host.RunAsync();
+        } finally {
+            await orchestrator.DisposeAsync();
+            await connection.DisposeAsync();
+        }
 
         return 0;
     }
