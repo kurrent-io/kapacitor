@@ -105,6 +105,15 @@ class WatchState {
     public bool               FullFileScanDone   { get; set; }
     public string?            FirstAssistantText { get; set; }
     public int                EventCount         { get; set; }
+
+    // Buffering: hold transcript lines until threshold is reached to avoid polluting
+    // the server with short-lived sessions (e.g. <local-command-caveat> prompts)
+    public List<string> BufferedLines       { get; } = [];
+    public List<int>    BufferedLineNumbers { get; } = [];
+    public int          LinesReadAhead      { get; set; } // file position while buffering
+    public bool         ThresholdReached    { get; set; }
+
+    public const int TranscriptThreshold = 10;
 }
 
 record SessionTitlePayload {

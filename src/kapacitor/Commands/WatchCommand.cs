@@ -174,8 +174,14 @@ static partial class WatchCommand {
         }
 
         // Final drain before exit
-        Log("Draining remaining lines...");
-        await DrainNewLines(hubConnection, sessionId, transcriptPath, agentId, state, CancellationToken.None);
+        if (agentId is null && !state.ThresholdReached) {
+            // Session watcher never reached threshold — short-lived session.
+            // Skip sending buffered lines so the server can clean up the empty session.
+            Log($"Session below threshold ({state.BufferedLines.Count}/{WatchState.TranscriptThreshold} lines), skipping final drain");
+        } else {
+            Log("Draining remaining lines...");
+            await DrainNewLines(hubConnection, sessionId, transcriptPath, agentId, state, CancellationToken.None);
+        }
 
         // Signal drain complete to server
         try {
@@ -291,7 +297,8 @@ static partial class WatchCommand {
                 }
 
                 // Send truncated user text as the initial title immediately
-                if (state is { InitialTitleSent: false, FirstUserText: not null } && agentId is null) {
+                // (deferred until threshold is reached for session watchers)
+                if (state is { InitialTitleSent: false, FirstUserText: not null, ThresholdReached: true } && agentId is null) {
                     state.InitialTitleSent = true;
                     _                      = SendInitialTitleAsync(hubConnection, sessionId, TruncateForTitle(state.FirstUserText, 80));
                 }
@@ -316,7 +323,8 @@ static partial class WatchCommand {
             }
 
             // Generate LLM title after enough events have accumulated
-            if (state is { TitleGenerated: false, TitleInFlight: false, TitleAttempts: < 5 }
+            // (deferred until threshold is reached for session watchers)
+            if (state is { TitleGenerated: false, TitleInFlight: false, TitleAttempts: < 5, ThresholdReached: true }
              && agentId is null
              && state.FirstUserText is not null
              && state.EventCount >= 5) {
@@ -324,6 +332,42 @@ static partial class WatchCommand {
                 state.TitleInFlight = true;
                 state.TitleAttempts++;
                 _ = GenerateTitleAsync(hubConnection, sessionId, state);
+            }
+
+            // ── Buffering for session watchers ──────────────────────────────
+            // Hold lines until threshold is reached to avoid polluting the server
+            // with short-lived sessions (e.g. <local-command-caveat> prompts).
+            // Subagent watchers (agentId != null) skip buffering entirely.
+            if (agentId is null && !state.ThresholdReached && newLines.Count > 0) {
+                state.BufferedLines.AddRange(newLines);
+                state.BufferedLineNumbers.AddRange(newLineNumbers);
+                state.LinesReadAhead = linesRead;
+
+                if (state.BufferedLines.Count < WatchState.TranscriptThreshold) {
+                    Log($"Buffering {newLines.Count} line(s) ({state.BufferedLines.Count}/{WatchState.TranscriptThreshold} threshold)");
+
+                    return;
+                }
+
+                // Threshold reached — flush the entire buffer
+                Log($"Threshold reached ({state.BufferedLines.Count} lines), flushing buffer");
+                state.ThresholdReached = true;
+                newLines       = [..state.BufferedLines];
+                newLineNumbers = [..state.BufferedLineNumbers];
+                linesRead      = state.LinesReadAhead;
+                state.BufferedLines.Clear();
+                state.BufferedLineNumbers.Clear();
+
+                // Send the initial title now that we're flushing
+                if (state is { InitialTitleSent: false, FirstUserText: not null }) {
+                    state.InitialTitleSent = true;
+                    _ = SendInitialTitleAsync(hubConnection, sessionId, TruncateForTitle(state.FirstUserText, 80));
+                }
+            } else if (agentId is null && !state.ThresholdReached) {
+                // No new content lines while buffering — track file position
+                state.LinesReadAhead = linesRead;
+
+                return;
             }
 
             // Only include repository info when it has changed since last send
