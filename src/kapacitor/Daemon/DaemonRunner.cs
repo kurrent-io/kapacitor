@@ -147,8 +147,7 @@ public static class DaemonRunner {
 
         try {
             await host.RunAsync();
-        }
-        finally {
+        } finally {
             await orchestrator.DisposeAsync();
             await connection.DisposeAsync();
         }
