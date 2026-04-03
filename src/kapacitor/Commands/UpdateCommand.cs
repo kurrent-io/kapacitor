@@ -114,5 +114,18 @@ public static class UpdateCommand {
         }
     }
 
-    static string? GetCurrentVersion() => typeof(UpdateCommand).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion;
+    static string? GetCurrentVersion() {
+        var version = typeof(UpdateCommand).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion;
+
+        // Strip build metadata (everything after '+') so that
+        // "0.1.2+d727aeea..." compares equal to npm's "0.1.2"
+        if (version is not null) {
+            var plusIndex = version.IndexOf('+');
+
+            if (plusIndex >= 0)
+                version = version[..plusIndex];
+        }
+
+        return version;
+    }
 }

@@ -44,7 +44,7 @@ public static class AppConfig {
         var idx = Array.IndexOf(args, "--server-url");
 
         if (idx >= 0 && idx + 1 < args.Length) {
-            ResolvedServerUrl = args[idx + 1];
+            ResolvedServerUrl = NormalizeUrl(args[idx + 1]);
 
             return ResolvedServerUrl;
         }
@@ -53,7 +53,7 @@ public static class AppConfig {
         var envUrl = Environment.GetEnvironmentVariable("KAPACITOR_URL");
 
         if (!string.IsNullOrEmpty(envUrl)) {
-            ResolvedServerUrl = envUrl;
+            ResolvedServerUrl = NormalizeUrl(envUrl);
 
             return ResolvedServerUrl;
         }
@@ -62,7 +62,7 @@ public static class AppConfig {
         var config = Load();
 
         if (!string.IsNullOrEmpty(config?.ServerUrl)) {
-            ResolvedServerUrl = config.ServerUrl;
+            ResolvedServerUrl = NormalizeUrl(config.ServerUrl);
 
             return ResolvedServerUrl;
         }
@@ -72,6 +72,12 @@ public static class AppConfig {
 
         return null;
     }
+
+    /// <summary>
+    /// Removes trailing slashes from a URL to prevent double-slash issues
+    /// when appending paths (e.g., <c>https://example.com/</c> + <c>/auth/config</c>).
+    /// </summary>
+    public static string NormalizeUrl(string url) => url.TrimEnd('/');
 
     public static KapacitorConfig? Load() {
         if (!File.Exists(ConfigPath))
