@@ -158,6 +158,10 @@ static class HistoryCommand {
                         ["model"]           = meta.Model
                     };
 
+                    if (meta.FirstTimestamp is not null) {
+                        startHook["started_at"] = meta.FirstTimestamp.Value.ToString("O");
+                    }
+
                     // Pass continuation info directly (bypasses pending continuation mechanism)
                     if (prevSessionId is not null) {
                         startHook["previous_session_id"] = prevSessionId;
@@ -262,6 +266,8 @@ static class HistoryCommand {
                     }
 
                     // POST synthesized session-end hook
+                    var lastTimestamp = ExtractLastTimestamp(filePath);
+
                     var endHook = new JsonObject {
                         ["session_id"]      = sessionId,
                         ["transcript_path"] = filePath,
@@ -269,6 +275,10 @@ static class HistoryCommand {
                         ["reason"]          = "Other",
                         ["hook_event_name"] = "session_end"
                     };
+
+                    if (lastTimestamp is not null) {
+                        endHook["ended_at"] = lastTimestamp.Value.ToString("O");
+                    }
 
                     try {
                         using var endContent = new StringContent(endHook.ToJsonString(), Encoding.UTF8, "application/json");
@@ -377,7 +387,7 @@ static class HistoryCommand {
         }
     }
 
-    static SessionMetadata ExtractSessionMetadata(string filePath) {
+    internal static SessionMetadata ExtractSessionMetadata(string filePath) {
         var meta = new SessionMetadata();
 
         try {
@@ -443,6 +453,51 @@ static class HistoryCommand {
         }
 
         return meta;
+    }
+
+    internal static DateTimeOffset? ExtractLastTimestamp(string filePath) {
+        try {
+            // Read backward from end of file to find the last timestamp without loading everything into memory.
+            // Strategy: read the last ~64KB chunk which covers well over 50 JSONL lines.
+            using var fs = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            const int chunkSize = 64 * 1024;
+            var       offset    = Math.Max(0, fs.Length - chunkSize);
+            fs.Seek(offset, SeekOrigin.Begin);
+
+            using var reader = new StreamReader(fs);
+
+            // If we seeked mid-file, skip the first partial line
+            if (offset > 0) reader.ReadLine();
+
+            // Collect the last 50 non-empty lines
+            var tail = new List<string>(50);
+
+            while (reader.ReadLine() is { } line) {
+                if (!string.IsNullOrWhiteSpace(line)) {
+                    tail.Add(line);
+
+                    if (tail.Count > 50) tail.RemoveAt(0);
+                }
+            }
+
+            // Scan from the end
+            for (var i = tail.Count - 1; i >= 0; i--) {
+                try {
+                    using var doc  = JsonDocument.Parse(tail[i]);
+                    var       root = doc.RootElement;
+
+                    if (root.TryGetProperty("timestamp", out var tsProp) &&
+                        tsProp.ValueKind == JsonValueKind.String          &&
+                        DateTimeOffset.TryParse(tsProp.GetString(), out var ts)) {
+                        return ts;
+                    }
+                } catch (JsonException) { }
+            }
+        } catch {
+            // Best effort
+        }
+
+        return null;
     }
 
     static string? ExtractCwdFromTranscript(string filePath) {

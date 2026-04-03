@@ -161,6 +161,7 @@ class SessionMetadata {
     public string?         Slug           { get; set; }
     public string?         SessionId      { get; set; }
     public DateTimeOffset? FirstTimestamp { get; set; }
+    public DateTimeOffset? LastTimestamp  { get; set; }
 }
 
 static partial class GitUrlParser {
