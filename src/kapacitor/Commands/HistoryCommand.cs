@@ -20,10 +20,18 @@ static class HistoryCommand {
         }
 
         // Discover transcript files: ~/.claude/projects/{encoded-cwd}/{sessionId}.jsonl
-        // Skip files inside subagent directories
+        // Skip files inside subagent directories.
+        // Deduplicate directories by resolved path — symlinked project dirs (e.g., agent worktrees
+        // pointing to the main project dir) would otherwise scan the same files multiple times.
         var transcriptFiles = new List<(string SessionId, string FilePath, string EncodedCwd)>();
+        var seenRealPaths   = new HashSet<string>(StringComparer.Ordinal);
 
         foreach (var cwdDir in Directory.GetDirectories(projectsDir)) {
+            var realPath = new DirectoryInfo(cwdDir).ResolveLinkTarget(returnFinalTarget: true)?.FullName
+                        ?? Path.GetFullPath(cwdDir);
+
+            if (!seenRealPaths.Add(realPath)) continue;
+
             var encodedCwd = Path.GetFileName(cwdDir);
 
             transcriptFiles.AddRange(
