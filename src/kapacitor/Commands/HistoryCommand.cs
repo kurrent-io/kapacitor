@@ -82,6 +82,13 @@ static class HistoryCommand {
         var errored = 0;
 
         foreach (var (sessionId, filePath, encodedCwd) in transcriptFiles) {
+            // Skip transcripts that are kapacitor-spawned sub-sessions (title generation, what's-done summaries)
+            if (IsKapacitorSubSession(filePath)) {
+                skipped++;
+
+                continue;
+            }
+
             // Check server status via last-line API
             HistorySessionStatus status;
             int                  resumeFromLine = 0;
@@ -625,4 +632,51 @@ static class HistoryCommand {
             return d;
         }
     }
+
+    /// <summary>
+    /// Detects transcripts created by kapacitor's own headless <c>claude -p</c> invocations
+    /// (title generation, what's-done summaries). These sessions start with a <c>queue-operation</c>
+    /// entry whose content matches known kapacitor prompt prefixes.
+    /// </summary>
+    static bool IsKapacitorSubSession(string filePath) {
+        try {
+            using var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            using var reader = new StreamReader(stream);
+
+            var linesChecked = 0;
+
+            while (reader.ReadLine() is { } line && linesChecked < 5) {
+                linesChecked++;
+
+                if (string.IsNullOrWhiteSpace(line)) continue;
+
+                try {
+                    using var doc  = JsonDocument.Parse(line);
+                    var       root = doc.RootElement;
+
+                    // Headless claude -p sessions start with queue-operation entries
+                    if (root.TryGetProperty("type", out var typeProp)
+                     && typeProp.GetString() == "queue-operation"
+                     && root.TryGetProperty("operation", out var opProp)
+                     && opProp.GetString() == "enqueue"
+                     && root.TryGetProperty("content", out var contentProp)
+                     && contentProp.ValueKind == JsonValueKind.String) {
+                        var content = contentProp.GetString();
+
+                        if (content is not null && IsKnownKapacitorPrompt(content)) {
+                            return true;
+                        }
+                    }
+                } catch (JsonException) { }
+            }
+        } catch {
+            // Best effort — if we can't read the file, don't skip it
+        }
+
+        return false;
+    }
+
+    static bool IsKnownKapacitorPrompt(string content) =>
+        content.StartsWith("Generate a short descriptive title", StringComparison.Ordinal)
+     || content.StartsWith("Based on the following session transcript, write a concise summary", StringComparison.Ordinal);
 }
