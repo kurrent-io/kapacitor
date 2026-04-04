@@ -162,6 +162,15 @@ record WhatsDonePayload {
     public long CacheWriteTokens { get; init; }
 }
 
+record RepoRecapEntry(
+        string          SessionId,
+        string?         Slug,
+        string?         Title,
+        DateTimeOffset  StartedAt,
+        DateTimeOffset? EndedAt,
+        string          Summary
+    );
+
 enum HistorySessionStatus { New, Partial, AlreadyLoaded }
 
 class SessionMetadata {
@@ -200,6 +209,7 @@ static partial class GitUrlParser {
 }
 
 [JsonSerializable(typeof(List<RecapEntry>))]
+[JsonSerializable(typeof(List<RepoRecapEntry>))]
 [JsonSerializable(typeof(List<ErrorEntry>))]
 [JsonSerializable(typeof(RepositoryPayload))]
 [JsonSerializable(typeof(GitCacheEntry))]

@@ -1,8 +1,80 @@
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 
 namespace kapacitor.Commands;
 
 static class RecapCommand {
+    public static async Task<int> HandleRepoRecap(string baseUrl, int limit = 10) {
+        var cwd  = Directory.GetCurrentDirectory();
+        var repo = await RepositoryDetection.DetectRepositoryAsync(cwd);
+
+        if (repo?.Owner is null || repo.RepoName is null) {
+            await Console.Error.WriteLineAsync("Not in a git repository with a remote origin.");
+
+            return 1;
+        }
+
+        var hash = ComputeRepoHash(repo.Owner, repo.RepoName);
+
+        using var httpClient = await HttpClientExtensions.CreateAuthenticatedClientAsync();
+
+        HttpResponseMessage resp;
+
+        try {
+            resp = await httpClient.GetWithRetryAsync($"{baseUrl}/api/repositories/{hash}/recaps?limit={limit}");
+        } catch (HttpRequestException ex) {
+            HttpClientExtensions.WriteUnreachableError(baseUrl, ex);
+
+            return 1;
+        }
+
+        if (await HttpClientExtensions.HandleUnauthorizedAsync(resp)) {
+            return 1;
+        }
+
+        if (!resp.IsSuccessStatusCode) {
+            await Console.Error.WriteLineAsync($"HTTP {(int)resp.StatusCode}");
+
+            return 1;
+        }
+
+        var json    = await resp.Content.ReadAsStringAsync();
+        var entries = JsonSerializer.Deserialize(json, KapacitorJsonContext.Default.ListRepoRecapEntry);
+
+        if (entries is null || entries.Count == 0) {
+            Console.WriteLine($"No session summaries found for {repo.Owner}/{repo.RepoName}.");
+
+            return 0;
+        }
+
+        Console.WriteLine($"# Recent sessions for {repo.Owner}/{repo.RepoName}");
+        Console.WriteLine();
+
+        foreach (var entry in entries) {
+            var date    = entry.StartedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm");
+            var title   = entry.Title ?? "(untitled)";
+            Console.WriteLine($"## {title}");
+            Console.WriteLine($"*Session {entry.SessionId} | {date}*");
+            Console.WriteLine();
+            Console.WriteLine(entry.Summary);
+            Console.WriteLine();
+            Console.WriteLine($"Full transcript: `kapacitor recap --full {entry.SessionId}`");
+            Console.WriteLine();
+            Console.WriteLine("---");
+            Console.WriteLine();
+        }
+
+        return 0;
+    }
+
+    static string ComputeRepoHash(string owner, string repoName) {
+        var input = $"{owner}/{repoName}".ToLowerInvariant();
+        var hash  = SHA256.HashData(Encoding.UTF8.GetBytes(input));
+
+        return Convert.ToHexStringLower(hash)[..16];
+    }
+
     public static async Task<int> HandleRecap(string baseUrl, string sessionId, bool chain, bool full = false) {
         using var httpClient = await HttpClientExtensions.CreateAuthenticatedClientAsync();
         var       query      = chain ? "?chain=true" : "";

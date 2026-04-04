@@ -76,13 +76,20 @@ switch (command) {
         return await ErrorsCommand.HandleErrors(baseUrl!, errSessionId, useChain);
     }
     case "recap": {
-        var useChain       = args.Contains("--chain");
-        var useFull        = args.Contains("--full");
+        var useChain = args.Contains("--chain");
+        var useFull  = args.Contains("--full");
+        var useRepo  = args.Contains("--repo");
+
+        if (useRepo) {
+            return await RecapCommand.HandleRepoRecap(baseUrl!);
+        }
+
         var recapSessionId = ResolveSessionId(args);
 
         if (recapSessionId is null) {
-            Console.Error.WriteLine("Usage: kapacitor recap [--chain] [--full] [sessionId]");
+            Console.Error.WriteLine("Usage: kapacitor recap [--chain] [--full] [--repo] [sessionId]");
             Console.Error.WriteLine("  No session ID provided and KAPACITOR_SESSION_ID not set.");
+            Console.Error.WriteLine("  Use --repo to see recent session summaries for the current repository.");
 
             return 1;
         }
@@ -559,6 +566,7 @@ void PrintUsage() {
     Console.WriteLine("Session:");
     Console.WriteLine("  errors [--chain] [id]            List tool call errors for a session");
     Console.WriteLine("  recap [--chain] [--full] [id]    Session summary (--full for raw transcript)");
+    Console.WriteLine("  recap --repo                     Recent session summaries for current repo");
     Console.WriteLine("  validate-plan [id]               Validate plan completion for a session");
     Console.WriteLine("  generate-whats-done <id>         Generate what's-done summary");
     Console.WriteLine("  set-title <title>                Set session title");
