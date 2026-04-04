@@ -77,16 +77,17 @@ switch (command) {
     }
     case "recap": {
         var useChain       = args.Contains("--chain");
-        var recapSessionId = ResolveSessionId(args, skipCount: 1, skipFlag: "--chain");
+        var useFull        = args.Contains("--full");
+        var recapSessionId = ResolveSessionId(args);
 
         if (recapSessionId is null) {
-            Console.Error.WriteLine("Usage: kapacitor recap [--chain] [sessionId]");
+            Console.Error.WriteLine("Usage: kapacitor recap [--chain] [--full] [sessionId]");
             Console.Error.WriteLine("  No session ID provided and KAPACITOR_SESSION_ID not set.");
 
             return 1;
         }
 
-        return await RecapCommand.HandleRecap(baseUrl!, recapSessionId, useChain);
+        return await RecapCommand.HandleRecap(baseUrl!, recapSessionId, useChain, useFull);
     }
     case "validate-plan": {
         var vpSessionId = ResolveSessionId(args);
@@ -520,8 +521,8 @@ async Task PostPlanContentAsync(HttpClient httpClient, string url, string sessio
 }
 
 string? ResolveSessionId(string[] args, int skipCount = 1, string? skipFlag = null) {
-    // Try argument first
-    var fromArg = args.Skip(skipCount).FirstOrDefault(a => skipFlag == null || a != skipFlag);
+    // Take the first positional argument (skip flags starting with --)
+    var fromArg = args.Skip(skipCount).FirstOrDefault(a => !a.StartsWith("--"));
 
     return fromArg ?? Environment.GetEnvironmentVariable("KAPACITOR_SESSION_ID");
 }
@@ -557,7 +558,7 @@ void PrintUsage() {
     Console.WriteLine();
     Console.WriteLine("Session:");
     Console.WriteLine("  errors [--chain] [id]            List tool call errors for a session");
-    Console.WriteLine("  recap [--chain] [id]             Session recap for context handoff");
+    Console.WriteLine("  recap [--chain] [--full] [id]    Session summary (--full for raw transcript)");
     Console.WriteLine("  validate-plan [id]               Validate plan completion for a session");
     Console.WriteLine("  generate-whats-done <id>         Generate what's-done summary");
     Console.WriteLine("  set-title <title>                Set session title");

@@ -3,7 +3,7 @@ using System.Text.Json;
 namespace kapacitor.Commands;
 
 static class RecapCommand {
-    public static async Task<int> HandleRecap(string baseUrl, string sessionId, bool chain) {
+    public static async Task<int> HandleRecap(string baseUrl, string sessionId, bool chain, bool full = false) {
         using var httpClient = await HttpClientExtensions.CreateAuthenticatedClientAsync();
         var       query      = chain ? "?chain=true" : "";
 
@@ -42,6 +42,53 @@ static class RecapCommand {
             return 0;
         }
 
+        if (full)
+            return PrintFull(entries, chain);
+
+        return PrintSummary(entries, chain);
+    }
+
+    static int PrintSummary(List<RecapEntry> entries, bool chain) {
+        var summaries = entries.Where(e => e.Type is "whats_done" or "plan").ToList();
+
+        if (summaries.Count == 0) {
+            Console.WriteLine("No summary available yet. Use `kapacitor recap --full` to see the raw transcript.");
+
+            return 0;
+        }
+
+        string? currentSessionId = null;
+
+        foreach (var entry in summaries) {
+            if (chain && entry.SessionId != currentSessionId) {
+                currentSessionId = entry.SessionId;
+                Console.WriteLine($"# Session {currentSessionId}");
+                Console.WriteLine();
+            }
+
+            switch (entry.Type) {
+                case "plan":
+                    Console.WriteLine("## Plan");
+                    Console.WriteLine(entry.Content);
+                    Console.WriteLine();
+
+                    break;
+
+                case "whats_done":
+                    Console.WriteLine("## Summary");
+                    Console.WriteLine(entry.Content);
+                    Console.WriteLine();
+
+                    break;
+            }
+        }
+
+        Console.Error.WriteLine("Use `kapacitor recap --full` for the complete transcript.");
+
+        return 0;
+    }
+
+    static int PrintFull(List<RecapEntry> entries, bool chain) {
         string? currentSessionId = null;
         string? currentAgentId   = null;
 

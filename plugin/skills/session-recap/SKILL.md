@@ -12,29 +12,45 @@ description: >-
 
 # Session Recap
 
-Retrieve the history of a Claude Code session recorded by Kurrent Capacitor. The recap contains user prompts, assistant responses, plans, and file writes/edits — everything needed to understand what happened in a session or to continue where it left off.
+Retrieve the history of a Claude Code session recorded by Kurrent Capacitor. By default, shows a concise AI-generated summary (context, key decisions, unfinished work). Use `--full` for the complete transcript with all user prompts, assistant responses, plans, and file changes.
 
 ## Usage
 
 **IMPORTANT:** Always use the `kapacitor recap` CLI command. Do NOT call the HTTP API directly via `curl`, `WebFetch`, or `HttpClient` — the CLI handles formatting, error handling, and server URL resolution.
 
 ```bash
-# Current session recap
+# Session summary (default — concise AI-generated overview)
 kapacitor recap
+
+# Full transcript (all prompts, responses, file changes)
+kapacitor recap --full
 
 # Full continuation chain (all linked sessions, oldest first)
 kapacitor recap --chain
 
+# Both: full transcript across all chained sessions
+kapacitor recap --chain --full
+
 # Explicit session ID (overrides env var)
 kapacitor recap <sessionId>
+kapacitor recap --full <sessionId>
 kapacitor recap --chain <sessionId>
 ```
 
 The session ID is automatically set by the `KAPACITOR_SESSION_ID` environment variable (persisted at session start). You can pass an explicit ID to review a different session.
 
-## Output Format
+## Default Output (Summary)
 
-The command outputs markdown with these section types:
+Shows the plan (if any) and an AI-generated summary with:
+- **Context** — why the work was done
+- **Key decisions** — trade-offs and design choices that matter for future work
+- **Unfinished/Risks** — anything deferred or left incomplete
+
+If no summary is available (e.g., active session), a hint is shown to use `--full`.
+
+## Full Output (`--full`)
+
+The complete transcript with these section types:
 
 - **`## User Prompt`** — what the user asked
 - **`## Assistant`** — Claude's text responses
@@ -46,8 +62,10 @@ When using `--chain`, sessions are separated by `# Session <id>` headers, and ag
 
 ## When to Use Each Flag
 
-- **No flag** (`kapacitor recap`) — reviewing the current session
-- **`--chain`** (`kapacitor recap --chain`) — understanding the full history of a task that spanned multiple sessions, or resuming work that was continued across sessions
+- **No flags** (`kapacitor recap`) — quick context on what happened and why
+- **`--full`** (`kapacitor recap --full`) — when you need exact prompts, responses, or file contents
+- **`--chain`** (`kapacitor recap --chain`) — understanding the full history of a task that spanned multiple sessions
+- **`--chain --full`** — complete transcript across all continuations
 
 ## Environment
 
@@ -55,8 +73,8 @@ The `KAPACITOR_URL` environment variable overrides the default server URL (`http
 
 ## Tips
 
-- The output can be large for long sessions. Scan for `## User Prompt` headers to quickly locate specific interactions.
-- When continuing work from a previous session, use `--chain` to get the full context across continuations.
+- Start with the default summary. Only use `--full` when you need specific details.
+- When continuing work from a previous session, use `--chain` to get summaries across continuations.
 - Summarize key decisions and changes for the user rather than echoing the full recap output verbatim.
 - The `kapacitor` CLI must be available on PATH (typically installed at `~/.local/bin/kapacitor`).
 
