@@ -21,7 +21,7 @@ public static class UpdateCommand {
             return 1;
         }
 
-        if (latest == current) {
+        if (!IsNewer(latest, current)) {
             Console.WriteLine($"Already up to date: {current}");
 
             return 0;
@@ -47,7 +47,7 @@ public static class UpdateCommand {
         try {
             var (latest, current) = await CheckForUpdateAsync(forceCheck: false);
 
-            if (latest is not null && current is not null && latest != current) {
+            if (latest is not null && current is not null && IsNewer(latest, current)) {
                 await Console.Error.WriteLineAsync();
                 await Console.Error.WriteLineAsync($"Update available: {current} → {latest}");
                 await Console.Error.WriteLineAsync("Run `npm update -g @kurrent/kapacitor` to update");
@@ -112,6 +112,28 @@ public static class UpdateCommand {
         } catch {
             return (null, current);
         }
+    }
+
+    /// <summary>
+    /// Returns true if <paramref name="latest"/> is a newer semver than <paramref name="current"/>.
+    /// Prerelease suffixes (e.g. "-alpha.0.1") are stripped so that a local prerelease build
+    /// is not considered older than the stable version it's based on.
+    /// </summary>
+    static bool IsNewer(string? latest, string? current) {
+        if (latest is null || current is null) return false;
+
+        // Strip prerelease suffix (everything after first '-') for comparison
+        static Version? ParseCore(string v) {
+            var dash = v.IndexOf('-');
+            if (dash >= 0) v = v[..dash];
+            return Version.TryParse(v, out var parsed) ? parsed : null;
+        }
+
+        var latestVersion  = ParseCore(latest);
+        var currentVersion = ParseCore(current);
+        if (latestVersion is null || currentVersion is null) return latest != current;
+
+        return latestVersion > currentVersion;
     }
 
     static string? GetCurrentVersion() {

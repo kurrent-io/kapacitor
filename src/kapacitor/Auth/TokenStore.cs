@@ -1,6 +1,7 @@
 using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using kapacitor.Config;
 
 namespace kapacitor.Auth;
 
@@ -90,7 +91,7 @@ public static class TokenStore {
     }
 
     static async Task<StoredTokens?> RefreshGitHubAsync(StoredTokens tokens) {
-        var       baseUrl = Environment.GetEnvironmentVariable("KAPACITOR_URL") ?? "http://localhost:5108";
+        var       baseUrl = AppConfig.ResolvedServerUrl ?? Environment.GetEnvironmentVariable("KAPACITOR_URL") ?? "http://localhost:5108";
         using var http    = new HttpClient();
 
         var requestBody = JsonSerializer.Serialize(
