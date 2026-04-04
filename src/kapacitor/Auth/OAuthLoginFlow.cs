@@ -29,10 +29,11 @@ public static class OAuthLoginFlow {
         var config = (await configResponse.Content.ReadFromJsonAsync(KapacitorJsonContext.Default.AuthDiscoveryResponse))!;
 
         return config.Provider switch {
-            "None"   => HandleNoneLogin(),
-            "GitHub" => await HandleGitHubLogin(serverUrl, config),
-            "Auth0"  => await HandleAuth0Login(config),
-            _        => HandleUnknownProvider(config.Provider)
+            "None"      => HandleNoneLogin(),
+            "GitHub"    => await HandleGitHubLogin(serverUrl, config),
+            "GitHubApp" => await HandleGitHubLogin(serverUrl, config),
+            "Auth0"     => await HandleAuth0Login(config),
+            _           => HandleUnknownProvider(config.Provider)
         };
     }
 
@@ -144,7 +145,7 @@ public static class OAuthLoginFlow {
                 AccessToken    = exchange.AccessToken,
                 ExpiresAt      = DateTimeOffset.UtcNow.AddSeconds(exchange.ExpiresIn),
                 GitHubUsername = exchange.Username,
-                Provider       = "GitHub"
+                Provider       = config.Provider
             }
         );
 

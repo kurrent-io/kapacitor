@@ -83,7 +83,7 @@ public static class TokenStore {
         }
 
         // GitHub: refresh via server's /auth/refresh endpoint
-        if (tokens.Provider == "GitHub") {
+        if (tokens.Provider is "GitHub" or "GitHubApp") {
             return await RefreshGitHubAsync(tokens);
         }
 
