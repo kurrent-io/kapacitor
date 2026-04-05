@@ -36,7 +36,7 @@ static class HistoryCommand {
 
             transcriptFiles.AddRange(
                 from jsonlFile in Directory.GetFiles(cwdDir, "*.jsonl")
-                let sessionId = Path.GetFileNameWithoutExtension(jsonlFile)
+                let sessionId = NormalizeGuid(Path.GetFileNameWithoutExtension(jsonlFile))
                 select (sessionId, jsonlFile, encodedCwd)
             );
         }
@@ -49,6 +49,7 @@ static class HistoryCommand {
 
         // Filter by session ID if specified
         if (filterSession is not null) {
+            filterSession = NormalizeGuid(filterSession);
             transcriptFiles = [.. transcriptFiles.Where(t => t.SessionId == filterSession)];
 
             if (transcriptFiles.Count == 0) {
@@ -249,10 +250,19 @@ static class HistoryCommand {
                         continue;
                     }
 
-                    // Discover and start agents
+                    Console.Write($"Loading {sessionId}... ");
+
+                    // Send main session transcript first — agent lifecycle hooks come AFTER
+                    // so AgentStarted/Stopped events don't precede session conversation in the
+                    // stream (which would cause MetaSessionChatBuilder to skip all content).
+                    var linesSent = await SendTranscriptBatches(httpClient, baseUrl, sessionId, filePath, agentId: null, startLine: 0);
+                    Console.WriteLine($"{linesSent} lines [new]");
+
+                    // Discover and import agents AFTER the main transcript
                     var agentTranscripts = DiscoverAgentTranscripts(filePath);
 
-                    foreach (var (agentId, _) in agentTranscripts) {
+                    foreach (var (agentId, agentPath) in agentTranscripts) {
+                        // Start agent
                         var agentStartHook = new JsonObject {
                             ["session_id"]      = sessionId,
                             ["transcript_path"] = filePath,
@@ -266,25 +276,15 @@ static class HistoryCommand {
                             using var agentStartContent = new StringContent(agentStartHook.ToJsonString(), Encoding.UTF8, "application/json");
                             await httpClient.PostWithRetryAsync($"{baseUrl}/hooks/subagent-start", agentStartContent);
                         } catch {
-                            // Best effort for agent starts
+                            // Best effort
                         }
-                    }
 
-                    Console.Write($"Loading {sessionId}... ");
-
-                    // Send all transcript lines in batches
-                    var linesSent = await SendTranscriptBatches(httpClient, baseUrl, sessionId, filePath, agentId: null, startLine: 0);
-                    Console.WriteLine($"{linesSent} lines [new]");
-
-                    // Send agent transcript lines
-                    foreach (var (agentId, agentPath) in agentTranscripts) {
+                        // Send agent transcript
                         Console.Write($"  Loading agent {agentId}... ");
                         var agentLinesSent = await SendTranscriptBatches(httpClient, baseUrl, sessionId, agentPath, agentId, startLine: 0);
                         Console.WriteLine($"{agentLinesSent} lines");
-                    }
 
-                    // Stop agents
-                    foreach (var (agentId, agentPath) in agentTranscripts) {
+                        // Stop agent
                         var agentStopHook = new JsonObject {
                             ["session_id"]             = sessionId,
                             ["transcript_path"]        = filePath,
@@ -301,7 +301,7 @@ static class HistoryCommand {
                             using var agentStopContent = new StringContent(agentStopHook.ToJsonString(), Encoding.UTF8, "application/json");
                             await httpClient.PostWithRetryAsync($"{baseUrl}/hooks/subagent-stop", agentStopContent);
                         } catch {
-                            // Best effort for agent stops
+                            // Best effort
                         }
                     }
 
@@ -712,4 +712,11 @@ static class HistoryCommand {
     static bool IsKnownKapacitorPrompt(string content) =>
         content.StartsWith("Generate a short descriptive title", StringComparison.Ordinal)
      || content.StartsWith("Based on the following session transcript, write a concise summary", StringComparison.Ordinal);
+
+    /// <summary>
+    /// Normalize a GUID string to dashless format (matching the live CLI's NormalizeGuidField).
+    /// Non-GUID strings are returned as-is.
+    /// </summary>
+    static string NormalizeGuid(string value) =>
+        Guid.TryParse(value, out var guid) ? guid.ToString("N") : value;
 }
