@@ -225,8 +225,34 @@ static partial class GitUrlParser {
 [JsonSerializable(typeof(Auth.GitHubTokenResponse))]
 [JsonSerializable(typeof(Auth.Auth0TokenResponse))]
 [JsonSerializable(typeof(Auth.Auth0IdTokenClaims))]
+[JsonSerializable(typeof(LaunchAgentCommand))]
+[JsonSerializable(typeof(SendInputCommand))]
+[JsonSerializable(typeof(ResizeTerminalCommand))]
 [JsonSerializable(typeof(int))]
 [JsonSerializable(typeof(string))]
 [JsonSerializable(typeof(string[]))]
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.SnakeCaseLower)]
 partial class KapacitorJsonContext : JsonSerializerContext;
+
+/// <summary>Commands sent from the server to daemon clients via SignalR.</summary>
+public readonly record struct LaunchAgentCommand(
+    string    AgentId,
+    string?   Prompt,
+    string    Model,
+    string?   Effort,
+    string    RepoPath,
+    string[]? Tools,
+    string[]? AttachmentIds
+);
+
+public readonly record struct SendInputCommand(
+    string    AgentId,
+    string    Text,
+    string[]? AttachmentIds
+);
+
+public readonly record struct ResizeTerminalCommand(
+    string AgentId,
+    int    Cols,
+    int    Rows
+);

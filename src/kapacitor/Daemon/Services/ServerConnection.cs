@@ -1,5 +1,6 @@
 using System.Runtime.InteropServices;
 using System.Text.Json;
+using System.Threading.Channels;
 using kapacitor.Auth;
 using Microsoft.AspNetCore.SignalR.Client;
 using Microsoft.Extensions.DependencyInjection;
@@ -13,11 +14,11 @@ public class ServerConnection : IAsyncDisposable {
     readonly ILogger<ServerConnection> _logger;
 
     // Events for incoming commands from server
-    public event Func<string, string?, string, string?, string, string[]?, string[]?, Task>? OnLaunchAgent;    // agentId, prompt, model, effort, repoPath, tools, attachmentIds
-    public event Func<string, Task>?                                                         OnStopAgent;      // agentId
-    public event Func<string, string, string[]?, Task>?                                      OnSendInput;      // agentId, text, attachmentIds
-    public event Func<string, string, Task>?                                                 OnSendSpecialKey; // agentId, key
-    public event Action<string, int, int>?                                                   OnResizeTerminal; // agentId, cols, rows
+    public event Func<LaunchAgentCommand, Task>?      OnLaunchAgent;
+    public event Func<string, Task>?                  OnStopAgent;      // agentId
+    public event Func<SendInputCommand, Task>?        OnSendInput;
+    public event Func<string, string, Task>?          OnSendSpecialKey; // agentId, key
+    public event Func<ResizeTerminalCommand, Task>?   OnResizeTerminal;
 
     public ServerConnection(DaemonConfig config, ILogger<ServerConnection> logger) {
         _config = config;
@@ -43,18 +44,9 @@ public class ServerConnection : IAsyncDisposable {
             )
             .Build();
 
-        _hub.On<string, string?, string, string?, string, string[]?, string[]?>(
+        _hub.On<LaunchAgentCommand>(
             "LaunchAgent",
-            (
-                    agentId,
-                    prompt,
-                    model,
-                    effort,
-                    repoPath,
-                    tools,
-                    attachmentIds
-                ) =>
-                OnLaunchAgent?.Invoke(agentId, prompt, model, effort, repoPath, tools, attachmentIds) ?? Task.CompletedTask
+            cmd => OnLaunchAgent?.Invoke(cmd) ?? Task.CompletedTask
         );
 
         _hub.On<string>(
@@ -62,9 +54,9 @@ public class ServerConnection : IAsyncDisposable {
             agentId => OnStopAgent?.Invoke(agentId) ?? Task.CompletedTask
         );
 
-        _hub.On<string, string, string[]?>(
+        _hub.On<SendInputCommand>(
             "SendInput",
-            (agentId, text, attachmentIds) => OnSendInput?.Invoke(agentId, text, attachmentIds) ?? Task.CompletedTask
+            cmd => OnSendInput?.Invoke(cmd) ?? Task.CompletedTask
         );
 
         _hub.On<string, string>(
@@ -72,9 +64,9 @@ public class ServerConnection : IAsyncDisposable {
             (agentId, key) => OnSendSpecialKey?.Invoke(agentId, key) ?? Task.CompletedTask
         );
 
-        _hub.On<string, int, int>(
+        _hub.On<ResizeTerminalCommand>(
             "ResizeTerminal",
-            (agentId, cols, rows) => OnResizeTerminal?.Invoke(agentId, cols, rows)
+            cmd => OnResizeTerminal?.Invoke(cmd) ?? Task.CompletedTask
         );
 
         _hub.Reconnected += OnReconnected;
@@ -83,9 +75,11 @@ public class ServerConnection : IAsyncDisposable {
 
     CancellationToken _ct;
     volatile bool     _disposed;
+    Task?             _eventProcessorTask;
 
     public async Task ConnectAsync(CancellationToken ct) {
         _ct = ct;
+        _eventProcessorTask = ProcessEventQueueAsync(ct);
         await ConnectWithRetryAsync(ct);
     }
 
@@ -170,38 +164,67 @@ public class ServerConnection : IAsyncDisposable {
         => _hub.SendAsync("SendTerminalOutput", agentId, base64Data, cancellationToken: _ct);
 
     public Task AppendAgentRunEventAsync(string agentId, string eventType, System.Text.Json.Nodes.JsonObject data) {
-        // Use HTTP for event persistence (same as MAUI client)
         var url = $"{_config.ServerUrl.TrimEnd('/')}/api/agent-runs/{agentId}/events";
-        // Fire-and-forget HTTP POST
-        _ = PostEventAsync(url, eventType, data);
+        _eventChannel.Writer.TryWrite(new PendingEvent(url, eventType, data));
 
         return Task.CompletedTask;
     }
 
+    readonly Channel<PendingEvent> _eventChannel = Channel.CreateBounded<PendingEvent>(
+        new BoundedChannelOptions(1000) { FullMode = BoundedChannelFullMode.DropOldest }
+    );
+
     HttpClient? _httpClient;
 
-    async Task PostEventAsync(string url, string eventType, System.Text.Json.Nodes.JsonObject data) {
-        try {
-            _httpClient ??= new HttpClient();
-            var tokens = await TokenStore.GetValidTokensAsync();
+    async Task ProcessEventQueueAsync(CancellationToken ct) {
+        await foreach (var evt in _eventChannel.Reader.ReadAllAsync(ct)) {
+            var retryDelay = TimeSpan.FromSeconds(1);
 
-            if (tokens?.AccessToken is not null) {
-                _httpClient.DefaultRequestHeaders.Authorization = new("Bearer", tokens.AccessToken);
+            while (!ct.IsCancellationRequested) {
+                try {
+                    _httpClient ??= new HttpClient();
+                    var tokens = await TokenStore.GetValidTokensAsync();
+
+                    if (tokens?.AccessToken is not null) {
+                        _httpClient.DefaultRequestHeaders.Authorization = new("Bearer", tokens.AccessToken);
+                    }
+
+                    var payloadObj = new System.Text.Json.Nodes.JsonObject {
+                        ["event_type"] = evt.EventType,
+                        ["data"]       = evt.Data
+                    };
+                    var payload  = payloadObj.ToJsonString();
+                    var response = await _httpClient.PostAsync(evt.Url, new StringContent(payload, System.Text.Encoding.UTF8, "application/json"), ct);
+                    response.EnsureSuccessStatusCode();
+
+                    break;
+                } catch (OperationCanceledException) when (ct.IsCancellationRequested) {
+                    return;
+                } catch (Exception ex) {
+                    _logger.LogWarning(ex, "Failed to post agent run event, retrying in {Delay}s", retryDelay.TotalSeconds);
+
+                    try {
+                        await Task.Delay(retryDelay, ct);
+                    } catch (OperationCanceledException) {
+                        return;
+                    }
+
+                    retryDelay = TimeSpan.FromSeconds(Math.Min(retryDelay.TotalSeconds * 2, 30));
+                }
             }
-
-            var payloadObj = new System.Text.Json.Nodes.JsonObject {
-                ["event_type"] = eventType,
-                ["data"]       = data
-            };
-            var payload = payloadObj.ToJsonString();
-            await _httpClient.PostAsync(url, new StringContent(payload, System.Text.Encoding.UTF8, "application/json"), _ct);
-        } catch (Exception ex) {
-            _logger.LogWarning(ex, "Failed to post agent run event");
         }
     }
 
+    record PendingEvent(string Url, string EventType, System.Text.Json.Nodes.JsonObject Data);
+
     public async ValueTask DisposeAsync() {
         _disposed = true;
+        _eventChannel.Writer.TryComplete();
+
+        if (_eventProcessorTask is not null) {
+            await _eventProcessorTask;
+        }
+
         _httpClient?.Dispose();
         await _hub.DisposeAsync();
     }

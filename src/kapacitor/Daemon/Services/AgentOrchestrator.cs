@@ -91,15 +91,9 @@ public partial class AgentOrchestrator : IAsyncDisposable {
 
     int ActiveCount => _agents.Count(a => a.Value.Status is "Starting" or "Running");
 
-    async Task HandleLaunchAgent(
-            string    agentId,
-            string?   prompt,
-            string    model,
-            string?   effort,
-            string    repoPath,
-            string[]? tools,
-            string[]? attachmentIds
-        ) {
+    async Task HandleLaunchAgent(LaunchAgentCommand cmd) {
+        var (agentId, prompt, model, effort, repoPath, tools, attachmentIds) = cmd;
+
         WorktreeInfo? worktree = null;
 
         try {
@@ -368,7 +362,9 @@ public partial class AgentOrchestrator : IAsyncDisposable {
         }
     }
 
-    async Task HandleSendInput(string agentId, string text, string[]? attachmentIds) {
+    async Task HandleSendInput(SendInputCommand cmd) {
+        var (agentId, text, attachmentIds) = cmd;
+
         if (!_agents.TryGetValue(agentId, out var agent)) {
             return;
         }
@@ -487,12 +483,12 @@ public partial class AgentOrchestrator : IAsyncDisposable {
         return path;
     }
 
-    void HandleResizeTerminal(string agentId, int cols, int rows) {
-        if (!_agents.TryGetValue(agentId, out var agent)) {
-            return;
+    Task HandleResizeTerminal(ResizeTerminalCommand cmd) {
+        if (_agents.TryGetValue(cmd.AgentId, out var agent)) {
+            agent.Process.Resize((ushort)cmd.Cols, (ushort)cmd.Rows);
         }
 
-        agent.Process.Resize((ushort)cols, (ushort)rows);
+        return Task.CompletedTask;
     }
 
     void ReRegisterAgents() {
