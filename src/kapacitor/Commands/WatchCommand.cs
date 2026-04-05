@@ -62,7 +62,7 @@ static partial class WatchCommand {
                     };
                 }
             )
-            .WithAutomaticReconnect([TimeSpan.Zero, TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(10), TimeSpan.FromSeconds(30)])
+            .WithAutomaticReconnect(new InfiniteRetryPolicy())
             .AddJsonProtocol(options => {
                     options.PayloadSerializerOptions.TypeInfoResolverChain
                         .Insert(0, KapacitorJsonContext.Default);
@@ -103,16 +103,16 @@ static partial class WatchCommand {
         };
 
         hubConnection.Closed += ex => {
-            Log($"SignalR connection closed permanently: {ex?.Message}");
-            // All reconnect attempts exhausted — self-terminate
+            Log($"SignalR connection closed: {ex?.Message}");
             cts.Cancel();
 
             return Task.CompletedTask;
         };
 
-        // Connect with retry (server may not be up yet) — try for up to 5 minutes
+        // Connect with retry — server may not be up yet.
+        // Retry indefinitely with exponential backoff (cap 30s).
+        // The watcher is lightweight when idle and the session will end via session-end hook.
         var connectRetryDelay = TimeSpan.FromSeconds(1);
-        var connectStartTime  = DateTimeOffset.UtcNow;
 
         while (!cts.Token.IsCancellationRequested) {
             try {
@@ -122,7 +122,7 @@ static partial class WatchCommand {
             } catch (OperationCanceledException) {
                 // SIGTERM/SIGINT during connect — exit gracefully
                 break;
-            } catch (Exception ex) when (DateTimeOffset.UtcNow - connectStartTime < TimeSpan.FromMinutes(5)) {
+            } catch (Exception ex) {
                 Log($"SignalR connect failed, retrying in {connectRetryDelay.TotalSeconds}s: {ex.Message}");
 
                 try {
@@ -132,13 +132,6 @@ static partial class WatchCommand {
                 }
 
                 connectRetryDelay = TimeSpan.FromSeconds(Math.Min(connectRetryDelay.TotalSeconds * 2, 30));
-            } catch (Exception ex) {
-                // Timeout exhausted — give up
-                Log($"SignalR connect failed after 5 minutes, giving up: {ex.Message}");
-                await hubConnection.DisposeAsync();
-                await logWriter.DisposeAsync();
-
-                return 0;
             }
         }
 
@@ -155,6 +148,18 @@ static partial class WatchCommand {
 
         try {
             while (!cts.Token.IsCancellationRequested) {
+                // Skip work while disconnected — SignalR auto-reconnect handles recovery.
+                // No point re-reading the file or attempting sends that will fail.
+                if (hubConnection.State != HubConnectionState.Connected) {
+                    try {
+                        await Task.Delay(TimeSpan.FromSeconds(5), cts.Token);
+                    } catch (OperationCanceledException) {
+                        break;
+                    }
+
+                    continue;
+                }
+
                 // Periodically refresh repository info (every 60s)
                 if (cwd is not null && DateTimeOffset.UtcNow - state.LastRepoDetection > TimeSpan.FromSeconds(60)) {
                     state.Repository        = await RepositoryDetection.DetectRepositoryAsync(cwd);
@@ -724,4 +729,18 @@ static partial class WatchCommand {
 
     [GeneratedRegex("[*_`#]+")]
     private static partial Regex MarkdownRegex();
+
+    /// <summary>
+    /// Retries SignalR reconnection indefinitely with exponential backoff capped at 30s.
+    /// The watcher is lightweight when idle — it should never give up while the session is active.
+    /// </summary>
+    sealed class InfiniteRetryPolicy : IRetryPolicy {
+        public TimeSpan? NextRetryDelay(RetryContext retryContext) =>
+            retryContext.PreviousRetryCount switch {
+                0 => TimeSpan.Zero,
+                1 => TimeSpan.FromSeconds(2),
+                2 => TimeSpan.FromSeconds(10),
+                _ => TimeSpan.FromSeconds(30),
+            };
+    }
 }

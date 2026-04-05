@@ -379,9 +379,12 @@ switch (command) {
             var transcriptPath = node?["transcript_path"]?.GetValue<string>();
 
             if (sessionId is not null) {
-                var wasRunning = await WatcherManager.KillWatcher(sessionId);
+                await WatcherManager.KillWatcher(sessionId);
 
-                if (!wasRunning && transcriptPath is not null) {
+                // Always inline drain — the watcher may have been alive but never connected
+                // (stuck in SignalR connect retry during server downtime). InlineDrainAsync
+                // checks server position first, so it's a no-op if already fully drained.
+                if (transcriptPath is not null) {
                     await WatcherManager.InlineDrainAsync(baseUrl!, sessionId, transcriptPath, agentId: null);
                 }
             }
@@ -401,9 +404,9 @@ switch (command) {
             var transcriptPath = node?["transcript_path"]?.GetValue<string>();
 
             if (sessionId is not null && agentId is not null) {
-                var wasRunning = await WatcherManager.KillWatcher($"{sessionId}-{agentId}");
+                await WatcherManager.KillWatcher($"{sessionId}-{agentId}");
 
-                if (!wasRunning && transcriptPath is not null) {
+                if (transcriptPath is not null) {
                     var sessionDir          = Path.ChangeExtension(transcriptPath, null);
                     var agentTranscriptPath = Path.Combine(sessionDir, "subagents", $"agent-{agentId}.jsonl");
                     await WatcherManager.InlineDrainAsync(baseUrl!, sessionId, agentTranscriptPath, agentId);

@@ -291,12 +291,18 @@ static class WatcherManager {
                     await Console.Out.WriteLineAsync($"Inline drain for {sessionId}: sent {newLines.Count} line(s)");
                 } else {
                     await Console.Error.WriteLineAsync($"Inline drain for {sessionId}: server returned HTTP {(int)resp.StatusCode}");
+                    PrintRecoveryHint(sessionId);
                 }
             } catch (HttpRequestException ex) {
                 await Console.Error.WriteLineAsync($"Inline drain for {sessionId}: server unreachable after retries — {ex.Message}");
+                PrintRecoveryHint(sessionId);
             }
         } catch (Exception ex) {
             await Console.Error.WriteLineAsync($"Inline drain for {sessionId} failed: {ex.Message}");
+            PrintRecoveryHint(sessionId);
         }
     }
+
+    static void PrintRecoveryHint(string sessionId) =>
+        Console.Error.WriteLine($"Transcript not uploaded. To import later, run: kapacitor history --session {sessionId}");
 }
