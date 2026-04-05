@@ -1,6 +1,5 @@
 using System.Text;
 using System.Text.Json.Nodes;
-using kapacitor.Auth;
 
 namespace kapacitor.Commands;
 
@@ -60,11 +59,13 @@ static class McpReviewServer {
             JsonObject response;
 
             if (method == "tools/call" && (owner is null || repo is null || prNumber is null)) {
-                response = BuildToolResult(id,
-                    "No PR detected for current branch. Either:\n" +
+                response = BuildToolResult(
+                    id,
+                    "No PR detected for current branch. Either:\n"                      +
                     "- Switch to a branch with an open PR and restart the MCP server\n" +
                     "- Use `kapacitor review <pr>` to launch a dedicated review session",
-                    isError: true);
+                    isError: true
+                );
             } else {
                 response = method switch {
                     "initialize" => BuildInitializeResponse(id),
@@ -82,7 +83,7 @@ static class McpReviewServer {
 
     static async Task<(string Owner, string Repo, int PrNumber)?> DetectPrFromGitAsync() {
         try {
-            var cwd = Directory.GetCurrentDirectory();
+            var cwd      = Directory.GetCurrentDirectory();
             var repoInfo = await RepositoryDetection.DetectRepositoryAsync(cwd);
 
             if (repoInfo?.Owner is not null && repoInfo.RepoName is not null && repoInfo.PrNumber is not null) {
@@ -121,14 +122,14 @@ static class McpReviewServer {
         };
 
     static async Task<JsonObject> HandleToolCallAsync(
-        JsonNode   id,
-        JsonObject request,
-        HttpClient client,
-        string     baseUrl,
-        string     owner,
-        string     repo,
-        int        prNumber
-    ) {
+            JsonNode   id,
+            JsonObject request,
+            HttpClient client,
+            string     baseUrl,
+            string     owner,
+            string     repo,
+            int        prNumber
+        ) {
         var paramsNode = request["params"]?.AsObject();
         var toolName   = paramsNode?["name"]?.GetValue<string>();
         var arguments  = paramsNode?["arguments"]?.AsObject();
@@ -189,7 +190,7 @@ static class McpReviewServer {
         var sessionId = arguments?["session_id"]?.GetValue<string>()
          ?? throw new ArgumentException("Missing required argument: session_id");
 
-        var url = $"{baseUrl}/api/review/sessions/{Uri.EscapeDataString(sessionId)}/transcript";
+        var url         = $"{baseUrl}/api/review/sessions/{Uri.EscapeDataString(sessionId)}/transcript";
         var queryParams = new List<string>();
 
         if (arguments?["file_path"]?.GetValue<string>() is { } filePath) {
@@ -213,6 +214,7 @@ static class McpReviewServer {
 
     static JsonObject BuildToolResult(JsonNode id, string text, bool isError = false) {
         var contentItem = new JsonObject { ["type"] = "text", ["text"] = text };
+
         var result = new JsonObject {
             ["content"] = new JsonArray(contentItem)
         };
@@ -238,78 +240,77 @@ static class McpReviewServer {
             }
         };
 
-    static JsonArray BuildToolsList() =>
-        [
-            BuildToolDef(
-                "get_pr_summary",
-                "Get an overview of the PR: which Claude Code sessions contributed, which files were changed (with event counts), and what test commands were run with their pass/fail outcomes. Call this first to orient yourself.",
-                new JsonObject { ["type"] = "object", ["properties"] = new JsonObject(), ["required"] = new JsonArray() }
-            ),
-            BuildToolDef(
-                "list_pr_files",
-                "List all files changed in the PR with aggregated metadata: change types (read/edit/create), how many sessions touched each file, and total event count. Use this to understand the scope of changes.",
-                new JsonObject { ["type"] = "object", ["properties"] = new JsonObject(), ["required"] = new JsonArray() }
-            ),
-            BuildToolDef(
-                "get_file_context",
-                "Get deep context for a specific file: which sessions modified it, when, and relevant transcript excerpts where the file was discussed or changed. Use this when a reviewer asks 'why was this file changed?'",
-                new JsonObject {
-                    ["type"] = "object",
-                    ["properties"] = new JsonObject {
-                        ["file_path"] = new JsonObject {
-                            ["type"]        = "string",
-                            ["description"] = "Path of the file to get context for"
-                        }
+    static JsonArray BuildToolsList() => [
+        BuildToolDef(
+            "get_pr_summary",
+            "Get an overview of the PR: which Claude Code sessions contributed, which files were changed (with event counts), and what test commands were run with their pass/fail outcomes. Call this first to orient yourself.",
+            new JsonObject { ["type"] = "object", ["properties"] = new JsonObject(), ["required"] = new JsonArray() }
+        ),
+        BuildToolDef(
+            "list_pr_files",
+            "List all files changed in the PR with aggregated metadata: change types (read/edit/create), how many sessions touched each file, and total event count. Use this to understand the scope of changes.",
+            new JsonObject { ["type"] = "object", ["properties"] = new JsonObject(), ["required"] = new JsonArray() }
+        ),
+        BuildToolDef(
+            "get_file_context",
+            "Get deep context for a specific file: which sessions modified it, when, and relevant transcript excerpts where the file was discussed or changed. Use this when a reviewer asks 'why was this file changed?'",
+            new JsonObject {
+                ["type"] = "object",
+                ["properties"] = new JsonObject {
+                    ["file_path"] = new JsonObject {
+                        ["type"]        = "string",
+                        ["description"] = "Path of the file to get context for"
+                    }
+                },
+                ["required"] = new JsonArray(JsonValue.Create("file_path"))
+            }
+        ),
+        BuildToolDef(
+            "search_context",
+            "Full-text search across all session transcripts linked to this PR. Returns ranked excerpts with speaker (user/assistant/tool), content, and highlighted snippets. Use for 'why' questions: 'why retry logic', 'what alternatives', 'error handling rationale'.",
+            new JsonObject {
+                ["type"] = "object",
+                ["properties"] = new JsonObject {
+                    ["query"] = new JsonObject {
+                        ["type"]        = "string",
+                        ["description"] = "Free-text search query"
+                    }
+                },
+                ["required"] = new JsonArray(JsonValue.Create("query"))
+            }
+        ),
+        BuildToolDef(
+            "list_sessions",
+            "List all Claude Code sessions that contributed to this PR, with session IDs, titles, timestamps, and models used. Use this to understand the work timeline and pick sessions to drill into with get_transcript.",
+            new JsonObject { ["type"] = "object", ["properties"] = new JsonObject(), ["required"] = new JsonArray() }
+        ),
+        BuildToolDef(
+            "get_transcript",
+            "Get the full transcript of a specific session: user messages, assistant reasoning, tool calls, and results. Paginated (default 100 events). Use file_path filter to scope to events mentioning a specific file. This is the deepest level of detail — use when you need to trace the exact reasoning chain.",
+            new JsonObject {
+                ["type"] = "object",
+                ["properties"] = new JsonObject {
+                    ["session_id"] = new JsonObject {
+                        ["type"]        = "string",
+                        ["description"] = "Session ID to retrieve the transcript for"
                     },
-                    ["required"] = new JsonArray(JsonValue.Create("file_path"))
-                }
-            ),
-            BuildToolDef(
-                "search_context",
-                "Full-text search across all session transcripts linked to this PR. Returns ranked excerpts with speaker (user/assistant/tool), content, and highlighted snippets. Use for 'why' questions: 'why retry logic', 'what alternatives', 'error handling rationale'.",
-                new JsonObject {
-                    ["type"] = "object",
-                    ["properties"] = new JsonObject {
-                        ["query"] = new JsonObject {
-                            ["type"]        = "string",
-                            ["description"] = "Free-text search query"
-                        }
+                    ["file_path"] = new JsonObject {
+                        ["type"]        = "string",
+                        ["description"] = "Optional file path to filter transcript events"
                     },
-                    ["required"] = new JsonArray(JsonValue.Create("query"))
-                }
-            ),
-            BuildToolDef(
-                "list_sessions",
-                "List all Claude Code sessions that contributed to this PR, with session IDs, titles, timestamps, and models used. Use this to understand the work timeline and pick sessions to drill into with get_transcript.",
-                new JsonObject { ["type"] = "object", ["properties"] = new JsonObject(), ["required"] = new JsonArray() }
-            ),
-            BuildToolDef(
-                "get_transcript",
-                "Get the full transcript of a specific session: user messages, assistant reasoning, tool calls, and results. Paginated (default 100 events). Use file_path filter to scope to events mentioning a specific file. This is the deepest level of detail — use when you need to trace the exact reasoning chain.",
-                new JsonObject {
-                    ["type"] = "object",
-                    ["properties"] = new JsonObject {
-                        ["session_id"] = new JsonObject {
-                            ["type"]        = "string",
-                            ["description"] = "Session ID to retrieve the transcript for"
-                        },
-                        ["file_path"] = new JsonObject {
-                            ["type"]        = "string",
-                            ["description"] = "Optional file path to filter transcript events"
-                        },
-                        ["skip"] = new JsonObject {
-                            ["type"]        = "integer",
-                            ["description"] = "Number of events to skip (for pagination)"
-                        },
-                        ["take"] = new JsonObject {
-                            ["type"]        = "integer",
-                            ["description"] = "Number of events to return (for pagination)"
-                        }
+                    ["skip"] = new JsonObject {
+                        ["type"]        = "integer",
+                        ["description"] = "Number of events to skip (for pagination)"
                     },
-                    ["required"] = new JsonArray(JsonValue.Create("session_id"))
-                }
-            )
-        ];
+                    ["take"] = new JsonObject {
+                        ["type"]        = "integer",
+                        ["description"] = "Number of events to return (for pagination)"
+                    }
+                },
+                ["required"] = new JsonArray(JsonValue.Create("session_id"))
+            }
+        )
+    ];
 
     static JsonObject BuildToolDef(string name, string description, JsonObject inputSchema) =>
         new() {

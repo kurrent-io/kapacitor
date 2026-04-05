@@ -155,55 +155,60 @@ public partial class ServerConnection : IAsyncDisposable {
     HttpClient? _httpClient;
 
     async Task ProcessEventQueueAsync(CancellationToken ct) {
-        await foreach (var evt in _eventChannel.Reader.ReadAllAsync(ct)) {
-            string payload;
+        try {
+            await foreach (var evt in _eventChannel.Reader.ReadAllAsync(ct)) {
+                string payload;
 
-            try {
-                var eventType = evt.Event.GetType().Name;
-                var data      = JsonSerializer.SerializeToNode(evt.Event, evt.Event.GetType(), KapacitorJsonContext.Default)!.AsObject();
-                var payloadObj = new JsonObject {
-                    ["event_type"] = eventType,
-                    ["data"]       = data
-                };
-                payload = payloadObj.ToJsonString();
-            } catch (Exception ex) {
-                LogEventSerializationFailed(ex, evt.Event.GetType().Name, evt.AgentId);
-
-                continue;
-            }
-
-            var url        = $"{_config.ServerUrl.TrimEnd('/')}/api/agent-runs/{evt.AgentId}/events";
-            var retryDelay = TimeSpan.FromSeconds(1);
-
-            while (!ct.IsCancellationRequested) {
                 try {
-                    _httpClient ??= new();
-                    var tokens = await TokenStore.GetValidTokensAsync();
+                    var eventType = evt.Event.GetType().Name;
+                    var data      = JsonSerializer.SerializeToNode(evt.Event, evt.Event.GetType(), KapacitorJsonContext.Default)!.AsObject();
 
-                    if (tokens?.AccessToken is not null) {
-                        _httpClient.DefaultRequestHeaders.Authorization = new("Bearer", tokens.AccessToken);
-                    }
-
-                    var response = await _httpClient.PostAsync(url, new StringContent(payload, Encoding.UTF8, "application/json"), ct);
-                    response.EnsureSuccessStatusCode();
-
-                    break;
-                } catch (OperationCanceledException) when (ct.IsCancellationRequested) {
-                    return;
+                    var payloadObj = new JsonObject {
+                        ["event_type"] = eventType,
+                        ["data"]       = data
+                    };
+                    payload = payloadObj.ToJsonString();
                 } catch (Exception ex) {
-                    LogEventPostFailed(ex, retryDelay.TotalSeconds);
+                    LogEventSerializationFailed(ex, evt.Event.GetType().Name, evt.AgentId);
 
+                    continue;
+                }
+
+                var url        = $"{_config.ServerUrl.TrimEnd('/')}/api/agent-runs/{evt.AgentId}/events";
+                var retryDelay = TimeSpan.FromSeconds(1);
+
+                while (!ct.IsCancellationRequested) {
                     try {
-                        await Task.Delay(retryDelay, ct);
-                    } catch (OperationCanceledException) {
+                        _httpClient ??= new();
+                        var tokens = await TokenStore.GetValidTokensAsync();
+
+                        if (tokens?.AccessToken is not null) {
+                            _httpClient.DefaultRequestHeaders.Authorization = new("Bearer", tokens.AccessToken);
+                        }
+
+                        var response = await _httpClient.PostAsync(url, new StringContent(payload, Encoding.UTF8, "application/json"), ct);
+                        response.EnsureSuccessStatusCode();
+
+                        break;
+                    } catch (OperationCanceledException) when (ct.IsCancellationRequested) {
                         return;
-                    }
+                    } catch (Exception ex) {
+                        LogEventPostFailed(ex, retryDelay.TotalSeconds);
+
+                        try {
+                            await Task.Delay(retryDelay, ct);
+                        } catch (OperationCanceledException) {
+                            return;
+                        }
 
 #pragma warning disable IDE0059
-                    retryDelay = TimeSpan.FromSeconds(Math.Min(retryDelay.TotalSeconds * 2, 30));
+                        retryDelay = TimeSpan.FromSeconds(Math.Min(retryDelay.TotalSeconds * 2, 30));
 #pragma warning restore IDE0059
+                    }
                 }
             }
+        } catch (OperationCanceledException) when (ct.IsCancellationRequested) {
+            // Graceful shutdown — channel read cancelled
         }
     }
 
