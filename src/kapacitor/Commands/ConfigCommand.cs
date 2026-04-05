@@ -48,6 +48,12 @@ public static class ConfigCommand {
             "daemon.name"                                           => config with { Daemon = (config.Daemon ?? new DaemonSettings()) with { Name = value } },
             "daemon.max_agents" when int.TryParse(value, out var n) => config with { Daemon = (config.Daemon ?? new DaemonSettings()) with { MaxAgents = n } },
             "update_check" when bool.TryParse(value, out var b)     => config with { UpdateCheck = b },
+            "default_visibility" when value is "private" or "org_public" or "public"
+                => config with { DefaultVisibility = value },
+            "default_visibility"
+                => throw new ArgumentException("Invalid value. Must be: private, org_public, or public"),
+            "excluded_repos"
+                => config with { ExcludedRepos = value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries) },
             _                                                       => throw new ArgumentException($"Unknown config key: {key}")
         };
 
@@ -65,6 +71,8 @@ public static class ConfigCommand {
         Console.Error.WriteLine("  daemon.name        Daemon name");
         Console.Error.WriteLine("  daemon.max_agents  Max concurrent agents");
         Console.Error.WriteLine("  update_check       Enable update check (true/false)");
+        Console.Error.WriteLine("  default_visibility   Default session visibility (private, org_public, public)");
+        Console.Error.WriteLine("  excluded_repos       Excluded repos, comma-separated (owner/repo,owner/repo)");
 
         return 1;
     }

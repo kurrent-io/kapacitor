@@ -321,6 +321,30 @@ if (command is "session-end" or "subagent-stop") {
     body = await RepositoryDetection.EnrichWithRepositoryInfo(body);
 }
 
+// Load config once for exclusion check and default_visibility injection.
+// Runs after repo enrichment so the body already has repository.owner/repo_name,
+// avoiding a redundant git detection in RepoExclusion.
+var kapacitorConfig = AppConfig.Load();
+
+// Check repo exclusion — silently exit for excluded repos
+if (kapacitorConfig?.ExcludedRepos is { Length: > 0 } repos && await RepoExclusion.IsExcludedAsync(body, repos)) {
+    return 0;
+}
+
+// Inject default_visibility from config for session-start hooks
+if (command == "session-start" && kapacitorConfig?.DefaultVisibility is { } vis) {
+    try {
+        var node = JsonNode.Parse(body);
+
+        if (node is not null) {
+            node["default_visibility"] = vis;
+            body = node.ToJsonString();
+        }
+    } catch {
+        // Best effort — don't block session start if config read fails
+    }
+}
+
 // For session-start: read plan file if slug is known and inject plan_content into payload
 var planContentInjected = false;
 

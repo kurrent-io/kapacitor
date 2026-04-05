@@ -12,6 +12,12 @@ public record KapacitorConfig {
 
     [JsonPropertyName("update_check")]
     public bool UpdateCheck { get; init; } = true;
+
+    [JsonPropertyName("default_visibility")]
+    public string DefaultVisibility { get; init; } = "org_public";
+
+    [JsonPropertyName("excluded_repos")]
+    public string[] ExcludedRepos { get; init; } = [];
 }
 
 public record DaemonSettings {
@@ -79,14 +85,24 @@ public static class AppConfig {
     /// </summary>
     public static string NormalizeUrl(string url) => url.TrimEnd('/');
 
+    static readonly string[] ValidVisibilities = ["private", "org_public", "public"];
+
     public static KapacitorConfig? Load() {
         if (!File.Exists(ConfigPath))
             return null;
 
         try {
-            var json = File.ReadAllText(ConfigPath);
+            var json   = File.ReadAllText(ConfigPath);
+            var config = JsonSerializer.Deserialize(json, ConfigJsonContext.Default.KapacitorConfig);
 
-            return JsonSerializer.Deserialize(json, ConfigJsonContext.Default.KapacitorConfig);
+            if (config is null) return null;
+
+            // Normalize default_visibility to lowercase; reset invalid values to default
+            var vis = config.DefaultVisibility.ToLowerInvariant();
+
+            if (!ValidVisibilities.Contains(vis)) vis = "org_public";
+
+            return vis == config.DefaultVisibility ? config : config with { DefaultVisibility = vis };
         } catch (Exception ex) when (ex is JsonException or IOException or UnauthorizedAccessException) {
             Console.Error.WriteLine($"Warning: could not read config at {ConfigPath}: {ex.Message}");
 

@@ -28,7 +28,7 @@ public static class SetupCommand {
         }
 
         // Step 1: Server URL
-        Console.WriteLine("Step 1/4: Server");
+        Console.WriteLine("Step 1/5: Server");
         string serverUrl;
 
         if (serverUrlArg is not null) {
@@ -68,7 +68,7 @@ public static class SetupCommand {
         Console.WriteLine();
 
         // Step 2: Login
-        Console.WriteLine("Step 2/4: Login");
+        Console.WriteLine("Step 2/5: Login");
 
         if (provider == "None") {
             Console.WriteLine("  Auth provider is None — no login required.");
@@ -87,8 +87,50 @@ public static class SetupCommand {
 
         Console.WriteLine();
 
-        // Step 3: Claude Code plugin
-        Console.WriteLine("Step 3/4: Claude Code Plugin");
+        // Step 3: Default session visibility
+        Console.WriteLine("Step 3/5: Default session visibility");
+        Console.WriteLine();
+        Console.WriteLine("  How should your sessions be visible to others by default?");
+        Console.WriteLine();
+        Console.WriteLine("    1) All private — only you can see your sessions");
+        Console.WriteLine("    2) Org repos public, others private (current default)");
+        Console.WriteLine("    3) All public — everyone can see all your sessions");
+        Console.WriteLine();
+
+        string defaultVisibility;
+
+        if (noPrompt) {
+            defaultVisibility = (GetArg(args, "--default-visibility") ?? "org_public").ToLowerInvariant();
+
+            if (defaultVisibility is not "private" and not "org_public" and not "public") {
+                await Console.Error.WriteLineAsync($"  Invalid default-visibility: {defaultVisibility}. Must be: private, org_public, or public");
+
+                return 1;
+            }
+
+            Console.WriteLine($"  Default visibility: {defaultVisibility}");
+        } else {
+            while (true) {
+                Console.Write("  Choose [1-3] (default: 2): ");
+                var choice = Console.ReadLine()?.Trim();
+
+                defaultVisibility = choice switch {
+                    "" or null or "2" => "org_public",
+                    "1"               => "private",
+                    "3"               => "public",
+                    _                 => ""
+                };
+
+                if (defaultVisibility != "") break;
+
+                Console.WriteLine("  Invalid choice. Please enter 1, 2, or 3.");
+            }
+        }
+
+        Console.WriteLine();
+
+        // Step 4: Claude Code plugin
+        Console.WriteLine("Step 4/5: Claude Code Plugin");
         Console.WriteLine("  The Kapacitor plugin provides hooks, skills, and collaborative memory.");
         Console.WriteLine();
 
@@ -106,8 +148,8 @@ public static class SetupCommand {
 
         Console.WriteLine();
 
-        // Step 4: Daemon name + save
-        Console.WriteLine("Step 4/4: Agent Daemon");
+        // Step 5: Daemon name + save
+        Console.WriteLine("Step 5/5: Agent Daemon");
 
         var    defaultName = Environment.UserName.ToLowerInvariant();
         string daemonName;
@@ -128,6 +170,7 @@ public static class SetupCommand {
 
         config = config with {
             ServerUrl = serverUrl,
+            DefaultVisibility = defaultVisibility,
             Daemon = (config.Daemon ?? new DaemonSettings()) with { Name = daemonName }
         };
         AppConfig.Save(config);
@@ -135,6 +178,7 @@ public static class SetupCommand {
         var finalTokens = TokenStore.Load();
         Console.WriteLine("Setup complete!");
         Console.WriteLine($"  ✓ Server:  {serverUrl}");
+        Console.WriteLine($"  ✓ Visibility: {defaultVisibility}");
         Console.WriteLine($"  ✓ Daemon:  {daemonName}");
 
         if (finalTokens is not null) {

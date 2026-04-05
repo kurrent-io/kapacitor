@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using kapacitor.Config;
 
 namespace kapacitor.Commands;
 
@@ -84,10 +85,11 @@ static class HistoryCommand {
         // Sort transcript files so continuation chains are processed in order
         SortByContinuationOrder(transcriptFiles, continuationMap);
 
-        var loaded  = 0;
-        var resumed = 0;
-        var skipped = 0;
-        var errored = 0;
+        var loaded       = 0;
+        var resumed      = 0;
+        var skipped      = 0;
+        var errored      = 0;
+        var excludedRepos = AppConfig.Load()?.ExcludedRepos;
 
         foreach (var (sessionId, filePath, encodedCwd) in transcriptFiles) {
             // Skip transcripts that are kapacitor-spawned sub-sessions (title generation, what's-done summaries)
@@ -164,6 +166,9 @@ static class HistoryCommand {
                     // POST synthesized session-start hook
                     continuationMap.TryGetValue(sessionId, out var prevSessionId);
 
+                    // Note: default_visibility is deliberately omitted for history imports.
+                    // Historical sessions predate the user's visibility preference; null falls
+                    // back to org_public behavior, which is the safest default for imported data.
                     var startHook = new JsonObject {
                         ["session_id"]      = sessionId,
                         ["transcript_path"] = filePath,
@@ -191,6 +196,27 @@ static class HistoryCommand {
 
                     if (startCwd is not null) {
                         var repo = await RepositoryDetection.DetectRepositoryAsync(startCwd);
+
+                        // Check repo exclusion
+                        if (excludedRepos is { Length: > 0 }
+                         && repo?.Owner is not null
+                         && repo.RepoName is not null
+                         && excludedRepos.Contains($"{repo.Owner}/{repo.RepoName}", StringComparer.OrdinalIgnoreCase)) {
+                            if (Console.IsInputRedirected) {
+                                Console.WriteLine($"Skipping {sessionId} [repository {repo.Owner}/{repo.RepoName} is excluded]");
+                                skipped++;
+                                continue;
+                            }
+
+                            Console.Write($"Repository {repo.Owner}/{repo.RepoName} is excluded from tracking. Continue anyway? (y/N) ");
+                            var answer = Console.ReadLine()?.Trim();
+
+                            if (!string.Equals(answer, "y", StringComparison.OrdinalIgnoreCase)) {
+                                Console.WriteLine($"Skipping {sessionId}");
+                                skipped++;
+                                continue;
+                            }
+                        }
 
                         if (repo is not null) {
                             var repoNode = new JsonObject();
