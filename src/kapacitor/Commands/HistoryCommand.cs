@@ -11,8 +11,7 @@ static class HistoryCommand {
 
         Console.WriteLine("Discovering sessions...");
 
-        var home        = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        var projectsDir = Path.Combine(home, ".claude", "projects");
+        var projectsDir = ClaudePaths.Projects;
 
         if (!Directory.Exists(projectsDir)) {
             Console.WriteLine("No Claude Code projects directory found.");

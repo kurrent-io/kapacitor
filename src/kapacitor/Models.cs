@@ -228,6 +228,15 @@ static partial class GitUrlParser {
 [JsonSerializable(typeof(LaunchAgentCommand))]
 [JsonSerializable(typeof(SendInputCommand))]
 [JsonSerializable(typeof(ResizeTerminalCommand))]
+[JsonSerializable(typeof(DaemonConnect))]
+[JsonSerializable(typeof(AgentRegistered))]
+[JsonSerializable(typeof(AgentStatusChanged))]
+[JsonSerializable(typeof(AgentUnregistered))]
+[JsonSerializable(typeof(LaunchFailed))]
+[JsonSerializable(typeof(TerminalOutput))]
+[JsonSerializable(typeof(AgentRunStarted))]
+[JsonSerializable(typeof(AgentRunStopped))]
+[JsonSerializable(typeof(AgentRunHeartbeat))]
 [JsonSerializable(typeof(int))]
 [JsonSerializable(typeof(string))]
 [JsonSerializable(typeof(string[]))]
@@ -255,4 +264,56 @@ public readonly record struct ResizeTerminalCommand(
     string AgentId,
     int    Cols,
     int    Rows
+);
+
+/// <summary>Commands sent from daemon clients to the server via SignalR.</summary>
+public readonly record struct DaemonConnect(
+    string   Name,
+    string   Platform,
+    string[] RepoPaths,
+    int      MaxAgents
+);
+
+public readonly record struct AgentRegistered(
+    string  AgentId,
+    string? Prompt,
+    string? Model,
+    string? Effort,
+    string? RepoPath
+);
+
+public readonly record struct AgentStatusChanged(
+    string  AgentId,
+    string  Status,
+    string? SessionId
+);
+
+public readonly record struct AgentUnregistered(string AgentId);
+
+public readonly record struct LaunchFailed(
+    string AgentId,
+    string Reason
+);
+
+public readonly record struct TerminalOutput(
+    string AgentId,
+    string Base64Data
+);
+
+/// <summary>Agent run events posted to the server HTTP API.</summary>
+record AgentRunStarted(
+    string? Prompt,
+    string? Model,
+    string? Effort,
+    string? RepoPath,
+    string? WorktreePath
+);
+
+record AgentRunStopped(
+    string? Reason,
+    int?    ExitCode
+);
+
+record AgentRunHeartbeat(
+    string? SessionId
 );

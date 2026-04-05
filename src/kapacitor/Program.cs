@@ -536,8 +536,7 @@ if (updateCheckTask is not null) {
 return 0;
 
 string? ReadPlanFile(string slug) {
-    var home     = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-    var planPath = Path.Combine(home, ".claude", "plans", $"{slug}.md");
+    var planPath = Path.Combine(ClaudePaths.Plans, $"{slug}.md");
 
     try {
         return File.Exists(planPath) ? File.ReadAllText(planPath) : null;

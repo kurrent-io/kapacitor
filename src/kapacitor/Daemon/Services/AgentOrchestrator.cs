@@ -127,13 +127,7 @@ public partial class AgentOrchestrator : IAsyncDisposable {
                 return;
             }
 
-            _logger.LogInformation(
-                "Launching agent {AgentId} for {Repo} (effort={Effort}, model={Model})",
-                agentId,
-                repoPath,
-                effort ?? "default",
-                model
-            );
+            LogLaunching(agentId, repoPath, effort ?? "default", model);
 
             worktree = await _worktreeManager.CreateAsync(repoPath);
 
@@ -154,7 +148,7 @@ public partial class AgentOrchestrator : IAsyncDisposable {
                 // so that project-level permissions and settings carry over.
                 SymlinkClaudeProjectDir(repoPath, worktree.Path);
             } catch (Exception ex) {
-                _logger.LogWarning(ex, "Failed to overlay .claude settings for agent {AgentId} (continuing)", agentId);
+                LogOverlayFailed(ex, agentId);
             }
 
             // Merge dialog-selected tools into the worktree's settings.local.json
@@ -165,7 +159,7 @@ public partial class AgentOrchestrator : IAsyncDisposable {
                     MergeToolPermissions(worktree.Path, tools);
                 }
             } catch (Exception ex) {
-                _logger.LogWarning(ex, "Failed to merge tool permissions for agent {AgentId} (continuing)", agentId);
+                LogToolPermissionsFailed(ex, agentId);
             }
 
             // Download attachments into worktree (best-effort)
@@ -178,7 +172,7 @@ public partial class AgentOrchestrator : IAsyncDisposable {
                         prompt = string.IsNullOrEmpty(prompt) ? suffix.TrimStart() : prompt + suffix;
                     }
                 } catch (Exception ex) {
-                    _logger.LogWarning(ex, "Failed to download launch attachments for agent {AgentId} (continuing)", agentId);
+                    LogAttachmentDownloadFailed(ex, agentId);
                 }
             }
 
@@ -211,13 +205,7 @@ public partial class AgentOrchestrator : IAsyncDisposable {
 
             var process = _ptyFactory.Spawn(_config.ClaudePath, args.ToArray(), worktree.Path, env);
 
-            _logger.LogInformation(
-                "Agent {AgentId} spawned (PID={Pid}, worktree={Worktree}, claude={ClaudePath})",
-                agentId,
-                process.Pid,
-                worktree.Path,
-                _config.ClaudePath
-            );
+            LogAgentSpawned(agentId, process.Pid, worktree.Path, _config.ClaudePath);
 
             var cts   = new CancellationTokenSource();
             var agent = new AgentInstance(agentId, prompt, model, effort, repoPath, process, worktree, cts);
@@ -228,17 +216,13 @@ public partial class AgentOrchestrator : IAsyncDisposable {
 
             _ = _server.AppendAgentRunEventAsync(
                 agentId,
-                "AgentRunStarted",
-                new System.Text.Json.Nodes.JsonObject {
-                    ["prompt"]    = prompt, ["model"]           = model, ["effort"] = effort,
-                    ["repo_path"] = repoPath, ["worktree_path"] = worktree.Path
-                }
+                new AgentRunStarted(prompt, model, effort, repoPath, worktree.Path)
             );
 
             // Start reading output
             _ = ReadAgentOutputAsync(agent);
         } catch (Exception ex) {
-            _logger.LogError(ex, "Failed to launch agent {AgentId}", agentId);
+            LogLaunchFailed(ex, agentId);
 
             // Clean up worktree if it was created but agent didn't start
             if (worktree != null) {
@@ -272,7 +256,7 @@ public partial class AgentOrchestrator : IAsyncDisposable {
         } catch (OperationCanceledException) {
             /* expected on stop */
         } catch (Exception ex) {
-            _logger.LogWarning(ex, "Error reading output for agent {AgentId}", agent.Id);
+            LogOutputReadError(ex, agent.Id);
         } finally {
             try {
                 // PTY output can end before waitpid reports the child as exited.
@@ -304,12 +288,7 @@ public partial class AgentOrchestrator : IAsyncDisposable {
 
                         status = "Failed";
 
-                        _logger.LogWarning(
-                            "Agent {AgentId} failed during startup (exit code {ExitCode}): {Reason}",
-                            agent.Id,
-                            exitCode,
-                            reason
-                        );
+                        LogStartupFailed(agent.Id, exitCode, reason);
 
                         _ = _server.LaunchFailedAsync(agent.Id, reason);
                     }
@@ -321,20 +300,16 @@ public partial class AgentOrchestrator : IAsyncDisposable {
 
                     _ = _server.AppendAgentRunEventAsync(
                         agent.Id,
-                        "AgentRunStopped",
-                        new() {
-                            ["reason"]    = stopReason,
-                            ["exit_code"] = exitCode
-                        }
+                        new AgentRunStopped(stopReason, exitCode)
                     );
                 }
 
-                _logger.LogInformation("Agent {AgentId} exited with code {ExitCode}", agent.Id, exitCode);
+                LogAgentExited(agent.Id, exitCode);
 
                 // Clean up worktree and unregister from server
                 await CleanupAgentAsync(agent.Id);
             } catch (Exception ex) {
-                _logger.LogError(ex, "Error during cleanup of agent {AgentId}", agent.Id);
+                LogCleanupError(ex, agent.Id);
             }
         }
     }
@@ -345,20 +320,20 @@ public partial class AgentOrchestrator : IAsyncDisposable {
         }
 
         try {
-            _logger.LogInformation("Stopping agent {AgentId}", agentId);
+            LogStopping(agentId);
 
             // Set status BEFORE cancelling ReadCts so the read loop's finally
             // block sees "Completed" and skips its own status change / event append.
             agent.Status = "Completed";
             _            = _server.AgentStatusChangedAsync(agentId, "Completed", agent.SessionId);
-            _            = _server.AppendAgentRunEventAsync(agentId, "AgentRunStopped", new System.Text.Json.Nodes.JsonObject { ["reason"] = "user" });
+            _            = _server.AppendAgentRunEventAsync(agentId, new AgentRunStopped("user", null));
 
             // Cancel the read loop, then terminate the process.
             // The read loop's finally block will handle CleanupAgentAsync.
             await agent.ReadCts.CancelAsync();
             await agent.Process.TerminateAsync(TimeSpan.FromSeconds(10));
         } catch (Exception ex) {
-            _logger.LogError(ex, "Error stopping agent {AgentId}", agentId);
+            LogStopError(ex, agentId);
         }
     }
 
@@ -427,7 +402,7 @@ public partial class AgentOrchestrator : IAsyncDisposable {
                 var response = await httpClient.GetAsync($"/api/attachments/{id}");
 
                 if (!response.IsSuccessStatusCode) {
-                    _logger.LogWarning("Failed to download attachment {Id}: {Status}", id, response.StatusCode);
+                    LogAttachmentNotFound(id, response.StatusCode);
 
                     continue;
                 }
@@ -447,7 +422,7 @@ public partial class AgentOrchestrator : IAsyncDisposable {
                 var safeDir  = Path.GetFullPath(attachDir) + Path.DirectorySeparatorChar;
 
                 if (!fullPath.StartsWith(safeDir)) {
-                    _logger.LogWarning("Attachment filename would escape directory: {FileName}", rawFileName);
+                    LogAttachmentPathEscape(rawFileName);
 
                     continue;
                 }
@@ -457,7 +432,7 @@ public partial class AgentOrchestrator : IAsyncDisposable {
 
                 paths.Add($".attached/{Path.GetFileName(filePath)}");
             } catch (Exception ex) {
-                _logger.LogWarning(ex, "Error downloading attachment {Id}", id);
+                LogAttachmentError(ex, id);
             }
         }
 
@@ -507,7 +482,7 @@ public partial class AgentOrchestrator : IAsyncDisposable {
                         await _server.SendTerminalOutputAsync(agent.Id, base64);
                     }
                 } catch (Exception ex) {
-                    _logger.LogWarning(ex, "Failed to re-register agent {AgentId}", agent.Id);
+                    LogReRegisterFailed(ex, agent.Id);
                 }
             }
         }
@@ -524,13 +499,7 @@ public partial class AgentOrchestrator : IAsyncDisposable {
                 // Detect agents stuck in "Starting" with no output
                 if (agent.Status                         == "Starting" &&
                     DateTime.UtcNow - agent.LastOutputAt > StartupTimeout) {
-                    _logger.LogWarning(
-                        "Agent {AgentId} stuck in Starting for {Seconds:F1}s with no output (PID={Pid}, exited={Exited}), terminating",
-                        agent.Id,
-                        (DateTime.UtcNow - agent.LastOutputAt).TotalSeconds,
-                        agent.Process.Pid,
-                        agent.Process.HasExited
-                    );
+                    LogAgentStuck(agent.Id, (DateTime.UtcNow - agent.LastOutputAt).TotalSeconds, agent.Process.Pid, agent.Process.HasExited);
                     _ = HandleStopAgent(agent.Id);
 
                     continue;
@@ -538,8 +507,7 @@ public partial class AgentOrchestrator : IAsyncDisposable {
 
                 _ = _server.AppendAgentRunEventAsync(
                     agent.Id,
-                    "AgentRunHeartbeat",
-                    new() { ["session_id"] = agent.SessionId }
+                    new AgentRunHeartbeat(agent.SessionId)
                 );
             }
         }
@@ -550,7 +518,7 @@ public partial class AgentOrchestrator : IAsyncDisposable {
             try {
                 await _server.SendHeartbeatAsync();
             } catch (Exception ex) {
-                _logger.LogDebug(ex, "Daemon heartbeat failed");
+                LogHeartbeatFailed(ex);
             }
         }
     }
@@ -561,13 +529,13 @@ public partial class AgentOrchestrator : IAsyncDisposable {
         }
 
         // Each cleanup step is best-effort so later steps still run
-        try { await agent.Process.DisposeAsync(); } catch (Exception ex) { _logger.LogWarning(ex, "Error disposing process for agent {AgentId}", agentId); }
+        try { await agent.Process.DisposeAsync(); } catch (Exception ex) { LogCleanupStepFailed(ex, "disposing process", agentId); }
 
-        try { RemoveClaudeProjectSymlink(agent.Worktree.Path); } catch (Exception ex) { _logger.LogWarning(ex, "Error removing symlink for agent {AgentId}", agentId); }
+        try { RemoveClaudeProjectSymlink(agent.Worktree.Path); } catch (Exception ex) { LogCleanupStepFailed(ex, "removing symlink", agentId); }
 
-        try { await WorktreeManager.RemoveAsync(agent.Worktree); } catch (Exception ex) { _logger.LogWarning(ex, "Error removing worktree for agent {AgentId}", agentId); }
+        try { await WorktreeManager.RemoveAsync(agent.Worktree); } catch (Exception ex) { LogCleanupStepFailed(ex, "removing worktree", agentId); }
 
-        try { await _server.AgentUnregisteredAsync(agentId); } catch (Exception ex) { _logger.LogWarning(ex, "Error unregistering agent {AgentId}", agentId); }
+        try { await _server.AgentUnregisteredAsync(agentId); } catch (Exception ex) { LogCleanupStepFailed(ex, "unregistering", agentId); }
     }
 
     public async ValueTask DisposeAsync() {
@@ -667,25 +635,17 @@ public partial class AgentOrchestrator : IAsyncDisposable {
     /// and memory are shared with the hosted agent.
     /// </summary>
     static void SymlinkClaudeProjectDir(string sourceRepoPath, string worktreePath) {
-        var claudeProjectsDir = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-            ".claude",
-            "projects"
-        );
-
-        if (!Directory.Exists(claudeProjectsDir)) {
+        if (!Directory.Exists(ClaudePaths.Projects)) {
             return;
         }
 
-        var sourceHash    = PathToProjectHash(sourceRepoPath);
-        var sourceProjDir = Path.Combine(claudeProjectsDir, sourceHash);
+        var sourceProjDir = ClaudePaths.ProjectDir(sourceRepoPath);
 
         if (!Directory.Exists(sourceProjDir)) {
             return;
         }
 
-        var worktreeHash    = PathToProjectHash(worktreePath);
-        var worktreeProjDir = Path.Combine(claudeProjectsDir, worktreeHash);
+        var worktreeProjDir = ClaudePaths.ProjectDir(worktreePath);
 
         // Don't clobber an existing directory or symlink
         if (Path.Exists(worktreeProjDir)) {
@@ -700,28 +660,12 @@ public partial class AgentOrchestrator : IAsyncDisposable {
     /// Only removes symlinks, never real directories.
     /// </summary>
     static void RemoveClaudeProjectSymlink(string worktreePath) {
-        var claudeProjectsDir = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-            ".claude",
-            "projects"
-        );
-
-        var worktreeHash    = PathToProjectHash(worktreePath);
-        var worktreeProjDir = Path.Combine(claudeProjectsDir, worktreeHash);
-
-        var info = new DirectoryInfo(worktreeProjDir);
+        var info = new DirectoryInfo(ClaudePaths.ProjectDir(worktreePath));
 
         if (info is { Exists: true, LinkTarget: not null }) {
             info.Delete();
         }
     }
-
-    /// <summary>
-    /// Converts an absolute path to Claude Code's project directory hash format.
-    /// e.g. "/Users/alexey/dev/myrepo" → "-Users-alexey-dev-myrepo"
-    /// </summary>
-    static string PathToProjectHash(string absolutePath) =>
-        absolutePath.Replace(Path.DirectorySeparatorChar, '-');
 
     /// <summary>
     /// Extracts readable text from the terminal output buffer by decoding UTF-8
@@ -748,6 +692,65 @@ public partial class AgentOrchestrator : IAsyncDisposable {
 
         return cleaned.Length > 500 ? cleaned[^500..] : cleaned;
     }
+
+    // ── LoggerMessage source-generated methods ────────────────────────────
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Launching agent {AgentId} for {Repo} (effort={Effort}, model={Model})")]
+    partial void LogLaunching(string agentId, string repo, string effort, string model);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Agent {AgentId} spawned (PID={Pid}, worktree={Worktree}, claude={ClaudePath})")]
+    partial void LogAgentSpawned(string agentId, int pid, string worktree, string claudePath);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Agent {AgentId} exited with code {ExitCode}")]
+    partial void LogAgentExited(string agentId, int? exitCode);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Stopping agent {AgentId}")]
+    partial void LogStopping(string agentId);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Failed to overlay .claude settings for agent {AgentId} (continuing)")]
+    partial void LogOverlayFailed(Exception ex, string agentId);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Failed to merge tool permissions for agent {AgentId} (continuing)")]
+    partial void LogToolPermissionsFailed(Exception ex, string agentId);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Failed to download launch attachments for agent {AgentId} (continuing)")]
+    partial void LogAttachmentDownloadFailed(Exception ex, string agentId);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Error reading output for agent {AgentId}")]
+    partial void LogOutputReadError(Exception ex, string agentId);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Agent {AgentId} failed during startup (exit code {ExitCode}): {Reason}")]
+    partial void LogStartupFailed(string agentId, int? exitCode, string reason);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Failed to download attachment {Id}: {Status}")]
+    partial void LogAttachmentNotFound(string id, System.Net.HttpStatusCode status);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Attachment filename would escape directory: {FileName}")]
+    partial void LogAttachmentPathEscape(string fileName);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Error downloading attachment {Id}")]
+    partial void LogAttachmentError(Exception ex, string id);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Failed to re-register agent {AgentId}")]
+    partial void LogReRegisterFailed(Exception ex, string agentId);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Agent {AgentId} stuck in Starting for {Seconds:F1}s with no output (PID={Pid}, exited={Exited}), terminating")]
+    partial void LogAgentStuck(string agentId, double seconds, int pid, bool exited);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Error {Step} for agent {AgentId}")]
+    partial void LogCleanupStepFailed(Exception ex, string step, string agentId);
+
+    [LoggerMessage(Level = LogLevel.Error, Message = "Failed to launch agent {AgentId}")]
+    partial void LogLaunchFailed(Exception ex, string agentId);
+
+    [LoggerMessage(Level = LogLevel.Error, Message = "Error during cleanup of agent {AgentId}")]
+    partial void LogCleanupError(Exception ex, string agentId);
+
+    [LoggerMessage(Level = LogLevel.Error, Message = "Error stopping agent {AgentId}")]
+    partial void LogStopError(Exception ex, string agentId);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Daemon heartbeat failed")]
+    partial void LogHeartbeatFailed(Exception ex);
 
     [GeneratedRegex(@"\x1B\[[0-9;]*[A-Za-z]|\x1B\].*?\x07|\x1B[()][AB012]|\x1B\[[\?]?[0-9;]*[hlm]")]
     private static partial Regex StripAnsiRegex();

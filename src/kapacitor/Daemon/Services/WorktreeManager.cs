@@ -5,7 +5,7 @@ namespace kapacitor.Daemon.Services;
 
 public record WorktreeInfo(string Path, string Branch, string SourceRepo, bool IsStandalone = false);
 
-public class WorktreeManager(DaemonConfig config, ILogger<WorktreeManager> logger) {
+public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManager> logger) {
     public async Task<WorktreeInfo> CreateAsync(string repoPath, string? name = null) {
         name ??= $"agent-{Guid.NewGuid():N}"[..20];
         var worktreePath = Path.Combine(config.WorktreeRoot, name);
@@ -57,8 +57,8 @@ public class WorktreeManager(DaemonConfig config, ILogger<WorktreeManager> logge
                 continue;
             }
 
-            logger.LogInformation("Cleaning up orphaned worktree: {Path}", dir);
-            try { Directory.Delete(dir, true); } catch (Exception ex) { logger.LogWarning(ex, "Failed to clean up {Path}", dir); }
+            LogCleaningUp(dir);
+            try { Directory.Delete(dir, true); } catch (Exception ex) { LogCleanupFailed(ex, dir); }
         }
 
         return Task.CompletedTask;
@@ -99,6 +99,12 @@ public class WorktreeManager(DaemonConfig config, ILogger<WorktreeManager> logge
             /* best-effort */
         }
     }
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Cleaning up orphaned worktree: {Path}")]
+    partial void LogCleaningUp(string path);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Failed to clean up {Path}")]
+    partial void LogCleanupFailed(Exception ex, string path);
 
     static void CopyDirectory(string source, string dest) {
         foreach (var file in Directory.GetFiles(source)) {

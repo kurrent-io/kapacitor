@@ -7,7 +7,7 @@ using Microsoft.Extensions.Logging;
 
 namespace kapacitor.Daemon;
 
-public static class DaemonRunner {
+public static partial class DaemonRunner {
     public static readonly string LogPath = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
         ".config",
@@ -130,11 +130,7 @@ public static class DaemonRunner {
         var host   = builder.Build();
         var logger = host.Services.GetRequiredService<ILoggerFactory>().CreateLogger("kapacitor.Daemon");
 
-        logger.LogInformation(
-            "kapacitor agent '{Name}' starting, connecting to {ServerUrl}",
-            config.Name,
-            config.ServerUrl
-        );
+        LogDaemonStarting(logger, config.Name, config.ServerUrl);
 
         var lifetime   = host.Services.GetRequiredService<IHostApplicationLifetime>();
         var connection = host.Services.GetRequiredService<ServerConnection>();
@@ -154,4 +150,7 @@ public static class DaemonRunner {
 
         return 0;
     }
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "kapacitor agent '{Name}' starting, connecting to {ServerUrl}")]
+    static partial void LogDaemonStarting(ILogger logger, string name, string serverUrl);
 }

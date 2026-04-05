@@ -158,8 +158,7 @@ static class ClaudeCliRunner {
     /// Searches <c>~/.claude/projects/</c> for a transcript file matching the session ID.
     /// </summary>
     static string? FindTranscriptFile(string sessionId) {
-        var home        = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        var projectsDir = Path.Combine(home, ".claude", "projects");
+        var projectsDir = ClaudePaths.Projects;
 
         if (!Directory.Exists(projectsDir)) {
             return null;

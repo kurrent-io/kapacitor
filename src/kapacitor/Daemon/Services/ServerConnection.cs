@@ -1,5 +1,7 @@
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Threading.Channels;
 using kapacitor.Auth;
 using Microsoft.AspNetCore.SignalR.Client;
@@ -8,17 +10,17 @@ using Microsoft.Extensions.Logging;
 
 namespace kapacitor.Daemon.Services;
 
-public class ServerConnection : IAsyncDisposable {
+public partial class ServerConnection : IAsyncDisposable {
     readonly HubConnection             _hub;
     readonly DaemonConfig              _config;
     readonly ILogger<ServerConnection> _logger;
 
     // Events for incoming commands from server
-    public event Func<LaunchAgentCommand, Task>?      OnLaunchAgent;
-    public event Func<string, Task>?                  OnStopAgent;      // agentId
-    public event Func<SendInputCommand, Task>?        OnSendInput;
-    public event Func<string, string, Task>?          OnSendSpecialKey; // agentId, key
-    public event Func<ResizeTerminalCommand, Task>?   OnResizeTerminal;
+    public event Func<LaunchAgentCommand, Task>?    OnLaunchAgent;
+    public event Func<string, Task>?                OnStopAgent; // agentId
+    public event Func<SendInputCommand, Task>?      OnSendInput;
+    public event Func<string, string, Task>?        OnSendSpecialKey; // agentId, key
+    public event Func<ResizeTerminalCommand, Task>? OnResizeTerminal;
 
     public ServerConnection(DaemonConfig config, ILogger<ServerConnection> logger) {
         _config = config;
@@ -37,37 +39,17 @@ public class ServerConnection : IAsyncDisposable {
             )
             .WithAutomaticReconnect(new RetryPolicy())
             .AddJsonProtocol(options => {
-                    options.PayloadSerializerOptions.TypeInfoResolverChain
-                        .Insert(0, KapacitorJsonContext.Default);
+                    options.PayloadSerializerOptions.TypeInfoResolverChain.Insert(0, KapacitorJsonContext.Default);
                     options.PayloadSerializerOptions.PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower;
                 }
             )
             .Build();
 
-        _hub.On<LaunchAgentCommand>(
-            "LaunchAgent",
-            cmd => OnLaunchAgent?.Invoke(cmd) ?? Task.CompletedTask
-        );
-
-        _hub.On<string>(
-            "StopAgent",
-            agentId => OnStopAgent?.Invoke(agentId) ?? Task.CompletedTask
-        );
-
-        _hub.On<SendInputCommand>(
-            "SendInput",
-            cmd => OnSendInput?.Invoke(cmd) ?? Task.CompletedTask
-        );
-
-        _hub.On<string, string>(
-            "SendSpecialKey",
-            (agentId, key) => OnSendSpecialKey?.Invoke(agentId, key) ?? Task.CompletedTask
-        );
-
-        _hub.On<ResizeTerminalCommand>(
-            "ResizeTerminal",
-            cmd => OnResizeTerminal?.Invoke(cmd) ?? Task.CompletedTask
-        );
+        _hub.On<LaunchAgentCommand>("LaunchAgent", cmd => OnLaunchAgent?.Invoke(cmd)                       ?? Task.CompletedTask);
+        _hub.On<string>("StopAgent", agentId => OnStopAgent?.Invoke(agentId)                               ?? Task.CompletedTask);
+        _hub.On<SendInputCommand>("SendInput", cmd => OnSendInput?.Invoke(cmd)                             ?? Task.CompletedTask);
+        _hub.On<string, string>("SendSpecialKey", (agentId, key) => OnSendSpecialKey?.Invoke(agentId, key) ?? Task.CompletedTask);
+        _hub.On<ResizeTerminalCommand>("ResizeTerminal", cmd => OnResizeTerminal?.Invoke(cmd) ?? Task.CompletedTask);
 
         _hub.Reconnected += OnReconnected;
         _hub.Closed      += OnClosed;
@@ -78,7 +60,7 @@ public class ServerConnection : IAsyncDisposable {
     Task?             _eventProcessorTask;
 
     public async Task ConnectAsync(CancellationToken ct) {
-        _ct = ct;
+        _ct                 = ct;
         _eventProcessorTask = ProcessEventQueueAsync(ct);
         await ConnectWithRetryAsync(ct);
     }
@@ -89,17 +71,17 @@ public class ServerConnection : IAsyncDisposable {
 
         while (!ct.IsCancellationRequested) {
             try {
-                _logger.LogInformation("Connecting to {Url}...", _config.ServerUrl);
+                LogConnecting(_config.ServerUrl);
                 await _hub.StartAsync(ct);
                 await RegisterDaemon();
-                _logger.LogInformation("Connected and registered as '{Name}'", _config.Name);
+                LogConnected(_config.Name);
 
                 return;
             } catch (OperationCanceledException) when (ct.IsCancellationRequested) {
                 throw;
             } catch (Exception ex) {
                 var delay = delays[Math.Min(attempt, delays.Length - 1)];
-                _logger.LogWarning(ex, "Connection attempt {Attempt} failed, retrying in {Delay}s", attempt + 1, delay);
+                LogConnectionAttemptFailed(ex, attempt + 1, delay);
                 await Task.Delay(TimeSpan.FromSeconds(delay), ct);
                 attempt++;
             }
@@ -113,7 +95,7 @@ public class ServerConnection : IAsyncDisposable {
             return;
         }
 
-        _logger.LogWarning(ex, "SignalR connection closed, will reconnect");
+        LogConnectionClosed(ex);
 
         try {
             await ConnectWithRetryAsync(_ct);
@@ -128,16 +110,13 @@ public class ServerConnection : IAsyncDisposable {
 
         await _hub.InvokeAsync(
             "DaemonConnect",
-            _config.Name,
-            platform,
-            _config.AllowedRepoPaths,
-            _config.MaxConcurrentAgents,
+            new DaemonConnect(_config.Name, platform, _config.AllowedRepoPaths, _config.MaxConcurrentAgents),
             cancellationToken: _ct
         );
     }
 
     async Task OnReconnected(string? connectionId) {
-        _logger.LogInformation("Reconnected to server, re-registering daemon");
+        LogReconnected();
         await RegisterDaemon();
         OnReconnectedCallback?.Invoke();
     }
@@ -149,23 +128,22 @@ public class ServerConnection : IAsyncDisposable {
 
     // Outgoing messages to server
     public Task AgentRegisteredAsync(string agentId, string? prompt, string? model, string? effort, string? repoPath)
-        => _hub.InvokeAsync("AgentRegistered", agentId, prompt, model, effort, repoPath, cancellationToken: _ct);
+        => _hub.InvokeAsync("AgentRegistered", new AgentRegistered(agentId, prompt, model, effort, repoPath), cancellationToken: _ct);
 
     public Task AgentStatusChangedAsync(string agentId, string status, string? sessionId)
-        => _hub.InvokeAsync("AgentStatusChanged", agentId, status, sessionId, cancellationToken: _ct);
+        => _hub.InvokeAsync("AgentStatusChanged", new AgentStatusChanged(agentId, status, sessionId), cancellationToken: _ct);
 
     public Task AgentUnregisteredAsync(string agentId)
-        => _hub.InvokeAsync("AgentUnregistered", agentId, cancellationToken: _ct);
+        => _hub.InvokeAsync("AgentUnregistered", new AgentUnregistered(agentId), cancellationToken: _ct);
 
     public Task LaunchFailedAsync(string agentId, string reason)
-        => _hub.InvokeAsync("LaunchFailed", agentId, reason, cancellationToken: _ct);
+        => _hub.InvokeAsync("LaunchFailed", new LaunchFailed(agentId, reason), cancellationToken: _ct);
 
     public Task SendTerminalOutputAsync(string agentId, string base64Data)
-        => _hub.SendAsync("SendTerminalOutput", agentId, base64Data, cancellationToken: _ct);
+        => _hub.SendAsync("SendTerminalOutput", new TerminalOutput(agentId, base64Data), cancellationToken: _ct);
 
-    public Task AppendAgentRunEventAsync(string agentId, string eventType, System.Text.Json.Nodes.JsonObject data) {
-        var url = $"{_config.ServerUrl.TrimEnd('/')}/api/agent-runs/{agentId}/events";
-        _eventChannel.Writer.TryWrite(new PendingEvent(url, eventType, data));
+    public Task AppendAgentRunEventAsync(string agentId, object evt) {
+        _eventChannel.Writer.TryWrite(new PendingEvent(agentId, evt));
 
         return Task.CompletedTask;
     }
@@ -178,30 +156,42 @@ public class ServerConnection : IAsyncDisposable {
 
     async Task ProcessEventQueueAsync(CancellationToken ct) {
         await foreach (var evt in _eventChannel.Reader.ReadAllAsync(ct)) {
+            string payload;
+
+            try {
+                var eventType = evt.Event.GetType().Name;
+                var data      = JsonSerializer.SerializeToNode(evt.Event, evt.Event.GetType(), KapacitorJsonContext.Default)!.AsObject();
+                var payloadObj = new JsonObject {
+                    ["event_type"] = eventType,
+                    ["data"]       = data
+                };
+                payload = payloadObj.ToJsonString();
+            } catch (Exception ex) {
+                LogEventSerializationFailed(ex, evt.Event.GetType().Name, evt.AgentId);
+
+                continue;
+            }
+
+            var url        = $"{_config.ServerUrl.TrimEnd('/')}/api/agent-runs/{evt.AgentId}/events";
             var retryDelay = TimeSpan.FromSeconds(1);
 
             while (!ct.IsCancellationRequested) {
                 try {
-                    _httpClient ??= new HttpClient();
+                    _httpClient ??= new();
                     var tokens = await TokenStore.GetValidTokensAsync();
 
                     if (tokens?.AccessToken is not null) {
                         _httpClient.DefaultRequestHeaders.Authorization = new("Bearer", tokens.AccessToken);
                     }
 
-                    var payloadObj = new System.Text.Json.Nodes.JsonObject {
-                        ["event_type"] = evt.EventType,
-                        ["data"]       = evt.Data
-                    };
-                    var payload  = payloadObj.ToJsonString();
-                    var response = await _httpClient.PostAsync(evt.Url, new StringContent(payload, System.Text.Encoding.UTF8, "application/json"), ct);
+                    var response = await _httpClient.PostAsync(url, new StringContent(payload, Encoding.UTF8, "application/json"), ct);
                     response.EnsureSuccessStatusCode();
 
                     break;
                 } catch (OperationCanceledException) when (ct.IsCancellationRequested) {
                     return;
                 } catch (Exception ex) {
-                    _logger.LogWarning(ex, "Failed to post agent run event, retrying in {Delay}s", retryDelay.TotalSeconds);
+                    LogEventPostFailed(ex, retryDelay.TotalSeconds);
 
                     try {
                         await Task.Delay(retryDelay, ct);
@@ -209,13 +199,15 @@ public class ServerConnection : IAsyncDisposable {
                         return;
                     }
 
+#pragma warning disable IDE0059
                     retryDelay = TimeSpan.FromSeconds(Math.Min(retryDelay.TotalSeconds * 2, 30));
+#pragma warning restore IDE0059
                 }
             }
         }
     }
 
-    record PendingEvent(string Url, string EventType, System.Text.Json.Nodes.JsonObject Data);
+    record PendingEvent(string AgentId, object Event);
 
     public async ValueTask DisposeAsync() {
         _disposed = true;
@@ -228,6 +220,27 @@ public class ServerConnection : IAsyncDisposable {
         _httpClient?.Dispose();
         await _hub.DisposeAsync();
     }
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Connecting to {Url}...")]
+    partial void LogConnecting(string url);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Connected and registered as '{Name}'")]
+    partial void LogConnected(string name);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Connection attempt {Attempt} failed, retrying in {Delay}s")]
+    partial void LogConnectionAttemptFailed(Exception ex, int attempt, int delay);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "SignalR connection closed, will reconnect")]
+    partial void LogConnectionClosed(Exception? ex);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Reconnected to server, re-registering daemon")]
+    partial void LogReconnected();
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Failed to post agent run event, retrying in {Delay}s")]
+    partial void LogEventPostFailed(Exception ex, double delay);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Failed to serialize {EventType} for agent {AgentId}, dropping event")]
+    partial void LogEventSerializationFailed(Exception ex, string eventType, string agentId);
 
     class RetryPolicy : IRetryPolicy {
         static readonly TimeSpan[] Delays = [
