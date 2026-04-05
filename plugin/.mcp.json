@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "kapacitor-review": {
+      "command": "kapacitor",
+      "args": ["mcp", "review"],
+      "description": "PR review context tools — query implementation session transcripts to understand why code was changed"
+    }
+  }
+}

@@ -173,18 +173,21 @@ switch (command) {
     }
     case "mcp": {
         if (args.Length < 2) {
-            Console.Error.WriteLine("Usage: kapacitor mcp review --owner <owner> --repo <repo> --pr <number>");
+            Console.Error.WriteLine("Usage: kapacitor mcp review [--owner <owner> --repo <repo> --pr <number>]");
             return 1;
         }
         if (args[1] == "review") {
             var mcpOwner = GetArg(args, "--owner");
             var mcpRepo  = GetArg(args, "--repo");
             var mcpPr    = GetArg(args, "--pr");
-            if (mcpOwner is null || mcpRepo is null || mcpPr is null || !int.TryParse(mcpPr, out var mcpPrNum)) {
-                Console.Error.WriteLine("Usage: kapacitor mcp review --owner <owner> --repo <repo> --pr <number>");
-                return 1;
+
+            // Explicit PR args — use directly
+            if (mcpOwner is not null && mcpRepo is not null && mcpPr is not null && int.TryParse(mcpPr, out var mcpPrNum)) {
+                return await McpReviewServer.RunAsync(baseUrl!, mcpOwner, mcpRepo, mcpPrNum);
             }
-            return await McpReviewServer.RunAsync(baseUrl!, mcpOwner, mcpRepo, mcpPrNum);
+
+            // No args — auto-detect from git
+            return await McpReviewServer.RunAutoAsync(baseUrl!);
         }
         Console.Error.WriteLine($"Unknown mcp subcommand: {args[1]}");
         return 1;

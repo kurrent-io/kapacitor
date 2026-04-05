@@ -5,8 +5,31 @@ using kapacitor.Auth;
 namespace kapacitor.Commands;
 
 static class McpReviewServer {
-    public static async Task<int> RunAsync(string baseUrl, string owner, string repo, int prNumber) {
+    /// <summary>
+    /// Run with explicit PR context (used by `kapacitor review`).
+    /// </summary>
+    public static Task<int> RunAsync(string baseUrl, string owner, string repo, int prNumber)
+        => RunCoreAsync(baseUrl, owner, repo, prNumber);
+
+    /// <summary>
+    /// Run with auto-detection from git/gh in current directory (used by plugin MCP server).
+    /// </summary>
+    public static Task<int> RunAutoAsync(string baseUrl)
+        => RunCoreAsync(baseUrl, null, null, null);
+
+    static async Task<int> RunCoreAsync(string baseUrl, string? owner, string? repo, int? prNumber) {
         using var client = await HttpClientExtensions.CreateAuthenticatedClientAsync(baseUrl);
+
+        // Auto-detect from git if not provided
+        if (owner is null || repo is null || prNumber is null) {
+            var detected = await DetectPrFromGitAsync();
+
+            if (detected is not null) {
+                owner    ??= detected.Value.Owner;
+                repo     ??= detected.Value.Repo;
+                prNumber ??= detected.Value.PrNumber;
+            }
+        }
 
         var tools = BuildToolsList();
 
@@ -34,17 +57,42 @@ static class McpReviewServer {
             // Notifications have no id — don't send a response
             if (id is null) continue;
 
-            JsonObject response = method switch {
-                "initialize"  => BuildInitializeResponse(id),
-                "tools/list"  => BuildToolsListResponse(id, tools),
-                "tools/call"  => await HandleToolCallAsync(id, request, client, baseUrl, owner, repo, prNumber),
-                _             => BuildErrorResponse(id, -32601, $"Method not found: {method}")
-            };
+            JsonObject response;
+
+            if (method == "tools/call" && (owner is null || repo is null || prNumber is null)) {
+                response = BuildToolResult(id,
+                    "No PR detected for current branch. Either:\n" +
+                    "- Switch to a branch with an open PR and restart the MCP server\n" +
+                    "- Use `kapacitor review <pr>` to launch a dedicated review session",
+                    isError: true);
+            } else {
+                response = method switch {
+                    "initialize" => BuildInitializeResponse(id),
+                    "tools/list" => BuildToolsListResponse(id, tools),
+                    "tools/call" => await HandleToolCallAsync(id, request, client, baseUrl, owner!, repo!, prNumber!.Value),
+                    _            => BuildErrorResponse(id, -32601, $"Method not found: {method}")
+                };
+            }
 
             await writer.WriteLineAsync(response.ToJsonString());
         }
 
         return 0;
+    }
+
+    static async Task<(string Owner, string Repo, int PrNumber)?> DetectPrFromGitAsync() {
+        try {
+            var cwd = Directory.GetCurrentDirectory();
+            var repoInfo = await RepositoryDetection.DetectRepositoryAsync(cwd);
+
+            if (repoInfo?.Owner is not null && repoInfo.RepoName is not null && repoInfo.PrNumber is not null) {
+                return (repoInfo.Owner, repoInfo.RepoName, repoInfo.PrNumber.Value);
+            }
+
+            return null;
+        } catch {
+            return null;
+        }
     }
 
     static JsonObject BuildInitializeResponse(JsonNode id) =>
