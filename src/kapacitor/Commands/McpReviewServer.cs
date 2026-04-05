@@ -1,5 +1,9 @@
+using System.Net.Http.Json;
 using System.Text;
+using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.Json.Serialization;
+using System.Text.Json.Serialization.Metadata;
 
 namespace kapacitor.Commands;
 
@@ -56,7 +60,7 @@ static class McpReviewServer {
             // Notifications have no id — don't send a response
             if (id is null) continue;
 
-            JsonObject response;
+            string response;
 
             if (method == "tools/call" && (owner is null || repo is null || prNumber is null)) {
                 response = BuildToolResult(
@@ -75,7 +79,7 @@ static class McpReviewServer {
                 };
             }
 
-            await writer.WriteLineAsync(response.ToJsonString());
+            await writer.WriteLineAsync(response);
         }
 
         return 0;
@@ -96,32 +100,17 @@ static class McpReviewServer {
         }
     }
 
-    static JsonObject BuildInitializeResponse(JsonNode id) =>
-        new() {
-            ["jsonrpc"] = "2.0",
-            ["id"]      = id.DeepClone(),
-            ["result"] = new JsonObject {
-                ["protocolVersion"] = "2024-11-05",
-                ["capabilities"] = new JsonObject {
-                    ["tools"] = new JsonObject()
-                },
-                ["serverInfo"] = new JsonObject {
-                    ["name"]    = "kapacitor-review",
-                    ["version"] = "1.0.0"
-                }
-            }
-        };
+    static string BuildInitializeResponse(JsonNode id) =>
+        ToResponse(id, new McpInitResult(
+            "2024-11-05",
+            new McpCapabilities(new McpToolsCapability()),
+            new McpServerInfo("kapacitor-review", "1.0.0")
+        ), McpJsonContext.Default.McpInitResult);
 
-    static JsonObject BuildToolsListResponse(JsonNode id, JsonArray tools) =>
-        new() {
-            ["jsonrpc"] = "2.0",
-            ["id"]      = id.DeepClone(),
-            ["result"] = new JsonObject {
-                ["tools"] = tools.DeepClone()
-            }
-        };
+    static string BuildToolsListResponse(JsonNode id, McpTool[] tools) =>
+        ToResponse(id, new McpToolsResult(tools), McpJsonContext.Default.McpToolsResult);
 
-    static async Task<JsonObject> HandleToolCallAsync(
+    static async Task<string> HandleToolCallAsync(
             JsonNode   id,
             JsonObject request,
             HttpClient client,
@@ -141,7 +130,7 @@ static class McpReviewServer {
         try {
             var prBase = $"{baseUrl}/api/review/{owner}/{repo}/pulls/{prNumber}";
 
-            HttpResponseMessage response = toolName switch {
+            HttpResponseMessage httpResponse = toolName switch {
                 "get_pr_summary" => await client.GetAsync(prBase),
                 "list_pr_files"  => await client.GetAsync($"{prBase}/files"),
                 "get_file_context" => await client.GetAsync(
@@ -149,10 +138,9 @@ static class McpReviewServer {
                 ),
                 "search_context" => await client.PostAsync(
                     $"{prBase}/search",
-                    new StringContent(
-                        new JsonObject { ["query"] = GetRequiredArg(arguments, "query") }.ToJsonString(),
-                        Encoding.UTF8,
-                        "application/json"
+                    JsonContent.Create(
+                        new SearchQuery(GetRequiredArg(arguments, "query")),
+                        McpJsonContext.Default.SearchQuery
                     )
                 ),
                 "list_sessions" => await client.GetAsync($"{prBase}/sessions"),
@@ -162,10 +150,10 @@ static class McpReviewServer {
                 _ => throw new ArgumentException($"Unknown tool: {toolName}")
             };
 
-            var body = await response.Content.ReadAsStringAsync();
+            var body = await httpResponse.Content.ReadAsStringAsync();
 
-            if (!response.IsSuccessStatusCode) {
-                return BuildToolResult(id, $"Error: HTTP {(int)response.StatusCode} — {body}", isError: true);
+            if (!httpResponse.IsSuccessStatusCode) {
+                return BuildToolResult(id, $"Error: HTTP {(int)httpResponse.StatusCode} — {body}", isError: true);
             }
 
             return BuildToolResult(id, body);
@@ -212,110 +200,93 @@ static class McpReviewServer {
         return url;
     }
 
-    static JsonObject BuildToolResult(JsonNode id, string text, bool isError = false) {
-        var contentItem = new JsonObject { ["type"] = "text", ["text"] = text };
+    static string BuildToolResult(JsonNode id, string text, bool isError = false) =>
+        ToResponse(id, new McpToolCallResult(
+            [new McpContentItem("text", text)],
+            isError ? true : null
+        ), McpJsonContext.Default.McpToolCallResult);
 
-        var result = new JsonObject {
-            ["content"] = new JsonArray(contentItem)
-        };
-
-        if (isError) {
-            result["isError"] = true;
-        }
-
-        return new JsonObject {
+    static string BuildErrorResponse(JsonNode id, int code, string message) {
+        var envelope = new JsonObject {
             ["jsonrpc"] = "2.0",
             ["id"]      = id.DeepClone(),
-            ["result"]  = result
+            ["error"]   = JsonSerializer.SerializeToNode(new McpError(code, message), McpJsonContext.Default.McpError)
         };
+        return envelope.ToJsonString();
     }
 
-    static JsonObject BuildErrorResponse(JsonNode id, int code, string message) =>
-        new() {
+    static string ToResponse<T>(JsonNode id, T result, JsonTypeInfo<T> typeInfo) {
+        var envelope = new JsonObject {
             ["jsonrpc"] = "2.0",
             ["id"]      = id.DeepClone(),
-            ["error"] = new JsonObject {
-                ["code"]    = code,
-                ["message"] = message
-            }
+            ["result"]  = JsonSerializer.SerializeToNode(result, typeInfo)
         };
+        return envelope.ToJsonString();
+    }
 
-    static JsonArray BuildToolsList() => [
-        BuildToolDef(
+    static McpTool[] BuildToolsList() => [
+        new(
             "get_pr_summary",
             "Get an overview of the PR: which Claude Code sessions contributed, which files were changed (with event counts), and what test commands were run with their pass/fail outcomes. Call this first to orient yourself.",
-            new JsonObject { ["type"] = "object", ["properties"] = new JsonObject(), ["required"] = new JsonArray() }
+            new McpInputSchema("object", new(), [])
         ),
-        BuildToolDef(
+        new(
             "list_pr_files",
             "List all files changed in the PR with aggregated metadata: change types (read/edit/create), how many sessions touched each file, and total event count. Use this to understand the scope of changes.",
-            new JsonObject { ["type"] = "object", ["properties"] = new JsonObject(), ["required"] = new JsonArray() }
+            new McpInputSchema("object", new(), [])
         ),
-        BuildToolDef(
+        new(
             "get_file_context",
             "Get deep context for a specific file: which sessions modified it, when, and relevant transcript excerpts where the file was discussed or changed. Use this when a reviewer asks 'why was this file changed?'",
-            new JsonObject {
-                ["type"] = "object",
-                ["properties"] = new JsonObject {
-                    ["file_path"] = new JsonObject {
-                        ["type"]        = "string",
-                        ["description"] = "Path of the file to get context for"
-                    }
-                },
-                ["required"] = new JsonArray(JsonValue.Create("file_path"))
-            }
+            new McpInputSchema("object", new() {
+                ["file_path"] = new McpSchemaProperty("string", "Path of the file to get context for")
+            }, ["file_path"])
         ),
-        BuildToolDef(
+        new(
             "search_context",
             "Full-text search across all session transcripts linked to this PR. Returns ranked excerpts with speaker (user/assistant/tool), content, and highlighted snippets. Use for 'why' questions: 'why retry logic', 'what alternatives', 'error handling rationale'.",
-            new JsonObject {
-                ["type"] = "object",
-                ["properties"] = new JsonObject {
-                    ["query"] = new JsonObject {
-                        ["type"]        = "string",
-                        ["description"] = "Free-text search query"
-                    }
-                },
-                ["required"] = new JsonArray(JsonValue.Create("query"))
-            }
+            new McpInputSchema("object", new() {
+                ["query"] = new McpSchemaProperty("string", "Free-text search query")
+            }, ["query"])
         ),
-        BuildToolDef(
+        new(
             "list_sessions",
             "List all Claude Code sessions that contributed to this PR, with session IDs, titles, timestamps, and models used. Use this to understand the work timeline and pick sessions to drill into with get_transcript.",
-            new JsonObject { ["type"] = "object", ["properties"] = new JsonObject(), ["required"] = new JsonArray() }
+            new McpInputSchema("object", new(), [])
         ),
-        BuildToolDef(
+        new(
             "get_transcript",
             "Get the full transcript of a specific session: user messages, assistant reasoning, tool calls, and results. Paginated (default 100 events). Use file_path filter to scope to events mentioning a specific file. This is the deepest level of detail — use when you need to trace the exact reasoning chain.",
-            new JsonObject {
-                ["type"] = "object",
-                ["properties"] = new JsonObject {
-                    ["session_id"] = new JsonObject {
-                        ["type"]        = "string",
-                        ["description"] = "Session ID to retrieve the transcript for"
-                    },
-                    ["file_path"] = new JsonObject {
-                        ["type"]        = "string",
-                        ["description"] = "Optional file path to filter transcript events"
-                    },
-                    ["skip"] = new JsonObject {
-                        ["type"]        = "integer",
-                        ["description"] = "Number of events to skip (for pagination)"
-                    },
-                    ["take"] = new JsonObject {
-                        ["type"]        = "integer",
-                        ["description"] = "Number of events to return (for pagination)"
-                    }
-                },
-                ["required"] = new JsonArray(JsonValue.Create("session_id"))
-            }
+            new McpInputSchema("object", new() {
+                ["session_id"] = new McpSchemaProperty("string", "Session ID to retrieve the transcript for"),
+                ["file_path"]  = new McpSchemaProperty("string", "Optional file path to filter transcript events"),
+                ["skip"]       = new McpSchemaProperty("integer", "Number of events to skip (for pagination)"),
+                ["take"]       = new McpSchemaProperty("integer", "Number of events to return (for pagination)")
+            }, ["session_id"])
         )
     ];
-
-    static JsonObject BuildToolDef(string name, string description, JsonObject inputSchema) =>
-        new() {
-            ["name"]        = name,
-            ["description"] = description,
-            ["inputSchema"] = inputSchema
-        };
 }
+
+// MCP protocol types — serialized with source-generated McpJsonContext for AOT compatibility
+record McpInitResult(string ProtocolVersion, McpCapabilities Capabilities, McpServerInfo ServerInfo);
+record McpCapabilities(McpToolsCapability Tools);
+record McpToolsCapability;
+record McpServerInfo(string Name, string Version);
+record McpToolsResult(McpTool[] Tools);
+record McpTool(string Name, string Description, McpInputSchema InputSchema);
+record McpInputSchema(string Type, Dictionary<string, McpSchemaProperty> Properties, string[] Required);
+record McpSchemaProperty(string Type, string Description);
+record McpToolCallResult(McpContentItem[] Content, bool? IsError = null);
+record McpContentItem(string Type, string Text);
+record McpError(int Code, string Message);
+record SearchQuery(string Query);
+
+[JsonSourceGenerationOptions(
+    DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
+    PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]
+[JsonSerializable(typeof(McpInitResult))]
+[JsonSerializable(typeof(McpToolsResult))]
+[JsonSerializable(typeof(McpToolCallResult))]
+[JsonSerializable(typeof(McpError))]
+[JsonSerializable(typeof(SearchQuery))]
+partial class McpJsonContext : JsonSerializerContext;
