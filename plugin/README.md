@@ -17,10 +17,11 @@ This plugin integrates [Kurrent Capacitor](../README.md) with Claude Code by aut
 
 Each hook pipes its JSON payload through the `kapacitor` CLI, which enriches it with git/PR info and forwards it to the server. A background watcher process streams transcript lines in real time.
 
-**Skills** — Two slash commands for reviewing recorded sessions:
+**Skills** — Slash commands for reviewing recorded sessions:
 
 - `/kapacitor:session-recap` — Retrieve a structured summary of a session (user prompts, assistant responses, plans, file changes)
 - `/kapacitor:session-errors` — Extract tool call errors from a session for post-session review and pattern detection
+- `/kapacitor:validate-plan` — Verify that all planned items were completed
 
 ## Prerequisites
 

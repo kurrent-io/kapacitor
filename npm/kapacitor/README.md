@@ -23,7 +23,20 @@ kapacitor setup                  Configure server, login, and install plugin
 kapacitor status                 Show server, auth, and agent status
 kapacitor agent start [-d]       Start agent daemon
 kapacitor agent stop             Stop agent daemon
+kapacitor review <pr>            Launch Claude Code with PR review context
 kapacitor update                 Check for updates
 kapacitor --version              Show version
 kapacitor --help                 Show all commands
 ```
+
+## PR Review
+
+Start a Claude Code session with tools to query implementation context for a PR:
+
+```bash
+kapacitor review https://github.com/owner/repo/pull/123
+# or
+kapacitor review owner/repo#123
+```
+
+Claude gets MCP tools to search session transcripts, understand per-file rationale, and explain design decisions made during implementation.
