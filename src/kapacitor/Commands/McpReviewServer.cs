@@ -194,17 +194,17 @@ static class McpReviewServer {
         [
             BuildToolDef(
                 "get_pr_summary",
-                "Get an overview of a pull request including sessions, files changed, and test runs",
+                "Get an overview of the PR: which Claude Code sessions contributed, which files were changed (with event counts), and what test commands were run with their pass/fail outcomes. Call this first to orient yourself.",
                 new JsonObject { ["type"] = "object", ["properties"] = new JsonObject(), ["required"] = new JsonArray() }
             ),
             BuildToolDef(
                 "list_pr_files",
-                "List files changed in the pull request with links to the sessions that changed them",
+                "List all files changed in the PR with aggregated metadata: change types (read/edit/create), how many sessions touched each file, and total event count. Use this to understand the scope of changes.",
                 new JsonObject { ["type"] = "object", ["properties"] = new JsonObject(), ["required"] = new JsonArray() }
             ),
             BuildToolDef(
                 "get_file_context",
-                "Get context about why a specific file was changed, including relevant transcript excerpts",
+                "Get deep context for a specific file: which sessions modified it, when, and relevant transcript excerpts where the file was discussed or changed. Use this when a reviewer asks 'why was this file changed?'",
                 new JsonObject {
                     ["type"] = "object",
                     ["properties"] = new JsonObject {
@@ -218,7 +218,7 @@ static class McpReviewServer {
             ),
             BuildToolDef(
                 "search_context",
-                "Search session transcripts for relevant context using a free-text query",
+                "Full-text search across all session transcripts linked to this PR. Returns ranked excerpts with speaker (user/assistant/tool), content, and highlighted snippets. Use for 'why' questions: 'why retry logic', 'what alternatives', 'error handling rationale'.",
                 new JsonObject {
                     ["type"] = "object",
                     ["properties"] = new JsonObject {
@@ -232,12 +232,12 @@ static class McpReviewServer {
             ),
             BuildToolDef(
                 "list_sessions",
-                "List sessions associated with this pull request",
+                "List all Claude Code sessions that contributed to this PR, with session IDs, titles, timestamps, and models used. Use this to understand the work timeline and pick sessions to drill into with get_transcript.",
                 new JsonObject { ["type"] = "object", ["properties"] = new JsonObject(), ["required"] = new JsonArray() }
             ),
             BuildToolDef(
                 "get_transcript",
-                "Get transcript events from a specific session, optionally filtered by file path",
+                "Get the full transcript of a specific session: user messages, assistant reasoning, tool calls, and results. Paginated (default 100 events). Use file_path filter to scope to events mentioning a specific file. This is the deepest level of detail — use when you need to trace the exact reasoning chain.",
                 new JsonObject {
                     ["type"] = "object",
                     ["properties"] = new JsonObject {
