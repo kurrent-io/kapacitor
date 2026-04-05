@@ -162,6 +162,33 @@ switch (command) {
         return await ConfigCommand.HandleAsync(args);
     case "update":
         return await UpdateCommand.HandleAsync();
+    case "review": {
+        if (args.Length < 2) {
+            Console.Error.WriteLine("Usage: kapacitor review <pr-url-or-shorthand>");
+            Console.Error.WriteLine("  Example: kapacitor review https://github.com/owner/repo/pull/123");
+            Console.Error.WriteLine("  Example: kapacitor review owner/repo#123");
+            return 1;
+        }
+        return await ReviewCommand.HandleReview(baseUrl!, args[1]);
+    }
+    case "mcp": {
+        if (args.Length < 2) {
+            Console.Error.WriteLine("Usage: kapacitor mcp review --owner <owner> --repo <repo> --pr <number>");
+            return 1;
+        }
+        if (args[1] == "review") {
+            var mcpOwner = GetArg(args, "--owner");
+            var mcpRepo  = GetArg(args, "--repo");
+            var mcpPr    = GetArg(args, "--pr");
+            if (mcpOwner is null || mcpRepo is null || mcpPr is null || !int.TryParse(mcpPr, out var mcpPrNum)) {
+                Console.Error.WriteLine("Usage: kapacitor mcp review --owner <owner> --repo <repo> --pr <number>");
+                return 1;
+            }
+            return await McpReviewServer.RunAsync(baseUrl!, mcpOwner, mcpRepo, mcpPrNum);
+        }
+        Console.Error.WriteLine($"Unknown mcp subcommand: {args[1]}");
+        return 1;
+    }
     case "cleanup":
         return await CleanupCommand.HandleCleanup();
     case "history": {
@@ -553,6 +580,11 @@ async Task PostPlanContentAsync(HttpClient httpClient, string url, string sessio
     await httpClient.PostWithRetryAsync($"{url}/api/sessions/{sessionId}/plan", planPayload);
 }
 
+static string? GetArg(string[] arguments, string flag) {
+    var idx = Array.IndexOf(arguments, flag);
+    return idx >= 0 && idx + 1 < arguments.Length ? arguments[idx + 1] : null;
+}
+
 string? ResolveSessionId(string[] args, int skipCount = 1, string? skipFlag = null) {
     // Take the first positional argument (skip flags starting with --)
     var fromArg = args.Skip(skipCount).FirstOrDefault(a => !a.StartsWith("--"));
@@ -596,6 +628,7 @@ void PrintUsage() {
     Console.WriteLine("  validate-plan [id]               Validate plan completion for a session");
     Console.WriteLine("  generate-whats-done <id>         Generate what's-done summary");
     Console.WriteLine("  set-title <title>                Set session title");
+    Console.WriteLine("  review <pr>                      Launch Claude with PR review context");
     Console.WriteLine();
     Console.WriteLine("Maintenance:");
     Console.WriteLine("  update                           Check for and install updates");
