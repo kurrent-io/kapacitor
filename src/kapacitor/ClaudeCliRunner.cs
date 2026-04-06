@@ -22,8 +22,29 @@ static class ClaudeCliRunner {
     /// Logs are written via <paramref name="log"/>.
     /// </summary>
     public static async Task<ClaudeCliResult?> RunAsync(string prompt, TimeSpan timeout, Action<string> log) {
+        // Run from a stable isolated directory to avoid loading project-specific plugins/config
+        // that might interfere with the headless title generation session.
+        // Uses a fixed path so Claude treats all invocations as the same "project" and doesn't
+        // scatter transcripts across many per-invocation directories under ~/.claude/projects.
+        var stableDir = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+            ".config", "kapacitor", "claude-cwd"
+        );
+
+        try {
+            Directory.CreateDirectory(stableDir);
+        } catch (Exception ex) {
+            log($"Failed to create isolated working directory: {ex.Message}");
+            stableDir = Path.GetTempPath();
+        }
+
+        return await RunCoreAsync(prompt, timeout, log, stableDir);
+    }
+
+    static async Task<ClaudeCliResult?> RunCoreAsync(string prompt, TimeSpan timeout, Action<string> log, string workingDir) {
         var psi = new ProcessStartInfo {
             FileName               = "claude",
+            WorkingDirectory       = workingDir,
             RedirectStandardOutput = true,
             RedirectStandardError  = true,
             UseShellExecute        = false,
@@ -66,23 +87,36 @@ static class ClaudeCliRunner {
 
             if (process.ExitCode != 0) {
                 var stderrPreview = stderr.Length > 200 ? stderr[..200] : stderr;
-                log($"Claude exited with code {process.ExitCode}: {stderrPreview}");
+                var stdoutPreview = stdout.Length > 200 ? stdout[..200] : stdout;
+                log($"Claude exited with code {process.ExitCode}, stderr: {stderrPreview}");
 
-                return null;
+                if (!string.IsNullOrWhiteSpace(stdout)) {
+                    log($"Claude stdout (exit {process.ExitCode}): {stdoutPreview}");
+                }
+
+                // Still try to parse stdout — claude sometimes exits 1 but produces a valid JSON result.
+                // Use JSON-only parsing to avoid treating error text on stdout as a valid result.
+                var errorResult = ParseJsonResponseOnly(stdout);
+
+                if (errorResult is not null) {
+                    log("Recovered result from stdout despite non-zero exit code");
+
+                    return errorResult;
+                }
+            } else {
+                var result = ParseResponse(stdout);
+
+                if (result is not null) {
+                    return result;
+                }
             }
 
-            var result = ParseResponse(stdout);
-
-            if (result is not null) {
-                return result;
-            }
-
-            // Fallback: CLI returned empty result (extended thinking bug).
-            // Try reading the actual response from the session transcript file.
+            // Fallback: try reading the actual response from the session transcript file.
+            // Works both for empty result (extended thinking bug) and non-zero exit codes.
             var fallback = TryReadTranscriptFallback(stdout, log);
 
             if (fallback is not null) {
-                log("Recovered result from session transcript (empty result workaround)");
+                log("Recovered result from session transcript (fallback)");
 
                 return fallback;
             }
@@ -100,6 +134,23 @@ static class ClaudeCliRunner {
     }
 
     internal static ClaudeCliResult? ParseResponse(string stdout) {
+        var jsonResult = ParseJsonResponseOnly(stdout);
+
+        if (jsonResult is not null) {
+            return jsonResult;
+        }
+
+        // Fallback: treat stdout as plain text result (only safe when exit code was 0)
+        var trimmed = stdout.Trim();
+
+        return string.IsNullOrWhiteSpace(trimmed) ? null : new(trimmed, null, 0, 0, 0, 0, null);
+    }
+
+    /// <summary>
+    /// Parses only valid JSON responses. Does not fall back to plain text.
+    /// Safe to use on non-zero exit codes where stdout might contain error messages.
+    /// </summary>
+    static ClaudeCliResult? ParseJsonResponseOnly(string stdout) {
         try {
             using var doc  = JsonDocument.Parse(stdout);
             var       root = doc.RootElement;
@@ -108,10 +159,7 @@ static class ClaudeCliRunner {
 
             return string.IsNullOrWhiteSpace(result) ? null : BuildResult(root, result);
         } catch (JsonException) {
-            // Fallback: treat stdout as plain text result
-            var trimmed = stdout.Trim();
-
-            return string.IsNullOrWhiteSpace(trimmed) ? null : new(trimmed, null, 0, 0, 0, 0, null);
+            return null;
         }
     }
 
