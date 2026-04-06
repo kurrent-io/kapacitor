@@ -140,10 +140,16 @@ static class ClaudeCliRunner {
             return jsonResult;
         }
 
-        // Fallback: treat stdout as plain text result (only safe when exit code was 0)
+        // Fallback: treat stdout as plain text result (only safe when exit code was 0).
+        // Don't treat JSON-shaped input as plain text — if ParseJsonResponseOnly returned null
+        // for valid JSON, the result field was empty/missing and we should return null.
         var trimmed = stdout.Trim();
 
-        return string.IsNullOrWhiteSpace(trimmed) ? null : new(trimmed, null, 0, 0, 0, 0, null);
+        if (string.IsNullOrWhiteSpace(trimmed) || trimmed[0] is '{' or '[') {
+            return null;
+        }
+
+        return new(trimmed, null, 0, 0, 0, 0, null);
     }
 
     /// <summary>

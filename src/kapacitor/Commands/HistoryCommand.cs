@@ -6,7 +6,7 @@ using kapacitor.Config;
 namespace kapacitor.Commands;
 
 static class HistoryCommand {
-    public static async Task<int> HandleHistory(string baseUrl, string? filterCwd, string? filterSession = null, int minLines = 10) {
+    public static async Task<int> HandleHistory(string baseUrl, string? filterCwd, string? filterSession = null, int minLines = 10, bool generateSummaries = false) {
         using var httpClient = await HttpClientExtensions.CreateAuthenticatedClientAsync();
 
         Console.WriteLine("Discovering sessions...");
@@ -278,11 +278,39 @@ static class HistoryCommand {
                         endHook["ended_at"] = lastTimestamp.Value.ToString("O");
                     }
 
+                    var shouldGenerateWhatsDone = false;
+
                     try {
                         using var endContent = new StringContent(endHook.ToJsonString(), Encoding.UTF8, "application/json");
-                        await httpClient.PostWithRetryAsync($"{baseUrl}/hooks/session-end", endContent);
+                        using var endResp    = await httpClient.PostWithRetryAsync($"{baseUrl}/hooks/session-end", endContent);
+
+                        if (generateSummaries && endResp.IsSuccessStatusCode) {
+                            try {
+                                var endBody     = await endResp.Content.ReadAsStringAsync();
+                                var endRespNode = JsonNode.Parse(endBody);
+                                shouldGenerateWhatsDone = endRespNode?["generate_whats_done"]?.GetValue<bool>() == true;
+                            } catch {
+                                // Best effort response parsing
+                            }
+                        }
                     } catch {
                         // Best effort for session end
+                    }
+
+                    // Generate Claude title (overwrites fallback from session-end)
+                    await GenerateTitleForImportAsync(httpClient, baseUrl, sessionId, filePath);
+
+                    // Generate what's-done summary if requested
+                    if (shouldGenerateWhatsDone) {
+                        Console.Write($"  Generating summary for {sessionId}... ");
+
+                        try {
+                            var wdResult = await WhatsDoneCommand.GenerateForSessionAsync(baseUrl, sessionId, _ => { });
+
+                            Console.WriteLine(wdResult == 0 ? "done" : "failed");
+                        } catch {
+                            Console.WriteLine("failed");
+                        }
                     }
 
                     loaded++;
@@ -577,4 +605,179 @@ static class HistoryCommand {
     /// </summary>
     static string NormalizeGuid(string value) =>
         Guid.TryParse(value, out var guid) ? guid.ToString("N") : value;
+
+    /// <summary>
+    /// Generates a Claude title for an imported session by extracting the first user/assistant
+    /// text from the transcript and calling ClaudeCliRunner.
+    /// </summary>
+    static async Task GenerateTitleForImportAsync(HttpClient httpClient, string baseUrl, string sessionId, string filePath) {
+        try {
+            var (userText, assistantText) = ExtractTitleContext(filePath);
+
+            if (userText is null) {
+                return;
+            }
+
+            Console.Write($"  Generating title for {sessionId}... ");
+
+            var truncatedUser = userText.Length > 500 ? userText[..500] : userText;
+
+            var promptBuilder = new StringBuilder();
+            promptBuilder.Append("Generate a short descriptive title (max 10 words, no quotes, no period) for a coding session. ");
+            promptBuilder.Append("NEVER ask a question. NEVER include a question mark. Always produce a title, even if context is limited.");
+            promptBuilder.Append($"\n\nThe user's request: {truncatedUser}");
+
+            if (assistantText is not null) {
+                promptBuilder.Append($"\n\nThe assistant's initial response: {assistantText}");
+            }
+
+            var result = await ClaudeCliRunner.RunAsync(promptBuilder.ToString(), TimeSpan.FromSeconds(15), _ => { });
+
+            if (result is null) {
+                Console.WriteLine("skipped (no result)");
+
+                return;
+            }
+
+            // Strip markdown and trailing question marks (same as WatchCommand)
+            var title = result.Result
+                .Replace("**", "").Replace("*", "").Replace("`", "")
+                .TrimEnd('?').Trim();
+
+            if (title.Length > 120) {
+                title = title[..120];
+            }
+
+            var payload = new SessionTitlePayload {
+                SessionId        = sessionId,
+                Title            = title,
+                Model            = result.Model,
+                InputTokens      = result.InputTokens,
+                OutputTokens     = result.OutputTokens,
+                CacheReadTokens  = result.CacheReadTokens,
+                CacheWriteTokens = result.CacheWriteTokens
+            };
+
+            var       payloadJson = JsonSerializer.Serialize(payload, KapacitorJsonContext.Default.SessionTitlePayload);
+            using var content     = new StringContent(payloadJson, Encoding.UTF8, "application/json");
+            using var titleResp   = await httpClient.PostWithRetryAsync($"{baseUrl}/hooks/session-title", content);
+
+            Console.WriteLine(title);
+        } catch (Exception ex) {
+            Console.WriteLine($"failed ({ex.Message})");
+        }
+    }
+
+    /// <summary>
+    /// Extracts the first user text and first assistant text from a transcript file
+    /// for title generation. Scans up to 200 lines.
+    /// </summary>
+    static (string? UserText, string? AssistantText) ExtractTitleContext(string filePath) {
+        string? userText      = null;
+        string? assistantText = null;
+
+        try {
+            using var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            using var reader = new StreamReader(stream);
+
+            var linesChecked = 0;
+
+            while (reader.ReadLine() is { } line && linesChecked < 200) {
+                linesChecked++;
+
+                if (string.IsNullOrWhiteSpace(line)) {
+                    continue;
+                }
+
+                try {
+                    using var doc  = JsonDocument.Parse(line);
+                    var       root = doc.RootElement;
+                    var       type = root.TryGetProperty("type", out var typeProp) ? typeProp.GetString() : null;
+
+                    if (userText is null && type == "user") {
+                        // Skip system-injected meta messages
+                        if (root.TryGetProperty("isMeta", out var metaProp) && metaProp.ValueKind == JsonValueKind.True) {
+                            continue;
+                        }
+
+                        var text = ExtractMessageText(root);
+
+                        if (text is not null) {
+                            // Skip slash commands — wait for real user prompt
+                            if (text.Contains("<command-name>")) {
+                                continue;
+                            }
+
+                            userText = text;
+                        }
+                    } else if (assistantText is null && type == "assistant") {
+                        var text = ExtractAssistantText(root);
+
+                        if (text is not null) {
+                            assistantText = text.Length > 300 ? text[..300] : text;
+                        }
+                    }
+
+                    if (userText is not null && assistantText is not null) {
+                        break;
+                    }
+                } catch (JsonException) { }
+            }
+        } catch {
+            // Best effort
+        }
+
+        return (userText, assistantText);
+    }
+
+    static string? ExtractMessageText(JsonElement root) {
+        if (!root.TryGetProperty("message", out var msg) || !msg.TryGetProperty("content", out var content)) {
+            return null;
+        }
+
+        switch (content.ValueKind) {
+            case JsonValueKind.String: {
+                var text = content.GetString();
+
+                return text?.StartsWith("<local-command-stdout>") == true ? null : WatchCommand.StripSystemInstructions(text);
+            }
+            case JsonValueKind.Array: {
+                foreach (var element in content.EnumerateArray()) {
+                    if (element.ValueKind                                            == JsonValueKind.Object
+                     && element.TryGetProperty("type", out var t)   && t.GetString() == "text"
+                     && element.TryGetProperty("text", out var txt) && txt.ValueKind == JsonValueKind.String) {
+                        var text = txt.GetString();
+
+                        if (text?.StartsWith("<local-command-stdout>") == false) {
+                            return WatchCommand.StripSystemInstructions(text);
+                        }
+                    }
+                }
+
+                break;
+            }
+        }
+
+        return null;
+    }
+
+    static string? ExtractAssistantText(JsonElement root) {
+        if (!root.TryGetProperty("message", out var msg) || !msg.TryGetProperty("content", out var content)
+         || content.ValueKind != JsonValueKind.Array) {
+            return null;
+        }
+
+        foreach (var block in content.EnumerateArray()) {
+            if (block.TryGetProperty("type", out var btProp) && btProp.GetString() == "text"
+             && block.TryGetProperty("text", out var txt)) {
+                var text = txt.GetString()?.Trim();
+
+                if (!string.IsNullOrEmpty(text)) {
+                    return text;
+                }
+            }
+        }
+
+        return null;
+    }
 }

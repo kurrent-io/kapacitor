@@ -221,7 +221,9 @@ switch (command) {
             minLines = parsed;
         }
 
-        return await HistoryCommand.HandleHistory(baseUrl!, filterCwd, filterSession, minLines);
+        var generateSummaries = args.Contains("--generate-summaries");
+
+        return await HistoryCommand.HandleHistory(baseUrl!, filterCwd, filterSession, minLines, generateSummaries);
     }
     case "watch" when args.Length < 3:
         Console.Error.WriteLine("Usage: kapacitor watch <sessionId> <transcriptPath> [--agent-id <agentId>] [--cwd <cwd>] [--skip-title]");
