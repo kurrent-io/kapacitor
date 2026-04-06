@@ -30,7 +30,6 @@ public static class OAuthLoginFlow {
 
         return config.Provider switch {
             "None"      => HandleNoneLogin(),
-            "GitHub"    => await HandleGitHubLogin(serverUrl, config),
             "GitHubApp" => await HandleGitHubLogin(serverUrl, config),
             "Auth0"     => await HandleAuth0Login(config),
             _           => HandleUnknownProvider(config.Provider)
