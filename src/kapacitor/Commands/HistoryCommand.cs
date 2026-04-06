@@ -252,57 +252,15 @@ static class HistoryCommand {
 
                     Console.Write($"Loading {sessionId}... ");
 
-                    // Send main session transcript first — agent lifecycle hooks come AFTER
-                    // so AgentStarted/Stopped events don't precede session conversation in the
-                    // stream (which would cause MetaSessionChatBuilder to skip all content).
-                    var linesSent = await SendTranscriptBatches(httpClient, baseUrl, sessionId, filePath, agentId: null, startLine: 0);
-                    Console.WriteLine($"{linesSent} lines [new]");
+                    // Import transcript with interleaved agent lifecycle events
+                    var importResult = await SessionImporter.ImportSessionAsync(
+                        httpClient, baseUrl, filePath, sessionId, meta, prevSessionId, encodedCwd
+                    );
 
-                    // Discover and import agents AFTER the main transcript
-                    var agentTranscripts = DiscoverAgentTranscripts(filePath);
+                    Console.WriteLine($"{importResult.LinesSent} lines [new]");
 
-                    foreach (var (agentId, agentPath) in agentTranscripts) {
-                        // Start agent
-                        var agentStartHook = new JsonObject {
-                            ["session_id"]      = sessionId,
-                            ["transcript_path"] = filePath,
-                            ["cwd"]             = startCwd ?? "",
-                            ["hook_event_name"] = "subagent_start",
-                            ["agent_id"]        = agentId,
-                            ["agent_type"]      = "task"
-                        };
-
-                        try {
-                            using var agentStartContent = new StringContent(agentStartHook.ToJsonString(), Encoding.UTF8, "application/json");
-                            await httpClient.PostWithRetryAsync($"{baseUrl}/hooks/subagent-start", agentStartContent);
-                        } catch {
-                            // Best effort
-                        }
-
-                        // Send agent transcript
-                        Console.Write($"  Loading agent {agentId}... ");
-                        var agentLinesSent = await SendTranscriptBatches(httpClient, baseUrl, sessionId, agentPath, agentId, startLine: 0);
-                        Console.WriteLine($"{agentLinesSent} lines");
-
-                        // Stop agent
-                        var agentStopHook = new JsonObject {
-                            ["session_id"]             = sessionId,
-                            ["transcript_path"]        = filePath,
-                            ["cwd"]                    = startCwd ?? "",
-                            ["hook_event_name"]        = "subagent_stop",
-                            ["agent_id"]               = agentId,
-                            ["agent_type"]             = "task",
-                            ["stop_hook_active"]       = false,
-                            ["agent_transcript_path"]  = agentPath,
-                            ["last_assistant_message"] = ""
-                        };
-
-                        try {
-                            using var agentStopContent = new StringContent(agentStopHook.ToJsonString(), Encoding.UTF8, "application/json");
-                            await httpClient.PostWithRetryAsync($"{baseUrl}/hooks/subagent-stop", agentStopContent);
-                        } catch {
-                            // Best effort
-                        }
+                    if (importResult.AgentIds.Count > 0) {
+                        Console.WriteLine($"  {importResult.AgentIds.Count} agent{(importResult.AgentIds.Count == 1 ? "" : "s")} imported inline");
                     }
 
                     // POST synthesized session-end hook
@@ -334,7 +292,7 @@ static class HistoryCommand {
                 default: {
                     // Partial load — resume from where we left off
                     Console.Write($"Loading {sessionId}... ");
-                    var linesSent = await SendTranscriptBatches(httpClient, baseUrl, sessionId, filePath, agentId: null, startLine: resumeFromLine);
+                    var linesSent = await SessionImporter.SendTranscriptBatches(httpClient, baseUrl, sessionId, filePath, agentId: null, startLine: resumeFromLine);
                     Console.WriteLine($"{linesSent} lines [resuming from line {resumeFromLine}]");
                     resumed++;
 
@@ -349,82 +307,6 @@ static class HistoryCommand {
         Console.WriteLine();
 
         return 0;
-    }
-
-    static async Task<int> SendTranscriptBatches(
-            HttpClient httpClient,
-            string     baseUrl,
-            string     sessionId,
-            string     filePath,
-            string?    agentId,
-            int        startLine
-        ) {
-        if (!File.Exists(filePath)) return 0;
-
-        var       totalSent        = 0;
-        var       batchLines       = new List<string>();
-        var       batchLineNumbers = new List<int>();
-        const int batchSize        = 100;
-
-        await using var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
-        using var       reader = new StreamReader(stream);
-
-        var lineIndex = 0;
-
-        while (await reader.ReadLineAsync() is { } line) {
-            if (lineIndex < startLine) {
-                lineIndex++;
-
-                continue;
-            }
-
-            if (!string.IsNullOrWhiteSpace(line)) {
-                batchLines.Add(line);
-                batchLineNumbers.Add(lineIndex);
-            }
-
-            lineIndex++;
-
-            if (batchLines.Count >= batchSize) {
-                await PostTranscriptBatch(httpClient, baseUrl, sessionId, agentId, batchLines, batchLineNumbers);
-                totalSent += batchLines.Count;
-                batchLines.Clear();
-                batchLineNumbers.Clear();
-            }
-        }
-
-        // Send remaining lines
-        if (batchLines.Count > 0) {
-            await PostTranscriptBatch(httpClient, baseUrl, sessionId, agentId, batchLines, batchLineNumbers);
-            totalSent += batchLines.Count;
-        }
-
-        return totalSent;
-    }
-
-    static async Task PostTranscriptBatch(
-            HttpClient   httpClient,
-            string       baseUrl,
-            string       sessionId,
-            string?      agentId,
-            List<string> lines,
-            List<int>    lineNumbers
-        ) {
-        var batch = new TranscriptBatch {
-            SessionId   = sessionId,
-            AgentId     = agentId,
-            Lines       = [.. lines],
-            LineNumbers = [.. lineNumbers]
-        };
-
-        var       json    = JsonSerializer.Serialize(batch, KapacitorJsonContext.Default.TranscriptBatch);
-        using var content = new StringContent(json, Encoding.UTF8, "application/json");
-
-        try {
-            await httpClient.PostWithRetryAsync($"{baseUrl}/hooks/transcript", content);
-        } catch (HttpRequestException) {
-            // Log but continue — don't abort the whole history load for one failed batch
-        }
     }
 
     internal static SessionMetadata ExtractSessionMetadata(string filePath) {
@@ -569,31 +451,7 @@ static class HistoryCommand {
         return null;
     }
 
-    static string? DecodeCwdFromDirName(string encodedCwd) {
-        // Encoded cwd has / replaced with - (e.g., -Users-alexey-dev-myproject)
-        // Reverse: replace leading - with /, then interior - with /
-        return string.IsNullOrEmpty(encodedCwd) ? null : encodedCwd.Replace('-', '/');
-    }
-
-    static List<(string AgentId, string Path)> DiscoverAgentTranscripts(string sessionTranscriptPath) {
-        var results      = new List<(string, string)>();
-        var sessionDir   = Path.ChangeExtension(sessionTranscriptPath, null);
-        var subagentsDir = Path.Combine(sessionDir, "subagents");
-
-        if (!Directory.Exists(subagentsDir)) {
-            return results;
-        }
-
-        results.AddRange(
-            from agentFile in Directory.GetFiles(subagentsDir, "agent-*.jsonl")
-            let fileName = Path.GetFileNameWithoutExtension(agentFile)
-            where fileName.StartsWith("agent-")
-            let agentId = fileName["agent-".Length..]
-            select (agentId, agentFile)
-        );
-
-        return results;
-    }
+    static string? DecodeCwdFromDirName(string encodedCwd) => SessionImporter.DecodeCwdFromDirName(encodedCwd);
 
     /// <summary>
     /// Groups sessions by slug, sorts by timestamp within each group, and builds
