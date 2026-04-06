@@ -34,7 +34,7 @@ public class HookRoundTripTests(KurrentDbFixture db) {
 
     [Test]
     public async Task SessionStart_CreatesSession() {
-        await using var factory = new CapacitorFactory(db.ConnectionString);
+        await using var factory = db.CreateFactory();
         var client    = factory.CreateClient();
         var sessionId = $"test-{Guid.NewGuid():N}";
 
@@ -51,7 +51,7 @@ public class HookRoundTripTests(KurrentDbFixture db) {
 
     [Test]
     public async Task TranscriptBatch_StoresEvents() {
-        await using var factory = new CapacitorFactory(db.ConnectionString);
+        await using var factory = db.CreateFactory();
         var client    = factory.CreateClient();
         var sessionId = $"test-{Guid.NewGuid():N}";
 
