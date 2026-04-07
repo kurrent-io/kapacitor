@@ -88,6 +88,17 @@ static class HttpClientExtensions {
 
         public Task<HttpResponseMessage> GetWithRetryAsync(string url, TimeSpan? timeout = null, CancellationToken ct = default)
             => SendWithRetryAsync(() => client.GetAsync(url, ct), timeout ?? DefaultTimeout, ct);
+
+        public Task<HttpResponseMessage> PutWithRetryAsync(
+                string            url,
+                HttpContent       content,
+                TimeSpan?         timeout = null,
+                CancellationToken ct      = default
+            )
+            => SendWithRetryAsync(() => client.PutAsync(url, content, ct), timeout ?? DefaultTimeout, ct);
+
+        public Task<HttpResponseMessage> DeleteWithRetryAsync(string url, TimeSpan? timeout = null, CancellationToken ct = default)
+            => SendWithRetryAsync(() => client.DeleteAsync(url, ct), timeout ?? DefaultTimeout, ct);
     }
 
     /// <summary>

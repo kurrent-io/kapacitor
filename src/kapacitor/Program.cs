@@ -199,6 +199,82 @@ switch (command) {
     }
     case "cleanup":
         return await CleanupCommand.HandleCleanup();
+    case "disable": {
+        var sessionId = Environment.GetEnvironmentVariable("KAPACITOR_SESSION_ID")?.Replace("-", "");
+
+        if (sessionId is null) {
+            Console.Error.WriteLine("KAPACITOR_SESSION_ID not set. Run this inside an active Claude Code session.");
+            return 1;
+        }
+
+        // 1. Kill the watcher (and any subagent watchers)
+        await WatcherManager.KillWatcher(sessionId);
+
+        // Also kill subagent watchers — scan PID files matching "{sessionId}-*"
+        var watcherDir = WatcherManager.GetWatcherDir();
+        if (Directory.Exists(watcherDir)) {
+            foreach (var pidFile in Directory.GetFiles(watcherDir, $"{sessionId}-*.pid")) {
+                var subKey = Path.GetFileNameWithoutExtension(pidFile);
+                await WatcherManager.KillWatcher(subKey);
+            }
+        }
+
+        // 2. Mark session as disabled (prevents future hook calls from sending data)
+        MarkSessionDisabled(sessionId);
+
+        // 3. Tell server to delete session data
+        using var disableClient = await HttpClientExtensions.CreateAuthenticatedClientAsync();
+
+        try {
+            var resp = await disableClient.DeleteWithRetryAsync($"{baseUrl!}/api/sessions/{sessionId}");
+
+            if (resp.IsSuccessStatusCode) {
+                Console.WriteLine($"Session {sessionId} disabled. Recording stopped and server data deleted.");
+            } else if (resp.StatusCode == System.Net.HttpStatusCode.NotFound) {
+                Console.WriteLine($"Session {sessionId} disabled. No server data found (may have already been deleted).");
+            } else if (await HttpClientExtensions.HandleUnauthorizedAsync(resp)) {
+                return 1;
+            } else {
+                Console.Error.WriteLine($"Server returned HTTP {(int)resp.StatusCode}");
+                return 1;
+            }
+        } catch (HttpRequestException ex) {
+            HttpClientExtensions.WriteUnreachableError(baseUrl!, ex);
+            Console.WriteLine("Session disabled locally (watcher stopped, hooks silenced). Server data not deleted.");
+        }
+
+        return 0;
+    }
+    case "hide": {
+        var sessionId = Environment.GetEnvironmentVariable("KAPACITOR_SESSION_ID")?.Replace("-", "");
+
+        if (sessionId is null) {
+            Console.Error.WriteLine("KAPACITOR_SESSION_ID not set. Run this inside an active Claude Code session.");
+            return 1;
+        }
+
+        using var hideClient  = await HttpClientExtensions.CreateAuthenticatedClientAsync();
+        var       visPayload  = new JsonObject { ["visibility"] = "none" };
+        using var visContent  = new StringContent(visPayload.ToJsonString(), Encoding.UTF8, "application/json");
+
+        try {
+            var resp = await hideClient.PutWithRetryAsync($"{baseUrl!}/api/sessions/{sessionId}/visibility", visContent);
+
+            if (resp.IsSuccessStatusCode) {
+                Console.WriteLine($"Session {sessionId} hidden (owner-only).");
+            } else if (await HttpClientExtensions.HandleUnauthorizedAsync(resp)) {
+                return 1;
+            } else {
+                Console.Error.WriteLine($"Server returned HTTP {(int)resp.StatusCode}");
+                return 1;
+            }
+        } catch (HttpRequestException ex) {
+            HttpClientExtensions.WriteUnreachableError(baseUrl!, ex);
+            return 1;
+        }
+
+        return 0;
+    }
     case "history": {
         string? filterCwd     = null;
         string? filterSession = null;
@@ -332,6 +408,22 @@ try {
     }
 } catch {
     // Best effort — don't fail the hook if JSON parsing fails
+}
+
+// Check if session is disabled — skip all server communication
+try {
+    var disabledSessionId = JsonNode.Parse(body)?["session_id"]?.GetValue<string>();
+
+    if (disabledSessionId is not null && IsSessionDisabled(disabledSessionId)) {
+        // For session-end: remove the marker so it doesn't accumulate
+        if (command == "session-end") {
+            RemoveDisabledMarker(disabledSessionId);
+        }
+
+        return 0;
+    }
+} catch {
+    // Best effort — don't fail if JSON parsing fails
 }
 
 // On session-start, clear the last-emitted repo cache so this session always gets a
@@ -638,6 +730,8 @@ void PrintUsage() {
     Console.WriteLine("  validate-plan [id]               Validate plan completion for a session");
     Console.WriteLine("  generate-whats-done <id>         Generate what's-done summary");
     Console.WriteLine("  set-title <title>                Set session title");
+    Console.WriteLine("  disable                          Stop recording and delete session data");
+    Console.WriteLine("  hide                             Hide session (owner-only visibility)");
     Console.WriteLine("  review <pr>                      Launch Claude with PR review context");
     Console.WriteLine();
     Console.WriteLine("Maintenance:");
@@ -657,6 +751,25 @@ void PrintUsage() {
     Console.WriteLine("  KAPACITOR_URL              Server URL (overrides config file)");
     Console.WriteLine("  KAPACITOR_SESSION_ID       Session ID (set automatically by SessionStart hook)");
     Console.WriteLine("  KAPACITOR_DAEMON_NAME      Daemon name (overrides config file)");
+}
+
+string GetDisabledDir() => Path.Combine(
+    Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+    ".config", "kapacitor", "disabled"
+);
+
+bool IsSessionDisabled(string sessionId) =>
+    File.Exists(Path.Combine(GetDisabledDir(), sessionId));
+
+void MarkSessionDisabled(string sessionId) {
+    var dir = GetDisabledDir();
+    Directory.CreateDirectory(dir);
+    File.WriteAllText(Path.Combine(dir, sessionId), "");
+}
+
+void RemoveDisabledMarker(string sessionId) {
+    var path = Path.Combine(GetDisabledDir(), sessionId);
+    try { File.Delete(path); } catch { /* ignore */ }
 }
 
 int PrintCommandHelp(string cmd) {
@@ -844,6 +957,28 @@ int PrintCommandHelp(string cmd) {
             Console.WriteLine("Usage: echo '<json>' | kapacitor permission-request");
             Console.WriteLine();
             Console.WriteLine("Used by the Claude Code PermissionRequest hook. Reads JSON from stdin.");
+            break;
+        case "disable":
+            Console.WriteLine("kapacitor disable — Stop recording and delete all session data");
+            Console.WriteLine();
+            Console.WriteLine("Usage: kapacitor disable");
+            Console.WriteLine();
+            Console.WriteLine("Stops the watcher, prevents future hook events from being sent,");
+            Console.WriteLine("and deletes all session data from the server (streams + read models).");
+            Console.WriteLine();
+            Console.WriteLine("Environment:");
+            Console.WriteLine("  KAPACITOR_SESSION_ID    Session ID (required, set automatically)");
+            break;
+        case "hide":
+            Console.WriteLine("kapacitor hide — Hide session from other users");
+            Console.WriteLine();
+            Console.WriteLine("Usage: kapacitor hide");
+            Console.WriteLine();
+            Console.WriteLine("Sets the current session's visibility to owner-only. Other users");
+            Console.WriteLine("will no longer see this session in the dashboard.");
+            Console.WriteLine();
+            Console.WriteLine("Environment:");
+            Console.WriteLine("  KAPACITOR_SESSION_ID    Session ID (required, set automatically)");
             break;
         default:
             if (hookCommands.Contains(cmd)) {

@@ -35,6 +35,8 @@ Each hook pipes its JSON payload through the `kapacitor` CLI, which enriches it 
 - `/kapacitor:session-recap` — Retrieve a structured summary of a session (user prompts, assistant responses, plans, file changes)
 - `/kapacitor:session-errors` — Extract tool call errors from a session for post-session review and pattern detection
 - `/kapacitor:validate-plan` — Verify that all planned items were completed
+- `/kapacitor:session-disable` — Stop recording and delete all server data for the current session
+- `/kapacitor:session-hide` — Hide the current session (owner-only visibility)
 
 ## Prerequisites
 
@@ -108,4 +110,8 @@ plugin/
       SKILL.md           — /kapacitor:session-errors skill
     validate-plan/
       SKILL.md           — /kapacitor:validate-plan skill
+    session-disable/
+      SKILL.md           — /kapacitor:session-disable skill
+    session-hide/
+      SKILL.md           — /kapacitor:session-hide skill
 ```
