@@ -8,7 +8,6 @@
   },
   "optionalDependencies": {
     "@kurrent/kapacitor-darwin-arm64": "0.0.0",
-    "@kurrent/kapacitor-darwin-x64": "0.0.0",
     "@kurrent/kapacitor-linux-x64": "0.0.0",
     "@kurrent/kapacitor-linux-arm64": "0.0.0",
     "@kurrent/kapacitor-linux-musl-x64": "0.0.0",

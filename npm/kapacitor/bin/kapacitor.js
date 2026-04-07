@@ -21,7 +21,6 @@ function isMusl() {
 
 const PLATFORM_PACKAGES = {
   "darwin-arm64":      "@kurrent/kapacitor-darwin-arm64",
-  "darwin-x64":        "@kurrent/kapacitor-darwin-x64",
   "linux-x64":         "@kurrent/kapacitor-linux-x64",
   "linux-arm64":       "@kurrent/kapacitor-linux-arm64",
   "linux-musl-x64":    "@kurrent/kapacitor-linux-musl-x64",
