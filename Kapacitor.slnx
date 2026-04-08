@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/kapacitor/kapacitor.csproj" />
+  </Folder>
+  <Folder Name="/test/">
+    <Project Path="test/kapacitor.Tests.Unit/kapacitor.Tests.Unit.csproj" />
+    <Project Path="test/kapacitor.Tests.Integration/kapacitor.Tests.Integration.csproj" />
+  </Folder>
+</Solution>
