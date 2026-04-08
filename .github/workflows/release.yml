@@ -1,0 +1,291 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+  checks: read
+
+env:
+  DOTNET_VERSION: '10.0.x'
+  PROJECT: src/kapacitor/kapacitor.csproj
+
+jobs:
+  ci:
+    name: Wait for CI
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wait for CI workflow to succeed
+        uses: lewagon/wait-on-check-action@v1.6.1
+        with:
+          ref: ${{ github.sha }}
+          check-regexp: '^(Build and test|AOT publish check)$'
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          wait-interval: 15
+          checks-discovery-timeout: 300
+
+  create-runner-x86:
+    name: Create Hetzner x86 runner
+    needs: ci
+    runs-on: ubuntu-latest
+    outputs:
+      label: ${{ steps.create.outputs.label }}
+      server_id: ${{ steps.create.outputs.server_id }}
+    steps:
+      - name: Create runner
+        id: create
+        uses: Cyclenerd/hcloud-github-runner@v1
+        with:
+          mode: create
+          github_token: ${{ secrets.HCLOUD_GITHUB_PAT }}
+          hcloud_token: ${{ secrets.HCLOUD_TOKEN }}
+          server_type: cx43
+          location: nbg1
+          image: docker-ce
+          ssh_key: ${{ secrets.HCLOUD_SSH_KEY_ID }}
+          pre_runner_script: |
+            apt-get update
+            apt-get install -y clang zlib1g-dev
+
+  create-runner-arm:
+    name: Create Hetzner ARM runner
+    needs: ci
+    runs-on: ubuntu-latest
+    outputs:
+      label: ${{ steps.create.outputs.label }}
+      server_id: ${{ steps.create.outputs.server_id }}
+    steps:
+      - name: Create runner
+        id: create
+        uses: Cyclenerd/hcloud-github-runner@v1
+        with:
+          mode: create
+          github_token: ${{ secrets.HCLOUD_GITHUB_PAT }}
+          hcloud_token: ${{ secrets.HCLOUD_TOKEN }}
+          server_type: cax21
+          location: nbg1
+          image: docker-ce
+          ssh_key: ${{ secrets.HCLOUD_SSH_KEY_ID }}
+          pre_runner_script: |
+            apt-get update
+            apt-get install -y clang zlib1g-dev musl-tools
+
+  build:
+    needs: [ci, create-runner-x86, create-runner-arm]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - rid: osx-arm64
+            os: macos-latest
+            runner: github
+            npm-package: kapacitor-darwin-arm64
+            binary-name: kapacitor
+          - rid: linux-x64
+            runner: hetzner-x86
+            npm-package: kapacitor-linux-x64
+            binary-name: kapacitor
+          - rid: linux-arm64
+            runner: hetzner-arm
+            npm-package: kapacitor-linux-arm64
+            binary-name: kapacitor
+          - rid: linux-musl-x64
+            runner: hetzner-x86
+            container: alpine:3.20
+            npm-package: kapacitor-linux-musl-x64
+            binary-name: kapacitor
+          - rid: linux-musl-arm64
+            runner: hetzner-arm
+            npm-package: kapacitor-linux-musl-arm64
+            binary-name: kapacitor
+          - rid: win-x64
+            os: windows-latest
+            runner: github
+            npm-package: kapacitor-win-x64
+            binary-name: kapacitor.exe
+
+    runs-on: >-
+      ${{
+        matrix.runner == 'hetzner-x86' && needs.create-runner-x86.outputs.label ||
+        matrix.runner == 'hetzner-arm' && needs.create-runner-arm.outputs.label ||
+        matrix.os
+      }}
+    container: ${{ matrix.container || '' }}
+
+    steps:
+      - name: Install Alpine build dependencies
+        if: matrix.container != ''
+        shell: sh
+        run: |
+          apk add --no-cache bash curl git icu-libs krb5-libs libgcc libstdc++ zlib clang build-base zlib-dev linux-headers
+
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Extract version from tag
+        id: version
+        shell: bash
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Publish AOT binary
+        run: >
+          dotnet publish ${{ env.PROJECT }}
+          -c Release
+          -r ${{ matrix.rid }}
+          -p:MinVerVersionOverride=${{ steps.version.outputs.VERSION }}
+          -o publish/
+
+      - name: Copy binary to npm package
+        shell: bash
+        run: |
+          mkdir -p npm/${{ matrix.npm-package }}/bin
+          cp publish/${{ matrix.binary-name }} npm/${{ matrix.npm-package }}/bin/
+          if [ -f publish/libpty_shim.dylib ]; then
+            cp publish/libpty_shim.dylib npm/${{ matrix.npm-package }}/bin/
+          fi
+
+      - name: Create release archive
+        shell: bash
+        run: |
+          cd publish
+          if [ "${{ matrix.rid }}" = "win-x64" ]; then
+            7z a ../kapacitor-${{ matrix.rid }}.zip ${{ matrix.binary-name }}
+          else
+            tar czf ../kapacitor-${{ matrix.rid }}.tar.gz ${{ matrix.binary-name }}
+            if [ -f libpty_shim.dylib ]; then
+              tar czf ../kapacitor-${{ matrix.rid }}.tar.gz ${{ matrix.binary-name }} libpty_shim.dylib
+            fi
+          fi
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-${{ matrix.npm-package }}
+          path: npm/${{ matrix.npm-package }}/
+
+      - name: Upload release archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.rid }}
+          path: kapacitor-${{ matrix.rid }}.*
+
+  publish-npm:
+    needs: [build, create-runner-x86]
+    runs-on: ${{ needs.create-runner-x86.outputs.label }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Extract version from tag
+        id: version
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Download all npm artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: npm-*
+          path: npm-artifacts/
+
+      - name: Update package versions and publish platform packages
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          VERSION=${{ steps.version.outputs.VERSION }}
+
+          for dir in npm-artifacts/npm-kapacitor-*/; do
+            pkg_name=$(basename "$dir" | sed 's/^npm-//')
+            cp "npm/$pkg_name/package.json" "$dir/package.json"
+            cd "$dir"
+            npm version "$VERSION" --no-git-tag-version --allow-same-version
+            npm publish --access public
+            cd -
+          done
+
+      - name: Update plugin version
+        run: |
+          VERSION=${{ steps.version.outputs.VERSION }}
+          node -e "
+            const pkg = require('./plugin/.claude-plugin/plugin.json');
+            pkg.version = '$VERSION';
+            require('fs').writeFileSync('./plugin/.claude-plugin/plugin.json', JSON.stringify(pkg, null, 2) + '\n');
+          "
+
+      - name: Copy plugin into wrapper package
+        run: cp -r plugin/ npm/kapacitor/plugin/
+
+      - name: Publish wrapper package
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          VERSION=${{ steps.version.outputs.VERSION }}
+          cd npm/kapacitor
+          npm version "$VERSION" --no-git-tag-version --allow-same-version
+          node -e "
+            const pkg = require('./package.json');
+            for (const dep of Object.keys(pkg.optionalDependencies || {})) {
+              pkg.optionalDependencies[dep] = '$VERSION';
+            }
+            require('fs').writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
+          "
+          npm publish --access public
+
+  github-release:
+    needs: [build, create-runner-x86]
+    runs-on: ${{ needs.create-runner-x86.outputs.label }}
+
+    steps:
+      - name: Download all release archives
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: release-artifacts/
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release-artifacts/*
+          generate_release_notes: true
+
+  delete-runner-x86:
+    name: Delete Hetzner x86 runner
+    needs: [create-runner-x86, publish-npm, github-release]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Delete runner
+        uses: Cyclenerd/hcloud-github-runner@v1
+        with:
+          mode: delete
+          github_token: ${{ secrets.HCLOUD_GITHUB_PAT }}
+          hcloud_token: ${{ secrets.HCLOUD_TOKEN }}
+          name: ${{ needs.create-runner-x86.outputs.label }}
+          server_id: ${{ needs.create-runner-x86.outputs.server_id }}
+
+  delete-runner-arm:
+    name: Delete Hetzner ARM runner
+    needs: [create-runner-arm, build]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Delete runner
+        uses: Cyclenerd/hcloud-github-runner@v1
+        with:
+          mode: delete
+          github_token: ${{ secrets.HCLOUD_GITHUB_PAT }}
+          hcloud_token: ${{ secrets.HCLOUD_TOKEN }}
+          name: ${{ needs.create-runner-arm.outputs.label }}
+          server_id: ${{ needs.create-runner-arm.outputs.server_id }}
