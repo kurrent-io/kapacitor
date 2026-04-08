@@ -550,19 +550,7 @@ static partial class WatchCommand {
 
     static async Task GenerateTitleAsync(HubConnection hubConnection, string sessionId, WatchState state) {
         try {
-            var userText      = state.FirstUserText!;
-            var truncatedUser = userText.Length > 500 ? userText[..500] : userText;
-
-            var promptBuilder = new System.Text.StringBuilder();
-            promptBuilder.Append("Generate a short descriptive title (max 10 words, no quotes, no period) for a coding session. ");
-            promptBuilder.Append("NEVER ask a question. NEVER include a question mark. Always produce a title, even if context is limited.");
-            promptBuilder.Append($"\n\nThe user's request: {truncatedUser}");
-
-            if (state.FirstAssistantText is not null) {
-                promptBuilder.Append($"\n\nThe assistant's initial response: {state.FirstAssistantText}");
-            }
-
-            var result = await ClaudeCliRunner.RunAsync(promptBuilder.ToString(), TimeSpan.FromSeconds(15), Log);
+            var result = await TitleGenerator.GenerateAsync(state.FirstUserText!, state.FirstAssistantText, Log);
 
             if (result is null) {
                 Log($"Title generation attempt {state.TitleAttempts}/5 returned no result (empty response from claude CLI)");
@@ -571,23 +559,12 @@ static partial class WatchCommand {
                 return;
             }
 
-            // Strip markdown formatting (bold, italic, code) from generated title
-            var title = StripMarkdown(result.Result);
-
-            // Strip trailing question mark if the model still produced one
-            title = title.TrimEnd('?').TrimEnd();
-
-            // Sanity-check: limit to 120 chars
-            if (title.Length > 120) {
-                title = title[..120];
-            }
-
             Log($"Title usage: model={result.Model} input={result.InputTokens} output={result.OutputTokens} cost=${result.CostUsd:F4}");
 
             await PostTitleAsync(
                 hubConnection,
                 sessionId,
-                title,
+                result.Result,
                 result.Model,
                 result.InputTokens,
                 result.OutputTokens,
@@ -674,13 +651,6 @@ static partial class WatchCommand {
         return $"{truncated.ToString().Trim()}...";
     }
 
-    internal static string StripMarkdown(string text) {
-        // Strip bold/italic markers, inline code backticks, and heading prefixes
-        text = MarkdownRegex().Replace(text, "");
-
-        return text.Trim();
-    }
-
     static void Log(string message) => Console.Error.WriteLine($"[{DateTimeOffset.Now:HH:mm:ss.fff}] [watch] {message}");
 
     public static int CountFileLines(string path) {
@@ -705,9 +675,6 @@ static partial class WatchCommand {
 
     [GeneratedRegex("<command-name>(.*?)</command-name>", RegexOptions.Compiled)]
     private static partial Regex CommandNameRx();
-
-    [GeneratedRegex("[*_`#]+")]
-    private static partial Regex MarkdownRegex();
 
     /// <summary>
     /// Retries SignalR reconnection indefinitely with exponential backoff capped at 30s.
