@@ -1,65 +1,97 @@
-# Kurrent Capacitor CLI
+# Kurrent Capacitor
 
-Records and visualizes [Claude Code](https://claude.ai/claude-code) sessions via hooks, backed by [KurrentDB](https://kurrent.io).
+Full observability for your Claude Code sessions. Record every session, visualize agent activity in real time, and review code changes grounded in the actual development transcripts.
+
+Capacitor captures the complete picture — session lifecycle, transcript data, subagent trees, tool usage, and token consumption — then surfaces it through a real-time dashboard and PR review tools that give you context no diff can provide.
 
 ## Installation
+
+Install the CLI globally via npm:
 
 ```bash
 npm install -g @kurrent/kapacitor
 ```
 
+npm automatically selects the right native binary for your platform:
+
+| Platform | Architecture |
+|----------|-------------|
+| macOS | ARM64 (Apple Silicon) |
+| Linux | x64, ARM64 |
+| Linux (Alpine/musl) | x64, ARM64 |
+| Windows | x64 |
+
+The CLI is compiled with NativeAOT — fast startup, no runtime dependency.
+
 ## Setup
 
+Run the guided setup wizard:
+
 ```bash
-kapacitor setup    # guided first-run configuration
-kapacitor login    # authenticate with your Capacitor server
-kapacitor status   # verify connection
+kapacitor setup
 ```
 
-## How it works
+This walks you through 5 steps:
 
-The CLI integrates with Claude Code via hooks. When you start a Claude Code session, the CLI forwards lifecycle events (session start/end, subagent start/stop, notifications) and transcript data to your Capacitor server for real-time visualization.
+1. **Server URL** — connects to your Capacitor server, validates reachability
+2. **Authentication** — OAuth login (GitHub Device Flow or Auth0 PKCE, auto-discovered)
+3. **Default visibility** — choose who sees your sessions (`private`, `org_public`, or `public`)
+4. **Claude Code plugin** — installs the hooks that record your sessions
+5. **Agent daemon** — optional background daemon for remote agent management
 
-### Hook events
-
-| Hook | Purpose |
-|------|---------|
-| `session-start` | Session created, begins recording |
-| `session-end` | Session completed |
-| `subagent-start` | Subagent spawned |
-| `subagent-stop` | Subagent completed |
-| `notification` | Claude Code notification |
-| `stop` | Session interrupted |
-| `pre-compact` | Before context compaction |
-| `permission-request` | Permission prompt |
-
-### Background watcher
-
-On session start, the CLI spawns a background watcher process that polls the `.jsonl` transcript file and streams new lines to the server via a persistent SignalR connection.
-
-### Agent daemon
-
-`kapacitor agent start` runs a long-lived daemon that manages Claude CLI agents in isolated git worktrees. It connects to the Capacitor server via SignalR and receives launch/stop/input commands.
-
-### PR review context
-
-`kapacitor review <pr>` launches a Claude Code session with MCP tools that query implementation context from recorded sessions, grounding code review in actual development transcripts.
-
-## Commands
+For non-interactive environments:
 
 ```bash
-kapacitor session-start          # Forward session-start hook
-kapacitor session-end            # Forward session-end hook
-kapacitor watch                  # Start transcript watcher
-kapacitor agent start|stop|status # Manage agent daemon
-kapacitor review <pr-url>        # PR review with session context
-kapacitor mcp review             # MCP server for PR review tools
-kapacitor login|logout|whoami    # Authentication
-kapacitor setup                  # First-run configuration
-kapacitor config show|set        # Configuration management
-kapacitor update                 # Check for updates
-kapacitor status                 # Health check
-kapacitor errors                 # Review session errors
+kapacitor setup --server-url https://capacitor.example.com --default-visibility org_public --no-prompt
+```
+
+Verify everything works:
+
+```bash
+kapacitor status   # shows server, auth, and daemon health
+```
+
+## What it records
+
+Once set up, Capacitor runs silently in the background. Every Claude Code session is captured automatically via hooks:
+
+- **Session lifecycle** — start, end, interruptions, context compaction
+- **Transcript data** — streamed in real time via a background watcher process over SignalR
+- **Subagent activity** — full tree of spawned subagents with their own transcripts
+- **Tool usage** — every tool call with timing and results
+- **Token consumption** — input/output/cache token counts per interaction
+- **Repository context** — git repo, branch, and PR linkage
+
+## Key features
+
+### Real-time dashboard
+
+The Capacitor server provides a Blazor-based dashboard showing active and historical sessions, grouped by repository. Watch sessions unfold live or drill into completed ones — browse the reconstructed conversation, inspect the event timeline, explore the hierarchical call tree, or review stats and metadata.
+
+### PR review with full context
+
+```bash
+kapacitor review <pr-url>
+```
+
+Launches a Claude Code session equipped with MCP tools that query the implementation transcripts. Reviewers can ask *why* code was changed, understand design decisions, check what alternatives were considered, and verify test coverage — all grounded in what actually happened during development.
+
+### Remote agent daemon
+
+```bash
+kapacitor agent start -d
+```
+
+Runs a background daemon that manages Claude CLI agents in isolated git worktrees. The server dispatches work, the daemon executes it — with full PTY hosting, permission handling, and live terminal output streaming.
+
+### Session management
+
+```bash
+kapacitor errors              # review tool call errors from this session
+kapacitor recap               # get a session summary
+kapacitor hide                # make a session owner-only
+kapacitor disable             # stop recording and delete session data
+kapacitor history             # import local transcript history
 ```
 
 ## Building from source
@@ -68,7 +100,7 @@ kapacitor errors                 # Review session errors
 dotnet publish src/kapacitor/kapacitor.csproj -c Release
 ```
 
-The CLI is compiled with NativeAOT for fast startup and small binary size.
+Requires .NET 10 SDK. On macOS, also requires Xcode command line tools (for the PTY shim compilation).
 
 ## License
 
