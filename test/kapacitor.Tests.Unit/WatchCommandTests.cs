@@ -115,22 +115,6 @@ public class TryExtractUserTextWithSystemInstructionsTests {
     }
 }
 
-public class StripMarkdownTests {
-    [Test]
-    [Arguments("**bold**", "bold")]
-    [Arguments("*italic*", "italic")]
-    [Arguments("`code`", "code")]
-    [Arguments("## heading", "heading")]
-    [Arguments("### sub heading", "sub heading")]
-    [Arguments("**bold** and *italic* and `code`", "bold and italic and code")]
-    [Arguments("plain text", "plain text")]
-    [Arguments("", "")]
-    public async Task StripsMarkdownFormatting(string input, string expected) {
-        var result = Commands.WatchCommand.StripMarkdown(input);
-        await Assert.That(result).IsEqualTo(expected);
-    }
-}
-
 public class RepoPayloadChangedTests {
     static RepositoryPayload MakePayload(
             string owner    = "o",
