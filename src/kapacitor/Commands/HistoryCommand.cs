@@ -119,8 +119,8 @@ static class HistoryCommand {
                             var json = await resp.Content.ReadAsStringAsync();
                             var doc  = JsonDocument.Parse(json);
 
-                            if (doc.RootElement.TryGetProperty("last_line_number", out var prop) && prop.ValueKind == JsonValueKind.Number) {
-                                resumeFromLine = prop.GetInt32() + 1;
+                            if (doc.RootElement.Num("last_line_number") is { } lastLine) {
+                                resumeFromLine = (int)lastLine + 1;
                                 status         = HistorySessionStatus.Partial;
                             } else {
                                 status = HistorySessionStatus.AlreadyLoaded;
@@ -358,37 +358,26 @@ static class HistoryCommand {
                     var root = doc.RootElement;
 
                     // Skip file-history-snapshot entries
-                    if (root.TryGetProperty("type", out var typeProp) && typeProp.GetString() == "file-history-snapshot") {
+                    if (root.Str("type") == "file-history-snapshot") {
                         continue;
                     }
 
                     // Extract cwd from metadata
-                    if (meta.Cwd is null && root.TryGetProperty("cwd", out var cwdProp)) {
-                        meta.Cwd = cwdProp.GetString();
-                    }
+                    meta.Cwd ??= root.Str("cwd");
 
                     // Extract model from assistant message
-                    if (meta.Model is null                              &&
-                        root.TryGetProperty("message", out var msgProp) &&
-                        msgProp.TryGetProperty("model", out var modelProp)) {
-                        meta.Model = modelProp.GetString();
-                    }
+                    meta.Model ??= root.Obj("message")?.Str("model");
 
                     // Extract slug from metadata
-                    if (meta.Slug is null && root.TryGetProperty("slug", out var slugProp) &&
-                        slugProp.ValueKind == JsonValueKind.String) {
-                        meta.Slug = slugProp.GetString();
-                    }
+                    meta.Slug ??= root.Str("slug");
 
                     // Extract sessionId
-                    if (meta.SessionId is null && root.TryGetProperty("sessionId", out var sidProp)) {
-                        meta.SessionId = sidProp.GetString();
-                    }
+                    meta.SessionId ??= root.Str("sessionId");
 
                     // Extract first timestamp for continuation ordering
-                    if (meta.FirstTimestamp is null              && root.TryGetProperty("timestamp", out var tsProp) &&
-                        tsProp.ValueKind == JsonValueKind.String &&
-                        DateTimeOffset.TryParse(tsProp.GetString(), out var ts)) {
+                    if (meta.FirstTimestamp is null
+                     && root.Str("timestamp") is { } tsStr
+                     && DateTimeOffset.TryParse(tsStr, out var ts)) {
                         meta.FirstTimestamp = ts;
                     }
 
@@ -436,9 +425,8 @@ static class HistoryCommand {
                     using var doc  = JsonDocument.Parse(tail[i]);
                     var       root = doc.RootElement;
 
-                    if (root.TryGetProperty("timestamp", out var tsProp) &&
-                        tsProp.ValueKind == JsonValueKind.String          &&
-                        DateTimeOffset.TryParse(tsProp.GetString(), out var ts)) {
+                    if (root.Str("timestamp") is { } tsStr
+                     && DateTimeOffset.TryParse(tsStr, out var ts)) {
                         return ts;
                     }
                 } catch (JsonException) { }
@@ -467,8 +455,8 @@ static class HistoryCommand {
                 try {
                     var doc = JsonDocument.Parse(line);
 
-                    if (doc.RootElement.TryGetProperty("cwd", out var cwdProp)) {
-                        return cwdProp.GetString();
+                    if (doc.RootElement.Str("cwd") is { } cwd) {
+                        return cwd;
                     }
                 } catch (JsonException) { }
             }
@@ -574,15 +562,10 @@ static class HistoryCommand {
                     var       root = doc.RootElement;
 
                     // Headless claude -p sessions start with queue-operation entries
-                    if (root.TryGetProperty("type", out var typeProp)
-                     && typeProp.GetString() == "queue-operation"
-                     && root.TryGetProperty("operation", out var opProp)
-                     && opProp.GetString() == "enqueue"
-                     && root.TryGetProperty("content", out var contentProp)
-                     && contentProp.ValueKind == JsonValueKind.String) {
-                        var content = contentProp.GetString();
-
-                        if (content is not null && IsKnownKapacitorPrompt(content)) {
+                    if (root.Str("type") == "queue-operation"
+                     && root.Str("operation") == "enqueue"
+                     && root.Str("content") is { } content) {
+                        if (IsKnownKapacitorPrompt(content)) {
                             return true;
                         }
                     }
@@ -692,11 +675,11 @@ static class HistoryCommand {
                 try {
                     using var doc  = JsonDocument.Parse(line);
                     var       root = doc.RootElement;
-                    var       type = root.TryGetProperty("type", out var typeProp) ? typeProp.GetString() : null;
+                    var       type = root.Str("type");
 
                     if (userText is null && type == "user") {
                         // Skip system-injected meta messages
-                        if (root.TryGetProperty("isMeta", out var metaProp) && metaProp.ValueKind == JsonValueKind.True) {
+                        if (root.TryGetProperty("isMeta", out var isMeta) && isMeta.ValueKind == JsonValueKind.True) {
                             continue;
                         }
 
@@ -731,30 +714,19 @@ static class HistoryCommand {
     }
 
     static string? ExtractMessageText(JsonElement root) {
-        if (!root.TryGetProperty("message", out var msg) || !msg.TryGetProperty("content", out var content)) {
-            return null;
+        var msg = root.Obj("message");
+
+        // message.content can be a string or an array
+        if (msg?.Str("content") is { } strContent) {
+            return strContent.StartsWith("<local-command-stdout>") ? null : WatchCommand.StripSystemInstructions(strContent);
         }
 
-        switch (content.ValueKind) {
-            case JsonValueKind.String: {
-                var text = content.GetString();
-
-                return text?.StartsWith("<local-command-stdout>") == true ? null : WatchCommand.StripSystemInstructions(text);
-            }
-            case JsonValueKind.Array: {
-                foreach (var element in content.EnumerateArray()) {
-                    if (element.ValueKind                                            == JsonValueKind.Object
-                     && element.TryGetProperty("type", out var t)   && t.GetString() == "text"
-                     && element.TryGetProperty("text", out var txt) && txt.ValueKind == JsonValueKind.String) {
-                        var text = txt.GetString();
-
-                        if (text?.StartsWith("<local-command-stdout>") == false) {
-                            return WatchCommand.StripSystemInstructions(text);
-                        }
-                    }
+        if (msg?.Arr("content") is { } arrContent) {
+            foreach (var element in arrContent.EnumerateArray()) {
+                if (element.Str("type") == "text" && element.Str("text") is { } text
+                 && !text.StartsWith("<local-command-stdout>")) {
+                    return WatchCommand.StripSystemInstructions(text);
                 }
-
-                break;
             }
         }
 
@@ -762,19 +734,13 @@ static class HistoryCommand {
     }
 
     static string? ExtractAssistantText(JsonElement root) {
-        if (!root.TryGetProperty("message", out var msg) || !msg.TryGetProperty("content", out var content)
-         || content.ValueKind != JsonValueKind.Array) {
+        if (root.Obj("message")?.Arr("content") is not { } content) {
             return null;
         }
 
         foreach (var block in content.EnumerateArray()) {
-            if (block.TryGetProperty("type", out var btProp) && btProp.GetString() == "text"
-             && block.TryGetProperty("text", out var txt)) {
-                var text = txt.GetString()?.Trim();
-
-                if (!string.IsNullOrEmpty(text)) {
-                    return text;
-                }
+            if (block.Str("type") == "text" && block.Str("text")?.Trim() is { Length: > 0 } text) {
+                return text;
             }
         }
 

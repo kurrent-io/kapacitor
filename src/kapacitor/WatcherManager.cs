@@ -231,9 +231,8 @@ static class WatcherManager {
                     var json = await resp.Content.ReadAsStringAsync();
                     var doc  = JsonDocument.Parse(json);
 
-                    startLine = doc.RootElement.TryGetProperty("last_line_number", out var prop) && prop.ValueKind == JsonValueKind.Number
-                        ? prop.GetInt32() + 1
-                        : Commands.WatchCommand.CountFileLines(transcriptPath);
+                    startLine = (int?)doc.RootElement.Num("last_line_number") + 1
+                        ?? Commands.WatchCommand.CountFileLines(transcriptPath);
                 } else {
                     startLine = Commands.WatchCommand.CountFileLines(transcriptPath);
                 }

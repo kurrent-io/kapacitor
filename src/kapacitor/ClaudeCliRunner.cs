@@ -161,7 +161,7 @@ static class ClaudeCliRunner {
             using var doc  = JsonDocument.Parse(stdout);
             var       root = doc.RootElement;
 
-            var result = root.TryGetProperty("result", out var r) ? r.GetString()?.Trim() : null;
+            var result = root.Str("result")?.Trim();
 
             return string.IsNullOrWhiteSpace(result) ? null : BuildResult(root, result);
         } catch (JsonException) {
@@ -178,7 +178,7 @@ static class ClaudeCliRunner {
             using var doc  = JsonDocument.Parse(stdout);
             var       root = doc.RootElement;
 
-            var sessionId = root.TryGetProperty("session_id", out var sid) ? sid.GetString() : null;
+            var sessionId = root.Str("session_id");
 
             if (string.IsNullOrEmpty(sessionId)) {
                 return null;
@@ -243,13 +243,11 @@ static class ClaudeCliRunner {
                 using var doc  = JsonDocument.Parse(line);
                 var       root = doc.RootElement;
 
-                if (root.TryGetProperty("type", out var typeProp) && typeProp.GetString() == "assistant"
-                 && root.TryGetProperty("message", out var msg)   && msg.TryGetProperty("content", out var content)
-                 && content.ValueKind == JsonValueKind.Array) {
+                if (root.Str("type") == "assistant"
+                 && root.Obj("message")?.Arr("content") is { } content) {
                     foreach (var block in content.EnumerateArray()) {
-                        if (block.TryGetProperty("type", out var bt) && bt.GetString() == "text"
-                         && block.TryGetProperty("text", out var txt)) {
-                            var text = txt.GetString()?.Trim();
+                        if (block.Str("type") == "text") {
+                            var text = block.Str("text")?.Trim();
 
                             if (!string.IsNullOrEmpty(text)) {
                                 lastText = text;
@@ -277,14 +275,14 @@ static class ClaudeCliRunner {
         string? model       = null;
         long    inputTokens = 0, outputTokens = 0, cacheReadTokens = 0, cacheWriteTokens = 0;
 
-        if (root.TryGetProperty("modelUsage", out var modelUsage) && modelUsage.ValueKind == JsonValueKind.Object) {
+        if (root.Obj("modelUsage") is { } modelUsage) {
             foreach (var prop in modelUsage.EnumerateObject()) {
                 model ??= prop.Name; // Use first model as the primary model name
                 var mu = prop.Value;
-                inputTokens      += mu.TryGetProperty("inputTokens", out var inp) ? inp.GetInt64() : 0;
-                outputTokens     += mu.TryGetProperty("outputTokens", out var outp) ? outp.GetInt64() : 0;
-                cacheReadTokens  += mu.TryGetProperty("cacheReadInputTokens", out var cr) ? cr.GetInt64() : 0;
-                cacheWriteTokens += mu.TryGetProperty("cacheCreationInputTokens", out var cw) ? cw.GetInt64() : 0;
+                inputTokens      += mu.Num("inputTokens") ?? 0;
+                outputTokens     += mu.Num("outputTokens") ?? 0;
+                cacheReadTokens  += mu.Num("cacheReadInputTokens") ?? 0;
+                cacheWriteTokens += mu.Num("cacheCreationInputTokens") ?? 0;
             }
         }
 

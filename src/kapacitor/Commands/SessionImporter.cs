@@ -112,8 +112,9 @@ static class SessionImporter {
 
     /// <summary>
     /// Scan the main transcript and return a map of agentId → first line index
-    /// where the agent is referenced. Checks both <c>agent_progress</c> events
-    /// and <c>result</c> events with <c>async_launched</c> status.
+    /// where the agent is referenced. Checks <c>agent_progress</c> events,
+    /// <c>result</c> events with <c>async_launched</c> status, and <c>user</c>
+    /// events with <c>toolUseResult.agentId</c> (foreground agent completions).
     /// </summary>
     internal static Dictionary<string, int> ScanAgentProgressLines(string transcriptPath) {
         var result = new Dictionary<string, int>(StringComparer.Ordinal);
@@ -147,6 +148,7 @@ static class SessionImporter {
     /// 1. <c>progress</c> events with <c>data.type == "agent_progress"</c>
     /// 2. <c>assistant</c> messages with Agent/Task <c>tool_use</c> blocks (records tool_use_id → position)
     /// 3. <c>result</c> events with <c>tool_result.status == "async_launched"</c> (resolves agentId via tool_use position)
+    /// 4. <c>user</c> events with <c>toolUseResult.agentId</c> (foreground agent completions)
     /// </summary>
     static void TryExtractAgentReference(
             string                  line,
@@ -157,11 +159,7 @@ static class SessionImporter {
         try {
             using var doc  = JsonDocument.Parse(line);
             var       root = doc.RootElement;
-
-            if (!root.TryGetProperty("type", out var typeProp) || typeProp.ValueKind != JsonValueKind.String)
-                return;
-
-            var type = typeProp.GetString();
+            var       type = root.Str("type");
 
             switch (type) {
                 case "progress":
@@ -176,6 +174,10 @@ static class SessionImporter {
                     TryExtractFromAsyncLaunched(root, lineIndex, result, toolUsePositions);
 
                     break;
+                case "user":
+                    TryExtractFromToolUseResult(root, lineIndex, result, toolUsePositions);
+
+                    break;
             }
         } catch (JsonException) {
             // Skip malformed lines
@@ -186,16 +188,12 @@ static class SessionImporter {
     /// Extract agentId from <c>progress</c> events with <c>data.type == "agent_progress"</c>.
     /// </summary>
     static void TryExtractFromAgentProgress(JsonElement root, int lineIndex, Dictionary<string, int> result) {
-        if (!root.TryGetProperty("data", out var dataProp))
+        var data = root.Obj("data");
+
+        if (data?.Str("type") != "agent_progress")
             return;
 
-        if (!dataProp.TryGetProperty("type", out var dataTypeProp) || dataTypeProp.GetString() != "agent_progress")
-            return;
-
-        if (!dataProp.TryGetProperty("agentId", out var agentIdProp) || agentIdProp.ValueKind != JsonValueKind.String)
-            return;
-
-        var agentId = agentIdProp.GetString();
+        var agentId = data.Value.Str("agentId");
 
         if (agentId is not null && !result.ContainsKey(agentId))
             result[agentId] = lineIndex;
@@ -207,24 +205,16 @@ static class SessionImporter {
     /// </summary>
     static void TryExtractAgentToolUsePositions(JsonElement root, int lineIndex, Dictionary<string, int> toolUsePositions) {
         // assistant events: root.message.content[] or root.content[]
-        var content = root.TryGetProperty("message", out var msg) && msg.TryGetProperty("content", out var mc)
-            ? mc
-            : root.TryGetProperty("content", out var rc)
-                ? rc
-                : default;
+        var content = root.Obj("message")?.Arr("content") ?? root.Arr("content");
 
-        if (content.ValueKind != JsonValueKind.Array)
+        if (content is not { } arr)
             return;
 
-        foreach (var block in content.EnumerateArray()) {
-            if (block.TryGetProperty("type", out var bt) && bt.GetString() == "tool_use"
-             && block.TryGetProperty("name", out var bn) && bn.GetString() is "Agent" or "Task"
-             && block.TryGetProperty("id", out var bid)   && bid.ValueKind == JsonValueKind.String) {
-                var toolUseId = bid.GetString();
-
-                if (toolUseId is not null)
-                    toolUsePositions.TryAdd(toolUseId, lineIndex);
-            }
+        foreach (var block in arr.EnumerateArray()) {
+            if (block.Str("type") == "tool_use"
+             && block.Str("name") is "Agent" or "Task"
+             && block.Str("id") is { } toolUseId)
+                toolUsePositions.TryAdd(toolUseId, lineIndex);
         }
     }
 
@@ -239,19 +229,12 @@ static class SessionImporter {
             Dictionary<string, int> result,
             Dictionary<string, int> toolUsePositions
         ) {
-        if (!root.TryGetProperty("tool_result", out var tr) || tr.ValueKind != JsonValueKind.Object)
+        var tr = root.Obj("tool_result");
+
+        if (tr?.Str("status") != "async_launched")
             return;
 
-        if (!tr.TryGetProperty("status", out var status) || status.GetString() != "async_launched")
-            return;
-
-        // Extract agentId (supports both camelCase and snake_case)
-        string? agentId = null;
-
-        if (tr.TryGetProperty("agentId", out var aid) && aid.ValueKind == JsonValueKind.String)
-            agentId = aid.GetString();
-        else if (tr.TryGetProperty("agent_id", out var aid2) && aid2.ValueKind == JsonValueKind.String)
-            agentId = aid2.GetString();
+        var agentId = tr.Value.Str("agentId") ?? tr.Value.Str("agent_id");
 
         if (agentId is null || result.ContainsKey(agentId))
             return;
@@ -259,11 +242,43 @@ static class SessionImporter {
         // Prefer the tool_use position (where the agent was invoked) over the result position
         var position = lineIndex;
 
-        if (root.TryGetProperty("tool_use_id", out var tuid) && tuid.ValueKind == JsonValueKind.String) {
-            var toolUseId = tuid.GetString();
+        if (root.Str("tool_use_id") is { } toolUseId && toolUsePositions.TryGetValue(toolUseId, out var toolUsePos))
+            position = toolUsePos;
 
-            if (toolUseId is not null && toolUsePositions.TryGetValue(toolUseId, out var toolUsePos))
-                position = toolUsePos;
+        result[agentId] = position;
+    }
+
+    /// <summary>
+    /// Extract agentId from <c>user</c> events where <c>toolUseResult.agentId</c> is present
+    /// (foreground/synchronous agent completions). Resolves the interleave position via the
+    /// tool_use_id from the message content, falling back to the result's own line position.
+    /// </summary>
+    static void TryExtractFromToolUseResult(
+            JsonElement             root,
+            int                     lineIndex,
+            Dictionary<string, int> result,
+            Dictionary<string, int> toolUsePositions
+        ) {
+        var tur = root.Obj("toolUseResult");
+
+        var agentId = tur?.Str("agentId") ?? tur?.Str("agent_id");
+
+        if (agentId is null || result.ContainsKey(agentId))
+            return;
+
+        // Find tool_use_id from message.content[].tool_use_id to resolve invocation position
+        var position = lineIndex;
+
+        if (root.Obj("message")?.Arr("content") is { } content) {
+            foreach (var block in content.EnumerateArray()) {
+                if (block.Str("type") == "tool_result"
+                 && block.Str("tool_use_id") is { } toolUseId
+                 && toolUsePositions.TryGetValue(toolUseId, out var toolUsePos)) {
+                    position = toolUsePos;
+
+                    break;
+                }
+            }
         }
 
         result[agentId] = position;

@@ -121,7 +121,7 @@ static class HttpClientExtensions {
 
         try {
             using var doc     = JsonDocument.Parse(body);
-            var       message = doc.RootElement.TryGetProperty("message", out var msg) ? msg.GetString() : null;
+            var       message = doc.RootElement.Str("message");
             await Console.Error.WriteLineAsync(message ?? "Authentication failed. Run 'kapacitor login' to re-authenticate.");
         } catch {
             await Console.Error.WriteLineAsync("Authentication failed. Run 'kapacitor login' to re-authenticate.");

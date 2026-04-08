@@ -456,23 +456,17 @@ static partial class WatchCommand {
             using var doc  = JsonDocument.Parse(line);
             var       root = doc.RootElement;
 
-            if (!root.TryGetProperty("type", out var typeProp) || typeProp.GetString() != "assistant") {
+            if (root.Str("type") != "assistant") {
                 return null;
             }
 
-            if (!root.TryGetProperty("message", out var msg) || !msg.TryGetProperty("content", out var content)) {
-                return null;
-            }
-
-            if (content.ValueKind != JsonValueKind.Array) {
+            if (root.Obj("message")?.Arr("content") is not { } content) {
                 return null;
             }
 
             foreach (var block in content.EnumerateArray()) {
-                var blockType = block.TryGetProperty("type", out var btProp) ? btProp.GetString() : null;
-
-                if (blockType == "text" && block.TryGetProperty("text", out var txt)) {
-                    var text = txt.GetString()?.Trim();
+                if (block.Str("type") == "text") {
+                    var text = block.Str("text")?.Trim();
 
                     if (!string.IsNullOrEmpty(text)) {
                         return text;
@@ -490,9 +484,7 @@ static partial class WatchCommand {
         try {
             using var doc  = JsonDocument.Parse(line);
             var       root = doc.RootElement;
-            var       type = root.TryGetProperty("type", out var typeProp) ? typeProp.GetString() : null;
-
-            return type is "user" or "assistant";
+            return root.Str("type") is "user" or "assistant";
         } catch {
             return false;
         }
@@ -503,7 +495,7 @@ static partial class WatchCommand {
             using var doc  = JsonDocument.Parse(line);
             var       root = doc.RootElement;
 
-            if (!root.TryGetProperty("type", out var typeProp) || typeProp.GetString() != "user") {
+            if (root.Str("type") != "user") {
                 return null;
             }
 
@@ -512,32 +504,19 @@ static partial class WatchCommand {
                 return null;
             }
 
-            if (!root.TryGetProperty("message", out var msg) || !msg.TryGetProperty("content", out var content)) {
-                return null;
+            var msg = root.Obj("message");
+
+            // message.content can be a string or an array
+            if (msg?.Str("content") is { } strContent) {
+                return strContent.StartsWith("<local-command-stdout>") ? null : StripSystemInstructions(strContent);
             }
 
-            switch (content.ValueKind) {
-                case JsonValueKind.String: {
-                    var text = content.GetString();
-
-                    // Skip local command output — not real user input
-                    return text?.StartsWith("<local-command-stdout>") == true ? null : StripSystemInstructions(text);
-                }
-                // Handle array content (e.g., tool results with [{type:"text", text:"..."}])
-                case JsonValueKind.Array: {
-                    foreach (var element in content.EnumerateArray()) {
-                        if (element.ValueKind                                            == JsonValueKind.Object
-                         && element.TryGetProperty("type", out var t)   && t.GetString() == "text"
-                         && element.TryGetProperty("text", out var txt) && txt.ValueKind == JsonValueKind.String) {
-                            var text = txt.GetString();
-
-                            if (text?.StartsWith("<local-command-stdout>") == false) {
-                                return StripSystemInstructions(text);
-                            }
-                        }
+            if (msg?.Arr("content") is { } arrContent) {
+                foreach (var element in arrContent.EnumerateArray()) {
+                    if (element.Str("type") == "text" && element.Str("text") is { } text
+                     && !text.StartsWith("<local-command-stdout>")) {
+                        return StripSystemInstructions(text);
                     }
-
-                    break;
                 }
             }
         } catch (Exception ex) {
