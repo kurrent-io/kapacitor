@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags:
+      - 'v*'
+
+env:
+  DOTNET_VERSION: '10.0.x'
+
+jobs:
+  build-and-test:
+    name: Build and test
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Build CLI
+        run: dotnet build src/kapacitor/kapacitor.csproj
+
+      - name: Run unit tests
+        run: dotnet run --project test/kapacitor.Tests.Unit/kapacitor.Tests.Unit.csproj
+
+      - name: Run integration tests
+        run: dotnet run --project test/kapacitor.Tests.Integration/kapacitor.Tests.Integration.csproj
+
+  aot-check:
+    name: AOT publish check
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y clang zlib1g-dev
+
+      - name: Publish AOT (linux-x64)
+        run: dotnet publish src/kapacitor/kapacitor.csproj -c Release -r linux-x64
+
+      - name: Check for trimming warnings
+        run: |
+          OUTPUT=$(dotnet publish src/kapacitor/kapacitor.csproj -c Release -r linux-x64 2>&1)
+          if echo "$OUTPUT" | grep -E 'IL[23][01][0-9]{2}'; then
+            echo "::error::AOT/trimming warnings detected"
+            echo "$OUTPUT" | grep -E 'IL[23][01][0-9]{2}'
+            exit 1
+          fi
