@@ -91,6 +91,15 @@ static class HistoryCommand {
         var errored      = 0;
         var excludedRepos = AppConfig.Load()?.ExcludedRepos;
 
+        // Background tasks for title and summary generation (run in parallel with imports)
+        var backgroundTasks    = new List<Task>();
+        var concurrencyLimit   = new SemaphoreSlim(3);
+        var titlesGenerated    = 0;
+        var titlesSkipped      = 0;
+        var titlesFailed       = 0;
+        var summariesGenerated = 0;
+        var summariesFailed    = 0;
+
         foreach (var (sessionId, filePath, encodedCwd) in transcriptFiles) {
             // Skip transcripts that are kapacitor-spawned sub-sessions (title generation, what's-done summaries)
             if (IsKapacitorSubSession(filePath)) {
@@ -297,20 +306,42 @@ static class HistoryCommand {
                         // Best effort for session end
                     }
 
-                    // Generate Claude title (overwrites fallback from session-end)
-                    await GenerateTitleForImportAsync(httpClient, baseUrl, sessionId, filePath);
+                    // Generate Claude title in background (overlaps with next session's import)
+                    var titleSessionId = sessionId;
+                    var titleFilePath  = filePath;
 
-                    // Generate what's-done summary if requested
-                    if (shouldGenerateWhatsDone) {
-                        Console.Write($"  Generating summary for {sessionId}... ");
+                    backgroundTasks.Add(Task.Run(async () => {
+                        await concurrencyLimit.WaitAsync();
 
                         try {
-                            var wdResult = await WhatsDoneCommand.GenerateForSessionAsync(baseUrl, sessionId, _ => { });
+                            var result = await GenerateTitleForImportAsync(httpClient, baseUrl, titleSessionId, titleFilePath, silent: true);
 
-                            Console.WriteLine(wdResult == 0 ? "done" : "failed");
-                        } catch {
-                            Console.WriteLine("failed");
+                            switch (result) {
+                                case TitleResult.Generated: Interlocked.Increment(ref titlesGenerated); break;
+                                case TitleResult.Skipped:   Interlocked.Increment(ref titlesSkipped); break;
+                                case TitleResult.Failed:    Interlocked.Increment(ref titlesFailed); break;
+                            }
+                        } finally {
+                            concurrencyLimit.Release();
                         }
+                    }));
+
+                    // Generate what's-done summary in background if requested
+                    if (shouldGenerateWhatsDone) {
+                        backgroundTasks.Add(Task.Run(async () => {
+                            await concurrencyLimit.WaitAsync();
+
+                            try {
+                                var wdResult = await WhatsDoneCommand.GenerateForSessionAsync(baseUrl, titleSessionId, _ => { });
+
+                                if (wdResult == 0) Interlocked.Increment(ref summariesGenerated);
+                                else Interlocked.Increment(ref summariesFailed);
+                            } catch {
+                                Interlocked.Increment(ref summariesFailed);
+                            } finally {
+                                concurrencyLimit.Release();
+                            }
+                        }));
                     }
 
                     loaded++;
@@ -327,6 +358,26 @@ static class HistoryCommand {
                     break;
                 }
             }
+        }
+
+        // Wait for background title/summary generation to complete (best effort — never lose the final report)
+        if (backgroundTasks.Count > 0) {
+            Console.WriteLine($"Waiting for {backgroundTasks.Count} background task{(backgroundTasks.Count == 1 ? "" : "s")} (titles/summaries)...");
+
+            try {
+                await Task.WhenAll(backgroundTasks);
+            } catch {
+                // Individual tasks already have try/catch; this guards against unexpected faults
+            }
+
+            var parts = new List<string>();
+
+            if (titlesGenerated > 0) parts.Add($"{titlesGenerated} title{(titlesGenerated == 1 ? "" : "s")}");
+            if (summariesGenerated > 0) parts.Add($"{summariesGenerated} summar{(summariesGenerated == 1 ? "y" : "ies")}");
+            if (titlesSkipped > 0) parts.Add($"{titlesSkipped} skipped");
+            if (titlesFailed + summariesFailed > 0) parts.Add($"{titlesFailed + summariesFailed} failed");
+
+            if (parts.Count > 0) Console.WriteLine($"  {string.Join(", ", parts)}");
         }
 
         Console.WriteLine();
@@ -593,15 +644,15 @@ static class HistoryCommand {
     /// Generates a Claude title for an imported session by extracting the first user/assistant
     /// text from the transcript and calling ClaudeCliRunner.
     /// </summary>
-    static async Task GenerateTitleForImportAsync(HttpClient httpClient, string baseUrl, string sessionId, string filePath) {
+    static async Task<TitleResult> GenerateTitleForImportAsync(HttpClient httpClient, string baseUrl, string sessionId, string filePath, bool silent = false) {
         try {
             var (userText, assistantText) = ExtractTitleContext(filePath);
 
             if (userText is null) {
-                return;
+                return TitleResult.Skipped;
             }
 
-            Console.Write($"  Generating title for {sessionId}... ");
+            if (!silent) Console.Write($"  Generating title for {sessionId}... ");
 
             var truncatedUser = userText.Length > 500 ? userText[..500] : userText;
 
@@ -617,9 +668,9 @@ static class HistoryCommand {
             var result = await ClaudeCliRunner.RunAsync(promptBuilder.ToString(), TimeSpan.FromSeconds(15), _ => { });
 
             if (result is null) {
-                Console.WriteLine("skipped (no result)");
+                if (!silent) Console.WriteLine("skipped (no result)");
 
-                return;
+                return TitleResult.Skipped;
             }
 
             // Strip markdown and trailing question marks (same as WatchCommand)
@@ -645,11 +696,17 @@ static class HistoryCommand {
             using var content     = new StringContent(payloadJson, Encoding.UTF8, "application/json");
             using var titleResp   = await httpClient.PostWithRetryAsync($"{baseUrl}/hooks/session-title", content);
 
-            Console.WriteLine(title);
+            if (!silent) Console.WriteLine(title);
+
+            return TitleResult.Generated;
         } catch (Exception ex) {
-            Console.WriteLine($"failed ({ex.Message})");
+            if (!silent) Console.WriteLine($"failed ({ex.Message})");
+
+            return TitleResult.Failed;
         }
     }
+
+    enum TitleResult { Generated, Skipped, Failed }
 
     /// <summary>
     /// Extracts the first user text and first assistant text from a transcript file
