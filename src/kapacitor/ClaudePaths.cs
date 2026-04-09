@@ -3,8 +3,9 @@ namespace kapacitor;
 static class ClaudePaths {
     static readonly string Home = Path.Combine(PathHelpers.HomeDirectory, ".claude");
 
-    public static string Projects { get; } = Path.Combine(Home, "projects");
-    public static string Plans    { get; } = Path.Combine(Home, "plans");
+    public static string Projects     { get; } = Path.Combine(Home, "projects");
+    public static string Plans        { get; } = Path.Combine(Home, "plans");
+    public static string UserSettings { get; } = Path.Combine(Home, "settings.json");
 
     /// <summary>
     /// Returns the project directory for a given repo path.

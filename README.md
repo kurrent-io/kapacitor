@@ -31,15 +31,15 @@ The CLI is compiled with NativeAOT — fast startup, no runtime dependency.
 kapacitor setup
 ```
 
-The setup wizard walks you through everything:
+The setup wizard walks you through:
 
 1. **Server URL** — enter the URL your admin provided
 2. **Login** — authenticates via GitHub Device Flow (if the server requires auth)
-3. **Default visibility** — choose how your sessions are visible to others (all private, org repos public, or all public)
-4. **Claude Code hooks** — choose where to install hooks (user-wide, project-only, or full plugin)
+3. **Default visibility** — choose how your sessions are visible to others
+4. **Claude Code plugin** — installs hooks, skills, and collaborative memory (user-wide or project-only)
 5. **Agent daemon** — configure the daemon name for remote agent execution
 
-That's it. Verify with `kapacitor whoami` and `kapacitor status`.
+Verify with `kapacitor whoami` and `kapacitor status`.
 
 For non-interactive environments:
 

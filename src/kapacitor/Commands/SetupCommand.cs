@@ -1,3 +1,5 @@
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using kapacitor.Auth;
 using kapacitor.Config;
 // ReSharper disable MethodHasAsyncOverload
@@ -138,12 +140,58 @@ public static class SetupCommand {
         var pluginPath = ResolvePluginPath();
 
         if (pluginPath is not null) {
-            await Console.Out.WriteLineAsync("  Install (or update) the plugin by running this inside Claude Code:");
+            var marketplacePath = Path.GetDirectoryName(pluginPath)!;
+
+            await Console.Out.WriteLineAsync("  Where should the plugin be installed?");
             await Console.Out.WriteLineAsync();
-            await Console.Out.WriteLineAsync($"    /plugin install {pluginPath}");
+            await Console.Out.WriteLineAsync("    1) User-wide — all Claude Code sessions (recommended)");
+            await Console.Out.WriteLineAsync("    2) This project only");
+            await Console.Out.WriteLineAsync("    3) Skip — I'll install it manually");
             await Console.Out.WriteLineAsync();
+
+            string pluginScope;
+
+            if (noPrompt) {
+                pluginScope = GetArg(args, "--plugin-scope") ?? "user";
+                await Console.Out.WriteLineAsync($"  Plugin scope: {pluginScope}");
+            } else {
+                while (true) {
+                    Console.Write("  Choose [1-3] (default: 1): ");
+                    var choice = Console.ReadLine()?.Trim();
+
+                    pluginScope = choice switch {
+                        "" or null or "1" => "user",
+                        "2"               => "project",
+                        "3"               => "skip",
+                        _                 => ""
+                    };
+
+                    if (pluginScope != "") break;
+
+                    await Console.Out.WriteLineAsync("  Invalid choice. Please enter 1, 2, or 3.");
+                }
+            }
+
+            if (pluginScope == "skip") {
+                await Console.Out.WriteLineAsync("  Skipped. Install manually inside Claude Code:");
+                await Console.Out.WriteLineAsync($"    /plugin install {pluginPath}");
+            } else {
+                var settingsPath = pluginScope == "project"
+                    ? Path.Combine(Environment.CurrentDirectory, ".claude", "settings.local.json")
+                    : ClaudePaths.UserSettings;
+
+                var installed = InstallPlugin(settingsPath, marketplacePath);
+
+                if (installed) {
+                    var scope = pluginScope == "project" ? "project" : "user";
+                    await Console.Out.WriteLineAsync($"  ✓ Plugin registered ({scope}: {settingsPath})");
+                } else {
+                    await Console.Out.WriteLineAsync("  ⚠ Could not update settings. Install manually inside Claude Code:");
+                    await Console.Out.WriteLineAsync($"    /plugin install {pluginPath}");
+                }
+            }
         } else {
-            await Console.Out.WriteLineAsync("  Plugin not found. Install kapacitor via npm first:");
+            await Console.Out.WriteLineAsync("  ⚠ Plugin directory not found. Re-install kapacitor via npm:");
             await Console.Out.WriteLineAsync("    npm install -g @kurrent/kapacitor");
         }
 
@@ -224,5 +272,54 @@ public static class SetupCommand {
         var idx = Array.IndexOf(args, name);
 
         return idx >= 0 && idx + 1 < args.Length ? args[idx + 1] : null;
+    }
+
+    static readonly JsonSerializerOptions WriteOpts = new() { WriteIndented = true };
+
+    /// <summary>
+    /// Registers the kapacitor plugin in a Claude Code settings.json file by merging
+    /// the marketplace source and enabling the plugin. Preserves all existing settings.
+    /// </summary>
+    internal static bool InstallPlugin(string settingsPath, string marketplacePath) {
+        try {
+            JsonObject root = [];
+
+            if (File.Exists(settingsPath)) {
+                try {
+                    if (JsonNode.Parse(File.ReadAllText(settingsPath)) is JsonObject obj)
+                        root = obj;
+                } catch {
+                    // Malformed JSON — start fresh
+                }
+            }
+
+            // Ensure extraKnownMarketplaces.kurrent exists with the correct path
+            if (root["extraKnownMarketplaces"] is not JsonObject marketplaces) {
+                marketplaces                    = [];
+                root["extraKnownMarketplaces"] = marketplaces;
+            }
+
+            marketplaces["kurrent"] = new JsonObject {
+                ["source"] = new JsonObject {
+                    ["source"] = "directory",
+                    ["path"]   = marketplacePath
+                }
+            };
+
+            // Ensure enabledPlugins.kapacitor@kurrent is true
+            if (root["enabledPlugins"] is not JsonObject enabled) {
+                enabled                = [];
+                root["enabledPlugins"] = enabled;
+            }
+
+            enabled["kapacitor@kurrent"] = true;
+
+            Directory.CreateDirectory(Path.GetDirectoryName(settingsPath)!);
+            File.WriteAllText(settingsPath, root.ToJsonString(WriteOpts));
+
+            return true;
+        } catch {
+            return false;
+        }
     }
 }
