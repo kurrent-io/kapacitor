@@ -115,7 +115,8 @@ static class SessionImporter {
     /// <c>result</c> events with <c>async_launched</c> status, and <c>user</c>
     /// events with <c>toolUseResult.agentId</c> (foreground agent completions).
     /// </summary>
-    static Dictionary<string, int> ScanAgentProgressLines(string transcriptPath) {
+    // ReSharper disable once MemberCanBePrivate.Global
+    public static Dictionary<string, int> ScanAgentProgressLines(string transcriptPath) {
         var result = new Dictionary<string, int>(StringComparer.Ordinal);
 
         // Two-pass scan: first collect tool_use_id → line position from assistant
