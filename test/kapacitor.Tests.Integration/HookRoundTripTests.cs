@@ -1,4 +1,3 @@
-using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -27,8 +26,9 @@ public class HookRoundTripTests : IDisposable {
         _server.Given(Request.Create().WithPath("/hooks/session-start").UsingPost())
             .RespondWith(Response.Create().WithStatusCode(200).WithBody("{}"));
 
-        using var client = new HttpClient();
-        var sessionId = $"test-{Guid.NewGuid():N}";
+        using var client    = new HttpClient();
+        var       sessionId = $"test-{Guid.NewGuid():N}";
+
         var payload = new {
             session_id      = sessionId,
             cwd             = "/tmp/test",
@@ -39,13 +39,11 @@ public class HookRoundTripTests : IDisposable {
             hook_event_name = "session-start"
         };
 
-        var response = await client.PostAsJsonAsync(
-            $"{_server.Url}/hooks/session-start", payload, JsonOptions);
+        var response = await client.PostAsJsonAsync($"{_server.Url}/hooks/session-start", payload, JsonOptions);
 
         await Assert.That((int)response.StatusCode).IsEqualTo(200);
 
-        var requests = _server.FindLogEntries(
-            Request.Create().WithPath("/hooks/session-start").UsingPost());
+        var requests = _server.FindLogEntries(Request.Create().WithPath("/hooks/session-start").UsingPost());
         await Assert.That(requests.Count).IsEqualTo(1);
 
         var body = JsonNode.Parse(requests[0].RequestMessage.Body!)!;
@@ -61,29 +59,29 @@ public class HookRoundTripTests : IDisposable {
                 Response.Create()
                     .WithStatusCode(200)
                     .WithHeader("Content-Type", "application/json")
-                    .WithBody("""{"processed": 2}"""));
+                    .WithBody("""{"processed": 2}""")
+            );
 
-        using var client = new HttpClient();
-        var sessionId = $"test-{Guid.NewGuid():N}";
+        using var client    = new HttpClient();
+        var       sessionId = $"test-{Guid.NewGuid():N}";
+
         var payload = new {
-            session_id   = sessionId,
-            lines        = new[] {
-                JsonSerializer.Serialize(new { type = "user", uuid = Guid.NewGuid().ToString(), message = new { role = "user", content = "hello" } }),
+            session_id = sessionId,
+            lines = new[] {
+                JsonSerializer.Serialize(new { type = "user", uuid      = Guid.NewGuid().ToString(), message = new { role = "user", content      = "hello" } }),
                 JsonSerializer.Serialize(new { type = "assistant", uuid = Guid.NewGuid().ToString(), message = new { role = "assistant", content = "world" } })
             },
             line_numbers = new[] { 0, 1 }
         };
 
-        var response = await client.PostAsJsonAsync(
-            $"{_server.Url}/hooks/transcript", payload, JsonOptions);
+        var response = await client.PostAsJsonAsync($"{_server.Url}/hooks/transcript", payload, JsonOptions);
 
         await Assert.That((int)response.StatusCode).IsEqualTo(200);
 
         var responseJson = JsonNode.Parse(await response.Content.ReadAsStringAsync());
         await Assert.That(responseJson?["processed"]?.GetValue<int>()).IsEqualTo(2);
 
-        var requests = _server.FindLogEntries(
-            Request.Create().WithPath("/hooks/transcript").UsingPost());
+        var requests = _server.FindLogEntries(Request.Create().WithPath("/hooks/transcript").UsingPost());
         await Assert.That(requests.Count).IsEqualTo(1);
 
         var body = JsonDocument.Parse(requests[0].RequestMessage.Body!).RootElement;

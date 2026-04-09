@@ -1,7 +1,7 @@
 <Project>
     <PropertyGroup>
         <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
-        <NoWarn>IDE0055</NoWarn>
+        <NoWarn>IDE0055;IDE1006</NoWarn>
         <MinVerTagPrefix>v</MinVerTagPrefix>
     </PropertyGroup>
     <ItemGroup>

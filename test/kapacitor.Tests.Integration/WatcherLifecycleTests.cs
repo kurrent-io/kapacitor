@@ -13,13 +13,17 @@ public class WatcherLifecycleTests {
     [After(Class)]
     public static void TearDown() {
         Environment.SetEnvironmentVariable("KAPACITOR_WATCHER_DIR", null);
-        try { Directory.Delete(TempDir, recursive: true); } catch { /* best effort */ }
+
+        try { Directory.Delete(TempDir, recursive: true); } catch {
+            /* best effort */
+        }
     }
 
     static (string key, string transcriptPath, string pidFile) SetUpWatcher() {
         var key            = $"test-watcher-{Guid.NewGuid():N}";
         var transcriptPath = Path.Combine(Path.GetTempPath(), $"{key}.jsonl");
         File.WriteAllText(transcriptPath, "");
+
         return (key, transcriptPath, Path.Combine(TempDir, $"{key}.pid"));
     }
 
@@ -34,7 +38,7 @@ public class WatcherLifecycleTests {
         var (key, transcriptPath, pidFile) = SetUpWatcher();
 
         try {
-            WatcherManager.SpawnWatcher("http://localhost:0", key, transcriptPath, agentId: null);
+            await WatcherManager.SpawnWatcher("http://localhost:0", key, transcriptPath, agentId: null);
             await AssertPidFileValid(pidFile);
 
             await WatcherManager.KillWatcher(key);
@@ -49,7 +53,7 @@ public class WatcherLifecycleTests {
         var (key, transcriptPath, pidFile) = SetUpWatcher();
 
         try {
-            WatcherManager.EnsureWatcherRunning("http://localhost:0", key, transcriptPath, agentId: null);
+            await WatcherManager.EnsureWatcherRunning("http://localhost:0", key, transcriptPath, agentId: null);
             await AssertPidFileValid(pidFile);
 
             await WatcherManager.KillWatcher(key);

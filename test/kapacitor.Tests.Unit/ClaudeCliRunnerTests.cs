@@ -4,19 +4,19 @@ public class ClaudeCliRunnerTests {
     [Test]
     public async Task ParseResponse_ValidJsonWithAllFields_ParsesCorrectly() {
         const string json = """
-            {
-                "result": "Hello, world!",
-                "total_cost_usd": 0.0042,
-                "modelUsage": {
-                    "claude-haiku-3": {
-                        "inputTokens": 100,
-                        "outputTokens": 50,
-                        "cacheReadInputTokens": 30,
-                        "cacheCreationInputTokens": 10
-                    }
-                }
-            }
-            """;
+                            {
+                                "result": "Hello, world!",
+                                "total_cost_usd": 0.0042,
+                                "modelUsage": {
+                                    "claude-haiku-3": {
+                                        "inputTokens": 100,
+                                        "outputTokens": 50,
+                                        "cacheReadInputTokens": 30,
+                                        "cacheCreationInputTokens": 10
+                                    }
+                                }
+                            }
+                            """;
 
         var result = ClaudeCliRunner.ParseResponse(json);
 
@@ -35,11 +35,11 @@ public class ClaudeCliRunnerTests {
     [Arguments("   ")]
     public async Task ParseResponse_JsonWithEmptyOrWhitespaceResult_ReturnsNull(string resultValue) {
         var json = $$"""
-            {
-                "result": "{{resultValue}}",
-                "total_cost_usd": 0.001
-            }
-            """;
+                     {
+                         "result": "{{resultValue}}",
+                         "total_cost_usd": 0.001
+                     }
+                     """;
 
         var result = ClaudeCliRunner.ParseResponse(json);
 

@@ -8,7 +8,7 @@ public static class StatusCommand {
         Console.Write("  Server:  ");
 
         if (baseUrl is null) {
-            Console.WriteLine("not configured");
+            await Console.Out.WriteLineAsync("not configured");
         } else {
             Console.Write($"{baseUrl} ");
 
@@ -16,9 +16,9 @@ public static class StatusCommand {
                 using var http = new HttpClient();
                 http.Timeout = TimeSpan.FromSeconds(5);
                 var resp = await http.GetAsync($"{baseUrl}/auth/config");
-                Console.WriteLine(resp.IsSuccessStatusCode ? "✓ reachable" : $"✗ HTTP {(int)resp.StatusCode}");
+                await Console.Out.WriteLineAsync(resp.IsSuccessStatusCode ? "✓ reachable" : $"✗ HTTP {(int)resp.StatusCode}");
             } catch {
-                Console.WriteLine("✗ unreachable");
+                await Console.Out.WriteLineAsync("✗ unreachable");
             }
         }
 
@@ -32,22 +32,17 @@ public static class StatusCommand {
             var expiryText = remaining.TotalHours > 1
                 ? $"expires in {remaining.TotalHours:F0}h"
                 : $"expires in {remaining.TotalMinutes:F0}m";
-            Console.WriteLine($"{tokens.GitHubUsername} ({tokens.Provider}) ✓ token valid ({expiryText})");
+            await Console.Out.WriteLineAsync($"{tokens.GitHubUsername} ({tokens.Provider}) ✓ token valid ({expiryText})");
         } else {
-            var rawTokens = TokenStore.Load();
+            var rawTokens = await TokenStore.LoadAsync();
 
-            Console.WriteLine(rawTokens is not null ? $"{rawTokens.GitHubUsername} ({rawTokens.Provider}) ✗ token expired" : "not authenticated (run: kapacitor login)");
+            await Console.Out.WriteLineAsync(rawTokens is not null ? $"{rawTokens.GitHubUsername} ({rawTokens.Provider}) ✗ token expired" : "not authenticated (run: kapacitor login)");
         }
 
         // Agent
         Console.Write("  Agent:   ");
 
-        var pidPath = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-            ".config",
-            "kapacitor",
-            "agent.pid"
-        );
+        var pidPath = PathHelpers.ConfigPath("agent.pid");
 
         if (File.Exists(pidPath)) {
             var pidStr = (await File.ReadAllTextAsync(pidPath)).Trim();
@@ -55,15 +50,15 @@ public static class StatusCommand {
             if (int.TryParse(pidStr, out var pid)) {
                 try {
                     System.Diagnostics.Process.GetProcessById(pid);
-                    Console.WriteLine($"running (PID {pid})");
+                    await Console.Out.WriteLineAsync($"running (PID {pid})");
                 } catch (ArgumentException) {
-                    Console.WriteLine("not running (stale PID file)");
+                    await Console.Out.WriteLineAsync("not running (stale PID file)");
                 }
             } else {
-                Console.WriteLine("unknown (invalid PID file)");
+                await Console.Out.WriteLineAsync("unknown (invalid PID file)");
             }
         } else {
-            Console.WriteLine("not running");
+            await Console.Out.WriteLineAsync("not running");
         }
 
         return 0;

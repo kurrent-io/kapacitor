@@ -4,12 +4,15 @@ using System.Net.Http.Json;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+// ReSharper disable MethodHasAsyncOverload
 
 namespace kapacitor.Auth;
 
 public static class OAuthLoginFlow {
     public static async Task<int> LoginWithDiscoveryAsync(string serverUrl) {
-        using var           http = new HttpClient();
+        // ReSharper disable once ShortLivedHttpClient
+        using var http = new HttpClient();
+
         HttpResponseMessage configResponse;
 
         try {
@@ -21,7 +24,7 @@ public static class OAuthLoginFlow {
         }
 
         if (!configResponse.IsSuccessStatusCode) {
-            await Console.Error.WriteLineAsync($"Error: Failed to fetch auth config from {serverUrl}/auth/config");
+            Console.Error.WriteLine($"Error: Failed to fetch auth config from {serverUrl}/auth/config");
 
             return 1;
         }
@@ -37,7 +40,7 @@ public static class OAuthLoginFlow {
     }
 
     static int HandleNoneLogin() {
-        Console.WriteLine("Server has no authentication configured — login not required.");
+        Console.Out.WriteLine("Server has no authentication configured — login not required.");
 
         return 0;
     }
@@ -65,7 +68,7 @@ public static class OAuthLoginFlow {
         );
 
         if (!deviceResponse.IsSuccessStatusCode) {
-            await Console.Error.WriteLineAsync($"Error requesting device code: {await deviceResponse.Content.ReadAsStringAsync()}");
+            Console.Error.WriteLine($"Error requesting device code: {await deviceResponse.Content.ReadAsStringAsync()}");
 
             return 1;
         }
@@ -73,10 +76,10 @@ public static class OAuthLoginFlow {
         var device   = (await deviceResponse.Content.ReadFromJsonAsync(KapacitorJsonContext.Default.GitHubDeviceCodeResponse))!;
         var interval = device.Interval;
 
-        Console.WriteLine();
-        Console.WriteLine($"  Enter code: {device.UserCode}");
-        Console.WriteLine($"  at: {device.VerificationUri}");
-        Console.WriteLine();
+        await Console.Out.WriteLineAsync();
+        await Console.Out.WriteLineAsync($"  Enter code: {device.UserCode}");
+        await Console.Out.WriteLineAsync($"  at: {device.VerificationUri}");
+        await Console.Out.WriteLineAsync();
 
         try { Process.Start(new ProcessStartInfo(device.VerificationUri) { UseShellExecute = true }); } catch {
             /* Browser open is best-effort */
@@ -122,7 +125,7 @@ public static class OAuthLoginFlow {
             }
         }
 
-        Console.WriteLine(" done!");
+        await Console.Out.WriteLineAsync(" done!");
 
         var exchangeResponse = await http.PostAsJsonAsync(
             $"{serverUrl}/auth/token",
@@ -132,15 +135,15 @@ public static class OAuthLoginFlow {
 
         if (!exchangeResponse.IsSuccessStatusCode) {
             var errorBody = await exchangeResponse.Content.ReadAsStringAsync();
-            await Console.Error.WriteLineAsync($"Error exchanging token: {errorBody}");
+            Console.Error.WriteLine($"Error exchanging token: {errorBody}");
 
             return 1;
         }
 
         var exchange = (await exchangeResponse.Content.ReadFromJsonAsync(KapacitorJsonContext.Default.TokenExchangeResponse))!;
 
-        TokenStore.Save(
-            new StoredTokens {
+        await TokenStore.SaveAsync(
+            new() {
                 AccessToken    = exchange.AccessToken,
                 ExpiresAt      = DateTimeOffset.UtcNow.AddSeconds(exchange.ExpiresIn),
                 GitHubUsername = exchange.Username,
@@ -148,7 +151,7 @@ public static class OAuthLoginFlow {
             }
         );
 
-        Console.WriteLine($"Logged in as {exchange.Username}");
+        await Console.Out.WriteLineAsync($"Logged in as {exchange.Username}");
 
         return 0;
     }
@@ -177,7 +180,7 @@ public static class OAuthLoginFlow {
             $"&audience={Uri.EscapeDataString(audience)}"                           +
             $"&code_challenge={challenge}&code_challenge_method=S256";
 
-        Console.WriteLine("Opening browser for authentication...");
+        await Console.Out.WriteLineAsync("Opening browser for authentication...");
         Process.Start(new ProcessStartInfo(authUrl) { UseShellExecute = true });
 
         var context = await listener.GetContextAsync();
@@ -193,7 +196,7 @@ public static class OAuthLoginFlow {
         listener.Stop();
 
         if (string.IsNullOrEmpty(code)) {
-            await Console.Error.WriteLineAsync("Error: No authorization code received.");
+            Console.Error.WriteLine("Error: No authorization code received.");
 
             return 1;
         }
@@ -214,7 +217,7 @@ public static class OAuthLoginFlow {
         );
 
         if (!tokenResponse.IsSuccessStatusCode) {
-            await Console.Error.WriteLineAsync($"Error: {await tokenResponse.Content.ReadAsStringAsync()}");
+            Console.Error.WriteLine($"Error: {await tokenResponse.Content.ReadAsStringAsync()}");
 
             return 1;
         }
@@ -230,7 +233,7 @@ public static class OAuthLoginFlow {
             username = claims?.Nickname ?? "unknown";
         }
 
-        TokenStore.Save(
+        await TokenStore.SaveAsync(
             new() {
                 AccessToken    = json.AccessToken,
                 RefreshToken   = json.RefreshToken,
@@ -242,7 +245,7 @@ public static class OAuthLoginFlow {
             }
         );
 
-        Console.WriteLine($"Logged in as {username}");
+        await Console.Out.WriteLineAsync($"Logged in as {username}");
 
         return 0;
     }

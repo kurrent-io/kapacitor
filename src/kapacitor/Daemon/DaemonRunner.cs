@@ -8,12 +8,7 @@ using Microsoft.Extensions.Logging;
 namespace kapacitor.Daemon;
 
 public static partial class DaemonRunner {
-    public static readonly string LogPath = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-        ".config",
-        "kapacitor",
-        "agent.log"
-    );
+    public static readonly string LogPath = PathHelpers.ConfigPath("agent.log");
 
     public static async Task<int> RunAsync(string[] args) {
         string? logFile = null;
@@ -80,7 +75,7 @@ public static partial class DaemonRunner {
         }
 
         // Also load daemon settings from config file
-        var appConfig = AppConfig.Load();
+        var appConfig = await AppConfig.Load();
 
         if (appConfig?.Daemon is { } daemonSettings) {
             if (string.IsNullOrEmpty(config.Name) && !string.IsNullOrEmpty(daemonSettings.Name))

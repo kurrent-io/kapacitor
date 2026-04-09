@@ -26,10 +26,7 @@ static class ClaudeCliRunner {
         // that might interfere with the headless title generation session.
         // Uses a fixed path so Claude treats all invocations as the same "project" and doesn't
         // scatter transcripts across many per-invocation directories under ~/.claude/projects.
-        var stableDir = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-            ".config", "kapacitor", "claude-cwd"
-        );
+        var stableDir = PathHelpers.ConfigPath("claude-cwd");
 
         try {
             Directory.CreateDirectory(stableDir);

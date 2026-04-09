@@ -10,8 +10,7 @@ public class GitUrlParserTests {
     [Arguments("http://github.com/owner/repo.git", "owner", "repo")]
     [Arguments("https://gitlab.com/my-org/my-repo", "my-org", "my-repo")]
     [Arguments("https://gitlab.com/my-org/my-repo.git", "my-org", "my-repo")]
-    public async Task ParseRemoteUrl_HttpsUrls_ReturnsOwnerAndRepo(
-        string url, string expectedOwner, string expectedRepo) {
+    public async Task ParseRemoteUrl_HttpsUrls_ReturnsOwnerAndRepo(string url, string expectedOwner, string expectedRepo) {
         var (owner, repoName) = GitUrlParser.ParseRemoteUrl(url);
 
         await Assert.That(owner).IsEqualTo(expectedOwner);
@@ -26,8 +25,7 @@ public class GitUrlParserTests {
     [Arguments("git@gitlab.com:my-org/my-repo", "my-org", "my-repo")]
     [Arguments("git@gitlab.com:my-org/my-repo.git", "my-org", "my-repo")]
     [Arguments("git@my-host.example.com:org/repo", "org", "repo")]
-    public async Task ParseRemoteUrl_SshUrls_ReturnsOwnerAndRepo(
-        string url, string expectedOwner, string expectedRepo) {
+    public async Task ParseRemoteUrl_SshUrls_ReturnsOwnerAndRepo(string url, string expectedOwner, string expectedRepo) {
         var (owner, repoName) = GitUrlParser.ParseRemoteUrl(url);
 
         await Assert.That(owner).IsEqualTo(expectedOwner);

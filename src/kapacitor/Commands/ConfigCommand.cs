@@ -4,61 +4,58 @@ using kapacitor.Config;
 namespace kapacitor.Commands;
 
 public static class ConfigCommand {
-    public static Task<int> HandleAsync(string[] args) {
+    public static async Task<int> HandleAsync(string[] args) {
         if (args.Length < 2) {
-            Console.Error.WriteLine("Usage: kapacitor config <show|set> [key] [value]");
+            await Console.Error.WriteLineAsync("Usage: kapacitor config <show|set> [key] [value]");
 
-            return Task.FromResult(1);
+            return 1;
         }
 
         var subcommand = args[1];
 
         return subcommand switch {
-            "show"                      => Task.FromResult(Show()),
-            "set" when args.Length >= 4 => Task.FromResult(Set(args[2], args[3])),
-            "set"                       => Task.FromResult(SetUsage()),
-            _                           => Task.FromResult(UnknownSubcommand(subcommand))
+            "show"                      => await Show(),
+            "set" when args.Length >= 4 => await Set(args[2], args[3]),
+            "set"                       => SetUsage(),
+            _                           => UnknownSubcommand(subcommand)
         };
     }
 
-    static int Show() {
-        var config = AppConfig.Load();
+    static async Task<int> Show() {
+        var config = await AppConfig.Load();
 
         if (config is null) {
-            Console.WriteLine("No config file found.");
-            Console.WriteLine($"  Path: {AppConfig.GetConfigPath()}");
-            Console.WriteLine("  Run `kapacitor setup` to create one.");
+            await Console.Out.WriteLineAsync("No config file found.");
+            await Console.Out.WriteLineAsync($"  Path: {AppConfig.GetConfigPath()}");
+            await Console.Out.WriteLineAsync("  Run `kapacitor setup` to create one.");
 
             return 0;
         }
 
         var json = JsonSerializer.Serialize(config, ConfigJsonContextIndented.Default.KapacitorConfig);
-        Console.WriteLine(json);
-        Console.WriteLine();
-        Console.WriteLine($"  Path: {AppConfig.GetConfigPath()}");
+        await Console.Out.WriteLineAsync(json);
+        await Console.Out.WriteLineAsync();
+        await Console.Out.WriteLineAsync($"  Path: {AppConfig.GetConfigPath()}");
 
         return 0;
     }
 
-    static int Set(string key, string value) {
-        var config = AppConfig.Load() ?? new KapacitorConfig();
+    static async Task<int> Set(string key, string value) {
+        var config = await AppConfig.Load() ?? new KapacitorConfig();
 
         config = key switch {
-            "server_url"                                            => config with { ServerUrl = value },
-            "daemon.name"                                           => config with { Daemon = (config.Daemon ?? new DaemonSettings()) with { Name = value } },
+            "server_url" => config with { ServerUrl = value },
+            "daemon.name" => config with { Daemon = (config.Daemon ?? new DaemonSettings()) with { Name = value } },
             "daemon.max_agents" when int.TryParse(value, out var n) => config with { Daemon = (config.Daemon ?? new DaemonSettings()) with { MaxAgents = n } },
-            "update_check" when bool.TryParse(value, out var b)     => config with { UpdateCheck = b },
-            "default_visibility" when value is "private" or "org_public" or "public"
-                => config with { DefaultVisibility = value },
-            "default_visibility"
-                => throw new ArgumentException("Invalid value. Must be: private, org_public, or public"),
-            "excluded_repos"
-                => config with { ExcludedRepos = value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries) },
-            _                                                       => throw new ArgumentException($"Unknown config key: {key}")
+            "update_check" when bool.TryParse(value, out var b) => config with { UpdateCheck = b },
+            "default_visibility" when value is "private" or "org_public" or "public" => config with { DefaultVisibility = value },
+            "default_visibility" => throw new ArgumentException("Invalid value. Must be: private, org_public, or public"),
+            "excluded_repos" => config with { ExcludedRepos = value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries) },
+            _ => throw new ArgumentException($"Unknown config key: {key}")
         };
 
-        AppConfig.Save(config);
-        Console.WriteLine($"Set {key} = {value}");
+        await AppConfig.Save(config);
+        await Console.Out.WriteLineAsync($"Set {key} = {value}");
 
         return 0;
     }

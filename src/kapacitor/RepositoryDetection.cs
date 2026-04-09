@@ -185,9 +185,8 @@ static class RepositoryDetection {
 
     static string GetCachePath(string cwd) {
         var hash = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(cwd)))[..16];
-        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
 
-        return Path.Combine(home, ".config", "kapacitor", "cache", $"{hash}.json");
+        return Path.Combine(PathHelpers.ConfigPath("cache"), $"{hash}.json");
     }
 
     static GitCacheEntry? LoadCache(string cwd) {
@@ -225,9 +224,8 @@ static class RepositoryDetection {
 
     static string GetLastEmittedPath(string cwd) {
         var hash = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(cwd)))[..16];
-        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
 
-        return Path.Combine(home, ".config", "kapacitor", "cache", $"{hash}.repo-emitted.json");
+        return Path.Combine(PathHelpers.ConfigPath("cache"), $"{hash}.repo-emitted.json");
     }
 
     static RepositoryPayload? LoadLastEmitted(string cwd) {

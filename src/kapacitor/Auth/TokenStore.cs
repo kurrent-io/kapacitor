@@ -31,28 +31,23 @@ public record StoredTokens {
 }
 
 public static class TokenStore {
-    static readonly string TokenPath = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-        ".config",
-        "kapacitor",
-        "tokens.json"
-    );
+    static readonly string TokenPath = PathHelpers.ConfigPath("tokens.json");
 
-    public static StoredTokens? Load() {
+    public static async Task<StoredTokens?> LoadAsync() {
         if (!File.Exists(TokenPath)) {
             return null;
         }
 
-        var json = File.ReadAllText(TokenPath);
+        var json = await File.ReadAllTextAsync(TokenPath);
 
         return JsonSerializer.Deserialize(json, KapacitorJsonContext.Default.StoredTokens);
     }
 
-    public static void Save(StoredTokens tokens) {
+    public static async Task SaveAsync(StoredTokens tokens) {
         var dir = Path.GetDirectoryName(TokenPath)!;
         Directory.CreateDirectory(dir);
-        var tempPath = TokenPath + ".tmp";
-        File.WriteAllText(tempPath, JsonSerializer.Serialize(tokens, KapacitorJsonContext.Default.StoredTokens));
+        var tempPath = $"{TokenPath}.tmp";
+        await File.WriteAllTextAsync(tempPath, JsonSerializer.Serialize(tokens, KapacitorJsonContext.Default.StoredTokens));
         File.Move(tempPath, TokenPath, overwrite: true);
 
         if (!OperatingSystem.IsWindows()) {
@@ -67,7 +62,7 @@ public static class TokenStore {
     }
 
     public static async Task<StoredTokens?> GetValidTokensAsync() {
-        var tokens = Load();
+        var tokens = await LoadAsync();
 
         if (tokens is null) {
             return null;
@@ -118,7 +113,7 @@ public static class TokenStore {
                 ExpiresAt = DateTimeOffset.UtcNow.AddSeconds(json.ExpiresIn)
             };
 
-            Save(refreshed);
+            await SaveAsync(refreshed);
 
             return refreshed;
         } catch {
@@ -152,7 +147,7 @@ public static class TokenStore {
             RefreshToken = json.RefreshToken ?? tokens.RefreshToken
         };
 
-        Save(refreshed);
+        await SaveAsync(refreshed);
 
         return refreshed;
     }

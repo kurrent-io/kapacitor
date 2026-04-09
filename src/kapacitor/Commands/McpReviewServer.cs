@@ -17,8 +17,7 @@ static class McpReviewServer {
     /// <summary>
     /// Run with auto-detection from git/gh in current directory (used by plugin MCP server).
     /// </summary>
-    public static Task<int> RunAutoAsync(string baseUrl)
-        => RunCoreAsync(baseUrl, null, null, null);
+    public static Task<int> RunAutoAsync(string baseUrl) => RunCoreAsync(baseUrl, null, null, null);
 
     static async Task<int> RunCoreAsync(string baseUrl, string? owner, string? repo, int? prNumber) {
         using var client = await HttpClientExtensions.CreateAuthenticatedClientAsync(baseUrl);
@@ -36,10 +35,11 @@ static class McpReviewServer {
 
         var tools = BuildToolsList();
 
-        using var stdin  = Console.OpenStandardInput();
-        using var stdout = Console.OpenStandardOutput();
-        using var reader = new StreamReader(stdin, Encoding.UTF8);
-        using var writer = new StreamWriter(stdout, new UTF8Encoding(false)) { AutoFlush = true };
+        await using var stdin  = Console.OpenStandardInput();
+        await using var stdout = Console.OpenStandardOutput();
+        using var       reader = new StreamReader(stdin, Encoding.UTF8);
+        await using var writer = new StreamWriter(stdout, new UTF8Encoding(false));
+        writer.AutoFlush = true;
 
         while (await reader.ReadLineAsync() is { } line) {
             if (string.IsNullOrWhiteSpace(line)) continue;
@@ -101,11 +101,11 @@ static class McpReviewServer {
     }
 
     static string BuildInitializeResponse(JsonNode id) =>
-        ToResponse(id, new McpInitResult(
-            "2024-11-05",
-            new McpCapabilities(new McpToolsCapability()),
-            new McpServerInfo("kapacitor-review", "1.0.0")
-        ), McpJsonContext.Default.McpInitResult);
+        ToResponse(
+            id,
+            new("2024-11-05", new(new()), new("kapacitor-review", "1.0.0")),
+            McpJsonContext.Default.McpInitResult
+        );
 
     static string BuildToolsListResponse(JsonNode id, McpTool[] tools) =>
         ToResponse(id, new McpToolsResult(tools), McpJsonContext.Default.McpToolsResult);
@@ -130,33 +130,22 @@ static class McpReviewServer {
         try {
             var prBase = $"{baseUrl}/api/review/{owner}/{repo}/pulls/{prNumber}";
 
-            HttpResponseMessage httpResponse = toolName switch {
-                "get_pr_summary" => await client.GetAsync(prBase),
-                "list_pr_files"  => await client.GetAsync($"{prBase}/files"),
-                "get_file_context" => await client.GetAsync(
-                    $"{prBase}/files/{GetRequiredArg(arguments, "file_path").TrimStart('/')}"
-                ),
+            var httpResponse = toolName switch {
+                "get_pr_summary"   => await client.GetAsync(prBase),
+                "list_pr_files"    => await client.GetAsync($"{prBase}/files"),
+                "get_file_context" => await client.GetAsync($"{prBase}/files/{GetRequiredArg(arguments, "file_path").TrimStart('/')}"),
                 "search_context" => await client.PostAsync(
                     $"{prBase}/search",
-                    JsonContent.Create(
-                        new SearchQuery(GetRequiredArg(arguments, "query")),
-                        McpJsonContext.Default.SearchQuery
-                    )
+                    JsonContent.Create(new(GetRequiredArg(arguments, "query")), McpJsonContext.Default.SearchQuery)
                 ),
-                "list_sessions" => await client.GetAsync($"{prBase}/sessions"),
-                "get_transcript" => await client.GetAsync(
-                    BuildTranscriptUrl(baseUrl, arguments)
-                ),
-                _ => throw new ArgumentException($"Unknown tool: {toolName}")
+                "list_sessions"  => await client.GetAsync($"{prBase}/sessions"),
+                "get_transcript" => await client.GetAsync(BuildTranscriptUrl(baseUrl, arguments)),
+                _                => throw new ArgumentException($"Unknown tool: {toolName}")
             };
 
             var body = await httpResponse.Content.ReadAsStringAsync();
 
-            if (!httpResponse.IsSuccessStatusCode) {
-                return BuildToolResult(id, $"Error: HTTP {(int)httpResponse.StatusCode} — {body}", isError: true);
-            }
-
-            return BuildToolResult(id, body);
+            return !httpResponse.IsSuccessStatusCode ? BuildToolResult(id, $"Error: HTTP {(int)httpResponse.StatusCode} — {body}", isError: true) : BuildToolResult(id, body);
         } catch (ArgumentException ex) {
             return BuildToolResult(id, $"Error: {ex.Message}", isError: true);
         } catch (HttpRequestException ex) {
@@ -167,11 +156,7 @@ static class McpReviewServer {
     static string GetRequiredArg(JsonObject? arguments, string name) {
         var value = arguments?[name]?.GetValue<string>();
 
-        if (value is null) {
-            throw new ArgumentException($"Missing required argument: {name}");
-        }
-
-        return value;
+        return value ?? throw new ArgumentException($"Missing required argument: {name}");
     }
 
     static string BuildTranscriptUrl(string baseUrl, JsonObject? arguments) {
@@ -201,10 +186,7 @@ static class McpReviewServer {
     }
 
     static string BuildToolResult(JsonNode id, string text, bool isError = false) =>
-        ToResponse(id, new McpToolCallResult(
-            [new McpContentItem("text", text)],
-            isError ? true : null
-        ), McpJsonContext.Default.McpToolCallResult);
+        ToResponse(id, new([new("text", text)], isError ? true : null), McpJsonContext.Default.McpToolCallResult);
 
     static string BuildErrorResponse(JsonNode id, int code, string message) {
         var envelope = new JsonObject {
@@ -212,6 +194,7 @@ static class McpReviewServer {
             ["id"]      = id.DeepClone(),
             ["error"]   = JsonSerializer.SerializeToNode(new McpError(code, message), McpJsonContext.Default.McpError)
         };
+
         return envelope.ToJsonString();
     }
 
@@ -221,6 +204,7 @@ static class McpReviewServer {
             ["id"]      = id.DeepClone(),
             ["result"]  = JsonSerializer.SerializeToNode(result, typeInfo)
         };
+
         return envelope.ToJsonString();
     }
 
@@ -228,62 +212,82 @@ static class McpReviewServer {
         new(
             "get_pr_summary",
             "Get an overview of the PR: which Claude Code sessions contributed, which files were changed (with event counts), and what test commands were run with their pass/fail outcomes. Call this first to orient yourself.",
-            new McpInputSchema("object", new(), [])
+            new("object", [], [])
         ),
         new(
             "list_pr_files",
             "List all files changed in the PR with aggregated metadata: change types (read/edit/create), how many sessions touched each file, and total event count. Use this to understand the scope of changes.",
-            new McpInputSchema("object", new(), [])
+            new("object", [], [])
         ),
         new(
             "get_file_context",
             "Get deep context for a specific file: which sessions modified it, when, and relevant transcript excerpts where the file was discussed or changed. Use this when a reviewer asks 'why was this file changed?'",
-            new McpInputSchema("object", new() {
-                ["file_path"] = new McpSchemaProperty("string", "Path of the file to get context for")
-            }, ["file_path"])
+            new(
+                "object",
+                new() { ["file_path"] = new("string", "Path of the file to get context for") },
+                ["file_path"]
+            )
         ),
         new(
             "search_context",
             "Full-text search across all session transcripts linked to this PR. Returns ranked excerpts with speaker (user/assistant/tool), content, and highlighted snippets. Use for 'why' questions: 'why retry logic', 'what alternatives', 'error handling rationale'.",
-            new McpInputSchema("object", new() {
-                ["query"] = new McpSchemaProperty("string", "Free-text search query")
-            }, ["query"])
+            new(
+                "object",
+                new() { ["query"] = new("string", "Free-text search query") },
+                ["query"]
+            )
         ),
         new(
             "list_sessions",
             "List all Claude Code sessions that contributed to this PR, with session IDs, titles, timestamps, and models used. Use this to understand the work timeline and pick sessions to drill into with get_transcript.",
-            new McpInputSchema("object", new(), [])
+            new("object", [], [])
         ),
         new(
             "get_transcript",
             "Get the full transcript of a specific session: user messages, assistant reasoning, tool calls, and results. Paginated (default 100 events). Use file_path filter to scope to events mentioning a specific file. This is the deepest level of detail — use when you need to trace the exact reasoning chain.",
-            new McpInputSchema("object", new() {
-                ["session_id"] = new McpSchemaProperty("string", "Session ID to retrieve the transcript for"),
-                ["file_path"]  = new McpSchemaProperty("string", "Optional file path to filter transcript events"),
-                ["skip"]       = new McpSchemaProperty("integer", "Number of events to skip (for pagination)"),
-                ["take"]       = new McpSchemaProperty("integer", "Number of events to return (for pagination)")
-            }, ["session_id"])
+            new(
+                "object",
+                new() {
+                    ["session_id"] = new("string", "Session ID to retrieve the transcript for"),
+                    ["file_path"]  = new("string", "Optional file path to filter transcript events"),
+                    ["skip"]       = new("integer", "Number of events to skip (for pagination)"),
+                    ["take"]       = new("integer", "Number of events to return (for pagination)")
+                },
+                ["session_id"]
+            )
         )
     ];
 }
 
 // MCP protocol types — serialized with source-generated McpJsonContext for AOT compatibility
 record McpInitResult(string ProtocolVersion, McpCapabilities Capabilities, McpServerInfo ServerInfo);
+
 record McpCapabilities(McpToolsCapability Tools);
+
 record McpToolsCapability;
+
 record McpServerInfo(string Name, string Version);
+
 record McpToolsResult(McpTool[] Tools);
+
 record McpTool(string Name, string Description, McpInputSchema InputSchema);
+
 record McpInputSchema(string Type, Dictionary<string, McpSchemaProperty> Properties, string[] Required);
+
 record McpSchemaProperty(string Type, string Description);
+
 record McpToolCallResult(McpContentItem[] Content, bool? IsError = null);
+
 record McpContentItem(string Type, string Text);
+
 record McpError(int Code, string Message);
+
 record SearchQuery(string Query);
 
 [JsonSourceGenerationOptions(
     DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
-    PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]
+    PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase
+)]
 [JsonSerializable(typeof(McpInitResult))]
 [JsonSerializable(typeof(McpToolsResult))]
 [JsonSerializable(typeof(McpToolCallResult))]

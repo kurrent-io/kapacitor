@@ -1,16 +1,12 @@
 using System.Reflection;
 using System.Text.Json.Nodes;
 using kapacitor.Config;
+// ReSharper disable MethodHasAsyncOverload
 
 namespace kapacitor.Commands;
 
 public static class UpdateCommand {
-    static readonly string CachePath = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-        ".config",
-        "kapacitor",
-        "update-check.json"
-    );
+    static readonly string CachePath = PathHelpers.ConfigPath("update-check.json");
 
     public static async Task<int> HandleAsync() {
         var (latest, current) = await CheckForUpdateAsync(forceCheck: true);
@@ -22,15 +18,15 @@ public static class UpdateCommand {
         }
 
         if (!IsNewer(latest, current)) {
-            Console.WriteLine($"Already up to date: {current}");
+            await Console.Out.WriteLineAsync($"Already up to date: {current}");
 
             return 0;
         }
 
-        Console.WriteLine($"Update available: {current} → {latest}");
-        Console.WriteLine();
-        Console.WriteLine("Run:");
-        Console.WriteLine("  npm update -g @kurrent/kapacitor");
+        await Console.Out.WriteLineAsync($"Update available: {current} → {latest}");
+        await Console.Out.WriteLineAsync();
+        await Console.Out.WriteLineAsync("Run:");
+        await Console.Out.WriteLineAsync("  npm update -g @kurrent/kapacitor");
 
         return 0;
     }
@@ -40,7 +36,7 @@ public static class UpdateCommand {
     /// Called on every CLI invocation (cached, max once per 24h).
     /// </summary>
     public static async Task PrintUpdateHintIfAvailable() {
-        var config = AppConfig.Load();
+        var config = await AppConfig.Load();
 
         if (config?.UpdateCheck == false) return;
 
@@ -48,9 +44,9 @@ public static class UpdateCommand {
             var (latest, current) = await CheckForUpdateAsync(forceCheck: false);
 
             if (latest is not null && current is not null && IsNewer(latest, current)) {
-                await Console.Error.WriteLineAsync();
-                await Console.Error.WriteLineAsync($"Update available: {current} → {latest}");
-                await Console.Error.WriteLineAsync("Run `npm update -g @kurrent/kapacitor` to update");
+                Console.Error.WriteLine();
+                Console.Error.WriteLine($"Update available: {current} → {latest}");
+                Console.Error.WriteLine("Run `npm update -g @kurrent/kapacitor` to update");
             }
         } catch {
             // Best effort — never break the CLI for update checks

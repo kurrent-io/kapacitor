@@ -12,14 +12,12 @@ static class WatcherManager {
             return overrideDir;
         }
 
-        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-
-        return Path.Combine(home, ".config", "kapacitor", "watchers");
+        return PathHelpers.ConfigPath("watchers");
     }
 
     static string GetPidFilePath(string key) => Path.Combine(GetWatcherDir(), $"{key}.pid");
 
-    public static void SpawnWatcher(
+    public static async Task SpawnWatcher(
             string  baseUrl,
             string  key,
             string  transcriptPath,
@@ -54,15 +52,13 @@ static class WatcherManager {
                 RedirectStandardError  = true,
                 UseShellExecute        = false,
                 CreateNoWindow         = true,
-                Environment = {
-                    ["KAPACITOR_URL"] = baseUrl
-                }
+                Environment = { ["KAPACITOR_URL"] = baseUrl }
             };
 
             var process = Process.Start(psi);
 
             if (process is null) {
-                Console.Error.WriteLine($"Failed to spawn watcher for {key}");
+                await Console.Error.WriteLineAsync($"Failed to spawn watcher for {key}");
 
                 return;
             }
@@ -73,10 +69,10 @@ static class WatcherManager {
             process.StandardOutput.Close();
             process.StandardError.Close();
 
-            File.WriteAllText(GetPidFilePath(key), process.Id.ToString());
-            Console.WriteLine($"Spawned watcher for {key} (PID {process.Id})");
+            await File.WriteAllTextAsync(GetPidFilePath(key), process.Id.ToString());
+            await Console.Out.WriteLineAsync($"Spawned watcher for {key} (PID {process.Id})");
         } catch (Exception ex) {
-            Console.Error.WriteLine($"Failed to spawn watcher for {key}: {ex.Message}");
+            await Console.Error.WriteLineAsync($"Failed to spawn watcher for {key}: {ex.Message}");
         }
     }
 
@@ -162,7 +158,7 @@ static class WatcherManager {
         }
     }
 
-    public static void EnsureWatcherRunning(
+    public static async Task EnsureWatcherRunning(
             string  baseUrl,
             string  key,
             string  transcriptPath,
@@ -176,8 +172,8 @@ static class WatcherManager {
         }
 
         // Watcher is dead or missing — respawn
-        Console.WriteLine($"Watcher {key} not running, respawning...");
-        SpawnWatcher(baseUrl, key, transcriptPath, agentId, sessionIdOverride, cwd, skipTitle);
+        await Console.Out.WriteLineAsync($"Watcher {key} not running, respawning...");
+        await SpawnWatcher(baseUrl, key, transcriptPath, agentId, sessionIdOverride, cwd, skipTitle);
     }
 
     public static void SpawnWhatsDoneGenerator(string baseUrl, string sessionId) {
@@ -210,7 +206,7 @@ static class WatcherManager {
             process.StandardOutput.Close();
             process.StandardError.Close();
 
-            Console.WriteLine($"Spawned what's-done generator for {sessionId} (PID {process.Id})");
+            Console.Out.WriteLine($"Spawned what's-done generator for {sessionId} (PID {process.Id})");
         } catch (Exception ex) {
             Console.Error.WriteLine($"Failed to spawn what's-done generator for {sessionId}: {ex.Message}");
         }
@@ -268,7 +264,7 @@ static class WatcherManager {
             }
 
             if (newLines.Count == 0) {
-                Console.WriteLine($"Inline drain for {sessionId}: no new lines to send");
+                await Console.Out.WriteLineAsync($"Inline drain for {sessionId}: no new lines to send");
 
                 return;
             }
@@ -276,8 +272,8 @@ static class WatcherManager {
             var batch = new TranscriptBatch {
                 SessionId   = sessionId,
                 AgentId     = agentId,
-                Lines       = newLines.ToArray(),
-                LineNumbers = newLineNumbers.ToArray()
+                Lines       = [..newLines],
+                LineNumbers = [..newLineNumbers]
             };
 
             var       batchJson = JsonSerializer.Serialize(batch, KapacitorJsonContext.Default.TranscriptBatch);

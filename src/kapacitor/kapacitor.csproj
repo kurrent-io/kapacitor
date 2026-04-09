@@ -13,6 +13,9 @@
         <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     </PropertyGroup>
     <ItemGroup>
+        <EmbeddedResource Include="Resources\**\*" />
+    </ItemGroup>
+    <ItemGroup>
         <InternalsVisibleTo Include="kapacitor.Tests.Unit" />
         <InternalsVisibleTo Include="kapacitor.Tests.Integration" />
         <!-- Used when referenced as a submodule from the server repo -->

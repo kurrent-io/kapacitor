@@ -4,12 +4,7 @@ using kapacitor.Daemon;
 namespace kapacitor.Commands;
 
 public static class AgentCommands {
-    static readonly string PidPath = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-        ".config",
-        "kapacitor",
-        "agent.pid"
-    );
+    static readonly string PidPath = PathHelpers.ConfigPath("agent.pid");
 
     public static async Task<int> HandleAsync(string[] args) {
         if (args.Length < 2) {
@@ -24,8 +19,8 @@ public static class AgentCommands {
         return subcommand switch {
             "start"  => await StartAsync(remaining),
             "stop"   => Stop(),
-            "status" => Status(),
-            "logs"   => Logs(),
+            "status" => await Status(),
+            "logs"   => await Logs(),
             _        => PrintUsage()
         };
     }
@@ -86,10 +81,10 @@ public static class AgentCommands {
         Directory.CreateDirectory(dir);
         File.WriteAllText(PidPath, process.Id.ToString());
 
-        Console.WriteLine($"Agent daemon started (PID {process.Id})");
-        Console.WriteLine($"  Log:       {logPath}");
-        Console.WriteLine($"  Stop with: kapacitor agent stop");
-        Console.WriteLine($"  Status:    kapacitor agent status");
+        Console.Out.WriteLine($"Agent daemon started (PID {process.Id})");
+        Console.Out.WriteLine($"  Log:       {logPath}");
+        Console.Out.WriteLine($"  Stop with: kapacitor agent stop");
+        Console.Out.WriteLine($"  Status:    kapacitor agent status");
 
         return 0;
     }
@@ -112,7 +107,7 @@ public static class AgentCommands {
 
         try {
             if (!IsOurDaemon(pid)) {
-                Console.WriteLine("Agent daemon was not running (stale PID file).");
+                Console.Out.WriteLine("Agent daemon was not running (stale PID file).");
                 File.Delete(PidPath);
 
                 return 0;
@@ -120,9 +115,9 @@ public static class AgentCommands {
 
             var process = Process.GetProcessById(pid);
             process.Kill(entireProcessTree: true);
-            Console.WriteLine($"Agent daemon stopped (PID {pid}).");
+            Console.Out.WriteLine($"Agent daemon stopped (PID {pid}).");
         } catch (ArgumentException) {
-            Console.WriteLine("Agent daemon was not running.");
+            Console.Out.WriteLine("Agent daemon was not running.");
         }
 
         File.Delete(PidPath);
@@ -130,25 +125,25 @@ public static class AgentCommands {
         return 0;
     }
 
-    static int Status() {
+    static async Task<int> Status() {
         if (!File.Exists(PidPath)) {
-            Console.WriteLine("Agent: not running");
+            await Console.Out.WriteLineAsync("Agent: not running");
 
             return 0;
         }
 
-        var pidStr = File.ReadAllText(PidPath).Trim();
+        var pidStr = (await File.ReadAllTextAsync(PidPath)).Trim();
 
         if (!int.TryParse(pidStr, out var pid)) {
-            Console.WriteLine("Agent: unknown (invalid PID file)");
+            await Console.Out.WriteLineAsync("Agent: unknown (invalid PID file)");
 
             return 1;
         }
 
         if (IsOurDaemon(pid)) {
-            Console.WriteLine($"Agent: running (PID {pid})");
+            await Console.Out.WriteLineAsync($"Agent: running (PID {pid})");
         } else {
-            Console.WriteLine("Agent: not running (stale PID file)");
+            await Console.Out.WriteLineAsync("Agent: not running (stale PID file)");
             File.Delete(PidPath);
         }
 
@@ -175,24 +170,24 @@ public static class AgentCommands {
         }
     }
 
-    static int Logs() {
+    static async Task<int> Logs() {
         var logPath = DaemonRunner.LogPath;
 
         if (!File.Exists(logPath)) {
-            Console.Error.WriteLine("No log file found.");
+            await Console.Error.WriteLineAsync("No log file found.");
 
             return 1;
         }
 
         // Tail last 50 lines
-        var lines = File.ReadAllLines(logPath);
+        var lines = await File.ReadAllLinesAsync(logPath);
         var start = Math.Max(0, lines.Length - 50);
 
         for (var i = start; i < lines.Length; i++) {
-            Console.WriteLine(lines[i]);
+            await Console.Out.WriteLineAsync(lines[i]);
         }
 
-        Console.Error.WriteLine($"\n--- {logPath} ({lines.Length} lines total) ---");
+        await Console.Error.WriteLineAsync($"\n--- {logPath} ({lines.Length} lines total) ---");
 
         return 0;
     }

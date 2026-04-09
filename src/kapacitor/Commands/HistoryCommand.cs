@@ -2,6 +2,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using kapacitor.Config;
+// ReSharper disable MethodHasAsyncOverload
 
 namespace kapacitor.Commands;
 
@@ -9,12 +10,12 @@ static class HistoryCommand {
     public static async Task<int> HandleHistory(string baseUrl, string? filterCwd, string? filterSession = null, int minLines = 10, bool generateSummaries = false) {
         using var httpClient = await HttpClientExtensions.CreateAuthenticatedClientAsync();
 
-        Console.WriteLine("Discovering sessions...");
+        await Console.Out.WriteLineAsync("Discovering sessions...");
 
         var projectsDir = ClaudePaths.Projects;
 
         if (!Directory.Exists(projectsDir)) {
-            Console.WriteLine("No Claude Code projects directory found.");
+            await Console.Out.WriteLineAsync("No Claude Code projects directory found.");
 
             return 0;
         }
@@ -28,7 +29,7 @@ static class HistoryCommand {
 
         foreach (var cwdDir in Directory.GetDirectories(projectsDir)) {
             var realPath = new DirectoryInfo(cwdDir).ResolveLinkTarget(returnFinalTarget: true)?.FullName
-                        ?? Path.GetFullPath(cwdDir);
+             ?? Path.GetFullPath(cwdDir);
 
             if (!seenRealPaths.Add(realPath)) continue;
 
@@ -42,18 +43,18 @@ static class HistoryCommand {
         }
 
         if (transcriptFiles.Count == 0) {
-            Console.WriteLine("No transcript files found.");
+            await Console.Out.WriteLineAsync("No transcript files found.");
 
             return 0;
         }
 
         // Filter by session ID if specified
         if (filterSession is not null) {
-            filterSession = NormalizeGuid(filterSession);
+            filterSession   = NormalizeGuid(filterSession);
             transcriptFiles = [.. transcriptFiles.Where(t => t.SessionId == filterSession)];
 
             if (transcriptFiles.Count == 0) {
-                await Console.Error.WriteLineAsync($"Session not found: {filterSession}");
+                Console.Error.WriteLine($"Session not found: {filterSession}");
 
                 return 1;
             }
@@ -75,8 +76,8 @@ static class HistoryCommand {
         }
 
         var projectCount = transcriptFiles.Select(t => t.EncodedCwd).Distinct().Count();
-        Console.WriteLine($"Found {transcriptFiles.Count} session{(transcriptFiles.Count == 1 ? "" : "s")} in {projectCount} project{(projectCount == 1 ? "" : "s")}");
-        Console.WriteLine();
+        await Console.Out.WriteLineAsync($"Found {transcriptFiles.Count} session{(transcriptFiles.Count == 1 ? "" : "s")} in {projectCount} project{(projectCount == 1 ? "" : "s")}");
+        await Console.Out.WriteLineAsync();
 
         // Build continuation map: group sessions by slug and order by timestamp
         // so we can link continuations during migration
@@ -85,11 +86,11 @@ static class HistoryCommand {
         // Sort transcript files so continuation chains are processed in order
         SortByContinuationOrder(transcriptFiles, continuationMap);
 
-        var loaded       = 0;
-        var resumed      = 0;
-        var skipped      = 0;
-        var errored      = 0;
-        var excludedRepos = AppConfig.Load()?.ExcludedRepos;
+        var loaded        = 0;
+        var resumed       = 0;
+        var skipped       = 0;
+        var errored       = 0;
+        var excludedRepos = (await AppConfig.Load())?.ExcludedRepos;
 
         // Background tasks for title and summary generation (run in parallel with imports)
         var backgroundTasks    = new List<Task>();
@@ -110,7 +111,8 @@ static class HistoryCommand {
 
             // Check server status via last-line API
             HistorySessionStatus status;
-            int                  resumeFromLine = 0;
+
+            var resumeFromLine = 0;
 
             try {
                 var resp = await httpClient.GetWithRetryAsync($"{baseUrl}/api/sessions/{sessionId}/last-line");
@@ -135,7 +137,7 @@ static class HistoryCommand {
                                 status = HistorySessionStatus.AlreadyLoaded;
                             }
                         } else {
-                            Console.WriteLine($"Skipping {sessionId} [server error: HTTP {(int)resp.StatusCode}]");
+                            await Console.Out.WriteLineAsync($"Skipping {sessionId} [server error: HTTP {(int)resp.StatusCode}]");
                             errored++;
 
                             continue;
@@ -145,14 +147,14 @@ static class HistoryCommand {
                     }
                 }
             } catch (HttpRequestException ex) {
-                Console.WriteLine($"Skipping {sessionId} [server unreachable: {ex.Message}]");
+                await Console.Out.WriteLineAsync($"Skipping {sessionId} [server unreachable: {ex.Message}]");
                 errored++;
 
                 continue;
             }
 
             if (status == HistorySessionStatus.AlreadyLoaded) {
-                Console.WriteLine($"Skipping {sessionId} [already loaded]");
+                await Console.Out.WriteLineAsync($"Skipping {sessionId} [already loaded]");
                 skipped++;
 
                 continue;
@@ -164,7 +166,7 @@ static class HistoryCommand {
             switch (status) {
                 // Skip short transcripts (likely trivial sessions with no meaningful work)
                 case HistorySessionStatus.New when minLines > 0 && totalLines < minLines:
-                    Console.WriteLine($"Skipping {sessionId} [too short: {totalLines} lines < {minLines} minimum]");
+                    await Console.Out.WriteLineAsync($"Skipping {sessionId} [too short: {totalLines} lines < {minLines} minimum]");
                     skipped++;
 
                     continue;
@@ -212,8 +214,9 @@ static class HistoryCommand {
                          && repo.RepoName is not null
                          && excludedRepos.Contains($"{repo.Owner}/{repo.RepoName}", StringComparer.OrdinalIgnoreCase)) {
                             if (Console.IsInputRedirected) {
-                                Console.WriteLine($"Skipping {sessionId} [repository {repo.Owner}/{repo.RepoName} is excluded]");
+                                await Console.Out.WriteLineAsync($"Skipping {sessionId} [repository {repo.Owner}/{repo.RepoName} is excluded]");
                                 skipped++;
+
                                 continue;
                             }
 
@@ -221,8 +224,9 @@ static class HistoryCommand {
                             var answer = Console.ReadLine()?.Trim();
 
                             if (!string.Equals(answer, "y", StringComparison.OrdinalIgnoreCase)) {
-                                Console.WriteLine($"Skipping {sessionId}");
+                                await Console.Out.WriteLineAsync($"Skipping {sessionId}");
                                 skipped++;
+
                                 continue;
                             }
                         }
@@ -247,13 +251,13 @@ static class HistoryCommand {
                         var startResp = await httpClient.PostWithRetryAsync($"{baseUrl}/hooks/session-start", startContent);
 
                         if (!startResp.IsSuccessStatusCode) {
-                            Console.WriteLine($"Skipping {sessionId} [session-start failed: HTTP {(int)startResp.StatusCode}]");
+                            await Console.Out.WriteLineAsync($"Skipping {sessionId} [session-start failed: HTTP {(int)startResp.StatusCode}]");
                             errored++;
 
                             continue;
                         }
                     } catch (HttpRequestException ex) {
-                        Console.WriteLine($"Skipping {sessionId} [server unreachable: {ex.Message}]");
+                        await Console.Out.WriteLineAsync($"Skipping {sessionId} [server unreachable: {ex.Message}]");
                         errored++;
 
                         continue;
@@ -263,13 +267,18 @@ static class HistoryCommand {
 
                     // Import transcript with interleaved agent lifecycle events
                     var importResult = await SessionImporter.ImportSessionAsync(
-                        httpClient, baseUrl, filePath, sessionId, meta, prevSessionId, encodedCwd
+                        httpClient,
+                        baseUrl,
+                        filePath,
+                        sessionId,
+                        meta,
+                        encodedCwd
                     );
 
-                    Console.WriteLine($"{importResult.LinesSent} lines [new]");
+                    await Console.Out.WriteLineAsync($"{importResult.LinesSent} lines [new]");
 
                     if (importResult.AgentIds.Count > 0) {
-                        Console.WriteLine($"  {importResult.AgentIds.Count} agent{(importResult.AgentIds.Count == 1 ? "" : "s")} imported inline");
+                        await Console.Out.WriteLineAsync($"  {importResult.AgentIds.Count} agent{(importResult.AgentIds.Count == 1 ? "" : "s")} imported inline");
                     }
 
                     // POST synthesized session-end hook
@@ -310,38 +319,44 @@ static class HistoryCommand {
                     var titleSessionId = sessionId;
                     var titleFilePath  = filePath;
 
-                    backgroundTasks.Add(Task.Run(async () => {
-                        await concurrencyLimit.WaitAsync();
+                    backgroundTasks.Add(
+                        Task.Run(async () => {
+                                await concurrencyLimit.WaitAsync();
 
-                        try {
-                            var result = await GenerateTitleForImportAsync(httpClient, baseUrl, titleSessionId, titleFilePath);
+                                try {
+                                    var result = await GenerateTitleForImportAsync(httpClient, baseUrl, titleSessionId, titleFilePath);
 
-                            switch (result) {
-                                case TitleResult.Generated: Interlocked.Increment(ref titlesGenerated); break;
-                                case TitleResult.Skipped:   Interlocked.Increment(ref titlesSkipped); break;
-                                case TitleResult.Failed:    Interlocked.Increment(ref titlesFailed); break;
+                                    switch (result) {
+                                        case TitleResult.Generated: Interlocked.Increment(ref titlesGenerated); break;
+                                        case TitleResult.Skipped:   Interlocked.Increment(ref titlesSkipped); break;
+                                        case TitleResult.Failed:    Interlocked.Increment(ref titlesFailed); break;
+                                    }
+                                } finally {
+                                    concurrencyLimit.Release();
+                                }
                             }
-                        } finally {
-                            concurrencyLimit.Release();
-                        }
-                    }));
+                        )
+                    );
 
                     // Generate what's-done summary in background if requested
                     if (shouldGenerateWhatsDone) {
-                        backgroundTasks.Add(Task.Run(async () => {
-                            await concurrencyLimit.WaitAsync();
+                        backgroundTasks.Add(
+                            Task.Run(async () => {
+                                    await concurrencyLimit.WaitAsync();
 
-                            try {
-                                var wdResult = await WhatsDoneCommand.GenerateForSessionAsync(baseUrl, titleSessionId, _ => { });
+                                    try {
+                                        var wdResult = await WhatsDoneCommand.GenerateForSessionAsync(baseUrl, titleSessionId, _ => { });
 
-                                if (wdResult == 0) Interlocked.Increment(ref summariesGenerated);
-                                else Interlocked.Increment(ref summariesFailed);
-                            } catch {
-                                Interlocked.Increment(ref summariesFailed);
-                            } finally {
-                                concurrencyLimit.Release();
-                            }
-                        }));
+                                        if (wdResult == 0) Interlocked.Increment(ref summariesGenerated);
+                                        else Interlocked.Increment(ref summariesFailed);
+                                    } catch {
+                                        Interlocked.Increment(ref summariesFailed);
+                                    } finally {
+                                        concurrencyLimit.Release();
+                                    }
+                                }
+                            )
+                        );
                     }
 
                     loaded++;
@@ -352,7 +367,7 @@ static class HistoryCommand {
                     // Partial load — resume from where we left off
                     Console.Write($"Loading {sessionId}... ");
                     var linesSent = await SessionImporter.SendTranscriptBatches(httpClient, baseUrl, sessionId, filePath, agentId: null, startLine: resumeFromLine);
-                    Console.WriteLine($"{linesSent} lines [resuming from line {resumeFromLine}]");
+                    await Console.Out.WriteLineAsync($"{linesSent} lines [resuming from line {resumeFromLine}]");
                     resumed++;
 
                     break;
@@ -362,7 +377,7 @@ static class HistoryCommand {
 
         // Wait for background title/summary generation to complete (best effort — never lose the final report)
         if (backgroundTasks.Count > 0) {
-            Console.WriteLine($"Waiting for {backgroundTasks.Count} background task{(backgroundTasks.Count == 1 ? "" : "s")} (titles/summaries)...");
+            await Console.Out.WriteLineAsync($"Waiting for {backgroundTasks.Count} background task{(backgroundTasks.Count == 1 ? "" : "s")} (titles/summaries)...");
 
             try {
                 await Task.WhenAll(backgroundTasks);
@@ -372,18 +387,18 @@ static class HistoryCommand {
 
             var parts = new List<string>();
 
-            if (titlesGenerated > 0) parts.Add($"{titlesGenerated} title{(titlesGenerated == 1 ? "" : "s")}");
-            if (summariesGenerated > 0) parts.Add($"{summariesGenerated} summar{(summariesGenerated == 1 ? "y" : "ies")}");
-            if (titlesSkipped > 0) parts.Add($"{titlesSkipped} skipped");
+            if (titlesGenerated                > 0) parts.Add($"{titlesGenerated} title{(titlesGenerated        == 1 ? "" : "s")}");
+            if (summariesGenerated             > 0) parts.Add($"{summariesGenerated} summar{(summariesGenerated == 1 ? "y" : "ies")}");
+            if (titlesSkipped                  > 0) parts.Add($"{titlesSkipped} skipped");
             if (titlesFailed + summariesFailed > 0) parts.Add($"{titlesFailed + summariesFailed} failed");
 
-            if (parts.Count > 0) Console.WriteLine($"  {string.Join(", ", parts)}");
+            if (parts.Count > 0) await Console.Out.WriteLineAsync($"  {string.Join(", ", parts)}");
         }
 
-        Console.WriteLine();
+        await Console.Out.WriteLineAsync();
         Console.Write($"Done: {loaded} loaded, {resumed} resumed, {skipped} skipped");
         if (errored > 0) Console.Write($", {errored} errored");
-        Console.WriteLine();
+        await Console.Out.WriteLineAsync();
 
         return 0;
     }
@@ -449,7 +464,7 @@ static class HistoryCommand {
         try {
             // Read backward from end of file to find the last timestamp without loading everything into memory.
             // Strategy: read the last ~64KB chunk which covers well over 50 JSONL lines.
-            using var fs = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            using var fs        = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
             const int chunkSize = 64 * 1024;
             var       offset    = Math.Max(0, fs.Length - chunkSize);
             fs.Seek(offset, SeekOrigin.Begin);

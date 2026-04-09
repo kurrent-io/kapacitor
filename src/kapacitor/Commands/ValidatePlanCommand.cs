@@ -37,7 +37,7 @@ static class ValidatePlanCommand {
         var entries = JsonSerializer.Deserialize(json, KapacitorJsonContext.Default.ListRecapEntry);
 
         if (entries is null || entries.Count == 0) {
-            Console.WriteLine("No plan found for this session.");
+            await Console.Out.WriteLineAsync("No plan found for this session.");
 
             return 0;
         }
@@ -50,56 +50,56 @@ static class ValidatePlanCommand {
         var summaries = entries.Where(e => e.Type == "whats_done").ToList();
 
         if (plans.Count == 0) {
-            Console.WriteLine("No plan found for this session.");
+            await Console.Out.WriteLineAsync("No plan found for this session.");
 
             return 0;
         }
 
         // Output plan(s)
-        Console.WriteLine("## Plan");
-        Console.WriteLine();
+        await Console.Out.WriteLineAsync("## Plan");
+        await Console.Out.WriteLineAsync();
 
         foreach (var plan in plans) {
-            Console.WriteLine(plan.Content);
+            await Console.Out.WriteLineAsync(plan.Content);
         }
 
-        Console.WriteLine();
+        await Console.Out.WriteLineAsync();
 
         // Output what's done
-        Console.WriteLine("## What's Done");
-        Console.WriteLine();
+        await Console.Out.WriteLineAsync("## What's Done");
+        await Console.Out.WriteLineAsync();
 
         if (summaries.Count > 0) {
-            Console.WriteLine("### Summary");
-            Console.WriteLine();
+            await Console.Out.WriteLineAsync("### Summary");
+            await Console.Out.WriteLineAsync();
 
             foreach (var summary in summaries) {
-                Console.WriteLine(summary.Content);
+                await Console.Out.WriteLineAsync(summary.Content);
             }
 
-            Console.WriteLine();
+            await Console.Out.WriteLineAsync();
         }
 
-        Console.WriteLine("### Details");
-        Console.WriteLine();
+        await Console.Out.WriteLineAsync("### Details");
+        await Console.Out.WriteLineAsync();
 
         if (work.Count == 0) {
-            Console.WriteLine("No file writes or edits recorded.");
+            await Console.Out.WriteLineAsync("No file writes or edits recorded.");
         } else {
             foreach (var entry in work) {
                 var label = entry.Type == "write" ? "Write" : "Edit";
                 var path  = entry.FilePath ?? "unknown";
-                Console.WriteLine($"- {label}: {path}");
+                await Console.Out.WriteLineAsync($"- {label}: {path}");
             }
         }
 
-        Console.WriteLine();
+        await Console.Out.WriteLineAsync();
 
         // Verification instruction
-        Console.WriteLine("## Instructions");
-        Console.WriteLine();
+        await Console.Out.WriteLineAsync("## Instructions");
+        await Console.Out.WriteLineAsync();
 
-        Console.WriteLine(
+        await Console.Out.WriteLineAsync(
             "Compare the plan above against the summary and file list under \"What's Done\". Identify any planned items that were NOT completed. If everything is done, confirm that. If there are gaps, list them and complete the remaining work now."
         );
 

@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json.Nodes;
+// ReSharper disable MethodHasAsyncOverload
 
 namespace kapacitor.Commands;
 
@@ -12,7 +13,7 @@ static class PermissionRequestCommand {
         try {
             node = JsonNode.Parse(body);
         } catch {
-            await Console.Error.WriteLineAsync("[kapacitor] Failed to parse permission-request input");
+            Console.Error.WriteLine("[kapacitor] Failed to parse permission-request input");
 
             return 0;
         }
@@ -23,7 +24,7 @@ static class PermissionRequestCommand {
         var sessionId = node["session_id"]?.GetValue<string>()?.Replace("-", "");
 
         if (sessionId is null) {
-            await Console.Error.WriteLineAsync("[kapacitor] No session_id in permission-request");
+            Console.Error.WriteLine("[kapacitor] No session_id in permission-request");
 
             return 0;
         }
@@ -59,7 +60,7 @@ static class PermissionRequestCommand {
             using var response = await client.PostAsync($"{baseUrl}/hooks/permission-request", content);
 
             if (!response.IsSuccessStatusCode) {
-                await Console.Error.WriteLineAsync($"[kapacitor] permission-request failed: HTTP {(int)response.StatusCode}");
+                Console.Error.WriteLine($"[kapacitor] permission-request failed: HTTP {(int)response.StatusCode}");
 
                 return 2;
             }
@@ -69,11 +70,11 @@ static class PermissionRequestCommand {
 
             return 0;
         } catch (TaskCanceledException) {
-            await Console.Error.WriteLineAsync("[kapacitor] permission-request timed out");
+            Console.Error.WriteLine("[kapacitor] permission-request timed out");
 
             return 2;
         } catch (HttpRequestException ex) {
-            await Console.Error.WriteLineAsync($"[kapacitor] permission-request error: {ex.Message}");
+            Console.Error.WriteLine($"[kapacitor] permission-request error: {ex.Message}");
 
             return 2;
         }

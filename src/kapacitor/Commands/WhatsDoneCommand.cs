@@ -6,7 +6,7 @@ namespace kapacitor.Commands;
 static class WhatsDoneCommand {
     public static async Task<int> HandleGenerateWhatsDone(string baseUrl, string sessionId) {
         // Redirect output to log file (same pattern as WatchCommand)
-        var logDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".config", "kapacitor", "logs");
+        var logDir = PathHelpers.ConfigPath("logs");
         Directory.CreateDirectory(logDir);
         var logPath   = Path.Combine(logDir, $"{sessionId}-whatsdone.log");
         var logWriter = new StreamWriter(logPath, append: true) { AutoFlush = true };
@@ -67,33 +67,7 @@ static class WhatsDoneCommand {
         log("Calling claude to generate summary...");
         log($"Recap text: {recapText.Length} chars");
 
-        var prompt = """
-            You are writing a knowledge base entry from a Claude Code session transcript.
-            Other engineers and future AI sessions will read this to understand context
-            that isn't obvious from the code diff alone.
-
-            The transcript contains plans, user prompts, assistant responses, and file changes.
-            The file changes themselves are already recorded separately — do NOT list them again.
-
-            Write:
-
-            **Context:** Why was this work done? What problem or request triggered it?
-
-            **Key decisions:** Design choices, trade-offs, or alternatives that were considered
-            and rejected. Only include decisions where the reasoning matters for future work.
-
-            **Unfinished/Risks:** Anything deferred, left incomplete, or flagged as risky.
-            Skip this section if everything was cleanly completed.
-
-            Rules:
-            - Under 300 words.
-            - Don't list files or code changes — those are already recorded.
-            - Don't describe process (retries, debugging, tool calls).
-            - If a previous summary exists in the transcript, build on it — don't repeat it.
-
-            Transcript:
-
-            """ + recapText;
+        var prompt = EmbeddedResources.Load("prompt-whats-done.txt") + recapText;
 
         var result = await ClaudeCliRunner.RunAsync(prompt, TimeSpan.FromSeconds(90), log);
 

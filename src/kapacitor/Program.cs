@@ -13,7 +13,7 @@ if (Environment.GetEnvironmentVariable("KAPACITOR_SKIP") is "1") {
     return 0;
 }
 
-var baseUrl = AppConfig.ResolveServerUrl(args);
+var baseUrl = await AppConfig.ResolveServerUrl(args);
 
 // Fire-and-forget update check (prints hint to stderr after command finishes)
 var noUpdateCheck = args.Contains("--no-update-check");
@@ -33,7 +33,7 @@ string[] hookCommands = [
 ];
 
 if (args.Length < 1) {
-    PrintUsage();
+    await PrintUsage();
 
     return 1;
 }
@@ -41,14 +41,14 @@ if (args.Length < 1) {
 var command = args[0];
 
 if (command is "--help" or "-h" or "help") {
-    PrintUsage();
+    await PrintUsage();
 
     return 0;
 }
 
 // Per-command help: kapacitor <command> --help / -h
 if (args.Skip(1).Any(a => a is "--help" or "-h")) {
-    return PrintCommandHelp(command);
+    return await PrintCommandHelp(command);
 }
 
 // Commands that don't need a server URL
@@ -64,12 +64,12 @@ switch (command) {
         var version = typeof(Program).Assembly
             .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?
             .InformationalVersion ?? "unknown";
-        Console.WriteLine($"kapacitor {version}");
+        await Console.Out.WriteLineAsync($"kapacitor {version}");
         return 0;
     }
     case "errors": {
         var useChain     = args.Contains("--chain");
-        var errSessionId = ResolveSessionId(args, skipCount: 1, skipFlag: "--chain");
+        var errSessionId = ResolveSessionId(args, skipCount: 1);
 
         if (errSessionId is null) {
             Console.Error.WriteLine("Usage: kapacitor errors [--chain] [sessionId]");
@@ -127,7 +127,7 @@ switch (command) {
     }
     case "logout": {
         TokenStore.Delete();
-        Console.WriteLine("Logged out.");
+        await Console.Out.WriteLineAsync("Logged out.");
 
         return 0;
     }
@@ -135,13 +135,13 @@ switch (command) {
         var provider = await HttpClientExtensions.DiscoverProviderAsync(baseUrl!);
 
         if (provider == "None") {
-            Console.WriteLine("Provider: None (no authentication)");
-            Console.WriteLine($"Server:   {baseUrl!}");
+            await Console.Out.WriteLineAsync("Provider: None (no authentication)");
+            await Console.Out.WriteLineAsync($"Server:   {baseUrl!}");
 
             return 0;
         }
 
-        var tokens = TokenStore.Load();
+        var tokens = await TokenStore.LoadAsync();
 
         if (tokens is null) {
             Console.Error.WriteLine("Not authenticated. Run `kapacitor login`.");
@@ -149,11 +149,11 @@ switch (command) {
             return 1;
         }
 
-        Console.WriteLine($"Username: {tokens.GitHubUsername}");
-        Console.WriteLine($"Provider: {tokens.Provider}");
-        Console.WriteLine($"Expires:  {tokens.ExpiresAt:u}");
-        Console.WriteLine($"Server:   {baseUrl!}");
-        Console.WriteLine($"Expired:  {(tokens.IsExpired ? "yes" : "no")}");
+        await Console.Out.WriteLineAsync($"Username: {tokens.GitHubUsername}");
+        await Console.Out.WriteLineAsync($"Provider: {tokens.Provider}");
+        await Console.Out.WriteLineAsync($"Expires:  {tokens.ExpiresAt:u}");
+        await Console.Out.WriteLineAsync($"Server:   {baseUrl!}");
+        await Console.Out.WriteLineAsync($"Expired:  {(tokens.IsExpired ? "yes" : "no")}");
 
         return 0;
     }
@@ -229,9 +229,9 @@ switch (command) {
             var resp = await disableClient.DeleteWithRetryAsync($"{baseUrl!}/api/sessions/{sessionId}");
 
             if (resp.IsSuccessStatusCode) {
-                Console.WriteLine($"Session {sessionId} disabled. Recording stopped and server data deleted.");
+                await Console.Out.WriteLineAsync($"Session {sessionId} disabled. Recording stopped and server data deleted.");
             } else if (resp.StatusCode == System.Net.HttpStatusCode.NotFound) {
-                Console.WriteLine($"Session {sessionId} disabled. No server data found (may have already been deleted).");
+                await Console.Out.WriteLineAsync($"Session {sessionId} disabled. No server data found (may have already been deleted).");
             } else if (await HttpClientExtensions.HandleUnauthorizedAsync(resp)) {
                 return 1;
             } else {
@@ -240,7 +240,7 @@ switch (command) {
             }
         } catch (HttpRequestException ex) {
             HttpClientExtensions.WriteUnreachableError(baseUrl!, ex);
-            Console.WriteLine("Session disabled locally (watcher stopped, hooks silenced). Server data not deleted.");
+            await Console.Out.WriteLineAsync("Session disabled locally (watcher stopped, hooks silenced). Server data not deleted.");
         }
 
         return 0;
@@ -261,7 +261,7 @@ switch (command) {
             var resp = await hideClient.PutWithRetryAsync($"{baseUrl!}/api/sessions/{sessionId}/visibility", visContent);
 
             if (resp.IsSuccessStatusCode) {
-                Console.WriteLine($"Session {sessionId} hidden (owner-only).");
+                await Console.Out.WriteLineAsync($"Session {sessionId} hidden (owner-only).");
             } else if (await HttpClientExtensions.HandleUnauthorizedAsync(resp)) {
                 return 1;
             } else {
@@ -395,7 +395,7 @@ try {
         NormalizeGuidField(node, "session_id");
         NormalizeGuidField(node, "agent_id");
 
-        node["home_dir"] = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        node["home_dir"] = PathHelpers.HomeDirectory;
 
         // If running inside a daemon-spawned agent, inject the agent ID
         var agentHostId = Environment.GetEnvironmentVariable("KAPACITOR_AGENT_ID");
@@ -453,7 +453,7 @@ if (command is "session-end" or "subagent-stop") {
 // Load config once for exclusion check and default_visibility injection.
 // Runs after repo enrichment so the body already has repository.owner/repo_name,
 // avoiding a redundant git detection in RepoExclusion.
-var kapacitorConfig = AppConfig.Load();
+var kapacitorConfig = await AppConfig.Load();
 
 // Check repo exclusion — silently exit for excluded repos
 if (kapacitorConfig?.ExcludedRepos is { Length: > 0 } repos && await RepoExclusion.IsExcludedAsync(body, repos)) {
@@ -623,7 +623,7 @@ switch (command) {
              || source.Equals("compact", StringComparison.OrdinalIgnoreCase));
 
         if (sessionId is not null && transcriptPath is not null) {
-            WatcherManager.EnsureWatcherRunning(baseUrl!, sessionId, transcriptPath, agentId: null, cwd: sessionCwd, skipTitle: isResumeOrCompact);
+            await WatcherManager.EnsureWatcherRunning(baseUrl!, sessionId, transcriptPath, agentId: null, cwd: sessionCwd, skipTitle: isResumeOrCompact);
         }
 
         break;
@@ -637,7 +637,7 @@ switch (command) {
         if (sessionId is not null && agentId is not null && transcriptPath is not null) {
             var sessionDir          = Path.ChangeExtension(transcriptPath, null);
             var agentTranscriptPath = Path.Combine(sessionDir, "subagents", $"agent-{agentId}.jsonl");
-            WatcherManager.EnsureWatcherRunning(baseUrl!, $"{sessionId}-{agentId}", agentTranscriptPath, agentId, sessionId);
+            await WatcherManager.EnsureWatcherRunning(baseUrl!, $"{sessionId}-{agentId}", agentTranscriptPath, agentId, sessionId);
         }
 
         break;
@@ -650,7 +650,7 @@ switch (command) {
         var sessionCwd     = node?["cwd"]?.GetValue<string>();
 
         if (sessionId is not null && transcriptPath is not null) {
-            WatcherManager.EnsureWatcherRunning(baseUrl!, sessionId, transcriptPath, agentId: null, cwd: sessionCwd);
+            await WatcherManager.EnsureWatcherRunning(baseUrl!, sessionId, transcriptPath, agentId: null, cwd: sessionCwd);
         }
 
         break;
@@ -687,7 +687,7 @@ static string? GetArg(string[] arguments, string flag) {
     return idx >= 0 && idx + 1 < arguments.Length ? arguments[idx + 1] : null;
 }
 
-string? ResolveSessionId(string[] args, int skipCount = 1, string? skipFlag = null) {
+string? ResolveSessionId(string[] args, int skipCount = 1) {
     // Take the first positional argument (skip flags starting with --)
     var fromArg = args.Skip(skipCount).FirstOrDefault(a => !a.StartsWith("--"));
 
@@ -702,61 +702,13 @@ void NormalizeGuidField(JsonNode node, string fieldName) {
     }
 }
 
-void PrintUsage() {
-    Console.WriteLine("kapacitor — CLI companion for Kurrent Capacitor");
-    Console.WriteLine();
-    Console.WriteLine("Usage: kapacitor <command> [options]");
-    Console.WriteLine();
-    Console.WriteLine("Getting Started:");
-    Console.WriteLine("  setup                            Configure server, login, and install plugin");
-    Console.WriteLine("  status                           Show server, auth, and agent status");
-    Console.WriteLine("  login                            Authenticate via OAuth (browser)");
-    Console.WriteLine("  logout                           Remove stored credentials");
-    Console.WriteLine("  whoami                           Show current authenticated user");
-    Console.WriteLine();
-    Console.WriteLine("Configuration:");
-    Console.WriteLine("  config show                      Print current configuration");
-    Console.WriteLine("  config set <key> <value>         Update a config value");
-    Console.WriteLine();
-    Console.WriteLine("Agent Daemon:");
-    Console.WriteLine("  agent start [-d]                 Start agent daemon (foreground, or -d for background)");
-    Console.WriteLine("  agent stop                       Stop background agent daemon");
-    Console.WriteLine("  agent status                     Show agent daemon status");
-    Console.WriteLine();
-    Console.WriteLine("Session:");
-    Console.WriteLine("  errors [--chain] [id]            List tool call errors for a session");
-    Console.WriteLine("  recap [--chain] [--full] [id]    Session summary (--full for raw transcript)");
-    Console.WriteLine("  recap --repo                     Recent session summaries for current repo");
-    Console.WriteLine("  validate-plan [id]               Validate plan completion for a session");
-    Console.WriteLine("  generate-whats-done <id>         Generate what's-done summary");
-    Console.WriteLine("  set-title <title>                Set session title");
-    Console.WriteLine("  disable                          Stop recording and delete session data");
-    Console.WriteLine("  hide                             Hide session (owner-only visibility)");
-    Console.WriteLine("  review <pr>                      Launch Claude with PR review context");
-    Console.WriteLine();
-    Console.WriteLine("Maintenance:");
-    Console.WriteLine("  update                           Check for and install updates");
-    Console.WriteLine("  cleanup                          Kill all orphaned watcher processes");
-    Console.WriteLine("  --version                        Show version");
-    Console.WriteLine("  --help                           Show this help");
-    Console.WriteLine();
-    Console.WriteLine("Hook Commands (internal — used by Claude Code plugin):");
-
-    foreach (var h in hookCommands) {
-        Console.WriteLine($"  {h}");
-    }
-
-    Console.WriteLine();
-    Console.WriteLine("Environment:");
-    Console.WriteLine("  KAPACITOR_URL              Server URL (overrides config file)");
-    Console.WriteLine("  KAPACITOR_SESSION_ID       Session ID (set automatically by SessionStart hook)");
-    Console.WriteLine("  KAPACITOR_DAEMON_NAME      Daemon name (overrides config file)");
+async Task PrintUsage() {
+    var hookList = string.Join('\n', hookCommands.Select(h => $"  {h}"));
+    var text = EmbeddedResources.Load("help-usage.txt").Replace("{hookCommands}", hookList);
+    await Console.Out.WriteAsync(text);
 }
 
-string GetDisabledDir() => Path.Combine(
-    Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-    ".config", "kapacitor", "disabled"
-);
+string GetDisabledDir() => PathHelpers.ConfigPath("disabled");
 
 bool IsSessionDisabled(string sessionId) =>
     File.Exists(Path.Combine(GetDisabledDir(), sessionId));
@@ -772,227 +724,19 @@ void RemoveDisabledMarker(string sessionId) {
     try { File.Delete(path); } catch { /* ignore */ }
 }
 
-int PrintCommandHelp(string cmd) {
-    switch (cmd) {
-        case "setup":
-            Console.WriteLine("kapacitor setup — Configure server, login, and install plugin");
-            Console.WriteLine();
-            Console.WriteLine("Usage: kapacitor setup [options]");
-            Console.WriteLine();
-            Console.WriteLine("Options:");
-            Console.WriteLine("  --server-url <url>          Server URL (skip prompt)");
-            Console.WriteLine("  --daemon-name <name>        Daemon name (skip prompt)");
-            Console.WriteLine("  --default-visibility <vis>  Default visibility: private, org_public, public");
-            Console.WriteLine("  --no-prompt                 Non-interactive mode (requires --server-url)");
-            break;
-        case "status":
-            Console.WriteLine("kapacitor status — Show server, auth, and agent status");
-            Console.WriteLine();
-            Console.WriteLine("Usage: kapacitor status");
-            break;
-        case "login":
-            Console.WriteLine("kapacitor login — Authenticate via OAuth");
-            Console.WriteLine();
-            Console.WriteLine("Usage: kapacitor login");
-            Console.WriteLine();
-            Console.WriteLine("Opens a browser for OAuth authentication. The auth method (GitHub Device");
-            Console.WriteLine("Flow or Auth0 PKCE) is auto-discovered from the server configuration.");
-            break;
-        case "logout":
-            Console.WriteLine("kapacitor logout — Remove stored credentials");
-            Console.WriteLine();
-            Console.WriteLine("Usage: kapacitor logout");
-            break;
-        case "whoami":
-            Console.WriteLine("kapacitor whoami — Show current authenticated user");
-            Console.WriteLine();
-            Console.WriteLine("Usage: kapacitor whoami");
-            break;
-        case "config":
-            Console.WriteLine("kapacitor config — Manage configuration");
-            Console.WriteLine();
-            Console.WriteLine("Usage: kapacitor config <subcommand>");
-            Console.WriteLine();
-            Console.WriteLine("Subcommands:");
-            Console.WriteLine("  show                    Print current configuration");
-            Console.WriteLine("  set <key> <value>       Update a config value");
-            Console.WriteLine();
-            Console.WriteLine("Config keys:");
-            Console.WriteLine("  server_url              Server URL");
-            Console.WriteLine("  daemon.name             Daemon name");
-            Console.WriteLine("  daemon.max_agents       Max concurrent agents");
-            Console.WriteLine("  update_check            Enable update check (true/false)");
-            Console.WriteLine("  default_visibility      Default session visibility (private, org_public, public)");
-            Console.WriteLine("  excluded_repos          Excluded repos, comma-separated (owner/repo,owner/repo)");
-            break;
-        case "agent":
-            Console.WriteLine("kapacitor agent — Manage the agent daemon");
-            Console.WriteLine();
-            Console.WriteLine("Usage: kapacitor agent <subcommand>");
-            Console.WriteLine();
-            Console.WriteLine("Subcommands:");
-            Console.WriteLine("  start [-d]              Start the agent daemon (foreground, or -d for background)");
-            Console.WriteLine("  stop                    Stop the background agent daemon");
-            Console.WriteLine("  status                  Show agent daemon status");
-            Console.WriteLine("  logs                    Show recent daemon log output");
-            Console.WriteLine();
-            Console.WriteLine("Options for start:");
-            Console.WriteLine("  --name <name>           Daemon name");
-            Console.WriteLine("  --server-url <url>      Server URL");
-            Console.WriteLine("  --max-agents <n>        Max concurrent agents (default: 5)");
-            Console.WriteLine("  --log-file <path>       Log to file instead of console");
-            Console.WriteLine("  -d, --detach            Run in background (logs to file automatically)");
-            break;
-        case "errors":
-            Console.WriteLine("kapacitor errors — List tool call errors for a session");
-            Console.WriteLine();
-            Console.WriteLine("Usage: kapacitor errors [options] [sessionId]");
-            Console.WriteLine();
-            Console.WriteLine("Options:");
-            Console.WriteLine("  --chain                 Include all sessions in the continuation chain");
-            Console.WriteLine();
-            Console.WriteLine("Arguments:");
-            Console.WriteLine("  sessionId               Session ID (defaults to KAPACITOR_SESSION_ID)");
-            break;
-        case "recap":
-            Console.WriteLine("kapacitor recap — Session summary");
-            Console.WriteLine();
-            Console.WriteLine("Usage: kapacitor recap [options] [sessionId]");
-            Console.WriteLine();
-            Console.WriteLine("Options:");
-            Console.WriteLine("  --chain                 Include all sessions in the continuation chain");
-            Console.WriteLine("  --full                  Show raw transcript instead of summary");
-            Console.WriteLine("  --repo                  Show recent session summaries for the current repo");
-            Console.WriteLine();
-            Console.WriteLine("Arguments:");
-            Console.WriteLine("  sessionId               Session ID (defaults to KAPACITOR_SESSION_ID)");
-            break;
-        case "validate-plan":
-            Console.WriteLine("kapacitor validate-plan — Validate plan completion for a session");
-            Console.WriteLine();
-            Console.WriteLine("Usage: kapacitor validate-plan [sessionId]");
-            Console.WriteLine();
-            Console.WriteLine("Arguments:");
-            Console.WriteLine("  sessionId               Session ID (defaults to KAPACITOR_SESSION_ID)");
-            break;
-        case "generate-whats-done":
-            Console.WriteLine("kapacitor generate-whats-done — Generate what's-done summary");
-            Console.WriteLine();
-            Console.WriteLine("Usage: kapacitor generate-whats-done <sessionId>");
-            Console.WriteLine();
-            Console.WriteLine("Arguments:");
-            Console.WriteLine("  sessionId               Session ID (required)");
-            break;
-        case "set-title":
-            Console.WriteLine("kapacitor set-title — Set session title");
-            Console.WriteLine();
-            Console.WriteLine("Usage: kapacitor set-title <title>");
-            Console.WriteLine();
-            Console.WriteLine("Arguments:");
-            Console.WriteLine("  title                   Session title (max 120 characters)");
-            Console.WriteLine();
-            Console.WriteLine("Environment:");
-            Console.WriteLine("  KAPACITOR_SESSION_ID    Session ID (required)");
-            break;
-        case "review":
-            Console.WriteLine("kapacitor review — Launch Claude with PR review context");
-            Console.WriteLine();
-            Console.WriteLine("Usage: kapacitor review <pr-url-or-shorthand>");
-            Console.WriteLine();
-            Console.WriteLine("Arguments:");
-            Console.WriteLine("  pr                      PR URL or shorthand (e.g., owner/repo#123)");
-            Console.WriteLine();
-            Console.WriteLine("Examples:");
-            Console.WriteLine("  kapacitor review https://github.com/owner/repo/pull/123");
-            Console.WriteLine("  kapacitor review owner/repo#123");
-            break;
-        case "mcp":
-            Console.WriteLine("kapacitor mcp — MCP server commands");
-            Console.WriteLine();
-            Console.WriteLine("Usage: kapacitor mcp <subcommand>");
-            Console.WriteLine();
-            Console.WriteLine("Subcommands:");
-            Console.WriteLine("  review                  Start the MCP review server (stdio)");
-            Console.WriteLine();
-            Console.WriteLine("Options for review:");
-            Console.WriteLine("  --owner <owner>         Repository owner");
-            Console.WriteLine("  --repo <repo>           Repository name");
-            Console.WriteLine("  --pr <number>           PR number");
-            Console.WriteLine();
-            Console.WriteLine("If --owner/--repo/--pr are omitted, auto-detects from git.");
-            break;
-        case "update":
-            Console.WriteLine("kapacitor update — Check for and install updates");
-            Console.WriteLine();
-            Console.WriteLine("Usage: kapacitor update");
-            break;
-        case "cleanup":
-            Console.WriteLine("kapacitor cleanup — Kill all orphaned watcher processes");
-            Console.WriteLine();
-            Console.WriteLine("Usage: kapacitor cleanup");
-            break;
-        case "history":
-            Console.WriteLine("kapacitor history — Import local transcript history to server");
-            Console.WriteLine();
-            Console.WriteLine("Usage: kapacitor history [options]");
-            Console.WriteLine();
-            Console.WriteLine("Options:");
-            Console.WriteLine("  --cwd <path>            Filter by working directory");
-            Console.WriteLine("  --session <id>          Import a specific session only");
-            Console.WriteLine("  --min-lines <n>         Skip sessions shorter than n lines (default: 10)");
-            break;
-        case "watch":
-            Console.WriteLine("kapacitor watch — Watch a session transcript file (internal)");
-            Console.WriteLine();
-            Console.WriteLine("Usage: kapacitor watch <sessionId> <transcriptPath> [options]");
-            Console.WriteLine();
-            Console.WriteLine("Options:");
-            Console.WriteLine("  --agent-id <id>         Agent ID (for subagent watchers)");
-            Console.WriteLine("  --cwd <path>            Working directory");
-            Console.WriteLine("  --skip-title            Skip title generation");
-            break;
-        case "permission-request":
-            Console.WriteLine("kapacitor permission-request — Handle permission request (internal)");
-            Console.WriteLine();
-            Console.WriteLine("Usage: echo '<json>' | kapacitor permission-request");
-            Console.WriteLine();
-            Console.WriteLine("Used by the Claude Code PermissionRequest hook. Reads JSON from stdin.");
-            break;
-        case "disable":
-            Console.WriteLine("kapacitor disable — Stop recording and delete all session data");
-            Console.WriteLine();
-            Console.WriteLine("Usage: kapacitor disable");
-            Console.WriteLine();
-            Console.WriteLine("Stops the watcher, prevents future hook events from being sent,");
-            Console.WriteLine("and deletes all session data from the server (streams + read models).");
-            Console.WriteLine();
-            Console.WriteLine("Environment:");
-            Console.WriteLine("  KAPACITOR_SESSION_ID    Session ID (required, set automatically)");
-            break;
-        case "hide":
-            Console.WriteLine("kapacitor hide — Hide session from other users");
-            Console.WriteLine();
-            Console.WriteLine("Usage: kapacitor hide");
-            Console.WriteLine();
-            Console.WriteLine("Sets the current session's visibility to owner-only. Other users");
-            Console.WriteLine("will no longer see this session in the dashboard.");
-            Console.WriteLine();
-            Console.WriteLine("Environment:");
-            Console.WriteLine("  KAPACITOR_SESSION_ID    Session ID (required, set automatically)");
-            break;
-        default:
-            if (hookCommands.Contains(cmd)) {
-                Console.WriteLine($"kapacitor {cmd} — Hook command (internal)");
-                Console.WriteLine();
-                Console.WriteLine($"Usage: echo '<json>' | kapacitor {cmd}");
-                Console.WriteLine();
-                Console.WriteLine("Used internally by the Claude Code plugin. Reads JSON from stdin.");
-            } else {
-                Console.Error.WriteLine($"Unknown command: {cmd}");
-                Console.Error.WriteLine("Run `kapacitor --help` for a list of commands.");
-                return 1;
-            }
-            break;
+async Task<int> PrintCommandHelp(string cmd) {
+    var text = EmbeddedResources.TryLoad($"help-{cmd}.txt");
+
+    if (text is not null) {
+        await Console.Out.WriteAsync(text);
+    } else if (hookCommands.Contains(cmd)) {
+        var hookText = EmbeddedResources.Load("help-hook.txt").Replace("{cmd}", cmd);
+        await Console.Out.WriteAsync(hookText);
+    } else {
+        Console.Error.WriteLine($"Unknown command: {cmd}");
+        Console.Error.WriteLine("Run `kapacitor --help` for a list of commands.");
+        return 1;
     }
+
     return 0;
 }

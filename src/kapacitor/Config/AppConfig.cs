@@ -36,16 +36,11 @@ internal partial class ConfigJsonContext : JsonSerializerContext;
 internal partial class ConfigJsonContextIndented : JsonSerializerContext;
 
 public static class AppConfig {
-    static readonly string ConfigPath = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-        ".config",
-        "kapacitor",
-        "config.json"
-    );
+    static readonly string ConfigPath = PathHelpers.ConfigPath("config.json");
 
     public static string? ResolvedServerUrl { get; private set; }
 
-    public static string? ResolveServerUrl(string[] args) {
+    public static async Task<string?> ResolveServerUrl(string[] args) {
         // 1. CLI arg: --server-url <url>
         var idx = Array.IndexOf(args, "--server-url");
 
@@ -65,7 +60,7 @@ public static class AppConfig {
         }
 
         // 3. Config file
-        var config = Load();
+        var config = await Load();
 
         if (!string.IsNullOrEmpty(config?.ServerUrl)) {
             ResolvedServerUrl = NormalizeUrl(config.ServerUrl);
@@ -87,12 +82,12 @@ public static class AppConfig {
 
     static readonly string[] ValidVisibilities = ["private", "org_public", "public"];
 
-    public static KapacitorConfig? Load() {
+    public static async Task<KapacitorConfig?> Load() {
         if (!File.Exists(ConfigPath))
             return null;
 
         try {
-            var json   = File.ReadAllText(ConfigPath);
+            var json   = await File.ReadAllTextAsync(ConfigPath);
             var config = JsonSerializer.Deserialize(json, ConfigJsonContext.Default.KapacitorConfig);
 
             if (config is null) return null;
@@ -104,18 +99,18 @@ public static class AppConfig {
 
             return vis == config.DefaultVisibility ? config : config with { DefaultVisibility = vis };
         } catch (Exception ex) when (ex is JsonException or IOException or UnauthorizedAccessException) {
-            Console.Error.WriteLine($"Warning: could not read config at {ConfigPath}: {ex.Message}");
+            await Console.Error.WriteLineAsync($"Warning: could not read config at {ConfigPath}: {ex.Message}");
 
             return null;
         }
     }
 
-    public static void Save(KapacitorConfig config) {
+    public static async Task Save(KapacitorConfig config) {
         var dir = Path.GetDirectoryName(ConfigPath)!;
         Directory.CreateDirectory(dir);
-        var tempPath = ConfigPath + ".tmp";
+        var tempPath = $"{ConfigPath}.tmp";
 
-        File.WriteAllBytes(
+        await File.WriteAllBytesAsync(
             tempPath,
             JsonSerializer.SerializeToUtf8Bytes(config, ConfigJsonContextIndented.Default.KapacitorConfig)
         );

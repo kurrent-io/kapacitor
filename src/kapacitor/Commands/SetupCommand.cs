@@ -1,5 +1,6 @@
 using kapacitor.Auth;
 using kapacitor.Config;
+// ReSharper disable MethodHasAsyncOverload
 
 namespace kapacitor.Commands;
 
@@ -8,34 +9,34 @@ public static class SetupCommand {
         var serverUrlArg = GetArg(args, "--server-url");
         var noPrompt     = args.Contains("--no-prompt");
 
-        Console.WriteLine();
-        Console.WriteLine("Welcome to Kapacitor!");
-        Console.WriteLine();
+        await Console.Out.WriteLineAsync();
+        await Console.Out.WriteLineAsync("Welcome to Kapacitor!");
+        await Console.Out.WriteLineAsync();
 
         // Check if already configured
-        var existing       = AppConfig.Load();
-        var existingTokens = TokenStore.Load();
+        var existing       = await AppConfig.Load();
+        var existingTokens = await TokenStore.LoadAsync();
 
         if (existing?.ServerUrl is not null && existingTokens is not null && !noPrompt) {
             Console.Write($"Already configured for {existing.ServerUrl} as {existingTokens.GitHubUsername}. Re-run setup? [y/N] ");
             var answer = Console.ReadLine()?.Trim().ToLowerInvariant();
 
             if (answer is not "y" and not "yes") {
-                Console.WriteLine("Setup cancelled.");
+                await Console.Out.WriteLineAsync("Setup cancelled.");
 
                 return 0;
             }
         }
 
         // Step 1: Server URL
-        Console.WriteLine("Step 1/5: Server");
+        await Console.Out.WriteLineAsync("Step 1/5: Server");
         string serverUrl;
 
         if (serverUrlArg is not null) {
             serverUrl = serverUrlArg;
-            Console.WriteLine($"  Server URL: {serverUrl}");
+            await Console.Out.WriteLineAsync($"  Server URL: {serverUrl}");
         } else if (noPrompt) {
-            await Console.Error.WriteLineAsync("  --server-url is required with --no-prompt");
+            Console.Error.WriteLine("  --server-url is required with --no-prompt");
 
             return 1;
         } else {
@@ -43,7 +44,7 @@ public static class SetupCommand {
             serverUrl = Console.ReadLine()?.Trim() ?? "";
 
             if (string.IsNullOrEmpty(serverUrl)) {
-                await Console.Error.WriteLineAsync("  Server URL is required.");
+                Console.Error.WriteLine("  Server URL is required.");
 
                 return 1;
             }
@@ -58,44 +59,44 @@ public static class SetupCommand {
 
         try {
             provider = await HttpClientExtensions.DiscoverProviderAsync(serverUrl);
-            Console.WriteLine($"✓ Reachable. Auth provider: {provider}");
+            await Console.Out.WriteLineAsync($"✓ Reachable. Auth provider: {provider}");
         } catch (Exception ex) {
-            await Console.Error.WriteLineAsync($"✗ Cannot reach server: {ex.Message}");
+            Console.Error.WriteLine($"✗ Cannot reach server: {ex.Message}");
 
             return 1;
         }
 
-        Console.WriteLine();
+        await Console.Out.WriteLineAsync();
 
         // Step 2: Login
-        Console.WriteLine("Step 2/5: Login");
+        await Console.Out.WriteLineAsync("Step 2/5: Login");
 
         if (provider == "None") {
-            Console.WriteLine("  Auth provider is None — no login required.");
+            await Console.Out.WriteLineAsync("  Auth provider is None — no login required.");
         } else {
             var loginResult = await OAuthLoginFlow.LoginWithDiscoveryAsync(serverUrl);
 
             if (loginResult != 0) {
-                await Console.Error.WriteLineAsync("  Login failed.");
+                Console.Error.WriteLine("  Login failed.");
 
                 return 1;
             }
 
-            var tokens = TokenStore.Load();
-            Console.WriteLine($"  ✓ Logged in as {tokens?.GitHubUsername}");
+            var tokens = await TokenStore.LoadAsync();
+            await Console.Out.WriteLineAsync($"  ✓ Logged in as {tokens?.GitHubUsername}");
         }
 
-        Console.WriteLine();
+        await Console.Out.WriteLineAsync();
 
         // Step 3: Default session visibility
-        Console.WriteLine("Step 3/5: Default session visibility");
-        Console.WriteLine();
-        Console.WriteLine("  How should your sessions be visible to others by default?");
-        Console.WriteLine();
-        Console.WriteLine("    1) All private — only you can see your sessions");
-        Console.WriteLine("    2) Org repos public, others private (current default)");
-        Console.WriteLine("    3) All public — everyone can see all your sessions");
-        Console.WriteLine();
+        await Console.Out.WriteLineAsync("Step 3/5: Default session visibility");
+        await Console.Out.WriteLineAsync();
+        await Console.Out.WriteLineAsync("  How should your sessions be visible to others by default?");
+        await Console.Out.WriteLineAsync();
+        await Console.Out.WriteLineAsync("    1) All private — only you can see your sessions");
+        await Console.Out.WriteLineAsync("    2) Org repos public, others private (current default)");
+        await Console.Out.WriteLineAsync("    3) All public — everyone can see all your sessions");
+        await Console.Out.WriteLineAsync();
 
         string defaultVisibility;
 
@@ -103,12 +104,12 @@ public static class SetupCommand {
             defaultVisibility = (GetArg(args, "--default-visibility") ?? "org_public").ToLowerInvariant();
 
             if (defaultVisibility is not "private" and not "org_public" and not "public") {
-                await Console.Error.WriteLineAsync($"  Invalid default-visibility: {defaultVisibility}. Must be: private, org_public, or public");
+                Console.Error.WriteLine($"  Invalid default-visibility: {defaultVisibility}. Must be: private, org_public, or public");
 
                 return 1;
             }
 
-            Console.WriteLine($"  Default visibility: {defaultVisibility}");
+            await Console.Out.WriteLineAsync($"  Default visibility: {defaultVisibility}");
         } else {
             while (true) {
                 Console.Write("  Choose [1-3] (default: 2): ");
@@ -123,47 +124,47 @@ public static class SetupCommand {
 
                 if (defaultVisibility != "") break;
 
-                Console.WriteLine("  Invalid choice. Please enter 1, 2, or 3.");
+                await Console.Out.WriteLineAsync("  Invalid choice. Please enter 1, 2, or 3.");
             }
         }
 
-        Console.WriteLine();
+        await Console.Out.WriteLineAsync();
 
         // Step 4: Claude Code plugin
-        Console.WriteLine("Step 4/5: Claude Code Plugin");
-        Console.WriteLine("  The Kapacitor plugin provides hooks, skills, and collaborative memory.");
-        Console.WriteLine();
+        await Console.Out.WriteLineAsync("Step 4/5: Claude Code Plugin");
+        await Console.Out.WriteLineAsync("  The Kapacitor plugin provides hooks, skills, and collaborative memory.");
+        await Console.Out.WriteLineAsync();
 
         var pluginPath = ResolvePluginPath();
 
         if (pluginPath is not null) {
-            Console.WriteLine("  Install (or update) the plugin by running this inside Claude Code:");
-            Console.WriteLine();
-            Console.WriteLine($"    /plugin install {pluginPath}");
-            Console.WriteLine();
+            await Console.Out.WriteLineAsync("  Install (or update) the plugin by running this inside Claude Code:");
+            await Console.Out.WriteLineAsync();
+            await Console.Out.WriteLineAsync($"    /plugin install {pluginPath}");
+            await Console.Out.WriteLineAsync();
         } else {
-            Console.WriteLine("  Plugin not found. Install kapacitor via npm first:");
-            Console.WriteLine("    npm install -g @kurrent/kapacitor");
+            await Console.Out.WriteLineAsync("  Plugin not found. Install kapacitor via npm first:");
+            await Console.Out.WriteLineAsync("    npm install -g @kurrent/kapacitor");
         }
 
-        Console.WriteLine();
+        await Console.Out.WriteLineAsync();
 
         // Step 5: Daemon name + save
-        Console.WriteLine("Step 5/5: Agent Daemon");
+        await Console.Out.WriteLineAsync("Step 5/5: Agent Daemon");
 
         var    defaultName = Environment.UserName.ToLowerInvariant();
         string daemonName;
 
         if (noPrompt) {
             daemonName = GetArg(args, "--daemon-name") ?? defaultName;
-            Console.WriteLine($"  Daemon name: {daemonName}");
+            await Console.Out.WriteLineAsync($"  Daemon name: {daemonName}");
         } else {
             Console.Write($"  Daemon name [{defaultName}]: ");
             var input = Console.ReadLine()?.Trim();
             daemonName = string.IsNullOrEmpty(input) ? defaultName : input;
         }
 
-        Console.WriteLine();
+        await Console.Out.WriteLineAsync();
 
         // Save config
         var config = existing ?? new KapacitorConfig();
@@ -173,21 +174,21 @@ public static class SetupCommand {
             DefaultVisibility = defaultVisibility,
             Daemon = (config.Daemon ?? new DaemonSettings()) with { Name = daemonName }
         };
-        AppConfig.Save(config);
+        await AppConfig.Save(config);
 
-        var finalTokens = TokenStore.Load();
-        Console.WriteLine("Setup complete!");
-        Console.WriteLine($"  ✓ Server:  {serverUrl}");
-        Console.WriteLine($"  ✓ Visibility: {defaultVisibility}");
-        Console.WriteLine($"  ✓ Daemon:  {daemonName}");
+        var finalTokens = await TokenStore.LoadAsync();
+        await Console.Out.WriteLineAsync("Setup complete!");
+        await Console.Out.WriteLineAsync($"  ✓ Server:  {serverUrl}");
+        await Console.Out.WriteLineAsync($"  ✓ Visibility: {defaultVisibility}");
+        await Console.Out.WriteLineAsync($"  ✓ Daemon:  {daemonName}");
 
         if (finalTokens is not null) {
-            Console.WriteLine($"  ✓ Auth:    {finalTokens.GitHubUsername} ({finalTokens.Provider})");
+            await Console.Out.WriteLineAsync($"  ✓ Auth:    {finalTokens.GitHubUsername} ({finalTokens.Provider})");
         }
 
-        Console.WriteLine($"  Config saved to {AppConfig.GetConfigPath()}");
-        Console.WriteLine();
-        Console.WriteLine("  Optional: start the agent daemon with `kapacitor agent start -d`");
+        await Console.Out.WriteLineAsync($"  Config saved to {AppConfig.GetConfigPath()}");
+        await Console.Out.WriteLineAsync();
+        await Console.Out.WriteLineAsync("  Optional: start the agent daemon with `kapacitor agent start -d`");
 
         return 0;
     }
@@ -216,10 +217,7 @@ public static class SetupCommand {
         // Try: repo root layout (dev mode)
         var repoPlugin = Path.GetFullPath(Path.Combine(exeDir, "..", "..", "plugin"));
 
-        if (Directory.Exists(repoPlugin))
-            return repoPlugin;
-
-        return null;
+        return Directory.Exists(repoPlugin) ? repoPlugin : null;
     }
 
     static string? GetArg(string[] args, string name) {

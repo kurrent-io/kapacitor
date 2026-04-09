@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+// ReSharper disable MethodHasAsyncOverload
 
 namespace kapacitor.Commands;
 
@@ -10,7 +11,7 @@ static class RecapCommand {
         var repo = await RepositoryDetection.DetectRepositoryAsync(cwd);
 
         if (repo?.Owner is null || repo.RepoName is null) {
-            await Console.Error.WriteLineAsync("Not in a git repository with a remote origin.");
+            Console.Error.WriteLine("Not in a git repository with a remote origin.");
 
             return 1;
         }
@@ -34,7 +35,7 @@ static class RecapCommand {
         }
 
         if (!resp.IsSuccessStatusCode) {
-            await Console.Error.WriteLineAsync($"HTTP {(int)resp.StatusCode}");
+            Console.Error.WriteLine($"HTTP {(int)resp.StatusCode}");
 
             return 1;
         }
@@ -43,26 +44,26 @@ static class RecapCommand {
         var entries = JsonSerializer.Deserialize(json, KapacitorJsonContext.Default.ListRepoRecapEntry);
 
         if (entries is null || entries.Count == 0) {
-            Console.WriteLine($"No session summaries found for {repo.Owner}/{repo.RepoName}.");
+            await Console.Out.WriteLineAsync($"No session summaries found for {repo.Owner}/{repo.RepoName}.");
 
             return 0;
         }
 
-        Console.WriteLine($"# Recent sessions for {repo.Owner}/{repo.RepoName}");
-        Console.WriteLine();
+        await Console.Out.WriteLineAsync($"# Recent sessions for {repo.Owner}/{repo.RepoName}");
+        await Console.Out.WriteLineAsync();
 
         foreach (var entry in entries) {
-            var date    = entry.StartedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm");
-            var title   = entry.Title ?? "(untitled)";
-            Console.WriteLine($"## {title}");
-            Console.WriteLine($"*Session {entry.SessionId} | {date}*");
-            Console.WriteLine();
-            Console.WriteLine(entry.Summary);
-            Console.WriteLine();
-            Console.WriteLine($"Full transcript: `kapacitor recap --full {entry.SessionId}`");
-            Console.WriteLine();
-            Console.WriteLine("---");
-            Console.WriteLine();
+            var date  = entry.StartedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm");
+            var title = entry.Title ?? "(untitled)";
+            await Console.Out.WriteLineAsync($"## {title}");
+            await Console.Out.WriteLineAsync($"*Session {entry.SessionId} | {date}*");
+            await Console.Out.WriteLineAsync();
+            await Console.Out.WriteLineAsync(entry.Summary);
+            await Console.Out.WriteLineAsync();
+            await Console.Out.WriteLineAsync($"Full transcript: `kapacitor recap --full {entry.SessionId}`");
+            await Console.Out.WriteLineAsync();
+            await Console.Out.WriteLineAsync("---");
+            await Console.Out.WriteLineAsync();
         }
 
         return 0;
@@ -94,13 +95,13 @@ static class RecapCommand {
         }
 
         if (resp.StatusCode == System.Net.HttpStatusCode.NotFound) {
-            await Console.Error.WriteLineAsync($"Session not found: {sessionId}");
+            Console.Error.WriteLine($"Session not found: {sessionId}");
 
             return 1;
         }
 
         if (!resp.IsSuccessStatusCode) {
-            await Console.Error.WriteLineAsync($"HTTP {(int)resp.StatusCode}");
+            Console.Error.WriteLine($"HTTP {(int)resp.StatusCode}");
 
             return 1;
         }
@@ -109,22 +110,19 @@ static class RecapCommand {
         var entries = JsonSerializer.Deserialize(json, KapacitorJsonContext.Default.ListRecapEntry);
 
         if (entries is null || entries.Count == 0) {
-            Console.WriteLine("No recap entries found.");
+            await Console.Out.WriteLineAsync("No recap entries found.");
 
             return 0;
         }
 
-        if (full)
-            return PrintFull(entries, chain);
-
-        return PrintSummary(entries, chain);
+        return full ? PrintFull(entries, chain) : PrintSummary(entries, chain);
     }
 
     static int PrintSummary(List<RecapEntry> entries, bool chain) {
         var summaries = entries.Where(e => e.Type is "whats_done" or "plan").ToList();
 
         if (summaries.Count == 0) {
-            Console.WriteLine("No summary available yet. Use `kapacitor recap --full` to see the raw transcript.");
+            Console.Out.WriteLine("No summary available yet. Use `kapacitor recap --full` to see the raw transcript.");
 
             return 0;
         }
@@ -134,22 +132,22 @@ static class RecapCommand {
         foreach (var entry in summaries) {
             if (chain && entry.SessionId != currentSessionId) {
                 currentSessionId = entry.SessionId;
-                Console.WriteLine($"# Session {currentSessionId}");
-                Console.WriteLine();
+                Console.Out.WriteLine($"# Session {currentSessionId}");
+                Console.Out.WriteLine();
             }
 
             switch (entry.Type) {
                 case "plan":
-                    Console.WriteLine("## Plan");
-                    Console.WriteLine(entry.Content);
-                    Console.WriteLine();
+                    Console.Out.WriteLine("## Plan");
+                    Console.Out.WriteLine(entry.Content);
+                    Console.Out.WriteLine();
 
                     break;
 
                 case "whats_done":
-                    Console.WriteLine("## Summary");
-                    Console.WriteLine(entry.Content);
-                    Console.WriteLine();
+                    Console.Out.WriteLine("## Summary");
+                    Console.Out.WriteLine(entry.Content);
+                    Console.Out.WriteLine();
 
                     break;
             }
@@ -169,60 +167,60 @@ static class RecapCommand {
             if (chain && entry.SessionId != currentSessionId) {
                 currentSessionId = entry.SessionId;
                 currentAgentId   = null;
-                Console.WriteLine($"# Session {currentSessionId}");
-                Console.WriteLine();
+                Console.Out.WriteLine($"# Session {currentSessionId}");
+                Console.Out.WriteLine();
             }
 
             // Agent header when agent changes
             if (entry.AgentId is not null && entry.AgentId != currentAgentId) {
                 currentAgentId = entry.AgentId;
                 var agentLabel = entry.AgentType is not null ? $"Agent ({entry.AgentType})" : $"Agent {entry.AgentId}";
-                Console.WriteLine($"### {agentLabel}");
-                Console.WriteLine();
+                Console.Out.WriteLine($"### {agentLabel}");
+                Console.Out.WriteLine();
             } else if (entry.AgentId is null && currentAgentId is not null) {
                 currentAgentId = null;
             }
 
             switch (entry.Type) {
                 case "plan":
-                    Console.WriteLine("## Plan");
-                    Console.WriteLine(entry.Content);
-                    Console.WriteLine();
+                    Console.Out.WriteLine("## Plan");
+                    Console.Out.WriteLine(entry.Content);
+                    Console.Out.WriteLine();
 
                     break;
 
                 case "user_prompt":
-                    Console.WriteLine("## User Prompt");
-                    Console.WriteLine(entry.Content);
-                    Console.WriteLine();
+                    Console.Out.WriteLine("## User Prompt");
+                    Console.Out.WriteLine(entry.Content);
+                    Console.Out.WriteLine();
 
                     break;
 
                 case "assistant_text":
-                    Console.WriteLine("## Assistant");
-                    Console.WriteLine(entry.Content);
-                    Console.WriteLine();
+                    Console.Out.WriteLine("## Assistant");
+                    Console.Out.WriteLine(entry.Content);
+                    Console.Out.WriteLine();
 
                     break;
 
                 case "write":
                     var writePath = entry.FilePath ?? "unknown";
                     var writeLang = GetLanguageHint(writePath);
-                    Console.WriteLine($"## Write {writePath}");
-                    Console.WriteLine($"```{writeLang}");
-                    Console.WriteLine(entry.Content);
-                    Console.WriteLine("```");
-                    Console.WriteLine();
+                    Console.Out.WriteLine($"## Write {writePath}");
+                    Console.Out.WriteLine($"```{writeLang}");
+                    Console.Out.WriteLine(entry.Content);
+                    Console.Out.WriteLine("```");
+                    Console.Out.WriteLine();
 
                     break;
 
                 case "edit":
                     var editPath = entry.FilePath ?? "unknown";
-                    Console.WriteLine($"## Edit {editPath}");
-                    Console.WriteLine("```");
-                    Console.WriteLine(entry.Content);
-                    Console.WriteLine("```");
-                    Console.WriteLine();
+                    Console.Out.WriteLine($"## Edit {editPath}");
+                    Console.Out.WriteLine("```");
+                    Console.Out.WriteLine(entry.Content);
+                    Console.Out.WriteLine("```");
+                    Console.Out.WriteLine();
 
                     break;
             }

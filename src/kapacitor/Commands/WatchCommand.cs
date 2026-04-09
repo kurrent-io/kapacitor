@@ -17,7 +17,7 @@ static partial class WatchCommand {
             bool    skipTitle = false
         ) {
         // Redirect all output to a log file so we don't hold parent's pipe FDs open
-        var logDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".config", "kapacitor", "logs");
+        var logDir = PathHelpers.ConfigPath("logs");
         Directory.CreateDirectory(logDir);
         var logKey    = agentId is not null ? $"{sessionId}-{agentId}" : sessionId;
         var logPath   = Path.Combine(logDir, $"{logKey}.log");
@@ -64,8 +64,7 @@ static partial class WatchCommand {
             )
             .WithAutomaticReconnect(new InfiniteRetryPolicy())
             .AddJsonProtocol(options => {
-                    options.PayloadSerializerOptions.TypeInfoResolverChain
-                        .Insert(0, KapacitorJsonContext.Default);
+                    options.PayloadSerializerOptions.TypeInfoResolverChain.Insert(0, KapacitorJsonContext.Default);
                     options.PayloadSerializerOptions.PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower;
                 }
             )
@@ -357,16 +356,16 @@ static partial class WatchCommand {
                 // Threshold reached — flush the entire buffer
                 Log($"Threshold reached ({state.BufferedLines.Count} lines), flushing buffer");
                 state.ThresholdReached = true;
-                newLines       = [..state.BufferedLines];
-                newLineNumbers = [..state.BufferedLineNumbers];
-                linesRead      = state.LinesReadAhead;
+                newLines               = [..state.BufferedLines];
+                newLineNumbers         = [..state.BufferedLineNumbers];
+                linesRead              = state.LinesReadAhead;
                 state.BufferedLines.Clear();
                 state.BufferedLineNumbers.Clear();
 
                 // Send the initial title now that we're flushing
                 if (state is { InitialTitleSent: false, FirstUserText: not null }) {
                     state.InitialTitleSent = true;
-                    _ = SendInitialTitleAsync(hubConnection, sessionId, TruncateForTitle(state.FirstUserText, 80));
+                    _                      = SendInitialTitleAsync(hubConnection, sessionId, TruncateForTitle(state.FirstUserText, 80));
                 }
             } else if (agentId is null && !state.ThresholdReached) {
                 // No new content lines while buffering — track file position
@@ -484,6 +483,7 @@ static partial class WatchCommand {
         try {
             using var doc  = JsonDocument.Parse(line);
             var       root = doc.RootElement;
+
             return root.Str("type") is "user" or "assistant";
         } catch {
             return false;

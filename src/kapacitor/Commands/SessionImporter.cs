@@ -20,11 +20,10 @@ static class SessionImporter {
             string          transcriptPath,
             string          sessionId,
             SessionMetadata metadata,
-            string?         previousSessionId,
             string?         encodedCwd
         ) {
         if (!File.Exists(transcriptPath))
-            return new ImportResult(sessionId, [], 0);
+            return new(sessionId, [], 0);
 
         var cwd = metadata.Cwd ?? (encodedCwd is not null ? DecodeCwdFromDirName(encodedCwd) : null) ?? "";
 
@@ -116,7 +115,7 @@ static class SessionImporter {
     /// <c>result</c> events with <c>async_launched</c> status, and <c>user</c>
     /// events with <c>toolUseResult.agentId</c> (foreground agent completions).
     /// </summary>
-    internal static Dictionary<string, int> ScanAgentProgressLines(string transcriptPath) {
+    static Dictionary<string, int> ScanAgentProgressLines(string transcriptPath) {
         var result = new Dictionary<string, int>(StringComparer.Ordinal);
 
         // Two-pass scan: first collect tool_use_id → line position from assistant
@@ -195,8 +194,8 @@ static class SessionImporter {
 
         var agentId = data.Value.Str("agentId");
 
-        if (agentId is not null && !result.ContainsKey(agentId))
-            result[agentId] = lineIndex;
+        if (agentId is not null)
+            result.TryAdd(agentId, lineIndex);
     }
 
     /// <summary>

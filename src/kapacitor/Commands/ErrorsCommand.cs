@@ -1,4 +1,5 @@
 using System.Text.Json;
+// ReSharper disable MethodHasAsyncOverload
 
 namespace kapacitor.Commands;
 
@@ -22,13 +23,13 @@ static class ErrorsCommand {
         }
 
         if (resp.StatusCode == System.Net.HttpStatusCode.NotFound) {
-            await Console.Error.WriteLineAsync($"Session not found: {sessionId}");
+            Console.Error.WriteLine($"Session not found: {sessionId}");
 
             return 1;
         }
 
         if (!resp.IsSuccessStatusCode) {
-            await Console.Error.WriteLineAsync($"HTTP {(int)resp.StatusCode}");
+            Console.Error.WriteLine($"HTTP {(int)resp.StatusCode}");
 
             return 1;
         }
@@ -37,20 +38,20 @@ static class ErrorsCommand {
         var errors = JsonSerializer.Deserialize(json, KapacitorJsonContext.Default.ListErrorEntry);
 
         if (errors is null || errors.Count == 0) {
-            Console.WriteLine("No errors found.");
+            await Console.Out.WriteLineAsync("No errors found.");
 
             return 0;
         }
 
-        Console.WriteLine($"Found {errors.Count} error(s):\n");
+        await Console.Out.WriteLineAsync($"Found {errors.Count} error(s):\n");
 
         foreach (var error in errors) {
             var label    = error.SessionSlug ?? error.SessionId;
             var agentTag = error.AgentId is not null ? $" (agent {error.AgentId})" : "";
             var tool     = error.ToolName ?? "unknown";
-            Console.WriteLine($"  [{label}]{agentTag} #{error.EventNumber} {tool}");
-            Console.WriteLine($"    {error.Error}");
-            Console.WriteLine();
+            await Console.Out.WriteLineAsync($"  [{label}]{agentTag} #{error.EventNumber} {tool}");
+            await Console.Out.WriteLineAsync($"    {error.Error}");
+            await Console.Out.WriteLineAsync();
         }
 
         return 0;

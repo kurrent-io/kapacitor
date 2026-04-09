@@ -58,7 +58,7 @@ public class HistoryCommandTests {
 
     [Test]
     public async Task ExtractLastTimestamp_returns_null_for_missing_file() {
-        var result = HistoryCommand.ExtractLastTimestamp("/tmp/nonexistent-" + Guid.NewGuid() + ".jsonl");
+        var result = HistoryCommand.ExtractLastTimestamp($"/tmp/nonexistent-{Guid.NewGuid()}.jsonl");
         await Assert.That(result).IsNull();
     }
 
