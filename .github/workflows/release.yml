@@ -27,92 +27,39 @@ jobs:
           wait-interval: 15
           checks-discovery-timeout: 300
 
-  create-runner-x86:
-    name: Create Hetzner x86 runner
-    needs: ci
-    runs-on: ubuntu-latest
-    outputs:
-      label: ${{ steps.create.outputs.label }}
-      server_id: ${{ steps.create.outputs.server_id }}
-    steps:
-      - name: Create runner
-        id: create
-        uses: Cyclenerd/hcloud-github-runner@v1
-        with:
-          mode: create
-          github_token: ${{ secrets.HCLOUD_GITHUB_PAT }}
-          hcloud_token: ${{ secrets.HCLOUD_TOKEN }}
-          server_type: cx43
-          location: nbg1
-          image: docker-ce
-          ssh_key: ${{ secrets.HCLOUD_SSH_KEY_ID }}
-          pre_runner_script: |
-            apt-get update
-            apt-get install -y clang zlib1g-dev
-
-  create-runner-arm:
-    name: Create Hetzner ARM runner
-    needs: ci
-    runs-on: ubuntu-latest
-    outputs:
-      label: ${{ steps.create.outputs.label }}
-      server_id: ${{ steps.create.outputs.server_id }}
-    steps:
-      - name: Create runner
-        id: create
-        uses: Cyclenerd/hcloud-github-runner@v1
-        with:
-          mode: create
-          github_token: ${{ secrets.HCLOUD_GITHUB_PAT }}
-          hcloud_token: ${{ secrets.HCLOUD_TOKEN }}
-          server_type: cax21
-          location: nbg1
-          image: docker-ce
-          ssh_key: ${{ secrets.HCLOUD_SSH_KEY_ID }}
-          pre_runner_script: |
-            apt-get update
-            apt-get install -y clang zlib1g-dev musl-tools
-
   build:
-    needs: [ci, create-runner-x86, create-runner-arm]
+    needs: ci
     strategy:
       fail-fast: false
       matrix:
         include:
           - rid: osx-arm64
             os: macos-latest
-            runner: github
             npm-package: kapacitor-darwin-arm64
             binary-name: kapacitor
           - rid: linux-x64
-            runner: hetzner-x86
+            os: ubuntu-latest
             npm-package: kapacitor-linux-x64
             binary-name: kapacitor
           - rid: linux-arm64
-            runner: hetzner-arm
+            os: ubuntu-24.04-arm
             npm-package: kapacitor-linux-arm64
             binary-name: kapacitor
           - rid: linux-musl-x64
-            runner: hetzner-x86
+            os: ubuntu-latest
             container: alpine:3.20
             npm-package: kapacitor-linux-musl-x64
             binary-name: kapacitor
           - rid: linux-musl-arm64
-            runner: hetzner-arm
+            os: ubuntu-24.04-arm
             npm-package: kapacitor-linux-musl-arm64
             binary-name: kapacitor
           - rid: win-x64
             os: windows-latest
-            runner: github
             npm-package: kapacitor-win-x64
             binary-name: kapacitor.exe
 
-    runs-on: >-
-      ${{
-        matrix.runner == 'hetzner-x86' && needs.create-runner-x86.outputs.label ||
-        matrix.runner == 'hetzner-arm' && needs.create-runner-arm.outputs.label ||
-        matrix.os
-      }}
+    runs-on: ${{ matrix.os }}
     container: ${{ matrix.container || '' }}
 
     steps:
@@ -121,6 +68,12 @@ jobs:
         shell: sh
         run: |
           apk add --no-cache bash curl git icu-libs krb5-libs libgcc libstdc++ zlib clang build-base zlib-dev linux-headers
+
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux' && !matrix.container
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang zlib1g-dev ${{ contains(matrix.rid, 'musl') && 'musl-tools' || '' }}
 
       - uses: actions/checkout@v4
 
@@ -177,8 +130,8 @@ jobs:
           path: kapacitor-${{ matrix.rid }}.*
 
   publish-npm:
-    needs: [build, create-runner-x86]
-    runs-on: ${{ needs.create-runner-x86.outputs.label }}
+    needs: build
+    runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
@@ -243,8 +196,8 @@ jobs:
           npm publish --access public
 
   github-release:
-    needs: [build, create-runner-x86]
-    runs-on: ${{ needs.create-runner-x86.outputs.label }}
+    needs: build
+    runs-on: ubuntu-latest
 
     steps:
       - name: Download all release archives
@@ -259,33 +212,3 @@ jobs:
         with:
           files: release-artifacts/*
           generate_release_notes: true
-
-  delete-runner-x86:
-    name: Delete Hetzner x86 runner
-    needs: [create-runner-x86, publish-npm, github-release]
-    runs-on: ubuntu-latest
-    if: always()
-    steps:
-      - name: Delete runner
-        uses: Cyclenerd/hcloud-github-runner@v1
-        with:
-          mode: delete
-          github_token: ${{ secrets.HCLOUD_GITHUB_PAT }}
-          hcloud_token: ${{ secrets.HCLOUD_TOKEN }}
-          name: ${{ needs.create-runner-x86.outputs.label }}
-          server_id: ${{ needs.create-runner-x86.outputs.server_id }}
-
-  delete-runner-arm:
-    name: Delete Hetzner ARM runner
-    needs: [create-runner-arm, build]
-    runs-on: ubuntu-latest
-    if: always()
-    steps:
-      - name: Delete runner
-        uses: Cyclenerd/hcloud-github-runner@v1
-        with:
-          mode: delete
-          github_token: ${{ secrets.HCLOUD_GITHUB_PAT }}
-          hcloud_token: ${{ secrets.HCLOUD_TOKEN }}
-          name: ${{ needs.create-runner-arm.outputs.label }}
-          server_id: ${{ needs.create-runner-arm.outputs.server_id }}
