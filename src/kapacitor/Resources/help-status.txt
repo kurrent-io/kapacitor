@@ -1,0 +1,3 @@
+kapacitor status — Show server, auth, and agent status
+
+Usage: kapacitor status

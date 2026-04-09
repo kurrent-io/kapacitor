@@ -1,0 +1,44 @@
+kapacitor — CLI companion for Kurrent Capacitor
+
+Usage: kapacitor <command> [options]
+
+Getting Started:
+  setup                            Configure server, login, and install plugin
+  status                           Show server, auth, and agent status
+  login                            Authenticate via OAuth (browser)
+  logout                           Remove stored credentials
+  whoami                           Show current authenticated user
+
+Configuration:
+  config show                      Print current configuration
+  config set <key> <value>         Update a config value
+
+Agent Daemon:
+  agent start [-d]                 Start agent daemon (foreground, or -d for background)
+  agent stop                       Stop background agent daemon
+  agent status                     Show agent daemon status
+
+Session:
+  errors [--chain] [id]            List tool call errors for a session
+  recap [--chain] [--full] [id]    Session summary (--full for raw transcript)
+  recap --repo                     Recent session summaries for current repo
+  validate-plan [id]               Validate plan completion for a session
+  generate-whats-done <id>         Generate what's-done summary
+  set-title <title>                Set session title
+  disable                          Stop recording and delete session data
+  hide                             Hide session (owner-only visibility)
+  review <pr>                      Launch Claude with PR review context
+
+Maintenance:
+  update                           Check for and install updates
+  cleanup                          Kill all orphaned watcher processes
+  --version                        Show version
+  --help                           Show this help
+
+Hook Commands (internal — used by Claude Code plugin):
+{hookCommands}
+
+Environment:
+  KAPACITOR_URL              Server URL (overrides config file)
+  KAPACITOR_SESSION_ID       Session ID (set automatically by SessionStart hook)
+  KAPACITOR_DAEMON_NAME      Daemon name (overrides config file)

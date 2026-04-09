@@ -1,0 +1,6 @@
+kapacitor validate-plan — Validate plan completion for a session
+
+Usage: kapacitor validate-plan [sessionId]
+
+Arguments:
+  sessionId               Session ID (defaults to KAPACITOR_SESSION_ID)

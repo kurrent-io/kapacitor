@@ -1,0 +1,13 @@
+kapacitor mcp — MCP server commands
+
+Usage: kapacitor mcp <subcommand>
+
+Subcommands:
+  review                  Start the MCP review server (stdio)
+
+Options for review:
+  --owner <owner>         Repository owner
+  --repo <repo>           Repository name
+  --pr <number>           PR number
+
+If --owner/--repo/--pr are omitted, auto-detects from git.

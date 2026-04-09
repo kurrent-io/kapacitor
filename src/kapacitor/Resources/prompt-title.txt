@@ -1,0 +1,1 @@
+Generate a short descriptive title (max 10 words, no quotes, no period) for a coding session. NEVER ask a question. NEVER include a question mark. Always produce a title, even if context is limited.

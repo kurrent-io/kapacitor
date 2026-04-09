@@ -1,0 +1,9 @@
+kapacitor setup — Configure server, login, and install plugin
+
+Usage: kapacitor setup [options]
+
+Options:
+  --server-url <url>          Server URL (skip prompt)
+  --daemon-name <name>        Daemon name (skip prompt)
+  --default-visibility <vis>  Default visibility: private, org_public, public
+  --no-prompt                 Non-interactive mode (requires --server-url)

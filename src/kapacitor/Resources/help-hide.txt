@@ -1,0 +1,9 @@
+kapacitor hide — Hide session from other users
+
+Usage: kapacitor hide
+
+Sets the current session's visibility to owner-only. Other users
+will no longer see this session in the dashboard.
+
+Environment:
+  KAPACITOR_SESSION_ID    Session ID (required, set automatically)

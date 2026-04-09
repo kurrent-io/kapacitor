@@ -1,0 +1,15 @@
+kapacitor config — Manage configuration
+
+Usage: kapacitor config <subcommand>
+
+Subcommands:
+  show                    Print current configuration
+  set <key> <value>       Update a config value
+
+Config keys:
+  server_url              Server URL
+  daemon.name             Daemon name
+  daemon.max_agents       Max concurrent agents
+  update_check            Enable update check (true/false)
+  default_visibility      Default session visibility (private, org_public, public)
+  excluded_repos          Excluded repos, comma-separated (owner/repo,owner/repo)

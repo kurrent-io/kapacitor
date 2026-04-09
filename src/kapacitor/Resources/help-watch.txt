@@ -1,0 +1,8 @@
+kapacitor watch — Watch a session transcript file (internal)
+
+Usage: kapacitor watch <sessionId> <transcriptPath> [options]
+
+Options:
+  --agent-id <id>         Agent ID (for subagent watchers)
+  --cwd <path>            Working directory
+  --skip-title            Skip title generation

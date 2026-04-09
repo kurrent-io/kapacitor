@@ -1,0 +1,6 @@
+kapacitor generate-whats-done — Generate what's-done summary
+
+Usage: kapacitor generate-whats-done <sessionId>
+
+Arguments:
+  sessionId               Session ID (required)

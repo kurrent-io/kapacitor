@@ -1,0 +1,6 @@
+kapacitor login — Authenticate via OAuth
+
+Usage: kapacitor login
+
+Opens a browser for OAuth authentication. The auth method (GitHub Device
+Flow or Auth0 PKCE) is auto-discovered from the server configuration.

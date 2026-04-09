@@ -1,0 +1,16 @@
+kapacitor agent — Manage the agent daemon
+
+Usage: kapacitor agent <subcommand>
+
+Subcommands:
+  start [-d]              Start the agent daemon (foreground, or -d for background)
+  stop                    Stop the background agent daemon
+  status                  Show agent daemon status
+  logs                    Show recent daemon log output
+
+Options for start:
+  --name <name>           Daemon name
+  --server-url <url>      Server URL
+  --max-agents <n>        Max concurrent agents (default: 5)
+  --log-file <path>       Log to file instead of console
+  -d, --detach            Run in background (logs to file automatically)

@@ -1,0 +1,9 @@
+kapacitor set-title — Set session title
+
+Usage: kapacitor set-title <title>
+
+Arguments:
+  title                   Session title (max 120 characters)
+
+Environment:
+  KAPACITOR_SESSION_ID    Session ID (required)

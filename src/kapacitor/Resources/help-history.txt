@@ -1,0 +1,8 @@
+kapacitor history — Import local transcript history to server
+
+Usage: kapacitor history [options]
+
+Options:
+  --cwd <path>            Filter by working directory
+  --session <id>          Import a specific session only
+  --min-lines <n>         Skip sessions shorter than n lines (default: 10)

@@ -1,0 +1,9 @@
+kapacitor errors — List tool call errors for a session
+
+Usage: kapacitor errors [options] [sessionId]
+
+Options:
+  --chain                 Include all sessions in the continuation chain
+
+Arguments:
+  sessionId               Session ID (defaults to KAPACITOR_SESSION_ID)
