@@ -54,6 +54,10 @@ static partial class SecretRedactor {
         text = PemBlockRegex.Replace(text, "[REDACTED]");
         text = AwsAccessKeyRegex.Replace(text, "[REDACTED]");
         text = VendorTokenRegex.Replace(text, "[REDACTED]");
+        text = JsonKeySecretRegex.Replace(text, "$1[REDACTED]$3");
+        text = EnvVarSecretRegex.Replace(text, "$1[REDACTED]");
+        text = YamlStyleSecretRegex.Replace(text, "$1[REDACTED]");
+        text = ConnectionStringPwdRegex.Replace(text, "$1[REDACTED]$3");
         return text;
     }
 
@@ -72,4 +76,29 @@ static partial class SecretRedactor {
     [GeneratedRegex(@"(?:ghp_|gho_|ghs_|github_pat_|cfat_|sk-(?:proj-|live_|test_)?|sk_live_|sk_test_|xoxb-|xoxp-|xoxa-|pypi-|npm_|glpat-)[A-Za-z0-9\-_]{10,}", RegexOptions.None)]
     private static partial Regex VendorTokenRx();
     static readonly Regex VendorTokenRegex = VendorTokenRx();
+
+    // JSON key: matches "secret_name": "value" or \"secret_name\": \"value\" (escaped quotes inside JSON strings)
+    // group 1 = opening quote(s) + key name + closing quote(s) + colon + space + opening quote(s)
+    // group 2 = value
+    // group 3 = closing quote(s)
+    [GeneratedRegex("""((?:\\"|")(?:[^"\\]*(?:secret|token|password|passwd|pwd|api_key|apikey|private_key|credentials|client_secret|access_key|auth_token)[^"\\]*)(?:\\"|")[ \t]*:[ \t]*(?:\\"|"))([^"\\]+)((?:\\"|"))""", RegexOptions.IgnoreCase)]
+    private static partial Regex JsonKeySecretRx();
+    static readonly Regex JsonKeySecretRegex = JsonKeySecretRx();
+
+    // Env var: SECRET_NAME=value (uppercase key containing secret keyword, value until whitespace)
+    [GeneratedRegex(@"([A-Z_]*(?:SECRET|TOKEN|PASSWORD|PASSWD|PWD|API_KEY|APIKEY|PRIVATE_KEY|CREDENTIALS|CLIENT_SECRET|ACCESS_KEY|AUTH_TOKEN)[A-Z_]*=)(\S+)", RegexOptions.IgnoreCase)]
+    private static partial Regex EnvVarSecretRx();
+    static readonly Regex EnvVarSecretRegex = EnvVarSecretRx();
+
+    // YAML-style: secret_name: value (key containing secret keyword followed by colon, space, and value)
+    // Only matches when value is a non-trivial token (no spaces, length >= 8)
+    [GeneratedRegex(@"((?:secret|token|password|passwd|pwd|api_key|apikey|private_key|credentials|client_secret|access_key|auth_token)[^:\n]*:[ \t]+)(\S{8,})", RegexOptions.IgnoreCase)]
+    private static partial Regex YamlStyleSecretRx();
+    static readonly Regex YamlStyleSecretRegex = YamlStyleSecretRx();
+
+    // Connection string: Password=value; or Pwd=value;
+    // group 1 = key=, group 2 = value, group 3 = ; or end
+    [GeneratedRegex(@"((?:Password|Pwd)\s*=\s*)([^;]+)(;|$)", RegexOptions.IgnoreCase)]
+    private static partial Regex ConnectionStringPwdRx();
+    static readonly Regex ConnectionStringPwdRegex = ConnectionStringPwdRx();
 }

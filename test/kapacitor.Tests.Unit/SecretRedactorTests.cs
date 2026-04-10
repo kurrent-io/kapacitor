@@ -82,4 +82,65 @@ public class SecretRedactorTests {
         await Assert.That(result).DoesNotContain("AKIAIOSFODNN7EXAMPLE");
         await Assert.That(result).Contains("[REDACTED]");
     }
+
+    [Test]
+    public async Task RedactsLine_JsonKeySecret_InToolResult() {
+        var line = """
+            {"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_1","type":"tool_result","content":"{ \"client_secret\": \"a8f3b2c91d4e7f0123456789abcdef01\" }","is_error":false}]}}
+            """.Trim();
+
+        var result = SecretRedactor.RedactLine(line);
+
+        await Assert.That(result).DoesNotContain("a8f3b2c91d4e7f0123456789abcdef01");
+        await Assert.That(result).Contains("client_secret");
+        await Assert.That(result).Contains("[REDACTED]");
+    }
+
+    [Test]
+    public async Task RedactsLine_EnvVarToken_InToolResult() {
+        var line = """
+            {"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_1","type":"tool_result","content":"HETZNER_API_TOKEN=abc123def456ghi789jkl","is_error":false}]}}
+            """.Trim();
+
+        var result = SecretRedactor.RedactLine(line);
+
+        await Assert.That(result).DoesNotContain("abc123def456ghi789jkl");
+        await Assert.That(result).Contains("HETZNER_API_TOKEN");
+        await Assert.That(result).Contains("[REDACTED]");
+    }
+
+    [Test]
+    public async Task RedactsLine_YamlStyleSecret_InToolResult() {
+        var line = """
+            {"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_1","type":"tool_result","content":"api_key: sk_reallyLongSecretValue123456","is_error":false}]}}
+            """.Trim();
+
+        var result = SecretRedactor.RedactLine(line);
+
+        await Assert.That(result).DoesNotContain("sk_reallyLongSecretValue123456");
+        await Assert.That(result).Contains("[REDACTED]");
+    }
+
+    [Test]
+    public async Task RedactsLine_ConnectionStringPassword_InToolResult() {
+        var line = """
+            {"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_1","type":"tool_result","content":"Server=localhost;Database=mydb;Password=hunter2;User Id=sa","is_error":false}]}}
+            """.Trim();
+
+        var result = SecretRedactor.RedactLine(line);
+
+        await Assert.That(result).DoesNotContain("hunter2");
+        await Assert.That(result).Contains("[REDACTED]");
+    }
+
+    [Test]
+    public async Task DoesNotRedact_CleanToolResult() {
+        var line = """
+            {"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_1","type":"tool_result","content":"total 40\ndrwxr-xr-x  8 user staff 256 Feb 11 22:54 .\n-rw-r--r--  1 user staff 611 Feb 10 22:33 Program.cs","is_error":false}]}}
+            """.Trim();
+
+        var result = SecretRedactor.RedactLine(line);
+
+        await Assert.That(result).IsEqualTo(line);
+    }
 }
