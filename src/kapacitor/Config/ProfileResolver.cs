@@ -55,7 +55,12 @@ public class ProfileResolver(
         }
 
         // 5. Git remote match
-        var remoteMatch = RemoteMatcher.FindMatchingProfile(config.Profiles, repoRemoteUrls);
+        string? remoteMatch;
+        try {
+            remoteMatch = RemoteMatcher.FindMatchingProfile(config.Profiles, repoRemoteUrls);
+        } catch (InvalidOperationException ex) {
+            return new(null, null, null, ex.Message);
+        }
         if (remoteMatch is not null)
             return ResolveByName(remoteMatch);
 

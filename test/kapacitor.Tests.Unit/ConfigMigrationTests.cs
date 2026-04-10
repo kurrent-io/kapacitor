@@ -63,6 +63,15 @@ public class ConfigMigrationTests {
     }
 
     [Test]
+    public async Task Migrate_NonObjectJson_CreatesEmptyV2() {
+        var result = ConfigMigration.MigrateIfNeeded("[]");
+
+        await Assert.That(result.WasMigrated).IsTrue();
+        await Assert.That(result.Config.Version).IsEqualTo(2);
+        await Assert.That(result.Config.Profiles).ContainsKey("default");
+    }
+
+    [Test]
     public async Task ProfileConfig_RoundTrips_ThroughJson() {
         var config = new ProfileConfig {
             ActiveProfile = "default",

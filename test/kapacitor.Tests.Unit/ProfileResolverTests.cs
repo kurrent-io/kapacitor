@@ -164,6 +164,31 @@ public class ProfileResolverTests {
     }
 
     [Test]
+    public async Task Resolve_AmbiguousRemotes_ReturnsWarningInsteadOfCrashing() {
+        var config = new ProfileConfig {
+            ActiveProfile = "default",
+            Profiles = new Dictionary<string, Profile> {
+                ["default"] = new() { ServerUrl = "https://default.com" },
+                ["alpha"] = new() { ServerUrl = "https://alpha.com", Remotes = ["github.com/shared/*"] },
+                ["beta"] = new() { ServerUrl = "https://beta.com", Remotes = ["github.com/shared/*"] }
+            }
+        };
+
+        var resolver = new ProfileResolver(
+            config,
+            cliServerUrl: null, envUrl: null, envProfile: null,
+            repoConfig: null,
+            repoRemoteUrls: ["https://github.com/shared/repo.git"],
+            repoPath: null
+        );
+
+        var result = resolver.Resolve();
+
+        await Assert.That(result.ServerUrl).IsNull();
+        await Assert.That(result.Warning).IsNotNull();
+    }
+
+    [Test]
     public async Task Resolve_RepoConfigUnknownProfile_ReturnsNullServerUrl() {
         var config = TwoProfileConfig();
         var resolver = new ProfileResolver(

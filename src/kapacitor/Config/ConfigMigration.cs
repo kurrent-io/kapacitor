@@ -4,27 +4,27 @@ using System.Text.Json.Nodes;
 namespace kapacitor.Config;
 
 public static class ConfigMigration {
-    public record MigrationResult(ProfileConfig Config, bool WasMigrated);
+    public record MigrationResult(ProfileConfig Config, bool WasMigrated, bool ShouldPersist);
 
     static MigrationResult FreshDefault() =>
-        new(new ProfileConfig { Profiles = new Dictionary<string, Profile> { ["default"] = new Profile() } }, true);
+        new(new ProfileConfig { Profiles = new Dictionary<string, Profile> { ["default"] = new Profile() } }, WasMigrated: true, ShouldPersist: false);
 
     public static MigrationResult MigrateIfNeeded(string json) {
-        JsonObject? node;
+        JsonNode? parsed;
 
         try {
-            node = JsonNode.Parse(json)?.AsObject();
+            parsed = JsonNode.Parse(json);
         } catch (JsonException) {
             return FreshDefault();
         }
 
-        if (node is null)
+        if (parsed is not JsonObject node)
             return FreshDefault();
 
         // Check if already V2
         if (node["version"]?.GetValue<int>() is 2) {
             var v2 = JsonSerializer.Deserialize(json, ProfileConfigJsonContext.Default.ProfileConfig)!;
-            return new(v2, false);
+            return new(v2, WasMigrated: false, ShouldPersist: false);
         }
 
         // V1 → V2: read old flat fields, build default profile
@@ -45,6 +45,6 @@ public static class ConfigMigration {
             ProfileBindings  = new Dictionary<string, string>()
         };
 
-        return new(config, true);
+        return new(config, WasMigrated: true, ShouldPersist: true);
     }
 }

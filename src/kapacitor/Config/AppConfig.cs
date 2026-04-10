@@ -42,6 +42,8 @@ public static class AppConfig {
 
     public static ResolvedProfile? ResolvedProfile { get; private set; }
 
+    public static string RepoRoot => GetGitRepoRoot() ?? Environment.CurrentDirectory;
+
     public static async Task<string?> ResolveServerUrl(string[] args) {
         var idx = Array.IndexOf(args, "--server-url");
         var cliServerUrl = (idx >= 0 && idx + 1 < args.Length) ? args[idx + 1] : null;
@@ -51,8 +53,10 @@ public static class AppConfig {
 
         var config = await LoadProfileConfig();
 
+        var repoRoot = RepoRoot;
+
         RepoConfig? repoConfig = null;
-        var repoConfigPath = Path.Combine(Environment.CurrentDirectory, ".kapacitor.json");
+        var repoConfigPath = Path.Combine(repoRoot, ".kapacitor.json");
         if (File.Exists(repoConfigPath)) {
             try {
                 var json = await File.ReadAllTextAsync(repoConfigPath);
@@ -64,7 +68,7 @@ public static class AppConfig {
 
         var resolver = new ProfileResolver(
             config, cliServerUrl, envUrl, envProfile,
-            repoConfig, remoteUrls, Environment.CurrentDirectory
+            repoConfig, remoteUrls, repoRoot
         );
 
         var resolved = resolver.Resolve();
@@ -98,6 +102,25 @@ public static class AppConfig {
                 .ToArray()!;
         } catch {
             return [];
+        }
+    }
+
+    static string? GetGitRepoRoot() {
+        try {
+            var psi = new System.Diagnostics.ProcessStartInfo("git", "rev-parse --show-toplevel") {
+                RedirectStandardOutput = true,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+            using var proc = System.Diagnostics.Process.Start(psi);
+            if (proc is null) return null;
+
+            var output = proc.StandardOutput.ReadToEnd().Trim();
+            proc.WaitForExit();
+
+            return proc.ExitCode == 0 && !string.IsNullOrEmpty(output) ? output : null;
+        } catch {
+            return null;
         }
     }
 
@@ -152,7 +175,7 @@ public static class AppConfig {
             var json   = await File.ReadAllTextAsync(ConfigPath);
             var result = ConfigMigration.MigrateIfNeeded(json);
 
-            if (result.WasMigrated) {
+            if (result.ShouldPersist) {
                 await SaveProfileConfig(result.Config);
             }
 

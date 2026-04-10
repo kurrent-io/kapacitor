@@ -13,10 +13,10 @@ public static class UseCommand {
         var name = args[1];
         var global = args.Contains("--global");
         var save = args.Contains("--save");
-        var repoPath = global ? null : Environment.CurrentDirectory;
+        var repoPath = global ? null : AppConfig.RepoRoot;
         var configPath = AppConfig.GetConfigPath();
 
-        return await SetProfile(configPath, name, repoPath, global, save, save ? Environment.CurrentDirectory : null);
+        return await SetProfile(configPath, name, repoPath, global, save, save ? AppConfig.RepoRoot : null);
     }
 
     internal static async Task<int> SetProfile(
