@@ -143,4 +143,58 @@ public class SecretRedactorTests {
 
         await Assert.That(result).IsEqualTo(line);
     }
+
+    [Test]
+    public async Task RedactsLine_SecretInToolUseResult() {
+        var line = """
+            {"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_1","type":"tool_result","content":"ok","is_error":false}]},"toolUseResult":{"content":"-----BEGIN EC PRIVATE KEY-----\nMHQCAQEEIBkg\n-----END EC PRIVATE KEY-----"}}
+            """.Trim();
+
+        var result = SecretRedactor.RedactLine(line);
+
+        await Assert.That(result).DoesNotContain("MHQCAQEEIBkg");
+        await Assert.That(result).Contains("[REDACTED]");
+    }
+
+    [Test]
+    public async Task PassesThrough_UserMessage_Unchanged() {
+        var line = """{"type":"user","message":{"role":"user","content":"my secret password is hunter2"}}""";
+
+        var result = SecretRedactor.RedactLine(line);
+
+        // User messages with string content (not array with tool_result) are not scanned
+        await Assert.That(result).IsEqualTo(line);
+    }
+
+    [Test]
+    public async Task PassesThrough_ToolUse_Unchanged() {
+        var line = """{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"Read","input":{"file_path":"/etc/secret.pem"}}]}}""";
+
+        var result = SecretRedactor.RedactLine(line);
+
+        await Assert.That(result).IsEqualTo(line);
+    }
+
+    [Test]
+    public async Task RedactsLine_MultipleSecrets_InSameToolResult() {
+        var line = """
+            {"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_1","type":"tool_result","content":"GITHUB_TOKEN=ghp_abc123def456ghi789jkl012mno345pqrs678\nAWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE\nDB_PASSWORD=supersecretvalue123","is_error":false}]}}
+            """.Trim();
+
+        var result = SecretRedactor.RedactLine(line);
+
+        await Assert.That(result).DoesNotContain("ghp_abc123");
+        await Assert.That(result).DoesNotContain("AKIAIOSFODNN7EXAMPLE");
+        await Assert.That(result).DoesNotContain("supersecretvalue123");
+    }
+
+    [Test]
+    public async Task PassesThrough_EmptyLine_Unchanged() {
+        await Assert.That(SecretRedactor.RedactLine("")).IsEqualTo("");
+    }
+
+    [Test]
+    public async Task PassesThrough_WhitespaceLine_Unchanged() {
+        await Assert.That(SecretRedactor.RedactLine("   ")).IsEqualTo("   ");
+    }
 }
