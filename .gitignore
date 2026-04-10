@@ -16,3 +16,4 @@ logs/
 deploy/Pulumi.*.yaml
 **/.idea/
 .idea/
+TestResults/
