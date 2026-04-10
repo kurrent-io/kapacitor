@@ -22,17 +22,8 @@ public static class ConfigCommand {
     }
 
     static async Task<int> Show() {
-        var config = await AppConfig.Load();
-
-        if (config is null) {
-            await Console.Out.WriteLineAsync("No config file found.");
-            await Console.Out.WriteLineAsync($"  Path: {AppConfig.GetConfigPath()}");
-            await Console.Out.WriteLineAsync("  Run `kapacitor setup` to create one.");
-
-            return 0;
-        }
-
-        var json = JsonSerializer.Serialize(config, ConfigJsonContextIndented.Default.KapacitorConfig);
+        var profileConfig = await AppConfig.LoadProfileConfig();
+        var json = JsonSerializer.Serialize(profileConfig, ProfileConfigJsonContextIndented.Default.ProfileConfig);
         await Console.Out.WriteLineAsync(json);
         await Console.Out.WriteLineAsync();
         await Console.Out.WriteLineAsync($"  Path: {AppConfig.GetConfigPath()}");
@@ -41,22 +32,26 @@ public static class ConfigCommand {
     }
 
     static async Task<int> Set(string key, string value) {
-        var config = await AppConfig.Load() ?? new KapacitorConfig();
+        var profileConfig = await AppConfig.LoadProfileConfig();
+        var profileName = profileConfig.ActiveProfile;
+        var profile = profileConfig.Profiles.GetValueOrDefault(profileName) ?? new Profile();
 
-        config = key switch {
-            "server_url" => config with { ServerUrl = value },
-            "daemon.name" => config with { Daemon = (config.Daemon ?? new DaemonSettings()) with { Name = value } },
-            "daemon.max_agents" when int.TryParse(value, out var n) => config with { Daemon = (config.Daemon ?? new DaemonSettings()) with { MaxAgents = n } },
-            "update_check" when bool.TryParse(value, out var b) => config with { UpdateCheck = b },
-            "default_visibility" when value is "private" or "org_public" or "public" => config with { DefaultVisibility = value },
+        profile = key switch {
+            "server_url" => profile with { ServerUrl = value },
+            "daemon.name" => profile with { Daemon = (profile.Daemon ?? new DaemonSettings()) with { Name = value } },
+            "daemon.max_agents" when int.TryParse(value, out var n) => profile with { Daemon = (profile.Daemon ?? new DaemonSettings()) with { MaxAgents = n } },
+            "update_check" when bool.TryParse(value, out var b) => profile with { UpdateCheck = b },
+            "default_visibility" when value is "private" or "org_public" or "public" => profile with { DefaultVisibility = value },
             "default_visibility" => throw new ArgumentException("Invalid value. Must be: private, org_public, or public"),
-            "excluded_repos" => config with { ExcludedRepos = value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries) },
+            "excluded_repos" => profile with { ExcludedRepos = value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries) },
             _ => throw new ArgumentException($"Unknown config key: {key}")
         };
 
-        await AppConfig.Save(config);
-        await Console.Out.WriteLineAsync($"Set {key} = {value}");
+        var profiles = new Dictionary<string, Profile>(profileConfig.Profiles) { [profileName] = profile };
+        profileConfig = profileConfig with { Profiles = profiles };
+        await AppConfig.SaveProfileConfig(profileConfig);
 
+        await Console.Out.WriteLineAsync($"Set {key} = {value} (profile: {profileName})");
         return 0;
     }
 
