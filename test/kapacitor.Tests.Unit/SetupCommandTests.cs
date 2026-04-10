@@ -16,10 +16,10 @@ public class SetupCommandTests {
 
         var root = JsonNode.Parse(File.ReadAllText(settingsPath))!.AsObject();
 
-        await Assert.That(root["extraKnownMarketplaces"]?["kurrent"]?["source"]?["path"]?.GetValue<string>())
+        await Assert.That(root["extraKnownMarketplaces"]?["kapacitor"]?["source"]?["path"]?.GetValue<string>())
             .IsEqualTo(marketplace);
 
-        await Assert.That(root["enabledPlugins"]?["kapacitor@kurrent"]?.GetValue<bool>())
+        await Assert.That(root["enabledPlugins"]?["kapacitor@kapacitor"]?.GetValue<bool>())
             .IsEqualTo(true);
     }
 
@@ -51,10 +51,10 @@ public class SetupCommandTests {
             .IsEqualTo(true);
 
         // Plugin added
-        await Assert.That(root["enabledPlugins"]?["kapacitor@kurrent"]?.GetValue<bool>())
+        await Assert.That(root["enabledPlugins"]?["kapacitor@kapacitor"]?.GetValue<bool>())
             .IsEqualTo(true);
 
-        await Assert.That(root["extraKnownMarketplaces"]?["kurrent"]?["source"]?["path"]?.GetValue<string>())
+        await Assert.That(root["extraKnownMarketplaces"]?["kapacitor"]?["source"]?["path"]?.GetValue<string>())
             .IsEqualTo(marketplace);
     }
 
@@ -70,7 +70,7 @@ public class SetupCommandTests {
               "extraKnownMarketplaces": {
                 "kurrent": { "source": { "source": "directory", "path": "/old/path" } }
               },
-              "enabledPlugins": { "kapacitor@kurrent": true }
+              "enabledPlugins": { "kapacitor@kapacitor": true }
             }
             """);
 
@@ -80,7 +80,7 @@ public class SetupCommandTests {
 
         var root = JsonNode.Parse(File.ReadAllText(settingsPath))!.AsObject();
 
-        await Assert.That(root["extraKnownMarketplaces"]?["kurrent"]?["source"]?["path"]?.GetValue<string>())
+        await Assert.That(root["extraKnownMarketplaces"]?["kapacitor"]?["source"]?["path"]?.GetValue<string>())
             .IsEqualTo(newPath);
     }
 
@@ -110,7 +110,7 @@ public class SetupCommandTests {
 
         var root = JsonNode.Parse(File.ReadAllText(settingsPath))!.AsObject();
 
-        await Assert.That(root["enabledPlugins"]?["kapacitor@kurrent"]?.GetValue<bool>())
+        await Assert.That(root["enabledPlugins"]?["kapacitor@kapacitor"]?.GetValue<bool>())
             .IsEqualTo(true);
     }
 
