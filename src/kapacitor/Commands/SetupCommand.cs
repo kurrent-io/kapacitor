@@ -140,7 +140,8 @@ public static class SetupCommand {
         var pluginPath = ResolvePluginPath();
 
         if (pluginPath is not null) {
-            var marketplacePath = Path.GetDirectoryName(pluginPath)!;
+            // The plugin directory itself is the marketplace root (single-plugin marketplace)
+            var marketplacePath = pluginPath;
 
             await Console.Out.WriteLineAsync("  Where should the plugin be installed?");
             await Console.Out.WriteLineAsync();
@@ -241,7 +242,7 @@ public static class SetupCommand {
         return 0;
     }
 
-    static string? ResolvePluginPath() {
+    internal static string? ResolvePluginPath() {
         var exePath = Environment.ProcessPath;
 
         if (exePath is null) return null;
@@ -253,25 +254,25 @@ public static class SetupCommand {
         // Try: <exe_dir>/../../../../plugin  (npm optional-deps layout)
         // Binary is at <wrapper>/node_modules/@kurrent/<platform-pkg>/bin/kapacitor
         // Plugin is at <wrapper>/plugin
-        var optDepsPluginPath = Path.GetFullPath(Path.Combine(exeDir, "..", "..", "..", "..", "plugin"));
+        var optDepsPluginPath = Path.GetFullPath(Path.Combine(exeDir, "..", "..", "..", "..", "kapacitor"));
 
         if (Directory.Exists(optDepsPluginPath))
             return optDepsPluginPath;
 
         // Try: <exe_dir>/../../kapacitor/plugin  (npm flat layout)
-        var npmPluginPath = Path.GetFullPath(Path.Combine(exeDir, "..", "..", "kapacitor", "plugin"));
+        var npmPluginPath = Path.GetFullPath(Path.Combine(exeDir, "..", "..", "kapacitor", "kapacitor"));
 
         if (Directory.Exists(npmPluginPath))
             return npmPluginPath;
 
         // Try: <exe_dir>/../plugin  (wrapper package direct layout)
-        var wrapperPluginPath = Path.GetFullPath(Path.Combine(exeDir, "..", "plugin"));
+        var wrapperPluginPath = Path.GetFullPath(Path.Combine(exeDir, "..", "kapacitor"));
 
         if (Directory.Exists(wrapperPluginPath))
             return wrapperPluginPath;
 
         // Try: repo root layout (dev mode)
-        var repoPlugin = Path.GetFullPath(Path.Combine(exeDir, "..", "..", "plugin"));
+        var repoPlugin = Path.GetFullPath(Path.Combine(exeDir, "..", "..", "kapacitor"));
 
         return Directory.Exists(repoPlugin) ? repoPlugin : null;
     }
@@ -301,26 +302,32 @@ public static class SetupCommand {
                 }
             }
 
-            // Ensure extraKnownMarketplaces.kurrent exists with the correct path
+            // Ensure extraKnownMarketplaces.kapacitor exists with the correct path
             if (root["extraKnownMarketplaces"] is not JsonObject marketplaces) {
                 marketplaces                    = [];
                 root["extraKnownMarketplaces"] = marketplaces;
             }
 
-            marketplaces["kurrent"] = new JsonObject {
+            marketplaces["kapacitor"] = new JsonObject {
                 ["source"] = new JsonObject {
                     ["source"] = "directory",
                     ["path"]   = marketplacePath
                 }
             };
 
-            // Ensure enabledPlugins.kapacitor@kurrent is true
+            // Remove stale kurrent marketplace entry if present
+            marketplaces.Remove("kurrent");
+
+            // Ensure enabledPlugins.kapacitor@kapacitor is true
             if (root["enabledPlugins"] is not JsonObject enabled) {
                 enabled                = [];
                 root["enabledPlugins"] = enabled;
             }
 
-            enabled["kapacitor@kurrent"] = true;
+            enabled["kapacitor@kapacitor"] = true;
+
+            // Remove stale plugin entry if present
+            enabled.Remove("kapacitor@kurrent");
 
             Directory.CreateDirectory(Path.GetDirectoryName(settingsPath)!);
             File.WriteAllText(settingsPath, root.ToJsonString(WriteOpts));

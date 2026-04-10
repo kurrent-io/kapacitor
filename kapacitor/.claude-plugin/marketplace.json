@@ -1,0 +1,16 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "kapacitor",
+  "owner": {
+    "name": "Kurrent",
+    "email": "support@kurrent.io"
+  },
+  "plugins": [
+    {
+      "name": "kapacitor",
+      "description": "Records and visualizes Claude Code sessions via kapacitor CLI hooks",
+      "source": "./",
+      "category": "productivity"
+    }
+  ]
+}

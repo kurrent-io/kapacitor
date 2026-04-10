@@ -29,6 +29,10 @@ Session:
   hide                             Hide session (owner-only visibility)
   review <pr>                      Launch Claude with PR review context
 
+Plugin:
+  plugin install [--project]       Register the Claude Code plugin
+  plugin remove [--project]        Remove the Claude Code plugin
+
 Maintenance:
   update                           Check for and install updates
   cleanup                          Kill all orphaned watcher processes
