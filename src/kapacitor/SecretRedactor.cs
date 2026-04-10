@@ -52,6 +52,8 @@ static partial class SecretRedactor {
 
     static string RedactSecrets(string text) {
         text = PemBlockRegex.Replace(text, "[REDACTED]");
+        text = AwsAccessKeyRegex.Replace(text, "[REDACTED]");
+        text = VendorTokenRegex.Replace(text, "[REDACTED]");
         return text;
     }
 
@@ -59,4 +61,15 @@ static partial class SecretRedactor {
     [GeneratedRegex(@"-----BEGIN[A-Z\s]*PRIVATE KEY-----(?:\\n|[\s\S])*?-----END[A-Z\s]*PRIVATE KEY-----", RegexOptions.None)]
     private static partial Regex PemBlockRx();
     static readonly Regex PemBlockRegex = PemBlockRx();
+
+    // AWS access key IDs: AKIA followed by 16 uppercase alphanumeric chars
+    [GeneratedRegex(@"AKIA[0-9A-Z]{16}", RegexOptions.None)]
+    private static partial Regex AwsAccessKeyRx();
+    static readonly Regex AwsAccessKeyRegex = AwsAccessKeyRx();
+
+    // Known vendor token prefixes followed by token characters
+    // Each prefix is specific enough to avoid false positives
+    [GeneratedRegex(@"(?:ghp_|gho_|ghs_|github_pat_|cfat_|sk-(?:proj-|live_|test_)?|sk_live_|sk_test_|xoxb-|xoxp-|xoxa-|pypi-|npm_|glpat-)[A-Za-z0-9\-_]{10,}", RegexOptions.None)]
+    private static partial Regex VendorTokenRx();
+    static readonly Regex VendorTokenRegex = VendorTokenRx();
 }
