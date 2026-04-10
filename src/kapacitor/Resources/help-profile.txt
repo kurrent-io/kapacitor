@@ -1,0 +1,21 @@
+kapacitor profile — Manage server profiles
+
+Usage: kapacitor profile <subcommand> [options]
+
+Subcommands:
+  add <name> --server-url <url> [--remote <pattern>]...
+                            Add a new profile
+  list                      Show all profiles
+  remove <name>             Remove a profile
+  show [name]               Show profile details (defaults to active)
+
+Options for 'add':
+  --server-url <url>        Server URL (required)
+  --remote <pattern>        Git remote pattern for auto-matching (repeatable)
+
+Examples:
+  kapacitor profile add work --server-url https://cap.example.com
+  kapacitor profile add oss --server-url https://cap.oss.dev --remote github.com/myorg
+  kapacitor profile list
+  kapacitor profile show work
+  kapacitor profile remove work
