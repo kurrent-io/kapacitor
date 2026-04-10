@@ -93,7 +93,7 @@ public static class AppConfig {
             if (config is null) return null;
 
             // Normalize default_visibility to lowercase; reset invalid values to default
-            var vis = config.DefaultVisibility.ToLowerInvariant();
+            var vis = (config.DefaultVisibility ?? "org_public").ToLowerInvariant();
 
             if (!ValidVisibilities.Contains(vis)) vis = "org_public";
 
