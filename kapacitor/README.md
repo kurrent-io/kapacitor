@@ -45,39 +45,34 @@ Each hook pipes its JSON payload through the `kapacitor` CLI, which enriches it 
 
 ## Installation
 
-### Option A: Interactive plugin manager (recommended)
-
-From inside a Claude Code session:
-
-```
-/plugin marketplace add /path/to/kapacitor
-/plugin install kapacitor@kurrent
-```
-
-Or run `/plugin` and browse the **Discover** tab to install interactively.
-
-### Option B: Plugin directory flag (one-time)
+### Option A: CLI command (recommended)
 
 ```bash
-claude --plugin-dir /path/to/kapacitor/plugin
+kapacitor plugin install
 ```
 
-### Option C: Settings file (persistent, no CLI needed)
+This registers the plugin user-wide. Use `--project` to install for the current project only.
+
+### Option B: Interactive plugin manager
+
+From inside a Claude Code session, run `/plugin` and browse the **Installed** tab.
+
+### Option C: Settings file (manual)
 
 Add to `.claude/settings.local.json` or `~/.claude/settings.json`:
 
 ```json
 {
   "extraKnownMarketplaces": {
-    "kurrent": {
+    "kapacitor": {
       "source": {
         "source": "directory",
-        "path": "/path/to/kapacitor"
+        "path": "/path/to/kapacitor/kapacitor"
       }
     }
   },
   "enabledPlugins": {
-    "kapacitor@kurrent": true
+    "kapacitor@kapacitor": true
   }
 }
 ```
@@ -97,9 +92,10 @@ export KAPACITOR_URL=http://my-server:5108
 ## Plugin structure
 
 ```
-plugin/
+kapacitor/
   .claude-plugin/
     plugin.json          — Plugin manifest (name, version, description)
+    marketplace.json     — Marketplace manifest for plugin discovery
   .mcp.json              — MCP server config (PR review context tools)
   hooks/
     hooks.json           — Hook definitions for all lifecycle events

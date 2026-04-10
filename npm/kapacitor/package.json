@@ -16,6 +16,6 @@
   },
   "files": [
     "bin/",
-    "plugin/"
+    "kapacitor/"
   ]
 }

@@ -1,6 +1,6 @@
 # Kurrent Capacitor CLI
 
-**File paths:** CLI source at `src/kapacitor/`, npm packages at `npm/`, Claude Code plugin at `plugin/`, unit tests at `test/kapacitor.Tests.Unit/`, integration tests at `test/kapacitor.Tests.Integration/`.
+**File paths:** CLI source at `src/kapacitor/`, npm packages at `npm/`, Claude Code plugin at `kapacitor/`, unit tests at `test/kapacitor.Tests.Unit/`, integration tests at `test/kapacitor.Tests.Integration/`.
 
 ## What this project does
 

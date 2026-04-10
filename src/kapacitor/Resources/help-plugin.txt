@@ -1,0 +1,10 @@
+kapacitor plugin — Manage the Claude Code plugin
+
+Usage: kapacitor plugin <subcommand> [options]
+
+Subcommands:
+  install             Register the plugin in Claude Code settings
+  remove              Remove the plugin from Claude Code settings
+
+Options:
+  --project           Apply to current project only (default: user-wide)

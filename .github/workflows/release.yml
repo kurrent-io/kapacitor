@@ -171,13 +171,13 @@ jobs:
         run: |
           VERSION=${{ steps.version.outputs.VERSION }}
           node -e "
-            const pkg = require('./plugin/.claude-plugin/plugin.json');
+            const pkg = require('./kapacitor/.claude-plugin/plugin.json');
             pkg.version = '$VERSION';
-            require('fs').writeFileSync('./plugin/.claude-plugin/plugin.json', JSON.stringify(pkg, null, 2) + '\n');
+            require('fs').writeFileSync('./kapacitor/.claude-plugin/plugin.json', JSON.stringify(pkg, null, 2) + '\n');
           "
 
       - name: Copy plugin into wrapper package
-        run: cp -r plugin/ npm/kapacitor/plugin/
+        run: cp -r kapacitor/ npm/kapacitor/kapacitor/
 
       - name: Publish wrapper package
         env:
