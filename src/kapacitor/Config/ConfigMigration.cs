@@ -6,11 +6,20 @@ namespace kapacitor.Config;
 public static class ConfigMigration {
     public record MigrationResult(ProfileConfig Config, bool WasMigrated);
 
+    static MigrationResult FreshDefault() =>
+        new(new ProfileConfig { Profiles = new Dictionary<string, Profile> { ["default"] = new Profile() } }, true);
+
     public static MigrationResult MigrateIfNeeded(string json) {
-        var node = JsonNode.Parse(json)?.AsObject();
+        JsonObject? node;
+
+        try {
+            node = JsonNode.Parse(json)?.AsObject();
+        } catch (JsonException) {
+            return FreshDefault();
+        }
 
         if (node is null)
-            return new(new ProfileConfig { Profiles = new Dictionary<string, Profile> { ["default"] = new Profile() } }, true);
+            return FreshDefault();
 
         // Check if already V2
         if (node["version"]?.GetValue<int>() is 2) {
