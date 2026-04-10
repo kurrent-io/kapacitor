@@ -250,7 +250,15 @@ public static class SetupCommand {
 
         if (exeDir is null) return null;
 
-        // Try: <exe_dir>/../../kapacitor/plugin  (npm layout)
+        // Try: <exe_dir>/../../../../plugin  (npm optional-deps layout)
+        // Binary is at <wrapper>/node_modules/@kurrent/<platform-pkg>/bin/kapacitor
+        // Plugin is at <wrapper>/plugin
+        var optDepsPluginPath = Path.GetFullPath(Path.Combine(exeDir, "..", "..", "..", "..", "plugin"));
+
+        if (Directory.Exists(optDepsPluginPath))
+            return optDepsPluginPath;
+
+        // Try: <exe_dir>/../../kapacitor/plugin  (npm flat layout)
         var npmPluginPath = Path.GetFullPath(Path.Combine(exeDir, "..", "..", "kapacitor", "plugin"));
 
         if (Directory.Exists(npmPluginPath))
