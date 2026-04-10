@@ -51,6 +51,20 @@ public static class AppConfig {
         var envUrl = Environment.GetEnvironmentVariable("KAPACITOR_URL");
         var envProfile = Environment.GetEnvironmentVariable("KAPACITOR_PROFILE");
 
+        // Short-circuit: if explicit URL is provided, skip all profile/repo resolution
+        if (cliServerUrl is not null || envUrl is not null) {
+            var config = await LoadProfileConfig();
+            var resolver = new ProfileResolver(
+                config, cliServerUrl, envUrl, envProfile,
+                repoConfig: null, repoRemoteUrls: [], repoPath: null
+            );
+            var quickResolved = resolver.Resolve();
+            ResolvedProfile = quickResolved;
+            ResolvedServerUrl = quickResolved.ServerUrl;
+            return quickResolved.ServerUrl;
+        }
+
+        {
         var config = await LoadProfileConfig();
 
         var repoRoot = RepoRoot;
@@ -80,6 +94,7 @@ public static class AppConfig {
         }
 
         return resolved.ServerUrl;
+        }
     }
 
     static string[] GetGitRemoteUrls() {
@@ -93,7 +108,11 @@ public static class AppConfig {
             if (proc is null) return [];
 
             var output = proc.StandardOutput.ReadToEnd();
-            proc.WaitForExit();
+
+            if (!proc.WaitForExit(5000)) {
+                try { proc.Kill(); } catch { /* best effort */ }
+                return [];
+            }
 
             return output.Split('\n', StringSplitOptions.RemoveEmptyEntries)
                 .Select(line => line.Split('\t', ' ').ElementAtOrDefault(1))
@@ -116,7 +135,11 @@ public static class AppConfig {
             if (proc is null) return null;
 
             var output = proc.StandardOutput.ReadToEnd().Trim();
-            proc.WaitForExit();
+
+            if (!proc.WaitForExit(5000)) {
+                try { proc.Kill(); } catch { /* best effort */ }
+                return null;
+            }
 
             return proc.ExitCode == 0 && !string.IsNullOrEmpty(output) ? output : null;
         } catch {
