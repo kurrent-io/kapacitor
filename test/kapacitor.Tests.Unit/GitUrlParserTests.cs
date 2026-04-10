@@ -10,6 +10,9 @@ public class GitUrlParserTests {
     [Arguments("http://github.com/owner/repo.git", "owner", "repo")]
     [Arguments("https://gitlab.com/my-org/my-repo", "my-org", "my-repo")]
     [Arguments("https://gitlab.com/my-org/my-repo.git", "my-org", "my-repo")]
+    [Arguments("https://github.com/kurrent-io/Kurrent.Capacitor", "kurrent-io", "Kurrent.Capacitor")]
+    [Arguments("https://github.com/kurrent-io/Kurrent.Capacitor.git", "kurrent-io", "Kurrent.Capacitor")]
+    [Arguments("https://github.com/owner/a.b.c.git", "owner", "a.b.c")]
     public async Task ParseRemoteUrl_HttpsUrls_ReturnsOwnerAndRepo(string url, string expectedOwner, string expectedRepo) {
         var (owner, repoName) = GitUrlParser.ParseRemoteUrl(url);
 
@@ -25,6 +28,9 @@ public class GitUrlParserTests {
     [Arguments("git@gitlab.com:my-org/my-repo", "my-org", "my-repo")]
     [Arguments("git@gitlab.com:my-org/my-repo.git", "my-org", "my-repo")]
     [Arguments("git@my-host.example.com:org/repo", "org", "repo")]
+    [Arguments("git@github.com:kurrent-io/Kurrent.Capacitor", "kurrent-io", "Kurrent.Capacitor")]
+    [Arguments("git@github.com:kurrent-io/Kurrent.Capacitor.git", "kurrent-io", "Kurrent.Capacitor")]
+    [Arguments("git@github.com:owner/a.b.c.git", "owner", "a.b.c")]
     public async Task ParseRemoteUrl_SshUrls_ReturnsOwnerAndRepo(string url, string expectedOwner, string expectedRepo) {
         var (owner, repoName) = GitUrlParser.ParseRemoteUrl(url);
 

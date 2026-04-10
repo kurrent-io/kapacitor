@@ -201,10 +201,10 @@ static partial class GitUrlParser {
             : (null, null);
     }
 
-    [GeneratedRegex(@"https?://[^/]+/(?<owner>[^/]+)/(?<repo>[^/.]+)(?:\.git)?$")]
+    [GeneratedRegex(@"https?://[^/]+/(?<owner>[^/]+)/(?<repo>[^/]+?)(?:\.git)?$")]
     internal static partial Regex HttpsRegex();
 
-    [GeneratedRegex(@"git@[\w.-]+:(?<owner>[^/]+)/(?<repo>[^/.]+)(?:\.git)?$")]
+    [GeneratedRegex(@"git@[\w.-]+:(?<owner>[^/]+)/(?<repo>[^/]+?)(?:\.git)?$")]
     internal static partial Regex SshRegex();
 }
 
