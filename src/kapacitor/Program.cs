@@ -52,7 +52,7 @@ if (args.Skip(1).Any(a => a is "--help" or "-h")) {
 }
 
 // Commands that don't need a server URL
-string[] offlineCommands = ["--help", "-h", "help", "--version", "-v", "logout", "cleanup", "config", "agent", "setup", "status", "update", "plugin"];
+string[] offlineCommands = ["--help", "-h", "help", "--version", "-v", "logout", "cleanup", "config", "agent", "setup", "status", "update", "plugin", "profile", "use"];
 
 if (baseUrl is null && !offlineCommands.Contains(command)) {
     Console.Error.WriteLine("No server configured. Run `kapacitor setup` or set KAPACITOR_URL.");
@@ -163,6 +163,10 @@ switch (command) {
         return await SetupCommand.HandleAsync(args);
     case "plugin":
         return await PluginCommand.HandleAsync(args);
+    case "profile":
+        return await ProfileCommand.HandleAsync(args);
+    case "use":
+        return await UseCommand.HandleAsync(args);
     case "status":
         return await StatusCommand.HandleAsync(baseUrl);
     case "config":

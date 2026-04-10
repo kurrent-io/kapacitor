@@ -40,38 +40,65 @@ public static class AppConfig {
 
     public static string? ResolvedServerUrl { get; private set; }
 
+    public static ResolvedProfile? ResolvedProfile { get; private set; }
+
     public static async Task<string?> ResolveServerUrl(string[] args) {
-        // 1. CLI arg: --server-url <url>
         var idx = Array.IndexOf(args, "--server-url");
+        var cliServerUrl = (idx >= 0 && idx + 1 < args.Length) ? args[idx + 1] : null;
 
-        if (idx >= 0 && idx + 1 < args.Length) {
-            ResolvedServerUrl = NormalizeUrl(args[idx + 1]);
-
-            return ResolvedServerUrl;
-        }
-
-        // 2. Env var
         var envUrl = Environment.GetEnvironmentVariable("KAPACITOR_URL");
+        var envProfile = Environment.GetEnvironmentVariable("KAPACITOR_PROFILE");
 
-        if (!string.IsNullOrEmpty(envUrl)) {
-            ResolvedServerUrl = NormalizeUrl(envUrl);
+        var config = await LoadProfileConfig();
 
-            return ResolvedServerUrl;
+        RepoConfig? repoConfig = null;
+        var repoConfigPath = Path.Combine(Environment.CurrentDirectory, ".kapacitor.json");
+        if (File.Exists(repoConfigPath)) {
+            try {
+                var json = await File.ReadAllTextAsync(repoConfigPath);
+                repoConfig = JsonSerializer.Deserialize(json, RepoConfigJsonContext.Default.RepoConfig);
+            } catch { /* ignore malformed */ }
         }
 
-        // 3. Config file
-        var config = await Load();
+        var remoteUrls = GetGitRemoteUrls();
 
-        if (!string.IsNullOrEmpty(config?.ServerUrl)) {
-            ResolvedServerUrl = NormalizeUrl(config.ServerUrl);
+        var resolver = new ProfileResolver(
+            config, cliServerUrl, envUrl, envProfile,
+            repoConfig, remoteUrls, Environment.CurrentDirectory
+        );
 
-            return ResolvedServerUrl;
+        var resolved = resolver.Resolve();
+        ResolvedProfile = resolved;
+        ResolvedServerUrl = resolved.ServerUrl;
+
+        if (resolved.Warning is not null) {
+            await Console.Error.WriteLineAsync($"Warning: {resolved.Warning}");
         }
 
-        // 4. No default
-        ResolvedServerUrl = null;
+        return resolved.ServerUrl;
+    }
 
-        return null;
+    static string[] GetGitRemoteUrls() {
+        try {
+            var psi = new System.Diagnostics.ProcessStartInfo("git", "remote -v") {
+                RedirectStandardOutput = true,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+            using var proc = System.Diagnostics.Process.Start(psi);
+            if (proc is null) return [];
+
+            var output = proc.StandardOutput.ReadToEnd();
+            proc.WaitForExit();
+
+            return output.Split('\n', StringSplitOptions.RemoveEmptyEntries)
+                .Select(line => line.Split('\t', ' ').ElementAtOrDefault(1))
+                .Where(url => url is not null)
+                .Distinct()
+                .ToArray()!;
+        } catch {
+            return [];
+        }
     }
 
     /// <summary>
