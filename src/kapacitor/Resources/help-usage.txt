@@ -9,6 +9,13 @@ Getting Started:
   logout                           Remove stored credentials
   whoami                           Show current authenticated user
 
+Profiles:
+  profile add <name> --server-url <url>  Add a server profile
+  profile list                     Show all profiles
+  profile remove <name>            Remove a profile
+  profile show [name]              Show profile details
+  use <profile> [--global] [--save]  Switch active profile
+
 Configuration:
   config show                      Print current configuration
   config set <key> <value>         Update a config value

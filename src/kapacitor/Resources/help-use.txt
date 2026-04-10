@@ -1,0 +1,16 @@
+kapacitor use — Switch active profile
+
+Usage: kapacitor use <profile-name> [options]
+
+Switches the active profile globally or binds it to a directory.
+Without --global, binds the profile to the git repo root, or the current
+directory if not inside a git repository.
+
+Options:
+  --global                  Set as the global active profile
+  --save                    Write .kapacitor.json to the bind directory (for team sharing)
+
+Examples:
+  kapacitor use work                  Bind 'work' profile to current repo/directory
+  kapacitor use work --global         Set 'work' as the global default
+  kapacitor use oss --save            Bind and write .kapacitor.json
