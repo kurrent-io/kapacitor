@@ -9,11 +9,20 @@ static partial class SecretRedactor {
             using var doc  = JsonDocument.Parse(rawJsonlLine);
             var       root = doc.RootElement;
 
-            // Only process tool_result events: type=progress, data.message.type=user,
-            // content array contains tool_result blocks
-            var userMessage = root.Obj("data")?.Obj("message");
-            if (userMessage is null || userMessage.Value.Str("type") != "user")
-                return rawJsonlLine;
+            // Resolve the user message element from either format:
+            //   Direct format:   { "type": "user", "message": { "role": "user", "content": [...] } }
+            //   Progress format: { "type": "progress", "data": { "message": { "type": "user", "message": { ... } } } }
+            JsonElement? userMessage;
+            if (root.Str("type") == "user") {
+                // Direct format — the root IS the user event; content lives at root.message.content
+                userMessage = root;
+            } else {
+                // Progress wrapper — content lives at data.message.message.content
+                var nested = root.Obj("data")?.Obj("message");
+                if (nested is null || nested.Value.Str("type") != "user")
+                    return rawJsonlLine;
+                userMessage = nested;
+            }
 
             var content = userMessage.Value.Obj("message")?.Arr("content");
             if (content is null)
