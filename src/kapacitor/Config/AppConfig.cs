@@ -117,5 +117,36 @@ public static class AppConfig {
         File.Move(tempPath, ConfigPath, overwrite: true);
     }
 
+    public static async Task<ProfileConfig> LoadProfileConfig() {
+        if (!File.Exists(ConfigPath))
+            return new ProfileConfig { Profiles = new Dictionary<string, Profile> { ["default"] = new Profile() } };
+
+        try {
+            var json   = await File.ReadAllTextAsync(ConfigPath);
+            var result = ConfigMigration.MigrateIfNeeded(json);
+
+            if (result.WasMigrated) {
+                await SaveProfileConfig(result.Config);
+            }
+
+            return result.Config;
+        } catch (Exception ex) when (ex is JsonException or IOException or UnauthorizedAccessException) {
+            await Console.Error.WriteLineAsync($"Warning: could not read config at {ConfigPath}: {ex.Message}");
+            return new ProfileConfig { Profiles = new Dictionary<string, Profile> { ["default"] = new Profile() } };
+        }
+    }
+
+    public static async Task SaveProfileConfig(ProfileConfig config) {
+        var dir      = Path.GetDirectoryName(ConfigPath)!;
+        Directory.CreateDirectory(dir);
+        var tempPath = $"{ConfigPath}.tmp";
+
+        await File.WriteAllBytesAsync(
+            tempPath,
+            JsonSerializer.SerializeToUtf8Bytes(config, ProfileConfigJsonContextIndented.Default.ProfileConfig)
+        );
+        File.Move(tempPath, ConfigPath, overwrite: true);
+    }
+
     public static string GetConfigPath() => ConfigPath;
 }
