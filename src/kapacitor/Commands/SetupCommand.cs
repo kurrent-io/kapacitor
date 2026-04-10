@@ -16,8 +16,9 @@ public static class SetupCommand {
         await Console.Out.WriteLineAsync();
 
         // Check if already configured
-        var existing       = await AppConfig.Load();
-        var existingTokens = await TokenStore.LoadAsync();
+        var existingProfile = await AppConfig.LoadProfileConfig();
+        var existing        = existingProfile.Profiles.GetValueOrDefault("default");
+        var existingTokens  = await TokenStore.LoadAsync();
 
         if (existing?.ServerUrl is not null && existingTokens is not null && !noPrompt) {
             Console.Write($"Already configured for {existing.ServerUrl} as {existingTokens.GitHubUsername}. Re-run setup? [y/N] ");
@@ -216,14 +217,20 @@ public static class SetupCommand {
         await Console.Out.WriteLineAsync();
 
         // Save config
-        var config = existing ?? new KapacitorConfig();
+        var profileConfig = await AppConfig.LoadProfileConfig();
+        var defaultProfile = profileConfig.Profiles.GetValueOrDefault("default") ?? new Profile();
 
-        config = config with {
+        defaultProfile = defaultProfile with {
             ServerUrl = serverUrl,
             DefaultVisibility = defaultVisibility,
-            Daemon = (config.Daemon ?? new DaemonSettings()) with { Name = daemonName }
+            Daemon = (defaultProfile.Daemon ?? new DaemonSettings()) with { Name = daemonName }
         };
-        await AppConfig.Save(config);
+
+        var profiles = new Dictionary<string, Profile>(profileConfig.Profiles) {
+            ["default"] = defaultProfile
+        };
+        profileConfig = profileConfig with { Profiles = profiles };
+        await AppConfig.SaveProfileConfig(profileConfig);
 
         var finalTokens = await TokenStore.LoadAsync();
         await Console.Out.WriteLineAsync("Setup complete!");

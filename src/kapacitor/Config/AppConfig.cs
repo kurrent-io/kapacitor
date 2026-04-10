@@ -40,38 +40,111 @@ public static class AppConfig {
 
     public static string? ResolvedServerUrl { get; private set; }
 
+    public static ResolvedProfile? ResolvedProfile { get; private set; }
+
+    public static string RepoRoot => GetGitRepoRoot() ?? Environment.CurrentDirectory;
+
     public static async Task<string?> ResolveServerUrl(string[] args) {
-        // 1. CLI arg: --server-url <url>
         var idx = Array.IndexOf(args, "--server-url");
+        var cliServerUrl = (idx >= 0 && idx + 1 < args.Length) ? args[idx + 1] : null;
 
-        if (idx >= 0 && idx + 1 < args.Length) {
-            ResolvedServerUrl = NormalizeUrl(args[idx + 1]);
-
-            return ResolvedServerUrl;
-        }
-
-        // 2. Env var
         var envUrl = Environment.GetEnvironmentVariable("KAPACITOR_URL");
+        var envProfile = Environment.GetEnvironmentVariable("KAPACITOR_PROFILE");
 
-        if (!string.IsNullOrEmpty(envUrl)) {
-            ResolvedServerUrl = NormalizeUrl(envUrl);
-
-            return ResolvedServerUrl;
+        // Short-circuit: if explicit URL is provided, skip all profile/repo resolution
+        if (cliServerUrl is not null || envUrl is not null) {
+            var config = await LoadProfileConfig();
+            var resolver = new ProfileResolver(
+                config, cliServerUrl, envUrl, envProfile,
+                repoConfig: null, repoRemoteUrls: [], repoPath: null
+            );
+            var quickResolved = resolver.Resolve();
+            ResolvedProfile = quickResolved;
+            ResolvedServerUrl = quickResolved.ServerUrl;
+            return quickResolved.ServerUrl;
         }
 
-        // 3. Config file
-        var config = await Load();
+        {
+        var config = await LoadProfileConfig();
 
-        if (!string.IsNullOrEmpty(config?.ServerUrl)) {
-            ResolvedServerUrl = NormalizeUrl(config.ServerUrl);
+        var repoRoot = RepoRoot;
 
-            return ResolvedServerUrl;
+        RepoConfig? repoConfig = null;
+        var repoConfigPath = Path.Combine(repoRoot, ".kapacitor.json");
+        if (File.Exists(repoConfigPath)) {
+            try {
+                var json = await File.ReadAllTextAsync(repoConfigPath);
+                repoConfig = JsonSerializer.Deserialize(json, RepoConfigJsonContext.Default.RepoConfig);
+            } catch { /* ignore malformed */ }
         }
 
-        // 4. No default
-        ResolvedServerUrl = null;
+        var remoteUrls = GetGitRemoteUrls();
 
-        return null;
+        var resolver = new ProfileResolver(
+            config, cliServerUrl, envUrl, envProfile,
+            repoConfig, remoteUrls, repoRoot
+        );
+
+        var resolved = resolver.Resolve();
+        ResolvedProfile = resolved;
+        ResolvedServerUrl = resolved.ServerUrl;
+
+        if (resolved.Warning is not null) {
+            await Console.Error.WriteLineAsync($"Warning: {resolved.Warning}");
+        }
+
+        return resolved.ServerUrl;
+        }
+    }
+
+    static string[] GetGitRemoteUrls() {
+        try {
+            var psi = new System.Diagnostics.ProcessStartInfo("git", "remote -v") {
+                RedirectStandardOutput = true,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+            using var proc = System.Diagnostics.Process.Start(psi);
+            if (proc is null) return [];
+
+            var output = proc.StandardOutput.ReadToEnd();
+
+            if (!proc.WaitForExit(5000)) {
+                try { proc.Kill(); } catch { /* best effort */ }
+                return [];
+            }
+
+            return output.Split('\n', StringSplitOptions.RemoveEmptyEntries)
+                .Select(line => line.Split('\t', ' ').ElementAtOrDefault(1))
+                .Where(url => url is not null)
+                .Distinct()
+                .ToArray()!;
+        } catch {
+            return [];
+        }
+    }
+
+    static string? GetGitRepoRoot() {
+        try {
+            var psi = new System.Diagnostics.ProcessStartInfo("git", "rev-parse --show-toplevel") {
+                RedirectStandardOutput = true,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+            using var proc = System.Diagnostics.Process.Start(psi);
+            if (proc is null) return null;
+
+            var output = proc.StandardOutput.ReadToEnd().Trim();
+
+            if (!proc.WaitForExit(5000)) {
+                try { proc.Kill(); } catch { /* best effort */ }
+                return null;
+            }
+
+            return proc.ExitCode == 0 && !string.IsNullOrEmpty(output) ? output : null;
+        } catch {
+            return null;
+        }
     }
 
     /// <summary>
@@ -113,6 +186,37 @@ public static class AppConfig {
         await File.WriteAllBytesAsync(
             tempPath,
             JsonSerializer.SerializeToUtf8Bytes(config, ConfigJsonContextIndented.Default.KapacitorConfig)
+        );
+        File.Move(tempPath, ConfigPath, overwrite: true);
+    }
+
+    public static async Task<ProfileConfig> LoadProfileConfig() {
+        if (!File.Exists(ConfigPath))
+            return new ProfileConfig { Profiles = new Dictionary<string, Profile> { ["default"] = new Profile() } };
+
+        try {
+            var json   = await File.ReadAllTextAsync(ConfigPath);
+            var result = ConfigMigration.MigrateIfNeeded(json);
+
+            if (result.ShouldPersist) {
+                await SaveProfileConfig(result.Config);
+            }
+
+            return result.Config;
+        } catch (Exception ex) when (ex is JsonException or IOException or UnauthorizedAccessException) {
+            await Console.Error.WriteLineAsync($"Warning: could not read config at {ConfigPath}: {ex.Message}");
+            return new ProfileConfig { Profiles = new Dictionary<string, Profile> { ["default"] = new Profile() } };
+        }
+    }
+
+    public static async Task SaveProfileConfig(ProfileConfig config) {
+        var dir      = Path.GetDirectoryName(ConfigPath)!;
+        Directory.CreateDirectory(dir);
+        var tempPath = $"{ConfigPath}.tmp";
+
+        await File.WriteAllBytesAsync(
+            tempPath,
+            JsonSerializer.SerializeToUtf8Bytes(config, ProfileConfigJsonContextIndented.Default.ProfileConfig)
         );
         File.Move(tempPath, ConfigPath, overwrite: true);
     }
