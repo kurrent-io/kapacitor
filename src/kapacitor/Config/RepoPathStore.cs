@@ -6,7 +6,7 @@ namespace kapacitor.Config;
 static class RepoPathStore {
     static readonly string StorePath = PathHelpers.ConfigPath("repos.json");
 
-    static readonly StringComparison PathComparison =
+    public static readonly StringComparison PathComparison =
         RuntimeInformation.IsOSPlatform(OSPlatform.Linux)
             ? StringComparison.Ordinal
             : StringComparison.OrdinalIgnoreCase;
