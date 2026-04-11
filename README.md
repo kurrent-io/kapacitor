@@ -148,6 +148,19 @@ kapacitor agent status             # check if daemon is running
 kapacitor agent stop               # stop the background daemon
 ```
 
+### Repository paths
+
+Manage known repo paths for the agent launch dialog. Repos are automatically added when agents are launched, but you can also manage the list manually:
+
+```bash
+kapacitor repos                    # list known repos (sorted by last used)
+kapacitor repos add .              # add current directory
+kapacitor repos add ~/dev/project  # add a specific path
+kapacitor repos remove ~/dev/old   # remove a path
+```
+
+Known repos are persisted to `~/.config/kapacitor/repos.json` and reported to the server when the daemon connects, so the launch dialog always shows previously-used repos even after restarts.
+
 ### Profiles
 
 Profiles let you work with multiple Capacitor servers — for example, a company server for work repos and a separate one for open-source projects. Each profile stores its own server URL, visibility settings, and daemon configuration.
