@@ -208,6 +208,14 @@ static partial class GitUrlParser {
     internal static partial Regex SshRegex();
 }
 
+record RepoEntry {
+    [JsonPropertyName("path")]
+    public required string Path { get; init; }
+
+    [JsonPropertyName("last_used")]
+    public required DateTimeOffset LastUsed { get; init; }
+}
+
 [JsonSerializable(typeof(List<RecapEntry>))]
 [JsonSerializable(typeof(List<RepoRecapEntry>))]
 [JsonSerializable(typeof(List<ErrorEntry>))]
@@ -240,6 +248,7 @@ static partial class GitUrlParser {
 [JsonSerializable(typeof(int))]
 [JsonSerializable(typeof(string))]
 [JsonSerializable(typeof(string[]))]
+[JsonSerializable(typeof(RepoEntry[]))]
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.SnakeCaseLower)]
 partial class KapacitorJsonContext : JsonSerializerContext;
 
