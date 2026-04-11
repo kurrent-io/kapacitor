@@ -1,0 +1,14 @@
+Usage: kapacitor repos [add|remove] [path]
+
+Manage known repository paths for the agent daemon launch dialog.
+
+Subcommands:
+  (none)         List known repos (sorted by last used)
+  add <path>     Add a repo path (supports "." for current directory)
+  remove <path>  Remove a repo path
+
+Examples:
+  kapacitor repos              # list known repos
+  kapacitor repos add .        # add current directory
+  kapacitor repos add ~/dev/my-project
+  kapacitor repos remove ~/dev/old-project

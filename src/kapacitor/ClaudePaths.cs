@@ -20,6 +20,11 @@ static class ClaudePaths {
         if (Path.AltDirectorySeparatorChar != Path.DirectorySeparatorChar)
             hash = hash.Replace(Path.AltDirectorySeparatorChar, '-');
 
+        // Claude Code replaces dots with dashes in project dir names.
+        // Without this, the daemon's symlink lands at the wrong path and
+        // Claude creates a fresh project dir without MCP configs.
+        hash = hash.Replace('.', '-');
+
         // Windows drive designator (e.g. "C:") is invalid in directory names
         return hash.Replace(':', '-');
     }
