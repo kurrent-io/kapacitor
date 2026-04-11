@@ -8,10 +8,14 @@ public record WorktreeInfo(string Path, string Branch, string SourceRepo, bool I
 public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManager> logger) {
     public async Task<WorktreeInfo> CreateAsync(string repoPath, string? name = null) {
         name ??= $"agent-{Guid.NewGuid():N}"[..20];
-        var worktreePath = Path.Combine(config.WorktreeRoot, name);
+
+        // Place worktrees under the repo's own .capacitor/ directory so they inherit
+        // the repo's workspace trust in Claude Code (trust cascades up parent dirs).
+        var worktreeRoot = Path.Combine(repoPath, ".capacitor", "worktrees");
+        var worktreePath = Path.Combine(worktreeRoot, name);
         var branch       = $"capacitor/{name}";
 
-        Directory.CreateDirectory(config.WorktreeRoot);
+        Directory.CreateDirectory(worktreeRoot);
 
         if (await IsGitRepoWithCommits(repoPath)) {
             await RunGit(repoPath, "worktree", "add", worktreePath, "-b", branch);
@@ -46,22 +50,30 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
     }
 
     public Task CleanupOrphanedAsync(IEnumerable<string>? activeWorktreePaths = null) {
-        if (!Directory.Exists(config.WorktreeRoot)) {
-            return Task.CompletedTask;
+        // Legacy global root — clean up any leftover worktrees from before the per-repo change
+        CleanupDirectory(config.WorktreeRoot, activeWorktreePaths);
+
+        // Per-repo roots — scan each allowed repo for .capacitor/worktrees/
+        foreach (var repoPath in config.AllowedRepoPaths) {
+            var cleanPath = repoPath.TrimEnd('/', '*');
+            var perRepoRoot = Path.Combine(cleanPath, ".capacitor", "worktrees");
+            CleanupDirectory(perRepoRoot, activeWorktreePaths);
         }
+
+        return Task.CompletedTask;
+    }
+
+    void CleanupDirectory(string root, IEnumerable<string>? activeWorktreePaths) {
+        if (!Directory.Exists(root)) return;
 
         var activePaths = activeWorktreePaths?.ToHashSet(StringComparer.OrdinalIgnoreCase) ?? [];
 
-        foreach (var dir in Directory.GetDirectories(config.WorktreeRoot)) {
-            if (activePaths.Contains(dir)) {
-                continue;
-            }
+        foreach (var dir in Directory.GetDirectories(root)) {
+            if (activePaths.Contains(dir)) continue;
 
             LogCleaningUp(dir);
             try { Directory.Delete(dir, true); } catch (Exception ex) { LogCleanupFailed(ex, dir); }
         }
-
-        return Task.CompletedTask;
     }
 
     static async Task<bool> IsGitRepoWithCommits(string path) {
