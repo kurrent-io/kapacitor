@@ -85,20 +85,22 @@ static partial class SecretRedactor {
     private static partial Regex JsonKeySecretRx();
     static readonly Regex JsonKeySecretRegex = JsonKeySecretRx();
 
-    // Env var: SECRET_NAME=value (uppercase key containing secret keyword, value until whitespace)
-    [GeneratedRegex(@"([A-Z_]*(?:SECRET|TOKEN|PASSWORD|PASSWD|PWD|API_KEY|APIKEY|PRIVATE_KEY|CREDENTIALS|CLIENT_SECRET|ACCESS_KEY|AUTH_TOKEN)[A-Z_]*=)(\S+)", RegexOptions.IgnoreCase)]
+    // Env var: SECRET_NAME=value (uppercase key containing secret keyword, value until whitespace or JSON delimiter)
+    // Excludes " and \ to avoid consuming JSON string boundaries when matching against raw serialized JSON
+    [GeneratedRegex(@"([A-Z_]*(?:SECRET|TOKEN|PASSWORD|PASSWD|PWD|API_KEY|APIKEY|PRIVATE_KEY|CREDENTIALS|CLIENT_SECRET|ACCESS_KEY|AUTH_TOKEN)[A-Z_]*=)([^\s""\\]+)", RegexOptions.IgnoreCase)]
     private static partial Regex EnvVarSecretRx();
     static readonly Regex EnvVarSecretRegex = EnvVarSecretRx();
 
     // YAML-style: secret_name: value (key containing secret keyword followed by colon, space, and value)
-    // Only matches when value is a non-trivial token (no spaces, length >= 8)
-    [GeneratedRegex(@"((?:secret|token|password|passwd|pwd|api_key|apikey|private_key|credentials|client_secret|access_key|auth_token)[^:\n]*:[ \t]+)(\S{8,})", RegexOptions.IgnoreCase)]
+    // Excludes " and \ to avoid crossing JSON string boundaries. Minimum 8 chars to reduce false positives.
+    [GeneratedRegex(@"((?:secret|token|password|passwd|pwd|api_key|apikey|private_key|credentials|client_secret|access_key|auth_token)[^:\n]*:[ \t]+)([^\s""\\]{8,})", RegexOptions.IgnoreCase)]
     private static partial Regex YamlStyleSecretRx();
     static readonly Regex YamlStyleSecretRegex = YamlStyleSecretRx();
 
     // Connection string: Password=value; or Pwd=value;
+    // Excludes " and \ to avoid crossing JSON string boundaries
     // group 1 = key=, group 2 = value, group 3 = ; or end
-    [GeneratedRegex(@"((?:Password|Pwd)\s*=\s*)([^;]+)(;|$)", RegexOptions.IgnoreCase)]
+    [GeneratedRegex(@"((?:Password|Pwd)\s*=\s*)([^;""\\]+)(;|$)", RegexOptions.IgnoreCase)]
     private static partial Regex ConnectionStringPwdRx();
     static readonly Regex ConnectionStringPwdRegex = ConnectionStringPwdRx();
 }

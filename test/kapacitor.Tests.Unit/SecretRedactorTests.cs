@@ -197,4 +197,36 @@ public class SecretRedactorTests {
     public async Task PassesThrough_WhitespaceLine_Unchanged() {
         await Assert.That(SecretRedactor.RedactLine("   ")).IsEqualTo("   ");
     }
+
+    [Test]
+    public async Task PreservesValidJson_AfterEnvVarRedaction() {
+        var line = """
+            {"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_1","type":"tool_result","content":"HETZNER_API_TOKEN=abc123def456ghi789jkl","is_error":false}]}}
+            """.Trim();
+
+        var result = SecretRedactor.RedactLine(line);
+
+        // Must still be valid JSON after redaction
+        using var doc = System.Text.Json.JsonDocument.Parse(result);
+        var content = doc.RootElement
+            .GetProperty("message")
+            .GetProperty("content");
+        // is_error field must survive redaction
+        await Assert.That(content[0].GetProperty("is_error").GetBoolean()).IsFalse();
+    }
+
+    [Test]
+    public async Task PreservesValidJson_AfterConnectionStringRedaction() {
+        var line = """
+            {"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_1","type":"tool_result","content":"Server=localhost;Database=mydb;Password=hunter2;User Id=sa","is_error":false}]}}
+            """.Trim();
+
+        var result = SecretRedactor.RedactLine(line);
+
+        using var doc = System.Text.Json.JsonDocument.Parse(result);
+        var content = doc.RootElement
+            .GetProperty("message")
+            .GetProperty("content");
+        await Assert.That(content[0].GetProperty("is_error").GetBoolean()).IsFalse();
+    }
 }
