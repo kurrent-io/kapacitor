@@ -165,7 +165,7 @@ The `--remote` flag associates a profile with git remote patterns. When you open
 #### Switching profiles
 
 ```bash
-kapacitor use work                  # bind 'work' profile to current repo
+kapacitor use work                  # bind 'work' profile to current repo/directory
 kapacitor use work --global         # set 'work' as the global default
 kapacitor use oss --save            # bind and write .kapacitor.json for team sharing
 ```
@@ -179,9 +179,9 @@ The CLI resolves which profile to use in this order:
 1. `--server-url` CLI flag
 2. `KAPACITOR_URL` environment variable
 3. `KAPACITOR_PROFILE` environment variable
-4. `.kapacitor.json` in the repo root
+4. `.kapacitor.json` in the repo root (or current directory if not in a repo)
 5. Git remote pattern matching from `--remote` flags
-6. Repo-specific binding from `kapacitor use`
+6. Directory binding from `kapacitor use`
 7. Global active profile (or `default`)
 
 ### Configuration
