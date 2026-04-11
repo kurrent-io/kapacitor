@@ -125,7 +125,10 @@ public partial class ServerConnection : IAsyncDisposable {
             return persisted;
 
         // Union: persisted paths first (sorted by last_used desc), then config-only paths
-        var seen   = new HashSet<string>(persisted, StringComparer.OrdinalIgnoreCase);
+        var comparer = RepoPathStore.PathComparison == StringComparison.Ordinal
+            ? StringComparer.Ordinal
+            : StringComparer.OrdinalIgnoreCase;
+        var seen = new HashSet<string>(persisted, comparer);
         var merged = new List<string>(persisted);
 
         foreach (var p in _config.AllowedRepoPaths) {

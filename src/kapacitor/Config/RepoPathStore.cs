@@ -8,7 +8,7 @@ static class RepoPathStore {
 
     static readonly SemaphoreSlim Lock = new(1, 1);
 
-    static readonly StringComparison PathComparison =
+    public static readonly StringComparison PathComparison =
         RuntimeInformation.IsOSPlatform(OSPlatform.Linux)
             ? StringComparison.Ordinal
             : StringComparison.OrdinalIgnoreCase;
