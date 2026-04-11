@@ -242,7 +242,7 @@ static partial class WatchCommand {
                 }
 
                 if (!string.IsNullOrWhiteSpace(line)) {
-                    newLines.Add(line);
+                    newLines.Add(SecretRedactor.RedactLine(line));
                     newLineNumbers.Add(lineIndex);
                 }
 
