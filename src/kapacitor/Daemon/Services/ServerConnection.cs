@@ -4,6 +4,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Threading.Channels;
 using kapacitor.Auth;
+using kapacitor.Config;
 using Microsoft.AspNetCore.SignalR.Client;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -108,11 +109,33 @@ public partial class ServerConnection : IAsyncDisposable {
     async Task RegisterDaemon() {
         var platform = $"{RuntimeInformation.OSDescription} {RuntimeInformation.OSArchitecture}";
 
+        var repoPaths = await MergeRepoPathsAsync();
+
         await _hub.InvokeAsync(
             "DaemonConnect",
-            new DaemonConnect(_config.Name, platform, _config.AllowedRepoPaths, _config.MaxConcurrentAgents),
+            new DaemonConnect(_config.Name, platform, repoPaths, _config.MaxConcurrentAgents),
             cancellationToken: _ct
         );
+    }
+
+    async Task<string[]> MergeRepoPathsAsync() {
+        var persisted = await RepoPathStore.GetSortedPathsAsync();
+
+        if (_config.AllowedRepoPaths.Length == 0)
+            return persisted;
+
+        // Union: persisted paths first (sorted by last_used desc), then config-only paths
+        var seen   = new HashSet<string>(persisted, StringComparer.OrdinalIgnoreCase);
+        var merged = new List<string>(persisted);
+
+        foreach (var p in _config.AllowedRepoPaths) {
+            var clean = p.TrimEnd('/', '*');
+
+            if (seen.Add(clean))
+                merged.Add(clean);
+        }
+
+        return merged.ToArray();
     }
 
     async Task OnReconnected(string? connectionId) {
@@ -125,6 +148,15 @@ public partial class ServerConnection : IAsyncDisposable {
 
     public Task SendHeartbeatAsync()
         => _hub.SendAsync("DaemonHeartbeat", cancellationToken: _ct);
+
+    public async Task UpdateRepoPathsAsync() {
+        try {
+            var repoPaths = await MergeRepoPathsAsync();
+            await _hub.InvokeAsync("DaemonUpdateRepoPaths", repoPaths, cancellationToken: _ct);
+        } catch (Exception ex) {
+            LogRepoPathUpdateFailed(ex);
+        }
+    }
 
     // Outgoing messages to server
     public Task AgentRegisteredAsync(string agentId, string? prompt, string? model, string? effort, string? repoPath)
@@ -246,6 +278,9 @@ public partial class ServerConnection : IAsyncDisposable {
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Failed to serialize {EventType} for agent {AgentId}, dropping event")]
     partial void LogEventSerializationFailed(Exception ex, string eventType, string agentId);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Failed to update repo paths on server")]
+    partial void LogRepoPathUpdateFailed(Exception ex);
 
     class RetryPolicy : IRetryPolicy {
         static readonly TimeSpan[] Delays = [
