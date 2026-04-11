@@ -4,6 +4,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using kapacitor.Auth;
+using kapacitor.Config;
 using kapacitor.Daemon.Pty;
 using Microsoft.Extensions.Logging;
 
@@ -218,6 +219,16 @@ public partial class AgentOrchestrator : IAsyncDisposable {
                 agentId,
                 new AgentRunStarted(prompt, model, effort, repoPath, worktree.Path)
             );
+
+            // Persist repo path and notify server so launch dialog updates
+            _ = Task.Run(async () => {
+                try {
+                    await RepoPathStore.AddAsync(repoPath);
+                    await _server.UpdateRepoPathsAsync();
+                } catch (Exception ex) {
+                    LogRepoPathPersistFailed(ex, agentId);
+                }
+            });
 
             // Start reading output
             _ = ReadAgentOutputAsync(agent);
@@ -751,6 +762,9 @@ public partial class AgentOrchestrator : IAsyncDisposable {
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "Daemon heartbeat failed")]
     partial void LogHeartbeatFailed(Exception ex);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Failed to persist repo path for agent {AgentId}")]
+    partial void LogRepoPathPersistFailed(Exception ex, string agentId);
 
     [GeneratedRegex(@"\x1B\[[0-9;]*[A-Za-z]|\x1B\].*?\x07|\x1B[()][AB012]|\x1B\[[\?]?[0-9;]*[hlm]")]
     private static partial Regex StripAnsiRegex();
