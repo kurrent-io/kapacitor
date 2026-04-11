@@ -159,7 +159,7 @@ static partial class TitleGenerator {
                     var       root = doc.RootElement;
 
                     // Headless claude -p sessions start with queue-operation entries
-                    if (root.Str("type") == "queue-operation"
+                    if (root.Str("type")      == "queue-operation"
                      && root.Str("operation") == "enqueue"
                      && root.Str("content") is { } content) {
                         if (IsKnownKapacitorPrompt(content)) {

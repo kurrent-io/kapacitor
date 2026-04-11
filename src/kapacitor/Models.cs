@@ -245,75 +245,75 @@ partial class KapacitorJsonContext : JsonSerializerContext;
 
 /// <summary>Commands sent from the server to daemon clients via SignalR.</summary>
 public readonly record struct LaunchAgentCommand(
-    string    AgentId,
-    string?   Prompt,
-    string    Model,
-    string?   Effort,
-    string    RepoPath,
-    string[]? Tools,
-    string[]? AttachmentIds
-);
+        string    AgentId,
+        string?   Prompt,
+        string    Model,
+        string?   Effort,
+        string    RepoPath,
+        string[]? Tools,
+        string[]? AttachmentIds
+    );
 
 public readonly record struct SendInputCommand(
-    string    AgentId,
-    string    Text,
-    string[]? AttachmentIds
-);
+        string    AgentId,
+        string    Text,
+        string[]? AttachmentIds
+    );
 
 public readonly record struct ResizeTerminalCommand(
-    string AgentId,
-    int    Cols,
-    int    Rows
-);
+        string AgentId,
+        int    Cols,
+        int    Rows
+    );
 
 /// <summary>Commands sent from daemon clients to the server via SignalR.</summary>
 public readonly record struct DaemonConnect(
-    string   Name,
-    string   Platform,
-    string[] RepoPaths,
-    int      MaxAgents
-);
+        string   Name,
+        string   Platform,
+        string[] RepoPaths,
+        int      MaxAgents
+    );
 
 public readonly record struct AgentRegistered(
-    string  AgentId,
-    string? Prompt,
-    string? Model,
-    string? Effort,
-    string? RepoPath
-);
+        string  AgentId,
+        string? Prompt,
+        string? Model,
+        string? Effort,
+        string? RepoPath
+    );
 
 public readonly record struct AgentStatusChanged(
-    string  AgentId,
-    string  Status,
-    string? SessionId
-);
+        string  AgentId,
+        string  Status,
+        string? SessionId
+    );
 
 public readonly record struct AgentUnregistered(string AgentId);
 
 public readonly record struct LaunchFailed(
-    string AgentId,
-    string Reason
-);
+        string AgentId,
+        string Reason
+    );
 
 public readonly record struct TerminalOutput(
-    string AgentId,
-    string Base64Data
-);
+        string AgentId,
+        string Base64Data
+    );
 
 /// <summary>Agent run events posted to the server HTTP API.</summary>
 record AgentRunStarted(
-    string? Prompt,
-    string? Model,
-    string? Effort,
-    string? RepoPath,
-    string? WorktreePath
-);
+        string? Prompt,
+        string? Model,
+        string? Effort,
+        string? RepoPath,
+        string? WorktreePath
+    );
 
 record AgentRunStopped(
-    string? Reason,
-    int?    ExitCode
-);
+        string? Reason,
+        int?    ExitCode
+    );
 
 record AgentRunHeartbeat(
-    string? SessionId
-);
+        string? SessionId
+    );

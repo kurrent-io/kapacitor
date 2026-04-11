@@ -2,7 +2,6 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using kapacitor.Auth;
 using kapacitor.Config;
-// ReSharper disable MethodHasAsyncOverload
 
 namespace kapacitor.Commands;
 
@@ -39,7 +38,7 @@ public static class SetupCommand {
             serverUrl = serverUrlArg;
             await Console.Out.WriteLineAsync($"  Server URL: {serverUrl}");
         } else if (noPrompt) {
-            Console.Error.WriteLine("  --server-url is required with --no-prompt");
+            await Console.Error.WriteLineAsync("  --server-url is required with --no-prompt");
 
             return 1;
         } else {
@@ -47,7 +46,7 @@ public static class SetupCommand {
             serverUrl = Console.ReadLine()?.Trim() ?? "";
 
             if (string.IsNullOrEmpty(serverUrl)) {
-                Console.Error.WriteLine("  Server URL is required.");
+                await Console.Error.WriteLineAsync("  Server URL is required.");
 
                 return 1;
             }
@@ -64,7 +63,7 @@ public static class SetupCommand {
             provider = await HttpClientExtensions.DiscoverProviderAsync(serverUrl);
             await Console.Out.WriteLineAsync($"✓ Reachable. Auth provider: {provider}");
         } catch (Exception ex) {
-            Console.Error.WriteLine($"✗ Cannot reach server: {ex.Message}");
+            await Console.Error.WriteLineAsync($"✗ Cannot reach server: {ex.Message}");
 
             return 1;
         }
@@ -80,7 +79,7 @@ public static class SetupCommand {
             var loginResult = await OAuthLoginFlow.LoginWithDiscoveryAsync(serverUrl);
 
             if (loginResult != 0) {
-                Console.Error.WriteLine("  Login failed.");
+                await Console.Error.WriteLineAsync("  Login failed.");
 
                 return 1;
             }
@@ -107,7 +106,7 @@ public static class SetupCommand {
             defaultVisibility = (GetArg(args, "--default-visibility") ?? "org_public").ToLowerInvariant();
 
             if (defaultVisibility is not "private" and not "org_public" and not "public") {
-                Console.Error.WriteLine($"  Invalid default-visibility: {defaultVisibility}. Must be: private, org_public, or public");
+                await Console.Error.WriteLineAsync($"  Invalid default-visibility: {defaultVisibility}. Must be: private, org_public, or public");
 
                 return 1;
             }
@@ -217,7 +216,7 @@ public static class SetupCommand {
         await Console.Out.WriteLineAsync();
 
         // Save config
-        var profileConfig = await AppConfig.LoadProfileConfig();
+        var profileConfig  = await AppConfig.LoadProfileConfig();
         var defaultProfile = profileConfig.Profiles.GetValueOrDefault("default") ?? new Profile();
 
         defaultProfile = defaultProfile with {
@@ -311,7 +310,7 @@ public static class SetupCommand {
 
             // Ensure extraKnownMarketplaces.kapacitor exists with the correct path
             if (root["extraKnownMarketplaces"] is not JsonObject marketplaces) {
-                marketplaces                    = [];
+                marketplaces                   = [];
                 root["extraKnownMarketplaces"] = marketplaces;
             }
 

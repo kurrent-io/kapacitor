@@ -3,23 +3,21 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 
-// ReSharper disable MethodHasAsyncOverload
-
 namespace kapacitor.Commands;
 
 static partial class ReviewCommand {
     public static async Task<int> HandleReview(string baseUrl, string prIdentifier) {
         // Parse PR identifier
         if (!TryParsePr(prIdentifier, out var owner, out var repo, out var prNumber)) {
-            Console.Error.WriteLine($"Could not parse PR identifier: {prIdentifier}");
-            Console.Error.WriteLine("Expected formats:");
-            Console.Error.WriteLine("  URL:       https://github.com/owner/repo/pull/123");
-            Console.Error.WriteLine("  Shorthand: owner/repo#123");
+            await Console.Error.WriteLineAsync($"Could not parse PR identifier: {prIdentifier}");
+            await Console.Error.WriteLineAsync("Expected formats:");
+            await Console.Error.WriteLineAsync("  URL:       https://github.com/owner/repo/pull/123");
+            await Console.Error.WriteLineAsync("  Shorthand: owner/repo#123");
 
             return 1;
         }
 
-        Console.Error.WriteLine($"Reviewing PR #{prNumber} in {owner}/{repo}...");
+        await Console.Error.WriteLineAsync($"Reviewing PR #{prNumber} in {owner}/{repo}...");
 
         // Verify that review context exists on the server
         using var client = await HttpClientExtensions.CreateAuthenticatedClientAsync(baseUrl);
@@ -31,12 +29,12 @@ static partial class ReviewCommand {
                 var status = (int)response.StatusCode;
 
                 if (status == 404) {
-                    Console.Error.WriteLine($"No review context found for {owner}/{repo}#{prNumber}.");
-                    Console.Error.WriteLine("Make sure the PR has sessions tracked in Capacitor.");
+                    await Console.Error.WriteLineAsync($"No review context found for {owner}/{repo}#{prNumber}.");
+                    await Console.Error.WriteLineAsync("Make sure the PR has sessions tracked in Capacitor.");
                 } else if (await HttpClientExtensions.HandleUnauthorizedAsync(response)) {
                     // 401 message already printed
                 } else {
-                    Console.Error.WriteLine($"Server returned HTTP {status} when checking review context.");
+                    await Console.Error.WriteLineAsync($"Server returned HTTP {status} when checking review context.");
                 }
 
                 return 1;
@@ -75,7 +73,7 @@ static partial class ReviewCommand {
             var json = mcpConfig.ToJsonString(new JsonSerializerOptions { WriteIndented = true });
             await File.WriteAllTextAsync(configPath, json);
 
-            Console.Error.WriteLine($"Launching claude with review MCP server...");
+            await Console.Error.WriteLineAsync($"Launching claude with review MCP server...");
 
             var psi = new ProcessStartInfo {
                 FileName        = "claude",
@@ -96,7 +94,7 @@ static partial class ReviewCommand {
             var process = Process.Start(psi);
 
             if (process is null) {
-                Console.Error.WriteLine("Failed to start claude. Make sure it is installed and on your PATH.");
+                await Console.Error.WriteLineAsync("Failed to start claude. Make sure it is installed and on your PATH.");
 
                 return 1;
             }

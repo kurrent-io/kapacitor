@@ -8,11 +8,7 @@ static class WatcherManager {
     internal static string GetWatcherDir() {
         var overrideDir = Environment.GetEnvironmentVariable("KAPACITOR_WATCHER_DIR");
 
-        if (overrideDir is not null) {
-            return overrideDir;
-        }
-
-        return PathHelpers.ConfigPath("watchers");
+        return overrideDir ?? PathHelpers.ConfigPath("watchers");
     }
 
     static string GetPidFilePath(string key) => Path.Combine(GetWatcherDir(), $"{key}.pid");
@@ -52,7 +48,7 @@ static class WatcherManager {
                 RedirectStandardError  = true,
                 UseShellExecute        = false,
                 CreateNoWindow         = true,
-                Environment = { ["KAPACITOR_URL"] = baseUrl }
+                Environment            = { ["KAPACITOR_URL"] = baseUrl }
             };
 
             var process = Process.Start(psi);
@@ -228,7 +224,7 @@ static class WatcherManager {
                     var doc  = JsonDocument.Parse(json);
 
                     startLine = (int?)doc.RootElement.Num("last_line_number") + 1
-                        ?? Commands.WatchCommand.CountFileLines(transcriptPath);
+                     ?? Commands.WatchCommand.CountFileLines(transcriptPath);
                 } else {
                     startLine = Commands.WatchCommand.CountFileLines(transcriptPath);
                 }

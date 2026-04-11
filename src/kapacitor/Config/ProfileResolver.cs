@@ -3,14 +3,14 @@ namespace kapacitor.Config;
 public record ResolvedProfile(string? ServerUrl, string? ProfileName, Profile? Profile, string? Warning);
 
 public class ProfileResolver(
-    ProfileConfig config,
-    string? cliServerUrl,
-    string? envUrl,
-    string? envProfile,
-    RepoConfig? repoConfig,
-    string[] repoRemoteUrls,
-    string? repoPath
-) {
+        ProfileConfig config,
+        string?       cliServerUrl,
+        string?       envUrl,
+        string?       envProfile,
+        RepoConfig?   repoConfig,
+        string[]      repoRemoteUrls,
+        string?       repoPath
+    ) {
     public ResolvedProfile Resolve() {
         // 1. CLI --server-url flag
         if (!string.IsNullOrEmpty(cliServerUrl))
@@ -28,8 +28,8 @@ public class ProfileResolver(
         if (repoConfig?.Profile is { } repoProfileName) {
             if (config.Profiles.TryGetValue(repoProfileName, out var repoProfile)) {
                 if (repoConfig.ServerUrl is { } repoUrl
-                    && !string.IsNullOrEmpty(repoProfile.ServerUrl)
-                    && AppConfig.NormalizeUrl(repoUrl) != AppConfig.NormalizeUrl(repoProfile.ServerUrl!)) {
+                 && !string.IsNullOrEmpty(repoProfile.ServerUrl)
+                 && AppConfig.NormalizeUrl(repoUrl) != AppConfig.NormalizeUrl(repoProfile.ServerUrl!)) {
                     return new(
                         AppConfig.NormalizeUrl(repoProfile.ServerUrl!),
                         repoProfileName,
@@ -56,11 +56,13 @@ public class ProfileResolver(
 
         // 5. Git remote match
         string? remoteMatch;
+
         try {
             remoteMatch = RemoteMatcher.FindMatchingProfile(config.Profiles, repoRemoteUrls);
         } catch (InvalidOperationException ex) {
             return new(null, null, null, ex.Message);
         }
+
         if (remoteMatch is not null)
             return ResolveByName(remoteMatch);
 

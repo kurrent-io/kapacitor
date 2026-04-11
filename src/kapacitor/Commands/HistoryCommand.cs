@@ -2,7 +2,6 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using kapacitor.Config;
-// ReSharper disable MethodHasAsyncOverload
 
 namespace kapacitor.Commands;
 
@@ -54,7 +53,7 @@ static class HistoryCommand {
             transcriptFiles = [.. transcriptFiles.Where(t => t.SessionId == filterSession)];
 
             if (transcriptFiles.Count == 0) {
-                Console.Error.WriteLine($"Session not found: {filterSession}");
+                await Console.Error.WriteLineAsync($"Session not found: {filterSession}");
 
                 return 1;
             }

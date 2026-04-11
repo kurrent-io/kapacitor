@@ -16,8 +16,9 @@ if (Environment.GetEnvironmentVariable("KAPACITOR_SKIP") is "1") {
 var baseUrl = await AppConfig.ResolveServerUrl(args);
 
 // Fire-and-forget update check (prints hint to stderr after command finishes)
-var noUpdateCheck = args.Contains("--no-update-check");
+var   noUpdateCheck   = args.Contains("--no-update-check");
 Task? updateCheckTask = null;
+
 if (!noUpdateCheck) {
     updateCheckTask = Task.Run(UpdateCommand.PrintUpdateHintIfAvailable);
 }
@@ -56,15 +57,18 @@ string[] offlineCommands = ["--help", "-h", "help", "--version", "-v", "logout",
 
 if (baseUrl is null && !offlineCommands.Contains(command)) {
     Console.Error.WriteLine("No server configured. Run `kapacitor setup` or set KAPACITOR_URL.");
+
     return 1;
 }
 
 switch (command) {
     case "--version" or "-v": {
         var version = typeof(Program).Assembly
-            .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?
+            .GetCustomAttribute<AssemblyInformationalVersionAttribute>()
+            ?
             .InformationalVersion ?? "unknown";
         await Console.Out.WriteLineAsync($"kapacitor {version}");
+
         return 0;
     }
     case "errors": {
@@ -178,15 +182,19 @@ switch (command) {
             Console.Error.WriteLine("Usage: kapacitor review <pr-url-or-shorthand>");
             Console.Error.WriteLine("  Example: kapacitor review https://github.com/owner/repo/pull/123");
             Console.Error.WriteLine("  Example: kapacitor review owner/repo#123");
+
             return 1;
         }
+
         return await ReviewCommand.HandleReview(baseUrl!, args[1]);
     }
     case "mcp": {
         if (args.Length < 2) {
             Console.Error.WriteLine("Usage: kapacitor mcp review [--owner <owner> --repo <repo> --pr <number>]");
+
             return 1;
         }
+
         if (args[1] == "review") {
             var mcpOwner = GetArg(args, "--owner");
             var mcpRepo  = GetArg(args, "--repo");
@@ -200,7 +208,9 @@ switch (command) {
             // No args — auto-detect from git
             return await McpReviewServer.RunAutoAsync(baseUrl!);
         }
+
         Console.Error.WriteLine($"Unknown mcp subcommand: {args[1]}");
+
         return 1;
     }
     case "cleanup":
@@ -210,6 +220,7 @@ switch (command) {
 
         if (sessionId is null) {
             Console.Error.WriteLine("KAPACITOR_SESSION_ID not set. Run this inside an active Claude Code session.");
+
             return 1;
         }
 
@@ -218,6 +229,7 @@ switch (command) {
 
         // Also kill subagent watchers — scan PID files matching "{sessionId}-*"
         var watcherDir = WatcherManager.GetWatcherDir();
+
         if (Directory.Exists(watcherDir)) {
             foreach (var pidFile in Directory.GetFiles(watcherDir, $"{sessionId}-*.pid")) {
                 var subKey = Path.GetFileNameWithoutExtension(pidFile);
@@ -242,6 +254,7 @@ switch (command) {
                 return 1;
             } else {
                 Console.Error.WriteLine($"Server returned HTTP {(int)resp.StatusCode}");
+
                 return 1;
             }
         } catch (HttpRequestException ex) {
@@ -256,12 +269,13 @@ switch (command) {
 
         if (sessionId is null) {
             Console.Error.WriteLine("KAPACITOR_SESSION_ID not set. Run this inside an active Claude Code session.");
+
             return 1;
         }
 
-        using var hideClient  = await HttpClientExtensions.CreateAuthenticatedClientAsync();
-        var       visPayload  = new JsonObject { ["visibility"] = "none" };
-        using var visContent  = new StringContent(visPayload.ToJsonString(), Encoding.UTF8, "application/json");
+        using var hideClient = await HttpClientExtensions.CreateAuthenticatedClientAsync();
+        var       visPayload = new JsonObject { ["visibility"] = "none" };
+        using var visContent = new StringContent(visPayload.ToJsonString(), Encoding.UTF8, "application/json");
 
         try {
             var resp = await hideClient.PutWithRetryAsync($"{baseUrl!}/api/sessions/{sessionId}/visibility", visContent);
@@ -272,10 +286,12 @@ switch (command) {
                 return 1;
             } else {
                 Console.Error.WriteLine($"Server returned HTTP {(int)resp.StatusCode}");
+
                 return 1;
             }
         } catch (HttpRequestException ex) {
             HttpClientExtensions.WriteUnreachableError(baseUrl!, ex);
+
             return 1;
         }
 
@@ -473,7 +489,7 @@ if (command == "session-start" && kapacitorConfig?.DefaultVisibility is { } vis)
 
         if (node is not null) {
             node["default_visibility"] = vis;
-            body = node.ToJsonString();
+            body                       = node.ToJsonString();
         }
     } catch {
         // Best effort — don't block session start if config read fails
@@ -690,6 +706,7 @@ async Task PostPlanContentAsync(HttpClient httpClient, string url, string sessio
 
 static string? GetArg(string[] arguments, string flag) {
     var idx = Array.IndexOf(arguments, flag);
+
     return idx >= 0 && idx + 1 < arguments.Length ? arguments[idx + 1] : null;
 }
 
@@ -710,7 +727,7 @@ void NormalizeGuidField(JsonNode node, string fieldName) {
 
 async Task PrintUsage() {
     var hookList = string.Join('\n', hookCommands.Select(h => $"  {h}"));
-    var text = EmbeddedResources.Load("help-usage.txt").Replace("{hookCommands}", hookList);
+    var text     = EmbeddedResources.Load("help-usage.txt").Replace("{hookCommands}", hookList);
     await Console.Out.WriteAsync(text);
 }
 
@@ -727,7 +744,10 @@ void MarkSessionDisabled(string sessionId) {
 
 void RemoveDisabledMarker(string sessionId) {
     var path = Path.Combine(GetDisabledDir(), sessionId);
-    try { File.Delete(path); } catch { /* ignore */ }
+
+    try { File.Delete(path); } catch {
+        /* ignore */
+    }
 }
 
 async Task<int> PrintCommandHelp(string cmd) {
@@ -741,6 +761,7 @@ async Task<int> PrintCommandHelp(string cmd) {
     } else {
         Console.Error.WriteLine($"Unknown command: {cmd}");
         Console.Error.WriteLine("Run `kapacitor --help` for a list of commands.");
+
         return 1;
     }
 

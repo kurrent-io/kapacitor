@@ -59,7 +59,7 @@ public static class UseCommand {
 
     static async Task<ProfileConfig> LoadConfig(string configPath) {
         if (!File.Exists(configPath))
-            return new ProfileConfig { Profiles = new Dictionary<string, Profile> { ["default"] = new() } };
+            return new() { Profiles = new() { ["default"] = new() } };
 
         var json = await File.ReadAllTextAsync(configPath);
         return ConfigMigration.MigrateIfNeeded(json).Config;

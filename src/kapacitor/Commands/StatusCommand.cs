@@ -13,6 +13,7 @@ public static class StatusCommand {
             Console.Write($"{baseUrl} ");
 
             try {
+                // ReSharper disable once ShortLivedHttpClient
                 using var http = new HttpClient();
                 http.Timeout = TimeSpan.FromSeconds(5);
                 var resp = await http.GetAsync($"{baseUrl}/auth/config");

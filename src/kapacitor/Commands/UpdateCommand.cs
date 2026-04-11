@@ -1,7 +1,6 @@
 using System.Reflection;
 using System.Text.Json.Nodes;
 using kapacitor.Config;
-// ReSharper disable MethodHasAsyncOverload
 
 namespace kapacitor.Commands;
 
@@ -12,7 +11,7 @@ public static class UpdateCommand {
         var (latest, current) = await CheckForUpdateAsync(forceCheck: true);
 
         if (latest is null) {
-            Console.Error.WriteLine("Could not check for updates.");
+            await Console.Error.WriteLineAsync("Could not check for updates.");
 
             return 1;
         }
@@ -44,9 +43,9 @@ public static class UpdateCommand {
             var (latest, current) = await CheckForUpdateAsync(forceCheck: false);
 
             if (latest is not null && current is not null && IsNewer(latest, current)) {
-                Console.Error.WriteLine();
-                Console.Error.WriteLine($"Update available: {current} → {latest}");
-                Console.Error.WriteLine("Run `npm update -g @kurrent/kapacitor` to update");
+                await Console.Error.WriteLineAsync();
+                await Console.Error.WriteLineAsync($"Update available: {current} → {latest}");
+                await Console.Error.WriteLineAsync("Run `npm update -g @kurrent/kapacitor` to update");
             }
         } catch {
             // Best effort — never break the CLI for update checks
@@ -120,13 +119,15 @@ public static class UpdateCommand {
 
         // Strip prerelease suffix (everything after first '-') for comparison
         static Version? ParseCore(string v) {
-            var dash = v.IndexOf('-');
+            var dash         = v.IndexOf('-');
             if (dash >= 0) v = v[..dash];
+
             return Version.TryParse(v, out var parsed) ? parsed : null;
         }
 
         var latestVersion  = ParseCore(latest);
         var currentVersion = ParseCore(current);
+
         if (latestVersion is null || currentVersion is null) return latest != current;
 
         return latestVersion > currentVersion;

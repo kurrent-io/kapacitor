@@ -10,9 +10,11 @@ static class EmbeddedResources {
     /// </summary>
     internal static string Load(string name) {
         var resourceName = $"kapacitor.Resources.{name}";
+
         using var stream = Assembly.GetManifestResourceStream(resourceName)
-            ?? throw new InvalidOperationException($"Embedded resource '{resourceName}' not found");
+         ?? throw new InvalidOperationException($"Embedded resource '{resourceName}' not found");
         using var reader = new StreamReader(stream);
+
         return reader.ReadToEnd();
     }
 
@@ -21,9 +23,13 @@ static class EmbeddedResources {
     /// </summary>
     internal static string? TryLoad(string name) {
         var resourceName = $"kapacitor.Resources.{name}";
+
         using var stream = Assembly.GetManifestResourceStream(resourceName);
+
         if (stream is null) return null;
+
         using var reader = new StreamReader(stream);
+
         return reader.ReadToEnd();
     }
 }

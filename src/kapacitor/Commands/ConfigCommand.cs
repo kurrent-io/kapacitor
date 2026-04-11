@@ -23,7 +23,7 @@ public static class ConfigCommand {
 
     static async Task<int> Show() {
         var profileConfig = await AppConfig.LoadProfileConfig();
-        var json = JsonSerializer.Serialize(profileConfig, ProfileConfigJsonContextIndented.Default.ProfileConfig);
+        var json          = JsonSerializer.Serialize(profileConfig, ProfileConfigJsonContextIndented.Default.ProfileConfig);
         await Console.Out.WriteLineAsync(json);
         await Console.Out.WriteLineAsync();
         await Console.Out.WriteLineAsync($"  Path: {AppConfig.GetConfigPath()}");
@@ -33,8 +33,8 @@ public static class ConfigCommand {
 
     static async Task<int> Set(string key, string value) {
         var profileConfig = await AppConfig.LoadProfileConfig();
-        var profileName = profileConfig.ActiveProfile;
-        var profile = profileConfig.Profiles.GetValueOrDefault(profileName) ?? new Profile();
+        var profileName   = profileConfig.ActiveProfile;
+        var profile       = profileConfig.Profiles.GetValueOrDefault(profileName) ?? new Profile();
 
         profile = key switch {
             "server_url" => profile with { ServerUrl = value },
@@ -52,6 +52,7 @@ public static class ConfigCommand {
         await AppConfig.SaveProfileConfig(profileConfig);
 
         await Console.Out.WriteLineAsync($"Set {key} = {value} (profile: {profileName})");
+
         return 0;
     }
 

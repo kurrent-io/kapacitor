@@ -13,28 +13,35 @@ static partial class SecretRedactor {
             //   Direct format:   { "type": "user", "message": { "role": "user", "content": [...] } }
             //   Progress format: { "type": "progress", "data": { "message": { "type": "user", "message": { ... } } } }
             JsonElement? userMessage;
+
             if (root.Str("type") == "user") {
                 // Direct format — the root IS the user event; content lives at root.message.content
                 userMessage = root;
             } else {
                 // Progress wrapper — content lives at data.message.message.content
                 var nested = root.Obj("data")?.Obj("message");
+
                 if (nested is null || nested.Value.Str("type") != "user")
                     return rawJsonlLine;
+
                 userMessage = nested;
             }
 
             var content = userMessage.Value.Obj("message")?.Arr("content");
+
             if (content is null)
                 return rawJsonlLine;
 
             var hasToolResult = false;
+
             foreach (var block in content.Value.EnumerateArray()) {
                 if (block.Str("type") == "tool_result") {
                     hasToolResult = true;
+
                     break;
                 }
             }
+
             if (!hasToolResult)
                 return rawJsonlLine;
 
@@ -58,43 +65,53 @@ static partial class SecretRedactor {
         text = EnvVarSecretRegex.Replace(text, "$1[REDACTED]");
         text = YamlStyleSecretRegex.Replace(text, "$1[REDACTED]");
         text = ConnectionStringPwdRegex.Replace(text, "$1[REDACTED]$3");
+
         return text;
     }
 
     // Matches PEM private key blocks (handles both real newlines and \\n escaped newlines in JSON strings)
     [GeneratedRegex(@"-----BEGIN[A-Z\s]*PRIVATE KEY-----(?:\\n|[\s\S])*?-----END[A-Z\s]*PRIVATE KEY-----", RegexOptions.None)]
     private static partial Regex PemBlockRx();
+
     static readonly Regex PemBlockRegex = PemBlockRx();
 
     // AWS access key IDs: AKIA followed by 16 uppercase alphanumeric chars
     [GeneratedRegex(@"AKIA[0-9A-Z]{16}", RegexOptions.None)]
     private static partial Regex AwsAccessKeyRx();
+
     static readonly Regex AwsAccessKeyRegex = AwsAccessKeyRx();
 
     // Known vendor token prefixes followed by token characters
     // Each prefix is specific enough to avoid false positives
     [GeneratedRegex(@"(?:ghp_|gho_|ghs_|github_pat_|cfat_|sk-(?:proj-|live_|test_)?|sk_live_|sk_test_|xoxb-|xoxp-|xoxa-|pypi-|npm_|glpat-)[A-Za-z0-9\-_]{10,}", RegexOptions.None)]
     private static partial Regex VendorTokenRx();
+
     static readonly Regex VendorTokenRegex = VendorTokenRx();
 
     // JSON key: matches "secret_name": "value" or \"secret_name\": \"value\" (escaped quotes inside JSON strings)
     // group 1 = opening quote(s) + key name + closing quote(s) + colon + space + opening quote(s)
     // group 2 = value
     // group 3 = closing quote(s)
-    [GeneratedRegex("""((?:\\"|")(?:[^"\\]*(?:secret|token|password|passwd|pwd|api_key|apikey|private_key|credentials|client_secret|access_key|auth_token)[^"\\]*)(?:\\"|")[ \t]*:[ \t]*(?:\\"|"))([^"\\]+)((?:\\"|"))""", RegexOptions.IgnoreCase)]
+    [GeneratedRegex(
+        """((?:\\"|")(?:[^"\\]*(?:secret|token|password|passwd|pwd|api_key|apikey|private_key|credentials|client_secret|access_key|auth_token)[^"\\]*)(?:\\"|")[ \t]*:[ \t]*(?:\\"|"))([^"\\]+)((?:\\"|"))""",
+        RegexOptions.IgnoreCase
+    )]
     private static partial Regex JsonKeySecretRx();
+
     static readonly Regex JsonKeySecretRegex = JsonKeySecretRx();
 
     // Env var: SECRET_NAME=value (uppercase key containing secret keyword, value until whitespace or JSON delimiter)
     // Excludes " and \ to avoid consuming JSON string boundaries when matching against raw serialized JSON
     [GeneratedRegex(@"([A-Z_]*(?:SECRET|TOKEN|PASSWORD|PASSWD|PWD|API_KEY|APIKEY|PRIVATE_KEY|CREDENTIALS|CLIENT_SECRET|ACCESS_KEY|AUTH_TOKEN)[A-Z_]*=)([^\s""\\]+)", RegexOptions.IgnoreCase)]
     private static partial Regex EnvVarSecretRx();
+
     static readonly Regex EnvVarSecretRegex = EnvVarSecretRx();
 
     // YAML-style: secret_name: value (key containing secret keyword followed by colon, space, and value)
     // Excludes " and \ to avoid crossing JSON string boundaries. Minimum 8 chars to reduce false positives.
     [GeneratedRegex(@"((?:secret|token|password|passwd|pwd|api_key|apikey|private_key|credentials|client_secret|access_key|auth_token)[^:\n]*:[ \t]+)([^\s""\\]{8,})", RegexOptions.IgnoreCase)]
     private static partial Regex YamlStyleSecretRx();
+
     static readonly Regex YamlStyleSecretRegex = YamlStyleSecretRx();
 
     // Connection string: Password=value; or Pwd=value;
@@ -102,5 +119,6 @@ static partial class SecretRedactor {
     // group 1 = key=, group 2 = value, group 3 = ; or end
     [GeneratedRegex(@"((?:Password|Pwd)\s*=\s*)([^;""\\]+)(;|$)", RegexOptions.IgnoreCase)]
     private static partial Regex ConnectionStringPwdRx();
+
     static readonly Regex ConnectionStringPwdRegex = ConnectionStringPwdRx();
 }
