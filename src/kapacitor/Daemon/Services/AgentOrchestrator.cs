@@ -690,8 +690,9 @@ public partial class AgentOrchestrator : IAsyncDisposable {
 
     /// <summary>
     /// Reads MCP server definitions from ~/.claude.json for the source repo and
-    /// writes a .mcp.json in the worktree root so Claude discovers them. Merges
+    /// writes .mcp.json in the worktree root so Claude discovers them. Merges
     /// with any existing .mcp.json already present in the worktree (e.g. from git).
+    /// Strips env fields from copied servers to avoid leaking credentials.
     /// </summary>
     static void WriteMcpConfig(string sourceRepoPath, string worktreePath) {
         var claudeJsonPath = Path.Combine(PathHelpers.HomeDirectory, ".claude.json");
@@ -718,7 +719,9 @@ public partial class AgentOrchestrator : IAsyncDisposable {
         // Add servers from ~/.claude.json (don't overwrite repo-committed ones)
         foreach (var (name, value) in servers) {
             if (!merged.ContainsKey(name) && value is not null) {
-                merged[name] = value.DeepClone();
+                var clone = value.DeepClone().AsObject();
+                clone.Remove("env");
+                merged[name] = clone;
             }
         }
 
