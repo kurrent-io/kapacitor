@@ -148,6 +148,42 @@ kapacitor agent status             # check if daemon is running
 kapacitor agent stop               # stop the background daemon
 ```
 
+### Profiles
+
+Profiles let you work with multiple Capacitor servers — for example, a company server for work repos and a separate one for open-source projects. Each profile stores its own server URL, visibility settings, and daemon configuration.
+
+```bash
+kapacitor profile add work --server-url https://cap.example.com
+kapacitor profile add oss --server-url https://cap.oss.dev --remote "github.com/myorg/*"
+kapacitor profile list
+kapacitor profile show work
+kapacitor profile remove work
+```
+
+The `--remote` flag associates a profile with git remote patterns. When you open a repo whose remote matches a pattern, that profile activates automatically.
+
+#### Switching profiles
+
+```bash
+kapacitor use work                  # bind 'work' profile to current repo/directory
+kapacitor use work --global         # set 'work' as the global default
+kapacitor use oss --save            # bind and write .kapacitor.json for team sharing
+```
+
+Without `--global`, `use` binds the profile to the current git repo root (or the current directory if not in a repo). With `--save`, it writes a `.kapacitor.json` file that can be committed so the whole team uses the same profile.
+
+#### Profile resolution order
+
+The CLI resolves which profile to use in this order:
+
+1. `--server-url` CLI flag
+2. `KAPACITOR_URL` environment variable
+3. `KAPACITOR_PROFILE` environment variable
+4. `.kapacitor.json` in the repo root (or current directory if not in a repo)
+5. Git remote pattern matching from `--remote` flags
+6. Directory binding from `kapacitor use`
+7. Global active profile (or `default`)
+
 ### Configuration
 
 ```bash
@@ -173,6 +209,8 @@ kapacitor config set excluded_repos "myorg/secret-project,personal/diary"
 
 ```bash
 kapacitor status         # server health check
+kapacitor whoami         # show current authenticated user
+kapacitor login          # authenticate via OAuth
 kapacitor update         # check for CLI updates
 kapacitor logout         # delete stored tokens
 ```
