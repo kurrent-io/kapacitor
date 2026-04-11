@@ -24,6 +24,9 @@ Agent Daemon:
   agent start [-d]                 Start agent daemon (foreground, or -d for background)
   agent stop                       Stop background agent daemon
   agent status                     Show agent daemon status
+  repos                            List known repos (sorted by last used)
+  repos add <path>                 Add a repo path (supports "." for cwd)
+  repos remove <path>              Remove a repo path
 
 Session:
   errors [--chain] [id]            List tool call errors for a session
