@@ -152,6 +152,16 @@ public partial class AgentOrchestrator : IAsyncDisposable {
                 LogOverlayFailed(ex, agentId);
             }
 
+            // Write .mcp.json into the worktree so Claude discovers MCP servers.
+            // Claude stores per-project MCP configs in ~/.claude.json keyed by the
+            // literal CWD path, so worktrees don't inherit them. Writing a repo-level
+            // .mcp.json is the simplest way to propagate them.
+            try {
+                WriteMcpConfig(repoPath, worktree.Path);
+            } catch (Exception ex) {
+                LogMcpConfigFailed(ex, agentId);
+            }
+
             // Merge dialog-selected tools into the worktree's settings.local.json
             // instead of using --allowedTools (which overrides project permissions).
             // Best-effort: filesystem/JSON errors should not block agent launch.
@@ -679,6 +689,44 @@ public partial class AgentOrchestrator : IAsyncDisposable {
     }
 
     /// <summary>
+    /// Reads MCP server definitions from ~/.claude.json for the source repo and
+    /// writes a .mcp.json in the worktree root so Claude discovers them. Merges
+    /// with any existing .mcp.json already present in the worktree (e.g. from git).
+    /// </summary>
+    static void WriteMcpConfig(string sourceRepoPath, string worktreePath) {
+        var claudeJsonPath = Path.Combine(PathHelpers.HomeDirectory, ".claude.json");
+
+        if (!File.Exists(claudeJsonPath)) return;
+
+        var root = JsonNode.Parse(File.ReadAllText(claudeJsonPath));
+        var servers = root?["projects"]?[sourceRepoPath]?["mcpServers"]?.AsObject();
+
+        if (servers is null || servers.Count == 0) return;
+
+        var mcpJsonPath = Path.Combine(worktreePath, ".mcp.json");
+
+        // Read existing .mcp.json if present (e.g. committed to git)
+        JsonObject merged;
+
+        if (File.Exists(mcpJsonPath)) {
+            var existing = JsonNode.Parse(File.ReadAllText(mcpJsonPath));
+            merged = existing?["mcpServers"]?.AsObject() ?? new JsonObject();
+        } else {
+            merged = new JsonObject();
+        }
+
+        // Add servers from ~/.claude.json (don't overwrite repo-committed ones)
+        foreach (var (name, value) in servers) {
+            if (!merged.ContainsKey(name) && value is not null) {
+                merged[name] = value.DeepClone();
+            }
+        }
+
+        var wrapper = new JsonObject { ["mcpServers"] = merged };
+        File.WriteAllText(mcpJsonPath, wrapper.ToJsonString(IndentedJsonOpts));
+    }
+
+    /// <summary>
     /// Extracts readable text from the terminal output buffer by decoding UTF-8
     /// and stripping ANSI escape sequences. Returns the last ~500 chars to keep
     /// the error message reasonable for the UI snackbar.
@@ -723,6 +771,9 @@ public partial class AgentOrchestrator : IAsyncDisposable {
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Failed to merge tool permissions for agent {AgentId} (continuing)")]
     partial void LogToolPermissionsFailed(Exception ex, string agentId);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Failed to write .mcp.json for agent {AgentId} (continuing)")]
+    partial void LogMcpConfigFailed(Exception ex, string agentId);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Failed to download launch attachments for agent {AgentId} (continuing)")]
     partial void LogAttachmentDownloadFailed(Exception ex, string agentId);
