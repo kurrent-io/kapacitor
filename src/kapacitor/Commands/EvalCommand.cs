@@ -40,13 +40,18 @@ static class EvalCommand {
 
         using var httpClient = await HttpClientExtensions.CreateAuthenticatedClientAsync();
 
+        // Session IDs are typically UUIDs but meta-session slugs are free-form
+        // user input; escape once and reuse for every session-scoped URL so
+        // reserved path characters don't corrupt the request.
+        var encodedSessionId = Uri.EscapeDataString(sessionId);
+
         // 1. Fetch the compacted eval context. We keep the raw JSON for
         //    embedding in judge prompts and parse it once for progress logging.
         string              traceJson;
         EvalContextResult? context;
 
         try {
-            var url = $"{baseUrl}/api/sessions/{sessionId}/eval-context"
+            var url = $"{baseUrl}/api/sessions/{encodedSessionId}/eval-context"
                 + (chain ? "?chain=true" : "")
                 + (thresholdBytes is { } t ? (chain ? "&" : "?") + $"threshold={t}" : "");
 
@@ -91,10 +96,12 @@ static class EvalCommand {
         }
 
         // 2. Fetch retained judge facts per category so we can inject them
-        //    into each judge's prompt as "known patterns" — DEV-1434.
-        //    Failures don't abort the run; the judges just won't see prior
-        //    patterns this time.
-        var knownFactsByCategory = await FetchAllJudgeFactsAsync(httpClient, baseUrl);
+        //    into each judge's prompt as "known patterns" — DEV-1434 /
+        //    DEV-1438. Facts are scoped to the session's repo server-side,
+        //    so sessions without a detected repository return empty lists
+        //    and the judges simply see no prior patterns. Failures don't
+        //    abort the run.
+        var knownFactsByCategory = await FetchAllJudgeFactsAsync(httpClient, baseUrl, encodedSessionId);
 
         // 3. Run each question in sequence. Failures on individual questions
         //    are logged but don't abort the whole run — a partial result set
@@ -139,7 +146,7 @@ static class EvalCommand {
 
             // If the judge emitted a retain_fact, persist it for future evals.
             if (ExtractRetainFact(result.Result) is { } retainedFact) {
-                await PostJudgeFactAsync(httpClient, baseUrl, q.Category, retainedFact, context.SessionId, evalRunId);
+                await PostJudgeFactAsync(httpClient, baseUrl, encodedSessionId, q.Category, retainedFact, evalRunId);
             }
         }
 
@@ -156,7 +163,7 @@ static class EvalCommand {
         Render(aggregate, sessionId);
 
         // 5. Persist to the server.
-        var postUrl     = $"{baseUrl}/api/sessions/{sessionId}/evals";
+        var postUrl     = $"{baseUrl}/api/sessions/{encodedSessionId}/evals";
         var payloadJson = JsonSerializer.Serialize(aggregate, KapacitorJsonContext.Default.SessionEvalCompletedPayload);
         using var httpContent = new StringContent(payloadJson, Encoding.UTF8, "application/json");
 
@@ -244,12 +251,16 @@ static class EvalCommand {
         }
     }
 
-    static async Task<Dictionary<string, List<JudgeFact>>> FetchAllJudgeFactsAsync(HttpClient httpClient, string baseUrl) {
+    /// <param name="encodedSessionId">Already URL-path-escaped — see HandleEval.</param>
+    static async Task<Dictionary<string, List<JudgeFact>>> FetchAllJudgeFactsAsync(HttpClient httpClient, string baseUrl, string encodedSessionId) {
         var result = new Dictionary<string, List<JudgeFact>>();
 
         foreach (var category in Categories) {
             try {
-                using var resp = await httpClient.GetWithRetryAsync($"{baseUrl}/api/judge-facts?category={category}");
+                // Categories are internal constants (safe ASCII), but escape
+                // for hygiene — costs nothing and insulates the URL from any
+                // future category that might include unusual characters.
+                using var resp = await httpClient.GetWithRetryAsync($"{baseUrl}/api/sessions/{encodedSessionId}/judge-facts?category={Uri.EscapeDataString(category)}");
                 if (!resp.IsSuccessStatusCode) {
                     Log($"Failed to fetch judge facts for {category}: HTTP {(int)resp.StatusCode}");
 
@@ -268,11 +279,11 @@ static class EvalCommand {
         return result;
     }
 
-    static async Task PostJudgeFactAsync(HttpClient httpClient, string baseUrl, string category, string fact, string sessionId, string evalRunId) {
+    /// <param name="encodedSessionId">Already URL-path-escaped — see HandleEval.</param>
+    static async Task PostJudgeFactAsync(HttpClient httpClient, string baseUrl, string encodedSessionId, string category, string fact, string evalRunId) {
         var payload = new JudgeFactPayload {
             Category        = category,
             Fact            = fact,
-            SourceSessionId = sessionId,
             SourceEvalRunId = evalRunId
         };
 
@@ -280,7 +291,7 @@ static class EvalCommand {
         using var content = new StringContent(payloadJson, Encoding.UTF8, "application/json");
 
         try {
-            using var resp = await httpClient.PostWithRetryAsync($"{baseUrl}/api/judge-facts", content);
+            using var resp = await httpClient.PostWithRetryAsync($"{baseUrl}/api/sessions/{encodedSessionId}/judge-facts", content);
             Log(
                 resp.IsSuccessStatusCode
                     ? $"  retained fact for category {category}"
