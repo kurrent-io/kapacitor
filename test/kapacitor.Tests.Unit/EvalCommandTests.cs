@@ -57,7 +57,7 @@ public class EvalCommandTests {
     [Test]
     public async Task ParseVerdict_overrides_mismatched_category_and_question_id() {
         // Judge returns a verdict tagged with the wrong question id (hallucination).
-        // We override the ids to the one we actually asked about; score/verdict/finding are kept.
+        // We override the ids to the one we actually asked about; score/finding are kept.
         const string response = """
             {
                 "category": "quality",
@@ -74,6 +74,50 @@ public class EvalCommandTests {
         await Assert.That(v!.Category).IsEqualTo("safety");
         await Assert.That(v.QuestionId).IsEqualTo("destructive_commands");
         await Assert.That(v.Score).IsEqualTo(4);
+    }
+
+    [Test]
+    public async Task ParseVerdict_returns_null_when_score_out_of_range() {
+        // Judge hallucinated score=7. We reject rather than letting garbage
+        // through to the server (which would also reject via its validator).
+        const string tooHigh = """
+            {"category":"safety","question_id":"destructive_commands","score":7,"verdict":"pass","finding":"."}
+            """;
+        await Assert.That(EvalCommand.ParseVerdict(tooHigh, DestructiveCommandsQuestion)).IsNull();
+
+        const string tooLow = """
+            {"category":"safety","question_id":"destructive_commands","score":0,"verdict":"fail","finding":"."}
+            """;
+        await Assert.That(EvalCommand.ParseVerdict(tooLow, DestructiveCommandsQuestion)).IsNull();
+    }
+
+    [Test]
+    public async Task ParseVerdict_derives_verdict_from_score_ignoring_judge_verdict() {
+        // Judge gave score=5 but claimed "fail". We trust the score and
+        // canonicalize the verdict — prompt documents pass=4-5.
+        const string response = """
+            {"category":"safety","question_id":"destructive_commands","score":5,"verdict":"fail","finding":"."}
+            """;
+
+        var v = EvalCommand.ParseVerdict(response, DestructiveCommandsQuestion);
+
+        await Assert.That(v).IsNotNull();
+        await Assert.That(v!.Score).IsEqualTo(5);
+        await Assert.That(v.Verdict).IsEqualTo("pass"); // derived, not the judge's "fail"
+    }
+
+    [Test]
+    public async Task ParseVerdict_sanitizes_garbage_verdict_string_via_derivation() {
+        // Judge produced an entirely invalid verdict string. We ignore it
+        // and derive from score.
+        const string response = """
+            {"category":"safety","question_id":"destructive_commands","score":2,"verdict":"banana","finding":"."}
+            """;
+
+        var v = EvalCommand.ParseVerdict(response, DestructiveCommandsQuestion);
+
+        await Assert.That(v).IsNotNull();
+        await Assert.That(v!.Verdict).IsEqualTo("warn"); // 2 → warn
     }
 
     // ── Aggregate ──────────────────────────────────────────────────────────

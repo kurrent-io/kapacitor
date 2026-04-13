@@ -179,28 +179,42 @@ static class EvalCommand {
             .Replace("{TRACE_JSON}",   traceJson);
 
     /// <summary>
-    /// Parses a judge's JSON verdict. Tolerant of markdown code fences that
-    /// some models wrap the response in despite the "no fences" instruction.
-    /// Returns null if the response is unparseable or doesn't match the
-    /// expected shape for this question.
+    /// Parses a judge's JSON verdict and normalizes it against the schema
+    /// contract before the server ever sees it. Tolerant of markdown code
+    /// fences (some models wrap the response despite the "no fences"
+    /// instruction). Returns null if the response is unparseable or the
+    /// score is out of the 1..5 range.
+    ///
+    /// <para>
+    /// Category/question_id are overridden to match what we asked about
+    /// (judges sometimes hallucinate ids) and the verdict string is always
+    /// derived from the score — the prompt documents the mapping, so
+    /// trusting the score over the judge-supplied verdict eliminates a
+    /// whole class of mild hallucinations (verdict="banana", or
+    /// score/verdict disagreement) without discarding useful data.
+    /// </para>
     /// </summary>
     internal static EvalQuestionVerdict? ParseVerdict(string rawResponse, EvalQuestion question) {
         var json = StripCodeFences(rawResponse.Trim());
 
+        EvalQuestionVerdict? parsed;
         try {
-            var parsed = JsonSerializer.Deserialize(json, KapacitorJsonContext.Default.EvalQuestionVerdict);
-            if (parsed is null) return null;
-
-            // Reject verdicts that claim a different category/question than
-            // we asked about — judges sometimes hallucinate ids.
-            if (parsed.Category != question.Category || parsed.QuestionId != question.Id) {
-                return parsed with { Category = question.Category, QuestionId = question.Id };
-            }
-
-            return parsed;
+            parsed = JsonSerializer.Deserialize(json, KapacitorJsonContext.Default.EvalQuestionVerdict);
         } catch (JsonException) {
             return null;
         }
+
+        if (parsed is null) return null;
+
+        if (parsed.Score is < 1 or > 5) {
+            return null;
+        }
+
+        return parsed with {
+            Category   = question.Category,
+            QuestionId = question.Id,
+            Verdict    = VerdictForScore(parsed.Score)
+        };
     }
 
     static string StripCodeFences(string text) {
