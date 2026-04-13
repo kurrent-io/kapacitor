@@ -27,13 +27,22 @@ static class ClaudeCliRunner {
     /// summarization like title generation). For judgment tasks like the
     /// eval command, pass a stronger model (e.g. <c>sonnet</c>).
     /// </para>
+    ///
+    /// <para>
+    /// When <paramref name="promptViaStdin"/> is true, the prompt is streamed
+    /// to the <c>claude</c> process via stdin instead of being passed as a
+    /// command-line argument — required for prompts that would otherwise
+    /// exceed OS argv limits (notably 32K on Windows), such as the eval
+    /// command's embedded session trace.
+    /// </para>
     /// </summary>
     public static async Task<ClaudeCliResult?> RunAsync(
             string         prompt,
             TimeSpan       timeout,
             Action<string> log,
-            string         model    = "haiku",
-            int            maxTurns = 1
+            string         model          = "haiku",
+            int            maxTurns       = 1,
+            bool           promptViaStdin = false
         ) {
         // Run from a stable isolated directory to avoid loading project-specific plugins/config
         // that might interfere with the headless title generation session.
@@ -48,7 +57,7 @@ static class ClaudeCliRunner {
             stableDir = Path.GetTempPath();
         }
 
-        return await RunCoreAsync(prompt, timeout, log, stableDir, model, maxTurns);
+        return await RunCoreAsync(prompt, timeout, log, stableDir, model, maxTurns, promptViaStdin);
     }
 
     static async Task<ClaudeCliResult?> RunCoreAsync(
@@ -57,13 +66,15 @@ static class ClaudeCliRunner {
             Action<string> log,
             string         workingDir,
             string         model,
-            int            maxTurns
+            int            maxTurns,
+            bool           promptViaStdin
         ) {
         var psi = new ProcessStartInfo {
             FileName               = "claude",
             WorkingDirectory       = workingDir,
             RedirectStandardOutput = true,
             RedirectStandardError  = true,
+            RedirectStandardInput  = promptViaStdin,
             UseShellExecute        = false,
             CreateNoWindow         = true,
             Environment = {
@@ -74,7 +85,11 @@ static class ClaudeCliRunner {
         psi.Environment.Remove("CLAUDECODE");
         psi.Environment.Remove("CLAUDE_CODE_ENTRYPOINT");
         psi.ArgumentList.Add("-p");
-        psi.ArgumentList.Add(prompt);
+        if (!promptViaStdin) {
+            // When piping stdin, `claude -p` reads the prompt from stdin; don't
+            // also pass it as a positional arg.
+            psi.ArgumentList.Add(prompt);
+        }
         psi.ArgumentList.Add("--output-format");
         psi.ArgumentList.Add("json");
         psi.ArgumentList.Add("--max-turns");
@@ -93,6 +108,20 @@ static class ClaudeCliRunner {
         }
 
         using var cts = new CancellationTokenSource(timeout);
+
+        if (promptViaStdin) {
+            try {
+                await process.StandardInput.WriteAsync(prompt.AsMemory(), cts.Token);
+                await process.StandardInput.FlushAsync(cts.Token);
+                process.StandardInput.Close();
+            } catch (Exception ex) {
+                log($"Failed to stream prompt to claude stdin: {ex.Message}");
+
+                try { process.Kill(entireProcessTree: true); } catch { /* ignore */ }
+
+                return null;
+            }
+        }
 
         try {
             var stdoutTask = process.StandardOutput.ReadToEndAsync(cts.Token);

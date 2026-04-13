@@ -33,6 +33,7 @@ Session:
   recap [--chain] [--full] [id]    Session summary (--full for raw transcript)
   recap --repo                     Recent session summaries for current repo
   validate-plan [id]               Validate plan completion for a session
+  eval [--model N] [--chain] [id]  Run LLM-as-judge evaluation over a session
   generate-whats-done <id>         Generate what's-done summary
   set-title <title>                Set session title
   disable                          Stop recording and delete session data

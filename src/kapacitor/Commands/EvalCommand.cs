@@ -107,7 +107,10 @@ static class EvalCommand {
                 TimeSpan.FromMinutes(5),
                 msg => Log($"  {msg}"),
                 model: model,
-                maxTurns: 1
+                maxTurns: 1,
+                // Prompts embed the full compacted trace and can be hundreds
+                // of KB — well past Windows' 32K argv limit. Stream via stdin.
+                promptViaStdin: true
             );
 
             if (result is null) {

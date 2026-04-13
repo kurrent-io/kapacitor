@@ -118,7 +118,7 @@ switch (command) {
         return await ValidatePlanCommand.Handle(baseUrl!, vpSessionId);
     }
     case "eval": {
-        var evalSessionId = ResolveSessionId(args);
+        var evalSessionId = ResolveSessionId(args, valueFlags: ["--model", "--threshold"]);
 
         if (evalSessionId is null) {
             Console.Error.WriteLine("Usage: kapacitor eval [--model sonnet] [--chain] [--threshold N] [sessionId]");
@@ -730,12 +730,8 @@ static string? GetArg(string[] arguments, string flag) {
     return idx >= 0 && idx + 1 < arguments.Length ? arguments[idx + 1] : null;
 }
 
-string? ResolveSessionId(string[] args, int skipCount = 1) {
-    // Take the first positional argument (skip flags starting with --)
-    var fromArg = args.Skip(skipCount).FirstOrDefault(a => !a.StartsWith("--"));
-
-    return fromArg ?? Environment.GetEnvironmentVariable("KAPACITOR_SESSION_ID");
-}
+string? ResolveSessionId(string[] args, int skipCount = 1, string[]? valueFlags = null) =>
+    ArgParsing.ResolveSessionId(args, skipCount, valueFlags);
 
 void NormalizeGuidField(JsonNode node, string fieldName) {
     var value = node[fieldName]?.GetValue<string>();
