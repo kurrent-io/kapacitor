@@ -22,6 +22,7 @@ public partial class ServerConnection : IAsyncDisposable {
     public event Func<SendInputCommand, Task>?      OnSendInput;
     public event Func<string, string, Task>?        OnSendSpecialKey; // agentId, key
     public event Func<ResizeTerminalCommand, Task>? OnResizeTerminal;
+    public event Func<RunEvalCommand, Task>?        OnRunEval;
 
     public ServerConnection(DaemonConfig config, ILogger<ServerConnection> logger) {
         _config = config;
@@ -51,6 +52,7 @@ public partial class ServerConnection : IAsyncDisposable {
         _hub.On<SendInputCommand>("SendInput", cmd => OnSendInput?.Invoke(cmd)                             ?? Task.CompletedTask);
         _hub.On<string, string>("SendSpecialKey", (agentId, key) => OnSendSpecialKey?.Invoke(agentId, key) ?? Task.CompletedTask);
         _hub.On<ResizeTerminalCommand>("ResizeTerminal", cmd => OnResizeTerminal?.Invoke(cmd) ?? Task.CompletedTask);
+        _hub.On<RunEvalCommand>("RunEval", cmd => OnRunEval?.Invoke(cmd) ?? Task.CompletedTask);
 
         _hub.Reconnected += OnReconnected;
         _hub.Closed      += OnClosed;
@@ -176,6 +178,20 @@ public partial class ServerConnection : IAsyncDisposable {
 
     public Task SendTerminalOutputAsync(string agentId, string base64Data)
         => _hub.SendAsync("SendTerminalOutput", new TerminalOutput(agentId, base64Data), cancellationToken: _ct);
+
+    // ── Eval progress events (DEV-1440) ────────────────────────────────────
+
+    public Task EvalStartedAsync(string evalRunId, string sessionId, string judgeModel, int totalQuestions)
+        => _hub.SendAsync("EvalStarted", new EvalStarted(evalRunId, sessionId, judgeModel, totalQuestions), cancellationToken: _ct);
+
+    public Task EvalQuestionCompletedAsync(string evalRunId, string sessionId, int index, int total, string category, string questionId, int score, string verdict)
+        => _hub.SendAsync("EvalQuestionCompleted", new EvalQuestionCompleted(evalRunId, sessionId, index, total, category, questionId, score, verdict), cancellationToken: _ct);
+
+    public Task EvalFinishedAsync(string evalRunId, string sessionId, int overallScore, string summary)
+        => _hub.SendAsync("EvalFinished", new EvalFinished(evalRunId, sessionId, overallScore, summary), cancellationToken: _ct);
+
+    public Task EvalFailedAsync(string evalRunId, string sessionId, string reason)
+        => _hub.SendAsync("EvalFailed", new EvalFailed(evalRunId, sessionId, reason), cancellationToken: _ct);
 
     public Task AppendAgentRunEventAsync(string agentId, object evt) {
         _eventChannel.Writer.TryWrite(new PendingEvent(agentId, evt));
