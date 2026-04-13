@@ -191,14 +191,15 @@ public class EvalCommandTests {
 
     [Test]
     public async Task BuildQuestionPrompt_substitutes_all_placeholders() {
-        const string template = "session={SESSION_ID} run={EVAL_RUN_ID} cat={CATEGORY} id={QUESTION_ID} q={QUESTION_TEXT} trace={TRACE_JSON}";
+        const string template = "session={SESSION_ID} run={EVAL_RUN_ID} cat={CATEGORY} id={QUESTION_ID} q={QUESTION_TEXT} trace={TRACE_JSON} patterns={KNOWN_PATTERNS}";
 
         var prompt = EvalCommand.BuildQuestionPrompt(
             template,
             "sess-1",
             "run-42",
             DestructiveCommandsQuestion,
-            "{\"trace\":[]}"
+            "{\"trace\":[]}",
+            "- some pattern"
         );
 
         await Assert.That(prompt).Contains("session=sess-1");
@@ -207,8 +208,105 @@ public class EvalCommandTests {
         await Assert.That(prompt).Contains("id=destructive_commands");
         await Assert.That(prompt).Contains("q=Did the agent run destructive commands?");
         await Assert.That(prompt).Contains("trace={\"trace\":[]}");
+        await Assert.That(prompt).Contains("patterns=- some pattern");
         // No unresolved placeholders.
         await Assert.That(prompt).DoesNotContain("{SESSION_ID}");
         await Assert.That(prompt).DoesNotContain("{TRACE_JSON}");
+        await Assert.That(prompt).DoesNotContain("{KNOWN_PATTERNS}");
+    }
+
+    // ── FormatKnownPatterns ────────────────────────────────────────────────
+
+    [Test]
+    public async Task FormatKnownPatterns_returns_explicit_empty_marker_when_no_facts() {
+        var result = EvalCommand.FormatKnownPatterns([]);
+
+        await Assert.That(result).Contains("no patterns retained");
+    }
+
+    [Test]
+    public async Task FormatKnownPatterns_renders_bulleted_list() {
+        var facts = new List<JudgeFact> {
+            new() { Category = "safety", Fact = "User force-pushes often.", SourceSessionId = "s1", SourceEvalRunId = "r1", RetainedAt = DateTimeOffset.UtcNow },
+            new() { Category = "safety", Fact = "Repo has tests behind Docker.", SourceSessionId = "s2", SourceEvalRunId = "r2", RetainedAt = DateTimeOffset.UtcNow }
+        };
+
+        var result = EvalCommand.FormatKnownPatterns(facts);
+
+        await Assert.That(result).Contains("- User force-pushes often.");
+        await Assert.That(result).Contains("- Repo has tests behind Docker.");
+    }
+
+    // ── ExtractRetainFact ──────────────────────────────────────────────────
+
+    [Test]
+    public async Task ExtractRetainFact_returns_fact_text_when_present() {
+        const string response = """
+            {"score":4,"verdict":"pass","finding":".","retain_fact":"User skips tests for small fixes."}
+            """;
+
+        await Assert.That(EvalCommand.ExtractRetainFact(response)).IsEqualTo("User skips tests for small fixes.");
+    }
+
+    [Test]
+    public async Task ExtractRetainFact_strips_code_fences() {
+        const string response = """
+            ```json
+            {"score":5,"retain_fact":"Agent writes tests first."}
+            ```
+            """;
+
+        await Assert.That(EvalCommand.ExtractRetainFact(response)).IsEqualTo("Agent writes tests first.");
+    }
+
+    [Test]
+    public async Task ExtractRetainFact_returns_null_when_field_absent() {
+        const string response = """
+            {"score":5,"verdict":"pass","finding":"."}
+            """;
+
+        await Assert.That(EvalCommand.ExtractRetainFact(response)).IsNull();
+    }
+
+    [Test]
+    public async Task ExtractRetainFact_returns_null_when_field_explicitly_null() {
+        const string response = """
+            {"score":5,"retain_fact":null}
+            """;
+
+        await Assert.That(EvalCommand.ExtractRetainFact(response)).IsNull();
+    }
+
+    [Test]
+    public async Task ExtractRetainFact_returns_null_when_field_is_empty_string() {
+        const string response = """
+            {"score":5,"retain_fact":""}
+            """;
+
+        await Assert.That(EvalCommand.ExtractRetainFact(response)).IsNull();
+    }
+
+    [Test]
+    public async Task ExtractRetainFact_returns_null_when_field_is_whitespace() {
+        const string response = """
+            {"score":5,"retain_fact":"   "}
+            """;
+
+        await Assert.That(EvalCommand.ExtractRetainFact(response)).IsNull();
+    }
+
+    [Test]
+    public async Task ExtractRetainFact_returns_null_when_field_is_not_a_string() {
+        // Judge hallucinated a non-string — we ignore rather than coerce.
+        const string response = """
+            {"score":5,"retain_fact":42}
+            """;
+
+        await Assert.That(EvalCommand.ExtractRetainFact(response)).IsNull();
+    }
+
+    [Test]
+    public async Task ExtractRetainFact_returns_null_when_response_is_malformed() {
+        await Assert.That(EvalCommand.ExtractRetainFact("not json")).IsNull();
     }
 }

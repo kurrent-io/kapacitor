@@ -258,6 +258,42 @@ record EvalCategoryResult {
     public List<EvalQuestionVerdict> Questions { get; init; } = [];
 }
 
+// Cross-eval memory — DEV-1434. Judges may optionally emit a retain_fact
+// when they spot a cross-cutting pattern; the CLI POSTs it to the server's
+// judge-facts endpoint which appends to a per-category stream. Facts from
+// past evaluations are fetched at eval startup and injected into each
+// judge's prompt as "known patterns".
+record JudgeFactPayload {
+    [JsonPropertyName("category")]
+    public required string Category { get; init; }
+
+    [JsonPropertyName("fact")]
+    public required string Fact { get; init; }
+
+    [JsonPropertyName("source_session_id")]
+    public required string SourceSessionId { get; init; }
+
+    [JsonPropertyName("source_eval_run_id")]
+    public required string SourceEvalRunId { get; init; }
+}
+
+record JudgeFact {
+    [JsonPropertyName("category")]
+    public required string Category { get; init; }
+
+    [JsonPropertyName("fact")]
+    public required string Fact { get; init; }
+
+    [JsonPropertyName("source_session_id")]
+    public required string SourceSessionId { get; init; }
+
+    [JsonPropertyName("source_eval_run_id")]
+    public required string SourceEvalRunId { get; init; }
+
+    [JsonPropertyName("retained_at")]
+    public required DateTimeOffset RetainedAt { get; init; }
+}
+
 // Posted to POST /api/sessions/{id}/evals. The server fills evaluated_at.
 record SessionEvalCompletedPayload {
     [JsonPropertyName("eval_run_id")]
@@ -326,6 +362,8 @@ record RepoEntry {
 [JsonSerializable(typeof(EvalContextResult))]
 [JsonSerializable(typeof(EvalQuestionVerdict))]
 [JsonSerializable(typeof(SessionEvalCompletedPayload))]
+[JsonSerializable(typeof(JudgeFactPayload))]
+[JsonSerializable(typeof(List<JudgeFact>))]
 [JsonSerializable(typeof(List<ErrorEntry>))]
 [JsonSerializable(typeof(RepositoryPayload))]
 [JsonSerializable(typeof(GitCacheEntry))]
