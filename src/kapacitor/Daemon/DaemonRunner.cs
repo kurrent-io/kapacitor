@@ -121,6 +121,7 @@ public static partial class DaemonRunner {
 
         builder.Services.AddHttpClient("Attachments", client => client.BaseAddress = new Uri(config.ServerUrl));
         builder.Services.AddSingleton<AgentOrchestrator>();
+        builder.Services.AddSingleton<EvalRunner>();
 
         var host   = builder.Build();
         var logger = host.Services.GetRequiredService<ILoggerFactory>().CreateLogger("kapacitor.Daemon");
@@ -135,6 +136,10 @@ public static partial class DaemonRunner {
         await worktreeManager.CleanupOrphanedAsync();
 
         var orchestrator = host.Services.GetRequiredService<AgentOrchestrator>();
+        // Instantiate EvalRunner so it subscribes to OnRunEval on the
+        // ServerConnection. It's stateless beyond the subscription, so no
+        // disposal dance is needed.
+        _ = host.Services.GetRequiredService<EvalRunner>();
 
         try {
             await host.RunAsync();

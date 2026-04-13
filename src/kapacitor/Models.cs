@@ -380,6 +380,11 @@ record RepoEntry {
 [JsonSerializable(typeof(LaunchAgentCommand))]
 [JsonSerializable(typeof(SendInputCommand))]
 [JsonSerializable(typeof(ResizeTerminalCommand))]
+[JsonSerializable(typeof(RunEvalCommand))]
+[JsonSerializable(typeof(EvalStarted))]
+[JsonSerializable(typeof(EvalQuestionCompleted))]
+[JsonSerializable(typeof(EvalFinished))]
+[JsonSerializable(typeof(EvalFailed))]
 [JsonSerializable(typeof(DaemonConnect))]
 [JsonSerializable(typeof(AgentRegistered))]
 [JsonSerializable(typeof(AgentStatusChanged))]
@@ -451,6 +456,52 @@ public readonly record struct LaunchFailed(
 public readonly record struct TerminalOutput(
         string AgentId,
         string Base64Data
+    );
+
+// ── Eval dispatch (DEV-1440) ──────────────────────────────────────────────
+
+/// <summary>Sent by the server when the dashboard triggers an eval; received by the daemon over SignalR.</summary>
+public readonly record struct RunEvalCommand(
+        string EvalRunId,
+        string SessionId,
+        string Model,
+        bool   Chain,
+        int?   ThresholdBytes
+    );
+
+/// <summary>Daemon → server: eval has fetched context and is about to run the first judge.</summary>
+public readonly record struct EvalStarted(
+        string EvalRunId,
+        string SessionId,
+        string JudgeModel,
+        int    TotalQuestions
+    );
+
+/// <summary>Daemon → server: a judge question completed with a verdict.</summary>
+public readonly record struct EvalQuestionCompleted(
+        string EvalRunId,
+        string SessionId,
+        int    Index,
+        int    Total,
+        string Category,
+        string QuestionId,
+        int    Score,
+        string Verdict
+    );
+
+/// <summary>Daemon → server: eval run finished end-to-end and aggregate has been persisted.</summary>
+public readonly record struct EvalFinished(
+        string EvalRunId,
+        string SessionId,
+        int    OverallScore,
+        string Summary
+    );
+
+/// <summary>Daemon → server: eval run failed before producing an aggregate.</summary>
+public readonly record struct EvalFailed(
+        string EvalRunId,
+        string SessionId,
+        string Reason
     );
 
 /// <summary>Agent run events posted to the server HTTP API.</summary>
