@@ -19,8 +19,8 @@ public class SetupCommandTests {
         await Assert.That(root["extraKnownMarketplaces"]?["kapacitor"]?["source"]?["path"]?.GetValue<string>())
             .IsEqualTo(marketplace);
 
-        await Assert.That(root["enabledPlugins"]?["kapacitor@kapacitor"]?.GetValue<bool>())
-            .IsEqualTo(true);
+        await Assert.That(root["enabledPlugins"]?["kapacitor@kapacitor"]?.GetValue<bool>() ?? false)
+            .IsTrue();
     }
 
     [Test]
@@ -47,12 +47,12 @@ public class SetupCommandTests {
         await Assert.That(root["permissions"]?["allow"]?[0]?.GetValue<string>())
             .IsEqualTo("Bash");
 
-        await Assert.That(root["enabledPlugins"]?["other-plugin@foo"]?.GetValue<bool>())
-            .IsEqualTo(true);
+        await Assert.That(root["enabledPlugins"]?["other-plugin@foo"]?.GetValue<bool>() ?? false)
+            .IsTrue();
 
         // Plugin added
-        await Assert.That(root["enabledPlugins"]?["kapacitor@kapacitor"]?.GetValue<bool>())
-            .IsEqualTo(true);
+        await Assert.That(root["enabledPlugins"]?["kapacitor@kapacitor"]?.GetValue<bool>() ?? false)
+            .IsTrue();
 
         await Assert.That(root["extraKnownMarketplaces"]?["kapacitor"]?["source"]?["path"]?.GetValue<string>())
             .IsEqualTo(marketplace);
@@ -110,8 +110,8 @@ public class SetupCommandTests {
 
         var root = JsonNode.Parse(File.ReadAllText(settingsPath))!.AsObject();
 
-        await Assert.That(root["enabledPlugins"]?["kapacitor@kapacitor"]?.GetValue<bool>())
-            .IsEqualTo(true);
+        await Assert.That(root["enabledPlugins"]?["kapacitor@kapacitor"]?.GetValue<bool>() ?? false)
+            .IsTrue();
     }
 
     sealed class TempDir : IDisposable {
