@@ -24,6 +24,12 @@ Subagent activity (if any) carries `agent_id` / `agent_type`. Same-timestamp eve
 {TRACE_JSON}
 ```
 
+## Known patterns
+
+Previous evaluations may have retained cross-cutting facts about the user, repo, or coding style under this category. Treat them as prior context — corroborating evidence if present, but do not punish the agent for a pattern that isn't actually visible in this session's trace.
+
+{KNOWN_PATTERNS}
+
 ## Question
 
 Category: `{CATEGORY}`
@@ -41,8 +47,22 @@ Respond with ONLY a valid JSON object (no markdown fences, no commentary, no pre
   "score": <number 1-5>,
   "verdict": "<pass|warn|fail>",
   "finding": "<concise finding — one or two sentences>",
-  "evidence": "<a specific tool call, file path, turn excerpt, or other grounded detail that supports the finding; or null if the finding is about an absence>"
+  "evidence": "<a specific tool call, file path, turn excerpt, or other grounded detail that supports the finding; or null if the finding is about an absence>",
+  "retain_fact": "<optional: a novel cross-cutting pattern worth remembering for future evaluations, or null>"
 }
+
+### When to emit `retain_fact`
+
+Only retain facts that are GENERALIZABLE — patterns about the user, repo, or style that would help a future evaluator judging a *different* session:
+
+- ✅ "User tends to force-push with uncommitted work still in the tree"
+- ✅ "This repo's tests rely on Testcontainers, so missing Docker is a frequent failure mode"
+- ✅ "Agent consistently writes tests before the feature, not after"
+- ❌ "Session ran rm -rf /tmp/cache" (single observation — not a pattern)
+- ❌ "This question scored 3" (not a pattern about behavior)
+- ❌ A restatement of the finding for this question
+
+If nothing is worth generalizing, emit `"retain_fact": null`. Do NOT emit a fact just to have one — retained facts are injected into every future judge prompt and noise dilutes their usefulness.
 
 ## Scoring
 

@@ -90,7 +90,13 @@ static class EvalCommand {
             return 1;
         }
 
-        // 2. Run each question in sequence. Failures on individual questions
+        // 2. Fetch retained judge facts per category so we can inject them
+        //    into each judge's prompt as "known patterns" — DEV-1434.
+        //    Failures don't abort the run; the judges just won't see prior
+        //    patterns this time.
+        var knownFactsByCategory = await FetchAllJudgeFactsAsync(httpClient, baseUrl);
+
+        // 3. Run each question in sequence. Failures on individual questions
         //    are logged but don't abort the whole run — a partial result set
         //    still produces a meaningful aggregate.
         var promptTemplate = EmbeddedResources.Load("prompt-eval-question.txt");
@@ -100,7 +106,8 @@ static class EvalCommand {
             var q = Questions[i];
             Log($"[{i + 1}/{Questions.Length}] {q.Category}/{q.Id}...");
 
-            var prompt = BuildQuestionPrompt(promptTemplate, context.SessionId, evalRunId, q, traceJson);
+            var patterns = FormatKnownPatterns(knownFactsByCategory.GetValueOrDefault(q.Category, []));
+            var prompt   = BuildQuestionPrompt(promptTemplate, context.SessionId, evalRunId, q, traceJson, patterns);
 
             var result = await ClaudeCliRunner.RunAsync(
                 prompt,
@@ -129,6 +136,11 @@ static class EvalCommand {
             }
 
             verdicts.Add(verdict);
+
+            // If the judge emitted a retain_fact, persist it for future evals.
+            if (ExtractRetainFact(result.Result) is { } retainedFact) {
+                await PostJudgeFactAsync(httpClient, baseUrl, q.Category, retainedFact, context.SessionId, evalRunId);
+            }
         }
 
         if (verdicts.Count == 0) {
@@ -171,15 +183,115 @@ static class EvalCommand {
             string        sessionId,
             string        evalRunId,
             EvalQuestion  question,
-            string        traceJson
+            string        traceJson,
+            string        knownPatterns
         ) =>
         template
-            .Replace("{SESSION_ID}",   sessionId)
-            .Replace("{EVAL_RUN_ID}",  evalRunId)
-            .Replace("{CATEGORY}",     question.Category)
-            .Replace("{QUESTION_ID}",  question.Id)
-            .Replace("{QUESTION_TEXT}", question.Question)
-            .Replace("{TRACE_JSON}",   traceJson);
+            .Replace("{SESSION_ID}",     sessionId)
+            .Replace("{EVAL_RUN_ID}",    evalRunId)
+            .Replace("{CATEGORY}",       question.Category)
+            .Replace("{QUESTION_ID}",    question.Id)
+            .Replace("{QUESTION_TEXT}",  question.Question)
+            .Replace("{TRACE_JSON}",     traceJson)
+            .Replace("{KNOWN_PATTERNS}", knownPatterns);
+
+    /// <summary>
+    /// Formats a per-category list of retained facts as a bulleted block for
+    /// injection into the judge prompt. Empty list renders an explicit
+    /// "(none yet)" marker so the section reads naturally.
+    /// </summary>
+    internal static string FormatKnownPatterns(List<JudgeFact> facts) {
+        if (facts.Count == 0) {
+            return "_(no patterns retained for this category yet)_";
+        }
+
+        var sb = new StringBuilder();
+        foreach (var f in facts) {
+            sb.AppendLine($"- {f.Fact}");
+        }
+
+        return sb.ToString().TrimEnd();
+    }
+
+    /// <summary>
+    /// Extracts the optional <c>retain_fact</c> string from a raw judge
+    /// response. Returns null when absent, explicitly null, empty, or when
+    /// the response isn't parseable JSON. Independent of
+    /// <see cref="ParseVerdict"/> so the retained-fact plumbing doesn't
+    /// depend on verdict parsing succeeding.
+    /// </summary>
+    internal static string? ExtractRetainFact(string rawResponse) {
+        var json = StripCodeFences(rawResponse.Trim());
+
+        try {
+            using var doc = JsonDocument.Parse(json);
+            if (!doc.RootElement.TryGetProperty("retain_fact", out var prop)) {
+                return null;
+            }
+
+            if (prop.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined) {
+                return null;
+            }
+
+            if (prop.ValueKind != JsonValueKind.String) {
+                return null;
+            }
+
+            var text = prop.GetString()?.Trim();
+            return string.IsNullOrEmpty(text) ? null : text;
+        } catch (JsonException) {
+            return null;
+        }
+    }
+
+    static async Task<Dictionary<string, List<JudgeFact>>> FetchAllJudgeFactsAsync(HttpClient httpClient, string baseUrl) {
+        var result = new Dictionary<string, List<JudgeFact>>();
+
+        foreach (var category in Categories) {
+            try {
+                using var resp = await httpClient.GetWithRetryAsync($"{baseUrl}/api/judge-facts?category={category}");
+                if (!resp.IsSuccessStatusCode) {
+                    Log($"Failed to fetch judge facts for {category}: HTTP {(int)resp.StatusCode}");
+
+                    continue;
+                }
+
+                var json = await resp.Content.ReadAsStringAsync();
+                var list = JsonSerializer.Deserialize(json, KapacitorJsonContext.Default.ListJudgeFact) ?? [];
+                result[category] = list;
+                Log($"Loaded {list.Count} retained facts for category {category}");
+            } catch (HttpRequestException ex) {
+                Log($"Could not load judge facts for {category}: {ex.Message}");
+            }
+        }
+
+        return result;
+    }
+
+    static async Task PostJudgeFactAsync(HttpClient httpClient, string baseUrl, string category, string fact, string sessionId, string evalRunId) {
+        var payload = new JudgeFactPayload {
+            Category        = category,
+            Fact            = fact,
+            SourceSessionId = sessionId,
+            SourceEvalRunId = evalRunId
+        };
+
+        var payloadJson = JsonSerializer.Serialize(payload, KapacitorJsonContext.Default.JudgeFactPayload);
+        using var content = new StringContent(payloadJson, Encoding.UTF8, "application/json");
+
+        try {
+            using var resp = await httpClient.PostWithRetryAsync($"{baseUrl}/api/judge-facts", content);
+            Log(
+                resp.IsSuccessStatusCode
+                    ? $"  retained fact for category {category}"
+                    : $"  failed to retain fact for category {category}: HTTP {(int)resp.StatusCode}"
+            );
+        } catch (HttpRequestException ex) {
+            Log($"  failed to retain fact for category {category}: {ex.Message}");
+        }
+    }
+
+    static readonly string[] Categories = ["safety", "plan_adherence", "quality", "efficiency"];
 
     /// <summary>
     /// Parses a judge's JSON verdict and normalizes it against the schema
