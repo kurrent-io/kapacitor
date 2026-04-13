@@ -1,4 +1,5 @@
 using kapacitor.Eval;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
 namespace kapacitor.Daemon.Services;
@@ -13,14 +14,21 @@ namespace kapacitor.Daemon.Services;
 /// through <c>EvalStarted</c> / <c>EvalQuestionCompleted</c> / etc.
 /// </summary>
 public sealed class EvalRunner {
-    readonly ServerConnection     _connection;
-    readonly ILogger<EvalRunner>  _logger;
-    readonly string               _baseUrl;
+    readonly ServerConnection    _connection;
+    readonly ILogger<EvalRunner> _logger;
+    readonly string              _baseUrl;
+    readonly CancellationToken   _shutdownToken;
 
-    public EvalRunner(ServerConnection connection, DaemonConfig config, ILogger<EvalRunner> logger) {
-        _connection = connection;
-        _logger     = logger;
-        _baseUrl    = config.ServerUrl.TrimEnd('/');
+    public EvalRunner(
+            ServerConnection         connection,
+            DaemonConfig             config,
+            IHostApplicationLifetime lifetime,
+            ILogger<EvalRunner>      logger
+        ) {
+        _connection    = connection;
+        _logger        = logger;
+        _baseUrl       = config.ServerUrl.TrimEnd('/');
+        _shutdownToken = lifetime.ApplicationStopping;
 
         _connection.OnRunEval += HandleRunEvalAsync;
     }
@@ -33,8 +41,10 @@ public sealed class EvalRunner {
 
         // Fire-and-forget so the SignalR hub invocation doesn't block; the
         // eval's own observer callbacks fan progress back to the server.
-        // Any unhandled exception from the run is caught and translated to
-        // an EvalFailed event so the dashboard learns about it.
+        // Daemon shutdown cancels the token so in-flight evals get a clean
+        // OnFailed("cancelled") rather than dying mid-judge. Any unhandled
+        // exception from the run is caught and translated to an EvalFailed
+        // event so the dashboard learns about it either way.
         _ = Task.Run(async () => {
             try {
                 using var httpClient = await HttpClientExtensions.CreateAuthenticatedClientAsync();
@@ -47,7 +57,12 @@ public sealed class EvalRunner {
                     cmd.Model,
                     cmd.Chain,
                     cmd.ThresholdBytes,
-                    observer
+                    observer,
+                    ct: _shutdownToken,
+                    // Use the dispatched run id so all progress events and
+                    // the persisted aggregate share the same correlation id
+                    // the dashboard already knows about.
+                    evalRunId: cmd.EvalRunId
                 );
             } catch (Exception ex) {
                 _logger.LogError(ex, "Unhandled exception running eval {RunId} on session {Sid}", cmd.EvalRunId, cmd.SessionId);
@@ -77,6 +92,13 @@ sealed class DaemonEvalObserver(
         string           sessionId,
         ILogger          logger
     ) : IEvalObserver {
+    // Serialize SignalR relays so concurrent Task.Runs don't interleave;
+    // the dashboard expects EvalStarted → question completions →
+    // EvalFinished/EvalFailed in order. SemaphoreSlim suffices because
+    // the observer is called synchronously from EvalService — only the
+    // async send to SignalR could otherwise reorder.
+    readonly SemaphoreSlim _relayLock = new(1, 1);
+
     public void OnInfo(string message) =>
         logger.LogDebug("[eval {Run}] {Message}", evalRunId, message);
 
@@ -117,10 +139,13 @@ sealed class DaemonEvalObserver(
 
     void Relay(Func<Task> send, string eventName) {
         _ = Task.Run(async () => {
+            await _relayLock.WaitAsync();
             try {
                 await send();
             } catch (Exception ex) {
                 logger.LogWarning(ex, "Failed to relay {Event} for eval {Run}", eventName, evalRunId);
+            } finally {
+                _relayLock.Release();
             }
         });
     }

@@ -34,14 +34,20 @@ internal static class EvalService {
             bool              chain,
             int?              thresholdBytes,
             IEvalObserver     observer,
-            CancellationToken ct = default
+            CancellationToken ct           = default,
+            string?           evalRunId    = null
         ) {
         // Wrap the caller-supplied observer so any throw from a callback
         // (e.g. SignalR push failures in the daemon) is caught and logged
         // without aborting the eval — IEvalObserver documents this guarantee.
         observer = new SafeObserver(observer);
 
-        var evalRunId = Guid.NewGuid().ToString();
+        // The daemon (DEV-1440 M2) passes the dispatched RunEvalCommand.EvalRunId
+        // so server-side correlation works end-to-end (RunEvalCommand →
+        // EvalStarted → EvalQuestionCompleted → EvalFinished + persisted
+        // SessionEvalCompleted all share the same id). Direct CLI invocations
+        // pass null and the service mints a fresh GUID.
+        evalRunId ??= Guid.NewGuid().ToString();
 
         // Session IDs are typically UUIDs but meta-session slugs are free-form
         // user input; escape once and reuse for every session-scoped URL so
