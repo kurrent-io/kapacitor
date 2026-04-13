@@ -36,6 +36,11 @@ internal static class EvalService {
             IEvalObserver     observer,
             CancellationToken ct = default
         ) {
+        // Wrap the caller-supplied observer so any throw from a callback
+        // (e.g. SignalR push failures in the daemon) is caught and logged
+        // without aborting the eval — IEvalObserver documents this guarantee.
+        observer = new SafeObserver(observer);
+
         var evalRunId = Guid.NewGuid().ToString();
 
         // Session IDs are typically UUIDs but meta-session slugs are free-form
@@ -43,6 +48,29 @@ internal static class EvalService {
         // reserved path characters don't corrupt the request.
         var encodedSessionId = Uri.EscapeDataString(sessionId);
 
+        try {
+            return await RunInnerAsync(baseUrl, httpClient, encodedSessionId, evalRunId, model, chain, thresholdBytes, observer, ct);
+        } catch (OperationCanceledException) {
+            // Honour the contract that observers always see OnFinished or
+            // OnFailed — cancellation isn't an exception path consumers
+            // should have to special-case.
+            observer.OnFailed("cancelled");
+
+            return null;
+        }
+    }
+
+    static async Task<SessionEvalCompletedPayload?> RunInnerAsync(
+            string            baseUrl,
+            HttpClient        httpClient,
+            string            encodedSessionId,
+            string            evalRunId,
+            string            model,
+            bool              chain,
+            int?              thresholdBytes,
+            IEvalObserver     observer,
+            CancellationToken ct
+        ) {
         // 1. Fetch the compacted eval context.
         string              traceJson;
         EvalContextResult? context;
@@ -54,8 +82,13 @@ internal static class EvalService {
 
             using var resp = await httpClient.GetWithRetryAsync(url, ct: ct);
 
-            if (await HttpClientExtensions.HandleUnauthorizedAsync(resp)) {
-                observer.OnFailed("unauthenticated");
+            if (resp.StatusCode == System.Net.HttpStatusCode.Unauthorized) {
+                // Detect 401 directly rather than going through
+                // HttpClientExtensions.HandleUnauthorizedAsync — that helper
+                // writes to stderr, which would duplicate output for CLI
+                // callers and add noise for daemon callers that route via
+                // SignalR. The observer is the single reporting channel.
+                observer.OnFailed("authentication failed — run 'kapacitor login' to re-authenticate");
 
                 return null;
             }
@@ -86,6 +119,10 @@ internal static class EvalService {
             return null;
         }
 
+        // OnStarted before OnContextFetched so the user-facing log reads
+        // "Evaluating session..." then "Fetched...", matching the pre-refactor
+        // CLI output order.
+        observer.OnStarted(evalRunId, context.SessionId, model, EvalQuestions.All.Length);
         observer.OnContextFetched(
             context.Trace.Count,
             traceJson.Length,
@@ -93,11 +130,10 @@ internal static class EvalService {
             context.Compaction.ToolResultsTruncated,
             context.Compaction.BytesSaved
         );
-        observer.OnStarted(evalRunId, context.SessionId, model, EvalQuestions.All.Length);
 
         // 2. Fetch retained judge facts per category to inject as known
         //    patterns. Per-category failures don't abort the run.
-        var knownFactsByCategory = await FetchAllJudgeFactsAsync(httpClient, baseUrl, encodedSessionId, observer);
+        var knownFactsByCategory = await FetchAllJudgeFactsAsync(httpClient, baseUrl, encodedSessionId, observer, ct);
 
         // 3. Run each question in sequence.
         var promptTemplate = EmbeddedResources.Load("prompt-eval-question.txt");
@@ -141,7 +177,7 @@ internal static class EvalService {
 
             // If the judge emitted a retain_fact, persist it for future evals.
             if (ExtractRetainFact(result.Result) is { } retainedFact) {
-                if (await PostJudgeFactAsync(httpClient, baseUrl, encodedSessionId, q.Category, retainedFact, evalRunId, observer)) {
+                if (await PostJudgeFactAsync(httpClient, baseUrl, encodedSessionId, q.Category, retainedFact, evalRunId, observer, ct)) {
                     observer.OnFactRetained(q.Category, retainedFact);
                 }
             }
@@ -344,17 +380,19 @@ internal static class EvalService {
     // ── Judge-facts HTTP ───────────────────────────────────────────────────
 
     static async Task<Dictionary<string, List<JudgeFact>>> FetchAllJudgeFactsAsync(
-            HttpClient    httpClient,
-            string        baseUrl,
-            string        encodedSessionId,
-            IEvalObserver observer
+            HttpClient        httpClient,
+            string            baseUrl,
+            string            encodedSessionId,
+            IEvalObserver     observer,
+            CancellationToken ct
         ) {
         var result = new Dictionary<string, List<JudgeFact>>();
 
         foreach (var category in EvalQuestions.Categories) {
             try {
                 using var resp = await httpClient.GetWithRetryAsync(
-                    $"{baseUrl}/api/sessions/{encodedSessionId}/judge-facts?category={Uri.EscapeDataString(category)}"
+                    $"{baseUrl}/api/sessions/{encodedSessionId}/judge-facts?category={Uri.EscapeDataString(category)}",
+                    ct: ct
                 );
                 if (!resp.IsSuccessStatusCode) {
                     observer.OnInfo($"Failed to fetch judge facts for {category}: HTTP {(int)resp.StatusCode}");
@@ -362,7 +400,7 @@ internal static class EvalService {
                     continue;
                 }
 
-                var json = await resp.Content.ReadAsStringAsync();
+                var json = await resp.Content.ReadAsStringAsync(ct);
                 var list = JsonSerializer.Deserialize(json, KapacitorJsonContext.Default.ListJudgeFact) ?? [];
                 result[category] = list;
                 observer.OnInfo($"Loaded {list.Count} retained facts for category {category}");
@@ -375,13 +413,14 @@ internal static class EvalService {
     }
 
     static async Task<bool> PostJudgeFactAsync(
-            HttpClient    httpClient,
-            string        baseUrl,
-            string        encodedSessionId,
-            string        category,
-            string        fact,
-            string        evalRunId,
-            IEvalObserver observer
+            HttpClient        httpClient,
+            string            baseUrl,
+            string            encodedSessionId,
+            string            category,
+            string            fact,
+            string            evalRunId,
+            IEvalObserver     observer,
+            CancellationToken ct
         ) {
         var payload = new JudgeFactPayload {
             Category        = category,
@@ -393,7 +432,7 @@ internal static class EvalService {
         using var content = new StringContent(payloadJson, Encoding.UTF8, "application/json");
 
         try {
-            using var resp = await httpClient.PostWithRetryAsync($"{baseUrl}/api/sessions/{encodedSessionId}/judge-facts", content);
+            using var resp = await httpClient.PostWithRetryAsync($"{baseUrl}/api/sessions/{encodedSessionId}/judge-facts", content, ct: ct);
             if (!resp.IsSuccessStatusCode) {
                 observer.OnInfo($"failed to retain fact for category {category}: HTTP {(int)resp.StatusCode}");
 
@@ -405,6 +444,56 @@ internal static class EvalService {
             observer.OnInfo($"failed to retain fact for category {category}: {ex.Message}");
 
             return false;
+        }
+    }
+
+    /// <summary>
+    /// Wraps an <see cref="IEvalObserver"/> so each callback's exception is
+    /// caught and logged to stderr, rather than aborting the eval. Honours
+    /// the observer-throw guarantee documented on
+    /// <see cref="IEvalObserver"/>. The fallback log path is deliberately
+    /// minimal — if even <c>Console.Error</c> throws (extremely unlikely
+    /// outside CI sandboxes), we swallow that too rather than risk
+    /// corrupting eval state for a logging side effect.
+    /// </summary>
+    sealed class SafeObserver(IEvalObserver inner) : IEvalObserver {
+        public void OnInfo(string message) => Safe(() => inner.OnInfo(message), nameof(OnInfo));
+
+        public void OnStarted(string evalRunId, string sessionId, string judgeModel, int totalQuestions) =>
+            Safe(() => inner.OnStarted(evalRunId, sessionId, judgeModel, totalQuestions), nameof(OnStarted));
+
+        public void OnContextFetched(int traceEntries, int traceChars, int toolResultsTotal, int toolResultsTruncated, long bytesSaved) =>
+            Safe(() => inner.OnContextFetched(traceEntries, traceChars, toolResultsTotal, toolResultsTruncated, bytesSaved), nameof(OnContextFetched));
+
+        public void OnQuestionStarted(int index, int total, string category, string questionId) =>
+            Safe(() => inner.OnQuestionStarted(index, total, category, questionId), nameof(OnQuestionStarted));
+
+        public void OnQuestionCompleted(int index, int total, EvalQuestionVerdict verdict, long inputTokens, long outputTokens) =>
+            Safe(() => inner.OnQuestionCompleted(index, total, verdict, inputTokens, outputTokens), nameof(OnQuestionCompleted));
+
+        public void OnQuestionFailed(int index, int total, string category, string questionId, string reason) =>
+            Safe(() => inner.OnQuestionFailed(index, total, category, questionId, reason), nameof(OnQuestionFailed));
+
+        public void OnFactRetained(string category, string fact) =>
+            Safe(() => inner.OnFactRetained(category, fact), nameof(OnFactRetained));
+
+        public void OnFinished(SessionEvalCompletedPayload aggregate) =>
+            Safe(() => inner.OnFinished(aggregate), nameof(OnFinished));
+
+        public void OnFailed(string reason) =>
+            Safe(() => inner.OnFailed(reason), nameof(OnFailed));
+
+        static void Safe(Action notify, string callbackName) {
+            try {
+                notify();
+            } catch (Exception ex) {
+                try {
+                    Console.Error.WriteLine($"[eval] observer {callbackName} threw: {ex.GetType().Name}: {ex.Message}");
+                } catch {
+                    // Don't propagate — the eval pipeline mustn't fail because
+                    // the failure-log channel itself failed.
+                }
+            }
         }
     }
 }

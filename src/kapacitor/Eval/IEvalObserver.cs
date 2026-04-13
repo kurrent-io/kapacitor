@@ -12,7 +12,11 @@ namespace kapacitor.Eval;
 /// Callbacks are fired from the running eval task but must not perform
 /// long-running work synchronously — observers that need to do I/O should
 /// fan out to a background queue. Exceptions from an observer are caught
-/// and logged by the service; they don't abort the eval.
+/// by an internal SafeObserver wrapper inside EvalService and logged to
+/// stderr; they don't abort the eval. Cancellation via the
+/// <c>CancellationToken</c> passed to <c>RunAsync</c> also surfaces as
+/// <see cref="OnFailed"/>("cancelled") so observers always see exactly
+/// one terminal callback.
 /// </para>
 /// </summary>
 internal interface IEvalObserver {
