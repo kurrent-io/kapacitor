@@ -91,10 +91,12 @@ static class EvalCommand {
         }
 
         // 2. Fetch retained judge facts per category so we can inject them
-        //    into each judge's prompt as "known patterns" — DEV-1434.
-        //    Failures don't abort the run; the judges just won't see prior
-        //    patterns this time.
-        var knownFactsByCategory = await FetchAllJudgeFactsAsync(httpClient, baseUrl);
+        //    into each judge's prompt as "known patterns" — DEV-1434 /
+        //    DEV-1438. Facts are scoped to the session's repo server-side,
+        //    so sessions without a detected repository return empty lists
+        //    and the judges simply see no prior patterns. Failures don't
+        //    abort the run.
+        var knownFactsByCategory = await FetchAllJudgeFactsAsync(httpClient, baseUrl, sessionId);
 
         // 3. Run each question in sequence. Failures on individual questions
         //    are logged but don't abort the whole run — a partial result set
@@ -139,7 +141,7 @@ static class EvalCommand {
 
             // If the judge emitted a retain_fact, persist it for future evals.
             if (ExtractRetainFact(result.Result) is { } retainedFact) {
-                await PostJudgeFactAsync(httpClient, baseUrl, q.Category, retainedFact, context.SessionId, evalRunId);
+                await PostJudgeFactAsync(httpClient, baseUrl, sessionId, q.Category, retainedFact, evalRunId);
             }
         }
 
@@ -244,12 +246,12 @@ static class EvalCommand {
         }
     }
 
-    static async Task<Dictionary<string, List<JudgeFact>>> FetchAllJudgeFactsAsync(HttpClient httpClient, string baseUrl) {
+    static async Task<Dictionary<string, List<JudgeFact>>> FetchAllJudgeFactsAsync(HttpClient httpClient, string baseUrl, string sessionId) {
         var result = new Dictionary<string, List<JudgeFact>>();
 
         foreach (var category in Categories) {
             try {
-                using var resp = await httpClient.GetWithRetryAsync($"{baseUrl}/api/judge-facts?category={category}");
+                using var resp = await httpClient.GetWithRetryAsync($"{baseUrl}/api/sessions/{sessionId}/judge-facts?category={category}");
                 if (!resp.IsSuccessStatusCode) {
                     Log($"Failed to fetch judge facts for {category}: HTTP {(int)resp.StatusCode}");
 
@@ -268,11 +270,10 @@ static class EvalCommand {
         return result;
     }
 
-    static async Task PostJudgeFactAsync(HttpClient httpClient, string baseUrl, string category, string fact, string sessionId, string evalRunId) {
+    static async Task PostJudgeFactAsync(HttpClient httpClient, string baseUrl, string sessionId, string category, string fact, string evalRunId) {
         var payload = new JudgeFactPayload {
             Category        = category,
             Fact            = fact,
-            SourceSessionId = sessionId,
             SourceEvalRunId = evalRunId
         };
 
@@ -280,7 +281,7 @@ static class EvalCommand {
         using var content = new StringContent(payloadJson, Encoding.UTF8, "application/json");
 
         try {
-            using var resp = await httpClient.PostWithRetryAsync($"{baseUrl}/api/judge-facts", content);
+            using var resp = await httpClient.PostWithRetryAsync($"{baseUrl}/api/sessions/{sessionId}/judge-facts", content);
             Log(
                 resp.IsSuccessStatusCode
                     ? $"  retained fact for category {category}"

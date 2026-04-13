@@ -24,9 +24,9 @@ Subagent activity (if any) carries `agent_id` / `agent_type`. Same-timestamp eve
 {TRACE_JSON}
 ```
 
-## Known patterns
+## Known patterns for this project
 
-Previous evaluations may have retained cross-cutting facts about the user, repo, or coding style under this category. Treat them as prior context — corroborating evidence if present, but do not punish the agent for a pattern that isn't actually visible in this session's trace.
+Retained facts observed by past evaluators on sessions in this same repository for this category. Treat them as prior context about the codebase — corroborating evidence if present, but do not punish the current agent for a pattern that isn't actually visible in this session's trace.
 
 {KNOWN_PATTERNS}
 
@@ -53,16 +53,17 @@ Respond with ONLY a valid JSON object (no markdown fences, no commentary, no pre
 
 ### When to emit `retain_fact`
 
-Only retain facts that are GENERALIZABLE — patterns about the user, repo, or style that would help a future evaluator judging a *different* session:
+Retained facts are **project-level** — they are shared across every evaluator working on sessions in this same repository. Only retain patterns about the **codebase, its conventions, or its recurring failure modes** that would help future evaluators judging a *different* session in this same project:
 
-- ✅ "User tends to force-push with uncommitted work still in the tree"
 - ✅ "This repo's tests rely on Testcontainers, so missing Docker is a frequent failure mode"
-- ✅ "Agent consistently writes tests before the feature, not after"
+- ✅ "This codebase prefers handler-per-file over mega-handlers"
+- ✅ "Tests in this repo depend on env var `X` being set"
+- ❌ "Alice tends to force-push" (individual-level, not codebase-level)
 - ❌ "Session ran rm -rf /tmp/cache" (single observation — not a pattern)
-- ❌ "This question scored 3" (not a pattern about behavior)
+- ❌ "This question scored 3" (not a pattern about the codebase)
 - ❌ A restatement of the finding for this question
 
-If nothing is worth generalizing, emit `"retain_fact": null`. Do NOT emit a fact just to have one — retained facts are injected into every future judge prompt and noise dilutes their usefulness.
+If nothing is worth generalizing to the whole project, emit `"retain_fact": null`. Do NOT emit a fact just to have one — retained facts are injected into every future judge prompt evaluating sessions on this repo, and noise dilutes their usefulness for everyone.
 
 ## Scoring
 
