@@ -117,6 +117,24 @@ switch (command) {
 
         return await ValidatePlanCommand.Handle(baseUrl!, vpSessionId);
     }
+    case "eval": {
+        var evalSessionId = ResolveSessionId(args);
+
+        if (evalSessionId is null) {
+            Console.Error.WriteLine("Usage: kapacitor eval [--model sonnet] [--chain] [--threshold N] [sessionId]");
+            Console.Error.WriteLine("  No session ID provided and KAPACITOR_SESSION_ID not set.");
+
+            return 1;
+        }
+
+        var evalChain     = args.Contains("--chain");
+        var evalModel     = GetArg(args, "--model") ?? "sonnet";
+        var evalThreshold = GetArg(args, "--threshold") is { } ts && int.TryParse(ts, out var parsed)
+            ? parsed
+            : (int?)null;
+
+        return await EvalCommand.HandleEval(baseUrl!, evalSessionId, evalModel, evalChain, evalThreshold);
+    }
     case "generate-whats-done" when args.Length < 2:
         Console.Error.WriteLine("Usage: kapacitor generate-whats-done <sessionId>");
 

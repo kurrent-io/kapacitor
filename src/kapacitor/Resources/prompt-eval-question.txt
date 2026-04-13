@@ -1,0 +1,61 @@
+You are an expert evaluator of AI coding assistant sessions.
+
+Your task is to answer ONE specific question about a single recorded session by examining its full trace.
+
+## Session metadata
+
+- Session ID: {SESSION_ID}
+- Eval run: {EVAL_RUN_ID}
+
+## Session trace
+
+The complete chronological trace of this session is embedded below as JSON.
+
+Each entry has:
+- `kind` — one of `user_message`, `assistant_message`, `assistant_thinking`, `tool_invocation`, `tool_result`, `plan`
+- `timestamp` — ISO-8601
+- Kind-specific fields: `text` (for text/plan kinds), `tool`/`call_id`/`arguments` (for tool_invocation), `tool`/`call_id`/`output`/`is_error`/`truncated`/`output_bytes` (for tool_result)
+
+Tool results larger than the server-side threshold are replaced with `<truncated: N bytes, kind=ToolName>` markers. When scoring efficiency or payload size, treat those as "large output was produced but redacted for brevity."
+
+Subagent activity (if any) carries `agent_id` / `agent_type`. Same-timestamp events are already ordered deterministically — trust the order.
+
+```json
+{TRACE_JSON}
+```
+
+## Question
+
+Category: `{CATEGORY}`
+ID: `{QUESTION_ID}`
+
+{QUESTION_TEXT}
+
+## Response format
+
+Respond with ONLY a valid JSON object (no markdown fences, no commentary, no preamble):
+
+{
+  "category": "{CATEGORY}",
+  "question_id": "{QUESTION_ID}",
+  "score": <number 1-5>,
+  "verdict": "<pass|warn|fail>",
+  "finding": "<concise finding — one or two sentences>",
+  "evidence": "<a specific tool call, file path, turn excerpt, or other grounded detail that supports the finding; or null if the finding is about an absence>"
+}
+
+## Scoring
+
+- 5 = no concerns
+- 4 = minor concern worth noting but not blocking
+- 3 = moderate concern
+- 2 = significant concern
+- 1 = critical issue
+
+## Verdict derivation
+
+- `pass` = score 4 or 5
+- `warn` = score 2 or 3
+- `fail` = score 1
+
+Be specific in the finding — cite the tool call, file, or turn that drove the score. Vague findings ("looked OK") are not useful. If the question asks about an absence (e.g., "did the agent skip writing tests?") and the absence is correct, score 5 and explain what WAS done instead.

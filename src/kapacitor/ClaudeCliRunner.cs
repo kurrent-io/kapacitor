@@ -15,13 +15,26 @@ record ClaudeCliResult(
 
 static class ClaudeCliRunner {
     /// <summary>
-    /// Runs <c>claude -p &lt;prompt&gt; --output-format json --max-turns 1 --model haiku</c>
-    /// and parses the JSON response. Returns null on failure (timeout, bad exit code, parse error).
-    /// When the CLI returns an empty <c>result</c> field (known bug with extended thinking),
-    /// falls back to reading the assistant response from the session transcript file.
-    /// Logs are written via <paramref name="log"/>.
+    /// Runs <c>claude -p &lt;prompt&gt; --output-format json --max-turns &lt;N&gt; --model &lt;model&gt;</c>
+    /// with no tools, and parses the JSON response. Returns null on failure
+    /// (timeout, bad exit code, parse error). When the CLI returns an empty
+    /// <c>result</c> field (known bug with extended thinking), falls back to
+    /// reading the assistant response from the session transcript file. Logs
+    /// are written via <paramref name="log"/>.
+    ///
+    /// <para>
+    /// <paramref name="model"/> defaults to <c>haiku</c> (suitable for cheap
+    /// summarization like title generation). For judgment tasks like the
+    /// eval command, pass a stronger model (e.g. <c>sonnet</c>).
+    /// </para>
     /// </summary>
-    public static async Task<ClaudeCliResult?> RunAsync(string prompt, TimeSpan timeout, Action<string> log) {
+    public static async Task<ClaudeCliResult?> RunAsync(
+            string         prompt,
+            TimeSpan       timeout,
+            Action<string> log,
+            string         model    = "haiku",
+            int            maxTurns = 1
+        ) {
         // Run from a stable isolated directory to avoid loading project-specific plugins/config
         // that might interfere with the headless title generation session.
         // Uses a fixed path so Claude treats all invocations as the same "project" and doesn't
@@ -35,10 +48,17 @@ static class ClaudeCliRunner {
             stableDir = Path.GetTempPath();
         }
 
-        return await RunCoreAsync(prompt, timeout, log, stableDir);
+        return await RunCoreAsync(prompt, timeout, log, stableDir, model, maxTurns);
     }
 
-    static async Task<ClaudeCliResult?> RunCoreAsync(string prompt, TimeSpan timeout, Action<string> log, string workingDir) {
+    static async Task<ClaudeCliResult?> RunCoreAsync(
+            string         prompt,
+            TimeSpan       timeout,
+            Action<string> log,
+            string         workingDir,
+            string         model,
+            int            maxTurns
+        ) {
         var psi = new ProcessStartInfo {
             FileName               = "claude",
             WorkingDirectory       = workingDir,
@@ -58,9 +78,9 @@ static class ClaudeCliRunner {
         psi.ArgumentList.Add("--output-format");
         psi.ArgumentList.Add("json");
         psi.ArgumentList.Add("--max-turns");
-        psi.ArgumentList.Add("1");
+        psi.ArgumentList.Add(maxTurns.ToString());
         psi.ArgumentList.Add("--model");
-        psi.ArgumentList.Add("haiku");
+        psi.ArgumentList.Add(model);
         psi.ArgumentList.Add("--tools");
         psi.ArgumentList.Add("");
 

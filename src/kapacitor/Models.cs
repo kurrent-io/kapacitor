@@ -171,6 +171,111 @@ record RepoRecapEntry(
         string          Summary
     );
 
+// ── Eval command types — see DEV-1433 ─────────────────────────────────────
+
+// Response shape from GET /api/sessions/{id}/eval-context. Only the fields
+// the CLI needs; the server emits more that we don't parse (agent tagging,
+// per-tool truncation breakdown, etc.) and System.Text.Json ignores them.
+record EvalContextEntry {
+    [JsonPropertyName("kind")]
+    public required string Kind { get; init; }
+
+    [JsonPropertyName("timestamp")]
+    public required DateTimeOffset Timestamp { get; init; }
+
+    [JsonPropertyName("text")]
+    public string? Text { get; init; }
+
+    [JsonPropertyName("tool")]
+    public string? Tool { get; init; }
+}
+
+record EvalContextCompactionSummary {
+    [JsonPropertyName("threshold_bytes")]
+    public required int ThresholdBytes { get; init; }
+
+    [JsonPropertyName("entries")]
+    public required int Entries { get; init; }
+
+    [JsonPropertyName("tool_results_total")]
+    public required int ToolResultsTotal { get; init; }
+
+    [JsonPropertyName("tool_results_truncated")]
+    public required int ToolResultsTruncated { get; init; }
+
+    [JsonPropertyName("bytes_saved")]
+    public required long BytesSaved { get; init; }
+}
+
+record EvalContextResult {
+    [JsonPropertyName("session_id")]
+    public required string SessionId { get; init; }
+
+    [JsonPropertyName("session_chain")]
+    public required List<string> SessionChain { get; init; }
+
+    [JsonPropertyName("trace")]
+    public required List<EvalContextEntry> Trace { get; init; }
+
+    [JsonPropertyName("compaction")]
+    public required EvalContextCompactionSummary Compaction { get; init; }
+}
+
+// Per-question verdict returned by each judge invocation. Matches the server
+// event shape in SessionMetadataEvents.cs. `Evidence` is optional — judges
+// may omit it when there's nothing specific to quote.
+record EvalQuestionVerdict {
+    [JsonPropertyName("category")]
+    public required string Category { get; init; }
+
+    [JsonPropertyName("question_id")]
+    public required string QuestionId { get; init; }
+
+    [JsonPropertyName("score")]
+    public required int Score { get; init; }
+
+    [JsonPropertyName("verdict")]
+    public required string Verdict { get; init; }
+
+    [JsonPropertyName("finding")]
+    public required string Finding { get; init; }
+
+    [JsonPropertyName("evidence")]
+    public string? Evidence { get; init; }
+}
+
+record EvalCategoryResult {
+    [JsonPropertyName("name")]
+    public required string Name { get; init; }
+
+    [JsonPropertyName("score")]
+    public required int Score { get; init; }
+
+    [JsonPropertyName("verdict")]
+    public required string Verdict { get; init; }
+
+    [JsonPropertyName("questions")]
+    public List<EvalQuestionVerdict> Questions { get; init; } = [];
+}
+
+// Posted to POST /api/sessions/{id}/evals. The server fills evaluated_at.
+record SessionEvalCompletedPayload {
+    [JsonPropertyName("eval_run_id")]
+    public required string EvalRunId { get; init; }
+
+    [JsonPropertyName("judge_model")]
+    public required string JudgeModel { get; init; }
+
+    [JsonPropertyName("categories")]
+    public List<EvalCategoryResult> Categories { get; init; } = [];
+
+    [JsonPropertyName("overall_score")]
+    public required int OverallScore { get; init; }
+
+    [JsonPropertyName("summary")]
+    public required string Summary { get; init; }
+}
+
 enum HistorySessionStatus { New, Partial, AlreadyLoaded }
 
 class SessionMetadata {
@@ -218,6 +323,9 @@ record RepoEntry {
 
 [JsonSerializable(typeof(List<RecapEntry>))]
 [JsonSerializable(typeof(List<RepoRecapEntry>))]
+[JsonSerializable(typeof(EvalContextResult))]
+[JsonSerializable(typeof(EvalQuestionVerdict))]
+[JsonSerializable(typeof(SessionEvalCompletedPayload))]
 [JsonSerializable(typeof(List<ErrorEntry>))]
 [JsonSerializable(typeof(RepositoryPayload))]
 [JsonSerializable(typeof(GitCacheEntry))]
