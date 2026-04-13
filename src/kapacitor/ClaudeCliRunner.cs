@@ -15,13 +15,35 @@ record ClaudeCliResult(
 
 static class ClaudeCliRunner {
     /// <summary>
-    /// Runs <c>claude -p &lt;prompt&gt; --output-format json --max-turns 1 --model haiku</c>
-    /// and parses the JSON response. Returns null on failure (timeout, bad exit code, parse error).
-    /// When the CLI returns an empty <c>result</c> field (known bug with extended thinking),
-    /// falls back to reading the assistant response from the session transcript file.
-    /// Logs are written via <paramref name="log"/>.
+    /// Runs <c>claude -p &lt;prompt&gt; --output-format json --max-turns &lt;N&gt; --model &lt;model&gt;</c>
+    /// with no tools, and parses the JSON response. Returns null on failure
+    /// (timeout, bad exit code, parse error). When the CLI returns an empty
+    /// <c>result</c> field (known bug with extended thinking), falls back to
+    /// reading the assistant response from the session transcript file. Logs
+    /// are written via <paramref name="log"/>.
+    ///
+    /// <para>
+    /// <paramref name="model"/> defaults to <c>haiku</c> (suitable for cheap
+    /// summarization like title generation). For judgment tasks like the
+    /// eval command, pass a stronger model (e.g. <c>sonnet</c>).
+    /// </para>
+    ///
+    /// <para>
+    /// When <paramref name="promptViaStdin"/> is true, the prompt is streamed
+    /// to the <c>claude</c> process via stdin instead of being passed as a
+    /// command-line argument — required for prompts that would otherwise
+    /// exceed OS argv limits (notably 32K on Windows), such as the eval
+    /// command's embedded session trace.
+    /// </para>
     /// </summary>
-    public static async Task<ClaudeCliResult?> RunAsync(string prompt, TimeSpan timeout, Action<string> log) {
+    public static async Task<ClaudeCliResult?> RunAsync(
+            string         prompt,
+            TimeSpan       timeout,
+            Action<string> log,
+            string         model          = "haiku",
+            int            maxTurns       = 1,
+            bool           promptViaStdin = false
+        ) {
         // Run from a stable isolated directory to avoid loading project-specific plugins/config
         // that might interfere with the headless title generation session.
         // Uses a fixed path so Claude treats all invocations as the same "project" and doesn't
@@ -35,15 +57,24 @@ static class ClaudeCliRunner {
             stableDir = Path.GetTempPath();
         }
 
-        return await RunCoreAsync(prompt, timeout, log, stableDir);
+        return await RunCoreAsync(prompt, timeout, log, stableDir, model, maxTurns, promptViaStdin);
     }
 
-    static async Task<ClaudeCliResult?> RunCoreAsync(string prompt, TimeSpan timeout, Action<string> log, string workingDir) {
+    static async Task<ClaudeCliResult?> RunCoreAsync(
+            string         prompt,
+            TimeSpan       timeout,
+            Action<string> log,
+            string         workingDir,
+            string         model,
+            int            maxTurns,
+            bool           promptViaStdin
+        ) {
         var psi = new ProcessStartInfo {
             FileName               = "claude",
             WorkingDirectory       = workingDir,
             RedirectStandardOutput = true,
             RedirectStandardError  = true,
+            RedirectStandardInput  = promptViaStdin,
             UseShellExecute        = false,
             CreateNoWindow         = true,
             Environment = {
@@ -54,13 +85,17 @@ static class ClaudeCliRunner {
         psi.Environment.Remove("CLAUDECODE");
         psi.Environment.Remove("CLAUDE_CODE_ENTRYPOINT");
         psi.ArgumentList.Add("-p");
-        psi.ArgumentList.Add(prompt);
+        if (!promptViaStdin) {
+            // When piping stdin, `claude -p` reads the prompt from stdin; don't
+            // also pass it as a positional arg.
+            psi.ArgumentList.Add(prompt);
+        }
         psi.ArgumentList.Add("--output-format");
         psi.ArgumentList.Add("json");
         psi.ArgumentList.Add("--max-turns");
-        psi.ArgumentList.Add("1");
+        psi.ArgumentList.Add(maxTurns.ToString());
         psi.ArgumentList.Add("--model");
-        psi.ArgumentList.Add("haiku");
+        psi.ArgumentList.Add(model);
         psi.ArgumentList.Add("--tools");
         psi.ArgumentList.Add("");
 
@@ -73,6 +108,20 @@ static class ClaudeCliRunner {
         }
 
         using var cts = new CancellationTokenSource(timeout);
+
+        if (promptViaStdin) {
+            try {
+                await process.StandardInput.WriteAsync(prompt.AsMemory(), cts.Token);
+                await process.StandardInput.FlushAsync(cts.Token);
+                process.StandardInput.Close();
+            } catch (Exception ex) {
+                log($"Failed to stream prompt to claude stdin: {ex.Message}");
+
+                try { process.Kill(entireProcessTree: true); } catch { /* ignore */ }
+
+                return null;
+            }
+        }
 
         try {
             var stdoutTask = process.StandardOutput.ReadToEndAsync(cts.Token);

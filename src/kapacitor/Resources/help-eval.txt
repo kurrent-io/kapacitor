@@ -1,0 +1,23 @@
+Usage: kapacitor eval <sessionId> [options]
+
+Runs an LLM-as-judge evaluation over a stored session. 13 questions across 4
+categories (safety, plan adherence, quality, efficiency) are asked of Claude
+in sequence, each in its own headless invocation with no tools. The server's
+eval-context endpoint supplies the compacted session trace; results are
+aggregated into per-category + overall scores and persisted back to the
+session's stream as a SessionEvalCompleted event.
+
+Options:
+  --model <name>      Judge model (default: sonnet). haiku/sonnet/opus.
+  --chain             Evaluate the full continuation chain, not just this session.
+  --threshold <n>     Override the server's compaction threshold (bytes per tool
+                      result, default server-side: 2000). Capped at 200_000.
+  --help, -h          Show this help.
+
+Notes:
+  - Judges run sequentially; expect ~1-3 minutes total depending on model and
+    session size. Parallelization is tracked in DEV-1435.
+  - Each judge has no tools — Read, Bash, Grep, WebFetch, etc. are all blocked.
+    The full compacted trace is embedded in the prompt.
+  - If the session ID is omitted, the currently-recorded session (as set by
+    the session-start hook in KAPACITOR_SESSION_ID) is used.
