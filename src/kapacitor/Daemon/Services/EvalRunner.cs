@@ -78,13 +78,20 @@ public sealed class EvalRunner {
 }
 
 /// <summary>
-/// <see cref="IEvalObserver"/> implementation that pushes the shaped
-/// callbacks — <see cref="OnStarted"/>, <see cref="OnQuestionCompleted"/>,
-/// <see cref="OnFinished"/>, <see cref="OnFailed"/> — over the daemon's
-/// SignalR connection so the dashboard can render live progress. Info /
-/// per-question-start / per-question-failure / fact-retained callbacks
-/// just log locally; they're not interesting enough to justify SignalR
-/// chatter for every judge.
+/// <see cref="IEvalObserver"/> implementation that pushes every per-run
+/// and per-question transition — <see cref="OnStarted"/>,
+/// <see cref="OnQuestionStarted"/>, <see cref="OnQuestionCompleted"/>,
+/// <see cref="OnQuestionFailed"/>, <see cref="OnFinished"/>,
+/// <see cref="OnFailed"/> — over the daemon's SignalR connection so the
+/// dashboard can render live progress. Per-question start + fail are
+/// relayed (not just completed) because the dashboard advances the
+/// "running" marker off `QuestionStarted` and the ✗ marker off
+/// `QuestionFailed`; without them, a judge that returned an unparseable
+/// verdict (or timed out) leaves the UI stuck on the previous question
+/// until the whole 13-judge loop finally ends. <see cref="OnInfo"/>,
+/// <see cref="OnContextFetched"/>, and <see cref="OnFactRetained"/> are
+/// debug-log-only — the dashboard has no rendering for them and the
+/// SignalR chatter would be pure overhead.
 /// </summary>
 sealed class DaemonEvalObserver(
         ServerConnection connection,

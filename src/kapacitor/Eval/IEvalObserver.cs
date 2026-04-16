@@ -2,11 +2,16 @@ namespace kapacitor.Eval;
 
 /// <summary>
 /// Progress surface for an eval run. The CLI implementation writes each
-/// callback to stderr; a daemon implementation (DEV-1440 milestone 2) will
-/// push the shaped callbacks (<see cref="OnStarted"/>,
-/// <see cref="OnQuestionCompleted"/>, <see cref="OnFinished"/>,
-/// <see cref="OnFailed"/>) over SignalR so the dashboard can render live
-/// progress while judges run on the user's machine.
+/// callback to stderr; the daemon implementation (DEV-1440 milestone 2)
+/// pushes every per-run and per-question transition
+/// (<see cref="OnStarted"/>, <see cref="OnQuestionStarted"/>,
+/// <see cref="OnQuestionCompleted"/>, <see cref="OnQuestionFailed"/>,
+/// <see cref="OnFinished"/>, <see cref="OnFailed"/>) over SignalR so the
+/// dashboard can render live progress — including failed judges —
+/// while they run on the user's machine.
+/// <see cref="OnInfo"/>, <see cref="OnContextFetched"/>, and
+/// <see cref="OnFactRetained"/> are daemon-local (debug logs only) since
+/// the dashboard has no rendering for them.
 ///
 /// <para>
 /// Callbacks are fired from the running eval task but must not perform
