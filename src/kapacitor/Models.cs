@@ -382,7 +382,9 @@ record RepoEntry {
 [JsonSerializable(typeof(ResizeTerminalCommand))]
 [JsonSerializable(typeof(RunEvalCommand))]
 [JsonSerializable(typeof(EvalStarted))]
+[JsonSerializable(typeof(EvalQuestionStarted))]
 [JsonSerializable(typeof(EvalQuestionCompleted))]
+[JsonSerializable(typeof(EvalQuestionFailed))]
 [JsonSerializable(typeof(EvalFinished))]
 [JsonSerializable(typeof(EvalFailed))]
 [JsonSerializable(typeof(DaemonConnect))]
@@ -477,6 +479,16 @@ public readonly record struct EvalStarted(
         int    TotalQuestions
     );
 
+/// <summary>Daemon → server: a judge question started running. Emitted before each claude invocation so the dashboard can show which question is currently in flight even when earlier ones failed.</summary>
+public readonly record struct EvalQuestionStarted(
+        string EvalRunId,
+        string SessionId,
+        int    Index,
+        int    Total,
+        string Category,
+        string QuestionId
+    );
+
 /// <summary>Daemon → server: a judge question completed with a verdict.</summary>
 public readonly record struct EvalQuestionCompleted(
         string EvalRunId,
@@ -487,6 +499,17 @@ public readonly record struct EvalQuestionCompleted(
         string QuestionId,
         int    Score,
         string Verdict
+    );
+
+/// <summary>Daemon → server: a judge question failed (claude returned no/unparseable result, timed out, or emitted an out-of-range score). The overall eval continues to the next question.</summary>
+public readonly record struct EvalQuestionFailed(
+        string EvalRunId,
+        string SessionId,
+        int    Index,
+        int    Total,
+        string Category,
+        string QuestionId,
+        string Reason
     );
 
 /// <summary>Daemon → server: eval run finished end-to-end and aggregate has been persisted.</summary>
