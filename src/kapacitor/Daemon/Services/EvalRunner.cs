@@ -110,8 +110,10 @@ sealed class DaemonEvalObserver(
     public void OnContextFetched(int traceEntries, int traceChars, int toolResultsTotal, int toolResultsTruncated, long bytesSaved) =>
         logger.LogDebug("Eval {Run} context fetched: {Entries} entries, {Chars} chars", evalRunId, traceEntries, traceChars);
 
-    public void OnQuestionStarted(int index, int total, string category, string questionId) =>
+    public void OnQuestionStarted(int index, int total, string category, string questionId) {
         logger.LogDebug("[eval {Run}] [{Index}/{Total}] {Category}/{Question} started", evalRunId, index, total, category, questionId);
+        Relay(() => connection.EvalQuestionStartedAsync(evalRunId, sessionId, index, total, category, questionId), "EvalQuestionStarted");
+    }
 
     public void OnQuestionCompleted(int index, int total, EvalQuestionVerdict verdict, long inputTokens, long outputTokens) {
         logger.LogInformation(
@@ -121,8 +123,10 @@ sealed class DaemonEvalObserver(
         Relay(() => connection.EvalQuestionCompletedAsync(evalRunId, sessionId, index, total, verdict.Category, verdict.QuestionId, verdict.Score, verdict.Verdict), "EvalQuestionCompleted");
     }
 
-    public void OnQuestionFailed(int index, int total, string category, string questionId, string reason) =>
+    public void OnQuestionFailed(int index, int total, string category, string questionId, string reason) {
         logger.LogWarning("[eval {Run}] [{Index}/{Total}] {Category}/{Question} failed: {Reason}", evalRunId, index, total, category, questionId, reason);
+        Relay(() => connection.EvalQuestionFailedAsync(evalRunId, sessionId, index, total, category, questionId, reason), "EvalQuestionFailed");
+    }
 
     public void OnFactRetained(string category, string fact) =>
         logger.LogDebug("[eval {Run}] retained fact for {Category}: {Fact}", evalRunId, category, fact);
