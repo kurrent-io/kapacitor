@@ -12,6 +12,29 @@ namespace kapacitor.Eval;
 /// service caring.
 /// </summary>
 internal static class EvalService {
+    // DEV-1476: every judge invocation is pinned to a JSON Schema via
+    // `claude -p --json-schema`. Without this, judges occasionally emitted
+    // free-form text (including harmony-style `<function_calls>` XML as
+    // prose) which is unparseable as a verdict. The CLI fulfils the schema
+    // through a synthetic `StructuredOutput` tool that costs one extra turn
+    // — callers here pass `maxTurns: 2` to accommodate it.
+    //
+    // Both schemas accept `null` for optional string fields (rather than
+    // omitting them) because `--json-schema` enforces `required` — the
+    // per-question prompt already instructs the judge to emit explicit
+    // nulls, so this matches existing expectations.
+    const string VerdictJsonSchema = """
+        {"type":"object","properties":{"category":{"type":"string"},"question_id":{"type":"string"},"score":{"type":"integer","minimum":1,"maximum":5},"verdict":{"type":"string","enum":["pass","warn","fail"]},"finding":{"type":"string"},"evidence":{"type":["string","null"]},"recommendation":{"type":["string","null"]},"retain_fact":{"type":["string","null"]}},"required":["category","question_id","score","verdict","finding","evidence","recommendation","retain_fact"],"additionalProperties":false}
+        """;
+
+    const string RetrospectiveJsonSchema = """
+        {"type":"object","properties":{"overall":{"type":"string"},"strengths":{"type":"array","items":{"type":"string"}},"issues":{"type":"array","items":{"type":"string"}},"suggestions":{"type":"array","items":{"type":"string"}}},"required":["overall","strengths","issues","suggestions"],"additionalProperties":false}
+        """;
+
+    // Claude CLI spends one turn calling the synthetic StructuredOutput tool
+    // and a second turn emitting the end-of-turn, so eval calls need 2.
+    const int JudgeMaxTurns = 2;
+
     /// <summary>
     /// Runs the full eval pipeline for <paramref name="sessionId"/>:
     /// fetches the compacted trace, runs 13 judge questions sequentially
@@ -164,10 +187,11 @@ internal static class EvalService {
                 TimeSpan.FromMinutes(5),
                 msg => { diagnostics.Add(msg); observer.OnInfo($"  {msg}"); },
                 model: model,
-                maxTurns: 1,
+                maxTurns: JudgeMaxTurns,
                 // Prompts embed the full compacted trace and can be hundreds
                 // of KB — well past Windows' 32K argv limit. Stream via stdin.
                 promptViaStdin: true,
+                jsonSchema: VerdictJsonSchema,
                 ct: ct
             );
 
@@ -514,9 +538,10 @@ internal static class EvalService {
                 TimeSpan.FromMinutes(5),
                 msg => observer.OnInfo($"  {msg}"),
                 model:          model,
-                maxTurns:       1,
+                maxTurns:       JudgeMaxTurns,
                 // Prompt embeds full compacted trace + verdicts; likely >32K on Windows.
                 promptViaStdin: true,
+                jsonSchema:     RetrospectiveJsonSchema,
                 ct:             ct
             );
 
