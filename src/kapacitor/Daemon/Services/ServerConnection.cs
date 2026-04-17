@@ -199,6 +199,17 @@ public partial class ServerConnection : IAsyncDisposable {
     public Task EvalFailedAsync(string evalRunId, string sessionId, string reason)
         => _hub.SendAsync("EvalFailed", new EvalFailed(evalRunId, sessionId, reason), cancellationToken: _ct);
 
+    // ── Retrospective progress events (DEV-1470) ───────────────────────────
+
+    public Task EvalRetrospectiveStartedAsync(string sessionId, string evalRunId)
+        => _hub.SendAsync("EvalRetrospectiveStarted", new EvalRetrospectiveStarted(sessionId, evalRunId), cancellationToken: _ct);
+
+    public Task EvalRetrospectiveCompletedAsync(string sessionId, string evalRunId)
+        => _hub.SendAsync("EvalRetrospectiveCompleted", new EvalRetrospectiveCompleted(sessionId, evalRunId), cancellationToken: _ct);
+
+    public Task EvalRetrospectiveFailedAsync(string sessionId, string evalRunId, string reason)
+        => _hub.SendAsync("EvalRetrospectiveFailed", new EvalRetrospectiveFailed(sessionId, evalRunId, reason), cancellationToken: _ct);
+
     public Task AppendAgentRunEventAsync(string agentId, object evt) {
         _eventChannel.Writer.TryWrite(new PendingEvent(agentId, evt));
 

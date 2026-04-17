@@ -409,6 +409,9 @@ record RepoEntry {
 [JsonSerializable(typeof(EvalQuestionFailed))]
 [JsonSerializable(typeof(EvalFinished))]
 [JsonSerializable(typeof(EvalFailed))]
+[JsonSerializable(typeof(EvalRetrospectiveStarted))]
+[JsonSerializable(typeof(EvalRetrospectiveCompleted))]
+[JsonSerializable(typeof(EvalRetrospectiveFailed))]
 [JsonSerializable(typeof(DaemonConnect))]
 [JsonSerializable(typeof(AgentRegistered))]
 [JsonSerializable(typeof(AgentStatusChanged))]
@@ -546,6 +549,25 @@ public readonly record struct EvalFinished(
 public readonly record struct EvalFailed(
         string EvalRunId,
         string SessionId,
+        string Reason
+    );
+
+/// <summary>Daemon → server: retrospective pass is about to start (all category judges have completed).</summary>
+public readonly record struct EvalRetrospectiveStarted(
+        string SessionId,
+        string EvalRunId
+    );
+
+/// <summary>Daemon → server: retrospective pass produced a summary and has been folded into the aggregate.</summary>
+public readonly record struct EvalRetrospectiveCompleted(
+        string SessionId,
+        string EvalRunId
+    );
+
+/// <summary>Daemon → server: retrospective pass failed; the aggregate is still persisted without a retrospective.</summary>
+public readonly record struct EvalRetrospectiveFailed(
+        string SessionId,
+        string EvalRunId,
         string Reason
     );
 
