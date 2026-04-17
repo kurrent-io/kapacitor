@@ -261,6 +261,20 @@ record EvalCategoryResult {
     public List<EvalQuestionVerdict> Questions { get; init; } = [];
 }
 
+record EvalRetrospective {
+    [JsonPropertyName("overall")]
+    public required string OverallSummary { get; init; }
+
+    [JsonPropertyName("strengths")]
+    public List<string> Strengths { get; init; } = [];
+
+    [JsonPropertyName("issues")]
+    public List<string> Issues { get; init; } = [];
+
+    [JsonPropertyName("suggestions")]
+    public List<string> Suggestions { get; init; } = [];
+}
+
 // Cross-eval memory — DEV-1434 / DEV-1438. Judges may optionally emit a
 // retain_fact when they spot a cross-cutting pattern; the CLI POSTs it to
 // the session-scoped endpoint and the server derives repo scope from the
@@ -311,6 +325,9 @@ record SessionEvalCompletedPayload {
 
     [JsonPropertyName("summary")]
     public required string Summary { get; init; }
+
+    [JsonPropertyName("retrospective")]
+    public EvalRetrospective? Retrospective { get; init; }
 }
 
 enum HistorySessionStatus { New, Partial, AlreadyLoaded }
@@ -362,6 +379,7 @@ record RepoEntry {
 [JsonSerializable(typeof(List<RepoRecapEntry>))]
 [JsonSerializable(typeof(EvalContextResult))]
 [JsonSerializable(typeof(EvalQuestionVerdict))]
+[JsonSerializable(typeof(EvalRetrospective))]
 [JsonSerializable(typeof(SessionEvalCompletedPayload))]
 [JsonSerializable(typeof(JudgeFactPayload))]
 [JsonSerializable(typeof(List<JudgeFact>))]
