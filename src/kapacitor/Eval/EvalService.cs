@@ -208,7 +208,11 @@ internal static class EvalService {
                 continue;
             }
 
-            var verdict = ParseVerdict(result.Result, q);
+            var verdict = ParseVerdict(
+                result.Result,
+                q,
+                onContractViolation: msg => observer.OnInfo($"  {q.Category}/{q.Id}: {msg}")
+            );
             if (verdict is null) {
                 observer.OnQuestionFailed(i + 1, EvalQuestions.All.Length, q.Category, q.Id, $"verdict JSON could not be parsed; raw response: {Truncate(result.Result, 500)}");
 
@@ -347,8 +351,26 @@ internal static class EvalService {
     /// trusting the score over the judge-supplied verdict eliminates a
     /// whole class of mild hallucinations without discarding useful data.
     /// </para>
+    ///
+    /// <para>
+    /// The recommendation contract ("required when score &lt; 4, optional
+    /// at 4, null at 5") can't be expressed in the JSON schema we pass to
+    /// <c>claude --json-schema</c> — Anthropic's tool input_schema rejects
+    /// top-level <c>oneOf</c>/<c>allOf</c>/<c>anyOf</c>, so conditional
+    /// requirements aren't representable. Enforced here instead: score=5
+    /// verdicts always have their recommendation nulled (the contract
+    /// says there shouldn't be one, and a score-5 recommendation is
+    /// meaningless anyway). Score &lt; 4 with a missing recommendation is
+    /// flagged via <paramref name="onContractViolation"/> but still
+    /// accepted — dropping a valid score/finding/evidence because the
+    /// recommendation is missing is a worse outcome than a partial verdict.
+    /// </para>
     /// </summary>
-    public static EvalQuestionVerdict? ParseVerdict(string rawResponse, EvalQuestions.Question question) {
+    public static EvalQuestionVerdict? ParseVerdict(
+            string                 rawResponse,
+            EvalQuestions.Question question,
+            Action<string>?        onContractViolation = null
+        ) {
         var json = StripCodeFences(rawResponse.Trim());
 
         EvalQuestionVerdict? parsed;
@@ -366,6 +388,18 @@ internal static class EvalService {
 
         var normalisedRecommendation = parsed.Recommendation?.Trim();
         if (string.IsNullOrEmpty(normalisedRecommendation)) normalisedRecommendation = null;
+
+        // Contract: null recommendation at score=5, concrete recommendation
+        // at score<4. Normalise score=5 unconditionally; surface score<4
+        // violations but accept the verdict anyway.
+        if (parsed.Score == 5 && normalisedRecommendation is not null) {
+            onContractViolation?.Invoke($"score 5 verdict included a recommendation — nulling per contract");
+            normalisedRecommendation = null;
+        }
+
+        if (parsed.Score < 4 && normalisedRecommendation is null) {
+            onContractViolation?.Invoke($"score {parsed.Score} verdict missing recommendation — accepting partial verdict");
+        }
 
         return parsed with {
             Category       = question.Category,
