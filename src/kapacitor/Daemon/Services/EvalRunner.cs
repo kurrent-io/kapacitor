@@ -138,6 +138,12 @@ sealed class DaemonEvalObserver(
     public void OnFactRetained(string category, string fact) =>
         logger.LogDebug("[eval {Run}] retained fact for {Category}: {Fact}", evalRunId, category, fact);
 
+    // Retrospective relays are wired in Task 7 — for now these are
+    // deliberate no-ops so the interface stays fully implemented.
+    public void OnRetrospectiveStarted() { }
+    public void OnRetrospectiveCompleted(EvalRetrospective retrospective) { }
+    public void OnRetrospectiveFailed(string reason) { }
+
     public void OnFinished(SessionEvalCompletedPayload aggregate) {
         logger.LogInformation("Eval {Run} finished on session {Sid}: {Score}/5", evalRunId, sessionId, aggregate.OverallScore);
         Relay(() => connection.EvalFinishedAsync(evalRunId, sessionId, aggregate.OverallScore, aggregate.Summary), "EvalFinished");

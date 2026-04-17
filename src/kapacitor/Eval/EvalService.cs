@@ -487,6 +487,15 @@ internal static class EvalService {
         public void OnFactRetained(string category, string fact) =>
             Safe(() => inner.OnFactRetained(category, fact), nameof(OnFactRetained));
 
+        public void OnRetrospectiveStarted() =>
+            Safe(inner.OnRetrospectiveStarted, nameof(OnRetrospectiveStarted));
+
+        public void OnRetrospectiveCompleted(EvalRetrospective retrospective) =>
+            Safe(() => inner.OnRetrospectiveCompleted(retrospective), nameof(OnRetrospectiveCompleted));
+
+        public void OnRetrospectiveFailed(string reason) =>
+            Safe(() => inner.OnRetrospectiveFailed(reason), nameof(OnRetrospectiveFailed));
+
         public void OnFinished(SessionEvalCompletedPayload aggregate) =>
             Safe(() => inner.OnFinished(aggregate), nameof(OnFinished));
 
