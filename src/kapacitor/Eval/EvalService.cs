@@ -162,7 +162,8 @@ internal static class EvalService {
                 maxTurns: 1,
                 // Prompts embed the full compacted trace and can be hundreds
                 // of KB — well past Windows' 32K argv limit. Stream via stdin.
-                promptViaStdin: true
+                promptViaStdin: true,
+                ct: ct
             );
 
             if (result is null) {
@@ -463,6 +464,11 @@ internal static class EvalService {
             IEvalObserver                               observer,
             CancellationToken                           ct
         ) {
+        // Check cancellation before emitting OnRetrospectiveStarted so a
+        // shutdown between the per-question loop and retrospective doesn't
+        // leave observers seeing a started-never-finished synthesis event.
+        ct.ThrowIfCancellationRequested();
+
         observer.OnRetrospectiveStarted();
 
         var sessionMeta   = $"session-id: {sessionId}\nrun-id: {evalRunId}\nmodel: {model}\noverall-score: {aggregate.OverallScore}/5";
@@ -478,7 +484,8 @@ internal static class EvalService {
                 model:          model,
                 maxTurns:       1,
                 // Prompt embeds full compacted trace + verdicts; likely >32K on Windows.
-                promptViaStdin: true
+                promptViaStdin: true,
+                ct:             ct
             );
 
             if (result is null) {
