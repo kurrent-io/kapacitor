@@ -46,6 +46,15 @@ internal interface IEvalObserver {
     /// <summary>Fired when the judge produced a retain_fact and the CLI successfully POSTed it to the server.</summary>
     void OnFactRetained(string category, string fact);
 
+    /// <summary>Fired just before the retrospective synthesis prompt is sent to the judge model.</summary>
+    void OnRetrospectiveStarted();
+
+    /// <summary>Fired after the retrospective completed successfully and its payload was parsed.</summary>
+    void OnRetrospectiveCompleted(EvalRetrospective retrospective);
+
+    /// <summary>Fired when retrospective synthesis failed (null Claude result, unparseable JSON, etc.); the eval still completes.</summary>
+    void OnRetrospectiveFailed(string reason);
+
     /// <summary>Fired once after all judges finished, results aggregated, and the aggregate POSTed to the server.</summary>
     void OnFinished(SessionEvalCompletedPayload aggregate);
 

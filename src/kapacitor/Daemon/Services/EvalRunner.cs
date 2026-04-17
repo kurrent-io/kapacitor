@@ -138,6 +138,21 @@ sealed class DaemonEvalObserver(
     public void OnFactRetained(string category, string fact) =>
         logger.LogDebug("[eval {Run}] retained fact for {Category}: {Fact}", evalRunId, category, fact);
 
+    public void OnRetrospectiveStarted() {
+        logger.LogInformation("[eval {Run}] retrospective started", evalRunId);
+        Relay(() => connection.EvalRetrospectiveStartedAsync(sessionId, evalRunId), "EvalRetrospectiveStarted");
+    }
+
+    public void OnRetrospectiveCompleted(EvalRetrospective retrospective) {
+        logger.LogInformation("[eval {Run}] retrospective completed", evalRunId);
+        Relay(() => connection.EvalRetrospectiveCompletedAsync(sessionId, evalRunId), "EvalRetrospectiveCompleted");
+    }
+
+    public void OnRetrospectiveFailed(string reason) {
+        logger.LogWarning("[eval {Run}] retrospective failed: {Reason}", evalRunId, reason);
+        Relay(() => connection.EvalRetrospectiveFailedAsync(sessionId, evalRunId, reason), "EvalRetrospectiveFailed");
+    }
+
     public void OnFinished(SessionEvalCompletedPayload aggregate) {
         logger.LogInformation("Eval {Run} finished on session {Sid}: {Score}/5", evalRunId, sessionId, aggregate.OverallScore);
         Relay(() => connection.EvalFinishedAsync(evalRunId, sessionId, aggregate.OverallScore, aggregate.Summary), "EvalFinished");

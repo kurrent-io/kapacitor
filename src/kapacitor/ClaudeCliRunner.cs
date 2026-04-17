@@ -35,14 +35,25 @@ static class ClaudeCliRunner {
     /// exceed OS argv limits (notably 32K on Windows), such as the eval
     /// command's embedded session trace.
     /// </para>
+    ///
+    /// <para>
+    /// <paramref name="ct"/> cancels the invocation cooperatively: stdin
+    /// writes, stdout/stderr reads, and <see cref="Process.WaitForExitAsync"/>
+    /// all observe a token linked with the internal timeout. On external
+    /// cancellation the subprocess is killed (not just awaited-off) and
+    /// <see cref="OperationCanceledException"/> propagates to the caller so
+    /// it can distinguish shutdown from the internal timeout (which is
+    /// swallowed and surfaces as a null result, same as before).
+    /// </para>
     /// </summary>
     public static async Task<ClaudeCliResult?> RunAsync(
-            string         prompt,
-            TimeSpan       timeout,
-            Action<string> log,
-            string         model          = "haiku",
-            int            maxTurns       = 1,
-            bool           promptViaStdin = false
+            string            prompt,
+            TimeSpan          timeout,
+            Action<string>    log,
+            string            model          = "haiku",
+            int               maxTurns       = 1,
+            bool              promptViaStdin = false,
+            CancellationToken ct             = default
         ) {
         // Run from a stable isolated directory to avoid loading project-specific plugins/config
         // that might interfere with the headless title generation session.
@@ -57,17 +68,18 @@ static class ClaudeCliRunner {
             stableDir = Path.GetTempPath();
         }
 
-        return await RunCoreAsync(prompt, timeout, log, stableDir, model, maxTurns, promptViaStdin);
+        return await RunCoreAsync(prompt, timeout, log, stableDir, model, maxTurns, promptViaStdin, ct);
     }
 
     static async Task<ClaudeCliResult?> RunCoreAsync(
-            string         prompt,
-            TimeSpan       timeout,
-            Action<string> log,
-            string         workingDir,
-            string         model,
-            int            maxTurns,
-            bool           promptViaStdin
+            string            prompt,
+            TimeSpan          timeout,
+            Action<string>    log,
+            string            workingDir,
+            string            model,
+            int               maxTurns,
+            bool              promptViaStdin,
+            CancellationToken ct
         ) {
         var psi = new ProcessStartInfo {
             FileName               = "claude",
@@ -107,13 +119,24 @@ static class ClaudeCliRunner {
             return null;
         }
 
-        using var cts = new CancellationTokenSource(timeout);
+        using var timeoutCts = new CancellationTokenSource(timeout);
+        // Link caller cancellation with the internal timeout so both flow into
+        // the same awaited token. Distinguishing which fired (external vs
+        // timeout) is cheap — ct.IsCancellationRequested is the source of truth.
+        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct, timeoutCts.Token);
 
         if (promptViaStdin) {
             try {
-                await process.StandardInput.WriteAsync(prompt.AsMemory(), cts.Token);
-                await process.StandardInput.FlushAsync(cts.Token);
+                await process.StandardInput.WriteAsync(prompt.AsMemory(), linkedCts.Token);
+                await process.StandardInput.FlushAsync(linkedCts.Token);
                 process.StandardInput.Close();
+            } catch (OperationCanceledException) when (ct.IsCancellationRequested) {
+                // External cancel while writing stdin: kill the subprocess so
+                // we don't leave claude running after the caller has given up,
+                // then propagate so the daemon's cancellation path sees it.
+                try { process.Kill(entireProcessTree: true); } catch { /* ignore */ }
+
+                throw;
             } catch (Exception ex) {
                 log($"Failed to stream prompt to claude stdin: {ex.Message}");
 
@@ -124,10 +147,10 @@ static class ClaudeCliRunner {
         }
 
         try {
-            var stdoutTask = process.StandardOutput.ReadToEndAsync(cts.Token);
-            var stderrTask = process.StandardError.ReadToEndAsync(cts.Token);
+            var stdoutTask = process.StandardOutput.ReadToEndAsync(linkedCts.Token);
+            var stderrTask = process.StandardError.ReadToEndAsync(linkedCts.Token);
 
-            await process.WaitForExitAsync(cts.Token);
+            await process.WaitForExitAsync(linkedCts.Token);
             var stdout = await stdoutTask;
             var stderr = await stderrTask;
 
@@ -168,6 +191,15 @@ static class ClaudeCliRunner {
             }
 
             return null;
+        } catch (OperationCanceledException) when (ct.IsCancellationRequested) {
+            // External cancellation wins over the internal timeout: kill the
+            // subprocess (otherwise the await unblocks but claude keeps
+            // running) and rethrow so the caller's cancellation path fires.
+            try { process.Kill(entireProcessTree: true); } catch {
+                /* ignore */
+            }
+
+            throw;
         } catch (OperationCanceledException) {
             log($"Claude process timed out ({timeout.TotalSeconds:0}s), killing");
 

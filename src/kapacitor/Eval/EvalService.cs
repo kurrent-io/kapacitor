@@ -162,7 +162,8 @@ internal static class EvalService {
                 maxTurns: 1,
                 // Prompts embed the full compacted trace and can be hundreds
                 // of KB — well past Windows' 32K argv limit. Stream via stdin.
-                promptViaStdin: true
+                promptViaStdin: true,
+                ct: ct
             );
 
             if (result is null) {
@@ -198,7 +199,23 @@ internal static class EvalService {
         // 4. Aggregate per-category + overall scores.
         var aggregate = Aggregate(verdicts, evalRunId, model);
 
-        // 5. Persist the aggregate to the server.
+        // 5. Synthesise a retrospective from the per-question verdicts. Non-fatal:
+        //    the 13 verdicts are the persistence contract, a failed synthesis
+        //    just leaves Retrospective=null on the payload.
+        var retrospective = await RunRetrospectiveAsync(
+            evalRunId:            evalRunId,
+            sessionId:            encodedSessionId,
+            model:                model,
+            traceJson:            traceJson,
+            aggregate:            aggregate,
+            verdicts:             verdicts,
+            knownFactsByCategory: knownFactsByCategory,
+            observer:             observer,
+            ct:                   ct
+        );
+        aggregate = aggregate with { Retrospective = retrospective };
+
+        // 6. Persist the aggregate to the server.
         var postUrl     = $"{baseUrl}/api/sessions/{encodedSessionId}/evals";
         var payloadJson = JsonSerializer.Serialize(aggregate, KapacitorJsonContext.Default.SessionEvalCompletedPayload);
         using var httpContent = new StringContent(payloadJson, Encoding.UTF8, "application/json");
@@ -239,6 +256,27 @@ internal static class EvalService {
             .Replace("{QUESTION_TEXT}",  question.Text)
             .Replace("{TRACE_JSON}",     traceJson)
             .Replace("{KNOWN_PATTERNS}", knownPatterns);
+
+    static readonly string RetrospectivePromptTemplate =
+        EmbeddedResources.Load("prompt-eval-retrospective.txt");
+
+    /// <summary>
+    /// Builds the retrospective synthesis prompt from the four placeholders the
+    /// judge needs: session metadata, per-question verdicts, retained
+    /// patterns from prior evals in this repo, and the compacted trace. The
+    /// prompt file itself is loaded once at startup.
+    /// </summary>
+    public static string BuildRetrospectivePrompt(
+            string sessionMeta,
+            string verdictsJson,
+            string knownPatterns,
+            string traceJson
+        ) =>
+        RetrospectivePromptTemplate
+            .Replace("{SESSION_META}",   sessionMeta)
+            .Replace("{VERDICTS_JSON}",  verdictsJson)
+            .Replace("{KNOWN_PATTERNS}", knownPatterns)
+            .Replace("{TRACE_JSON}",     traceJson);
 
     /// <summary>
     /// Formats a per-category list of retained facts as a bulleted block for
@@ -290,11 +328,32 @@ internal static class EvalService {
             return null;
         }
 
+        var normalisedRecommendation = parsed.Recommendation?.Trim();
+        if (string.IsNullOrEmpty(normalisedRecommendation)) normalisedRecommendation = null;
+
         return parsed with {
-            Category   = question.Category,
-            QuestionId = question.Id,
-            Verdict    = VerdictForScore(parsed.Score)
+            Category       = question.Category,
+            QuestionId     = question.Id,
+            Verdict        = VerdictForScore(parsed.Score),
+            Recommendation = normalisedRecommendation
         };
+    }
+
+    /// <summary>
+    /// Parses the retrospective synthesis response. Tolerant of markdown code
+    /// fences. Returns null on empty/whitespace input, malformed JSON, or a
+    /// <c>null</c> JSON literal. Synthesis failure is non-fatal — the caller
+    /// leaves <see cref="SessionEvalCompletedPayload.Retrospective"/> as null.
+    /// </summary>
+    public static EvalRetrospective? ParseRetrospective(string rawResponse) {
+        var json = StripCodeFences(rawResponse.Trim());
+        if (string.IsNullOrWhiteSpace(json)) return null;
+
+        try {
+            return JsonSerializer.Deserialize(json, KapacitorJsonContext.Default.EvalRetrospective);
+        } catch (JsonException) {
+            return null;
+        }
     }
 
     /// <summary>
@@ -382,6 +441,100 @@ internal static class EvalService {
         >= 2 => "warn",
         _    => "fail"
     };
+
+    // ── Retrospective synthesis ────────────────────────────────────────────
+
+    /// <summary>
+    /// Synthesises a retrospective from the per-question verdicts using one
+    /// extra judge invocation with the same model and timeout as a
+    /// per-question call. Failure is non-fatal — the caller just leaves
+    /// <see cref="SessionEvalCompletedPayload.Retrospective"/> as null and
+    /// persists the 13 verdicts regardless. Only
+    /// <see cref="OperationCanceledException"/> propagates so upstream
+    /// cancellation still cancels the eval run.
+    /// </summary>
+    static async Task<EvalRetrospective?> RunRetrospectiveAsync(
+            string                                      evalRunId,
+            string                                      sessionId,
+            string                                      model,
+            string                                      traceJson,
+            SessionEvalCompletedPayload                 aggregate,
+            IReadOnlyList<EvalQuestionVerdict>          verdicts,
+            IReadOnlyDictionary<string, List<JudgeFact>> knownFactsByCategory,
+            IEvalObserver                               observer,
+            CancellationToken                           ct
+        ) {
+        // Check cancellation before emitting OnRetrospectiveStarted so a
+        // shutdown between the per-question loop and retrospective doesn't
+        // leave observers seeing a started-never-finished synthesis event.
+        ct.ThrowIfCancellationRequested();
+
+        observer.OnRetrospectiveStarted();
+
+        var sessionMeta   = $"session-id: {sessionId}\nrun-id: {evalRunId}\nmodel: {model}\noverall-score: {aggregate.OverallScore}/5";
+        var verdictsJson  = JsonSerializer.Serialize(verdicts, KapacitorJsonContext.Default.IReadOnlyListEvalQuestionVerdict);
+        var knownPatterns = FormatKnownPatternsAllCategories(knownFactsByCategory);
+        var prompt        = BuildRetrospectivePrompt(sessionMeta, verdictsJson, knownPatterns, traceJson);
+
+        try {
+            var result = await ClaudeCliRunner.RunAsync(
+                prompt,
+                TimeSpan.FromMinutes(5),
+                msg => observer.OnInfo($"  {msg}"),
+                model:          model,
+                maxTurns:       1,
+                // Prompt embeds full compacted trace + verdicts; likely >32K on Windows.
+                promptViaStdin: true,
+                ct:             ct
+            );
+
+            if (result is null) {
+                observer.OnRetrospectiveFailed("claude returned null (timeout, non-zero exit, or unparseable response)");
+
+                return null;
+            }
+
+            var retrospective = ParseRetrospective(result.Result);
+            if (retrospective is null) {
+                observer.OnRetrospectiveFailed("retrospective response did not parse as expected JSON shape");
+
+                return null;
+            }
+
+            observer.OnRetrospectiveCompleted(retrospective);
+
+            return retrospective;
+        } catch (OperationCanceledException) {
+            // Upstream cancellation must continue to cancel — don't swallow.
+            throw;
+        } catch (Exception ex) {
+            observer.OnRetrospectiveFailed(ex.Message);
+
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Formats retained facts across all categories as a bulleted block for
+    /// the retrospective prompt's <c>{KNOWN_PATTERNS}</c> placeholder.
+    /// Produces an explicit empty-state string when nothing has been retained
+    /// yet so the prompt section doesn't read as a broken substitution.
+    /// </summary>
+    static string FormatKnownPatternsAllCategories(IReadOnlyDictionary<string, List<JudgeFact>> facts) {
+        if (facts.Count == 0 || facts.Values.All(v => v.Count == 0)) {
+            return "(no patterns retained from prior evals in this repo)";
+        }
+
+        var sb = new StringBuilder();
+        foreach (var (category, list) in facts.OrderBy(kv => kv.Key)) {
+            if (list.Count == 0) continue;
+            sb.AppendLine($"{category}:");
+            foreach (var fact in list) sb.AppendLine($"- {fact.Fact}");
+            sb.AppendLine();
+        }
+
+        return sb.ToString().TrimEnd();
+    }
 
     // ── Judge-facts HTTP ───────────────────────────────────────────────────
 
@@ -482,6 +635,15 @@ internal static class EvalService {
 
         public void OnFactRetained(string category, string fact) =>
             Safe(() => inner.OnFactRetained(category, fact), nameof(OnFactRetained));
+
+        public void OnRetrospectiveStarted() =>
+            Safe(inner.OnRetrospectiveStarted, nameof(OnRetrospectiveStarted));
+
+        public void OnRetrospectiveCompleted(EvalRetrospective retrospective) =>
+            Safe(() => inner.OnRetrospectiveCompleted(retrospective), nameof(OnRetrospectiveCompleted));
+
+        public void OnRetrospectiveFailed(string reason) =>
+            Safe(() => inner.OnRetrospectiveFailed(reason), nameof(OnRetrospectiveFailed));
 
         public void OnFinished(SessionEvalCompletedPayload aggregate) =>
             Safe(() => inner.OnFinished(aggregate), nameof(OnFinished));

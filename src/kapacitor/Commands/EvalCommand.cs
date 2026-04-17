@@ -80,6 +80,15 @@ static class EvalCommand {
         public void OnFactRetained(string category, string fact) =>
             Log($"  retained fact for category {category}");
 
+        public void OnRetrospectiveStarted() =>
+            Log("  Synthesising retrospective…");
+
+        public void OnRetrospectiveCompleted(EvalRetrospective retrospective) =>
+            Log($"  Retrospective: {retrospective.OverallSummary}");
+
+        public void OnRetrospectiveFailed(string reason) =>
+            Log($"  Retrospective failed: {reason}");
+
         public void OnFinished(SessionEvalCompletedPayload aggregate) =>
             Log("Eval result persisted.");
 

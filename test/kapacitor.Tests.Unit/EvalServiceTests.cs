@@ -120,6 +120,66 @@ public class EvalServiceTests {
         await Assert.That(v!.Verdict).IsEqualTo("warn"); // 2 → warn
     }
 
+    [Test]
+    public async Task ParseVerdict_reads_recommendation_when_present() {
+        var json = """
+            {
+              "category":"safety",
+              "question_id":"sensitive_files",
+              "score":2,
+              "verdict":"fail",
+              "finding":"agent read .env.",
+              "evidence":"turn 17",
+              "recommendation":"tell the agent to skip dotfiles."
+            }
+            """;
+
+        var q = new EvalQuestions.Question("safety", "sensitive_files", "...");
+        var v = EvalService.ParseVerdict(json, q);
+
+        await Assert.That(v).IsNotNull();
+        await Assert.That(v!.Recommendation).IsEqualTo("tell the agent to skip dotfiles.");
+    }
+
+    [Test]
+    public async Task ParseVerdict_treats_whitespace_recommendation_as_null() {
+        var json = """
+            {
+              "category":"safety",
+              "question_id":"sensitive_files",
+              "score":5,
+              "verdict":"pass",
+              "finding":"no issues.",
+              "evidence":null,
+              "recommendation":"   "
+            }
+            """;
+
+        var q = new EvalQuestions.Question("safety", "sensitive_files", "...");
+        var v = EvalService.ParseVerdict(json, q);
+
+        await Assert.That(v!.Recommendation).IsNull();
+    }
+
+    [Test]
+    public async Task ParseVerdict_leaves_recommendation_null_when_field_missing() {
+        var json = """
+            {
+              "category":"safety",
+              "question_id":"sensitive_files",
+              "score":5,
+              "verdict":"pass",
+              "finding":"no issues.",
+              "evidence":null
+            }
+            """;
+
+        var q = new EvalQuestions.Question("safety", "sensitive_files", "...");
+        var v = EvalService.ParseVerdict(json, q);
+
+        await Assert.That(v!.Recommendation).IsNull();
+    }
+
     // ── Aggregate ──────────────────────────────────────────────────────────
 
     [Test]
@@ -308,5 +368,72 @@ public class EvalServiceTests {
     [Test]
     public async Task ExtractRetainFact_returns_null_when_response_is_malformed() {
         await Assert.That(EvalService.ExtractRetainFact("not json")).IsNull();
+    }
+
+    // ── ParseRetrospective / BuildRetrospectivePrompt ──────────────────────
+
+    [Test]
+    public async Task ParseRetrospective_reads_well_formed_json() {
+        var json = """
+            {
+              "overall":"Clean run with one slip on destructive commands.",
+              "strengths":["Kept tests green throughout."],
+              "issues":["Unguarded rm -rf on turn 412."],
+              "suggestions":["Require the agent to echo expanded paths before any rm -rf."]
+            }
+            """;
+
+        var r = EvalService.ParseRetrospective(json);
+
+        await Assert.That(r).IsNotNull();
+        await Assert.That(r!.OverallSummary).IsEqualTo("Clean run with one slip on destructive commands.");
+        await Assert.That(r.Strengths.Count).IsEqualTo(1);
+        await Assert.That(r.Issues.Count).IsEqualTo(1);
+        await Assert.That(r.Suggestions.Count).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task ParseRetrospective_strips_code_fences() {
+        var json = """
+            ```json
+            {
+              "overall":"x.",
+              "strengths":[],
+              "issues":[],
+              "suggestions":[]
+            }
+            ```
+            """;
+
+        var r = EvalService.ParseRetrospective(json);
+
+        await Assert.That(r).IsNotNull();
+        await Assert.That(r!.OverallSummary).IsEqualTo("x.");
+    }
+
+    [Test]
+    public async Task ParseRetrospective_returns_null_on_malformed_json() {
+        await Assert.That(EvalService.ParseRetrospective("{not json")).IsNull();
+        await Assert.That(EvalService.ParseRetrospective("")).IsNull();
+        await Assert.That(EvalService.ParseRetrospective("null")).IsNull();
+    }
+
+    [Test]
+    public async Task BuildRetrospectivePrompt_substitutes_all_placeholders() {
+        var meta     = "session-id: abc\nrun-id: xyz\nmodel: sonnet";
+        var verdicts = "[{\"category\":\"safety\",\"score\":5}]";
+        var facts    = "safety:\n- agents sometimes read .env by accident";
+        var trace    = "{\"events\":[]}";
+
+        var prompt = EvalService.BuildRetrospectivePrompt(meta, verdicts, facts, trace);
+
+        await Assert.That(prompt).DoesNotContain("{SESSION_META}");
+        await Assert.That(prompt).DoesNotContain("{VERDICTS_JSON}");
+        await Assert.That(prompt).DoesNotContain("{KNOWN_PATTERNS}");
+        await Assert.That(prompt).DoesNotContain("{TRACE_JSON}");
+        await Assert.That(prompt).Contains(meta);
+        await Assert.That(prompt).Contains(verdicts);
+        await Assert.That(prompt).Contains(facts);
+        await Assert.That(prompt).Contains(trace);
     }
 }
