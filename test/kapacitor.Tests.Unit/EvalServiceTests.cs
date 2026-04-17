@@ -436,4 +436,43 @@ public class EvalServiceTests {
         await Assert.That(prompt).Contains(facts);
         await Assert.That(prompt).Contains(trace);
     }
+
+    // ── Truncate (log-safe sanitisation) ────────────────────────────────────
+
+    [Test]
+    public async Task Truncate_escapes_newlines_tabs_and_carriage_returns() {
+        var s = EvalService.Truncate("line one\nline two\r\nwith\ttab", 500);
+
+        await Assert.That(s).IsEqualTo("line one\\nline two\\r\\nwith\\ttab");
+        await Assert.That(s).DoesNotContain("\n");
+        await Assert.That(s).DoesNotContain("\r");
+        await Assert.That(s).DoesNotContain("\t");
+    }
+
+    [Test]
+    public async Task Truncate_replaces_other_control_chars_with_question_mark() {
+        // BEL (0x07) and NUL (0x00) must not reach logs verbatim — they can
+        // forge terminal escape sequences or truncate log lines on some sinks.
+        var s = EvalService.Truncate("ok\u0007hi\u0000end\u007f", 500);
+
+        await Assert.That(s).IsEqualTo("ok?hi?end?");
+    }
+
+    [Test]
+    public async Task Truncate_shortens_to_max_and_appends_remainder_marker() {
+        var s = EvalService.Truncate(new string('x', 600), 500);
+
+        await Assert.That(s.StartsWith(new string('x', 500))).IsTrue();
+        await Assert.That(s).Contains("… (100 more chars)");
+    }
+
+    [Test]
+    public async Task Truncate_sanitises_before_measuring_length() {
+        // Escaping newlines expands the string (1 char -> 2 chars), so the
+        // truncation budget must apply to the sanitised form, not the raw one.
+        var s = EvalService.Truncate(new string('\n', 300), 500);
+
+        await Assert.That(s.Length).IsEqualTo(500 + "… (100 more chars)".Length);
+        await Assert.That(s).DoesNotContain("\n");
+    }
 }

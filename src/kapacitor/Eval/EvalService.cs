@@ -410,8 +410,29 @@ internal static class EvalService {
         return text.Trim();
     }
 
-    static string Truncate(string text, int max) =>
-        text.Length <= max ? text : text[..max] + $"… ({text.Length - max} more chars)";
+    /// <summary>
+    /// Prepares untrusted model or subprocess output for embedding in a
+    /// single-line log/observer reason: escapes C0 control chars (so newlines
+    /// can't fake multi-line log entries or inject ANSI/log-structure), then
+    /// truncates to <paramref name="max"/> with a remainder marker. Both steps
+    /// matter — sanitising without truncating lets model output dominate the
+    /// log, truncating without sanitising lets a single \n split the reason
+    /// into what looks like two log entries.
+    /// </summary>
+    internal static string Truncate(string text, int max) {
+        var sb = new StringBuilder(text.Length);
+        foreach (var c in text) {
+            sb.Append(c switch {
+                '\n'             => "\\n",
+                '\r'             => "\\r",
+                '\t'             => "\\t",
+                < ' ' or '\x7f'  => "?",
+                _                => c.ToString()
+            });
+        }
+        var sanitised = sb.ToString();
+        return sanitised.Length <= max ? sanitised : sanitised[..max] + $"… ({sanitised.Length - max} more chars)";
+    }
 
     // ── Aggregation ────────────────────────────────────────────────────────
 
