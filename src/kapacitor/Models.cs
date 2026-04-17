@@ -242,6 +242,9 @@ record EvalQuestionVerdict {
 
     [JsonPropertyName("evidence")]
     public string? Evidence { get; init; }
+
+    [JsonPropertyName("recommendation")]
+    public string? Recommendation { get; init; }
 }
 
 record EvalCategoryResult {

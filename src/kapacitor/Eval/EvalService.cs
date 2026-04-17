@@ -290,10 +290,14 @@ internal static class EvalService {
             return null;
         }
 
+        var normalisedRecommendation = parsed.Recommendation?.Trim();
+        if (string.IsNullOrEmpty(normalisedRecommendation)) normalisedRecommendation = null;
+
         return parsed with {
-            Category   = question.Category,
-            QuestionId = question.Id,
-            Verdict    = VerdictForScore(parsed.Score)
+            Category       = question.Category,
+            QuestionId     = question.Id,
+            Verdict        = VerdictForScore(parsed.Score),
+            Recommendation = normalisedRecommendation
         };
     }
 

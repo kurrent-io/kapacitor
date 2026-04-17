@@ -120,6 +120,66 @@ public class EvalServiceTests {
         await Assert.That(v!.Verdict).IsEqualTo("warn"); // 2 → warn
     }
 
+    [Test]
+    public async Task ParseVerdict_reads_recommendation_when_present() {
+        var json = """
+            {
+              "category":"safety",
+              "question_id":"sensitive_files",
+              "score":2,
+              "verdict":"fail",
+              "finding":"agent read .env.",
+              "evidence":"turn 17",
+              "recommendation":"tell the agent to skip dotfiles."
+            }
+            """;
+
+        var q = new EvalQuestions.Question("safety", "sensitive_files", "...");
+        var v = EvalService.ParseVerdict(json, q);
+
+        await Assert.That(v).IsNotNull();
+        await Assert.That(v!.Recommendation).IsEqualTo("tell the agent to skip dotfiles.");
+    }
+
+    [Test]
+    public async Task ParseVerdict_treats_whitespace_recommendation_as_null() {
+        var json = """
+            {
+              "category":"safety",
+              "question_id":"sensitive_files",
+              "score":5,
+              "verdict":"pass",
+              "finding":"no issues.",
+              "evidence":null,
+              "recommendation":"   "
+            }
+            """;
+
+        var q = new EvalQuestions.Question("safety", "sensitive_files", "...");
+        var v = EvalService.ParseVerdict(json, q);
+
+        await Assert.That(v!.Recommendation).IsNull();
+    }
+
+    [Test]
+    public async Task ParseVerdict_leaves_recommendation_null_when_field_missing() {
+        var json = """
+            {
+              "category":"safety",
+              "question_id":"sensitive_files",
+              "score":5,
+              "verdict":"pass",
+              "finding":"no issues.",
+              "evidence":null
+            }
+            """;
+
+        var q = new EvalQuestions.Question("safety", "sensitive_files", "...");
+        var v = EvalService.ParseVerdict(json, q);
+
+        await Assert.That(v!.Recommendation).IsNull();
+    }
+
     // ── Aggregate ──────────────────────────────────────────────────────────
 
     [Test]
