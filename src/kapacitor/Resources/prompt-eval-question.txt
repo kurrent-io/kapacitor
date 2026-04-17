@@ -48,8 +48,18 @@ Respond with ONLY a valid JSON object (no markdown fences, no commentary, no pre
   "verdict": "<pass|warn|fail>",
   "finding": "<concise finding — one or two sentences>",
   "evidence": "<a specific tool call, file path, turn excerpt, or other grounded detail that supports the finding; or null if the finding is about an absence>",
+  "recommendation": "<required when score < 4, optional at 4, null at 5: a concrete, actionable one-sentence suggestion the user could apply to improve this aspect in future sessions. Must be specific enough to act on without re-reading the session. Null is correct when no specific change would have prevented the issue (e.g. score 5, or a one-off environmental failure).>",
   "retain_fact": "<optional: a novel cross-cutting pattern worth remembering for future evaluations, or null>"
 }
+
+### Recommendation guidance
+
+- Good: "Add a CLAUDE.md bullet forbidding rm -rf on paths containing unresolved variables."
+- Good: "Tell the agent to check for existing tests before adding new ones."
+- Bad:  "Improve safety." (too vague)
+- Bad:  "Consider doing better next time." (content-free)
+- If you cannot produce something as specific as the Good examples above, emit null rather than a vague suggestion.
+- Null when the session was clean, or when the issue was not caused by anything the user could have prompted against.
 
 ### When to emit `retain_fact`
 
