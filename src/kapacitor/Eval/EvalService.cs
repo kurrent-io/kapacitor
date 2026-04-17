@@ -154,10 +154,15 @@ internal static class EvalService {
             var patterns = FormatKnownPatterns(knownFactsByCategory.GetValueOrDefault(q.Category, []));
             var prompt   = BuildQuestionPrompt(promptTemplate, context.SessionId, evalRunId, q, traceJson, patterns);
 
+            // Capture ClaudeCliRunner diagnostics (exit code, stdout preview)
+            // so a null result gets reported with *why* it was null — those
+            // lines are the only signal about API errors or max-turn failures,
+            // and daemon observers log OnInfo at Debug level where they vanish.
+            var diagnostics = new List<string>();
             var result = await ClaudeCliRunner.RunAsync(
                 prompt,
                 TimeSpan.FromMinutes(5),
-                msg => observer.OnInfo($"  {msg}"),
+                msg => { diagnostics.Add(msg); observer.OnInfo($"  {msg}"); },
                 model: model,
                 maxTurns: 1,
                 // Prompts embed the full compacted trace and can be hundreds
@@ -167,14 +172,17 @@ internal static class EvalService {
             );
 
             if (result is null) {
-                observer.OnQuestionFailed(i + 1, EvalQuestions.All.Length, q.Category, q.Id, "null claude result");
+                var reason = diagnostics.Count == 0
+                    ? "null claude result"
+                    : $"null claude result; {string.Join(" | ", diagnostics.Select(d => Truncate(d, 300)))}";
+                observer.OnQuestionFailed(i + 1, EvalQuestions.All.Length, q.Category, q.Id, reason);
 
                 continue;
             }
 
             var verdict = ParseVerdict(result.Result, q);
             if (verdict is null) {
-                observer.OnQuestionFailed(i + 1, EvalQuestions.All.Length, q.Category, q.Id, "verdict JSON could not be parsed");
+                observer.OnQuestionFailed(i + 1, EvalQuestions.All.Length, q.Category, q.Id, $"verdict JSON could not be parsed; raw response: {Truncate(result.Result, 500)}");
 
                 continue;
             }
@@ -402,6 +410,9 @@ internal static class EvalService {
         return text.Trim();
     }
 
+    static string Truncate(string text, int max) =>
+        text.Length <= max ? text : text[..max] + $"… ({text.Length - max} more chars)";
+
     // ── Aggregation ────────────────────────────────────────────────────────
 
     public static SessionEvalCompletedPayload Aggregate(List<EvalQuestionVerdict> verdicts, string evalRunId, string model) {
@@ -496,7 +507,7 @@ internal static class EvalService {
 
             var retrospective = ParseRetrospective(result.Result);
             if (retrospective is null) {
-                observer.OnRetrospectiveFailed("retrospective response did not parse as expected JSON shape");
+                observer.OnRetrospectiveFailed($"retrospective response did not parse as expected JSON shape; raw response: {Truncate(result.Result, 500)}");
 
                 return null;
             }

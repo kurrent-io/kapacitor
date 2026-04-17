@@ -110,6 +110,18 @@ static class ClaudeCliRunner {
         psi.ArgumentList.Add(model);
         psi.ArgumentList.Add("--tools");
         psi.ArgumentList.Add("");
+        // `--tools ""` is not enough for headless single-turn judge runs:
+        //   - MCP servers from the user's global config still load, so we
+        //     need `--strict-mcp-config` (with no `--mcp-config`) to load zero.
+        //   - The built-in `LSP` tool is attached regardless of `--tools`,
+        //     and Claude eagerly probes any file paths it sees in the
+        //     compacted trace, blowing past `--max-turns 1` with
+        //     `stop_reason=tool_use`. `--disallowedTools LSP` blocks it.
+        // Without both flags, real eval traces (which mention file paths)
+        // fail every question with `error_max_turns`.
+        psi.ArgumentList.Add("--strict-mcp-config");
+        psi.ArgumentList.Add("--disallowedTools");
+        psi.ArgumentList.Add("LSP");
 
         using var process = Process.Start(psi);
 
