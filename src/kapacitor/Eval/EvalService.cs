@@ -32,8 +32,12 @@ internal static class EvalService {
         """;
 
     // Claude CLI spends one turn calling the synthetic StructuredOutput tool
-    // and a second turn emitting the end-of-turn, so eval calls need 2.
-    const int JudgeMaxTurns = 2;
+    // and a second turn emitting the end-of-turn, so eval calls need at
+    // least 2. Using 3 gives headroom when the model emits a reasoning
+    // block before the tool call on very large retrospective prompts —
+    // hitting max-turns here would otherwise leave structured_output
+    // unpopulated and the call would surface as a null result.
+    const int JudgeMaxTurns = 3;
 
     /// <summary>
     /// Runs the full eval pipeline for <paramref name="sessionId"/>:

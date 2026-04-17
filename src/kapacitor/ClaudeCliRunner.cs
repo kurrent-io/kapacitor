@@ -224,12 +224,23 @@ static class ClaudeCliRunner {
 
             // Fallback: try reading the actual response from the session transcript file.
             // Works both for empty result (extended thinking bug) and non-zero exit codes.
-            var fallback = TryReadTranscriptFallback(stdout, log);
+            //
+            // Skipped when a JSON schema was required: the transcript's
+            // last assistant text is whatever the model happened to narrate
+            // (or stale content from auto-memory in the shared project
+            // directory) — it is NOT schema-shaped and would be surfaced as
+            // the "result" only to fail downstream parsing with misleading
+            // noise. DEV-1476 saw this produce unrelated PR-status text.
+            if (string.IsNullOrEmpty(jsonSchema)) {
+                var fallback = TryReadTranscriptFallback(stdout, log);
 
-            if (fallback is not null) {
-                log("Recovered result from session transcript (fallback)");
+                if (fallback is not null) {
+                    log("Recovered result from session transcript (fallback)");
 
-                return fallback;
+                    return fallback;
+                }
+            } else {
+                log("Skipping transcript fallback: --json-schema was required and not satisfied");
             }
 
             return null;
