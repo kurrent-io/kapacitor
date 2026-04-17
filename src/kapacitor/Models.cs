@@ -379,6 +379,7 @@ record RepoEntry {
 [JsonSerializable(typeof(List<RepoRecapEntry>))]
 [JsonSerializable(typeof(EvalContextResult))]
 [JsonSerializable(typeof(EvalQuestionVerdict))]
+[JsonSerializable(typeof(IReadOnlyList<EvalQuestionVerdict>))]
 [JsonSerializable(typeof(EvalRetrospective))]
 [JsonSerializable(typeof(SessionEvalCompletedPayload))]
 [JsonSerializable(typeof(JudgeFactPayload))]
