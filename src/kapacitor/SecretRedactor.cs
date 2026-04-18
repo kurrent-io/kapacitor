@@ -77,8 +77,10 @@ static partial class SecretRedactor {
 
     // AWS unique ID prefixes (access keys, session tokens, IAM principals).
     // See: https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_identifiers.html#identifiers-prefixes
-    // Each prefix is 4 uppercase letters followed by 16 uppercase alphanumeric chars.
-    [GeneratedRegex(@"(?:AKIA|ASIA|AROA|AIDA|AIPA|AGPA|ANPA|ANVA|ASCA|APKA|ABIA|ACCA)[0-9A-Z]{16}", RegexOptions.None)]
+    // Access keys (AKIA/ASIA) are 20 chars total; IAM principal unique IDs are typically 21 chars
+    // but not strictly length-bounded, so match {16,128} with a non-alnum lookahead to avoid
+    // leaving a trailing character adjacent to [REDACTED].
+    [GeneratedRegex(@"(?:AKIA|ASIA|AROA|AIDA|AIPA|AGPA|ANPA|ANVA|ASCA|APKA|ABIA|ACCA)[0-9A-Z]{16,128}(?![0-9A-Z])", RegexOptions.None)]
     private static partial Regex AwsUniqueIdRx();
 
     static readonly Regex AwsUniqueIdRegex = AwsUniqueIdRx();

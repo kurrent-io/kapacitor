@@ -96,8 +96,10 @@ public class SecretRedactorTests {
 
         var result = SecretRedactor.RedactLine(line);
 
+        // Assert full redaction with adjacent-character locked down — a partial leak like
+        // "[REDACTED]5" (21-char ID redacted as 20) would still pass DoesNotContain(id).
+        await Assert.That(result).Contains("id is [REDACTED] here");
         await Assert.That(result).DoesNotContain(id);
-        await Assert.That(result).Contains("[REDACTED]");
     }
 
     [Test]
