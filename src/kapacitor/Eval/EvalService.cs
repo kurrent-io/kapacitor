@@ -27,8 +27,12 @@ internal static class EvalService {
         {"type":"object","properties":{"category":{"type":"string"},"question_id":{"type":"string"},"score":{"type":"integer","minimum":1,"maximum":5},"verdict":{"type":"string","enum":["pass","warn","fail"]},"finding":{"type":"string"},"evidence":{"type":["string","null"]},"recommendation":{"type":["string","null"]},"retain_fact":{"type":["string","null"]}},"required":["category","question_id","score","verdict","finding","evidence","recommendation","retain_fact"],"additionalProperties":false}
         """;
 
+    // maxItems mirrors the prompt's documented caps: at most three
+    // strengths/issues and five suggestions. Enforcing this at the schema
+    // level keeps retrospectives cheap and prevents the model from padding
+    // lists with low-signal bullets just because the schema would let it.
     const string RetrospectiveJsonSchema = """
-        {"type":"object","properties":{"overall":{"type":"string"},"strengths":{"type":"array","items":{"type":"string"}},"issues":{"type":"array","items":{"type":"string"}},"suggestions":{"type":"array","items":{"type":"string"}}},"required":["overall","strengths","issues","suggestions"],"additionalProperties":false}
+        {"type":"object","properties":{"overall":{"type":"string"},"strengths":{"type":"array","maxItems":3,"items":{"type":"string"}},"issues":{"type":"array","maxItems":3,"items":{"type":"string"}},"suggestions":{"type":"array","maxItems":5,"items":{"type":"string"}}},"required":["overall","strengths","issues","suggestions"],"additionalProperties":false}
         """;
 
     // Claude CLI spends one turn calling the synthetic StructuredOutput tool
