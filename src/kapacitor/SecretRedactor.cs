@@ -59,7 +59,7 @@ static partial class SecretRedactor {
 
     static string RedactSecrets(string text) {
         text = PemBlockRegex.Replace(text, "[REDACTED]");
-        text = AwsAccessKeyRegex.Replace(text, "[REDACTED]");
+        text = AwsUniqueIdRegex.Replace(text, "[REDACTED]");
         text = VendorTokenRegex.Replace(text, "[REDACTED]");
         text = JsonKeySecretRegex.Replace(text, "$1[REDACTED]$3");
         text = EnvVarSecretRegex.Replace(text, "$1[REDACTED]");
@@ -75,11 +75,15 @@ static partial class SecretRedactor {
 
     static readonly Regex PemBlockRegex = PemBlockRx();
 
-    // AWS access key IDs: AKIA followed by 16 uppercase alphanumeric chars
-    [GeneratedRegex(@"AKIA[0-9A-Z]{16}", RegexOptions.None)]
-    private static partial Regex AwsAccessKeyRx();
+    // AWS unique ID prefixes (access keys, session tokens, IAM principals).
+    // See: https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_identifiers.html#identifiers-prefixes
+    // Access keys (AKIA/ASIA) are 20 chars total; IAM principal unique IDs are typically 21 chars
+    // but not strictly length-bounded, so match {16,128} with a non-alnum lookahead to avoid
+    // leaving a trailing character adjacent to [REDACTED].
+    [GeneratedRegex(@"(?:AKIA|ASIA|AROA|AIDA|AIPA|AGPA|ANPA|ANVA|ASCA|APKA|ABIA|ACCA)[0-9A-Z]{16,128}(?![0-9A-Z])", RegexOptions.None)]
+    private static partial Regex AwsUniqueIdRx();
 
-    static readonly Regex AwsAccessKeyRegex = AwsAccessKeyRx();
+    static readonly Regex AwsUniqueIdRegex = AwsUniqueIdRx();
 
     // Known vendor token prefixes followed by token characters
     // Each prefix is specific enough to avoid false positives
