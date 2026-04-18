@@ -45,6 +45,19 @@ static class ClaudeCliRunner {
     /// it can distinguish shutdown from the internal timeout (which is
     /// swallowed and surfaces as a null result, same as before).
     /// </para>
+    ///
+    /// <para>
+    /// When <paramref name="jsonSchema"/> is supplied, the CLI is asked to
+    /// constrain output against the schema via <c>--json-schema</c>. The
+    /// model then satisfies the response through the synthetic
+    /// <c>StructuredOutput</c> tool — this adds one required turn on top of
+    /// whatever the real work needs, so callers using a schema should bump
+    /// <paramref name="maxTurns"/> accordingly (typically +1). The matched
+    /// object is returned under the top-level <c>structured_output</c> field
+    /// and surfaces here as the <see cref="ClaudeCliResult.Result"/> string
+    /// (re-serialised), so downstream parsers see the same shape they would
+    /// from a free-form JSON reply.
+    /// </para>
     /// </summary>
     public static async Task<ClaudeCliResult?> RunAsync(
             string            prompt,
@@ -53,6 +66,7 @@ static class ClaudeCliRunner {
             string            model          = "haiku",
             int               maxTurns       = 1,
             bool              promptViaStdin = false,
+            string?           jsonSchema     = null,
             CancellationToken ct             = default
         ) {
         // Run from a stable isolated directory to avoid loading project-specific plugins/config
@@ -68,7 +82,7 @@ static class ClaudeCliRunner {
             stableDir = Path.GetTempPath();
         }
 
-        return await RunCoreAsync(prompt, timeout, log, stableDir, model, maxTurns, promptViaStdin, ct);
+        return await RunCoreAsync(prompt, timeout, log, stableDir, model, maxTurns, promptViaStdin, jsonSchema, ct);
     }
 
     static async Task<ClaudeCliResult?> RunCoreAsync(
@@ -79,6 +93,7 @@ static class ClaudeCliRunner {
             string            model,
             int               maxTurns,
             bool              promptViaStdin,
+            string?           jsonSchema,
             CancellationToken ct
         ) {
         var psi = new ProcessStartInfo {
@@ -97,11 +112,13 @@ static class ClaudeCliRunner {
         psi.Environment.Remove("CLAUDECODE");
         psi.Environment.Remove("CLAUDE_CODE_ENTRYPOINT");
         psi.ArgumentList.Add("-p");
+
         if (!promptViaStdin) {
             // When piping stdin, `claude -p` reads the prompt from stdin; don't
             // also pass it as a positional arg.
             psi.ArgumentList.Add(prompt);
         }
+
         psi.ArgumentList.Add("--output-format");
         psi.ArgumentList.Add("json");
         psi.ArgumentList.Add("--max-turns");
@@ -122,6 +139,15 @@ static class ClaudeCliRunner {
         psi.ArgumentList.Add("--strict-mcp-config");
         psi.ArgumentList.Add("--disallowedTools");
         psi.ArgumentList.Add("LSP");
+
+        if (!string.IsNullOrEmpty(jsonSchema)) {
+            // --json-schema makes the CLI enforce a structured reply via an
+            // internal StructuredOutput tool; the matched object lands in
+            // the top-level `structured_output` field (and `result` is
+            // empty). ParseJsonResponseOnly prefers that field.
+            psi.ArgumentList.Add("--json-schema");
+            psi.ArgumentList.Add(jsonSchema);
+        }
 
         using var process = Process.Start(psi);
 
@@ -146,13 +172,17 @@ static class ClaudeCliRunner {
                 // External cancel while writing stdin: kill the subprocess so
                 // we don't leave claude running after the caller has given up,
                 // then propagate so the daemon's cancellation path sees it.
-                try { process.Kill(entireProcessTree: true); } catch { /* ignore */ }
+                try { process.Kill(entireProcessTree: true); } catch {
+                    /* ignore */
+                }
 
                 throw;
             } catch (Exception ex) {
                 log($"Failed to stream prompt to claude stdin: {ex.Message}");
 
-                try { process.Kill(entireProcessTree: true); } catch { /* ignore */ }
+                try { process.Kill(entireProcessTree: true); } catch {
+                    /* ignore */
+                }
 
                 return null;
             }
@@ -194,12 +224,23 @@ static class ClaudeCliRunner {
 
             // Fallback: try reading the actual response from the session transcript file.
             // Works both for empty result (extended thinking bug) and non-zero exit codes.
-            var fallback = TryReadTranscriptFallback(stdout, log);
+            //
+            // Skipped when a JSON schema was required: the transcript's
+            // last assistant text is whatever the model happened to narrate
+            // (or stale content from auto-memory in the shared project
+            // directory) — it is NOT schema-shaped and would be surfaced as
+            // the "result" only to fail downstream parsing with misleading
+            // noise. DEV-1476 saw this produce unrelated PR-status text.
+            if (string.IsNullOrEmpty(jsonSchema)) {
+                var fallback = TryReadTranscriptFallback(stdout, log);
 
-            if (fallback is not null) {
-                log("Recovered result from session transcript (fallback)");
+                if (fallback is not null) {
+                    log("Recovered result from session transcript (fallback)");
 
-                return fallback;
+                    return fallback;
+                }
+            } else {
+                log("Skipping transcript fallback: --json-schema was required and not satisfied");
             }
 
             return null;
@@ -207,7 +248,9 @@ static class ClaudeCliRunner {
             // External cancellation wins over the internal timeout: kill the
             // subprocess (otherwise the await unblocks but claude keeps
             // running) and rethrow so the caller's cancellation path fires.
-            try { process.Kill(entireProcessTree: true); } catch {
+            try {
+                process.Kill(entireProcessTree: true);
+            } catch {
                 /* ignore */
             }
 
@@ -215,7 +258,9 @@ static class ClaudeCliRunner {
         } catch (OperationCanceledException) {
             log($"Claude process timed out ({timeout.TotalSeconds:0}s), killing");
 
-            try { process.Kill(entireProcessTree: true); } catch {
+            try {
+                process.Kill(entireProcessTree: true);
+            } catch {
                 /* ignore */
             }
 
@@ -245,11 +290,23 @@ static class ClaudeCliRunner {
     /// <summary>
     /// Parses only valid JSON responses. Does not fall back to plain text.
     /// Safe to use on non-zero exit codes where stdout might contain error messages.
+    ///
+    /// <para>
+    /// Prefers the top-level <c>structured_output</c> field over <c>result</c>
+    /// when present: that's where <c>--json-schema</c> deposits the matched
+    /// object, and <c>result</c> is empty in that mode. The object is
+    /// re-serialised to a string so downstream verdict/retrospective parsers
+    /// see the same shape they would from a free-form JSON reply.
+    /// </para>
     /// </summary>
     static ClaudeCliResult? ParseJsonResponseOnly(string stdout) {
         try {
             using var doc  = JsonDocument.Parse(stdout);
             var       root = doc.RootElement;
+
+            if (root.TryGetProperty("structured_output", out var so) && so.ValueKind is JsonValueKind.Object or JsonValueKind.Array) {
+                return BuildResult(root, so.GetRawText());
+            }
 
             var result = root.Str("result")?.Trim();
 
@@ -311,8 +368,7 @@ static class ClaudeCliRunner {
         var fileName = $"{sessionId}.jsonl";
 
         try {
-            return Directory.EnumerateFiles(projectsDir, fileName, SearchOption.AllDirectories)
-                .FirstOrDefault();
+            return Directory.EnumerateFiles(projectsDir, fileName, SearchOption.AllDirectories).FirstOrDefault();
         } catch {
             return null;
         }
@@ -335,14 +391,13 @@ static class ClaudeCliRunner {
 
                 if (root.Str("type") == "assistant"
                  && root.Obj("message")?.Arr("content") is { } content) {
-                    foreach (var block in content.EnumerateArray()) {
-                        if (block.Str("type") == "text") {
-                            var text = block.Str("text")?.Trim();
-
-                            if (!string.IsNullOrEmpty(text)) {
-                                lastText = text;
-                            }
-                        }
+                    foreach (var text in from block in content.EnumerateArray()
+                                         where block.Str("type") == "text"
+                                         select block.Str("text")?.Trim()
+                                         into text
+                                         where !string.IsNullOrEmpty(text)
+                                         select text) {
+                        lastText = text;
                     }
                 }
             } catch {
@@ -362,16 +417,19 @@ static class ClaudeCliRunner {
             ? c.GetDouble()
             : (double?)null;
 
-        string? model       = null;
-        long    inputTokens = 0, outputTokens = 0, cacheReadTokens = 0, cacheWriteTokens = 0;
+        string? model            = null;
+        long    inputTokens      = 0;
+        long    outputTokens     = 0;
+        long    cacheReadTokens  = 0;
+        long    cacheWriteTokens = 0;
 
         if (root.Obj("modelUsage") is { } modelUsage) {
             foreach (var prop in modelUsage.EnumerateObject()) {
                 model ??= prop.Name; // Use first model as the primary model name
                 var mu = prop.Value;
-                inputTokens      += mu.Num("inputTokens") ?? 0;
-                outputTokens     += mu.Num("outputTokens") ?? 0;
-                cacheReadTokens  += mu.Num("cacheReadInputTokens") ?? 0;
+                inputTokens      += mu.Num("inputTokens")              ?? 0;
+                outputTokens     += mu.Num("outputTokens")             ?? 0;
+                cacheReadTokens  += mu.Num("cacheReadInputTokens")     ?? 0;
                 cacheWriteTokens += mu.Num("cacheCreationInputTokens") ?? 0;
             }
         }

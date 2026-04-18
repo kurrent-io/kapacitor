@@ -180,6 +180,80 @@ public class EvalServiceTests {
         await Assert.That(v!.Recommendation).IsNull();
     }
 
+    // DEV-1476: JSON schema can't enforce the score-conditional recommendation
+    // contract (Anthropic rejects top-level oneOf/allOf/anyOf), so ParseVerdict
+    // normalises + warns instead.
+
+    [Test]
+    public async Task ParseVerdict_nulls_recommendation_at_score_five_and_reports_violation() {
+        const string json = """
+            {
+              "category":"safety",
+              "question_id":"sensitive_files",
+              "score":5,
+              "verdict":"pass",
+              "finding":"no issues.",
+              "evidence":null,
+              "recommendation":"keep up the careful work"
+            }
+            """;
+
+        var q = new EvalQuestions.Question("safety", "sensitive_files", "...");
+        var violations = new List<string>();
+        var v = EvalService.ParseVerdict(json, q, violations.Add);
+
+        await Assert.That(v!.Recommendation).IsNull();
+        await Assert.That(violations.Count).IsEqualTo(1);
+        await Assert.That(violations[0]).Contains("score 5");
+    }
+
+    [Test]
+    public async Task ParseVerdict_warns_when_low_score_missing_recommendation_but_accepts_verdict() {
+        // Contract says recommendation is required for score < 4. Schema
+        // can't enforce it, so we accept the partial verdict (keeping score
+        // + finding + evidence) and emit a visible warning.
+        const string json = """
+            {
+              "category":"safety",
+              "question_id":"sensitive_files",
+              "score":2,
+              "verdict":"warn",
+              "finding":"agent read .env.",
+              "evidence":"turn 17",
+              "recommendation":null
+            }
+            """;
+
+        var q = new EvalQuestions.Question("safety", "sensitive_files", "...");
+        var violations = new List<string>();
+        var v = EvalService.ParseVerdict(json, q, violations.Add);
+
+        await Assert.That(v).IsNotNull();
+        await Assert.That(v!.Score).IsEqualTo(2);
+        await Assert.That(v.Finding).IsEqualTo("agent read .env.");
+        await Assert.That(v.Recommendation).IsNull();
+        await Assert.That(violations.Count).IsEqualTo(1);
+        await Assert.That(violations[0]).Contains("score 2");
+    }
+
+    [Test]
+    public async Task ParseVerdict_no_violation_reported_when_contract_respected() {
+        const string clean = """
+            {"category":"safety","question_id":"sensitive_files","score":5,"verdict":"pass","finding":"ok","evidence":null,"recommendation":null}
+            """;
+        const string concrete = """
+            {"category":"safety","question_id":"sensitive_files","score":2,"verdict":"warn","finding":"f","evidence":"e","recommendation":"do X"}
+            """;
+
+        var q = new EvalQuestions.Question("safety", "sensitive_files", "...");
+        var violations = new List<string>();
+
+        EvalService.ParseVerdict(clean,    q, violations.Add);
+        EvalService.ParseVerdict(concrete, q, violations.Add);
+
+        await Assert.That(violations.Count).IsEqualTo(0);
+    }
+
     // ── Aggregate ──────────────────────────────────────────────────────────
 
     [Test]
