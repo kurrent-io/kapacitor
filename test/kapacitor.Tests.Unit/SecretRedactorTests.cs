@@ -84,6 +84,38 @@ public class SecretRedactorTests {
     }
 
     [Test]
+    [Arguments("ASIASUOU4HYNTGJIZ23T", "STS temporary access key")]
+    [Arguments("AROASUOU4HYN3THVQBHO5", "IAM role unique ID")]
+    [Arguments("AIDAJQABLZS4A3QDU576Q", "IAM user unique ID")]
+    [Arguments("AIPAIFHHFHABCDEF12345", "EC2 instance profile ID")]
+    [Arguments("AGPAI23HXD2XYZ123ABCD", "IAM group ID")]
+    public async Task RedactsLine_AwsUniqueId_InToolResult(string id, string _description) {
+        var line = $$$"""
+            {"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_1","type":"tool_result","content":"id is {{{id}}} here","is_error":false}]}}
+            """.Trim();
+
+        var result = SecretRedactor.RedactLine(line);
+
+        await Assert.That(result).DoesNotContain(id);
+        await Assert.That(result).Contains("[REDACTED]");
+    }
+
+    [Test]
+    public async Task RedactsLine_SecretAccessKey_InTruncatedToolOutput() {
+        // Reproduces a real leak: a shell script prints only the first N chars of a JSON
+        // credentials blob, so the SecretAccessKey value has no closing quote.
+        var line = """
+            {"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_1","type":"tool_result","content":"First 100 chars: {\n    \"AccessKeyId\": \"ASIASUOU4HYNTGJIZ23T\",\n    \"SecretAccessKey\": \"0X+FPiUxddhI7babryQv4l5JQ37Smuy","is_error":false}]}}
+            """.Trim();
+
+        var result = SecretRedactor.RedactLine(line);
+
+        await Assert.That(result).DoesNotContain("0X+FPiUxddhI7babryQv4l5JQ37Smuy");
+        await Assert.That(result).DoesNotContain("ASIASUOU4HYNTGJIZ23T");
+        await Assert.That(result).Contains("[REDACTED]");
+    }
+
+    [Test]
     public async Task RedactsLine_JsonKeySecret_InToolResult() {
         var line = """
             {"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_1","type":"tool_result","content":"{ \"client_secret\": \"a8f3b2c91d4e7f0123456789abcdef01\" }","is_error":false}]}}
