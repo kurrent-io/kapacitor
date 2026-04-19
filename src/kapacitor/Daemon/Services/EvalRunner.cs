@@ -46,7 +46,7 @@ internal sealed class EvalRunner {
         // only by the daemon's shutdown token. Server-side phase timeouts
         // take effect via InvokeAsync<T>'s own timeout unwinding (the
         // daemon's response is simply discarded if the server moved on).
-        using var httpClient = await HttpClientExtensions.CreateAuthenticatedClientAsync();
+        using var httpClient = await HttpClientExtensions.CreateAuthenticatedClientAsync(_baseUrl);
         var observer = new DaemonEvalObserver(_connection, cmd.EvalRunId, cmd.SessionId, _logger);
 
         try {
@@ -76,7 +76,7 @@ internal sealed class EvalRunner {
         var ctx = _cache.Get(cmd.EvalRunId);
         if (ctx is null) return new QuestionResult(false, null, "context not cached (prepare missing or expired)", 0, 0);
 
-        using var httpClient = await HttpClientExtensions.CreateAuthenticatedClientAsync();
+        using var httpClient = await HttpClientExtensions.CreateAuthenticatedClientAsync(_baseUrl);
         var observer = new DaemonEvalObserver(_connection, cmd.EvalRunId, ctx.SessionId, _logger);
 
         try {
@@ -102,7 +102,7 @@ internal sealed class EvalRunner {
         var ctx = _cache.Get(cmd.EvalRunId);
         if (ctx is null) return new FinalizeResult(false, "context not cached", null);
 
-        using var httpClient = await HttpClientExtensions.CreateAuthenticatedClientAsync();
+        using var httpClient = await HttpClientExtensions.CreateAuthenticatedClientAsync(_baseUrl);
         var observer = new DaemonEvalObserver(_connection, cmd.EvalRunId, ctx.SessionId, _logger);
 
         try {
@@ -112,12 +112,13 @@ internal sealed class EvalRunner {
                 ctx, httpClient, _baseUrl, cmd.Verdicts, cmd.Model,
                 observer, _shutdownToken
             );
-
-            _cache.Remove(cmd.EvalRunId);
             return new FinalizeResult(aggregate is not null, aggregate is null ? "finalize failed" : null, aggregate);
         } catch (Exception ex) {
             _logger.LogError(ex, "FinalizeEval failed for {RunId}", cmd.EvalRunId);
             return new FinalizeResult(false, $"{ex.GetType().Name}: {ex.Message}", null);
+        } finally {
+            // Always evict — a finalize throw must not leak the cached context.
+            _cache.Remove(cmd.EvalRunId);
         }
     }
 
