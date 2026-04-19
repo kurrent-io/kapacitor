@@ -425,7 +425,6 @@ record RepoEntry {
 [JsonSerializable(typeof(LaunchAgentCommand))]
 [JsonSerializable(typeof(SendInputCommand))]
 [JsonSerializable(typeof(ResizeTerminalCommand))]
-[JsonSerializable(typeof(RunEvalCommand))]
 [JsonSerializable(typeof(PrepareEvalCommand))]
 [JsonSerializable(typeof(RunQuestionCommand))]
 [JsonSerializable(typeof(FinalizeEvalCommand))]
@@ -513,17 +512,6 @@ public readonly record struct LaunchFailed(
 public readonly record struct TerminalOutput(
         string AgentId,
         string Base64Data
-    );
-
-// ── Eval dispatch (DEV-1440) ──────────────────────────────────────────────
-
-/// <summary>Sent by the server when the dashboard triggers an eval; received by the daemon over SignalR.</summary>
-public readonly record struct RunEvalCommand(
-        string EvalRunId,
-        string SessionId,
-        string Model,
-        bool   Chain,
-        int?   ThresholdBytes
     );
 
 // ── Per-question eval dispatch (DEV-1463 PR 2) ────────────────────────────
