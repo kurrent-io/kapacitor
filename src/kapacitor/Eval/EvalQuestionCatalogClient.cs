@@ -13,17 +13,40 @@ internal static class EvalQuestionCatalogClient {
     public static async Task<EvalQuestionDto[]?> FetchAsync(
             string            baseUrl,
             HttpClient        httpClient,
+            IEvalObserver     observer,
             CancellationToken ct
         ) {
         try {
             using var resp = await httpClient.GetWithRetryAsync($"{baseUrl}/api/eval/questions", ct: ct);
-            if (!resp.IsSuccessStatusCode) return null;
+            if (resp.StatusCode == System.Net.HttpStatusCode.Unauthorized) {
+                observer.OnFailed("authentication failed — run 'kapacitor login' to re-authenticate");
+                return null;
+            }
+            if (!resp.IsSuccessStatusCode) {
+                observer.OnFailed($"failed to load eval question catalog: HTTP {(int)resp.StatusCode}");
+                return null;
+            }
 
             var json = await resp.Content.ReadAsStringAsync(ct);
-            return JsonSerializer.Deserialize(json, KapacitorJsonContext.Default.EvalQuestionDtoArray);
-        } catch (HttpRequestException) {
+            var parsed = JsonSerializer.Deserialize(json, KapacitorJsonContext.Default.EvalQuestionDtoArray);
+            if (parsed is null || parsed.Length == 0) {
+                observer.OnFailed("eval question catalog is empty");
+                return null;
+            }
+            foreach (var q in parsed) {
+                if (string.IsNullOrWhiteSpace(q.Category)
+                    || string.IsNullOrWhiteSpace(q.Id)
+                    || string.IsNullOrWhiteSpace(q.Prompt)) {
+                    observer.OnFailed("eval question catalog contains a malformed entry (missing category, id, or prompt)");
+                    return null;
+                }
+            }
+            return parsed;
+        } catch (HttpRequestException ex) {
+            observer.OnFailed($"failed to load eval question catalog: {ex.Message}");
             return null;
-        } catch (JsonException) {
+        } catch (JsonException ex) {
+            observer.OnFailed($"eval question catalog response was not valid JSON: {ex.Message}");
             return null;
         }
     }

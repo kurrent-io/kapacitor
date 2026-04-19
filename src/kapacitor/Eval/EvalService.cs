@@ -90,9 +90,12 @@ internal static class EvalService {
         observer = new SafeObserver(observer);
 
         try {
-            questions ??= await EvalQuestionCatalogClient.FetchAsync(baseUrl, httpClient, ct);
+            questions ??= await EvalQuestionCatalogClient.FetchAsync(baseUrl, httpClient, observer, ct);
             if (questions is null || questions.Count == 0) {
-                observer.OnFailed("failed to load eval question catalog from server");
+                // FetchAsync already emitted OnFailed with a specific reason.
+                // Caller-supplied empty list is rejected here without a specific reason
+                // because we can't distinguish (rare edge case; both paths abort safely).
+                if (questions is { Count: 0 }) observer.OnFailed("eval question catalog is empty");
                 return null;
             }
 
@@ -112,6 +115,9 @@ internal static class EvalService {
             // should have to special-case.
             observer.OnFailed("cancelled");
 
+            return null;
+        } catch (Exception ex) {
+            observer.OnFailed($"eval aborted unexpectedly: {ex.GetType().Name}: {ex.Message}");
             return null;
         }
     }
