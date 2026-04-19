@@ -221,6 +221,27 @@ record EvalContextResult {
     public required EvalContextCompactionSummary Compaction { get; init; }
 }
 
+/// <summary>
+/// Wire-format DTO for a single eval question served by
+/// <c>GET /api/eval/questions</c>. Mirrors the shape of
+/// <c>Kurrent.Capacitor.EvalQuestionMetadata.Question</c> on the server —
+/// the CLI cannot reference the Shared library (standalone submodule),
+/// so the shape is duplicated here.
+/// </summary>
+record EvalQuestionDto {
+    [JsonPropertyName("category")]
+    public required string Category { get; init; }
+
+    [JsonPropertyName("id")]
+    public required string Id { get; init; }
+
+    [JsonPropertyName("text")]
+    public required string Text { get; init; }
+
+    [JsonPropertyName("prompt")]
+    public required string Prompt { get; init; }
+}
+
 // Per-question verdict returned by each judge invocation. Matches the server
 // event shape in SessionMetadataEvents.cs. `Evidence` is optional — judges
 // may omit it when there's nothing specific to quote.
@@ -378,6 +399,8 @@ record RepoEntry {
 [JsonSerializable(typeof(List<RecapEntry>))]
 [JsonSerializable(typeof(List<RepoRecapEntry>))]
 [JsonSerializable(typeof(EvalContextResult))]
+[JsonSerializable(typeof(EvalQuestionDto))]
+[JsonSerializable(typeof(EvalQuestionDto[]))]
 [JsonSerializable(typeof(EvalQuestionVerdict))]
 [JsonSerializable(typeof(IReadOnlyList<EvalQuestionVerdict>))]
 [JsonSerializable(typeof(EvalRetrospective))]
