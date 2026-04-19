@@ -121,6 +121,7 @@ public static partial class DaemonRunner {
 
         builder.Services.AddHttpClient("Attachments", client => client.BaseAddress = new Uri(config.ServerUrl));
         builder.Services.AddSingleton<AgentOrchestrator>();
+        builder.Services.AddSingleton<EvalContextCache>();
         builder.Services.AddSingleton<EvalRunner>();
 
         var host   = builder.Build();
