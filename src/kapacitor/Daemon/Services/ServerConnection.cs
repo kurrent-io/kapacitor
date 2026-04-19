@@ -11,7 +11,7 @@ using Microsoft.Extensions.Logging;
 
 namespace kapacitor.Daemon.Services;
 
-public partial class ServerConnection : IAsyncDisposable {
+internal partial class ServerConnection : IAsyncDisposable {
     readonly HubConnection             _hub;
     readonly DaemonConfig              _config;
     readonly ILogger<ServerConnection> _logger;
@@ -22,7 +22,20 @@ public partial class ServerConnection : IAsyncDisposable {
     public event Func<SendInputCommand, Task>?      OnSendInput;
     public event Func<string, string, Task>?        OnSendSpecialKey; // agentId, key
     public event Func<ResizeTerminalCommand, Task>? OnResizeTerminal;
-    public event Func<RunEvalCommand, Task>?        OnRunEval;
+
+    // Per-phase eval handlers (DEV-1463 PR 2). These use SignalR's
+    // client-result invocation — the server calls
+    // HubConnection.InvokeAsync<T> which expects exactly one handler
+    // returning the typed result, so we use settable properties rather
+    // than multicast events. The SignalR 10.0.5 On<T1, TResult> overloads
+    // don't expose a CancellationToken to the handler (verified against
+    // Microsoft.AspNetCore.SignalR.Client reflection), so per-call
+    // cancellation has to be driven by the daemon's own shutdown token —
+    // the handler implementations link their work to _shutdownToken.
+    public Func<PrepareEvalCommand,  Task<PrepareResult>>?  PrepareEvalHandler  { get; set; }
+    public Func<RunQuestionCommand,  Task<QuestionResult>>? RunQuestionHandler  { get; set; }
+    public Func<FinalizeEvalCommand, Task<FinalizeResult>>? FinalizeEvalHandler { get; set; }
+    public Func<CancelEvalCommand,   Task>?                 CancelEvalHandler   { get; set; }
 
     public ServerConnection(DaemonConfig config, ILogger<ServerConnection> logger) {
         _config = config;
@@ -52,7 +65,22 @@ public partial class ServerConnection : IAsyncDisposable {
         _hub.On<SendInputCommand>("SendInput", cmd => OnSendInput?.Invoke(cmd)                             ?? Task.CompletedTask);
         _hub.On<string, string>("SendSpecialKey", (agentId, key) => OnSendSpecialKey?.Invoke(agentId, key) ?? Task.CompletedTask);
         _hub.On<ResizeTerminalCommand>("ResizeTerminal", cmd => OnResizeTerminal?.Invoke(cmd) ?? Task.CompletedTask);
-        _hub.On<RunEvalCommand>("RunEval", cmd => OnRunEval?.Invoke(cmd) ?? Task.CompletedTask);
+
+        // Client-result invocations for per-phase eval dispatch.
+        _hub.On<PrepareEvalCommand, PrepareResult>("PrepareEval",
+            cmd => PrepareEvalHandler?.Invoke(cmd)
+                ?? Task.FromResult(new PrepareResult(false, "no handler", null, 0, 0, 0, 0, 0)));
+
+        _hub.On<RunQuestionCommand, QuestionResult>("RunQuestion",
+            cmd => RunQuestionHandler?.Invoke(cmd)
+                ?? Task.FromResult(new QuestionResult(false, null, "no handler", 0, 0)));
+
+        _hub.On<FinalizeEvalCommand, FinalizeResult>("FinalizeEval",
+            cmd => FinalizeEvalHandler?.Invoke(cmd)
+                ?? Task.FromResult(new FinalizeResult(false, "no handler", null)));
+
+        _hub.On<CancelEvalCommand>("CancelEval",
+            cmd => CancelEvalHandler?.Invoke(cmd) ?? Task.CompletedTask);
 
         _hub.Reconnected += OnReconnected;
         _hub.Closed      += OnClosed;

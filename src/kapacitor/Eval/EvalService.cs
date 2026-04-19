@@ -56,7 +56,8 @@ internal static class EvalService {
         EvalContextResult                            ContextResult,
         IReadOnlyDictionary<string, List<JudgeFact>> KnownFactsByCategory,
         string                                       PromptTemplate,
-        IReadOnlyList<EvalQuestionDto>               Questions
+        IReadOnlyList<EvalQuestionDto>               Questions,
+        string                                       Model
     );
 
     /// <summary>
@@ -214,7 +215,8 @@ internal static class EvalService {
             ContextResult:        context,
             KnownFactsByCategory: knownFactsByCategory,
             PromptTemplate:       promptTemplate,
-            Questions:            questions
+            Questions:            questions,
+            Model:                model
         );
     }
 

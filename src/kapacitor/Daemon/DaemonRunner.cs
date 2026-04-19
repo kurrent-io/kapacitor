@@ -137,9 +137,10 @@ public static partial class DaemonRunner {
         await worktreeManager.CleanupOrphanedAsync();
 
         var orchestrator = host.Services.GetRequiredService<AgentOrchestrator>();
-        // Instantiate EvalRunner so it subscribes to OnRunEval on the
-        // ServerConnection. It's stateless beyond the subscription, so no
-        // disposal dance is needed.
+        // Instantiate EvalRunner so it wires the per-phase eval handlers
+        // (PrepareEval / RunQuestion / FinalizeEval / CancelEval) on the
+        // ServerConnection. It's stateless beyond the handler assignment —
+        // cached context lives in EvalContextCache — so no disposal dance.
         _ = host.Services.GetRequiredService<EvalRunner>();
 
         try {
