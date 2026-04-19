@@ -44,8 +44,23 @@ internal static class EvalService {
     const int JudgeMaxTurns = 3;
 
     /// <summary>
+    /// Output of <see cref="PrepareAsync"/> — the shared state threaded
+    /// through every <see cref="RunQuestionAsync"/> and finally consumed by
+    /// <see cref="FinalizeAsync"/>. All fields are non-null on success.
+    /// </summary>
+    internal sealed record EvalContext(
+        string                                       EvalRunId,
+        string                                       EncodedSessionId,
+        string                                       SessionId,
+        string                                       TraceJson,
+        EvalContextResult                            ContextResult,
+        IReadOnlyDictionary<string, List<JudgeFact>> KnownFactsByCategory,
+        string                                       PromptTemplate
+    );
+
+    /// <summary>
     /// Runs the full eval pipeline for <paramref name="sessionId"/>:
-    /// fetches the compacted trace, runs 13 judge questions sequentially
+    /// fetches the compacted trace, runs judge questions sequentially
     /// against the <paramref name="model"/>, aggregates per-category and
     /// overall scores, persists the result back to the server, and
     /// optionally retains any cross-cutting patterns the judges surfaced.
@@ -58,35 +73,41 @@ internal static class EvalService {
     /// </para>
     /// </summary>
     public static async Task<SessionEvalCompletedPayload?> RunAsync(
-            string            baseUrl,
-            HttpClient        httpClient,
-            string            sessionId,
-            string            model,
-            bool              chain,
-            int?              thresholdBytes,
-            IEvalObserver     observer,
-            CancellationToken ct           = default,
-            string?           evalRunId    = null
+            string                          baseUrl,
+            HttpClient                      httpClient,
+            string                          sessionId,
+            string                          model,
+            bool                            chain,
+            int?                            thresholdBytes,
+            IEvalObserver                   observer,
+            CancellationToken               ct        = default,
+            string?                         evalRunId = null,
+            IReadOnlyList<EvalQuestionDto>? questions = null
         ) {
         // Wrap the caller-supplied observer so any throw from a callback
         // (e.g. SignalR push failures in the daemon) is caught and logged
         // without aborting the eval — IEvalObserver documents this guarantee.
         observer = new SafeObserver(observer);
 
-        // The daemon (DEV-1440 M2) passes the dispatched RunEvalCommand.EvalRunId
-        // so server-side correlation works end-to-end (RunEvalCommand →
-        // EvalStarted → EvalQuestionCompleted → EvalFinished + persisted
-        // SessionEvalCompleted all share the same id). Direct CLI invocations
-        // pass null and the service mints a fresh GUID.
-        evalRunId ??= Guid.NewGuid().ToString();
-
-        // Session IDs are typically UUIDs but meta-session slugs are free-form
-        // user input; escape once and reuse for every session-scoped URL so
-        // reserved path characters don't corrupt the request.
-        var encodedSessionId = Uri.EscapeDataString(sessionId);
-
         try {
-            return await RunInnerAsync(baseUrl, httpClient, encodedSessionId, evalRunId, model, chain, thresholdBytes, observer, ct);
+            questions ??= await EvalQuestionCatalogClient.FetchAsync(baseUrl, httpClient, ct);
+            if (questions is null || questions.Count == 0) {
+                observer.OnFailed("failed to load eval question catalog from server");
+                return null;
+            }
+
+            var ctx = await PrepareAsync(baseUrl, httpClient, sessionId, questions, chain, thresholdBytes, observer, ct, evalRunId);
+            if (ctx is null) return null;
+
+            observer.OnStarted(ctx.EvalRunId, ctx.SessionId, model, questions.Count);
+
+            var verdicts = new List<EvalQuestionVerdict>();
+            for (var i = 0; i < questions.Count; i++) {
+                var verdict = await RunQuestionAsync(ctx, httpClient, baseUrl, questions[i], model, i + 1, questions.Count, observer, ct);
+                if (verdict is not null) verdicts.Add(verdict);
+            }
+
+            return await FinalizeAsync(ctx, httpClient, baseUrl, verdicts, model, questions, observer, ct);
         } catch (OperationCanceledException) {
             // Honour the contract that observers always see OnFinished or
             // OnFailed — cancellation isn't an exception path consumers
@@ -97,19 +118,28 @@ internal static class EvalService {
         }
     }
 
-    static async Task<SessionEvalCompletedPayload?> RunInnerAsync(
-            string            baseUrl,
-            HttpClient        httpClient,
-            string            encodedSessionId,
-            string            evalRunId,
-            string            model,
-            bool              chain,
-            int?              thresholdBytes,
-            IEvalObserver     observer,
-            CancellationToken ct
+    // ── Phase 1: Prepare ───────────────────────────────────────────────────
+
+    public static async Task<EvalContext?> PrepareAsync(
+            string                         baseUrl,
+            HttpClient                     httpClient,
+            string                         sessionId,
+            IReadOnlyList<EvalQuestionDto> questions,
+            bool                           chain,
+            int?                           thresholdBytes,
+            IEvalObserver                  observer,
+            CancellationToken              ct,
+            string?                        evalRunId = null
         ) {
+        evalRunId ??= Guid.NewGuid().ToString();
+
+        // Session IDs are typically UUIDs but meta-session slugs are free-form
+        // user input; escape once and reuse for every session-scoped URL so
+        // reserved path characters don't corrupt the request.
+        var encodedSessionId = Uri.EscapeDataString(sessionId);
+
         // 1. Fetch the compacted eval context.
-        string              traceJson;
+        string             traceJson;
         EvalContextResult? context;
 
         try {
@@ -156,10 +186,6 @@ internal static class EvalService {
             return null;
         }
 
-        // OnStarted before OnContextFetched so the user-facing log reads
-        // "Evaluating session..." then "Fetched...", matching the pre-refactor
-        // CLI output order.
-        observer.OnStarted(evalRunId, context.SessionId, model, EvalQuestions.All.Length);
         observer.OnContextFetched(
             context.Trace.Count,
             traceJson.Length,
@@ -168,72 +194,105 @@ internal static class EvalService {
             context.Compaction.BytesSaved
         );
 
-        // 2. Fetch retained judge facts per category to inject as known
-        //    patterns. Per-category failures don't abort the run.
-        var knownFactsByCategory = await FetchAllJudgeFactsAsync(httpClient, baseUrl, encodedSessionId, observer, ct);
+        // 2. Fetch retained judge facts per category to inject as known patterns.
+        var knownFactsByCategory = await FetchAllJudgeFactsAsync(httpClient, baseUrl, encodedSessionId, questions, observer, ct);
+        var promptTemplate       = EmbeddedResources.Load("prompt-eval-question.txt");
 
-        // 3. Run each question in sequence.
-        var promptTemplate = EmbeddedResources.Load("prompt-eval-question.txt");
-        var verdicts       = new List<EvalQuestionVerdict>();
+        return new EvalContext(
+            EvalRunId:            evalRunId,
+            EncodedSessionId:     encodedSessionId,
+            SessionId:            context.SessionId,
+            TraceJson:            traceJson,
+            ContextResult:        context,
+            KnownFactsByCategory: knownFactsByCategory,
+            PromptTemplate:       promptTemplate
+        );
+    }
 
-        for (var i = 0; i < EvalQuestions.All.Length; i++) {
-            ct.ThrowIfCancellationRequested();
+    // ── Phase 2: RunQuestion ───────────────────────────────────────────────
 
-            var q = EvalQuestions.All[i];
-            observer.OnQuestionStarted(i + 1, EvalQuestions.All.Length, q.Category, q.Id);
+    public static async Task<EvalQuestionVerdict?> RunQuestionAsync(
+            EvalContext        ctx,
+            HttpClient         httpClient,
+            string             baseUrl,
+            EvalQuestionDto    question,
+            string             model,
+            int                index,
+            int                total,
+            IEvalObserver      observer,
+            CancellationToken  ct
+        ) {
+        ct.ThrowIfCancellationRequested();
+        observer.OnQuestionStarted(index, total, question.Category, question.Id);
 
-            var patterns = FormatKnownPatterns(knownFactsByCategory.GetValueOrDefault(q.Category, []));
-            var prompt   = BuildQuestionPrompt(promptTemplate, context.SessionId, evalRunId, q, traceJson, patterns);
+        var patterns = FormatKnownPatterns(ctx.KnownFactsByCategory.GetValueOrDefault(question.Category, []));
+        var prompt   = BuildQuestionPrompt(ctx.PromptTemplate, ctx.SessionId, ctx.EvalRunId,
+            question, ctx.TraceJson, patterns);
 
-            // Capture ClaudeCliRunner diagnostics (exit code, stdout preview)
-            // so a null result gets reported with *why* it was null — those
-            // lines are the only signal about API errors or max-turn failures,
-            // and daemon observers log OnInfo at Debug level where they vanish.
-            var diagnostics = new List<string>();
-            var result = await ClaudeCliRunner.RunAsync(
-                prompt,
-                TimeSpan.FromMinutes(5),
-                msg => { diagnostics.Add(msg); observer.OnInfo($"  {msg}"); },
-                model: model,
-                maxTurns: JudgeMaxTurns,
-                // Prompts embed the full compacted trace and can be hundreds
-                // of KB — well past Windows' 32K argv limit. Stream via stdin.
-                promptViaStdin: true,
-                jsonSchema: VerdictJsonSchema,
-                ct: ct
-            );
+        // Capture ClaudeCliRunner diagnostics (exit code, stdout preview)
+        // so a null result gets reported with *why* it was null — those
+        // lines are the only signal about API errors or max-turn failures,
+        // and daemon observers log OnInfo at Debug level where they vanish.
+        var diagnostics = new List<string>();
+        var result = await ClaudeCliRunner.RunAsync(
+            prompt,
+            TimeSpan.FromMinutes(5),
+            msg => { diagnostics.Add(msg); observer.OnInfo($"  {msg}"); },
+            model: model,
+            maxTurns: JudgeMaxTurns,
+            // Prompts embed the full compacted trace and can be hundreds
+            // of KB — well past Windows' 32K argv limit. Stream via stdin.
+            promptViaStdin: true,
+            jsonSchema: VerdictJsonSchema,
+            ct: ct
+        );
 
-            if (result is null) {
-                var reason = diagnostics.Count == 0
-                    ? "null claude result"
-                    : $"null claude result; {string.Join(" | ", diagnostics.Select(d => Truncate(d, 300)))}";
-                observer.OnQuestionFailed(i + 1, EvalQuestions.All.Length, q.Category, q.Id, reason);
+        if (result is null) {
+            var reason = diagnostics.Count == 0
+                ? "null claude result"
+                : $"null claude result; {string.Join(" | ", diagnostics.Select(d => Truncate(d, 300)))}";
+            observer.OnQuestionFailed(index, total, question.Category, question.Id, reason);
 
-                continue;
-            }
+            return null;
+        }
 
-            var verdict = ParseVerdict(
-                result.Result,
-                q,
-                onContractViolation: msg => observer.OnInfo($"  {q.Category}/{q.Id}: {msg}")
-            );
-            if (verdict is null) {
-                observer.OnQuestionFailed(i + 1, EvalQuestions.All.Length, q.Category, q.Id, $"verdict JSON could not be parsed; raw response: {Truncate(result.Result, 500)}");
+        var verdict = ParseVerdict(
+            result.Result,
+            question,
+            onContractViolation: msg => observer.OnInfo($"  {question.Category}/{question.Id}: {msg}")
+        );
+        if (verdict is null) {
+            observer.OnQuestionFailed(index, total, question.Category, question.Id,
+                $"verdict JSON could not be parsed; raw response: {Truncate(result.Result, 500)}");
 
-                continue;
-            }
+            return null;
+        }
 
-            verdicts.Add(verdict);
-            observer.OnQuestionCompleted(i + 1, EvalQuestions.All.Length, verdict, result.InputTokens, result.OutputTokens);
+        observer.OnQuestionCompleted(index, total, verdict, result.InputTokens, result.OutputTokens);
 
-            // If the judge emitted a retain_fact, persist it for future evals.
-            if (ExtractRetainFact(result.Result) is { } retainedFact) {
-                if (await PostJudgeFactAsync(httpClient, baseUrl, encodedSessionId, q.Category, retainedFact, evalRunId, observer, ct)) {
-                    observer.OnFactRetained(q.Category, retainedFact);
-                }
+        // If the judge emitted a retain_fact, persist it for future evals.
+        if (ExtractRetainFact(result.Result) is { } retainedFact) {
+            if (await PostJudgeFactAsync(httpClient, baseUrl, ctx.EncodedSessionId, question.Category,
+                    retainedFact, ctx.EvalRunId, observer, ct)) {
+                observer.OnFactRetained(question.Category, retainedFact);
             }
         }
 
+        return verdict;
+    }
+
+    // ── Phase 3: Finalize ──────────────────────────────────────────────────
+
+    public static async Task<SessionEvalCompletedPayload?> FinalizeAsync(
+            EvalContext                        ctx,
+            HttpClient                         httpClient,
+            string                             baseUrl,
+            IReadOnlyList<EvalQuestionVerdict> verdicts,
+            string                             model,
+            IReadOnlyList<EvalQuestionDto>     questions,
+            IEvalObserver                      observer,
+            CancellationToken                  ct
+        ) {
         if (verdicts.Count == 0) {
             observer.OnFailed("all judge invocations failed");
 
@@ -241,26 +300,26 @@ internal static class EvalService {
         }
 
         // 4. Aggregate per-category + overall scores.
-        var aggregate = Aggregate(verdicts, evalRunId, model);
+        var aggregate = Aggregate(verdicts, ctx.EvalRunId, model, questions);
 
         // 5. Synthesise a retrospective from the per-question verdicts. Non-fatal:
-        //    the 13 verdicts are the persistence contract, a failed synthesis
+        //    the verdicts are the persistence contract, a failed synthesis
         //    just leaves Retrospective=null on the payload.
         var retrospective = await RunRetrospectiveAsync(
-            evalRunId:            evalRunId,
-            sessionId:            encodedSessionId,
+            evalRunId:            ctx.EvalRunId,
+            sessionId:            ctx.EncodedSessionId,
             model:                model,
-            traceJson:            traceJson,
+            traceJson:            ctx.TraceJson,
             aggregate:            aggregate,
             verdicts:             verdicts,
-            knownFactsByCategory: knownFactsByCategory,
+            knownFactsByCategory: ctx.KnownFactsByCategory,
             observer:             observer,
             ct:                   ct
         );
         aggregate = aggregate with { Retrospective = retrospective };
 
         // 6. Persist the aggregate to the server.
-        var postUrl     = $"{baseUrl}/api/sessions/{encodedSessionId}/evals";
+        var postUrl     = $"{baseUrl}/api/sessions/{ctx.EncodedSessionId}/evals";
         var payloadJson = JsonSerializer.Serialize(aggregate, KapacitorJsonContext.Default.SessionEvalCompletedPayload);
         using var httpContent = new StringContent(payloadJson, Encoding.UTF8, "application/json");
 
@@ -285,19 +344,19 @@ internal static class EvalService {
     // ── Prompt construction ────────────────────────────────────────────────
 
     public static string BuildQuestionPrompt(
-            string                 template,
-            string                 sessionId,
-            string                 evalRunId,
-            EvalQuestions.Question question,
-            string                 traceJson,
-            string                 knownPatterns
+            string          template,
+            string          sessionId,
+            string          evalRunId,
+            EvalQuestionDto question,
+            string          traceJson,
+            string          knownPatterns
         ) =>
         template
             .Replace("{SESSION_ID}",     sessionId)
             .Replace("{EVAL_RUN_ID}",    evalRunId)
             .Replace("{CATEGORY}",       question.Category)
             .Replace("{QUESTION_ID}",    question.Id)
-            .Replace("{QUESTION_TEXT}",  question.Text)
+            .Replace("{QUESTION_TEXT}",  question.Prompt)
             .Replace("{TRACE_JSON}",     traceJson)
             .Replace("{KNOWN_PATTERNS}", knownPatterns);
 
@@ -371,9 +430,9 @@ internal static class EvalService {
     /// </para>
     /// </summary>
     public static EvalQuestionVerdict? ParseVerdict(
-            string                 rawResponse,
-            EvalQuestions.Question question,
-            Action<string>?        onContractViolation = null
+            string          rawResponse,
+            EvalQuestionDto question,
+            Action<string>? onContractViolation = null
         ) {
         var json = StripCodeFences(rawResponse.Trim());
 
@@ -502,7 +561,12 @@ internal static class EvalService {
 
     // ── Aggregation ────────────────────────────────────────────────────────
 
-    public static SessionEvalCompletedPayload Aggregate(List<EvalQuestionVerdict> verdicts, string evalRunId, string model) {
+    public static SessionEvalCompletedPayload Aggregate(
+            IReadOnlyList<EvalQuestionVerdict> verdicts,
+            string                             evalRunId,
+            string                             model,
+            IReadOnlyList<EvalQuestionDto>     questions
+        ) {
         var byCategory = verdicts
             .GroupBy(v => v.Category)
             .Select(g => {
@@ -515,14 +579,14 @@ internal static class EvalService {
                     Questions = g.ToList()
                 };
             })
-            .OrderBy(c => EvalQuestions.CategoryOrder(c.Name))
+            .OrderBy(c => CategoryOrderFromTaxonomy(c.Name, questions))
             .ToList();
 
         var overall = byCategory.Count > 0
             ? (int)Math.Round(byCategory.Average(c => c.Score))
             : 0;
 
-        var summary = $"Evaluated {verdicts.Count}/{EvalQuestions.All.Length} questions "
+        var summary = $"Evaluated {verdicts.Count}/{questions.Count} questions "
             + $"across {byCategory.Count} categories. Overall: {overall}/5 ({VerdictForScore(overall)}).";
 
         return new SessionEvalCompletedPayload {
@@ -532,6 +596,18 @@ internal static class EvalService {
             OverallScore = overall,
             Summary      = summary
         };
+    }
+
+    static int CategoryOrderFromTaxonomy(string category, IReadOnlyList<EvalQuestionDto> questions) {
+        var idx  = 0;
+        var seen = new HashSet<string>();
+        foreach (var q in questions) {
+            if (seen.Add(q.Category)) {
+                if (q.Category == category) return idx;
+                idx++;
+            }
+        }
+        return 99;
     }
 
     public static string VerdictForScore(int score) => score switch {
@@ -547,7 +623,7 @@ internal static class EvalService {
     /// extra judge invocation with the same model and timeout as a
     /// per-question call. Failure is non-fatal — the caller just leaves
     /// <see cref="SessionEvalCompletedPayload.Retrospective"/> as null and
-    /// persists the 13 verdicts regardless. Only
+    /// persists the verdicts regardless. Only
     /// <see cref="OperationCanceledException"/> propagates so upstream
     /// cancellation still cancels the eval run.
     /// </summary>
@@ -638,15 +714,16 @@ internal static class EvalService {
     // ── Judge-facts HTTP ───────────────────────────────────────────────────
 
     static async Task<Dictionary<string, List<JudgeFact>>> FetchAllJudgeFactsAsync(
-            HttpClient        httpClient,
-            string            baseUrl,
-            string            encodedSessionId,
-            IEvalObserver     observer,
-            CancellationToken ct
+            HttpClient                     httpClient,
+            string                         baseUrl,
+            string                         encodedSessionId,
+            IReadOnlyList<EvalQuestionDto> questions,
+            IEvalObserver                  observer,
+            CancellationToken              ct
         ) {
         var result = new Dictionary<string, List<JudgeFact>>();
 
-        foreach (var category in EvalQuestions.Categories) {
+        foreach (var category in questions.Select(q => q.Category).Distinct(StringComparer.Ordinal)) {
             try {
                 using var resp = await httpClient.GetWithRetryAsync(
                     $"{baseUrl}/api/sessions/{encodedSessionId}/judge-facts?category={Uri.EscapeDataString(category)}",
