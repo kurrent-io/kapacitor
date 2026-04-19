@@ -50,7 +50,7 @@ public class TerminalOutputBuffer {
     }
 }
 
-public partial class AgentOrchestrator : IAsyncDisposable {
+internal partial class AgentOrchestrator : IAsyncDisposable {
     readonly ConcurrentDictionary<string, AgentInstance> _agents = new();
     readonly DaemonConfig                                _config;
     readonly ServerConnection                            _server;

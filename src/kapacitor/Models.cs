@@ -425,7 +425,13 @@ record RepoEntry {
 [JsonSerializable(typeof(LaunchAgentCommand))]
 [JsonSerializable(typeof(SendInputCommand))]
 [JsonSerializable(typeof(ResizeTerminalCommand))]
-[JsonSerializable(typeof(RunEvalCommand))]
+[JsonSerializable(typeof(PrepareEvalCommand))]
+[JsonSerializable(typeof(RunQuestionCommand))]
+[JsonSerializable(typeof(FinalizeEvalCommand))]
+[JsonSerializable(typeof(CancelEvalCommand))]
+[JsonSerializable(typeof(PrepareResult))]
+[JsonSerializable(typeof(QuestionResult))]
+[JsonSerializable(typeof(FinalizeResult))]
 [JsonSerializable(typeof(EvalStarted))]
 [JsonSerializable(typeof(EvalQuestionStarted))]
 [JsonSerializable(typeof(EvalQuestionCompleted))]
@@ -508,15 +514,67 @@ public readonly record struct TerminalOutput(
         string Base64Data
     );
 
-// ── Eval dispatch (DEV-1440) ──────────────────────────────────────────────
+// ── Per-question eval dispatch (DEV-1463 PR 2) ────────────────────────────
+// Plain PascalCase records — no [JsonPropertyName] attrs — so they round-trip
+// via SignalR's default JSON protocol with the matching server-side records.
+// Inner DTOs (EvalQuestionDto, EvalQuestionVerdict) carry their own snake_case
+// [JsonPropertyName] attrs which agree on both ends (see server's
+// EvalQuestionMetadata.Question and SessionMetadataEvents.EvalQuestionVerdict).
 
-/// <summary>Sent by the server when the dashboard triggers an eval; received by the daemon over SignalR.</summary>
-public readonly record struct RunEvalCommand(
-        string EvalRunId,
-        string SessionId,
-        string Model,
-        bool   Chain,
-        int?   ThresholdBytes
+/// <summary>Server → daemon: prepare an eval run. Daemon fetches + caches context, returns counts.</summary>
+internal readonly record struct PrepareEvalCommand(
+        string                         EvalRunId,
+        string                         SessionId,
+        string                         Model,
+        bool                           Chain,
+        int?                           ThresholdBytes,
+        IReadOnlyList<EvalQuestionDto> Questions
+    );
+
+/// <summary>Server → daemon: run a single judge question against the cached context.</summary>
+internal readonly record struct RunQuestionCommand(
+        string          EvalRunId,
+        EvalQuestionDto Question,
+        int             Index,
+        int             Total
+    );
+
+/// <summary>Server → daemon: aggregate verdicts, run retrospective, persist final result.</summary>
+internal readonly record struct FinalizeEvalCommand(
+        string                             EvalRunId,
+        IReadOnlyList<EvalQuestionVerdict> Verdicts,
+        string                             Model
+    );
+
+/// <summary>Server → daemon: discard any cached context for this run (e.g. dashboard aborted).</summary>
+internal readonly record struct CancelEvalCommand(string EvalRunId);
+
+/// <summary>Daemon → server: prepare-phase result.</summary>
+internal readonly record struct PrepareResult(
+        bool    Success,
+        string? Error,
+        string? CanonicalSessionId,
+        int     TraceEntries,
+        int     TraceChars,
+        int     ToolResultsTotal,
+        int     ToolResultsTruncated,
+        long    BytesSaved
+    );
+
+/// <summary>Daemon → server: per-question judge result.</summary>
+internal readonly record struct QuestionResult(
+        bool                 Success,
+        EvalQuestionVerdict? Verdict,
+        string?              Error,
+        long                 InputTokens,
+        long                 OutputTokens
+    );
+
+/// <summary>Daemon → server: finalize-phase result including the aggregate to persist.</summary>
+internal readonly record struct FinalizeResult(
+        bool                         Success,
+        string?                      Error,
+        SessionEvalCompletedPayload? Aggregate
     );
 
 /// <summary>Daemon → server: eval has fetched context and is about to run the first judge.</summary>

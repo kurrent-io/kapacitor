@@ -55,7 +55,9 @@ internal static class EvalService {
         string                                       TraceJson,
         EvalContextResult                            ContextResult,
         IReadOnlyDictionary<string, List<JudgeFact>> KnownFactsByCategory,
-        string                                       PromptTemplate
+        string                                       PromptTemplate,
+        IReadOnlyList<EvalQuestionDto>               Questions,
+        string                                       Model
     );
 
     /// <summary>
@@ -108,7 +110,7 @@ internal static class EvalService {
                 if (verdict is not null) verdicts.Add(verdict);
             }
 
-            return await FinalizeAsync(ctx, httpClient, baseUrl, verdicts, model, questions, observer, ct);
+            return await FinalizeAsync(ctx, httpClient, baseUrl, verdicts, model, observer, ct);
         } catch (OperationCanceledException) {
             // Honour the contract that observers always see OnFinished or
             // OnFailed — cancellation isn't an exception path consumers
@@ -212,7 +214,9 @@ internal static class EvalService {
             TraceJson:            traceJson,
             ContextResult:        context,
             KnownFactsByCategory: knownFactsByCategory,
-            PromptTemplate:       promptTemplate
+            PromptTemplate:       promptTemplate,
+            Questions:            questions,
+            Model:                model
         );
     }
 
@@ -296,7 +300,6 @@ internal static class EvalService {
             string                             baseUrl,
             IReadOnlyList<EvalQuestionVerdict> verdicts,
             string                             model,
-            IReadOnlyList<EvalQuestionDto>     questions,
             IEvalObserver                      observer,
             CancellationToken                  ct
         ) {
@@ -307,7 +310,7 @@ internal static class EvalService {
         }
 
         // 4. Aggregate per-category + overall scores.
-        var aggregate = Aggregate(verdicts, ctx.EvalRunId, model, questions);
+        var aggregate = Aggregate(verdicts, ctx.EvalRunId, model, ctx.Questions);
 
         // 5. Synthesise a retrospective from the per-question verdicts. Non-fatal:
         //    the verdicts are the persistence contract, a failed synthesis

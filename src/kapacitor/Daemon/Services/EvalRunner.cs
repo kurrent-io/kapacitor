@@ -5,75 +5,127 @@ using Microsoft.Extensions.Logging;
 namespace kapacitor.Daemon.Services;
 
 /// <summary>
-/// DEV-1440 milestone 2 — handles <see cref="RunEvalCommand"/> dispatched
-/// from the dashboard via SignalR. The daemon pulls an authenticated
-/// HTTP client, runs <see cref="EvalService"/> with a
-/// <see cref="DaemonEvalObserver"/> that relays progress back over the
-/// SignalR connection, and completes asynchronously — the SignalR
-/// <c>RunEval</c> hub invocation fires-and-forgets; progress comes back
-/// through <c>EvalStarted</c> / <c>EvalQuestionCompleted</c> / etc.
+/// Per-phase handlers for the DEV-1463 PR 2 eval dispatch protocol.
+/// Replaces the pre-PR-2 single-shot <c>RunEvalCommand</c> handler.
+/// Holds no state between calls except via <see cref="EvalContextCache"/>.
+///
+/// <para>Each handler translates a SignalR client-result invocation into
+/// a call to <see cref="EvalService"/> and packages the outcome as a
+/// typed result DTO. The server's orchestrator (see
+/// <c>EvalRunOrchestrator</c>) threads the phases together.</para>
 /// </summary>
-public sealed class EvalRunner {
+internal sealed class EvalRunner {
     readonly ServerConnection    _connection;
+    readonly EvalContextCache    _cache;
     readonly ILogger<EvalRunner> _logger;
     readonly string              _baseUrl;
     readonly CancellationToken   _shutdownToken;
 
     public EvalRunner(
             ServerConnection         connection,
+            EvalContextCache         cache,
             DaemonConfig             config,
             IHostApplicationLifetime lifetime,
             ILogger<EvalRunner>      logger
         ) {
         _connection    = connection;
+        _cache         = cache;
         _logger        = logger;
         _baseUrl       = config.ServerUrl.TrimEnd('/');
         _shutdownToken = lifetime.ApplicationStopping;
 
-        _connection.OnRunEval += HandleRunEvalAsync;
+        _connection.PrepareEvalHandler  = HandlePrepareAsync;
+        _connection.RunQuestionHandler  = HandleRunQuestionAsync;
+        _connection.FinalizeEvalHandler = HandleFinalizeAsync;
+        _connection.CancelEvalHandler   = HandleCancelAsync;
     }
 
-    async Task HandleRunEvalAsync(RunEvalCommand cmd) {
-        _logger.LogInformation(
-            "Dispatched eval {RunId} for session {Sid} (model {Model}, chain={Chain})",
-            cmd.EvalRunId, cmd.SessionId, cmd.Model, cmd.Chain
-        );
+    async Task<PrepareResult> HandlePrepareAsync(PrepareEvalCommand cmd) {
+        // SignalR 10.0.5's On<T1, TResult> overloads don't surface a
+        // per-call CancellationToken, so cancellation here is bounded
+        // only by the daemon's shutdown token. Server-side phase timeouts
+        // take effect via InvokeAsync<T>'s own timeout unwinding (the
+        // daemon's response is simply discarded if the server moved on).
+        using var httpClient = await HttpClientExtensions.CreateAuthenticatedClientAsync(_baseUrl);
+        var observer = new DaemonEvalObserver(_connection, cmd.EvalRunId, cmd.SessionId, _logger);
 
-        // Fire-and-forget so the SignalR hub invocation doesn't block; the
-        // eval's own observer callbacks fan progress back to the server.
-        // Daemon shutdown cancels the token so in-flight evals get a clean
-        // OnFailed("cancelled") rather than dying mid-judge. Any unhandled
-        // exception from the run is caught and translated to an EvalFailed
-        // event so the dashboard learns about it either way.
-        _ = Task.Run(async () => {
-            try {
-                using var httpClient = await HttpClientExtensions.CreateAuthenticatedClientAsync();
-                var observer = new DaemonEvalObserver(_connection, cmd.EvalRunId, cmd.SessionId, _logger);
+        try {
+            var ctx = await EvalService.PrepareAsync(
+                _baseUrl, httpClient, cmd.SessionId, cmd.Questions,
+                cmd.Chain, cmd.ThresholdBytes, observer, _shutdownToken, cmd.Model, cmd.EvalRunId
+            );
+            if (ctx is null) return new PrepareResult(false, "context load failed", null, 0, 0, 0, 0, 0);
 
-                await EvalService.RunAsync(
-                    _baseUrl,
-                    httpClient,
-                    cmd.SessionId,
-                    cmd.Model,
-                    cmd.Chain,
-                    cmd.ThresholdBytes,
-                    observer,
-                    ct: _shutdownToken,
-                    // Use the dispatched run id so all progress events and
-                    // the persisted aggregate share the same correlation id
-                    // the dashboard already knows about.
-                    evalRunId: cmd.EvalRunId
-                );
-            } catch (Exception ex) {
-                _logger.LogError(ex, "Unhandled exception running eval {RunId} on session {Sid}", cmd.EvalRunId, cmd.SessionId);
+            _cache.Put(cmd.EvalRunId, ctx);
+            return new PrepareResult(
+                true, null,
+                ctx.SessionId,
+                ctx.ContextResult.Trace.Count,
+                ctx.TraceJson.Length,
+                ctx.ContextResult.Compaction.ToolResultsTotal,
+                ctx.ContextResult.Compaction.ToolResultsTruncated,
+                ctx.ContextResult.Compaction.BytesSaved
+            );
+        } catch (Exception ex) {
+            _logger.LogError(ex, "PrepareEval failed for {RunId}", cmd.EvalRunId);
+            return new PrepareResult(false, $"{ex.GetType().Name}: {ex.Message}", null, 0, 0, 0, 0, 0);
+        }
+    }
 
-                try {
-                    await _connection.EvalFailedAsync(cmd.EvalRunId, cmd.SessionId, $"daemon error: {ex.GetType().Name}");
-                } catch (Exception relayEx) {
-                    _logger.LogError(relayEx, "Failed to relay EvalFailed for eval {RunId}", cmd.EvalRunId);
-                }
-            }
-        });
+    async Task<QuestionResult> HandleRunQuestionAsync(RunQuestionCommand cmd) {
+        var ctx = _cache.Get(cmd.EvalRunId);
+        if (ctx is null) return new QuestionResult(false, null, "context not cached (prepare missing or expired)", 0, 0);
+
+        using var httpClient = await HttpClientExtensions.CreateAuthenticatedClientAsync(_baseUrl);
+        var observer = new DaemonEvalObserver(_connection, cmd.EvalRunId, ctx.SessionId, _logger);
+
+        try {
+            // Model is carried on the cached EvalContext (set during Prepare) —
+            // the per-question wire format doesn't repeat it.
+            var verdict = await EvalService.RunQuestionAsync(
+                ctx, httpClient, _baseUrl, cmd.Question, ctx.Model,
+                cmd.Index, cmd.Total, observer, _shutdownToken
+            );
+            if (verdict is null) return new QuestionResult(false, null, "verdict null", 0, 0);
+
+            // Token counts are emitted by EvalService via the observer;
+            // daemon no longer owns that accounting. Report 0 here unless
+            // we surface them on the verdict type directly (future change).
+            return new QuestionResult(true, verdict, null, 0, 0);
+        } catch (Exception ex) {
+            _logger.LogError(ex, "RunQuestion failed for {RunId}/{QuestionId}", cmd.EvalRunId, cmd.Question.Id);
+            return new QuestionResult(false, null, $"{ex.GetType().Name}: {ex.Message}", 0, 0);
+        }
+    }
+
+    async Task<FinalizeResult> HandleFinalizeAsync(FinalizeEvalCommand cmd) {
+        var ctx = _cache.Get(cmd.EvalRunId);
+        if (ctx is null) return new FinalizeResult(false, "context not cached", null);
+
+        using var httpClient = await HttpClientExtensions.CreateAuthenticatedClientAsync(_baseUrl);
+        var observer = new DaemonEvalObserver(_connection, cmd.EvalRunId, ctx.SessionId, _logger);
+
+        try {
+            // FinalizeAsync signature was updated in Task 6.5 — the taxonomy is
+            // carried on ctx.Questions, not passed separately.
+            var aggregate = await EvalService.FinalizeAsync(
+                ctx, httpClient, _baseUrl, cmd.Verdicts, cmd.Model,
+                observer, _shutdownToken
+            );
+            return new FinalizeResult(aggregate is not null, aggregate is null ? "finalize failed" : null, aggregate);
+        } catch (Exception ex) {
+            _logger.LogError(ex, "FinalizeEval failed for {RunId}", cmd.EvalRunId);
+            return new FinalizeResult(false, $"{ex.GetType().Name}: {ex.Message}", null);
+        } finally {
+            // Always evict — a finalize throw must not leak the cached context.
+            _cache.Remove(cmd.EvalRunId);
+        }
+    }
+
+    Task HandleCancelAsync(CancelEvalCommand cmd) {
+        _cache.Remove(cmd.EvalRunId);
+        _logger.LogInformation("Cancelled eval {RunId}", cmd.EvalRunId);
+        return Task.CompletedTask;
     }
 }
 
