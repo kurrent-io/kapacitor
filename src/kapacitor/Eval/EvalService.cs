@@ -96,10 +96,8 @@ internal static class EvalService {
                 return null;
             }
 
-            var ctx = await PrepareAsync(baseUrl, httpClient, sessionId, questions, chain, thresholdBytes, observer, ct, evalRunId);
+            var ctx = await PrepareAsync(baseUrl, httpClient, sessionId, questions, chain, thresholdBytes, observer, ct, model, evalRunId);
             if (ctx is null) return null;
-
-            observer.OnStarted(ctx.EvalRunId, ctx.SessionId, model, questions.Count);
 
             var verdicts = new List<EvalQuestionVerdict>();
             for (var i = 0; i < questions.Count; i++) {
@@ -129,6 +127,7 @@ internal static class EvalService {
             int?                           thresholdBytes,
             IEvalObserver                  observer,
             CancellationToken              ct,
+            string                         model,
             string?                        evalRunId = null
         ) {
         evalRunId ??= Guid.NewGuid().ToString();
@@ -185,6 +184,8 @@ internal static class EvalService {
 
             return null;
         }
+
+        observer.OnStarted(evalRunId, context.SessionId, model, questions.Count);
 
         observer.OnContextFetched(
             context.Trace.Count,
