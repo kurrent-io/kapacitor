@@ -120,4 +120,33 @@ public class ClaudeCliRunnerTests {
         using var doc = JsonDocument.Parse(result!.Result);
         await Assert.That(doc.RootElement.GetProperty("overall").GetString()).IsEqualTo("clean run");
     }
+
+    // DEV-1484 contract: when a caller opts into MCP mode, they must name the
+    // tools they want exposed. Without an allowlist the runner would drop the
+    // built-in lockdown (no --strict-mcp-config / --tools "") without a
+    // replacement restriction — effectively widening the permission surface to
+    // every tool on every configured MCP server. Guard at the entry point so
+    // the misuse surfaces as an ArgumentException instead of a silent
+    // broadening.
+    [Test]
+    public async Task RunAsync_WithMcpConfigAndNullAllowedTools_Throws() =>
+        await AssertAllowedToolsGuard(allowedTools: null);
+
+    [Test]
+    public async Task RunAsync_WithMcpConfigAndEmptyAllowedTools_Throws() =>
+        await AssertAllowedToolsGuard(allowedTools: []);
+
+    static async Task AssertAllowedToolsGuard(string[]? allowedTools) {
+        var ex = await Assert.ThrowsAsync<ArgumentException>(() =>
+            ClaudeCliRunner.RunAsync(
+                prompt:        "irrelevant",
+                timeout:       TimeSpan.FromSeconds(1),
+                log:           _ => { },
+                mcpConfigJson: """{"mcpServers":{}}""",
+                allowedTools:  allowedTools
+            )
+        );
+
+        await Assert.That(ex.ParamName).IsEqualTo("allowedTools");
+    }
 }

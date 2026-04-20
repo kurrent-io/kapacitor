@@ -232,7 +232,9 @@ switch (command) {
     }
     case "mcp": {
         if (args.Length < 2) {
-            Console.Error.WriteLine("Usage: kapacitor mcp review [--owner <owner> --repo <repo> --pr <number>]");
+            Console.Error.WriteLine("Usage: kapacitor mcp review|judge …");
+            Console.Error.WriteLine("  kapacitor mcp review [--owner <owner> --repo <repo> --pr <number>]");
+            Console.Error.WriteLine("  kapacitor mcp judge --session <sessionId>");
 
             return 1;
         }
@@ -249,6 +251,18 @@ switch (command) {
 
             // No args — auto-detect from git
             return await McpReviewServer.RunAutoAsync(baseUrl!);
+        }
+
+        if (args[1] == "judge") {
+            var session = GetArg(args, "--session");
+
+            if (string.IsNullOrWhiteSpace(session)) {
+                Console.Error.WriteLine("Usage: kapacitor mcp judge --session <sessionId>");
+
+                return 1;
+            }
+
+            return await McpJudgeServer.RunAsync(baseUrl!, session);
         }
 
         Console.Error.WriteLine($"Unknown mcp subcommand: {args[1]}");

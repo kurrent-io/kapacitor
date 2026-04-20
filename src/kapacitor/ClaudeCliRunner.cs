@@ -58,6 +58,22 @@ static class ClaudeCliRunner {
     /// (re-serialised), so downstream parsers see the same shape they would
     /// from a free-form JSON reply.
     /// </para>
+    ///
+    /// <para>
+    /// <paramref name="mcpConfigJson"/> and <paramref name="allowedTools"/>
+    /// are opt-in for callers that need the model to reach for MCP tools
+    /// during the run (today: the DEV-1484 retrospective judge, which
+    /// pulls session details via <c>kapacitor mcp judge</c> instead of
+    /// having the full trace embedded in its prompt). When
+    /// <paramref name="mcpConfigJson"/> is supplied, the runner flips out
+    /// of the text-only lockdown (<c>--strict-mcp-config</c> / empty
+    /// <c>--tools</c> / <c>--disallowedTools LSP</c>) and instead loads
+    /// the caller-supplied MCP config via <c>--mcp-config</c>, restricting
+    /// the model to exactly <paramref name="allowedTools"/> via
+    /// <c>--allowedTools</c>. <c>--disable-slash-commands</c> stays on in
+    /// both modes. Leaving both null preserves the text-only behaviour
+    /// every other caller relies on.
+    /// </para>
     /// </summary>
     public static async Task<ClaudeCliResult?> RunAsync(
             string            prompt,
@@ -67,8 +83,23 @@ static class ClaudeCliRunner {
             int               maxTurns       = 1,
             bool              promptViaStdin = false,
             string?           jsonSchema     = null,
+            string?           mcpConfigJson  = null,
+            string[]?         allowedTools   = null,
             CancellationToken ct             = default
         ) {
+        // MCP mode without an allowlist would hand the model every tool the
+        // config exposes — including anything future MCP servers we add.
+        // The doc comment promises "restricted to exactly `allowedTools`",
+        // so enforce the contract here rather than silently drifting into a
+        // wider permission surface. Callers that want MCP tools must name
+        // them explicitly.
+        if (mcpConfigJson is not null && (allowedTools is null || allowedTools.Length == 0)) {
+            throw new ArgumentException(
+                "allowedTools must be a non-empty list when mcpConfigJson is supplied",
+                nameof(allowedTools)
+            );
+        }
+
         // Fresh empty working dir per invocation: keeps Claude's CLAUDE.md
         // auto-discovery from picking anything up, and isolates every run
         // from user project state. Deleted in the `finally` so we don't
@@ -93,7 +124,7 @@ static class ClaudeCliRunner {
         }
 
         try {
-            return await RunCoreAsync(prompt, timeout, log, workingDir, model, maxTurns, promptViaStdin, jsonSchema, ct);
+            return await RunCoreAsync(prompt, timeout, log, workingDir, model, maxTurns, promptViaStdin, jsonSchema, mcpConfigJson, allowedTools, ct);
         } finally {
             if (createdWorkingDir) {
                 try {
@@ -115,6 +146,8 @@ static class ClaudeCliRunner {
             int               maxTurns,
             bool              promptViaStdin,
             string?           jsonSchema,
+            string?           mcpConfigJson,
+            string[]?         allowedTools,
             CancellationToken ct
         ) {
         var psi = new ProcessStartInfo {
@@ -146,26 +179,46 @@ static class ClaudeCliRunner {
         psi.ArgumentList.Add(maxTurns.ToString());
         psi.ArgumentList.Add("--model");
         psi.ArgumentList.Add(model);
-        psi.ArgumentList.Add("--tools");
-        psi.ArgumentList.Add("");
-        // `--tools ""` is not enough for headless single-turn judge runs:
-        //   - MCP servers from the user's global config still load, so we
-        //     need `--strict-mcp-config` (with no `--mcp-config`) to load zero.
-        //   - The built-in `LSP` tool is attached regardless of `--tools`,
-        //     and Claude eagerly probes any file paths it sees in the
-        //     compacted trace, blowing past `--max-turns 1` with
-        //     `stop_reason=tool_use`. `--disallowedTools LSP` blocks it.
-        // Without both flags, real eval traces (which mention file paths)
-        // fail every question with `error_max_turns`.
-        psi.ArgumentList.Add("--strict-mcp-config");
-        psi.ArgumentList.Add("--disallowedTools");
-        psi.ArgumentList.Add("LSP");
+
+        if (mcpConfigJson is null) {
+            // Text-only mode (title generation, per-question judges): block
+            // MCP servers, all tools, and the LSP probe.
+            //
+            // `--tools ""` is not enough for headless single-turn judge runs:
+            //   - MCP servers from the user's global config still load, so we
+            //     need `--strict-mcp-config` (with no `--mcp-config`) to load zero.
+            //   - The built-in `LSP` tool is attached regardless of `--tools`,
+            //     and Claude eagerly probes any file paths it sees in the
+            //     compacted trace, blowing past `--max-turns 1` with
+            //     `stop_reason=tool_use`. `--disallowedTools LSP` blocks it.
+            // Without both flags, real eval traces (which mention file paths)
+            // fail every question with `error_max_turns`.
+            psi.ArgumentList.Add("--strict-mcp-config");
+            psi.ArgumentList.Add("--tools");
+            psi.ArgumentList.Add("");
+            psi.ArgumentList.Add("--disallowedTools");
+            psi.ArgumentList.Add("LSP");
+        } else {
+            // Tool-using mode (DEV-1484 retrospective): load the caller-supplied
+            // MCP config, and restrict the model to exactly the MCP tools the
+            // caller named. The `--tools ""` / `--disallowedTools LSP` lockdown
+            // from the text-only branch is dropped — the explicit `--allowedTools`
+            // allowlist is the only tool surface the model sees.
+            psi.ArgumentList.Add("--mcp-config");
+            psi.ArgumentList.Add(mcpConfigJson);
+            if (allowedTools is { Length: > 0 }) {
+                psi.ArgumentList.Add("--allowedTools");
+                psi.ArgumentList.Add(string.Join(",", allowedTools));
+            }
+        }
+
         // Skills load ~200 entries into the system prompt and the
         // `using-superpowers` skill auto-invokes `Skill` on every session.
         // Both are pure overhead for a headless judge: they inflate the
         // prompt (contributing to the 200K-token auto-compact that
         // destroys verdicts) and burn turns on skill dispatch that never
-        // produces a StructuredOutput reply.
+        // produces a StructuredOutput reply. Applies in both text-only and
+        // tool-using modes.
         psi.ArgumentList.Add("--disable-slash-commands");
 
         if (!string.IsNullOrEmpty(jsonSchema)) {

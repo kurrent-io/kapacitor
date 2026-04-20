@@ -519,10 +519,11 @@ public class EvalServiceTests {
         var meta     = "session-id: abc\nrun-id: xyz\nmodel: sonnet";
         var verdicts = "[{\"category\":\"safety\",\"score\":5}]";
         var facts    = "safety:\n- agents sometimes read .env by accident";
-        var trace    = "{\"events\":[]}";
 
-        var prompt = EvalService.BuildRetrospectivePrompt(meta, verdicts, facts, trace);
+        var prompt = EvalService.BuildRetrospectivePrompt(meta, verdicts, facts);
 
+        // DEV-1484: {TRACE_JSON} was dropped — the trace is no longer
+        // embedded, the judge pulls session data via MCP tools instead.
         await Assert.That(prompt).DoesNotContain("{SESSION_META}");
         await Assert.That(prompt).DoesNotContain("{VERDICTS_JSON}");
         await Assert.That(prompt).DoesNotContain("{KNOWN_PATTERNS}");
@@ -530,7 +531,6 @@ public class EvalServiceTests {
         await Assert.That(prompt).Contains(meta);
         await Assert.That(prompt).Contains(verdicts);
         await Assert.That(prompt).Contains(facts);
-        await Assert.That(prompt).Contains(trace);
     }
 
     // ── Truncate (log-safe sanitisation) ────────────────────────────────────
