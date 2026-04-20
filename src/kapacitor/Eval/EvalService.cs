@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 
 namespace kapacitor.Eval;
 
@@ -51,6 +52,11 @@ internal static class EvalService {
     // structured-output + headroom for reasoning blocks) without letting
     // the judge page the transcript indefinitely.
     const int RetrospectiveMaxTurns = 10;
+
+    // 15-min wallclock pairs with RetrospectiveMaxTurns=10: gives the judge
+    // room for up to 6 MCP tool calls plus structured-output + reasoning
+    // headroom even under cold-start claude CLI latency.
+    static readonly TimeSpan RetrospectiveTimeout = TimeSpan.FromMinutes(15);
 
     /// <summary>
     /// Resolves a caller-supplied model alias to the variant we actually
@@ -357,7 +363,6 @@ internal static class EvalService {
             evalRunId:            ctx.EvalRunId,
             sessionId:            ctx.EncodedSessionId,
             model:                model,
-            traceJson:            ctx.TraceJson,
             aggregate:            aggregate,
             verdicts:             verdicts,
             knownFactsByCategory: ctx.KnownFactsByCategory,
@@ -391,6 +396,8 @@ internal static class EvalService {
 
     // ── Prompt construction ────────────────────────────────────────────────
 
+    // Per-question judges remain text-only (see ClaudeCliRunner mcpConfigJson branching)
+    // — they still embed {TRACE_JSON}. Retrospective moved to MCP tool access in DEV-1484.
     public static string BuildQuestionPrompt(
             string          template,
             string          sessionId,
@@ -685,7 +692,6 @@ internal static class EvalService {
             string                                      evalRunId,
             string                                      sessionId,
             string                                      model,
-            string                                      traceJson,
             SessionEvalCompletedPayload                 aggregate,
             IReadOnlyList<EvalQuestionVerdict>          verdicts,
             IReadOnlyDictionary<string, List<JudgeFact>> knownFactsByCategory,
@@ -707,20 +713,18 @@ internal static class EvalService {
         // DEV-1484: instead of embedding the compacted trace (which blew
         // past Sonnet's 200K-token window on real sessions), launch a
         // per-session MCP judge server and let the judge pull recap /
-        // errors / transcript slices on demand.
-        //
-        // Hand-written JSON (not a serialised anonymous type) so this is
-        // AOT-safe and so the server key stays literally "kapacitor-review"
-        // — matching the prefix used everywhere else (Batch A server,
-        // `kapacitor-review` plugin) and avoiding any risk of
-        // System.Text.Json anon-object naming surprises.
-        // JsonEncodedText.Encode handles any escaping the sessionId might
-        // need (quotes, backslashes, control chars) so the inline template
-        // stays valid JSON for any session id the server accepts.
-        var sessionIdJson = JsonEncodedText.Encode(sessionId).ToString();
-        var mcpConfig =
-            "{\"mcpServers\":{\"kapacitor-review\":{\"command\":\"kapacitor\","
-          + "\"args\":[\"mcp\",\"judge\",\"--session\",\"" + sessionIdJson + "\"]}}}";
+        // errors / transcript slices on demand. MCP config built with
+        // JsonObject/JsonArray — same pattern as ReviewCommand.cs.
+        var commandPath = Environment.ProcessPath ?? "kapacitor";
+
+        var mcpConfig = new JsonObject {
+            ["mcpServers"] = new JsonObject {
+                ["kapacitor-review"] = new JsonObject {
+                    ["command"] = commandPath,
+                    ["args"]    = new JsonArray("mcp", "judge", "--session", sessionId)
+                }
+            }
+        }.ToJsonString();
 
         var allowedTools = new[] {
             "mcp__kapacitor-review__get_session_recap",
@@ -731,7 +735,7 @@ internal static class EvalService {
         try {
             var result = await ClaudeCliRunner.RunAsync(
                 prompt,
-                TimeSpan.FromMinutes(15),                 // bumped from 5 per DEV-1484
+                RetrospectiveTimeout,
                 msg => observer.OnInfo($"  {msg}"),
                 model:          JudgeModelFor(model),
                 maxTurns:       RetrospectiveMaxTurns,
