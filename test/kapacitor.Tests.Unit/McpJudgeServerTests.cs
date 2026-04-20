@@ -64,6 +64,37 @@ public class McpJudgeServerTests : IDisposable {
     }
 
     [Test]
+    public async Task get_session_errors_forwards_session_id_and_chain_flag() {
+        _server.Given(Request.Create()
+                .WithPath("/api/sessions/abc-123/errors")
+                .WithParam("chain", "true")
+                .UsingGet())
+            .RespondWith(Response.Create()
+                .WithStatusCode(200)
+                .WithBody("""[{"turn":42,"error":"exit 1"}]"""));
+
+        using var http = new HttpClient();
+
+        var result = await McpJudgeServer.HandleToolCallForTests(
+            toolName: "get_session_errors",
+            arguments: new JsonObject { ["session_id"] = "abc-123" },
+            client: http,
+            baseUrl: _server.Url!,
+            expectedSessionId: "abc-123"
+        );
+
+        using var doc = JsonDocument.Parse(result);
+
+        await Assert.That(
+                doc.RootElement.GetProperty("result")
+                    .GetProperty("content")[0]
+                    .GetProperty("text")
+                    .GetString()
+            )
+            .IsEqualTo("""[{"turn":42,"error":"exit 1"}]""");
+    }
+
+    [Test]
     public async Task get_session_recap_errors_when_session_id_missing() {
         using var http = new HttpClient();
 

@@ -109,8 +109,9 @@ static class McpJudgeServer {
             var encoded = Uri.EscapeDataString(sessionId);
 
             var httpResponse = toolName switch {
-                "get_session_recap" => await client.GetAsync($"{prBase}/api/sessions/{encoded}/recap?chain=true"),
-                _                   => throw new ArgumentException($"Unknown tool: {toolName}")
+                "get_session_recap"  => await client.GetAsync($"{prBase}/api/sessions/{encoded}/recap?chain=true"),
+                "get_session_errors" => await client.GetAsync($"{prBase}/api/sessions/{encoded}/errors?chain=true"),
+                _                    => throw new ArgumentException($"Unknown tool: {toolName}")
             };
 
             var body = await httpResponse.Content.ReadAsStringAsync();
@@ -166,6 +167,16 @@ static class McpJudgeServer {
             new(
                 "object",
                 new() { ["session_id"] = new("string", "Session ID to recap (must match the judge's bound session)") },
+                ["session_id"]
+            )
+        ),
+        new(
+            "get_session_errors",
+            "List errors and failures recorded in the session (tool errors, non-zero exits, exceptions). "
+          + "Use when you need to ground a finding in specific failures instead of inferring from the transcript.",
+            new(
+                "object",
+                new() { ["session_id"] = new("string", "Session ID (must match the judge's bound session)") },
                 ["session_id"]
             )
         )
