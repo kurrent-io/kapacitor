@@ -745,7 +745,10 @@ internal static class EvalService {
         var allowedTools = new[] {
             "mcp__kapacitor-review__get_session_recap",
             "mcp__kapacitor-review__get_session_errors",
-            "mcp__kapacitor-review__get_transcript"
+            "mcp__kapacitor-review__get_transcript",
+            "mcp__kapacitor-review__get_session_summary",
+            "mcp__kapacitor-review__search_session",
+            "mcp__kapacitor-review__get_tool_result"
         };
 
         try {
