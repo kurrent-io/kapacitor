@@ -108,8 +108,9 @@ static class McpJudgeServer {
 
             var encoded = Uri.EscapeDataString(sessionId);
 
-            HttpResponseMessage httpResponse = toolName switch {
-                _ => throw new ArgumentException($"Unknown tool: {toolName}")
+            var httpResponse = toolName switch {
+                "get_session_recap" => await client.GetAsync($"{prBase}/api/sessions/{encoded}/recap?chain=true"),
+                _                   => throw new ArgumentException($"Unknown tool: {toolName}")
             };
 
             var body = await httpResponse.Content.ReadAsStringAsync();
@@ -157,5 +158,16 @@ static class McpJudgeServer {
         return envelope.ToJsonString();
     }
 
-    static McpTool[] BuildToolsList() => [];
+    static McpTool[] BuildToolsList() => [
+        new(
+            "get_session_recap",
+            "Get a short narrative recap of the session's user inputs, assistant replies, and tool invocations. "
+          + "Start here — it's the cheapest way to orient yourself before pulling specific transcript slices.",
+            new(
+                "object",
+                new() { ["session_id"] = new("string", "Session ID to recap (must match the judge's bound session)") },
+                ["session_id"]
+            )
+        )
+    ];
 }
