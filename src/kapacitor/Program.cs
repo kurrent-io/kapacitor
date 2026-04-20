@@ -118,10 +118,17 @@ switch (command) {
         return await ValidatePlanCommand.Handle(baseUrl!, vpSessionId);
     }
     case "eval": {
-        var evalSessionId = ResolveSessionId(args, valueFlags: ["--model", "--threshold"]);
+        // --list-questions is a standalone sub-action; short-circuit.
+        if (args.Contains("--list-questions")) {
+            return await EvalCommand.HandleListQuestions(baseUrl!);
+        }
+
+        var evalSessionId = ResolveSessionId(args, valueFlags: ["--model", "--threshold", "--questions", "--skip"]);
 
         if (evalSessionId is null) {
-            Console.Error.WriteLine("Usage: kapacitor eval [--model sonnet] [--chain] [--threshold N] [sessionId]");
+            Console.Error.WriteLine("Usage: kapacitor eval [--model sonnet] [--chain] [--threshold N]");
+            Console.Error.WriteLine("                     [--questions <csv> | --skip <csv>] [sessionId]");
+            Console.Error.WriteLine("       kapacitor eval --list-questions");
             Console.Error.WriteLine("  No session ID provided and KAPACITOR_SESSION_ID not set.");
 
             return 1;
@@ -132,8 +139,13 @@ switch (command) {
         var evalThreshold = GetArg(args, "--threshold") is { } ts && int.TryParse(ts, out var parsed)
             ? parsed
             : (int?)null;
+        var evalQuestions = GetArg(args, "--questions");
+        var evalSkip      = GetArg(args, "--skip");
 
-        return await EvalCommand.HandleEval(baseUrl!, evalSessionId, evalModel, evalChain, evalThreshold);
+        return await EvalCommand.HandleEval(
+            baseUrl!, evalSessionId, evalModel, evalChain, evalThreshold,
+            evalQuestions, evalSkip
+        );
     }
     case "generate-whats-done" when args.Length < 2:
         Console.Error.WriteLine("Usage: kapacitor generate-whats-done <sessionId>");

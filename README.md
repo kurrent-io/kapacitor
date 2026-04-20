@@ -126,6 +126,9 @@ kapacitor eval <sessionId>                      # default: sonnet judge
 kapacitor eval --model opus <sessionId>         # stronger judge
 kapacitor eval --chain <sessionId>              # include the full continuation chain
 kapacitor eval --threshold 5000 <sessionId>     # keep more of each tool output before truncation
+kapacitor eval --questions safety <sessionId>   # run only the 4 safety judges
+kapacitor eval --skip efficiency <sessionId>    # run everything except efficiency
+kapacitor eval --list-questions                 # print the question taxonomy
 ```
 
 Output is a per-category + overall score (1-5, with `pass`/`warn`/`fail` verdicts), with a specific finding and supporting evidence per question. The aggregate is also persisted back to the session's stream as a `SessionEvalCompleted` event, so past evaluations can be queried from the dashboard or used to track quality trends across sessions.
