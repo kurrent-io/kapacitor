@@ -43,6 +43,15 @@ internal static class EvalService {
     // unpopulated and the call would surface as a null result.
     const int JudgeMaxTurns = 3;
 
+    // DEV-1484: the retrospective judge now pulls session details via MCP
+    // tools (recap/errors/transcript) instead of reading them from the
+    // embedded trace. Each tool call costs a turn, plus one for the final
+    // StructuredOutput reply and one end-of-turn. 10 gives the prompt's
+    // "at most 6 tool calls" budget room to breathe (6 tool calls + 1
+    // structured-output + headroom for reasoning blocks) without letting
+    // the judge page the transcript indefinitely.
+    const int RetrospectiveMaxTurns = 10;
+
     /// <summary>
     /// Resolves a caller-supplied model alias to the variant we actually
     /// want to dispatch to for a judge call. Today: force the 1M-context
@@ -403,22 +412,28 @@ internal static class EvalService {
         EmbeddedResources.Load("prompt-eval-retrospective.txt");
 
     /// <summary>
-    /// Builds the retrospective synthesis prompt from the four placeholders the
-    /// judge needs: session metadata, per-question verdicts, retained
-    /// patterns from prior evals in this repo, and the compacted trace. The
-    /// prompt file itself is loaded once at startup.
+    /// Builds the retrospective synthesis prompt from the three placeholders
+    /// the judge needs: session metadata, per-question verdicts, and retained
+    /// patterns from prior evals in this repo. The prompt file itself is
+    /// loaded once at startup.
+    ///
+    /// <para>
+    /// Per DEV-1484 the compacted trace is no longer embedded — the judge
+    /// pulls recap/errors/transcript slices on demand via the MCP tools
+    /// configured on the <c>ClaudeCliRunner.RunAsync</c> call. The
+    /// <c>{TRACE_JSON}</c> placeholder was removed from the template so no
+    /// substitution is needed here.
+    /// </para>
     /// </summary>
     public static string BuildRetrospectivePrompt(
             string sessionMeta,
             string verdictsJson,
-            string knownPatterns,
-            string traceJson
+            string knownPatterns
         ) =>
         RetrospectivePromptTemplate
             .Replace("{SESSION_META}",   sessionMeta)
             .Replace("{VERDICTS_JSON}",  verdictsJson)
-            .Replace("{KNOWN_PATTERNS}", knownPatterns)
-            .Replace("{TRACE_JSON}",     traceJson);
+            .Replace("{KNOWN_PATTERNS}", knownPatterns);
 
     /// <summary>
     /// Formats a per-category list of retained facts as a bulleted block for
@@ -687,18 +702,45 @@ internal static class EvalService {
         var sessionMeta   = $"session-id: {sessionId}\nrun-id: {evalRunId}\nmodel: {model}\noverall-score: {aggregate.OverallScore}/5";
         var verdictsJson  = JsonSerializer.Serialize(verdicts, KapacitorJsonContext.Default.IReadOnlyListEvalQuestionVerdict);
         var knownPatterns = FormatKnownPatternsAllCategories(knownFactsByCategory);
-        var prompt        = BuildRetrospectivePrompt(sessionMeta, verdictsJson, knownPatterns, traceJson);
+        var prompt        = BuildRetrospectivePrompt(sessionMeta, verdictsJson, knownPatterns);
+
+        // DEV-1484: instead of embedding the compacted trace (which blew
+        // past Sonnet's 200K-token window on real sessions), launch a
+        // per-session MCP judge server and let the judge pull recap /
+        // errors / transcript slices on demand.
+        //
+        // Hand-written JSON (not a serialised anonymous type) so this is
+        // AOT-safe and so the server key stays literally "kapacitor-review"
+        // — matching the prefix used everywhere else (Batch A server,
+        // `kapacitor-review` plugin) and avoiding any risk of
+        // System.Text.Json anon-object naming surprises.
+        // JsonEncodedText.Encode handles any escaping the sessionId might
+        // need (quotes, backslashes, control chars) so the inline template
+        // stays valid JSON for any session id the server accepts.
+        var sessionIdJson = JsonEncodedText.Encode(sessionId).ToString();
+        var mcpConfig =
+            "{\"mcpServers\":{\"kapacitor-review\":{\"command\":\"kapacitor\","
+          + "\"args\":[\"mcp\",\"judge\",\"--session\",\"" + sessionIdJson + "\"]}}}";
+
+        var allowedTools = new[] {
+            "mcp__kapacitor-review__get_session_recap",
+            "mcp__kapacitor-review__get_session_errors",
+            "mcp__kapacitor-review__get_transcript"
+        };
 
         try {
             var result = await ClaudeCliRunner.RunAsync(
                 prompt,
-                TimeSpan.FromMinutes(5),
+                TimeSpan.FromMinutes(15),                 // bumped from 5 per DEV-1484
                 msg => observer.OnInfo($"  {msg}"),
                 model:          JudgeModelFor(model),
-                maxTurns:       JudgeMaxTurns,
-                // Prompt embeds full compacted trace + verdicts; likely >32K on Windows.
+                maxTurns:       RetrospectiveMaxTurns,
+                // Prompt embeds verdicts + metadata; stdin keeps us below
+                // Windows' 32K argv limit even without the trace.
                 promptViaStdin: true,
                 jsonSchema:     RetrospectiveJsonSchema,
+                mcpConfigJson:  mcpConfig,
+                allowedTools:   allowedTools,
                 ct:             ct
             );
 
