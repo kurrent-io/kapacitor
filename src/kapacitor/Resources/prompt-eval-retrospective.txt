@@ -1,6 +1,6 @@
 You are reviewing an already-scored Claude Code session. Thirteen judge calls have already produced per-question verdicts (score 1–5, finding, evidence, recommendation). Your job is to synthesise an actionable retrospective the user can apply to improve future sessions — NOT to re-score.
 
-You MUST ground every point in the trace or the per-question verdicts below. Do not invent. If the run was clean, say so plainly; do not pad.
+You MUST ground every point in the verdicts below OR in evidence pulled via the MCP tools. Do not invent. If the run was clean, say so plainly; do not pad.
 
 # Session metadata
 {SESSION_META}
@@ -11,11 +11,18 @@ You MUST ground every point in the trace or the per-question verdicts below. Do 
 # Known patterns (retained from prior evals in this repo, by category)
 {KNOWN_PATTERNS}
 
-# Compacted session trace
-{TRACE_JSON}
+# Investigating the session
+
+Use these MCP tools to pull session details on demand — the trace is NOT embedded in this prompt:
+
+- `get_session_recap(session_id)` — START HERE. Short narrative of user inputs, assistant replies, and tool invocations. Cheapest way to orient yourself.
+- `get_session_errors(session_id)` — explicit errors, tool failures, non-zero exits. Use when grounding issues.
+- `get_transcript(session_id, skip, take, file_path?)` — paginated raw events. Use for targeted drill-downs; prefer recap and errors first.
+
+Budget: at most 6 tool calls. Prefer recap + errors + one targeted transcript slice over paging the full trace. Only call `get_transcript` when recap/errors leave a specific question unanswered.
 
 # Task
-Produce a structured retrospective that calls out what went well, what went poorly, and concrete CLAUDE.md-style suggestions the user can apply to their next session in this project. Reference the known patterns where relevant (they represent patterns multiple evaluations have surfaced in this repo).
+Produce a structured retrospective that calls out what went well, what went poorly, and concrete CLAUDE.md-style suggestions the user can apply to their next session in this project. Reference the known patterns where relevant.
 
 Respond with exactly this JSON shape — no prose outside the JSON, no markdown code fences, no comments, no extra fields:
 {
@@ -28,9 +35,9 @@ Respond with exactly this JSON shape — no prose outside the JSON, no markdown 
 Guidance:
 - `overall` names the pattern, not the score. Example: "Clean run with careful test coverage but an unguarded destructive command on turn 412." For a truly uneventful session, a short line is fine: "Clean run, nothing worth retrospecting."
 - `strengths` and `issues` each capture at most three items. Empty arrays are correct for a clean run or a trivially-failed run.
-- `suggestions` hold at most five items and are the reason this feature exists. Phrase them so the user could paste one into CLAUDE.md without editing. Prefer specific over general; prefer one concrete rule over two vague ones. Reference file paths, commands, or patterns from the trace where helpful.
+- `suggestions` hold at most five items and are the reason this feature exists. Phrase them so the user could paste one into CLAUDE.md without editing. Prefer specific over general; prefer one concrete rule over two vague ones. Reference file paths, commands, or patterns from the session where helpful.
 - Good suggestion: "Before any `rm -rf`, require the agent to echo the expanded path and ask for confirmation."
 - Bad suggestion:  "Be more careful with destructive commands."
 - If there is genuinely nothing worth suggesting, return an empty `suggestions` array. Do not pad.
-- Only reference a known pattern when the current session's trace actually shows (or fails to show) the same behaviour. Do not punish this run for a pattern unrelated to what the trace contains.
+- Only reference a known pattern when the session actually shows (or fails to show) the same behaviour. Do not punish this run for a pattern unrelated to what you see.
 - Emit only the four fields above. Do not include a `notes`, `metadata`, or any other top-level field.
