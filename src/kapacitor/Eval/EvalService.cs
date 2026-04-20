@@ -44,6 +44,35 @@ internal static class EvalService {
     const int JudgeMaxTurns = 3;
 
     /// <summary>
+    /// Resolves a caller-supplied model alias to the variant we actually
+    /// want to dispatch to for a judge call. Today: force the 1M-context
+    /// Sonnet variant for any plain <c>sonnet</c> request, because the
+    /// embedded compacted trace routinely exceeds the 200K window of the
+    /// default Sonnet (see DEV-1474 audit — real traces hit ~278K input
+    /// tokens, triggering the CLI's auto-compact and destroying verdicts).
+    ///
+    /// <para>
+    /// Temporary workaround pending DEV-1485 / DEV-1486, which will give
+    /// judges session-scoped tool access and drop the embedded trace
+    /// entirely. Once those ship, default-Sonnet is enough and this
+    /// remap can go away.
+    /// </para>
+    ///
+    /// <para>
+    /// Only the two short aliases the dashboard and CLI ship today
+    /// (<c>sonnet</c>, <c>claude-sonnet-4-6</c>) are rewritten — every
+    /// other alias or explicit full model ID passes through unchanged,
+    /// so a caller who knows what they're doing can still opt out by
+    /// naming the model exactly.
+    /// </para>
+    /// </summary>
+    public static string JudgeModelFor(string model) => model switch {
+        "sonnet"            => "sonnet[1m]",
+        "claude-sonnet-4-6" => "claude-sonnet-4-6[1m]",
+        _                   => model
+    };
+
+    /// <summary>
     /// Output of <see cref="PrepareAsync"/> — the shared state threaded
     /// through every <see cref="RunQuestionAsync"/> and finally consumed by
     /// <see cref="FinalizeAsync"/>. All fields are non-null on success.
@@ -249,7 +278,7 @@ internal static class EvalService {
             prompt,
             TimeSpan.FromMinutes(5),
             msg => { diagnostics.Add(msg); observer.OnInfo($"  {msg}"); },
-            model: model,
+            model: JudgeModelFor(model),
             maxTurns: JudgeMaxTurns,
             // Prompts embed the full compacted trace and can be hundreds
             // of KB — well past Windows' 32K argv limit. Stream via stdin.
@@ -665,7 +694,7 @@ internal static class EvalService {
                 prompt,
                 TimeSpan.FromMinutes(5),
                 msg => observer.OnInfo($"  {msg}"),
-                model:          model,
+                model:          JudgeModelFor(model),
                 maxTurns:       JudgeMaxTurns,
                 // Prompt embeds full compacted trace + verdicts; likely >32K on Windows.
                 promptViaStdin: true,

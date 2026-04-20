@@ -69,20 +69,41 @@ static class ClaudeCliRunner {
             string?           jsonSchema     = null,
             CancellationToken ct             = default
         ) {
-        // Run from a stable isolated directory to avoid loading project-specific plugins/config
-        // that might interfere with the headless title generation session.
-        // Uses a fixed path so Claude treats all invocations as the same "project" and doesn't
-        // scatter transcripts across many per-invocation directories under ~/.claude/projects.
-        var stableDir = PathHelpers.ConfigPath("claude-cwd");
+        // Fresh empty working dir per invocation: keeps Claude's CLAUDE.md
+        // auto-discovery from picking anything up, and isolates every run
+        // from user project state. Deleted in the `finally` so we don't
+        // leak one directory per eval question under the OS tmp root.
+        //
+        // A previous implementation reused a single stable dir under
+        // ~/.config/kapacitor/claude-cwd. That kept all transcripts under
+        // one ~/.claude/projects/ slug but still allowed ambient context
+        // (hooks, plugin sync, auto-memory) to accumulate — and when an
+        // ancestor directory happened to contain a CLAUDE.md, it would
+        // load into the judge's prompt and push it over the 200K token
+        // auto-compact threshold (DEV-1463 eval failures).
+        var workingDir = Path.Combine(Path.GetTempPath(), $"kapacitor-claude-{Guid.NewGuid():N}");
+        var createdWorkingDir = false;
 
         try {
-            Directory.CreateDirectory(stableDir);
+            Directory.CreateDirectory(workingDir);
+            createdWorkingDir = true;
         } catch (Exception ex) {
             log($"Failed to create isolated working directory: {ex.Message}");
-            stableDir = Path.GetTempPath();
+            workingDir = Path.GetTempPath();
         }
 
-        return await RunCoreAsync(prompt, timeout, log, stableDir, model, maxTurns, promptViaStdin, jsonSchema, ct);
+        try {
+            return await RunCoreAsync(prompt, timeout, log, workingDir, model, maxTurns, promptViaStdin, jsonSchema, ct);
+        } finally {
+            if (createdWorkingDir) {
+                try {
+                    Directory.Delete(workingDir, recursive: true);
+                } catch {
+                    // Best-effort cleanup; don't fail the caller because a
+                    // transcript file is still being flushed by claude.
+                }
+            }
+        }
     }
 
     static async Task<ClaudeCliResult?> RunCoreAsync(
@@ -139,6 +160,13 @@ static class ClaudeCliRunner {
         psi.ArgumentList.Add("--strict-mcp-config");
         psi.ArgumentList.Add("--disallowedTools");
         psi.ArgumentList.Add("LSP");
+        // Skills load ~200 entries into the system prompt and the
+        // `using-superpowers` skill auto-invokes `Skill` on every session.
+        // Both are pure overhead for a headless judge: they inflate the
+        // prompt (contributing to the 200K-token auto-compact that
+        // destroys verdicts) and burn turns on skill dispatch that never
+        // produces a StructuredOutput reply.
+        psi.ArgumentList.Add("--disable-slash-commands");
 
         if (!string.IsNullOrEmpty(jsonSchema)) {
             // --json-schema makes the CLI enforce a structured reply via an
