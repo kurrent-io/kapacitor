@@ -111,6 +111,7 @@ static class McpJudgeServer {
             var httpResponse = toolName switch {
                 "get_session_recap"  => await client.GetAsync($"{prBase}/api/sessions/{encoded}/recap?chain=true"),
                 "get_session_errors" => await client.GetAsync($"{prBase}/api/sessions/{encoded}/errors?chain=true"),
+                "get_transcript"     => await client.GetAsync(BuildTranscriptUrl(prBase, arguments!)),
                 _                    => throw new ArgumentException($"Unknown tool: {toolName}")
             };
 
@@ -179,6 +180,46 @@ static class McpJudgeServer {
                 new() { ["session_id"] = new("string", "Session ID (must match the judge's bound session)") },
                 ["session_id"]
             )
+        ),
+        new(
+            "get_transcript",
+            "Get the full transcript of a specific session: user messages, assistant reasoning, tool calls, and results. Paginated (default 100 events). Use file_path filter to scope to events mentioning a specific file. This is the deepest level of detail — use when you need to trace the exact reasoning chain.",
+            new(
+                "object",
+                new() {
+                    ["session_id"] = new("string", "Session ID to retrieve the transcript for (must match the judge's bound session)"),
+                    ["file_path"]  = new("string", "Optional file path to filter transcript events"),
+                    ["skip"]       = new("integer", "Number of events to skip (for pagination)"),
+                    ["take"]       = new("integer", "Number of events to return (for pagination)")
+                },
+                ["session_id"]
+            )
         )
     ];
+
+    static string BuildTranscriptUrl(string baseUrl, JsonObject? arguments) {
+        var sessionId = arguments?["session_id"]?.GetValue<string>()
+         ?? throw new ArgumentException("Missing required argument: session_id");
+
+        var url         = $"{baseUrl}/api/review/sessions/{Uri.EscapeDataString(sessionId)}/transcript";
+        var queryParams = new List<string>();
+
+        if (arguments?["file_path"]?.GetValue<string>() is { } filePath) {
+            queryParams.Add($"file_path={Uri.EscapeDataString(filePath)}");
+        }
+
+        if (arguments?["skip"]?.ToString() is { } skip) {
+            queryParams.Add($"skip={Uri.EscapeDataString(skip)}");
+        }
+
+        if (arguments?["take"]?.ToString() is { } take) {
+            queryParams.Add($"take={Uri.EscapeDataString(take)}");
+        }
+
+        if (queryParams.Count > 0) {
+            url += "?" + string.Join("&", queryParams);
+        }
+
+        return url;
+    }
 }
