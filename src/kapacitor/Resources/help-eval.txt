@@ -1,4 +1,5 @@
 Usage: kapacitor eval <sessionId> [options]
+       kapacitor eval --list-questions
 
 Runs an LLM-as-judge evaluation over a stored session. 13 questions across 4
 categories (safety, plan adherence, quality, efficiency) are asked of Claude
@@ -12,6 +13,13 @@ Options:
   --chain             Evaluate the full continuation chain, not just this session.
   --threshold <n>     Override the server's compaction threshold (bytes per tool
                       result, default server-side: 2000). Capped at 200_000.
+  --questions <csv>   Run only the listed questions. Accepts category names
+                      (safety, plan_adherence, quality, efficiency) and
+                      individual question IDs (e.g. tests_written). Mutually
+                      exclusive with --skip.
+  --skip <csv>        Run everything except the listed questions/categories.
+                      Mutually exclusive with --questions.
+  --list-questions    Print the question taxonomy (grouped by category) and exit.
   --help, -h          Show this help.
 
 Notes:
@@ -21,3 +29,8 @@ Notes:
     The full compacted trace is embedded in the prompt.
   - If the session ID is omitted, the currently-recorded session (as set by
     the session-start hook in KAPACITOR_SESSION_ID) is used.
+
+Examples:
+  kapacitor eval --questions safety                # 4 safety judges only
+  kapacitor eval --questions safety,tests_written  # 4 safety + tests_written = 5
+  kapacitor eval --skip efficiency                 # 10 judges (skip the 3 efficiency ones)

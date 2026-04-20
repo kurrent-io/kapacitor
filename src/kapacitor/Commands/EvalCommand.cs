@@ -9,18 +9,72 @@ namespace kapacitor.Commands;
 /// the daemon (DEV-1440 milestone 2) can reuse it.
 /// </summary>
 static class EvalCommand {
-    public static async Task<int> HandleEval(string baseUrl, string sessionId, string model, bool chain, int? thresholdBytes) {
-        using var httpClient = await HttpClientExtensions.CreateAuthenticatedClientAsync();
+    public static async Task<int> HandleEval(
+            string  baseUrl,
+            string  sessionId,
+            string  model,
+            bool    chain,
+            int?    thresholdBytes,
+            string? questionsCsv,
+            string? skipCsv
+        ) {
+        using var httpClient = await HttpClientExtensions.CreateAuthenticatedClientAsync(baseUrl);
 
+        // Fetch taxonomy once up-front so --list and --questions/--skip share
+        // the same source of truth; the server controls it (PR 1), not the CLI.
         var observer = new ConsoleEvalObserver(sessionId);
-        var result   = await EvalService.RunAsync(baseUrl, httpClient, sessionId, model, chain, thresholdBytes, observer);
-
-        if (result is null) {
+        var catalog  = await EvalQuestionCatalogClient.FetchAsync(baseUrl, httpClient, observer, CancellationToken.None);
+        if (catalog is null || catalog.Length == 0) {
+            // FetchAsync emitted OnFailed with a reason already.
             return 1;
         }
 
+        var include = Parse(questionsCsv);
+        var skip    = Parse(skipCsv);
+        var (questions, error) = EvalQuestionSelection.Resolve(catalog, include, skip);
+        if (error is not null) {
+            await Console.Error.WriteLineAsync($"eval: {error}");
+            return 2;
+        }
+        if (questions!.Count == 0) {
+            await Console.Error.WriteLineAsync("eval: selection resolved to zero questions");
+            return 2;
+        }
+
+        var result = await EvalService.RunAsync(
+            baseUrl, httpClient, sessionId, model, chain, thresholdBytes,
+            observer, questions: questions
+        );
+
+        if (result is null) return 1;
+
         Render(result, sessionId);
         return 0;
+    }
+
+    public static async Task<int> HandleListQuestions(string baseUrl) {
+        using var httpClient = await HttpClientExtensions.CreateAuthenticatedClientAsync(baseUrl);
+        var observer = new ConsoleEvalObserver(sessionId: "");
+        var catalog  = await EvalQuestionCatalogClient.FetchAsync(baseUrl, httpClient, observer, CancellationToken.None);
+        if (catalog is null) return 1;
+
+        foreach (var group in catalog.GroupBy(q => q.Category)) {
+            Console.WriteLine(group.Key);
+            foreach (var q in group) {
+                Console.WriteLine($"  {q.Id,-26}  {q.Text}");
+            }
+        }
+        return 0;
+    }
+
+    // Distinguishes "flag absent" (null) from "flag present, empty value"
+    // (empty array). An explicit --questions "" or --questions "," flows
+    // into Resolve() as zero tokens, which produces an empty selection —
+    // HandleEval then exits 2 with "selection resolved to zero questions"
+    // rather than silently running the full catalog.
+    internal static IReadOnlyList<string>? Parse(string? csv) {
+        if (csv is null) return null;
+        return csv.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
     }
 
     static void Render(SessionEvalCompletedPayload agg, string sessionId) {
