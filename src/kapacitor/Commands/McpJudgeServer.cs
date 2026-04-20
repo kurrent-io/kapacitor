@@ -1,3 +1,4 @@
+using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -109,10 +110,18 @@ static class McpJudgeServer {
             var encoded = Uri.EscapeDataString(sessionId);
 
             using var httpResponse = toolName switch {
-                "get_session_recap"  => await client.GetAsync($"{apiRoot}/api/sessions/{encoded}/recap?chain=true"),
-                "get_session_errors" => await client.GetAsync($"{apiRoot}/api/sessions/{encoded}/errors?chain=true"),
-                "get_transcript"     => await client.GetAsync(BuildTranscriptUrl(apiRoot, sessionId, arguments)),
-                _                    => throw new ArgumentException($"Unknown tool: {toolName}")
+                "get_session_recap"   => await client.GetAsync($"{apiRoot}/api/sessions/{encoded}/recap?chain=true"),
+                "get_session_errors"  => await client.GetAsync($"{apiRoot}/api/sessions/{encoded}/errors?chain=true"),
+                "get_transcript"      => await client.GetAsync(BuildTranscriptUrl(apiRoot, sessionId, arguments)),
+                "get_session_summary" => await client.GetAsync($"{apiRoot}/api/sessions/{encoded}/eval-summary"),
+                "search_session"      => await client.PostAsync(
+                    $"{apiRoot}/api/sessions/{encoded}/search",
+                    JsonContent.Create(BuildSearchBody(arguments), McpJsonContext.Default.SessionSearchQuery)
+                ),
+                "get_tool_result"     => await client.GetAsync(
+                    $"{apiRoot}/api/sessions/{encoded}/tool-results/{Uri.EscapeDataString(GetRequiredString(arguments, "call_id"))}"
+                ),
+                _                     => throw new ArgumentException($"Unknown tool: {toolName}")
             };
 
             var body = await httpResponse.Content.ReadAsStringAsync();
@@ -194,8 +203,65 @@ static class McpJudgeServer {
                 },
                 ["session_id"]
             )
+        ),
+        new(
+            "get_session_summary",
+            "Get a structured orientation digest for the session: title, turn count, plan text, files touched (path + change type + event count), "
+          + "test runs with pass/fail, error flag, and which tool results were truncated in the compacted trace (pair call_ids with get_tool_result). "
+          + "START HERE when you need a quick overview before deciding which MCP tool to call next.",
+            new(
+                "object",
+                new() { ["session_id"] = new("string", "Session ID (must match the judge's bound session)") },
+                ["session_id"]
+            )
+        ),
+        new(
+            "search_session",
+            "Full-text search scoped to one session. Returns ranked excerpts with speaker (user/assistant/tool), timestamp, and a highlighted snippet. "
+          + "Use for targeted lookups ('where did the agent run rm', 'what error mentioned permission') rather than paging the full trace. "
+          + "limit defaults to 20, capped at 50.",
+            new(
+                "object",
+                new() {
+                    ["session_id"] = new("string", "Session ID (must match the judge's bound session)"),
+                    ["query"]      = new("string", "Free-text FTS5 query"),
+                    ["limit"]      = new("integer", "Max number of ranked excerpts to return (default 20, max 50)")
+                },
+                ["session_id", "query"]
+            )
+        ),
+        new(
+            "get_tool_result",
+            "Fetch the untruncated body of a single tool result by its call_id. Use when get_session_summary reported the result was truncated "
+          + "(see the truncated_tool_results field) and the finding depends on what the tool actually produced — e.g. full dotnet test output, "
+          + "full git diff, full search hit list. 1 MB hard cap on response size.",
+            new(
+                "object",
+                new() {
+                    ["session_id"] = new("string", "Session ID (must match the judge's bound session)"),
+                    ["call_id"]    = new("string", "call_id from a tool_invocation/tool_result pair (e.g. toolu_01abc...)")
+                },
+                ["session_id", "call_id"]
+            )
         )
     ];
+
+    static SessionSearchQuery BuildSearchBody(JsonObject? arguments) {
+        var query = GetRequiredString(arguments, "query");
+        var limit = arguments?["limit"]?.GetValue<int>();
+
+        return new(query, limit);
+    }
+
+    static string GetRequiredString(JsonObject? arguments, string name) {
+        var value = arguments?[name]?.GetValue<string>();
+
+        if (string.IsNullOrWhiteSpace(value)) {
+            throw new ArgumentException($"Missing required argument: {name}");
+        }
+
+        return value;
+    }
 
     static string BuildTranscriptUrl(string baseUrl, string sessionId, JsonObject? arguments) {
         var url         = $"{baseUrl}/api/review/sessions/{Uri.EscapeDataString(sessionId)}/transcript";

@@ -284,6 +284,8 @@ record McpError(int Code, string Message);
 
 record SearchQuery(string Query);
 
+record SessionSearchQuery(string Query, int? Limit = null);
+
 [JsonSourceGenerationOptions(
     DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
     PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase
@@ -293,4 +295,5 @@ record SearchQuery(string Query);
 [JsonSerializable(typeof(McpToolCallResult))]
 [JsonSerializable(typeof(McpError))]
 [JsonSerializable(typeof(SearchQuery))]
+[JsonSerializable(typeof(SessionSearchQuery))]
 partial class McpJsonContext : JsonSerializerContext;

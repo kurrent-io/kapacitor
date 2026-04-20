@@ -221,4 +221,74 @@ public class McpJudgeServerTests : IDisposable {
         await Assert.That(content.GetProperty("content")[0].GetProperty("text").GetString())
             .Contains("session_id");
     }
+
+    [Test]
+    public async Task get_session_summary_forwards_session_id() {
+        _server.Given(Request.Create()
+                .WithPath("/api/sessions/abc-123/eval-summary")
+                .UsingGet())
+            .RespondWith(Response.Create()
+                .WithStatusCode(200)
+                .WithBody("""{"session_id":"abc-123","title":"t","turn_count":5}"""));
+
+        using var http = new HttpClient();
+        var result = await McpJudgeServer.HandleToolCallForTests(
+            toolName: "get_session_summary",
+            arguments: new JsonObject { ["session_id"] = "abc-123" },
+            client: http,
+            baseUrl: _server.Url!,
+            expectedSessionId: "abc-123"
+        );
+
+        using var doc = JsonDocument.Parse(result);
+        var text = doc.RootElement.GetProperty("result").GetProperty("content")[0].GetProperty("text").GetString();
+        await Assert.That(text).Contains("\"turn_count\":5");
+    }
+
+    [Test]
+    public async Task search_session_posts_query_body() {
+        _server.Given(Request.Create()
+                .WithPath("/api/sessions/abc-123/search")
+                .UsingPost()
+                .WithBody(b => b.Contains("\"query\"")))
+            .RespondWith(Response.Create()
+                .WithStatusCode(200)
+                .WithBody("""{"session_id":"abc-123","query":"rm","total_candidates":0,"results":[]}"""));
+
+        using var http = new HttpClient();
+        var result = await McpJudgeServer.HandleToolCallForTests(
+            toolName: "search_session",
+            arguments: new JsonObject { ["session_id"] = "abc-123", ["query"] = "rm" },
+            client: http,
+            baseUrl: _server.Url!,
+            expectedSessionId: "abc-123"
+        );
+
+        using var doc = JsonDocument.Parse(result);
+        var text = doc.RootElement.GetProperty("result").GetProperty("content")[0].GetProperty("text").GetString();
+        await Assert.That(text).Contains("\"results\"");
+    }
+
+    [Test]
+    public async Task get_tool_result_forwards_call_id_in_path() {
+        _server.Given(Request.Create()
+                .WithPath("/api/sessions/abc-123/tool-results/toolu_xyz")
+                .UsingGet())
+            .RespondWith(Response.Create()
+                .WithStatusCode(200)
+                .WithBody("""{"call_id":"toolu_xyz","output":"untruncated-body"}"""));
+
+        using var http = new HttpClient();
+        var result = await McpJudgeServer.HandleToolCallForTests(
+            toolName: "get_tool_result",
+            arguments: new JsonObject { ["session_id"] = "abc-123", ["call_id"] = "toolu_xyz" },
+            client: http,
+            baseUrl: _server.Url!,
+            expectedSessionId: "abc-123"
+        );
+
+        using var doc = JsonDocument.Parse(result);
+        var text = doc.RootElement.GetProperty("result").GetProperty("content")[0].GetProperty("text").GetString();
+        await Assert.That(text).Contains("untruncated-body");
+    }
 }
