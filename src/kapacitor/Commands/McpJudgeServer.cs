@@ -248,7 +248,18 @@ static class McpJudgeServer {
 
     static SessionSearchQuery BuildSearchBody(JsonObject? arguments) {
         var query = GetRequiredString(arguments, "query");
-        var limit = arguments?["limit"]?.GetValue<int>();
+
+        int? limit = null;
+
+        if (arguments?["limit"] is { } limitNode) {
+            try {
+                limit = limitNode.GetValue<int>();
+            } catch (InvalidOperationException) {
+                throw new ArgumentException("limit must be an integer");
+            } catch (FormatException) {
+                throw new ArgumentException("limit must be an integer");
+            }
+        }
 
         return new(query, limit);
     }
