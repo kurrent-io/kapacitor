@@ -15,11 +15,14 @@ You MUST ground every point in the verdicts below OR in evidence pulled via the 
 
 Use these MCP tools to pull session details on demand — the trace is NOT embedded in this prompt:
 
-- `get_session_recap(session_id)` — START HERE. Short narrative of user inputs, assistant replies, and tool invocations. Cheapest way to orient yourself.
-- `get_session_errors(session_id)` — explicit errors, tool failures, non-zero exits. Use when grounding issues.
-- `get_transcript(session_id, skip, take, file_path?)` — paginated raw events. Use for targeted drill-downs; prefer recap and errors first.
+- `get_session_summary(session_id)` — START HERE. Title, turn count, plan text, files touched (with change types), test runs with pass/fail, error flag, and the list of tool results whose bodies were truncated (their `call_id`s pair with `get_tool_result`).
+- `get_session_recap(session_id)` — short narrative if you need it.
+- `search_session(session_id, query, limit?)` — targeted full-text lookup for a phrase. Default limit 20, cap 50.
+- `get_session_errors(session_id)` — explicit errors, tool failures, non-zero exits.
+- `get_transcript(session_id, skip, take, file_path?)` — paginated raw events. Use for drill-downs after summary + search have narrowed the target.
+- `get_tool_result(session_id, call_id)` — full untruncated body of a specific tool result. Only call when `truncated_tool_results` lists a relevant call_id and the finding depends on what the tool actually produced.
 
-Budget: at most 6 tool calls. Prefer recap + errors + one targeted transcript slice over paging the full trace. Only call `get_transcript` when recap/errors leave a specific question unanswered.
+Budget: at most 6 tool calls. Prefer summary → search → targeted fetch over paging the full trace. Don't call `get_transcript` unless summary + search + recap left a specific question unanswered.
 
 # Task
 Produce a structured retrospective that calls out what went well, what went poorly, and concrete CLAUDE.md-style suggestions the user can apply to their next session in this project. Reference the known patterns where relevant.
