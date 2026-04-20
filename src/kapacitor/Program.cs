@@ -142,6 +142,16 @@ switch (command) {
         var evalQuestions = GetArg(args, "--questions");
         var evalSkip      = GetArg(args, "--skip");
 
+        // Guard against the user dropping the flag value — otherwise GetArg
+        // silently returns the next token ("--skip", "--chain", …) and the
+        // resolver later reports a confusing "unknown token" error.
+        foreach (var (flag, value) in new[] { ("--questions", evalQuestions), ("--skip", evalSkip) }) {
+            if (value is not null && value.StartsWith("--")) {
+                Console.Error.WriteLine($"eval: {flag} requires a value (got '{value}')");
+                return 2;
+            }
+        }
+
         return await EvalCommand.HandleEval(
             baseUrl!, evalSessionId, evalModel, evalChain, evalThreshold,
             evalQuestions, evalSkip

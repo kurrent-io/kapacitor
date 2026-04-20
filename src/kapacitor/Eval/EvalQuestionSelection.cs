@@ -24,7 +24,15 @@ internal static class EvalQuestionSelection {
         }
 
         var categories    = catalog.Select(q => q.Category).Distinct(StringComparer.Ordinal).ToHashSet(StringComparer.Ordinal);
-        var questionsById = catalog.ToDictionary(q => q.Id, StringComparer.Ordinal);
+        // Defensive TryAdd rather than ToDictionary: the server-side catalog
+        // has unique IDs by construction, but a misbehaving server response
+        // should surface a controlled error instead of crashing the CLI.
+        var questionsById = new Dictionary<string, EvalQuestionDto>(StringComparer.Ordinal);
+        foreach (var q in catalog) {
+            if (!questionsById.TryAdd(q.Id, q)) {
+                return (null, $"eval question catalog contains duplicate id '{q.Id}'");
+            }
+        }
 
         var resolved = new HashSet<string>(StringComparer.Ordinal);
         var tokens   = include ?? skip!;

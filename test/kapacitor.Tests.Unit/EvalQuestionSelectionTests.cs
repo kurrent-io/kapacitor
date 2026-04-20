@@ -58,4 +58,32 @@ public class EvalQuestionSelectionTests {
         await Assert.That(resolved).IsNull();
         await Assert.That(error!).Contains("notarealthing");
     }
+
+    // Qodo PR #23 finding #1 — an explicitly-empty --questions must not
+    // silently fall back to the full catalog; Resolve sees an empty token
+    // list and returns an empty selection, which HandleEval treats as a
+    // zero-question user error.
+    [Test]
+    public async Task Empty_include_returns_empty_selection_not_full_catalog() {
+        var (resolved, error) = EvalQuestionSelection.Resolve(Catalog, include: [], skip: null);
+        await Assert.That(error).IsNull();
+        await Assert.That(resolved!.Count).IsEqualTo(0);
+    }
+
+    // Qodo PR #23 finding #3 — a misbehaving server returning a catalog
+    // with duplicate IDs must produce a controlled error, not an
+    // uncaught ToDictionary ArgumentException.
+    [Test]
+    public async Task Duplicate_catalog_id_returns_error_instead_of_throwing() {
+        IReadOnlyList<EvalQuestionDto> dupCatalog = [
+            new() { Category = "safety", Id = "same_id", Text = "t", Prompt = "p" },
+            new() { Category = "safety", Id = "same_id", Text = "t", Prompt = "p" }
+        ];
+
+        var (resolved, error) = EvalQuestionSelection.Resolve(dupCatalog, include: ["safety"], skip: null);
+
+        await Assert.That(resolved).IsNull();
+        await Assert.That(error!).Contains("duplicate");
+        await Assert.That(error!).Contains("same_id");
+    }
 }

@@ -67,10 +67,14 @@ static class EvalCommand {
         return 0;
     }
 
-    static IReadOnlyList<string>? Parse(string? csv) {
-        if (string.IsNullOrEmpty(csv)) return null;
-        var parts = csv.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        return parts.Length == 0 ? null : parts;
+    // Distinguishes "flag absent" (null) from "flag present, empty value"
+    // (empty array). An explicit --questions "" or --questions "," flows
+    // into Resolve() as zero tokens, which produces an empty selection —
+    // HandleEval then exits 2 with "selection resolved to zero questions"
+    // rather than silently running the full catalog.
+    internal static IReadOnlyList<string>? Parse(string? csv) {
+        if (csv is null) return null;
+        return csv.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
     }
 
     static void Render(SessionEvalCompletedPayload agg, string sessionId) {
