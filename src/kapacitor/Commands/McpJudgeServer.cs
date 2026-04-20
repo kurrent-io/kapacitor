@@ -91,7 +91,7 @@ static class McpJudgeServer {
         }
 
         try {
-            var prBase    = baseUrl.TrimEnd('/');
+            var apiRoot   = baseUrl.TrimEnd('/');
             var sessionId = arguments?["session_id"]?.GetValue<string>();
 
             if (sessionId is null) {
@@ -109,9 +109,9 @@ static class McpJudgeServer {
             var encoded = Uri.EscapeDataString(sessionId);
 
             var httpResponse = toolName switch {
-                "get_session_recap"  => await client.GetAsync($"{prBase}/api/sessions/{encoded}/recap?chain=true"),
-                "get_session_errors" => await client.GetAsync($"{prBase}/api/sessions/{encoded}/errors?chain=true"),
-                "get_transcript"     => await client.GetAsync(BuildTranscriptUrl(prBase, arguments!)),
+                "get_session_recap"  => await client.GetAsync($"{apiRoot}/api/sessions/{encoded}/recap?chain=true"),
+                "get_session_errors" => await client.GetAsync($"{apiRoot}/api/sessions/{encoded}/errors?chain=true"),
+                "get_transcript"     => await client.GetAsync(BuildTranscriptUrl(apiRoot, sessionId, arguments)),
                 _                    => throw new ArgumentException($"Unknown tool: {toolName}")
             };
 
@@ -197,10 +197,7 @@ static class McpJudgeServer {
         )
     ];
 
-    static string BuildTranscriptUrl(string baseUrl, JsonObject? arguments) {
-        var sessionId = arguments?["session_id"]?.GetValue<string>()
-         ?? throw new ArgumentException("Missing required argument: session_id");
-
+    static string BuildTranscriptUrl(string baseUrl, string sessionId, JsonObject? arguments) {
         var url         = $"{baseUrl}/api/review/sessions/{Uri.EscapeDataString(sessionId)}/transcript";
         var queryParams = new List<string>();
 
