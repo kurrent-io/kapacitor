@@ -359,9 +359,17 @@ internal static class EvalService {
         // 5. Synthesise a retrospective from the per-question verdicts. Non-fatal:
         //    the verdicts are the persistence contract, a failed synthesis
         //    just leaves Retrospective=null on the payload.
+        // Pass the raw session id (not EncodedSessionId) — both sinks
+        // below treat this as a plain identifier: the prompt text shows
+        // it to the judge verbatim, and the MCP judge subprocess receives
+        // it on argv and re-encodes it at its own HTTP boundary. Passing
+        // the URL-encoded form here would show the judge a mangled id
+        // and make the subprocess double-encode into a URL the server
+        // won't match (latent for UUID sessions, visible for
+        // meta-session slugs — see DEV-1484 final review).
         var retrospective = await RunRetrospectiveAsync(
             evalRunId:            ctx.EvalRunId,
-            sessionId:            ctx.EncodedSessionId,
+            sessionId:            ctx.SessionId,
             model:                model,
             aggregate:            aggregate,
             verdicts:             verdicts,
