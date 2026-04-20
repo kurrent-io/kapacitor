@@ -87,6 +87,19 @@ static class ClaudeCliRunner {
             string[]?         allowedTools   = null,
             CancellationToken ct             = default
         ) {
+        // MCP mode without an allowlist would hand the model every tool the
+        // config exposes — including anything future MCP servers we add.
+        // The doc comment promises "restricted to exactly `allowedTools`",
+        // so enforce the contract here rather than silently drifting into a
+        // wider permission surface. Callers that want MCP tools must name
+        // them explicitly.
+        if (mcpConfigJson is not null && (allowedTools is null || allowedTools.Length == 0)) {
+            throw new ArgumentException(
+                "allowedTools must be a non-empty list when mcpConfigJson is supplied",
+                nameof(allowedTools)
+            );
+        }
+
         // Fresh empty working dir per invocation: keeps Claude's CLAUDE.md
         // auto-discovery from picking anything up, and isolates every run
         // from user project state. Deleted in the `finally` so we don't

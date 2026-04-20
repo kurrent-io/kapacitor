@@ -371,6 +371,7 @@ internal static class EvalService {
             evalRunId:            ctx.EvalRunId,
             sessionId:            ctx.SessionId,
             model:                model,
+            baseUrl:              baseUrl,
             aggregate:            aggregate,
             verdicts:             verdicts,
             knownFactsByCategory: ctx.KnownFactsByCategory,
@@ -700,6 +701,7 @@ internal static class EvalService {
             string                                      evalRunId,
             string                                      sessionId,
             string                                      model,
+            string                                      baseUrl,
             SessionEvalCompletedPayload                 aggregate,
             IReadOnlyList<EvalQuestionVerdict>          verdicts,
             IReadOnlyDictionary<string, List<JudgeFact>> knownFactsByCategory,
@@ -725,11 +727,17 @@ internal static class EvalService {
         // JsonObject/JsonArray — same pattern as ReviewCommand.cs.
         var commandPath = Environment.ProcessPath ?? "kapacitor";
 
+        // Inject KAPACITOR_URL so the child process uses the exact server the
+        // parent daemon resolved (which may have come from --server-url and
+        // therefore isn't reachable via the child's own config lookup).
+        // Matches the pattern in ReviewCommand.cs for the `kapacitor review`
+        // MCP launch.
         var mcpConfig = new JsonObject {
             ["mcpServers"] = new JsonObject {
                 ["kapacitor-review"] = new JsonObject {
                     ["command"] = commandPath,
-                    ["args"]    = new JsonArray("mcp", "judge", "--session", sessionId)
+                    ["args"]    = new JsonArray("mcp", "judge", "--session", sessionId),
+                    ["env"]     = new JsonObject { ["KAPACITOR_URL"] = baseUrl }
                 }
             }
         }.ToJsonString();

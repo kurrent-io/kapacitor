@@ -108,7 +108,7 @@ static class McpJudgeServer {
 
             var encoded = Uri.EscapeDataString(sessionId);
 
-            var httpResponse = toolName switch {
+            using var httpResponse = toolName switch {
                 "get_session_recap"  => await client.GetAsync($"{apiRoot}/api/sessions/{encoded}/recap?chain=true"),
                 "get_session_errors" => await client.GetAsync($"{apiRoot}/api/sessions/{encoded}/errors?chain=true"),
                 "get_transcript"     => await client.GetAsync(BuildTranscriptUrl(apiRoot, sessionId, arguments)),
