@@ -240,6 +240,12 @@ record EvalQuestionDto {
 
     [JsonPropertyName("prompt")]
     public required string Prompt { get; init; }
+
+    // DEV-1486: server-owned flag that opts this question into tools-enabled
+    // judging. Defaults to false so older servers that don't send the field
+    // keep producing text-only judge runs.
+    [JsonPropertyName("needs_tools")]
+    public bool NeedsTools { get; init; }
 }
 
 // Per-question verdict returned by each judge invocation. Matches the server
