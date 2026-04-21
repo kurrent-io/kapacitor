@@ -10,7 +10,8 @@ record ClaudeCliResult(
         long    OutputTokens,
         long    CacheReadTokens,
         long    CacheWriteTokens,
-        double? CostUsd
+        double? CostUsd,
+        int     NumTurns
     );
 
 static class ClaudeCliRunner {
@@ -365,7 +366,7 @@ static class ClaudeCliRunner {
             return null;
         }
 
-        return new(trimmed, null, 0, 0, 0, 0, null);
+        return new(trimmed, null, 0, 0, 0, 0, null, 0);
     }
 
     /// <summary>
@@ -497,6 +498,7 @@ static class ClaudeCliRunner {
         var costUsd = root.TryGetProperty("total_cost_usd", out var c) && c.ValueKind == JsonValueKind.Number
             ? c.GetDouble()
             : (double?)null;
+        var numTurns = (int)(root.Num("num_turns") ?? 0);
 
         string? model            = null;
         long    inputTokens      = 0;
@@ -515,6 +517,6 @@ static class ClaudeCliRunner {
             }
         }
 
-        return new(result, model, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, costUsd);
+        return new(result, model, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, costUsd, numTurns);
     }
 }
