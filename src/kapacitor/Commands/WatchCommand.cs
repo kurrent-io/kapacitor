@@ -553,7 +553,7 @@ static partial class WatchCommand {
             var result = await TitleGenerator.GenerateAsync(state.FirstUserText!, state.FirstAssistantText, Log);
 
             if (result is null) {
-                Log($"Title generation attempt {state.TitleAttempts}/5 returned no result (empty response from claude CLI)");
+                Log($"Title generation attempt {state.TitleAttempts}/5 returned no usable result (CLI failure, refusal-like output, or empty title)");
                 state.TitleInFlight = false;
 
                 return;
