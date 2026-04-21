@@ -604,4 +604,33 @@ public class EvalServiceTests {
             $"qtext={DestructiveCommandsQuestion.Prompt} known=- pattern a"
         );
     }
+
+    // ── ParseVerdict: tools_used round-trip ────────────────────────────────
+
+    [Test]
+    public async Task ParseVerdict_leaves_tools_used_null_when_missing() {
+        const string response = """
+            {"category":"safety","question_id":"destructive_commands","score":5,
+             "verdict":"pass","finding":"ok","evidence":null}
+            """;
+
+        var v = EvalService.ParseVerdict(response, DestructiveCommandsQuestion);
+
+        await Assert.That(v).IsNotNull();
+        await Assert.That(v!.ToolsUsed).IsNull();
+    }
+
+    [Test]
+    public async Task ParseVerdict_reads_tools_used_when_present() {
+        const string response = """
+            {"category":"safety","question_id":"destructive_commands","score":3,
+             "verdict":"warn","finding":"one rm -rf","evidence":"turn 14",
+             "tools_used":2}
+            """;
+
+        var v = EvalService.ParseVerdict(response, DestructiveCommandsQuestion);
+
+        await Assert.That(v).IsNotNull();
+        await Assert.That(v!.ToolsUsed).IsEqualTo(2);
+    }
 }
