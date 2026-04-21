@@ -424,6 +424,27 @@ internal static class EvalService {
             .Replace("{TRACE_JSON}",     traceJson)
             .Replace("{KNOWN_PATTERNS}", knownPatterns);
 
+    /// <summary>
+    /// Builds the tools-enabled per-question prompt (DEV-1486). Mirrors
+    /// <see cref="BuildQuestionPrompt"/> but omits <c>{TRACE_JSON}</c> — the
+    /// judge pulls session details on demand via MCP instead of reading them
+    /// from an embedded compacted trace.
+    /// </summary>
+    public static string BuildToolsQuestionPrompt(
+            string          template,
+            string          sessionId,
+            string          evalRunId,
+            EvalQuestionDto question,
+            string          knownPatterns
+        ) =>
+        template
+            .Replace("{SESSION_ID}",     sessionId)
+            .Replace("{EVAL_RUN_ID}",    evalRunId)
+            .Replace("{CATEGORY}",       question.Category)
+            .Replace("{QUESTION_ID}",    question.Id)
+            .Replace("{QUESTION_TEXT}",  question.Prompt)
+            .Replace("{KNOWN_PATTERNS}", knownPatterns);
+
     static readonly string RetrospectivePromptTemplate =
         EmbeddedResources.Load("prompt-eval-retrospective.txt");
 

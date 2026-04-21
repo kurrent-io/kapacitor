@@ -586,4 +586,22 @@ public class EvalServiceTests {
         await Assert.That(tpl).Contains("{KNOWN_PATTERNS}");
         await Assert.That(tpl).DoesNotContain("{TRACE_JSON}");
     }
+
+    // ── BuildToolsQuestionPrompt ──────────────────────────────────────────
+
+    [Test]
+    public async Task BuildToolsQuestionPrompt_substitutes_placeholders_and_has_no_trace() {
+        var prompt = EvalService.BuildToolsQuestionPrompt(
+            template:       "session={SESSION_ID} run={EVAL_RUN_ID} cat={CATEGORY} qid={QUESTION_ID} qtext={QUESTION_TEXT} known={KNOWN_PATTERNS}",
+            sessionId:      "sess-123",
+            evalRunId:      "run-abc",
+            question:       DestructiveCommandsQuestion,
+            knownPatterns:  "- pattern a"
+        );
+
+        await Assert.That(prompt).IsEqualTo(
+            "session=sess-123 run=run-abc cat=safety qid=destructive_commands " +
+            $"qtext={DestructiveCommandsQuestion.Prompt} known=- pattern a"
+        );
+    }
 }
