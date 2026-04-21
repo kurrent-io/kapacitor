@@ -1,3 +1,4 @@
+using kapacitor;
 using kapacitor.Eval;
 
 namespace kapacitor.Tests.Unit;
@@ -570,5 +571,19 @@ public class EvalServiceTests {
 
         await Assert.That(s.Length).IsEqualTo(500 + "… (100 more chars)".Length);
         await Assert.That(s).DoesNotContain("\n");
+    }
+
+    // ── Prompt template: tools-enabled ────────────────────────────────────
+
+    [Test]
+    public async Task ToolsPromptTemplate_loads_and_contains_key_placeholders() {
+        var tpl = EmbeddedResources.Load("prompt-eval-question-tools.txt");
+
+        await Assert.That(tpl).Contains("{SESSION_ID}");
+        await Assert.That(tpl).Contains("{CATEGORY}");
+        await Assert.That(tpl).Contains("{QUESTION_ID}");
+        await Assert.That(tpl).Contains("{QUESTION_TEXT}");
+        await Assert.That(tpl).Contains("{KNOWN_PATTERNS}");
+        await Assert.That(tpl).DoesNotContain("{TRACE_JSON}");
     }
 }
