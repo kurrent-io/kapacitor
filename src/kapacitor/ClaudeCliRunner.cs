@@ -86,6 +86,7 @@ static class ClaudeCliRunner {
             string?           jsonSchema     = null,
             string?           mcpConfigJson  = null,
             string[]?         allowedTools   = null,
+            double?           maxBudgetUsd   = null,
             CancellationToken ct             = default
         ) {
         // MCP mode without an allowlist would hand the model every tool the
@@ -125,7 +126,7 @@ static class ClaudeCliRunner {
         }
 
         try {
-            return await RunCoreAsync(prompt, timeout, log, workingDir, model, maxTurns, promptViaStdin, jsonSchema, mcpConfigJson, allowedTools, ct);
+            return await RunCoreAsync(prompt, timeout, log, workingDir, model, maxTurns, promptViaStdin, jsonSchema, mcpConfigJson, allowedTools, maxBudgetUsd, ct);
         } finally {
             if (createdWorkingDir) {
                 try {
@@ -149,6 +150,7 @@ static class ClaudeCliRunner {
             string?           jsonSchema,
             string?           mcpConfigJson,
             string[]?         allowedTools,
+            double?           maxBudgetUsd,
             CancellationToken ct
         ) {
         var psi = new ProcessStartInfo {
@@ -180,6 +182,11 @@ static class ClaudeCliRunner {
         psi.ArgumentList.Add(maxTurns.ToString());
         psi.ArgumentList.Add("--model");
         psi.ArgumentList.Add(model);
+
+        if (maxBudgetUsd is { } budget) {
+            psi.ArgumentList.Add("--max-budget-usd");
+            psi.ArgumentList.Add(budget.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture));
+        }
 
         if (mcpConfigJson is null) {
             // Text-only mode (title generation, per-question judges): block
