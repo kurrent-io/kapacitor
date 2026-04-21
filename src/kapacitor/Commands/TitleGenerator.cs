@@ -64,7 +64,7 @@ static partial class TitleGenerator {
         var title = CleanTitle(result.Result);
 
         if (title is null) {
-            log($"Title generation produced a refusal preamble, discarding: {Truncate(result.Result, 120)}");
+            log($"Title generation produced a refusal preamble, discarding: {SanitizeForLog(result.Result, 120)}");
 
             return null;
         }
@@ -98,7 +98,29 @@ static partial class TitleGenerator {
         return RefusalRx().IsMatch(title);
     }
 
-    static string Truncate(string value, int max) => value.Length <= max ? value : value[..max];
+    /// <summary>
+    /// Collapses newlines/control characters and truncates, so untrusted model output
+    /// cannot forge multi-line log entries.
+    /// </summary>
+    internal static string SanitizeForLog(string value, int max) {
+        var sb = new StringBuilder(Math.Min(value.Length, max));
+
+        foreach (var ch in value) {
+            if (sb.Length >= max) break;
+
+            if (ch is '\r' or '\n') {
+                sb.Append("\\n");
+
+                continue;
+            }
+
+            if (char.IsControl(ch)) continue;
+
+            sb.Append(ch);
+        }
+
+        return sb.ToString();
+    }
 
     /// <summary>
     /// Extracts the first user text and first assistant text from a transcript file

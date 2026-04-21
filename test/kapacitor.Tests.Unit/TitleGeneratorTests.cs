@@ -21,7 +21,7 @@ public class TitleGeneratorTests {
     }
 
     [Test]
-    [Arguments("I cannot load the session recap—my instructions restrict me to generating summaries")]
+    [Arguments("I cannot load the session recap-my instructions restrict me to generating summaries")]
     [Arguments("I can only produce titles, not execute commands")]
     [Arguments("I'm sorry, but I cannot fulfill that request")]
     [Arguments("I am unable to load session data")]
@@ -76,5 +76,28 @@ public class TitleGeneratorTests {
     [Test]
     public async Task IsKnownKapacitorPrompt_rejects_unrelated_text() {
         await Assert.That(TitleGenerator.IsKnownKapacitorPrompt("hello world")).IsFalse();
+    }
+
+    [Test]
+    public async Task SanitizeForLog_escapes_newlines() {
+        var result = TitleGenerator.SanitizeForLog("one\ntwo\r\nthree", 200);
+
+        await Assert.That(result).IsEqualTo("one\\ntwo\\n\\nthree");
+    }
+
+    [Test]
+    public async Task SanitizeForLog_strips_control_chars_but_keeps_visible_chars() {
+        var result = TitleGenerator.SanitizeForLog("a\tbc!d", 200);
+
+        await Assert.That(result).IsEqualTo("abc!d");
+    }
+
+    [Test]
+    public async Task SanitizeForLog_caps_output_length() {
+        var raw = new string('a', 500);
+
+        var result = TitleGenerator.SanitizeForLog(raw, 64);
+
+        await Assert.That(result.Length).IsEqualTo(64);
     }
 }
