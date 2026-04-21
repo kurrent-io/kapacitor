@@ -75,6 +75,16 @@ static class ClaudeCliRunner {
     /// both modes. Leaving both null preserves the text-only behaviour
     /// every other caller relies on.
     /// </para>
+    ///
+    /// <para>
+    /// <paramref name="maxBudgetUsd"/> caps the wall-clock spend of the
+    /// <c>claude</c> subprocess. When null (default) no cap is applied. The CLI
+    /// honours it via <c>--max-budget-usd</c> and will return with whatever
+    /// partial result it had when the cap was hit; downstream parsers treat a
+    /// missing <c>structured_output</c> field as a failed judge, which is the
+    /// intended "hit the ceiling" behaviour for DEV-1486's tools-enabled
+    /// questions.
+    /// </para>
     /// </summary>
     public static async Task<ClaudeCliResult?> RunAsync(
             string            prompt,
