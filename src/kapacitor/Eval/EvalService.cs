@@ -68,11 +68,11 @@ internal static class EvalService {
 
     static readonly TimeSpan ToolsPerQuestionTimeout = TimeSpan.FromMinutes(10);
 
-    // Byte-identical to the retrospective's allowed-tools list (see
-    // RunRetrospectiveAsync). Keeping them identical keeps the call_id →
-    // tool_name accounting surface aligned across per-question and
-    // retrospective judge runs.
-    static readonly string[] ToolsPerQuestionAllowedTools = new[] {
+    // Shared between RunRetrospectiveAsync and the tools-enabled per-question
+    // branch of RunQuestionAsync. Keeping a single list keeps the
+    // call_id → tool_name accounting surface aligned across both judge runs
+    // and prevents drift when new MCP tools are added.
+    static readonly string[] JudgeMcpAllowedTools = new[] {
         "mcp__kapacitor-review__get_session_recap",
         "mcp__kapacitor-review__get_session_errors",
         "mcp__kapacitor-review__get_transcript",
@@ -344,7 +344,7 @@ internal static class EvalService {
                 promptViaStdin: true,
                 jsonSchema:     VerdictJsonSchema,
                 mcpConfigJson:  mcpConfig,
-                allowedTools:   ToolsPerQuestionAllowedTools,
+                allowedTools:   JudgeMcpAllowedTools,
                 maxBudgetUsd:   ToolsPerQuestionMaxBudgetUsd,
                 ct:             ct
             );
@@ -838,15 +838,6 @@ internal static class EvalService {
             }
         }.ToJsonString();
 
-        var allowedTools = new[] {
-            "mcp__kapacitor-review__get_session_recap",
-            "mcp__kapacitor-review__get_session_errors",
-            "mcp__kapacitor-review__get_transcript",
-            "mcp__kapacitor-review__get_session_summary",
-            "mcp__kapacitor-review__search_session",
-            "mcp__kapacitor-review__get_tool_result"
-        };
-
         try {
             var result = await ClaudeCliRunner.RunAsync(
                 prompt,
@@ -859,7 +850,7 @@ internal static class EvalService {
                 promptViaStdin: true,
                 jsonSchema:     RetrospectiveJsonSchema,
                 mcpConfigJson:  mcpConfig,
-                allowedTools:   allowedTools,
+                allowedTools:   JudgeMcpAllowedTools,
                 ct:             ct
             );
 
