@@ -72,14 +72,14 @@ internal static class EvalService {
     // RunRetrospectiveAsync). Keeping them identical keeps the call_id →
     // tool_name accounting surface aligned across per-question and
     // retrospective judge runs.
-    static readonly string[] ToolsPerQuestionAllowedTools = [
+    static readonly string[] ToolsPerQuestionAllowedTools = new[] {
         "mcp__kapacitor-review__get_session_recap",
         "mcp__kapacitor-review__get_session_errors",
         "mcp__kapacitor-review__get_transcript",
         "mcp__kapacitor-review__get_session_summary",
         "mcp__kapacitor-review__search_session",
         "mcp__kapacitor-review__get_tool_result"
-    ];
+    };
 
     /// <summary>
     /// Resolves a caller-supplied model alias to the variant we actually
