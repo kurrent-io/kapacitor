@@ -31,23 +31,27 @@ static partial class TitleGenerator {
 
     /// <summary>
     /// Builds the title generation prompt from user and optional assistant context.
+    /// Labels the inputs as data to summarize, never as a request directed at the model.
     /// </summary>
     static string BuildPrompt(string userText, string? assistantText) {
         var truncatedUser = userText.Length > 500 ? userText[..500] : userText;
 
         var sb = new StringBuilder();
         sb.Append(TitlePromptTemplate);
-        sb.Append($"\n\nThe user's request: {truncatedUser}");
+        sb.Append($"\n\n<user_message_to_summarize>\n{truncatedUser}\n</user_message_to_summarize>");
 
         if (assistantText is not null) {
-            sb.Append($"\n\nThe assistant's initial response: {assistantText}");
+            sb.Append($"\n\n<assistant_reply_for_context_only>\n{assistantText}\n</assistant_reply_for_context_only>");
         }
+
+        sb.Append("\n\nTitle:");
 
         return sb.ToString();
     }
 
     /// <summary>
-    /// Generates a title by calling Claude CLI. Returns the cleaned title string, or null on failure.
+    /// Generates a title by calling Claude CLI. Returns the cleaned title string, or null on failure
+    /// (including when the model produced a refusal rather than a title).
     /// </summary>
     internal static async Task<ClaudeCliResult?> GenerateAsync(string userText, string? assistantText, Action<string> log) {
         var prompt = BuildPrompt(userText, assistantText);
@@ -59,22 +63,42 @@ static partial class TitleGenerator {
 
         var title = CleanTitle(result.Result);
 
+        if (title is null) {
+            log($"Title generation produced a refusal preamble, discarding: {Truncate(result.Result, 120)}");
+
+            return null;
+        }
+
         return result with { Result = title };
     }
 
     /// <summary>
     /// Strips markdown formatting, trailing question marks, and caps length.
+    /// Returns null if the output looks like a refusal preamble rather than a title —
+    /// the caller can retry or fall back instead of persisting garbage.
     /// </summary>
-    internal static string CleanTitle(string raw) {
+    internal static string? CleanTitle(string raw) {
         var title = MarkdownRx().Replace(raw, "").Trim();
         title = title.TrimEnd('?').TrimEnd();
+
+        if (LooksLikeRefusal(title)) {
+            return null;
+        }
 
         if (title.Length > 120) {
             title = title[..120];
         }
 
-        return title;
+        return title.Length == 0 ? null : title;
     }
+
+    static bool LooksLikeRefusal(string title) {
+        if (title.Length == 0) return false;
+
+        return RefusalRx().IsMatch(title);
+    }
+
+    static string Truncate(string value, int max) => value.Length <= max ? value : value[..max];
 
     /// <summary>
     /// Extracts the first user text and first assistant text from a transcript file
@@ -207,4 +231,8 @@ static partial class TitleGenerator {
 
     [GeneratedRegex("[*_`#]+")]
     private static partial Regex MarkdownRx();
+
+    [GeneratedRegex(@"^(?:I\s+(?:cannot|can't|can\s+only|am\s+(?:unable|not\s+able))\b|I'?m\s+(?:sorry|unable)\b|Sorry[,\s]|My\s+(?:instructions|role|job)\b|As\s+an?\s+\w+,?\s+I\b|Unfortunately[,\s])",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex RefusalRx();
 }
