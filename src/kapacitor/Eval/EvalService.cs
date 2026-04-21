@@ -58,6 +58,29 @@ internal static class EvalService {
     // headroom even under cold-start claude CLI latency.
     static readonly TimeSpan RetrospectiveTimeout = TimeSpan.FromMinutes(15);
 
+    // DEV-1486: tools-enabled per-question judges reuse the retrospective's
+    // MCP tool surface but on a tighter per-question budget. 10 turns /
+    // 10 minutes / $0.50 balances "enough rope to call summary + search +
+    // one or two targeted fetches" against runaway investigation on a
+    // single question.
+    const int    ToolsPerQuestionMaxTurns     = 10;
+    const double ToolsPerQuestionMaxBudgetUsd = 0.50;
+
+    static readonly TimeSpan ToolsPerQuestionTimeout = TimeSpan.FromMinutes(10);
+
+    // Shared between RunRetrospectiveAsync and the tools-enabled per-question
+    // branch of RunQuestionAsync. Keeping a single list keeps the
+    // call_id → tool_name accounting surface aligned across both judge runs
+    // and prevents drift when new MCP tools are added.
+    static readonly string[] JudgeMcpAllowedTools = new[] {
+        "mcp__kapacitor-review__get_session_recap",
+        "mcp__kapacitor-review__get_session_errors",
+        "mcp__kapacitor-review__get_transcript",
+        "mcp__kapacitor-review__get_session_summary",
+        "mcp__kapacitor-review__search_session",
+        "mcp__kapacitor-review__get_tool_result"
+    };
+
     /// <summary>
     /// Resolves a caller-supplied model alias to the variant we actually
     /// want to dispatch to for a judge call. Today: force the 1M-context
@@ -100,6 +123,7 @@ internal static class EvalService {
         EvalContextResult                            ContextResult,
         IReadOnlyDictionary<string, List<JudgeFact>> KnownFactsByCategory,
         string                                       PromptTemplate,
+        string                                       ToolsPromptTemplate,
         IReadOnlyList<EvalQuestionDto>               Questions,
         string                                       Model
     );
@@ -250,6 +274,7 @@ internal static class EvalService {
         // 2. Fetch retained judge facts per category to inject as known patterns.
         var knownFactsByCategory = await FetchAllJudgeFactsAsync(httpClient, baseUrl, encodedSessionId, questions, observer, ct);
         var promptTemplate       = EmbeddedResources.Load("prompt-eval-question.txt");
+        var toolsPromptTemplate  = EmbeddedResources.Load("prompt-eval-question-tools.txt");
 
         return new EvalContext(
             EvalRunId:            evalRunId,
@@ -259,6 +284,7 @@ internal static class EvalService {
             ContextResult:        context,
             KnownFactsByCategory: knownFactsByCategory,
             PromptTemplate:       promptTemplate,
+            ToolsPromptTemplate:  toolsPromptTemplate,
             Questions:            questions,
             Model:                model
         );
@@ -281,26 +307,65 @@ internal static class EvalService {
         observer.OnQuestionStarted(index, total, question.Category, question.Id);
 
         var patterns = FormatKnownPatterns(ctx.KnownFactsByCategory.GetValueOrDefault(question.Category, []));
-        var prompt   = BuildQuestionPrompt(ctx.PromptTemplate, ctx.SessionId, ctx.EvalRunId,
-            question, ctx.TraceJson, patterns);
 
         // Capture ClaudeCliRunner diagnostics (exit code, stdout preview)
         // so a null result gets reported with *why* it was null — those
         // lines are the only signal about API errors or max-turn failures,
         // and daemon observers log OnInfo at Debug level where they vanish.
-        var diagnostics = new List<string>();
-        var result = await ClaudeCliRunner.RunAsync(
-            prompt,
-            TimeSpan.FromMinutes(5),
-            msg => { diagnostics.Add(msg); observer.OnInfo($"  {msg}"); },
-            model: JudgeModelFor(model),
-            maxTurns: JudgeMaxTurns,
-            // Prompts embed the full compacted trace and can be hundreds
-            // of KB — well past Windows' 32K argv limit. Stream via stdin.
-            promptViaStdin: true,
-            jsonSchema: VerdictJsonSchema,
-            ct: ct
-        );
+        var              diagnostics = new List<string>();
+        ClaudeCliResult? result;
+
+        if (question.NeedsTools) {
+            // DEV-1486 tools-enabled path. Session-scoped MCP tool surface
+            // (same as retrospective) on a per-question budget: 10 turns,
+            // 10-min timeout, $0.50 cap. Prompt omits the compacted trace —
+            // the judge fetches session details on demand.
+            var prompt = BuildToolsQuestionPrompt(
+                ctx.ToolsPromptTemplate, ctx.SessionId, ctx.EvalRunId, question, patterns);
+
+            var commandPath = Environment.ProcessPath ?? "kapacitor";
+
+            var mcpConfig = new JsonObject {
+                ["mcpServers"] = new JsonObject {
+                    ["kapacitor-review"] = new JsonObject {
+                        ["command"] = commandPath,
+                        ["args"]    = new JsonArray("mcp", "judge", "--session", ctx.SessionId),
+                        ["env"]     = new JsonObject { ["KAPACITOR_URL"] = baseUrl }
+                    }
+                }
+            }.ToJsonString();
+
+            result = await ClaudeCliRunner.RunAsync(
+                prompt,
+                ToolsPerQuestionTimeout,
+                msg => { diagnostics.Add(msg); observer.OnInfo($"  {msg}"); },
+                model:          JudgeModelFor(model),
+                maxTurns:       ToolsPerQuestionMaxTurns,
+                promptViaStdin: true,
+                jsonSchema:     VerdictJsonSchema,
+                mcpConfigJson:  mcpConfig,
+                allowedTools:   JudgeMcpAllowedTools,
+                maxBudgetUsd:   ToolsPerQuestionMaxBudgetUsd,
+                ct:             ct
+            );
+        } else {
+            // Text-only path (default): unchanged from pre-DEV-1486.
+            var prompt = BuildQuestionPrompt(ctx.PromptTemplate, ctx.SessionId, ctx.EvalRunId,
+                question, ctx.TraceJson, patterns);
+
+            result = await ClaudeCliRunner.RunAsync(
+                prompt,
+                TimeSpan.FromMinutes(5),
+                msg => { diagnostics.Add(msg); observer.OnInfo($"  {msg}"); },
+                model:          JudgeModelFor(model),
+                maxTurns:       JudgeMaxTurns,
+                // Prompts embed the full compacted trace and can be hundreds
+                // of KB — well past Windows' 32K argv limit. Stream via stdin.
+                promptViaStdin: true,
+                jsonSchema:     VerdictJsonSchema,
+                ct:             ct
+            );
+        }
 
         if (result is null) {
             var reason = diagnostics.Count == 0
@@ -321,6 +386,15 @@ internal static class EvalService {
                 $"verdict JSON could not be parsed; raw response: {Truncate(result.Result, 500)}");
 
             return null;
+        }
+
+        // DEV-1486: record tool-call count for tools-enabled questions.
+        // Derived as num_turns - 1 (the final StructuredOutput turn doesn't
+        // count as investigation). Clamped at 0 for the defensive case
+        // where the CLI reports 0 turns. Null for text-only questions so
+        // the server can distinguish "didn't measure" from "measured zero".
+        if (question.NeedsTools) {
+            verdict = verdict with { ToolsUsed = Math.Max(0, result.NumTurns - 1) };
         }
 
         observer.OnQuestionCompleted(index, total, verdict, result.InputTokens, result.OutputTokens);
@@ -405,8 +479,9 @@ internal static class EvalService {
 
     // ── Prompt construction ────────────────────────────────────────────────
 
-    // Per-question judges remain text-only (see ClaudeCliRunner mcpConfigJson branching)
-    // — they still embed {TRACE_JSON}. Retrospective moved to MCP tool access in DEV-1484.
+    // Per-question judges are text-only by default; the four DEV-1486 tagged
+    // questions (NeedsTools=true) opt into the MCP tool surface via
+    // BuildToolsQuestionPrompt + the tools branch of RunQuestionAsync.
     public static string BuildQuestionPrompt(
             string          template,
             string          sessionId,
@@ -422,6 +497,27 @@ internal static class EvalService {
             .Replace("{QUESTION_ID}",    question.Id)
             .Replace("{QUESTION_TEXT}",  question.Prompt)
             .Replace("{TRACE_JSON}",     traceJson)
+            .Replace("{KNOWN_PATTERNS}", knownPatterns);
+
+    /// <summary>
+    /// Builds the tools-enabled per-question prompt (DEV-1486). Mirrors
+    /// <see cref="BuildQuestionPrompt"/> but omits <c>{TRACE_JSON}</c> — the
+    /// judge pulls session details on demand via MCP instead of reading them
+    /// from an embedded compacted trace.
+    /// </summary>
+    public static string BuildToolsQuestionPrompt(
+            string          template,
+            string          sessionId,
+            string          evalRunId,
+            EvalQuestionDto question,
+            string          knownPatterns
+        ) =>
+        template
+            .Replace("{SESSION_ID}",     sessionId)
+            .Replace("{EVAL_RUN_ID}",    evalRunId)
+            .Replace("{CATEGORY}",       question.Category)
+            .Replace("{QUESTION_ID}",    question.Id)
+            .Replace("{QUESTION_TEXT}",  question.Prompt)
             .Replace("{KNOWN_PATTERNS}", knownPatterns);
 
     static readonly string RetrospectivePromptTemplate =
@@ -742,15 +838,6 @@ internal static class EvalService {
             }
         }.ToJsonString();
 
-        var allowedTools = new[] {
-            "mcp__kapacitor-review__get_session_recap",
-            "mcp__kapacitor-review__get_session_errors",
-            "mcp__kapacitor-review__get_transcript",
-            "mcp__kapacitor-review__get_session_summary",
-            "mcp__kapacitor-review__search_session",
-            "mcp__kapacitor-review__get_tool_result"
-        };
-
         try {
             var result = await ClaudeCliRunner.RunAsync(
                 prompt,
@@ -763,7 +850,7 @@ internal static class EvalService {
                 promptViaStdin: true,
                 jsonSchema:     RetrospectiveJsonSchema,
                 mcpConfigJson:  mcpConfig,
-                allowedTools:   allowedTools,
+                allowedTools:   JudgeMcpAllowedTools,
                 ct:             ct
             );
 

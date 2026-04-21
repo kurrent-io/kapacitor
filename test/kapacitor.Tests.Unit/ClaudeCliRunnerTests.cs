@@ -149,4 +149,28 @@ public class ClaudeCliRunnerTests {
 
         await Assert.That(ex.ParamName).IsEqualTo("allowedTools");
     }
+
+    [Test]
+    public async Task ParseResponse_extracts_num_turns_from_json() {
+        const string json = """
+                            {
+                                "result": "ok",
+                                "num_turns": 4,
+                                "total_cost_usd": 0.12,
+                                "modelUsage": {
+                                    "claude-sonnet-4-6": {
+                                        "inputTokens": 10,
+                                        "outputTokens": 5,
+                                        "cacheReadInputTokens": 0,
+                                        "cacheCreationInputTokens": 0
+                                    }
+                                }
+                            }
+                            """;
+
+        var result = ClaudeCliRunner.ParseResponse(json);
+
+        await Assert.That(result).IsNotNull();
+        await Assert.That(result!.NumTurns).IsEqualTo(4);
+    }
 }

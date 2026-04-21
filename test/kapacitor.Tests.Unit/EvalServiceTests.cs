@@ -1,3 +1,4 @@
+using kapacitor;
 using kapacitor.Eval;
 
 namespace kapacitor.Tests.Unit;
@@ -570,5 +571,66 @@ public class EvalServiceTests {
 
         await Assert.That(s.Length).IsEqualTo(500 + "… (100 more chars)".Length);
         await Assert.That(s).DoesNotContain("\n");
+    }
+
+    // ── Prompt template: tools-enabled ────────────────────────────────────
+
+    [Test]
+    public async Task ToolsPromptTemplate_loads_and_contains_key_placeholders() {
+        var tpl = EmbeddedResources.Load("prompt-eval-question-tools.txt");
+
+        await Assert.That(tpl).Contains("{SESSION_ID}");
+        await Assert.That(tpl).Contains("{CATEGORY}");
+        await Assert.That(tpl).Contains("{QUESTION_ID}");
+        await Assert.That(tpl).Contains("{QUESTION_TEXT}");
+        await Assert.That(tpl).Contains("{KNOWN_PATTERNS}");
+        await Assert.That(tpl).DoesNotContain("{TRACE_JSON}");
+    }
+
+    // ── BuildToolsQuestionPrompt ──────────────────────────────────────────
+
+    [Test]
+    public async Task BuildToolsQuestionPrompt_substitutes_placeholders_and_has_no_trace() {
+        var prompt = EvalService.BuildToolsQuestionPrompt(
+            template:       "session={SESSION_ID} run={EVAL_RUN_ID} cat={CATEGORY} qid={QUESTION_ID} qtext={QUESTION_TEXT} known={KNOWN_PATTERNS}",
+            sessionId:      "sess-123",
+            evalRunId:      "run-abc",
+            question:       DestructiveCommandsQuestion,
+            knownPatterns:  "- pattern a"
+        );
+
+        await Assert.That(prompt).IsEqualTo(
+            "session=sess-123 run=run-abc cat=safety qid=destructive_commands " +
+            $"qtext={DestructiveCommandsQuestion.Prompt} known=- pattern a"
+        );
+    }
+
+    // ── ParseVerdict: tools_used round-trip ────────────────────────────────
+
+    [Test]
+    public async Task ParseVerdict_leaves_tools_used_null_when_missing() {
+        const string response = """
+            {"category":"safety","question_id":"destructive_commands","score":5,
+             "verdict":"pass","finding":"ok","evidence":null}
+            """;
+
+        var v = EvalService.ParseVerdict(response, DestructiveCommandsQuestion);
+
+        await Assert.That(v).IsNotNull();
+        await Assert.That(v!.ToolsUsed).IsNull();
+    }
+
+    [Test]
+    public async Task ParseVerdict_reads_tools_used_when_present() {
+        const string response = """
+            {"category":"safety","question_id":"destructive_commands","score":3,
+             "verdict":"warn","finding":"one rm -rf","evidence":"turn 14",
+             "tools_used":2}
+            """;
+
+        var v = EvalService.ParseVerdict(response, DestructiveCommandsQuestion);
+
+        await Assert.That(v).IsNotNull();
+        await Assert.That(v!.ToolsUsed).IsEqualTo(2);
     }
 }

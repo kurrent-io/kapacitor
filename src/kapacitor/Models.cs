@@ -240,6 +240,12 @@ record EvalQuestionDto {
 
     [JsonPropertyName("prompt")]
     public required string Prompt { get; init; }
+
+    // DEV-1486: server-owned flag that opts this question into tools-enabled
+    // judging. Defaults to false so older servers that don't send the field
+    // keep producing text-only judge runs.
+    [JsonPropertyName("needs_tools")]
+    public bool NeedsTools { get; init; }
 }
 
 // Per-question verdict returned by each judge invocation. Matches the server
@@ -266,6 +272,13 @@ record EvalQuestionVerdict {
 
     [JsonPropertyName("recommendation")]
     public string? Recommendation { get; init; }
+
+    // DEV-1486: tool-call count for tools-enabled judges. Null for text-only
+    // questions. Populated from the claude CLI's num_turns field minus 1
+    // (the final StructuredOutput turn). Shipped back to the server so the
+    // dashboard can surface actual budget spent per question.
+    [JsonPropertyName("tools_used")]
+    public int? ToolsUsed { get; init; }
 }
 
 record EvalCategoryResult {

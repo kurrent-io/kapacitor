@@ -10,7 +10,8 @@ record ClaudeCliResult(
         long    OutputTokens,
         long    CacheReadTokens,
         long    CacheWriteTokens,
-        double? CostUsd
+        double? CostUsd,
+        int     NumTurns
     );
 
 static class ClaudeCliRunner {
@@ -74,6 +75,16 @@ static class ClaudeCliRunner {
     /// both modes. Leaving both null preserves the text-only behaviour
     /// every other caller relies on.
     /// </para>
+    ///
+    /// <para>
+    /// <paramref name="maxBudgetUsd"/> caps the wall-clock spend of the
+    /// <c>claude</c> subprocess. When null (default) no cap is applied. The CLI
+    /// honours it via <c>--max-budget-usd</c> and will return with whatever
+    /// partial result it had when the cap was hit; downstream parsers treat a
+    /// missing <c>structured_output</c> field as a failed judge, which is the
+    /// intended "hit the ceiling" behaviour for DEV-1486's tools-enabled
+    /// questions.
+    /// </para>
     /// </summary>
     public static async Task<ClaudeCliResult?> RunAsync(
             string            prompt,
@@ -85,6 +96,7 @@ static class ClaudeCliRunner {
             string?           jsonSchema     = null,
             string?           mcpConfigJson  = null,
             string[]?         allowedTools   = null,
+            double?           maxBudgetUsd   = null,
             CancellationToken ct             = default
         ) {
         // MCP mode without an allowlist would hand the model every tool the
@@ -124,7 +136,7 @@ static class ClaudeCliRunner {
         }
 
         try {
-            return await RunCoreAsync(prompt, timeout, log, workingDir, model, maxTurns, promptViaStdin, jsonSchema, mcpConfigJson, allowedTools, ct);
+            return await RunCoreAsync(prompt, timeout, log, workingDir, model, maxTurns, promptViaStdin, jsonSchema, mcpConfigJson, allowedTools, maxBudgetUsd, ct);
         } finally {
             if (createdWorkingDir) {
                 try {
@@ -148,6 +160,7 @@ static class ClaudeCliRunner {
             string?           jsonSchema,
             string?           mcpConfigJson,
             string[]?         allowedTools,
+            double?           maxBudgetUsd,
             CancellationToken ct
         ) {
         var psi = new ProcessStartInfo {
@@ -179,6 +192,11 @@ static class ClaudeCliRunner {
         psi.ArgumentList.Add(maxTurns.ToString());
         psi.ArgumentList.Add("--model");
         psi.ArgumentList.Add(model);
+
+        if (maxBudgetUsd is { } budget) {
+            psi.ArgumentList.Add("--max-budget-usd");
+            psi.ArgumentList.Add(budget.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture));
+        }
 
         if (mcpConfigJson is null) {
             // Text-only mode (title generation, per-question judges): block
@@ -365,7 +383,7 @@ static class ClaudeCliRunner {
             return null;
         }
 
-        return new(trimmed, null, 0, 0, 0, 0, null);
+        return new(trimmed, null, 0, 0, 0, 0, null, 0);
     }
 
     /// <summary>
@@ -497,6 +515,7 @@ static class ClaudeCliRunner {
         var costUsd = root.TryGetProperty("total_cost_usd", out var c) && c.ValueKind == JsonValueKind.Number
             ? c.GetDouble()
             : (double?)null;
+        var numTurns = (int)(root.Num("num_turns") ?? 0);
 
         string? model            = null;
         long    inputTokens      = 0;
@@ -515,6 +534,6 @@ static class ClaudeCliRunner {
             }
         }
 
-        return new(result, model, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, costUsd);
+        return new(result, model, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, costUsd, numTurns);
     }
 }
