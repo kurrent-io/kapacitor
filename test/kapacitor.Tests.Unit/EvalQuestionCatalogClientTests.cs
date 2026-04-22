@@ -1,4 +1,3 @@
-using kapacitor;
 using kapacitor.Eval;
 using WireMock.RequestBuilders;
 using WireMock.ResponseBuilders;
@@ -16,35 +15,50 @@ public class EvalQuestionCatalogClientTests : IDisposable {
         public List<string> FailureMessages { get; } = [];
 
         public void OnInfo(string message) { }
+
         public void OnStarted(string evalRunId, string sessionId, string judgeModel, int totalQuestions) { }
+
         public void OnContextFetched(int traceEntries, int traceChars, int toolResultsTotal, int toolResultsTruncated, long bytesSaved) { }
+
         public void OnQuestionStarted(int index, int total, string category, string questionId) { }
+
         public void OnQuestionCompleted(int index, int total, EvalQuestionVerdict verdict, long inputTokens, long outputTokens) { }
+
         public void OnQuestionFailed(int index, int total, string category, string questionId, string reason) { }
+
         public void OnFactRetained(string category, string fact) { }
+
         public void OnRetrospectiveStarted() { }
+
         public void OnRetrospectiveCompleted(EvalRetrospective retrospective) { }
+
         public void OnRetrospectiveFailed(string reason) { }
+
         public void OnFinished(SessionEvalCompletedPayload aggregate) { }
+
         public void OnFailed(string reason) => FailureMessages.Add(reason);
     }
 
     [Test]
     public async Task FetchAsync_deserializes_server_response() {
         _server.Given(Request.Create().WithPath("/api/eval/questions").UsingGet())
-            .RespondWith(Response.Create()
-                .WithStatusCode(200)
-                .WithHeader("Content-Type", "application/json")
-                .WithBody("""
-                [
-                  {"category":"safety","id":"sensitive_files","text":"label","prompt":"question?"},
-                  {"category":"quality","id":"tests_written","text":"label","prompt":"question?"}
-                ]
-                """));
+            .RespondWith(
+                Response.Create()
+                    .WithStatusCode(200)
+                    .WithHeader("Content-Type", "application/json")
+                    .WithBody(
+                        """
+                        [
+                          {"category":"safety","id":"sensitive_files","text":"label","prompt":"question?"},
+                          {"category":"quality","id":"tests_written","text":"label","prompt":"question?"}
+                        ]
+                        """
+                    )
+            );
 
-        using var http = new HttpClient();
-        var observer = new RecordingObserver();
-        var result = await EvalQuestionCatalogClient.FetchAsync(_server.Url!, http, observer, CancellationToken.None);
+        using var http     = new HttpClient();
+        var       observer = new RecordingObserver();
+        var       result   = await EvalQuestionCatalogClient.FetchAsync(_server.Url!, http, observer, CancellationToken.None);
 
         await Assert.That(result).IsNotNull();
         await Assert.That(result!.Length).IsEqualTo(2);
@@ -58,9 +72,9 @@ public class EvalQuestionCatalogClientTests : IDisposable {
         _server.Given(Request.Create().WithPath("/api/eval/questions").UsingGet())
             .RespondWith(Response.Create().WithStatusCode(500));
 
-        using var http = new HttpClient();
-        var observer = new RecordingObserver();
-        var result = await EvalQuestionCatalogClient.FetchAsync(_server.Url!, http, observer, CancellationToken.None);
+        using var http     = new HttpClient();
+        var       observer = new RecordingObserver();
+        var       result   = await EvalQuestionCatalogClient.FetchAsync(_server.Url!, http, observer, CancellationToken.None);
 
         await Assert.That(result).IsNull();
         await Assert.That(observer.FailureMessages).Count().IsEqualTo(1);
@@ -72,9 +86,9 @@ public class EvalQuestionCatalogClientTests : IDisposable {
         _server.Given(Request.Create().WithPath("/api/eval/questions").UsingGet())
             .RespondWith(Response.Create().WithStatusCode(401));
 
-        using var http = new HttpClient();
-        var observer = new RecordingObserver();
-        var result = await EvalQuestionCatalogClient.FetchAsync(_server.Url!, http, observer, CancellationToken.None);
+        using var http     = new HttpClient();
+        var       observer = new RecordingObserver();
+        var       result   = await EvalQuestionCatalogClient.FetchAsync(_server.Url!, http, observer, CancellationToken.None);
 
         await Assert.That(result).IsNull();
         await Assert.That(observer.FailureMessages).Count().IsEqualTo(1);
@@ -84,14 +98,16 @@ public class EvalQuestionCatalogClientTests : IDisposable {
     [Test]
     public async Task FetchAsync_emits_json_error_on_invalid_json() {
         _server.Given(Request.Create().WithPath("/api/eval/questions").UsingGet())
-            .RespondWith(Response.Create()
-                .WithStatusCode(200)
-                .WithHeader("Content-Type", "application/json")
-                .WithBody("not json at all"));
+            .RespondWith(
+                Response.Create()
+                    .WithStatusCode(200)
+                    .WithHeader("Content-Type", "application/json")
+                    .WithBody("not json at all")
+            );
 
-        using var http = new HttpClient();
-        var observer = new RecordingObserver();
-        var result = await EvalQuestionCatalogClient.FetchAsync(_server.Url!, http, observer, CancellationToken.None);
+        using var http     = new HttpClient();
+        var       observer = new RecordingObserver();
+        var       result   = await EvalQuestionCatalogClient.FetchAsync(_server.Url!, http, observer, CancellationToken.None);
 
         await Assert.That(result).IsNull();
         await Assert.That(observer.FailureMessages).Count().IsEqualTo(1);
@@ -101,18 +117,22 @@ public class EvalQuestionCatalogClientTests : IDisposable {
     [Test]
     public async Task FetchAsync_emits_malformed_entry_error_on_missing_category() {
         _server.Given(Request.Create().WithPath("/api/eval/questions").UsingGet())
-            .RespondWith(Response.Create()
-                .WithStatusCode(200)
-                .WithHeader("Content-Type", "application/json")
-                .WithBody("""
-                [
-                  {"category":"","id":"test_id","text":"label","prompt":"question?"}
-                ]
-                """));
+            .RespondWith(
+                Response.Create()
+                    .WithStatusCode(200)
+                    .WithHeader("Content-Type", "application/json")
+                    .WithBody(
+                        """
+                        [
+                          {"category":"","id":"test_id","text":"label","prompt":"question?"}
+                        ]
+                        """
+                    )
+            );
 
-        using var http = new HttpClient();
-        var observer = new RecordingObserver();
-        var result = await EvalQuestionCatalogClient.FetchAsync(_server.Url!, http, observer, CancellationToken.None);
+        using var http     = new HttpClient();
+        var       observer = new RecordingObserver();
+        var       result   = await EvalQuestionCatalogClient.FetchAsync(_server.Url!, http, observer, CancellationToken.None);
 
         await Assert.That(result).IsNull();
         await Assert.That(observer.FailureMessages).Count().IsEqualTo(1);
@@ -122,14 +142,16 @@ public class EvalQuestionCatalogClientTests : IDisposable {
     [Test]
     public async Task FetchAsync_emits_empty_error_on_empty_array() {
         _server.Given(Request.Create().WithPath("/api/eval/questions").UsingGet())
-            .RespondWith(Response.Create()
-                .WithStatusCode(200)
-                .WithHeader("Content-Type", "application/json")
-                .WithBody("[]"));
+            .RespondWith(
+                Response.Create()
+                    .WithStatusCode(200)
+                    .WithHeader("Content-Type", "application/json")
+                    .WithBody("[]")
+            );
 
-        using var http = new HttpClient();
-        var observer = new RecordingObserver();
-        var result = await EvalQuestionCatalogClient.FetchAsync(_server.Url!, http, observer, CancellationToken.None);
+        using var http     = new HttpClient();
+        var       observer = new RecordingObserver();
+        var       result   = await EvalQuestionCatalogClient.FetchAsync(_server.Url!, http, observer, CancellationToken.None);
 
         await Assert.That(result).IsNull();
         await Assert.That(observer.FailureMessages).Count().IsEqualTo(1);

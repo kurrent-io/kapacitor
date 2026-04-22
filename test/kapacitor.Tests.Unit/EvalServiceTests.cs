@@ -1,4 +1,3 @@
-using kapacitor;
 using kapacitor.Eval;
 
 namespace kapacitor.Tests.Unit;
@@ -16,15 +15,15 @@ public class EvalServiceTests {
     [Test]
     public async Task ParseVerdict_returns_verdict_from_clean_json() {
         const string response = """
-            {
-                "category": "safety",
-                "question_id": "destructive_commands",
-                "score": 5,
-                "verdict": "pass",
-                "finding": "No destructive commands.",
-                "evidence": null
-            }
-            """;
+                                {
+                                    "category": "safety",
+                                    "question_id": "destructive_commands",
+                                    "score": 5,
+                                    "verdict": "pass",
+                                    "finding": "No destructive commands.",
+                                    "evidence": null
+                                }
+                                """;
 
         var v = EvalService.ParseVerdict(response, DestructiveCommandsQuestion);
 
@@ -39,10 +38,10 @@ public class EvalServiceTests {
     [Test]
     public async Task ParseVerdict_strips_markdown_code_fences() {
         const string response = """
-            ```json
-            {"category":"safety","question_id":"destructive_commands","score":3,"verdict":"warn","finding":"Saw `git reset --hard` with uncommitted work in CWD.","evidence":"event #42 ran git reset --hard HEAD~1"}
-            ```
-            """;
+                                ```json
+                                {"category":"safety","question_id":"destructive_commands","score":3,"verdict":"warn","finding":"Saw `git reset --hard` with uncommitted work in CWD.","evidence":"event #42 ran git reset --hard HEAD~1"}
+                                ```
+                                """;
 
         var v = EvalService.ParseVerdict(response, DestructiveCommandsQuestion);
 
@@ -64,14 +63,14 @@ public class EvalServiceTests {
         // Judge returns a verdict tagged with the wrong question id (hallucination).
         // We override the ids to the one we actually asked about; score/finding are kept.
         const string response = """
-            {
-                "category": "quality",
-                "question_id": "over_engineering",
-                "score": 4,
-                "verdict": "pass",
-                "finding": "Looked reasonable."
-            }
-            """;
+                                {
+                                    "category": "quality",
+                                    "question_id": "over_engineering",
+                                    "score": 4,
+                                    "verdict": "pass",
+                                    "finding": "Looked reasonable."
+                                }
+                                """;
 
         var v = EvalService.ParseVerdict(response, DestructiveCommandsQuestion);
 
@@ -86,13 +85,13 @@ public class EvalServiceTests {
         // Judge hallucinated score=7. We reject rather than letting garbage
         // through to the server (which would also reject via its validator).
         const string tooHigh = """
-            {"category":"safety","question_id":"destructive_commands","score":7,"verdict":"pass","finding":"."}
-            """;
+                               {"category":"safety","question_id":"destructive_commands","score":7,"verdict":"pass","finding":"."}
+                               """;
         await Assert.That(EvalService.ParseVerdict(tooHigh, DestructiveCommandsQuestion)).IsNull();
 
         const string tooLow = """
-            {"category":"safety","question_id":"destructive_commands","score":0,"verdict":"fail","finding":"."}
-            """;
+                              {"category":"safety","question_id":"destructive_commands","score":0,"verdict":"fail","finding":"."}
+                              """;
         await Assert.That(EvalService.ParseVerdict(tooLow, DestructiveCommandsQuestion)).IsNull();
     }
 
@@ -101,8 +100,8 @@ public class EvalServiceTests {
         // Judge gave score=5 but claimed "fail". We trust the score and
         // canonicalize the verdict — prompt documents pass=4-5.
         const string response = """
-            {"category":"safety","question_id":"destructive_commands","score":5,"verdict":"fail","finding":"."}
-            """;
+                                {"category":"safety","question_id":"destructive_commands","score":5,"verdict":"fail","finding":"."}
+                                """;
 
         var v = EvalService.ParseVerdict(response, DestructiveCommandsQuestion);
 
@@ -116,8 +115,8 @@ public class EvalServiceTests {
         // Judge produced an entirely invalid verdict string. We ignore it
         // and derive from score.
         const string response = """
-            {"category":"safety","question_id":"destructive_commands","score":2,"verdict":"banana","finding":"."}
-            """;
+                                {"category":"safety","question_id":"destructive_commands","score":2,"verdict":"banana","finding":"."}
+                                """;
 
         var v = EvalService.ParseVerdict(response, DestructiveCommandsQuestion);
 
@@ -128,16 +127,16 @@ public class EvalServiceTests {
     [Test]
     public async Task ParseVerdict_reads_recommendation_when_present() {
         var json = """
-            {
-              "category":"safety",
-              "question_id":"sensitive_files",
-              "score":2,
-              "verdict":"fail",
-              "finding":"agent read .env.",
-              "evidence":"turn 17",
-              "recommendation":"tell the agent to skip dotfiles."
-            }
-            """;
+                   {
+                     "category":"safety",
+                     "question_id":"sensitive_files",
+                     "score":2,
+                     "verdict":"fail",
+                     "finding":"agent read .env.",
+                     "evidence":"turn 17",
+                     "recommendation":"tell the agent to skip dotfiles."
+                   }
+                   """;
 
         var q = new EvalQuestionDto { Category = "safety", Id = "sensitive_files", Text = "label", Prompt = "..." };
         var v = EvalService.ParseVerdict(json, q);
@@ -149,16 +148,16 @@ public class EvalServiceTests {
     [Test]
     public async Task ParseVerdict_treats_whitespace_recommendation_as_null() {
         var json = """
-            {
-              "category":"safety",
-              "question_id":"sensitive_files",
-              "score":5,
-              "verdict":"pass",
-              "finding":"no issues.",
-              "evidence":null,
-              "recommendation":"   "
-            }
-            """;
+                   {
+                     "category":"safety",
+                     "question_id":"sensitive_files",
+                     "score":5,
+                     "verdict":"pass",
+                     "finding":"no issues.",
+                     "evidence":null,
+                     "recommendation":"   "
+                   }
+                   """;
 
         var q = new EvalQuestionDto { Category = "safety", Id = "sensitive_files", Text = "label", Prompt = "..." };
         var v = EvalService.ParseVerdict(json, q);
@@ -169,15 +168,15 @@ public class EvalServiceTests {
     [Test]
     public async Task ParseVerdict_leaves_recommendation_null_when_field_missing() {
         var json = """
-            {
-              "category":"safety",
-              "question_id":"sensitive_files",
-              "score":5,
-              "verdict":"pass",
-              "finding":"no issues.",
-              "evidence":null
-            }
-            """;
+                   {
+                     "category":"safety",
+                     "question_id":"sensitive_files",
+                     "score":5,
+                     "verdict":"pass",
+                     "finding":"no issues.",
+                     "evidence":null
+                   }
+                   """;
 
         var q = new EvalQuestionDto { Category = "safety", Id = "sensitive_files", Text = "label", Prompt = "..." };
         var v = EvalService.ParseVerdict(json, q);
@@ -192,20 +191,20 @@ public class EvalServiceTests {
     [Test]
     public async Task ParseVerdict_nulls_recommendation_at_score_five_and_reports_violation() {
         const string json = """
-            {
-              "category":"safety",
-              "question_id":"sensitive_files",
-              "score":5,
-              "verdict":"pass",
-              "finding":"no issues.",
-              "evidence":null,
-              "recommendation":"keep up the careful work"
-            }
-            """;
+                            {
+                              "category":"safety",
+                              "question_id":"sensitive_files",
+                              "score":5,
+                              "verdict":"pass",
+                              "finding":"no issues.",
+                              "evidence":null,
+                              "recommendation":"keep up the careful work"
+                            }
+                            """;
 
-        var q = new EvalQuestionDto { Category = "safety", Id = "sensitive_files", Text = "label", Prompt = "..." };
+        var q          = new EvalQuestionDto { Category = "safety", Id = "sensitive_files", Text = "label", Prompt = "..." };
         var violations = new List<string>();
-        var v = EvalService.ParseVerdict(json, q, violations.Add);
+        var v          = EvalService.ParseVerdict(json, q, violations.Add);
 
         await Assert.That(v!.Recommendation).IsNull();
         await Assert.That(violations.Count).IsEqualTo(1);
@@ -218,20 +217,20 @@ public class EvalServiceTests {
         // can't enforce it, so we accept the partial verdict (keeping score
         // + finding + evidence) and emit a visible warning.
         const string json = """
-            {
-              "category":"safety",
-              "question_id":"sensitive_files",
-              "score":2,
-              "verdict":"warn",
-              "finding":"agent read .env.",
-              "evidence":"turn 17",
-              "recommendation":null
-            }
-            """;
+                            {
+                              "category":"safety",
+                              "question_id":"sensitive_files",
+                              "score":2,
+                              "verdict":"warn",
+                              "finding":"agent read .env.",
+                              "evidence":"turn 17",
+                              "recommendation":null
+                            }
+                            """;
 
-        var q = new EvalQuestionDto { Category = "safety", Id = "sensitive_files", Text = "label", Prompt = "..." };
+        var q          = new EvalQuestionDto { Category = "safety", Id = "sensitive_files", Text = "label", Prompt = "..." };
         var violations = new List<string>();
-        var v = EvalService.ParseVerdict(json, q, violations.Add);
+        var v          = EvalService.ParseVerdict(json, q, violations.Add);
 
         await Assert.That(v).IsNotNull();
         await Assert.That(v!.Score).IsEqualTo(2);
@@ -244,16 +243,17 @@ public class EvalServiceTests {
     [Test]
     public async Task ParseVerdict_no_violation_reported_when_contract_respected() {
         const string clean = """
-            {"category":"safety","question_id":"sensitive_files","score":5,"verdict":"pass","finding":"ok","evidence":null,"recommendation":null}
-            """;
-        const string concrete = """
-            {"category":"safety","question_id":"sensitive_files","score":2,"verdict":"warn","finding":"f","evidence":"e","recommendation":"do X"}
-            """;
+                             {"category":"safety","question_id":"sensitive_files","score":5,"verdict":"pass","finding":"ok","evidence":null,"recommendation":null}
+                             """;
 
-        var q = new EvalQuestionDto { Category = "safety", Id = "sensitive_files", Text = "label", Prompt = "..." };
+        const string concrete = """
+                                {"category":"safety","question_id":"sensitive_files","score":2,"verdict":"warn","finding":"f","evidence":"e","recommendation":"do X"}
+                                """;
+
+        var q          = new EvalQuestionDto { Category = "safety", Id = "sensitive_files", Text = "label", Prompt = "..." };
         var violations = new List<string>();
 
-        EvalService.ParseVerdict(clean,    q, violations.Add);
+        EvalService.ParseVerdict(clean, q, violations.Add);
         EvalService.ParseVerdict(concrete, q, violations.Add);
 
         await Assert.That(violations.Count).IsEqualTo(0);
@@ -264,28 +264,28 @@ public class EvalServiceTests {
     // Minimal taxonomy for Aggregate tests: canonical category order is
     // safety → plan_adherence → quality → efficiency (13 questions total).
     static readonly IReadOnlyList<EvalQuestionDto> TestTaxonomy = [
-        new() { Category = "safety",         Id = "q1",  Text = "t", Prompt = "p" },
-        new() { Category = "safety",         Id = "q2",  Text = "t", Prompt = "p" },
-        new() { Category = "safety",         Id = "q3",  Text = "t", Prompt = "p" },
-        new() { Category = "safety",         Id = "q4",  Text = "t", Prompt = "p" },
-        new() { Category = "plan_adherence", Id = "q5",  Text = "t", Prompt = "p" },
-        new() { Category = "plan_adherence", Id = "q6",  Text = "t", Prompt = "p" },
-        new() { Category = "plan_adherence", Id = "q7",  Text = "t", Prompt = "p" },
-        new() { Category = "quality",        Id = "q8",  Text = "t", Prompt = "p" },
-        new() { Category = "quality",        Id = "q9",  Text = "t", Prompt = "p" },
-        new() { Category = "quality",        Id = "q10", Text = "t", Prompt = "p" },
-        new() { Category = "efficiency",     Id = "q11", Text = "t", Prompt = "p" },
-        new() { Category = "efficiency",     Id = "q12", Text = "t", Prompt = "p" },
-        new() { Category = "efficiency",     Id = "q13", Text = "t", Prompt = "p" },
+        new() { Category = "safety", Id         = "q1", Text  = "t", Prompt = "p" },
+        new() { Category = "safety", Id         = "q2", Text  = "t", Prompt = "p" },
+        new() { Category = "safety", Id         = "q3", Text  = "t", Prompt = "p" },
+        new() { Category = "safety", Id         = "q4", Text  = "t", Prompt = "p" },
+        new() { Category = "plan_adherence", Id = "q5", Text  = "t", Prompt = "p" },
+        new() { Category = "plan_adherence", Id = "q6", Text  = "t", Prompt = "p" },
+        new() { Category = "plan_adherence", Id = "q7", Text  = "t", Prompt = "p" },
+        new() { Category = "quality", Id        = "q8", Text  = "t", Prompt = "p" },
+        new() { Category = "quality", Id        = "q9", Text  = "t", Prompt = "p" },
+        new() { Category = "quality", Id        = "q10", Text = "t", Prompt = "p" },
+        new() { Category = "efficiency", Id     = "q11", Text = "t", Prompt = "p" },
+        new() { Category = "efficiency", Id     = "q12", Text = "t", Prompt = "p" },
+        new() { Category = "efficiency", Id     = "q13", Text = "t", Prompt = "p" },
     ];
 
     [Test]
     public async Task Aggregate_computes_category_and_overall_scores() {
         var verdicts = new List<EvalQuestionVerdict> {
-            new() { Category = "safety",         QuestionId = "q1", Score = 5, Verdict = "pass", Finding = "" },
-            new() { Category = "safety",         QuestionId = "q2", Score = 3, Verdict = "warn", Finding = "" },
-            new() { Category = "quality",        QuestionId = "q3", Score = 4, Verdict = "pass", Finding = "" },
-            new() { Category = "efficiency",     QuestionId = "q4", Score = 2, Verdict = "warn", Finding = "" }
+            new() { Category = "safety", QuestionId     = "q1", Score = 5, Verdict = "pass", Finding = "" },
+            new() { Category = "safety", QuestionId     = "q2", Score = 3, Verdict = "warn", Finding = "" },
+            new() { Category = "quality", QuestionId    = "q3", Score = 4, Verdict = "pass", Finding = "" },
+            new() { Category = "efficiency", QuestionId = "q4", Score = 2, Verdict = "warn", Finding = "" }
         };
 
         var agg = EvalService.Aggregate(verdicts, "run-xyz", "sonnet", TestTaxonomy);
@@ -317,10 +317,10 @@ public class EvalServiceTests {
     public async Task Aggregate_orders_categories_canonically() {
         // Supply in random order, expect: safety, plan_adherence, quality, efficiency
         var verdicts = new List<EvalQuestionVerdict> {
-            new() { Category = "efficiency",     QuestionId = "a", Score = 5, Verdict = "pass", Finding = "" },
-            new() { Category = "quality",        QuestionId = "b", Score = 5, Verdict = "pass", Finding = "" },
+            new() { Category = "efficiency", QuestionId     = "a", Score = 5, Verdict = "pass", Finding = "" },
+            new() { Category = "quality", QuestionId        = "b", Score = 5, Verdict = "pass", Finding = "" },
             new() { Category = "plan_adherence", QuestionId = "c", Score = 5, Verdict = "pass", Finding = "" },
-            new() { Category = "safety",         QuestionId = "d", Score = 5, Verdict = "pass", Finding = "" }
+            new() { Category = "safety", QuestionId         = "d", Score = 5, Verdict = "pass", Finding = "" }
         };
 
         var agg = EvalService.Aggregate(verdicts, "r", "m", TestTaxonomy);
@@ -384,7 +384,7 @@ public class EvalServiceTests {
     [Test]
     public async Task FormatKnownPatterns_renders_bulleted_list() {
         var facts = new List<JudgeFact> {
-            new() { Category = "safety", Fact = "User force-pushes often.", SourceSessionId = "s1", SourceEvalRunId = "r1", RetainedAt = DateTimeOffset.UtcNow },
+            new() { Category = "safety", Fact = "User force-pushes often.", SourceSessionId      = "s1", SourceEvalRunId = "r1", RetainedAt = DateTimeOffset.UtcNow },
             new() { Category = "safety", Fact = "Repo has tests behind Docker.", SourceSessionId = "s2", SourceEvalRunId = "r2", RetainedAt = DateTimeOffset.UtcNow }
         };
 
@@ -399,8 +399,8 @@ public class EvalServiceTests {
     [Test]
     public async Task ExtractRetainFact_returns_fact_text_when_present() {
         const string response = """
-            {"score":4,"verdict":"pass","finding":".","retain_fact":"User skips tests for small fixes."}
-            """;
+                                {"score":4,"verdict":"pass","finding":".","retain_fact":"User skips tests for small fixes."}
+                                """;
 
         await Assert.That(EvalService.ExtractRetainFact(response)).IsEqualTo("User skips tests for small fixes.");
     }
@@ -408,10 +408,10 @@ public class EvalServiceTests {
     [Test]
     public async Task ExtractRetainFact_strips_code_fences() {
         const string response = """
-            ```json
-            {"score":5,"retain_fact":"Agent writes tests first."}
-            ```
-            """;
+                                ```json
+                                {"score":5,"retain_fact":"Agent writes tests first."}
+                                ```
+                                """;
 
         await Assert.That(EvalService.ExtractRetainFact(response)).IsEqualTo("Agent writes tests first.");
     }
@@ -419,8 +419,8 @@ public class EvalServiceTests {
     [Test]
     public async Task ExtractRetainFact_returns_null_when_field_absent() {
         const string response = """
-            {"score":5,"verdict":"pass","finding":"."}
-            """;
+                                {"score":5,"verdict":"pass","finding":"."}
+                                """;
 
         await Assert.That(EvalService.ExtractRetainFact(response)).IsNull();
     }
@@ -428,8 +428,8 @@ public class EvalServiceTests {
     [Test]
     public async Task ExtractRetainFact_returns_null_when_field_explicitly_null() {
         const string response = """
-            {"score":5,"retain_fact":null}
-            """;
+                                {"score":5,"retain_fact":null}
+                                """;
 
         await Assert.That(EvalService.ExtractRetainFact(response)).IsNull();
     }
@@ -437,8 +437,8 @@ public class EvalServiceTests {
     [Test]
     public async Task ExtractRetainFact_returns_null_when_field_is_empty_string() {
         const string response = """
-            {"score":5,"retain_fact":""}
-            """;
+                                {"score":5,"retain_fact":""}
+                                """;
 
         await Assert.That(EvalService.ExtractRetainFact(response)).IsNull();
     }
@@ -446,8 +446,8 @@ public class EvalServiceTests {
     [Test]
     public async Task ExtractRetainFact_returns_null_when_field_is_whitespace() {
         const string response = """
-            {"score":5,"retain_fact":"   "}
-            """;
+                                {"score":5,"retain_fact":"   "}
+                                """;
 
         await Assert.That(EvalService.ExtractRetainFact(response)).IsNull();
     }
@@ -456,8 +456,8 @@ public class EvalServiceTests {
     public async Task ExtractRetainFact_returns_null_when_field_is_not_a_string() {
         // Judge hallucinated a non-string — we ignore rather than coerce.
         const string response = """
-            {"score":5,"retain_fact":42}
-            """;
+                                {"score":5,"retain_fact":42}
+                                """;
 
         await Assert.That(EvalService.ExtractRetainFact(response)).IsNull();
     }
@@ -472,13 +472,13 @@ public class EvalServiceTests {
     [Test]
     public async Task ParseRetrospective_reads_well_formed_json() {
         var json = """
-            {
-              "overall":"Clean run with one slip on destructive commands.",
-              "strengths":["Kept tests green throughout."],
-              "issues":["Unguarded rm -rf on turn 412."],
-              "suggestions":["Require the agent to echo expanded paths before any rm -rf."]
-            }
-            """;
+                   {
+                     "overall":"Clean run with one slip on destructive commands.",
+                     "strengths":["Kept tests green throughout."],
+                     "issues":["Unguarded rm -rf on turn 412."],
+                     "suggestions":["Require the agent to echo expanded paths before any rm -rf."]
+                   }
+                   """;
 
         var r = EvalService.ParseRetrospective(json);
 
@@ -492,15 +492,15 @@ public class EvalServiceTests {
     [Test]
     public async Task ParseRetrospective_strips_code_fences() {
         var json = """
-            ```json
-            {
-              "overall":"x.",
-              "strengths":[],
-              "issues":[],
-              "suggestions":[]
-            }
-            ```
-            """;
+                   ```json
+                   {
+                     "overall":"x.",
+                     "strengths":[],
+                     "issues":[],
+                     "suggestions":[]
+                   }
+                   ```
+                   """;
 
         var r = EvalService.ParseRetrospective(json);
 
@@ -592,17 +592,18 @@ public class EvalServiceTests {
     [Test]
     public async Task BuildToolsQuestionPrompt_substitutes_placeholders_and_has_no_trace() {
         var prompt = EvalService.BuildToolsQuestionPrompt(
-            template:       "session={SESSION_ID} run={EVAL_RUN_ID} cat={CATEGORY} qid={QUESTION_ID} qtext={QUESTION_TEXT} known={KNOWN_PATTERNS}",
-            sessionId:      "sess-123",
-            evalRunId:      "run-abc",
-            question:       DestructiveCommandsQuestion,
-            knownPatterns:  "- pattern a"
+            template: "session={SESSION_ID} run={EVAL_RUN_ID} cat={CATEGORY} qid={QUESTION_ID} qtext={QUESTION_TEXT} known={KNOWN_PATTERNS}",
+            sessionId: "sess-123",
+            evalRunId: "run-abc",
+            question: DestructiveCommandsQuestion,
+            knownPatterns: "- pattern a"
         );
 
-        await Assert.That(prompt).IsEqualTo(
-            "session=sess-123 run=run-abc cat=safety qid=destructive_commands " +
-            $"qtext={DestructiveCommandsQuestion.Prompt} known=- pattern a"
-        );
+        await Assert.That(prompt)
+            .IsEqualTo(
+                "session=sess-123 run=run-abc cat=safety qid=destructive_commands " +
+                $"qtext={DestructiveCommandsQuestion.Prompt} known=- pattern a"
+            );
     }
 
     // ── ParseVerdict: tools_used round-trip ────────────────────────────────
@@ -610,9 +611,9 @@ public class EvalServiceTests {
     [Test]
     public async Task ParseVerdict_leaves_tools_used_null_when_missing() {
         const string response = """
-            {"category":"safety","question_id":"destructive_commands","score":5,
-             "verdict":"pass","finding":"ok","evidence":null}
-            """;
+                                {"category":"safety","question_id":"destructive_commands","score":5,
+                                 "verdict":"pass","finding":"ok","evidence":null}
+                                """;
 
         var v = EvalService.ParseVerdict(response, DestructiveCommandsQuestion);
 
@@ -623,10 +624,10 @@ public class EvalServiceTests {
     [Test]
     public async Task ParseVerdict_reads_tools_used_when_present() {
         const string response = """
-            {"category":"safety","question_id":"destructive_commands","score":3,
-             "verdict":"warn","finding":"one rm -rf","evidence":"turn 14",
-             "tools_used":2}
-            """;
+                                {"category":"safety","question_id":"destructive_commands","score":3,
+                                 "verdict":"warn","finding":"one rm -rf","evidence":"turn 14",
+                                 "tools_used":2}
+                                """;
 
         var v = EvalService.ParseVerdict(response, DestructiveCommandsQuestion);
 
