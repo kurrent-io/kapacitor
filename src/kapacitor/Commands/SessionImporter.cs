@@ -35,8 +35,9 @@ static class SessionImporter {
             agentMap[agentId] = agentPath;
         }
 
-        // Scan the main transcript to find the first line where each agentId appears
-        // in a progress/agent_progress event (for interleave position) plus the real
+        // Scan the main transcript to find, per agent, the earliest line where it is
+        // referenced — via agent_progress, an async_launched tool_result, or a
+        // foreground toolUseResult.agentId (for interleave position) — plus the real
         // subagent_type from the parent Task-tool invocation (for canonical fidelity).
         var scan           = ScanAgentLifecycle(transcriptPath);
         var agentFirstLine = scan.FirstLineByAgent;
@@ -133,9 +134,10 @@ static class SessionImporter {
     ///    "code-reviewer" / "general-purpose" / "Explore" instead of the generic "task".
     /// </summary>
     /// <remarks>
-    /// The caller should fall back to <c>null</c> (or let the server default) when an
-    /// agent id has no resolved type — this happens for compact agents and any agent
-    /// whose invocation we never observe (e.g. transcripts we discover only by file).
+    /// An agent id may have no resolved type — e.g. compact agents, or transcripts
+    /// we discover only by file with no observed parent invocation. In that case
+    /// <see cref="SendAgentLifecycle"/> substitutes the literal <c>"task"</c> on the
+    /// outgoing hook payload so the server still records a concrete AgentType.
     /// </remarks>
     // ReSharper disable once MemberCanBePrivate.Global
     public static Dictionary<string, int> ScanAgentProgressLines(string transcriptPath) =>
