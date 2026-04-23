@@ -1,3 +1,4 @@
+using Spectre.Console;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -6,15 +7,44 @@ using kapacitor.Config;
 namespace kapacitor.Commands;
 
 static class HistoryCommand {
+    readonly struct HistoryDisplay {
+        public bool Tty { get; init; }
+        // Non-null in Tty mode, null in Plain mode.
+        public ProgressTask? Footer { get; init; }
+
+        public void SetFooterSession(string sessionIdShort, int totalLines) {
+            if (Footer is null) return;
+            Footer.Description = $"[green]Importing[/] {(int)Footer.Value}/{(int)Footer.MaxValue} · {Markup.Escape(sessionIdShort)}: 0/{totalLines} lines";
+        }
+
+        public void AdvanceFooterLines(int linesDone, int linesTotal, string sessionIdShort, string? agentSuffixId) {
+            if (Footer is null) return;
+            var suffix = agentSuffixId is null ? "" : $" ↳ subagent {Markup.Escape(agentSuffixId)}";
+            Footer.Description = $"[green]Importing[/] {(int)Footer.Value}/{(int)Footer.MaxValue} · {Markup.Escape(sessionIdShort)}: {linesDone}/{linesTotal} lines{suffix}";
+        }
+
+        public void Line(string plain, string? markup = null) {
+            if (Tty) AnsiConsole.MarkupLine(markup ?? Markup.Escape(plain));
+            else     Console.WriteLine(plain);
+        }
+
+        public static HistoryDisplay Create() {
+            var tty = !Console.IsOutputRedirected;
+
+            return new HistoryDisplay { Tty = tty, Footer = null };
+        }
+    }
+
     public static async Task<int> HandleHistory(string baseUrl, string? filterCwd, string? filterSession = null, int minLines = 10, bool generateSummaries = false) {
         using var httpClient = await HttpClientExtensions.CreateAuthenticatedClientAsync();
+        var display = HistoryDisplay.Create();
 
-        await Console.Out.WriteLineAsync("Discovering sessions...");
+        display.Line("Discovering sessions...");
 
         var projectsDir = ClaudePaths.Projects;
 
         if (!Directory.Exists(projectsDir)) {
-            await Console.Out.WriteLineAsync("No Claude Code projects directory found.");
+            display.Line("No Claude Code projects directory found.");
 
             return 0;
         }
@@ -42,7 +72,7 @@ static class HistoryCommand {
         }
 
         if (transcriptFiles.Count == 0) {
-            await Console.Out.WriteLineAsync("No transcript files found.");
+            display.Line("No transcript files found.");
 
             return 0;
         }
@@ -75,8 +105,8 @@ static class HistoryCommand {
         }
 
         var projectCount = transcriptFiles.Select(t => t.EncodedCwd).Distinct().Count();
-        await Console.Out.WriteLineAsync($"Found {transcriptFiles.Count} session{(transcriptFiles.Count == 1 ? "" : "s")} in {projectCount} project{(projectCount == 1 ? "" : "s")}");
-        await Console.Out.WriteLineAsync();
+        display.Line($"Found {transcriptFiles.Count} session{(transcriptFiles.Count == 1 ? "" : "s")} in {projectCount} project{(projectCount == 1 ? "" : "s")}");
+        display.Line("");
 
         // Build continuation map: group sessions by slug and order by timestamp
         // so we can link continuations during migration
@@ -136,7 +166,7 @@ static class HistoryCommand {
                                 status = HistorySessionStatus.AlreadyLoaded;
                             }
                         } else {
-                            await Console.Out.WriteLineAsync($"Skipping {sessionId} [server error: HTTP {(int)resp.StatusCode}]");
+                            display.Line($"Skipping {sessionId} [server error: HTTP {(int)resp.StatusCode}]");
                             errored++;
 
                             continue;
@@ -146,14 +176,14 @@ static class HistoryCommand {
                     }
                 }
             } catch (HttpRequestException ex) {
-                await Console.Out.WriteLineAsync($"Skipping {sessionId} [server unreachable: {ex.Message}]");
+                display.Line($"Skipping {sessionId} [server unreachable: {ex.Message}]");
                 errored++;
 
                 continue;
             }
 
             if (status == HistorySessionStatus.AlreadyLoaded) {
-                await Console.Out.WriteLineAsync($"Skipping {sessionId} [already loaded]");
+                display.Line($"Skipping {sessionId} [already loaded]");
                 skipped++;
 
                 continue;
@@ -165,7 +195,7 @@ static class HistoryCommand {
             switch (status) {
                 // Skip short transcripts (likely trivial sessions with no meaningful work)
                 case HistorySessionStatus.New when minLines > 0 && totalLines < minLines:
-                    await Console.Out.WriteLineAsync($"Skipping {sessionId} [too short: {totalLines} lines < {minLines} minimum]");
+                    display.Line($"Skipping {sessionId} [too short: {totalLines} lines < {minLines} minimum]");
                     skipped++;
 
                     continue;
@@ -213,7 +243,7 @@ static class HistoryCommand {
                          && repo.RepoName is not null
                          && excludedRepos.Contains($"{repo.Owner}/{repo.RepoName}", StringComparer.OrdinalIgnoreCase)) {
                             if (Console.IsInputRedirected) {
-                                await Console.Out.WriteLineAsync($"Skipping {sessionId} [repository {repo.Owner}/{repo.RepoName} is excluded]");
+                                display.Line($"Skipping {sessionId} [repository {repo.Owner}/{repo.RepoName} is excluded]");
                                 skipped++;
 
                                 continue;
@@ -223,7 +253,7 @@ static class HistoryCommand {
                             var answer = Console.ReadLine()?.Trim();
 
                             if (!string.Equals(answer, "y", StringComparison.OrdinalIgnoreCase)) {
-                                await Console.Out.WriteLineAsync($"Skipping {sessionId}");
+                                display.Line($"Skipping {sessionId}");
                                 skipped++;
 
                                 continue;
@@ -250,19 +280,17 @@ static class HistoryCommand {
                         var startResp = await httpClient.PostWithRetryAsync($"{baseUrl}/hooks/session-start", startContent);
 
                         if (!startResp.IsSuccessStatusCode) {
-                            await Console.Out.WriteLineAsync($"Skipping {sessionId} [session-start failed: HTTP {(int)startResp.StatusCode}]");
+                            display.Line($"Skipping {sessionId} [session-start failed: HTTP {(int)startResp.StatusCode}]");
                             errored++;
 
                             continue;
                         }
                     } catch (HttpRequestException ex) {
-                        await Console.Out.WriteLineAsync($"Skipping {sessionId} [server unreachable: {ex.Message}]");
+                        display.Line($"Skipping {sessionId} [server unreachable: {ex.Message}]");
                         errored++;
 
                         continue;
                     }
-
-                    Console.Write($"Loading {sessionId}... ");
 
                     // Import transcript with interleaved agent lifecycle events
                     var importResult = await SessionImporter.ImportSessionAsync(
@@ -274,11 +302,7 @@ static class HistoryCommand {
                         encodedCwd
                     );
 
-                    await Console.Out.WriteLineAsync($"{importResult.LinesSent} lines [new]");
-
-                    if (importResult.AgentIds.Count > 0) {
-                        await Console.Out.WriteLineAsync($"  {importResult.AgentIds.Count} agent{(importResult.AgentIds.Count == 1 ? "" : "s")} imported inline");
-                    }
+                    display.Line($"Loading {sessionId}... {importResult.LinesSent} lines [new]");
 
                     // POST synthesized session-end hook
                     var lastTimestamp = ExtractLastTimestamp(filePath);
@@ -364,9 +388,8 @@ static class HistoryCommand {
                 }
                 default: {
                     // Partial load — resume from where we left off
-                    Console.Write($"Loading {sessionId}... ");
                     var linesSent = await SessionImporter.SendTranscriptBatches(httpClient, baseUrl, sessionId, filePath, agentId: null, startLine: resumeFromLine);
-                    await Console.Out.WriteLineAsync($"{linesSent} lines [resuming from line {resumeFromLine}]");
+                    display.Line($"Loading {sessionId}... {linesSent} lines [resuming from line {resumeFromLine}]");
                     resumed++;
 
                     break;
@@ -376,7 +399,7 @@ static class HistoryCommand {
 
         // Wait for background title/summary generation to complete (best effort — never lose the final report)
         if (backgroundTasks.Count > 0) {
-            await Console.Out.WriteLineAsync($"Waiting for {backgroundTasks.Count} background task{(backgroundTasks.Count == 1 ? "" : "s")} (titles/summaries)...");
+            display.Line($"Waiting for {backgroundTasks.Count} background task{(backgroundTasks.Count == 1 ? "" : "s")} (titles/summaries)...");
 
             try {
                 await Task.WhenAll(backgroundTasks);
@@ -391,13 +414,11 @@ static class HistoryCommand {
             if (titlesSkipped                  > 0) parts.Add($"{titlesSkipped} skipped");
             if (titlesFailed + summariesFailed > 0) parts.Add($"{titlesFailed + summariesFailed} failed");
 
-            if (parts.Count > 0) await Console.Out.WriteLineAsync($"  {string.Join(", ", parts)}");
+            if (parts.Count > 0) display.Line($"  {string.Join(", ", parts)}");
         }
 
-        await Console.Out.WriteLineAsync();
-        Console.Write($"Done: {loaded} loaded, {resumed} resumed, {skipped} skipped");
-        if (errored > 0) Console.Write($", {errored} errored");
-        await Console.Out.WriteLineAsync();
+        display.Line("");
+        display.Line($"Done: {loaded} loaded, {resumed} resumed, {skipped} skipped{(errored > 0 ? $", {errored} errored" : "")}");
 
         return 0;
     }
