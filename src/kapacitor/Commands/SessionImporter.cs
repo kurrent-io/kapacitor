@@ -36,8 +36,11 @@ static class SessionImporter {
         }
 
         // Scan the main transcript to find the first line where each agentId appears
-        // in a progress/agent_progress event. This tells us where to interleave.
-        var agentFirstLine = ScanAgentProgressLines(transcriptPath);
+        // in a progress/agent_progress event (for interleave position) plus the real
+        // subagent_type from the parent Task-tool invocation (for canonical fidelity).
+        var scan           = ScanAgentLifecycle(transcriptPath);
+        var agentFirstLine = scan.FirstLineByAgent;
+        var agentTypes     = scan.AgentTypeByAgent;
 
         // Track which agents were sent inline
         var sentAgents = new HashSet<string>(StringComparer.Ordinal);
@@ -69,7 +72,8 @@ static class SessionImporter {
                     }
 
                     // Send agent lifecycle: start → transcript → stop
-                    await SendAgentLifecycle(httpClient, baseUrl, sessionId, agentId, agentPath, cwd, transcriptPath);
+                    agentTypes.TryGetValue(agentId, out var agentType);
+                    await SendAgentLifecycle(httpClient, baseUrl, sessionId, agentId, agentType, agentPath, cwd, transcriptPath);
                     sentAgents.Add(agentId);
                     agentIds.Add(agentId);
                 }
@@ -100,7 +104,8 @@ static class SessionImporter {
         // main session (e.g., compact agents like acompact-*) as a fallback at the end.
         foreach (var (agentId, agentPath) in agentTranscripts) {
             if (!sentAgents.Contains(agentId)) {
-                await SendAgentLifecycle(httpClient, baseUrl, sessionId, agentId, agentPath, cwd, transcriptPath);
+                agentTypes.TryGetValue(agentId, out var agentType);
+                await SendAgentLifecycle(httpClient, baseUrl, sessionId, agentId, agentType, agentPath, cwd, transcriptPath);
                 sentAgents.Add(agentId);
                 agentIds.Add(agentId);
             }
@@ -110,18 +115,42 @@ static class SessionImporter {
     }
 
     /// <summary>
-    /// Scan the main transcript and return a map of agentId → first line index
-    /// where the agent is referenced. Checks <c>agent_progress</c> events,
-    /// <c>result</c> events with <c>async_launched</c> status, and <c>user</c>
-    /// events with <c>toolUseResult.agentId</c> (foreground agent completions).
+    /// Result of a single-pass transcript scan that resolves both the interleave
+    /// position and the subagent type for every agent referenced from the parent.
     /// </summary>
-    // ReSharper disable once MemberCanBePrivate.Global
-    public static Dictionary<string, int> ScanAgentProgressLines(string transcriptPath) {
-        var result = new Dictionary<string, int>(StringComparer.Ordinal);
+    internal sealed record AgentLifecycleScan(
+            Dictionary<string, int>     FirstLineByAgent,
+            Dictionary<string, string?> AgentTypeByAgent
+        );
 
-        // Two-pass scan: first collect tool_use_id → line position from assistant
-        // messages invoking Agent/Task, then resolve agentId from async_launched results.
-        var toolUsePositions = new Dictionary<string, int>(StringComparer.Ordinal); // tool_use_id → line index
+    /// <summary>
+    /// Scan the main transcript once and return, per agent:
+    /// 1. the first line index where the agent is referenced (via <c>agent_progress</c>,
+    ///    <c>async_launched</c>, or foreground <c>toolUseResult.agentId</c>), used as the
+    ///    interleave position;
+    /// 2. the real subagent type pulled from the parent Task-tool invocation's
+    ///    <c>input.subagent_type</c>, so canonical <c>SubagentStarted.AgentType</c> carries
+    ///    "code-reviewer" / "general-purpose" / "Explore" instead of the generic "task".
+    /// </summary>
+    /// <remarks>
+    /// The caller should fall back to <c>null</c> (or let the server default) when an
+    /// agent id has no resolved type — this happens for compact agents and any agent
+    /// whose invocation we never observe (e.g. transcripts we discover only by file).
+    /// </remarks>
+    // ReSharper disable once MemberCanBePrivate.Global
+    public static Dictionary<string, int> ScanAgentProgressLines(string transcriptPath) =>
+        ScanAgentLifecycle(transcriptPath).FirstLineByAgent;
+
+    internal static AgentLifecycleScan ScanAgentLifecycle(string transcriptPath) {
+        var firstLine  = new Dictionary<string, int>(StringComparer.Ordinal);
+        var agentTypes = new Dictionary<string, string?>(StringComparer.Ordinal);
+
+        // Two-pass resolution in a single read: first collect tool_use_id → line
+        // position AND tool_use_id → subagent_type from assistant messages invoking
+        // Agent/Task, then resolve agentId from async_launched results and foreground
+        // toolUseResult.agentId entries, carrying the subagent_type through.
+        var toolUsePositions = new Dictionary<string, int>(StringComparer.Ordinal);
+        var toolUseTypes     = new Dictionary<string, string?>(StringComparer.Ordinal);
 
         try {
             using var fs     = new FileStream(transcriptPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
@@ -131,7 +160,7 @@ static class SessionImporter {
 
             while (reader.ReadLine() is { } line) {
                 if (!string.IsNullOrWhiteSpace(line)) {
-                    TryExtractAgentReference(line, lineIndex, result, toolUsePositions);
+                    TryExtractAgentReference(line, lineIndex, firstLine, toolUsePositions, toolUseTypes, agentTypes);
                 }
 
                 lineIndex++;
@@ -140,7 +169,7 @@ static class SessionImporter {
             // Best effort — if we can't scan, agents will be sent at the end
         }
 
-        return result;
+        return new AgentLifecycleScan(firstLine, agentTypes);
     }
 
     /// <summary>
@@ -151,10 +180,12 @@ static class SessionImporter {
     /// 4. <c>user</c> events with <c>toolUseResult.agentId</c> (foreground agent completions)
     /// </summary>
     static void TryExtractAgentReference(
-            string                  line,
-            int                     lineIndex,
-            Dictionary<string, int> result,
-            Dictionary<string, int> toolUsePositions
+            string                      line,
+            int                         lineIndex,
+            Dictionary<string, int>     result,
+            Dictionary<string, int>     toolUsePositions,
+            Dictionary<string, string?> toolUseTypes,
+            Dictionary<string, string?> agentTypes
         ) {
         try {
             using var doc  = JsonDocument.Parse(line);
@@ -167,15 +198,15 @@ static class SessionImporter {
 
                     break;
                 case "assistant":
-                    TryExtractAgentToolUsePositions(root, lineIndex, toolUsePositions);
+                    TryExtractAgentToolUsePositions(root, lineIndex, toolUsePositions, toolUseTypes);
 
                     break;
                 case "result":
-                    TryExtractFromAsyncLaunched(root, lineIndex, result, toolUsePositions);
+                    TryExtractFromAsyncLaunched(root, lineIndex, result, toolUsePositions, toolUseTypes, agentTypes);
 
                     break;
                 case "user":
-                    TryExtractFromToolUseResult(root, lineIndex, result, toolUsePositions);
+                    TryExtractFromToolUseResult(root, lineIndex, result, toolUsePositions, toolUseTypes, agentTypes);
 
                     break;
             }
@@ -200,10 +231,18 @@ static class SessionImporter {
     }
 
     /// <summary>
-    /// Extract tool_use positions from <c>assistant</c> messages that invoke Agent/Task tools.
-    /// Records tool_use_id → line index for later resolution by async_launched results.
+    /// Extract tool_use positions and the real <c>subagent_type</c> argument from
+    /// <c>assistant</c> messages that invoke Agent/Task tools. Records
+    /// tool_use_id → line index for later resolution by async_launched results,
+    /// and tool_use_id → subagent_type so the resolved agent carries the real
+    /// type (e.g. "code-reviewer") instead of the generic "task".
     /// </summary>
-    static void TryExtractAgentToolUsePositions(JsonElement root, int lineIndex, Dictionary<string, int> toolUsePositions) {
+    static void TryExtractAgentToolUsePositions(
+            JsonElement                 root,
+            int                         lineIndex,
+            Dictionary<string, int>     toolUsePositions,
+            Dictionary<string, string?> toolUseTypes
+        ) {
         // assistant events: root.message.content[] or root.content[]
         var content = root.Obj("message")?.Arr("content") ?? root.Arr("content");
 
@@ -211,10 +250,15 @@ static class SessionImporter {
             return;
 
         foreach (var block in arr.EnumerateArray()) {
-            if (block.Str("type") == "tool_use"
-             && block.Str("name") is "Agent" or "Task"
-             && block.Str("id") is { } toolUseId)
-                toolUsePositions.TryAdd(toolUseId, lineIndex);
+            if (block.Str("type") != "tool_use"
+             || block.Str("name") is not ("Agent" or "Task")
+             || block.Str("id") is not { } toolUseId)
+                continue;
+
+            toolUsePositions.TryAdd(toolUseId, lineIndex);
+
+            var subagentType = block.Obj("input")?.Str("subagent_type");
+            toolUseTypes.TryAdd(toolUseId, subagentType);
         }
     }
 
@@ -224,10 +268,12 @@ static class SessionImporter {
     /// otherwise falls back to the result's own line position.
     /// </summary>
     static void TryExtractFromAsyncLaunched(
-            JsonElement             root,
-            int                     lineIndex,
-            Dictionary<string, int> result,
-            Dictionary<string, int> toolUsePositions
+            JsonElement                 root,
+            int                         lineIndex,
+            Dictionary<string, int>     result,
+            Dictionary<string, int>     toolUsePositions,
+            Dictionary<string, string?> toolUseTypes,
+            Dictionary<string, string?> agentTypes
         ) {
         var tr = root.Obj("tool_result");
 
@@ -242,8 +288,13 @@ static class SessionImporter {
         // Prefer the tool_use position (where the agent was invoked) over the result position
         var position = lineIndex;
 
-        if (root.Str("tool_use_id") is { } toolUseId && toolUsePositions.TryGetValue(toolUseId, out var toolUsePos))
-            position = toolUsePos;
+        if (root.Str("tool_use_id") is { } toolUseId) {
+            if (toolUsePositions.TryGetValue(toolUseId, out var toolUsePos))
+                position = toolUsePos;
+
+            if (toolUseTypes.TryGetValue(toolUseId, out var subagentType))
+                agentTypes.TryAdd(agentId, subagentType);
+        }
 
         result[agentId] = position;
     }
@@ -254,10 +305,12 @@ static class SessionImporter {
     /// tool_use_id from the message content, falling back to the result's own line position.
     /// </summary>
     static void TryExtractFromToolUseResult(
-            JsonElement             root,
-            int                     lineIndex,
-            Dictionary<string, int> result,
-            Dictionary<string, int> toolUsePositions
+            JsonElement                 root,
+            int                         lineIndex,
+            Dictionary<string, int>     result,
+            Dictionary<string, int>     toolUsePositions,
+            Dictionary<string, string?> toolUseTypes,
+            Dictionary<string, string?> agentTypes
         ) {
         var tur = root.Obj("toolUseResult");
 
@@ -266,18 +319,25 @@ static class SessionImporter {
         if (agentId is null || result.ContainsKey(agentId))
             return;
 
-        // Find tool_use_id from message.content[].tool_use_id to resolve invocation position
+        // Find tool_use_id from message.content[].tool_use_id to resolve invocation
+        // position and propagate the parent invocation's subagent_type.
         var position = lineIndex;
 
         if (root.Obj("message")?.Arr("content") is { } content) {
             foreach (var block in content.EnumerateArray()) {
-                if (block.Str("type") == "tool_result"
-                 && block.Str("tool_use_id") is { } toolUseId
-                 && toolUsePositions.TryGetValue(toolUseId, out var toolUsePos)) {
-                    position = toolUsePos;
+                if (block.Str("type") != "tool_result"
+                 || block.Str("tool_use_id") is not { } toolUseId)
+                    continue;
 
-                    break;
+                if (toolUsePositions.TryGetValue(toolUseId, out var toolUsePos)) {
+                    position = toolUsePos;
                 }
+
+                if (toolUseTypes.TryGetValue(toolUseId, out var subagentType)) {
+                    agentTypes.TryAdd(agentId, subagentType);
+                }
+
+                break;
             }
         }
 
@@ -287,15 +347,24 @@ static class SessionImporter {
     /// <summary>
     /// Send the full agent lifecycle for one agent: subagent-start → transcript → subagent-stop.
     /// </summary>
+    /// <param name="agentType">
+    /// The real subagent type pulled from the parent Task-tool invocation's
+    /// <c>input.subagent_type</c> (e.g. "code-reviewer", "general-purpose", "Explore").
+    /// Falls back to "task" when unknown — typically compact agents and transcripts
+    /// discovered without a parent invocation.
+    /// </param>
     static async Task SendAgentLifecycle(
             HttpClient httpClient,
             string     baseUrl,
             string     sessionId,
             string     agentId,
+            string?    agentType,
             string     agentPath,
             string     cwd,
             string     sessionTranscriptPath
         ) {
+        var resolvedAgentType = agentType ?? "task";
+
         // Start agent
         var agentStartHook = new JsonObject {
             ["session_id"]      = sessionId,
@@ -303,7 +372,7 @@ static class SessionImporter {
             ["cwd"]             = cwd,
             ["hook_event_name"] = "subagent_start",
             ["agent_id"]        = agentId,
-            ["agent_type"]      = "task"
+            ["agent_type"]      = resolvedAgentType
         };
 
         try {
@@ -323,7 +392,7 @@ static class SessionImporter {
             ["cwd"]                    = cwd,
             ["hook_event_name"]        = "subagent_stop",
             ["agent_id"]               = agentId,
-            ["agent_type"]             = "task",
+            ["agent_type"]             = resolvedAgentType,
             ["stop_hook_active"]       = false,
             ["agent_transcript_path"]  = agentPath,
             ["last_assistant_message"] = ""
