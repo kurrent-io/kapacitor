@@ -2,6 +2,8 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using kapacitor.Auth;
 using kapacitor.Config;
+using Spectre.Console;
+using Profile = kapacitor.Config.Profile;
 
 namespace kapacitor.Commands;
 
@@ -10,9 +12,7 @@ public static class SetupCommand {
         var serverUrlArg = GetArg(args, "--server-url");
         var noPrompt     = args.Contains("--no-prompt");
 
-        await Console.Out.WriteLineAsync();
-        await Console.Out.WriteLineAsync("Welcome to Kapacitor!");
-        await Console.Out.WriteLineAsync();
+        AnsiConsole.Write(new Rule("[bold green]Welcome to Kapacitor[/]").Centered());
 
         // Check if already configured
         var existingProfile = await AppConfig.LoadProfileConfig();
@@ -31,7 +31,7 @@ public static class SetupCommand {
         }
 
         // Step 1: Server URL
-        await Console.Out.WriteLineAsync("Step 1/5: Server");
+        AnsiConsole.Write(new Rule("[yellow]Step 1/5 — Server[/]").LeftJustified());
         string serverUrl;
 
         if (serverUrlArg is not null) {
@@ -56,14 +56,17 @@ public static class SetupCommand {
         serverUrl = AppConfig.NormalizeUrl(serverUrl);
 
         // Validate server reachability
-        Console.Write("  Checking server... ");
         string provider;
 
         try {
-            provider = await HttpClientExtensions.DiscoverProviderAsync(serverUrl);
-            await Console.Out.WriteLineAsync($"✓ Reachable. Auth provider: {provider}");
+            provider = await AnsiConsole.Status()
+                .Spinner(Spinner.Known.Dots)
+                .StartAsync("Checking server…", async _ =>
+                    await HttpClientExtensions.DiscoverProviderAsync(serverUrl));
+
+            AnsiConsole.MarkupLine($"  [green]✓[/] Reachable · auth provider: [cyan]{Markup.Escape(provider)}[/]");
         } catch (Exception ex) {
-            await Console.Error.WriteLineAsync($"✗ Cannot reach server: {ex.Message}");
+            AnsiConsole.MarkupLine($"  [red]✗[/] Cannot reach server: {Markup.Escape(ex.Message)}");
 
             return 1;
         }
@@ -71,7 +74,7 @@ public static class SetupCommand {
         await Console.Out.WriteLineAsync();
 
         // Step 2: Login
-        await Console.Out.WriteLineAsync("Step 2/5: Login");
+        AnsiConsole.Write(new Rule("[yellow]Step 2/5 — Login[/]").LeftJustified());
 
         if (provider == "None") {
             await Console.Out.WriteLineAsync("  Auth provider is None — no login required.");
@@ -91,7 +94,7 @@ public static class SetupCommand {
         await Console.Out.WriteLineAsync();
 
         // Step 3: Default session visibility
-        await Console.Out.WriteLineAsync("Step 3/5: Default session visibility");
+        AnsiConsole.Write(new Rule("[yellow]Step 3/5 — Default session visibility[/]").LeftJustified());
         await Console.Out.WriteLineAsync();
         await Console.Out.WriteLineAsync("  How should your sessions be visible to others by default?");
         await Console.Out.WriteLineAsync();
@@ -133,7 +136,7 @@ public static class SetupCommand {
         await Console.Out.WriteLineAsync();
 
         // Step 4: Claude Code plugin
-        await Console.Out.WriteLineAsync("Step 4/5: Claude Code Plugin");
+        AnsiConsole.Write(new Rule("[yellow]Step 4/5 — Claude Code Plugin[/]").LeftJustified());
         await Console.Out.WriteLineAsync("  The Kapacitor plugin provides hooks, skills, and collaborative memory.");
         await Console.Out.WriteLineAsync();
 
@@ -199,7 +202,7 @@ public static class SetupCommand {
         await Console.Out.WriteLineAsync();
 
         // Step 5: Daemon name + save
-        await Console.Out.WriteLineAsync("Step 5/5: Agent Daemon");
+        AnsiConsole.Write(new Rule("[yellow]Step 5/5 — Agent Daemon[/]").LeftJustified());
 
         var    defaultName = Environment.UserName.ToLowerInvariant();
         string daemonName;
@@ -232,18 +235,21 @@ public static class SetupCommand {
         await AppConfig.SaveProfileConfig(profileConfig);
 
         var finalTokens = await TokenStore.LoadAsync();
-        await Console.Out.WriteLineAsync("Setup complete!");
-        await Console.Out.WriteLineAsync($"  ✓ Server:  {serverUrl}");
-        await Console.Out.WriteLineAsync($"  ✓ Visibility: {defaultVisibility}");
-        await Console.Out.WriteLineAsync($"  ✓ Daemon:  {daemonName}");
+        AnsiConsole.Write(new Rule("[green]Setup complete[/]").LeftJustified());
+
+        var grid = new Grid().AddColumn().AddColumn();
+        grid.AddRow("[bold]Server[/]",     Markup.Escape(serverUrl));
+        grid.AddRow("[bold]Visibility[/]", Markup.Escape(defaultVisibility));
+        grid.AddRow("[bold]Daemon[/]",     Markup.Escape(daemonName));
 
         if (finalTokens is not null) {
-            await Console.Out.WriteLineAsync($"  ✓ Auth:    {finalTokens.GitHubUsername} ({finalTokens.Provider})");
+            grid.AddRow("[bold]Auth[/]", Markup.Escape($"{finalTokens.GitHubUsername} ({finalTokens.Provider})"));
         }
 
-        await Console.Out.WriteLineAsync($"  Config saved to {AppConfig.GetConfigPath()}");
-        await Console.Out.WriteLineAsync();
-        await Console.Out.WriteLineAsync("  Optional: start the agent daemon with `kapacitor agent start -d`");
+        grid.AddRow("[bold]Config[/]", Markup.Escape(AppConfig.GetConfigPath()));
+
+        AnsiConsole.Write(grid);
+        AnsiConsole.MarkupLine("\n[dim]Optional:[/] start the agent daemon with [cyan]kapacitor agent start -d[/]");
 
         return 0;
     }
