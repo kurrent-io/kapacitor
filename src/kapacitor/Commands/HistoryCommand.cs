@@ -129,6 +129,8 @@ static class HistoryCommand {
         var titlesFailed       = 0;
         var summariesGenerated = 0;
         var summariesFailed    = 0;
+        var titleFailures      = new System.Collections.Concurrent.ConcurrentBag<(string SessionId, string Reason)>();
+        var summaryFailures    = new System.Collections.Concurrent.ConcurrentBag<(string SessionId, string Reason)>();
 
         async Task RunLoop() {
             foreach (var (sessionId, filePath, encodedCwd) in transcriptFiles) {
@@ -390,7 +392,10 @@ static class HistoryCommand {
                                         switch (result) {
                                             case TitleResult.Generated: Interlocked.Increment(ref titlesGenerated); break;
                                             case TitleResult.Skipped:   Interlocked.Increment(ref titlesSkipped); break;
-                                            case TitleResult.Failed:    Interlocked.Increment(ref titlesFailed); break;
+                                            case TitleResult.Failed:
+                                                Interlocked.Increment(ref titlesFailed);
+                                                titleFailures.Add((titleSessionId, "generation error"));
+                                                break;
                                         }
                                     } finally {
                                         concurrencyLimit.Release();
@@ -408,10 +413,15 @@ static class HistoryCommand {
                                         try {
                                             var wdResult = await WhatsDoneCommand.GenerateForSessionAsync(baseUrl, titleSessionId, _ => { });
 
-                                            if (wdResult == 0) Interlocked.Increment(ref summariesGenerated);
-                                            else Interlocked.Increment(ref summariesFailed);
-                                        } catch {
+                                            if (wdResult == 0) {
+                                                Interlocked.Increment(ref summariesGenerated);
+                                            } else {
+                                                Interlocked.Increment(ref summariesFailed);
+                                                summaryFailures.Add((titleSessionId, $"exit {wdResult}"));
+                                            }
+                                        } catch (Exception ex) {
                                             Interlocked.Increment(ref summariesFailed);
+                                            summaryFailures.Add((titleSessionId, ex.Message));
                                         } finally {
                                             concurrencyLimit.Release();
                                         }
@@ -459,12 +469,79 @@ static class HistoryCommand {
 
         // Wait for background title/summary generation to complete (best effort — never lose the final report)
         if (backgroundTasks.Count > 0) {
-            display.Line($"Waiting for {backgroundTasks.Count} background task{(backgroundTasks.Count == 1 ? "" : "s")} (titles/summaries)...");
+            if (display.Tty) {
+                AnsiConsole.Write(new Rule($"[dim]── Waiting for {backgroundTasks.Count} background task(s) ──[/]").LeftJustified());
 
-            try {
-                await Task.WhenAll(backgroundTasks);
-            } catch {
-                // Individual tasks already have try/catch; this guards against unexpected faults
+                await AnsiConsole.Progress()
+                    .AutoClear(false)
+                    .HideCompleted(false)
+                    .Columns(new TaskDescriptionColumn(), new ProgressBarColumn(), new PercentageColumn())
+                    .StartAsync(async ctx => {
+                        var maxVal      = backgroundTasks.Count;
+                        var titleTask   = ctx.AddTask("[cyan]Titles[/]",    maxValue: maxVal);
+                        var summaryTask = ctx.AddTask("[cyan]Summaries[/]", maxValue: maxVal);
+
+                        var seenTitleFailures   = 0;
+                        var seenSummaryFailures = 0;
+
+                        while (backgroundTasks.Any(t => !t.IsCompleted)) {
+                            titleTask.Value   = titlesGenerated + titlesFailed + titlesSkipped;
+                            summaryTask.Value = summariesGenerated + summariesFailed;
+
+                            var titleFailSnapshot   = titleFailures.ToList();
+                            var summaryFailSnapshot = summaryFailures.ToList();
+
+                            for (var i = seenTitleFailures; i < titleFailSnapshot.Count; i++) {
+                                var (sid, reason) = titleFailSnapshot[i];
+                                AnsiConsole.MarkupLine($"  [red]✗[/] title failed for [cyan]{Markup.Escape(sid)}[/]: {Markup.Escape(reason)}");
+                            }
+                            seenTitleFailures = titleFailSnapshot.Count;
+
+                            for (var i = seenSummaryFailures; i < summaryFailSnapshot.Count; i++) {
+                                var (sid, reason) = summaryFailSnapshot[i];
+                                AnsiConsole.MarkupLine($"  [red]✗[/] summary failed for [cyan]{Markup.Escape(sid)}[/]: {Markup.Escape(reason)}");
+                            }
+                            seenSummaryFailures = summaryFailSnapshot.Count;
+
+                            await Task.Delay(250);
+                        }
+
+                        try {
+                            await Task.WhenAll(backgroundTasks);
+                        } catch {
+                            // per-task try/catch handles individual failures
+                        }
+
+                        var titleFinal   = titleFailures.ToList();
+                        var summaryFinal = summaryFailures.ToList();
+
+                        for (var i = seenTitleFailures; i < titleFinal.Count; i++) {
+                            var (sid, reason) = titleFinal[i];
+                            AnsiConsole.MarkupLine($"  [red]✗[/] title failed for [cyan]{Markup.Escape(sid)}[/]: {Markup.Escape(reason)}");
+                        }
+                        for (var i = seenSummaryFailures; i < summaryFinal.Count; i++) {
+                            var (sid, reason) = summaryFinal[i];
+                            AnsiConsole.MarkupLine($"  [red]✗[/] summary failed for [cyan]{Markup.Escape(sid)}[/]: {Markup.Escape(reason)}");
+                        }
+
+                        titleTask.Value   = titlesGenerated + titlesFailed + titlesSkipped;
+                        summaryTask.Value = summariesGenerated + summariesFailed;
+                    });
+            } else {
+                display.Line($"Waiting for {backgroundTasks.Count} background task(s) (titles/summaries)...");
+
+                try {
+                    await Task.WhenAll(backgroundTasks);
+                } catch {
+                    // per-task try/catch handles individual failures
+                }
+
+                foreach (var (sid, reason) in titleFailures) {
+                    display.Line($"  ✗ title failed for {sid}: {reason}");
+                }
+                foreach (var (sid, reason) in summaryFailures) {
+                    display.Line($"  ✗ summary failed for {sid}: {reason}");
+                }
             }
 
             var parts = new List<string>();
