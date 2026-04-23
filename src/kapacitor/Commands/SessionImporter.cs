@@ -423,12 +423,13 @@ static class SessionImporter {
     /// Send transcript lines in batches of 100 for a given file (main or agent).
     /// </summary>
     internal static async Task<int> SendTranscriptBatches(
-            HttpClient httpClient,
-            string     baseUrl,
-            string     sessionId,
-            string     filePath,
-            string?    agentId,
-            int        startLine
+            HttpClient                 httpClient,
+            string                     baseUrl,
+            string                     sessionId,
+            string                     filePath,
+            string?                    agentId,
+            int                        startLine,
+            IProgress<ImportProgress>? progress = null
         ) {
         if (!File.Exists(filePath)) return 0;
 
@@ -458,16 +459,19 @@ static class SessionImporter {
 
             if (batchLines.Count >= batchSize) {
                 await PostTranscriptBatch(httpClient, baseUrl, sessionId, agentId, batchLines, batchLineNumbers);
-                totalSent += batchLines.Count;
+                var flushed = batchLines.Count;
+                totalSent += flushed;
+                progress?.Report(new BatchFlushed(flushed));
                 batchLines.Clear();
                 batchLineNumbers.Clear();
             }
         }
 
-        // Send remaining lines
         if (batchLines.Count > 0) {
             await PostTranscriptBatch(httpClient, baseUrl, sessionId, agentId, batchLines, batchLineNumbers);
-            totalSent += batchLines.Count;
+            var flushed = batchLines.Count;
+            totalSent += flushed;
+            progress?.Report(new BatchFlushed(flushed));
         }
 
         return totalSent;
