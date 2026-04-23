@@ -41,6 +41,7 @@ public class SessionImporterProgressTests : IDisposable {
             await Assert.That(flushes[0].LinesAdded).IsEqualTo(100);
             await Assert.That(flushes[1].LinesAdded).IsEqualTo(100);
             await Assert.That(flushes[2].LinesAdded).IsEqualTo(50);
+            await Assert.That(flushes.All(f => f.AgentId == null)).IsTrue();
         } finally {
             File.Delete(path);
         }
@@ -98,6 +99,16 @@ public class SessionImporterProgressTests : IDisposable {
             await Assert.That(startIdx).IsGreaterThanOrEqualTo(0);
             await Assert.That(finishIdx).IsGreaterThan(startIdx);
             await Assert.That(((SubagentFinished)ordered[finishIdx]).LinesSent).IsEqualTo(3);
+
+            // Batch flushes between the subagent boundaries must carry the agent id
+            // so UI callers can attribute lines to parent vs subagent.
+            var subagentBatches = ordered
+                .Skip(startIdx)
+                .Take(finishIdx - startIdx)
+                .OfType<BatchFlushed>()
+                .ToList();
+            await Assert.That(subagentBatches.Count).IsGreaterThan(0);
+            await Assert.That(subagentBatches.All(b => b.AgentId == agentId)).IsTrue();
         } finally {
             tmp.Delete(recursive: true);
         }

@@ -70,7 +70,7 @@ static class SessionImporter {
                         await PostTranscriptBatch(httpClient, baseUrl, sessionId, agentId: null, batchLines, batchLineNumbers);
                         var flushed = batchLines.Count;
                         totalSent += flushed;
-                        progress?.Report(new BatchFlushed(flushed));
+                        progress?.Report(new BatchFlushed(AgentId: null, flushed));
                         batchLines.Clear();
                         batchLineNumbers.Clear();
                     }
@@ -94,7 +94,7 @@ static class SessionImporter {
                 await PostTranscriptBatch(httpClient, baseUrl, sessionId, agentId: null, batchLines, batchLineNumbers);
                 var flushed = batchLines.Count;
                 totalSent += flushed;
-                progress?.Report(new BatchFlushed(flushed));
+                progress?.Report(new BatchFlushed(AgentId: null, flushed));
                 batchLines.Clear();
                 batchLineNumbers.Clear();
             }
@@ -105,7 +105,7 @@ static class SessionImporter {
             await PostTranscriptBatch(httpClient, baseUrl, sessionId, agentId: null, batchLines, batchLineNumbers);
             var flushed = batchLines.Count;
             totalSent += flushed;
-            progress?.Report(new BatchFlushed(flushed));
+            progress?.Report(new BatchFlushed(AgentId: null, flushed));
         }
 
         // Send any agents that had transcript files but NO progress marker in the
@@ -472,7 +472,7 @@ static class SessionImporter {
                 await PostTranscriptBatch(httpClient, baseUrl, sessionId, agentId, batchLines, batchLineNumbers);
                 var flushed = batchLines.Count;
                 totalSent += flushed;
-                progress?.Report(new BatchFlushed(flushed));
+                progress?.Report(new BatchFlushed(agentId, flushed));
                 batchLines.Clear();
                 batchLineNumbers.Clear();
             }
@@ -482,7 +482,7 @@ static class SessionImporter {
             await PostTranscriptBatch(httpClient, baseUrl, sessionId, agentId, batchLines, batchLineNumbers);
             var flushed = batchLines.Count;
             totalSent += flushed;
-            progress?.Report(new BatchFlushed(flushed));
+            progress?.Report(new BatchFlushed(agentId, flushed));
         }
 
         return totalSent;

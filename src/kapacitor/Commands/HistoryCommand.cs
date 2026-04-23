@@ -7,6 +7,17 @@ using kapacitor.Config;
 namespace kapacitor.Commands;
 
 static class HistoryCommand {
+    /// <summary>
+    /// Synchronous <see cref="IProgress{T}"/> whose <see cref="Report"/> invokes
+    /// the handler inline. <c>new Progress&lt;T&gt;</c> in a console app marshals to
+    /// the ThreadPool, so footer mutations and streamed lines could arrive after
+    /// the sequential import loop moved to the next session. Inline reporting
+    /// keeps UI updates ordered with the import they describe.
+    /// </summary>
+    sealed class InlineProgress<T>(Action<T> onReport) : IProgress<T> {
+        public void Report(T value) => onReport(value);
+    }
+
     readonly struct HistoryDisplay {
         public bool Tty { get; init; }
         // Non-null in Tty mode, null in Plain mode.
@@ -121,8 +132,12 @@ static class HistoryCommand {
         var errored       = 0;
         var excludedRepos = (await AppConfig.Load())?.ExcludedRepos;
 
-        // Background tasks for title and summary generation (run in parallel with imports)
+        // Background tasks for title and summary generation (run in parallel with imports).
+        // Separate counts (not backgroundTasks.Count) drive the progress bars' maxValue so
+        // each bar can actually reach 100% when both title and summary tasks are enqueued.
         var backgroundTasks    = new List<Task>();
+        var titleTaskCount     = 0;
+        var summaryTaskCount   = 0;
         var concurrencyLimit   = new SemaphoreSlim(3);
         var titlesGenerated    = 0;
         var titlesSkipped      = 0;
@@ -205,11 +220,17 @@ static class HistoryCommand {
 
                 display.SetFooterSession(sessionIdShort, totalLines);
 
-                var perSessionProgress = new Progress<ImportProgress>(ev => {
+                var perSessionProgress = new InlineProgress<ImportProgress>(ev => {
                         switch (ev) {
-                            case BatchFlushed bf:
+                            // Only parent-transcript batches contribute to the
+                            // footer's lines/total pair; subagent batches are
+                            // surfaced via SubagentFinished so linesDone stays
+                            // bounded by totalLines.
+                            case BatchFlushed { AgentId: null } bf:
                                 linesDone += bf.LinesAdded;
                                 display.AdvanceFooterLines(linesDone, totalLines, sessionIdShort, currentSubagent);
+                                break;
+                            case BatchFlushed:
                                 break;
                             case SubagentStarted ss:
                                 currentSubagent = ss.AgentId.Length >= 8 ? ss.AgentId[..8] : ss.AgentId;
@@ -403,6 +424,7 @@ static class HistoryCommand {
                                 }
                             )
                         );
+                        titleTaskCount++;
 
                         // Generate what's-done summary in background if requested
                         if (shouldGenerateWhatsDone) {
@@ -428,6 +450,7 @@ static class HistoryCommand {
                                     }
                                 )
                             );
+                            summaryTaskCount++;
                         }
 
                         loaded++;
@@ -477,16 +500,17 @@ static class HistoryCommand {
                     .HideCompleted(false)
                     .Columns(new TaskDescriptionColumn(), new ProgressBarColumn(), new PercentageColumn())
                     .StartAsync(async ctx => {
-                        var maxVal      = backgroundTasks.Count;
-                        var titleTask   = ctx.AddTask("[cyan]Titles[/]",    maxValue: maxVal);
-                        var summaryTask = ctx.AddTask("[cyan]Summaries[/]", maxValue: maxVal);
+                        // Skip summary bar when no summaries were requested — Spectre
+                        // renders a zero-max bar as a permanent 0/0 which is noise.
+                        var titleTask   = titleTaskCount   > 0 ? ctx.AddTask("[cyan]Titles[/]",    maxValue: titleTaskCount)   : null;
+                        var summaryTask = summaryTaskCount > 0 ? ctx.AddTask("[cyan]Summaries[/]", maxValue: summaryTaskCount) : null;
 
                         var seenTitleFailures   = 0;
                         var seenSummaryFailures = 0;
 
                         while (backgroundTasks.Any(t => !t.IsCompleted)) {
-                            titleTask.Value   = titlesGenerated + titlesFailed + titlesSkipped;
-                            summaryTask.Value = summariesGenerated + summariesFailed;
+                            titleTask  ?.Value = titlesGenerated    + titlesFailed + titlesSkipped;
+                            summaryTask?.Value = summariesGenerated + summariesFailed;
 
                             var titleFailSnapshot   = titleFailures.ToList();
                             var summaryFailSnapshot = summaryFailures.ToList();
@@ -524,8 +548,8 @@ static class HistoryCommand {
                             AnsiConsole.MarkupLine($"  [red]✗[/] summary failed for [cyan]{Markup.Escape(sid)}[/]: {Markup.Escape(reason)}");
                         }
 
-                        titleTask.Value   = titlesGenerated + titlesFailed + titlesSkipped;
-                        summaryTask.Value = summariesGenerated + summariesFailed;
+                        titleTask  ?.Value = titlesGenerated    + titlesFailed + titlesSkipped;
+                        summaryTask?.Value = summariesGenerated + summariesFailed;
                     });
             } else {
                 display.Line($"Waiting for {backgroundTasks.Count} background task(s) (titles/summaries)...");
