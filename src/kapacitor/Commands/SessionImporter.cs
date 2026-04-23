@@ -282,19 +282,24 @@ static class SessionImporter {
 
         var agentId = tr.Value.Str("agentId") ?? tr.Value.Str("agent_id");
 
-        if (agentId is null || result.ContainsKey(agentId))
+        if (agentId is null)
+            return;
+
+        var toolUseId = root.Str("tool_use_id");
+
+        // Always try to propagate subagent_type — an earlier agent_progress reference
+        // may already have locked in FirstLineByAgent, but this can still be our first
+        // chance to learn the real type from the parent Task invocation.
+        if (toolUseId is not null && toolUseTypes.TryGetValue(toolUseId, out var subagentType))
+            agentTypes.TryAdd(agentId, subagentType);
+
+        if (result.ContainsKey(agentId))
             return;
 
         // Prefer the tool_use position (where the agent was invoked) over the result position
-        var position = lineIndex;
-
-        if (root.Str("tool_use_id") is { } toolUseId) {
-            if (toolUsePositions.TryGetValue(toolUseId, out var toolUsePos))
-                position = toolUsePos;
-
-            if (toolUseTypes.TryGetValue(toolUseId, out var subagentType))
-                agentTypes.TryAdd(agentId, subagentType);
-        }
+        var position = toolUseId is not null && toolUsePositions.TryGetValue(toolUseId, out var toolUsePos)
+            ? toolUsePos
+            : lineIndex;
 
         result[agentId] = position;
     }
@@ -316,11 +321,16 @@ static class SessionImporter {
 
         var agentId = tur?.Str("agentId") ?? tur?.Str("agent_id");
 
-        if (agentId is null || result.ContainsKey(agentId))
+        if (agentId is null)
             return;
 
+        var alreadyPositioned = result.ContainsKey(agentId);
+
         // Find tool_use_id from message.content[].tool_use_id to resolve invocation
-        // position and propagate the parent invocation's subagent_type.
+        // position and propagate the parent invocation's subagent_type. Always try
+        // to propagate the type — an earlier agent_progress reference may have
+        // already locked in FirstLineByAgent, but the parent invocation's type
+        // might still be resolvable here.
         var position = lineIndex;
 
         if (root.Obj("message")?.Arr("content") is { } content) {
@@ -329,17 +339,18 @@ static class SessionImporter {
                  || block.Str("tool_use_id") is not { } toolUseId)
                     continue;
 
-                if (toolUsePositions.TryGetValue(toolUseId, out var toolUsePos)) {
+                if (!alreadyPositioned && toolUsePositions.TryGetValue(toolUseId, out var toolUsePos))
                     position = toolUsePos;
-                }
 
-                if (toolUseTypes.TryGetValue(toolUseId, out var subagentType)) {
+                if (toolUseTypes.TryGetValue(toolUseId, out var subagentType))
                     agentTypes.TryAdd(agentId, subagentType);
-                }
 
                 break;
             }
         }
+
+        if (alreadyPositioned)
+            return;
 
         result[agentId] = position;
     }
