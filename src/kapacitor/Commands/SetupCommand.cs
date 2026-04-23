@@ -2,6 +2,8 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using kapacitor.Auth;
 using kapacitor.Config;
+using Spectre.Console;
+using Profile = kapacitor.Config.Profile;
 
 namespace kapacitor.Commands;
 
@@ -10,9 +12,7 @@ public static class SetupCommand {
         var serverUrlArg = GetArg(args, "--server-url");
         var noPrompt     = args.Contains("--no-prompt");
 
-        await Console.Out.WriteLineAsync();
-        await Console.Out.WriteLineAsync("Welcome to Kapacitor!");
-        await Console.Out.WriteLineAsync();
+        AnsiConsole.Write(new Rule("[bold green]Welcome to Kapacitor[/]").Centered());
 
         // Check if already configured
         var existingProfile = await AppConfig.LoadProfileConfig();
@@ -20,18 +20,19 @@ public static class SetupCommand {
         var existingTokens  = await TokenStore.LoadAsync();
 
         if (existing?.ServerUrl is not null && existingTokens is not null && !noPrompt) {
-            Console.Write($"Already configured for {existing.ServerUrl} as {existingTokens.GitHubUsername}. Re-run setup? [y/N] ");
-            var answer = Console.ReadLine()?.Trim().ToLowerInvariant();
+            var rerun = AnsiConsole.Prompt(
+                new ConfirmationPrompt($"Already configured for [cyan]{Markup.Escape(existing.ServerUrl)}[/] as [cyan]{Markup.Escape(existingTokens.GitHubUsername ?? "?")}[/]. Re-run setup?")
+                    { DefaultValue = false });
 
-            if (answer is not "y" and not "yes") {
-                await Console.Out.WriteLineAsync("Setup cancelled.");
+            if (!rerun) {
+                AnsiConsole.MarkupLine("[dim]Setup cancelled.[/]");
 
                 return 0;
             }
         }
 
         // Step 1: Server URL
-        await Console.Out.WriteLineAsync("Step 1/5: Server");
+        AnsiConsole.Write(new Rule("[yellow]Step 1/5 — Server[/]").LeftJustified());
         string serverUrl;
 
         if (serverUrlArg is not null) {
@@ -42,28 +43,28 @@ public static class SetupCommand {
 
             return 1;
         } else {
-            Console.Write("  Enter your Capacitor server URL: ");
-            serverUrl = Console.ReadLine()?.Trim() ?? "";
-
-            if (string.IsNullOrEmpty(serverUrl)) {
-                await Console.Error.WriteLineAsync("  Server URL is required.");
-
-                return 1;
-            }
+            serverUrl = AnsiConsole.Prompt(
+                new TextPrompt<string>("Capacitor server URL:")
+                    .Validate(u => !string.IsNullOrWhiteSpace(u)
+                        ? ValidationResult.Success()
+                        : ValidationResult.Error("[red]URL cannot be empty[/]")));
         }
 
         // Normalize: strip trailing slashes to avoid double-slash URLs
         serverUrl = AppConfig.NormalizeUrl(serverUrl);
 
         // Validate server reachability
-        Console.Write("  Checking server... ");
         string provider;
 
         try {
-            provider = await HttpClientExtensions.DiscoverProviderAsync(serverUrl);
-            await Console.Out.WriteLineAsync($"✓ Reachable. Auth provider: {provider}");
+            provider = await AnsiConsole.Status()
+                .Spinner(Spinner.Known.Dots)
+                .StartAsync("Checking server…", async _ =>
+                    await HttpClientExtensions.DiscoverProviderAsync(serverUrl));
+
+            AnsiConsole.MarkupLine($"  [green]✓[/] Reachable · auth provider: [cyan]{Markup.Escape(provider)}[/]");
         } catch (Exception ex) {
-            await Console.Error.WriteLineAsync($"✗ Cannot reach server: {ex.Message}");
+            AnsiConsole.MarkupLine($"  [red]✗[/] Cannot reach server: {Markup.Escape(ex.Message)}");
 
             return 1;
         }
@@ -71,7 +72,7 @@ public static class SetupCommand {
         await Console.Out.WriteLineAsync();
 
         // Step 2: Login
-        await Console.Out.WriteLineAsync("Step 2/5: Login");
+        AnsiConsole.Write(new Rule("[yellow]Step 2/5 — Login[/]").LeftJustified());
 
         if (provider == "None") {
             await Console.Out.WriteLineAsync("  Auth provider is None — no login required.");
@@ -91,14 +92,7 @@ public static class SetupCommand {
         await Console.Out.WriteLineAsync();
 
         // Step 3: Default session visibility
-        await Console.Out.WriteLineAsync("Step 3/5: Default session visibility");
-        await Console.Out.WriteLineAsync();
-        await Console.Out.WriteLineAsync("  How should your sessions be visible to others by default?");
-        await Console.Out.WriteLineAsync();
-        await Console.Out.WriteLineAsync("    1) All private — only you can see your sessions");
-        await Console.Out.WriteLineAsync("    2) Org repos public, others private (current default)");
-        await Console.Out.WriteLineAsync("    3) All public — everyone can see all your sessions");
-        await Console.Out.WriteLineAsync();
+        AnsiConsole.Write(new Rule("[yellow]Step 3/5 — Default session visibility[/]").LeftJustified());
 
         string defaultVisibility;
 
@@ -113,27 +107,22 @@ public static class SetupCommand {
 
             await Console.Out.WriteLineAsync($"  Default visibility: {defaultVisibility}");
         } else {
-            while (true) {
-                Console.Write("  Choose [1-3] (default: 2): ");
-                var choice = Console.ReadLine()?.Trim();
-
-                defaultVisibility = choice switch {
-                    "" or null or "2" => "org_public",
-                    "1"               => "private",
-                    "3"               => "public",
-                    _                 => ""
-                };
-
-                if (defaultVisibility != "") break;
-
-                await Console.Out.WriteLineAsync("  Invalid choice. Please enter 1, 2, or 3.");
-            }
+            defaultVisibility = AnsiConsole.Prompt(
+                new SelectionPrompt<string>()
+                    .Title("How should your sessions be visible to others by default?")
+                    .AddChoices("org_public", "private", "public")
+                    .UseConverter(v => v switch {
+                        "private"    => "All private — only you can see your sessions",
+                        "org_public" => "Org repos public, others private (default)",
+                        "public"     => "All public — everyone can see all your sessions",
+                        _            => v
+                    }));
         }
 
         await Console.Out.WriteLineAsync();
 
         // Step 4: Claude Code plugin
-        await Console.Out.WriteLineAsync("Step 4/5: Claude Code Plugin");
+        AnsiConsole.Write(new Rule("[yellow]Step 4/5 — Claude Code Plugin[/]").LeftJustified());
         await Console.Out.WriteLineAsync("  The Kapacitor plugin provides hooks, skills, and collaborative memory.");
         await Console.Out.WriteLineAsync();
 
@@ -143,34 +132,22 @@ public static class SetupCommand {
             // The plugin directory itself is the marketplace root (single-plugin marketplace)
             var marketplacePath = pluginPath;
 
-            await Console.Out.WriteLineAsync("  Where should the plugin be installed?");
-            await Console.Out.WriteLineAsync();
-            await Console.Out.WriteLineAsync("    1) User-wide — all Claude Code sessions (recommended)");
-            await Console.Out.WriteLineAsync("    2) This project only");
-            await Console.Out.WriteLineAsync("    3) Skip — I'll install it manually");
-            await Console.Out.WriteLineAsync();
-
             string pluginScope;
 
             if (noPrompt) {
                 pluginScope = GetArg(args, "--plugin-scope") ?? "user";
                 await Console.Out.WriteLineAsync($"  Plugin scope: {pluginScope}");
             } else {
-                while (true) {
-                    Console.Write("  Choose [1-3] (default: 1): ");
-                    var choice = Console.ReadLine()?.Trim();
-
-                    pluginScope = choice switch {
-                        "" or null or "1" => "user",
-                        "2"               => "project",
-                        "3"               => "skip",
-                        _                 => ""
-                    };
-
-                    if (pluginScope != "") break;
-
-                    await Console.Out.WriteLineAsync("  Invalid choice. Please enter 1, 2, or 3.");
-                }
+                pluginScope = AnsiConsole.Prompt(
+                    new SelectionPrompt<string>()
+                        .Title("Where should the plugin be installed?")
+                        .AddChoices("user", "project", "skip")
+                        .UseConverter(v => v switch {
+                            "user"    => "User-wide — all Claude Code sessions (recommended)",
+                            "project" => "This project only",
+                            "skip"    => "Skip — I'll install it manually",
+                            _         => v
+                        }));
             }
 
             if (pluginScope == "skip") {
@@ -199,7 +176,7 @@ public static class SetupCommand {
         await Console.Out.WriteLineAsync();
 
         // Step 5: Daemon name + save
-        await Console.Out.WriteLineAsync("Step 5/5: Agent Daemon");
+        AnsiConsole.Write(new Rule("[yellow]Step 5/5 — Agent Daemon[/]").LeftJustified());
 
         var    defaultName = Environment.UserName.ToLowerInvariant();
         string daemonName;
@@ -208,9 +185,10 @@ public static class SetupCommand {
             daemonName = GetArg(args, "--daemon-name") ?? defaultName;
             await Console.Out.WriteLineAsync($"  Daemon name: {daemonName}");
         } else {
-            Console.Write($"  Daemon name [{defaultName}]: ");
-            var input = Console.ReadLine()?.Trim();
-            daemonName = string.IsNullOrEmpty(input) ? defaultName : input;
+            daemonName = AnsiConsole.Prompt(
+                new TextPrompt<string>("Daemon name:")
+                    .DefaultValue(defaultName)
+                    .ShowDefaultValue());
         }
 
         await Console.Out.WriteLineAsync();
@@ -232,18 +210,21 @@ public static class SetupCommand {
         await AppConfig.SaveProfileConfig(profileConfig);
 
         var finalTokens = await TokenStore.LoadAsync();
-        await Console.Out.WriteLineAsync("Setup complete!");
-        await Console.Out.WriteLineAsync($"  ✓ Server:  {serverUrl}");
-        await Console.Out.WriteLineAsync($"  ✓ Visibility: {defaultVisibility}");
-        await Console.Out.WriteLineAsync($"  ✓ Daemon:  {daemonName}");
+        AnsiConsole.Write(new Rule("[green]Setup complete[/]").LeftJustified());
+
+        var grid = new Grid().AddColumn().AddColumn();
+        grid.AddRow("[bold]Server[/]",     Markup.Escape(serverUrl));
+        grid.AddRow("[bold]Visibility[/]", Markup.Escape(defaultVisibility));
+        grid.AddRow("[bold]Daemon[/]",     Markup.Escape(daemonName));
 
         if (finalTokens is not null) {
-            await Console.Out.WriteLineAsync($"  ✓ Auth:    {finalTokens.GitHubUsername} ({finalTokens.Provider})");
+            grid.AddRow("[bold]Auth[/]", Markup.Escape($"{finalTokens.GitHubUsername} ({finalTokens.Provider})"));
         }
 
-        await Console.Out.WriteLineAsync($"  Config saved to {AppConfig.GetConfigPath()}");
-        await Console.Out.WriteLineAsync();
-        await Console.Out.WriteLineAsync("  Optional: start the agent daemon with `kapacitor agent start -d`");
+        grid.AddRow("[bold]Config[/]", Markup.Escape(AppConfig.GetConfigPath()));
+
+        AnsiConsole.Write(grid);
+        AnsiConsole.MarkupLine("\n[dim]Optional:[/] start the agent daemon with [cyan]kapacitor agent start -d[/]");
 
         return 0;
     }

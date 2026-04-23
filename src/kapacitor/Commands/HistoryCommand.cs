@@ -1,3 +1,4 @@
+using Spectre.Console;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -6,15 +7,55 @@ using kapacitor.Config;
 namespace kapacitor.Commands;
 
 static class HistoryCommand {
+    /// <summary>
+    /// Synchronous <see cref="IProgress{T}"/> whose <see cref="Report"/> invokes
+    /// the handler inline. <c>new Progress&lt;T&gt;</c> in a console app marshals to
+    /// the ThreadPool, so footer mutations and streamed lines could arrive after
+    /// the sequential import loop moved to the next session. Inline reporting
+    /// keeps UI updates ordered with the import they describe.
+    /// </summary>
+    sealed class InlineProgress<T>(Action<T> onReport) : IProgress<T> {
+        public void Report(T value) => onReport(value);
+    }
+
+    readonly struct HistoryDisplay {
+        public bool Tty { get; init; }
+        // Non-null in Tty mode, null in Plain mode.
+        public ProgressTask? Footer { get; init; }
+
+        public void SetFooterSession(string sessionIdShort, int totalLines) {
+            if (Footer is null) return;
+            Footer.Description = $"[green]Importing[/] {(int)Footer.Value}/{(int)Footer.MaxValue} · {Markup.Escape(sessionIdShort)}: 0/{totalLines} lines";
+        }
+
+        public void AdvanceFooterLines(int linesDone, int linesTotal, string sessionIdShort, string? agentSuffixId) {
+            if (Footer is null) return;
+            var suffix = agentSuffixId is null ? "" : $" ↳ subagent {Markup.Escape(agentSuffixId)}";
+            Footer.Description = $"[green]Importing[/] {(int)Footer.Value}/{(int)Footer.MaxValue} · {Markup.Escape(sessionIdShort)}: {linesDone}/{linesTotal} lines{suffix}";
+        }
+
+        public void Line(string plain, string? markup = null) {
+            if (Tty) AnsiConsole.MarkupLine(markup ?? Markup.Escape(plain));
+            else     Console.WriteLine(plain);
+        }
+
+        public static HistoryDisplay Create() {
+            var tty = !Console.IsOutputRedirected;
+
+            return new HistoryDisplay { Tty = tty, Footer = null };
+        }
+    }
+
     public static async Task<int> HandleHistory(string baseUrl, string? filterCwd, string? filterSession = null, int minLines = 10, bool generateSummaries = false) {
         using var httpClient = await HttpClientExtensions.CreateAuthenticatedClientAsync();
+        var display = HistoryDisplay.Create();
 
-        await Console.Out.WriteLineAsync("Discovering sessions...");
+        display.Line("Discovering sessions...");
 
         var projectsDir = ClaudePaths.Projects;
 
         if (!Directory.Exists(projectsDir)) {
-            await Console.Out.WriteLineAsync("No Claude Code projects directory found.");
+            display.Line("No Claude Code projects directory found.");
 
             return 0;
         }
@@ -42,7 +83,7 @@ static class HistoryCommand {
         }
 
         if (transcriptFiles.Count == 0) {
-            await Console.Out.WriteLineAsync("No transcript files found.");
+            display.Line("No transcript files found.");
 
             return 0;
         }
@@ -75,8 +116,8 @@ static class HistoryCommand {
         }
 
         var projectCount = transcriptFiles.Select(t => t.EncodedCwd).Distinct().Count();
-        await Console.Out.WriteLineAsync($"Found {transcriptFiles.Count} session{(transcriptFiles.Count == 1 ? "" : "s")} in {projectCount} project{(projectCount == 1 ? "" : "s")}");
-        await Console.Out.WriteLineAsync();
+        display.Line($"Found {transcriptFiles.Count} session{(transcriptFiles.Count == 1 ? "" : "s")} in {projectCount} project{(projectCount == 1 ? "" : "s")}");
+        display.Line("");
 
         // Build continuation map: group sessions by slug and order by timestamp
         // so we can link continuations during migration
@@ -91,297 +132,440 @@ static class HistoryCommand {
         var errored       = 0;
         var excludedRepos = (await AppConfig.Load())?.ExcludedRepos;
 
-        // Background tasks for title and summary generation (run in parallel with imports)
+        // Background tasks for title and summary generation (run in parallel with imports).
+        // Separate counts (not backgroundTasks.Count) drive the progress bars' maxValue so
+        // each bar can actually reach 100% when both title and summary tasks are enqueued.
         var backgroundTasks    = new List<Task>();
+        var titleTaskCount     = 0;
+        var summaryTaskCount   = 0;
         var concurrencyLimit   = new SemaphoreSlim(3);
         var titlesGenerated    = 0;
         var titlesSkipped      = 0;
         var titlesFailed       = 0;
         var summariesGenerated = 0;
         var summariesFailed    = 0;
+        var titleFailures      = new System.Collections.Concurrent.ConcurrentBag<(string SessionId, string Reason)>();
+        var summaryFailures    = new System.Collections.Concurrent.ConcurrentBag<(string SessionId, string Reason)>();
 
-        foreach (var (sessionId, filePath, encodedCwd) in transcriptFiles) {
-            // Skip transcripts that are kapacitor-spawned sub-sessions (title generation, what's-done summaries)
-            if (TitleGenerator.IsKapacitorSubSession(filePath)) {
-                skipped++;
-
-                continue;
-            }
-
-            // Check server status via last-line API
-            HistorySessionStatus status;
-
-            var resumeFromLine = 0;
-
-            try {
-                var resp = await httpClient.GetWithRetryAsync($"{baseUrl}/api/sessions/{sessionId}/last-line");
-
-                switch (resp.StatusCode) {
-                    case System.Net.HttpStatusCode.NotFound:
-                        // 404 = stream doesn't exist, full load needed
-                        status = HistorySessionStatus.New; break;
-                    case System.Net.HttpStatusCode.NoContent:
-                        // 204 = stream exists but no line numbers, skip
-                        status = HistorySessionStatus.AlreadyLoaded; break;
-                    default: {
-                        if (resp.IsSuccessStatusCode) {
-                            // 200 = has line numbers, can resume
-                            var json = await resp.Content.ReadAsStringAsync();
-                            var doc  = JsonDocument.Parse(json);
-
-                            if (doc.RootElement.Num("last_line_number") is { } lastLine) {
-                                resumeFromLine = (int)lastLine + 1;
-                                status         = HistorySessionStatus.Partial;
-                            } else {
-                                status = HistorySessionStatus.AlreadyLoaded;
-                            }
-                        } else {
-                            await Console.Out.WriteLineAsync($"Skipping {sessionId} [server error: HTTP {(int)resp.StatusCode}]");
-                            errored++;
-
-                            continue;
-                        }
-
-                        break;
-                    }
-                }
-            } catch (HttpRequestException ex) {
-                await Console.Out.WriteLineAsync($"Skipping {sessionId} [server unreachable: {ex.Message}]");
-                errored++;
-
-                continue;
-            }
-
-            if (status == HistorySessionStatus.AlreadyLoaded) {
-                await Console.Out.WriteLineAsync($"Skipping {sessionId} [already loaded]");
-                skipped++;
-
-                continue;
-            }
-
-            // Count total lines for progress display
-            var totalLines = WatchCommand.CountFileLines(filePath);
-
-            switch (status) {
-                // Skip short transcripts (likely trivial sessions with no meaningful work)
-                case HistorySessionStatus.New when minLines > 0 && totalLines < minLines:
-                    await Console.Out.WriteLineAsync($"Skipping {sessionId} [too short: {totalLines} lines < {minLines} minimum]");
+        async Task RunLoop() {
+            foreach (var (sessionId, filePath, encodedCwd) in transcriptFiles) {
+                // Skip transcripts that are kapacitor-spawned sub-sessions (title generation, what's-done summaries)
+                if (TitleGenerator.IsKapacitorSubSession(filePath)) {
                     skipped++;
+                    display.Footer?.Increment(1);
 
                     continue;
-                case HistorySessionStatus.New: {
-                    // Extract metadata from transcript for session-start hook
-                    var meta = ExtractSessionMetadata(filePath);
+                }
 
-                    // POST synthesized session-start hook
-                    continuationMap.TryGetValue(sessionId, out var prevSessionId);
+                // Check server status via last-line API
+                HistorySessionStatus status;
 
-                    // Note: default_visibility is deliberately omitted for history imports.
-                    // Historical sessions predate the user's visibility preference; null falls
-                    // back to org_public behavior, which is the safest default for imported data.
-                    var startHook = new JsonObject {
-                        ["session_id"]      = sessionId,
-                        ["transcript_path"] = filePath,
-                        ["cwd"]             = meta.Cwd ?? DecodeCwdFromDirName(encodedCwd),
-                        ["source"]          = "Startup",
-                        ["hook_event_name"] = "session_start",
-                        ["model"]           = meta.Model
-                    };
+                var resumeFromLine = 0;
 
-                    if (meta.FirstTimestamp is not null) {
-                        startHook["started_at"] = meta.FirstTimestamp.Value.ToString("O");
-                    }
+                try {
+                    var resp = await httpClient.GetWithRetryAsync($"{baseUrl}/api/sessions/{sessionId}/last-line");
 
-                    // Pass continuation info directly (bypasses pending continuation mechanism)
-                    if (prevSessionId is not null) {
-                        startHook["previous_session_id"] = prevSessionId;
-                    }
+                    switch (resp.StatusCode) {
+                        case System.Net.HttpStatusCode.NotFound:
+                            // 404 = stream doesn't exist, full load needed
+                            status = HistorySessionStatus.New; break;
+                        case System.Net.HttpStatusCode.NoContent:
+                            // 204 = stream exists but no line numbers, skip
+                            status = HistorySessionStatus.AlreadyLoaded; break;
+                        default: {
+                            if (resp.IsSuccessStatusCode) {
+                                // 200 = has line numbers, can resume
+                                var json = await resp.Content.ReadAsStringAsync();
+                                var doc  = JsonDocument.Parse(json);
 
-                    if (meta.Slug is not null) {
-                        startHook["slug"] = meta.Slug;
-                    }
-
-                    // Enrich with repository info if we have a cwd
-                    var startCwd = meta.Cwd ?? DecodeCwdFromDirName(encodedCwd);
-
-                    if (startCwd is not null) {
-                        var repo = await RepositoryDetection.DetectRepositoryAsync(startCwd);
-
-                        // Check repo exclusion
-                        if (excludedRepos is { Length: > 0 }
-                         && repo?.Owner is not null
-                         && repo.RepoName is not null
-                         && excludedRepos.Contains($"{repo.Owner}/{repo.RepoName}", StringComparer.OrdinalIgnoreCase)) {
-                            if (Console.IsInputRedirected) {
-                                await Console.Out.WriteLineAsync($"Skipping {sessionId} [repository {repo.Owner}/{repo.RepoName} is excluded]");
-                                skipped++;
+                                if (doc.RootElement.Num("last_line_number") is { } lastLine) {
+                                    resumeFromLine = (int)lastLine + 1;
+                                    status         = HistorySessionStatus.Partial;
+                                } else {
+                                    status = HistorySessionStatus.AlreadyLoaded;
+                                }
+                            } else {
+                                display.Line($"Skipping {sessionId} [server error: HTTP {(int)resp.StatusCode}]");
+                                errored++;
+                                display.Footer?.Increment(1);
 
                                 continue;
                             }
 
-                            Console.Write($"Repository {repo.Owner}/{repo.RepoName} is excluded from tracking. Continue anyway? (y/N) ");
-                            var answer = Console.ReadLine()?.Trim();
+                            break;
+                        }
+                    }
+                } catch (HttpRequestException ex) {
+                    display.Line($"Skipping {sessionId} [server unreachable: {ex.Message}]");
+                    errored++;
+                    display.Footer?.Increment(1);
 
-                            if (!string.Equals(answer, "y", StringComparison.OrdinalIgnoreCase)) {
-                                await Console.Out.WriteLineAsync($"Skipping {sessionId}");
-                                skipped++;
+                    continue;
+                }
 
-                                continue;
-                            }
+                if (status == HistorySessionStatus.AlreadyLoaded) {
+                    display.Line($"Skipping {sessionId} [already loaded]");
+                    skipped++;
+                    display.Footer?.Increment(1);
+
+                    continue;
+                }
+
+                // Count total lines for progress display
+                var totalLines = WatchCommand.CountFileLines(filePath);
+
+                var sessionIdShort = sessionId.Length >= 8 ? sessionId[..8] : sessionId;
+                var linesDone      = 0;
+                string? currentSubagent = null;
+
+                display.SetFooterSession(sessionIdShort, totalLines);
+
+                var perSessionProgress = new InlineProgress<ImportProgress>(ev => {
+                        switch (ev) {
+                            // Only parent-transcript batches contribute to the
+                            // footer's lines/total pair; subagent batches are
+                            // surfaced via SubagentFinished so linesDone stays
+                            // bounded by totalLines.
+                            case BatchFlushed { AgentId: null } bf:
+                                linesDone += bf.LinesAdded;
+                                display.AdvanceFooterLines(linesDone, totalLines, sessionIdShort, currentSubagent);
+                                break;
+                            case BatchFlushed:
+                                break;
+                            case SubagentStarted ss:
+                                currentSubagent = ss.AgentId.Length >= 8 ? ss.AgentId[..8] : ss.AgentId;
+                                display.AdvanceFooterLines(linesDone, totalLines, sessionIdShort, currentSubagent);
+                                break;
+                            case SubagentFinished sf:
+                                display.Line(
+                                    $"  ↳ imported subagent {sf.AgentId} ({sf.LinesSent} lines)",
+                                    $"  [dim]↳[/] imported subagent [cyan]{Markup.Escape(sf.AgentId)}[/] ({sf.LinesSent} lines)");
+                                currentSubagent = null;
+                                display.AdvanceFooterLines(linesDone, totalLines, sessionIdShort, null);
+                                break;
+                        }
+                    }
+                );
+
+                switch (status) {
+                    // Skip short transcripts (likely trivial sessions with no meaningful work)
+                    case HistorySessionStatus.New when minLines > 0 && totalLines < minLines:
+                        display.Line($"Skipping {sessionId} [too short: {totalLines} lines < {minLines} minimum]");
+                        skipped++;
+                        display.Footer?.Increment(1);
+
+                        continue;
+                    case HistorySessionStatus.New: {
+                        // Extract metadata from transcript for session-start hook
+                        var meta = ExtractSessionMetadata(filePath);
+
+                        // POST synthesized session-start hook
+                        continuationMap.TryGetValue(sessionId, out var prevSessionId);
+
+                        // Note: default_visibility is deliberately omitted for history imports.
+                        // Historical sessions predate the user's visibility preference; null falls
+                        // back to org_public behavior, which is the safest default for imported data.
+                        var startHook = new JsonObject {
+                            ["session_id"]      = sessionId,
+                            ["transcript_path"] = filePath,
+                            ["cwd"]             = meta.Cwd ?? DecodeCwdFromDirName(encodedCwd),
+                            ["source"]          = "Startup",
+                            ["hook_event_name"] = "session_start",
+                            ["model"]           = meta.Model
+                        };
+
+                        if (meta.FirstTimestamp is not null) {
+                            startHook["started_at"] = meta.FirstTimestamp.Value.ToString("O");
                         }
 
-                        if (repo is not null) {
-                            var repoNode = new JsonObject();
+                        // Pass continuation info directly (bypasses pending continuation mechanism)
+                        if (prevSessionId is not null) {
+                            startHook["previous_session_id"] = prevSessionId;
+                        }
+
+                        if (meta.Slug is not null) {
+                            startHook["slug"] = meta.Slug;
+                        }
+
+                        // Enrich with repository info if we have a cwd
+                        var startCwd = meta.Cwd ?? DecodeCwdFromDirName(encodedCwd);
+
+                        if (startCwd is not null) {
+                            var repo = await RepositoryDetection.DetectRepositoryAsync(startCwd);
+
+                            // Check repo exclusion
+                            if (excludedRepos is { Length: > 0 }
+                             && repo?.Owner is not null
+                             && repo.RepoName is not null
+                             && excludedRepos.Contains($"{repo.Owner}/{repo.RepoName}", StringComparer.OrdinalIgnoreCase)) {
+                                if (Console.IsInputRedirected) {
+                                    display.Line($"Skipping {sessionId} [repository {repo.Owner}/{repo.RepoName} is excluded]");
+                                    skipped++;
+                                    display.Footer?.Increment(1);
+
+                                    continue;
+                                }
+
+                                Console.Write($"Repository {repo.Owner}/{repo.RepoName} is excluded from tracking. Continue anyway? (y/N) ");
+                                var answer = Console.ReadLine()?.Trim();
+
+                                if (!string.Equals(answer, "y", StringComparison.OrdinalIgnoreCase)) {
+                                    display.Line($"Skipping {sessionId}");
+                                    skipped++;
+                                    display.Footer?.Increment(1);
+
+                                    continue;
+                                }
+                            }
+
+                            if (repo is not null) {
+                                var repoNode = new JsonObject();
 #pragma warning disable IDE0011
-                            if (repo.UserName is not null) repoNode["user_name"]   = repo.UserName;
-                            if (repo.UserEmail is not null) repoNode["user_email"] = repo.UserEmail;
-                            if (repo.RemoteUrl is not null) repoNode["remote_url"] = repo.RemoteUrl;
-                            if (repo.Owner is not null) repoNode["owner"]          = repo.Owner;
-                            if (repo.RepoName is not null) repoNode["repo_name"]   = repo.RepoName;
-                            if (repo.Branch is not null) repoNode["branch"]        = repo.Branch;
+                                if (repo.UserName is not null) repoNode["user_name"]   = repo.UserName;
+                                if (repo.UserEmail is not null) repoNode["user_email"] = repo.UserEmail;
+                                if (repo.RemoteUrl is not null) repoNode["remote_url"] = repo.RemoteUrl;
+                                if (repo.Owner is not null) repoNode["owner"]          = repo.Owner;
+                                if (repo.RepoName is not null) repoNode["repo_name"]   = repo.RepoName;
+                                if (repo.Branch is not null) repoNode["branch"]        = repo.Branch;
 #pragma warning restore IDE0011
-                            startHook["repository"] = repoNode;
+                                startHook["repository"] = repoNode;
+                            }
                         }
-                    }
 
-                    try {
-                        using var startContent = new StringContent(startHook.ToJsonString(), Encoding.UTF8, "application/json");
+                        try {
+                            using var startContent = new StringContent(startHook.ToJsonString(), Encoding.UTF8, "application/json");
 
-                        var startResp = await httpClient.PostWithRetryAsync($"{baseUrl}/hooks/session-start", startContent);
+                            var startResp = await httpClient.PostWithRetryAsync($"{baseUrl}/hooks/session-start", startContent);
 
-                        if (!startResp.IsSuccessStatusCode) {
-                            await Console.Out.WriteLineAsync($"Skipping {sessionId} [session-start failed: HTTP {(int)startResp.StatusCode}]");
+                            if (!startResp.IsSuccessStatusCode) {
+                                display.Line($"Skipping {sessionId} [session-start failed: HTTP {(int)startResp.StatusCode}]");
+                                errored++;
+                                display.Footer?.Increment(1);
+
+                                continue;
+                            }
+                        } catch (HttpRequestException ex) {
+                            display.Line($"Skipping {sessionId} [server unreachable: {ex.Message}]");
                             errored++;
+                            display.Footer?.Increment(1);
 
                             continue;
                         }
-                    } catch (HttpRequestException ex) {
-                        await Console.Out.WriteLineAsync($"Skipping {sessionId} [server unreachable: {ex.Message}]");
-                        errored++;
 
-                        continue;
-                    }
+                        // Import transcript with interleaved agent lifecycle events
+                        var importResult = await SessionImporter.ImportSessionAsync(
+                            httpClient,
+                            baseUrl,
+                            filePath,
+                            sessionId,
+                            meta,
+                            encodedCwd,
+                            perSessionProgress
+                        );
 
-                    Console.Write($"Loading {sessionId}... ");
+                        display.Line($"Loading {sessionId}... {importResult.LinesSent} lines [new]");
 
-                    // Import transcript with interleaved agent lifecycle events
-                    var importResult = await SessionImporter.ImportSessionAsync(
-                        httpClient,
-                        baseUrl,
-                        filePath,
-                        sessionId,
-                        meta,
-                        encodedCwd
-                    );
+                        // POST synthesized session-end hook
+                        var lastTimestamp = ExtractLastTimestamp(filePath);
 
-                    await Console.Out.WriteLineAsync($"{importResult.LinesSent} lines [new]");
+                        var endHook = new JsonObject {
+                            ["session_id"]      = sessionId,
+                            ["transcript_path"] = filePath,
+                            ["cwd"]             = startCwd ?? "",
+                            ["reason"]          = "Other",
+                            ["hook_event_name"] = "session_end"
+                        };
 
-                    if (importResult.AgentIds.Count > 0) {
-                        await Console.Out.WriteLineAsync($"  {importResult.AgentIds.Count} agent{(importResult.AgentIds.Count == 1 ? "" : "s")} imported inline");
-                    }
-
-                    // POST synthesized session-end hook
-                    var lastTimestamp = ExtractLastTimestamp(filePath);
-
-                    var endHook = new JsonObject {
-                        ["session_id"]      = sessionId,
-                        ["transcript_path"] = filePath,
-                        ["cwd"]             = startCwd ?? "",
-                        ["reason"]          = "Other",
-                        ["hook_event_name"] = "session_end"
-                    };
-
-                    if (lastTimestamp is not null) {
-                        endHook["ended_at"] = lastTimestamp.Value.ToString("O");
-                    }
-
-                    var shouldGenerateWhatsDone = false;
-
-                    try {
-                        using var endContent = new StringContent(endHook.ToJsonString(), Encoding.UTF8, "application/json");
-                        using var endResp    = await httpClient.PostWithRetryAsync($"{baseUrl}/hooks/session-end", endContent);
-
-                        if (generateSummaries && endResp.IsSuccessStatusCode) {
-                            try {
-                                var endBody     = await endResp.Content.ReadAsStringAsync();
-                                var endRespNode = JsonNode.Parse(endBody);
-                                shouldGenerateWhatsDone = endRespNode?["generate_whats_done"]?.GetValue<bool>() == true;
-                            } catch {
-                                // Best effort response parsing
-                            }
+                        if (lastTimestamp is not null) {
+                            endHook["ended_at"] = lastTimestamp.Value.ToString("O");
                         }
-                    } catch {
-                        // Best effort for session end
-                    }
 
-                    // Generate Claude title in background (overlaps with next session's import)
-                    var titleSessionId = sessionId;
-                    var titleFilePath  = filePath;
+                        var shouldGenerateWhatsDone = false;
 
-                    backgroundTasks.Add(
-                        Task.Run(async () => {
-                                await concurrencyLimit.WaitAsync();
+                        try {
+                            using var endContent = new StringContent(endHook.ToJsonString(), Encoding.UTF8, "application/json");
+                            using var endResp    = await httpClient.PostWithRetryAsync($"{baseUrl}/hooks/session-end", endContent);
 
+                            if (generateSummaries && endResp.IsSuccessStatusCode) {
                                 try {
-                                    var result = await GenerateTitleForImportAsync(httpClient, baseUrl, titleSessionId, titleFilePath);
-
-                                    switch (result) {
-                                        case TitleResult.Generated: Interlocked.Increment(ref titlesGenerated); break;
-                                        case TitleResult.Skipped:   Interlocked.Increment(ref titlesSkipped); break;
-                                        case TitleResult.Failed:    Interlocked.Increment(ref titlesFailed); break;
-                                    }
-                                } finally {
-                                    concurrencyLimit.Release();
+                                    var endBody     = await endResp.Content.ReadAsStringAsync();
+                                    var endRespNode = JsonNode.Parse(endBody);
+                                    shouldGenerateWhatsDone = endRespNode?["generate_whats_done"]?.GetValue<bool>() == true;
+                                } catch {
+                                    // Best effort response parsing
                                 }
                             }
-                        )
-                    );
+                        } catch {
+                            // Best effort for session end
+                        }
 
-                    // Generate what's-done summary in background if requested
-                    if (shouldGenerateWhatsDone) {
+                        // Generate Claude title in background (overlaps with next session's import)
+                        var titleSessionId = sessionId;
+                        var titleFilePath  = filePath;
+
                         backgroundTasks.Add(
                             Task.Run(async () => {
                                     await concurrencyLimit.WaitAsync();
 
                                     try {
-                                        var wdResult = await WhatsDoneCommand.GenerateForSessionAsync(baseUrl, titleSessionId, _ => { });
+                                        var result = await GenerateTitleForImportAsync(httpClient, baseUrl, titleSessionId, titleFilePath);
 
-                                        if (wdResult == 0) Interlocked.Increment(ref summariesGenerated);
-                                        else Interlocked.Increment(ref summariesFailed);
-                                    } catch {
-                                        Interlocked.Increment(ref summariesFailed);
+                                        switch (result) {
+                                            case TitleResult.Generated: Interlocked.Increment(ref titlesGenerated); break;
+                                            case TitleResult.Skipped:   Interlocked.Increment(ref titlesSkipped); break;
+                                            case TitleResult.Failed:
+                                                Interlocked.Increment(ref titlesFailed);
+                                                titleFailures.Add((titleSessionId, "generation error"));
+                                                break;
+                                        }
                                     } finally {
                                         concurrencyLimit.Release();
                                     }
                                 }
                             )
                         );
+                        titleTaskCount++;
+
+                        // Generate what's-done summary in background if requested
+                        if (shouldGenerateWhatsDone) {
+                            backgroundTasks.Add(
+                                Task.Run(async () => {
+                                        await concurrencyLimit.WaitAsync();
+
+                                        try {
+                                            var wdResult = await WhatsDoneCommand.GenerateForSessionAsync(baseUrl, titleSessionId, _ => { });
+
+                                            if (wdResult == 0) {
+                                                Interlocked.Increment(ref summariesGenerated);
+                                            } else {
+                                                Interlocked.Increment(ref summariesFailed);
+                                                summaryFailures.Add((titleSessionId, $"exit {wdResult}"));
+                                            }
+                                        } catch (Exception ex) {
+                                            Interlocked.Increment(ref summariesFailed);
+                                            summaryFailures.Add((titleSessionId, ex.Message));
+                                        } finally {
+                                            concurrencyLimit.Release();
+                                        }
+                                    }
+                                )
+                            );
+                            summaryTaskCount++;
+                        }
+
+                        loaded++;
+                        display.Footer?.Increment(1);
+
+                        break;
                     }
+                    default: {
+                        // Partial load — resume from where we left off
+                        var linesSent = await SessionImporter.SendTranscriptBatches(
+                            httpClient, baseUrl, sessionId, filePath, agentId: null,
+                            startLine: resumeFromLine, progress: perSessionProgress
+                        );
+                        display.Line($"Loading {sessionId}... {linesSent} lines [resuming from line {resumeFromLine}]");
+                        resumed++;
+                        display.Footer?.Increment(1);
 
-                    loaded++;
-
-                    break;
-                }
-                default: {
-                    // Partial load — resume from where we left off
-                    Console.Write($"Loading {sessionId}... ");
-                    var linesSent = await SessionImporter.SendTranscriptBatches(httpClient, baseUrl, sessionId, filePath, agentId: null, startLine: resumeFromLine);
-                    await Console.Out.WriteLineAsync($"{linesSent} lines [resuming from line {resumeFromLine}]");
-                    resumed++;
-
-                    break;
+                        break;
+                    }
                 }
             }
         }
 
+        if (display.Tty) {
+            await AnsiConsole.Progress()
+                .AutoClear(false)
+                .HideCompleted(false)
+                .Columns(new TaskDescriptionColumn(), new ProgressBarColumn(), new PercentageColumn())
+                .StartAsync(async ctx => {
+                    var footer = ctx.AddTask("[green]Importing[/]", maxValue: transcriptFiles.Count);
+                    display = display with { Footer = footer };
+
+                    await RunLoop();
+                    footer.Value = footer.MaxValue;
+                });
+        } else {
+            await RunLoop();
+        }
+
         // Wait for background title/summary generation to complete (best effort — never lose the final report)
         if (backgroundTasks.Count > 0) {
-            await Console.Out.WriteLineAsync($"Waiting for {backgroundTasks.Count} background task{(backgroundTasks.Count == 1 ? "" : "s")} (titles/summaries)...");
+            if (display.Tty) {
+                AnsiConsole.Write(new Rule($"[dim]── Waiting for {backgroundTasks.Count} background task(s) ──[/]").LeftJustified());
 
-            try {
-                await Task.WhenAll(backgroundTasks);
-            } catch {
-                // Individual tasks already have try/catch; this guards against unexpected faults
+                await AnsiConsole.Progress()
+                    .AutoClear(false)
+                    .HideCompleted(false)
+                    .Columns(new TaskDescriptionColumn(), new ProgressBarColumn(), new PercentageColumn())
+                    .StartAsync(async ctx => {
+                        // Skip summary bar when no summaries were requested — Spectre
+                        // renders a zero-max bar as a permanent 0/0 which is noise.
+                        var titleTask   = titleTaskCount   > 0 ? ctx.AddTask("[cyan]Titles[/]",    maxValue: titleTaskCount)   : null;
+                        var summaryTask = summaryTaskCount > 0 ? ctx.AddTask("[cyan]Summaries[/]", maxValue: summaryTaskCount) : null;
+
+                        var seenTitleFailures   = 0;
+                        var seenSummaryFailures = 0;
+
+                        while (backgroundTasks.Any(t => !t.IsCompleted)) {
+                            titleTask  ?.Value = titlesGenerated    + titlesFailed + titlesSkipped;
+                            summaryTask?.Value = summariesGenerated + summariesFailed;
+
+                            var titleFailSnapshot   = titleFailures.ToList();
+                            var summaryFailSnapshot = summaryFailures.ToList();
+
+                            for (var i = seenTitleFailures; i < titleFailSnapshot.Count; i++) {
+                                var (sid, reason) = titleFailSnapshot[i];
+                                AnsiConsole.MarkupLine($"  [red]✗[/] title failed for [cyan]{Markup.Escape(sid)}[/]: {Markup.Escape(reason)}");
+                            }
+                            seenTitleFailures = titleFailSnapshot.Count;
+
+                            for (var i = seenSummaryFailures; i < summaryFailSnapshot.Count; i++) {
+                                var (sid, reason) = summaryFailSnapshot[i];
+                                AnsiConsole.MarkupLine($"  [red]✗[/] summary failed for [cyan]{Markup.Escape(sid)}[/]: {Markup.Escape(reason)}");
+                            }
+                            seenSummaryFailures = summaryFailSnapshot.Count;
+
+                            await Task.Delay(250);
+                        }
+
+                        try {
+                            await Task.WhenAll(backgroundTasks);
+                        } catch {
+                            // per-task try/catch handles individual failures
+                        }
+
+                        var titleFinal   = titleFailures.ToList();
+                        var summaryFinal = summaryFailures.ToList();
+
+                        for (var i = seenTitleFailures; i < titleFinal.Count; i++) {
+                            var (sid, reason) = titleFinal[i];
+                            AnsiConsole.MarkupLine($"  [red]✗[/] title failed for [cyan]{Markup.Escape(sid)}[/]: {Markup.Escape(reason)}");
+                        }
+                        for (var i = seenSummaryFailures; i < summaryFinal.Count; i++) {
+                            var (sid, reason) = summaryFinal[i];
+                            AnsiConsole.MarkupLine($"  [red]✗[/] summary failed for [cyan]{Markup.Escape(sid)}[/]: {Markup.Escape(reason)}");
+                        }
+
+                        titleTask  ?.Value = titlesGenerated    + titlesFailed + titlesSkipped;
+                        summaryTask?.Value = summariesGenerated + summariesFailed;
+                    });
+            } else {
+                display.Line($"Waiting for {backgroundTasks.Count} background task(s) (titles/summaries)...");
+
+                try {
+                    await Task.WhenAll(backgroundTasks);
+                } catch {
+                    // per-task try/catch handles individual failures
+                }
+
+                foreach (var (sid, reason) in titleFailures) {
+                    display.Line($"  ✗ title failed for {sid}: {reason}");
+                }
+                foreach (var (sid, reason) in summaryFailures) {
+                    display.Line($"  ✗ summary failed for {sid}: {reason}");
+                }
             }
 
             var parts = new List<string>();
@@ -391,13 +575,11 @@ static class HistoryCommand {
             if (titlesSkipped                  > 0) parts.Add($"{titlesSkipped} skipped");
             if (titlesFailed + summariesFailed > 0) parts.Add($"{titlesFailed + summariesFailed} failed");
 
-            if (parts.Count > 0) await Console.Out.WriteLineAsync($"  {string.Join(", ", parts)}");
+            if (parts.Count > 0) display.Line($"  {string.Join(", ", parts)}");
         }
 
-        await Console.Out.WriteLineAsync();
-        Console.Write($"Done: {loaded} loaded, {resumed} resumed, {skipped} skipped");
-        if (errored > 0) Console.Write($", {errored} errored");
-        await Console.Out.WriteLineAsync();
+        display.Line("");
+        display.Line($"Done: {loaded} loaded, {resumed} resumed, {skipped} skipped{(errored > 0 ? $", {errored} errored" : "")}");
 
         return 0;
     }
