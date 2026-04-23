@@ -15,12 +15,13 @@ static class SessionImporter {
     /// <c>progress</c> / <c>agent_progress</c> entries.
     /// </summary>
     internal static async Task<ImportResult> ImportSessionAsync(
-            HttpClient      httpClient,
-            string          baseUrl,
-            string          transcriptPath,
-            string          sessionId,
-            SessionMetadata metadata,
-            string?         encodedCwd
+            HttpClient                 httpClient,
+            string                     baseUrl,
+            string                     transcriptPath,
+            string                     sessionId,
+            SessionMetadata            metadata,
+            string?                    encodedCwd,
+            IProgress<ImportProgress>? progress = null
         ) {
         if (!File.Exists(transcriptPath))
             return new(sessionId, [], 0);
@@ -67,14 +68,16 @@ static class SessionImporter {
                     // Flush the current batch before inserting agent lifecycle
                     if (batchLines.Count > 0) {
                         await PostTranscriptBatch(httpClient, baseUrl, sessionId, agentId: null, batchLines, batchLineNumbers);
-                        totalSent += batchLines.Count;
+                        var flushed = batchLines.Count;
+                        totalSent += flushed;
+                        progress?.Report(new BatchFlushed(flushed));
                         batchLines.Clear();
                         batchLineNumbers.Clear();
                     }
 
                     // Send agent lifecycle: start → transcript → stop
                     agentTypes.TryGetValue(agentId, out var agentType);
-                    await SendAgentLifecycle(httpClient, baseUrl, sessionId, agentId, agentType, agentPath, cwd, transcriptPath);
+                    await SendAgentLifecycle(httpClient, baseUrl, sessionId, agentId, agentType, agentPath, cwd, transcriptPath, progress);
                     sentAgents.Add(agentId);
                     agentIds.Add(agentId);
                 }
@@ -89,7 +92,9 @@ static class SessionImporter {
 
             if (batchLines.Count >= batchSize) {
                 await PostTranscriptBatch(httpClient, baseUrl, sessionId, agentId: null, batchLines, batchLineNumbers);
-                totalSent += batchLines.Count;
+                var flushed = batchLines.Count;
+                totalSent += flushed;
+                progress?.Report(new BatchFlushed(flushed));
                 batchLines.Clear();
                 batchLineNumbers.Clear();
             }
@@ -98,7 +103,9 @@ static class SessionImporter {
         // Flush remaining main transcript lines
         if (batchLines.Count > 0) {
             await PostTranscriptBatch(httpClient, baseUrl, sessionId, agentId: null, batchLines, batchLineNumbers);
-            totalSent += batchLines.Count;
+            var flushed = batchLines.Count;
+            totalSent += flushed;
+            progress?.Report(new BatchFlushed(flushed));
         }
 
         // Send any agents that had transcript files but NO progress marker in the
@@ -106,7 +113,7 @@ static class SessionImporter {
         foreach (var (agentId, agentPath) in agentTranscripts) {
             if (!sentAgents.Contains(agentId)) {
                 agentTypes.TryGetValue(agentId, out var agentType);
-                await SendAgentLifecycle(httpClient, baseUrl, sessionId, agentId, agentType, agentPath, cwd, transcriptPath);
+                await SendAgentLifecycle(httpClient, baseUrl, sessionId, agentId, agentType, agentPath, cwd, transcriptPath, progress);
                 sentAgents.Add(agentId);
                 agentIds.Add(agentId);
             }
@@ -366,15 +373,16 @@ static class SessionImporter {
     /// Falls back to "task" when unknown — typically compact agents and transcripts
     /// discovered without a parent invocation.
     /// </param>
-    static async Task SendAgentLifecycle(
-            HttpClient httpClient,
-            string     baseUrl,
-            string     sessionId,
-            string     agentId,
-            string?    agentType,
-            string     agentPath,
-            string     cwd,
-            string     sessionTranscriptPath
+    static async Task<int> SendAgentLifecycle(
+            HttpClient                 httpClient,
+            string                     baseUrl,
+            string                     sessionId,
+            string                     agentId,
+            string?                    agentType,
+            string                     agentPath,
+            string                     cwd,
+            string                     sessionTranscriptPath,
+            IProgress<ImportProgress>? progress
         ) {
         var resolvedAgentType = agentType ?? "task";
 
@@ -395,8 +403,9 @@ static class SessionImporter {
             // Best effort
         }
 
-        // Send agent transcript
-        await SendTranscriptBatches(httpClient, baseUrl, sessionId, agentPath, agentId, startLine: 0);
+        progress?.Report(new SubagentStarted(agentId));
+        var agentLines = await SendTranscriptBatches(httpClient, baseUrl, sessionId, agentPath, agentId, startLine: 0, progress: progress);
+        progress?.Report(new SubagentFinished(agentId, agentLines));
 
         // Stop agent
         var agentStopHook = new JsonObject {
@@ -417,6 +426,8 @@ static class SessionImporter {
         } catch {
             // Best effort
         }
+
+        return agentLines;
     }
 
     /// <summary>
