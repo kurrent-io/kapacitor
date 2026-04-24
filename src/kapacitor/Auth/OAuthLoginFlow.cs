@@ -8,6 +8,12 @@ using System.Text.Json;
 
 namespace kapacitor.Auth;
 
+public static class AuthProvider {
+    public const string GitHubApp = "GitHubApp";
+    public const string Auth0     = "Auth0";
+    public const string None      = "None";
+}
+
 public static class OAuthLoginFlow {
     public static async Task<int> LoginWithDiscoveryAsync(string serverUrl) {
         // ReSharper disable once ShortLivedHttpClient
@@ -32,10 +38,10 @@ public static class OAuthLoginFlow {
         var config = (await configResponse.Content.ReadFromJsonAsync(KapacitorJsonContext.Default.AuthDiscoveryResponse))!;
 
         return config.Provider switch {
-            "None"      => HandleNoneLogin(),
-            "GitHubApp" => await HandleGitHubLogin(serverUrl, config),
-            "Auth0"     => await HandleAuth0Login(config),
-            _           => HandleUnknownProvider(config.Provider)
+            AuthProvider.None      => HandleNoneLogin(),
+            AuthProvider.GitHubApp => await HandleGitHubLogin(serverUrl, config),
+            AuthProvider.Auth0     => await HandleAuth0Login(config),
+            _                      => HandleUnknownProvider(config.Provider)
         };
     }
 
@@ -51,6 +57,12 @@ public static class OAuthLoginFlow {
         return 1;
     }
 
+    /// <summary>
+    /// Runs GitHub Device Flow interactively. Prints the user code and verification URL to
+    /// <see cref="Console.Out"/>, opens the system browser to the verification URL, and polls
+    /// GitHub for the access token. Intended for CLI use — not suitable for headless callers.
+    /// </summary>
+    /// <returns>The GitHub access token on success, or <c>null</c> on failure.</returns>
     public static async Task<string?> RunDeviceFlowAsync(string clientId) {
         using var http = new HttpClient();
         http.DefaultRequestHeaders.Accept.Add(new("application/json"));
@@ -115,6 +127,12 @@ public static class OAuthLoginFlow {
     }
 
     public static async Task<int> ExchangeAndSaveAsync(string serverUrl, string githubAccessToken, string provider) {
+        if (provider is not AuthProvider.GitHubApp and not AuthProvider.Auth0) {
+            Console.Error.WriteLine($"Error: unknown auth provider '{provider}'");
+
+            return 1;
+        }
+
         using var http = new HttpClient();
 
         var exchangeResponse = await http.PostAsJsonAsync(
@@ -233,7 +251,7 @@ public static class OAuthLoginFlow {
                 RefreshToken   = json.RefreshToken,
                 ExpiresAt      = DateTimeOffset.UtcNow.AddSeconds(json.ExpiresIn),
                 GitHubUsername = username,
-                Provider       = "Auth0",
+                Provider       = AuthProvider.Auth0,
                 Auth0Domain    = auth0Domain,
                 ClientId       = clientId
             }
