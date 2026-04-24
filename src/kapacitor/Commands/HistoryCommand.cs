@@ -40,6 +40,70 @@ static class HistoryCommand {
             else     Console.WriteLine(plain);
         }
 
+        public void BeginPhase(string title) {
+            if (Tty) {
+                AnsiConsole.Write(new Rule($"[yellow]{Markup.Escape(title)}[/]").LeftJustified());
+            } else {
+                Console.WriteLine();
+                Console.WriteLine($"== {title} ==");
+            }
+        }
+
+        public void WritePlanGrid(ClassificationCounts c) {
+            if (Tty) {
+                var grid = new Grid().AddColumn().AddColumn();
+                grid.AddRow("[bold]New[/]",             c.New.ToString());
+                grid.AddRow("[bold]Resumable[/]",       c.Partial.ToString());
+                grid.AddRow("[bold]Already loaded[/]",  c.AlreadyLoaded.ToString());
+                grid.AddRow("[bold]Too short[/]",       c.TooShort.ToString());
+                grid.AddRow("[bold]Excluded[/]",        c.Excluded.ToString());
+                if (c.ProbeError > 0) grid.AddRow("[bold]Probe errors[/]", $"[red]{c.ProbeError}[/]");
+                AnsiConsole.Write(grid);
+            } else {
+                Console.WriteLine($"  New               {c.New}");
+                Console.WriteLine($"  Resumable         {c.Partial}");
+                Console.WriteLine($"  Already loaded    {c.AlreadyLoaded}");
+                Console.WriteLine($"  Too short         {c.TooShort}");
+                Console.WriteLine($"  Excluded          {c.Excluded}");
+                if (c.ProbeError > 0) Console.WriteLine($"  Probe errors      {c.ProbeError}");
+            }
+        }
+
+        public void WriteDoneGrid(FinalCounts f) {
+            if (Tty) {
+                var grid = new Grid().AddColumn().AddColumn();
+                grid.AddRow("[bold]Loaded[/]",         f.Loaded.ToString());
+                grid.AddRow("[bold]Resumed[/]",        f.Resumed.ToString());
+                grid.AddRow("[bold]Already loaded[/]", f.AlreadyLoaded.ToString());
+                if (f.TooShort > 0)    grid.AddRow("[bold]Too short[/]",    f.TooShort.ToString());
+                if (f.Excluded > 0)    grid.AddRow("[bold]Excluded[/]",     f.Excluded.ToString());
+                if (f.ProbeError > 0)  grid.AddRow("[bold]Probe errors[/]", $"[red]{f.ProbeError}[/]");
+                if (f.Errored > 0)     grid.AddRow("[bold]Errored[/]",      $"[red]{f.Errored}[/]");
+                if (f.RanBackground) {
+                    grid.AddRow("[bold]Titles[/]", $"{f.TitlesGenerated} generated, {f.TitlesSkipped} skipped, {f.TitlesFailed} failed");
+                    if (f.RequestedSummaries)
+                        grid.AddRow("[bold]Summaries[/]", $"{f.SummariesGenerated} generated, {f.SummariesFailed} failed");
+                }
+                AnsiConsole.Write(new Rule("[green]Done[/]").LeftJustified());
+                AnsiConsole.Write(grid);
+            } else {
+                Console.WriteLine();
+                Console.WriteLine("== Done ==");
+                Console.WriteLine($"  Loaded              {f.Loaded}");
+                Console.WriteLine($"  Resumed             {f.Resumed}");
+                Console.WriteLine($"  Already loaded      {f.AlreadyLoaded}");
+                if (f.TooShort > 0)   Console.WriteLine($"  Too short           {f.TooShort}");
+                if (f.Excluded > 0)   Console.WriteLine($"  Excluded            {f.Excluded}");
+                if (f.ProbeError > 0) Console.WriteLine($"  Probe errors        {f.ProbeError}");
+                if (f.Errored > 0)    Console.WriteLine($"  Errored             {f.Errored}");
+                if (f.RanBackground) {
+                    Console.WriteLine($"  Titles              {f.TitlesGenerated} generated, {f.TitlesSkipped} skipped, {f.TitlesFailed} failed");
+                    if (f.RequestedSummaries)
+                        Console.WriteLine($"  Summaries           {f.SummariesGenerated} generated, {f.SummariesFailed} failed");
+                }
+            }
+        }
+
         public static HistoryDisplay Create() {
             var tty = !Console.IsOutputRedirected;
 
@@ -90,6 +154,16 @@ static class HistoryCommand {
         /// <summary>Total transcript line count (cached so we don't re-read the file downstream).</summary>
         public int TotalLines { get; init; }
     }
+
+    internal sealed record ClassificationCounts(
+        int New, int Partial, int AlreadyLoaded, int TooShort, int Excluded, int ProbeError);
+
+    internal sealed record FinalCounts(
+        int Loaded, int Resumed, int AlreadyLoaded, int TooShort, int Excluded,
+        int ProbeError, int Errored,
+        int TitlesGenerated, int TitlesSkipped, int TitlesFailed,
+        int SummariesGenerated, int SummariesFailed,
+        bool RanBackground, bool RequestedSummaries);
 
     public static async Task<int> HandleHistory(string baseUrl, string? filterCwd, string? filterSession = null, int minLines = 15, bool generateSummaries = false) {
         using var httpClient = await HttpClientExtensions.CreateAuthenticatedClientAsync();
