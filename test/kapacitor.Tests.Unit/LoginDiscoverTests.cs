@@ -49,8 +49,9 @@ public class LoginDiscoverTests {
                   .WithBody("""{"access_token":"tok","expires_in":7200,"username":"bob"}""")
                   .WithHeader("Content-Type", "application/json"));
 
-        await OAuthLoginFlow.ExchangeAndSaveAsync(tenant.Urls[0], "gh-token", AuthProvider.GitHubApp, "contoso");
+        var exit = await OAuthLoginFlow.ExchangeAndSaveAsync(tenant.Urls[0], "gh-token", AuthProvider.GitHubApp, "contoso");
 
+        await Assert.That(exit).IsEqualTo(0);
         var stored = await TokenStore.LoadAsync("contoso");
         await Assert.That(stored).IsNotNull();
         await Assert.That(stored!.GitHubUsername).IsEqualTo("bob");
@@ -59,8 +60,8 @@ public class LoginDiscoverTests {
 
     [Test]
     public async Task Exchange_rejects_unknown_provider() {
-        using var tenant = WireMock.Server.WireMockServer.Start();
-        var exit = await OAuthLoginFlow.ExchangeAndSaveAsync(tenant.Urls[0], "gh-token", "NonsenseProvider", "acme");
+        var exit = await OAuthLoginFlow.ExchangeAndSaveAsync(
+            "http://localhost:1", "gh-token", "NonsenseProvider", "acme");
         await Assert.That(exit).IsEqualTo(1);
     }
 

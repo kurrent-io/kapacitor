@@ -816,16 +816,19 @@ async Task<int> HandleDiscoverLoginAsync() {
     cfg = TenantDiscovery.MergeProfiles(cfg, outcome.Tenants, outcome.Picked!);
     await AppConfig.SaveProfileConfig(cfg);
 
-    // Exchange tokens for every discovered tenant so switching profiles works immediately
-    foreach (var tenant in outcome.Tenants) {
-        var exchangeExit = await OAuthLoginFlow.ExchangeAndSaveAsync(
-            tenant.Origin, ghToken, AuthProvider.GitHubApp, tenant.OrgLogin);
+    // Discovery flows only via the shared GitHub App proxy, so every discovered tenant
+    // uses the GitHubApp provider. If DiscoveredTenant ever gains a Provider field, read it here.
 
-        if (exchangeExit != 0) {
+    // Exchange tokens for every discovered tenant so switching profiles works immediately
+    var exchanges = outcome.Tenants.Select(async tenant => {
+        var exit = await OAuthLoginFlow.ExchangeAndSaveAsync(
+            tenant.Origin, ghToken, AuthProvider.GitHubApp, tenant.OrgLogin);
+        if (exit != 0) {
             await Console.Error.WriteLineAsync(
                 $"Warning: token exchange failed for {tenant.OrgLogin}. Run 'kapacitor login' after switching to that profile.");
         }
-    }
+    });
+    await Task.WhenAll(exchanges);
 
     await Console.Out.WriteLineAsync($"Logged in. Active profile: {outcome.Picked!.OrgLogin}.");
 
