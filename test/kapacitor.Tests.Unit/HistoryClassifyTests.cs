@@ -40,7 +40,9 @@ public class HistoryClassifyTests : IDisposable {
         await Assert.That(result.Count).IsEqualTo(1);
         await Assert.That(result[0].Status).IsEqualTo(HistoryCommand.ClassificationStatus.New);
         await Assert.That(result[0].SessionId).IsEqualTo("sessionNew");
-        await Assert.That(result[0].TotalLines).IsEqualTo(50);
+        // TotalLines is only populated for TooShort; classification uses a bounded
+        // count that early-exits once the file clears the minLines threshold.
+        await Assert.That(result[0].TotalLines).IsEqualTo(0);
     }
 
     [Test]
@@ -82,11 +84,12 @@ public class HistoryClassifyTests : IDisposable {
     }
 
     [Test]
-    public async Task ClassifyAsync_maps_short_transcript_to_TooShort_without_probing() {
-        // No WireMock stub — if ClassifyAsync probes, this will fail on a bare 404 default.
-        // But since we classify TooShort before the probe, there's no request at all.
+    public async Task ClassifyAsync_maps_short_transcript_to_TooShort() {
+        // TooShort is decided AFTER the probe, only for sessions that would otherwise
+        // be New or Partial. This avoids scanning huge transcripts for AlreadyLoaded
+        // sessions on re-runs.
         _server.Given(Request.Create().WithPath("/api/sessions/*/last-line").UsingGet())
-            .RespondWith(Response.Create().WithStatusCode(500)); // sabotage: would cause ProbeError if used
+            .RespondWith(Response.Create().WithStatusCode(404));
 
         var path = await WriteTranscript(_tempDir, "tiny", lines: 5);
         var transcripts = new List<(string SessionId, string FilePath, string EncodedCwd)> {

@@ -391,6 +391,19 @@ static class HistoryCommand {
     }
 
     /// <summary>
+    /// Timestamp used to order a continuation chain. Prefers the transcript's first
+    /// observed message timestamp; falls back to the file's last-write mtime when
+    /// the transcript has no parseable timestamp in its first 50 lines (best-effort
+    /// `ExtractSessionMetadata` leaves `FirstTimestamp` null in that case).
+    /// <br/>
+    /// Without this fallback, timestamp-less transcripts would all sort at
+    /// `DateTimeOffset.MinValue` and could displace real predecessors — corrupting
+    /// `previous_session_id` links in the session-start hook.
+    /// </summary>
+    static DateTimeOffset ChainTimestamp(SessionClassification c) =>
+        c.Meta.FirstTimestamp ?? new DateTimeOffset(File.GetLastWriteTimeUtc(c.FilePath), TimeSpan.Zero);
+
+    /// <summary>
     /// Build a sessionId → previousSessionId map from classifications, grouping by slug.
     /// Replaces BuildContinuationMap which read transcripts again.
     /// </summary>
@@ -402,7 +415,7 @@ static class HistoryCommand {
 
         foreach (var group in bySlug) {
             var chain = group
-                .OrderBy(c => c.Meta.FirstTimestamp ?? DateTimeOffset.MinValue)
+                .OrderBy(ChainTimestamp)
                 .ThenBy(c => c.SessionId, StringComparer.Ordinal)
                 .ToList();
             for (var i = 1; i < chain.Count; i++)
@@ -591,7 +604,7 @@ static class HistoryCommand {
 
         foreach (var group in withSlug) {
             var ordered = group
-                .OrderBy(c => c.Meta.FirstTimestamp ?? DateTimeOffset.MinValue)
+                .OrderBy(ChainTimestamp)
                 .ThenBy(c => c.SessionId, StringComparer.Ordinal)
                 .ToList();
             chains.Add(ordered);
@@ -871,20 +884,8 @@ static class HistoryCommand {
             };
         }
 
-        // Short-circuit: count lines first; skip the probe entirely if too short.
-        var totalLines = WatchCommand.CountFileLines(filePath);
-        if (minLines > 0 && totalLines < minLines) {
-            return new SessionClassification {
-                SessionId = sessionId,
-                FilePath = filePath,
-                EncodedCwd = encodedCwd,
-                Meta = meta,
-                Status = ClassificationStatus.TooShort,
-                TotalLines = totalLines,
-            };
-        }
-
-        // Probe the server.
+        // Probe the server BEFORE scanning the file. On re-runs the probe returns
+        // 204 (AlreadyLoaded) quickly and we never need to read the transcript.
         ClassificationStatus status;
         int resumeFromLine = 0;
         string? probeErrorReason = null;
@@ -922,6 +923,22 @@ static class HistoryCommand {
             probeGate.Release();
         }
 
+        // Apply the TooShort filter only for sessions that would otherwise be imported.
+        // This avoids scanning the whole transcript when AlreadyLoaded / ProbeError.
+        if (minLines > 0 && (status == ClassificationStatus.New || status == ClassificationStatus.Partial)) {
+            var observedLines = CountLinesUpTo(filePath, minLines);
+            if (observedLines < minLines) {
+                return new SessionClassification {
+                    SessionId = sessionId,
+                    FilePath = filePath,
+                    EncodedCwd = encodedCwd,
+                    Meta = meta,
+                    Status = ClassificationStatus.TooShort,
+                    TotalLines = observedLines,
+                };
+            }
+        }
+
         // Flag excluded repos for New/Partial sessions. Resolution (include or skip?)
         // happens later in HandleHistory, where we can batch prompts by repo key.
         string? excludedRepoKey = null;
@@ -939,6 +956,9 @@ static class HistoryCommand {
             }
         }
 
+        // TotalLines is only meaningful for TooShort sessions (where we know the exact
+        // count because it's below the threshold). Leave it at 0 for other statuses —
+        // we only read enough of the file to confirm the TooShort filter didn't apply.
         return new SessionClassification {
             SessionId = sessionId,
             FilePath = filePath,
@@ -947,8 +967,27 @@ static class HistoryCommand {
             Status = status,
             ResumeFromLine = resumeFromLine,
             ProbeErrorReason = probeErrorReason,
-            TotalLines = totalLines,
             ExcludedRepoKey = excludedRepoKey,
         };
+    }
+
+    /// <summary>
+    /// Count transcript lines with an early exit once <paramref name="threshold"/> lines
+    /// have been observed. The caller only needs to distinguish "below threshold" from
+    /// "at or above"; scanning further would be wasted I/O on large transcripts.
+    /// Returns the exact count when below threshold, or exactly <paramref name="threshold"/>
+    /// once the threshold is reached.
+    /// </summary>
+    static int CountLinesUpTo(string path, int threshold) {
+        try {
+            if (!File.Exists(path)) return 0;
+            using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            using var reader = new StreamReader(stream);
+            var count = 0;
+            while (count < threshold && reader.ReadLine() is not null) count++;
+            return count;
+        } catch {
+            return 0;
+        }
     }
 }
