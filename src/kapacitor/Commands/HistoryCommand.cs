@@ -10,19 +10,6 @@ namespace kapacitor.Commands;
 static class HistoryCommand {
     readonly struct HistoryDisplay {
         public bool Tty { get; init; }
-        // Non-null in Tty mode, null in Plain mode.
-        public ProgressTask? Footer { get; init; }
-
-        public void SetFooterSession(string sessionIdShort, int totalLines) {
-            if (Footer is null) return;
-            Footer.Description = $"[green]Importing[/] {(int)Footer.Value}/{(int)Footer.MaxValue} · {Markup.Escape(sessionIdShort)}: 0/{totalLines} lines";
-        }
-
-        public void AdvanceFooterLines(int linesDone, int linesTotal, string sessionIdShort, string? agentSuffixId) {
-            if (Footer is null) return;
-            var suffix = agentSuffixId is null ? "" : $" ↳ subagent {Markup.Escape(agentSuffixId)}";
-            Footer.Description = $"[green]Importing[/] {(int)Footer.Value}/{(int)Footer.MaxValue} · {Markup.Escape(sessionIdShort)}: {linesDone}/{linesTotal} lines{suffix}";
-        }
 
         public void Line(string plain, string? markup = null) {
             if (Tty) AnsiConsole.MarkupLine(markup ?? Markup.Escape(plain));
@@ -93,11 +80,7 @@ static class HistoryCommand {
             }
         }
 
-        public static HistoryDisplay Create() {
-            var tty = !Console.IsOutputRedirected;
-
-            return new HistoryDisplay { Tty = tty, Footer = null };
-        }
+        public static HistoryDisplay Create() => new() { Tty = !Console.IsOutputRedirected };
     }
 
     internal enum ClassificationStatus {
@@ -765,7 +748,7 @@ static class HistoryCommand {
 
         try {
             using var startContent = new StringContent(startHook.ToJsonString(), System.Text.Encoding.UTF8, "application/json");
-            using var startResp    = await httpClient.PostWithRetryAsync($"{baseUrl}/hooks/session-start", startContent);
+            using var startResp    = await httpClient.PostWithRetryAsync($"{baseUrl}/hooks/session-start", startContent, ct: ct);
             if (!startResp.IsSuccessStatusCode) {
                 events.OnSessionErrored(session.SessionId, $"session-start failed: HTTP {(int)startResp.StatusCode}");
                 return SessionImportOutcome.Errored;
@@ -793,7 +776,7 @@ static class HistoryCommand {
         var generateWhatsDone = false;
         try {
             using var endContent = new StringContent(endHook.ToJsonString(), System.Text.Encoding.UTF8, "application/json");
-            using var endResp    = await httpClient.PostWithRetryAsync($"{baseUrl}/hooks/session-end", endContent);
+            using var endResp    = await httpClient.PostWithRetryAsync($"{baseUrl}/hooks/session-end", endContent, ct: ct);
             if (endResp.IsSuccessStatusCode) {
                 try {
                     var body = await endResp.Content.ReadAsStringAsync(ct);
