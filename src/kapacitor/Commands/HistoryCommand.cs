@@ -203,12 +203,18 @@ static class HistoryCommand {
 
         if (excludedByKey.Count > 0) {
             var includedKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            if (!Console.IsInputRedirected) {
+            // Only prompt when both stdin and stdout are interactive. Writing prompts to stderr
+            // keeps them visible even when stdout is redirected, but we still can't ReadLine
+            // meaningfully without a TTY on stdin.
+            var canPrompt = display.Tty && !Console.IsInputRedirected;
+            if (canPrompt) {
                 foreach (var (key, sessions) in excludedByKey) {
-                    Console.Write($"Repository {key} is excluded. Include {sessions.Count} session{(sessions.Count == 1 ? "" : "s")} from it? (y/N) ");
+                    Console.Error.Write($"Repository {key} is excluded. Include {sessions.Count} session{(sessions.Count == 1 ? "" : "s")} from it? (y/N) ");
                     var answer = Console.ReadLine()?.Trim();
                     if (string.Equals(answer, "y", StringComparison.OrdinalIgnoreCase)) includedKeys.Add(key);
                 }
+            } else {
+                Console.Error.WriteLine($"Auto-skipping {excludedByKey.Values.Sum(v => v.Count)} session(s) from {excludedByKey.Count} excluded repo(s) (non-interactive).");
             }
 
             for (var i = 0; i < classifications.Count; i++) {
@@ -672,7 +678,16 @@ static class HistoryCommand {
             await chainGate.WaitAsync(ct);
             try {
                 foreach (var session in chain) {
-                    var r = await ImportSingleSessionAsync(httpClient, baseUrl, session, events, ct);
+                    // Belt-and-suspenders: ImportSingleSessionAsync already catches
+                    // expected failures; a bare catch here guarantees one rogue
+                    // session can't fault the worker and abort Task.WhenAll.
+                    SessionImportOutcome r;
+                    try {
+                        r = await ImportSingleSessionAsync(httpClient, baseUrl, session, events, ct);
+                    } catch (Exception ex) {
+                        events.OnSessionErrored(session.SessionId, ex.Message);
+                        r = SessionImportOutcome.Errored;
+                    }
                     switch (r) {
                         case SessionImportOutcome.Loaded:  Interlocked.Increment(ref loaded);  break;
                         case SessionImportOutcome.Resumed: Interlocked.Increment(ref resumed); break;
@@ -712,6 +727,9 @@ static class HistoryCommand {
                 return SessionImportOutcome.Resumed;
             } catch (HttpRequestException ex) {
                 events.OnSessionErrored(session.SessionId, $"server unreachable: {ex.Message}");
+                return SessionImportOutcome.Errored;
+            } catch (Exception ex) {
+                events.OnSessionErrored(session.SessionId, ex.Message);
                 return SessionImportOutcome.Errored;
             }
         }
@@ -758,8 +776,17 @@ static class HistoryCommand {
             return SessionImportOutcome.Errored;
         }
 
-        var importResult = await SessionImporter.ImportSessionAsync(
-            httpClient, baseUrl, session.FilePath, session.SessionId, meta, session.EncodedCwd, perSessionProgress);
+        ImportResult importResult;
+        try {
+            importResult = await SessionImporter.ImportSessionAsync(
+                httpClient, baseUrl, session.FilePath, session.SessionId, meta, session.EncodedCwd, perSessionProgress);
+        } catch (Exception ex) {
+            // Catches file-IO, JSON parsing, and anything else ImportSessionAsync can throw.
+            // Sending session-end on a half-imported session would be misleading; let the
+            // errored count reflect reality and move on to the next session in the chain.
+            events.OnSessionErrored(session.SessionId, ex.Message);
+            return SessionImportOutcome.Errored;
+        }
 
         events.OnLineCompleted($"Loading {session.SessionId}... {importResult.LinesSent} lines [new]");
 
