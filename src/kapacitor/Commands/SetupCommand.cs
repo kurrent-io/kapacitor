@@ -31,42 +31,62 @@ public static class SetupCommand {
             }
         }
 
-        // Step 1: Server URL
+        // Step 1: Server
         AnsiConsole.Write(new Rule("[yellow]Step 1/5 — Server[/]").LeftJustified());
         string serverUrl;
+        string? preAuthToken = null;
+        string  provider;
 
         if (serverUrlArg is not null) {
-            serverUrl = serverUrlArg;
+            serverUrl = AppConfig.NormalizeUrl(serverUrlArg);
             await Console.Out.WriteLineAsync($"  Server URL: {serverUrl}");
+
+            try {
+                provider = await AnsiConsole.Status().Spinner(Spinner.Known.Dots).StartAsync("Checking server…",
+                    async _ => await HttpClientExtensions.DiscoverProviderAsync(serverUrl));
+                AnsiConsole.MarkupLine($"  [green]✓[/] Reachable · auth provider: [cyan]{Markup.Escape(provider)}[/]");
+            } catch (Exception ex) {
+                AnsiConsole.MarkupLine($"  [red]✗[/] Cannot reach server: {Markup.Escape(ex.Message)}");
+                return 1;
+            }
         } else if (noPrompt) {
             await Console.Error.WriteLineAsync("  --server-url is required with --no-prompt");
-
             return 1;
         } else {
-            serverUrl = AnsiConsole.Prompt(
-                new TextPrompt<string>("Capacitor server URL:")
-                    .Validate(u => !string.IsNullOrWhiteSpace(u)
-                        ? ValidationResult.Success()
-                        : ValidationResult.Error("[red]URL cannot be empty[/]")));
-        }
+            // Discovery path
+            AnsiConsole.MarkupLine($"  Proxy: [dim]{Markup.Escape(AuthProxyEndpoint.Url)}[/]");
 
-        // Normalize: strip trailing slashes to avoid double-slash URLs
-        serverUrl = AppConfig.NormalizeUrl(serverUrl);
+            using var http    = new HttpClient();
+            var proxyClient   = new AuthProxyClient(http);
 
-        // Validate server reachability
-        string provider;
+            var clientId = await AnsiConsole.Status().Spinner(Spinner.Known.Dots).StartAsync("Contacting auth service…",
+                async _ => await proxyClient.GetGitHubClientIdAsync(AuthProxyEndpoint.Url));
+            if (clientId is null) {
+                AnsiConsole.MarkupLine("  [red]✗[/] Cannot reach the Kurrent auth service. Retry later, or pass --server-url <url>.");
+                return 1;
+            }
 
-        try {
-            provider = await AnsiConsole.Status()
-                .Spinner(Spinner.Known.Dots)
-                .StartAsync("Checking server…", async _ =>
-                    await HttpClientExtensions.DiscoverProviderAsync(serverUrl));
+            var ghToken = await OAuthLoginFlow.RunDeviceFlowAsync(clientId);
+            if (ghToken is null) return 1;
 
-            AnsiConsole.MarkupLine($"  [green]✓[/] Reachable · auth provider: [cyan]{Markup.Escape(provider)}[/]");
-        } catch (Exception ex) {
-            AnsiConsole.MarkupLine($"  [red]✗[/] Cannot reach server: {Markup.Escape(ex.Message)}");
+            var discovery = new TenantDiscovery(proxyClient, new SpectreTenantPicker());
+            var outcome   = await discovery.RunAsync(AuthProxyEndpoint.Url, ghToken);
 
-            return 1;
+            if (outcome.ErrorMessage is not null) {
+                AnsiConsole.MarkupLine($"  [red]✗[/] {Markup.Escape(outcome.ErrorMessage)}");
+                return 1;
+            }
+
+            serverUrl    = outcome.Picked!.Origin;
+            preAuthToken = ghToken;
+            provider     = AuthProvider.GitHubApp;
+
+            // Create/update a profile per discovered tenant; the picked one becomes active
+            var profileCfg = await AppConfig.LoadProfileConfig();
+            profileCfg     = TenantDiscovery.MergeProfiles(profileCfg, outcome.Tenants, outcome.Picked);
+            await AppConfig.SaveProfileConfig(profileCfg);
+
+            AnsiConsole.MarkupLine($"  [green]✓[/] Discovered {outcome.Tenants.Length} tenant(s). Active: [cyan]{Markup.Escape(outcome.Picked.OrgLogin)}[/]");
         }
 
         await Console.Out.WriteLineAsync();
@@ -74,8 +94,14 @@ public static class SetupCommand {
         // Step 2: Login
         AnsiConsole.Write(new Rule("[yellow]Step 2/5 — Login[/]").LeftJustified());
 
-        if (provider == "None") {
+        if (provider == AuthProvider.None) {
             await Console.Out.WriteLineAsync("  Auth provider is None — no login required.");
+        } else if (preAuthToken is not null) {
+            var exchangeResult = await OAuthLoginFlow.ExchangeAndSaveAsync(serverUrl, preAuthToken, provider);
+            if (exchangeResult != 0) {
+                await Console.Error.WriteLineAsync("  Token exchange failed.");
+                return 1;
+            }
         } else {
             var loginResult = await OAuthLoginFlow.LoginWithDiscoveryAsync(serverUrl);
 
@@ -195,16 +221,17 @@ public static class SetupCommand {
 
         // Save config
         var profileConfig  = await AppConfig.LoadProfileConfig();
-        var defaultProfile = profileConfig.Profiles.GetValueOrDefault("default") ?? new Profile();
+        var activeName     = profileConfig.ActiveProfile;
+        var defaultProfile = profileConfig.Profiles.GetValueOrDefault(activeName) ?? new Profile();
 
         defaultProfile = defaultProfile with {
-            ServerUrl = serverUrl,
+            ServerUrl         = serverUrl,
             DefaultVisibility = defaultVisibility,
-            Daemon = (defaultProfile.Daemon ?? new DaemonSettings()) with { Name = daemonName }
+            Daemon            = (defaultProfile.Daemon ?? new DaemonSettings()) with { Name = daemonName }
         };
 
         var profiles = new Dictionary<string, Profile>(profileConfig.Profiles) {
-            ["default"] = defaultProfile
+            [activeName] = defaultProfile
         };
         profileConfig = profileConfig with { Profiles = profiles };
         await AppConfig.SaveProfileConfig(profileConfig);
