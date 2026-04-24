@@ -21,7 +21,7 @@ public class TenantDiscovery(IAuthProxyClient proxy, ITenantPicker picker) {
             return new([], null, result.Error switch {
                 DiscoveryError.ProxyUnreachable => "The Kurrent auth service is unreachable.",
                 DiscoveryError.TokenRejected    => "GitHub rejected the authentication token. Please sign in again.",
-                DiscoveryError.UpstreamError    => "Kurrent auth service could not reach GitHub. Try again later.",
+                DiscoveryError.UpstreamError    => "Kurrent auth service returned an error. Try again later.",
                 _                               => "Tenant discovery failed."
             });
         }
@@ -46,8 +46,9 @@ public class TenantDiscovery(IAuthProxyClient proxy, ITenantPicker picker) {
             ProfileConfig      existing,
             DiscoveredTenant[] discovered,
             DiscoveredTenant   active) {
-        var profiles = new Dictionary<string, Profile>(existing.Profiles);
-        var template = existing.Profiles.GetValueOrDefault(existing.ActiveProfile)
+        var profiles      = new Dictionary<string, Profile>(existing.Profiles);
+        var activeProfile = string.IsNullOrWhiteSpace(existing.ActiveProfile) ? "default" : existing.ActiveProfile;
+        var template = existing.Profiles.GetValueOrDefault(activeProfile)
                     ?? existing.Profiles.GetValueOrDefault("default")
                     ?? new Profile();
 

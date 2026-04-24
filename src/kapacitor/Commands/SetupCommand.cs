@@ -16,7 +16,8 @@ public static class SetupCommand {
 
         // Check if already configured
         var existingProfile = await AppConfig.LoadProfileConfig();
-        var existing        = existingProfile.Profiles.GetValueOrDefault(existingProfile.ActiveProfile);
+        var activeProfile   = string.IsNullOrWhiteSpace(existingProfile.ActiveProfile) ? "default" : existingProfile.ActiveProfile;
+        var existing        = existingProfile.Profiles.GetValueOrDefault(activeProfile);
         var existingTokens  = await TokenStore.LoadAsync();
 
         if (existing?.ServerUrl is not null && existingTokens is not null && !noPrompt) {

@@ -91,7 +91,7 @@ public class TenantDiscoveryTests {
         var discovery = new TenantDiscovery(proxy, Substitute.For<ITenantPicker>());
         var outcome = await discovery.RunAsync("https://proxy", "gh");
 
-        await Assert.That(outcome.ErrorMessage!).Contains("could not reach GitHub");
+        await Assert.That(outcome.ErrorMessage!).Contains("returned an error");
     }
 
     [Test]

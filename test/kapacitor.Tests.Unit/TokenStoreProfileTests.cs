@@ -96,6 +96,17 @@ public class TokenStoreProfileTests {
         await Assert.That((await TokenStore.LoadAsync("contoso"))!.GitHubUsername).IsEqualTo("bob");
     }
 
+    [Test]
+    [NotInParallel(nameof(TokenStoreProfileTests))]
+    public async Task SaveAsync_with_invalid_profile_name_throws() {
+        await Assert.That(async () => await TokenStore.SaveAsync("../evil", MakeTokens("x")))
+            .Throws<ArgumentException>();
+        await Assert.That(async () => await TokenStore.SaveAsync("", MakeTokens("x")))
+            .Throws<ArgumentException>();
+        await Assert.That(async () => await TokenStore.SaveAsync("has/slash", MakeTokens("x")))
+            .Throws<ArgumentException>();
+    }
+
     static StoredTokens MakeTokens(string username) => new() {
         AccessToken    = "t",
         ExpiresAt      = DateTimeOffset.UtcNow.AddHours(1),

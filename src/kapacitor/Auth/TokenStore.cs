@@ -33,7 +33,25 @@ public record StoredTokens {
 public static class TokenStore {
     static string LegacyTokenPath => PathHelpers.ConfigPath("tokens.json");
     static string TokenDir         => PathHelpers.ConfigPath("tokens");
-    static string ProfileTokenPath(string profile) => Path.Combine(TokenDir, $"{profile}.json");
+
+    static void ValidateProfileName(string profile) {
+        if (string.IsNullOrWhiteSpace(profile)) {
+            throw new ArgumentException("Profile name must not be empty.", nameof(profile));
+        }
+        if (profile == "." || profile == "..") {
+            throw new ArgumentException("Profile name is invalid.", nameof(profile));
+        }
+        if (profile.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0 ||
+            profile.Contains(Path.DirectorySeparatorChar) ||
+            profile.Contains(Path.AltDirectorySeparatorChar)) {
+            throw new ArgumentException("Profile name contains invalid filename characters.", nameof(profile));
+        }
+    }
+
+    static string ProfileTokenPath(string profile) {
+        ValidateProfileName(profile);
+        return Path.Combine(TokenDir, $"{profile}.json");
+    }
 
     // ── Profile-aware overloads ──────────────────────────────────────────────
 
@@ -85,12 +103,16 @@ public static class TokenStore {
     }
 
     public static Task DeleteAsync() {
-        if (File.Exists(LegacyTokenPath)) File.Delete(LegacyTokenPath);
+        if (File.Exists(LegacyTokenPath)) {
+            try { File.Delete(LegacyTokenPath); } catch { /* best-effort */ }
+        }
 
         if (Directory.Exists(TokenDir)) {
-            foreach (var file in Directory.EnumerateFiles(TokenDir, "*.json")) {
-                try { File.Delete(file); } catch { /* best-effort */ }
-            }
+            try {
+                foreach (var file in Directory.EnumerateFiles(TokenDir, "*.json")) {
+                    try { File.Delete(file); } catch { /* best-effort */ }
+                }
+            } catch { /* best-effort */ }
         }
 
         return Task.CompletedTask;
