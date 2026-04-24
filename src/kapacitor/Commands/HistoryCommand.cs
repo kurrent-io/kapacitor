@@ -46,6 +46,50 @@ static class HistoryCommand {
         }
     }
 
+    internal enum ClassificationStatus {
+        /// <summary>Session does not exist on the server — needs a full import.</summary>
+        New,
+        /// <summary>Session exists on the server with a partial line count — resume from ResumeFromLine.</summary>
+        Partial,
+        /// <summary>Session is fully loaded on the server — no work to do.</summary>
+        AlreadyLoaded,
+        /// <summary>Transcript line count is below the minLines threshold.</summary>
+        TooShort,
+        /// <summary>Session's repository is in the user's excluded list and the user declined to include it.</summary>
+        Excluded,
+        /// <summary>The last-line probe failed (HTTP error, network error).</summary>
+        ProbeError,
+        /// <summary>Kapacitor-spawned sub-session (title generation, what's-done summary) — never imported.</summary>
+        InternalSubSession,
+    }
+
+    internal sealed record SessionClassification {
+        public required string SessionId { get; init; }
+        public required string FilePath { get; init; }
+        public required string EncodedCwd { get; init; }
+        public required SessionMetadata Meta { get; init; }
+        public required ClassificationStatus Status { get; init; }
+
+        /// <summary>Only populated when Status == Partial.</summary>
+        public int ResumeFromLine { get; init; }
+
+        /// <summary>Only populated when Status == ProbeError. Short human-readable reason.</summary>
+        public string? ProbeErrorReason { get; init; }
+
+        /// <summary>Populated when the session is a continuation in the continuation map.</summary>
+        public string? PreviousSessionId { get; init; }
+
+        /// <summary>
+        /// Populated when Status == Excluded OR when the session would otherwise be New/Partial
+        /// but its cwd maps to an excluded repo and the user has not yet been consulted.
+        /// Format: "{Owner}/{RepoName}".
+        /// </summary>
+        public string? ExcludedRepoKey { get; init; }
+
+        /// <summary>Total transcript line count (cached so we don't re-read the file downstream).</summary>
+        public int TotalLines { get; init; }
+    }
+
     public static async Task<int> HandleHistory(string baseUrl, string? filterCwd, string? filterSession = null, int minLines = 15, bool generateSummaries = false) {
         using var httpClient = await HttpClientExtensions.CreateAuthenticatedClientAsync();
         var display = HistoryDisplay.Create();
