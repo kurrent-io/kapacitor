@@ -804,6 +804,40 @@ static class HistoryCommand {
     }
 
     /// <summary>
+    /// Group the import-bound subset (New + Partial) into ordered chains by slug.
+    /// A chain is a list of classifications sharing the same slug, ordered by
+    /// FirstTimestamp ascending. Sessions without a slug (or with a unique slug)
+    /// become chains of length 1. Chain order (across chains) is stable by slug
+    /// string so re-runs import in the same order.
+    /// </summary>
+    internal static List<List<SessionClassification>> BuildImportChains(List<SessionClassification> classifications) {
+        var importable = classifications
+            .Where(c => c.Status == ClassificationStatus.New || c.Status == ClassificationStatus.Partial)
+            .ToList();
+
+        var chains = new List<List<SessionClassification>>();
+
+        var withSlug = importable
+            .Where(c => c.Meta.Slug is not null)
+            .GroupBy(c => c.Meta.Slug!, StringComparer.Ordinal)
+            .OrderBy(g => g.Key, StringComparer.Ordinal);
+
+        foreach (var group in withSlug) {
+            var ordered = group
+                .OrderBy(c => c.Meta.FirstTimestamp ?? DateTimeOffset.MinValue)
+                .ThenBy(c => c.SessionId, StringComparer.Ordinal)
+                .ToList();
+            chains.Add(ordered);
+        }
+
+        foreach (var solo in importable.Where(c => c.Meta.Slug is null).OrderBy(c => c.SessionId, StringComparer.Ordinal)) {
+            chains.Add([solo]);
+        }
+
+        return chains;
+    }
+
+    /// <summary>
     /// Sorts transcript files so that within each continuation chain,
     /// earlier sessions are processed before their continuations.
     /// </summary>
