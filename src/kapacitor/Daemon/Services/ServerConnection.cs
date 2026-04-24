@@ -41,8 +41,8 @@ internal partial class ServerConnection : IAsyncDisposable {
     /// Callback invoked at <see cref="RegisterDaemon"/> time to snapshot the
     /// agent IDs currently hosted by this daemon. The server uses this to
     /// reconcile its registry against the daemon's view. Set by
-    /// <see cref="AgentOrchestrator"/> at startup; defaults to an empty
-    /// array so tests don't need to wire the callback.
+    /// <see cref="AgentOrchestrator"/> at startup; when null, an empty array
+    /// is sent (tests don't need to wire the callback).
     /// </summary>
     public Func<string[]>? GetLiveAgentIds { get; set; }
 
@@ -148,7 +148,7 @@ internal partial class ServerConnection : IAsyncDisposable {
     async Task RegisterDaemon() {
         var platform  = $"{RuntimeInformation.OSDescription} {RuntimeInformation.OSArchitecture}";
         var repoPaths = await MergeRepoPathsAsync();
-        var liveIds   = GetLiveAgentIds?.Invoke() ?? [];
+        var liveIds   = GetLiveAgentIds?.Invoke() ?? Array.Empty<string>();
 
         await _hub.InvokeAsync(
             "DaemonConnect",
