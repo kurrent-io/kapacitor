@@ -170,7 +170,7 @@ switch (command) {
         return await OAuthLoginFlow.LoginWithDiscoveryAsync(baseUrl!);
     }
     case "logout": {
-        TokenStore.Delete();
+        await TokenStore.DeleteAsync();
         await Console.Out.WriteLineAsync("Logged out.");
 
         return 0;

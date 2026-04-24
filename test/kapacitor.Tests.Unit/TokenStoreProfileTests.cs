@@ -72,22 +72,22 @@ public class TokenStoreProfileTests {
         await Assert.That((await TokenStore.LoadAsync("contoso"))!.GitHubUsername).IsEqualTo("bob");
     }
 
+    [Test]
+    [NotInParallel(nameof(TokenStoreProfileTests))]
+    public async Task Delete_with_profile_removes_only_that_profile() {
+        await TokenStore.SaveAsync("acme",    MakeTokens("alice"));
+        await TokenStore.SaveAsync("contoso", MakeTokens("bob"));
+
+        TokenStore.Delete("acme");
+
+        await Assert.That(await TokenStore.LoadAsync("acme")).IsNull();
+        await Assert.That((await TokenStore.LoadAsync("contoso"))!.GitHubUsername).IsEqualTo("bob");
+    }
+
     static StoredTokens MakeTokens(string username) => new() {
         AccessToken    = "t",
         ExpiresAt      = DateTimeOffset.UtcNow.AddHours(1),
         GitHubUsername = username,
         Provider       = AuthProvider.GitHubApp
     };
-
-    // Inline copy matching SetupCommandTests.cs / ProfileCommandTests.cs
-    sealed class TempDir : IDisposable {
-        public string Path { get; } = System.IO.Path.Combine(
-            System.IO.Path.GetTempPath(),
-            "kapacitor-test-" + Guid.NewGuid().ToString("N")[..8]
-        );
-        public TempDir() => Directory.CreateDirectory(Path);
-        public void Dispose() {
-            try { Directory.Delete(Path, true); } catch { /* best effort */ }
-        }
-    }
 }

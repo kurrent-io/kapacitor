@@ -84,9 +84,9 @@ public static class TokenStore {
         await SaveAsync(profile, tokens);
     }
 
-    public static void Delete() {
+    public static async Task DeleteAsync() {
         if (File.Exists(LegacyTokenPath)) File.Delete(LegacyTokenPath);
-        var profile = ResolveActiveProfileAsync().GetAwaiter().GetResult();
+        var profile = await ResolveActiveProfileAsync();
         Delete(profile);
     }
 
