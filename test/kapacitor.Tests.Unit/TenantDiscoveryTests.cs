@@ -83,6 +83,39 @@ public class TenantDiscoveryTests {
     }
 
     [Test]
+    public async Task RunAsync_returns_upstream_error_message() {
+        var proxy = Substitute.For<IAuthProxyClient>();
+        proxy.DiscoverTenantsAsync(Arg.Any<string>(), Arg.Any<string>())
+             .Returns(Task.FromResult(new DiscoveryResult([], DiscoveryError.UpstreamError)));
+
+        var discovery = new TenantDiscovery(proxy, Substitute.For<ITenantPicker>());
+        var outcome = await discovery.RunAsync("https://proxy", "gh");
+
+        await Assert.That(outcome.ErrorMessage!).Contains("could not reach GitHub");
+    }
+
+    [Test]
+    public async Task RunAsync_returns_no_tenant_selected_when_picker_returns_null() {
+        DiscoveredTenant[] list = [
+            new() { OrgId = 1, OrgLogin = "acme",    Origin = "https://a.example" },
+            new() { OrgId = 2, OrgLogin = "contoso", Origin = "https://b.example" }
+        ];
+        var proxy = Substitute.For<IAuthProxyClient>();
+        proxy.DiscoverTenantsAsync(Arg.Any<string>(), Arg.Any<string>())
+             .Returns(Task.FromResult(new DiscoveryResult(list, DiscoveryError.None)));
+
+        var picker = Substitute.For<ITenantPicker>();
+        picker.Pick(list).Returns((DiscoveredTenant?)null);
+
+        var discovery = new TenantDiscovery(proxy, picker);
+        var outcome = await discovery.RunAsync("https://proxy", "gh");
+
+        await Assert.That(outcome.Picked).IsNull();
+        await Assert.That(outcome.ErrorMessage).IsEqualTo("No tenant selected.");
+        await Assert.That(outcome.Tenants.Length).IsEqualTo(2);
+    }
+
+    [Test]
     public async Task MergeProfiles_creates_profile_per_tenant_and_sets_active() {
         var existing = new ProfileConfig {
             ActiveProfile = "default",
