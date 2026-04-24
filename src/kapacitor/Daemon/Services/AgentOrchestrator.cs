@@ -162,6 +162,16 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
                 LogMcpConfigFailed(ex, agentId);
             }
 
+            // Pre-trust the worktree path in ~/.claude.json. Without this, claude
+            // blocks on the "Do you trust the files in this folder?" dialog for any
+            // new cwd — and since the daemon drives claude over a PTY with no
+            // interactive user, it would hang forever.
+            try {
+                TrustWorktreeInClaudeConfig(worktree.Path);
+            } catch (Exception ex) {
+                LogTrustWorktreeFailed(ex, agentId);
+            }
+
             // Merge dialog-selected tools into the worktree's settings.local.json
             // instead of using --allowedTools (which overrides project permissions).
             // Best-effort: filesystem/JSON errors should not block agent launch.
@@ -688,12 +698,94 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
         }
     }
 
-    /// <summary>
-    /// Reads MCP server definitions from ~/.claude.json for the source repo and
-    /// writes .mcp.json in the worktree root so Claude discovers them. Merges
-    /// with any existing .mcp.json already present in the worktree (e.g. from git).
-    /// Strips env fields from copied servers to avoid leaking credentials.
-    /// </summary>
+    static void TrustWorktreeInClaudeConfig(string worktreePath) {
+        // Workspace trust (the "Do you trust the files in this folder?" dialog)
+        // is stored globally in ~/.claude.json under projects[path].
+        var claudeJsonPath = Path.Combine(PathHelpers.HomeDirectory, ".claude.json");
+
+        if (File.Exists(claudeJsonPath)) {
+            var root = JsonNode.Parse(File.ReadAllText(claudeJsonPath))?.AsObject();
+
+            if (root is not null) {
+                var projects = root["projects"]?.AsObject();
+
+                if (projects is null) {
+                    projects         = new JsonObject();
+                    root["projects"] = projects;
+                }
+
+                var entry = projects[worktreePath]?.AsObject();
+
+                if (entry is null) {
+                    entry                  = new JsonObject();
+                    projects[worktreePath] = entry;
+                }
+
+                if (entry["hasTrustDialogAccepted"]?.GetValue<bool>() != true) {
+                    entry["hasTrustDialogAccepted"] = true;
+                    File.WriteAllText(claudeJsonPath, root.ToJsonString(IndentedJsonOpts));
+                }
+            }
+        }
+
+        // MCP server approval (the "New MCP server found in .mcp.json" dialog)
+        // is stored per-project in {worktree}/.claude/settings.local.json, NOT in
+        // ~/.claude.json. Claude requires BOTH fields: the blanket flag AND each
+        // server listed by name (the blanket flag alone still shows a per-server
+        // discovery prompt on first encounter).
+        var serverNames = ReadMcpJsonServerNames(worktreePath);
+
+        if (serverNames.Count == 0) return;
+
+        var settingsDir  = Path.Combine(worktreePath, ".claude");
+        var settingsPath = Path.Combine(settingsDir, "settings.local.json");
+
+        Directory.CreateDirectory(settingsDir);
+
+        var settings = File.Exists(settingsPath)
+            ? JsonNode.Parse(File.ReadAllText(settingsPath))?.AsObject() ?? new JsonObject()
+            : new JsonObject();
+
+        var sDirty = false;
+
+        if (settings["enableAllProjectMcpServers"]?.GetValue<bool>() != true) {
+            settings["enableAllProjectMcpServers"] = true;
+            sDirty                                 = true;
+        }
+
+        var existing = settings["enabledMcpjsonServers"]?.AsArray();
+        var known    = new HashSet<string>(
+            existing?.OfType<JsonValue>().Select(v => v.GetValue<string>()) ?? []
+        );
+
+        if (serverNames.Any(known.Add)) {
+            // Rebuild the array via JSON parsing to avoid AOT issues with
+            // JsonArray.Add(string) / JsonValue.Create<string>.
+            var json = "[" + string.Join(",", known.Select(n => $"\"{JsonEncodedText.Encode(n)}\"")) + "]";
+            settings["enabledMcpjsonServers"] = JsonNode.Parse(json);
+            sDirty                            = true;
+        }
+
+        if (sDirty) {
+            File.WriteAllText(settingsPath, settings.ToJsonString(IndentedJsonOpts));
+        }
+    }
+
+    static List<string> ReadMcpJsonServerNames(string worktreePath) {
+        var mcpJsonPath = Path.Combine(worktreePath, ".mcp.json");
+
+        if (!File.Exists(mcpJsonPath)) return [];
+
+        try {
+            var parsed  = JsonNode.Parse(File.ReadAllText(mcpJsonPath));
+            var servers = parsed?["mcpServers"]?.AsObject();
+
+            return servers is null ? [] : [..servers.Select(kv => kv.Key)];
+        } catch {
+            return [];
+        }
+    }
+
     static void WriteMcpConfig(string sourceRepoPath, string worktreePath) {
         var claudeJsonPath = Path.Combine(PathHelpers.HomeDirectory, ".claude.json");
 
@@ -777,6 +869,9 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Failed to write .mcp.json for agent {AgentId} (continuing)")]
     partial void LogMcpConfigFailed(Exception ex, string agentId);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Failed to pre-trust worktree for agent {AgentId} (continuing)")]
+    partial void LogTrustWorktreeFailed(Exception ex, string agentId);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Failed to download launch attachments for agent {AgentId} (continuing)")]
     partial void LogAttachmentDownloadFailed(Exception ex, string agentId);
