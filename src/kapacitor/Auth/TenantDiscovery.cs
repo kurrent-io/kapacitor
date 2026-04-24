@@ -47,7 +47,9 @@ public class TenantDiscovery(IAuthProxyClient proxy, ITenantPicker picker) {
             DiscoveredTenant[] discovered,
             DiscoveredTenant   active) {
         var profiles = new Dictionary<string, Profile>(existing.Profiles);
-        var template = existing.Profiles.GetValueOrDefault("default") ?? new Profile();
+        var template = existing.Profiles.GetValueOrDefault(existing.ActiveProfile)
+                    ?? existing.Profiles.GetValueOrDefault("default")
+                    ?? new Profile();
 
         foreach (var t in discovered) {
             var name = t.OrgLogin;

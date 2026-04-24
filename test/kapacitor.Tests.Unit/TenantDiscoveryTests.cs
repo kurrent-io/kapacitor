@@ -137,6 +137,28 @@ public class TenantDiscoveryTests {
     }
 
     [Test]
+    public async Task MergeProfiles_inherits_from_active_profile_when_not_default() {
+        var existing = new ProfileConfig {
+            ActiveProfile = "acme",
+            Profiles = new Dictionary<string, Profile> {
+                ["acme"]    = new() { ServerUrl = "https://a.example", DefaultVisibility = "private" },
+                ["default"] = new() { DefaultVisibility = "org_public" }
+            }
+        };
+        DiscoveredTenant[] discovered = [
+            new() { OrgId = 1, OrgLogin = "acme",   Origin = "https://a.example" },
+            new() { OrgId = 2, OrgLogin = "newly",  Origin = "https://n.example" }
+        ];
+
+        var merged = TenantDiscovery.MergeProfiles(existing, discovered, discovered[1]);
+
+        // newly-discovered "newly" profile should inherit settings from active "acme", NOT from "default"
+        await Assert.That(merged.Profiles["newly"].DefaultVisibility).IsEqualTo("private");
+        await Assert.That(merged.Profiles["newly"].ServerUrl).IsEqualTo("https://n.example");
+        await Assert.That(merged.ActiveProfile).IsEqualTo("newly");
+    }
+
+    [Test]
     public async Task MergeProfiles_preserves_existing_profile_settings() {
         var existing = new ProfileConfig {
             Profiles = new Dictionary<string, Profile> {
