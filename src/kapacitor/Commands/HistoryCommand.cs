@@ -1,4 +1,5 @@
 using Spectre.Console;
+using System.Net;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -882,4 +883,92 @@ static class HistoryCommand {
     }
 
     enum TitleResult { Generated, Skipped, Failed }
+
+    /// <summary>
+    /// Probe each transcript against the server's last-line API and classify
+    /// what the import phase should do with it. Probes run concurrently via
+    /// SemaphoreSlim(8) — idempotent GETs, safe to parallelize.
+    /// </summary>
+    internal static async Task<List<SessionClassification>> ClassifyAsync(
+            HttpClient httpClient,
+            string baseUrl,
+            List<(string SessionId, string FilePath, string EncodedCwd)> transcripts,
+            int minLines,
+            string[]? excludedRepos,
+            CancellationToken ct
+        ) {
+        using var probeGate = new SemaphoreSlim(8);
+        var tasks = new List<Task<SessionClassification>>(transcripts.Count);
+
+        foreach (var (sessionId, filePath, encodedCwd) in transcripts) {
+            tasks.Add(ClassifyOneAsync(httpClient, baseUrl, sessionId, filePath, encodedCwd, minLines, excludedRepos, probeGate, ct));
+        }
+
+        var results = await Task.WhenAll(tasks);
+        return [.. results];
+    }
+
+    static async Task<SessionClassification> ClassifyOneAsync(
+            HttpClient httpClient,
+            string baseUrl,
+            string sessionId,
+            string filePath,
+            string encodedCwd,
+            int minLines,
+            string[]? excludedRepos,
+            SemaphoreSlim probeGate,
+            CancellationToken ct
+        ) {
+        var meta = ExtractSessionMetadata(filePath);
+
+        // Probe the server.
+        await probeGate.WaitAsync(ct);
+        ClassificationStatus status;
+        int resumeFromLine = 0;
+        string? probeErrorReason = null;
+        try {
+            using var resp = await httpClient.GetWithRetryAsync($"{baseUrl}/api/sessions/{sessionId}/last-line", ct: ct);
+            switch (resp.StatusCode) {
+                case HttpStatusCode.NotFound:
+                    status = ClassificationStatus.New;
+                    break;
+                case HttpStatusCode.NoContent:
+                    status = ClassificationStatus.AlreadyLoaded;
+                    break;
+                default:
+                    if (resp.IsSuccessStatusCode) {
+                        var json = await resp.Content.ReadAsStringAsync(ct);
+                        using var doc = System.Text.Json.JsonDocument.Parse(json);
+                        if (doc.RootElement.Num("last_line_number") is { } lastLine) {
+                            resumeFromLine = (int)lastLine + 1;
+                            status = ClassificationStatus.Partial;
+                        } else {
+                            status = ClassificationStatus.AlreadyLoaded;
+                        }
+                    } else {
+                        status = ClassificationStatus.ProbeError;
+                        probeErrorReason = $"HTTP {(int)resp.StatusCode}";
+                    }
+                    break;
+            }
+        } catch (HttpRequestException ex) {
+            status = ClassificationStatus.ProbeError;
+            probeErrorReason = ex.Message;
+        } finally {
+            probeGate.Release();
+        }
+
+        var totalLines = WatchCommand.CountFileLines(filePath);
+
+        return new SessionClassification {
+            SessionId = sessionId,
+            FilePath = filePath,
+            EncodedCwd = encodedCwd,
+            Meta = meta,
+            Status = status,
+            ResumeFromLine = resumeFromLine,
+            ProbeErrorReason = probeErrorReason,
+            TotalLines = totalLines,
+        };
+    }
 }
