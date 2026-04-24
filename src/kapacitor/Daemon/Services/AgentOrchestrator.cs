@@ -162,6 +162,16 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
                 LogMcpConfigFailed(ex, agentId);
             }
 
+            // Pre-trust the worktree path in ~/.claude.json. Without this, claude
+            // blocks on the "Do you trust the files in this folder?" dialog for any
+            // new cwd — and since the daemon drives claude over a PTY with no
+            // interactive user, it would hang forever.
+            try {
+                TrustWorktreeInClaudeConfig(worktree.Path);
+            } catch (Exception ex) {
+                LogTrustWorktreeFailed(ex, agentId);
+            }
+
             // Merge dialog-selected tools into the worktree's settings.local.json
             // instead of using --allowedTools (which overrides project permissions).
             // Best-effort: filesystem/JSON errors should not block agent launch.
@@ -512,6 +522,11 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     static readonly TimeSpan              StartupTimeout    = TimeSpan.FromSeconds(90);
     static readonly TimeSpan              EarlyExitWindow   = TimeSpan.FromSeconds(30);
     static readonly JsonSerializerOptions IndentedJsonOpts  = new() { WriteIndented = true };
+
+    // Serializes writes to shared JSON config files (~/.claude.json and per-worktree
+    // settings.local.json) across concurrent agent launches. Atomic rename prevents
+    // partial writes from ever being visible.
+    static readonly object TrustWriteLock = new();
     static readonly HashSet<string>       ValidEffortLevels = ["low", "medium", "high", "max"];
 
     async Task RunHeartbeatLoopAsync(CancellationToken ct) {
@@ -688,12 +703,139 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
         }
     }
 
+    static void TrustWorktreeInClaudeConfig(string worktreePath) {
+        // Serialize against concurrent agent launches. ~/.claude.json is shared
+        // across the whole user and {worktree}/.claude/settings.local.json is
+        // touched by MergeToolPermissions on the same path; interleaved reads and
+        // writes could drop updates or write truncated JSON.
+        lock (TrustWriteLock) {
+            // Workspace trust (the "Do you trust the files in this folder?" dialog)
+            // is stored globally in ~/.claude.json under projects[path]. On a fresh
+            // machine the file may not exist yet — create a minimal object so trust
+            // is always persisted.
+            var claudeJsonPath = Path.Combine(PathHelpers.HomeDirectory, ".claude.json");
+            var root           = LoadJsonObject(claudeJsonPath);
+
+            var projects = root["projects"] as JsonObject;
+
+            if (projects is null) {
+                projects         = new JsonObject();
+                root["projects"] = projects;
+            }
+
+            var entry = projects[worktreePath] as JsonObject;
+
+            if (entry is null) {
+                entry                  = new JsonObject();
+                projects[worktreePath] = entry;
+            }
+
+            var alreadyTrusted = entry["hasTrustDialogAccepted"] is JsonValue v && v.TryGetValue<bool>(out var b) && b;
+
+            if (!alreadyTrusted) {
+                entry["hasTrustDialogAccepted"] = true;
+                WriteJsonAtomic(claudeJsonPath, root);
+            }
+
+            // MCP server approval (the "New MCP server found in .mcp.json" dialog)
+            // is stored per-project in {worktree}/.claude/settings.local.json, NOT in
+            // ~/.claude.json. Claude requires BOTH fields: the blanket flag AND each
+            // server listed by name (the blanket flag alone still shows a per-server
+            // discovery prompt on first encounter).
+            var serverNames = ReadMcpJsonServerNames(worktreePath);
+
+            if (serverNames.Count == 0) return;
+
+            var settingsDir  = Path.Combine(worktreePath, ".claude");
+            var settingsPath = Path.Combine(settingsDir, "settings.local.json");
+
+            Directory.CreateDirectory(settingsDir);
+
+            var settings = LoadJsonObject(settingsPath);
+            var sDirty   = false;
+
+            var allEnabled = settings["enableAllProjectMcpServers"] is JsonValue ev
+                          && ev.TryGetValue<bool>(out var eb)
+                          && eb;
+
+            if (!allEnabled) {
+                settings["enableAllProjectMcpServers"] = true;
+                sDirty                                 = true;
+            }
+
+            var known = new HashSet<string>();
+
+            if (settings["enabledMcpjsonServers"] is JsonArray arr) {
+                foreach (var item in arr) {
+                    if (item is JsonValue jv && jv.TryGetValue<string>(out var s)) {
+                        known.Add(s);
+                    }
+                }
+            }
+
+            if (serverNames.Any(known.Add)) {
+                // Rebuild the array via JSON parsing to avoid AOT issues with
+                // JsonArray.Add(string) / JsonValue.Create<string>.
+                var json = "[" + string.Join(",", known.Select(n => $"\"{JsonEncodedText.Encode(n)}\"")) + "]";
+                settings["enabledMcpjsonServers"] = JsonNode.Parse(json);
+                sDirty                            = true;
+            }
+
+            if (sDirty) {
+                WriteJsonAtomic(settingsPath, settings);
+            }
+        }
+    }
+
     /// <summary>
-    /// Reads MCP server definitions from ~/.claude.json for the source repo and
-    /// writes .mcp.json in the worktree root so Claude discovers them. Merges
-    /// with any existing .mcp.json already present in the worktree (e.g. from git).
-    /// Strips env fields from copied servers to avoid leaking credentials.
+    /// Loads a JSON object from disk, tolerating missing files and non-object roots
+    /// by returning a fresh <see cref="JsonObject"/>. Ensures pre-trust logic never
+    /// throws on an unexpected config shape and reintroduces the launch hang.
     /// </summary>
+    static JsonObject LoadJsonObject(string path) {
+        if (!File.Exists(path)) return new JsonObject();
+
+        try {
+            return JsonNode.Parse(File.ReadAllText(path)) as JsonObject ?? new JsonObject();
+        } catch {
+            return new JsonObject();
+        }
+    }
+
+    /// <summary>
+    /// Writes JSON to <paramref name="path"/> via a sibling temp file + atomic
+    /// rename (POSIX <c>rename(2)</c> / Win32 <c>MoveFileEx</c> with replace).
+    /// A crash or concurrent reader never sees a truncated file — either the
+    /// previous contents or the new contents, never a partial write.
+    /// </summary>
+    static void WriteJsonAtomic(string path, JsonNode root) {
+        var tmp = path + ".tmp-" + Environment.ProcessId + "-" + Guid.NewGuid().ToString("N");
+        File.WriteAllText(tmp, root.ToJsonString(IndentedJsonOpts));
+
+        try {
+            File.Move(tmp, path, overwrite: true);
+        } catch {
+            try { File.Delete(tmp); } catch { /* best-effort */ }
+
+            throw;
+        }
+    }
+
+    static List<string> ReadMcpJsonServerNames(string worktreePath) {
+        var mcpJsonPath = Path.Combine(worktreePath, ".mcp.json");
+
+        if (!File.Exists(mcpJsonPath)) return [];
+
+        try {
+            var parsed  = JsonNode.Parse(File.ReadAllText(mcpJsonPath));
+            var servers = parsed?["mcpServers"]?.AsObject();
+
+            return servers is null ? [] : [..servers.Select(kv => kv.Key)];
+        } catch {
+            return [];
+        }
+    }
+
     static void WriteMcpConfig(string sourceRepoPath, string worktreePath) {
         var claudeJsonPath = Path.Combine(PathHelpers.HomeDirectory, ".claude.json");
 
@@ -777,6 +919,9 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Failed to write .mcp.json for agent {AgentId} (continuing)")]
     partial void LogMcpConfigFailed(Exception ex, string agentId);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Failed to pre-trust worktree for agent {AgentId} (continuing)")]
+    partial void LogTrustWorktreeFailed(Exception ex, string agentId);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Failed to download launch attachments for agent {AgentId} (continuing)")]
     partial void LogAttachmentDownloadFailed(Exception ex, string agentId);
