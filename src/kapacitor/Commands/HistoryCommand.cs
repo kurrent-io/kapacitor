@@ -918,6 +918,161 @@ static class HistoryCommand {
 
     enum TitleResult { Generated, Skipped, Failed }
 
+    internal sealed record ImportChainsResult(int Loaded, int Resumed, int Errored);
+
+    internal sealed record ChainWorkerEvents {
+        public required Action<string> OnLineCompleted { get; init; }
+        public required Action<string, string, int> OnSubagentFinished { get; init; }
+        public required Action<string, string> OnSessionErrored { get; init; }
+        public required Action<(string SessionId, string FilePath, string? PreviousSessionId)> OnTitleTaskReady { get; init; }
+        public required Action<(string SessionId, bool GenerateWhatsDone)> OnSessionEnded { get; init; }
+    }
+
+    /// <summary>
+    /// Dispatch chains across 4 parallel workers; sessions within a chain run
+    /// serially. Thread-safe: counters use Interlocked, callbacks must be
+    /// thread-safe (production wiring uses AnsiConsole + ConcurrentBag).
+    /// </summary>
+    internal static async Task<ImportChainsResult> ImportChainsAsync(
+            HttpClient httpClient,
+            string baseUrl,
+            List<List<SessionClassification>> chains,
+            ChainWorkerEvents events,
+            CancellationToken ct
+        ) {
+        using var chainGate = new SemaphoreSlim(4);
+        var loaded  = 0;
+        var resumed = 0;
+        var errored = 0;
+
+        var tasks = chains.Select(chain => Task.Run(async () => {
+            await chainGate.WaitAsync(ct);
+            try {
+                foreach (var session in chain) {
+                    var r = await ImportSingleSessionAsync(httpClient, baseUrl, session, events, ct);
+                    switch (r) {
+                        case SessionImportOutcome.Loaded:  Interlocked.Increment(ref loaded);  break;
+                        case SessionImportOutcome.Resumed: Interlocked.Increment(ref resumed); break;
+                        case SessionImportOutcome.Errored: Interlocked.Increment(ref errored); break;
+                    }
+                }
+            } finally {
+                chainGate.Release();
+            }
+        }, ct));
+
+        await Task.WhenAll(tasks);
+        return new ImportChainsResult(loaded, resumed, errored);
+    }
+
+    enum SessionImportOutcome { Loaded, Resumed, Errored }
+
+    static async Task<SessionImportOutcome> ImportSingleSessionAsync(
+            HttpClient httpClient,
+            string baseUrl,
+            SessionClassification session,
+            ChainWorkerEvents events,
+            CancellationToken ct
+        ) {
+        IProgress<ImportProgress> perSessionProgress = new CallbackProgress(ev => {
+            if (ev is SubagentFinished sf) {
+                events.OnSubagentFinished(session.SessionId, sf.AgentId, sf.LinesSent);
+            }
+        });
+
+        if (session.Status == ClassificationStatus.Partial) {
+            try {
+                var linesSent = await SessionImporter.SendTranscriptBatches(
+                    httpClient, baseUrl, session.SessionId, session.FilePath,
+                    agentId: null, startLine: session.ResumeFromLine, progress: perSessionProgress);
+                events.OnLineCompleted($"Loading {session.SessionId}... {linesSent} lines [resuming from line {session.ResumeFromLine}]");
+                return SessionImportOutcome.Resumed;
+            } catch (HttpRequestException ex) {
+                events.OnSessionErrored(session.SessionId, $"server unreachable: {ex.Message}");
+                return SessionImportOutcome.Errored;
+            }
+        }
+
+        // status == New: session-start → import → session-end → enqueue background tasks
+        var meta = session.Meta;
+        var cwd  = meta.Cwd ?? SessionImporter.DecodeCwdFromDirName(session.EncodedCwd);
+
+        var startHook = new System.Text.Json.Nodes.JsonObject {
+            ["session_id"]      = session.SessionId,
+            ["transcript_path"] = session.FilePath,
+            ["cwd"]             = cwd ?? "",
+            ["source"]          = "Startup",
+            ["hook_event_name"] = "session_start",
+            ["model"]           = meta.Model,
+        };
+        if (meta.FirstTimestamp is not null) startHook["started_at"]         = meta.FirstTimestamp.Value.ToString("O");
+        if (session.PreviousSessionId is not null) startHook["previous_session_id"] = session.PreviousSessionId;
+        if (meta.Slug is not null) startHook["slug"]                               = meta.Slug;
+
+        if (cwd is not null) {
+            var repo = await RepositoryDetection.DetectRepositoryAsync(cwd);
+            if (repo is not null) {
+                var repoNode = new System.Text.Json.Nodes.JsonObject();
+                if (repo.UserName is not null)  repoNode["user_name"]  = repo.UserName;
+                if (repo.UserEmail is not null) repoNode["user_email"] = repo.UserEmail;
+                if (repo.RemoteUrl is not null) repoNode["remote_url"] = repo.RemoteUrl;
+                if (repo.Owner is not null)     repoNode["owner"]      = repo.Owner;
+                if (repo.RepoName is not null)  repoNode["repo_name"]  = repo.RepoName;
+                if (repo.Branch is not null)    repoNode["branch"]     = repo.Branch;
+                startHook["repository"] = repoNode;
+            }
+        }
+
+        try {
+            using var startContent = new StringContent(startHook.ToJsonString(), System.Text.Encoding.UTF8, "application/json");
+            using var startResp    = await httpClient.PostWithRetryAsync($"{baseUrl}/hooks/session-start", startContent);
+            if (!startResp.IsSuccessStatusCode) {
+                events.OnSessionErrored(session.SessionId, $"session-start failed: HTTP {(int)startResp.StatusCode}");
+                return SessionImportOutcome.Errored;
+            }
+        } catch (HttpRequestException ex) {
+            events.OnSessionErrored(session.SessionId, $"server unreachable: {ex.Message}");
+            return SessionImportOutcome.Errored;
+        }
+
+        var importResult = await SessionImporter.ImportSessionAsync(
+            httpClient, baseUrl, session.FilePath, session.SessionId, meta, session.EncodedCwd, perSessionProgress);
+
+        events.OnLineCompleted($"Loading {session.SessionId}... {importResult.LinesSent} lines [new]");
+
+        var lastTs  = ExtractLastTimestamp(session.FilePath);
+        var endHook = new System.Text.Json.Nodes.JsonObject {
+            ["session_id"]      = session.SessionId,
+            ["transcript_path"] = session.FilePath,
+            ["cwd"]             = cwd ?? "",
+            ["reason"]          = "Other",
+            ["hook_event_name"] = "session_end",
+        };
+        if (lastTs is not null) endHook["ended_at"] = lastTs.Value.ToString("O");
+
+        var generateWhatsDone = false;
+        try {
+            using var endContent = new StringContent(endHook.ToJsonString(), System.Text.Encoding.UTF8, "application/json");
+            using var endResp    = await httpClient.PostWithRetryAsync($"{baseUrl}/hooks/session-end", endContent);
+            if (endResp.IsSuccessStatusCode) {
+                try {
+                    var body = await endResp.Content.ReadAsStringAsync(ct);
+                    var node = System.Text.Json.Nodes.JsonNode.Parse(body);
+                    generateWhatsDone = node?["generate_whats_done"]?.GetValue<bool>() == true;
+                } catch { /* best effort */ }
+            }
+        } catch { /* best effort */ }
+
+        events.OnTitleTaskReady((session.SessionId, session.FilePath, session.PreviousSessionId));
+        events.OnSessionEnded((session.SessionId, generateWhatsDone));
+
+        return SessionImportOutcome.Loaded;
+    }
+
+    sealed class CallbackProgress(Action<ImportProgress> onReport) : IProgress<ImportProgress> {
+        public void Report(ImportProgress value) => onReport(value);
+    }
+
     /// <summary>
     /// Probe each transcript against the server's last-line API and classify
     /// what the import phase should do with it. Probes run concurrently via
