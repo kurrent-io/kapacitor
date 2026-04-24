@@ -1,6 +1,12 @@
 kapacitor login — Authenticate via OAuth
 
-Usage: kapacitor login
+Usage: kapacitor login [--discover]
 
 Opens a browser for OAuth authentication. The auth method (GitHub Device
 Flow or Auth0 PKCE) is auto-discovered from the server configuration.
+
+Options:
+  --discover    Run tenant discovery across all your GitHub org memberships.
+                Exchanges tokens for each discovered Capacitor tenant and saves
+                them as named profiles, then sets the picked tenant as the
+                active profile. No existing profile configuration is required.

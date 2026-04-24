@@ -1,5 +1,6 @@
 using System.Text.Json.Nodes;
 using kapacitor.Commands;
+using kapacitor.Config;
 
 namespace kapacitor.Tests.Unit;
 
@@ -112,6 +113,24 @@ public class SetupCommandTests {
 
         await Assert.That(root["enabledPlugins"]?["kapacitor@kapacitor"]?.GetValue<bool>() ?? false)
             .IsTrue();
+    }
+
+    [Test]
+    public async Task Setup_save_profile_config_round_trips_active_profile() {
+        // Smoke-check that the discovery-path SetupCommand can save and reload the active
+        // profile after MergeProfiles has set it to a non-"default" name. The full discovery
+        // flow is end-to-end-tested by the integration suite.
+        var cfg = new ProfileConfig {
+            ActiveProfile = "acme",
+            Profiles = new Dictionary<string, Profile> {
+                ["acme"] = new() { ServerUrl = "https://a.example", DefaultVisibility = "org_public" }
+            }
+        };
+        await AppConfig.SaveProfileConfig(cfg);
+
+        var reloaded = await AppConfig.LoadProfileConfig();
+        await Assert.That(reloaded.ActiveProfile).IsEqualTo("acme");
+        await Assert.That(reloaded.Profiles["acme"].ServerUrl).IsEqualTo("https://a.example");
     }
 
     sealed class TempDir : IDisposable {

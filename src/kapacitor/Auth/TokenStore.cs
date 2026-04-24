@@ -31,34 +31,96 @@ public record StoredTokens {
 }
 
 public static class TokenStore {
-    static readonly string TokenPath = PathHelpers.ConfigPath("tokens.json");
+    static string LegacyTokenPath => PathHelpers.ConfigPath("tokens.json");
+    static string TokenDir         => PathHelpers.ConfigPath("tokens");
 
-    public static async Task<StoredTokens?> LoadAsync() {
-        if (!File.Exists(TokenPath)) {
-            return null;
+    static void ValidateProfileName(string profile) {
+        if (string.IsNullOrWhiteSpace(profile)) {
+            throw new ArgumentException("Profile name must not be empty.", nameof(profile));
+        }
+        if (profile == "." || profile == "..") {
+            throw new ArgumentException("Profile name is invalid.", nameof(profile));
+        }
+        if (profile.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0 ||
+            profile.Contains(Path.DirectorySeparatorChar) ||
+            profile.Contains(Path.AltDirectorySeparatorChar)) {
+            throw new ArgumentException("Profile name contains invalid filename characters.", nameof(profile));
+        }
+    }
+
+    static string ProfileTokenPath(string profile) {
+        ValidateProfileName(profile);
+        return Path.Combine(TokenDir, $"{profile}.json");
+    }
+
+    // ── Profile-aware overloads ──────────────────────────────────────────────
+
+    public static async Task<StoredTokens?> LoadAsync(string profile) {
+        var path = ProfileTokenPath(profile);
+        if (!File.Exists(path)) return null;
+        var json = await File.ReadAllTextAsync(path);
+        return JsonSerializer.Deserialize(json, KapacitorJsonContext.Default.StoredTokens);
+    }
+
+    public static async Task SaveAsync(string profile, StoredTokens tokens) {
+        Directory.CreateDirectory(TokenDir);
+        var path     = ProfileTokenPath(profile);
+        var tempPath = $"{path}.tmp";
+        await File.WriteAllTextAsync(tempPath, JsonSerializer.Serialize(tokens, KapacitorJsonContext.Default.StoredTokens));
+        File.Move(tempPath, path, overwrite: true);
+
+        if (!OperatingSystem.IsWindows()) {
+            File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
         }
 
-        var json = await File.ReadAllTextAsync(TokenPath);
+        // Migration: remove the pre-upgrade single-file token if it still exists
+        if (File.Exists(LegacyTokenPath)) {
+            try { File.Delete(LegacyTokenPath); } catch { /* best-effort */ }
+        }
+    }
 
+    public static void Delete(string profile) {
+        var path = ProfileTokenPath(profile);
+        if (File.Exists(path)) File.Delete(path);
+    }
+
+    // ── Legacy (profile-resolving) overloads ────────────────────────────────
+
+    public static async Task<StoredTokens?> LoadAsync() {
+        var profile    = await ResolveActiveProfileAsync();
+        var perProfile = await LoadAsync(profile);
+        if (perProfile is not null) return perProfile;
+
+        // Fall back to legacy single-file layout for pre-upgrade installs
+        if (!File.Exists(LegacyTokenPath)) return null;
+        var json = await File.ReadAllTextAsync(LegacyTokenPath);
         return JsonSerializer.Deserialize(json, KapacitorJsonContext.Default.StoredTokens);
     }
 
     public static async Task SaveAsync(StoredTokens tokens) {
-        var dir = Path.GetDirectoryName(TokenPath)!;
-        Directory.CreateDirectory(dir);
-        var tempPath = $"{TokenPath}.tmp";
-        await File.WriteAllTextAsync(tempPath, JsonSerializer.Serialize(tokens, KapacitorJsonContext.Default.StoredTokens));
-        File.Move(tempPath, TokenPath, overwrite: true);
-
-        if (!OperatingSystem.IsWindows()) {
-            File.SetUnixFileMode(TokenPath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
-        }
+        var profile = await ResolveActiveProfileAsync();
+        await SaveAsync(profile, tokens);
     }
 
-    public static void Delete() {
-        if (File.Exists(TokenPath)) {
-            File.Delete(TokenPath);
+    public static Task DeleteAsync() {
+        if (File.Exists(LegacyTokenPath)) {
+            try { File.Delete(LegacyTokenPath); } catch { /* best-effort */ }
         }
+
+        if (Directory.Exists(TokenDir)) {
+            try {
+                foreach (var file in Directory.EnumerateFiles(TokenDir, "*.json")) {
+                    try { File.Delete(file); } catch { /* best-effort */ }
+                }
+            } catch { /* best-effort */ }
+        }
+
+        return Task.CompletedTask;
+    }
+
+    static async Task<string> ResolveActiveProfileAsync() {
+        var cfg = await AppConfig.LoadProfileConfig();
+        return string.IsNullOrEmpty(cfg.ActiveProfile) ? "default" : cfg.ActiveProfile;
     }
 
     public static async Task<StoredTokens?> GetValidTokensAsync() {

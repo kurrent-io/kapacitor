@@ -8,6 +8,12 @@ using System.Text.Json;
 
 namespace kapacitor.Auth;
 
+public static class AuthProvider {
+    public const string GitHubApp = "GitHubApp";
+    public const string Auth0     = "Auth0";
+    public const string None      = "None";
+}
+
 public static class OAuthLoginFlow {
     public static async Task<int> LoginWithDiscoveryAsync(string serverUrl) {
         // ReSharper disable once ShortLivedHttpClient
@@ -32,10 +38,10 @@ public static class OAuthLoginFlow {
         var config = (await configResponse.Content.ReadFromJsonAsync(KapacitorJsonContext.Default.AuthDiscoveryResponse))!;
 
         return config.Provider switch {
-            "None"      => HandleNoneLogin(),
-            "GitHubApp" => await HandleGitHubLogin(serverUrl, config),
-            "Auth0"     => await HandleAuth0Login(config),
-            _           => HandleUnknownProvider(config.Provider)
+            AuthProvider.None      => HandleNoneLogin(),
+            AuthProvider.GitHubApp => await HandleGitHubLogin(serverUrl, config),
+            AuthProvider.Auth0     => await HandleAuth0Login(config),
+            _                      => HandleUnknownProvider(config.Provider)
         };
     }
 
@@ -51,26 +57,28 @@ public static class OAuthLoginFlow {
         return 1;
     }
 
-    static async Task<int> HandleGitHubLogin(string serverUrl, AuthDiscoveryResponse config) {
-        var clientId = config.GithubClientId!;
-
+    /// <summary>
+    /// Runs GitHub Device Flow interactively. Prints the user code and verification URL to
+    /// <see cref="Console.Out"/>, opens the system browser to the verification URL, and polls
+    /// GitHub for the access token. Intended for CLI use — not suitable for headless callers.
+    /// </summary>
+    /// <returns>The GitHub access token on success, or <c>null</c> on failure.</returns>
+    public static async Task<string?> RunDeviceFlowAsync(string clientId) {
         using var http = new HttpClient();
         http.DefaultRequestHeaders.Accept.Add(new("application/json"));
 
         var deviceResponse = await http.PostAsync(
             "https://github.com/login/device/code",
-            new FormUrlEncodedContent(
-                new Dictionary<string, string> {
-                    ["client_id"] = clientId,
-                    ["scope"]     = "read:user read:org"
-                }
-            )
+            new FormUrlEncodedContent(new Dictionary<string, string> {
+                ["client_id"] = clientId,
+                ["scope"]     = "read:user read:org"
+            })
         );
 
         if (!deviceResponse.IsSuccessStatusCode) {
             Console.Error.WriteLine($"Error requesting device code: {await deviceResponse.Content.ReadAsStringAsync()}");
 
-            return 1;
+            return null;
         }
 
         var device   = (await deviceResponse.Content.ReadFromJsonAsync(KapacitorJsonContext.Default.GitHubDeviceCodeResponse))!;
@@ -81,79 +89,125 @@ public static class OAuthLoginFlow {
         await Console.Out.WriteLineAsync($"  at: {device.VerificationUri}");
         await Console.Out.WriteLineAsync();
 
-        try { Process.Start(new ProcessStartInfo(device.VerificationUri) { UseShellExecute = true }); } catch {
+        try {
+            Process.Start(new ProcessStartInfo(device.VerificationUri) { UseShellExecute = true });
+        } catch {
             /* Browser open is best-effort */
         }
 
         Console.Write("Waiting for authorization...");
 
-        string? accessToken = null;
-
-        while (accessToken is null) {
+        while (true) {
             await Task.Delay(TimeSpan.FromSeconds(interval));
 
             var tokenResponse = await http.PostAsync(
                 "https://github.com/login/oauth/access_token",
-                new FormUrlEncodedContent(
-                    new Dictionary<string, string> {
-                        ["client_id"]   = clientId,
-                        ["device_code"] = device.DeviceCode,
-                        ["grant_type"]  = "urn:ietf:params:oauth:grant-type:device_code"
-                    }
-                )
+                new FormUrlEncodedContent(new Dictionary<string, string> {
+                    ["client_id"]   = clientId,
+                    ["device_code"] = device.DeviceCode,
+                    ["grant_type"]  = "urn:ietf:params:oauth:grant-type:device_code"
+                })
             );
 
             var tokenResult = (await tokenResponse.Content.ReadFromJsonAsync(KapacitorJsonContext.Default.GitHubTokenResponse))!;
 
             if (tokenResult.AccessToken is not null) {
-                accessToken = tokenResult.AccessToken;
-            } else if (tokenResult.Error is not null) {
-                switch (tokenResult.Error) {
-                    case "authorization_pending":
-                        Console.Write(".");
+                await Console.Out.WriteLineAsync(" done!");
 
-                        continue;
-                    case "slow_down":
-                        interval += 5;
-
-                        continue;
-                    default:
-                        Console.Error.WriteLine($"\nError: {tokenResult.Error}");
-
-                        return 1;
-                }
+                return tokenResult.AccessToken;
             }
+
+            if (tokenResult.Error is "authorization_pending") { Console.Write("."); continue; }
+            if (tokenResult.Error is "slow_down")             { interval += 5; continue; }
+
+            Console.Error.WriteLine($"\nError: {tokenResult.Error}");
+
+            return null;
+        }
+    }
+
+    public static async Task<int> ExchangeAndSaveAsync(string serverUrl, string githubAccessToken, string provider) {
+        if (provider is not AuthProvider.GitHubApp and not AuthProvider.Auth0) {
+            Console.Error.WriteLine($"Error: unknown auth provider '{provider}'");
+
+            return 1;
         }
 
-        await Console.Out.WriteLineAsync(" done!");
+        using var http = new HttpClient();
 
         var exchangeResponse = await http.PostAsJsonAsync(
             $"{serverUrl}/auth/token",
-            new() { GithubAccessToken = accessToken },
+            new TokenExchangeRequest { GithubAccessToken = githubAccessToken },
             KapacitorJsonContext.Default.TokenExchangeRequest
         );
 
         if (!exchangeResponse.IsSuccessStatusCode) {
-            var errorBody = await exchangeResponse.Content.ReadAsStringAsync();
-            Console.Error.WriteLine($"Error exchanging token: {errorBody}");
+            Console.Error.WriteLine($"Error exchanging token: {await exchangeResponse.Content.ReadAsStringAsync()}");
 
             return 1;
         }
 
         var exchange = (await exchangeResponse.Content.ReadFromJsonAsync(KapacitorJsonContext.Default.TokenExchangeResponse))!;
 
-        await TokenStore.SaveAsync(
-            new() {
-                AccessToken    = exchange.AccessToken,
-                ExpiresAt      = DateTimeOffset.UtcNow.AddSeconds(exchange.ExpiresIn),
-                GitHubUsername = exchange.Username,
-                Provider       = config.Provider
-            }
-        );
+        await TokenStore.SaveAsync(new StoredTokens {
+            AccessToken    = exchange.AccessToken,
+            ExpiresAt      = DateTimeOffset.UtcNow.AddSeconds(exchange.ExpiresIn),
+            GitHubUsername = exchange.Username,
+            Provider       = provider
+        });
 
         await Console.Out.WriteLineAsync($"Logged in as {exchange.Username}");
 
         return 0;
+    }
+
+    /// <summary>
+    /// Exchanges a GitHub access token for a Capacitor JWT and saves it to the named profile.
+    /// Unlike the single-argument overload, this does NOT print "Logged in as …" — the caller
+    /// is responsible for user-facing output. Returns 0 on success, 1 on failure.
+    /// </summary>
+    public static async Task<int> ExchangeAndSaveAsync(string serverUrl, string githubAccessToken, string provider, string profile) {
+        using var http = new HttpClient();
+        return await ExchangeAndSaveAsync(http, serverUrl, githubAccessToken, provider, profile);
+    }
+
+    public static async Task<int> ExchangeAndSaveAsync(
+            HttpClient http, string serverUrl, string githubAccessToken, string provider, string profile) {
+        if (provider is not AuthProvider.GitHubApp and not AuthProvider.Auth0) {
+            Console.Error.WriteLine($"Error: unknown auth provider '{provider}'");
+
+            return 1;
+        }
+
+        var exchangeResponse = await http.PostAsJsonAsync(
+            $"{serverUrl}/auth/token",
+            new TokenExchangeRequest { GithubAccessToken = githubAccessToken },
+            KapacitorJsonContext.Default.TokenExchangeRequest
+        );
+
+        if (!exchangeResponse.IsSuccessStatusCode) {
+            Console.Error.WriteLine($"Error exchanging token for profile '{profile}': {await exchangeResponse.Content.ReadAsStringAsync()}");
+
+            return 1;
+        }
+
+        var exchange = (await exchangeResponse.Content.ReadFromJsonAsync(KapacitorJsonContext.Default.TokenExchangeResponse))!;
+
+        await TokenStore.SaveAsync(profile, new StoredTokens {
+            AccessToken    = exchange.AccessToken,
+            ExpiresAt      = DateTimeOffset.UtcNow.AddSeconds(exchange.ExpiresIn),
+            GitHubUsername = exchange.Username,
+            Provider       = provider
+        });
+
+        return 0;
+    }
+
+    static async Task<int> HandleGitHubLogin(string serverUrl, AuthDiscoveryResponse config) {
+        var accessToken = await RunDeviceFlowAsync(config.GithubClientId!);
+        if (accessToken is null) return 1;
+
+        return await ExchangeAndSaveAsync(serverUrl, accessToken, config.Provider);
     }
 
     static async Task<int> HandleAuth0Login(AuthDiscoveryResponse config) {
@@ -239,7 +293,7 @@ public static class OAuthLoginFlow {
                 RefreshToken   = json.RefreshToken,
                 ExpiresAt      = DateTimeOffset.UtcNow.AddSeconds(json.ExpiresIn),
                 GitHubUsername = username,
-                Provider       = "Auth0",
+                Provider       = AuthProvider.Auth0,
                 Auth0Domain    = auth0Domain,
                 ClientId       = clientId
             }
