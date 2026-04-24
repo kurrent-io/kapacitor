@@ -498,7 +498,8 @@ public readonly record struct DaemonConnect(
         string   Name,
         string   Platform,
         string[] RepoPaths,
-        int      MaxAgents
+        int      MaxAgents,
+        string[] LiveAgentIds
     );
 
 public readonly record struct AgentRegistered(
