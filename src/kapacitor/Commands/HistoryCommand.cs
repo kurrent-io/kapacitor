@@ -104,27 +104,7 @@ static class HistoryCommand {
             return 0;
         }
 
-        // Discover transcript files: ~/.claude/projects/{encoded-cwd}/{sessionId}.jsonl
-        // Skip files inside subagent directories.
-        // Deduplicate directories by resolved path — symlinked project dirs (e.g., agent worktrees
-        // pointing to the main project dir) would otherwise scan the same files multiple times.
-        var transcriptFiles = new List<(string SessionId, string FilePath, string EncodedCwd)>();
-        var seenRealPaths   = new HashSet<string>(StringComparer.Ordinal);
-
-        foreach (var cwdDir in Directory.GetDirectories(projectsDir)) {
-            var realPath = new DirectoryInfo(cwdDir).ResolveLinkTarget(returnFinalTarget: true)?.FullName
-             ?? Path.GetFullPath(cwdDir);
-
-            if (!seenRealPaths.Add(realPath)) continue;
-
-            var encodedCwd = Path.GetFileName(cwdDir);
-
-            transcriptFiles.AddRange(
-                from jsonlFile in Directory.GetFiles(cwdDir, "*.jsonl")
-                let sessionId = NormalizeGuid(Path.GetFileNameWithoutExtension(jsonlFile))
-                select (sessionId, jsonlFile, encodedCwd)
-            );
-        }
+        var transcriptFiles = DiscoverTranscripts(projectsDir);
 
         if (transcriptFiles.Count == 0) {
             display.Line("No transcript files found.");
@@ -759,6 +739,35 @@ static class HistoryCommand {
     }
 
     static string? DecodeCwdFromDirName(string encodedCwd) => SessionImporter.DecodeCwdFromDirName(encodedCwd);
+
+    /// <summary>
+    /// Enumerate ~/.claude/projects/*/*.jsonl transcripts, deduplicating directories
+    /// by their resolved path (so symlinked project dirs don't scan the same files
+    /// twice). Returns one entry per transcript with the normalized session id.
+    /// </summary>
+    internal static List<(string SessionId, string FilePath, string EncodedCwd)> DiscoverTranscripts(string projectsDir) {
+        var results = new List<(string, string, string)>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+
+        if (!Directory.Exists(projectsDir)) return results;
+
+        foreach (var cwdDir in Directory.GetDirectories(projectsDir)) {
+            var realPath = new DirectoryInfo(cwdDir).ResolveLinkTarget(returnFinalTarget: true)?.FullName
+             ?? Path.GetFullPath(cwdDir);
+
+            if (!seen.Add(realPath)) continue;
+
+            var encodedCwd = Path.GetFileName(cwdDir);
+
+            results.AddRange(
+                from jsonlFile in Directory.GetFiles(cwdDir, "*.jsonl")
+                let sessionId = NormalizeGuid(Path.GetFileNameWithoutExtension(jsonlFile))
+                select (sessionId, jsonlFile, encodedCwd)
+            );
+        }
+
+        return results;
+    }
 
     /// <summary>
     /// Groups sessions by slug, sorts by timestamp within each group, and builds
