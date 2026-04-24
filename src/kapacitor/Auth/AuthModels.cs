@@ -91,3 +91,24 @@ public record RefreshTokenRequest {
     [JsonPropertyName("access_token")]
     public required string AccessToken { get; init; }
 }
+
+// Auth proxy: GET /config
+public sealed record ProxyConfigResponse {
+    [JsonPropertyName("github_client_id")] public string GitHubClientId { get; init; } = "";
+}
+
+// Auth proxy: POST /discover-tenants response item
+public sealed record DiscoveredTenant {
+    [JsonPropertyName("org_id")]    public long   OrgId    { get; init; }
+    [JsonPropertyName("org_login")] public string OrgLogin { get; init; } = "";
+    [JsonPropertyName("origin")]    public string Origin   { get; init; } = "";
+}
+
+public enum DiscoveryError {
+    None,
+    ProxyUnreachable,
+    TokenRejected,
+    UpstreamError
+}
+
+public sealed record DiscoveryResult(DiscoveredTenant[] Tenants, DiscoveryError Error);

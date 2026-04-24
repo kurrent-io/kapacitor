@@ -82,7 +82,7 @@ public class AuthProxyClientTests {
     }
 
     [Test]
-    public async Task DiscoverTenantsAsync_returns_GitHubError_on_502() {
+    public async Task DiscoverTenantsAsync_returns_UpstreamError_on_502() {
         using var server = WireMockServer.Start();
         server.Given(Request.Create().WithPath("/discover-tenants").UsingPost())
               .RespondWith(Response.Create().WithStatusCode(502));
@@ -92,7 +92,7 @@ public class AuthProxyClientTests {
 
         var result = await client.DiscoverTenantsAsync(server.Urls[0], "gh-token");
 
-        await Assert.That(result.Error).IsEqualTo(DiscoveryError.GitHubError);
+        await Assert.That(result.Error).IsEqualTo(DiscoveryError.UpstreamError);
     }
 
     [Test]

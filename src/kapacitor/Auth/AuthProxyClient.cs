@@ -1,27 +1,7 @@
 using System.Net;
 using System.Net.Http.Json;
-using System.Text.Json.Serialization;
 
 namespace kapacitor.Auth;
-
-public sealed record ProxyConfigResponse {
-    [JsonPropertyName("github_client_id")] public string GitHubClientId { get; init; } = "";
-}
-
-public sealed record DiscoveredTenant {
-    [JsonPropertyName("org_id")]    public long   OrgId    { get; init; }
-    [JsonPropertyName("org_login")] public string OrgLogin { get; init; } = "";
-    [JsonPropertyName("origin")]    public string Origin   { get; init; } = "";
-}
-
-public enum DiscoveryError {
-    None,
-    ProxyUnreachable,
-    TokenRejected,
-    GitHubError
-}
-
-public sealed record DiscoveryResult(DiscoveredTenant[] Tenants, DiscoveryError Error);
 
 public class AuthProxyClient(HttpClient http) {
     public async Task<string?> GetGitHubClientIdAsync(string proxyUrl) {
@@ -30,7 +10,7 @@ public class AuthProxyClient(HttpClient http) {
             if (!response.IsSuccessStatusCode) return null;
             var body = await response.Content.ReadFromJsonAsync(KapacitorJsonContext.Default.ProxyConfigResponse);
             return body?.GitHubClientId;
-        } catch (Exception e) when (e is HttpRequestException or TaskCanceledException or OperationCanceledException) {
+        } catch (Exception e) when (e is HttpRequestException or OperationCanceledException) {
             return null;
         }
     }
@@ -44,9 +24,9 @@ public class AuthProxyClient(HttpClient http) {
             return response.StatusCode switch {
                 HttpStatusCode.OK                                       => new(await ReadTenants(response), DiscoveryError.None),
                 HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden => new([], DiscoveryError.TokenRejected),
-                _                                                       => new([], DiscoveryError.GitHubError)
+                _                                                       => new([], DiscoveryError.UpstreamError)
             };
-        } catch (Exception e) when (e is HttpRequestException or TaskCanceledException or OperationCanceledException) {
+        } catch (Exception e) when (e is HttpRequestException or OperationCanceledException) {
             return new([], DiscoveryError.ProxyUnreachable);
         }
     }
