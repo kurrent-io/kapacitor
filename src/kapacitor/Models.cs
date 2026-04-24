@@ -435,6 +435,8 @@ record RepoEntry {
 [JsonSerializable(typeof(Auth.GitHubTokenResponse))]
 [JsonSerializable(typeof(Auth.Auth0TokenResponse))]
 [JsonSerializable(typeof(Auth.Auth0IdTokenClaims))]
+[JsonSerializable(typeof(Auth.ProxyConfigResponse))]
+[JsonSerializable(typeof(Auth.DiscoveredTenant[]))]
 [JsonSerializable(typeof(LaunchAgentCommand))]
 [JsonSerializable(typeof(SendInputCommand))]
 [JsonSerializable(typeof(ResizeTerminalCommand))]
