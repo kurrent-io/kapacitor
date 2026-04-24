@@ -141,4 +141,50 @@ public class HistoryClassifyTests : IDisposable {
 
         await Assert.That(result[0].Status).IsEqualTo(HistoryCommand.ClassificationStatus.InternalSubSession);
     }
+
+    [Test]
+    public async Task ClassifyAsync_tags_ExcludedRepoKey_for_new_sessions_in_excluded_repos() {
+        _server.Given(Request.Create().WithPath("/api/sessions/*/last-line").UsingGet())
+            .RespondWith(Response.Create().WithStatusCode(404));
+
+        // Make a transcript whose cwd is a real git repo with an "excluded" remote.
+        // git init + git remote add produces a real repo that DetectRepositoryAsync can query.
+        var repoDir = Directory.CreateTempSubdirectory("kapacitor-excl").FullName;
+        await RunGitAsync("init", repoDir);
+        await RunGitAsync("remote add origin https://github.com/acme/secret.git", repoDir);
+
+        var transcriptPath = Path.Combine(_tempDir, "sessionX.jsonl");
+        await File.WriteAllLinesAsync(transcriptPath, Enumerable.Range(0, 50).Select(i =>
+            $$$"""{"type":"user","timestamp":"2026-03-15T10:00:00Z","cwd":"{{{repoDir.Replace("\\", "\\\\")}}}","message":{"content":"x"}}"""
+        ));
+
+        var transcripts = new List<(string SessionId, string FilePath, string EncodedCwd)> {
+            ("sessionX", transcriptPath, repoDir.Replace('/', '-'))
+        };
+
+        using var client = new HttpClient();
+        var result = await HistoryCommand.ClassifyAsync(
+            client, _server.Url!, transcripts, minLines: 15,
+            excludedRepos: ["acme/secret"], CancellationToken.None);
+
+        await Assert.That(result[0].Status).IsEqualTo(HistoryCommand.ClassificationStatus.New);
+        await Assert.That(result[0].ExcludedRepoKey).IsEqualTo("acme/secret");
+    }
+
+    static async Task RunGitAsync(string arguments, string workingDir) {
+        var psi = new System.Diagnostics.ProcessStartInfo("git", arguments) {
+            WorkingDirectory       = workingDir,
+            RedirectStandardOutput = true,
+            RedirectStandardError  = true,
+            UseShellExecute        = false,
+            CreateNoWindow         = true,
+        };
+        using var process = System.Diagnostics.Process.Start(psi)
+            ?? throw new InvalidOperationException("Failed to start git");
+        await process.WaitForExitAsync();
+        if (process.ExitCode != 0) {
+            var err = await process.StandardError.ReadToEndAsync();
+            throw new InvalidOperationException($"git {arguments} failed: {err}");
+        }
+    }
 }

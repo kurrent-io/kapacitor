@@ -983,6 +983,23 @@ static class HistoryCommand {
             probeGate.Release();
         }
 
+        // Flag excluded repos for New/Partial sessions. Resolution (include or skip?)
+        // happens later in HandleHistory, where we can batch prompts by repo key.
+        string? excludedRepoKey = null;
+        if ((status == ClassificationStatus.New || status == ClassificationStatus.Partial)
+            && excludedRepos is { Length: > 0 }) {
+            var cwd = meta.Cwd ?? SessionImporter.DecodeCwdFromDirName(encodedCwd);
+            if (cwd is not null) {
+                var repo = await RepositoryDetection.DetectRepositoryAsync(cwd);
+                if (repo?.Owner is not null && repo.RepoName is not null) {
+                    var key = $"{repo.Owner}/{repo.RepoName}";
+                    if (excludedRepos.Contains(key, StringComparer.OrdinalIgnoreCase)) {
+                        excludedRepoKey = key;
+                    }
+                }
+            }
+        }
+
         return new SessionClassification {
             SessionId = sessionId,
             FilePath = filePath,
@@ -992,6 +1009,7 @@ static class HistoryCommand {
             ResumeFromLine = resumeFromLine,
             ProbeErrorReason = probeErrorReason,
             TotalLines = totalLines,
+            ExcludedRepoKey = excludedRepoKey,
         };
     }
 }
