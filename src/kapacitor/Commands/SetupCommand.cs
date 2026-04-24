@@ -16,7 +16,7 @@ public static class SetupCommand {
 
         // Check if already configured
         var existingProfile = await AppConfig.LoadProfileConfig();
-        var existing        = existingProfile.Profiles.GetValueOrDefault("default");
+        var existing        = existingProfile.Profiles.GetValueOrDefault(existingProfile.ActiveProfile);
         var existingTokens  = await TokenStore.LoadAsync();
 
         if (existing?.ServerUrl is not null && existingTokens is not null && !noPrompt) {
@@ -53,40 +53,9 @@ public static class SetupCommand {
             await Console.Error.WriteLineAsync("  --server-url is required with --no-prompt");
             return 1;
         } else {
-            // Discovery path
-            AnsiConsole.MarkupLine($"  Proxy: [dim]{Markup.Escape(AuthProxyEndpoint.Url)}[/]");
-
-            using var http    = new HttpClient();
-            var proxyClient   = new AuthProxyClient(http);
-
-            var clientId = await AnsiConsole.Status().Spinner(Spinner.Known.Dots).StartAsync("Contacting auth service…",
-                async _ => await proxyClient.GetGitHubClientIdAsync(AuthProxyEndpoint.Url));
-            if (clientId is null) {
-                AnsiConsole.MarkupLine("  [red]✗[/] Cannot reach the Kurrent auth service. Retry later, or pass --server-url <url>.");
-                return 1;
-            }
-
-            var ghToken = await OAuthLoginFlow.RunDeviceFlowAsync(clientId);
-            if (ghToken is null) return 1;
-
-            var discovery = new TenantDiscovery(proxyClient, new SpectreTenantPicker());
-            var outcome   = await discovery.RunAsync(AuthProxyEndpoint.Url, ghToken);
-
-            if (outcome.ErrorMessage is not null) {
-                AnsiConsole.MarkupLine($"  [red]✗[/] {Markup.Escape(outcome.ErrorMessage)}");
-                return 1;
-            }
-
-            serverUrl    = outcome.Picked!.Origin;
-            preAuthToken = ghToken;
-            provider     = AuthProvider.GitHubApp;
-
-            // Create/update a profile per discovered tenant; the picked one becomes active
-            var profileCfg = await AppConfig.LoadProfileConfig();
-            profileCfg     = TenantDiscovery.MergeProfiles(profileCfg, outcome.Tenants, outcome.Picked);
-            await AppConfig.SaveProfileConfig(profileCfg);
-
-            AnsiConsole.MarkupLine($"  [green]✓[/] Discovered {outcome.Tenants.Length} tenant(s). Active: [cyan]{Markup.Escape(outcome.Picked.OrgLogin)}[/]");
+            var discovered = await RunDiscoveryAsync();
+            if (discovered is null) return 1;
+            (serverUrl, preAuthToken, provider) = discovered.Value;
         }
 
         await Console.Out.WriteLineAsync();
@@ -102,6 +71,9 @@ public static class SetupCommand {
                 await Console.Error.WriteLineAsync("  Token exchange failed.");
                 return 1;
             }
+            // Keep formatting consistent with the non-discovery branch
+            var tokens = await TokenStore.LoadAsync();
+            AnsiConsole.MarkupLine($"  [green]✓[/] Logged in as [cyan]{Markup.Escape(tokens?.GitHubUsername ?? "?")}[/]");
         } else {
             var loginResult = await OAuthLoginFlow.LoginWithDiscoveryAsync(serverUrl);
 
@@ -254,6 +226,39 @@ public static class SetupCommand {
         AnsiConsole.MarkupLine("\n[dim]Optional:[/] start the agent daemon with [cyan]kapacitor agent start -d[/]");
 
         return 0;
+    }
+
+    static async Task<(string ServerUrl, string PreAuthToken, string Provider)?> RunDiscoveryAsync() {
+        AnsiConsole.MarkupLine($"  Proxy: [dim]{Markup.Escape(AuthProxyEndpoint.Url)}[/]");
+
+        using var http  = new HttpClient();
+        var proxyClient = new AuthProxyClient(http);
+
+        var clientId = await AnsiConsole.Status().Spinner(Spinner.Known.Dots).StartAsync("Contacting auth service…",
+            async _ => await proxyClient.GetGitHubClientIdAsync(AuthProxyEndpoint.Url));
+        if (clientId is null) {
+            AnsiConsole.MarkupLine("  [red]✗[/] Cannot reach the Kurrent auth service. Retry later, or pass --server-url <url>.");
+            return null;
+        }
+
+        var ghToken = await OAuthLoginFlow.RunDeviceFlowAsync(clientId);
+        if (ghToken is null) return null;
+
+        var discovery = new TenantDiscovery(proxyClient, new SpectreTenantPicker());
+        var outcome   = await discovery.RunAsync(AuthProxyEndpoint.Url, ghToken);
+
+        if (outcome.ErrorMessage is not null) {
+            AnsiConsole.MarkupLine($"  [red]✗[/] {Markup.Escape(outcome.ErrorMessage)}");
+            return null;
+        }
+
+        var profileCfg = await AppConfig.LoadProfileConfig();
+        profileCfg     = TenantDiscovery.MergeProfiles(profileCfg, outcome.Tenants, outcome.Picked!);
+        await AppConfig.SaveProfileConfig(profileCfg);
+
+        AnsiConsole.MarkupLine($"  [green]✓[/] Discovered {outcome.Tenants.Length} tenant(s). Active: [cyan]{Markup.Escape(outcome.Picked!.OrgLogin)}[/]");
+
+        return (outcome.Picked.Origin, ghToken, AuthProvider.GitHubApp);
     }
 
     internal static string? ResolvePluginPath() {
