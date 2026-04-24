@@ -13,6 +13,17 @@ Non-goals:
 - Changing the wire protocol or server-side behaviour.
 - Reworking `SessionImporter` or `ImportProgress` signatures.
 
+## Defaults
+
+Raise the `history` command's default minimum-lines filter from **10 to 15**. Short transcripts with fewer than 15 lines are almost always trivial (single-prompt sessions, aborted invocations) and add noise to imports without meaningful data. Users who want to override can still pass `--min-lines 0` or any other value.
+
+Touches two sites:
+
+- `src/kapacitor/Program.cs:359` — `var minLines = 10;` → `var minLines = 15;`.
+- `src/kapacitor/Commands/HistoryCommand.cs:49` — `HandleHistory(..., int minLines = 10, ...)` → `int minLines = 15`.
+
+The `TooShort` classification in Phase 1 uses whichever value is passed in; the change is only to the CLI-level default.
+
 ## Context
 
 Today `HistoryCommand.HandleHistory` is a single serial loop that mixes three concerns per iteration: probe the server's `last-line` API, decide what to do with the session (new / partial / skip), and then do it. The resulting UX has two problems:
