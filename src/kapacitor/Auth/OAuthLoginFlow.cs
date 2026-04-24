@@ -167,13 +167,17 @@ public static class OAuthLoginFlow {
     /// is responsible for user-facing output. Returns 0 on success, 1 on failure.
     /// </summary>
     public static async Task<int> ExchangeAndSaveAsync(string serverUrl, string githubAccessToken, string provider, string profile) {
+        using var http = new HttpClient();
+        return await ExchangeAndSaveAsync(http, serverUrl, githubAccessToken, provider, profile);
+    }
+
+    public static async Task<int> ExchangeAndSaveAsync(
+            HttpClient http, string serverUrl, string githubAccessToken, string provider, string profile) {
         if (provider is not AuthProvider.GitHubApp and not AuthProvider.Auth0) {
             Console.Error.WriteLine($"Error: unknown auth provider '{provider}'");
 
             return 1;
         }
-
-        using var http = new HttpClient();
 
         var exchangeResponse = await http.PostAsJsonAsync(
             $"{serverUrl}/auth/token",

@@ -819,10 +819,11 @@ async Task<int> HandleDiscoverLoginAsync() {
     // Discovery flows only via the shared GitHub App proxy, so every discovered tenant
     // uses the GitHubApp provider. If DiscoveredTenant ever gains a Provider field, read it here.
 
-    // Exchange tokens for every discovered tenant so switching profiles works immediately
+    // Exchange tokens for every discovered tenant so switching profiles works immediately.
+    // One HttpClient shared across all per-tenant exchanges to avoid socket/port exhaustion.
     var exchanges = outcome.Tenants.Select(async tenant => {
         var exit = await OAuthLoginFlow.ExchangeAndSaveAsync(
-            tenant.Origin, ghToken, AuthProvider.GitHubApp, tenant.OrgLogin);
+            http, tenant.Origin, ghToken, AuthProvider.GitHubApp, tenant.OrgLogin);
         if (exit != 0) {
             await Console.Error.WriteLineAsync(
                 $"Warning: token exchange failed for {tenant.OrgLogin}. Run 'kapacitor login' after switching to that profile.");
