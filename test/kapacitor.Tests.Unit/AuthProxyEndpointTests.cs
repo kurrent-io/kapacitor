@@ -7,7 +7,11 @@ public class AuthProxyEndpointTests {
     [NotInParallel(nameof(AuthProxyEndpointTests))]
     public async Task Returns_default_when_env_var_is_unset() {
         Environment.SetEnvironmentVariable("KAPACITOR_AUTH_PROXY_URL", null);
-        await Assert.That(AuthProxyEndpoint.Url).IsEqualTo(AuthProxyEndpoint.DefaultUrl);
+        try {
+            await Assert.That(AuthProxyEndpoint.Url).IsEqualTo(AuthProxyEndpoint.DefaultUrl);
+        } finally {
+            Environment.SetEnvironmentVariable("KAPACITOR_AUTH_PROXY_URL", null);
+        }
     }
 
     [Test]
