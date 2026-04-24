@@ -53,7 +53,7 @@ if (args.Skip(1).Any(a => a is "--help" or "-h")) {
 }
 
 // Commands that don't need a server URL
-string[] offlineCommands = ["--help", "-h", "help", "--version", "-v", "logout", "cleanup", "config", "agent", "setup", "status", "update", "plugin", "profile", "use", "repos"];
+string[] offlineCommands = ["--help", "-h", "help", "--version", "-v", "logout", "cleanup", "config", "agent", "setup", "status", "update", "plugin", "profile", "use", "repos", "login"];
 
 if (baseUrl is null && !offlineCommands.Contains(command)) {
     Console.Error.WriteLine("No server configured. Run `kapacitor setup` or set KAPACITOR_URL.");
@@ -167,7 +167,17 @@ switch (command) {
         return await WhatsDoneCommand.HandleGenerateWhatsDone(baseUrl!, wdSessionId);
     }
     case "login": {
-        return await OAuthLoginFlow.LoginWithDiscoveryAsync(baseUrl!);
+        if (args.Contains("--discover")) {
+            return await HandleDiscoverLoginAsync();
+        }
+
+        if (baseUrl is null) {
+            Console.Error.WriteLine("No server configured. Run `kapacitor setup`, set KAPACITOR_URL, or use `kapacitor login --discover`.");
+
+            return 1;
+        }
+
+        return await OAuthLoginFlow.LoginWithDiscoveryAsync(baseUrl);
     }
     case "logout": {
         await TokenStore.DeleteAsync();
@@ -775,6 +785,51 @@ void NormalizeGuidField(JsonNode node, string fieldName) {
     if (value is not null && value.Contains('-')) {
         node[fieldName] = value.Replace("-", "");
     }
+}
+
+async Task<int> HandleDiscoverLoginAsync() {
+    using var http  = new HttpClient();
+    var proxyClient = new AuthProxyClient(http);
+
+    var clientId = await proxyClient.GetGitHubClientIdAsync(AuthProxyEndpoint.Url);
+
+    if (clientId is null) {
+        await Console.Error.WriteLineAsync("Cannot reach the Kurrent auth service.");
+
+        return 1;
+    }
+
+    var ghToken = await OAuthLoginFlow.RunDeviceFlowAsync(clientId);
+    if (ghToken is null) return 1;
+
+    var discovery = new TenantDiscovery(proxyClient, new SpectreTenantPicker());
+    var outcome   = await discovery.RunAsync(AuthProxyEndpoint.Url, ghToken);
+
+    if (outcome.ErrorMessage is not null) {
+        await Console.Error.WriteLineAsync(outcome.ErrorMessage);
+
+        return 1;
+    }
+
+    // Merge discovered tenants as profiles; the picked one becomes active
+    var cfg = await AppConfig.LoadProfileConfig();
+    cfg = TenantDiscovery.MergeProfiles(cfg, outcome.Tenants, outcome.Picked!);
+    await AppConfig.SaveProfileConfig(cfg);
+
+    // Exchange tokens for every discovered tenant so switching profiles works immediately
+    foreach (var tenant in outcome.Tenants) {
+        var exchangeExit = await OAuthLoginFlow.ExchangeAndSaveAsync(
+            tenant.Origin, ghToken, AuthProvider.GitHubApp, tenant.OrgLogin);
+
+        if (exchangeExit != 0) {
+            await Console.Error.WriteLineAsync(
+                $"Warning: token exchange failed for {tenant.OrgLogin}. Run 'kapacitor login' after switching to that profile.");
+        }
+    }
+
+    await Console.Out.WriteLineAsync($"Logged in. Active profile: {outcome.Picked!.OrgLogin}.");
+
+    return 0;
 }
 
 async Task PrintUsage() {

@@ -161,6 +161,44 @@ public static class OAuthLoginFlow {
         return 0;
     }
 
+    /// <summary>
+    /// Exchanges a GitHub access token for a Capacitor JWT and saves it to the named profile.
+    /// Unlike the single-argument overload, this does NOT print "Logged in as …" — the caller
+    /// is responsible for user-facing output. Returns 0 on success, 1 on failure.
+    /// </summary>
+    public static async Task<int> ExchangeAndSaveAsync(string serverUrl, string githubAccessToken, string provider, string profile) {
+        if (provider is not AuthProvider.GitHubApp and not AuthProvider.Auth0) {
+            Console.Error.WriteLine($"Error: unknown auth provider '{provider}'");
+
+            return 1;
+        }
+
+        using var http = new HttpClient();
+
+        var exchangeResponse = await http.PostAsJsonAsync(
+            $"{serverUrl}/auth/token",
+            new TokenExchangeRequest { GithubAccessToken = githubAccessToken },
+            KapacitorJsonContext.Default.TokenExchangeRequest
+        );
+
+        if (!exchangeResponse.IsSuccessStatusCode) {
+            Console.Error.WriteLine($"Error exchanging token for profile '{profile}': {await exchangeResponse.Content.ReadAsStringAsync()}");
+
+            return 1;
+        }
+
+        var exchange = (await exchangeResponse.Content.ReadFromJsonAsync(KapacitorJsonContext.Default.TokenExchangeResponse))!;
+
+        await TokenStore.SaveAsync(profile, new StoredTokens {
+            AccessToken    = exchange.AccessToken,
+            ExpiresAt      = DateTimeOffset.UtcNow.AddSeconds(exchange.ExpiresIn),
+            GitHubUsername = exchange.Username,
+            Provider       = provider
+        });
+
+        return 0;
+    }
+
     static async Task<int> HandleGitHubLogin(string serverUrl, AuthDiscoveryResponse config) {
         var accessToken = await RunDeviceFlowAsync(config.GithubClientId!);
         if (accessToken is null) return 1;
