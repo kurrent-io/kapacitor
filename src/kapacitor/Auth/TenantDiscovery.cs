@@ -54,7 +54,7 @@ public class TenantDiscovery(IAuthProxyClient proxy, ITenantPicker picker) {
         foreach (var t in discovered) {
             var name = t.OrgLogin;
             profiles[name] = (profiles.GetValueOrDefault(name) ?? template) with {
-                ServerUrl = t.Origin
+                ServerUrl = AppConfig.NormalizeUrl(t.Origin)
             };
         }
 

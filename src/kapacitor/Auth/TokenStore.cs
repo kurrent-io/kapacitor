@@ -84,10 +84,16 @@ public static class TokenStore {
         await SaveAsync(profile, tokens);
     }
 
-    public static async Task DeleteAsync() {
+    public static Task DeleteAsync() {
         if (File.Exists(LegacyTokenPath)) File.Delete(LegacyTokenPath);
-        var profile = await ResolveActiveProfileAsync();
-        Delete(profile);
+
+        if (Directory.Exists(TokenDir)) {
+            foreach (var file in Directory.EnumerateFiles(TokenDir, "*.json")) {
+                try { File.Delete(file); } catch { /* best-effort */ }
+            }
+        }
+
+        return Task.CompletedTask;
     }
 
     static async Task<string> ResolveActiveProfileAsync() {

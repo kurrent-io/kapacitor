@@ -74,6 +74,18 @@ public class TokenStoreProfileTests {
 
     [Test]
     [NotInParallel(nameof(TokenStoreProfileTests))]
+    public async Task DeleteAsync_removes_all_profile_tokens() {
+        await TokenStore.SaveAsync("acme",    MakeTokens("alice"));
+        await TokenStore.SaveAsync("contoso", MakeTokens("bob"));
+
+        await TokenStore.DeleteAsync();
+
+        await Assert.That(await TokenStore.LoadAsync("acme")).IsNull();
+        await Assert.That(await TokenStore.LoadAsync("contoso")).IsNull();
+    }
+
+    [Test]
+    [NotInParallel(nameof(TokenStoreProfileTests))]
     public async Task Delete_with_profile_removes_only_that_profile() {
         await TokenStore.SaveAsync("acme",    MakeTokens("alice"));
         await TokenStore.SaveAsync("contoso", MakeTokens("bob"));

@@ -258,7 +258,7 @@ public static class SetupCommand {
 
         AnsiConsole.MarkupLine($"  [green]✓[/] Discovered {outcome.Tenants.Length} tenant(s). Active: [cyan]{Markup.Escape(outcome.Picked!.OrgLogin)}[/]");
 
-        return (outcome.Picked.Origin, ghToken, AuthProvider.GitHubApp);
+        return (AppConfig.NormalizeUrl(outcome.Picked.Origin), ghToken, AuthProvider.GitHubApp);
     }
 
     internal static string? ResolvePluginPath() {
