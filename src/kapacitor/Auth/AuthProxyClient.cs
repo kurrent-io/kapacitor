@@ -3,7 +3,12 @@ using System.Net.Http.Json;
 
 namespace kapacitor.Auth;
 
-public class AuthProxyClient(HttpClient http) {
+public interface IAuthProxyClient {
+    Task<string?>         GetGitHubClientIdAsync(string proxyUrl);
+    Task<DiscoveryResult> DiscoverTenantsAsync(string proxyUrl, string githubAccessToken);
+}
+
+public class AuthProxyClient(HttpClient http) : IAuthProxyClient {
     public async Task<string?> GetGitHubClientIdAsync(string proxyUrl) {
         try {
             var response = await http.GetAsync($"{proxyUrl}/config");
