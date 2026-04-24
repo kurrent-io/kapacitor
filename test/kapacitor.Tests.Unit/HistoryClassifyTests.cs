@@ -127,7 +127,9 @@ public class HistoryClassifyTests : IDisposable {
         // IsKapacitorSubSession detects headless claude -p sessions by reading the file:
         // the first lines must contain a queue-operation entry whose content starts with
         // a known kapacitor prompt prefix (title generation or what's-done summary).
-        var subagentDir = Directory.CreateTempSubdirectory("kapacitor-sub").FullName;
+        // Nested under _tempDir so Dispose cleans it up.
+        var subagentDir = Path.Combine(_tempDir, "kapacitor-sub");
+        Directory.CreateDirectory(subagentDir);
         var path = Path.Combine(subagentDir, "agent-title-abc123.jsonl");
         // The title prompt starts with "<role>\nYou label coding-session transcripts. "
         // The \n must be JSON-escaped (\n literal in JSON string) for the parser to see a newline in the value.
@@ -152,7 +154,9 @@ public class HistoryClassifyTests : IDisposable {
 
         // Make a transcript whose cwd is a real git repo with an "excluded" remote.
         // git init + git remote add produces a real repo that DetectRepositoryAsync can query.
-        var repoDir = Directory.CreateTempSubdirectory("kapacitor-excl").FullName;
+        // Nested under _tempDir so Dispose cleans it up.
+        var repoDir = Path.Combine(_tempDir, "kapacitor-excl");
+        Directory.CreateDirectory(repoDir);
         await RunGitAsync("init", repoDir);
         await RunGitAsync("remote add origin https://github.com/acme/secret.git", repoDir);
 

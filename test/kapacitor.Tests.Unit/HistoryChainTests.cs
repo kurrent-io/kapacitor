@@ -45,8 +45,14 @@ public class HistoryChainTests {
         var chains = HistoryCommand.BuildImportChains(classifications);
 
         await Assert.That(chains.Count).IsEqualTo(1);
+        // Order-sensitive: assert each position. IsEquivalentTo is permutation-
+        // tolerant and would pass for any order, defeating the purpose of a
+        // "orders by timestamp" test.
         var ids = chains[0].Select(c => c.SessionId).ToList();
-        await Assert.That(ids).IsEquivalentTo(new[] { "a1", "a2", "a3" });
+        await Assert.That(ids.Count).IsEqualTo(3);
+        await Assert.That(ids[0]).IsEqualTo("a1");
+        await Assert.That(ids[1]).IsEqualTo("a2");
+        await Assert.That(ids[2]).IsEqualTo("a3");
     }
 
     [Test]

@@ -43,8 +43,10 @@ public class HistoryImportChainsTests : IDisposable {
         };
     }
 
-    // No-git variant: Meta.Cwd = null → DetectRepositoryAsync is not invoked.
-    // Used by the parallelism test so git process startup doesn't dominate timing.
+    // No-git variant: both Meta.Cwd AND EncodedCwd must be empty so
+    // ImportSingleSessionAsync resolves cwd to null and skips DetectRepositoryAsync.
+    // A non-empty EncodedCwd would still decode to a valid cwd, triggering repo
+    // detection and polluting parallelism-timing measurements.
     HistoryCommand.SessionClassification MakeNewNoGit(string id, int lines) {
         var path = Path.Combine(_tempDir, $"{id}.jsonl");
         File.WriteAllLines(path, Enumerable.Range(0, lines).Select(i =>
@@ -53,8 +55,8 @@ public class HistoryImportChainsTests : IDisposable {
         return new HistoryCommand.SessionClassification {
             SessionId  = id,
             FilePath   = path,
-            EncodedCwd = "-tmp-proj",
-            Meta       = new SessionMetadata(),   // Cwd = null → skips git detection
+            EncodedCwd = "",                      // DecodeCwdFromDirName returns null on empty input
+            Meta       = new SessionMetadata(),   // Cwd = null
             Status     = HistoryCommand.ClassificationStatus.New,
             TotalLines = lines,
         };

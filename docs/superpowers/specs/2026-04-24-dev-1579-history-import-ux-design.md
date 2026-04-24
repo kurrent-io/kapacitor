@@ -85,20 +85,20 @@ For each transcript:
 
 1. Extract metadata once (`ExtractSessionMetadata`) — cached on the classification record.
 2. Check `TitleGenerator.IsKapacitorSubSession` — kapacitor-spawned sub-sessions are classified as `InternalSubSession`. This category is counted silently and never surfaced in the Plan or Done grids (equivalent to today's invisible skip).
-3. If `minLines > 0` and the transcript has fewer lines than `minLines` → `TooShort`.
-4. Otherwise, run the `last-line` probe. Probes execute concurrently via `SemaphoreSlim(8)`. Map response:
+3. Run the `last-line` probe. Probes execute concurrently via `SemaphoreSlim(8)`. Map response:
    - `404` → `New`.
    - `204` → `AlreadyLoaded`.
    - `200` with a `last_line_number` field → `Partial` (carry `ResumeFromLine = lastLine + 1`).
    - `200` without `last_line_number` → `AlreadyLoaded`.
    - Other status / `HttpRequestException` → `ProbeError` (carry a short reason string).
-5. If the session's cwd (resolved as `meta.Cwd ?? DecodeCwdFromDirName(encodedCwd)`, matching today) maps to an excluded repo via `RepositoryDetection.DetectRepositoryAsync` → mark `PendingExcluded` with the `{Owner}/{RepoName}` key. This applies only to sessions that would otherwise be `New` or `Partial`; `AlreadyLoaded` / `TooShort` / `ProbeError` are left alone (matching today, where the exclusion prompt only fires on the `New` path).
+4. Apply the `TooShort` filter only for sessions classified `New` or `Partial`. Use a bounded `CountLinesUpTo(path, minLines)` that early-exits once `minLines` lines are observed; if fewer, reclassify as `TooShort`. Running the probe before the line count means `AlreadyLoaded` / `ProbeError` sessions never trigger a transcript scan, saving substantial I/O on re-runs.
+5. If the session's cwd (resolved as `meta.Cwd ?? DecodeCwdFromDirName(encodedCwd)`, matching today) maps to an excluded repo via `RepositoryDetection.DetectRepositoryAsync` → mark `PendingExcluded` with the `{Owner}/{RepoName}` key. This applies only to sessions still classified as `New` or `Partial` after the TooShort check; other statuses are left alone (matching today, where the exclusion prompt only fires on the importable path).
 
 After all probes complete:
 
 6. Resolve `PendingExcluded` sessions:
    - Group by `{Owner}/{RepoName}`.
-   - In TTY mode: prompt once per repo — "Repository `foo/bar` is excluded. Include {count} sessions from it? (y/N)". Yes → sessions revert to their probed status (`New` / `Partial`). No → sessions become `Excluded`.
+   - In TTY mode: prompt once per repo — "Repository `foo/bar` is excluded. Include {count} sessions from it? (y/N)". Yes → sessions retain their `New` / `Partial` status. No → sessions become `Excluded`.
    - In non-TTY mode: all `PendingExcluded` sessions become `Excluded` (today's auto-skip behaviour).
 
 Classification output is a list of records:

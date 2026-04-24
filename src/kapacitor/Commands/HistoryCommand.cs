@@ -245,7 +245,11 @@ static class HistoryCommand {
         var chains = BuildImportChains(classifications);
 
         // --- Import ---
-        var backgroundTasks = new List<Task>();
+        // ConcurrentBag rather than List: OnTitleTaskReady / OnSessionEnded
+        // callbacks fire from parallel chain-worker threads, so a plain List's
+        // Add would race. No ordering guarantees needed — we only enumerate at
+        // the end via Task.WhenAll.
+        var backgroundTasks = new System.Collections.Concurrent.ConcurrentBag<Task>();
         var titleTaskCount = 0;
         var summaryTaskCount = 0;
         using var concurrencyLimit = new SemaphoreSlim(3);
@@ -398,10 +402,18 @@ static class HistoryCommand {
     /// <br/>
     /// Without this fallback, timestamp-less transcripts would all sort at
     /// `DateTimeOffset.MinValue` and could displace real predecessors — corrupting
-    /// `previous_session_id` links in the session-start hook.
+    /// `previous_session_id` links in the session-start hook. The mtime lookup is
+    /// wrapped so a file deleted between discovery and chain building can't crash
+    /// the whole history run; ordering is best-effort.
     /// </summary>
-    static DateTimeOffset ChainTimestamp(SessionClassification c) =>
-        c.Meta.FirstTimestamp ?? new DateTimeOffset(File.GetLastWriteTimeUtc(c.FilePath), TimeSpan.Zero);
+    static DateTimeOffset ChainTimestamp(SessionClassification c) {
+        if (c.Meta.FirstTimestamp is { } ts) return ts;
+        try {
+            return new DateTimeOffset(File.GetLastWriteTimeUtc(c.FilePath), TimeSpan.Zero);
+        } catch {
+            return DateTimeOffset.MinValue;
+        }
+    }
 
     /// <summary>
     /// Build a sessionId → previousSessionId map from classifications, grouping by slug.
@@ -682,37 +694,39 @@ static class HistoryCommand {
             ChainWorkerEvents events,
             CancellationToken ct
         ) {
-        using var chainGate = new SemaphoreSlim(4);
         var loaded  = 0;
         var resumed = 0;
         var errored = 0;
 
-        var tasks = chains.Select(chain => Task.Run(async () => {
-            await chainGate.WaitAsync(ct);
-            try {
-                foreach (var session in chain) {
-                    // Belt-and-suspenders: ImportSingleSessionAsync already catches
-                    // expected failures; a bare catch here guarantees one rogue
-                    // session can't fault the worker and abort Task.WhenAll.
-                    SessionImportOutcome r;
-                    try {
-                        r = await ImportSingleSessionAsync(httpClient, baseUrl, session, events, ct);
-                    } catch (Exception ex) {
-                        events.OnSessionErrored(session.SessionId, ex.Message);
-                        r = SessionImportOutcome.Errored;
-                    }
-                    switch (r) {
-                        case SessionImportOutcome.Loaded:  Interlocked.Increment(ref loaded);  break;
-                        case SessionImportOutcome.Resumed: Interlocked.Increment(ref resumed); break;
-                        case SessionImportOutcome.Errored: Interlocked.Increment(ref errored); break;
-                    }
-                }
-            } finally {
-                chainGate.Release();
-            }
-        }, ct));
+        // Parallel.ForEachAsync caps outstanding tasks at MaxDegreeOfParallelism,
+        // which matters when we have thousands of singleton chains. A hand-rolled
+        // chains.Select(Task.Run) would queue one Task per chain, all blocked on
+        // a semaphore — significant overhead at scale.
+        var options = new ParallelOptions {
+            MaxDegreeOfParallelism = 4,
+            CancellationToken = ct,
+        };
 
-        await Task.WhenAll(tasks);
+        await Parallel.ForEachAsync(chains, options, async (chain, token) => {
+            foreach (var session in chain) {
+                // Belt-and-suspenders: ImportSingleSessionAsync already catches
+                // expected failures; a bare catch here guarantees one rogue
+                // session can't fault the worker and abort the iteration.
+                SessionImportOutcome r;
+                try {
+                    r = await ImportSingleSessionAsync(httpClient, baseUrl, session, events, token);
+                } catch (Exception ex) {
+                    events.OnSessionErrored(session.SessionId, ex.Message);
+                    r = SessionImportOutcome.Errored;
+                }
+                switch (r) {
+                    case SessionImportOutcome.Loaded:  Interlocked.Increment(ref loaded);  break;
+                    case SessionImportOutcome.Resumed: Interlocked.Increment(ref resumed); break;
+                    case SessionImportOutcome.Errored: Interlocked.Increment(ref errored); break;
+                }
+            }
+        });
+
         return new ImportChainsResult(loaded, resumed, errored);
     }
 
@@ -987,7 +1001,10 @@ static class HistoryCommand {
             while (count < threshold && reader.ReadLine() is not null) count++;
             return count;
         } catch {
-            return 0;
+            // On transient I/O errors (locked file, permissions hiccup) treat the
+            // transcript as "not too short" so the caller proceeds to probe/import
+            // rather than silently classifying it as TooShort and skipping forever.
+            return threshold;
         }
     }
 }
