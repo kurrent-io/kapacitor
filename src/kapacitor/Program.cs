@@ -356,7 +356,7 @@ switch (command) {
     case "history": {
         string? filterCwd     = null;
         string? filterSession = null;
-        var     minLines      = 10;
+        var     minLines      = 15;
         var     cwdArgIdx     = Array.IndexOf(args, "--cwd");
 
         if (cwdArgIdx >= 0 && cwdArgIdx + 1 < args.Length) {
