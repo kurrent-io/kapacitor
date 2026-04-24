@@ -37,6 +37,15 @@ internal partial class ServerConnection : IAsyncDisposable {
     public Func<FinalizeEvalCommand, Task<FinalizeResult>>? FinalizeEvalHandler { get; set; }
     public Func<CancelEvalCommand,   Task>?                 CancelEvalHandler   { get; set; }
 
+    /// <summary>
+    /// Callback invoked at <see cref="RegisterDaemon"/> time to snapshot the
+    /// agent IDs currently hosted by this daemon. The server uses this to
+    /// reconcile its registry against the daemon's view. Set by
+    /// <see cref="AgentOrchestrator"/> at startup; defaults to an empty
+    /// array so tests don't need to wire the callback.
+    /// </summary>
+    public Func<string[]>? GetLiveAgentIds { get; set; }
+
     public ServerConnection(DaemonConfig config, ILogger<ServerConnection> logger) {
         _config = config;
         _logger = logger;
@@ -137,13 +146,13 @@ internal partial class ServerConnection : IAsyncDisposable {
     }
 
     async Task RegisterDaemon() {
-        var platform = $"{RuntimeInformation.OSDescription} {RuntimeInformation.OSArchitecture}";
-
+        var platform  = $"{RuntimeInformation.OSDescription} {RuntimeInformation.OSArchitecture}";
         var repoPaths = await MergeRepoPathsAsync();
+        var liveIds   = GetLiveAgentIds?.Invoke() ?? [];
 
         await _hub.InvokeAsync(
             "DaemonConnect",
-            new DaemonConnect(_config.Name, platform, repoPaths, _config.MaxConcurrentAgents),
+            new DaemonConnect(_config.Name, platform, repoPaths, _config.MaxConcurrentAgents, liveIds),
             cancellationToken: _ct
         );
     }

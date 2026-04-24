@@ -84,6 +84,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
         _server.OnSendSpecialKey      += HandleSendSpecialKey;
         _server.OnResizeTerminal      += HandleResizeTerminal;
         _server.OnReconnectedCallback += ReRegisterAgents;
+        _server.GetLiveAgentIds       =  () => _agents.Keys.ToArray();
 
         // Start heartbeat loops
         _ = RunHeartbeatLoopAsync(_shutdownCts.Token);
