@@ -700,32 +700,31 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
 
     static void TrustWorktreeInClaudeConfig(string worktreePath) {
         // Workspace trust (the "Do you trust the files in this folder?" dialog)
-        // is stored globally in ~/.claude.json under projects[path].
+        // is stored globally in ~/.claude.json under projects[path]. On a fresh
+        // machine the file may not exist yet — create a minimal object so trust
+        // is always persisted.
         var claudeJsonPath = Path.Combine(PathHelpers.HomeDirectory, ".claude.json");
+        var root           = LoadJsonObject(claudeJsonPath);
 
-        if (File.Exists(claudeJsonPath)) {
-            var root = JsonNode.Parse(File.ReadAllText(claudeJsonPath))?.AsObject();
+        var projects = root["projects"] as JsonObject;
 
-            if (root is not null) {
-                var projects = root["projects"]?.AsObject();
+        if (projects is null) {
+            projects         = new JsonObject();
+            root["projects"] = projects;
+        }
 
-                if (projects is null) {
-                    projects         = new JsonObject();
-                    root["projects"] = projects;
-                }
+        var entry = projects[worktreePath] as JsonObject;
 
-                var entry = projects[worktreePath]?.AsObject();
+        if (entry is null) {
+            entry                  = new JsonObject();
+            projects[worktreePath] = entry;
+        }
 
-                if (entry is null) {
-                    entry                  = new JsonObject();
-                    projects[worktreePath] = entry;
-                }
+        var alreadyTrusted = entry["hasTrustDialogAccepted"] is JsonValue v && v.TryGetValue<bool>(out var b) && b;
 
-                if (entry["hasTrustDialogAccepted"]?.GetValue<bool>() != true) {
-                    entry["hasTrustDialogAccepted"] = true;
-                    File.WriteAllText(claudeJsonPath, root.ToJsonString(IndentedJsonOpts));
-                }
-            }
+        if (!alreadyTrusted) {
+            entry["hasTrustDialogAccepted"] = true;
+            File.WriteAllText(claudeJsonPath, root.ToJsonString(IndentedJsonOpts));
         }
 
         // MCP server approval (the "New MCP server found in .mcp.json" dialog)
@@ -742,21 +741,27 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
 
         Directory.CreateDirectory(settingsDir);
 
-        var settings = File.Exists(settingsPath)
-            ? JsonNode.Parse(File.ReadAllText(settingsPath))?.AsObject() ?? new JsonObject()
-            : new JsonObject();
+        var settings = LoadJsonObject(settingsPath);
+        var sDirty   = false;
 
-        var sDirty = false;
+        var allEnabled = settings["enableAllProjectMcpServers"] is JsonValue ev
+                      && ev.TryGetValue<bool>(out var eb)
+                      && eb;
 
-        if (settings["enableAllProjectMcpServers"]?.GetValue<bool>() != true) {
+        if (!allEnabled) {
             settings["enableAllProjectMcpServers"] = true;
             sDirty                                 = true;
         }
 
-        var existing = settings["enabledMcpjsonServers"]?.AsArray();
-        var known    = new HashSet<string>(
-            existing?.OfType<JsonValue>().Select(v => v.GetValue<string>()) ?? []
-        );
+        var known = new HashSet<string>();
+
+        if (settings["enabledMcpjsonServers"] is JsonArray arr) {
+            foreach (var item in arr) {
+                if (item is JsonValue jv && jv.TryGetValue<string>(out var s)) {
+                    known.Add(s);
+                }
+            }
+        }
 
         if (serverNames.Any(known.Add)) {
             // Rebuild the array via JSON parsing to avoid AOT issues with
@@ -768,6 +773,21 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
 
         if (sDirty) {
             File.WriteAllText(settingsPath, settings.ToJsonString(IndentedJsonOpts));
+        }
+    }
+
+    /// <summary>
+    /// Loads a JSON object from disk, tolerating missing files and non-object roots
+    /// by returning a fresh <see cref="JsonObject"/>. Ensures pre-trust logic never
+    /// throws on an unexpected config shape and reintroduces the launch hang.
+    /// </summary>
+    static JsonObject LoadJsonObject(string path) {
+        if (!File.Exists(path)) return new JsonObject();
+
+        try {
+            return JsonNode.Parse(File.ReadAllText(path)) as JsonObject ?? new JsonObject();
+        } catch {
+            return new JsonObject();
         }
     }
 
