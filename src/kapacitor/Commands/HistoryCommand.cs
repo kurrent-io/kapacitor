@@ -46,7 +46,7 @@ static class HistoryCommand {
         }
     }
 
-    public static async Task<int> HandleHistory(string baseUrl, string? filterCwd, string? filterSession = null, int minLines = 10, bool generateSummaries = false) {
+    public static async Task<int> HandleHistory(string baseUrl, string? filterCwd, string? filterSession = null, int minLines = 15, bool generateSummaries = false) {
         using var httpClient = await HttpClientExtensions.CreateAuthenticatedClientAsync();
         var display = HistoryDisplay.Create();
 
