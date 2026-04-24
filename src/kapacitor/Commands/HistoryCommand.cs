@@ -921,11 +921,36 @@ static class HistoryCommand {
         ) {
         var meta = ExtractSessionMetadata(filePath);
 
+        // Short-circuit: kapacitor's own sub-sessions (title / what's-done) never get imported.
+        if (TitleGenerator.IsKapacitorSubSession(filePath)) {
+            return new SessionClassification {
+                SessionId = sessionId,
+                FilePath = filePath,
+                EncodedCwd = encodedCwd,
+                Meta = meta,
+                Status = ClassificationStatus.InternalSubSession,
+            };
+        }
+
+        // Short-circuit: count lines first; skip the probe entirely if too short.
+        var totalLines = WatchCommand.CountFileLines(filePath);
+        if (minLines > 0 && totalLines < minLines) {
+            return new SessionClassification {
+                SessionId = sessionId,
+                FilePath = filePath,
+                EncodedCwd = encodedCwd,
+                Meta = meta,
+                Status = ClassificationStatus.TooShort,
+                TotalLines = totalLines,
+            };
+        }
+
         // Probe the server.
-        await probeGate.WaitAsync(ct);
         ClassificationStatus status;
         int resumeFromLine = 0;
         string? probeErrorReason = null;
+
+        await probeGate.WaitAsync(ct);
         try {
             using var resp = await httpClient.GetWithRetryAsync($"{baseUrl}/api/sessions/{sessionId}/last-line", ct: ct);
             switch (resp.StatusCode) {
@@ -957,8 +982,6 @@ static class HistoryCommand {
         } finally {
             probeGate.Release();
         }
-
-        var totalLines = WatchCommand.CountFileLines(filePath);
 
         return new SessionClassification {
             SessionId = sessionId,
