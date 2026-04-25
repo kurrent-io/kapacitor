@@ -1,5 +1,4 @@
 using kapacitor.Auth;
-using TUnit;
 
 namespace kapacitor.Tests.Unit;
 
@@ -54,8 +53,11 @@ public class TokenStoreProfileTests {
     public async Task Legacy_tokens_json_is_migrated_on_first_profile_save() {
         // Write a legacy tokens.json in the config base dir
         Directory.CreateDirectory(Path.GetDirectoryName(LegacyPath)!);
-        await File.WriteAllTextAsync(LegacyPath,
-            System.Text.Json.JsonSerializer.Serialize(MakeTokens("legacy"), KapacitorJsonContext.Default.StoredTokens));
+
+        await File.WriteAllTextAsync(
+            LegacyPath,
+            System.Text.Json.JsonSerializer.Serialize(MakeTokens("legacy"), KapacitorJsonContext.Default.StoredTokens)
+        );
 
         await TokenStore.SaveAsync("acme", MakeTokens("alice"));
 
@@ -75,7 +77,7 @@ public class TokenStoreProfileTests {
     [Test]
     [NotInParallel(nameof(TokenStoreProfileTests))]
     public async Task DeleteAsync_removes_all_profile_tokens() {
-        await TokenStore.SaveAsync("acme",    MakeTokens("alice"));
+        await TokenStore.SaveAsync("acme", MakeTokens("alice"));
         await TokenStore.SaveAsync("contoso", MakeTokens("bob"));
 
         await TokenStore.DeleteAsync();
@@ -87,7 +89,7 @@ public class TokenStoreProfileTests {
     [Test]
     [NotInParallel(nameof(TokenStoreProfileTests))]
     public async Task Delete_with_profile_removes_only_that_profile() {
-        await TokenStore.SaveAsync("acme",    MakeTokens("alice"));
+        await TokenStore.SaveAsync("acme", MakeTokens("alice"));
         await TokenStore.SaveAsync("contoso", MakeTokens("bob"));
 
         TokenStore.Delete("acme");
@@ -101,8 +103,10 @@ public class TokenStoreProfileTests {
     public async Task SaveAsync_with_invalid_profile_name_throws() {
         await Assert.That(async () => await TokenStore.SaveAsync("../evil", MakeTokens("x")))
             .Throws<ArgumentException>();
+
         await Assert.That(async () => await TokenStore.SaveAsync("", MakeTokens("x")))
             .Throws<ArgumentException>();
+
         await Assert.That(async () => await TokenStore.SaveAsync("has/slash", MakeTokens("x")))
             .Throws<ArgumentException>();
     }
