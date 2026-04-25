@@ -396,6 +396,7 @@ static class HistoryCommand {
 
             if (display.Tty) {
                 var r = default(ImportChainsResult);
+                const int slotCount = 4;
 
                 await AnsiConsole.Progress()
                     .AutoClear(false)
@@ -404,18 +405,80 @@ static class HistoryCommand {
                     .StartAsync(async ctx => {
                             var bar = ctx.AddTask("[green]Importing[/]", maxValue: chains.Sum(c => c.Count));
 
+                            // Four description-only progress tasks rendered as live "slot rows"
+                            // beneath the main bar. IsIndeterminate=true draws a stripe
+                            // animation while a worker is processing; setting it to false
+                            // and Description="idle" parks the slot.
+                            var slots = new ProgressTask[slotCount];
+                            for (var i = 0; i < slotCount; i++) {
+                                slots[i] = ctx.AddTask($"  Slot {i + 1} — idle", maxValue: 1);
+                                slots[i].IsIndeterminate = false;
+                            }
+
+                            // currentSession[slot] holds the SessionId currently rendered on
+                            // the slot row, used to revert the description after a subagent
+                            // finishes (revert from "↳ subagent X" to "Loading <parent>").
+                            var currentVerb = new string[slotCount];
+                            var currentSid  = new string[slotCount];
+
+                            void SetSlot(int slot, string markup) {
+                                slots[slot].Description    = markup;
+                                slots[slot].IsIndeterminate = true;
+                            }
+
+                            void IdleSlot(int slot) {
+                                slots[slot].Description    = $"  Slot {slot + 1} — idle";
+                                slots[slot].IsIndeterminate = false;
+                                currentSid[slot]            = "";
+                                currentVerb[slot]           = "";
+                            }
+
                             var wrappedEvents = events with {
-                                OnSessionEnded = (slot, c, outcome, lines) => {
-                                    events.OnSessionEnded(slot, c, outcome, lines);
-                                    bar.Increment(1);
+                                OnSessionStarted = (slot, c) => {
+                                    var verb = c.Status == ClassificationStatus.Partial
+                                        ? $"resuming from line {c.ResumeFromLine}"
+                                        : "new";
+                                    currentSid[slot]  = c.SessionId;
+                                    currentVerb[slot] = verb;
+                                    SetSlot(slot, $"  [bold]Slot {slot + 1}[/] — Loading [cyan]{Markup.Escape(c.SessionId)}[/] ({verb})");
                                 },
-                                // Errored sessions also count toward the bar so it reaches 100%.
-                                OnSessionErrored = (slot, sid, reason) => {
-                                    events.OnSessionErrored(slot, sid, reason);
+                                OnSubagentStarted = (slot, sid, aid) => {
+                                    SetSlot(slot, $"  [bold]Slot {slot + 1}[/] — [dim]↳[/] subagent [cyan]{Markup.Escape(aid)}[/] (parent {Markup.Escape(sid)})");
+                                },
+                                OnSubagentFinished = (slot, sid, aid, lines) => {
+                                    // Revert to the parent session's "Loading" description.
+                                    if (!string.IsNullOrEmpty(currentSid[slot])) {
+                                        SetSlot(slot,
+                                            $"  [bold]Slot {slot + 1}[/] — Loading [cyan]{Markup.Escape(currentSid[slot])}[/] ({currentVerb[slot]})");
+                                    }
+                                    // Also fire the base handler so non-TTY callers (and any
+                                    // other observers) still see the "↳ imported subagent" line.
+                                    events.OnSubagentFinished(slot, sid, aid, lines);
+                                },
+                                OnSessionEnded = (slot, c, outcome, lines) => {
+                                    // Description stays on the just-finished session until
+                                    // the next OnSessionStarted swaps it. We only flip the
+                                    // stripe off here so a slot that drains (queue empty)
+                                    // looks calm.
                                     bar.Increment(1);
+                                    slots[slot].IsIndeterminate = false;
+                                    // Suppress the legacy per-session log line in TTY mode
+                                    // by NOT calling the base handler. Errors and subagents
+                                    // already render via slot updates / scrollback below.
+                                },
+                                OnSessionErrored = (slot, sid, reason) => {
+                                    bar.Increment(1);
+                                    IdleSlot(slot);
+                                    // Errors print to scrollback above the live region —
+                                    // Spectre.Console.Progress flushes prior writes.
+                                    AnsiConsole.MarkupLine($"[red]✗[/] Skipping [cyan]{Markup.Escape(sid)}[/] [{Markup.Escape(reason)}]");
                                 },
                             };
+
                             r = await ImportChainsAsync(httpClient, baseUrl, chains, wrappedEvents, CancellationToken.None);
+
+                            // After the await, all workers have drained; mark every slot idle.
+                            for (var i = 0; i < slotCount; i++) IdleSlot(i);
                         }
                     );
                 importResult = r!;
