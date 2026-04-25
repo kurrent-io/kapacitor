@@ -1105,20 +1105,38 @@ static class HistoryCommand {
             probeGate.Release();
         }
 
-        // Apply the TooShort filter only for sessions that would otherwise be imported.
-        // This avoids scanning the whole transcript when AlreadyLoaded / ProbeError.
-        if (minLines > 0 && (status == ClassificationStatus.New || status == ClassificationStatus.Partial)) {
-            var observedLines = CountLinesUpTo(filePath, minLines);
+        // Read enough of the local transcript to satisfy two checks at once:
+        //   1. TooShort — fewer lines than minLines.
+        //   2. False Partial — server says last_line_number = N but the local
+        //      transcript has no lines past index N (resumeFromLine would be
+        //      N+1 with nothing to send).
+        // CountLinesUpTo early-exits at the threshold, so the read cost is
+        // bounded by Math.Max(minLines, resumeFromLine + 1) lines.
+        if (status is ClassificationStatus.New or ClassificationStatus.Partial) {
+            var threshold = Math.Max(
+                minLines,
+                status == ClassificationStatus.Partial ? resumeFromLine + 1 : 0
+            );
 
-            if (observedLines < minLines) {
-                return new SessionClassification {
-                    SessionId  = sessionId,
-                    FilePath   = filePath,
-                    EncodedCwd = encodedCwd,
-                    Meta       = meta,
-                    Status     = ClassificationStatus.TooShort,
-                    TotalLines = observedLines,
-                };
+            if (threshold > 0) {
+                var observedLines = CountLinesUpTo(filePath, threshold);
+
+                if (minLines > 0 && observedLines < minLines) {
+                    return new SessionClassification {
+                        SessionId  = sessionId,
+                        FilePath   = filePath,
+                        EncodedCwd = encodedCwd,
+                        Meta       = meta,
+                        Status     = ClassificationStatus.TooShort,
+                        TotalLines = observedLines,
+                    };
+                }
+
+                // Server has lines >= the local transcript — nothing to resume.
+                if (status == ClassificationStatus.Partial && observedLines <= resumeFromLine) {
+                    status         = ClassificationStatus.AlreadyLoaded;
+                    resumeFromLine = 0;
+                }
             }
         }
 
