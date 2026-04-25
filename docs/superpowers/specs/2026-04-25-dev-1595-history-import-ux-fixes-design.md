@@ -183,7 +183,7 @@ flows through `ct` as before.
 internal sealed record ChainWorkerEvents {
     // Slot-aware lifecycle (new):
     public required Action<int, SessionClassification> OnSessionStarted { get; init; }
-    public required Action<int, string, string> OnSubagentStarted { get; init; }      // slot, agentId, sessionId
+    public required Action<int, string, string> OnSubagentStarted { get; init; }      // slot, sessionId, agentId
     public required Action<int, string, string, int> OnSubagentFinished { get; init; }// slot, sessionId, agentId, lines
     public required Action<int, SessionClassification, SessionImportOutcome, int> OnSessionEnded { get; init; }
     // Errors (replaces old OnSessionErrored streaming line):

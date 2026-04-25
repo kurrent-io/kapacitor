@@ -300,7 +300,7 @@ static class HistoryCommand {
         var chains = BuildImportChains(classifications);
 
         // --- Import ---
-        // ConcurrentBag rather than List: OnTitleTaskReady / OnSessionEnded
+        // ConcurrentBag rather than List: OnTitleTaskReady / OnBackgroundWorkReady
         // callbacks fire from parallel chain-worker threads, so a plain List's
         // Add would race. No ordering guarantees needed — we only enumerate at
         // the end via Task.WhenAll.
@@ -317,8 +317,8 @@ static class HistoryCommand {
         var       summaryFailures    = new System.Collections.Concurrent.ConcurrentBag<(string SessionId, string Reason)>();
 
         var events = new ChainWorkerEvents {
-            OnSessionStarted = (_, _) => { },     // overridden by display wrappers below
-            OnSubagentStarted = (_, _, _) => { }, // overridden by display wrappers below
+            OnSessionStarted = (_, _) => { },     // Task 4 will override for TTY slot rendering
+            OnSubagentStarted = (_, _, _) => { }, // Task 4 will override for TTY slot rendering
             OnSubagentFinished = (_, sid, aid, lines) => display.Line(
                 $"  ↳ imported subagent {aid} ({lines} lines)",
                 $"  [dim]↳[/] imported subagent [cyan]{Markup.Escape(aid)}[/] ({lines} lines)"
