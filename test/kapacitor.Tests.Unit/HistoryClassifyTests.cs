@@ -247,6 +247,34 @@ public class HistoryClassifyTests : IDisposable {
         await Assert.That(result[0].ExcludedRepoKey).IsEqualTo("acme/secret");
     }
 
+    [Test]
+    public async Task ClassifyAsync_invokes_onProbed_callback_once_per_transcript() {
+        _server.Given(Request.Create().WithPath("/api/sessions/*/last-line").UsingGet())
+            .RespondWith(Response.Create().WithStatusCode(404));
+
+        var paths = new List<(string SessionId, string FilePath, string EncodedCwd)>();
+        for (var i = 0; i < 5; i++) {
+            var path = await WriteTranscript(_tempDir, $"cb-{i}", lines: 50);
+            paths.Add(($"cb-{i}", path, "-tmp-proj"));
+        }
+
+        var probedCount = 0;
+        using var client = new HttpClient();
+
+        var result = await HistoryCommand.ClassifyAsync(
+            client,
+            _server.Url!,
+            paths,
+            minLines: 15,
+            excludedRepos: null,
+            CancellationToken.None,
+            onProbed: () => Interlocked.Increment(ref probedCount)
+        );
+
+        await Assert.That(result.Count).IsEqualTo(5);
+        await Assert.That(probedCount).IsEqualTo(5);
+    }
+
     static async Task RunGitAsync(string arguments, string workingDir) {
         var psi = new System.Diagnostics.ProcessStartInfo("git", arguments) {
             WorkingDirectory       = workingDir,

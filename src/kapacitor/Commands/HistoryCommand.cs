@@ -224,8 +224,15 @@ static class HistoryCommand {
                 .Columns(new TaskDescriptionColumn(), new ProgressBarColumn(), new PercentageColumn())
                 .StartAsync(async ctx => {
                         var bar     = ctx.AddTask("[yellow]Probing[/]", maxValue: transcriptFiles.Count);
-                        var results = await ClassifyAsync(httpClient, baseUrl, transcriptFiles, minLines, excludedRepos, CancellationToken.None);
-                        bar.Value = bar.MaxValue;
+                        var results = await ClassifyAsync(
+                            httpClient,
+                            baseUrl,
+                            transcriptFiles,
+                            minLines,
+                            excludedRepos,
+                            CancellationToken.None,
+                            onProbed: () => bar.Increment(1)
+                        );
                         tmp.AddRange(results);
                     }
                 );
@@ -995,13 +1002,14 @@ static class HistoryCommand {
             List<(string SessionId, string FilePath, string EncodedCwd)> transcripts,
             int                                                          minLines,
             string[]?                                                    excludedRepos,
-            CancellationToken                                            ct
+            CancellationToken                                            ct,
+            Action?                                                      onProbed = null
         ) {
         using var probeGate = new SemaphoreSlim(8);
         var       tasks     = new List<Task<SessionClassification>>(transcripts.Count);
 
         foreach (var (sessionId, filePath, encodedCwd) in transcripts) {
-            tasks.Add(ClassifyOneAsync(httpClient, baseUrl, sessionId, filePath, encodedCwd, minLines, excludedRepos, probeGate, ct));
+            tasks.Add(ClassifyOneAsync(httpClient, baseUrl, sessionId, filePath, encodedCwd, minLines, excludedRepos, probeGate, onProbed, ct));
         }
 
         var results = await Task.WhenAll(tasks);
@@ -1010,6 +1018,25 @@ static class HistoryCommand {
     }
 
     static async Task<SessionClassification> ClassifyOneAsync(
+            HttpClient        httpClient,
+            string            baseUrl,
+            string            sessionId,
+            string            filePath,
+            string            encodedCwd,
+            int               minLines,
+            string[]?         excludedRepos,
+            SemaphoreSlim     probeGate,
+            Action?           onProbed,
+            CancellationToken ct
+        ) {
+        try {
+            return await ClassifyOneCoreAsync(httpClient, baseUrl, sessionId, filePath, encodedCwd, minLines, excludedRepos, probeGate, ct);
+        } finally {
+            onProbed?.Invoke();
+        }
+    }
+
+    static async Task<SessionClassification> ClassifyOneCoreAsync(
             HttpClient        httpClient,
             string            baseUrl,
             string            sessionId,
