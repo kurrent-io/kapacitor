@@ -7,6 +7,14 @@ using kapacitor.Config;
 namespace kapacitor.Commands;
 
 static class HistoryCommand {
+    /// <summary>
+    /// Maximum parallel worker count for the Importing phase. Both the
+    /// channel-based dispatcher in ImportChainsAsync and the TTY slot-row
+    /// renderer in HandleHistory size themselves to this value, so they
+    /// MUST stay in lockstep.
+    /// </summary>
+    const int ImportWorkerCount = 4;
+
     readonly struct HistoryDisplay {
         public bool Tty { get; init; }
 
@@ -396,7 +404,7 @@ static class HistoryCommand {
 
             if (display.Tty) {
                 var r = default(ImportChainsResult);
-                const int slotCount = 4;
+                const int slotCount = ImportWorkerCount;
 
                 await AnsiConsole.Progress()
                     .AutoClear(false)
@@ -914,7 +922,7 @@ static class HistoryCommand {
         foreach (var chain in chains) await queue.Writer.WriteAsync(chain, ct);
         queue.Writer.Complete();
 
-        const int workerCount = 4;
+        const int workerCount = ImportWorkerCount;
         var workers = new Task[workerCount];
 
         for (var i = 0; i < workerCount; i++) {
@@ -923,12 +931,15 @@ static class HistoryCommand {
                 while (await queue.Reader.WaitToReadAsync(ct)) {
                     while (queue.Reader.TryRead(out var chain)) {
                         foreach (var session in chain) {
+                            ct.ThrowIfCancellationRequested();
                             events.OnSessionStarted(slot, session);
 
                             SessionImportOutcome r;
                             var linesSent = 0;
                             try {
                                 (r, linesSent) = await ImportSingleSessionAsync(httpClient, baseUrl, session, slot, events, ct);
+                            } catch (OperationCanceledException) when (ct.IsCancellationRequested) {
+                                throw;
                             } catch (Exception ex) {
                                 events.OnSessionErrored(slot, session.SessionId, ex.Message);
                                 r = SessionImportOutcome.Errored;
@@ -989,6 +1000,8 @@ static class HistoryCommand {
                 events.OnSessionErrored(slot, session.SessionId, $"server unreachable: {ex.Message}");
 
                 return (SessionImportOutcome.Errored, 0);
+            } catch (OperationCanceledException) when (ct.IsCancellationRequested) {
+                throw;
             } catch (Exception ex) {
                 events.OnSessionErrored(slot, session.SessionId, ex.Message);
 
@@ -1054,6 +1067,8 @@ static class HistoryCommand {
                 session.EncodedCwd,
                 perSessionProgress
             );
+        } catch (OperationCanceledException) when (ct.IsCancellationRequested) {
+            throw;
         } catch (Exception ex) {
             events.OnSessionErrored(slot, session.SessionId, ex.Message);
 
