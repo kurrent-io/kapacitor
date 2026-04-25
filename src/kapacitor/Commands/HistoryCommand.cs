@@ -317,8 +317,8 @@ static class HistoryCommand {
         var       summaryFailures    = new System.Collections.Concurrent.ConcurrentBag<(string SessionId, string Reason)>();
 
         var events = new ChainWorkerEvents {
-            OnSessionStarted = (_, _) => { },     // Task 4 will override for TTY slot rendering
-            OnSubagentStarted = (_, _, _) => { }, // Task 4 will override for TTY slot rendering
+            OnSessionStarted = (_, _) => { },     // non-TTY: session start is silent; TTY overrides below
+            OnSubagentStarted = (_, _, _) => { }, // non-TTY: subagent start is silent; TTY overrides below
             OnSubagentFinished = (_, sid, aid, lines) => display.Line(
                 $"  ↳ imported subagent {aid} ({lines} lines)",
                 $"  [dim]↳[/] imported subagent [cyan]{Markup.Escape(aid)}[/] ({lines} lines)"
@@ -445,15 +445,14 @@ static class HistoryCommand {
                                 OnSubagentStarted = (slot, sid, aid) => {
                                     SetSlot(slot, $"  [bold]Slot {slot + 1}[/] — [dim]↳[/] subagent [cyan]{Markup.Escape(aid)}[/] (parent {Markup.Escape(sid)})");
                                 },
-                                OnSubagentFinished = (slot, sid, aid, lines) => {
+                                OnSubagentFinished = (slot, _, _, _) => {
                                     // Revert to the parent session's "Loading" description.
+                                    // No scrollback line in TTY mode — subagent activity was
+                                    // already visible on the slot row while it ran.
                                     if (!string.IsNullOrEmpty(currentSid[slot])) {
                                         SetSlot(slot,
                                             $"  [bold]Slot {slot + 1}[/] — Loading [cyan]{Markup.Escape(currentSid[slot])}[/] ({currentVerb[slot]})");
                                     }
-                                    // Also fire the base handler so non-TTY callers (and any
-                                    // other observers) still see the "↳ imported subagent" line.
-                                    events.OnSubagentFinished(slot, sid, aid, lines);
                                 },
                                 OnSessionEnded = (slot, c, outcome, lines) => {
                                     // Description stays on the just-finished session until
@@ -463,8 +462,8 @@ static class HistoryCommand {
                                     bar.Increment(1);
                                     slots[slot].IsIndeterminate = false;
                                     // Suppress the legacy per-session log line in TTY mode
-                                    // by NOT calling the base handler. Errors and subagents
-                                    // already render via slot updates / scrollback below.
+                                    // by NOT calling the base handler. Slot rows showed the
+                                    // session while it ran; errors render via scrollback below.
                                 },
                                 OnSessionErrored = (slot, sid, reason) => {
                                     bar.Increment(1);
