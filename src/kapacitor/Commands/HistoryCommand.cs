@@ -317,15 +317,25 @@ static class HistoryCommand {
         var       summaryFailures    = new System.Collections.Concurrent.ConcurrentBag<(string SessionId, string Reason)>();
 
         var events = new ChainWorkerEvents {
-            OnLineCompleted = s => display.Line(s, $"[green]✓[/] {Markup.Escape(s)}"),
-            OnSubagentFinished = (_, aid, lines) => display.Line(
+            OnSessionStarted = (_, _) => { },     // overridden by display wrappers below
+            OnSubagentStarted = (_, _, _) => { }, // overridden by display wrappers below
+            OnSubagentFinished = (_, sid, aid, lines) => display.Line(
                 $"  ↳ imported subagent {aid} ({lines} lines)",
                 $"  [dim]↳[/] imported subagent [cyan]{Markup.Escape(aid)}[/] ({lines} lines)"
             ),
-            OnSessionErrored = (sid, reason) => display.Line(
+            OnSessionErrored = (_, sid, reason) => display.Line(
                 $"Skipping {sid} [{reason}]",
                 $"[red]✗[/] Skipping [cyan]{Markup.Escape(sid)}[/] [{Markup.Escape(reason)}]"
             ),
+            OnSessionEnded = (_, c, outcome, lines) => {
+                var verb = outcome == SessionImportOutcome.Resumed
+                    ? $"resuming from line {c.ResumeFromLine}"
+                    : "new";
+                display.Line(
+                    $"Loading {c.SessionId}... {lines} lines [{verb}]",
+                    $"[green]✓[/] Loading [cyan]{Markup.Escape(c.SessionId)}[/]... {lines} lines [{verb}]"
+                );
+            },
             OnTitleTaskReady = t => {
                 var (sid, fp, _) = t;
                 Interlocked.Increment(ref titleTaskCount);
@@ -351,7 +361,7 @@ static class HistoryCommand {
                     )
                 );
             },
-            OnSessionEnded = t => {
+            OnBackgroundWorkReady = t => {
                 if (!t.GenerateWhatsDone || !generateSummaries) return;
 
                 Interlocked.Increment(ref summaryTaskCount);
@@ -395,8 +405,13 @@ static class HistoryCommand {
                             var bar = ctx.AddTask("[green]Importing[/]", maxValue: chains.Sum(c => c.Count));
 
                             var wrappedEvents = events with {
-                                OnLineCompleted = s => {
-                                    events.OnLineCompleted(s);
+                                OnSessionEnded = (slot, c, outcome, lines) => {
+                                    events.OnSessionEnded(slot, c, outcome, lines);
+                                    bar.Increment(1);
+                                },
+                                // Errored sessions also count toward the bar so it reaches 100%.
+                                OnSessionErrored = (slot, sid, reason) => {
+                                    events.OnSessionErrored(slot, sid, reason);
                                     bar.Increment(1);
                                 },
                             };
@@ -780,11 +795,35 @@ static class HistoryCommand {
     internal sealed record ImportChainsResult(int Loaded, int Resumed, int Errored);
 
     internal sealed record ChainWorkerEvents {
-        public required Action<string>                                                         OnLineCompleted    { get; init; }
-        public required Action<string, string, int>                                            OnSubagentFinished { get; init; }
-        public required Action<string, string>                                                 OnSessionErrored   { get; init; }
-        public required Action<(string SessionId, string FilePath, string? PreviousSessionId)> OnTitleTaskReady   { get; init; }
-        public required Action<(string SessionId, bool GenerateWhatsDone)>                     OnSessionEnded     { get; init; }
+        /// <summary>Fired before a worker begins importing a session on its slot.</summary>
+        public required Action<int, SessionClassification> OnSessionStarted { get; init; }
+
+        /// <summary>Fired when the worker begins streaming a subagent's transcript inline.</summary>
+        public required Action<int, string, string> OnSubagentStarted { get; init; }   // slot, sessionId, agentId
+
+        /// <summary>Fired after a subagent's transcript has been fully streamed.</summary>
+        public required Action<int, string, string, int> OnSubagentFinished { get; init; }  // slot, sessionId, agentId, lines
+
+        /// <summary>Fired when a session import fails on a worker slot.</summary>
+        public required Action<int, string, string> OnSessionErrored { get; init; }   // slot, sessionId, reason
+
+        /// <summary>
+        /// Fired after a session import completes (loaded or resumed). The slot is
+        /// available for the next session as soon as this returns.
+        /// </summary>
+        public required Action<int, SessionClassification, SessionImportOutcome, int> OnSessionEnded { get; init; }
+        // slot, classification, outcome (Loaded|Resumed), linesSent
+
+        /// <summary>Fired when a successfully-imported session is ready for title generation.</summary>
+        public required Action<(string SessionId, string FilePath, string? PreviousSessionId)> OnTitleTaskReady { get; init; }
+
+        /// <summary>
+        /// Fired when a session's session-end hook returned, signalling that the
+        /// background phase may enqueue title / what's-done work for it.
+        /// Renamed from the previous `OnSessionEnded` to disambiguate from the
+        /// slot-aware lifecycle event above.
+        /// </summary>
+        public required Action<(string SessionId, bool GenerateWhatsDone)> OnBackgroundWorkReady { get; init; }
     }
 
     /// <summary>
@@ -803,56 +842,70 @@ static class HistoryCommand {
         var resumed = 0;
         var errored = 0;
 
-        // Parallel.ForEachAsync caps outstanding tasks at MaxDegreeOfParallelism,
-        // which matters when we have thousands of singleton chains. A hand-rolled
-        // chains.Select(Task.Run) would queue one Task per chain, all blocked on
-        // a semaphore — significant overhead at scale.
-        var options = new ParallelOptions {
-            MaxDegreeOfParallelism = 4,
-            CancellationToken      = ct,
-        };
-
-        await Parallel.ForEachAsync(
-            chains,
-            options,
-            async (chain, token) => {
-                foreach (var session in chain) {
-                    // Belt-and-suspenders: ImportSingleSessionAsync already catches
-                    // expected failures; a bare catch here guarantees one rogue
-                    // session can't fault the worker and abort the iteration.
-                    SessionImportOutcome r;
-
-                    try {
-                        r = await ImportSingleSessionAsync(httpClient, baseUrl, session, events, token);
-                    } catch (Exception ex) {
-                        events.OnSessionErrored(session.SessionId, ex.Message);
-                        r = SessionImportOutcome.Errored;
-                    }
-
-                    switch (r) {
-                        case SessionImportOutcome.Loaded:  Interlocked.Increment(ref loaded); break;
-                        case SessionImportOutcome.Resumed: Interlocked.Increment(ref resumed); break;
-                        case SessionImportOutcome.Errored: Interlocked.Increment(ref errored); break;
-                    }
-                }
+        var queue = System.Threading.Channels.Channel.CreateUnbounded<List<SessionClassification>>(
+            new System.Threading.Channels.UnboundedChannelOptions {
+                SingleReader = false,
+                SingleWriter = true,
             }
         );
+
+        foreach (var chain in chains) await queue.Writer.WriteAsync(chain, ct);
+        queue.Writer.Complete();
+
+        const int workerCount = 4;
+        var workers = new Task[workerCount];
+
+        for (var i = 0; i < workerCount; i++) {
+            var slot = i; // capture
+            workers[i] = Task.Run(async () => {
+                while (await queue.Reader.WaitToReadAsync(ct)) {
+                    while (queue.Reader.TryRead(out var chain)) {
+                        foreach (var session in chain) {
+                            events.OnSessionStarted(slot, session);
+
+                            SessionImportOutcome r;
+                            var linesSent = 0;
+                            try {
+                                (r, linesSent) = await ImportSingleSessionAsync(httpClient, baseUrl, session, slot, events, ct);
+                            } catch (Exception ex) {
+                                events.OnSessionErrored(slot, session.SessionId, ex.Message);
+                                r = SessionImportOutcome.Errored;
+                            }
+
+                            switch (r) {
+                                case SessionImportOutcome.Loaded:  Interlocked.Increment(ref loaded);  break;
+                                case SessionImportOutcome.Resumed: Interlocked.Increment(ref resumed); break;
+                                case SessionImportOutcome.Errored: Interlocked.Increment(ref errored); break;
+                            }
+
+                            if (r != SessionImportOutcome.Errored) {
+                                events.OnSessionEnded(slot, session, r, linesSent);
+                            }
+                        }
+                    }
+                }
+            }, ct);
+        }
+
+        await Task.WhenAll(workers);
 
         return new ImportChainsResult(loaded, resumed, errored);
     }
 
-    enum SessionImportOutcome { Loaded, Resumed, Errored }
+    internal enum SessionImportOutcome { Loaded, Resumed, Errored }
 
-    static async Task<SessionImportOutcome> ImportSingleSessionAsync(
+    static async Task<(SessionImportOutcome Outcome, int LinesSent)> ImportSingleSessionAsync(
             HttpClient            httpClient,
             string                baseUrl,
             SessionClassification session,
+            int                   slot,
             ChainWorkerEvents     events,
             CancellationToken     ct
         ) {
         IProgress<ImportProgress> perSessionProgress = new CallbackProgress(ev => {
-                if (ev is SubagentFinished sf) {
-                    events.OnSubagentFinished(session.SessionId, sf.AgentId, sf.LinesSent);
+                switch (ev) {
+                    case SubagentStarted ss:  events.OnSubagentStarted(slot, session.SessionId, ss.AgentId); break;
+                    case SubagentFinished sf: events.OnSubagentFinished(slot, session.SessionId, sf.AgentId, sf.LinesSent); break;
                 }
             }
         );
@@ -868,17 +921,16 @@ static class HistoryCommand {
                     startLine: session.ResumeFromLine,
                     progress: perSessionProgress
                 );
-                events.OnLineCompleted($"Loading {session.SessionId}... {linesSent} lines [resuming from line {session.ResumeFromLine}]");
 
-                return SessionImportOutcome.Resumed;
+                return (SessionImportOutcome.Resumed, linesSent);
             } catch (HttpRequestException ex) {
-                events.OnSessionErrored(session.SessionId, $"server unreachable: {ex.Message}");
+                events.OnSessionErrored(slot, session.SessionId, $"server unreachable: {ex.Message}");
 
-                return SessionImportOutcome.Errored;
+                return (SessionImportOutcome.Errored, 0);
             } catch (Exception ex) {
-                events.OnSessionErrored(session.SessionId, ex.Message);
+                events.OnSessionErrored(slot, session.SessionId, ex.Message);
 
-                return SessionImportOutcome.Errored;
+                return (SessionImportOutcome.Errored, 0);
             }
         }
 
@@ -918,14 +970,14 @@ static class HistoryCommand {
             using var startResp    = await httpClient.PostWithRetryAsync($"{baseUrl}/hooks/session-start", startContent, ct: ct);
 
             if (!startResp.IsSuccessStatusCode) {
-                events.OnSessionErrored(session.SessionId, $"session-start failed: HTTP {(int)startResp.StatusCode}");
+                events.OnSessionErrored(slot, session.SessionId, $"session-start failed: HTTP {(int)startResp.StatusCode}");
 
-                return SessionImportOutcome.Errored;
+                return (SessionImportOutcome.Errored, 0);
             }
         } catch (HttpRequestException ex) {
-            events.OnSessionErrored(session.SessionId, $"server unreachable: {ex.Message}");
+            events.OnSessionErrored(slot, session.SessionId, $"server unreachable: {ex.Message}");
 
-            return SessionImportOutcome.Errored;
+            return (SessionImportOutcome.Errored, 0);
         }
 
         ImportResult importResult;
@@ -941,15 +993,10 @@ static class HistoryCommand {
                 perSessionProgress
             );
         } catch (Exception ex) {
-            // Catches file-IO, JSON parsing, and anything else ImportSessionAsync can throw.
-            // Sending session-end on a half-imported session would be misleading; let the
-            // errored count reflect reality and move on to the next session in the chain.
-            events.OnSessionErrored(session.SessionId, ex.Message);
+            events.OnSessionErrored(slot, session.SessionId, ex.Message);
 
-            return SessionImportOutcome.Errored;
+            return (SessionImportOutcome.Errored, 0);
         }
-
-        events.OnLineCompleted($"Loading {session.SessionId}... {importResult.LinesSent} lines [new]");
 
         var lastTs = ExtractLastTimestamp(session.FilePath);
 
@@ -982,9 +1029,9 @@ static class HistoryCommand {
         }
 
         events.OnTitleTaskReady((session.SessionId, session.FilePath, session.PreviousSessionId));
-        events.OnSessionEnded((session.SessionId, generateWhatsDone));
+        events.OnBackgroundWorkReady((session.SessionId, generateWhatsDone));
 
-        return SessionImportOutcome.Loaded;
+        return (SessionImportOutcome.Loaded, importResult.LinesSent);
     }
 
     sealed class CallbackProgress(Action<ImportProgress> onReport) : IProgress<ImportProgress> {

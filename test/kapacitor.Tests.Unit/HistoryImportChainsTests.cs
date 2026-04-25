@@ -74,11 +74,13 @@ public class HistoryImportChainsTests : IDisposable {
 
         var completedLines = new System.Collections.Concurrent.ConcurrentBag<string>();
         var events = new HistoryCommand.ChainWorkerEvents {
-            OnLineCompleted    = s => completedLines.Add(s),
-            OnSubagentFinished = (_, _, _) => { },
-            OnSessionErrored   = (_, _) => { },
-            OnTitleTaskReady   = _ => { },
-            OnSessionEnded     = _ => { },
+            OnSessionStarted      = (_, _) => { },
+            OnSubagentStarted     = (_, _, _) => { },
+            OnSubagentFinished    = (_, _, _, _) => { },
+            OnSessionErrored      = (_, _, _) => { },
+            OnSessionEnded        = (_, c, _, _) => completedLines.Add($"Loading {c.SessionId}..."),
+            OnTitleTaskReady      = _ => { },
+            OnBackgroundWorkReady = _ => { },
         };
 
         using var client = new HttpClient();
@@ -101,11 +103,13 @@ public class HistoryImportChainsTests : IDisposable {
 
         var order = new System.Collections.Concurrent.ConcurrentQueue<string>();
         var events = new HistoryCommand.ChainWorkerEvents {
-            OnLineCompleted    = s => order.Enqueue(s),
-            OnSubagentFinished = (_, _, _) => { },
-            OnSessionErrored   = (_, _) => { },
-            OnTitleTaskReady   = _ => { },
-            OnSessionEnded     = _ => { },
+            OnSessionStarted      = (_, _) => { },
+            OnSubagentStarted     = (_, _, _) => { },
+            OnSubagentFinished    = (_, _, _, _) => { },
+            OnSessionErrored      = (_, _, _) => { },
+            OnSessionEnded        = (_, c, _, _) => order.Enqueue($"Loading {c.SessionId}..."),
+            OnTitleTaskReady      = _ => { },
+            OnBackgroundWorkReady = _ => { },
         };
 
         using var client = new HttpClient();
@@ -143,11 +147,13 @@ public class HistoryImportChainsTests : IDisposable {
             .ToList();
 
         var events = new HistoryCommand.ChainWorkerEvents {
-            OnLineCompleted    = _ => { },
-            OnSubagentFinished = (_, _, _) => { },
-            OnSessionErrored   = (_, _) => { },
-            OnTitleTaskReady   = _ => { },
-            OnSessionEnded     = _ => { },
+            OnSessionStarted      = (_, _) => { },
+            OnSubagentStarted     = (_, _, _) => { },
+            OnSubagentFinished    = (_, _, _, _) => { },
+            OnSessionErrored      = (_, _, _) => { },
+            OnSessionEnded        = (_, _, _, _) => { },
+            OnTitleTaskReady      = _ => { },
+            OnBackgroundWorkReady = _ => { },
         };
 
         using var client = new HttpClient();
