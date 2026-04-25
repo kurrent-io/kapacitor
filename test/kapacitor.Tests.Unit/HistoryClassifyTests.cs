@@ -337,9 +337,17 @@ public class HistoryClassifyTests : IDisposable {
 
     [Test]
     public async Task ClassifyAsync_does_not_set_ExcludedRepoKey_when_reclassified_to_AlreadyLoaded() {
-        // A "Partial" probe in an excluded repo, but the local transcript has
-        // no new lines. We must NOT prompt the user to "include this excluded
-        // repo" for work that does not exist — ExcludedRepoKey must be null.
+        // A "Partial" probe in an excluded repo, but the local transcript has no new
+        // lines. We must NOT prompt the user to "include this excluded repo" for work
+        // that does not exist — ExcludedRepoKey must be null.
+        //
+        // This fixture uses a real git-initialised temp directory whose remote matches
+        // the excluded list, so DetectRepositoryAsync returns a repo key of "any/repo".
+        // With that setup, the only way ExcludedRepoKey can remain null is if
+        // reclassification (Partial → AlreadyLoaded) has already moved status out of
+        // New|Partial before the excluded-repo block runs. If a future refactor swaps
+        // those two blocks, DetectRepositoryAsync will resolve "any/repo" and
+        // ExcludedRepoKey will be set — causing this test to fail.
         _server.Given(Request.Create().WithPath("/api/sessions/*/last-line").UsingGet())
             .RespondWith(
                 Response.Create()
@@ -348,26 +356,31 @@ public class HistoryClassifyTests : IDisposable {
                     .WithBody("""{"last_line_number": 49}""")
             );
 
-        // The repo detection in ClassifyOneCoreAsync uses RepositoryDetection
-        // against meta.Cwd, which falls back to DecodeCwdFromDirName(EncodedCwd).
-        // We bypass repo detection by leaving cwd unset — the excluded check
-        // never fires when cwd is null. So we need a different angle: rely on
-        // the order of operations in the spec — reclassification happens BEFORE
-        // the excluded-repo check, so even with a real excluded repo the flag
-        // should not be set. We simulate by writing a transcript whose path's
-        // EncodedCwd would NOT match the excluded list, but mark "anything" as
-        // excluded; the assertion is that ExcludedRepoKey is null because the
-        // session is no longer New|Partial when the excluded check runs.
-        var path = await WriteTranscript(_tempDir, "excludedNoNew", lines: 50);
+        // Create a real git repo under _tempDir so DetectRepositoryAsync can resolve it.
+        var repoDir = Path.Combine(_tempDir, "kapacitor-reclass-excl");
+        Directory.CreateDirectory(repoDir);
+        await RunGitAsync("init", repoDir);
+        await RunGitAsync("remote add origin https://github.com/any/repo.git", repoDir);
+
+        // Write a 50-line transcript whose cwd points at the repo above.
+        // ExtractSessionMetadata reads "cwd" from the JSONL lines, so
+        // DetectRepositoryAsync will be called with repoDir.
+        var transcriptPath = Path.Combine(_tempDir, "excludedNoNew.jsonl");
+
+        await File.WriteAllLinesAsync(
+            transcriptPath,
+            Enumerable.Range(0, 50)
+                .Select(i =>
+                    $$$"""{"type":"user","timestamp":"2026-03-15T10:00:00Z","cwd":"{{{repoDir.Replace("\\", "\\\\")}}}","message":{"content":"line-{{{i}}}"}}"""
+                )
+        );
 
         var transcripts = new List<(string SessionId, string FilePath, string EncodedCwd)> {
-            ("excludedNoNew", path, "-tmp-proj")
+            ("excludedNoNew", transcriptPath, repoDir.Replace('/', '-'))
         };
 
         using var client = new HttpClient();
 
-        // We pass an excluded list that would match EVERY repo if reached; the
-        // contract says it must not be reached for AlreadyLoaded.
         var result = await HistoryCommand.ClassifyAsync(
             client, _server.Url!, transcripts,
             minLines: 15,
@@ -375,6 +388,10 @@ public class HistoryClassifyTests : IDisposable {
             CancellationToken.None
         );
 
+        // last_line_number=49 with exactly 50 local lines means no new lines to send,
+        // so the session is reclassified from Partial to AlreadyLoaded.
+        // The excluded-repo block only fires for New|Partial, so ExcludedRepoKey must
+        // be null even though the repo key matches the excluded list.
         await Assert.That(result[0].Status).IsEqualTo(HistoryCommand.ClassificationStatus.AlreadyLoaded);
         await Assert.That(result[0].ExcludedRepoKey).IsNull();
     }
