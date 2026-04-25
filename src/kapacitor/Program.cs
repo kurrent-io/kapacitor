@@ -7,16 +7,9 @@ using kapacitor.Commands;
 using kapacitor.Config;
 using WatchCommand = kapacitor.Commands.WatchCommand;
 
-var baseUrl = await AppConfig.ResolveServerUrl(args);
-
-// Fire-and-forget update check (prints hint to stderr after command finishes)
-var   noUpdateCheck   = args.Contains("--no-update-check");
-Task? updateCheckTask = null;
-
-if (!noUpdateCheck) {
-    updateCheckTask = Task.Run(UpdateCommand.PrintUpdateHintIfAvailable);
-}
-
+// Declared before any PrintUsage()/PrintCommandHelp() call because both
+// local functions capture this list to render the hooks section of the
+// help text.
 string[] hookCommands = [
     "session-start",
     "session-end",
@@ -41,8 +34,23 @@ var command = args[0];
 // to hook commands because non-hook commands — notably `kapacitor mcp judge`
 // running as an MCP server child of the eval judge claude process — must
 // actually execute despite inheriting KAPACITOR_SKIP=1 from the parent.
+//
+// Runs before ResolveServerUrl/update-check so a skipped hook does no work:
+// ResolveServerUrl can shell out to `git remote -v` and emit warnings, and
+// the update-check task hits the npm registry — both pure noise inside a
+// nested headless invocation.
 if (Environment.GetEnvironmentVariable("KAPACITOR_SKIP") is "1" && hookCommands.Contains(command)) {
     return 0;
+}
+
+var baseUrl = await AppConfig.ResolveServerUrl(args);
+
+// Fire-and-forget update check (prints hint to stderr after command finishes)
+var   noUpdateCheck   = args.Contains("--no-update-check");
+Task? updateCheckTask = null;
+
+if (!noUpdateCheck) {
+    updateCheckTask = Task.Run(UpdateCommand.PrintUpdateHintIfAvailable);
 }
 
 if (command is "--help" or "-h" or "help") {

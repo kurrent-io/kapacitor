@@ -320,9 +320,11 @@ internal static class EvalService {
 
         if (question.NeedsTools) {
             // DEV-1486 tools-enabled path. Session-scoped MCP tool surface
-            // (same as retrospective) on a per-question budget: 10 turns,
-            // 10-min timeout, $0.50 cap. Prompt omits the compacted trace —
-            // the judge fetches session details on demand.
+            // (same as retrospective) on a per-question budget: 15 turns,
+            // 10-min timeout, $1.00 cap (raised from 10/$0.50 in DEV-1576
+            // after real runs hit error_max_turns mid-tool-use). Prompt
+            // omits the compacted trace — the judge fetches session details
+            // on demand.
             var prompt = BuildToolsQuestionPrompt(
                 ctx.ToolsPromptTemplate, ctx.SessionId, ctx.EvalRunId, question, patterns);
 
