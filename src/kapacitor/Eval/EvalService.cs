@@ -47,24 +47,27 @@ internal static class EvalService {
     // DEV-1484: the retrospective judge now pulls session details via MCP
     // tools (recap/errors/transcript) instead of reading them from the
     // embedded trace. Each tool call costs a turn, plus one for the final
-    // StructuredOutput reply and one end-of-turn. 10 gives the prompt's
-    // "at most 6 tool calls" budget room to breathe (6 tool calls + 1
-    // structured-output + headroom for reasoning blocks) without letting
-    // the judge page the transcript indefinitely.
-    const int RetrospectiveMaxTurns = 10;
+    // StructuredOutput reply and one end-of-turn. The prompt's "at most 6
+    // tool calls" budget collides with reasoning-block turns: assistant
+    // tool_use turns and reasoning turns both count, so 6 tool calls can
+    // already burn 8-10 turns before StructuredOutput. DEV-1576 raised
+    // this from 10 → 15 after real runs were hitting error_max_turns
+    // mid-tool-use and producing null results.
+    const int RetrospectiveMaxTurns = 15;
 
-    // 15-min wallclock pairs with RetrospectiveMaxTurns=10: gives the judge
-    // room for up to 6 MCP tool calls plus structured-output + reasoning
-    // headroom even under cold-start claude CLI latency.
+    // 15-min wallclock pairs with RetrospectiveMaxTurns=15: gives the judge
+    // room for the prompt's 6 MCP tool calls plus structured-output and
+    // reasoning headroom even under cold-start claude CLI latency.
     static readonly TimeSpan RetrospectiveTimeout = TimeSpan.FromMinutes(15);
 
     // DEV-1486: tools-enabled per-question judges reuse the retrospective's
-    // MCP tool surface but on a tighter per-question budget. 10 turns /
-    // 10 minutes / $0.50 balances "enough rope to call summary + search +
-    // one or two targeted fetches" against runaway investigation on a
-    // single question.
-    const int    ToolsPerQuestionMaxTurns     = 10;
-    const double ToolsPerQuestionMaxBudgetUsd = 0.50;
+    // MCP tool surface. DEV-1576: original 10 turns / $0.50 was too tight —
+    // judges hit error_max_turns mid-investigation and produced null
+    // verdicts because StructuredOutput never ran. Bumped to 15 turns /
+    // $1.00 to match the retrospective ceiling; the prompt's "at most 6
+    // tool calls" still bounds investigation depth.
+    const int    ToolsPerQuestionMaxTurns     = 15;
+    const double ToolsPerQuestionMaxBudgetUsd = 1.00;
 
     static readonly TimeSpan ToolsPerQuestionTimeout = TimeSpan.FromMinutes(10);
 

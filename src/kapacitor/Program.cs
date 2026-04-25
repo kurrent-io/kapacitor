@@ -7,12 +7,6 @@ using kapacitor.Commands;
 using kapacitor.Config;
 using WatchCommand = kapacitor.Commands.WatchCommand;
 
-// Skip all processing when spawned inside a headless claude invocation (e.g., title generation)
-// to prevent infinite hook loops
-if (Environment.GetEnvironmentVariable("KAPACITOR_SKIP") is "1") {
-    return 0;
-}
-
 var baseUrl = await AppConfig.ResolveServerUrl(args);
 
 // Fire-and-forget update check (prints hint to stderr after command finishes)
@@ -40,6 +34,16 @@ if (args.Length < 1) {
 }
 
 var command = args[0];
+
+// Hooks only: short-circuit when spawned inside a headless claude invocation
+// (e.g., title generation, the eval judge) so we don't forward the nested
+// session's hook events back into kapacitor and blow up into a loop. Scoped
+// to hook commands because non-hook commands — notably `kapacitor mcp judge`
+// running as an MCP server child of the eval judge claude process — must
+// actually execute despite inheriting KAPACITOR_SKIP=1 from the parent.
+if (Environment.GetEnvironmentVariable("KAPACITOR_SKIP") is "1" && hookCommands.Contains(command)) {
+    return 0;
+}
 
 if (command is "--help" or "-h" or "help") {
     await PrintUsage();
