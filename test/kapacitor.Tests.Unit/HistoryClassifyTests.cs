@@ -247,6 +247,155 @@ public class HistoryClassifyTests : IDisposable {
         await Assert.That(result[0].ExcludedRepoKey).IsEqualTo("acme/secret");
     }
 
+    [Test]
+    public async Task ClassifyAsync_invokes_onProbed_callback_once_per_transcript() {
+        _server.Given(Request.Create().WithPath("/api/sessions/*/last-line").UsingGet())
+            .RespondWith(Response.Create().WithStatusCode(404));
+
+        var paths = new List<(string SessionId, string FilePath, string EncodedCwd)>();
+        for (var i = 0; i < 5; i++) {
+            var path = await WriteTranscript(_tempDir, $"cb-{i}", lines: 50);
+            paths.Add(($"cb-{i}", path, "-tmp-proj"));
+        }
+
+        var probedCount = 0;
+        using var client = new HttpClient();
+
+        var result = await HistoryCommand.ClassifyAsync(
+            client,
+            _server.Url!,
+            paths,
+            minLines: 15,
+            excludedRepos: null,
+            CancellationToken.None,
+            onProbed: () => Interlocked.Increment(ref probedCount)
+        );
+
+        await Assert.That(result.Count).IsEqualTo(5);
+        await Assert.That(probedCount).IsEqualTo(5);
+    }
+
+    [Test]
+    public async Task ClassifyAsync_reclassifies_Partial_to_AlreadyLoaded_when_no_new_lines() {
+        // Server says last_line_number = 49 (50 lines stored: indices 0..49).
+        // Local transcript is exactly 50 lines (indices 0..49). resumeFromLine
+        // would be 50 — but there are no lines past index 49, so this is a
+        // false Partial that should be reclassified as AlreadyLoaded.
+        _server.Given(Request.Create().WithPath("/api/sessions/*/last-line").UsingGet())
+            .RespondWith(
+                Response.Create()
+                    .WithStatusCode(200)
+                    .WithHeader("Content-Type", "application/json")
+                    .WithBody("""{"last_line_number": 49}""")
+            );
+
+        var path = await WriteTranscript(_tempDir, "noNewLines", lines: 50);
+
+        var transcripts = new List<(string SessionId, string FilePath, string EncodedCwd)> {
+            ("noNewLines", path, "-tmp-proj")
+        };
+
+        using var client = new HttpClient();
+
+        var result = await HistoryCommand.ClassifyAsync(
+            client, _server.Url!, transcripts,
+            minLines: 15, excludedRepos: null, CancellationToken.None
+        );
+
+        await Assert.That(result[0].Status).IsEqualTo(HistoryCommand.ClassificationStatus.AlreadyLoaded);
+        await Assert.That(result[0].ResumeFromLine).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task ClassifyAsync_keeps_Partial_when_local_transcript_has_new_lines() {
+        // Server says last_line_number = 49. Local transcript is 60 lines —
+        // there are 10 new lines past index 49, so Partial is correct.
+        _server.Given(Request.Create().WithPath("/api/sessions/*/last-line").UsingGet())
+            .RespondWith(
+                Response.Create()
+                    .WithStatusCode(200)
+                    .WithHeader("Content-Type", "application/json")
+                    .WithBody("""{"last_line_number": 49}""")
+            );
+
+        var path = await WriteTranscript(_tempDir, "hasNewLines", lines: 60);
+
+        var transcripts = new List<(string SessionId, string FilePath, string EncodedCwd)> {
+            ("hasNewLines", path, "-tmp-proj")
+        };
+
+        using var client = new HttpClient();
+
+        var result = await HistoryCommand.ClassifyAsync(
+            client, _server.Url!, transcripts,
+            minLines: 15, excludedRepos: null, CancellationToken.None
+        );
+
+        await Assert.That(result[0].Status).IsEqualTo(HistoryCommand.ClassificationStatus.Partial);
+        await Assert.That(result[0].ResumeFromLine).IsEqualTo(50);
+    }
+
+    [Test]
+    public async Task ClassifyAsync_does_not_set_ExcludedRepoKey_when_reclassified_to_AlreadyLoaded() {
+        // A "Partial" probe in an excluded repo, but the local transcript has no new
+        // lines. We must NOT prompt the user to "include this excluded repo" for work
+        // that does not exist — ExcludedRepoKey must be null.
+        //
+        // This fixture uses a real git-initialised temp directory whose remote matches
+        // the excluded list, so DetectRepositoryAsync returns a repo key of "any/repo".
+        // With that setup, the only way ExcludedRepoKey can remain null is if
+        // reclassification (Partial → AlreadyLoaded) has already moved status out of
+        // New|Partial before the excluded-repo block runs. If a future refactor swaps
+        // those two blocks, DetectRepositoryAsync will resolve "any/repo" and
+        // ExcludedRepoKey will be set — causing this test to fail.
+        _server.Given(Request.Create().WithPath("/api/sessions/*/last-line").UsingGet())
+            .RespondWith(
+                Response.Create()
+                    .WithStatusCode(200)
+                    .WithHeader("Content-Type", "application/json")
+                    .WithBody("""{"last_line_number": 49}""")
+            );
+
+        // Create a real git repo under _tempDir so DetectRepositoryAsync can resolve it.
+        var repoDir = Path.Combine(_tempDir, "kapacitor-reclass-excl");
+        Directory.CreateDirectory(repoDir);
+        await RunGitAsync("init", repoDir);
+        await RunGitAsync("remote add origin https://github.com/any/repo.git", repoDir);
+
+        // Write a 50-line transcript whose cwd points at the repo above.
+        // ExtractSessionMetadata reads "cwd" from the JSONL lines, so
+        // DetectRepositoryAsync will be called with repoDir.
+        var transcriptPath = Path.Combine(_tempDir, "excludedNoNew.jsonl");
+
+        await File.WriteAllLinesAsync(
+            transcriptPath,
+            Enumerable.Range(0, 50)
+                .Select(i =>
+                    $$$"""{"type":"user","timestamp":"2026-03-15T10:00:00Z","cwd":"{{{repoDir.Replace("\\", "\\\\")}}}","message":{"content":"line-{{{i}}}"}}"""
+                )
+        );
+
+        var transcripts = new List<(string SessionId, string FilePath, string EncodedCwd)> {
+            ("excludedNoNew", transcriptPath, repoDir.Replace('/', '-'))
+        };
+
+        using var client = new HttpClient();
+
+        var result = await HistoryCommand.ClassifyAsync(
+            client, _server.Url!, transcripts,
+            minLines: 15,
+            excludedRepos: new[] { "any/repo" },
+            CancellationToken.None
+        );
+
+        // last_line_number=49 with exactly 50 local lines means no new lines to send,
+        // so the session is reclassified from Partial to AlreadyLoaded.
+        // The excluded-repo block only fires for New|Partial, so ExcludedRepoKey must
+        // be null even though the repo key matches the excluded list.
+        await Assert.That(result[0].Status).IsEqualTo(HistoryCommand.ClassificationStatus.AlreadyLoaded);
+        await Assert.That(result[0].ExcludedRepoKey).IsNull();
+    }
+
     static async Task RunGitAsync(string arguments, string workingDir) {
         var psi = new System.Diagnostics.ProcessStartInfo("git", arguments) {
             WorkingDirectory       = workingDir,
