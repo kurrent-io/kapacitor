@@ -84,7 +84,8 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
         _server.OnSendSpecialKey      += HandleSendSpecialKey;
         _server.OnResizeTerminal      += HandleResizeTerminal;
         _server.OnReconnectedCallback += ReRegisterAgents;
-        _server.GetLiveAgentIds       =  () => _agents
+
+        _server.GetLiveAgentIds = () => _agents
             .Where(kvp => kvp.Value.Status is "Starting" or "Running")
             .Select(kvp => kvp.Key)
             .ToArray();
@@ -246,13 +247,14 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
 
             // Persist repo path and notify server so launch dialog updates
             _ = Task.Run(async () => {
-                try {
-                    await RepoPathStore.AddAsync(repoPath);
-                    await _server.UpdateRepoPathsAsync();
-                } catch (Exception ex) {
-                    LogRepoPathPersistFailed(ex, agentId);
+                    try {
+                        await RepoPathStore.AddAsync(repoPath);
+                        await _server.UpdateRepoPathsAsync();
+                    } catch (Exception ex) {
+                        LogRepoPathPersistFailed(ex, agentId);
+                    }
                 }
-            });
+            );
 
             // Start reading output
             _ = ReadAgentOutputAsync(agent);
@@ -523,15 +525,15 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
         }
     }
 
-    static readonly TimeSpan              StartupTimeout    = TimeSpan.FromSeconds(90);
-    static readonly TimeSpan              EarlyExitWindow   = TimeSpan.FromSeconds(30);
-    static readonly JsonSerializerOptions IndentedJsonOpts  = new() { WriteIndented = true };
+    static readonly TimeSpan              StartupTimeout   = TimeSpan.FromSeconds(90);
+    static readonly TimeSpan              EarlyExitWindow  = TimeSpan.FromSeconds(30);
+    static readonly JsonSerializerOptions IndentedJsonOpts = new() { WriteIndented = true };
 
     // Serializes writes to shared JSON config files (~/.claude.json and per-worktree
     // settings.local.json) across concurrent agent launches. Atomic rename prevents
     // partial writes from ever being visible.
-    static readonly object TrustWriteLock = new();
-    static readonly HashSet<string>       ValidEffortLevels = ["low", "medium", "high", "max"];
+    static readonly Lock            TrustWriteLock    = new();
+    static readonly HashSet<string> ValidEffortLevels = ["low", "medium", "high", "max"];
 
     async Task RunHeartbeatLoopAsync(CancellationToken ct) {
         while (await _heartbeatTimer.WaitForNextTickAsync(ct)) {
@@ -720,17 +722,13 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             var claudeJsonPath = Path.Combine(PathHelpers.HomeDirectory, ".claude.json");
             var root           = LoadJsonObject(claudeJsonPath);
 
-            var projects = root["projects"] as JsonObject;
-
-            if (projects is null) {
-                projects         = new JsonObject();
+            if (root["projects"] is not JsonObject projects) {
+                projects         = [];
                 root["projects"] = projects;
             }
 
-            var entry = projects[worktreePath] as JsonObject;
-
-            if (entry is null) {
-                entry                  = new JsonObject();
+            if (projects[worktreePath] is not JsonObject entry) {
+                entry                  = [];
                 projects[worktreePath] = entry;
             }
 
@@ -759,8 +757,8 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             var sDirty   = false;
 
             var allEnabled = settings["enableAllProjectMcpServers"] is JsonValue ev
-                          && ev.TryGetValue<bool>(out var eb)
-                          && eb;
+             && ev.TryGetValue<bool>(out var eb)
+             && eb;
 
             if (!allEnabled) {
                 settings["enableAllProjectMcpServers"] = true;
@@ -819,7 +817,9 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
         try {
             File.Move(tmp, path, overwrite: true);
         } catch {
-            try { File.Delete(tmp); } catch { /* best-effort */ }
+            try { File.Delete(tmp); } catch {
+                /* best-effort */
+            }
 
             throw;
         }
@@ -845,7 +845,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
 
         if (!File.Exists(claudeJsonPath)) return;
 
-        var root = JsonNode.Parse(File.ReadAllText(claudeJsonPath));
+        var root    = JsonNode.Parse(File.ReadAllText(claudeJsonPath));
         var servers = root?["projects"]?[sourceRepoPath]?["mcpServers"]?.AsObject();
 
         if (servers is null || servers.Count == 0) return;

@@ -16,7 +16,7 @@ public class EvalQuestionCatalogClientTests : IDisposable {
 
         public void OnInfo(string message) { }
 
-        public void OnStarted(string evalRunId, string sessionId, string judgeModel, int totalQuestions) { }
+        public void OnStarted(string evalRunId, string judgeModel, int totalQuestions) { }
 
         public void OnContextFetched(int traceEntries, int traceChars, int toolResultsTotal, int toolResultsTruncated, long bytesSaved) { }
 

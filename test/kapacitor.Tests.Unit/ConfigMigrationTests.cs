@@ -16,11 +16,10 @@ public class ConfigMigrationTests {
             }
             """;
 
-        var result = ConfigMigration.MigrateIfNeeded(v1Json);
+        var (config, wasMigrated, _) = ConfigMigration.MigrateIfNeeded(v1Json);
 
-        await Assert.That(result.WasMigrated).IsTrue();
+        await Assert.That(wasMigrated).IsTrue();
 
-        var config = result.Config;
         await Assert.That(config.Version).IsEqualTo(2);
         await Assert.That(config.ActiveProfile).IsEqualTo("default");
         await Assert.That(config.Profiles).ContainsKey("default");

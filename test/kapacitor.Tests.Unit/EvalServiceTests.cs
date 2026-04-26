@@ -540,7 +540,7 @@ public class EvalServiceTests {
     public async Task Truncate_escapes_newlines_tabs_and_carriage_returns() {
         var s = EvalService.Truncate("line one\nline two\r\nwith\ttab", 500);
 
-        await Assert.That(s).IsEqualTo("line one\\nline two\\r\\nwith\\ttab");
+        await Assert.That(s).IsEqualTo(@"line one\nline two\r\nwith\ttab");
         await Assert.That(s).DoesNotContain("\n");
         await Assert.That(s).DoesNotContain("\r");
         await Assert.That(s).DoesNotContain("\t");
@@ -550,14 +550,14 @@ public class EvalServiceTests {
     public async Task Truncate_replaces_other_control_chars_with_question_mark() {
         // BEL (0x07) and NUL (0x00) must not reach logs verbatim — they can
         // forge terminal escape sequences or truncate log lines on some sinks.
-        var s = EvalService.Truncate("ok\u0007hi\u0000end\u007f", 500);
+        var s = EvalService.Truncate("ok\ahi\0end\u007f", 500);
 
         await Assert.That(s).IsEqualTo("ok?hi?end?");
     }
 
     [Test]
     public async Task Truncate_shortens_to_max_and_appends_remainder_marker() {
-        var s = EvalService.Truncate(new string('x', 600), 500);
+        var s = EvalService.Truncate(new('x', 600), 500);
 
         await Assert.That(s.StartsWith(new string('x', 500))).IsTrue();
         await Assert.That(s).Contains("… (100 more chars)");

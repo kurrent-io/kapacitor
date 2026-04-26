@@ -117,12 +117,16 @@ public static class OAuthLoginFlow {
                 return tokenResult.AccessToken;
             }
 
-            if (tokenResult.Error is "authorization_pending") { Console.Write("."); continue; }
-            if (tokenResult.Error is "slow_down")             { interval += 5; continue; }
+            switch (tokenResult.Error) {
+                case "authorization_pending":
+                    Console.Write("."); continue;
+                case "slow_down":
+                    interval += 5; continue;
+                default:
+                    Console.Error.WriteLine($"\nError: {tokenResult.Error}");
 
-            Console.Error.WriteLine($"\nError: {tokenResult.Error}");
-
-            return null;
+                    return null;
+            }
         }
     }
 

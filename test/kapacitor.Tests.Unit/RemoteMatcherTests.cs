@@ -71,11 +71,13 @@ public class RemoteMatcherTests {
         };
         var remoteUrls = new[] { "https://github.com/shared-org/repo.git" };
 
-        Action act = () => RemoteMatcher.FindMatchingProfile(profiles, remoteUrls);
-
-        var exception = await Assert.That(act).ThrowsException();
+        var exception = await Assert.That((Action)Act).ThrowsException();
         await Assert.That(exception!.Message).Contains("alpha");
         await Assert.That(exception.Message).Contains("beta");
+
+        return;
+
+        void Act() => RemoteMatcher.FindMatchingProfile(profiles, remoteUrls);
     }
 
     [Test]

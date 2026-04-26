@@ -338,40 +338,44 @@ static partial class WatchCommand {
                 _ = GenerateTitleAsync(hubConnection, sessionId, state);
             }
 
-            // ── Buffering for session watchers ──────────────────────────────
-            // Hold lines until threshold is reached to avoid polluting the server
-            // with short-lived sessions (e.g. <local-command-caveat> prompts).
-            // Subagent watchers (agentId != null) skip buffering entirely.
-            if (agentId is null && !state.ThresholdReached && newLines.Count > 0) {
-                state.BufferedLines.AddRange(newLines);
-                state.BufferedLineNumbers.AddRange(newLineNumbers);
-                state.LinesReadAhead = linesRead;
+            switch (agentId) {
+                // ── Buffering for session watchers ──────────────────────────────
+                // Hold lines until threshold is reached to avoid polluting the server
+                // with short-lived sessions (e.g. <local-command-caveat> prompts).
+                // Subagent watchers (agentId != null) skip buffering entirely.
+                case null when !state.ThresholdReached && newLines.Count > 0: {
+                    state.BufferedLines.AddRange(newLines);
+                    state.BufferedLineNumbers.AddRange(newLineNumbers);
+                    state.LinesReadAhead = linesRead;
 
-                if (state.BufferedLines.Count < WatchState.TranscriptThreshold) {
-                    Log($"Buffering {newLines.Count} line(s) ({state.BufferedLines.Count}/{WatchState.TranscriptThreshold} threshold)");
+                    if (state.BufferedLines.Count < WatchState.TranscriptThreshold) {
+                        Log($"Buffering {newLines.Count} line(s) ({state.BufferedLines.Count}/{WatchState.TranscriptThreshold} threshold)");
+
+                        return;
+                    }
+
+                    // Threshold reached — flush the entire buffer
+                    Log($"Threshold reached ({state.BufferedLines.Count} lines), flushing buffer");
+                    state.ThresholdReached = true;
+                    newLines               = [..state.BufferedLines];
+                    newLineNumbers         = [..state.BufferedLineNumbers];
+                    linesRead              = state.LinesReadAhead;
+                    state.BufferedLines.Clear();
+                    state.BufferedLineNumbers.Clear();
+
+                    // Send the initial title now that we're flushing
+                    if (state is { InitialTitleSent: false, FirstUserText: not null }) {
+                        state.InitialTitleSent = true;
+                        _                      = SendInitialTitleAsync(hubConnection, sessionId, TruncateForTitle(state.FirstUserText, 80));
+                    }
+
+                    break;
+                }
+                case null when !state.ThresholdReached:
+                    // No new content lines while buffering — track file position
+                    state.LinesReadAhead = linesRead;
 
                     return;
-                }
-
-                // Threshold reached — flush the entire buffer
-                Log($"Threshold reached ({state.BufferedLines.Count} lines), flushing buffer");
-                state.ThresholdReached = true;
-                newLines               = [..state.BufferedLines];
-                newLineNumbers         = [..state.BufferedLineNumbers];
-                linesRead              = state.LinesReadAhead;
-                state.BufferedLines.Clear();
-                state.BufferedLineNumbers.Clear();
-
-                // Send the initial title now that we're flushing
-                if (state is { InitialTitleSent: false, FirstUserText: not null }) {
-                    state.InitialTitleSent = true;
-                    _                      = SendInitialTitleAsync(hubConnection, sessionId, TruncateForTitle(state.FirstUserText, 80));
-                }
-            } else if (agentId is null && !state.ThresholdReached) {
-                // No new content lines while buffering — track file position
-                state.LinesReadAhead = linesRead;
-
-                return;
             }
 
             // Only include repository info when it has changed since last send

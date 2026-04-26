@@ -23,6 +23,7 @@ public static class ReposCommand {
 
         if (entries.Length == 0) {
             await Console.Out.WriteLineAsync("No known repos. Use `kapacitor repos add .` to add the current directory.");
+
             return 0;
         }
 
@@ -40,7 +41,8 @@ public static class ReposCommand {
         var resolved = Path.GetFullPath(path);
 
         if (!Directory.Exists(resolved)) {
-            Console.Error.WriteLine($"Directory does not exist: {resolved}");
+            await Console.Error.WriteLineAsync($"Directory does not exist: {resolved}");
+
             return 1;
         }
 
@@ -57,7 +59,8 @@ public static class ReposCommand {
         if (removed) {
             await Console.Out.WriteLineAsync($"Removed: {resolved}");
         } else {
-            Console.Error.WriteLine($"Not found: {resolved}");
+            await Console.Error.WriteLineAsync($"Not found: {resolved}");
+
             return 1;
         }
 
@@ -65,26 +68,31 @@ public static class ReposCommand {
     }
 
     static string FormatTimeAgo(TimeSpan elapsed) {
-        if (elapsed.TotalMinutes < 1)  return "just now";
-        if (elapsed.TotalHours   < 1)  return $"{(int)elapsed.TotalMinutes}m ago";
-        if (elapsed.TotalDays    < 1)  return $"{(int)elapsed.TotalHours}h ago";
-        if (elapsed.TotalDays    < 30) return $"{(int)elapsed.TotalDays}d ago";
+        if (elapsed.TotalMinutes < 1) return "just now";
+        if (elapsed.TotalHours   < 1) return $"{(int)elapsed.TotalMinutes}m ago";
 
-        return $"{(int)(elapsed.TotalDays / 30)}mo ago";
+        return elapsed.TotalDays switch {
+            < 1  => $"{(int)elapsed.TotalHours}h ago",
+            < 30 => $"{(int)elapsed.TotalDays}d ago",
+            _    => $"{(int)(elapsed.TotalDays / 30)}mo ago"
+        };
     }
 
     static int PrintUsage() {
         Console.Error.WriteLine("Usage: kapacitor repos [add|remove] [path]");
+
         return 1;
     }
 
     static int PrintAddUsage() {
         Console.Error.WriteLine("Usage: kapacitor repos add <path>");
+
         return 1;
     }
 
     static int PrintRemoveUsage() {
         Console.Error.WriteLine("Usage: kapacitor repos remove <path>");
+
         return 1;
     }
 }

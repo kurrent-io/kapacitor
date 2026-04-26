@@ -21,10 +21,10 @@ public class ProfileCommandTests {
     [Test]
     public async Task AddProfile_CreatesNewProfile() {
         using var tmp = new TempDir();
-        var configPath = System.IO.Path.Combine(tmp.Path, "config.json");
+        var configPath = Path.Combine(tmp.Path, "config.json");
 
         var initial = new ProfileConfig {
-            Profiles = new Dictionary<string, Profile> {
+            Profiles = new() {
                 ["default"] = new() { ServerUrl = "https://default.com" }
             }
         };
@@ -49,10 +49,10 @@ public class ProfileCommandTests {
     [Test]
     public async Task RemoveProfile_DeletesProfile() {
         using var tmp = new TempDir();
-        var configPath = System.IO.Path.Combine(tmp.Path, "config.json");
+        var configPath = Path.Combine(tmp.Path, "config.json");
 
         var initial = new ProfileConfig {
-            Profiles = new Dictionary<string, Profile> {
+            Profiles = new() {
                 ["default"] = new() { ServerUrl = "https://default.com" },
                 ["contoso"] = new() { ServerUrl = "https://contoso.com" }
             }
@@ -73,10 +73,10 @@ public class ProfileCommandTests {
     [Test]
     public async Task RemoveProfile_CannotRemoveDefault() {
         using var tmp = new TempDir();
-        var configPath = System.IO.Path.Combine(tmp.Path, "config.json");
+        var configPath = Path.Combine(tmp.Path, "config.json");
 
         var initial = new ProfileConfig {
-            Profiles = new Dictionary<string, Profile> {
+            Profiles = new() {
                 ["default"] = new() { ServerUrl = "https://default.com" }
             }
         };

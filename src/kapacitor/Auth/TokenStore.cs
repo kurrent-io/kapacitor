@@ -38,7 +38,7 @@ public static class TokenStore {
         if (string.IsNullOrWhiteSpace(profile)) {
             throw new ArgumentException("Profile name must not be empty.", nameof(profile));
         }
-        if (profile == "." || profile == "..") {
+        if (profile is "." or "..") {
             throw new ArgumentException("Profile name is invalid.", nameof(profile));
         }
         if (profile.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0 ||

@@ -148,7 +148,7 @@ internal partial class ServerConnection : IAsyncDisposable {
     async Task RegisterDaemon() {
         var platform  = $"{RuntimeInformation.OSDescription} {RuntimeInformation.OSArchitecture}";
         var repoPaths = await MergeRepoPathsAsync();
-        var liveIds   = GetLiveAgentIds?.Invoke() ?? Array.Empty<string>();
+        var liveIds   = GetLiveAgentIds?.Invoke() ?? [];
 
         await _hub.InvokeAsync(
             "DaemonConnect",
@@ -169,15 +169,9 @@ internal partial class ServerConnection : IAsyncDisposable {
             : StringComparer.OrdinalIgnoreCase;
         var seen = new HashSet<string>(persisted, comparer);
         var merged = new List<string>(persisted);
+        merged.AddRange(_config.AllowedRepoPaths.Select(p => p.TrimEnd('/', '*')).Where(seen.Add));
 
-        foreach (var p in _config.AllowedRepoPaths) {
-            var clean = p.TrimEnd('/', '*');
-
-            if (seen.Add(clean))
-                merged.Add(clean);
-        }
-
-        return merged.ToArray();
+        return [..merged];
     }
 
     async Task OnReconnected(string? connectionId) {

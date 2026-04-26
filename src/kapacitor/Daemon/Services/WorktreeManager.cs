@@ -51,13 +51,14 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
 
     public Task CleanupOrphanedAsync(IEnumerable<string>? activeWorktreePaths = null) {
         // Legacy global root — clean up any leftover worktrees from before the per-repo change
-        CleanupDirectory(config.WorktreeRoot, activeWorktreePaths);
+        var worktreePaths = activeWorktreePaths as string[] ?? [..activeWorktreePaths ?? []];
+        CleanupDirectory(config.WorktreeRoot, worktreePaths);
 
         // Per-repo roots — scan each allowed repo for .capacitor/worktrees/
         foreach (var repoPath in config.AllowedRepoPaths) {
             var cleanPath = repoPath.TrimEnd('/', '*');
             var perRepoRoot = Path.Combine(cleanPath, ".capacitor", "worktrees");
-            CleanupDirectory(perRepoRoot, activeWorktreePaths);
+            CleanupDirectory(perRepoRoot, worktreePaths);
         }
 
         return Task.CompletedTask;

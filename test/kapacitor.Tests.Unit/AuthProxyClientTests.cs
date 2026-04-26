@@ -28,8 +28,9 @@ public class AuthProxyClientTests {
 
     [Test]
     public async Task GetGitHubClientIdAsync_returns_null_on_proxy_unreachable() {
-        using var http   = new HttpClient { Timeout = TimeSpan.FromMilliseconds(200) };
-        var       client = new AuthProxyClient(http);
+        using var http = new HttpClient();
+        http.Timeout = TimeSpan.FromMilliseconds(200);
+        var client = new AuthProxyClient(http);
 
         var id = await client.GetGitHubClientIdAsync("http://127.0.0.1:1");
 
@@ -107,8 +108,9 @@ public class AuthProxyClientTests {
 
     [Test]
     public async Task DiscoverTenantsAsync_returns_ProxyUnreachable_on_connection_refused() {
-        using var http   = new HttpClient { Timeout = TimeSpan.FromMilliseconds(200) };
-        var       client = new AuthProxyClient(http);
+        using var http = new HttpClient();
+        http.Timeout = TimeSpan.FromMilliseconds(200);
+        var client = new AuthProxyClient(http);
 
         var result = await client.DiscoverTenantsAsync("http://127.0.0.1:1", "gh-token");
 

@@ -141,7 +141,7 @@ public static class ProfileCommand {
         await Console.Out.WriteLineAsync($"  daemon.max_agents: {profile.Daemon?.MaxAgents ?? 5}");
 
         if (profile.Remotes is { Length: > 0 }) {
-            await Console.Out.WriteLineAsync($"  remotes:");
+            await Console.Out.WriteLineAsync("  remotes:");
 
             foreach (var r in profile.Remotes)
                 await Console.Out.WriteLineAsync($"    - {r}");

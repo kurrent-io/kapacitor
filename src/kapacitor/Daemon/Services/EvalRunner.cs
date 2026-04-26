@@ -86,15 +86,14 @@ internal sealed class EvalRunner {
                 ctx, httpClient, _baseUrl, cmd.Question, ctx.Model,
                 cmd.Index, cmd.Total, observer, _shutdownToken
             );
-            if (verdict is null) return new QuestionResult(false, null, "verdict null", 0, 0);
-
-            // Token counts are emitted by EvalService via the observer;
-            // daemon no longer owns that accounting. Report 0 here unless
-            // we surface them on the verdict type directly (future change).
-            return new QuestionResult(true, verdict, null, 0, 0);
+            return verdict is null ? new(false, null, "verdict null", 0, 0) :
+                // Token counts are emitted by EvalService via the observer;
+                // daemon no longer owns that accounting. Report 0 here unless
+                // we surface them on the verdict type directly (future change).
+                new QuestionResult(true, verdict, null, 0, 0);
         } catch (Exception ex) {
             _logger.LogError(ex, "RunQuestion failed for {RunId}/{QuestionId}", cmd.EvalRunId, cmd.Question.Id);
-            return new QuestionResult(false, null, $"{ex.GetType().Name}: {ex.Message}", 0, 0);
+            return new(false, null, $"{ex.GetType().Name}: {ex.Message}", 0, 0);
         }
     }
 
@@ -112,10 +111,10 @@ internal sealed class EvalRunner {
                 ctx, httpClient, _baseUrl, cmd.Verdicts, cmd.Model,
                 observer, _shutdownToken
             );
-            return new FinalizeResult(aggregate is not null, aggregate is null ? "finalize failed" : null, aggregate);
+            return new(aggregate is not null, aggregate is null ? "finalize failed" : null, aggregate);
         } catch (Exception ex) {
             _logger.LogError(ex, "FinalizeEval failed for {RunId}", cmd.EvalRunId);
-            return new FinalizeResult(false, $"{ex.GetType().Name}: {ex.Message}", null);
+            return new(false, $"{ex.GetType().Name}: {ex.Message}", null);
         } finally {
             // Always evict — a finalize throw must not leak the cached context.
             _cache.Remove(cmd.EvalRunId);
@@ -161,7 +160,7 @@ sealed class DaemonEvalObserver(
     public void OnInfo(string message) =>
         logger.LogDebug("[eval {Run}] {Message}", evalRunId, message);
 
-    public void OnStarted(string runId, string contextSessionId, string judgeModel, int totalQuestions) {
+    public void OnStarted(string runId, string judgeModel, int totalQuestions) {
         logger.LogInformation("Eval {Run} started on session {Sid} (model {Model}, {Count} questions)", runId, sessionId, judgeModel, totalQuestions);
         Relay(() => connection.EvalStartedAsync(runId, sessionId, judgeModel, totalQuestions), "EvalStarted");
     }

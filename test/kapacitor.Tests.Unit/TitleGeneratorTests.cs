@@ -82,7 +82,7 @@ public class TitleGeneratorTests {
     public async Task SanitizeForLog_escapes_newlines() {
         var result = TitleGenerator.SanitizeForLog("one\ntwo\r\nthree", 200);
 
-        await Assert.That(result).IsEqualTo("one\\ntwo\\n\\nthree");
+        await Assert.That(result).IsEqualTo(@"one\ntwo\n\nthree");
     }
 
     [Test]

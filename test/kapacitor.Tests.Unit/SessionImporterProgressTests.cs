@@ -67,15 +67,15 @@ public class SessionImporterProgressTests : IDisposable {
             var agentPath = Path.Combine(agentsDir, $"agent-{agentId}.jsonl");
 
             await File.WriteAllLinesAsync(sessionPath, [
-                $$$"""{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu1","name":"Task","input":{"subagent_type":"code-reviewer"}}]}}""",
+                """{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu1","name":"Task","input":{"subagent_type":"code-reviewer"}}]}}""",
                 $$$"""{"type":"progress","data":{"type":"agent_progress","agentId":"{{{agentId}}}"}}""",
-                $$$"""{"type":"user","timestamp":"2026-03-15T10:00:00Z","message":{"content":"after"}}"""
+                """{"type":"user","timestamp":"2026-03-15T10:00:00Z","message":{"content":"after"}}"""
             ]);
 
             await File.WriteAllLinesAsync(agentPath, [
-                $$$"""{"type":"user","timestamp":"2026-03-15T10:00:00Z","message":{"content":"a1"}}""",
-                $$$"""{"type":"assistant","timestamp":"2026-03-15T10:00:01Z","message":{"content":"a2"}}""",
-                $$$"""{"type":"user","timestamp":"2026-03-15T10:00:02Z","message":{"content":"a3"}}"""
+                """{"type":"user","timestamp":"2026-03-15T10:00:00Z","message":{"content":"a1"}}""",
+                """{"type":"assistant","timestamp":"2026-03-15T10:00:01Z","message":{"content":"a2"}}""",
+                """{"type":"user","timestamp":"2026-03-15T10:00:02Z","message":{"content":"a3"}}"""
             ]);
 
             var events   = new List<ImportProgress>();

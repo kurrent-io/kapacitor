@@ -73,7 +73,7 @@ static partial class ReviewCommand {
             var json = mcpConfig.ToJsonString(new JsonSerializerOptions { WriteIndented = true });
             await File.WriteAllTextAsync(configPath, json);
 
-            await Console.Error.WriteLineAsync($"Launching claude with review MCP server...");
+            await Console.Error.WriteLineAsync("Launching claude with review MCP server...");
 
             var psi = new ProcessStartInfo {
                 FileName        = "claude",

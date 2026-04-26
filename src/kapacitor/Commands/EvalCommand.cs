@@ -73,8 +73,7 @@ static class EvalCommand {
     // HandleEval then exits 2 with "selection resolved to zero questions"
     // rather than silently running the full catalog.
     internal static IReadOnlyList<string>? Parse(string? csv) {
-        if (csv is null) return null;
-        return csv.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        return csv?.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
     }
 
     static void Render(SessionEvalCompletedPayload agg, string sessionId) {
@@ -116,7 +115,7 @@ static class EvalCommand {
     sealed class ConsoleEvalObserver(string sessionId) : IEvalObserver {
         public void OnInfo(string message) => Log(message);
 
-        public void OnStarted(string evalRunId, string contextSessionId, string judgeModel, int totalQuestions) =>
+        public void OnStarted(string evalRunId, string judgeModel, int totalQuestions) =>
             Log($"Evaluating session {sessionId} (run {evalRunId}, model {judgeModel}, {totalQuestions} questions)");
 
         public void OnContextFetched(int traceEntries, int traceChars, int toolResultsTotal, int toolResultsTruncated, long bytesSaved) =>

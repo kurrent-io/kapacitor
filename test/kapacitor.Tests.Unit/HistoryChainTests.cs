@@ -31,7 +31,7 @@ public class HistoryChainTests {
         var chains = HistoryCommand.BuildImportChains(classifications);
 
         var ids = chains.SelectMany(c => c).Select(c => c.SessionId).OrderBy(s => s).ToList();
-        await Assert.That(ids).IsEquivalentTo(new[] { "a", "c" });
+        await Assert.That(ids).IsEquivalentTo(["a", "c"]);
     }
 
     [Test]

@@ -267,11 +267,7 @@ static class McpJudgeServer {
     static string GetRequiredString(JsonObject? arguments, string name) {
         var value = arguments?[name]?.GetValue<string>();
 
-        if (string.IsNullOrWhiteSpace(value)) {
-            throw new ArgumentException($"Missing required argument: {name}");
-        }
-
-        return value;
+        return string.IsNullOrWhiteSpace(value) ? throw new ArgumentException($"Missing required argument: {name}") : value;
     }
 
     static string BuildTranscriptUrl(string baseUrl, string sessionId, JsonObject? arguments) {

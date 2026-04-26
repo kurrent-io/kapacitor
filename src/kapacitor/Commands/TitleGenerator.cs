@@ -93,9 +93,7 @@ static partial class TitleGenerator {
     }
 
     static bool LooksLikeRefusal(string title) {
-        if (title.Length == 0) return false;
-
-        return RefusalRx().IsMatch(title);
+        return title.Length != 0 && RefusalRx().IsMatch(title);
     }
 
     /// <summary>

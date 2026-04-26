@@ -250,7 +250,7 @@ public class McpJudgeServerTests : IDisposable {
         _server.Given(Request.Create()
                 .WithPath("/api/sessions/abc-123/search")
                 .UsingPost()
-                .WithBody(b => b.Contains("\"query\"")))
+                .WithBody(b => b!.Contains("\"query\"")))
             .RespondWith(Response.Create()
                 .WithStatusCode(200)
                 .WithBody("""{"session_id":"abc-123","query":"rm","total_candidates":0,"results":[]}"""));

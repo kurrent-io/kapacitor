@@ -83,8 +83,8 @@ public static class AgentCommands {
 
         Console.Out.WriteLine($"Agent daemon started (PID {process.Id})");
         Console.Out.WriteLine($"  Log:       {logPath}");
-        Console.Out.WriteLine($"  Stop with: kapacitor agent stop");
-        Console.Out.WriteLine($"  Status:    kapacitor agent status");
+        Console.Out.WriteLine("  Stop with: kapacitor agent stop");
+        Console.Out.WriteLine("  Status:    kapacitor agent status");
 
         return 0;
     }

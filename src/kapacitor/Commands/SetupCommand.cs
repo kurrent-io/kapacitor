@@ -129,7 +129,6 @@ public static class SetupCommand {
 
         if (pluginPath is not null) {
             // The plugin directory itself is the marketplace root (single-plugin marketplace)
-            var marketplacePath = pluginPath;
 
             string pluginScope;
 
@@ -157,7 +156,7 @@ public static class SetupCommand {
                     ? Path.Combine(Environment.CurrentDirectory, ".claude", "settings.local.json")
                     : ClaudePaths.UserSettings;
 
-                var installed = InstallPlugin(settingsPath, marketplacePath);
+                var installed = InstallPlugin(settingsPath, pluginPath);
 
                 if (installed) {
                     var scope = pluginScope == "project" ? "project" : "user";

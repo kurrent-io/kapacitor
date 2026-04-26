@@ -75,14 +75,14 @@ internal static class EvalService {
     // branch of RunQuestionAsync. Keeping a single list keeps the
     // call_id → tool_name accounting surface aligned across both judge runs
     // and prevents drift when new MCP tools are added.
-    static readonly string[] JudgeMcpAllowedTools = new[] {
+    static readonly string[] JudgeMcpAllowedTools = [
         "mcp__kapacitor-review__get_session_recap",
         "mcp__kapacitor-review__get_session_errors",
         "mcp__kapacitor-review__get_transcript",
         "mcp__kapacitor-review__get_session_summary",
         "mcp__kapacitor-review__search_session",
         "mcp__kapacitor-review__get_tool_result"
-    };
+    ];
 
     /// <summary>
     /// Resolves a caller-supplied model alias to the variant we actually
@@ -264,7 +264,7 @@ internal static class EvalService {
             return null;
         }
 
-        observer.OnStarted(evalRunId, context.SessionId, model, questions.Count);
+        observer.OnStarted(evalRunId, model, questions.Count);
 
         observer.OnContextFetched(
             context.Trace.Count,
@@ -623,16 +623,17 @@ internal static class EvalService {
         var normalisedRecommendation = parsed.Recommendation?.Trim();
         if (string.IsNullOrEmpty(normalisedRecommendation)) normalisedRecommendation = null;
 
-        // Contract: null recommendation at score=5, concrete recommendation
-        // at score<4. Normalise score=5 unconditionally; surface score<4
-        // violations but accept the verdict anyway.
-        if (parsed.Score == 5 && normalisedRecommendation is not null) {
-            onContractViolation?.Invoke($"score 5 verdict included a recommendation — nulling per contract");
-            normalisedRecommendation = null;
-        }
+        switch (parsed.Score) {
+            // Contract: null recommendation at score=5, concrete recommendation
+            // at score<4. Normalise score=5 unconditionally; surface score<4
+            // violations but accept the verdict anyway.
+            case 5 when normalisedRecommendation is not null:
+                onContractViolation?.Invoke("score 5 verdict included a recommendation — nulling per contract");
+                normalisedRecommendation = null;
 
-        if (parsed.Score < 4 && normalisedRecommendation is null) {
-            onContractViolation?.Invoke($"score {parsed.Score} verdict missing recommendation — accepting partial verdict");
+                break;
+            case < 4 when normalisedRecommendation is null:
+                onContractViolation?.Invoke($"score {parsed.Score} verdict missing recommendation — accepting partial verdict"); break;
         }
 
         return parsed with {
@@ -990,8 +991,8 @@ internal static class EvalService {
     sealed class SafeObserver(IEvalObserver inner) : IEvalObserver {
         public void OnInfo(string message) => Safe(() => inner.OnInfo(message), nameof(OnInfo));
 
-        public void OnStarted(string evalRunId, string sessionId, string judgeModel, int totalQuestions) =>
-            Safe(() => inner.OnStarted(evalRunId, sessionId, judgeModel, totalQuestions), nameof(OnStarted));
+        public void OnStarted(string evalRunId, string judgeModel, int totalQuestions) =>
+            Safe(() => inner.OnStarted(evalRunId, judgeModel, totalQuestions), nameof(OnStarted));
 
         public void OnContextFetched(int traceEntries, int traceChars, int toolResultsTotal, int toolResultsTruncated, long bytesSaved) =>
             Safe(() => inner.OnContextFetched(traceEntries, traceChars, toolResultsTotal, toolResultsTruncated, bytesSaved), nameof(OnContextFetched));

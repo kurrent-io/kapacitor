@@ -15,7 +15,7 @@ public class SetupCommandTests {
 
         await Assert.That(result).IsTrue();
 
-        var root = JsonNode.Parse(File.ReadAllText(settingsPath))!.AsObject();
+        var root = JsonNode.Parse(await File.ReadAllTextAsync(settingsPath))!.AsObject();
 
         await Assert.That(root["extraKnownMarketplaces"]?["kapacitor"]?["source"]?["path"]?.GetValue<string>())
             .IsEqualTo(marketplace);
@@ -26,23 +26,26 @@ public class SetupCommandTests {
 
     [Test]
     public async Task InstallPlugin_PreservesExistingSettings() {
-        using var tmp          = new TempDir();
-        var       settingsPath = Path.Combine(tmp.Path, "settings.json");
-        var       marketplace  = "/opt/kapacitor";
+        using var    tmp          = new TempDir();
+        var          settingsPath = Path.Combine(tmp.Path, "settings.json");
+        const string marketplace  = "/opt/kapacitor";
 
         // Pre-populate with existing settings
-        File.WriteAllText(settingsPath, """
+        await File.WriteAllTextAsync(
+            settingsPath,
+            """
             {
               "permissions": { "allow": ["Bash"] },
               "enabledPlugins": { "other-plugin@foo": true }
             }
-            """);
+            """
+        );
 
         var result = SetupCommand.InstallPlugin(settingsPath, marketplace);
 
         await Assert.That(result).IsTrue();
 
-        var root = JsonNode.Parse(File.ReadAllText(settingsPath))!.AsObject();
+        var root = JsonNode.Parse(await File.ReadAllTextAsync(settingsPath))!.AsObject();
 
         // Original settings preserved
         await Assert.That(root["permissions"]?["allow"]?[0]?.GetValue<string>())
@@ -61,25 +64,28 @@ public class SetupCommandTests {
 
     [Test]
     public async Task InstallPlugin_UpdatesExistingMarketplacePath() {
-        using var tmp          = new TempDir();
-        var       settingsPath = Path.Combine(tmp.Path, "settings.json");
-        var       newPath      = "/new/path";
+        using var    tmp          = new TempDir();
+        var          settingsPath = Path.Combine(tmp.Path, "settings.json");
+        const string newPath      = "/new/path";
 
         // Pre-populate with old marketplace path
-        File.WriteAllText(settingsPath, """
+        await File.WriteAllTextAsync(
+            settingsPath,
+            """
             {
               "extraKnownMarketplaces": {
                 "kurrent": { "source": { "source": "directory", "path": "/old/path" } }
               },
               "enabledPlugins": { "kapacitor@kapacitor": true }
             }
-            """);
+            """
+        );
 
         var result = SetupCommand.InstallPlugin(settingsPath, newPath);
 
         await Assert.That(result).IsTrue();
 
-        var root = JsonNode.Parse(File.ReadAllText(settingsPath))!.AsObject();
+        var root = JsonNode.Parse(await File.ReadAllTextAsync(settingsPath))!.AsObject();
 
         await Assert.That(root["extraKnownMarketplaces"]?["kapacitor"]?["source"]?["path"]?.GetValue<string>())
             .IsEqualTo(newPath);
@@ -87,9 +93,9 @@ public class SetupCommandTests {
 
     [Test]
     public async Task InstallPlugin_CreatesIntermediateDirectories() {
-        using var tmp          = new TempDir();
-        var       settingsPath = Path.Combine(tmp.Path, ".claude", "nested", "settings.json");
-        var       marketplace  = "/opt/kapacitor";
+        using var    tmp          = new TempDir();
+        var          settingsPath = Path.Combine(tmp.Path, ".claude", "nested", "settings.json");
+        const string marketplace  = "/opt/kapacitor";
 
         var result = SetupCommand.InstallPlugin(settingsPath, marketplace);
 
@@ -99,17 +105,17 @@ public class SetupCommandTests {
 
     [Test]
     public async Task InstallPlugin_MalformedJson_StartsFromScratch() {
-        using var tmp          = new TempDir();
-        var       settingsPath = Path.Combine(tmp.Path, "settings.json");
-        var       marketplace  = "/opt/kapacitor";
+        using var    tmp          = new TempDir();
+        var          settingsPath = Path.Combine(tmp.Path, "settings.json");
+        const string marketplace  = "/opt/kapacitor";
 
-        File.WriteAllText(settingsPath, "not json {{{");
+        await File.WriteAllTextAsync(settingsPath, "not json {{{");
 
         var result = SetupCommand.InstallPlugin(settingsPath, marketplace);
 
         await Assert.That(result).IsTrue();
 
-        var root = JsonNode.Parse(File.ReadAllText(settingsPath))!.AsObject();
+        var root = JsonNode.Parse(await File.ReadAllTextAsync(settingsPath))!.AsObject();
 
         await Assert.That(root["enabledPlugins"]?["kapacitor@kapacitor"]?.GetValue<bool>() ?? false)
             .IsTrue();
@@ -122,7 +128,7 @@ public class SetupCommandTests {
         // flow is end-to-end-tested by the integration suite.
         var cfg = new ProfileConfig {
             ActiveProfile = "acme",
-            Profiles = new Dictionary<string, Profile> {
+            Profiles = new() {
                 ["acme"] = new() { ServerUrl = "https://a.example", DefaultVisibility = "org_public" }
             }
         };
@@ -136,13 +142,15 @@ public class SetupCommandTests {
     sealed class TempDir : IDisposable {
         public string Path { get; } = System.IO.Path.Combine(
             System.IO.Path.GetTempPath(),
-            "kapacitor-test-" + Guid.NewGuid().ToString("N")[..8]
+            $"kapacitor-test-{Guid.NewGuid().ToString("N")[..8]}"
         );
 
         public TempDir() => Directory.CreateDirectory(Path);
 
         public void Dispose() {
-            try { Directory.Delete(Path, true); } catch { /* best effort */ }
+            try { Directory.Delete(Path, true); } catch {
+                /* best effort */
+            }
         }
     }
 }

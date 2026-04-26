@@ -223,8 +223,8 @@ public class HistoryClassifyTests : IDisposable {
         await File.WriteAllLinesAsync(
             transcriptPath,
             Enumerable.Range(0, 50)
-                .Select(i =>
-                    $$$"""{"type":"user","timestamp":"2026-03-15T10:00:00Z","cwd":"{{{repoDir.Replace("\\", "\\\\")}}}","message":{"content":"x"}}"""
+                .Select(_ =>
+                    $$$"""{"type":"user","timestamp":"2026-03-15T10:00:00Z","cwd":"{{{repoDir.Replace("\\", @"\\")}}}","message":{"content":"x"}}"""
                 )
         );
 
@@ -371,7 +371,7 @@ public class HistoryClassifyTests : IDisposable {
             transcriptPath,
             Enumerable.Range(0, 50)
                 .Select(i =>
-                    $$$"""{"type":"user","timestamp":"2026-03-15T10:00:00Z","cwd":"{{{repoDir.Replace("\\", "\\\\")}}}","message":{"content":"line-{{{i}}}"}}"""
+                    $$$"""{"type":"user","timestamp":"2026-03-15T10:00:00Z","cwd":"{{{repoDir.Replace("\\", @"\\")}}}","message":{"content":"line-{{{i}}}"}}"""
                 )
         );
 
@@ -384,7 +384,7 @@ public class HistoryClassifyTests : IDisposable {
         var result = await HistoryCommand.ClassifyAsync(
             client, _server.Url!, transcripts,
             minLines: 15,
-            excludedRepos: new[] { "any/repo" },
+            excludedRepos: ["any/repo"],
             CancellationToken.None
         );
 

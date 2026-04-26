@@ -261,35 +261,36 @@ switch (command) {
             return 1;
         }
 
-        if (args[1] == "review") {
-            var mcpOwner = GetArg(args, "--owner");
-            var mcpRepo  = GetArg(args, "--repo");
-            var mcpPr    = GetArg(args, "--pr");
+        switch (args[1]) {
+            case "review": {
+                var mcpOwner = GetArg(args, "--owner");
+                var mcpRepo  = GetArg(args, "--repo");
+                var mcpPr    = GetArg(args, "--pr");
 
-            // Explicit PR args — use directly
-            if (mcpOwner is not null && mcpRepo is not null && mcpPr is not null && int.TryParse(mcpPr, out var mcpPrNum)) {
-                return await McpReviewServer.RunAsync(baseUrl!, mcpOwner, mcpRepo, mcpPrNum);
+                // Explicit PR args — use directly
+                if (mcpOwner is not null && mcpRepo is not null && mcpPr is not null && int.TryParse(mcpPr, out var mcpPrNum)) {
+                    return await McpReviewServer.RunAsync(baseUrl!, mcpOwner, mcpRepo, mcpPrNum);
+                }
+
+                // No args — auto-detect from git
+                return await McpReviewServer.RunAutoAsync(baseUrl!);
             }
+            case "judge": {
+                var session = GetArg(args, "--session");
 
-            // No args — auto-detect from git
-            return await McpReviewServer.RunAutoAsync(baseUrl!);
-        }
+                if (string.IsNullOrWhiteSpace(session)) {
+                    Console.Error.WriteLine("Usage: kapacitor mcp judge --session <sessionId>");
 
-        if (args[1] == "judge") {
-            var session = GetArg(args, "--session");
+                    return 1;
+                }
 
-            if (string.IsNullOrWhiteSpace(session)) {
-                Console.Error.WriteLine("Usage: kapacitor mcp judge --session <sessionId>");
+                return await McpJudgeServer.RunAsync(baseUrl!, session);
+            }
+            default:
+                Console.Error.WriteLine($"Unknown mcp subcommand: {args[1]}");
 
                 return 1;
-            }
-
-            return await McpJudgeServer.RunAsync(baseUrl!, session);
         }
-
-        Console.Error.WriteLine($"Unknown mcp subcommand: {args[1]}");
-
-        return 1;
     }
     case "cleanup":
         return await CleanupCommand.HandleCleanup();

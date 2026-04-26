@@ -147,7 +147,7 @@ public class ClaudeCliRunnerTests {
             )
         );
 
-        await Assert.That(ex.ParamName).IsEqualTo("allowedTools");
+        await Assert.That(ex?.ParamName).IsEqualTo("allowedTools");
     }
 
     [Test]

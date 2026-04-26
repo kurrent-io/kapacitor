@@ -29,7 +29,7 @@ internal interface IEvalObserver {
     void OnInfo(string message);
 
     /// <summary>Fired once after the eval context has been fetched and the judges are about to run.</summary>
-    void OnStarted(string evalRunId, string sessionId, string judgeModel, int totalQuestions);
+    void OnStarted(string evalRunId, string judgeModel, int totalQuestions);
 
     /// <summary>Informational — context fetched, compaction stats available.</summary>
     void OnContextFetched(int traceEntries, int traceChars, int toolResultsTotal, int toolResultsTruncated, long bytesSaved);

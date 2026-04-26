@@ -33,13 +33,11 @@ internal static class EvalQuestionCatalogClient {
                 observer.OnFailed("eval question catalog is empty");
                 return null;
             }
-            foreach (var q in parsed) {
-                if (string.IsNullOrWhiteSpace(q.Category)
-                    || string.IsNullOrWhiteSpace(q.Id)
-                    || string.IsNullOrWhiteSpace(q.Prompt)) {
-                    observer.OnFailed("eval question catalog contains a malformed entry (missing category, id, or prompt)");
-                    return null;
-                }
+            if (parsed.Any(q => string.IsNullOrWhiteSpace(q.Category)
+                 || string.IsNullOrWhiteSpace(q.Id)
+                 || string.IsNullOrWhiteSpace(q.Prompt))) {
+                observer.OnFailed("eval question catalog contains a malformed entry (missing category, id, or prompt)");
+                return null;
             }
             return parsed;
         } catch (HttpRequestException ex) {

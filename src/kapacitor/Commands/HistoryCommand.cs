@@ -2,6 +2,7 @@ using Spectre.Console;
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using System.Threading.Channels;
 using kapacitor.Config;
 
 namespace kapacitor.Commands;
@@ -231,7 +232,8 @@ static class HistoryCommand {
                 .AutoClear(true)
                 .Columns(new TaskDescriptionColumn(), new ProgressBarColumn(), new PercentageColumn())
                 .StartAsync(async ctx => {
-                        var bar     = ctx.AddTask("[yellow]Probing[/]", maxValue: transcriptFiles.Count);
+                        var bar = ctx.AddTask("[yellow]Probing[/]", maxValue: transcriptFiles.Count);
+
                         var results = await ClassifyAsync(
                             httpClient,
                             baseUrl,
@@ -265,12 +267,12 @@ static class HistoryCommand {
 
             if (canPrompt) {
                 foreach (var (key, sessions) in excludedByKey) {
-                    Console.Error.Write($"Repository {key} is excluded. Include {sessions.Count} session{(sessions.Count == 1 ? "" : "s")} from it? (y/N) ");
+                    await Console.Error.WriteAsync($"Repository {key} is excluded. Include {sessions.Count} session{(sessions.Count == 1 ? "" : "s")} from it? (y/N) ");
                     var answer = Console.ReadLine()?.Trim();
                     if (string.Equals(answer, "y", StringComparison.OrdinalIgnoreCase)) includedKeys.Add(key);
                 }
             } else {
-                Console.Error.WriteLine($"Auto-skipping {excludedByKey.Values.Sum(v => v.Count)} session(s) from {excludedByKey.Count} excluded repo(s) (non-interactive).");
+                await Console.Error.WriteLineAsync($"Auto-skipping {excludedByKey.Values.Sum(v => v.Count)} session(s) from {excludedByKey.Count} excluded repo(s) (non-interactive).");
             }
 
             for (var i = 0; i < classifications.Count; i++) {
@@ -325,9 +327,9 @@ static class HistoryCommand {
         var       summaryFailures    = new System.Collections.Concurrent.ConcurrentBag<(string SessionId, string Reason)>();
 
         var events = new ChainWorkerEvents {
-            OnSessionStarted = (_, _) => { },     // non-TTY: session start is silent; TTY overrides below
+            OnSessionStarted  = (_, _) => { },    // non-TTY: session start is silent; TTY overrides below
             OnSubagentStarted = (_, _, _) => { }, // non-TTY: subagent start is silent; TTY overrides below
-            OnSubagentFinished = (_, sid, aid, lines) => display.Line(
+            OnSubagentFinished = (_, _, aid, lines) => display.Line(
                 $"  ↳ imported subagent {aid} ({lines} lines)",
                 $"  [dim]↳[/] imported subagent [cyan]{Markup.Escape(aid)}[/] ({lines} lines)"
             ),
@@ -339,6 +341,7 @@ static class HistoryCommand {
                 var verb = outcome == SessionImportOutcome.Resumed
                     ? $"resuming from line {c.ResumeFromLine}"
                     : "new";
+
                 display.Line(
                     $"Loading {c.SessionId}... {lines} lines [{verb}]",
                     $"[green]✓[/] Loading [cyan]{Markup.Escape(c.SessionId)}[/]... {lines} lines [{verb}]"
@@ -404,7 +407,6 @@ static class HistoryCommand {
 
             if (display.Tty) {
                 var r = default(ImportChainsResult);
-                const int slotCount = ImportWorkerCount;
 
                 await AnsiConsole.Progress()
                     .AutoClear(false)
@@ -417,29 +419,18 @@ static class HistoryCommand {
                             // beneath the main bar. IsIndeterminate=true draws a stripe
                             // animation while a worker is processing; setting it to false
                             // and Description="idle" parks the slot.
-                            var slots = new ProgressTask[slotCount];
-                            for (var i = 0; i < slotCount; i++) {
-                                slots[i] = ctx.AddTask($"  Slot {i + 1} — idle", maxValue: 1);
+                            var slots = new ProgressTask[ImportWorkerCount];
+
+                            for (var i = 0; i < ImportWorkerCount; i++) {
+                                slots[i]                 = ctx.AddTask($"  Slot {i + 1} — idle", maxValue: 1);
                                 slots[i].IsIndeterminate = false;
                             }
 
                             // currentSession[slot] holds the SessionId currently rendered on
                             // the slot row, used to revert the description after a subagent
                             // finishes (revert from "↳ subagent X" to "Loading <parent>").
-                            var currentVerb = new string[slotCount];
-                            var currentSid  = new string[slotCount];
-
-                            void SetSlot(int slot, string markup) {
-                                slots[slot].Description    = markup;
-                                slots[slot].IsIndeterminate = true;
-                            }
-
-                            void IdleSlot(int slot) {
-                                slots[slot].Description    = $"  Slot {slot + 1} — idle";
-                                slots[slot].IsIndeterminate = false;
-                                currentSid[slot]            = "";
-                                currentVerb[slot]           = "";
-                            }
+                            var currentVerb = new string[ImportWorkerCount];
+                            var currentSid  = new string[ImportWorkerCount];
 
                             var wrappedEvents = events with {
                                 OnSessionStarted = (slot, c) => {
@@ -458,11 +449,13 @@ static class HistoryCommand {
                                     // No scrollback line in TTY mode — subagent activity was
                                     // already visible on the slot row while it ran.
                                     if (!string.IsNullOrEmpty(currentSid[slot])) {
-                                        SetSlot(slot,
-                                            $"  [bold]Slot {slot + 1}[/] — Loading [cyan]{Markup.Escape(currentSid[slot])}[/] ({currentVerb[slot]})");
+                                        SetSlot(
+                                            slot,
+                                            $"  [bold]Slot {slot + 1}[/] — Loading [cyan]{Markup.Escape(currentSid[slot])}[/] ({currentVerb[slot]})"
+                                        );
                                     }
                                 },
-                                OnSessionEnded = (slot, c, outcome, lines) => {
+                                OnSessionEnded = (slot, _, _, _) => {
                                     // Description stays on the just-finished session until
                                     // the next OnSessionStarted swaps it. We only flip the
                                     // stripe off here so a slot that drains (queue empty)
@@ -485,7 +478,21 @@ static class HistoryCommand {
                             r = await ImportChainsAsync(httpClient, baseUrl, chains, wrappedEvents, CancellationToken.None);
 
                             // After the await, all workers have drained; mark every slot idle.
-                            for (var i = 0; i < slotCount; i++) IdleSlot(i);
+                            for (var i = 0; i < ImportWorkerCount; i++) IdleSlot(i);
+
+                            return;
+
+                            void IdleSlot(int slot) {
+                                slots[slot].Description     = $"  Slot {slot + 1} — idle";
+                                slots[slot].IsIndeterminate = false;
+                                currentSid[slot]            = "";
+                                currentVerb[slot]           = "";
+                            }
+
+                            void SetSlot(int slot, string markup) {
+                                slots[slot].Description     = markup;
+                                slots[slot].IsIndeterminate = true;
+                            }
                         }
                     );
                 importResult = r!;
@@ -493,11 +500,11 @@ static class HistoryCommand {
                 importResult = await ImportChainsAsync(httpClient, baseUrl, chains, events, CancellationToken.None);
             }
         } else {
-            importResult = new ImportChainsResult(0, 0, 0);
+            importResult = new(0, 0, 0);
         }
 
         // --- Background phase (titles / summaries) ---
-        var ranBackground = backgroundTasks.Count > 0;
+        var ranBackground = backgroundTasks.IsEmpty;
 
         if (ranBackground) {
             display.BeginPhase("Titles & summaries");
@@ -514,10 +521,10 @@ static class HistoryCommand {
                             var seenS       = 0;
 
                             while (backgroundTasks.Any(t => !t.IsCompleted)) {
-                                if (titleTask is not null) titleTask.Value     = titlesGenerated    + titlesFailed + titlesSkipped;
-                                if (summaryTask is not null) summaryTask.Value = summariesGenerated + summariesFailed;
-                                var tList                                      = titleFailures.ToList();
-                                var sList                                      = summaryFailures.ToList();
+                                titleTask?.Value   = titlesGenerated    + titlesFailed + titlesSkipped;
+                                summaryTask?.Value = summariesGenerated + summariesFailed;
+                                var tList = titleFailures.ToList();
+                                var sList = summaryFailures.ToList();
 
                                 for (var i = seenT; i < tList.Count; i++) {
                                     var (sid, reason) = tList[i];
@@ -539,8 +546,8 @@ static class HistoryCommand {
                                 /* per-task try/catch */
                             }
 
-                            if (titleTask is not null) titleTask.Value     = titlesGenerated    + titlesFailed + titlesSkipped;
-                            if (summaryTask is not null) summaryTask.Value = summariesGenerated + summariesFailed;
+                            titleTask?.Value   = titlesGenerated    + titlesFailed + titlesSkipped;
+                            summaryTask?.Value = summariesGenerated + summariesFailed;
                         }
                     );
             } else {
@@ -714,8 +721,7 @@ static class HistoryCommand {
                     using var doc  = JsonDocument.Parse(tail[i]);
                     var       root = doc.RootElement;
 
-                    if (root.Str("timestamp") is { } tsStr
-                     && DateTimeOffset.TryParse(tsStr, out var ts)) {
+                    if (root.Str("timestamp") is { } tsStr && DateTimeOffset.TryParse(tsStr, out var ts)) {
                         return ts;
                     }
                 } catch (JsonException) { }
@@ -794,27 +800,20 @@ static class HistoryCommand {
     /// </summary>
     internal static List<List<SessionClassification>> BuildImportChains(List<SessionClassification> classifications) {
         var importable = classifications
-            .Where(c => c.Status == ClassificationStatus.New || c.Status == ClassificationStatus.Partial)
+            .Where(c => c.Status is ClassificationStatus.New or ClassificationStatus.Partial)
             .ToList();
-
-        var chains = new List<List<SessionClassification>>();
 
         var withSlug = importable
             .Where(c => c.Meta.Slug is not null)
             .GroupBy(c => c.Meta.Slug!, StringComparer.Ordinal)
             .OrderBy(g => g.Key, StringComparer.Ordinal);
 
-        foreach (var group in withSlug) {
-            var ordered = group
-                .OrderBy(ChainTimestamp)
+        var chains = withSlug.Select(group => group.OrderBy(ChainTimestamp)
                 .ThenBy(c => c.SessionId, StringComparer.Ordinal)
-                .ToList();
-            chains.Add(ordered);
-        }
-
-        foreach (var solo in importable.Where(c => c.Meta.Slug is null).OrderBy(c => c.SessionId, StringComparer.Ordinal)) {
-            chains.Add([solo]);
-        }
+                .ToList()
+            )
+            .ToList();
+        chains.AddRange(importable.Where(c => c.Meta.Slug is null).OrderBy(c => c.SessionId, StringComparer.Ordinal).Select(solo => (List<SessionClassification>)[solo]));
 
         return chains;
     }
@@ -869,13 +868,13 @@ static class HistoryCommand {
         public required Action<int, SessionClassification> OnSessionStarted { get; init; }
 
         /// <summary>Fired when the worker begins streaming a subagent's transcript inline.</summary>
-        public required Action<int, string, string> OnSubagentStarted { get; init; }   // slot, sessionId, agentId
+        public required Action<int, string, string> OnSubagentStarted { get; init; } // slot, sessionId, agentId
 
         /// <summary>Fired after a subagent's transcript has been fully streamed.</summary>
-        public required Action<int, string, string, int> OnSubagentFinished { get; init; }  // slot, sessionId, agentId, lines
+        public required Action<int, string, string, int> OnSubagentFinished { get; init; } // slot, sessionId, agentId, lines
 
         /// <summary>Fired when a session import fails on a worker slot.</summary>
-        public required Action<int, string, string> OnSessionErrored { get; init; }   // slot, sessionId, reason
+        public required Action<int, string, string> OnSessionErrored { get; init; } // slot, sessionId, reason
 
         /// <summary>
         /// Fired after a session import completes (loaded or resumed). The slot is
@@ -912,8 +911,8 @@ static class HistoryCommand {
         var resumed = 0;
         var errored = 0;
 
-        var queue = System.Threading.Channels.Channel.CreateUnbounded<List<SessionClassification>>(
-            new System.Threading.Channels.UnboundedChannelOptions {
+        var queue = Channel.CreateUnbounded<List<SessionClassification>>(
+            new() {
                 SingleReader = false,
                 SingleWriter = true,
             }
@@ -922,47 +921,52 @@ static class HistoryCommand {
         foreach (var chain in chains) await queue.Writer.WriteAsync(chain, ct);
         queue.Writer.Complete();
 
-        const int workerCount = ImportWorkerCount;
-        var workers = new Task[workerCount];
+        var workers = new Task[ImportWorkerCount];
 
-        for (var i = 0; i < workerCount; i++) {
+        for (var i = 0; i < ImportWorkerCount; i++) {
             var slot = i; // capture
-            workers[i] = Task.Run(async () => {
-                while (await queue.Reader.WaitToReadAsync(ct)) {
-                    while (queue.Reader.TryRead(out var chain)) {
-                        foreach (var session in chain) {
-                            ct.ThrowIfCancellationRequested();
-                            events.OnSessionStarted(slot, session);
 
-                            SessionImportOutcome r;
-                            var linesSent = 0;
-                            try {
-                                (r, linesSent) = await ImportSingleSessionAsync(httpClient, baseUrl, session, slot, events, ct);
-                            } catch (OperationCanceledException) when (ct.IsCancellationRequested) {
-                                throw;
-                            } catch (Exception ex) {
-                                events.OnSessionErrored(slot, session.SessionId, ex.Message);
-                                r = SessionImportOutcome.Errored;
-                            }
+            workers[i] = Task.Run(
+                async () => {
+                    while (await queue.Reader.WaitToReadAsync(ct)) {
+                        while (queue.Reader.TryRead(out var chain)) {
+                            foreach (var session in chain) {
+                                ct.ThrowIfCancellationRequested();
+                                events.OnSessionStarted(slot, session);
 
-                            switch (r) {
-                                case SessionImportOutcome.Loaded:  Interlocked.Increment(ref loaded);  break;
-                                case SessionImportOutcome.Resumed: Interlocked.Increment(ref resumed); break;
-                                case SessionImportOutcome.Errored: Interlocked.Increment(ref errored); break;
-                            }
+                                SessionImportOutcome r;
 
-                            if (r != SessionImportOutcome.Errored) {
-                                events.OnSessionEnded(slot, session, r, linesSent);
+                                var linesSent = 0;
+
+                                try {
+                                    (r, linesSent) = await ImportSingleSessionAsync(httpClient, baseUrl, session, slot, events, ct);
+                                } catch (OperationCanceledException) when (ct.IsCancellationRequested) {
+                                    throw;
+                                } catch (Exception ex) {
+                                    events.OnSessionErrored(slot, session.SessionId, ex.Message);
+                                    r = SessionImportOutcome.Errored;
+                                }
+
+                                switch (r) {
+                                    case SessionImportOutcome.Loaded:  Interlocked.Increment(ref loaded); break;
+                                    case SessionImportOutcome.Resumed: Interlocked.Increment(ref resumed); break;
+                                    case SessionImportOutcome.Errored: Interlocked.Increment(ref errored); break;
+                                }
+
+                                if (r != SessionImportOutcome.Errored) {
+                                    events.OnSessionEnded(slot, session, r, linesSent);
+                                }
                             }
                         }
                     }
-                }
-            }, ct);
+                },
+                ct
+            );
         }
 
         await Task.WhenAll(workers);
 
-        return new ImportChainsResult(loaded, resumed, errored);
+        return new(loaded, resumed, errored);
     }
 
     internal enum SessionImportOutcome { Loaded, Resumed, Errored }
@@ -1041,7 +1045,7 @@ static class HistoryCommand {
         }
 
         try {
-            using var startContent = new StringContent(startHook.ToJsonString(), System.Text.Encoding.UTF8, "application/json");
+            using var startContent = new StringContent(startHook.ToJsonString(), Encoding.UTF8, "application/json");
             using var startResp    = await httpClient.PostWithRetryAsync($"{baseUrl}/hooks/session-start", startContent, ct: ct);
 
             if (!startResp.IsSuccessStatusCode) {
@@ -1089,7 +1093,7 @@ static class HistoryCommand {
         var generateWhatsDone = false;
 
         try {
-            using var endContent = new StringContent(endHook.ToJsonString(), System.Text.Encoding.UTF8, "application/json");
+            using var endContent = new StringContent(endHook.ToJsonString(), Encoding.UTF8, "application/json");
             using var endResp    = await httpClient.PostWithRetryAsync($"{baseUrl}/hooks/session-end", endContent, ct: ct);
 
             if (endResp.IsSuccessStatusCode) {
@@ -1175,7 +1179,7 @@ static class HistoryCommand {
 
         // Short-circuit: kapacitor's own sub-sessions (title / what's-done) never get imported.
         if (TitleGenerator.IsKapacitorSubSession(filePath)) {
-            return new SessionClassification {
+            return new() {
                 SessionId  = sessionId,
                 FilePath   = filePath,
                 EncodedCwd = encodedCwd,
@@ -1187,7 +1191,7 @@ static class HistoryCommand {
         // Probe the server BEFORE scanning the file. On re-runs the probe returns
         // 204 (AlreadyLoaded) quickly and we never need to read the transcript.
         ClassificationStatus status;
-        int                  resumeFromLine   = 0;
+        var                  resumeFromLine   = 0;
         string?              probeErrorReason = null;
 
         await probeGate.WaitAsync(ct);
@@ -1207,7 +1211,7 @@ static class HistoryCommand {
                 default:
                     if (resp.IsSuccessStatusCode) {
                         var       json = await resp.Content.ReadAsStringAsync(ct);
-                        using var doc  = System.Text.Json.JsonDocument.Parse(json);
+                        using var doc  = JsonDocument.Parse(json);
 
                         if (doc.RootElement.Num("last_line_number") is { } lastLine) {
                             resumeFromLine = (int)lastLine + 1;
@@ -1246,7 +1250,7 @@ static class HistoryCommand {
                 var observedLines = CountLinesUpTo(filePath, threshold);
 
                 if (minLines > 0 && observedLines < minLines) {
-                    return new SessionClassification {
+                    return new() {
                         SessionId  = sessionId,
                         FilePath   = filePath,
                         EncodedCwd = encodedCwd,
@@ -1268,7 +1272,7 @@ static class HistoryCommand {
         // happens later in HandleHistory, where we can batch prompts by repo key.
         string? excludedRepoKey = null;
 
-        if ((status == ClassificationStatus.New || status == ClassificationStatus.Partial)
+        if (status is ClassificationStatus.New or ClassificationStatus.Partial
          && excludedRepos is { Length: > 0 }) {
             var cwd = meta.Cwd ?? SessionImporter.DecodeCwdFromDirName(encodedCwd);
 

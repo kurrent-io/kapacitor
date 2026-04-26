@@ -60,7 +60,7 @@ public class SecretRedactorTests {
     [Arguments("pypi-ABCDEFghijklmnop1234567890ab", "PyPI")]
     [Arguments("npm_ABCDEFghijklmnop1234567890ab", "npm")]
     [Arguments("glpat-ABCDEFghijklmnop12345", "GitLab PAT")]
-    public async Task RedactsLine_VendorToken_InToolResult(string token, string _description) {
+    public async Task RedactsLine_VendorToken_InToolResult(string token, string description) {
         var line = $$$"""
             {"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_1","type":"tool_result","content":"The token is {{{token}}} here","is_error":false}]}}
             """.Trim();
@@ -89,7 +89,7 @@ public class SecretRedactorTests {
     [Arguments("AIDAJQABLZS4A3QDU576Q", "IAM user unique ID")]
     [Arguments("AIPAIFHHFHABCDEF12345", "EC2 instance profile ID")]
     [Arguments("AGPAI23HXD2XYZ123ABCD", "IAM group ID")]
-    public async Task RedactsLine_AwsUniqueId_InToolResult(string id, string _description) {
+    public async Task RedactsLine_AwsUniqueId_InToolResult(string id, string description) {
         var line = $$$"""
             {"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_1","type":"tool_result","content":"id is {{{id}}} here","is_error":false}]}}
             """.Trim();

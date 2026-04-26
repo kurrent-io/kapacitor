@@ -40,9 +40,7 @@ static class SessionImporter {
         // referenced — via agent_progress, an async_launched tool_result, or a
         // foreground toolUseResult.agentId (for interleave position) — plus the real
         // subagent_type from the parent Task-tool invocation (for canonical fidelity).
-        var scan           = ScanAgentLifecycle(transcriptPath);
-        var agentFirstLine = scan.FirstLineByAgent;
-        var agentTypes     = scan.AgentTypeByAgent;
+        var (agentFirstLine, agentTypes) = ScanAgentLifecycle(transcriptPath);
 
         // Track which agents were sent inline
         var sentAgents = new HashSet<string>(StringComparer.Ordinal);
@@ -518,8 +516,8 @@ static class SessionImporter {
     /// </summary>
     internal static List<(string AgentId, string Path)> DiscoverAgentTranscripts(string sessionTranscriptPath) {
         var results      = new List<(string, string)>();
-        var sessionDir   = System.IO.Path.ChangeExtension(sessionTranscriptPath, null);
-        var subagentsDir = System.IO.Path.Combine(sessionDir, "subagents");
+        var sessionDir   = Path.ChangeExtension(sessionTranscriptPath, null);
+        var subagentsDir = Path.Combine(sessionDir, "subagents");
 
         if (!Directory.Exists(subagentsDir)) {
             return results;
@@ -527,7 +525,7 @@ static class SessionImporter {
 
         results.AddRange(
             from agentFile in Directory.GetFiles(subagentsDir, "agent-*.jsonl")
-            let fileName = System.IO.Path.GetFileNameWithoutExtension(agentFile)
+            let fileName = Path.GetFileNameWithoutExtension(agentFile)
             where fileName.StartsWith("agent-")
             let agentId = fileName["agent-".Length..]
             select (agentId, agentFile)
