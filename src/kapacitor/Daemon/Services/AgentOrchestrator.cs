@@ -402,11 +402,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             return;
         }
 
-        byte[] bytes = key switch {
-            "Escape" => [0x1b],
-            "Tab"    => [0x09],
-            _        => []
-        };
+        var bytes = SpecialKeyMap.ToBytes(key);
 
         if (bytes.Length > 0) {
             await agent.Process.WriteAsync(bytes);
