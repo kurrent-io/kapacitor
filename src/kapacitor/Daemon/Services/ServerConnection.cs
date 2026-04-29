@@ -38,6 +38,13 @@ internal partial class ServerConnection : IAsyncDisposable {
     public Func<CancelEvalCommand,   Task>?                 CancelEvalHandler   { get; set; }
 
     /// <summary>
+    /// Handler for the server's "do you have a checkout of this repo?" probe.
+    /// Receives <c>(owner, repo, candidatePaths)</c> and returns confirmed git
+    /// roots. Set by <see cref="AgentOrchestrator"/> at startup.
+    /// </summary>
+    public Func<FindRepoForRemoteRequest, Task<string[]>>? FindRepoForRemoteHandler { get; set; }
+
+    /// <summary>
     /// Callback invoked at <see cref="RegisterDaemon"/> time to snapshot the
     /// agent IDs currently hosted by this daemon. The server uses this to
     /// reconcile its registry against the daemon's view. Set by
@@ -90,6 +97,13 @@ internal partial class ServerConnection : IAsyncDisposable {
 
         _hub.On<CancelEvalCommand>("CancelEval",
             cmd => CancelEvalHandler?.Invoke(cmd) ?? Task.CompletedTask);
+
+        // Server probe used by the "Review this PR" UI to discover which
+        // checkouts on this daemon match the PR's owner/repo. Returns an empty
+        // array when the orchestrator hasn't wired a handler yet (e.g. during
+        // startup) so the server treats this daemon as having no matches.
+        _hub.On<FindRepoForRemoteRequest, string[]>("FindRepoForRemote",
+            req => FindRepoForRemoteHandler?.Invoke(req) ?? Task.FromResult(Array.Empty<string>()));
 
         _hub.Reconnected += OnReconnected;
         _hub.Closed      += OnClosed;

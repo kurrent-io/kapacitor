@@ -118,6 +118,7 @@ public static partial class DaemonRunner {
         }
 
         builder.Services.AddSingleton<WorktreeManager>();
+        builder.Services.AddSingleton<RepoMatcher>();
 
         builder.Services.AddHttpClient("Attachments", client => client.BaseAddress = new Uri(config.ServerUrl));
         builder.Services.AddSingleton<AgentOrchestrator>();

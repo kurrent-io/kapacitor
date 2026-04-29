@@ -1,9 +1,11 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using kapacitor.Auth;
+using kapacitor.Commands;
 using kapacitor.Config;
 using kapacitor.Daemon.Pty;
 using Microsoft.Extensions.Logging;
@@ -20,11 +22,14 @@ public record AgentInstance(
         WorktreeInfo            Worktree,
         CancellationTokenSource ReadCts
     ) {
-    public string?              SessionId    { get; set; }
-    public string               Status       { get; set; } = "Starting";
-    public DateTime             CreatedAt    { get; }      = DateTime.UtcNow;
-    public DateTime             LastOutputAt { get; set; } = DateTime.UtcNow;
-    public TerminalOutputBuffer OutputBuffer { get; }      = new();
+    public string?              SessionId     { get; set; }
+    public string               Status        { get; set; } = "Starting";
+    public DateTime             CreatedAt     { get; }      = DateTime.UtcNow;
+    public DateTime             LastOutputAt  { get; set; } = DateTime.UtcNow;
+    public TerminalOutputBuffer OutputBuffer  { get; }      = new();
+
+    /// <summary>Temp MCP config path written for hosted PR reviews; deleted on cleanup.</summary>
+    public string? McpConfigPath { get; set; }
 }
 
 /// <summary>Ring buffer that keeps the last 2 MB of terminal output.</summary>
@@ -55,6 +60,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     readonly DaemonConfig                                _config;
     readonly ServerConnection                            _server;
     readonly WorktreeManager                             _worktreeManager;
+    readonly RepoMatcher                                 _repoMatcher;
     readonly IPtyProcessFactory                          _ptyFactory;
     readonly IHttpClientFactory                          _httpClientFactory;
     readonly ILogger<AgentOrchestrator>                  _logger;
@@ -66,6 +72,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             DaemonConfig               config,
             ServerConnection           server,
             WorktreeManager            worktreeManager,
+            RepoMatcher                repoMatcher,
             IPtyProcessFactory         ptyFactory,
             IHttpClientFactory         httpClientFactory,
             ILogger<AgentOrchestrator> logger
@@ -73,17 +80,19 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
         _config            = config;
         _server            = server;
         _worktreeManager   = worktreeManager;
+        _repoMatcher       = repoMatcher;
         _ptyFactory        = ptyFactory;
         _httpClientFactory = httpClientFactory;
         _logger            = logger;
 
         // Wire up server commands
-        _server.OnLaunchAgent         += HandleLaunchAgent;
-        _server.OnStopAgent           += HandleStopAgent;
-        _server.OnSendInput           += HandleSendInput;
-        _server.OnSendSpecialKey      += HandleSendSpecialKey;
-        _server.OnResizeTerminal      += HandleResizeTerminal;
-        _server.OnReconnectedCallback += ReRegisterAgents;
+        _server.OnLaunchAgent             += HandleLaunchAgent;
+        _server.OnStopAgent               += HandleStopAgent;
+        _server.OnSendInput               += HandleSendInput;
+        _server.OnSendSpecialKey          += HandleSendSpecialKey;
+        _server.OnResizeTerminal          += HandleResizeTerminal;
+        _server.OnReconnectedCallback     += ReRegisterAgents;
+        _server.FindRepoForRemoteHandler  =  HandleFindRepoForRemote;
 
         _server.GetLiveAgentIds = () => _agents
             .Where(kvp => kvp.Value.Status is "Starting" or "Running")
@@ -98,9 +107,17 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     int ActiveCount => _agents.Count(a => a.Value.Status is "Starting" or "Running");
 
     async Task HandleLaunchAgent(LaunchAgentCommand cmd) {
-        var (agentId, prompt, model, effort, repoPath, tools, attachmentIds) = cmd;
+        var agentId       = cmd.AgentId;
+        var prompt        = cmd.Prompt;
+        var model         = cmd.Model;
+        var effort        = cmd.Effort;
+        var repoPath      = cmd.RepoPath;
+        var tools         = cmd.Tools;
+        var attachmentIds = cmd.AttachmentIds;
+        var isReview      = cmd.Kind == LaunchKind.Review;
 
-        WorktreeInfo? worktree = null;
+        WorktreeInfo? worktree      = null;
+        string?       mcpConfigPath = null;
 
         try {
             if (ActiveCount >= _config.MaxConcurrentAgents) {
@@ -121,6 +138,33 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
                 return;
             }
 
+            if (isReview) {
+                if (cmd.Review is not { } review) {
+                    await _server.LaunchFailedAsync(agentId, "Review launch missing PR info");
+
+                    return;
+                }
+
+                // Final guard: re-validate that the chosen path's origin really
+                // matches the PR's repo. The match the UI saw could have moved
+                // (remote renamed, repo moved) between picker and launch.
+                var actual = await GetOriginRemoteAsync(repoPath);
+
+                if (actual is null) {
+                    await _server.LaunchFailedAsync(agentId, $"No origin remote at {repoPath}");
+
+                    return;
+                }
+
+                var expected = $"github.com/{review.Owner}/{review.Repo}";
+
+                if (!string.Equals(actual, expected, StringComparison.OrdinalIgnoreCase)) {
+                    await _server.LaunchFailedAsync(agentId, $"Repo at {repoPath} no longer matches {review.Owner}/{review.Repo} (origin: {actual})");
+
+                    return;
+                }
+            }
+
             // "auto" means let the CLI decide — don't pass --effort at all
             if (string.Equals(effort, "auto", StringComparison.OrdinalIgnoreCase)) {
                 effort = null;
@@ -135,7 +179,13 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
 
             LogLaunching(agentId, repoPath, effort ?? "default", model);
 
-            worktree = await _worktreeManager.CreateAsync(repoPath);
+            // Review launches base the worktree on the PR head ref so the agent
+            // works against the PR's actual state, not the local HEAD.
+            var baseRef = isReview && cmd.Review is { } reviewInfo
+                ? $"refs/pull/{reviewInfo.PrNumber}/head"
+                : cmd.BaseRef;
+
+            worktree = await _worktreeManager.CreateAsync(repoPath, baseRef: baseRef);
 
             // Overlay .claude/ local settings from source repo into worktree.
             // git worktree add creates tracked files (e.g. skills/), but gitignored
@@ -205,19 +255,34 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             // Build claude CLI args
             var args = new List<string>();
 
-            if (!string.IsNullOrEmpty(effort)) {
-                args.Add("--effort");
-                args.Add(effort);
-            }
+            if (isReview && cmd.Review is { } reviewArgs) {
+                var launch = await ReviewLaunchBuilder.BuildAsync(_config.ServerUrl ?? "", reviewArgs.Owner, reviewArgs.Repo, reviewArgs.PrNumber);
+                mcpConfigPath = launch.McpConfigPath;
 
-            if (!string.IsNullOrEmpty(model)) {
-                args.Add("--model");
-                args.Add(model);
-            }
+                args.Add("--mcp-config");
+                args.Add(launch.McpConfigPath);
+                args.Add("--system-prompt");
+                args.Add(launch.SystemPrompt);
 
-            if (!string.IsNullOrEmpty(prompt)) {
-                args.Add("--");
-                args.Add(prompt);
+                if (!string.IsNullOrEmpty(model)) {
+                    args.Add("--model");
+                    args.Add(model);
+                }
+            } else {
+                if (!string.IsNullOrEmpty(effort)) {
+                    args.Add("--effort");
+                    args.Add(effort);
+                }
+
+                if (!string.IsNullOrEmpty(model)) {
+                    args.Add("--model");
+                    args.Add(model);
+                }
+
+                if (!string.IsNullOrEmpty(prompt)) {
+                    args.Add("--");
+                    args.Add(prompt);
+                }
             }
 
             var env = new Dictionary<string, string> {
@@ -229,12 +294,18 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
                 env["KAPACITOR_URL"] = _config.ServerUrl;
             }
 
+            if (isReview && cmd.Review is { } reviewEnv) {
+                env["KAPACITOR_REVIEW_PR"] = reviewEnv.PrNumber.ToString();
+            }
+
             var process = _ptyFactory.Spawn(_config.ClaudePath, args.ToArray(), worktree.Path, env);
 
             LogAgentSpawned(agentId, process.Pid, worktree.Path, _config.ClaudePath);
 
             var cts   = new CancellationTokenSource();
-            var agent = new AgentInstance(agentId, prompt, model, effort, repoPath, process, worktree, cts);
+            var agent = new AgentInstance(agentId, prompt, model, effort, repoPath, process, worktree, cts) {
+                McpConfigPath = mcpConfigPath
+            };
             _agents[agentId] = agent;
 
             // Notify server
@@ -272,7 +343,43 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
                 }
             }
 
+            if (mcpConfigPath is not null) {
+                try { File.Delete(mcpConfigPath); } catch {
+                    /* best-effort */
+                }
+            }
+
             await _server.LaunchFailedAsync(agentId, ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// Reads <c>git remote get-url origin</c> at <paramref name="repoPath"/>
+    /// and normalises it to <c>host/owner/repo</c> form (or null if missing).
+    /// Used as a final guard before a hosted PR review is launched.
+    /// </summary>
+    static async Task<string?> GetOriginRemoteAsync(string repoPath) {
+        try {
+            var psi = new ProcessStartInfo("git", ["remote", "get-url", "origin"]) {
+                WorkingDirectory       = repoPath,
+                RedirectStandardOutput = true,
+                RedirectStandardError  = true,
+                CreateNoWindow         = true
+            };
+
+            using var proc = Process.Start(psi);
+
+            if (proc is null) return null;
+
+            await proc.WaitForExitAsync();
+
+            if (proc.ExitCode != 0) return null;
+
+            var raw = (await proc.StandardOutput.ReadToEndAsync()).Trim();
+
+            return string.IsNullOrWhiteSpace(raw) ? null : RemoteMatcher.NormalizeRemoteUrl(raw);
+        } catch {
+            return null;
         }
     }
 
@@ -491,6 +598,9 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
         return path;
     }
 
+    Task<string[]> HandleFindRepoForRemote(FindRepoForRemoteRequest req)
+        => _repoMatcher.FindAsync(req.Owner, req.Repo, req.CandidatePaths ?? [], _shutdownCts.Token);
+
     Task HandleResizeTerminal(ResizeTerminalCommand cmd) {
         if (_agents.TryGetValue(cmd.AgentId, out var agent)) {
             agent.Process.Resize((ushort)cmd.Cols, (ushort)cmd.Rows);
@@ -572,6 +682,10 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
         try { RemoveClaudeProjectSymlink(agent.Worktree.Path); } catch (Exception ex) { LogCleanupStepFailed(ex, "removing symlink", agentId); }
 
         try { await WorktreeManager.RemoveAsync(agent.Worktree); } catch (Exception ex) { LogCleanupStepFailed(ex, "removing worktree", agentId); }
+
+        if (agent.McpConfigPath is not null) {
+            try { File.Delete(agent.McpConfigPath); } catch (Exception ex) { LogCleanupStepFailed(ex, "removing mcp config", agentId); }
+        }
 
         try { await _server.AgentUnregisteredAsync(agentId); } catch (Exception ex) { LogCleanupStepFailed(ex, "unregistering", agentId); }
     }

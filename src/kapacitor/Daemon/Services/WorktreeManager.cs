@@ -6,7 +6,7 @@ namespace kapacitor.Daemon.Services;
 public record WorktreeInfo(string Path, string Branch, string SourceRepo, bool IsStandalone = false);
 
 public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManager> logger) {
-    public async Task<WorktreeInfo> CreateAsync(string repoPath, string? name = null) {
+    public async Task<WorktreeInfo> CreateAsync(string repoPath, string? name = null, string? baseRef = null) {
         name ??= $"agent-{Guid.NewGuid():N}"[..20];
 
         // Place worktrees under the repo's own .capacitor/ directory so they inherit
@@ -18,7 +18,15 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
         Directory.CreateDirectory(worktreeRoot);
 
         if (await IsGitRepoWithCommits(repoPath)) {
-            await RunGit(repoPath, "worktree", "add", worktreePath, "-b", branch);
+            if (!string.IsNullOrEmpty(baseRef)) {
+                // Fetch the requested ref (e.g. refs/pull/N/head) into FETCH_HEAD
+                // and create the worktree from it. Used by the hosted-review flow
+                // so the agent works against the PR head, not the user's local HEAD.
+                await RunGit(repoPath, "fetch", "origin", baseRef);
+                await RunGit(repoPath, "worktree", "add", "-B", branch, worktreePath, "FETCH_HEAD");
+            } else {
+                await RunGit(repoPath, "worktree", "add", worktreePath, "-b", branch);
+            }
 
             return new WorktreeInfo(worktreePath, branch, repoPath);
         }

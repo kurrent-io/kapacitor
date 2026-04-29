@@ -438,6 +438,9 @@ record RepoEntry {
 [JsonSerializable(typeof(Auth.ProxyConfigResponse))]
 [JsonSerializable(typeof(Auth.DiscoveredTenant[]))]
 [JsonSerializable(typeof(LaunchAgentCommand))]
+[JsonSerializable(typeof(ReviewLaunchInfo))]
+[JsonSerializable(typeof(LaunchKind))]
+[JsonSerializable(typeof(FindRepoForRemoteRequest))]
 [JsonSerializable(typeof(SendInputCommand))]
 [JsonSerializable(typeof(ResizeTerminalCommand))]
 [JsonSerializable(typeof(PrepareEvalCommand))]
@@ -474,13 +477,44 @@ partial class KapacitorJsonContext : JsonSerializerContext;
 
 /// <summary>Commands sent from the server to daemon clients via SignalR.</summary>
 public readonly record struct LaunchAgentCommand(
-        string    AgentId,
-        string?   Prompt,
-        string    Model,
-        string?   Effort,
-        string    RepoPath,
-        string[]? Tools,
-        string[]? AttachmentIds
+        string             AgentId,
+        string?            Prompt,
+        string             Model,
+        string?            Effort,
+        string             RepoPath,
+        string[]?          Tools,
+        string[]?          AttachmentIds,
+        LaunchKind         Kind    = LaunchKind.Default,
+        ReviewLaunchInfo?  Review  = null,
+        string?            BaseRef = null
+    );
+
+/// <summary>
+/// Discriminator for daemon launch commands. <see cref="Default"/> preserves
+/// the existing prompt-driven launch; <see cref="Review"/> uses
+/// <see cref="ReviewLaunchInfo"/> + <c>BaseRef</c> to drive a hosted PR review.
+/// </summary>
+public enum LaunchKind {
+    Default = 0,
+    Review  = 1
+}
+
+public readonly record struct ReviewLaunchInfo(
+        string Owner,
+        string Repo,
+        int    PrNumber
+    );
+
+/// <summary>
+/// Server → daemon probe asking "which of these candidate paths are a local
+/// checkout of <c>owner/repo</c>?". The daemon merges the candidates with its
+/// own knowledge, walks each up to a git root, validates origin, and returns
+/// the confirmed roots.
+/// </summary>
+public readonly record struct FindRepoForRemoteRequest(
+        string   Owner,
+        string   Repo,
+        string[] CandidatePaths
     );
 
 public readonly record struct SendInputCommand(

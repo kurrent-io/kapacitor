@@ -1,6 +1,4 @@
 using System.Diagnostics;
-using System.Text.Json;
-using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 
 namespace kapacitor.Commands;
@@ -45,34 +43,9 @@ static partial class ReviewCommand {
             return 1;
         }
 
-        // Build MCP config using JsonNode to avoid AOT/trimming warnings
-        var kapacitorPath = Environment.ProcessPath ?? "kapacitor";
-
-        var mcpConfig = new JsonObject {
-            ["mcpServers"] = new JsonObject {
-                ["kapacitor-review"] = new JsonObject {
-                    ["command"] = kapacitorPath,
-                    ["args"] = new JsonArray(
-                        "mcp",
-                        "review",
-                        "--owner",
-                        owner,
-                        "--repo",
-                        repo,
-                        "--pr",
-                        prNumber.ToString()
-                    ),
-                    ["env"] = new JsonObject { ["KAPACITOR_URL"] = baseUrl }
-                }
-            }
-        };
-
-        var configPath = Path.Combine(Path.GetTempPath(), $"kapacitor-review-{Guid.NewGuid():N}.json");
+        var launch = await ReviewLaunchBuilder.BuildAsync(baseUrl, owner, repo, prNumber);
 
         try {
-            var json = mcpConfig.ToJsonString(new JsonSerializerOptions { WriteIndented = true });
-            await File.WriteAllTextAsync(configPath, json);
-
             await Console.Error.WriteLineAsync("Launching claude with review MCP server...");
 
             var psi = new ProcessStartInfo {
@@ -81,15 +54,9 @@ static partial class ReviewCommand {
             };
 
             psi.ArgumentList.Add("--mcp-config");
-            psi.ArgumentList.Add(configPath);
+            psi.ArgumentList.Add(launch.McpConfigPath);
             psi.ArgumentList.Add("--system-prompt");
-
-            psi.ArgumentList.Add(
-                EmbeddedResources.Load("prompt-review.txt")
-                    .Replace("{prNumber}", prNumber.ToString())
-                    .Replace("{owner}", owner)
-                    .Replace("{repo}", repo)
-            );
+            psi.ArgumentList.Add(launch.SystemPrompt);
 
             var process = Process.Start(psi);
 
@@ -104,7 +71,7 @@ static partial class ReviewCommand {
             return process.ExitCode;
         } finally {
             try {
-                File.Delete(configPath);
+                File.Delete(launch.McpConfigPath);
             } catch {
                 // Best effort cleanup
             }
