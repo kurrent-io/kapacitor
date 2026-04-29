@@ -3,7 +3,13 @@ using Microsoft.Extensions.Logging;
 
 namespace kapacitor.Daemon.Services;
 
-public record WorktreeInfo(string Path, string Branch, string SourceRepo, bool IsStandalone = false);
+/// <summary>
+/// <paramref name="FetchedRef"/> is the per-worktree ref the daemon fetched
+/// the requested <c>baseRef</c> into (e.g. <c>refs/kapacitor/review/{name}</c>).
+/// Tracked so <see cref="WorktreeManager.RemoveAsync"/> can delete it on
+/// cleanup. Null for non-review launches.
+/// </summary>
+public record WorktreeInfo(string Path, string Branch, string SourceRepo, bool IsStandalone = false, string? FetchedRef = null);
 
 public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManager> logger) {
     public async Task<WorktreeInfo> CreateAsync(string repoPath, string? name = null, string? baseRef = null) {
@@ -19,14 +25,18 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
 
         if (await IsGitRepoWithCommits(repoPath)) {
             if (!string.IsNullOrEmpty(baseRef)) {
-                // Fetch the requested ref (e.g. refs/pull/N/head) into FETCH_HEAD
-                // and create the worktree from it. Used by the hosted-review flow
-                // so the agent works against the PR head, not the user's local HEAD.
-                await RunGit(repoPath, "fetch", "origin", baseRef);
-                await RunGit(repoPath, "worktree", "add", "-B", branch, worktreePath, "FETCH_HEAD");
-            } else {
-                await RunGit(repoPath, "worktree", "add", worktreePath, "-b", branch);
+                // Fetch into a per-worktree ref instead of the shared FETCH_HEAD
+                // so concurrent review launches in the same source repo can't
+                // race on each other's fetches. The unique ref carries the
+                // worktree name so it's traceable and easy to clean up.
+                var fetchedRef = $"refs/kapacitor/review/{name}";
+                await RunGit(repoPath, FetchTimeout, "fetch", "origin", $"{baseRef}:{fetchedRef}");
+                await RunGit(repoPath, GitTimeout, "worktree", "add", "-B", branch, worktreePath, fetchedRef);
+
+                return new WorktreeInfo(worktreePath, branch, repoPath, FetchedRef: fetchedRef);
             }
+
+            await RunGit(repoPath, GitTimeout, "worktree", "add", worktreePath, "-b", branch);
 
             return new WorktreeInfo(worktreePath, branch, repoPath);
         }
@@ -34,9 +44,9 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
         // Standalone: copy files + git init
         Directory.CreateDirectory(worktreePath);
         CopyDirectory(repoPath, worktreePath);
-        await RunGit(worktreePath, "init");
-        await RunGit(worktreePath, "add", "-A");
-        await RunGit(worktreePath, "commit", "-m", "Initial snapshot");
+        await RunGit(worktreePath, GitTimeout, "init");
+        await RunGit(worktreePath, GitTimeout, "add", "-A");
+        await RunGit(worktreePath, GitTimeout, "commit", "-m", "Initial snapshot");
 
         return new WorktreeInfo(worktreePath, "", repoPath, IsStandalone: true);
     }
@@ -50,10 +60,14 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
             return;
         }
 
-        await RunGit(worktree.SourceRepo, "worktree", "remove", worktree.Path, "--force");
+        await RunGit(worktree.SourceRepo, GitTimeout, "worktree", "remove", worktree.Path, "--force");
 
         if (deleteBranch && !string.IsNullOrEmpty(worktree.Branch)) {
             await RunGitBestEffort(worktree.SourceRepo, "branch", "-D", worktree.Branch);
+        }
+
+        if (!string.IsNullOrEmpty(worktree.FetchedRef)) {
+            await RunGitBestEffort(worktree.SourceRepo, "update-ref", "-d", worktree.FetchedRef);
         }
     }
 
@@ -85,28 +99,44 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
         }
     }
 
+    /// <summary>Default timeout for local git operations (worktree add, init, commit, …).</summary>
+    static readonly TimeSpan GitTimeout   = TimeSpan.FromSeconds(60);
+
+    /// <summary>Longer timeout for network git operations (fetch).</summary>
+    static readonly TimeSpan FetchTimeout = TimeSpan.FromMinutes(2);
+
     static async Task<bool> IsGitRepoWithCommits(string path) {
         try {
-            var psi = new ProcessStartInfo("git", ["rev-parse", "HEAD"]) {
-                WorkingDirectory       = path,
-                RedirectStandardOutput = true,
-                RedirectStandardError  = true
-            };
-            var proc = Process.Start(psi)!;
-            await proc.WaitForExitAsync();
+            var psi = NewGitPsi(path, ["rev-parse", "HEAD"]);
+            using var proc = Process.Start(psi)!;
+            using var cts  = new CancellationTokenSource(GitTimeout);
+
+            try {
+                await proc.WaitForExitAsync(cts.Token);
+            } catch (OperationCanceledException) {
+                try { proc.Kill(true); } catch { /* best-effort */ }
+
+                return false;
+            }
 
             return proc.ExitCode == 0;
         } catch { return false; }
     }
 
-    static async Task RunGit(string cwd, params string[] args) {
-        var psi = new ProcessStartInfo("git", args) {
-            WorkingDirectory       = cwd,
-            RedirectStandardOutput = true,
-            RedirectStandardError  = true
-        };
-        var proc = Process.Start(psi)!;
-        await proc.WaitForExitAsync();
+    static async Task RunGit(string cwd, TimeSpan timeout, params string[] args) {
+        var psi = NewGitPsi(cwd, args);
+        using var proc = Process.Start(psi)!;
+        using var cts  = new CancellationTokenSource(timeout);
+
+        try {
+            await proc.WaitForExitAsync(cts.Token);
+        } catch (OperationCanceledException) {
+            try { proc.Kill(true); } catch { /* best-effort */ }
+
+            throw new InvalidOperationException(
+                $"git {string.Join(' ', args)} timed out after {timeout.TotalSeconds:F0}s"
+            );
+        }
 
         if (proc.ExitCode != 0) {
             var stderr = await proc.StandardError.ReadToEndAsync();
@@ -116,9 +146,26 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
     }
 
     static async Task RunGitBestEffort(string cwd, params string[] args) {
-        try { await RunGit(cwd, args); } catch {
+        try { await RunGit(cwd, GitTimeout, args); } catch {
             /* best-effort */
         }
+    }
+
+    /// <summary>
+    /// Builds a <see cref="ProcessStartInfo"/> for git with prompts disabled
+    /// (<c>GIT_TERMINAL_PROMPT=0</c>, <c>GCM_INTERACTIVE=Never</c>) so an
+    /// unattended daemon can never block on a credential prompt.
+    /// </summary>
+    static ProcessStartInfo NewGitPsi(string cwd, string[] args) {
+        var psi = new ProcessStartInfo("git", args) {
+            WorkingDirectory       = cwd,
+            RedirectStandardOutput = true,
+            RedirectStandardError  = true,
+            CreateNoWindow         = true
+        };
+        psi.Environment["GIT_TERMINAL_PROMPT"] = "0";
+        psi.Environment["GCM_INTERACTIVE"]     = "Never";
+        return psi;
     }
 
     [LoggerMessage(Level = LogLevel.Information, Message = "Cleaning up orphaned worktree: {Path}")]

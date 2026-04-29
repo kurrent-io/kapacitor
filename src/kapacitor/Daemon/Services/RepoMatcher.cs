@@ -29,7 +29,7 @@ internal partial class RepoMatcher(DaemonConfig config, ILogger<RepoMatcher> log
     public async Task<string[]> FindAsync(string owner, string repo, string[] serverCandidates, CancellationToken ct) {
         var target = $"github.com/{owner}/{repo}";
 
-        var candidates = MergeCandidates(serverCandidates);
+        var candidates = await MergeCandidatesAsync(serverCandidates);
         var matches    = new List<string>();
         var seenRoots  = new HashSet<string>(RepoPathStore.PathComparison == StringComparison.Ordinal
             ? StringComparer.Ordinal
@@ -69,7 +69,7 @@ internal partial class RepoMatcher(DaemonConfig config, ILogger<RepoMatcher> log
     /// followed by the daemon's persisted RepoPathStore and config-allowed paths.
     /// Dedupe is platform-aware via <see cref="RepoPathStore.PathComparison"/>.
     /// </summary>
-    List<string> MergeCandidates(string[] serverCandidates) {
+    async Task<List<string>> MergeCandidatesAsync(string[] serverCandidates) {
         var comparer = RepoPathStore.PathComparison == StringComparison.Ordinal
             ? StringComparer.Ordinal
             : StringComparer.OrdinalIgnoreCase;
@@ -88,10 +88,10 @@ internal partial class RepoMatcher(DaemonConfig config, ILogger<RepoMatcher> log
 
         foreach (var p in serverCandidates) Add(p);
 
-        // RepoPathStore is async; load synchronously here so the caller can stay simple.
-        // Failures are non-fatal — we still try server candidates.
+        // Persisted RepoPathStore failures are non-fatal — server candidates
+        // and AllowedRepoPaths still flow through.
         try {
-            var persisted = RepoPathStore.GetSortedPathsAsync().GetAwaiter().GetResult();
+            var persisted = await RepoPathStore.GetSortedPathsAsync();
             foreach (var p in persisted) Add(p);
         } catch (Exception ex) {
             LogPersistedLoadFailed(ex);
@@ -153,7 +153,19 @@ internal partial class RepoMatcher(DaemonConfig config, ILogger<RepoMatcher> log
 
         _cache[repoRoot] = new CacheEntry(now + CacheTtl, normalized);
 
+        // Opportunistic sweep: a cache miss means we just went over the
+        // network/disk anyway, so dropping any other expired keys is cheap.
+        // Bounds the dictionary in long-running daemons that probe many
+        // distinct paths.
+        EvictExpired(now);
+
         return normalized;
+    }
+
+    void EvictExpired(DateTimeOffset now) {
+        foreach (var kvp in _cache) {
+            if (kvp.Value.Expires <= now) _cache.TryRemove(kvp.Key, out _);
+        }
     }
 
     static async Task<string?> RunGitCaptureAsync(string cwd, string[] args, CancellationToken ct) {
@@ -163,6 +175,8 @@ internal partial class RepoMatcher(DaemonConfig config, ILogger<RepoMatcher> log
             RedirectStandardError  = true,
             CreateNoWindow         = true
         };
+        psi.Environment["GIT_TERMINAL_PROMPT"] = "0";
+        psi.Environment["GCM_INTERACTIVE"]     = "Never";
 
         using var proc = Process.Start(psi);
 

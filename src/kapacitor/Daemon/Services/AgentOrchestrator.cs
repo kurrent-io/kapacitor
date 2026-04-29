@@ -353,10 +353,14 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
         }
     }
 
+    static readonly TimeSpan GitGuardTimeout = TimeSpan.FromSeconds(10);
+
     /// <summary>
     /// Reads <c>git remote get-url origin</c> at <paramref name="repoPath"/>
-    /// and normalises it to <c>host/owner/repo</c> form (or null if missing).
-    /// Used as a final guard before a hosted PR review is launched.
+    /// and normalises it to <c>host/owner/repo</c> form (or null if missing
+    /// or if git times out / blocks on a credential prompt). Used as a final
+    /// guard before a hosted PR review is launched, so it must never hang the
+    /// launch path.
     /// </summary>
     static async Task<string?> GetOriginRemoteAsync(string repoPath) {
         try {
@@ -366,12 +370,22 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
                 RedirectStandardError  = true,
                 CreateNoWindow         = true
             };
+            psi.Environment["GIT_TERMINAL_PROMPT"] = "0";
+            psi.Environment["GCM_INTERACTIVE"]     = "Never";
 
             using var proc = Process.Start(psi);
 
             if (proc is null) return null;
 
-            await proc.WaitForExitAsync();
+            using var cts = new CancellationTokenSource(GitGuardTimeout);
+
+            try {
+                await proc.WaitForExitAsync(cts.Token);
+            } catch (OperationCanceledException) {
+                try { proc.Kill(true); } catch { /* best-effort */ }
+
+                return null;
+            }
 
             if (proc.ExitCode != 0) return null;
 
