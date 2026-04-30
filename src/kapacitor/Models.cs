@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 
@@ -468,12 +469,26 @@ record RepoEntry {
 [JsonSerializable(typeof(AgentRunStarted))]
 [JsonSerializable(typeof(AgentRunStopped))]
 [JsonSerializable(typeof(AgentRunHeartbeat))]
+[JsonSerializable(typeof(PermissionDecision))]
 [JsonSerializable(typeof(int))]
 [JsonSerializable(typeof(string))]
 [JsonSerializable(typeof(string[]))]
 [JsonSerializable(typeof(RepoEntry[]))]
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.SnakeCaseLower)]
 partial class KapacitorJsonContext : JsonSerializerContext;
+
+/// <summary>
+/// Decision returned by the server's <c>RequestPermission</c> SignalR hub method.
+/// Mirrors <c>PermissionResponseEntry</c> on the server side. ApplyPermissions /
+/// UpdatedInput are typed as <see cref="JsonElement"/> so the daemon can relay
+/// them verbatim into Claude's hook decision payload without the server having
+/// to know about the hook wire shape.
+/// </summary>
+public readonly record struct PermissionDecision(
+        string       Behavior,
+        JsonElement? ApplyPermissions,
+        JsonElement? UpdatedInput
+    );
 
 /// <summary>Commands sent from the server to daemon clients via SignalR.</summary>
 public readonly record struct LaunchAgentCommand(

@@ -221,6 +221,31 @@ internal partial class ServerConnection : IAsyncDisposable {
     public Task LaunchFailedAsync(string agentId, string reason)
         => _hub.InvokeAsync("LaunchFailed", new LaunchFailed(agentId, reason), cancellationToken: _ct);
 
+    /// <summary>
+    /// Forwards a hosted-agent permission request to the server's <c>RequestPermission</c>
+    /// hub method and returns the user's decision. Runs over the persistent SignalR
+    /// connection so the long-poll isn't subject to the Cloudflare HTTP-request timeout
+    /// that severs the equivalent <c>/hooks/permission-request</c> route at ~120s.
+    /// The provided <paramref name="ct"/> should be the local hook caller's lifetime
+    /// (the daemon's HTTP listener tracks the incoming request); cancellation propagates
+    /// to the server which translates it into a synthesised "deny" decision.
+    /// </summary>
+    public Task<PermissionDecision> RequestPermissionAsync(
+            string            sessionId,
+            string?           toolName,
+            JsonElement?      toolInput,
+            JsonElement?      suggestions,
+            CancellationToken ct
+        ) =>
+        _hub.InvokeAsync<PermissionDecision>(
+            "RequestPermission",
+            sessionId,
+            toolName,
+            toolInput,
+            suggestions,
+            cancellationToken: ct
+        );
+
     public Task SendTerminalOutputAsync(string agentId, string base64Data)
         => _hub.SendAsync("SendTerminalOutput", new TerminalOutput(agentId, base64Data), cancellationToken: _ct);
 
