@@ -111,6 +111,13 @@ public static partial class DaemonRunner {
         builder.Services.AddSingleton(config);
         builder.Services.AddSingleton<ServerConnection>();
 
+        // Local HTTP bridge that fronts the server's permission flow. Registered as a
+        // singleton so AgentOrchestrator can read its bound URL at agent-spawn time, AND
+        // as a hosted service so its IHostedService lifecycle starts the listener before
+        // any agent is spawned.
+        builder.Services.AddSingleton<LocalPermissionBridge>();
+        builder.Services.AddHostedService(sp => sp.GetRequiredService<LocalPermissionBridge>());
+
         if (OperatingSystem.IsWindows()) {
             builder.Services.AddSingleton<IPtyProcessFactory, Pty.Windows.WinPtyProcessFactory>();
         } else {
@@ -132,6 +139,13 @@ public static partial class DaemonRunner {
 
         var lifetime   = host.Services.GetRequiredService<IHostApplicationLifetime>();
         var connection = host.Services.GetRequiredService<ServerConnection>();
+
+        // Start hosted services (LocalPermissionBridge in particular) BEFORE the SignalR
+        // connection comes up. Otherwise an early LaunchAgent message can arrive while
+        // BaseUrl is still null and the spawned Claude falls back to the HTTPS path —
+        // exactly what this bridge is meant to avoid.
+        await host.StartAsync(lifetime.ApplicationStopping);
+
         await connection.ConnectAsync(lifetime.ApplicationStopping);
 
         var worktreeManager = host.Services.GetRequiredService<WorktreeManager>();
@@ -145,10 +159,15 @@ public static partial class DaemonRunner {
         _ = host.Services.GetRequiredService<EvalRunner>();
 
         try {
-            await host.RunAsync();
+            // Wait without passing the lifetime token: WaitForShutdownAsync(token) treats
+            // token cancellation as a fault, so a normal Ctrl+C / lifetime.StopApplication()
+            // would surface as OperationCanceledException. The no-arg overload listens
+            // internally for ApplicationStopping and returns cleanly.
+            await host.WaitForShutdownAsync();
         } finally {
             await orchestrator.DisposeAsync();
             await connection.DisposeAsync();
+            await host.StopAsync();
         }
 
         return 0;

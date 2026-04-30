@@ -44,9 +44,6 @@ static class PermissionRequestCommand {
         var toolInput   = node["tool_input"];
         var suggestions = node["permission_suggestions"];
 
-        using var client = await HttpClientExtensions.CreateAuthenticatedClientAsync();
-        client.Timeout = TimeSpan.FromHours(10) + TimeSpan.FromMinutes(1);
-
         var payload = new JsonObject {
             ["session_id"]             = sessionId,
             ["tool_name"]              = toolName,
@@ -54,10 +51,56 @@ static class PermissionRequestCommand {
             ["permission_suggestions"] = suggestions?.DeepClone()
         };
 
+        // Prefer the daemon's local SignalR bridge when present — that path runs the
+        // long-poll over the daemon's persistent SignalR connection, bypassing
+        // Cloudflare's HTTP-request timeout (~120s) that severs the equivalent route
+        // on the server. Older daemon builds don't set this env var, so we fall back
+        // to the original /hooks/permission-request HTTPS path.
+        //
+        // Validate the daemon URL is loopback before posting — the env var carries no
+        // auth, so an accidentally / maliciously set non-loopback value would leak the
+        // hook payload (tool name, raw tool input) to an arbitrary endpoint.
+        if (TryGetLoopbackDaemonUrl(out var daemonUrl)) {
+            return await PostAsync(daemonUrl + "/permission-request", payload, authenticated: false);
+        }
+
+        return await PostAsync(baseUrl + "/hooks/permission-request", payload, authenticated: true);
+    }
+
+    static bool TryGetLoopbackDaemonUrl(out string daemonUrl) {
+        daemonUrl = "";
+        var raw = Environment.GetEnvironmentVariable("KAPACITOR_DAEMON_URL");
+        if (string.IsNullOrEmpty(raw)) return false;
+
+        if (!Uri.TryCreate(raw, UriKind.Absolute, out var uri) || !uri.IsLoopback) {
+            Console.Error.WriteLine($"[kapacitor] Ignoring non-loopback KAPACITOR_DAEMON_URL: {raw}");
+            return false;
+        }
+
+        if (uri.Scheme != Uri.UriSchemeHttp) {
+            Console.Error.WriteLine($"[kapacitor] Ignoring non-http KAPACITOR_DAEMON_URL scheme: {uri.Scheme}");
+            return false;
+        }
+
+        // Trim trailing slash so the appended "/permission-request" produces a clean URL.
+        daemonUrl = raw.TrimEnd('/');
+        return true;
+    }
+
+    static async Task<int> PostAsync(string url, JsonObject payload, bool authenticated) {
+        using var client = authenticated
+            ? await HttpClientExtensions.CreateAuthenticatedClientAsync()
+            : new HttpClient();
+
+        // The server-side long-poll waits up to 10 hours for the user to decide; the
+        // daemon-side bridge inherits that bound transparently. Add a minute of slack
+        // so the HTTP client doesn't tear down a still-pending request first.
+        client.Timeout = TimeSpan.FromHours(10) + TimeSpan.FromMinutes(1);
+
         using var content = new StringContent(payload.ToJsonString(), Encoding.UTF8, "application/json");
 
         try {
-            using var response = await client.PostAsync($"{baseUrl}/hooks/permission-request", content);
+            using var response = await client.PostAsync(url, content);
 
             if (!response.IsSuccessStatusCode) {
                 Console.Error.WriteLine($"[kapacitor] permission-request failed: HTTP {(int)response.StatusCode}");

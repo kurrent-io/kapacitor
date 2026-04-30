@@ -221,6 +221,32 @@ internal partial class ServerConnection : IAsyncDisposable {
     public Task LaunchFailedAsync(string agentId, string reason)
         => _hub.InvokeAsync("LaunchFailed", new LaunchFailed(agentId, reason), cancellationToken: _ct);
 
+    /// <summary>
+    /// Forwards a hosted-agent permission request to the server's <c>RequestPermission</c>
+    /// hub method and returns the user's decision. Runs over the persistent SignalR
+    /// connection so the long-poll isn't subject to the Cloudflare HTTP-request timeout
+    /// that severs the equivalent <c>/hooks/permission-request</c> route at ~120s.
+    /// The provided <paramref name="ct"/> typically tracks daemon shutdown — HttpListener
+    /// in the bridge doesn't surface a per-request "client disconnected" signal, so a
+    /// Claude process exiting mid-wait won't cancel this call. Switching the bridge to
+    /// Kestrel + <c>HttpContext.RequestAborted</c> would give us per-request cancellation.
+    /// </summary>
+    public Task<PermissionDecision> RequestPermissionAsync(
+            string            sessionId,
+            string?           toolName,
+            JsonElement?      toolInput,
+            JsonElement?      suggestions,
+            CancellationToken ct
+        ) =>
+        _hub.InvokeAsync<PermissionDecision>(
+            "RequestPermission",
+            sessionId,
+            toolName,
+            toolInput,
+            suggestions,
+            cancellationToken: ct
+        );
+
     public Task SendTerminalOutputAsync(string agentId, string base64Data)
         => _hub.SendAsync("SendTerminalOutput", new TerminalOutput(agentId, base64Data), cancellationToken: _ct);
 

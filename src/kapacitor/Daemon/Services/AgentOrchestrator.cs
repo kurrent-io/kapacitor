@@ -63,6 +63,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     readonly RepoMatcher                                 _repoMatcher;
     readonly IPtyProcessFactory                          _ptyFactory;
     readonly IHttpClientFactory                          _httpClientFactory;
+    readonly LocalPermissionBridge                       _permissionBridge;
     readonly ILogger<AgentOrchestrator>                  _logger;
     readonly PeriodicTimer                               _heartbeatTimer  = new(TimeSpan.FromSeconds(30));
     readonly PeriodicTimer                               _daemonHeartbeat = new(TimeSpan.FromMinutes(1));
@@ -75,6 +76,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             RepoMatcher                repoMatcher,
             IPtyProcessFactory         ptyFactory,
             IHttpClientFactory         httpClientFactory,
+            LocalPermissionBridge      permissionBridge,
             ILogger<AgentOrchestrator> logger
         ) {
         _config            = config;
@@ -83,6 +85,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
         _repoMatcher       = repoMatcher;
         _ptyFactory        = ptyFactory;
         _httpClientFactory = httpClientFactory;
+        _permissionBridge  = permissionBridge;
         _logger            = logger;
 
         // Wire up server commands
@@ -292,6 +295,14 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
 
             if (!string.IsNullOrEmpty(_config.ServerUrl)) {
                 env["KAPACITOR_URL"] = _config.ServerUrl;
+            }
+
+            // Tell the spawned Claude's permission-request hook where to find this
+            // daemon's local SignalR bridge. Bypasses Cloudflare's HTTP timeout on
+            // the server's /hooks/permission-request long-poll. CLI falls back to
+            // KAPACITOR_URL if this var is absent (e.g. older CLI builds).
+            if (_permissionBridge.BaseUrl is { } bridgeUrl) {
+                env["KAPACITOR_DAEMON_URL"] = bridgeUrl;
             }
 
             if (isReview && cmd.Review is { } reviewEnv) {
