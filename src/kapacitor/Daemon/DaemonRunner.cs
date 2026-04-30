@@ -139,6 +139,13 @@ public static partial class DaemonRunner {
 
         var lifetime   = host.Services.GetRequiredService<IHostApplicationLifetime>();
         var connection = host.Services.GetRequiredService<ServerConnection>();
+
+        // Start hosted services (LocalPermissionBridge in particular) BEFORE the SignalR
+        // connection comes up. Otherwise an early LaunchAgent message can arrive while
+        // BaseUrl is still null and the spawned Claude falls back to the HTTPS path —
+        // exactly what this bridge is meant to avoid.
+        await host.StartAsync(lifetime.ApplicationStopping);
+
         await connection.ConnectAsync(lifetime.ApplicationStopping);
 
         var worktreeManager = host.Services.GetRequiredService<WorktreeManager>();
@@ -152,10 +159,11 @@ public static partial class DaemonRunner {
         _ = host.Services.GetRequiredService<EvalRunner>();
 
         try {
-            await host.RunAsync();
+            await host.WaitForShutdownAsync(lifetime.ApplicationStopping);
         } finally {
             await orchestrator.DisposeAsync();
             await connection.DisposeAsync();
+            await host.StopAsync();
         }
 
         return 0;

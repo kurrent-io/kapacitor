@@ -24,24 +24,50 @@ internal sealed partial class LocalPermissionBridge(
         ServerConnection                server,
         ILogger<LocalPermissionBridge>  logger
     ) : IHostedService, IAsyncDisposable {
+    const int    MaxBindAttempts = 8;
+    const string PathPrefix      = "/permission-request";
+
     HttpListener?            _listener;
     Task?                    _acceptLoop;
     CancellationTokenSource? _cts;
+    string?                  _token;
 
+    /// <summary>
+    /// Full URL the spawned CLI hook command should POST to. Includes the random per-run
+    /// token as a path segment so unrelated local processes can't pose as a Claude hook
+    /// even if they discover the ephemeral port.
+    /// </summary>
     public string? BaseUrl { get; private set; }
 
     public Task StartAsync(CancellationToken cancellationToken) {
-        var port = ReserveFreeLoopbackPort();
+        // The TcpListener-based port probe has a TOCTOU window before HttpListener.Start
+        // binds the same port. Retry up to MaxBindAttempts on AddressAlreadyInUse so a
+        // single rare race doesn't crash daemon startup.
+        for (var attempt = 1; attempt <= MaxBindAttempts; attempt++) {
+            var port  = ReserveFreeLoopbackPort();
+            var token = Guid.NewGuid().ToString("N");
 
-        _listener = new HttpListener();
-        _listener.Prefixes.Add($"http://127.0.0.1:{port}/");
-        _listener.Start();
+            var listener = new HttpListener();
+            listener.Prefixes.Add($"http://127.0.0.1:{port}/{token}/");
 
-        BaseUrl = $"http://127.0.0.1:{port}";
-        _cts    = new CancellationTokenSource();
+            try {
+                listener.Start();
+                _listener = listener;
+                _token    = token;
+                BaseUrl   = $"http://127.0.0.1:{port}/{token}";
+                break;
+            } catch (HttpListenerException ex) when (attempt < MaxBindAttempts) {
+                LogBindRetry(logger, attempt, port, ex.Message);
+                listener.Close();
+            }
+        }
 
+        if (_listener is null)
+            throw new InvalidOperationException($"Failed to bind LocalPermissionBridge after {MaxBindAttempts} attempts");
+
+        _cts        = new CancellationTokenSource();
         _acceptLoop = Task.Run(() => AcceptLoopAsync(_cts.Token), _cts.Token);
-        LogBridgeStarted(logger, BaseUrl);
+        LogBridgeStarted(logger, BaseUrl!);
 
         return Task.CompletedTask;
     }
@@ -93,7 +119,13 @@ internal sealed partial class LocalPermissionBridge(
 
     async Task HandleAsync(HttpListenerContext context, CancellationToken ct) {
         try {
-            if (context.Request.Url?.AbsolutePath != "/permission-request" || context.Request.HttpMethod != "POST") {
+            // Require token + endpoint match. Token check first (constant-time-ish via string
+            // equality is fine — discovery vector is the env var, not timing). The HttpListener
+            // prefix already filters to /{token}/, but check explicitly so a misconfigured
+            // listener prefix can't quietly admit anything.
+            var path = context.Request.Url?.AbsolutePath;
+
+            if (path != $"/{_token}{PathPrefix}" || context.Request.HttpMethod != "POST") {
                 context.Response.StatusCode = 404;
                 context.Response.Close();
                 return;
@@ -124,13 +156,16 @@ internal sealed partial class LocalPermissionBridge(
             var toolInput   = ExtractElement(node, "tool_input");
             var suggestions = ExtractElement(node, "permission_suggestions");
 
-            // Use a CTS chained on the request's lifetime so a closed/aborted local connection
-            // (Claude exit, daemon shutdown) cancels the SignalR call promptly.
-            using var requestCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            // The HttpListener API doesn't expose a per-request "client disconnected" token,
+            // so the SignalR call is bound to the daemon-shutdown token only. If Claude exits
+            // mid-wait, the server hub call stays open until the user decides or the session
+            // ends — wasteful but bounded by the ServerConnection's connection lifetime.
+            // Switching to Kestrel + HttpContext.RequestAborted would give us per-request
+            // cancellation; out of scope for this PR.
             PermissionDecision decision;
 
             try {
-                decision = await server.RequestPermissionAsync(sessionId, toolName, toolInput, suggestions, requestCts.Token);
+                decision = await server.RequestPermissionAsync(sessionId, toolName, toolInput, suggestions, ct);
             } catch (Exception ex) {
                 LogRequestPermissionFailed(logger, ex, sessionId);
                 decision = new PermissionDecision("deny", null, null);
@@ -159,8 +194,10 @@ internal sealed partial class LocalPermissionBridge(
         if (child is null) return null;
 
         // JsonNode → JsonElement via raw JSON is the AOT-safe path; child.GetValue<JsonElement>()
-        // is finicky on JsonObject children.
-        return JsonDocument.Parse(child.ToJsonString()).RootElement.Clone();
+        // is finicky on JsonObject children. Dispose the document — Clone() copies the buffer
+        // so the returned element stays valid.
+        using var doc = JsonDocument.Parse(child.ToJsonString());
+        return doc.RootElement.Clone();
     }
 
     static string BuildHookResponseJson(PermissionDecision decision) {
@@ -184,6 +221,9 @@ internal sealed partial class LocalPermissionBridge(
 
     [LoggerMessage(Level = LogLevel.Information, Message = "Local permission bridge listening on {BaseUrl}")]
     static partial void LogBridgeStarted(ILogger logger, string baseUrl);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Local permission bridge bind attempt {Attempt} on port {Port} failed: {Reason} — retrying")]
+    static partial void LogBindRetry(ILogger logger, int attempt, int port, string reason);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "RequestPermission via SignalR failed for session {SessionId}; falling back to deny")]
     static partial void LogRequestPermissionFailed(ILogger logger, Exception exception, string sessionId);
