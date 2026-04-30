@@ -226,9 +226,10 @@ internal partial class ServerConnection : IAsyncDisposable {
     /// hub method and returns the user's decision. Runs over the persistent SignalR
     /// connection so the long-poll isn't subject to the Cloudflare HTTP-request timeout
     /// that severs the equivalent <c>/hooks/permission-request</c> route at ~120s.
-    /// The provided <paramref name="ct"/> should be the local hook caller's lifetime
-    /// (the daemon's HTTP listener tracks the incoming request); cancellation propagates
-    /// to the server which translates it into a synthesised "deny" decision.
+    /// The provided <paramref name="ct"/> typically tracks daemon shutdown — HttpListener
+    /// in the bridge doesn't surface a per-request "client disconnected" signal, so a
+    /// Claude process exiting mid-wait won't cancel this call. Switching the bridge to
+    /// Kestrel + <c>HttpContext.RequestAborted</c> would give us per-request cancellation.
     /// </summary>
     public Task<PermissionDecision> RequestPermissionAsync(
             string            sessionId,

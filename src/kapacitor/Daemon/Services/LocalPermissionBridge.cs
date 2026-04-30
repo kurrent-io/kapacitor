@@ -41,8 +41,9 @@ internal sealed partial class LocalPermissionBridge(
 
     public Task StartAsync(CancellationToken cancellationToken) {
         // The TcpListener-based port probe has a TOCTOU window before HttpListener.Start
-        // binds the same port. Retry up to MaxBindAttempts on AddressAlreadyInUse so a
-        // single rare race doesn't crash daemon startup.
+        // binds the same port. Retry up to MaxBindAttempts on TRANSIENT bind failures so a
+        // single rare race doesn't crash daemon startup. Non-transient errors (URLACL on
+        // Windows, permission issues) bubble up immediately so they aren't masked.
         for (var attempt = 1; attempt <= MaxBindAttempts; attempt++) {
             var port  = ReserveFreeLoopbackPort();
             var token = Guid.NewGuid().ToString("N");
@@ -56,7 +57,7 @@ internal sealed partial class LocalPermissionBridge(
                 _token    = token;
                 BaseUrl   = $"http://127.0.0.1:{port}/{token}";
                 break;
-            } catch (HttpListenerException ex) when (attempt < MaxBindAttempts) {
+            } catch (HttpListenerException ex) when (attempt < MaxBindAttempts && IsAddressInUse(ex)) {
                 LogBindRetry(logger, attempt, port, ex.Message);
                 listener.Close();
             }
@@ -71,6 +72,15 @@ internal sealed partial class LocalPermissionBridge(
 
         return Task.CompletedTask;
     }
+
+    /// <summary>
+    /// Detects "address already in use" across platforms. HttpListenerException's ErrorCode
+    /// is the underlying socket/Win32 error: 10048 = WSAEADDRINUSE (Windows), 48 = EADDRINUSE
+    /// (macOS), 98 = EADDRINUSE (Linux). Anything else (URLACL denial code 5, etc.) is not
+    /// transient and shouldn't be retried.
+    /// </summary>
+    static bool IsAddressInUse(HttpListenerException ex) =>
+        ex.ErrorCode is 10048 or 48 or 98;
 
     public async Task StopAsync(CancellationToken cancellationToken) {
         if (_cts is not null) await _cts.CancelAsync();
@@ -133,7 +143,18 @@ internal sealed partial class LocalPermissionBridge(
 
             using var reader = new StreamReader(context.Request.InputStream, Encoding.UTF8);
             var       body   = await reader.ReadToEndAsync(ct);
-            var       node   = JsonNode.Parse(body);
+
+            JsonNode? node;
+            try {
+                node = JsonNode.Parse(body);
+            } catch (JsonException) {
+                // Malformed JSON from the local hook caller — that's a 400 (caller error),
+                // not a 500 (daemon failure). Without this branch the outer Exception catch
+                // would mislabel client-side parse errors as server faults.
+                context.Response.StatusCode = 400;
+                context.Response.Close();
+                return;
+            }
 
             if (node is null) {
                 context.Response.StatusCode = 400;

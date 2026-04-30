@@ -56,11 +56,35 @@ static class PermissionRequestCommand {
         // Cloudflare's HTTP-request timeout (~120s) that severs the equivalent route
         // on the server. Older daemon builds don't set this env var, so we fall back
         // to the original /hooks/permission-request HTTPS path.
-        var daemonUrl = Environment.GetEnvironmentVariable("KAPACITOR_DAEMON_URL");
+        //
+        // Validate the daemon URL is loopback before posting — the env var carries no
+        // auth, so an accidentally / maliciously set non-loopback value would leak the
+        // hook payload (tool name, raw tool input) to an arbitrary endpoint.
+        if (TryGetLoopbackDaemonUrl(out var daemonUrl)) {
+            return await PostAsync(daemonUrl + "/permission-request", payload, authenticated: false);
+        }
 
-        return daemonUrl is { Length: > 0 } d
-            ? await PostAsync(d + "/permission-request", payload, authenticated: false)
-            : await PostAsync(baseUrl + "/hooks/permission-request", payload, authenticated: true);
+        return await PostAsync(baseUrl + "/hooks/permission-request", payload, authenticated: true);
+    }
+
+    static bool TryGetLoopbackDaemonUrl(out string daemonUrl) {
+        daemonUrl = "";
+        var raw = Environment.GetEnvironmentVariable("KAPACITOR_DAEMON_URL");
+        if (string.IsNullOrEmpty(raw)) return false;
+
+        if (!Uri.TryCreate(raw, UriKind.Absolute, out var uri) || !uri.IsLoopback) {
+            Console.Error.WriteLine($"[kapacitor] Ignoring non-loopback KAPACITOR_DAEMON_URL: {raw}");
+            return false;
+        }
+
+        if (uri.Scheme != Uri.UriSchemeHttp) {
+            Console.Error.WriteLine($"[kapacitor] Ignoring non-http KAPACITOR_DAEMON_URL scheme: {uri.Scheme}");
+            return false;
+        }
+
+        // Trim trailing slash so the appended "/permission-request" produces a clean URL.
+        daemonUrl = raw.TrimEnd('/');
+        return true;
     }
 
     static async Task<int> PostAsync(string url, JsonObject payload, bool authenticated) {

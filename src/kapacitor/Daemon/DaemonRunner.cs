@@ -159,7 +159,11 @@ public static partial class DaemonRunner {
         _ = host.Services.GetRequiredService<EvalRunner>();
 
         try {
-            await host.WaitForShutdownAsync(lifetime.ApplicationStopping);
+            // Wait without passing the lifetime token: WaitForShutdownAsync(token) treats
+            // token cancellation as a fault, so a normal Ctrl+C / lifetime.StopApplication()
+            // would surface as OperationCanceledException. The no-arg overload listens
+            // internally for ApplicationStopping and returns cleanly.
+            await host.WaitForShutdownAsync();
         } finally {
             await orchestrator.DisposeAsync();
             await connection.DisposeAsync();
