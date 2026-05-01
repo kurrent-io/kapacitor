@@ -67,7 +67,7 @@ static class PermissionRequestCommand {
         return await PostAsync(baseUrl + "/hooks/permission-request", payload, authenticated: true);
     }
 
-    static bool TryGetLoopbackDaemonUrl(out string daemonUrl) {
+    internal static bool TryGetLoopbackDaemonUrl(out string daemonUrl) {
         daemonUrl = "";
         var raw = Environment.GetEnvironmentVariable("KAPACITOR_DAEMON_URL");
         if (string.IsNullOrEmpty(raw)) return false;
