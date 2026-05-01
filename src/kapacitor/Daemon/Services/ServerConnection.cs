@@ -231,7 +231,7 @@ internal partial class ServerConnection : IAsyncDisposable {
     /// Claude process exiting mid-wait won't cancel this call. Switching the bridge to
     /// Kestrel + <c>HttpContext.RequestAborted</c> would give us per-request cancellation.
     /// </summary>
-    public Task<PermissionDecision> RequestPermissionAsync(
+    public virtual Task<PermissionDecision> RequestPermissionAsync(
             string            sessionId,
             string?           toolName,
             JsonElement?      toolInput,
