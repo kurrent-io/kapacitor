@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 
 namespace kapacitor.Tests.Unit;
 
@@ -25,14 +26,15 @@ public class ProcessHelpersTests {
     [Test]
     public async Task IsProcessAlive_transitions_to_false_after_child_exits() {
         // Spawn a short-lived child process, capture its pid, wait for exit, then assert dead.
-        using var process = new Process {
-            StartInfo = new ProcessStartInfo("/bin/sh", "-c \"exit 0\"") {
-                RedirectStandardOutput = true,
-                RedirectStandardError  = true,
-                UseShellExecute        = false
-            }
-        };
+        var psi = RuntimeInformation.IsOSPlatform(OSPlatform.Windows)
+            ? new ProcessStartInfo("cmd.exe", "/c exit 0")
+            : new ProcessStartInfo("/bin/sh", "-c \"exit 0\"");
 
+        psi.RedirectStandardOutput = true;
+        psi.RedirectStandardError  = true;
+        psi.UseShellExecute        = false;
+
+        using var process = new Process { StartInfo = psi };
         process.Start();
         var pid = process.Id;
 
