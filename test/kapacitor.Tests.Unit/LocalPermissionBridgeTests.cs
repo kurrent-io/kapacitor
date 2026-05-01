@@ -17,6 +17,11 @@ public class LocalPermissionBridgeTests {
         return (bridge, server);
     }
 
+    // Short HttpClient timeout so a misbehaving listener fails the test in seconds rather than
+    // stalling the suite on the default ~100s. Bridge replies are loopback and immediate, so
+    // anything past 5s indicates a regression worth surfacing fast.
+    static HttpClient CreateClient() => new() { Timeout = TimeSpan.FromSeconds(5) };
+
     [Test, NotInParallel(nameof(LocalPermissionBridgeTests))]
     public async Task StartAsync_ExposesLoopbackBaseUrlWithToken() {
         var (bridge, _) = CreateBridge();
@@ -47,7 +52,7 @@ public class LocalPermissionBridgeTests {
             var uri      = new Uri(bridge.BaseUrl!);
             var bogusUrl = $"http://127.0.0.1:{uri.Port}/{new string('0', 32)}/permission-request";
 
-            using var client   = new HttpClient();
+            using var client   = CreateClient();
             using var response = await client.PostAsync(bogusUrl, JsonContent.Create(new { session_id = "abc" }));
 
             await Assert.That((int)response.StatusCode).IsEqualTo(404);
@@ -62,7 +67,7 @@ public class LocalPermissionBridgeTests {
         try {
             await bridge.StartAsync(CancellationToken.None);
 
-            using var client   = new HttpClient();
+            using var client   = CreateClient();
             using var response = await client.PostAsync($"{bridge.BaseUrl}/something-else", JsonContent.Create(new { session_id = "abc" }));
 
             await Assert.That((int)response.StatusCode).IsEqualTo(404);
@@ -77,7 +82,7 @@ public class LocalPermissionBridgeTests {
         try {
             await bridge.StartAsync(CancellationToken.None);
 
-            using var client   = new HttpClient();
+            using var client   = CreateClient();
             using var response = await client.GetAsync($"{bridge.BaseUrl}/permission-request");
 
             await Assert.That((int)response.StatusCode).IsEqualTo(404);
@@ -92,7 +97,7 @@ public class LocalPermissionBridgeTests {
         try {
             await bridge.StartAsync(CancellationToken.None);
 
-            using var client   = new HttpClient();
+            using var client   = CreateClient();
             using var content  = new StringContent("{ this is not json", Encoding.UTF8, "application/json");
             using var response = await client.PostAsync($"{bridge.BaseUrl}/permission-request", content);
 
@@ -108,7 +113,7 @@ public class LocalPermissionBridgeTests {
         try {
             await bridge.StartAsync(CancellationToken.None);
 
-            using var client   = new HttpClient();
+            using var client   = CreateClient();
             using var response = await client.PostAsync($"{bridge.BaseUrl}/permission-request", JsonContent.Create(new { tool_name = "Bash" }));
 
             await Assert.That((int)response.StatusCode).IsEqualTo(400);
@@ -126,7 +131,7 @@ public class LocalPermissionBridgeTests {
         try {
             await bridge.StartAsync(CancellationToken.None);
 
-            using var client = new HttpClient();
+            using var client = CreateClient();
             var       payload = new {
                 session_id             = "11111111-2222-3333-4444-555555555555",
                 tool_name              = "Bash",
@@ -157,7 +162,7 @@ public class LocalPermissionBridgeTests {
         try {
             await bridge.StartAsync(CancellationToken.None);
 
-            using var client   = new HttpClient();
+            using var client   = CreateClient();
             using var response = await client.PostAsync($"{bridge.BaseUrl}/permission-request", JsonContent.Create(new { session_id = "abc" }));
 
             var body = await response.Content.ReadAsStringAsync();
@@ -183,7 +188,7 @@ public class LocalPermissionBridgeTests {
         try {
             await bridge.StartAsync(CancellationToken.None);
 
-            using var client   = new HttpClient();
+            using var client   = CreateClient();
             using var response = await client.PostAsync($"{bridge.BaseUrl}/permission-request", JsonContent.Create(new { session_id = "abc" }));
 
             var body = await response.Content.ReadAsStringAsync();
@@ -206,7 +211,7 @@ public class LocalPermissionBridgeTests {
         try {
             await bridge.StartAsync(CancellationToken.None);
 
-            using var client   = new HttpClient();
+            using var client   = CreateClient();
             using var response = await client.PostAsync($"{bridge.BaseUrl}/permission-request", JsonContent.Create(new { session_id = "abc" }));
 
             await Assert.That((int)response.StatusCode).IsEqualTo(200);
@@ -224,21 +229,25 @@ public class LocalPermissionBridgeTests {
     [Test, NotInParallel(nameof(LocalPermissionBridgeTests))]
     public async Task StopAsyncReleasesPort() {
         var (bridge, _) = CreateBridge();
-        await bridge.StartAsync(CancellationToken.None);
-
-        var port = new Uri(bridge.BaseUrl!).Port;
-        await bridge.StopAsync(CancellationToken.None);
-
-        // After stop, the port should accept a fresh bind. If StopAsync didn't release
-        // it, this would either throw or hang.
-        var probe = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, port);
         try {
-            probe.Start();
-        } finally {
-            probe.Stop();
-        }
+            await bridge.StartAsync(CancellationToken.None);
 
-        await bridge.DisposeAsync();
+            var port = new Uri(bridge.BaseUrl!).Port;
+            await bridge.StopAsync(CancellationToken.None);
+
+            // After stop, the port should accept a fresh bind. If StopAsync didn't release
+            // it, this would either throw or hang.
+            var probe = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, port);
+            try {
+                probe.Start();
+            } finally {
+                probe.Stop();
+            }
+        } finally {
+            // Ensure DisposeAsync runs even if the probe.Start() above throws — otherwise the
+            // listener / CTS leak into later tests in the same process.
+            await bridge.DisposeAsync();
+        }
     }
 }
 
