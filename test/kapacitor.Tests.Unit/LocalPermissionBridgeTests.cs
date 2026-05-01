@@ -266,6 +266,7 @@ sealed class FakeServerConnection : ServerConnection {
         Func<string, string?, JsonElement?, JsonElement?, CancellationToken, Task<PermissionDecision>>? respond
     ) : base(
         new DaemonConfig { Name = "test", ServerUrl = "http://127.0.0.1:1" },
+        NullLoggerFactory.Instance,
         NullLogger<ServerConnection>.Instance
     ) {
         _respond = respond;
