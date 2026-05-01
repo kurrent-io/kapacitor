@@ -1,4 +1,6 @@
+using System.Net;
 using System.Net.Http.Json;
+using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
 using kapacitor.Daemon;
@@ -237,7 +239,7 @@ public class LocalPermissionBridgeTests {
 
             // After stop, the port should accept a fresh bind. If StopAsync didn't release
             // it, this would either throw or hang.
-            var probe = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, port);
+            var probe = new TcpListener(IPAddress.Loopback, port);
             try {
                 probe.Start();
             } finally {
