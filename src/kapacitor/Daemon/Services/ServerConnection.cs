@@ -53,7 +53,7 @@ internal partial class ServerConnection : IAsyncDisposable {
     /// </summary>
     public Func<string[]>? GetLiveAgentIds { get; set; }
 
-    public ServerConnection(DaemonConfig config, ILogger<ServerConnection> logger) {
+    public ServerConnection(DaemonConfig config, ILoggerFactory loggerFactory, ILogger<ServerConnection> logger) {
         _config = config;
         _logger = logger;
 
@@ -69,6 +69,13 @@ internal partial class ServerConnection : IAsyncDisposable {
                 }
             )
             .WithAutomaticReconnect(new RetryPolicy())
+            // Forward SignalR client framework logs (HubConnection, JsonHubProtocol,
+            // …) to the daemon's logger factory. Without this, the HubConnectionBuilder
+            // resolves a NullLoggerFactory internally and protocol-level errors
+            // (e.g. "couldn't bind arguments for invocation 'LaunchAgent'" — exactly
+            // what DEV-1665 was) silently disappear, leaving the daemon looking
+            // healthy while it drops every invocation.
+            .ConfigureLogging(b => b.Services.AddSingleton(loggerFactory))
             .AddJsonProtocol(options => {
                     options.PayloadSerializerOptions.TypeInfoResolverChain.Insert(0, KapacitorJsonContext.Default);
                     options.PayloadSerializerOptions.PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower;
@@ -76,11 +83,11 @@ internal partial class ServerConnection : IAsyncDisposable {
             )
             .Build();
 
-        _hub.On<LaunchAgentCommand>("LaunchAgent", cmd => OnLaunchAgent?.Invoke(cmd)                       ?? Task.CompletedTask);
-        _hub.On<string>("StopAgent", agentId => OnStopAgent?.Invoke(agentId)                               ?? Task.CompletedTask);
-        _hub.On<SendInputCommand>("SendInput", cmd => OnSendInput?.Invoke(cmd)                             ?? Task.CompletedTask);
-        _hub.On<string, string>("SendSpecialKey", (agentId, key) => OnSendSpecialKey?.Invoke(agentId, key) ?? Task.CompletedTask);
-        _hub.On<ResizeTerminalCommand>("ResizeTerminal", cmd => OnResizeTerminal?.Invoke(cmd) ?? Task.CompletedTask);
+        _hub.On<LaunchAgentCommand>("LaunchAgent", cmd => SafeInvoke("LaunchAgent", () => OnLaunchAgent?.Invoke(cmd)));
+        _hub.On<string>("StopAgent", agentId => SafeInvoke("StopAgent", () => OnStopAgent?.Invoke(agentId)));
+        _hub.On<SendInputCommand>("SendInput", cmd => SafeInvoke("SendInput", () => OnSendInput?.Invoke(cmd)));
+        _hub.On<string, string>("SendSpecialKey", (agentId, key) => SafeInvoke("SendSpecialKey", () => OnSendSpecialKey?.Invoke(agentId, key)));
+        _hub.On<ResizeTerminalCommand>("ResizeTerminal", cmd => SafeInvoke("ResizeTerminal", () => OnResizeTerminal?.Invoke(cmd)));
 
         // Client-result invocations for per-phase eval dispatch.
         _hub.On<PrepareEvalCommand, PrepareResult>("PrepareEval",
@@ -388,6 +395,27 @@ internal partial class ServerConnection : IAsyncDisposable {
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "Failed to update repo paths on server")]
     partial void LogRepoPathUpdateFailed(Exception ex);
+
+    [LoggerMessage(Level = LogLevel.Error, Message = "Hub method '{Method}' handler threw — invocation dropped")]
+    partial void LogHandlerThrew(Exception ex, string method);
+
+    /// <summary>
+    /// Wraps each typed <c>On(...)</c> handler so an exception inside a handler
+    /// is logged with the hub method name instead of bubbling up into SignalR's
+    /// generic dispatch error path. Pairs with the <c>ConfigureLogging</c> wiring
+    /// above, which surfaces the framework's own binding/parsing errors. Together
+    /// they make sure no class of "daemon silently dropped a server invocation"
+    /// is invisible in the logs.
+    /// </summary>
+    async Task SafeInvoke(string method, Func<Task?> handler) {
+        try {
+            var task = handler();
+
+            if (task is not null) await task;
+        } catch (Exception ex) {
+            LogHandlerThrew(ex, method);
+        }
+    }
 
     class RetryPolicy : IRetryPolicy {
         static readonly TimeSpan[] Delays = [

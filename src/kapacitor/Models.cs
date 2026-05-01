@@ -474,7 +474,15 @@ record RepoEntry {
 [JsonSerializable(typeof(string))]
 [JsonSerializable(typeof(string[]))]
 [JsonSerializable(typeof(RepoEntry[]))]
-[JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.SnakeCaseLower)]
+// UseStringEnumConverter=true matches the server's SignalR JSON protocol, which
+// serialises enums (e.g. LaunchKind) as camelCase strings. Without it the
+// source-gen LaunchKind JsonTypeInfo defaults to numeric and silently drops the
+// invocation — the daemon receives "kind": "review" / "default" and the
+// LaunchAgent handler never fires (DEV-1665).
+[JsonSourceGenerationOptions(
+    PropertyNamingPolicy   = JsonKnownNamingPolicy.SnakeCaseLower,
+    UseStringEnumConverter = true
+)]
 partial class KapacitorJsonContext : JsonSerializerContext;
 
 /// <summary>
