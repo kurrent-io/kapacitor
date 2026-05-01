@@ -42,6 +42,12 @@ static class WatcherManager {
                 arguments += " --skip-title";
             }
 
+            // Pass the spawning hook's parent PID (claude) so the watcher can self-terminate
+            // if claude dies without firing session-end. Best-effort — skip if lookup fails.
+            if (ProcessHelpers.GetParentPid() is { } parentPid && parentPid > 1) {
+                arguments += $" --parent-pid {parentPid}";
+            }
+
             var psi = new ProcessStartInfo(kapacitorPath, arguments) {
                 RedirectStandardOutput = true,
                 RedirectStandardInput  = true,

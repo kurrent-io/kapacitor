@@ -14,7 +14,8 @@ static partial class WatchCommand {
             string  transcriptPath,
             string? agentId,
             string? cwd,
-            bool    skipTitle = false
+            bool    skipTitle = false,
+            int?    parentPid = null
         ) {
         // Redirect all output to a log file so we don't hold parent's pipe FDs open
         var logDir = PathHelpers.ConfigPath("logs");
@@ -33,6 +34,27 @@ static partial class WatchCommand {
             cts.Cancel();
         };
         PosixSignalRegistration.Create(PosixSignal.SIGTERM, _ => cts.Cancel());
+
+        // Watch the spawning claude process. If it dies without firing session-end
+        // (crash, force-kill, IDE-detach), self-terminate within ~5s instead of orphaning.
+        if (parentPid is { } ppid && ProcessHelpers.IsProcessAlive(ppid)) {
+            Log($"Monitoring parent pid {ppid}");
+            _ = Task.Run(async () => {
+                while (!cts.Token.IsCancellationRequested) {
+                    try {
+                        await Task.Delay(TimeSpan.FromSeconds(5), cts.Token);
+                    } catch (OperationCanceledException) {
+                        return;
+                    }
+
+                    if (!ProcessHelpers.IsProcessAlive(ppid)) {
+                        Log($"Parent pid {ppid} exited; shutting down watcher");
+                        cts.Cancel();
+                        return;
+                    }
+                }
+            }, cts.Token);
+        }
 
         var state = new WatchState();
 
