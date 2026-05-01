@@ -161,6 +161,26 @@ jobs:
           for dir in npm-artifacts/npm-kapacitor-*/; do
             pkg_name=$(basename "$dir" | sed 's/^npm-//')
             cp "npm/$pkg_name/package.json" "$dir/package.json"
+
+            # actions/upload-artifact + download-artifact round-trips through ZIP,
+            # which drops the executable bit. The platform packages have no `bin`
+            # field in package.json (the wrapper resolves the binary path
+            # manually), so npm won't restore +x at install time either. Set it
+            # explicitly here so the published tarball ships an executable file.
+            #
+            # Each platform package only has one of these (kapacitor or
+            # kapacitor.exe), set per the build matrix' `binary-name`. Pick by
+            # file existence instead of pkg_name pattern so adding new RIDs
+            # doesn't silently regress this step.
+            if [ -f "$dir/bin/kapacitor.exe" ]; then
+              chmod +x "$dir/bin/kapacitor.exe"
+            elif [ -f "$dir/bin/kapacitor" ]; then
+              chmod +x "$dir/bin/kapacitor"
+            else
+              echo "::error::No kapacitor binary found in $dir/bin (contents: $(ls "$dir/bin" 2>&1))"
+              exit 1
+            fi
+
             cd "$dir"
             npm version "$VERSION" --no-git-tag-version --allow-same-version
             npm publish --access public
