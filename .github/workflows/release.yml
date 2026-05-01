@@ -161,6 +161,18 @@ jobs:
           for dir in npm-artifacts/npm-kapacitor-*/; do
             pkg_name=$(basename "$dir" | sed 's/^npm-//')
             cp "npm/$pkg_name/package.json" "$dir/package.json"
+
+            # actions/upload-artifact + download-artifact round-trips through ZIP,
+            # which drops the executable bit. The platform packages have no `bin`
+            # field in package.json (the wrapper resolves the binary path
+            # manually), so npm won't restore +x at install time either. Set it
+            # explicitly here so the published tarball ships an executable file.
+            if [[ "$pkg_name" == *win-x64* ]]; then
+              chmod +x "$dir/bin/kapacitor.exe"
+            else
+              chmod +x "$dir/bin/kapacitor"
+            fi
+
             cd "$dir"
             npm version "$VERSION" --no-git-tag-version --allow-same-version
             npm publish --access public
