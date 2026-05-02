@@ -25,10 +25,14 @@ public class ProcessHelpersTests {
 
     [Test]
     public async Task IsProcessAlive_transitions_to_false_after_child_exits() {
-        // Spawn a short-lived child process, capture its pid, wait for exit, then assert dead.
+        // Use a long-running child and Kill() it explicitly: a fast-exit command can be
+        // reaped by .NET's SIGCHLD handler before the alive assertion runs on a busy CI
+        // scheduler, making `kill(pid, 0)` return ESRCH and the test fail intermittently.
+        // Spawn the binary directly (no shell wrapper) so there's no descendant to orphan
+        // when we kill the tracked pid.
         var psi = RuntimeInformation.IsOSPlatform(OSPlatform.Windows)
-            ? new ProcessStartInfo("cmd.exe", "/c exit 0")
-            : new ProcessStartInfo("/bin/sh", "-c \"exit 0\"");
+            ? new ProcessStartInfo("ping", "-n 30 127.0.0.1")
+            : new ProcessStartInfo("/bin/sleep", "30");
 
         psi.RedirectStandardOutput = true;
         psi.RedirectStandardError  = true;
@@ -40,10 +44,11 @@ public class ProcessHelpersTests {
 
         await Assert.That(ProcessHelpers.IsProcessAlive(pid)).IsTrue();
 
+        process.Kill(entireProcessTree: true);
         await process.WaitForExitAsync();
 
-        // Reap any zombie state so kill(pid, 0) reports ESRCH.
-        // On Unix, the OS clears the process table entry when the parent waits.
+        // After .NET reaps the killed child, kill(pid, 0) returns ESRCH. Poll briefly
+        // in case the reaper runs slightly later than WaitForExitAsync's completion.
         var deadline = DateTime.UtcNow.AddSeconds(2);
 
         while (DateTime.UtcNow < deadline && ProcessHelpers.IsProcessAlive(pid)) {
