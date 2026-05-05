@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using WireMock.RequestBuilders;
 using WireMock.ResponseBuilders;
 using WireMock.Server;
@@ -99,5 +100,125 @@ public class InlineDrainTests : IDisposable {
         } finally {
             Directory.Delete(dir, recursive: true);
         }
+    }
+}
+
+public class SessionStartAdditionalContextTests : IDisposable {
+    readonly WireMockServer _server = WireMockServer.Start();
+
+    public void Dispose() => _server.Stop();
+
+    [Test]
+    public async Task SessionStart_EmitsAdditionalContextJson_WhenServerReturnsTopClusters() {
+        _server.Given(Request.Create().WithPath("/hooks/session-start").UsingPost())
+            .RespondWith(
+                Response.Create()
+                    .WithStatusCode(200)
+                    .WithHeader("Content-Type", "application/json")
+                    .WithBody(
+                        """
+                        {
+                          "top_clusters": [
+                            { "category": "safety",          "text": "always close the writer" },
+                            { "category": "maintainability", "text": "prefer JsonNode.Parse for AOT-safe string assignment" }
+                          ]
+                        }
+                        """
+                    )
+            );
+
+        using var client   = new HttpClient();
+        using var content  = new StringContent("{}", Encoding.UTF8, "application/json");
+        var       response = await client.PostAsync($"{_server.Url}/hooks/session-start", content);
+        var       body     = await response.Content.ReadAsStringAsync();
+
+        var emission = SessionGuidelinesEmitter.BuildAdditionalContext(body, disabled: false);
+
+        await Assert.That(emission).IsNotNull();
+        var json = JsonNode.Parse(emission!);
+        await Assert.That(json!["hookSpecificOutput"]!["hookEventName"]!.GetValue<string>()).IsEqualTo("SessionStart");
+        var ctx = json["hookSpecificOutput"]!["additionalContext"]!.GetValue<string>();
+        await Assert.That(ctx).Contains("Recurring lessons");
+        await Assert.That(ctx).Contains("- always close the writer");
+        await Assert.That(ctx).Contains("- prefer JsonNode.Parse for AOT-safe string assignment");
+    }
+
+    [Test]
+    public async Task SessionStart_EmitsNothing_WhenTopClustersAbsent() {
+        _server.Given(Request.Create().WithPath("/hooks/session-start").UsingPost())
+            .RespondWith(
+                Response.Create()
+                    .WithStatusCode(200)
+                    .WithHeader("Content-Type", "application/json")
+                    .WithBody("""{ "slug": "some-resumed-session" }""")
+            );
+
+        using var client   = new HttpClient();
+        using var content  = new StringContent("{}", Encoding.UTF8, "application/json");
+        var       response = await client.PostAsync($"{_server.Url}/hooks/session-start", content);
+        var       body     = await response.Content.ReadAsStringAsync();
+
+        var emission = SessionGuidelinesEmitter.BuildAdditionalContext(body, disabled: false);
+
+        await Assert.That(emission).IsNull();
+    }
+
+    [Test]
+    public async Task SessionStart_EmitsNothing_WhenDisableSessionGuidelinesConfigSet() {
+        _server.Given(Request.Create().WithPath("/hooks/session-start").UsingPost())
+            .RespondWith(
+                Response.Create()
+                    .WithStatusCode(200)
+                    .WithHeader("Content-Type", "application/json")
+                    .WithBody(
+                        """
+                        {
+                          "top_clusters": [
+                            { "category": "safety", "text": "x" }
+                          ]
+                        }
+                        """
+                    )
+            );
+
+        using var client   = new HttpClient();
+        using var content  = new StringContent("{}", Encoding.UTF8, "application/json");
+        var       response = await client.PostAsync($"{_server.Url}/hooks/session-start", content);
+        var       body     = await response.Content.ReadAsStringAsync();
+
+        // Mirrors how Program.cs reads `AppConfig.ResolvedProfile?.Profile?.DisableSessionGuidelines is true`.
+        var emission = SessionGuidelinesEmitter.BuildAdditionalContext(body, disabled: true);
+
+        await Assert.That(emission).IsNull();
+    }
+
+    [Test]
+    public async Task SessionStart_EmitsNothing_WhenTopClustersEmpty() {
+        var emission = SessionGuidelinesEmitter.BuildAdditionalContext(
+            """{ "top_clusters": [] }""",
+            disabled: false
+        );
+
+        await Assert.That(emission).IsNull();
+    }
+
+    [Test]
+    public async Task SessionStart_SkipsEntries_WithBlankText() {
+        var emission = SessionGuidelinesEmitter.BuildAdditionalContext(
+            """
+            {
+              "top_clusters": [
+                { "category": "safety", "text": "" },
+                { "category": "safety", "text": "real lesson" }
+              ]
+            }
+            """,
+            disabled: false
+        );
+
+        await Assert.That(emission).IsNotNull();
+        var ctx = JsonNode.Parse(emission!)!["hookSpecificOutput"]!["additionalContext"]!.GetValue<string>();
+        await Assert.That(ctx).Contains("- real lesson");
+        await Assert.That(ctx).DoesNotContain("- \n");
     }
 }
