@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+    <PropertyGroup>
+        <TargetFramework>net10.0</TargetFramework>
+        <RootNamespace>kapacitor</RootNamespace>
+        <AssemblyName>Kapacitor.Core</AssemblyName>
+
+        <ImplicitUsings>enable</ImplicitUsings>
+        <Nullable>enable</Nullable>
+        <IsAotCompatible>true</IsAotCompatible>
+        <IsTrimmable>true</IsTrimmable>
+        <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    </PropertyGroup>
+    <ItemGroup>
+        <EmbeddedResource Include="Resources\**\*" />
+    </ItemGroup>
+    <ItemGroup>
+        <InternalsVisibleTo Include="kapacitor" />
+        <InternalsVisibleTo Include="kapacitor-daemon" />
+        <InternalsVisibleTo Include="kapacitor.Tests.Unit" />
+        <InternalsVisibleTo Include="kapacitor.Tests.Integration" />
+        <!-- Used when referenced as a submodule from the server repo -->
+        <InternalsVisibleTo Include="Kurrent.Capacitor.TestHelpers" />
+        <InternalsVisibleTo Include="Kurrent.Capacitor.Tests" />
+        <InternalsVisibleTo Include="Kurrent.Capacitor.Tests.UI" />
+    </ItemGroup>
+</Project>

@@ -8,6 +8,7 @@
     </PropertyGroup>
     <ItemGroup>
         <ProjectReference Include="../../src/kapacitor/kapacitor.csproj" />
+        <ProjectReference Include="../../src/Kapacitor.Daemon/Kapacitor.Daemon.csproj" />
     </ItemGroup>
     <ItemGroup>
         <PackageReference Include="TUnit" Version="1.18.37" />

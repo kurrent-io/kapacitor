@@ -1,5 +1,7 @@
 <Solution>
   <Folder Name="/src/">
+    <Project Path="src/Kapacitor.Core/Kapacitor.Core.csproj" />
+    <Project Path="src/Kapacitor.Daemon/Kapacitor.Daemon.csproj" />
     <Project Path="src/kapacitor/kapacitor.csproj" />
   </Folder>
   <Folder Name="/test/">

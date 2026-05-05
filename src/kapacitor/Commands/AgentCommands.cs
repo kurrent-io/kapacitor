@@ -1,10 +1,10 @@
 using System.Diagnostics;
-using kapacitor.Daemon;
 
 namespace kapacitor.Commands;
 
 public static class AgentCommands {
     static readonly string PidPath = PathHelpers.ConfigPath("agent.pid");
+    static readonly string LogPath = PathHelpers.ConfigPath("agent.log");
 
     public static async Task<int> HandleAsync(string[] args) {
         if (args.Length < 2) {
@@ -28,9 +28,39 @@ public static class AgentCommands {
     static async Task<int> StartAsync(string[] args) {
         var detached = args.Contains("-d") || args.Contains("--detach");
 
-        if (detached) return StartDetached(args);
+        return detached ? StartDetached(args) : await StartForegroundAsync(args);
+    }
 
-        return await DaemonRunner.RunAsync(args);
+    static async Task<int> StartForegroundAsync(string[] args) {
+        var daemonPath = ResolveDaemonBinary();
+
+        if (daemonPath is null) {
+            await Console.Error.WriteLineAsync(DaemonNotFoundMessage());
+
+            return 1;
+        }
+
+        var psi = new ProcessStartInfo {
+            FileName        = daemonPath,
+            UseShellExecute = false,
+            CreateNoWindow  = true
+        };
+
+        foreach (var arg in args) {
+            psi.ArgumentList.Add(arg);
+        }
+
+        using var process = Process.Start(psi);
+
+        if (process is null) {
+            await Console.Error.WriteLineAsync($"Failed to start {daemonPath}");
+
+            return 1;
+        }
+
+        await process.WaitForExitAsync();
+
+        return process.ExitCode;
     }
 
     static int StartDetached(string[] args) {
@@ -44,28 +74,24 @@ public static class AgentCommands {
             }
         }
 
-        var exePath = Environment.ProcessPath;
+        var daemonPath = ResolveDaemonBinary();
 
-        if (exePath is null) {
-            Console.Error.WriteLine("Cannot determine executable path for background launch.");
+        if (daemonPath is null) {
+            Console.Error.WriteLine(DaemonNotFoundMessage());
 
             return 1;
         }
 
-        var logPath = DaemonRunner.LogPath;
-
         var psi = new ProcessStartInfo {
-            FileName               = exePath,
+            FileName               = daemonPath,
             UseShellExecute        = false,
             RedirectStandardInput  = true,
             RedirectStandardOutput = false,
             RedirectStandardError  = false,
             CreateNoWindow         = true
         };
-        psi.ArgumentList.Add("agent");
-        psi.ArgumentList.Add("start");
         psi.ArgumentList.Add("--log-file");
-        psi.ArgumentList.Add(logPath);
+        psi.ArgumentList.Add(LogPath);
 
         foreach (var arg in args.Where(a => a is not "-d" and not "--detach")) {
             psi.ArgumentList.Add(arg);
@@ -82,7 +108,7 @@ public static class AgentCommands {
         File.WriteAllText(PidPath, process.Id.ToString());
 
         Console.Out.WriteLine($"Agent daemon started (PID {process.Id})");
-        Console.Out.WriteLine($"  Log:       {logPath}");
+        Console.Out.WriteLine($"  Log:       {LogPath}");
         Console.Out.WriteLine("  Stop with: kapacitor agent stop");
         Console.Out.WriteLine("  Status:    kapacitor agent status");
 
@@ -151,18 +177,16 @@ public static class AgentCommands {
     }
 
     /// <summary>
-    /// Verify that a PID belongs to our daemon process, not an unrelated process
-    /// that reused the PID after our daemon exited.
+    /// Verify that a PID belongs to a kapacitor-daemon process, not an unrelated
+    /// process that reused the PID after our daemon exited.
     /// </summary>
     static bool IsOurDaemon(int pid) {
         try {
-            var process = Process.GetProcessById(pid);
-            var ourExe  = Environment.ProcessPath;
-
-            if (ourExe is null) return true; // can't verify, assume ours
-
-            // Check process name matches (best-effort — ProcessName doesn't include path)
-            var ourName = Path.GetFileNameWithoutExtension(ourExe);
+            var process    = Process.GetProcessById(pid);
+            var daemonPath = ResolveDaemonBinary();
+            var ourName    = daemonPath is not null
+                ? Path.GetFileNameWithoutExtension(daemonPath)
+                : "kapacitor-daemon";
 
             return string.Equals(process.ProcessName, ourName, StringComparison.OrdinalIgnoreCase);
         } catch (ArgumentException) {
@@ -171,25 +195,40 @@ public static class AgentCommands {
     }
 
     static async Task<int> Logs() {
-        var logPath = DaemonRunner.LogPath;
-
-        if (!File.Exists(logPath)) {
+        if (!File.Exists(LogPath)) {
             await Console.Error.WriteLineAsync("No log file found.");
 
             return 1;
         }
 
         // Tail last 50 lines
-        var lines = await File.ReadAllLinesAsync(logPath);
+        var lines = await File.ReadAllLinesAsync(LogPath);
         var start = Math.Max(0, lines.Length - 50);
 
         for (var i = start; i < lines.Length; i++) {
             await Console.Out.WriteLineAsync(lines[i]);
         }
 
-        await Console.Error.WriteLineAsync($"\n--- {logPath} ({lines.Length} lines total) ---");
+        await Console.Error.WriteLineAsync($"\n--- {LogPath} ({lines.Length} lines total) ---");
 
         return 0;
+    }
+
+    /// <summary>
+    /// Resolve the kapacitor-daemon executable shipped alongside this binary.
+    /// The daemon is published as a separate AOT binary in the same directory
+    /// as the main kapacitor binary (npm packages bundle both).
+    /// </summary>
+    static string? ResolveDaemonBinary() {
+        var dir = AppContext.BaseDirectory;
+        var ext = OperatingSystem.IsWindows() ? ".exe" : "";
+        var sibling = Path.Combine(dir, $"kapacitor-daemon{ext}");
+
+        return File.Exists(sibling) ? sibling : null;
+    }
+
+    static string DaemonNotFoundMessage() {
+        return $"kapacitor-daemon binary not found next to {AppContext.BaseDirectory}. Reinstall the kapacitor package.";
     }
 
     static int PrintUsage() {
