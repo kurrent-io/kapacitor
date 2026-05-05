@@ -64,14 +64,10 @@ public static class AgentCommands {
     }
 
     static int StartDetached(string[] args) {
-        if (File.Exists(PidPath)) {
-            var pidStr = File.ReadAllText(PidPath).Trim();
+        if (ReadPidFile() is { } existing && IsOurDaemon(existing.Pid, existing.StartTicks)) {
+            Console.Error.WriteLine($"Agent daemon already running (PID {existing.Pid}). Use `kapacitor agent stop` first.");
 
-            if (int.TryParse(pidStr, out var existingPid) && IsOurDaemon(existingPid)) {
-                Console.Error.WriteLine($"Agent daemon already running (PID {existingPid}). Use `kapacitor agent stop` first.");
-
-                return 1;
-            }
+            return 1;
         }
 
         var daemonPath = ResolveDaemonBinary();
@@ -103,9 +99,7 @@ public static class AgentCommands {
         // Close stdin so the child doesn't wait for input
         process.StandardInput.Close();
 
-        var dir = Path.GetDirectoryName(PidPath)!;
-        Directory.CreateDirectory(dir);
-        File.WriteAllText(PidPath, process.Id.ToString());
+        WritePidFile(process);
 
         Console.Out.WriteLine($"Agent daemon started (PID {process.Id})");
         Console.Out.WriteLine($"  Log:       {LogPath}");
@@ -116,32 +110,23 @@ public static class AgentCommands {
     }
 
     static int Stop() {
-        if (!File.Exists(PidPath)) {
+        if (ReadPidFile() is not { } entry) {
             Console.Error.WriteLine("No agent daemon running (no PID file found).");
 
             return 1;
         }
 
-        var pidStr = File.ReadAllText(PidPath).Trim();
-
-        if (!int.TryParse(pidStr, out var pid)) {
-            Console.Error.WriteLine($"Invalid PID file: {PidPath}");
-            File.Delete(PidPath);
-
-            return 1;
-        }
-
         try {
-            if (!IsOurDaemon(pid)) {
+            if (!IsOurDaemon(entry.Pid, entry.StartTicks)) {
                 Console.Out.WriteLine("Agent daemon was not running (stale PID file).");
                 File.Delete(PidPath);
 
                 return 0;
             }
 
-            var process = Process.GetProcessById(pid);
+            var process = Process.GetProcessById(entry.Pid);
             process.Kill(entireProcessTree: true);
-            Console.Out.WriteLine($"Agent daemon stopped (PID {pid}).");
+            Console.Out.WriteLine($"Agent daemon stopped (PID {entry.Pid}).");
         } catch (ArgumentException) {
             Console.Out.WriteLine("Agent daemon was not running.");
         }
@@ -152,22 +137,14 @@ public static class AgentCommands {
     }
 
     static async Task<int> Status() {
-        if (!File.Exists(PidPath)) {
+        if (ReadPidFile() is not { } entry) {
             await Console.Out.WriteLineAsync("Agent: not running");
 
             return 0;
         }
 
-        var pidStr = (await File.ReadAllTextAsync(PidPath)).Trim();
-
-        if (!int.TryParse(pidStr, out var pid)) {
-            await Console.Out.WriteLineAsync("Agent: unknown (invalid PID file)");
-
-            return 1;
-        }
-
-        if (IsOurDaemon(pid)) {
-            await Console.Out.WriteLineAsync($"Agent: running (PID {pid})");
+        if (IsOurDaemon(entry.Pid, entry.StartTicks)) {
+            await Console.Out.WriteLineAsync($"Agent: running (PID {entry.Pid})");
         } else {
             await Console.Out.WriteLineAsync("Agent: not running (stale PID file)");
             File.Delete(PidPath);
@@ -176,13 +153,69 @@ public static class AgentCommands {
         return 0;
     }
 
-    /// <summary>
-    /// Verify that a PID belongs to a kapacitor-daemon process, not an unrelated
-    /// process that reused the PID after our daemon exited.
-    /// </summary>
-    static bool IsOurDaemon(int pid) {
+    record struct PidEntry(int Pid, long? StartTicks);
+
+    static void WritePidFile(Process process) {
+        var dir = Path.GetDirectoryName(PidPath)!;
+        Directory.CreateDirectory(dir);
+
+        // Record StartTime alongside PID so a recycled PID can't be mistaken
+        // for our daemon. UTC ticks are stable across local timezone changes.
+        long? startTicks = null;
+
         try {
-            var process    = Process.GetProcessById(pid);
+            startTicks = process.StartTime.ToUniversalTime().Ticks;
+        } catch (Exception) {
+            // Best-effort: if StartTime isn't readable (race with rapid exit, OS
+            // permission quirks), fall back to PID-only — IsOurDaemon will then
+            // use the ProcessName check.
+        }
+
+        var content = startTicks is { } t
+            ? $"{process.Id}\n{t}"
+            : process.Id.ToString();
+
+        File.WriteAllText(PidPath, content);
+    }
+
+    static PidEntry? ReadPidFile() {
+        if (!File.Exists(PidPath)) return null;
+
+        var lines = File.ReadAllText(PidPath)
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+        if (lines.Length == 0 || !int.TryParse(lines[0], out var pid)) {
+            Console.Error.WriteLine($"Invalid PID file: {PidPath}");
+            File.Delete(PidPath);
+
+            return null;
+        }
+
+        long? startTicks = lines.Length > 1 && long.TryParse(lines[1], out var ticks) ? ticks : null;
+
+        return new PidEntry(pid, startTicks);
+    }
+
+    /// <summary>
+    /// Verify that a PID belongs to our daemon. The strong check is StartTime
+    /// equality — PIDs get recycled, but a recycled process won't have the
+    /// same start instant. Falls back to ProcessName for legacy PID files
+    /// written before StartTime was recorded.
+    /// </summary>
+    static bool IsOurDaemon(int pid, long? expectedStartTicks) {
+        try {
+            var process = Process.GetProcessById(pid);
+
+            if (expectedStartTicks is { } expected) {
+                try {
+                    return process.StartTime.ToUniversalTime().Ticks == expected;
+                } catch (Exception) {
+                    // StartTime read failed — fall through to name-based check
+                }
+            }
+
+            // Legacy PID file (no StartTime recorded) or StartTime unreadable:
+            // best-effort match by process image name.
             var daemonPath = ResolveDaemonBinary();
             var ourName    = daemonPath is not null
                 ? Path.GetFileNameWithoutExtension(daemonPath)

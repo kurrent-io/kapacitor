@@ -100,7 +100,7 @@ jobs:
           -c Release
           -r ${{ matrix.rid }}
           -p:MinVerVersionOverride=${{ steps.version.outputs.VERSION }}
-          -o publish/
+          -o publish/cli/
 
       - name: Publish daemon AOT binary
         run: >
@@ -108,30 +108,46 @@ jobs:
           -c Release
           -r ${{ matrix.rid }}
           -p:MinVerVersionOverride=${{ steps.version.outputs.VERSION }}
-          -o publish/
+          -o publish/daemon/
+
+      # The daemon's UnixPtyInterop hard-imports libpty_shim on macOS ARM64. If
+      # the macOS-only build target ever silently fails to produce the dylib,
+      # the npm package would ship a daemon that crashes on PTY resize. Fail
+      # loudly here instead of distributing a broken artifact.
+      - name: Verify libpty_shim built (osx-arm64)
+        if: matrix.rid == 'osx-arm64'
+        shell: bash
+        run: |
+          if [ ! -f publish/daemon/libpty_shim.dylib ]; then
+            echo "::error::libpty_shim.dylib missing from publish/daemon/ on osx-arm64"
+            ls -la publish/daemon/
+            exit 1
+          fi
 
       - name: Copy binaries to npm package
         shell: bash
         run: |
           mkdir -p npm/${{ matrix.npm-package }}/bin
-          cp publish/${{ matrix.cli-binary }} npm/${{ matrix.npm-package }}/bin/
-          cp publish/${{ matrix.daemon-binary }} npm/${{ matrix.npm-package }}/bin/
-          if [ -f publish/libpty_shim.dylib ]; then
-            cp publish/libpty_shim.dylib npm/${{ matrix.npm-package }}/bin/
+          cp publish/cli/${{ matrix.cli-binary }} npm/${{ matrix.npm-package }}/bin/
+          cp publish/daemon/${{ matrix.daemon-binary }} npm/${{ matrix.npm-package }}/bin/
+          if [ -f publish/daemon/libpty_shim.dylib ]; then
+            cp publish/daemon/libpty_shim.dylib npm/${{ matrix.npm-package }}/bin/
           fi
 
       - name: Create release archive
         shell: bash
         run: |
-          cd publish
+          mkdir -p archive
+          cp publish/cli/${{ matrix.cli-binary }} archive/
+          cp publish/daemon/${{ matrix.daemon-binary }} archive/
+          if [ -f publish/daemon/libpty_shim.dylib ]; then
+            cp publish/daemon/libpty_shim.dylib archive/
+          fi
+          cd archive
           if [ "${{ matrix.rid }}" = "win-x64" ]; then
-            7z a ../kapacitor-${{ matrix.rid }}.zip ${{ matrix.cli-binary }} ${{ matrix.daemon-binary }}
+            7z a ../kapacitor-${{ matrix.rid }}.zip *
           else
-            files="${{ matrix.cli-binary }} ${{ matrix.daemon-binary }}"
-            if [ -f libpty_shim.dylib ]; then
-              files="$files libpty_shim.dylib"
-            fi
-            tar czf ../kapacitor-${{ matrix.rid }}.tar.gz $files
+            tar czf ../kapacitor-${{ matrix.rid }}.tar.gz *
           fi
 
       - name: Upload binary artifact
