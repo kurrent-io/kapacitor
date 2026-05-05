@@ -8,8 +8,9 @@ Subcommands:
 
 Config keys:
   server_url              Server URL
-  daemon.name             Daemon name
-  daemon.max_agents       Max concurrent agents
-  update_check            Enable update check (true/false)
-  default_visibility      Default session visibility (private, org_public, public)
-  excluded_repos          Excluded repos, comma-separated (owner/repo,owner/repo)
+  daemon.name                 Daemon name
+  daemon.max_agents           Max concurrent agents
+  default_visibility          Default session visibility (private, org_public, public)
+  disable_session_guidelines  Skip injecting recurring-lessons context at SessionStart (true/false)
+  excluded_repos              Excluded repos, comma-separated (owner/repo,owner/repo)
+  update_check                Enable update check (true/false)

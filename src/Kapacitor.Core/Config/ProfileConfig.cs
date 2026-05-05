@@ -23,11 +23,14 @@ public record Profile {
     [JsonPropertyName("daemon")]
     public DaemonSettings? Daemon { get; init; }
 
-    [JsonPropertyName("update_check")]
-    public bool UpdateCheck { get; init; } = true;
-
     [JsonPropertyName("default_visibility")]
     public string DefaultVisibility { get; init; } = "org_public";
+
+    [JsonPropertyName("disable_session_guidelines")]
+    public bool? DisableSessionGuidelines { get; init; }
+
+    [JsonPropertyName("update_check")]
+    public bool UpdateCheck { get; init; } = true;
 
     [JsonPropertyName("excluded_repos")]
     public string[] ExcludedRepos { get; init; } = [];
