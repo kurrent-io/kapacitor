@@ -705,11 +705,15 @@ switch (command) {
         var transcriptPath = node?["transcript_path"]?.GetValue<string>();
         var sessionCwd     = node?["cwd"]?.GetValue<string>();
 
-        // If CLI didn't inject plan_content, check if server resolved a slug (pending continuation)
-        if (!planContentInjected && sessionId is not null) {
-            try {
-                var responseBody = await response.Content.ReadAsStringAsync();
-                var responseNode = JsonNode.Parse(responseBody);
+        // Parse the server response body once. Two consumers:
+        //   1. slug fallback for plan_content (resume/compact path)
+        //   2. top_clusters → SessionStart additionalContext (DEV-1676)
+        try {
+            var responseBody = await response.Content.ReadAsStringAsync();
+            var responseNode = JsonNode.Parse(responseBody);
+
+            // (1) slug-resolved continuation — inject plan content if server resolved a slug
+            if (!planContentInjected && sessionId is not null) {
                 var resolvedSlug = responseNode?["slug"]?.GetValue<string>();
 
                 if (resolvedSlug is not null) {
@@ -719,9 +723,17 @@ switch (command) {
                         await PostPlanContentAsync(client, baseUrl!, sessionId, planContent);
                     }
                 }
-            } catch {
-                // Best effort — don't fail the hook if plan posting fails
             }
+
+            // (2) DEV-1676 — emit additionalContext from top_clusters unless the user opted out
+            var disabled = AppConfig.ResolvedProfile?.Profile?.DisableSessionGuidelines is true;
+            var emission = SessionGuidelinesEmitter.BuildAdditionalContext(responseNode, disabled);
+
+            if (emission is not null) {
+                Console.WriteLine(emission);
+            }
+        } catch {
+            // Best effort — never fail session start over response parsing
         }
 
         var source = node?["source"]?.GetValue<string>();

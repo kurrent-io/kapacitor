@@ -107,4 +107,18 @@ public class ConfigMigrationTests {
         await Assert.That(deserialized.Profiles["contoso"].Remotes).Contains("github.com/contoso/*");
         await Assert.That(deserialized.ProfileBindings["/home/user/contoso-project"]).IsEqualTo("contoso");
     }
+
+    [Test]
+    public async Task ProfileConfig_DisableSessionGuidelines_RoundTripsTrue() {
+        var json   = """{ "disable_session_guidelines": true }""";
+        var config = JsonSerializer.Deserialize(json, ProfileConfigJsonContext.Default.Profile)!;
+        await Assert.That(config.DisableSessionGuidelines).IsTrue();
+    }
+
+    [Test]
+    public async Task ProfileConfig_DisableSessionGuidelines_NullWhenAbsent() {
+        var json   = "{}";
+        var config = JsonSerializer.Deserialize(json, ProfileConfigJsonContext.Default.Profile)!;
+        await Assert.That(config.DisableSessionGuidelines).IsNull();
+    }
 }
