@@ -1,7 +1,9 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
     <PropertyGroup>
         <OutputType>Exe</OutputType>
         <TargetFramework>net10.0</TargetFramework>
+        <RootNamespace>kapacitor.Daemon</RootNamespace>
+        <AssemblyName>kapacitor-daemon</AssemblyName>
 
         <ImplicitUsings>enable</ImplicitUsings>
         <Nullable>enable</Nullable>
@@ -13,6 +15,9 @@
         <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     </PropertyGroup>
     <ItemGroup>
+        <ProjectReference Include="..\Kapacitor.Core\Kapacitor.Core.csproj" />
+    </ItemGroup>
+    <ItemGroup>
         <InternalsVisibleTo Include="kapacitor.Tests.Unit" />
         <InternalsVisibleTo Include="kapacitor.Tests.Integration" />
         <!-- Used when referenced as a submodule from the server repo -->
@@ -21,13 +26,9 @@
         <InternalsVisibleTo Include="Kurrent.Capacitor.Tests.UI" />
     </ItemGroup>
     <ItemGroup>
-        <ProjectReference Include="..\Kapacitor.Core\Kapacitor.Core.csproj" />
-    </ItemGroup>
-    <ItemGroup>
-        <PackageReference Include="IdentityModel.OidcClient" Version="6.0.0" />
         <PackageReference Include="Microsoft.AspNetCore.SignalR.Client" Version="10.*" />
+        <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.*" />
         <PackageReference Include="Microsoft.Extensions.Http" Version="10.*" />
-        <PackageReference Include="Spectre.Console" Version="0.*" />
     </ItemGroup>
 
     <!-- NativeAOT on macOS needs Homebrew library paths for keg-only packages (openssl, brotli) -->
@@ -37,5 +38,13 @@
         <!-- Intel Mac Homebrew paths -->
         <LinkerArg Condition="Exists('/usr/local/opt/openssl@3/lib')" Include="-L/usr/local/opt/openssl@3/lib" />
         <LinkerArg Condition="Exists('/usr/local/opt/brotli/lib')" Include="-L/usr/local/opt/brotli/lib" />
+    </ItemGroup>
+
+    <!-- Compile the PTY shim on macOS (needed for ARM64 variadic ioctl workaround) -->
+    <Target Name="CompilePtyShim" BeforeTargets="Build" Condition="$([MSBuild]::IsOSPlatform('OSX'))">
+        <Exec Command="cc -shared -o $(OutputPath)libpty_shim.dylib Native/pty_shim.c" />
+    </Target>
+    <ItemGroup Condition="$([MSBuild]::IsOSPlatform('OSX'))">
+        <None Include="$(OutputPath)libpty_shim.dylib" CopyToOutputDirectory="PreserveNewest" Link="libpty_shim.dylib" />
     </ItemGroup>
 </Project>

@@ -11,7 +11,8 @@ permissions:
 
 env:
   DOTNET_VERSION: '10.0.x'
-  PROJECT: src/kapacitor/kapacitor.csproj
+  CLI_PROJECT: src/kapacitor/kapacitor.csproj
+  DAEMON_PROJECT: src/Kapacitor.Daemon/Kapacitor.Daemon.csproj
 
 jobs:
   ci:
@@ -22,7 +23,7 @@ jobs:
         uses: lewagon/wait-on-check-action@v1.6.1
         with:
           ref: ${{ github.sha }}
-          check-regexp: '^(Build and test|AOT publish check)$'
+          check-regexp: '^(Build and test|AOT publish check.*)$'
           repo-token: ${{ secrets.GITHUB_TOKEN }}
           wait-interval: 15
           checks-discovery-timeout: 300
@@ -36,28 +37,34 @@ jobs:
           - rid: osx-arm64
             os: macos-latest
             npm-package: kapacitor-darwin-arm64
-            binary-name: kapacitor
+            cli-binary: kapacitor
+            daemon-binary: kapacitor-daemon
           - rid: linux-x64
             os: ubuntu-latest
             npm-package: kapacitor-linux-x64
-            binary-name: kapacitor
+            cli-binary: kapacitor
+            daemon-binary: kapacitor-daemon
           - rid: linux-arm64
             os: ubuntu-24.04-arm
             npm-package: kapacitor-linux-arm64
-            binary-name: kapacitor
+            cli-binary: kapacitor
+            daemon-binary: kapacitor-daemon
           - rid: linux-musl-x64
             os: ubuntu-latest
             container: alpine:3.20
             npm-package: kapacitor-linux-musl-x64
-            binary-name: kapacitor
+            cli-binary: kapacitor
+            daemon-binary: kapacitor-daemon
           - rid: linux-musl-arm64
             os: ubuntu-24.04-arm
             npm-package: kapacitor-linux-musl-arm64
-            binary-name: kapacitor
+            cli-binary: kapacitor
+            daemon-binary: kapacitor-daemon
           - rid: win-x64
             os: windows-latest
             npm-package: kapacitor-win-x64
-            binary-name: kapacitor.exe
+            cli-binary: kapacitor.exe
+            daemon-binary: kapacitor-daemon.exe
 
     runs-on: ${{ matrix.os }}
     container: ${{ matrix.container || '' }}
@@ -87,34 +94,60 @@ jobs:
         shell: bash
         run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
-      - name: Publish AOT binary
+      - name: Publish CLI AOT binary
         run: >
-          dotnet publish ${{ env.PROJECT }}
+          dotnet publish ${{ env.CLI_PROJECT }}
           -c Release
           -r ${{ matrix.rid }}
           -p:MinVerVersionOverride=${{ steps.version.outputs.VERSION }}
-          -o publish/
+          -o publish/cli/
 
-      - name: Copy binary to npm package
+      - name: Publish daemon AOT binary
+        run: >
+          dotnet publish ${{ env.DAEMON_PROJECT }}
+          -c Release
+          -r ${{ matrix.rid }}
+          -p:MinVerVersionOverride=${{ steps.version.outputs.VERSION }}
+          -o publish/daemon/
+
+      # The daemon's UnixPtyInterop hard-imports libpty_shim on macOS ARM64. If
+      # the macOS-only build target ever silently fails to produce the dylib,
+      # the npm package would ship a daemon that crashes on PTY resize. Fail
+      # loudly here instead of distributing a broken artifact.
+      - name: Verify libpty_shim built (osx-arm64)
+        if: matrix.rid == 'osx-arm64'
+        shell: bash
+        run: |
+          if [ ! -f publish/daemon/libpty_shim.dylib ]; then
+            echo "::error::libpty_shim.dylib missing from publish/daemon/ on osx-arm64"
+            ls -la publish/daemon/
+            exit 1
+          fi
+
+      - name: Copy binaries to npm package
         shell: bash
         run: |
           mkdir -p npm/${{ matrix.npm-package }}/bin
-          cp publish/${{ matrix.binary-name }} npm/${{ matrix.npm-package }}/bin/
-          if [ -f publish/libpty_shim.dylib ]; then
-            cp publish/libpty_shim.dylib npm/${{ matrix.npm-package }}/bin/
+          cp publish/cli/${{ matrix.cli-binary }} npm/${{ matrix.npm-package }}/bin/
+          cp publish/daemon/${{ matrix.daemon-binary }} npm/${{ matrix.npm-package }}/bin/
+          if [ -f publish/daemon/libpty_shim.dylib ]; then
+            cp publish/daemon/libpty_shim.dylib npm/${{ matrix.npm-package }}/bin/
           fi
 
       - name: Create release archive
         shell: bash
         run: |
-          cd publish
+          mkdir -p archive
+          cp publish/cli/${{ matrix.cli-binary }} archive/
+          cp publish/daemon/${{ matrix.daemon-binary }} archive/
+          if [ -f publish/daemon/libpty_shim.dylib ]; then
+            cp publish/daemon/libpty_shim.dylib archive/
+          fi
+          cd archive
           if [ "${{ matrix.rid }}" = "win-x64" ]; then
-            7z a ../kapacitor-${{ matrix.rid }}.zip ${{ matrix.binary-name }}
+            7z a ../kapacitor-${{ matrix.rid }}.zip *
           else
-            tar czf ../kapacitor-${{ matrix.rid }}.tar.gz ${{ matrix.binary-name }}
-            if [ -f libpty_shim.dylib ]; then
-              tar czf ../kapacitor-${{ matrix.rid }}.tar.gz ${{ matrix.binary-name }} libpty_shim.dylib
-            fi
+            tar czf ../kapacitor-${{ matrix.rid }}.tar.gz *
           fi
 
       - name: Upload binary artifact
@@ -166,17 +199,20 @@ jobs:
             # which drops the executable bit. The platform packages have no `bin`
             # field in package.json (the wrapper resolves the binary path
             # manually), so npm won't restore +x at install time either. Set it
-            # explicitly here so the published tarball ships an executable file.
+            # explicitly here so the published tarball ships executable files.
             #
-            # Each platform package only has one of these (kapacitor or
-            # kapacitor.exe), set per the build matrix' `binary-name`. Pick by
-            # file existence instead of pkg_name pattern so adding new RIDs
-            # doesn't silently regress this step.
-            if [ -f "$dir/bin/kapacitor.exe" ]; then
-              chmod +x "$dir/bin/kapacitor.exe"
-            elif [ -f "$dir/bin/kapacitor" ]; then
-              chmod +x "$dir/bin/kapacitor"
-            else
+            # Each platform package contains a CLI binary (kapacitor / kapacitor.exe)
+            # AND a daemon binary (kapacitor-daemon / kapacitor-daemon.exe).
+            # Pick by file existence instead of pkg_name pattern so adding new
+            # RIDs doesn't silently regress this step.
+            found_cli=false
+            for bin in kapacitor kapacitor.exe kapacitor-daemon kapacitor-daemon.exe; do
+              if [ -f "$dir/bin/$bin" ]; then
+                chmod +x "$dir/bin/$bin"
+                case "$bin" in kapacitor|kapacitor.exe) found_cli=true ;; esac
+              fi
+            done
+            if [ "$found_cli" != "true" ]; then
               echo "::error::No kapacitor binary found in $dir/bin (contents: $(ls "$dir/bin" 2>&1))"
               exit 1
             fi

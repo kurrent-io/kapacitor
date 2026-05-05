@@ -23,8 +23,8 @@ jobs:
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
 
-      - name: Build CLI
-        run: dotnet build src/kapacitor/kapacitor.csproj
+      - name: Build solution
+        run: dotnet build Kapacitor.slnx
 
       - name: Run unit tests
         run: dotnet run --project test/kapacitor.Tests.Unit/kapacitor.Tests.Unit.csproj
@@ -35,6 +35,12 @@ jobs:
   aot-check:
     name: AOT publish check
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        project:
+          - src/kapacitor/kapacitor.csproj
+          - src/Kapacitor.Daemon/Kapacitor.Daemon.csproj
 
     steps:
       - uses: actions/checkout@v6
@@ -48,11 +54,11 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y clang zlib1g-dev
 
       - name: Publish AOT (linux-x64)
-        run: dotnet publish src/kapacitor/kapacitor.csproj -c Release -r linux-x64
+        run: dotnet publish ${{ matrix.project }} -c Release -r linux-x64
 
       - name: Check for trimming warnings
         run: |
-          OUTPUT=$(dotnet publish src/kapacitor/kapacitor.csproj -c Release -r linux-x64 2>&1)
+          OUTPUT=$(dotnet publish ${{ matrix.project }} -c Release -r linux-x64 2>&1)
           if echo "$OUTPUT" | grep -E 'IL[23][01][0-9]{2}'; then
             echo "::error::AOT/trimming warnings detected"
             echo "$OUTPUT" | grep -E 'IL[23][01][0-9]{2}'
