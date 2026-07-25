@@ -75,7 +75,17 @@ internal static class CodexMcpInventory {
                 $"'{codexPath} mcp list --json' exited {exitCode} while enumerating the reviewer's inherited MCP servers: {detail.Trim()}");
         }
 
-        return ParseServers(stdout);
+        try {
+            return ParseServers(stdout);
+        } catch (CodexReviewerMcpIsolationException) {
+            throw;
+        } catch (Exception ex) {
+            // Parse-time surprises must reach the orchestrator AS the isolation exception — its
+            // launch-rejection catch filters on that type, and anything else would bypass the
+            // fail-closed LaunchFailed cleanup path.
+            throw new CodexReviewerMcpIsolationException(
+                $"Could not interpret 'codex mcp list --json' output: {ex.Message}");
+        }
     }
 
     /// <summary>
@@ -106,14 +116,20 @@ internal static class CodexMcpInventory {
         var servers = new List<InheritedMcpServer>(array.Count);
 
         foreach (var element in array) {
-            if (element?["name"] is not JsonValue nameNode ||
+            // Shape-check BEFORE any string indexer: JsonNode's indexer THROWS on a non-object
+            // node, and an unwrapped exception type would escape the
+            // CodexReviewerMcpIsolationException contract the orchestrator's fail-closed
+            // launch-rejection path catches.
+            if (element is not JsonObject entry ||
+                entry["name"] is not JsonValue nameNode ||
                 !nameNode.TryGetValue<string>(out var name) ||
                 string.IsNullOrEmpty(name)) {
                 throw new CodexReviewerMcpIsolationException(
                     "'codex mcp list --json' returned an MCP server entry with no usable name.");
             }
 
-            var url = element["transport"]?["url"] is JsonValue urlNode &&
+            var url = entry["transport"] is JsonObject transport &&
+                      transport["url"] is JsonValue urlNode &&
                       urlNode.TryGetValue<string>(out var value) &&
                       !string.IsNullOrEmpty(value)
                 ? value

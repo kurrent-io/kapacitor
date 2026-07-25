@@ -53,6 +53,9 @@ public class CodexMcpInventoryTests {
     [Arguments("""[ { "name": "x", "transport": null } ]""")]                    // null transport
     [Arguments("""[ { "name": "x", "transport": { "url": 42 } } ]""")]           // non-string url
     [Arguments("""[ { "name": "x", "transport": { "url": "" } } ]""")]           // empty url
+    [Arguments("""[ { "name": "x", "transport": 42 } ]""")]                      // non-object transport
+    [Arguments("""[ { "name": "x", "transport": "weird" } ]""")]                 // string transport
+    [Arguments("""[ { "name": "x", "transport": [ "list" ] } ]""")]              // array transport
     public async Task ParseServers_treats_missing_or_unusable_url_as_null(string payload) {
         // Best-effort url: either shape still yields a DISABLING override downstream, so an odd
         // transport must not fail the enumeration — it just selects the sentinel-command shape.
@@ -73,7 +76,12 @@ public class CodexMcpInventoryTests {
     [Arguments("[ { \"enabled\": true } ]")] // array element missing a name
     [Arguments("[ { \"name\": 42 } ]")]      // non-string name
     [Arguments("[ { \"name\": \"\" } ]")]    // empty name
+    [Arguments("[ 42 ]")]                    // non-object element
+    [Arguments("[ \"just-a-string\" ]")]     // string element
+    [Arguments("[ null ]")]                  // null element
     public async Task ParseServers_fails_closed_on_malformed_output(string payload) {
+        // Must be the ISOLATION exception, never a raw JsonNode indexer throw — the orchestrator's
+        // fail-closed launch-rejection path filters on the exception type.
         await Assert.That(() => CodexMcpInventory.ParseServers(payload))
             .Throws<CodexReviewerMcpIsolationException>();
     }
