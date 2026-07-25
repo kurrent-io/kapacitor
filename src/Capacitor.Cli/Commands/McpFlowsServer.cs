@@ -143,9 +143,24 @@ static class McpFlowsServer {
                 // support dynamic flows" hint — coded rejections never do (new-server signal).
                 var wasDynamicStart = toolName is "start_flow" && arguments?["definition_yaml"] is not null;
 
+                // Reviewer-model override: a model-bearing start goes to the protocol-v3 route
+                // (StartFlowAsync). Computed BEFORE the dispatch because a v3 start must NOT be wrapped
+                // in the settlement retry: each POST to /review/start/v3 mints AND launches a run, so
+                // re-POSTing a retryable settlement 409 (flow_settlement_busy /
+                // reviewer_launch_incarnation_superseded) would violate exactly-one-v3-POST and churn
+                // reviewer launches. The coded 409 surfaces to the caller, who retries the whole start.
+                // Every v2 (no-model) start and every round keeps the settlement retry unchanged.
+                var wasModelStart = !wasDynamicStart
+                    && toolName is "start_review_flow" or "start_flow"
+                    && !string.IsNullOrWhiteSpace(arguments?["model"]?.GetValue<string>());
+
                 using var postResponse = toolName switch {
-                    "start_review_flow"   => await SendWithSettlementRetryAsync(client, c => StartFlowAsync(c, apiRoot, arguments, cwd, repoRoot, repoInfo, kindArgName: "kind"), Task.Delay),
-                    "start_flow"          => await SendWithSettlementRetryAsync(client, c => StartFlowAsync(c, apiRoot, arguments, cwd, repoRoot, repoInfo, kindArgName: "definition_id"), Task.Delay),
+                    "start_review_flow"   => wasModelStart
+                        ? await StartFlowAsync(client, apiRoot, arguments, cwd, repoRoot, repoInfo, kindArgName: "kind")
+                        : await SendWithSettlementRetryAsync(client, c => StartFlowAsync(c, apiRoot, arguments, cwd, repoRoot, repoInfo, kindArgName: "kind"), Task.Delay),
+                    "start_flow"          => wasModelStart
+                        ? await StartFlowAsync(client, apiRoot, arguments, cwd, repoRoot, repoInfo, kindArgName: "definition_id")
+                        : await SendWithSettlementRetryAsync(client, c => StartFlowAsync(c, apiRoot, arguments, cwd, repoRoot, repoInfo, kindArgName: "definition_id"), Task.Delay),
                     "submit_review_round" => await SendWithSettlementRetryAsync(client, c => SubmitRoundAsync(c, apiRoot, arguments, contextArgName: "context", participant: null, async: true), Task.Delay),
                     _                     => await SendWithSettlementRetryAsync(client, c => SubmitRoundAsync(c, apiRoot, arguments, contextArgName: "message", participant: GetRequiredArg(arguments, "participant"), async: ParseAsyncArg(arguments)), Task.Delay)
                 };
@@ -159,15 +174,11 @@ static class McpFlowsServer {
                 // started) plus an explicit-vendor echo check once the route matched.
                 var requestedVendor = NormalizeVendor(arguments?["vendor"]?.GetValue<string>());
 
-                // Reviewer-model override: a model-bearing start went to the v3 route — its own
-                // protocol/ack gate REPLACES (and precedes) the vendor-override gate, which would report
-                // a v3 404 as a "protocol v2" skew. A model start always carries a vendor too, but the
-                // model ack (applied_reviewer_model + equivalence key) is the authoritative echo here.
-                var wasModelStart = !wasDynamicStart
-                    && toolName is "start_review_flow" or "start_flow"
-                    && !string.IsNullOrWhiteSpace(arguments?["model"]?.GetValue<string>());
-
                 if (wasModelStart) {
+                    // The model-bearing start went to the v3 route — its own protocol/ack gate REPLACES
+                    // (and precedes) the vendor-override skew gate, which would misreport a v3 404 as a
+                    // "protocol v2" skew. The model ack (applied_reviewer_model + equivalence key) is the
+                    // authoritative MODEL echo here.
                     if (CheckReviewerModelResult(toolName, postResponse.StatusCode, postResponse.IsSuccessStatusCode, postBody, out var modelRunIdToClose) is { } modelCheck) {
                         // Only the 2xx-missing-ack case salvages a run id; the skew cases start nothing.
                         if (modelRunIdToClose is not null)
@@ -175,7 +186,18 @@ static class McpFlowsServer {
 
                         return BuildToolResult(id, modelCheck.Message, modelCheck.IsError);
                     }
-                    // Valid ack — fall through to the shared success/round rendering below, which
+
+                    // Valid MODEL ack — but the model/key are opaque and don't prove which VENDOR was
+                    // applied. A model start always carries a vendor, so ALSO run the ordinal vendor-echo
+                    // check (the same helper a v2 start uses — no vendor->model knowledge is introduced).
+                    // A mismatch salvages + defensively closes the run and returns the error.
+                    if (CheckVendorOverrideResult(toolName, requestedVendor, postResponse.StatusCode, postResponse.IsSuccessStatusCode, postBody, out var modelVendorRunIdToClose) is { } modelVendorCheck) {
+                        if (modelVendorRunIdToClose is not null)
+                            await BestEffortCloseAsync(client, apiRoot, modelVendorRunIdToClose);
+
+                        return BuildToolResult(id, modelVendorCheck.Message, modelVendorCheck.IsError);
+                    }
+                    // Both acks valid — fall through to the shared success/round rendering below, which
                     // echoes the reviewer-model audit fields alongside the result.
                 } else if (!wasDynamicStart && CheckVendorOverrideResult(toolName, requestedVendor, postResponse.StatusCode, postResponse.IsSuccessStatusCode, postBody, out var flowRunIdToClose) is { } vendorCheck) {
                     // Best-effort: we have the run id from this same response (echo mismatch only —

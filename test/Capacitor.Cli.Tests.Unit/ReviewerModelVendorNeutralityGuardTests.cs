@@ -12,15 +12,17 @@ namespace Capacitor.Cli.Tests.Unit;
 /// aliases/ids entirely (see <c>ReviewerModelResolution.cs</c>'s doc comment: "there is deliberately
 /// NO shared, central vendor→model table anywhere").
 ///
-/// <para><b>What's excluded and why:</b> the two daemon runtime resolver IMPLEMENTATIONS
+/// <para><b>What's excluded and why:</b> ONLY the two daemon runtime resolver IMPLEMENTATIONS
 /// (<c>ClaudeLauncher.cs</c> embeds <c>ClaudeReviewerModelResolver</c>, <c>CodexLauncher.cs</c> embeds
-/// <c>CodexReviewerModelResolver</c>) legitimately own their vendor's aliases/ids, plus the resolver
-/// coordinator/interface file itself (<c>ReviewerModelResolution.cs</c> — verified empty of tell-tale
-/// tokens today; excluded anyway since it's "a ReviewerModelResolver file" by name). A short,
-/// per-file, per-line grandfather list additionally exempts two PRE-EXISTING, unrelated vendor-model
-/// literals that predate this feature entirely and are out of scope for it (see
-/// <see cref="GrandfatheredPreExistingLines"/>) — every OTHER line in those same files is still
-/// scanned, so a NEW map added anywhere in them still trips the guard.</para>
+/// <c>CodexReviewerModelResolver</c>) — these legitimately own their vendor's aliases/ids. The resolver
+/// coordinator/interface file <c>ReviewerModelResolution.cs</c> is deliberately NOT excluded: it is the
+/// cross-vendor COORDINATOR (whose own doc comment states "there is deliberately NO shared, central
+/// vendor→model table anywhere"), so a central vendor→model table wrongly added there MUST be caught. It
+/// is verified token-free today, so scanning it keeps the guard GREEN. A short, per-file, per-line
+/// grandfather list additionally exempts two PRE-EXISTING, unrelated vendor-model literals that predate
+/// this feature entirely and are out of scope for it (see <see cref="GrandfatheredPreExistingLines"/>) —
+/// every OTHER line in those same files is still scanned, so a NEW map added anywhere in them still
+/// trips the guard.</para>
 ///
 /// <para><b>Scope:</b> every <c>.cs</c> file under <c>src/</c> (not <c>test/</c>) — this is
 /// production/daemon source, not test fixtures. Single-line comments (<c>//</c>/<c>///</c>) are
@@ -29,12 +31,13 @@ namespace Capacitor.Cli.Tests.Unit;
 /// comments (<c>/* … */</c>) are not specially unwrapped — none of today's matches live inside one.</para>
 /// </summary>
 public class ReviewerModelVendorNeutralityGuardTests {
-    /// <summary>Files that legitimately own a vendor's reviewer-model aliases/ids, or are the
-    /// resolver-adjacent coordinator/interface file — never scanned.</summary>
+    /// <summary>The vendor-owned resolver IMPLEMENTATION files — the only files that legitimately own a
+    /// vendor's reviewer-model aliases/ids, so never scanned. The cross-vendor coordinator
+    /// (<c>ReviewerModelResolution.cs</c>) is deliberately NOT here: it must stay vendor-neutral, so a
+    /// central table added to it must be caught.</summary>
     static readonly HashSet<string> ResolverOwnedFiles = new(StringComparer.OrdinalIgnoreCase) {
         "ClaudeLauncher.cs",
         "CodexLauncher.cs",
-        "ReviewerModelResolution.cs",
     };
 
     /// <summary>Per-file substrings that are PRE-EXISTING, unrelated vendor-model literals
@@ -56,8 +59,12 @@ public class ReviewerModelVendorNeutralityGuardTests {
     /// <c>gemini-</c> requires a digit immediately after the dash (a real model version, e.g.
     /// <c>gemini-2.5-pro</c>) so it doesn't fire on unrelated CLI tokens like
     /// <c>--gemini-settings-path</c>/<c>gemini-hook</c>/<c>gemini-root</c> that merely share the
-    /// vendor name as a substring. <c>o1</c>/<c>o3</c> are word-bounded so they don't fire on
-    /// arbitrary identifiers.</summary>
+    /// vendor name as a substring. <c>o1</c>/<c>o3</c>/<c>o4</c> (the Codex reasoning series) are
+    /// word-bounded so they don't fire on arbitrary identifiers. The Codex resolver also accepts the
+    /// <c>codex-*</c> family: <c>codex-mini</c> is the tight token for its one real model id
+    /// (<c>codex-mini-latest</c>) — deliberately NOT a bare <c>codex-</c> pattern, which would fire on
+    /// the many non-model literals (<c>codex-hook</c>, <c>--skip-codex-network-access</c>,
+    /// <c>codex-unattended-v1</c>, the <c>codex-reviewer-model-v1</c> policy version, etc.).</summary>
     static readonly (string Label, Regex Pattern)[] TellTales = [
         ("claude-sonnet", new Regex(@"claude-sonnet", RegexOptions.Compiled)),
         ("claude-opus",   new Regex(@"claude-opus",   RegexOptions.Compiled)),
@@ -66,6 +73,8 @@ public class ReviewerModelVendorNeutralityGuardTests {
         ("gpt-4",         new Regex(@"gpt-4",          RegexOptions.Compiled)),
         ("o1",            new Regex(@"\bo1\b",         RegexOptions.Compiled)),
         ("o3",            new Regex(@"\bo3\b",         RegexOptions.Compiled)),
+        ("o4",            new Regex(@"\bo4\b",         RegexOptions.Compiled)),
+        ("codex-mini",    new Regex(@"codex-mini",     RegexOptions.Compiled)),
         ("gemini-<ver>",  new Regex(@"gemini-[0-9]",   RegexOptions.Compiled)),
     ];
 

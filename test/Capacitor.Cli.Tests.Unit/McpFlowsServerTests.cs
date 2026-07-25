@@ -363,7 +363,7 @@ public class McpFlowsServerTests {
     };
 
     const string V3RunningWithAck =
-        """{"flow_run_id":"f1","status":"running","round_id":null,"round_number":null,"applied_reviewer_model":"claude/opus-4","reviewer_model_equivalence_key":"claude/opus"}""";
+        """{"flow_run_id":"f1","status":"running","round_id":null,"round_number":null,"applied_reviewer_model":"claude/opus-4","reviewer_model_equivalence_key":"claude/opus","applied_reviewer_vendor":"claude"}""";
 
     // --- StartFlowAsync: route selection + local vendor requirement ---
 
@@ -603,7 +603,7 @@ public class McpFlowsServerTests {
                  "result_text":"looks good",
                  "requested_reviewer_model":"opus","applied_reviewer_model":"claude/opus-4",
                  "resolved_reviewer_model":"claude-opus-4-20260101","reviewer_model_source":"explicit",
-                 "reviewer_model_equivalence_key":"claude/opus"}
+                 "reviewer_model_equivalence_key":"claude/opus","applied_reviewer_vendor":"claude"}
                 """));
         using var client = new HttpClient();
 
@@ -623,6 +623,57 @@ public class McpFlowsServerTests {
         // Exactly one POST, to v3 — no polling GET, no v2 fallback.
         await Assert.That(server.LogEntries.Count(e => e.RequestMessage.Path == "/api/flows/review/start/v3")).IsEqualTo(1);
         await Assert.That(server.LogEntries.Any(e => e.RequestMessage.Path.Contains("/v2"))).IsFalse();
+    }
+
+    [Test]
+    public async Task HandleToolCall_with_model_settlement_busy_posts_v3_exactly_once_and_surfaces_the_coded_error() {
+        // A model-bearing v3 start mints AND launches a run on every POST, so a retryable settlement
+        // 409 must NOT be auto-retried (that would violate exactly-one-v3-POST and churn reviewer
+        // launches). The coded error surfaces so the caller retries the whole start.
+        using var server = WireMockServer.Start();
+        server.Given(Request.Create().WithPath("/api/flows/review/start/v3").UsingPost())
+            .RespondWith(Response.Create().WithStatusCode(409).WithBody(
+                """{"error":"flow_settlement_busy","message":"A concurrent settlement operation is racing this flow run."}"""));
+        using var client = new HttpClient();
+
+        var response = await McpFlowsServer.HandleToolCallAsync(
+            JsonNode.Parse("1")!, ModelToolCall("start_review_flow", ModelStartArguments("claude", "opus")),
+            client, server.Url!, cwd: "/tmp/cwd", repoRoot: null, repoInfo: null);
+
+        var result = JsonNode.Parse(response)!.AsObject();
+        await Assert.That(result["result"]!["isError"]!.GetValue<bool>()).IsTrue();
+        var text = result["result"]!["content"]![0]!["text"]!.GetValue<string>();
+        await Assert.That(text).Contains("flow_settlement_busy");
+
+        // EXACTLY ONE POST to v3 — a model-bearing start is never settlement-retried.
+        await Assert.That(server.LogEntries.Count(
+            e => e.RequestMessage.Path == "/api/flows/review/start/v3")).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task HandleToolCall_with_model_valid_ack_but_mismatched_vendor_closes_and_errors() {
+        // The model/key ack is opaque and cannot prove which VENDOR was applied, so a v3 success
+        // must ALSO pass the ordinal vendor-echo check. A mismatch salvages + closes the run and
+        // returns an error.
+        using var server = WireMockServer.Start();
+        server.Given(Request.Create().WithPath("/api/flows/review/start/v3").UsingPost())
+            .RespondWith(Response.Create().WithStatusCode(200).WithBody(
+                """{"flow_run_id":"f1","status":"running","round_id":null,"round_number":null,"applied_reviewer_model":"claude/opus-4","reviewer_model_equivalence_key":"claude/opus","applied_reviewer_vendor":"codex"}"""));
+        server.Given(Request.Create().WithPath("/api/flows/f1/close").UsingPost())
+            .RespondWith(Response.Create().WithStatusCode(200));
+        using var client = new HttpClient();
+
+        var response = await McpFlowsServer.HandleToolCallAsync(
+            JsonNode.Parse("1")!, ModelToolCall("start_review_flow", ModelStartArguments("claude", "opus")),
+            client, server.Url!, cwd: "/tmp/cwd", repoRoot: null, repoInfo: null);
+
+        var result = JsonNode.Parse(response)!.AsObject();
+        await Assert.That(result["result"]!["isError"]!.GetValue<bool>()).IsTrue();
+        var text = result["result"]!["content"]![0]!["text"]!.GetValue<string>();
+        await Assert.That(text).Contains("claude");
+        await Assert.That(text).Contains("codex");
+
+        await Assert.That(server.LogEntries.Count(e => e.RequestMessage.Path == "/api/flows/f1/close")).IsEqualTo(1);
     }
 
     // --- Tool schema exposure ---
