@@ -28,12 +28,13 @@ internal static class CodexMcpInventory {
 
     /// <summary>
     /// Runs <c>{codexPath} mcp list --json</c> (inheriting this process's environment, so the same
-    /// <c>CODEX_HOME</c> the reviewer will use is honoured) and returns the effective MCP server
-    /// names (config.toml + plugins). Throws <see cref="CodexReviewerMcpIsolationException"/> if the
-    /// process can't be started, times out, exits non-zero, or emits output that isn't a parseable
-    /// JSON array — never returns a partial/empty list to mask such a failure.
+    /// <c>CODEX_HOME</c> the reviewer will use is honoured) and returns the effective MCP servers
+    /// (config.toml + plugins), each with its transport url when it has one. Throws
+    /// <see cref="CodexReviewerMcpIsolationException"/> if the process can't be started, times out,
+    /// exits non-zero, or emits output that isn't a parseable JSON array — never returns a
+    /// partial/empty list to mask such a failure.
     /// </summary>
-    public static IReadOnlyList<string> ListInheritedServerNames(string codexPath) {
+    public static IReadOnlyList<InheritedMcpServer> ListInheritedServers(string codexPath) {
         string stdout;
         string stderr;
         int    exitCode;
@@ -74,17 +75,20 @@ internal static class CodexMcpInventory {
                 $"'{codexPath} mcp list --json' exited {exitCode} while enumerating the reviewer's inherited MCP servers: {detail.Trim()}");
         }
 
-        return ParseServerNames(stdout);
+        return ParseServers(stdout);
     }
 
     /// <summary>
-    /// Parses the <c>codex mcp list --json</c> payload — a JSON array of <c>{ "name": string, … }</c>
-    /// objects — into the list of server names. Pure and side-effect free (unit-testable without the
-    /// codex binary). Throws <see cref="CodexReviewerMcpIsolationException"/> when the payload isn't a
-    /// JSON array or an element has no string <c>name</c>: an unparseable enumeration must fail closed,
-    /// not silently drop servers. A valid empty array (<c>[]</c>) returns an empty list.
+    /// Parses the <c>codex mcp list --json</c> payload — a JSON array of
+    /// <c>{ "name": string, "transport": { "url": string?, … }?, … }</c> objects — into the list of
+    /// servers. Pure and side-effect free (unit-testable without the codex binary). Throws
+    /// <see cref="CodexReviewerMcpIsolationException"/> when the payload isn't a JSON array or an
+    /// element has no string <c>name</c>: an unparseable enumeration must fail closed, not silently
+    /// drop servers. The transport url is best-effort (null when absent or non-string) — either
+    /// value still yields a DISABLING override downstream, so it can shape but never bypass the
+    /// isolation. A valid empty array (<c>[]</c>) returns an empty list.
     /// </summary>
-    public static IReadOnlyList<string> ParseServerNames(string json) {
+    public static IReadOnlyList<InheritedMcpServer> ParseServers(string json) {
         JsonNode? root;
 
         try {
@@ -99,7 +103,7 @@ internal static class CodexMcpInventory {
                 "'codex mcp list --json' output was not a JSON array.");
         }
 
-        var names = new List<string>(array.Count);
+        var servers = new List<InheritedMcpServer>(array.Count);
 
         foreach (var element in array) {
             if (element?["name"] is not JsonValue nameNode ||
@@ -109,9 +113,20 @@ internal static class CodexMcpInventory {
                     "'codex mcp list --json' returned an MCP server entry with no usable name.");
             }
 
-            names.Add(name);
+            var url = element["transport"]?["url"] is JsonValue urlNode &&
+                      urlNode.TryGetValue<string>(out var value) &&
+                      !string.IsNullOrEmpty(value)
+                ? value
+                : null;
+
+            servers.Add(new(name, url));
         }
 
-        return names;
+        return servers;
     }
 }
+
+/// <summary>One effective MCP server a spawned Codex session would inherit. <see cref="Url"/> is the
+/// transport url for a url-based (streamable_http) server, null for stdio/transport-less ones — it
+/// selects the shape of the disabling override in <see cref="CodexLauncher"/> (AI-1519).</summary>
+internal readonly record struct InheritedMcpServer(string Name, string? Url = null);
