@@ -15,6 +15,10 @@ internal sealed partial class ClaudeLauncher(
     public string CliPath => config.ClaudePath;
     public bool   SupportsUnattended => true;
 
+    /// <summary>Claude owns its own reviewer-model policy (aliases + dated concrete ids → family-level
+    /// equivalence key). Stateless singleton.</summary>
+    public IReviewerModelResolver? ReviewerModelResolver => ClaudeReviewerModelResolver.Instance;
+
     public bool IsAvailable() => CliResolver.Exists(CliPath);
 
     static readonly Lock                  TrustWriteLock   = new();
@@ -657,4 +661,83 @@ internal sealed partial class ClaudeLauncher(
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "MCP allowlist entry '{Name}' can start flows — stripped (agent {AgentId})")]
     partial void LogAllowlistEntryStripped(string name, string agentId);
+}
+
+/// <summary>
+/// Claude-owned reviewer MODEL override policy. Anthropic aliases (<c>opus</c>/<c>sonnet</c>/<c>haiku</c>)
+/// and the dated concrete ids they resolve to (<c>claude-sonnet-4-5-20250929</c>,
+/// <c>claude-3-5-sonnet-20241022</c>) both canonicalize to a FAMILY-level equivalence key
+/// (<c>claude/&lt;family&gt;</c>). That family-level identity is the anchor that stays stable across the
+/// Claude CLI's own alias→dated resolution — so the key produced for a requested <c>sonnet</c> at
+/// preflight equals the key produced for whatever dated sonnet the CLI actually launches, which the
+/// server validates by equality. No central model table: this policy lives entirely inside the Claude
+/// launcher.
+/// </summary>
+internal sealed class ClaudeReviewerModelResolver : IReviewerModelResolver {
+    public static readonly ClaudeReviewerModelResolver Instance = new();
+
+    ClaudeReviewerModelResolver() { }
+
+    public string Vendor        => "claude";
+    public string PolicyVersion => "claude-reviewer-model-v1";
+
+    /// <summary>Anthropic model families. Both a bare alias ("sonnet") and any claude-scoped dated
+    /// concrete id ("claude-sonnet-4-5-20250929", "claude-3-5-sonnet-20241022") that carries a family
+    /// token canonicalize to the family — that family is the stable equivalence anchor. Deliberately
+    /// minimal (no exhaustive dated catalog, no speculative aliases).</summary>
+    static readonly string[] Families = ["opus", "sonnet", "haiku"];
+
+    public ReviewerModelResolution Resolve(string requestedModel) {
+        if (!ReviewerModelSyntax.IsWellFormed(requestedModel))
+            return new(ReviewerModelDisposition.Invalid, DiagnosticCode: "malformed_model_id");
+
+        var raw   = requestedModel.Trim();
+        var lower = raw.ToLowerInvariant();
+
+        var family = ResolveFamily(lower);
+        if (family is null)
+            return new(ReviewerModelDisposition.Unavailable);
+
+        return new(
+            ReviewerModelDisposition.Accept,
+            CanonicalRequestedModel: lower,
+            LaunchModel: raw,                       // passed through to the launcher verbatim
+            EquivalenceKey: $"claude/{family}");    // anchor — stable across alias→dated resolution
+    }
+
+    /// <summary>Returns the family iff exactly one known family token identifies the input: a bare alias
+    /// ("sonnet"), or a claude-scoped id whose tokens include exactly one family token
+    /// ("claude-sonnet-4-5-20250929", "claude-3-5-sonnet-20241022"). An unrecognized string, or an
+    /// ambiguous id carrying two family tokens, returns null.</summary>
+    static string? ResolveFamily(string lower) {
+        foreach (var f in Families)
+            if (lower == f) return f;
+
+        // A concrete id must be claude-scoped so a stray token in some other vendor's slug can't match.
+        if (!lower.StartsWith("claude-", StringComparison.Ordinal)) return null;
+
+        string? found = null;
+        foreach (var f in Families) {
+            if (!ContainsToken(lower, f)) continue;
+            if (found is not null) return null;     // ambiguous — two family tokens
+            found = f;
+        }
+
+        return found;
+    }
+
+    /// <summary>Whether <paramref name="lower"/> contains <paramref name="token"/> delimited by
+    /// non-alphanumeric boundaries, so "opus" matches "claude-opus-4-1" but not "opusplan".</summary>
+    static bool ContainsToken(string lower, string token) {
+        var idx = lower.IndexOf(token, StringComparison.Ordinal);
+        while (idx >= 0) {
+            var beforeOk = idx == 0 || !char.IsLetterOrDigit(lower[idx - 1]);
+            var afterPos = idx + token.Length;
+            var afterOk  = afterPos >= lower.Length || !char.IsLetterOrDigit(lower[afterPos]);
+            if (beforeOk && afterOk) return true;
+            idx = lower.IndexOf(token, idx + 1, StringComparison.Ordinal);
+        }
+
+        return false;
+    }
 }

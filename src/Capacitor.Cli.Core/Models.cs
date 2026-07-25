@@ -1649,7 +1649,18 @@ public sealed record UnattendedVendorCapability(
     string? CliVersion,
     string LauncherPolicyVersion,
     bool BorrowedReviewSupported,
-    string? BorrowedReviewContainment = null
+    string? BorrowedReviewContainment = null,
+    // Whether this daemon can resolve a reviewer MODEL override for this vendor via a runtime-owned
+    // resolver. Advertised true ONLY when the vendor is installed, unattended-certified, AND has a
+    // resolver — the server refuses a v3 model override unless this is true, so a vendor with no
+    // authoritative resolver advertises false and keeps its existing vendor-only unattended support.
+    // A daemon predating these fields reports false/null verbatim through the defaults below; a
+    // legacy/mid-rollout advertisement is NEVER widened to "supported" by any fallback.
+    bool SupportsReviewerModelResolution = false,
+    // The version of this vendor's reviewer-model policy (distinct from LauncherPolicyVersion), echoed
+    // by the server so a policy upgrade mid-flight is detected rather than silently trusted. Null when
+    // no resolver is advertised.
+    string? ReviewerModelPolicyVersion = null
 );
 
 public readonly record struct AgentRegistered(

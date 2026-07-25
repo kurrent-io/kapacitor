@@ -17,6 +17,10 @@ internal sealed partial class CodexLauncher(
     public bool   SupportsBorrowedReviewFlow => true;
     public string BorrowedReviewContainment => "native-tool-clamp";
 
+    /// <summary>Codex owns its own reviewer-model policy (known OpenAI/Codex slug families →
+    /// slug-level equivalence key). Stateless singleton.</summary>
+    public IReviewerModelResolver? ReviewerModelResolver => CodexReviewerModelResolver.Instance;
+
     public bool IsAvailable() => CliResolver.Exists(CliPath);
 
     /// <summary>
@@ -422,4 +426,49 @@ internal sealed partial class CodexLauncher(
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "MCP allowlist entry '{Name}' can start flows — stripped (agent {AgentId})")]
     partial void LogAllowlistEntryStripped(string name, string agentId);
+}
+
+/// <summary>
+/// Codex-owned reviewer MODEL override policy. Recognizes the genuinely-known OpenAI/Codex model slug
+/// families (<c>gpt-*</c>, the <c>o1</c>/<c>o3</c>/<c>o4</c> reasoning series, and <c>codex-*</c>) and
+/// canonicalizes to a SLUG-level equivalence key (<c>codex/&lt;slug&gt;</c>). Unlike Claude, Codex slugs
+/// are stable — there is no alias→dated resolution — so the requested slug and the concrete launched
+/// slug match at the slug level, and the slug itself is the stable anchor. No central model table: this
+/// policy lives entirely inside the Codex launcher.
+/// </summary>
+internal sealed class CodexReviewerModelResolver : IReviewerModelResolver {
+    public static readonly CodexReviewerModelResolver Instance = new();
+
+    CodexReviewerModelResolver() { }
+
+    public string Vendor        => "codex";
+    public string PolicyVersion => "codex-reviewer-model-v1";
+
+    /// <summary>Genuinely-known OpenAI/Codex model-slug family prefixes. Recognizing by family prefix
+    /// (rather than an exhaustive dated catalog) keeps this minimal while covering <c>gpt-5</c>,
+    /// <c>gpt-5-codex</c>, <c>gpt-4.1</c>, the <c>o1</c>/<c>o3</c>/<c>o4</c> reasoning series, and
+    /// <c>codex-mini-latest</c>. A slug matching a family prefix but not a real model still fails at
+    /// launch (Codex rejects it), never a resolution-level false accept of another vendor's model.</summary>
+    static readonly string[] KnownPrefixes = ["gpt-", "o1", "o3", "o4", "codex"];
+
+    public ReviewerModelResolution Resolve(string requestedModel) {
+        if (!ReviewerModelSyntax.IsWellFormed(requestedModel))
+            return new(ReviewerModelDisposition.Invalid, DiagnosticCode: "malformed_model_id");
+
+        var raw   = requestedModel.Trim();
+        var lower = raw.ToLowerInvariant();
+
+        var recognized = KnownPrefixes.Any(p => lower.StartsWith(p, StringComparison.Ordinal));
+        if (!recognized)
+            return new(ReviewerModelDisposition.Unavailable);
+
+        // Codex slugs are stable (no alias→dated resolution), so the canonical slug itself is the
+        // stable equivalence anchor — the requested slug and the concrete launched slug match at the
+        // slug level.
+        return new(
+            ReviewerModelDisposition.Accept,
+            CanonicalRequestedModel: lower,
+            LaunchModel: raw,                   // passed through to the launcher verbatim
+            EquivalenceKey: $"codex/{lower}");  // anchor
+    }
 }

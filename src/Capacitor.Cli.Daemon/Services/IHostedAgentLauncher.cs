@@ -41,6 +41,15 @@ internal interface IHostedAgentLauncher {
     string? BorrowedReviewContainment => null;
 
     /// <summary>
+    /// This vendor's runtime-owned reviewer MODEL override policy, or <see langword="null"/> when the
+    /// launcher has no authoritative model resolver yet. When non-null the daemon advertises
+    /// <c>SupportsReviewerModelResolution</c> for this vendor and the server may drive a reviewer
+    /// model override through it. A null resolver leaves the vendor's existing vendor-only unattended
+    /// support intact; it simply is not an override-eligible target for a model override.
+    /// </summary>
+    IReviewerModelResolver? ReviewerModelResolver => null;
+
+    /// <summary>
     /// Per-vendor preparation BEFORE the PTY is spawned. Implementations:
     ///   • Overlay vendor-specific settings dir from source repo into worktree
     ///   • Pre-trust the worktree path in the vendor's config file

@@ -30,6 +30,10 @@ internal sealed partial class PtyHostedAgentRuntimeFactory(
     public bool   SupportsBorrowedReviewFlow => launcher.SupportsBorrowedReviewFlow;
     public string? BorrowedReviewContainment => launcher.BorrowedReviewContainment;
 
+    /// <summary>PTY factories delegate reviewer-model resolution to their launcher-owned policy — the
+    /// launcher (Claude, Codex) owns its accepted aliases/ids and canonical/equivalence behavior.</summary>
+    public IReviewerModelResolver? ReviewerModelResolver => launcher.ReviewerModelResolver;
+
     public bool IsAvailable() => launcher.IsAvailable();
 
     /// <remarks>
