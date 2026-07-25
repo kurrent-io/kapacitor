@@ -337,7 +337,7 @@ public class McpFlowsServerTests : IDisposable {
 
             await AssertSchema(
                 byName["start_review_flow"],
-                properties: ["kind", "target_kind", "target_ref", "target_title", "context", "instructions", "mode", "vendor"],
+                properties: ["kind", "target_kind", "target_ref", "target_title", "context", "instructions", "mode", "vendor", "model"],
                 required:   ["kind", "target_kind", "target_ref", "target_title", "context"]
             );
 
@@ -1720,7 +1720,7 @@ public class McpFlowsServerTests : IDisposable {
 
             await AssertSchema(
                 startFlow,
-                properties: ["definition_id", "definition_yaml", "target_kind", "target_ref", "target_title", "context", "instructions", "mode", "vendor"],
+                properties: ["definition_id", "definition_yaml", "target_kind", "target_ref", "target_title", "context", "instructions", "mode", "vendor", "model"],
                 required:   ["target_kind", "target_ref", "target_title", "context"]
             );
 

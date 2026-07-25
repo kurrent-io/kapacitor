@@ -427,9 +427,9 @@ static class McpFlowsServer {
     /// best-effort defensive close. Pure (no HttpClient) so the close side effect stays with the caller.
     ///
     /// <para>Old-server / skew mapping (→ <see cref="ReviewerModelProtocolRequiredMessage"/>, never a
-    /// v2 retry): a 404/405 on the versioned route, an UNCODED (legacy/plain) non-success body, or a
-    /// coded body whose code is a protocol-skew code. A genuine coded v3 rejection (any other code)
-    /// returns null so the caller's <see cref="FormatFlowStartError"/> surfaces it verbatim.</para>
+    /// v2 retry): a 404/405 on the versioned route, or a coded body whose code is a protocol-skew
+    /// code. A genuine coded v3 rejection OR an uncoded (legacy / 5xx / proxy) body returns null so
+    /// the caller's <see cref="FormatFlowStartError"/> surfaces the real status/body verbatim.</para>
     ///
     /// <para>Ack validation on success requires a nonempty <c>applied_reviewer_model</c> AND
     /// <c>reviewer_model_equivalence_key</c> — it NEVER string-compares requested/applied/resolved
@@ -452,14 +452,17 @@ static class McpFlowsServer {
 
         if (!isSuccess) {
             // A coded protocol-skew rejection also means the server can't do v3; any OTHER coded
-            // rejection is a genuine v3 verdict and passes through to FormatFlowStartError. An
-            // uncoded/legacy error body reads as an old server → protocol_required.
+            // rejection is a genuine v3 verdict and passes through to FormatFlowStartError.
             if (TryParseCodedError(postBody, out var code, out _))
                 return ReviewerModelProtocolSkewCodes.Contains(code!)
                     ? (ReviewerModelProtocolRequiredMessage, true)
                     : null;
 
-            return (ReviewerModelProtocolRequiredMessage, true);
+            // Qodo #2: an UNCODED non-success body (e.g. a 5xx / proxy HTML-or-text error) is NOT an
+            // old-server signal — only a clean 404/405 is (handled above). Return null so the caller's
+            // FormatFlowStartError surfaces the real status/body, instead of masking a genuine
+            // failure as a protocol-version skew.
+            return null;
         }
 
         // Success: validate the model ack. Parse defensively — a malformed / non-object body must

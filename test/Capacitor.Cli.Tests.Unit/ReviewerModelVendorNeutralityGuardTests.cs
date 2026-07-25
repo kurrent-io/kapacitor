@@ -5,7 +5,7 @@ using System.Text.RegularExpressions;
 namespace Capacitor.Cli.Tests.Unit;
 
 /// <summary>
-/// AI-1417 Task 10, Step 1 — an architectural guard locking in vendor-neutrality for the
+/// An architectural guard locking in vendor-neutrality for the
 /// reviewer-model-override feature. The MCP layer (<c>McpFlowsServer</c>/<c>McpReviewServer</c>),
 /// the shared Cli.Core wire DTOs, and the RPC coordinator/wiring (daemon ↔ server) must hold NO
 /// hardcoded vendor-specific model prefix or provider→model map — a resolver owns its own vendor's
@@ -38,7 +38,7 @@ public class ReviewerModelVendorNeutralityGuardTests {
     };
 
     /// <summary>Per-file substrings that are PRE-EXISTING, unrelated vendor-model literals
-    /// (predate AI-1417, no relation to the reviewer-model-override feature) — grandfathered so the
+    /// (predate this feature, no relation to the reviewer-model-override feature) — grandfathered so the
     /// guard is GREEN today without touching those working, unrelated features. Scoped by filename
     /// AND substring (not a blanket file exclusion): any other tell-tale-matching line added to
     /// either file still fails the scan.</summary>

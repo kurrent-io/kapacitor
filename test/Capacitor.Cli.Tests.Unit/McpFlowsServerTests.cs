@@ -470,12 +470,15 @@ public class McpFlowsServerTests {
     }
 
     [Test]
-    public async Task CheckReviewerModelResult_uncoded_error_body_maps_to_protocol_required() {
+    public async Task CheckReviewerModelResult_uncoded_non_success_body_is_surfaced_not_masked() {
+        // Qodo #2: a non-404/405 uncoded body (e.g. a 5xx / proxy HTML-or-text error) is NOT an
+        // old-server signal — it returns null so the caller surfaces the real status/body, rather
+        // than masking a genuine failure as reviewer_model_protocol_required.
         var result = McpFlowsServer.CheckReviewerModelResult(
-            "start_flow", HttpStatusCode.BadRequest, isSuccess: false, postBody: "plain text error", out var runIdToClose);
+            "start_flow", HttpStatusCode.InternalServerError, isSuccess: false,
+            postBody: "<html>502 Bad Gateway</html>", out var runIdToClose);
 
-        await Assert.That(result).IsNotNull();
-        await Assert.That(result!.Value.Message).Contains("reviewer_model_protocol_required");
+        await Assert.That(result).IsNull();
         await Assert.That(runIdToClose).IsNull();
     }
 
