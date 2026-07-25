@@ -235,4 +235,60 @@ public class ReviewerModelResolutionTests {
         await Assert.That(r.Disposition).IsEqualTo(ReviewerModelDisposition.VendorMismatch);
         await Assert.That(r.DiagnosticCode).IsEqualTo("codex");
     }
+
+    // === Central anchor guard (Task-7 review Minor, enforced at the coordinator) ===
+
+    /// <summary>A resolver that (buggily) returns Accept WITHOUT a non-null equivalence-key anchor.</summary>
+    sealed class AnchorlessAcceptResolver(string vendor, params string[] recognized) : IReviewerModelResolver {
+        public string Vendor        => vendor;
+        public string PolicyVersion => $"{vendor}-anchorless-v1";
+
+        public ReviewerModelResolution Resolve(string requestedModel) =>
+            recognized.Contains(requestedModel, StringComparer.Ordinal)
+                ? new(ReviewerModelDisposition.Accept, CanonicalRequestedModel: requestedModel,
+                    LaunchModel: requestedModel, EquivalenceKey: null)   // no anchor — the bug
+                : new(ReviewerModelDisposition.Unavailable);
+    }
+
+    [Test]
+    public async Task Coordinator_SelectedAnchorlessAccept_DegradesToUnavailable() {
+        // The central anchor guard: an accept with no equivalence key is not a real accept (it would
+        // ship a silent no_anchor bug the server's echo validation trips on) — degrade to unavailable.
+        IReviewerModelResolver[] resolvers = [new AnchorlessAcceptResolver("zebra", "zmodel")];
+
+        var r = ReviewerModelResolvers.Resolve("zebra", "zmodel", resolvers);
+
+        await Assert.That(r.Disposition).IsEqualTo(ReviewerModelDisposition.Unavailable);
+    }
+
+    [Test]
+    public async Task Coordinator_AnchorlessAcceptFromOtherVendor_IsNotAVendorMismatch() {
+        // An anchorless accept from ANOTHER vendor must not be treated as a recognizing vendor either —
+        // the selected vendor rejects and no ANCHORED accept exists ⇒ plain unavailable, no mismatch.
+        IReviewerModelResolver[] resolvers = [
+            new AnchorlessAcceptResolver("aardvark", "shared"),
+            new FakeResolver("zebra", "zmodel"),
+        ];
+
+        var r = ReviewerModelResolvers.Resolve("zebra", "shared", resolvers);
+
+        await Assert.That(r.Disposition).IsEqualTo(ReviewerModelDisposition.Unavailable);
+        await Assert.That(r.DiagnosticCode).IsNull();
+    }
+
+    // === Codex date-sensitivity (Task 8: the report must never feed a dated slug to the resolver) ===
+
+    [Test]
+    public async Task Codex_DatedSlug_HasADifferentKeyThanTheBareSlug() {
+        // Codex's slug-level key is date-SENSITIVE: a hypothetical dated slug canonicalizes to a
+        // DIFFERENT anchor than the bare slug. This locks the contract that Task 8's resolved-model
+        // report must report the verbatim LaunchModel (bare slug), never a date-suffixed
+        // session-metadata model — the latter would drift the key and fail the server's echo validation.
+        var bare  = CodexReviewerModelResolver.Instance.Resolve("gpt-5-codex");
+        var dated = CodexReviewerModelResolver.Instance.Resolve("gpt-5-codex-2025-01-01");
+
+        await Assert.That(bare.Disposition).IsEqualTo(ReviewerModelDisposition.Accept);
+        await Assert.That(dated.Disposition).IsEqualTo(ReviewerModelDisposition.Accept);
+        await Assert.That(dated.EquivalenceKey).IsNotEqualTo(bare.EquivalenceKey);
+    }
 }

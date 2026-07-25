@@ -104,6 +104,15 @@ internal static class ReviewerModelSyntax {
 /// ordinal order by vendor so the "ordinal-first diagnostic vendor" reported for a mismatch is stable.
 /// </summary>
 internal static class ReviewerModelResolvers {
+    /// <summary>The reviewer-model preflight RPC PROTOCOL version this daemon speaks — returned verbatim
+    /// as <see cref="ReviewerModelResolveResponseV1.PolicyVersion"/> and compared by the server against
+    /// the <see cref="ReviewerModelResolveRequestV1.ExpectedPolicyVersion"/> it sent, so a mismatched
+    /// protocol version on either side fails the preflight CLOSED (never silently trusted). This is the
+    /// RPC-envelope version, distinct from a per-vendor resolver's <see cref="IReviewerModelResolver.PolicyVersion"/>
+    /// (which the daemon advertises on its capability and echoes on the post-launch resolved report).
+    /// MUST match the server's <c>ReviewerModelResolution.PolicyVersion</c>.</summary>
+    public const string RpcProtocolVersion = "reviewer_model_resolve_v1";
+
     /// <summary>Resolve <paramref name="requestedModel"/> for <paramref name="vendor"/> against the full
     /// advertised resolver set. Vendor-neutral: it never inspects the model string's vendor itself, only
     /// asks each resolver.</summary>
@@ -129,19 +138,35 @@ internal static class ReviewerModelResolvers {
 
         var result = selected.Resolve(requestedModel);
 
-        // The selected vendor recognized it (accept), or considered it malformed on its own terms
-        // (invalid) — both are terminal; do not reinterpret as another vendor's model.
-        if (result.Disposition is ReviewerModelDisposition.Accept or ReviewerModelDisposition.Invalid)
+        // The selected vendor considered it malformed on its own terms (invalid) — terminal; do not
+        // reinterpret as another vendor's model.
+        if (result.Disposition == ReviewerModelDisposition.Invalid)
             return result;
 
-        // Selected vendor doesn't recognize it (unavailable). Scan the OTHER advertised resolvers in
-        // ordinal order; the first that recognizes it makes this a vendor mismatch naming that vendor.
+        // The selected vendor ANCHORED-accepted it (accept WITH a non-null equivalence key) — terminal.
+        if (IsAnchoredAccept(result))
+            return result;
+
+        // Selected vendor doesn't (validly) recognize it — a plain unavailable, OR the central anchor
+        // guard demoted an anchorless "accept" to unavailable (see IsAnchoredAccept). Scan the OTHER
+        // advertised resolvers in ordinal order; the first that ANCHORED-accepts it makes this a vendor
+        // mismatch naming that vendor.
         foreach (var other in ordered) {
             if (ReferenceEquals(other, selected)) continue;
-            if (other.Resolve(requestedModel).Disposition == ReviewerModelDisposition.Accept)
+            if (IsAnchoredAccept(other.Resolve(requestedModel)))
                 return new(ReviewerModelDisposition.VendorMismatch, DiagnosticCode: other.Vendor);
         }
 
         return new(ReviewerModelDisposition.Unavailable);
     }
+
+    /// <summary>Central anchor guard (Task-7 review Minor): only an <see cref="ReviewerModelDisposition.Accept"/>
+    /// carrying a non-null <see cref="ReviewerModelResolution.EquivalenceKey"/> is a REAL accept. A resolver
+    /// that returns accept without an anchor would ship a silent <c>no_anchor</c> bug — the server's
+    /// post-launch echo validation then has nothing to validate the report against. Enforcing the
+    /// invariant HERE (in the one coordinator) rather than trusting every resolver means a future
+    /// resolver can't leak an anchorless accept: it is treated as a non-recognition (demoted to
+    /// unavailable) both for the selected vendor and for cross-vendor recognition.</summary>
+    static bool IsAnchoredAccept(ReviewerModelResolution r) =>
+        r.Disposition == ReviewerModelDisposition.Accept && r.EquivalenceKey is not null;
 }

@@ -377,6 +377,9 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
         _server.ReRegisterAgentsHook          =  ReRegisterAgentsAsync;
         _server.FindRepoForRemoteHandler      =  HandleFindRepoForRemote;
         _server.ProbeBorrowSourceHandler      =  HandleProbeBorrowSource;
+        // Task 8: the side-effect-free reviewer-model preflight. Pure resolution over the
+        // advertised resolvers — no subprocess/worktree/config side effects.
+        _server.ResolveReviewerModelHandler   =  req => Task.FromResult(HandleResolveReviewerModel(req));
 
         // Phase B2-b (sequenced-settlement design §4.2.4): the server prunes the resolved-candidates
         // ledger per-entry via AckResolvedCandidates (synchronous void handler); the connect payload
@@ -1027,7 +1030,10 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
                 SourceRepoPath: repoPath,
                 Worktree: worktree,
                 Prompt: prompt,
-                Model: model,
+                // Task 8: for an explicit-model reviewer launch, launch with the server-pinned
+                // LaunchModel VERBATIM (the launcher passes ctx.Model straight to the argument list —
+                // never recanonicalized). Null block ⇒ the legacy path, cmd.Model unchanged.
+                Model: cmd.ExplicitReviewerModel?.LaunchModel ?? model,
                 Effort: effort,
                 Tools: tools,
                 IsReview: isReview,
@@ -1154,13 +1160,17 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             // daemon liveness, so a missing id never blocks a launch.
             _ = DetectSessionIdAsync(agent, cmd.Vendor, spawnedAtUtc);
 
-            // Report the resolved model so the server can display the real model the agent
-            // is running (the dispatched `model` may be the "default" no-override sentinel,
-            // in which case Codex picks the model from ~/.codex/config.toml). The hub contract
-            // (ReportAgentResolvedModel) is Codex-only and the resolution via CodexConfigToml is
-            // Codex-specific, so gate the call on vendor — Claude/other agents never call the hub.
-            // Best-effort: never let a report failure break the launch.
-            if (string.Equals(cmd.Vendor, "codex", StringComparison.OrdinalIgnoreCase)) {
+            // Report the resolved model so the server can display / validate the real model the agent
+            // is running. Best-effort: never let a report failure break the launch.
+            if (cmd.ExplicitReviewerModel is { } explicitReviewerModel) {
+                // Task 8: a protocol-v3 explicit-model reviewer launch reports the CONCRETE
+                // resolved model via the dedicated ReportExplicitReviewerModelResolved channel, keyed by
+                // the durable LaunchAttemptId, so the server's one-shot waiter can validate + re-price it.
+                ReportExplicitReviewerModel(agentId, cmd.Vendor, explicitReviewerModel, runtimeFactory);
+            } else if (string.Equals(cmd.Vendor, "codex", StringComparison.OrdinalIgnoreCase)) {
+                // Legacy path (name/arity/behavior UNCHANGED): the dispatched `model` may be the "default"
+                // no-override sentinel, in which case Codex resolves the model from ~/.codex/config.toml.
+                // Codex-only — Claude/other agents never call the ReportAgentResolvedModel hub.
                 ReportResolvedModel(agentId, cmd.Vendor, model);
             }
 
@@ -1249,6 +1259,33 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             if (string.IsNullOrEmpty(resolved)) return;
 
             _ = _server.ReportAgentResolvedModelAsync(agentId, resolved);
+        } catch (Exception ex) {
+            LogReportResolvedModelFailed(ex, agentId);
+        }
+    }
+
+    /// <summary>
+    /// Task 8: reports the CONCRETE resolved model for an explicit-model reviewer launch via the
+    /// dedicated <c>ReportExplicitReviewerModelResolved</c> channel. The concrete model is the exact,
+    /// server-pinned <c>LaunchModel</c> the daemon launched with (never a recanonicalized or date-suffixed
+    /// value — for Codex the slug-level equivalence key is date-SENSITIVE, so a date-suffixed
+    /// session-metadata model would drift it; for Claude the family-level key absorbs any date, so the
+    /// launch model's key still matches the pinned family anchor). The reported equivalence key is DERIVED
+    /// from that concrete model via the vendor's own resolver so the server's key-equality validation is
+    /// meaningful. Best-effort: a resolver-absent / unresolvable model or a send failure never breaks the
+    /// launch — the server's report waiter then times out and fails the attempt CLOSED.
+    /// </summary>
+    void ReportExplicitReviewerModel(
+            string agentId, string vendor, ExplicitReviewerModelLaunch block, IHostedAgentRuntimeFactory runtimeFactory) {
+        try {
+            var report = BuildExplicitReviewerModelReport(agentId, vendor, block, runtimeFactory.ReviewerModelResolver);
+
+            if (report is null) {
+                LogExplicitReviewerModelUnreportable(agentId, vendor, block.LaunchModel);
+                return;
+            }
+
+            _ = _server.ReportExplicitReviewerModelResolvedAsync(report);
         } catch (Exception ex) {
             LogReportResolvedModelFailed(ex, agentId);
         }
@@ -1922,6 +1959,95 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     }
 
     /// <summary>
+    /// Task 8: handles the server's <c>ResolveReviewerModel</c> client-result invocation — the
+    /// side-effect-free reviewer-model preflight. PURE resolution: it consults the SELECTED vendor's
+    /// advertised resolver first (via the shared cross-vendor coordinator, which inspects the OTHER
+    /// advertised unattended resolvers only after the selected one rejects, to name a mismatch vendor)
+    /// and NEVER spawns a subprocess, creates a worktree, or writes config. Echoes the exact
+    /// <c>RequestId</c>/<c>Vendor</c>; returns the daemon's own RPC protocol version so a protocol drift
+    /// fails the preflight closed; and maps the daemon-internal disposition set onto the server's
+    /// accepted/unavailable/invalid wire dispositions (a vendor mismatch becomes an <c>unavailable</c>
+    /// carrying <c>RecognizedVendor</c>).
+    /// </summary>
+    ReviewerModelResolveResponseV1 HandleResolveReviewerModel(ReviewerModelResolveRequestV1 req) {
+        // The ADVERTISED unattended resolvers — the same predicate DaemonRunner.ComputeUnattendedVendor-
+        // Capabilities gates the capability on (installed + unattended-certified + resolver present).
+        // Vendor-neutral: we read each factory's own resolver, never a central vendor→model table.
+        var advertised = _runtimeFactories.Values
+            .Where(f => f.IsAvailable() && f.SupportsUnattended && f.ReviewerModelResolver is not null)
+            .Select(f => f.ReviewerModelResolver!)
+            .ToList();
+
+        // The coordinator resolves on the SELECTED vendor's resolver first and inspects the OTHER
+        // advertised resolvers only after the selected one rejects (to name a mismatch vendor).
+        var resolution = ReviewerModelResolvers.Resolve(req.Vendor, req.RequestedModel, advertised);
+
+        // Echo the exact RequestId + Vendor (the server rejects a mismatch), and return THIS daemon's own
+        // RPC protocol version — never an echo of the request's expectation — so a protocol drift on
+        // either side is detected and fails the preflight CLOSED.
+        var response = new ReviewerModelResolveResponseV1(
+            req.RequestId, req.Vendor, ReviewerModelResolvers.RpcProtocolVersion, Disposition: "unavailable");
+
+        return resolution.Disposition switch {
+            ReviewerModelDisposition.Accept => response with {
+                Disposition             = "accepted",
+                CanonicalRequestedModel = resolution.CanonicalRequestedModel,
+                LaunchModel             = resolution.LaunchModel,
+                EquivalenceKey          = resolution.EquivalenceKey,
+            },
+            // A cross-vendor recognition maps to unavailable with the ordinal-first OTHER vendor named;
+            // the server re-validates RecognizedVendor against what this daemon currently advertises.
+            ReviewerModelDisposition.VendorMismatch => response with {
+                Disposition      = "unavailable",
+                RecognizedVendor = resolution.DiagnosticCode,
+            },
+            ReviewerModelDisposition.Invalid => response with {
+                Disposition    = "invalid",
+                DiagnosticCode = resolution.DiagnosticCode,
+            },
+            // Unavailable, or any unexpected disposition — fail closed as plain unavailable.
+            _ => response,
+        };
+    }
+
+    /// <summary>
+    /// Task 8: builds the post-launch <see cref="ExplicitReviewerModelResolvedV1"/> report for an
+    /// explicit-model reviewer launch, or <see langword="null"/> when it cannot be built (no resolver for
+    /// the vendor, or the launch model no longer resolves — both fail the report closed rather than send
+    /// an unvalidatable one). The reported <c>EquivalenceKey</c> is DERIVED from the concrete launch model
+    /// via the SAME resolver (so the server's key-equality validation is meaningful, not a trivial echo),
+    /// and the <c>PolicyVersion</c> is the resolver's own per-vendor policy version. Pure/static so it is
+    /// unit-testable in isolation from the launch gauntlet.
+    /// </summary>
+    static ExplicitReviewerModelResolvedV1? BuildExplicitReviewerModelReport(
+            string agentId, string vendor, ExplicitReviewerModelLaunch block, IReviewerModelResolver? resolver) {
+        // The explicit path is gated by the server on the vendor advertising a resolver — defensively,
+        // no resolver means we can neither derive nor validate a key: fail the report CLOSED.
+        if (resolver is null) return null;
+
+        // The concrete model the daemon launched with is the server-pinned LaunchModel VERBATIM. For
+        // Codex this is load-bearing: its slug-level equivalence key is date-SENSITIVE, so reporting a
+        // date-suffixed session-metadata model would drift the key and fail the server's echo
+        // validation (see the Codex_DatedSlug regression test). For Claude the family-level key absorbs
+        // any date, so the launch model's key still matches the pinned family anchor.
+        var resolution = resolver.Resolve(block.LaunchModel);
+
+        // Derive the equivalence key from that concrete model via the SAME resolver — so the server's
+        // key-equality check is meaningful, not a trivial echo of the pinned block. A launch model that
+        // no longer anchored-accepts (a policy drift) can't produce a valid report: fail closed.
+        if (resolution.Disposition != ReviewerModelDisposition.Accept || resolution.EquivalenceKey is null)
+            return null;
+
+        return new ExplicitReviewerModelResolvedV1(
+            AgentId:         agentId,
+            LaunchAttemptId: block.LaunchAttemptId,
+            Vendor:          vendor,
+            ResolvedModel:   block.LaunchModel,          // verbatim — never recanonicalized/date-suffixed
+            PolicyVersion:   resolver.PolicyVersion,     // the per-vendor resolver policy version
+            EquivalenceKey:  resolution.EquivalenceKey); // DERIVED via the resolver; equals the pinned key
+    }
+
+    /// <summary>
     /// Registers an agent with the server exactly as a UI-launched agent: AgentRegistered +
     /// terminal dims + AgentRunStarted, then persists/announces the repo path. No-ops for a
     /// PrivateLocal agent. Shared by the hosted launch and the registered local launch so the
@@ -2560,6 +2686,9 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     [LoggerMessage(Level = LogLevel.Information, Message = "Stopping agent {AgentId}")]
     partial void LogStopping(string agentId);
 
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Could not build the explicit reviewer-model resolved report for agent {AgentId} (vendor {Vendor}, launch model {LaunchModel}) — no resolver or model no longer resolves; skipping the report (the server will fail the attempt closed)")]
+    partial void LogExplicitReviewerModelUnreportable(string agentId, string vendor, string launchModel);
+
     [LoggerMessage(Level = LogLevel.Warning, Message = "Failed to download launch attachments for agent {AgentId} (continuing)")]
     partial void LogAttachmentDownloadFailed(Exception ex, string agentId);
 
@@ -2704,6 +2833,15 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
 
     /// <summary>Test-only entry point to the private probe-borrow-source handler.</summary>
     internal Task<BorrowProbeResult> HandleProbeBorrowSourceForTest(string path) => HandleProbeBorrowSource(path);
+
+    /// <summary>Task 8: test-only entry point to the private reviewer-model preflight handler.</summary>
+    internal ReviewerModelResolveResponseV1 HandleResolveReviewerModelForTest(ReviewerModelResolveRequestV1 req) =>
+        HandleResolveReviewerModel(req);
+
+    /// <summary>Task 8: test-only entry point to the pure explicit-model resolved-report builder.</summary>
+    internal static ExplicitReviewerModelResolvedV1? BuildExplicitReviewerModelReportForTest(
+            string agentId, string vendor, ExplicitReviewerModelLaunch block, IReviewerModelResolver? resolver) =>
+        BuildExplicitReviewerModelReport(agentId, vendor, block, resolver);
 
     internal Task RegisterAgentForTestAsync(AgentInstance agent) => RegisterAgentAsync(agent);
     internal Task ReRegisterAgentsForTestAsync() => ReRegisterAgentsAsync();

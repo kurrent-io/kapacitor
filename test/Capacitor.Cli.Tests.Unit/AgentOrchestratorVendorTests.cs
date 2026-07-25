@@ -745,6 +745,344 @@ public partial class AgentOrchestratorVendorTests {
         }
     }
 
+    // ══ Task 8: reviewer-model preflight RPC + explicit resolved-model report ══════════════
+
+    /// <summary>Builds an orchestrator whose only runtime factories are the given resolver-carrying spies
+    /// (empty launchers, no git repo) — enough to drive the ResolveReviewerModel preflight handler in
+    /// isolation from any launch.</summary>
+    static AgentOrchestrator BuildPreflightOrchestrator(
+            CaptureServerConnection server, SpyPtyProcessFactory ptyFactory,
+            params SpyHostedAgentRuntimeFactory[] factories) =>
+        BuildOrchestrator(
+            server, ptyFactory, new Dictionary<string, IHostedAgentLauncher>(),
+            extraRuntimeFactories: factories);
+
+    static SpyHostedAgentRuntimeFactory ResolverFactory(string vendor, IReviewerModelResolver resolver) =>
+        new(vendor) { SupportsUnattended = true, ReviewerModelResolver = resolver };
+
+    static ReviewerModelResolveRequestV1 Req(
+            string vendor, string model, string requestId = "attempt-1",
+            string expectedPolicy = ReviewerModelResolvers.RpcProtocolVersion) =>
+        new(requestId, vendor, model, expectedPolicy);
+
+    [Test]
+    public async Task Preflight_accepts_a_known_model_and_echoes_correlation_and_protocol_version() {
+        var server     = new CaptureServerConnection();
+        var ptyFactory = new SpyPtyProcessFactory();
+        var claudeSpy  = ResolverFactory("claude", ClaudeReviewerModelResolver.Instance);
+        var codexSpy   = ResolverFactory("codex", CodexReviewerModelResolver.Instance);
+
+        await using var orch = BuildPreflightOrchestrator(server, ptyFactory, claudeSpy, codexSpy);
+
+        var resp = orch.HandleResolveReviewerModelForTest(Req("claude", "sonnet", requestId: "corr-42"));
+
+        // Correlation + vendor echoed verbatim; PolicyVersion is the RPC PROTOCOL version (so the
+        // server's policy-echo guard passes and a protocol drift is detectable — NOT the per-vendor
+        // resolver policy version).
+        await Assert.That(resp.RequestId).IsEqualTo("corr-42");
+        await Assert.That(resp.Vendor).IsEqualTo("claude");
+        await Assert.That(resp.PolicyVersion).IsEqualTo(ReviewerModelResolvers.RpcProtocolVersion);
+        await Assert.That(resp.Disposition).IsEqualTo("accepted");
+        await Assert.That(resp.CanonicalRequestedModel).IsEqualTo("sonnet");
+        await Assert.That(resp.LaunchModel).IsEqualTo("sonnet");
+        await Assert.That(resp.EquivalenceKey).IsEqualTo("claude/sonnet");
+        await Assert.That(resp.RecognizedVendor).IsNull();
+    }
+
+    [Test]
+    public async Task Preflight_returns_the_daemon_protocol_version_even_when_the_request_expects_a_different_one() {
+        // The daemon returns ITS OWN protocol version, not an echo of the request's expectation — so a
+        // server on a newer/older RPC protocol version detects the mismatch and fails closed.
+        var server     = new CaptureServerConnection();
+        var ptyFactory = new SpyPtyProcessFactory();
+        var claudeSpy  = ResolverFactory("claude", ClaudeReviewerModelResolver.Instance);
+
+        await using var orch = BuildPreflightOrchestrator(server, ptyFactory, claudeSpy);
+
+        var resp = orch.HandleResolveReviewerModelForTest(
+            Req("claude", "sonnet", expectedPolicy: "reviewer_model_resolve_v999"));
+
+        await Assert.That(resp.PolicyVersion).IsEqualTo(ReviewerModelResolvers.RpcProtocolVersion);
+        await Assert.That(resp.PolicyVersion).IsNotEqualTo("reviewer_model_resolve_v999");
+    }
+
+    [Test]
+    public async Task Preflight_maps_a_cross_vendor_model_to_unavailable_with_recognized_vendor() {
+        // The user picked codex as the reviewer vendor but asked for a Claude model. The selected
+        // resolver rejects; the OTHER advertised resolver recognizes it → unavailable + RecognizedVendor.
+        var server     = new CaptureServerConnection();
+        var ptyFactory = new SpyPtyProcessFactory();
+        var claudeSpy  = ResolverFactory("claude", ClaudeReviewerModelResolver.Instance);
+        var codexSpy   = ResolverFactory("codex", CodexReviewerModelResolver.Instance);
+
+        await using var orch = BuildPreflightOrchestrator(server, ptyFactory, claudeSpy, codexSpy);
+
+        var resp = orch.HandleResolveReviewerModelForTest(Req("codex", "sonnet"));
+
+        await Assert.That(resp.Disposition).IsEqualTo("unavailable");
+        await Assert.That(resp.RecognizedVendor).IsEqualTo("claude");
+    }
+
+    [Test]
+    public async Task Preflight_maps_an_unrecognized_model_to_plain_unavailable() {
+        var server     = new CaptureServerConnection();
+        var ptyFactory = new SpyPtyProcessFactory();
+        var claudeSpy  = ResolverFactory("claude", ClaudeReviewerModelResolver.Instance);
+        var codexSpy   = ResolverFactory("codex", CodexReviewerModelResolver.Instance);
+
+        await using var orch = BuildPreflightOrchestrator(server, ptyFactory, claudeSpy, codexSpy);
+
+        var resp = orch.HandleResolveReviewerModelForTest(Req("claude", "nobody-knows-this-model"));
+
+        await Assert.That(resp.Disposition).IsEqualTo("unavailable");
+        await Assert.That(resp.RecognizedVendor).IsNull();
+    }
+
+    [Test]
+    public async Task Preflight_maps_a_malformed_model_to_invalid_with_bounded_diagnostic_code() {
+        var server     = new CaptureServerConnection();
+        var ptyFactory = new SpyPtyProcessFactory();
+        var claudeSpy  = ResolverFactory("claude", ClaudeReviewerModelResolver.Instance);
+
+        await using var orch = BuildPreflightOrchestrator(server, ptyFactory, claudeSpy);
+
+        var resp = orch.HandleResolveReviewerModelForTest(Req("claude", "has a space"));
+
+        await Assert.That(resp.Disposition).IsEqualTo("invalid");
+        await Assert.That(resp.DiagnosticCode).IsEqualTo("malformed_model_id");
+    }
+
+    [Test]
+    public async Task Preflight_bounds_rejects_an_overlong_model_id_as_invalid() {
+        var server     = new CaptureServerConnection();
+        var ptyFactory = new SpyPtyProcessFactory();
+        var claudeSpy  = ResolverFactory("claude", ClaudeReviewerModelResolver.Instance);
+
+        await using var orch = BuildPreflightOrchestrator(server, ptyFactory, claudeSpy);
+
+        var resp = orch.HandleResolveReviewerModelForTest(Req("claude", new string('x', 500)));
+
+        await Assert.That(resp.Disposition).IsEqualTo("invalid");
+    }
+
+    [Test]
+    public async Task Preflight_for_a_vendor_without_a_resolver_returns_unavailable_old_daemon_shape() {
+        // A vendor advertised for unattended but with NO reviewer-model resolver (an old daemon build /
+        // an ACP vendor). The selected vendor can't resolve → unavailable, and nothing breaks.
+        var server        = new CaptureServerConnection();
+        var ptyFactory    = new SpyPtyProcessFactory();
+        var noResolverSpy = new SpyHostedAgentRuntimeFactory("cursor") { SupportsUnattended = true };
+
+        await using var orch = BuildPreflightOrchestrator(server, ptyFactory, noResolverSpy);
+
+        var resp = orch.HandleResolveReviewerModelForTest(Req("cursor", "sonnet"));
+
+        await Assert.That(resp.Disposition).IsEqualTo("unavailable");
+        await Assert.That(resp.RequestId).IsEqualTo("attempt-1");
+        await Assert.That(resp.Vendor).IsEqualTo("cursor");
+    }
+
+    [Test]
+    public async Task Preflight_selected_acceptance_wins_over_another_recognizing_vendor() {
+        // Both fake vendors recognize "shared"; the SELECTED vendor's resolution must win, not the
+        // ordinal-first one — the multi-provider selected-acceptance case.
+        var server     = new CaptureServerConnection();
+        var ptyFactory = new SpyPtyProcessFactory();
+        var aardvark   = ResolverFactory("aardvark", new PreflightFakeResolver("aardvark", "shared"));
+        var zebra      = ResolverFactory("zebra", new PreflightFakeResolver("zebra", "shared"));
+
+        await using var orch = BuildPreflightOrchestrator(server, ptyFactory, aardvark, zebra);
+
+        var resp = orch.HandleResolveReviewerModelForTest(Req("zebra", "shared"));
+
+        await Assert.That(resp.Disposition).IsEqualTo("accepted");
+        await Assert.That(resp.EquivalenceKey).IsEqualTo("zebra/shared");
+    }
+
+    [Test]
+    public async Task Preflight_has_no_launch_side_effects() {
+        // Pure resolution: no PTY spawn, no worktree, no LaunchFailed, no AgentRegistered.
+        var server     = new CaptureServerConnection();
+        var ptyFactory = new SpyPtyProcessFactory();
+        var claudeSpy  = ResolverFactory("claude", ClaudeReviewerModelResolver.Instance);
+
+        await using var orch = BuildPreflightOrchestrator(server, ptyFactory, claudeSpy);
+
+        _ = orch.HandleResolveReviewerModelForTest(Req("claude", "sonnet"));
+
+        await Assert.That(ptyFactory.SpawnCalls).IsEqualTo(0);
+        await Assert.That(claudeSpy.StartCalls).IsEqualTo(0);
+        await Assert.That(server.LaunchFailedCalls).IsEmpty();
+        await Assert.That(server.AgentRegisteredCallCount).IsEqualTo(0);
+        await Assert.That(orch.ActiveAgentCountForTest).IsEqualTo(0);
+    }
+
+    /// <summary>Minimal per-vendor resolver for the preflight side-effect / selected-acceptance tests —
+    /// accepts a fixed model id with a vendor-scoped anchor, unavailable otherwise.</summary>
+    sealed class PreflightFakeResolver(string vendor, params string[] recognized) : IReviewerModelResolver {
+        public string Vendor        => vendor;
+        public string PolicyVersion => $"{vendor}-fake-v1";
+
+        public ReviewerModelResolution Resolve(string requestedModel) =>
+            recognized.Contains(requestedModel, StringComparer.Ordinal)
+                ? new(ReviewerModelDisposition.Accept,
+                    CanonicalRequestedModel: requestedModel, LaunchModel: requestedModel,
+                    EquivalenceKey: $"{vendor}/{requestedModel}")
+                : new(ReviewerModelDisposition.Unavailable);
+    }
+
+    // ── Explicit resolved-model report (builder) ────────────────────────────────────────────
+
+    [Test]
+    public async Task Report_for_codex_uses_the_verbatim_launch_model_and_a_resolver_derived_key() {
+        var block = new ExplicitReviewerModelLaunch(
+            LaunchAttemptId: "attempt-9", LaunchModel: "gpt-5-codex",
+            PolicyVersion: "codex-reviewer-model-v1", EquivalenceKey: "codex/gpt-5-codex");
+
+        var report = AgentOrchestrator.BuildExplicitReviewerModelReportForTest(
+            "agent-7", "codex", block, CodexReviewerModelResolver.Instance);
+
+        await Assert.That(report).IsNotNull();
+        await Assert.That(report!.AgentId).IsEqualTo("agent-7");
+        await Assert.That(report.LaunchAttemptId).IsEqualTo("attempt-9");
+        await Assert.That(report.Vendor).IsEqualTo("codex");
+        // Codex HARD RULE: the reported concrete model is the VERBATIM launch slug — never a
+        // date-suffixed metadata model that would drift the slug-level key.
+        await Assert.That(report.ResolvedModel).IsEqualTo("gpt-5-codex");
+        // Key DERIVED from the concrete model via the resolver, and it equals the server-pinned key.
+        await Assert.That(report.EquivalenceKey).IsEqualTo("codex/gpt-5-codex");
+        await Assert.That(report.EquivalenceKey).IsEqualTo(block.EquivalenceKey);
+        // Report PolicyVersion is the per-vendor resolver policy version (not the RPC protocol version).
+        await Assert.That(report.PolicyVersion).IsEqualTo("codex-reviewer-model-v1");
+    }
+
+    [Test]
+    public async Task Report_for_claude_family_key_matches_the_pinned_key_from_the_launch_model() {
+        var block = new ExplicitReviewerModelLaunch(
+            LaunchAttemptId: "attempt-3", LaunchModel: "sonnet",
+            PolicyVersion: "claude-reviewer-model-v1", EquivalenceKey: "claude/sonnet");
+
+        var report = AgentOrchestrator.BuildExplicitReviewerModelReportForTest(
+            "agent-2", "claude", block, ClaudeReviewerModelResolver.Instance);
+
+        await Assert.That(report).IsNotNull();
+        await Assert.That(report!.ResolvedModel).IsEqualTo("sonnet");
+        await Assert.That(report.EquivalenceKey).IsEqualTo("claude/sonnet");
+        await Assert.That(report.EquivalenceKey).IsEqualTo(block.EquivalenceKey);
+        await Assert.That(report.PolicyVersion).IsEqualTo("claude-reviewer-model-v1");
+    }
+
+    [Test]
+    public async Task Report_with_no_resolver_is_null_fails_closed() {
+        var block = new ExplicitReviewerModelLaunch("a", "sonnet", "claude-reviewer-model-v1", "claude/sonnet");
+
+        var report = AgentOrchestrator.BuildExplicitReviewerModelReportForTest("agent-1", "claude", block, resolver: null);
+
+        await Assert.That(report).IsNull();
+    }
+
+    [Test]
+    public async Task Report_with_an_unresolvable_launch_model_is_null_fails_closed() {
+        // A launch model the resolver no longer accepts can't derive a meaningful key → no report.
+        var block = new ExplicitReviewerModelLaunch("a", "not-a-codex-model", "codex-reviewer-model-v1", "codex/x");
+
+        var report = AgentOrchestrator.BuildExplicitReviewerModelReportForTest(
+            "agent-1", "codex", block, CodexReviewerModelResolver.Instance);
+
+        await Assert.That(report).IsNull();
+    }
+
+    // ── Backward-compat matrix: which report channel a launch uses ──────────────────────────
+
+    [Test]
+    public async Task NewNew_explicit_model_launch_reports_on_the_v3_channel_and_launches_verbatim_model() {
+        var (repoPath, cleanup) = CreateGitRepo();
+
+        try {
+            var server     = new CaptureServerConnection();
+            var ptyFactory = new SpyPtyProcessFactory();
+            var claudeSpy  = new SpyHostedAgentRuntimeFactory("claude") {
+                EmitsTerminalOutput   = false,
+                SupportsUnattended    = true,
+                ReviewerModelResolver = ClaudeReviewerModelResolver.Instance
+            };
+
+            await using var orch = BuildOrchestrator(
+                server, ptyFactory, new Dictionary<string, IHostedAgentLauncher>(),
+                allowedRepoPath: repoPath, extraRuntimeFactories: [claudeSpy]);
+
+            var cmd = new LaunchAgentCommand(
+                AgentId: "agent-v3",
+                Prompt: "review this",
+                Model: "opus",                       // dispatched value; the block's LaunchModel wins
+                Effort: null,
+                RepoPath: repoPath,
+                Tools: null,
+                AttachmentIds: null,
+                Vendor: "claude",
+                ExplicitReviewerModel: new ExplicitReviewerModelLaunch(
+                    LaunchAttemptId: "attempt-v3", LaunchModel: "sonnet",
+                    PolicyVersion: "claude-reviewer-model-v1", EquivalenceKey: "claude/sonnet"));
+
+            await orch.HandleLaunchAgentForTest(cmd);
+
+            // The launch threaded the EXACT block LaunchModel through the runtime start context (never
+            // recanonicalized, and overriding the dispatched cmd.Model).
+            await Assert.That(claudeSpy.LastContext).IsNotNull();
+            await Assert.That(claudeSpy.LastContext!.Model).IsEqualTo("sonnet");
+
+            // Reported on the v3 channel with the derived key; the legacy channel was NOT used.
+            await server.ExplicitReviewerModelReportSignal.Reader.ReadAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5));
+            await Assert.That(server.ExplicitReviewerModelReports).Count().IsEqualTo(1);
+            var report = server.ExplicitReviewerModelReports[0];
+            await Assert.That(report.AgentId).IsEqualTo("agent-v3");
+            await Assert.That(report.LaunchAttemptId).IsEqualTo("attempt-v3");
+            await Assert.That(report.ResolvedModel).IsEqualTo("sonnet");
+            await Assert.That(report.EquivalenceKey).IsEqualTo("claude/sonnet");
+            await Assert.That(server.ReportAgentResolvedModelCalls).IsEmpty();
+
+            await orch.HandleStopAgentForTest("agent-v3");
+        } finally {
+            cleanup();
+        }
+    }
+
+    [Test]
+    public async Task NewDaemon_oldServer_legacy_codex_launch_uses_the_unchanged_ReportAgentResolvedModel() {
+        var (repoPath, cleanup) = CreateGitRepo();
+
+        try {
+            var server     = new CaptureServerConnection();
+            var ptyFactory = new SpyPtyProcessFactory();
+            var codexSpy   = new SpyHostedAgentRuntimeFactory("codex") { EmitsTerminalOutput = false };
+
+            await using var orch = BuildOrchestrator(
+                server, ptyFactory, new Dictionary<string, IHostedAgentLauncher>(),
+                allowedRepoPath: repoPath, extraRuntimeFactories: [codexSpy]);
+
+            var cmd = new LaunchAgentCommand(
+                AgentId: "agent-legacy",
+                Prompt: "go",
+                Model: "gpt-5-codex",
+                Effort: null,
+                RepoPath: repoPath,
+                Tools: null,
+                AttachmentIds: null,
+                Vendor: "codex"                       // no ExplicitReviewerModel block → legacy path
+            );
+
+            await orch.HandleLaunchAgentForTest(cmd);
+
+            // Legacy channel used (name/arity/behavior unchanged); the v3 channel was NOT used.
+            await Assert.That(server.ReportAgentResolvedModelCalls).Contains(("agent-legacy", "gpt-5-codex"));
+            await Assert.That(server.ExplicitReviewerModelReports).IsEmpty();
+
+            await orch.HandleStopAgentForTest("agent-legacy");
+        } finally {
+            cleanup();
+        }
+    }
+
     // ── Test doubles ─────────────────────────────────────────────────────
 
     /// <summary>PTY that has already exited and produces no output, so the read loop ends
@@ -849,6 +1187,10 @@ public partial class AgentOrchestratorVendorTests {
         public bool   SupportsUnattended { get; init; }
         public bool   SupportsBorrowedReviewFlow { get; init; }
         public bool   BorrowedReviewRequiresIndependentSnapshot { get; init; }
+
+        /// <summary>Task 8: lets a test give this factory a reviewer-model resolver so the
+        /// orchestrator's ResolveReviewerModel preflight handler can resolve against it.</summary>
+        public IReviewerModelResolver? ReviewerModelResolver { get; init; }
 
         /// <summary>Threaded onto the <see cref="FakeHostedAgentRuntime"/> this factory returns —
         /// defaults to <c>false</c> (ACP-shaped) matching this factory's original "cursor" use, but
@@ -1195,6 +1537,36 @@ public partial class AgentOrchestratorVendorTests {
 
         public override Task AppendAgentRunEventAsync(string agentId, object evt)
             => Task.CompletedTask;
+
+        // ── Task 8: resolved-model report capture ──────────────────────────────────
+        /// <summary>Every legacy (agentId, model) pair passed to ReportAgentResolvedModelAsync — proves
+        /// the no-model / vendor-only launch keeps using the unchanged legacy channel.</summary>
+        public List<(string AgentId, string Model)> ReportAgentResolvedModelCalls { get; } = [];
+
+        /// <summary>Every explicit-model report passed to ReportExplicitReviewerModelResolvedAsync — proves
+        /// an explicit-model launch reports the concrete resolved model on the dedicated v3 channel.</summary>
+        public List<ExplicitReviewerModelResolvedV1> ExplicitReviewerModelReports { get; } = [];
+
+        /// <summary>Signals each ExplicitReviewerModelResolvedAsync call (1-based count) so a test can
+        /// await the fire-and-forget report deterministically instead of racing Task.Delay.</summary>
+        public Channel<int> ExplicitReviewerModelReportSignal { get; } = Channel.CreateUnbounded<int>();
+
+        public override Task ReportAgentResolvedModelAsync(string agentId, string model) {
+            lock (ReportAgentResolvedModelCalls) ReportAgentResolvedModelCalls.Add((agentId, model));
+
+            return Task.CompletedTask;
+        }
+
+        public override Task ReportExplicitReviewerModelResolvedAsync(ExplicitReviewerModelResolvedV1 report) {
+            int count;
+            lock (ExplicitReviewerModelReports) {
+                ExplicitReviewerModelReports.Add(report);
+                count = ExplicitReviewerModelReports.Count;
+            }
+            ExplicitReviewerModelReportSignal.Writer.TryWrite(count);
+
+            return Task.CompletedTask;
+        }
 
         public override async Task<EndAgentSessionResult> EndAgentSessionAsync(string agentId, string reason) {
             EndSessionReasons.Add(reason);
