@@ -56,6 +56,35 @@ Cursor / cursor-agent → `cursor`; GitHub Copilot / Copilot CLI → `copilot`; 
 Normalize only the reviewer-role mention. Positive contrast (for example, “from Codex, ask Claude”)
 selects Claude; negated names are removed; two remaining reviewer candidates are ambiguous.
 
+## Choosing a reviewer model
+
+If the user names a specific model for the reviewer (e.g. "review with Claude opus", "use gpt-5-codex
+as the reviewer"), pass it as `model` — but ONLY alongside an explicit `vendor`; `model` without
+`vendor` is rejected before anything is sent (there is no vendor→model table to infer one from).
+Never pass `model` without the user having named one explicitly — omit it to use the vendor's
+default reviewer model. Pass the model id/alias exactly as the user said it, case-sensitive — do not
+translate, normalize, or guess a vendor's naming convention. Not every vendor supports a model
+override: a vendor's daemon must be installed, unattended-certified, AND carry a runtime model
+resolver (Claude and Codex today) — an unsupported vendor's daemon simply doesn't advertise the
+capability, and the server rejects the override rather than silently ignoring it.
+
+## Reviewer-model errors to act on
+
+- **`reviewer_model_protocol_required`** — the server (or the daemon's advertised vendor capability)
+  doesn't support a reviewer model override yet. Tell the user their server/daemon needs updating, or
+  drop `model` and retry without it.
+- **`reviewer_model_unavailable`** — no resolver for the selected vendor recognizes the requested
+  model. Tell the user the model isn't available for that vendor; ask for a different model or drop
+  the override.
+- **`model_vendor_mismatch`** — the requested model belongs to a different vendor than the one
+  selected (e.g. a Claude model name with `vendor: "codex"`). Tell the user the mismatch; ask which
+  vendor they actually meant.
+- **`reviewer_model_safe_settlement_required`** — the server can't safely reapply this exact model on
+  a heal/relaunch and refuses rather than risk silently drifting to a different one. Close the flow
+  and start a new one if the reviewer needs to be relaunched.
+- **`reviewer_model_unpriceable`** — the requested model has no resolvable pricing, so the server
+  can't budget-check it. Ask the user for a differently-named/priced model.
+
 ## If the flows MCP tools are not loaded
 
 After applying the role-surface safety gate, if `start_review_flow` / `submit_review_round` are not among the tools available in this session:
@@ -108,7 +137,7 @@ if findings:
 
 | Tool | Required args | Optional args | When to call |
 |---|---|---|---|
-| `start_review_flow` | `kind` (`spec-review`\|`code-review`), `target_kind` (what is being reviewed: `spec`, `code`, `pr`, `branch`, `file`, etc.), `target_ref` (a path, branch name, or PR URL/number that identifies the target), `target_title` (short human-readable title, e.g. spec name or PR title), `context` (background context: what to focus on, constraints, definition of done) | `vendor` (explicit reviewer vendor; omit for server default), `instructions`, `mode` (`context-only` — optional) | Once, at the start of a review task. |
+| `start_review_flow` | `kind` (`spec-review`\|`code-review`), `target_kind` (what is being reviewed: `spec`, `code`, `pr`, `branch`, `file`, etc.), `target_ref` (a path, branch name, or PR URL/number that identifies the target), `target_title` (short human-readable title, e.g. spec name or PR title), `context` (background context: what to focus on, constraints, definition of done) | `vendor` (explicit reviewer vendor; omit for server default), `model` (explicit reviewer model override — REQUIRES `vendor`; only pass it when the user named a model), `instructions`, `mode` (`context-only` — optional) | Once, at the start of a review task. |
 | `submit_review_round` | `flow_run_id`, `context` | `instructions` | After addressing findings. Pass the same `flow_run_id` and the updated context. |
 | `get_review_flow_status` | `flow_run_id` | — | Poll or check the current status of a flow (running, waiting, completed, failed). |
 | `close_review_flow` | `flow_run_id` | — | Only after the reviewer returns `clean`. |

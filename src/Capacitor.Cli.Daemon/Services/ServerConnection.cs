@@ -247,12 +247,15 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
 
         // Task 8: side-effect-free reviewer-model preflight (server→daemon client-result
         // invocation). When the orchestrator hasn't wired the handler (early startup), fail closed with
-        // an "unavailable" reply that still echoes RequestId/Vendor/ExpectedPolicyVersion so the server's
-        // correlation + policy-echo guards pass and it treats the model as simply unavailable.
+        // an "unavailable" reply that still echoes RequestId/Vendor so the server's correlation guard
+        // passes and it treats the model as simply unavailable. PolicyVersion is always THIS daemon's own
+        // RPC protocol version (never an echo of the request's expectation) — matching the invariant the
+        // real HandleResolveReviewerModel handler upholds, so a protocol drift is detected the same way
+        // whether or not the orchestrator has wired a handler yet.
         _hub.On<ReviewerModelResolveRequestV1, ReviewerModelResolveResponseV1>("ResolveReviewerModel",
             req => ResolveReviewerModelHandler?.Invoke(req)
                 ?? Task.FromResult(new ReviewerModelResolveResponseV1(
-                    req.RequestId, req.Vendor, req.ExpectedPolicyVersion, "unavailable")));
+                    req.RequestId, req.Vendor, ReviewerModelResolvers.RpcProtocolVersion, "unavailable")));
 
         // Server probe used by the "Review this PR" UI to discover which
         // checkouts on this daemon match the PR's owner/repo. Returns an empty

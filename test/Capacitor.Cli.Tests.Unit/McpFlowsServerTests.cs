@@ -540,6 +540,38 @@ public class McpFlowsServerTests {
     }
 
     [Test]
+    public async Task HandleToolCall_with_model_genuine_v3_rejection_surfaces_verbatim_not_reformatted() {
+        // Task-9 review Minor: a genuine coded v3 rejection (the model IS understood by the v3
+        // protocol, but the daemon can't launch it) must reach the caller byte-for-byte, via the
+        // SAME generic FormatFlowStartError path a no-model rejection uses — never reformatted or
+        // intercepted by the model-specific protocol-skew gate (which only fires for 404/405/uncoded/
+        // protocol-skew-coded bodies).
+        using var server = WireMockServer.Start();
+        server.Given(Request.Create().WithPath("/api/flows/review/start/v3").UsingPost())
+            .RespondWith(Response.Create().WithStatusCode(400).WithBody(
+                """{"error":"reviewer_model_unavailable","message":"the requested model is not available"}"""));
+        using var client = new HttpClient();
+
+        var response = await McpFlowsServer.HandleToolCallAsync(
+            JsonNode.Parse("1")!, ModelToolCall("start_review_flow", ModelStartArguments("claude", "opus")),
+            client, server.Url!, cwd: "/tmp/cwd", repoRoot: null, repoInfo: null);
+
+        var result = JsonNode.Parse(response)!.AsObject();
+        await Assert.That(result["result"]!["isError"]!.GetValue<bool>()).IsTrue();
+        var text = result["result"]!["content"]![0]!["text"]!.GetValue<string>();
+
+        // Verbatim: the exact code + message, not the local protocol-required substitute.
+        await Assert.That(text).Contains("reviewer_model_unavailable");
+        await Assert.That(text).Contains("the requested model is not available");
+        await Assert.That(text).DoesNotContain("reviewer_model_protocol_required");
+
+        // Exactly one POST — no v2 fallback, and nothing to close (no run ever started).
+        await Assert.That(server.LogEntries.Count()).IsEqualTo(1);
+        await Assert.That(server.LogEntries.Single().RequestMessage.Path).IsEqualTo("/api/flows/review/start/v3");
+        await Assert.That(server.LogEntries.Any(e => e.RequestMessage.Path.Contains("/close"))).IsFalse();
+    }
+
+    [Test]
     public async Task HandleToolCall_with_model_success_missing_ack_fails_and_closes_defensively() {
         using var server = WireMockServer.Start();
         server.Given(Request.Create().WithPath("/api/flows/review/start/v3").UsingPost())
