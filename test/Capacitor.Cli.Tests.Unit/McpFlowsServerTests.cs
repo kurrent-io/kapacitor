@@ -1,3 +1,4 @@
+using System.Net;
 using System.Text.Json.Nodes;
 using Capacitor.Cli.Commands;
 using WireMock.RequestBuilders;
@@ -340,5 +341,268 @@ public class McpFlowsServerTests {
         var ackIds  = JsonNode.Parse(ackBody)!.AsObject()["message_ids"]!.AsArray().Select(n => n!.GetValue<string>());
         await Assert.That(ackIds).IsEquivalentTo(pendingIds);
         await Assert.That(pendingIds).IsEquivalentTo(["msg-a1", "msg-b2"]);
+    }
+
+    // === Reviewer MODEL override (protocol-v3 transport) ===
+
+    static JsonObject ModelStartArguments(string? vendor, string? model, string kind = "code-review") {
+        var args = new JsonObject {
+            ["kind"]         = kind,
+            ["target_kind"]  = "pr",
+            ["target_ref"]   = "123",
+            ["target_title"] = "some PR",
+            ["context"]      = "some context"
+        };
+        if (vendor is not null) args["vendor"] = vendor;
+        if (model  is not null) args["model"]  = model;
+        return args;
+    }
+
+    static JsonObject ModelToolCall(string toolName, JsonObject arguments) => new() {
+        ["params"] = new JsonObject { ["name"] = toolName, ["arguments"] = arguments.DeepClone() }
+    };
+
+    const string V3RunningWithAck =
+        """{"flow_run_id":"f1","status":"running","round_id":null,"round_number":null,"applied_reviewer_model":"claude/opus-4","reviewer_model_equivalence_key":"claude/opus"}""";
+
+    // --- StartFlowAsync: route selection + local vendor requirement ---
+
+    [Test]
+    public async Task StartFlowAsync_with_model_posts_exactly_one_v3_request_with_protocol_3_body() {
+        using var server = WireMockServer.Start();
+        server.Given(Request.Create().WithPath("/api/flows/review/start/v3").UsingPost())
+            .RespondWith(Response.Create().WithStatusCode(200).WithBody(V3RunningWithAck));
+        // /v2 is deliberately left unstubbed — WireMock's default 404 proves the model path
+        // never touches it (zero v2/legacy retry).
+        using var client = new HttpClient();
+
+        using var response = await McpFlowsServer.StartFlowAsync(
+            client, server.Url!, ModelStartArguments("claude", "opus"),
+            cwd: "/tmp/cwd", repoRoot: null, repoInfo: null, kindArgName: "kind");
+
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.OK);
+        await Assert.That(server.LogEntries.Count()).IsEqualTo(1);
+
+        var hit = server.LogEntries.Single();
+        await Assert.That(hit.RequestMessage.Path).IsEqualTo("/api/flows/review/start/v3");
+        await Assert.That(server.LogEntries.Any(e => e.RequestMessage.Path.Contains("/v2"))).IsFalse();
+
+        var body = JsonNode.Parse(hit.RequestMessage.Body!)!.AsObject();
+        await Assert.That(body["model"]!.GetValue<string>()).IsEqualTo("opus");
+        await Assert.That(body["vendor"]!.GetValue<string>()).IsEqualTo("claude");
+        await Assert.That(body["client_flow_protocol_version"]!.GetValue<int>()).IsEqualTo(3);
+    }
+
+    [Test]
+    public async Task StartFlowAsync_with_model_but_no_vendor_rejects_locally_without_posting() {
+        using var server = WireMockServer.Start();
+        server.Given(Request.Create().WithPath("/api/flows/review/start/v3").UsingPost())
+            .RespondWith(Response.Create().WithStatusCode(200).WithBody(V3RunningWithAck));
+        using var client = new HttpClient();
+
+        await Assert.That(async () => await McpFlowsServer.StartFlowAsync(
+                client, server.Url!, ModelStartArguments(vendor: null, model: "opus"),
+                cwd: "/tmp/cwd", repoRoot: null, repoInfo: null, kindArgName: "kind"))
+            .Throws<ArgumentException>();
+
+        await Assert.That(server.LogEntries.Count()).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task StartFlowAsync_dynamic_flow_rejects_top_level_model_without_posting() {
+        using var server = WireMockServer.Start();
+        server.Given(Request.Create().WithPath("/api/flows/review/start/v3").UsingPost())
+            .RespondWith(Response.Create().WithStatusCode(200).WithBody(V3RunningWithAck));
+        using var client = new HttpClient();
+
+        var args = new JsonObject {
+            ["definition_yaml"] = "participants: {}",
+            ["target_kind"]     = "pr",
+            ["target_ref"]      = "123",
+            ["target_title"]    = "some PR",
+            ["context"]         = "some context",
+            ["vendor"]          = "claude",
+            ["model"]           = "opus"
+        };
+
+        await Assert.That(async () => await McpFlowsServer.StartFlowAsync(
+                client, server.Url!, args,
+                cwd: "/tmp/cwd", repoRoot: null, repoInfo: null, kindArgName: "definition_id"))
+            .Throws<ArgumentException>();
+
+        await Assert.That(server.LogEntries.Count()).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task StartFlowAsync_without_model_preserves_v2_route_and_omits_model() {
+        using var server = WireMockServer.Start();
+        server.Given(Request.Create().WithPath("/api/flows/review/start/v2").UsingPost())
+            .RespondWith(Response.Create().WithStatusCode(200).WithBody(
+                """{"flow_run_id":"f1","status":"running","round_id":null,"round_number":null}"""));
+        using var client = new HttpClient();
+
+        using var response = await McpFlowsServer.StartFlowAsync(
+            client, server.Url!, ModelStartArguments(vendor: null, model: null),
+            cwd: "/tmp/cwd", repoRoot: null, repoInfo: null, kindArgName: "kind");
+
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.OK);
+        var hit = server.LogEntries.Single();
+        await Assert.That(hit.RequestMessage.Path).IsEqualTo("/api/flows/review/start/v2");
+        await Assert.That(hit.RequestMessage.Body).DoesNotContain("model");
+
+        var body = JsonNode.Parse(hit.RequestMessage.Body!)!.AsObject();
+        await Assert.That(body["client_flow_protocol_version"]!.GetValue<int>()).IsEqualTo(2);
+    }
+
+    // --- CheckReviewerModelResult: pure decision logic ---
+
+    [Test]
+    [Arguments(HttpStatusCode.NotFound)]
+    [Arguments(HttpStatusCode.MethodNotAllowed)]
+    public async Task CheckReviewerModelResult_old_server_404_or_405_maps_to_protocol_required(HttpStatusCode status) {
+        var result = McpFlowsServer.CheckReviewerModelResult(
+            "start_review_flow", status, isSuccess: false, postBody: "", out var runIdToClose);
+
+        await Assert.That(result).IsNotNull();
+        await Assert.That(result!.Value.IsError).IsTrue();
+        await Assert.That(result.Value.Message).Contains("reviewer_model_protocol_required");
+        await Assert.That(runIdToClose).IsNull();
+    }
+
+    [Test]
+    public async Task CheckReviewerModelResult_uncoded_error_body_maps_to_protocol_required() {
+        var result = McpFlowsServer.CheckReviewerModelResult(
+            "start_flow", HttpStatusCode.BadRequest, isSuccess: false, postBody: "plain text error", out var runIdToClose);
+
+        await Assert.That(result).IsNotNull();
+        await Assert.That(result!.Value.Message).Contains("reviewer_model_protocol_required");
+        await Assert.That(runIdToClose).IsNull();
+    }
+
+    [Test]
+    public async Task CheckReviewerModelResult_genuine_coded_rejection_passes_through_to_generic_handler() {
+        // A real v3 rejection (e.g. the model isn't launchable on the daemon) must NOT be masked as
+        // a protocol issue — it surfaces via FormatFlowStartError instead (this helper returns null).
+        var body = """{"error":"reviewer_model_unavailable","message":"the requested model is not available"}""";
+
+        var result = McpFlowsServer.CheckReviewerModelResult(
+            "start_review_flow", HttpStatusCode.BadRequest, isSuccess: false, body, out var runIdToClose);
+
+        await Assert.That(result).IsNull();
+        await Assert.That(runIdToClose).IsNull();
+    }
+
+    [Test]
+    public async Task CheckReviewerModelResult_success_with_full_ack_is_a_noop() {
+        var body = """{"flow_run_id":"f1","status":"running","applied_reviewer_model":"claude/opus-4","reviewer_model_equivalence_key":"claude/opus"}""";
+
+        var result = McpFlowsServer.CheckReviewerModelResult(
+            "start_review_flow", HttpStatusCode.OK, isSuccess: true, body, out var runIdToClose);
+
+        await Assert.That(result).IsNull();
+        await Assert.That(runIdToClose).IsNull();
+    }
+
+    [Test]
+    [Arguments("""{"flow_run_id":"f1","status":"running","reviewer_model_equivalence_key":"claude/opus"}""")]
+    [Arguments("""{"flow_run_id":"f1","status":"running","applied_reviewer_model":"claude/opus-4"}""")]
+    [Arguments("""{"flow_run_id":"f1","status":"running"}""")]
+    public async Task CheckReviewerModelResult_success_missing_ack_fails_and_salvages_run_id(string body) {
+        var result = McpFlowsServer.CheckReviewerModelResult(
+            "start_review_flow", HttpStatusCode.OK, isSuccess: true, body, out var runIdToClose);
+
+        await Assert.That(result).IsNotNull();
+        await Assert.That(result!.Value.IsError).IsTrue();
+        await Assert.That(runIdToClose).IsEqualTo("f1");
+    }
+
+    // --- HandleToolCallAsync: full dispatch, WireMock-backed ---
+
+    [Test]
+    public async Task HandleToolCall_with_model_old_server_404_maps_to_protocol_required_no_v2_retry() {
+        using var server = WireMockServer.Start();
+        // /v3 is left unstubbed — WireMock's default 404 simulates a server that predates the
+        // reviewer-model override protocol.
+        using var client = new HttpClient();
+
+        var response = await McpFlowsServer.HandleToolCallAsync(
+            JsonNode.Parse("1")!, ModelToolCall("start_review_flow", ModelStartArguments("claude", "opus")),
+            client, server.Url!, cwd: "/tmp/cwd", repoRoot: null, repoInfo: null);
+
+        var result = JsonNode.Parse(response)!.AsObject();
+        await Assert.That(result["result"]!["isError"]!.GetValue<bool>()).IsTrue();
+        var text = result["result"]!["content"]![0]!["text"]!.GetValue<string>();
+        await Assert.That(text).Contains("reviewer_model_protocol_required");
+
+        // Never downgraded to v2, never closed anything.
+        await Assert.That(server.LogEntries.Any(e => e.RequestMessage.Path.Contains("/v2"))).IsFalse();
+        await Assert.That(server.LogEntries.Any(e => e.RequestMessage.Path.Contains("/close"))).IsFalse();
+    }
+
+    [Test]
+    public async Task HandleToolCall_with_model_success_missing_ack_fails_and_closes_defensively() {
+        using var server = WireMockServer.Start();
+        server.Given(Request.Create().WithPath("/api/flows/review/start/v3").UsingPost())
+            .RespondWith(Response.Create().WithStatusCode(200).WithBody(
+                """{"flow_run_id":"f1","status":"running","round_id":null,"round_number":null}"""));
+        server.Given(Request.Create().WithPath("/api/flows/f1/close").UsingPost())
+            .RespondWith(Response.Create().WithStatusCode(200));
+        using var client = new HttpClient();
+
+        var response = await McpFlowsServer.HandleToolCallAsync(
+            JsonNode.Parse("1")!, ModelToolCall("start_review_flow", ModelStartArguments("claude", "opus")),
+            client, server.Url!, cwd: "/tmp/cwd", repoRoot: null, repoInfo: null);
+
+        var result = JsonNode.Parse(response)!.AsObject();
+        await Assert.That(result["result"]!["isError"]!.GetValue<bool>()).IsTrue();
+        await Assert.That(server.LogEntries.Count(e => e.RequestMessage.Path == "/api/flows/f1/close")).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task HandleToolCall_with_model_valid_ack_renders_model_audit_and_posts_v3_only() {
+        using var server = WireMockServer.Start();
+        server.Given(Request.Create().WithPath("/api/flows/review/start/v3").UsingPost())
+            .RespondWith(Response.Create().WithStatusCode(200).WithBody(
+                """
+                {"flow_run_id":"f1","round_id":"r1","status":"findings","result_kind":"findings",
+                 "result_text":"looks good",
+                 "requested_reviewer_model":"opus","applied_reviewer_model":"claude/opus-4",
+                 "resolved_reviewer_model":"claude-opus-4-20260101","reviewer_model_source":"explicit",
+                 "reviewer_model_equivalence_key":"claude/opus"}
+                """));
+        using var client = new HttpClient();
+
+        var response = await McpFlowsServer.HandleToolCallAsync(
+            JsonNode.Parse("1")!, ModelToolCall("start_review_flow", ModelStartArguments("claude", "opus")),
+            client, server.Url!, cwd: "/tmp/cwd", repoRoot: null, repoInfo: null);
+
+        var result = JsonNode.Parse(response)!.AsObject();
+        await Assert.That(result["result"]!["isError"]).IsNull();
+        var text = result["result"]!["content"]![0]!["text"]!.GetValue<string>();
+
+        await Assert.That(text).Contains("requested_reviewer_model: opus");
+        await Assert.That(text).Contains("applied_reviewer_model: claude/opus-4");
+        await Assert.That(text).Contains("resolved_reviewer_model: claude-opus-4-20260101");
+        await Assert.That(text).Contains("reviewer_model_source: explicit");
+
+        // Exactly one POST, to v3 — no polling GET, no v2 fallback.
+        await Assert.That(server.LogEntries.Count(e => e.RequestMessage.Path == "/api/flows/review/start/v3")).IsEqualTo(1);
+        await Assert.That(server.LogEntries.Any(e => e.RequestMessage.Path.Contains("/v2"))).IsFalse();
+    }
+
+    // --- Tool schema exposure ---
+
+    [Test]
+    [Arguments("start_review_flow")]
+    [Arguments("start_flow")]
+    public async Task Start_tool_exposes_optional_model_documenting_that_vendor_is_required(string toolName) {
+        var tool  = McpFlowsServer.BuildToolsList().Single(t => t.Name == toolName);
+        var props = tool.InputSchema.Properties;
+
+        await Assert.That(props.ContainsKey("model")).IsTrue();
+        // Required list must NOT contain model — it's optional.
+        await Assert.That(tool.InputSchema.Required).DoesNotContain("model");
+        // Documents the vendor coupling without enumerating any vendor/model values.
+        await Assert.That(props["model"].Description.ToLowerInvariant()).Contains("vendor");
     }
 }
