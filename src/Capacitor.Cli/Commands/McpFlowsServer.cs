@@ -145,21 +145,27 @@ static class McpFlowsServer {
 
                 // Reviewer-model override: a model-bearing start goes to the protocol-v3 route
                 // (StartFlowAsync). Computed BEFORE the dispatch because a v3 start must NOT be wrapped
-                // in the settlement retry: each POST to /review/start/v3 mints AND launches a run, so
+                // in the SETTLEMENT retry: each POST to /review/start/v3 mints AND launches a run, so
                 // re-POSTing a retryable settlement 409 (flow_settlement_busy /
                 // reviewer_launch_incarnation_superseded) would violate exactly-one-v3-POST and churn
                 // reviewer launches. The coded 409 surfaces to the caller, who retries the whole start.
-                // Every v2 (no-model) start and every round keeps the settlement retry unchanged.
+                // It DOES keep the one-shot 401 token refresh (SendWithRefreshRetryAsync — which
+                // SendWithSettlementRetryAsync otherwise composes internally): a 401 is rejected at the
+                // auth layer BEFORE any run is created, so its single re-send is the only POST that
+                // reaches business logic — exactly-one-EFFECTIVE-v3-POST holds while a long-lived MCP
+                // process can still refresh a token that expired after startup. So a model start drops
+                // ONLY the settlement re-POST, not the refresh. Every v2 (no-model) start and every
+                // round keeps the full settlement retry (refresh included) unchanged.
                 var wasModelStart = !wasDynamicStart
                     && toolName is "start_review_flow" or "start_flow"
                     && !string.IsNullOrWhiteSpace(arguments?["model"]?.GetValue<string>());
 
                 using var postResponse = toolName switch {
                     "start_review_flow"   => wasModelStart
-                        ? await StartFlowAsync(client, apiRoot, arguments, cwd, repoRoot, repoInfo, kindArgName: "kind")
+                        ? await SendWithRefreshRetryAsync(client, c => StartFlowAsync(c, apiRoot, arguments, cwd, repoRoot, repoInfo, kindArgName: "kind"))
                         : await SendWithSettlementRetryAsync(client, c => StartFlowAsync(c, apiRoot, arguments, cwd, repoRoot, repoInfo, kindArgName: "kind"), Task.Delay),
                     "start_flow"          => wasModelStart
-                        ? await StartFlowAsync(client, apiRoot, arguments, cwd, repoRoot, repoInfo, kindArgName: "definition_id")
+                        ? await SendWithRefreshRetryAsync(client, c => StartFlowAsync(c, apiRoot, arguments, cwd, repoRoot, repoInfo, kindArgName: "definition_id"))
                         : await SendWithSettlementRetryAsync(client, c => StartFlowAsync(c, apiRoot, arguments, cwd, repoRoot, repoInfo, kindArgName: "definition_id"), Task.Delay),
                     "submit_review_round" => await SendWithSettlementRetryAsync(client, c => SubmitRoundAsync(c, apiRoot, arguments, contextArgName: "context", participant: null, async: true), Task.Delay),
                     _                     => await SendWithSettlementRetryAsync(client, c => SubmitRoundAsync(c, apiRoot, arguments, contextArgName: "message", participant: GetRequiredArg(arguments, "participant"), async: ParseAsyncArg(arguments)), Task.Delay)

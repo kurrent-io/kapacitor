@@ -813,6 +813,12 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
         var agentId       = cmd.AgentId;
         var prompt        = cmd.Prompt;
         var model         = cmd.Model;
+        // A protocol-v3 explicit-reviewer-model launch pins the server-resolved LaunchModel VERBATIM.
+        // Compute the effective model ONCE here so every site that records/reports the model the
+        // process actually runs — the launch log, the runtime start context, and the registered
+        // AgentInstance the server sees via RegisterAgentAsync / AgentRunStarted / every reconnect
+        // re-registration — reads the same value. Null block ⇒ legacy path, cmd.Model unchanged.
+        var effectiveModel = cmd.ExplicitReviewerModel?.LaunchModel ?? model;
         var effort        = cmd.Effort;
         var repoPath      = cmd.RepoPath;
         var tools         = cmd.Tools;
@@ -945,7 +951,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
                 return new CommandOutcome(CommandOutcomeKind.LaunchRejected, agentId, RejectReason: CommandRejectedReason.Semantic);
             }
 
-            LogLaunching(agentId, repoPath, effort ?? "default", model);
+            LogLaunching(agentId, repoPath, effort ?? "default", effectiveModel);
 
             // Review launches base the worktree on the PR head ref so the agent
             // works against the PR's actual state, not the local HEAD.
@@ -1032,8 +1038,9 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
                 Prompt: prompt,
                 // Task 8: for an explicit-model reviewer launch, launch with the server-pinned
                 // LaunchModel VERBATIM (the launcher passes ctx.Model straight to the argument list —
-                // never recanonicalized). Null block ⇒ the legacy path, cmd.Model unchanged.
-                Model: cmd.ExplicitReviewerModel?.LaunchModel ?? model,
+                // never recanonicalized). effectiveModel (computed once above) resolves this — the
+                // registered AgentInstance below reads the SAME local so they can never diverge.
+                Model: effectiveModel,
                 Effort: effort,
                 Tools: tools,
                 IsReview: isReview,
@@ -1091,7 +1098,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
 
             var cts = new CancellationTokenSource();
 
-            var agent = new AgentInstance(agentId, prompt, model, effort, repoPath, cmd.Vendor, runtime, worktree, cts) {
+            var agent = new AgentInstance(agentId, prompt, effectiveModel, effort, repoPath, cmd.Vendor, runtime, worktree, cts) {
                 McpConfigPath       = mcpConfigPath,
                 CurrentCols         = HostedPtyCols,
                 CurrentRows         = HostedPtyRows,

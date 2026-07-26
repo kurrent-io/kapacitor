@@ -1031,6 +1031,11 @@ public partial class AgentOrchestratorVendorTests {
             await Assert.That(claudeSpy.LastContext).IsNotNull();
             await Assert.That(claudeSpy.LastContext!.Model).IsEqualTo("sonnet");
 
+            // The registered AgentInstance ALSO carries the pinned LaunchModel — not the dispatched
+            // cmd.Model ("opus") — so RegisterAgentAsync / AgentRunStarted / every reconnect
+            // re-registration report the model the process actually runs.
+            await Assert.That(server.AgentRegisteredCalls).Contains(("agent-v3", "sonnet"));
+
             // Reported on the v3 channel with the derived key; the legacy channel was NOT used.
             await server.ExplicitReviewerModelReportSignal.Reader.ReadAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5));
             await Assert.That(server.ExplicitReviewerModelReports).Count().IsEqualTo(1);
@@ -1378,9 +1383,15 @@ public partial class AgentOrchestratorVendorTests {
         public int AgentRegisteredFailTimes { get; init; }
         public int AgentRegisteredCallCount { get; private set; }
 
+        /// <summary>Every (agentId, model) pair the orchestrator registered — proves the AgentInstance
+        /// the server sees carries the model the process actually runs (the pinned explicit-reviewer
+        /// LaunchModel, not the dispatched cmd.Model).</summary>
+        public List<(string AgentId, string? Model)> AgentRegisteredCalls { get; } = [];
+
         public override Task AgentRegisteredAsync(string agentId, string? prompt, string? model, string? effort, string? repoPath) {
             AgentRegisteredCallCount++;
             lock (AcpCallOrder) AcpCallOrder.Add($"register:{agentId}");
+            lock (AgentRegisteredCalls) AgentRegisteredCalls.Add((agentId, model));
 
             return AgentRegisteredCallCount <= AgentRegisteredFailTimes
                 ? Task.FromException(new InvalidOperationException("transient re-register failure"))

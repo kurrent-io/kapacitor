@@ -1,6 +1,7 @@
 using System.Net;
 using System.Text.Json.Nodes;
 using Capacitor.Cli.Commands;
+using Capacitor.Cli.Core.Auth;
 using WireMock.RequestBuilders;
 using WireMock.ResponseBuilders;
 using WireMock.Server;
@@ -648,6 +649,71 @@ public class McpFlowsServerTests {
         // EXACTLY ONE POST to v3 — a model-bearing start is never settlement-retried.
         await Assert.That(server.LogEntries.Count(
             e => e.RequestMessage.Path == "/api/flows/review/start/v3")).IsEqualTo(1);
+    }
+
+    // Round-2 regression guard: dropping the settlement re-POST for a v3 model start must NOT also
+    // drop the one-shot 401 token refresh. Seeds a non-expired token so TokenStore.GetValidTokensAsync
+    // returns it, then stubs v3 to 401-then-200 so the refreshed re-send is observable. Serialized on
+    // the shared KCAP_CONFIG_DIR token store like every other token-store test.
+    const string FreshBearer = "refreshed-bearer-xyz";
+
+    static async Task SeedDefaultTokenAsync() {
+        // The active profile must resolve to "default" so GetValidTokensAsync() loads what we seed —
+        // clear any config.json a sibling token-store test may have left in the shared config dir.
+        var cfg = Capacitor.Cli.Core.Config.AppConfig.GetConfigPath();
+        if (File.Exists(cfg)) File.Delete(cfg);
+
+        await TokenStore.SaveAsync("default", new StoredTokens {
+            AccessToken    = FreshBearer,
+            ExpiresAt      = DateTimeOffset.UtcNow.AddHours(1), // not expired → returned as-is (no real refresh endpoint needed)
+            GitHubUsername = "seed",
+            Provider       = AuthProvider.GitHubApp
+        });
+    }
+
+    static void CleanupDefaultToken() {
+        try { TokenStore.Delete("default"); } catch { /* best effort */ }
+        var cfg = Capacitor.Cli.Core.Config.AppConfig.GetConfigPath();
+        try { if (File.Exists(cfg)) File.Delete(cfg); } catch { /* best effort */ }
+    }
+
+    [Test]
+    [NotInParallel(nameof(TokenStoreProfileTests))]
+    public async Task HandleToolCall_with_model_401_refreshes_token_and_resends_v3_exactly_once() {
+        // A model-bearing v3 start keeps the one-shot 401 token refresh (SendWithRefreshRetryAsync):
+        // in a long-lived flows MCP process the cached token can expire after startup, and on 401 the
+        // client re-reads a fresh token and re-sends the SAME v3 POST once. The 401 is rejected at the
+        // auth layer BEFORE any run is created, so the re-send is the only POST that reaches business
+        // logic — exactly-one-EFFECTIVE-v3-POST still holds.
+        await SeedDefaultTokenAsync();
+        try {
+            using var server = WireMockServer.Start();
+            server.Given(Request.Create().WithPath("/api/flows/review/start/v3").UsingPost())
+                .InScenario("model-401").WillSetStateTo("after-401")
+                .RespondWith(Response.Create().WithStatusCode(401).WithBody(""));
+            server.Given(Request.Create().WithPath("/api/flows/review/start/v3").UsingPost())
+                .InScenario("model-401").WhenStateIs("after-401")
+                .RespondWith(Response.Create().WithStatusCode(200).WithBody(V3RunningWithAck));
+            using var client = new HttpClient();
+
+            var response = await McpFlowsServer.HandleToolCallAsync(
+                JsonNode.Parse("1")!, ModelToolCall("start_review_flow", ModelStartArguments("claude", "opus")),
+                client, server.Url!, cwd: "/tmp/cwd", repoRoot: null, repoInfo: null);
+
+            var result = JsonNode.Parse(response)!.AsObject();
+            // The refreshed 2nd send succeeded — NOT surfaced as the friendly "Not logged in".
+            await Assert.That(result["result"]!["isError"]).IsNull();
+
+            // Exactly two v3 POSTs (the original 401 + one refreshed re-send).
+            await Assert.That(server.FindLogEntries(
+                Request.Create().WithPath("/api/flows/review/start/v3").UsingPost()).Count).IsEqualTo(2);
+            // Only the 2nd carries the refreshed bearer (the first client had no auth header).
+            await Assert.That(server.FindLogEntries(
+                Request.Create().WithPath("/api/flows/review/start/v3")
+                    .WithHeader("Authorization", $"Bearer {FreshBearer}").UsingPost()).Count).IsEqualTo(1);
+        } finally {
+            CleanupDefaultToken();
+        }
     }
 
     [Test]
