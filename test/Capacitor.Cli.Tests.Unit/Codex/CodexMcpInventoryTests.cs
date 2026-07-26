@@ -14,7 +14,8 @@ public class CodexMcpInventoryTests {
     // A representative `codex mcp list --json` payload: a config.toml server, a plugin-provided
     // server (no config transport), a DOTTED-name server, and a url-based (streamable_http) server
     // — the four shapes the hardened enumeration must surface so every one gets disabled for the
-    // reviewer (the url shape needs its transport carried through — AI-1519).
+    // reviewer (the url shape needs its transport carried through so the disable override can
+    // re-state it instead of stamping the colliding sentinel command).
     const string SampleJson = """
         [
           { "name": "kcap-flows", "enabled": true, "disabled_reason": null,

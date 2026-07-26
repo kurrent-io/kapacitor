@@ -41,7 +41,7 @@ internal sealed partial class CodexLauncher(
     /// not check that the command exists for a disabled server, so the value is cross-platform safe.
     /// NEVER stamped on a url-based server: <c>-c</c> deep-merges over <c>config.toml</c>, so a
     /// config-defined url server would end up with BOTH <c>url</c> and <c>command</c> and fail config
-    /// load with "url is not supported for stdio" (AI-1519, verified against 0.144.6) — those
+    /// load with "url is not supported for stdio" (verified against 0.144.6) — those
     /// re-state their own <c>url</c> instead.</summary>
     internal const string DisabledServerSentinelCommand = "kcap-review-flow-isolation-disabled";
 
@@ -171,7 +171,7 @@ internal sealed partial class CodexLauncher(
     ///     <see cref="DisabledServerSentinelCommand"/> transport satisfies the validator while the
     ///     server stays off. A URL-BASED server must NOT get that sentinel: the deep-merge would
     ///     leave it with both <c>url</c> and <c>command</c>, which fails config load with "url is
-    ///     not supported for stdio" (AI-1519) — its override re-states the enumerated <c>url</c> as
+    ///     not supported for stdio" — its override re-states the enumerated <c>url</c> as
     ///     the transport instead, which is valid whether the server came from config.toml (merges
     ///     onto the identical url) or a plugin (the config-layer entry then carries its own
     ///     transport).</item>
@@ -197,7 +197,7 @@ internal sealed partial class CodexLauncher(
             // TomlString both quotes and escapes, so ANY name — dotted, quoted, or containing
             // control chars — becomes a valid inline-table key that Codex resolves to exactly one
             // server. A url server keeps its own transport (deep-merging the sentinel command onto
-            // it would fail config load — AI-1519); the sentinel transport makes plugin-provided
+            // it would fail config load); the sentinel transport makes plugin-provided
             // (transport-less) servers disable-able too.
             entries.Add(server.Url is { Length: > 0 } url
                 ? $"{TomlString(server.Name)}={{enabled=false,url={TomlString(url)}}}"

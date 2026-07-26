@@ -144,5 +144,5 @@ internal static class CodexMcpInventory {
 
 /// <summary>One effective MCP server a spawned Codex session would inherit. <see cref="Url"/> is the
 /// transport url for a url-based (streamable_http) server, null for stdio/transport-less ones — it
-/// selects the shape of the disabling override in <see cref="CodexLauncher"/> (AI-1519).</summary>
+/// selects the shape of the disabling override in <see cref="CodexLauncher"/>.</summary>
 internal readonly record struct InheritedMcpServer(string Name, string? Url = null);

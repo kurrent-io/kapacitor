@@ -360,7 +360,7 @@ public class CodexLauncherTests {
 
     [Test]
     public async Task Review_flow_disables_url_based_servers_via_their_own_url_not_the_sentinel_command() {
-        // AI-1519: `-c` overrides deep-merge over ~/.codex/config.toml, so stamping the sentinel
+        // `-c` overrides deep-merge over ~/.codex/config.toml, so stamping the sentinel
         // command onto a config-defined url (streamable_http) server left the merged entry with
         // BOTH url and command — codex then fails config load with "url is not supported for
         // stdio" (verified against 0.144.6), bricking every reviewer launch for a user with e.g.
