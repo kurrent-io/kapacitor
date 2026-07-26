@@ -41,9 +41,11 @@ public class PluginCommandGeminiTests {
         await Assert.That(servers.Select(kv => kv.Key)).Contains("kcap-sessions");
         await Assert.That(servers.Select(kv => kv.Key)).Contains("kcap-flows");
         await Assert.That(servers.Select(kv => kv.Key)).Contains("kcap-memory");
+        await Assert.That(servers.Select(kv => kv.Key)).Contains("kcap-analytics");
         // Read-only servers auto-approved via Gemini's per-server trust; write/flow servers still prompt.
         await Assert.That(servers["kcap-review"]!["trust"]!.GetValue<bool>()).IsTrue();
         await Assert.That(servers["kcap-sessions"]!["trust"]!.GetValue<bool>()).IsTrue();
+        await Assert.That(servers["kcap-analytics"]!["trust"]!.GetValue<bool>()).IsTrue();
         await Assert.That(servers["kcap-flows"]!["trust"]).IsNull();
         await Assert.That(servers["kcap-memory"]!["trust"]).IsNull();
         await Assert.That(servers["my-tool"]).IsNotNull();  // user server preserved

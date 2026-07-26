@@ -57,6 +57,12 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
     public Func<FinalizeEvalCommand, Task<FinalizeResult>>? FinalizeEvalHandler { get; set; }
     public Func<CancelEvalCommand,   Task>?                 CancelEvalHandler   { get; set; }
 
+    /// <summary>Task 8: handler for the server's <c>ResolveReviewerModel</c> client-result
+    /// invocation — the side-effect-free reviewer-model preflight. Set by <see cref="AgentOrchestrator"/>
+    /// at startup; when null (early startup / an old daemon build), the registration below returns a
+    /// fail-closed <c>"unavailable"</c> reply so the server never applies an unresolved override.</summary>
+    public Func<ReviewerModelResolveRequestV1, Task<ReviewerModelResolveResponseV1>>? ResolveReviewerModelHandler { get; set; }
+
     /// <summary>
     /// Handler for the server's "do you have a checkout of this repo?" probe.
     /// Receives <c>(owner, repo, candidatePaths)</c> and returns confirmed git
@@ -238,6 +244,18 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
 
         _hub.On<CancelEvalCommand>("CancelEval",
             cmd => CancelEvalHandler?.Invoke(cmd) ?? Task.CompletedTask);
+
+        // Task 8: side-effect-free reviewer-model preflight (server→daemon client-result
+        // invocation). When the orchestrator hasn't wired the handler (early startup), fail closed with
+        // an "unavailable" reply that still echoes RequestId/Vendor so the server's correlation guard
+        // passes and it treats the model as simply unavailable. PolicyVersion is always THIS daemon's own
+        // RPC protocol version (never an echo of the request's expectation) — matching the invariant the
+        // real HandleResolveReviewerModel handler upholds, so a protocol drift is detected the same way
+        // whether or not the orchestrator has wired a handler yet.
+        _hub.On<ReviewerModelResolveRequestV1, ReviewerModelResolveResponseV1>("ResolveReviewerModel",
+            req => ResolveReviewerModelHandler?.Invoke(req)
+                ?? Task.FromResult(new ReviewerModelResolveResponseV1(
+                    req.RequestId, req.Vendor, ReviewerModelResolvers.RpcProtocolVersion, "unavailable")));
 
         // Server probe used by the "Review this PR" UI to discover which
         // checkouts on this daemon match the PR's owner/repo. Returns an empty
@@ -655,6 +673,24 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
             await _hub.SendAsync("ReportAgentResolvedModel", agentId, model, cancellationToken: _ct);
         } catch (Exception ex) {
             LogReportResolvedModelFailed(ex, agentId);
+        }
+    }
+
+    /// <summary>
+    /// Task 8: reports the CONCRETE resolved model an explicit-model reviewer actually launched
+    /// with (the post-launch counterpart of the preflight RPC), over the persistent connection to the
+    /// server's <c>ReportExplicitReviewerModelResolved</c> hub method — a single-record (arity 1)
+    /// payload so the wire shape can evolve additively. Distinct from
+    /// <see cref="ReportAgentResolvedModelAsync"/> (name/arity/behavior unchanged): the legacy report is
+    /// still used for every no-model / vendor-only launch. Fire-and-forget best-effort: swallowed when
+    /// the connected server is older and has no such hub method, so a mixed-version rollout never
+    /// surfaces this as a failure. Virtual so tests can capture the report without a live hub.
+    /// </summary>
+    public virtual async Task ReportExplicitReviewerModelResolvedAsync(ExplicitReviewerModelResolvedV1 report) {
+        try {
+            await _hub.SendAsync("ReportExplicitReviewerModelResolved", report, cancellationToken: _ct);
+        } catch (Exception ex) {
+            LogReportResolvedModelFailed(ex, report.AgentId);
         }
     }
 

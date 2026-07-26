@@ -53,6 +53,12 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
         _ => null
     };
 
+    /// <summary>ACP / multi-provider vendors have no authoritative reviewer-model resolver yet, so this
+    /// stays <see langword="null"/> — the vendor advertises no <c>SupportsReviewerModelResolution</c>
+    /// and the server refuses a v3 model override for it, while its existing vendor-only unattended
+    /// support is untouched.</summary>
+    public IReviewerModelResolver? ReviewerModelResolver => null;
+
     public bool IsAvailable() => CliResolver.Exists(descriptor.ResolveBinaryPath(config));
 
     public async Task<HostedRuntimeStart> StartAsync(RuntimeStartContext ctx, CancellationToken ct) {

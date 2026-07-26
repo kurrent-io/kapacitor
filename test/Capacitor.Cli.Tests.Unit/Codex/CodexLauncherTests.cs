@@ -10,8 +10,13 @@ namespace Capacitor.Cli.Tests.Unit.Codex;
 
 [NotInParallel("HomeEnvVarMutation")]
 public class CodexLauncherTests {
+    // Review-flow arg tests must be deterministic w.r.t. the developer's real
+    // ~/.codex/config.toml, so the inherited-server seam defaults to empty. Tests that
+    // exercise the isolation pass inject an explicit inherited list.
     static CodexLauncher NewLauncher() =>
-        new(new DaemonConfig { CodexPath = "codex" }, NullLogger<CodexLauncher>.Instance);
+        new(new DaemonConfig { CodexPath = "codex" }, NullLogger<CodexLauncher>.Instance) {
+            ReadInheritedMcpServerNames = static () => []
+        };
 
     static LauncherContext NewCtx(
         string? prompt       = null,
@@ -31,6 +36,17 @@ public class CodexLauncherTests {
         Review: null,
         ReviewLaunch: null
     );
+
+    // Real MCP isolation emits ONE `-c mcp_servers={ … }` TOML-value override that disables every
+    // non-whitelisted inherited server (plain, dotted, or plugin-provided) uniformly. These helpers
+    // locate that single override and assert membership without pinning the exact byte layout.
+    static string? DisableTableOverride(string[] args) =>
+        args.FirstOrDefault(a => a.StartsWith("mcp_servers={", StringComparison.Ordinal)
+                              && !a.StartsWith("mcp_servers={}", StringComparison.Ordinal));
+
+    static bool DisablesServer(string[] args, string name) =>
+        DisableTableOverride(args) is { } table
+        && table.Contains($"\"{name}\"={{enabled=false", StringComparison.Ordinal);
 
     [Test]
     public async Task BuildArgs_uses_never_approval_for_hosted_codex() {
@@ -129,19 +145,24 @@ public class CodexLauncherTests {
     }
 
     [Test]
-    public async Task BuildArgs_clears_mcp_servers() {
+    public async Task BuildArgs_review_flow_does_not_emit_dead_mcp_servers_clear() {
+        // The old `-c mcp_servers={}` "clear" is a no-op in Codex 0.144.3 (`-c` overrides
+        // deep-merge, so an empty table removes nothing). It must be gone — real isolation is a
+        // populated `mcp_servers={ "<name>"={enabled=false,…} }` disable table (only emitted when
+        // there is something to disable; empty here since no inherited servers are injected).
         var args   = NewLauncher().BuildArgs(NewCtx(isReviewFlow: true)).Args;
         var joined = string.Join(' ', args);
-        await Assert.That(joined).Contains("mcp_servers={}");
-        var cIdx = Array.IndexOf(args, "-c");
-        await Assert.That(cIdx).IsGreaterThan(-1);
-        await Assert.That(args[cIdx + 1]).IsEqualTo("mcp_servers={}");
+        await Assert.That(joined).DoesNotContain("mcp_servers={}");
     }
 
     [Test]
-    public async Task Review_flow_clears_then_whitelists_only_the_flow_result_server() {
+    public async Task Review_flow_disables_inherited_servers_and_whitelists_only_flow_result() {
         var config = new DaemonConfig { CodexPath = "codex", CapacitorPath = "/opt/kcap", ServerUrl = "https://t.example" };
-        var launcher = new CodexLauncher(config, NullLogger<CodexLauncher>.Instance);
+        var launcher = new CodexLauncher(config, NullLogger<CodexLauncher>.Instance) {
+            // The user has a hand-registered kcap-flows (start_review_flow) plus heavy servers —
+            // exactly the recursion-guard threat the dead `mcp_servers={}` clear failed to strip.
+            ReadInheritedMcpServerNames = static () => ["kcap-flows", "node_repl", "computer-use"]
+        };
         var ctx = new LauncherContext(
             AgentId: "agent-xyz",
             SourceRepoPath: "/tmp/repo",
@@ -158,25 +179,29 @@ public class CodexLauncherTests {
 
         var args = launcher.BuildArgs(ctx).Args;
 
-        var clearIdx = Array.IndexOf(args, "mcp_servers={}");
-        await Assert.That(clearIdx).IsGreaterThanOrEqualTo(0);
+        await Assert.That(string.Join(' ', args)).DoesNotContain("mcp_servers={}");
 
-        var dotted = args.Where(a => a.StartsWith("mcp_servers.", StringComparison.Ordinal)).ToArray();
-        await Assert.That(dotted.Length).IsEqualTo(3);
-        await Assert.That(dotted.All(a => a.StartsWith("mcp_servers.kcap-flow-result.", StringComparison.Ordinal))).IsTrue();
+        // Every inherited server — including the hand-registered kcap-flows — is disabled in the
+        // single table override.
+        await Assert.That(DisablesServer(args, "kcap-flows")).IsTrue();
+        await Assert.That(DisablesServer(args, "node_repl")).IsTrue();
+        await Assert.That(DisablesServer(args, "computer-use")).IsTrue();
 
-        // Clear-then-whitelist ORDER: the bare table reset must come BEFORE every dotted override,
-        // otherwise the dotted overrides merge into the user's config.toml table.
-        foreach (var d in dotted) {
-            await Assert.That(Array.IndexOf(args, d)).IsGreaterThan(clearIdx);
-        }
+        // The ONLY server actually enabled/injected (via dotted overrides) is kcap-flow-result.
+        var enabled = args.Where(a => a.StartsWith("mcp_servers.", StringComparison.Ordinal)
+                                   && !a.Contains(".enabled=false")).ToArray();
+        await Assert.That(enabled.All(a => a.StartsWith("mcp_servers.kcap-flow-result.", StringComparison.Ordinal))).IsTrue();
+        await Assert.That(enabled.Length).IsEqualTo(4);
 
-        var command = dotted.Single(a => a.Contains(".command="));
+        // Force-enabled regardless of anything the user's own config may say.
+        await Assert.That(args).Contains("mcp_servers.kcap-flow-result.enabled=true");
+
+        var command = enabled.Single(a => a.Contains(".command="));
         await Assert.That(command).Contains("/opt/kcap");
-        var argsOverride = dotted.Single(a => a.Contains(".args="));
+        var argsOverride = enabled.Single(a => a.Contains(".args="));
         await Assert.That(argsOverride).Contains("mcp");
         await Assert.That(argsOverride).Contains("flow-result");
-        var env = dotted.Single(a => a.Contains(".env="));
+        var env = enabled.Single(a => a.Contains(".env="));
         await Assert.That(env).Contains("KCAP_URL");
         await Assert.That(env).Contains("https://t.example");
         await Assert.That(env).Contains("KCAP_FLOW_AGENT_ID");
@@ -184,9 +209,13 @@ public class CodexLauncherTests {
     }
 
     [Test]
-    public async Task Review_flow_without_server_url_injects_no_servers() {
-        var config = new DaemonConfig { CodexPath = "codex", CapacitorPath = "/opt/kcap", ServerUrl = "" };
-        var launcher = new CodexLauncher(config, NullLogger<CodexLauncher>.Instance);
+    public async Task Review_flow_never_disables_a_server_it_is_about_to_whitelist() {
+        // A user server literally named kcap-flow-result must NOT be disabled, or our own
+        // injected submission server would be turned off.
+        var config = new DaemonConfig { CodexPath = "codex", CapacitorPath = "/opt/kcap", ServerUrl = "https://t.example" };
+        var launcher = new CodexLauncher(config, NullLogger<CodexLauncher>.Instance) {
+            ReadInheritedMcpServerNames = static () => ["kcap-flow-result", "node_repl"]
+        };
         var ctx = new LauncherContext(
             AgentId: "agent-xyz",
             SourceRepoPath: "/tmp/repo",
@@ -203,8 +232,146 @@ public class CodexLauncherTests {
 
         var args = launcher.BuildArgs(ctx).Args;
 
-        await Assert.That(args).Contains("mcp_servers={}");
-        await Assert.That(args.Any(a => a.StartsWith("mcp_servers.", StringComparison.Ordinal))).IsFalse();
+        // kcap-flow-result must NOT appear in the disable table (it is whitelisted).
+        await Assert.That(DisablesServer(args, "kcap-flow-result")).IsFalse();
+        await Assert.That(DisablesServer(args, "node_repl")).IsTrue();
+        await Assert.That(args.Any(a => a.StartsWith("mcp_servers.kcap-flow-result.command=", StringComparison.Ordinal))).IsTrue();
+
+        // Not merely "not disabled" — explicitly forced on. The user's real
+        // ~/.codex/config.toml is what `ReadInheritedMcpServerNames` is standing in for here,
+        // and it may itself already carry `kcap-flow-result` as enabled=false from a prior
+        // manual registration. Since `-c` deep-merges over that file, skipping our own disable
+        // pass isn't enough — only an explicit enabled=true override guarantees the reviewer's
+        // result-submission channel actually starts.
+        await Assert.That(args).Contains("mcp_servers.kcap-flow-result.enabled=true");
+    }
+
+    [Test]
+    public async Task Review_flow_force_enables_whitelisted_allowlist_server_even_if_inherited_as_disabled() {
+        // Same bug as the flow-result server, on the allowlist-server path: the user's config
+        // may already carry an allowlisted kcap server (e.g. kcap-sessions) as enabled=false —
+        // `-c` deep-merges over that, so it must be forced back on, not merely left alone.
+        var config = new DaemonConfig { CodexPath = "codex", CapacitorPath = "/opt/kcap", ServerUrl = "https://t.example" };
+        var launcher = new CodexLauncher(config, NullLogger<CodexLauncher>.Instance) {
+            ReadInheritedMcpServerNames = static () => ["kcap-sessions"]
+        };
+
+        var args = launcher.BuildArgs(NewFlowCtx(["kcap-sessions"])).Args;
+
+        await Assert.That(DisablesServer(args, "kcap-sessions")).IsFalse();
+        await Assert.That(args).Contains("mcp_servers.kcap-sessions.enabled=true");
+    }
+
+    [Test]
+    public async Task Review_flow_disables_dotted_server_name() {
+        // HIGH 2: a dotted/quoted server name (e.g. a hand-registered "corp.flows" that can start a
+        // flow) cannot be expressed as a Codex `-c` dotted KEY path — the pre-hardening code logged
+        // and LEFT it enabled, bypassing the recursion guard. The TOML-quoted key inside the single
+        // table-value override targets it exactly, so it IS disabled now.
+        var config = new DaemonConfig { CodexPath = "codex", CapacitorPath = "/opt/kcap", ServerUrl = "https://t.example" };
+        var launcher = new CodexLauncher(config, NullLogger<CodexLauncher>.Instance) {
+            ReadInheritedMcpServerNames = static () => ["corp.flows", "node_repl"]
+        };
+        var ctx = new LauncherContext(
+            AgentId: "agent-xyz",
+            SourceRepoPath: "/tmp/repo",
+            Worktree: new WorktreeInfo(Path: "/tmp/wt", Branch: "wt-branch", SourceRepo: "/tmp/repo"),
+            Prompt: null,
+            Model: "gpt-5.3-codex",
+            Effort: null,
+            Tools: null,
+            IsReview: false,
+            IsReviewFlow: true,
+            Review: null,
+            ReviewLaunch: null
+        );
+
+        var args = launcher.BuildArgs(ctx).Args;
+
+        // The dotted server is disabled (not skipped), and its quoted key is emitted verbatim.
+        await Assert.That(DisablesServer(args, "corp.flows")).IsTrue();
+        await Assert.That(DisableTableOverride(args)!).Contains("\"corp.flows\"={enabled=false");
+        await Assert.That(DisablesServer(args, "node_repl")).IsTrue();
+        // No broken dotted-KEY override (which would fail Codex config load).
+        await Assert.That(args).DoesNotContain("mcp_servers.corp.flows.enabled=false");
+    }
+
+    [Test]
+    public async Task Review_flow_without_server_url_disables_inherited_and_injects_no_servers() {
+        // No server URL → nothing is whitelisted (zero-server recursion-safe default), but the
+        // inherited servers are STILL disabled so they don't leak into the reviewer.
+        var config = new DaemonConfig { CodexPath = "codex", CapacitorPath = "/opt/kcap", ServerUrl = "" };
+        var launcher = new CodexLauncher(config, NullLogger<CodexLauncher>.Instance) {
+            ReadInheritedMcpServerNames = static () => ["kcap-flows", "node_repl"]
+        };
+        var ctx = new LauncherContext(
+            AgentId: "agent-xyz",
+            SourceRepoPath: "/tmp/repo",
+            Worktree: new WorktreeInfo(Path: "/tmp/wt", Branch: "wt-branch", SourceRepo: "/tmp/repo"),
+            Prompt: null,
+            Model: "gpt-5.3-codex",
+            Effort: null,
+            Tools: null,
+            IsReview: false,
+            IsReviewFlow: true,
+            Review: null,
+            ReviewLaunch: null
+        );
+
+        var args = launcher.BuildArgs(ctx).Args;
+
+        await Assert.That(args).DoesNotContain("mcp_servers={}");
+        await Assert.That(DisablesServer(args, "kcap-flows")).IsTrue();
+        await Assert.That(DisablesServer(args, "node_repl")).IsTrue();
+        // Nothing enabled: no flow-result server injected.
+        await Assert.That(args.Any(a => a.StartsWith("mcp_servers.kcap-flow-result.", StringComparison.Ordinal))).IsFalse();
+    }
+
+    [Test]
+    public async Task Review_flow_reviewer_inherits_no_user_repo_or_plugin_mcp_server() {
+        // HIGH 1 + HIGH 2 together: `codex mcp list --json` (the injected seam here) reports the
+        // fully-composed effective list — user config.toml servers, a plugin-provided server, and a
+        // dotted-name flow server. EVERY one must be disabled so the reviewer's effective MCP is
+        // ONLY kcap-flow-result — no source (config, plugin, or dotted) leaks a flow-starting tool.
+        var config = new DaemonConfig { CodexPath = "codex", CapacitorPath = "/opt/kcap", ServerUrl = "https://t.example" };
+        var launcher = new CodexLauncher(config, NullLogger<CodexLauncher>.Instance) {
+            ReadInheritedMcpServerNames = static () => [
+                "kcap-flows",           // user config.toml, plain — the classic recursion vector
+                "corp.flows",           // user config.toml, DOTTED (High 2)
+                "sites-design-picker",  // native plugin-provided (High 1 — missed by config-only)
+                "node_repl"             // plugin/config, benign
+            ]
+        };
+
+        var args = launcher.BuildArgs(NewFlowCtx(null)).Args;
+
+        // Every inherited server, regardless of source or name shape, is disabled.
+        await Assert.That(DisablesServer(args, "kcap-flows")).IsTrue();
+        await Assert.That(DisablesServer(args, "corp.flows")).IsTrue();
+        await Assert.That(DisablesServer(args, "sites-design-picker")).IsTrue();
+        await Assert.That(DisablesServer(args, "node_repl")).IsTrue();
+
+        // The reviewer's ONLY enabled MCP server is kcap-flow-result.
+        var enabled = args.Where(a => a.StartsWith("mcp_servers.", StringComparison.Ordinal)
+                                   && !a.Contains(".enabled=false")).ToArray();
+        await Assert.That(enabled.All(a => a.StartsWith("mcp_servers.kcap-flow-result.", StringComparison.Ordinal))).IsTrue();
+        await Assert.That(args).Contains("mcp_servers.kcap-flow-result.enabled=true");
+    }
+
+    [Test]
+    public async Task Review_flow_fails_closed_when_inherited_servers_cannot_be_enumerated() {
+        // FAIL-CLOSED: if the inherited MCP set can't be authoritatively enumerated (e.g. `codex mcp
+        // list --json` fails), we must NOT proceed having disabled nothing — that would let a
+        // hand-registered flow-starting server through. The enumeration seam throws, and BuildArgs
+        // surfaces it as CodexReviewerMcpIsolationException for the orchestrator to reject the launch.
+        var config = new DaemonConfig { CodexPath = "codex", CapacitorPath = "/opt/kcap", ServerUrl = "https://t.example" };
+        var launcher = new CodexLauncher(config, NullLogger<CodexLauncher>.Instance) {
+            ReadInheritedMcpServerNames = static () =>
+                throw new CodexReviewerMcpIsolationException("mcp list failed")
+        };
+
+        await Assert.That(() => launcher.BuildArgs(NewFlowCtx(null)))
+            .Throws<CodexReviewerMcpIsolationException>();
     }
 
     [Test]
@@ -460,7 +627,9 @@ public class CodexLauncherTests {
     // === D-c: definition MCP allowlist materialization ===
 
     static CodexLauncher NewFlowResultLauncher() =>
-        new(new DaemonConfig { CodexPath = "codex", CapacitorPath = "/opt/kcap", ServerUrl = "https://t.example" }, NullLogger<CodexLauncher>.Instance);
+        new(new DaemonConfig { CodexPath = "codex", CapacitorPath = "/opt/kcap", ServerUrl = "https://t.example" }, NullLogger<CodexLauncher>.Instance) {
+            ReadInheritedMcpServerNames = static () => []
+        };
 
     static LauncherContext NewFlowCtx(string[]? allowlist) => new LauncherContext(
         AgentId: "agent-xyz",
@@ -480,18 +649,14 @@ public class CodexLauncherTests {
     public async Task ReviewFlow_with_allowlist_merges_servers_into_dotted_overrides() {
         var args = NewFlowResultLauncher().BuildArgs(NewFlowCtx(["kcap-sessions"])).Args;
 
-        var clearIdx = Array.IndexOf(args, "mcp_servers={}");
-        await Assert.That(clearIdx).IsGreaterThanOrEqualTo(0);
+        await Assert.That(string.Join(' ', args)).DoesNotContain("mcp_servers={}");
 
         var dotted = args.Where(a => a.StartsWith("mcp_servers.", StringComparison.Ordinal)).ToArray();
         await Assert.That(dotted.Any(a => a.StartsWith("mcp_servers.kcap-flow-result.", StringComparison.Ordinal))).IsTrue();
 
         var sessionsDotted = dotted.Where(a => a.StartsWith("mcp_servers.kcap-sessions.", StringComparison.Ordinal)).ToArray();
-        await Assert.That(sessionsDotted.Length).IsEqualTo(3);
-
-        foreach (var d in sessionsDotted) {
-            await Assert.That(Array.IndexOf(args, d)).IsGreaterThan(clearIdx);
-        }
+        await Assert.That(sessionsDotted.Length).IsEqualTo(4);
+        await Assert.That(args).Contains("mcp_servers.kcap-sessions.enabled=true");
 
         var command = sessionsDotted.Single(a => a.Contains(".command="));
         await Assert.That(command).Contains("/opt/kcap");
@@ -524,14 +689,16 @@ public class CodexLauncherTests {
     }
 
     [Test]
-    public async Task ReviewFlow_without_allowlist_args_byte_identical_to_today() {
+    public async Task ReviewFlow_no_inherited_servers_emits_only_the_flow_result_whitelist() {
+        // With no inherited servers there is nothing to disable — the dead `mcp_servers={}`
+        // clear is gone and the args are exactly the flow-result whitelist.
         var args = NewFlowResultLauncher().BuildArgs(NewFlowCtx(null)).Args;
 
         string[] expected = [
             "--cd", "/tmp/wt",
             "--sandbox", "workspace-write",
             "--ask-for-approval", "never",
-            "-c", "mcp_servers={}",
+            "-c", "mcp_servers.kcap-flow-result.enabled=true",
             "-c", "mcp_servers.kcap-flow-result.command=\"/opt/kcap\"",
             "-c", "mcp_servers.kcap-flow-result.args=[\"mcp\",\"flow-result\"]",
             "-c", "mcp_servers.kcap-flow-result.env={KCAP_URL=\"https://t.example\",KCAP_FLOW_AGENT_ID=\"agent-xyz\"}",

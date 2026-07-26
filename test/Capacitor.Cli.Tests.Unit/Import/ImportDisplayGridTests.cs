@@ -71,7 +71,34 @@ public class ImportDisplayGridTests {
         await Assert.That(output).DoesNotContain("By source");
     }
 
-    static ImportCommand.FinalCounts MakeFinal(int loaded) => new(
+    // Titles/Summaries rows must appear iff background work ran (the inverted guard dropped them).
+    [Test, NotInParallel]
+    public async Task done_grid_renders_titles_and_summaries_rows_when_background_ran() {
+        var output = CaptureNonTtyOutput(d => d.WriteDoneGrid(
+            MakeFinal(loaded: 3, ranBackground: true, requestedSummaries: true, titlesGenerated: 3, summariesGenerated: 3),
+            bySource: null));
+
+        await Assert.That(output).Contains("Titles");
+        await Assert.That(output).Contains("Summaries");
+    }
+
+    [Test, NotInParallel]
+    public async Task done_grid_omits_titles_and_summaries_rows_when_no_background_work() {
+        var output = CaptureNonTtyOutput(d => d.WriteDoneGrid(
+            MakeFinal(loaded: 3),
+            bySource: null));
+
+        await Assert.That(output).DoesNotContain("Titles");
+        await Assert.That(output).DoesNotContain("Summaries");
+    }
+
+    static ImportCommand.FinalCounts MakeFinal(
+            int  loaded,
+            bool ranBackground      = false,
+            bool requestedSummaries = false,
+            int  titlesGenerated    = 0,
+            int  summariesGenerated = 0
+        ) => new(
         Loaded: loaded,
         Resumed: 0,
         AlreadyLoaded: 0,
@@ -79,13 +106,13 @@ public class ImportDisplayGridTests {
         Excluded: 0,
         ProbeError: 0,
         Errored: 0,
-        TitlesGenerated: 0,
+        TitlesGenerated: titlesGenerated,
         TitlesSkipped: 0,
         TitlesFailed: 0,
-        SummariesGenerated: 0,
+        SummariesGenerated: summariesGenerated,
         SummariesFailed: 0,
-        RanBackground: false,
-        RequestedSummaries: false
+        RanBackground: ranBackground,
+        RequestedSummaries: requestedSummaries
     );
 
     static string CaptureNonTtyOutput(Action<ImportCommand.ImportDisplay> render) {

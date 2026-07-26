@@ -143,11 +143,32 @@ static class McpFlowsServer {
                 // support dynamic flows" hint — coded rejections never do (new-server signal).
                 var wasDynamicStart = toolName is "start_flow" && arguments?["definition_yaml"] is not null;
 
+                // Reviewer-model override: a model-bearing start goes to the protocol-v3 route
+                // (StartFlowAsync). Computed BEFORE the dispatch because a v3 start must NOT be wrapped
+                // in the SETTLEMENT retry: each POST to /review/start/v3 mints AND launches a run, so
+                // re-POSTing a retryable settlement 409 (flow_settlement_busy /
+                // reviewer_launch_incarnation_superseded) would violate exactly-one-v3-POST and churn
+                // reviewer launches. The coded 409 surfaces to the caller, who retries the whole start.
+                // It DOES keep the one-shot 401 token refresh (SendWithRefreshRetryAsync — which
+                // SendWithSettlementRetryAsync otherwise composes internally): a 401 is rejected at the
+                // auth layer BEFORE any run is created, so its single re-send is the only POST that
+                // reaches business logic — exactly-one-EFFECTIVE-v3-POST holds while a long-lived MCP
+                // process can still refresh a token that expired after startup. So a model start drops
+                // ONLY the settlement re-POST, not the refresh. Every v2 (no-model) start and every
+                // round keeps the full settlement retry (refresh included) unchanged.
+                var wasModelStart = !wasDynamicStart
+                    && toolName is "start_review_flow" or "start_flow"
+                    && !string.IsNullOrWhiteSpace(arguments?["model"]?.GetValue<string>());
+
                 using var postResponse = toolName switch {
-                    "start_review_flow"   => await SendWithRefreshRetryAsync(client, c => StartFlowAsync(c, apiRoot, arguments, cwd, repoRoot, repoInfo, kindArgName: "kind")),
-                    "start_flow"          => await SendWithRefreshRetryAsync(client, c => StartFlowAsync(c, apiRoot, arguments, cwd, repoRoot, repoInfo, kindArgName: "definition_id")),
-                    "submit_review_round" => await SendWithRefreshRetryAsync(client, c => SubmitRoundAsync(c, apiRoot, arguments, contextArgName: "context", participant: null, async: true)),
-                    _                     => await SendWithRefreshRetryAsync(client, c => SubmitRoundAsync(c, apiRoot, arguments, contextArgName: "message", participant: GetRequiredArg(arguments, "participant"), async: ParseAsyncArg(arguments)))
+                    "start_review_flow"   => wasModelStart
+                        ? await SendWithRefreshRetryAsync(client, c => StartFlowAsync(c, apiRoot, arguments, cwd, repoRoot, repoInfo, kindArgName: "kind"))
+                        : await SendWithSettlementRetryAsync(client, c => StartFlowAsync(c, apiRoot, arguments, cwd, repoRoot, repoInfo, kindArgName: "kind"), Task.Delay),
+                    "start_flow"          => wasModelStart
+                        ? await SendWithRefreshRetryAsync(client, c => StartFlowAsync(c, apiRoot, arguments, cwd, repoRoot, repoInfo, kindArgName: "definition_id"))
+                        : await SendWithSettlementRetryAsync(client, c => StartFlowAsync(c, apiRoot, arguments, cwd, repoRoot, repoInfo, kindArgName: "definition_id"), Task.Delay),
+                    "submit_review_round" => await SendWithSettlementRetryAsync(client, c => SubmitRoundAsync(c, apiRoot, arguments, contextArgName: "context", participant: null, async: true), Task.Delay),
+                    _                     => await SendWithSettlementRetryAsync(client, c => SubmitRoundAsync(c, apiRoot, arguments, contextArgName: "message", participant: GetRequiredArg(arguments, "participant"), async: ParseAsyncArg(arguments)), Task.Delay)
                 };
 
                 var postBody = await postResponse.Content.ReadAsStringAsync();
@@ -159,24 +180,37 @@ static class McpFlowsServer {
                 // started) plus an explicit-vendor echo check once the route matched.
                 var requestedVendor = NormalizeVendor(arguments?["vendor"]?.GetValue<string>());
 
-                if (!wasDynamicStart && CheckVendorOverrideResult(toolName, requestedVendor, postResponse.StatusCode, postResponse.IsSuccessStatusCode, postBody, out var flowRunIdToClose) is { } vendorCheck) {
+                if (wasModelStart) {
+                    // The model-bearing start went to the v3 route — its own protocol/ack gate REPLACES
+                    // (and precedes) the vendor-override skew gate, which would misreport a v3 404 as a
+                    // "protocol v2" skew. The model ack (applied_reviewer_model + equivalence key) is the
+                    // authoritative MODEL echo here.
+                    if (CheckReviewerModelResult(toolName, postResponse.StatusCode, postResponse.IsSuccessStatusCode, postBody, out var modelRunIdToClose) is { } modelCheck) {
+                        // Only the 2xx-missing-ack case salvages a run id; the skew cases start nothing.
+                        if (modelRunIdToClose is not null)
+                            await BestEffortCloseAsync(client, apiRoot, modelRunIdToClose);
+
+                        return BuildToolResult(id, modelCheck.Message, modelCheck.IsError);
+                    }
+
+                    // Valid MODEL ack — but the model/key are opaque and don't prove which VENDOR was
+                    // applied. A model start always carries a vendor, so ALSO run the ordinal vendor-echo
+                    // check (the same helper a v2 start uses — no vendor->model knowledge is introduced).
+                    // A mismatch salvages + defensively closes the run and returns the error.
+                    if (CheckVendorOverrideResult(toolName, requestedVendor, postResponse.StatusCode, postResponse.IsSuccessStatusCode, postBody, out var modelVendorRunIdToClose) is { } modelVendorCheck) {
+                        if (modelVendorRunIdToClose is not null)
+                            await BestEffortCloseAsync(client, apiRoot, modelVendorRunIdToClose);
+
+                        return BuildToolResult(id, modelVendorCheck.Message, modelVendorCheck.IsError);
+                    }
+                    // Both acks valid — fall through to the shared success/round rendering below, which
+                    // echoes the reviewer-model audit fields alongside the result.
+                } else if (!wasDynamicStart && CheckVendorOverrideResult(toolName, requestedVendor, postResponse.StatusCode, postResponse.IsSuccessStatusCode, postBody, out var flowRunIdToClose) is { } vendorCheck) {
                     // Best-effort: we have the run id from this same response (echo mismatch only —
                     // the 404 case never has one) — close it defensively rather than leave a
                     // wrongly-vendored reviewer running unattended.
-                    if (flowRunIdToClose is not null) {
-                        try {
-                            // The shared flows client uses Timeout.InfiniteTimeSpan (flow starts
-                            // long-poll), so bound THIS best-effort close with its own short
-                            // deadline — otherwise a stalled close would wedge the single-threaded
-                            // stdio MCP loop and the mismatch error would never be delivered.
-                            using var closeCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-                            using var closeResponse = await client.PostAsync(
-                                $"{apiRoot}/api/flows/{Uri.EscapeDataString(flowRunIdToClose)}/close", null, closeCts.Token);
-                        } catch {
-                            // best-effort (incl. the timeout above); the run still shows up in the
-                            // Flows tab / stale-reviewer sweep either way.
-                        }
-                    }
+                    if (flowRunIdToClose is not null)
+                        await BestEffortCloseAsync(client, apiRoot, flowRunIdToClose);
 
                     return BuildToolResult(id, vendorCheck.Message, vendorCheck.IsError);
                 }
@@ -257,6 +291,80 @@ static class McpFlowsServer {
         return await send(client);
     }
 
+    // How many times to transparently retry a settlement-layer coded 409 (flow_settlement_busy /
+    // reviewer_launch_incarnation_superseded) before surfacing it via FormatFlowStartError. Both
+    // codes resolve fast against the settlement layer's own reconciliation, so the bound is small
+    // and the backoff short (sub-second) — unlike the network-transient budget in
+    // PollUntilTerminalAsync or the one-shot 401 refresh retry above.
+    const int MaxSettlementRetries = 3;
+    static readonly TimeSpan SettlementRetryDelay = TimeSpan.FromMilliseconds(200);
+
+    static readonly HashSet<string> SettlementRetryableCodes =
+        new(StringComparer.Ordinal) { "flow_settlement_busy", "reviewer_launch_incarnation_superseded" };
+
+    /// <summary>Parses the coded-rejection envelope: a JSON object with a non-empty string
+    /// "error" code and a string "message". Returns false for an uncoded/unparseable body.
+    /// Shared by <see cref="FormatFlowStartError"/> and the settlement-retry gate below so both
+    /// agree on what counts as "coded".</summary>
+    internal static bool TryParseCodedError(string body, out string? code, out string? message) {
+        code = null;
+        message = null;
+
+        try {
+            var node = JsonNode.Parse(body) as JsonObject;
+            if (node?["error"] is JsonValue ev && ev.TryGetValue<string>(out var c) && c.Length > 0
+                    && node["message"] is JsonValue mv && mv.TryGetValue<string>(out var m)) {
+                code = c;
+                message = m;
+                return true;
+            }
+        } catch (JsonException) {
+            // not JSON — reads as uncoded
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Bounded, code-aware auto-retry for the two settlement-layer coded 409s a start/round POST
+    /// can return: flow_settlement_busy (a settlement CAS append exhausted its own retry budget)
+    /// and reviewer_launch_incarnation_superseded (the launch's incarnation was superseded by a
+    /// concurrent settlement transition). Both are documented server-side as retryable: retrying
+    /// the originating request re-resolves against the settlement layer's current state.
+    ///
+    /// For start_review_flow/start_flow, retrying re-POSTs the start — which mints a FRESH
+    /// flow_run_id and abandons the superseded attempt (see StartFlowAsync), so it's
+    /// unconditionally safe. For submit_review_round/send_to_participant, the server invariant
+    /// that no path appends FlowRoleAgentAssigned/FlowRoundSubmitted/FlowIntentCompleted unless
+    /// IsCurrentSettlementCompletion is true means a coded rejection here never recorded a round
+    /// — so retrying the same flow_run_id can't double-submit.
+    ///
+    /// Only these two codes (via <see cref="TryParseCodedError"/>) trigger a retry; every other
+    /// coded 4xx (budget_unverifiable, server_catching_up, client_upgrade_required, etc.) passes
+    /// through untouched. Bounded to <see cref="MaxSettlementRetries"/> attempts with a short,
+    /// sub-second backoff (<see cref="SettlementRetryDelay"/>); on exhaustion the last response
+    /// surfaces as-is via the caller's existing FormatFlowStartError. Wraps (doesn't replace)
+    /// <see cref="SendWithRefreshRetryAsync"/>, so the 401 refresh retry still applies on every
+    /// attempt. Delay is injectable so unit tests run instantly.
+    /// </summary>
+    internal static async Task<HttpResponseMessage> SendWithSettlementRetryAsync(
+            HttpClient client, Func<HttpClient, Task<HttpResponseMessage>> send, Func<TimeSpan, Task> delay
+        ) {
+        for (var attempt = 1;; attempt++) {
+            var response = await SendWithRefreshRetryAsync(client, send);
+
+            if (response.IsSuccessStatusCode || attempt >= MaxSettlementRetries) return response;
+
+            var body = await response.Content.ReadAsStringAsync();
+
+            if (!TryParseCodedError(body, out var code, out _) || !SettlementRetryableCodes.Contains(code!))
+                return response;
+
+            response.Dispose();
+            await delay(SettlementRetryDelay);
+        }
+    }
+
     /// <summary>
     /// Pure decision for the protocol-v2 skew seam (404 = old server) + explicit-vendor echo check
     /// on a start response. Returns null to proceed normally after the route matches (no explicit
@@ -315,6 +423,109 @@ static class McpFlowsServer {
             ? s
             : null;
 
+    // The LOCAL reviewer-model transport errors. Both are self-inflicted (never a
+    // server body) and both carry the reviewer_model_protocol_required code so a caller can react
+    // to a single machine-readable signal, whether the skew showed up as a missing route or a
+    // response that lacked the model ack. Neither ever downgrades to v2 — the request stays failed.
+    internal const string ReviewerModelProtocolRequiredMessage =
+        "Error (reviewer_model_protocol_required): this server does not support the reviewer model " +
+        "override protocol (v3). Upgrade the kcap server, or omit 'model' to use the server's default " +
+        "reviewer model. The request was NOT downgraded to an older protocol — no review flow was started.";
+
+    internal const string ReviewerModelAckMissingMessage =
+        "Error (reviewer_model_protocol_required): the server accepted the start but did not acknowledge " +
+        "the reviewer model override (missing applied_reviewer_model / reviewer_model_equivalence_key) — " +
+        "closed the run defensively. Upgrade the kcap server so the model override is honored.";
+
+    // Coded rejections that mean the server can't speak the v3 model protocol (as opposed to a
+    // genuine v3 rejection like reviewer_model_invalid / reviewer_model_unavailable, which must
+    // surface verbatim). reviewer_model_protocol_required is what every non-v3 route returns when
+    // it receives a Model; the two flow_client_protocol_* codes are the v3 route's own version guard.
+    static readonly HashSet<string> ReviewerModelProtocolSkewCodes = new(StringComparer.Ordinal) {
+        "reviewer_model_protocol_required",
+        "flow_client_protocol_required",
+        "flow_client_protocol_unsupported",
+    };
+
+    /// <summary>
+    /// Pure decision for the reviewer-MODEL start response (the v3 route). Runs only
+    /// for a model-bearing start (the caller gates on that). Returns null to proceed to normal
+    /// rendering (success with a valid ack); otherwise the tool error, with
+    /// <paramref name="flowRunIdToClose"/> set (the 2xx-missing-ack case only) for the caller's
+    /// best-effort defensive close. Pure (no HttpClient) so the close side effect stays with the caller.
+    ///
+    /// <para>Old-server / skew mapping (→ <see cref="ReviewerModelProtocolRequiredMessage"/>, never a
+    /// v2 retry): a 404/405 on the versioned route, or a coded body whose code is a protocol-skew
+    /// code. A genuine coded v3 rejection OR an uncoded (legacy / 5xx / proxy) body returns null so
+    /// the caller's <see cref="FormatFlowStartError"/> surfaces the real status/body verbatim.</para>
+    ///
+    /// <para>Ack validation on success requires a nonempty <c>applied_reviewer_model</c> AND
+    /// <c>reviewer_model_equivalence_key</c> — it NEVER string-compares requested/applied/resolved
+    /// (an alias validly resolves to a dated concrete id; the server already validated the
+    /// equivalence key). A 2xx missing either field is a legacy/malformed ack →
+    /// <see cref="ReviewerModelAckMissingMessage"/> + salvaged run id.</para>
+    /// </summary>
+    internal static (string Message, bool IsError)? CheckReviewerModelResult(
+            string toolName, HttpStatusCode statusCode, bool isSuccess, string postBody,
+            out string? flowRunIdToClose
+        ) {
+        flowRunIdToClose = null;
+
+        if (toolName is not ("start_review_flow" or "start_flow")) return null;
+
+        // Primary skew seam: the versioned v3 route either exists or doesn't. An old server returns
+        // a clean 404 (or 405) before any handler runs — no run started, no agent launched.
+        if (statusCode is HttpStatusCode.NotFound or HttpStatusCode.MethodNotAllowed)
+            return (ReviewerModelProtocolRequiredMessage, true);
+
+        if (!isSuccess) {
+            // A coded protocol-skew rejection also means the server can't do v3; any OTHER coded
+            // rejection is a genuine v3 verdict and passes through to FormatFlowStartError.
+            if (TryParseCodedError(postBody, out var code, out _))
+                return ReviewerModelProtocolSkewCodes.Contains(code!)
+                    ? (ReviewerModelProtocolRequiredMessage, true)
+                    : null;
+
+            // Qodo #2: an UNCODED non-success body (e.g. a 5xx / proxy HTML-or-text error) is NOT an
+            // old-server signal — only a clean 404/405 is (handled above). Return null so the caller's
+            // FormatFlowStartError surfaces the real status/body, instead of masking a genuine
+            // failure as a protocol-version skew.
+            return null;
+        }
+
+        // Success: validate the model ack. Parse defensively — a malformed / non-object body must
+        // not throw past this method (the outer catch would skip the defensive close).
+        JsonObject? node = null;
+        try { node = JsonNode.Parse(postBody) as JsonObject; } catch (JsonException) { /* leave null → treated as missing ack */ }
+
+        var applied = TryGetString(node, "applied_reviewer_model");
+        var key     = TryGetString(node, "reviewer_model_equivalence_key");
+
+        if (!string.IsNullOrEmpty(applied) && !string.IsNullOrEmpty(key)) return null;
+
+        // A 2xx that lacks the model ack fields is a legacy/malformed body — salvage the run id (if
+        // any) so the caller can close defensively, and fail closed rather than render a
+        // half-applied override.
+        flowRunIdToClose = TryGetString(node, "flow_run_id");
+        return (ReviewerModelAckMissingMessage, true);
+    }
+
+    /// <summary>Best-effort defensive close of a run a start response told us to
+    /// abandon (a vendor echo mismatch, or a missing model ack). Bounded by its own short deadline —
+    /// the shared flows client uses Timeout.InfiniteTimeSpan (flow starts long-poll), so an
+    /// unbounded close would wedge the single-threaded stdio MCP loop and the error would never be
+    /// delivered. Swallows every failure (incl. the timeout); the run still surfaces in the Flows
+    /// tab / stale-reviewer sweep either way.</summary>
+    static async Task BestEffortCloseAsync(HttpClient client, string apiRoot, string flowRunId) {
+        try {
+            using var closeCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            using var closeResponse = await client.PostAsync(
+                $"{apiRoot}/api/flows/{Uri.EscapeDataString(flowRunId)}/close", null, closeCts.Token);
+        } catch {
+            // best-effort (incl. the timeout above)
+        }
+    }
+
     /// <summary>
     /// Posts catalog starts to POST /api/flows/review/start/v2 and dynamic starts to the legacy
     /// generic start route. Shared by start_review_flow (reads
@@ -356,6 +567,27 @@ static class McpFlowsServer {
         var mode         = arguments?["mode"]?.GetValue<string>();
         var vendor       = NormalizeVendor(arguments?["vendor"]?.GetValue<string>());
 
+        // An optional reviewer MODEL override. When present it forces the
+        // protocol-v3 route (below) and is fail-closed locally BEFORE any HTTP call:
+        //  - a model is meaningless without a vendor (the server's v3 route requires one, and the
+        //    CLI never guesses a vendor from a model — there's no vendor→model table here), and
+        //  - a model is structurally invalid for a dynamic (definition_yaml) flow, where every
+        //    participant already declares its own model inline.
+        // Both throw ArgumentException, which HandleToolCallAsync turns into a clean tool error
+        // WITHOUT a POST (so a rejected pairing never mints a run and never retries v2).
+        var model = NormalizeModel(arguments?["model"]?.GetValue<string>());
+
+        if (model is not null) {
+            if (definitionYaml is not null)
+                throw new ArgumentException(
+                    "a reviewer model override is not supported for dynamic (definition_yaml) flows — " +
+                    "every participant already declares its own model in the embedded definition.");
+            if (vendor is null)
+                throw new ArgumentException(
+                    "vendor is required when a reviewer model override is requested. " +
+                    "Pass the lowercase canonical vendor token (e.g. 'claude', 'codex') the model belongs to.");
+        }
+
         var sessionId = ArgParsing.ResolveSessionIdFromEnv();
 
         // B2: this machine's stable id, matched server-side against each connected daemon's
@@ -393,15 +625,22 @@ static class McpFlowsServer {
             RequesterMachineId:   machineId,
             DefinitionYaml:       definitionYaml,
             Vendor:               vendor,
-            ClientFlowProtocolVersion: definitionYaml is null ? 2 : null
+            // Protocol version by route: a reviewer-model override is protocol 3 (v3 route); every
+            // other catalog start stays protocol 2 (v2 route); a dynamic start sends no version.
+            ClientFlowProtocolVersion: model is not null ? 3 : definitionYaml is null ? 2 : null,
+            Model:                model
         );
 
-        // Every catalog start uses protocol v2. Its route is the server capability signal: an old
-        // server returns a clean 404 before any handler runs, so the caller fails closed before a
-        // run starts. Dynamic definitions keep their separate legacy route and inline contract.
-        var startPath = definitionYaml is null
-            ? $"{apiRoot}/api/flows/review/start/v2"
-            : $"{apiRoot}/api/flows/review/start";
+        // Route selection IS the server-capability signal, so it fails closed before a run starts:
+        //  - a reviewer-model override → POST /review/start/v3 (an old server 404s the route before
+        //    any handler runs — mapped to reviewer_model_protocol_required, never downgraded to v2);
+        //  - every other catalog start → POST /review/start/v2 (protocol 2, unchanged);
+        //  - a dynamic (definition_yaml) start → the legacy generic route with its inline contract.
+        var startPath = model is not null
+            ? $"{apiRoot}/api/flows/review/start/v3"
+            : definitionYaml is null
+                ? $"{apiRoot}/api/flows/review/start/v2"
+                : $"{apiRoot}/api/flows/review/start";
 
         return await client.PostAsync(
             startPath,
@@ -446,6 +685,19 @@ static class McpFlowsServer {
         if (vendor is null) return null;
         var normalized = vendor.Trim().ToLowerInvariant();
         if (normalized.Length == 0) throw new ArgumentException("vendor must not be blank.");
+        return normalized;
+    }
+
+    /// <summary>Trims a reviewer model override, treating an absent (null) value as
+    /// "no override". A present-but-blank value throws — the server would reject it as
+    /// reviewer_model_required, so fail locally before the POST. Deliberately NOT case-folded and
+    /// NOT provider-prefix-stripped: model ids are vendor-specific and case-sensitive (the server's
+    /// ReviewerModelInput.Normalize does the authoritative hygiene — the CLI passes the value
+    /// through so no vendor→model knowledge lives in the MCP layer).</summary>
+    static string? NormalizeModel(string? model) {
+        if (model is null) return null;
+        var normalized = model.Trim();
+        if (normalized.Length == 0) throw new ArgumentException("model must not be blank when provided.");
         return normalized;
     }
 
@@ -520,19 +772,15 @@ static class McpFlowsServer {
     /// message verbatim, prefixed with the code, and never add the old-server hint. Only an
     /// UNCODED failure on a start that included definition_yaml gets the "may not support
     /// dynamic flows" hint (the coded body is the new-server capability signal), keeping the
-    /// raw body either way.</summary>
+    /// raw body either way. Decodes via <see cref="TryParseCodedError"/>, the same parse
+    /// SendWithSettlementRetryAsync's retry gate uses, so the two can never disagree about what
+    /// counts as "coded".</summary>
     internal static string FormatFlowStartError(int status, string body, bool wasDynamicStart) {
-        try {
-            var node = JsonNode.Parse(body) as JsonObject;
-            if (node?["error"] is JsonValue ev && ev.TryGetValue<string>(out var code) && code.Length > 0
-                && node["message"] is JsonValue mv && mv.TryGetValue<string>(out var message)) {
-                if (code == "server_catching_up")
-                    return $"Error ({code}): {message}\n{ServerCatchingUpGuidance}";
+        if (TryParseCodedError(body, out var code, out var message)) {
+            if (code == "server_catching_up")
+                return $"Error ({code}): {message}\n{ServerCatchingUpGuidance}";
 
-                return $"Error ({code}): {message}";
-            }
-        } catch (JsonException) {
-            // not JSON — fall through to the uncoded path
+            return $"Error ({code}): {message}";
         }
 
         var hint = wasDynamicStart
@@ -590,6 +838,9 @@ static class McpFlowsServer {
         var notFoundGraceDeadline = pollStartedAt + NotFoundGrace;
         var consecutiveTransient  = 0;
         var lastTransientError    = (string?)null;
+        // Separate, short-backoff budget for the two settlement-layer coded 409s — distinct from
+        // the network/5xx transient budget above, which uses the full 3s PollInterval.
+        var settlementRetriesUsed = 0;
 
         while (DateTimeOffset.UtcNow < deadline) {
             using var getCts = new CancellationTokenSource(PerGetTimeout);
@@ -621,6 +872,19 @@ static class McpFlowsServer {
                 var statusCode = (int)resp.StatusCode;
                 if (statusCode is >= 400 and < 500) {
                     var errBody = await resp.Content.ReadAsStringAsync();
+
+                    // The same two settlement-layer coded 409s can also surface on the poll GET
+                    // (the server-side backstop mapping an escaped settlement conflict). Bounded,
+                    // short auto-retry before falling through to the immediate-fail path; every
+                    // other coded/uncoded 4xx is untouched.
+                    if (TryParseCodedError(errBody, out var code, out _) &&
+                            SettlementRetryableCodes.Contains(code!) &&
+                            settlementRetriesUsed < MaxSettlementRetries - 1) {
+                        settlementRetriesUsed++;
+                        await Task.Delay(SettlementRetryDelay);
+                        continue;
+                    }
+
                     return new(FormatFlowStartError(statusCode, errBody, wasDynamicStart), true);
                 }
 
@@ -633,9 +897,10 @@ static class McpFlowsServer {
                     await Task.Delay(PollInterval); continue;
                 }
 
-                // Successful response — reset transient counter.
-                consecutiveTransient = 0;
-                lastTransientError   = null;
+                // Successful response — reset transient counters.
+                consecutiveTransient  = 0;
+                lastTransientError    = null;
+                settlementRetriesUsed = 0;
 
                 var body      = await resp.Content.ReadAsStringAsync();
                 var node      = JsonNode.Parse(body)?.AsObject();
@@ -698,6 +963,7 @@ static class McpFlowsServer {
         if (TryGetString(node, "reviewer_vendor_source") is { } vendorSource) {
             sb.Append("reviewer_vendor_source: "); AppendLine(sb, vendorSource);
         }
+        AppendReviewerModelAudit(sb, node);
         if (!string.IsNullOrEmpty(resultText)) { sb.AppendLine(); sb.Append(resultText); }
 
         pendingIds = AppendPendingMessages(sb, node);
@@ -733,6 +999,7 @@ static class McpFlowsServer {
             if (requestedVendor is not null) { sb.Append("requested_reviewer_vendor: "); AppendLine(sb, requestedVendor); }
             if (appliedVendor is not null) { sb.Append("applied_reviewer_vendor: "); AppendLine(sb, appliedVendor); }
             if (vendorSource is not null) { sb.Append("reviewer_vendor_source: "); AppendLine(sb, vendorSource); }
+            AppendReviewerModelAudit(sb, node);
 
             if (!string.IsNullOrEmpty(resultText)) {
                 sb.AppendLine();
@@ -780,6 +1047,7 @@ static class McpFlowsServer {
             if (requestedVendor is not null) { sb.Append("requested_reviewer_vendor: "); AppendLine(sb, requestedVendor); }
             if (appliedVendor is not null) { sb.Append("applied_reviewer_vendor: "); AppendLine(sb, appliedVendor); }
             if (vendorSource is not null) { sb.Append("reviewer_vendor_source: "); AppendLine(sb, vendorSource); }
+            AppendReviewerModelAudit(sb, node);
 
             if (!string.IsNullOrEmpty(lastResultKind)) {
                 sb.Append("result_kind: "); AppendLine(sb, lastResultKind);
@@ -885,6 +1153,19 @@ static class McpFlowsServer {
 
     static string StringField(JsonObject o, string name) =>
         o[name] is JsonValue v && v.TryGetValue<string>(out var s) ? s : "";
+
+    /// <summary>Renders the reviewer-MODEL override audit trail (requested / applied /
+    /// resolved model + the model source) when present, mirroring the vendor audit block. Each line
+    /// is conditional so a legacy / vendor-only / no-override response renders nothing extra. It
+    /// NEVER string-compares the three values — they legitimately differ (a requested alias resolves
+    /// to a dated concrete id; the server already validated equivalence). They are surfaced for the
+    /// caller to read, not to police.</summary>
+    static void AppendReviewerModelAudit(StringBuilder sb, JsonObject node) {
+        if (TryGetString(node, "requested_reviewer_model") is { } requested) { sb.Append("requested_reviewer_model: "); AppendLine(sb, requested); }
+        if (TryGetString(node, "applied_reviewer_model")   is { } applied)   { sb.Append("applied_reviewer_model: ");   AppendLine(sb, applied); }
+        if (TryGetString(node, "resolved_reviewer_model")  is { } resolved)  { sb.Append("resolved_reviewer_model: ");  AppendLine(sb, resolved); }
+        if (TryGetString(node, "reviewer_model_source")    is { } source)    { sb.Append("reviewer_model_source: ");    AppendLine(sb, source); }
+    }
 
     /// <summary> E-c: deliver-once ack for pending messages. Callers must invoke this
     /// AFTER the response text has been fully formatted, passing only the ids that were actually
@@ -1006,7 +1287,8 @@ static class McpFlowsServer {
                     ["context"]      = new("string", "Background context for the reviewer: what to focus on, constraints, definition of done. State where the changes live — the reviewer sees a mirror of the working tree you launched from only; if the changeset is elsewhere or incomplete there, say so and inline the relevant diffs."),
                     ["instructions"] = new("string", "Optional additional instructions for the reviewer agent."),
                     ["mode"]         = new("string", "Optional. Pass 'context-only' to have the reviewer treat the submitted context/diff as authoritative rather than reading the repository. By default the reviewer runs in a worktree mirrored from your working tree (uncommitted changes included) when it runs on the same machine, so it can ground the review in the actual source; passing 'context-only' opts out of that."),
-                    ["vendor"]       = new("string", "Optional reviewer vendor for the reserved alias, independent of the driver harness. Omit to use the server's Flows:Review:DefaultVendor. The selected vendor must be installed and certified unattended on an eligible daemon; there is no silent fallback. Pass the lowercase canonical vendor token (e.g. 'claude', 'codex').")
+                    ["vendor"]       = new("string", "Optional reviewer vendor for the reserved alias, independent of the driver harness. Omit to use the server's Flows:Review:DefaultVendor. The selected vendor must be installed and certified unattended on an eligible daemon; there is no silent fallback. Pass the lowercase canonical vendor token (e.g. 'claude', 'codex')."),
+                    ["model"]        = new("string", "Optional reviewer model override for this review. REQUIRES 'vendor' — the model is interpreted against that vendor (there is no vendor->model table here), so passing model without vendor is rejected locally. Omit to use the vendor's default reviewer model. The chosen model must be resolvable and certified on the selected daemon; there is no silent fallback. Pass the vendor's own model id or alias verbatim (case-sensitive) — do not translate or guess it. Requires a server that supports the v3 flow-start protocol.")
                 },
                 ["kind", "target_kind", "target_ref", "target_title", "context"]
             )
@@ -1068,7 +1350,8 @@ static class McpFlowsServer {
                     ["context"]        = new("string", "Background context for the agent: what to focus on, constraints, definition of done. State where the changes live — the participant sees a mirror of the working tree you launched from only; if the changeset is elsewhere or incomplete there, say so and inline the relevant diffs."),
                     ["instructions"]   = new("string", "Optional additional instructions for the agent."),
                     ["mode"]           = new("string", "Optional. Pass 'context-only' to have the agent treat the submitted context/diff as authoritative rather than reading the repository. By default the agent runs in a worktree mirrored from your working tree (uncommitted changes included) when it runs on the same machine, so it can ground the work in the actual source; passing 'context-only' opts out of that."),
-                    ["vendor"]         = new("string", "Optional reviewer vendor. Reserved spec-review/code-review aliases use it independently of the driver, or use the server default when omitted. Custom single-participant catalog definitions accept an explicit override. Rejected for multi-participant and definition_yaml flows. The selected vendor must be certified unattended on an eligible daemon; no silent fallback. Pass a lowercase canonical token.")
+                    ["vendor"]         = new("string", "Optional reviewer vendor. Reserved spec-review/code-review aliases use it independently of the driver, or use the server default when omitted. Custom single-participant catalog definitions accept an explicit override. Rejected for multi-participant and definition_yaml flows. The selected vendor must be certified unattended on an eligible daemon; no silent fallback. Pass a lowercase canonical token."),
+                    ["model"]          = new("string", "Optional reviewer model override for a single-participant catalog review definition. REQUIRES 'vendor' — the model is interpreted against that vendor (there is no vendor->model table here), so passing model without vendor is rejected locally. Rejected for definition_yaml (dynamic) and multi-participant flows. Omit to use the vendor's default reviewer model. The chosen model must be resolvable and certified on the selected daemon; there is no silent fallback. Pass the vendor's own model id or alias verbatim (case-sensitive) — do not translate or guess it. Requires a server that supports the v3 flow-start protocol.")
                 },
                 ["target_kind", "target_ref", "target_title", "context"]
             )
@@ -1144,7 +1427,13 @@ record StartReviewFlowDto(
     // version — see StartFlowAsync's route-selection logic, which only posts this alongside a
     // request to the versioned start route.
     [property: JsonPropertyName("vendor")]                 string? Vendor = null,
-    [property: JsonPropertyName("client_flow_protocol_version")] int? ClientFlowProtocolVersion = null
+    [property: JsonPropertyName("client_flow_protocol_version")] int? ClientFlowProtocolVersion = null,
+    // Reviewer MODEL override — optional, catalog single-participant review flow
+    // kinds only, and ONLY ever sent alongside client_flow_protocol_version 3 to the /review/start/v3
+    // route (see StartFlowAsync). Omitted (null via WhenWritingNull) keeps a no-model start
+    // byte-identical to the v2 wire on any server version. A model requires a non-null Vendor
+    // (StartFlowAsync rejects the pairing locally) and is invalid for dynamic (definition_yaml) flows.
+    [property: JsonPropertyName("model")]                  string? Model = null
 );
 
 /// <summary>

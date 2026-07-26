@@ -94,7 +94,7 @@ public static class TokenStore {
         return tokens;
     }
 
-    public static async Task SaveAsync(string profile, StoredTokens tokens) {
+    public static async Task SaveAsync(string profile, StoredTokens tokens, CancellationToken ct = default) {
         Directory.CreateDirectory(TokenDir);
         var path     = ProfileTokenPath(profile);
         // Unique per write so concurrent writers (hooks/watcher/daemon/MCP/login share this
@@ -115,9 +115,10 @@ public static class TokenStore {
         try {
             await using (var stream = new FileStream(tempPath, options))
             await using (var writer = new StreamWriter(stream)) {
-                await writer.WriteAsync(JsonSerializer.Serialize(tokens, CapacitorJsonContext.Default.StoredTokens));
+                await writer.WriteAsync(
+                    JsonSerializer.Serialize(tokens, CapacitorJsonContext.Default.StoredTokens).AsMemory(), ct);
             }
-            await ReplaceWithRetryAsync(tempPath, path);
+            await ReplaceWithRetryAsync(tempPath, path, ct);
         } finally {
             // Success renames the temp away; only a failed write/move leaves it. Unlike the
             // old shared name, a leaked unique temp never gets reused, so clean it up.
@@ -148,15 +149,16 @@ public static class TokenStore {
     const int ReplaceMaxAttempts   = 5;
     const int ReplaceBackoffBaseMs = 20;
 
-    static async Task ReplaceWithRetryAsync(string tempPath, string path) {
+    static async Task ReplaceWithRetryAsync(string tempPath, string path, CancellationToken ct = default) {
         for (var attempt = 1; ; attempt++) {
+            ct.ThrowIfCancellationRequested();
             try {
                 File.Move(tempPath, path, overwrite: true);
                 return;
             } catch (Exception ex) when ((ex is UnauthorizedAccessException or IOException)
                                          && attempt < ReplaceMaxAttempts) {
                 // Linear backoff (20/40/60/80ms) to let the peer holding the target close it.
-                await Task.Delay(ReplaceBackoffBaseMs * attempt);
+                await Task.Delay(ReplaceBackoffBaseMs * attempt, ct);
             }
         }
     }
@@ -233,8 +235,8 @@ public static class TokenStore {
         return Task.CompletedTask;
     }
 
-    static async Task<string> ResolveActiveProfileAsync() {
-        var cfg = await AppConfig.LoadProfileConfig();
+    static async Task<string> ResolveActiveProfileAsync(CancellationToken ct = default) {
+        var cfg = await AppConfig.LoadProfileConfig(ct);
         return string.IsNullOrEmpty(cfg.ActiveProfile) ? "default" : cfg.ActiveProfile;
     }
 
@@ -265,6 +267,28 @@ public static class TokenStore {
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// Forces one provider refresh even when the locally cached access token has not expired.
+    /// Used only after a server 401 proves that the otherwise-valid token is no longer accepted.
+    /// The existing profile-scoped lock still serializes rotating credentials across processes.
+    /// </summary>
+    public static async Task<StoredTokens?> ForceRefreshAsync(CancellationToken ct = default) {
+        var profile = await ResolveActiveProfileAsync(ct);
+        var tokens = await LoadWithLegacyFallbackAsync(profile);
+        if (tokens is null) return null;
+
+        Func<StoredTokens, Task<StoredTokens?>> refresh = tokens.Provider switch {
+            AuthProvider.WorkOS when tokens.RefreshToken is not null && tokens.ClientId is not null
+                => value => RefreshWorkOSAsync(value, ct),
+            AuthProvider.GitHubApp => value => RefreshGitHubAsync(value, ct),
+            _ => _ => Task.FromResult<StoredTokens?>(null)
+        };
+        if (tokens.Provider is not (AuthProvider.WorkOS or AuthProvider.GitHubApp)) return null;
+
+        return await RefreshWithCrossProcessLockAsync(
+            profile, tokens, refresh, needsRefresh: static _ => true, cancellationToken: ct);
     }
 
     // The decision the daemon's proactive-refresh tick makes each time it wakes. Kept a
@@ -357,7 +381,8 @@ public static class TokenStore {
             StoredTokens                            current,
             Func<StoredTokens, Task<StoredTokens?>> refresh,
             Func<StoredTokens, bool>?               needsRefresh    = null,
-            Action?                                 onLockContended = null
+            Action?                                 onLockContended = null,
+            CancellationToken                       cancellationToken = default
         ) {
         // Default predicate: refresh a token GetValidTokensAsync already found expired. The
         // proactive path (RefreshIfExpiringAsync) passes a wider "within N minutes of expiry"
@@ -375,6 +400,7 @@ public static class TokenStore {
         var         deadline   = DateTime.UtcNow.AddSeconds(15);
 
         while (lockStream is null) {
+            cancellationToken.ThrowIfCancellationRequested();
             try {
                 lockStream = new FileStream(lockPath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
             } catch (IOException) {
@@ -393,7 +419,7 @@ public static class TokenStore {
                     return null;
                 }
 
-                await Task.Delay(100);
+                await Task.Delay(100, cancellationToken);
             }
         }
 
@@ -421,7 +447,7 @@ public static class TokenStore {
             // a different profile's file (without that profile's lock). Saving here, under the lock,
             // with the profile we locked, closes that hole for both callers.
             if (refreshed is not null) {
-                await SaveAsync(profile, refreshed);
+                await SaveAsync(profile, refreshed, cancellationToken);
             }
 
             return refreshed;
@@ -465,7 +491,10 @@ public static class TokenStore {
     // Kept short so a hook never blocks for the default 30s budget when the server is down.
     static readonly TimeSpan RefreshRetryBudget = TimeSpan.FromSeconds(5);
 
-    static async Task<StoredTokens?> RefreshGitHubAsync(StoredTokens tokens) {
+    static Task<StoredTokens?> RefreshGitHubAsync(StoredTokens tokens) =>
+        RefreshGitHubAsync(tokens, CancellationToken.None);
+
+    static async Task<StoredTokens?> RefreshGitHubAsync(StoredTokens tokens, CancellationToken ct) {
         var baseUrl = AppConfig.ResolvedServerUrl ?? Environment.GetEnvironmentVariable("KCAP_URL") ?? "http://localhost:5108";
         var url     = $"{baseUrl}/auth/refresh";
 
@@ -487,13 +516,14 @@ public static class TokenStore {
         var payload = new StringContent(requestBody, System.Text.Encoding.UTF8, "application/json");
 
         try {
-            var response = await http.PostWithRetryAsync(url, payload, RefreshRetryBudget);
+            var response = await http.PostWithRetryAsync(url, payload, RefreshRetryBudget, ct);
 
             if (!response.IsSuccessStatusCode) {
                 return null;
             }
 
-            var json = await response.Content.ReadFromJsonAsync(CapacitorJsonContext.Default.TokenExchangeResponse);
+            var json = await response.Content.ReadFromJsonAsync(
+                CapacitorJsonContext.Default.TokenExchangeResponse, ct);
 
             if (json is null) {
                 return null;
@@ -511,7 +541,10 @@ public static class TokenStore {
         }
     }
 
-    static async Task<StoredTokens?> RefreshWorkOSAsync(StoredTokens tokens) {
+    static Task<StoredTokens?> RefreshWorkOSAsync(StoredTokens tokens) =>
+        RefreshWorkOSAsync(tokens, CancellationToken.None);
+
+    static async Task<StoredTokens?> RefreshWorkOSAsync(StoredTokens tokens, CancellationToken ct) {
         // Mirror RefreshGitHubAsync: network/parse failures return null (caller surfaces
         // "run kcap login") rather than throwing out of GetValidTokensAsync and crashing.
         try {
@@ -532,14 +565,16 @@ public static class TokenStore {
                         ["refresh_token"] = tokens.RefreshToken!
                     }
                 ),
-                RefreshRetryBudget
+                RefreshRetryBudget,
+                ct
             );
 
             if (!response.IsSuccessStatusCode) {
                 return null;
             }
 
-            var json = await response.Content.ReadFromJsonAsync(CapacitorJsonContext.Default.WorkOSAuthResponse);
+            var json = await response.Content.ReadFromJsonAsync(
+                CapacitorJsonContext.Default.WorkOSAuthResponse, ct);
 
             if (json is null) {
                 return null;

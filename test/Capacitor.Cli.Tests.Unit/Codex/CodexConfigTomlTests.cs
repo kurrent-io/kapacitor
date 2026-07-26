@@ -562,4 +562,53 @@ public class CodexConfigTomlTests {
         await Assert.That(File.GetUnixFileMode(path)).IsEqualTo(expected);
         await Assert.That(File.GetUnixFileMode(ledger)).IsEqualTo(expected);
     }
+
+    // ── ReadMcpServerNames: enumerate the [mcp_servers] table a reviewer would inherit ──
+
+    [Test]
+    public async Task ReadMcpServerNames_returns_table_keys_sorted_ordinal() {
+        var path = TempConfig();
+        File.WriteAllText(path, """
+            [mcp_servers.node_repl]
+            command = "node"
+            args = ["repl.js"]
+
+            [mcp_servers.kcap-flows]
+            command = "kcap"
+            args = ["mcp", "flows"]
+
+            [mcp_servers.computer-use]
+            command = "cu"
+            args = []
+            """);
+
+        var names = CodexConfigToml.ReadMcpServerNames(path);
+
+        await Assert.That(names).IsEquivalentTo(new[] { "computer-use", "kcap-flows", "node_repl" });
+    }
+
+    [Test]
+    public async Task ReadMcpServerNames_missing_file_returns_empty() {
+        var path = Path.Combine(Directory.CreateTempSubdirectory("kcap-codextoml-").FullName, "does-not-exist.toml");
+
+        await Assert.That(CodexConfigToml.ReadMcpServerNames(path)).IsEmpty();
+    }
+
+    [Test]
+    public async Task ReadMcpServerNames_no_mcp_servers_table_returns_empty() {
+        var path = TempConfig();
+        File.WriteAllText(path, """
+            model = "gpt-5.3-codex"
+            """);
+
+        await Assert.That(CodexConfigToml.ReadMcpServerNames(path)).IsEmpty();
+    }
+
+    [Test]
+    public async Task ReadMcpServerNames_malformed_toml_returns_empty() {
+        var path = TempConfig();
+        File.WriteAllText(path, "this is = = not valid [toml");
+
+        await Assert.That(CodexConfigToml.ReadMcpServerNames(path)).IsEmpty();
+    }
 }

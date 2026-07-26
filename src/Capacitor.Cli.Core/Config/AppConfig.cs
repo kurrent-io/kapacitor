@@ -249,14 +249,14 @@ public static class AppConfig {
         ResolvedProfile   = new ResolvedProfile(serverUrl, profileName, profile, null);
     }
 
-    public static async Task<ProfileConfig> LoadProfileConfig() {
+    public static async Task<ProfileConfig> LoadProfileConfig(CancellationToken ct = default) {
         if (!File.Exists(ConfigPath))
             return new() { Profiles = new() { ["default"] = new() } };
 
         string json;
 
         try {
-            json = await File.ReadAllTextAsync(ConfigPath);
+            json = await File.ReadAllTextAsync(ConfigPath, ct);
         } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) {
             await Console.Error.WriteLineAsync($"Warning: could not read config at {ConfigPath}: {ex.Message}");
 
@@ -296,7 +296,7 @@ public static class AppConfig {
             }
 
             try {
-                await SaveProfileConfig(result.Config);
+                await SaveProfileConfig(result.Config, ct);
             } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) {
                 await Console.Error.WriteLineAsync($"Warning: could not persist migrated config at {ConfigPath}: {ex.Message}");
             }
@@ -332,15 +332,17 @@ public static class AppConfig {
         return rebuilt is null ? config : config with { Profiles = rebuilt };
     }
 
-    public static async Task SaveProfileConfig(ProfileConfig config) {
+    public static async Task SaveProfileConfig(ProfileConfig config, CancellationToken ct = default) {
         var dir = Path.GetDirectoryName(ConfigPath)!;
         Directory.CreateDirectory(dir);
         var tempPath = $"{ConfigPath}.tmp";
 
         await File.WriteAllBytesAsync(
             tempPath,
-            JsonSerializer.SerializeToUtf8Bytes(config, ProfileConfigJsonContextIndented.Default.ProfileConfig)
+            JsonSerializer.SerializeToUtf8Bytes(config, ProfileConfigJsonContextIndented.Default.ProfileConfig),
+            ct
         );
+        ct.ThrowIfCancellationRequested();
         File.Move(tempPath, ConfigPath, overwrite: true);
     }
 

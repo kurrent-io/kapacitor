@@ -197,6 +197,10 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     AgentPidRecordStore? _pidRecords;
     AgentKillQuarantine? _quarantine;
     OrphanReaper?        _orphanReaper;
+
+    // Tail-of-PTY capture for a FAILED launch, under the same per-daemon record root as the PID
+    // records ({state}/{name}/agents/failed/) — survives worktree teardown for post-mortem.
+    FailedLaunchLog?     _failedLaunchLog;
     string               _daemonId    = "";
     string               _daemonEpoch = "";
 
@@ -338,6 +342,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
         var recordRoot = Path.Combine(
             config.StateDir ?? DaemonLockPaths.Directory, DaemonLockPaths.Sanitize(config.Name));
         _pidRecords  = new AgentPidRecordStore(recordRoot, logger);
+        _failedLaunchLog = new FailedLaunchLog(recordRoot);
         _quarantine  = new AgentKillQuarantine(logger);
         _daemonId    = ComputeDaemonId(config.Name);
         _daemonEpoch = config.DaemonEpoch ?? Guid.NewGuid().ToString("N");
@@ -372,6 +377,9 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
         _server.ReRegisterAgentsHook          =  ReRegisterAgentsAsync;
         _server.FindRepoForRemoteHandler      =  HandleFindRepoForRemote;
         _server.ProbeBorrowSourceHandler      =  HandleProbeBorrowSource;
+        // Task 8: the side-effect-free reviewer-model preflight. Pure resolution over the
+        // advertised resolvers — no subprocess/worktree/config side effects.
+        _server.ResolveReviewerModelHandler   =  req => Task.FromResult(HandleResolveReviewerModel(req));
 
         // Phase B2-b (sequenced-settlement design §4.2.4): the server prunes the resolved-candidates
         // ledger per-entry via AckResolvedCandidates (synchronous void handler); the connect payload
@@ -805,6 +813,12 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
         var agentId       = cmd.AgentId;
         var prompt        = cmd.Prompt;
         var model         = cmd.Model;
+        // A protocol-v3 explicit-reviewer-model launch pins the server-resolved LaunchModel VERBATIM.
+        // Compute the effective model ONCE here so every site that records/reports the model the
+        // process actually runs — the launch log, the runtime start context, and the registered
+        // AgentInstance the server sees via RegisterAgentAsync / AgentRunStarted / every reconnect
+        // re-registration — reads the same value. Null block ⇒ legacy path, cmd.Model unchanged.
+        var effectiveModel = cmd.ExplicitReviewerModel?.LaunchModel ?? model;
         var effort        = cmd.Effort;
         var repoPath      = cmd.RepoPath;
         var tools         = cmd.Tools;
@@ -937,7 +951,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
                 return new CommandOutcome(CommandOutcomeKind.LaunchRejected, agentId, RejectReason: CommandRejectedReason.Semantic);
             }
 
-            LogLaunching(agentId, repoPath, effort ?? "default", model);
+            LogLaunching(agentId, repoPath, effort ?? "default", effectiveModel);
 
             // Review launches base the worktree on the PR head ref so the agent
             // works against the PR's actual state, not the local HEAD.
@@ -1022,7 +1036,11 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
                 SourceRepoPath: repoPath,
                 Worktree: worktree,
                 Prompt: prompt,
-                Model: model,
+                // Task 8: for an explicit-model reviewer launch, launch with the server-pinned
+                // LaunchModel VERBATIM (the launcher passes ctx.Model straight to the argument list —
+                // never recanonicalized). effectiveModel (computed once above) resolves this — the
+                // registered AgentInstance below reads the SAME local so they can never diverge.
+                Model: effectiveModel,
                 Effort: effort,
                 Tools: tools,
                 IsReview: isReview,
@@ -1043,13 +1061,18 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             HostedRuntimeStart start;
 
             // Captured BEFORE the spawn so the transcript-based session-id fallback
-            // (DetectClaudeSessionIdAsync) can filter the shared project dir to files
+            // (DetectSessionIdAsync) can filter the shared project/rollout dir to files
             // written by THIS agent's process, not the user's earlier sessions.
             var spawnedAtUtc = DateTime.UtcNow;
 
             try {
                 start = await runtimeFactory.StartAsync(runtimeCtx, _shutdownCts.Token);
-            } catch (CodexHooksNotInstalledException ex) {
+            } catch (Exception ex) when (ex is CodexHooksNotInstalledException or CodexReviewerMcpIsolationException) {
+                // CodexHooksNotInstalledException: hooks preflight failed in Prepare.
+                // CodexReviewerMcpIsolationException: the review-flow reviewer's inherited MCP
+                // servers could not be authoritatively enumerated, so the recursion guard cannot be
+                // proven — fail the launch CLOSED rather than spawn a reviewer that might inherit a
+                // flow-starting server. Both map to the same cleanup path.
                 await _server.LaunchFailedAsync(agentId, ex.Message);
 
                 // No AgentInstance was created, so CleanupAgentAsync won't run — revoke the reviewer
@@ -1075,7 +1098,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
 
             var cts = new CancellationTokenSource();
 
-            var agent = new AgentInstance(agentId, prompt, model, effort, repoPath, cmd.Vendor, runtime, worktree, cts) {
+            var agent = new AgentInstance(agentId, prompt, effectiveModel, effort, repoPath, cmd.Vendor, runtime, worktree, cts) {
                 McpConfigPath       = mcpConfigPath,
                 CurrentCols         = HostedPtyCols,
                 CurrentRows         = HostedPtyRows,
@@ -1131,25 +1154,30 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             // Start reading output
             _ = ReadAgentOutputAsync(agent);
 
-            // Fallback session-id discovery: the primary link (the spawned Claude's
+            // Fallback session-id discovery: the primary link (the spawned harness's
             // session-start hook POSTing agent_host_id to /hooks/session-start) silently
-            // breaks when the hook can't authenticate (e.g. expired kcap token → 401),
-            // leaving the agent's web chat stuck on "Waiting for session to start..."
-            // forever while the terminal works. The daemon can discover the session id
-            // itself from the transcript file Claude writes and report it over its own
-            // authenticated connection. Claude-vendor only — other vendors have different
-            // transcript layouts. Best-effort background task, cancelled with the agent.
-            if (string.Equals(cmd.Vendor, "claude", StringComparison.OrdinalIgnoreCase)) {
-                _ = DetectClaudeSessionIdAsync(agent, spawnedAtUtc);
-            }
+            // breaks when the hook can't authenticate (e.g. expired kcap token → 401) or
+            // doesn't land in time (an unattended/borrowed reviewer), leaving the agent
+            // without a session id for correlation/display. The daemon can discover the id
+            // itself from the transcript/rollout the harness writes and report it over its
+            // own authenticated connection. Vendor-dispatched — Claude reads its per-worktree
+            // project transcript, Codex reads its ~/.codex/sessions rollout; vendors without a
+            // daemon-side locator no-op (the hook stays their only source). Best-effort
+            // background task, cancelled with the agent — the server converges incarnations on
+            // daemon liveness, so a missing id never blocks a launch.
+            _ = DetectSessionIdAsync(agent, cmd.Vendor, spawnedAtUtc);
 
-            // Report the resolved model so the server can display the real model the agent
-            // is running (the dispatched `model` may be the "default" no-override sentinel,
-            // in which case Codex picks the model from ~/.codex/config.toml). The hub contract
-            // (ReportAgentResolvedModel) is Codex-only and the resolution via CodexConfigToml is
-            // Codex-specific, so gate the call on vendor — Claude/other agents never call the hub.
-            // Best-effort: never let a report failure break the launch.
-            if (string.Equals(cmd.Vendor, "codex", StringComparison.OrdinalIgnoreCase)) {
+            // Report the resolved model so the server can display / validate the real model the agent
+            // is running. Best-effort: never let a report failure break the launch.
+            if (cmd.ExplicitReviewerModel is { } explicitReviewerModel) {
+                // Task 8: a protocol-v3 explicit-model reviewer launch reports the CONCRETE
+                // resolved model via the dedicated ReportExplicitReviewerModelResolved channel, keyed by
+                // the durable LaunchAttemptId, so the server's one-shot waiter can validate + re-price it.
+                ReportExplicitReviewerModel(agentId, cmd.Vendor, explicitReviewerModel, runtimeFactory);
+            } else if (string.Equals(cmd.Vendor, "codex", StringComparison.OrdinalIgnoreCase)) {
+                // Legacy path (name/arity/behavior UNCHANGED): the dispatched `model` may be the "default"
+                // no-override sentinel, in which case Codex resolves the model from ~/.codex/config.toml.
+                // Codex-only — Claude/other agents never call the ReportAgentResolvedModel hub.
                 ReportResolvedModel(agentId, cmd.Vendor, model);
             }
 
@@ -1244,6 +1272,33 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     }
 
     /// <summary>
+    /// Task 8: reports the CONCRETE resolved model for an explicit-model reviewer launch via the
+    /// dedicated <c>ReportExplicitReviewerModelResolved</c> channel. The concrete model is the exact,
+    /// server-pinned <c>LaunchModel</c> the daemon launched with (never a recanonicalized or date-suffixed
+    /// value — for Codex the slug-level equivalence key is date-SENSITIVE, so a date-suffixed
+    /// session-metadata model would drift it; for Claude the family-level key absorbs any date, so the
+    /// launch model's key still matches the pinned family anchor). The reported equivalence key is DERIVED
+    /// from that concrete model via the vendor's own resolver so the server's key-equality validation is
+    /// meaningful. Best-effort: a resolver-absent / unresolvable model or a send failure never breaks the
+    /// launch — the server's report waiter then times out and fails the attempt CLOSED.
+    /// </summary>
+    void ReportExplicitReviewerModel(
+            string agentId, string vendor, ExplicitReviewerModelLaunch block, IHostedAgentRuntimeFactory runtimeFactory) {
+        try {
+            var report = BuildExplicitReviewerModelReport(agentId, vendor, block, runtimeFactory.ReviewerModelResolver);
+
+            if (report is null) {
+                LogExplicitReviewerModelUnreportable(agentId, vendor, block.LaunchModel);
+                return;
+            }
+
+            _ = _server.ReportExplicitReviewerModelResolvedAsync(report);
+        } catch (Exception ex) {
+            LogReportResolvedModelFailed(ex, agentId);
+        }
+    }
+
+    /// <summary>
     /// Reads the top-level <c>model = "…"</c> from <c>~/.codex/config.toml</c> (honouring
     /// <c>CODEX_HOME</c> via <see cref="CodexPaths"/>); falls back to <paramref name="fallback"/>
     /// when the file is missing/unreadable or has no top-level model key.
@@ -1310,6 +1365,15 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
         // until the whole daemon exits.
         using var sendCts = CancellationTokenSource.CreateLinkedTokenSource(agent.ReadCts.Token, _shutdownCts.Token);
 
+        // An UNATTENDED reviewer (bypassPermissions, no human present) can wedge forever on a
+        // one-time consent/trust dialog — the original silent failure. Watch its PTY stream for the
+        // known banners and fail the launch fast with an actionable reason instead of dying at the
+        // server's session-id timeout. Only for unattended review-flow agents: an interactive agent's
+        // human viewer can dismiss the prompt themselves, so we must not fail-fast for them.
+        var dialogDetector = agent is { Kind: LaunchKind.ReviewFlow, Runtime.EmitsTerminalOutput: true }
+            ? new ConsentDialogDetector()
+            : null;
+
         try {
             await foreach (var data in agent.Runtime.ReadOutputAsync(agent.ReadCts.Token)) {
                 agent.LastOutputAt      = DateTime.UtcNow;
@@ -1318,6 +1382,20 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
                 if (agent.Status == "Starting") {
                     agent.Status = "Running";
                     if (!agent.IsPrivate) _ = _server.AgentStatusChangedAsync(agent.Id, "Running", agent.SessionId);
+                }
+
+                // Consent/trust dialogs are a PRE-SESSION concern: they render once at startup, before
+                // any session exists. Once the session is live (SessionId resolved from the transcript
+                // by DetectSessionIdAsync) the dialog phase is over — stop scanning so ordinary
+                // reviewer/tool output that merely quotes a banner phrase (e.g. a reviewer reading the
+                // detector's own source) can't latch a false wedge and kill a healthy reviewer.
+                if (dialogDetector is not null) {
+                    if (agent.SessionId is not null) {
+                        dialogDetector = null; // session live — release the detector + its window
+                    } else if (dialogDetector.Observe(data) is { } wedgeReason) {
+                        await FailWedgedLaunchAsync(agent, data, wedgeReason);
+                        return; // stop reading — the finally runs finalize + cleanup (kills the wedged PTY)
+                    }
                 }
 
                 // Append to the replay buffer AND fan out to local sinks atomically under
@@ -1365,6 +1443,51 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
         }
     }
 
+    /// <summary>
+    /// Fails a launch that the PTY dialog detector caught wedged on a consent/trust dialog: reports
+    /// an actionable <c>LaunchFailed</c> (so the server surfaces it instead of timing out silently),
+    /// persists the terminal tail for post-mortem, terminates the wedged (still-alive) process, and
+    /// cancels the read loop so its finally runs the normal finalize + cleanup. Sets Status="Failed"
+    /// FIRST so FinalizeAgentRunAsync skips its own startup-failure classification (no double report).
+    /// </summary>
+    async Task FailWedgedLaunchAsync(AgentInstance agent, byte[] triggeringChunk, string reason) {
+        LogConsentDialogWedge(agent.Id, reason);
+
+        // The detector inspects a chunk BEFORE the read loop appends it to OutputBuffer, so append the
+        // triggering chunk now — otherwise a banner delivered in the first chunk (the common case) is
+        // absent from the persisted tail, defeating the very capture this log exists to preserve.
+        // TerminalOutputBuffer.Append is self-synchronized; the read loop has stopped feeding it.
+        agent.OutputBuffer.Append(triggeringChunk);
+
+        // Capture the banner before termination/cleanup discards the buffer.
+        PersistFailedLaunchLog(agent, reason);
+
+        agent.Status           = "Failed";
+        agent.PendingEndReason = "consent_dialog_wedge";
+
+        if (!agent.IsPrivate) {
+            _ = _server.LaunchFailedAsync(agent.Id, reason);
+            _ = _server.AgentStatusChangedAsync(agent.Id, "Failed", agent.SessionId);
+            _ = _server.AppendAgentRunEventAsync(agent.Id, new AgentRunStopped("failed", null));
+        }
+
+        // The wedged process is still ALIVE on the dialog (unlike an ordinary startup failure, which
+        // has already exited) — actively terminate it so it can't hold a daemon slot.
+        try { await agent.Runtime.TerminateAsync(TimeSpan.FromSeconds(5)); } catch (Exception ex) { LogStopError(ex, agent.Id); }
+
+        // Cancel the read loop's token so the fallback session-id poll (DetectSessionIdAsync)
+        // stops too; the loop itself exits via the `return` at the call site.
+        try { await agent.ReadCts.CancelAsync(); } catch { /* best-effort */ }
+    }
+
+    /// <summary>Best-effort: persist the tail of an agent's PTY output to the retained failed-launch
+    /// log. Never throws (FailedLaunchLog swallows I/O errors) — a diagnostic write must not disturb
+    /// teardown.</summary>
+    void PersistFailedLaunchLog(AgentInstance agent, string reason) {
+        var path = _failedLaunchLog?.Persist(agent.Id, agent.OutputBuffer.Snapshot(), reason);
+        if (path is not null) LogFailedLaunchCaptured(agent.Id, path);
+    }
+
     async Task FinalizeAgentRunAsync(AgentInstance agent) {
         try {
             // PTY output can end before waitpid reports the child as exited.
@@ -1410,6 +1533,10 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
                     status = "Failed";
 
                     LogStartupFailed(agent.Id, exitCode, reason);
+
+                    // Persist the PTY tail before cleanup drops the in-memory buffer and removes the
+                    // worktree, so a startup failure is diagnosable post-mortem (see FailedLaunchLog).
+                    PersistFailedLaunchLog(agent, reason);
 
                     if (!agent.IsPrivate) _ = _server.LaunchFailedAsync(agent.Id, reason);
                 }
@@ -1848,6 +1975,95 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     }
 
     /// <summary>
+    /// Task 8: handles the server's <c>ResolveReviewerModel</c> client-result invocation — the
+    /// side-effect-free reviewer-model preflight. PURE resolution: it consults the SELECTED vendor's
+    /// advertised resolver first (via the shared cross-vendor coordinator, which inspects the OTHER
+    /// advertised unattended resolvers only after the selected one rejects, to name a mismatch vendor)
+    /// and NEVER spawns a subprocess, creates a worktree, or writes config. Echoes the exact
+    /// <c>RequestId</c>/<c>Vendor</c>; returns the daemon's own RPC protocol version so a protocol drift
+    /// fails the preflight closed; and maps the daemon-internal disposition set onto the server's
+    /// accepted/unavailable/invalid wire dispositions (a vendor mismatch becomes an <c>unavailable</c>
+    /// carrying <c>RecognizedVendor</c>).
+    /// </summary>
+    ReviewerModelResolveResponseV1 HandleResolveReviewerModel(ReviewerModelResolveRequestV1 req) {
+        // The ADVERTISED unattended resolvers — the same predicate DaemonRunner.ComputeUnattendedVendor-
+        // Capabilities gates the capability on (installed + unattended-certified + resolver present).
+        // Vendor-neutral: we read each factory's own resolver, never a central vendor→model table.
+        var advertised = _runtimeFactories.Values
+            .Where(f => f.IsAvailable() && f.SupportsUnattended && f.ReviewerModelResolver is not null)
+            .Select(f => f.ReviewerModelResolver!)
+            .ToList();
+
+        // The coordinator resolves on the SELECTED vendor's resolver first and inspects the OTHER
+        // advertised resolvers only after the selected one rejects (to name a mismatch vendor).
+        var resolution = ReviewerModelResolvers.Resolve(req.Vendor, req.RequestedModel, advertised);
+
+        // Echo the exact RequestId + Vendor (the server rejects a mismatch), and return THIS daemon's own
+        // RPC protocol version — never an echo of the request's expectation — so a protocol drift on
+        // either side is detected and fails the preflight CLOSED.
+        var response = new ReviewerModelResolveResponseV1(
+            req.RequestId, req.Vendor, ReviewerModelResolvers.RpcProtocolVersion, Disposition: "unavailable");
+
+        return resolution.Disposition switch {
+            ReviewerModelDisposition.Accept => response with {
+                Disposition             = "accepted",
+                CanonicalRequestedModel = resolution.CanonicalRequestedModel,
+                LaunchModel             = resolution.LaunchModel,
+                EquivalenceKey          = resolution.EquivalenceKey,
+            },
+            // A cross-vendor recognition maps to unavailable with the ordinal-first OTHER vendor named;
+            // the server re-validates RecognizedVendor against what this daemon currently advertises.
+            ReviewerModelDisposition.VendorMismatch => response with {
+                Disposition      = "unavailable",
+                RecognizedVendor = resolution.DiagnosticCode,
+            },
+            ReviewerModelDisposition.Invalid => response with {
+                Disposition    = "invalid",
+                DiagnosticCode = resolution.DiagnosticCode,
+            },
+            // Unavailable, or any unexpected disposition — fail closed as plain unavailable.
+            _ => response,
+        };
+    }
+
+    /// <summary>
+    /// Task 8: builds the post-launch <see cref="ExplicitReviewerModelResolvedV1"/> report for an
+    /// explicit-model reviewer launch, or <see langword="null"/> when it cannot be built (no resolver for
+    /// the vendor, or the launch model no longer resolves — both fail the report closed rather than send
+    /// an unvalidatable one). The reported <c>EquivalenceKey</c> is DERIVED from the concrete launch model
+    /// via the SAME resolver (so the server's key-equality validation is meaningful, not a trivial echo),
+    /// and the <c>PolicyVersion</c> is the resolver's own per-vendor policy version. Pure/static so it is
+    /// unit-testable in isolation from the launch gauntlet.
+    /// </summary>
+    static ExplicitReviewerModelResolvedV1? BuildExplicitReviewerModelReport(
+            string agentId, string vendor, ExplicitReviewerModelLaunch block, IReviewerModelResolver? resolver) {
+        // The explicit path is gated by the server on the vendor advertising a resolver — defensively,
+        // no resolver means we can neither derive nor validate a key: fail the report CLOSED.
+        if (resolver is null) return null;
+
+        // The concrete model the daemon launched with is the server-pinned LaunchModel VERBATIM. For
+        // Codex this is load-bearing: its slug-level equivalence key is date-SENSITIVE, so reporting a
+        // date-suffixed session-metadata model would drift the key and fail the server's echo
+        // validation (see the Codex_DatedSlug regression test). For Claude the family-level key absorbs
+        // any date, so the launch model's key still matches the pinned family anchor.
+        var resolution = resolver.Resolve(block.LaunchModel);
+
+        // Derive the equivalence key from that concrete model via the SAME resolver — so the server's
+        // key-equality check is meaningful, not a trivial echo of the pinned block. A launch model that
+        // no longer anchored-accepts (a policy drift) can't produce a valid report: fail closed.
+        if (resolution.Disposition != ReviewerModelDisposition.Accept || resolution.EquivalenceKey is null)
+            return null;
+
+        return new ExplicitReviewerModelResolvedV1(
+            AgentId:         agentId,
+            LaunchAttemptId: block.LaunchAttemptId,
+            Vendor:          vendor,
+            ResolvedModel:   block.LaunchModel,          // verbatim — never recanonicalized/date-suffixed
+            PolicyVersion:   resolver.PolicyVersion,     // the per-vendor resolver policy version
+            EquivalenceKey:  resolution.EquivalenceKey); // DERIVED via the resolver; equals the pinned key
+    }
+
+    /// <summary>
     /// Registers an agent with the server exactly as a UI-launched agent: AgentRegistered +
     /// terminal dims + AgentRunStarted, then persists/announces the repo path. No-ops for a
     /// PrivateLocal agent. Shared by the hosted launch and the registered local launch so the
@@ -2159,31 +2375,52 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     static readonly TimeSpan SessionIdPollTimeout  = TimeSpan.FromMinutes(3);
 
     /// <summary>
-    /// Background fallback that discovers the spawned Claude's session id from its transcript
-    /// file and reports it to the server, for when the session-start hook (the primary source
-    /// of the agent↔session link) fails — e.g. an expired kcap token means every /hooks POST
-    /// 401s, and the server would otherwise never learn the session id (its recovery path reads
-    /// an AgentRun heartbeat that only the same hook handler writes).
+    /// Vendor-dispatched, best-effort background fallback that discovers a spawned agent's
+    /// session id from the transcript/rollout its harness writes and reports it to the server,
+    /// for when the session-start hook (the primary source of the agent↔session link) fails or
+    /// doesn't land in time — e.g. an expired kcap token 401s every /hooks POST, or an
+    /// unattended/borrowed reviewer completes before the hook correlates. The server no longer
+    /// gates incarnation completion on this id (it converges on daemon liveness), so this only
+    /// resolves the id lazily for correlation/display and never blocks a launch.
     ///
-    /// Polls the Claude project dir for the agent's worktree (symlinked to the SOURCE repo's
-    /// project dir, so it's shared with the user's own sessions — see
-    /// <see cref="SessionTranscriptLocator"/> for how candidates are disambiguated by cwd).
-    /// On a match it sets <see cref="AgentInstance.SessionId"/> and best-effort reports via
-    /// AgentStatusChanged (live registry link) AND an <see cref="AgentRunHeartbeat"/> (so the
-    /// server's restart-recovery FindAgentSessionIdAsync path works too). Once SessionId is
-    /// set, the regular 30 s heartbeat loop and reconnect re-registration keep re-sending it,
-    /// so a transient report failure here self-heals. Stops when the id is known by other
-    /// means, the agent exits (ReadCts), or the daemon shuts down. Never breaks the launch.
+    /// Claude reads its per-worktree Claude project dir (symlinked to the SOURCE repo's, shared
+    /// with the user's own sessions — <see cref="SessionTranscriptLocator"/> disambiguates by
+    /// cwd). Codex reads its <c>~/.codex/sessions</c> rollout tree (shared across all the user's
+    /// Codex sessions — <see cref="CodexSessionRolloutLocator"/> disambiguates by
+    /// <c>payload.cwd</c> + spawn time). A vendor with no daemon-side locator is a no-op: the
+    /// hook stays its only session-id source.
     /// </summary>
-    async Task DetectClaudeSessionIdAsync(AgentInstance agent, DateTime spawnedAtUtc) {
-        try {
-            var projectDir = ClaudePaths.ProjectDir(agent.Worktree.Path);
-            var deadline   = DateTime.UtcNow + SessionIdPollTimeout;
+    async Task DetectSessionIdAsync(AgentInstance agent, string vendor, DateTime spawnedAtUtc) {
+        // The locator scans a shared dir, so a foreign-session file is cached in ruledOut and
+        // never re-opened. A cwd is fixed, so a definitive non-match is permanent; a file with
+        // no cwd yet (still being written) is NOT cached, so the agent's own freshly-created
+        // transcript/rollout is always re-checked.
+        Func<ISet<string>, string?>? locate = vendor.ToLowerInvariant() switch {
+            "claude" => ruledOut => SessionTranscriptLocator.TryLocate(
+                ClaudePaths.ProjectDir(agent.Worktree.Path), agent.Worktree.Path, spawnedAtUtc, ruledOut),
+            "codex" => ruledOut => CodexSessionRolloutLocator.TryLocate(
+                CodexPaths.Sessions, agent.Worktree.Path, spawnedAtUtc, ruledOut),
+            _ => null,
+        };
 
-            // Transcripts confirmed to belong to another session (a foreign cwd) are remembered
-            // here so we don't re-open them every 2 s tick. A session's cwd never changes, so a
-            // definitive non-match is permanent; files still being written (no cwd yet) are NOT
-            // added, so the agent's own freshly-created transcript is always re-checked.
+        if (locate is null) return;
+
+        await PollForSessionIdAsync(agent, locate);
+    }
+
+    /// <summary>
+    /// Shared poll loop for <see cref="DetectSessionIdAsync"/>. Polls <paramref name="locate"/>
+    /// until it resolves a session id, the id is set by other means (hook succeeded), the agent
+    /// exits (ReadCts), the daemon shuts down, or the timeout elapses. On a match it sets
+    /// <see cref="AgentInstance.SessionId"/> and best-effort reports via AgentStatusChanged (live
+    /// registry link) AND an <see cref="AgentRunHeartbeat"/> (so the server's restart-recovery
+    /// FindAgentSessionIdAsync path works too). Once SessionId is set, the 30 s heartbeat loop and
+    /// reconnect re-registration keep re-sending it, so a transient report failure self-heals.
+    /// Never breaks the launch.
+    /// </summary>
+    async Task PollForSessionIdAsync(AgentInstance agent, Func<ISet<string>, string?> locate) {
+        try {
+            var deadline = DateTime.UtcNow + SessionIdPollTimeout;
             var ruledOut = new HashSet<string>();
 
             using var cts = CancellationTokenSource.CreateLinkedTokenSource(agent.ReadCts.Token, _shutdownCts.Token);
@@ -2191,7 +2428,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             while (DateTime.UtcNow < deadline) {
                 if (agent.SessionId is not null) return; // linked by other means (hook succeeded)
 
-                if (SessionTranscriptLocator.TryLocate(projectDir, agent.Worktree.Path, spawnedAtUtc, ruledOut) is { } sessionId) {
+                if (locate(ruledOut) is { } sessionId) {
                     agent.SessionId ??= sessionId;
 
                     LogSessionIdDetected(agent.Id, sessionId);
@@ -2465,6 +2702,9 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     [LoggerMessage(Level = LogLevel.Information, Message = "Stopping agent {AgentId}")]
     partial void LogStopping(string agentId);
 
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Could not build the explicit reviewer-model resolved report for agent {AgentId} (vendor {Vendor}, launch model {LaunchModel}) — no resolver or model no longer resolves; skipping the report (the server will fail the attempt closed)")]
+    partial void LogExplicitReviewerModelUnreportable(string agentId, string vendor, string launchModel);
+
     [LoggerMessage(Level = LogLevel.Warning, Message = "Failed to download launch attachments for agent {AgentId} (continuing)")]
     partial void LogAttachmentDownloadFailed(Exception ex, string agentId);
 
@@ -2491,6 +2731,12 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Agent {AgentId} failed during startup (exit code {ExitCode}): {Reason}")]
     partial void LogStartupFailed(string agentId, int? exitCode, string reason);
+
+    [LoggerMessage(Level = LogLevel.Error, Message = "Agent {AgentId} wedged on an unattended consent/trust dialog — failing the launch fast: {Reason}")]
+    partial void LogConsentDialogWedge(string agentId, string reason);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Captured failed-launch terminal tail for agent {AgentId} at {Path}")]
+    partial void LogFailedLaunchCaptured(string agentId, string path);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Failed to download attachment {Id}: {Status}")]
     partial void LogAttachmentNotFound(string id, System.Net.HttpStatusCode status);
@@ -2579,6 +2825,14 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     /// </summary>
     internal Task HandleLaunchAgentForTest(LaunchAgentCommand cmd) => HandleLaunchAgent(cmd);
 
+    /// <summary>Test-only: drive the per-agent PTY read loop directly (mirrors the fire-and-forget
+    /// <c>_ = ReadAgentOutputAsync(agent)</c> in HandleLaunchAgent) so a seeded agent's consent-dialog
+    /// fail-fast + tail-capture can be exercised without the full ReviewFlow launch gauntlet.</summary>
+    internal Task ReadAgentOutputForTest(AgentInstance agent) => ReadAgentOutputAsync(agent);
+
+    /// <summary>Test-only: the retained failed-launch log root, for asserting a capture landed.</summary>
+    internal FailedLaunchLog? FailedLaunchLogForTest => _failedLaunchLog;
+
     /// <summary>Test-only: register a pre-built agent so cleanup/lifecycle can be driven directly.</summary>
     internal void RegisterAgentForTest(AgentInstance agent) => _agents[agent.Id] = agent;
 
@@ -2610,6 +2864,15 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
 
     /// <summary>Test-only entry point to the private probe-borrow-source handler.</summary>
     internal Task<BorrowProbeResult> HandleProbeBorrowSourceForTest(string path) => HandleProbeBorrowSource(path);
+
+    /// <summary>Task 8: test-only entry point to the private reviewer-model preflight handler.</summary>
+    internal ReviewerModelResolveResponseV1 HandleResolveReviewerModelForTest(ReviewerModelResolveRequestV1 req) =>
+        HandleResolveReviewerModel(req);
+
+    /// <summary>Task 8: test-only entry point to the pure explicit-model resolved-report builder.</summary>
+    internal static ExplicitReviewerModelResolvedV1? BuildExplicitReviewerModelReportForTest(
+            string agentId, string vendor, ExplicitReviewerModelLaunch block, IReviewerModelResolver? resolver) =>
+        BuildExplicitReviewerModelReport(agentId, vendor, block, resolver);
 
     internal Task RegisterAgentForTestAsync(AgentInstance agent) => RegisterAgentAsync(agent);
     internal Task ReRegisterAgentsForTestAsync() => ReRegisterAgentsAsync();

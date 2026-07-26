@@ -26,7 +26,7 @@ public class JsonMcpConfigWriterTests {
 
         await Assert.That(change).IsEqualTo(JsonMcpConfigWriter.Change.Updated);
         var servers = (JsonObject)Read(path)["mcpServers"]!;
-        await Assert.That(servers.Count).IsEqualTo(5);
+        await Assert.That(servers.Count).IsEqualTo(KcapMcpServers.All.Count);
         await Assert.That((string)servers["kcap-review"]!["command"]!).IsEqualTo("kcap");
         await Assert.That(servers["kcap-review"]!["args"]!.AsArray().Count).IsEqualTo(2);
     }

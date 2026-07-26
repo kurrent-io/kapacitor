@@ -141,6 +141,7 @@ public class PluginCommandOpenCodeTests {
         await Assert.That(mcp.Select(kv => kv.Key)).Contains("kcap-sessions");
         await Assert.That(mcp.Select(kv => kv.Key)).Contains("kcap-flows");
         await Assert.That(mcp.Select(kv => kv.Key)).Contains("kcap-memory");
+        await Assert.That(mcp.Select(kv => kv.Key)).Contains("kcap-analytics");
     }
 
     [Test]

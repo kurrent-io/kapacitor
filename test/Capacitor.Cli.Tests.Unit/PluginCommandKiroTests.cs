@@ -45,6 +45,8 @@ public class PluginCommandKiroTests {
         await Assert.That(servers.Select(kv => kv.Key)).Contains("kcap-sessions");
         await Assert.That(servers.Select(kv => kv.Key)).Contains("kcap-flows");
         await Assert.That(servers.Select(kv => kv.Key)).Contains("kcap-memory");
+        await Assert.That(servers.Select(kv => kv.Key)).Contains("kcap-analytics");
+        await Assert.That(servers["kcap-analytics"]!["trust"]).IsNull();                    // Kiro has no config trust knob
         await Assert.That(servers["my-tool"]).IsNotNull();                                  // user server preserved
         await Assert.That(servers["my-tool"]!["autoApprove"]!.AsArray().Count).IsEqualTo(1); // its autoApprove preserved
     }

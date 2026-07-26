@@ -94,18 +94,18 @@ public class McpMarkerTests {
         await Assert.That(m.Owned(equiv)).Contains("kcap-review"); // equivalent path form still recognized
     }
 
+    // Exercises the REAL central-path resolution (no per-config markerPathFor override). The central
+    // root is the assembly-pinned throwaway temp dir (McpMarkerGlobalSetup), never the real
+    // ~/.kcap/mcp-markers, so this touches no shared real state — no cleanup or serialization needed
+    // (a/b resolve to distinct config-hash files).
     [Test]
     public async Task Two_configs_in_same_dir_have_independent_ownership() {
         var dir = Directory.CreateTempSubdirectory("kcap-marker-indep-").FullName;
-        var m = new McpMarker("test"); // real MarkerPath resolution (no override)
+        var m = new McpMarker("test"); // real MarkerPath resolution → central root under the pinned temp
         var a = Path.Combine(dir, "a.json");
         var b = Path.Combine(dir, "b.json");
-        try {
-            m.Record(a, ["kcap-review"]);
-            await Assert.That(m.Owned(a)).Contains("kcap-review"); // a owns it
-            await Assert.That(m.Owned(b)).IsEmpty();               // b is independent of a
-        } finally {
-            m.Clear(a); // remove the central-state marker this test created under ~/.kcap
-        }
+        m.Record(a, ["kcap-review"]);
+        await Assert.That(m.Owned(a)).Contains("kcap-review"); // a owns it
+        await Assert.That(m.Owned(b)).IsEmpty();               // b is independent of a
     }
 }

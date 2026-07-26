@@ -610,12 +610,20 @@ public static partial class DaemonRunner {
             var borrowedSupported = vendor == "cursor"
                 ? factory.SupportsBorrowedReviewFlow && cursorArtifact is not null
                 : factory.SupportsBorrowedReviewFlow;
+            // Reviewer MODEL override support: advertised true ONLY when this vendor — already known
+            // installed + unattended-certified by ComputeUnattendedVendors above — also carries a
+            // runtime-owned resolver. Vendor-neutral: we read the factory's resolver + its policy
+            // version, never a vendor→model table. A vendor with no resolver advertises false/null,
+            // keeping its vendor-only unattended support intact.
+            var modelResolver = factory.ReviewerModelResolver;
             capabilities.Add(new(
                 vendor,
                 string.IsNullOrEmpty(cliPath) ? null : ProbeCliVersion(cliPath),
                 policyVersion,
                 borrowedSupported,
-                borrowedSupported ? factory.BorrowedReviewContainment : null));
+                borrowedSupported ? factory.BorrowedReviewContainment : null,
+                SupportsReviewerModelResolution: modelResolver is not null,
+                ReviewerModelPolicyVersion: modelResolver?.PolicyVersion));
         }
         return capabilities;
     }

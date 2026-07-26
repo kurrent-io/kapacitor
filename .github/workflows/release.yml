@@ -29,8 +29,142 @@ jobs:
           wait-interval: 15
           checks-discovery-timeout: 300
 
+  # Guards against a moved/re-cut release tag: npm never lets a version
+  # republish, so this workflow only re-runs for an already-published version
+  # if the tag was deleted+recreated (or force-moved) onto a different commit
+  # — the failure mode that lets a published npm artifact silently diverge
+  # from its git tag. Runs standalone (no `needs`) so it fails in seconds,
+  # before CI polling and the six-runner build matrix spend time/money on a
+  # release that's refused anyway.
+  verify-release-immutable:
+    name: Refuse a moved or re-cut release tag
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+
+      - name: Extract version from tag
+        id: version
+        shell: bash
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Refuse to re-publish or re-point an already-released version
+        shell: bash
+        run: |
+          set -euo pipefail
+          PKG="@kurrent/kcap"
+          VERSION="${{ steps.version.outputs.VERSION }}"
+          THIS_SHA="${{ github.sha }}"
+
+          echo "Checking npm registry for an existing $PKG@$VERSION ..."
+
+          # Queries one `npm view` field for "$PKG@$VERSION", retrying on
+          # transient failures. Prints "FOUND:<value>" (value may be empty
+          # for a field that predates this guard) or "NOTFOUND" (npm's
+          # definitive E404) and returns 0 for either. On a genuine failure
+          # (network/registry/auth) after retries, it returns 1 — the caller
+          # MUST treat that as ambiguous and refuse to release, NEVER as
+          # "not found", so an ignored/misread npm error can't masquerade as
+          # "brand-new version, proceed".
+          npm_view_field() {
+            local field="$1" attempts=3 delay=3 i out err rc errfile
+            for ((i = 1; i <= attempts; i++)); do
+              errfile="$(mktemp)"
+              if out=$(npm view "$PKG@$VERSION" "$field" --registry https://registry.npmjs.org 2>"$errfile"); then
+                rc=0
+              else
+                rc=$?
+              fi
+              err="$(cat "$errfile")"
+              rm -f "$errfile"
+
+              if [ "$rc" -eq 0 ]; then
+                echo "FOUND:${out}"
+                return 0
+              fi
+
+              # npm's own "this doesn't exist" signal, across the exit-code
+              # conventions different npm versions use for it (some report
+              # E404 in stderr text even for a plain field-not-found).
+              if printf '%s' "$err" | grep -qiE '(^|[^0-9])E404([^0-9]|$)|404 Not Found'; then
+                echo "NOTFOUND"
+                return 0
+              fi
+
+              echo "npm view '$field' attempt $i/$attempts failed (exit $rc): ${err:-<no output>}" >&2
+              if [ "$i" -lt "$attempts" ]; then
+                sleep "$delay"
+              fi
+            done
+
+            echo "::error::npm view '$field' for $PKG@$VERSION failed after $attempts attempts: ${err:-<no output>}"
+            return 1
+          }
+
+          query_status="ok"
+          published_sha=""
+
+          # kcapReleaseCommit is the explicit stamp the sibling publish step
+          # writes into package.json — source of truth for which commit an
+          # npm version was built from (matches MinVer's build-metadata
+          # suffix baked into the binary; both derive from the same tag's
+          # checked-out HEAD).
+          if result=$(npm_view_field kcapReleaseCommit); then
+            if [ "$result" != "NOTFOUND" ]; then
+              published_sha="${result#FOUND:}"
+
+              # Fallback for pre-guard versions: npm auto-records `gitHead`
+              # on every publish from a git checkout, so it already carries
+              # the same info for older releases.
+              if [ -z "$published_sha" ]; then
+                if result=$(npm_view_field gitHead); then
+                  if [ "$result" != "NOTFOUND" ]; then
+                    published_sha="${result#FOUND:}"
+                  fi
+                else
+                  query_status="error"
+                fi
+              fi
+            fi
+          else
+            query_status="error"
+          fi
+
+          # Pure pass/fail decision lives in a standalone, unit-tested script
+          # (scripts/verify-release-not-recut.sh + .test.sh) — this step only
+          # does the registry lookup, retries, and CI-specific error
+          # formatting.
+          set +e
+          verdict=$(bash scripts/verify-release-not-recut.sh "$THIS_SHA" "$published_sha" "$query_status")
+          rc=$?
+          set -e
+
+          if [ "$rc" -eq 0 ]; then
+            echo "No existing $PKG@$VERSION on npm — first-time publish for this version, proceeding."
+            exit 0
+          fi
+
+          if [ "$verdict" = "error" ]; then
+            echo "::error::Could not verify release immutability against npm for $PKG@$VERSION: the registry lookup did not complete successfully after retries. Refusing to publish rather than risk silently letting a moved/re-cut tag through."
+            exit 1
+          fi
+
+          echo "::error::$PKG@$VERSION is already published on npm (built from commit $published_sha)."
+          if [ "$verdict" = "republish" ]; then
+            echo "::error::This workflow run is for the SAME commit. npm forbids republishing an existing version even unchanged — if this is a retry of a partially-failed release, cut a NEW version instead of re-running this tag."
+          else
+            echo "::error::This workflow run is building from a DIFFERENT commit ($THIS_SHA)."
+            echo "::error::That means tag ${GITHUB_REF_NAME} has been moved or re-cut after ${PKG}@${VERSION}'s npm artifact was already published from commit $published_sha — the exact failure mode that let a published binary silently diverge from what its tag claimed. Refusing to publish."
+            echo "::error::Cut a NEW version for this commit instead of re-pointing an already-released tag."
+          fi
+          exit 1
+
   build:
-    needs: ci
+    needs: [ci, verify-release-immutable]
     strategy:
       fail-fast: false
       matrix:
@@ -175,13 +309,39 @@ jobs:
           # a JIT run instead of the AOT one; acceptable here since this is a load/call smoke,
           # not a perf or AOT-compatibility check (AOT publish itself is already exercised by
           # "Publish daemon AOT binary" above).
-          dotnet run --project test/Capacitor.Cli.Tests.Unit.NativeTestHost -r ${{ matrix.rid }} -- spawn-dummy > smoke-output.txt 2>&1 &
+          #
+          # A musl RID's build output (musl-linked apphost and shim) cannot execute on a glibc
+          # runner at all, so the load-and-call smoke only runs where the host libc matches the
+          # RID: linux-musl-x64 runs it inside its Alpine container; linux-musl-arm64 (glibc
+          # arm64 runner, no container) gets the machine-type check above only.
+          if [[ "${{ matrix.rid }}" == *musl* && ! -f /etc/alpine-release ]]; then
+            echo "Skipping load-and-call smoke: musl build output cannot execute on a glibc host"
+            exit 0
+          fi
+
+          # Build synchronously first: a cold `dotnet run` (restore + build) takes far longer
+          # than any fixed grace period, so the backgrounded run below must only have to start
+          # the already-built host.
+          dotnet build test/Capacitor.Cli.Tests.Unit.NativeTestHost -r ${{ matrix.rid }} -p:MinVerVersionOverride=${{ steps.version.outputs.VERSION }}
+          dotnet run --no-build --project test/Capacitor.Cli.Tests.Unit.NativeTestHost -r ${{ matrix.rid }} -- spawn-dummy > smoke-output.txt 2>&1 &
           HOST_PID=$!
-          sleep 3
+
+          # spawn-dummy blocks forever by design (it's the PDEATHSIG test host), so poll for
+          # the PID= line rather than sleeping a fixed interval, then tear the host down with a
+          # SIGKILL fallback — this step must never hang on a host that ignores SIGTERM.
+          ok=0
+          for _ in $(seq 1 60); do
+            if grep -q '^PID=' smoke-output.txt 2>/dev/null; then ok=1; break; fi
+            if ! kill -0 "$HOST_PID" 2>/dev/null; then break; fi
+            sleep 1
+          done
+          pkill -TERM -P "$HOST_PID" 2>/dev/null || true
           kill "$HOST_PID" 2>/dev/null || true
+          sleep 1
+          kill -9 "$HOST_PID" 2>/dev/null || true
           wait "$HOST_PID" 2>/dev/null || true
           cat smoke-output.txt
-          if ! grep -q '^PID=' smoke-output.txt; then
+          if [[ "$ok" -ne 1 ]]; then
             echo "::error::load-and-call smoke did not see a PID= line from spawn-dummy on ${{ matrix.rid }}"
             exit 1
           fi
@@ -368,6 +528,15 @@ jobs:
 
             cd "$dir"
             npm version "$VERSION" --no-git-tag-version --allow-same-version
+
+            # Stamp the exact commit this tag points to into the published
+            # package metadata, so the artifact self-describes the commit it
+            # was built from — checked by "Refuse a moved or re-cut release
+            # tag" above on every future release of this package. Same
+            # source of truth (github.sha) as the +<sha> build metadata
+            # MinVer bakes into the binary's AssemblyInformationalVersion.
+            npm pkg set kcapReleaseCommit="${{ github.sha }}" kcapReleaseTag="${{ github.ref_name }}"
+
             npm publish --access public --tag "${{ steps.disttag.outputs.TAG }}"
             cd -
           done
@@ -399,6 +568,7 @@ jobs:
             }
             require('fs').writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
           "
+          npm pkg set kcapReleaseCommit="${{ github.sha }}" kcapReleaseTag="${{ github.ref_name }}"
           npm publish --access public --tag "${{ steps.disttag.outputs.TAG }}"
 
   github-release:

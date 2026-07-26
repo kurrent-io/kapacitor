@@ -41,6 +41,15 @@ internal interface IHostedAgentRuntimeFactory {
     bool BorrowedReviewRequiresIndependentSnapshot => false;
 
     /// <summary>
+    /// This runtime's reviewer MODEL override resolver, or <see langword="null"/> when the vendor has
+    /// no authoritative resolver yet. PTY factories delegate to their launcher-owned policy; ACP /
+    /// multi-provider factories return <see langword="null"/> (which does not remove their existing
+    /// vendor-only unattended support). Consumed at startup to advertise
+    /// <c>UnattendedVendorCapability.SupportsReviewerModelResolution</c>.
+    /// </summary>
+    IReviewerModelResolver? ReviewerModelResolver => null;
+
+    /// <summary>
     /// Prepares and starts the hosted runtime for this launch. Throws
     /// <see cref="CodexHooksNotInstalledException"/> for the orchestrator to map to a
     /// <c>LaunchFailed</c> with worktree cleanup; any other exception is likewise mapped to

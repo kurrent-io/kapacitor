@@ -8,30 +8,26 @@ namespace Capacitor.Cli.Tests.Integration;
 
 /// <summary>
 /// Exercises <see cref="ClaudeHookCommand.Handle"/> end-to-end against a
-/// WireMock server and captures stdout to validate the SessionStart
-/// <c>hookSpecificOutput</c> envelope shape — including the
-/// single-envelope invariant when both <c>top_clusters</c> and
-/// <c>version</c> are present.
+/// WireMock server and validates the SessionStart <c>hookSpecificOutput</c>
+/// envelope shape — including the single-envelope invariant when both
+/// <c>top_clusters</c> and <c>version</c> are present.
 ///
-/// Test payloads deliberately OMIT <c>transcript_path</c> so the
-/// session-start path short-circuits before
-/// <c>WatcherManager.EnsureWatcherRunning</c>; spawning the watcher's
-/// child process corrupts TUnit's <c>Console</c> capture (see
-/// <c>test/Capacitor.Cli.Tests.Unit/Codex/CodexHookCommandTests.cs:47-53</c>).
+/// Stdout is captured via an explicit <see cref="TextWriter"/> passed to
+/// <c>Handle</c> (its <c>stdout</c> parameter), not by redirecting the global
+/// <c>Console.Out</c> — so another concurrently-running test's <c>Console.Out</c>
+/// write can't leak into the capture. The tests stay <c>[NotInParallel]</c>
+/// because they still touch process-global config/auth-cache and real hook HTTP
+/// timing; the injected writer is the durable fix for the contamination class.
 ///
-/// Config isolation is provided by <see cref="IntegrationGlobalSetup"/>,
-/// which points <c>KCAP_CONFIG_DIR</c> at a fresh temp directory before
-/// any test code touches <c>PathHelpers</c>. Without it, a developer-side
-/// <c>excluded_paths</c> entry covering the test <c>cwd</c> would silently
-/// short-circuit <c>ClaudeHookCommand</c> and make these tests pass for
-/// the wrong reason.
+/// Test payloads deliberately OMIT <c>transcript_path</c> so the session-start
+/// path short-circuits before <c>WatcherManager.EnsureWatcherRunning</c>;
+/// spawning the watcher's child process would still corrupt capture.
 ///
-/// Each test is <c>[NotInParallel]</c> with NO group key — i.e. globally
-/// sequential — because it redirects the process-global <c>Console.Out</c>.
-/// A group key is insufficient: another file's test whose SUT writes to
-/// <c>Console.Out</c> (e.g. <c>CodexHookCommand</c> emitting
-/// <c>{"continue":true}</c>) can run under a DIFFERENT key and leak into the
-/// capture. Do not re-add a group key here.
+/// Config isolation is provided by <see cref="IntegrationGlobalSetup"/>, which
+/// points <c>KCAP_CONFIG_DIR</c> at a fresh temp directory before any test code
+/// touches <c>PathHelpers</c>. Without it, a developer-side <c>excluded_paths</c>
+/// entry covering the test <c>cwd</c> would silently short-circuit
+/// <c>ClaudeHookCommand</c> and make these tests pass for the wrong reason.
 /// </summary>
 public class ClaudeHookStdoutTests : IDisposable {
     readonly WireMockServer _server = WireMockServer.Start();
@@ -49,16 +45,13 @@ public class ClaudeHookStdoutTests : IDisposable {
         }
         """;
 
-    static async Task<string> CaptureStdoutAsync(Func<Task> action) {
-        var original = Console.Out;
-        var sw       = new StringWriter();
-        Console.SetOut(sw);
-        try {
-            await action();
-        } finally {
-            Console.SetOut(original);
-        }
-        return sw.ToString();
+    // Capture hook stdout via the injected writer — no Console.SetOut, so nothing another
+    // concurrently-running test writes to Console can contaminate it.
+    async Task<string> RunSessionStartAsync() {
+        var stdout = new StringWriter();
+        await ClaudeHookCommand.Handle(
+            _server.Url!, new StringReader(SessionStartPayloadWithoutTranscriptPath()), stdout: stdout);
+        return stdout.ToString();
     }
 
     [Test, NotInParallel]
@@ -71,9 +64,7 @@ public class ClaudeHookStdoutTests : IDisposable {
                     .WithBody("""{ "version": "999.0.0" }""")
             );
 
-        var stdout = await CaptureStdoutAsync(() =>
-            ClaudeHookCommand.Handle(_server.Url!, new StringReader(SessionStartPayloadWithoutTranscriptPath()))
-        );
+        var stdout = await RunSessionStartAsync();
 
         var trimmed = stdout.Trim();
         await Assert.That(trimmed).IsNotEmpty();
@@ -106,9 +97,7 @@ public class ClaudeHookStdoutTests : IDisposable {
                     )
             );
 
-        var stdout = await CaptureStdoutAsync(() =>
-            ClaudeHookCommand.Handle(_server.Url!, new StringReader(SessionStartPayloadWithoutTranscriptPath()))
-        );
+        var stdout = await RunSessionStartAsync();
 
         var trimmed = stdout.Trim();
 
@@ -132,9 +121,7 @@ public class ClaudeHookStdoutTests : IDisposable {
         _server.Given(Request.Create().WithPath("/hooks/session-start").UsingPost())
             .RespondWith(Response.Create().WithStatusCode(200).WithBody("{}"));
 
-        var stdout = await CaptureStdoutAsync(() =>
-            ClaudeHookCommand.Handle(_server.Url!, new StringReader(SessionStartPayloadWithoutTranscriptPath()))
-        );
+        var stdout = await RunSessionStartAsync();
 
         await Assert.That(stdout.Trim()).IsEqualTo("");
     }

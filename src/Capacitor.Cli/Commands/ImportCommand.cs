@@ -467,6 +467,13 @@ static class ImportCommand {
         );
 
     /// <summary>
+    /// True when the import scheduled background title/summary work the Done phase must await
+    /// (and whose results the Titles/Summaries rows report). A named seam so the await-guard
+    /// decision is unit-testable and can't silently re-invert.
+    /// </summary>
+    internal static bool HadBackgroundWork(ConcurrentBag<Task> backgroundTasks) => !backgroundTasks.IsEmpty;
+
+    /// <summary>
     /// Compute the per-source Done-grid row for a single vendor.
     /// </summary>
     /// <param name="classifications">All classifications for this vendor (already filtered).</param>
@@ -1559,9 +1566,9 @@ static class ImportCommand {
         }
 
         // --- Background phase (titles / summaries) ---
-        var ranBackground = backgroundTasks.IsEmpty;
+        var hasBackgroundWork = HadBackgroundWork(backgroundTasks);
 
-        if (ranBackground) {
+        if (hasBackgroundWork) {
             display.BeginPhase("Titles & summaries");
 
             if (display.Tty) {
@@ -1638,7 +1645,7 @@ static class ImportCommand {
             TitlesFailed: titlesFailed,
             SummariesGenerated: summariesGenerated,
             SummariesFailed: summariesFailed,
-            RanBackground: ranBackground,
+            RanBackground: hasBackgroundWork,
             RequestedSummaries: summaryTaskCount > 0
         );
 

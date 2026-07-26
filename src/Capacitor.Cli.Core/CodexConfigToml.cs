@@ -86,8 +86,7 @@ public static class CodexConfigToml {
         Update(configPath ?? DefaultConfigPath, root => MutateTrust(root, worktreePath), out error);
 
     /// <summary>
-    /// Registers the kcap MCP servers (<c>kcap-review</c>, <c>kcap-sessions</c>,
-    /// <c>kcap-memory</c>) under the
+    /// Registers the kcap MCP servers (<see cref="KcapMcpServers.ForCodex"/>) under the
     /// top-level <c>[mcp_servers]</c> table of <c>~/.codex/config.toml</c> (or
     /// <paramref name="configPath"/>) so Codex CLI picks them up with no manual TOML edit.
     /// Idempotent, and non-destructive: an entry that already exists (a prior registration
@@ -98,8 +97,7 @@ public static class CodexConfigToml {
         UpdateMcpRegistration(configPath ?? DefaultConfigPath, remove: false);
 
     /// <summary>
-    /// Removes the kcap-owned MCP server entries (<c>kcap-review</c>, <c>kcap-sessions</c>,
-    /// <c>kcap-memory</c>)
+    /// Removes the kcap-owned MCP server entries (<see cref="KcapMcpServers.ForCodex"/>)
     /// from <c>~/.codex/config.toml</c> (or <paramref name="configPath"/>). Only those names
     /// are touched; user-defined servers are preserved. Drops the <c>[mcp_servers]</c> table
     /// entirely when removing them empties it, so uninstall leaves no bare table behind.
@@ -292,6 +290,39 @@ public static class CodexConfigToml {
                 : null;
         } catch {
             return null;
+        }
+    }
+
+    /// <summary>
+    /// Reads the top-level <c>[mcp_servers]</c> table keys from <c>~/.codex/config.toml</c>
+    /// (or <paramref name="configPath"/>), honouring <c>CODEX_HOME</c> via
+    /// <see cref="CodexPaths.Home"/>. Returns an empty, ordinal-sorted list when the file is
+    /// missing, unreadable, or has no <c>[mcp_servers]</c> table. Read-only; never throws.
+    ///
+    /// NOTE: this reports ONLY config.toml-declared servers. It is NOT the authoritative
+    /// enumeration of what a spawned Codex session inherits — Codex 0.144.3 also composes MCP
+    /// servers from active native plugins, which this misses. The review-flow reviewer isolation
+    /// therefore enumerates via <c>codex mcp list --json</c>
+    /// (<c>Capacitor.Cli.Daemon.Services.CodexMcpInventory</c>), which reports the fully-composed
+    /// effective list (config + plugins).
+    /// </summary>
+    public static IReadOnlyList<string> ReadMcpServerNames(string? configPath = null) {
+        var path = configPath ?? DefaultConfigPath;
+
+        if (!File.Exists(path)) return [];
+
+        try {
+            var root = TomlSerializer.Deserialize(File.ReadAllText(path), _tomlTypeInfo.TableInfo);
+
+            if (root is null || !root.TryGetValue("mcp_servers", out var v) || v is not TomlTable servers)
+                return [];
+
+            var names = servers.Keys.ToList();
+            names.Sort(StringComparer.Ordinal);
+
+            return names;
+        } catch {
+            return [];
         }
     }
 

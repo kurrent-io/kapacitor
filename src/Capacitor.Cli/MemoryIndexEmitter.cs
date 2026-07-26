@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json.Nodes;
+using Capacitor.Cli.SessionStartMemory;
 
 namespace Capacitor.Cli;
 
@@ -23,67 +24,90 @@ namespace Capacitor.Cli;
 /// </para>
 /// </summary>
 static class MemoryIndexEmitter {
+    static readonly HashSet<string> Kinds = new(StringComparer.Ordinal) { "preference", "feedback", "project", "reference" };
+
+    public static string? BuildFragment(IEnumerable<SessionStartMemoryEntry> entries) {
+        var org = new List<string>();
+        var team = new List<string>();
+        var user = new List<string>();
+        var inspected = 0;
+        foreach (var entry in entries) {
+            if (++inspected > SessionStartMemoryConstants.MaxEntries) break;
+            if (string.IsNullOrWhiteSpace(entry.MemoryId) || ScalarCount(entry.MemoryId.Trim()) > 256 ||
+                !Kinds.Contains(entry.Kind ?? "")) continue;
+            var slug = Normalize(entry.Slug, 128);
+            var description = Normalize(entry.Description, 512);
+            if (slug.Length == 0 || description.Length == 0) continue;
+            var line = $"- {slug}: {description}";
+            switch (entry.Audience) {
+                case "org": org.Add(line); break;
+                case "team": team.Add(line); break;
+                case "user": user.Add(line); break;
+            }
+        }
+        if (org.Count == 0 && team.Count == 0 && user.Count == 0) return null;
+
+        var prefix = "<!-- kcap-memory-index:v1 -->\n## Team memory\n" +
+            "Durable memories for this repo/context. Call `get_memory <slug>` for the full content of any entry, or `search_memories` to find more.";
+        var sb = new StringBuilder(prefix);
+        var currentBytes = Encoding.UTF8.GetByteCount(prefix);
+        if (!AppendBoundedGroup(sb, "Org", org, ref currentBytes)) return sb.ToString();
+        if (!AppendBoundedGroup(sb, "Team", team, ref currentBytes)) return sb.ToString();
+        AppendBoundedGroup(sb, "Yours", user, ref currentBytes);
+        return sb.ToString();
+    }
+
     /// <param name="indexNode">The <c>/api/memories/index</c> response body parsed as a <see cref="JsonNode"/> (expected: a JSON array).</param>
     /// <param name="disabled">True when the user set <c>disable_memory_index</c> on their active profile.</param>
     public static string? BuildFragment(JsonNode? indexNode, bool disabled) {
         if (disabled) return null;
         if (indexNode is not JsonArray entries || entries.Count == 0) return null;
-
-        // Preserve server order (updated_at DESC) within each audience bucket.
-        var org  = new List<string>();
-        var team = new List<string>();
-        var user = new List<string>();
-
+        var typed = new List<SessionStartMemoryEntry>();
         foreach (var node in entries) {
             if (node is not JsonObject o) continue;
-
-            string? slug, description, audience;
             try {
-                slug        = o["slug"]?.GetValue<string>();
-                description = o["description"]?.GetValue<string>();
-                audience    = o["audience"]?.GetValue<string>();
+                typed.Add(new SessionStartMemoryEntry(
+                    o["memory_id"]?.GetValue<string>() ?? "legacy",
+                    o["slug"]?.GetValue<string>(),
+                    o["audience"]?.GetValue<string>(),
+                    o["description"]?.GetValue<string>(),
+                    o["kind"]?.GetValue<string>() ?? "feedback"));
             } catch {
                 continue; // skip a malformed entry rather than dropping the whole block
             }
-
-            if (string.IsNullOrWhiteSpace(slug) || string.IsNullOrWhiteSpace(description)) continue;
-
-            // Collapse any internal whitespace — including newlines — to single spaces so a
-            // description keeps to one bullet. The server validates descriptions as single-line,
-            // but the injected block feeds an LLM's context, so the CLI must not depend on that:
-            // a stray '\n' would otherwise split one memory across lines and distort the grouping.
-            var line = $"- {OneLine(slug)}: {OneLine(description)}";
-            switch (audience) {
-                case "org":  org.Add(line);  break;
-                case "team": team.Add(line); break;
-                case "user": user.Add(line); break;
-                // Unknown/missing audience: skip — we only render the three known buckets,
-                // and grouping on an unrecognized key would be misleading.
-            }
         }
+        return BuildFragment(typed);
+    }
 
-        if (org.Count == 0 && team.Count == 0 && user.Count == 0) return null;
+    static bool AppendBoundedGroup(StringBuilder sb, string heading, List<string> lines, ref int currentBytes) {
+        if (lines.Count == 0) return true;
+        var headerWritten = false;
+        foreach (var line in lines) {
+            var addition = (headerWritten ? "\n" : $"\n\n### {heading}\n") + line;
+            var additionBytes = Encoding.UTF8.GetByteCount(addition);
+            if (currentBytes + additionBytes > SessionStartMemoryConstants.MaxFragmentBytes)
+                return false;
+            sb.Append(addition);
+            currentBytes += additionBytes;
+            headerWritten = true;
+        }
+        return true;
+    }
 
+    static string Normalize(string? value, int maxScalars) {
+        if (string.IsNullOrEmpty(value)) return "";
         var sb = new StringBuilder();
-        sb.AppendLine("## Team memory");
-        sb.AppendLine("Durable memories for this repo/context. Call `get_memory <slug>` for the full content of any entry, or `search_memories` to find more.");
-
-        AppendGroup(sb, "Org", org);
-        AppendGroup(sb, "Team", team);
-        AppendGroup(sb, "Yours", user);
-
-        return sb.ToString().TrimEnd();
+        var whitespace = false;
+        var count = 0;
+        foreach (var rune in value.EnumerateRunes()) {
+            if (Rune.IsWhiteSpace(rune)) { whitespace = sb.Length > 0; continue; }
+            if (Rune.GetUnicodeCategory(rune) == System.Globalization.UnicodeCategory.Control) continue;
+            if (count++ >= maxScalars) break;
+            if (whitespace) { sb.Append(' '); whitespace = false; }
+            sb.Append(rune.ToString());
+        }
+        return sb.ToString().Trim();
     }
 
-    static void AppendGroup(StringBuilder sb, string heading, List<string> lines) {
-        if (lines.Count == 0) return;
-
-        sb.AppendLine();
-        sb.AppendLine($"### {heading}");
-        foreach (var l in lines) sb.AppendLine(l);
-    }
-
-    // Collapse all whitespace runs (spaces, tabs, CR/LF) to single spaces and trim, so any
-    // value renders as one line. Splitting on null splits on Unicode whitespace.
-    static string OneLine(string s) => string.Join(' ', s.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
+    static int ScalarCount(string value) => value.EnumerateRunes().Count();
 }

@@ -779,6 +779,7 @@ public class AcpHostedAgentRuntimeFactoryTests {
     [Arguments("KCAP-FLOWS")]
     [Arguments("kcap-memory")]
     [Arguments("kcap-workitems")]
+    [Arguments("kcap-analytics")]
     [Arguments("totally-unknown")]
     public async Task ReviewFlow_NonAutoApprovableAllowlistEntry_ThrowsBeforeSpawn(string entry) {
         var (factory, spawns) = CountingSpawnFactory(SyntheticDescriptor(supportsMcpServers: true));

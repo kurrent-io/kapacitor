@@ -1,5 +1,6 @@
 using System.Text.Json.Nodes;
 using Capacitor.Cli.Commands;
+using Capacitor.Cli.SessionStartMemory;
 
 namespace Capacitor.Cli.Tests.Unit;
 
@@ -182,5 +183,22 @@ public class MemoryIndexEmitterTests {
 
         await Assert.That(fragment.TrimStart().StartsWith('{')).IsFalse();
         await Assert.That(fragment).DoesNotContain("hookSpecificOutput");
+    }
+
+    [Test]
+    [NotInParallel]
+    public async Task Typed_emitter_keeps_fragment_size_accounting_linear() {
+        var entries = Enumerable.Range(0, SessionStartMemoryConstants.MaxEntries)
+            .Select(i => new SessionStartMemoryEntry(
+                $"id-{i}", $"slug-{i}", "org", "x", "feedback"))
+            .ToArray();
+
+        _ = MemoryIndexEmitter.BuildFragment(entries[..1]);
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        var fragment = MemoryIndexEmitter.BuildFragment(entries);
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        await Assert.That(fragment).IsNotNull();
+        await Assert.That(allocated).IsLessThan(400_000);
     }
 }

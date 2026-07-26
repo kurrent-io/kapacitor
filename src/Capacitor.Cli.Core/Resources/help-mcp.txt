@@ -93,9 +93,34 @@ mcp workitems:
   Claude Code auto-registers `kcap-workitems` via the plugin's `.mcp.json`
   (installed by `kcap setup`); it is not offered for Cursor or Codex.
 
+mcp analytics:
+  Exposes two read-only tools — get_analytics_schema, query_analytics — for
+  agents to run governed SQL over the org's coding-agent analytics (sessions,
+  tool/skill/token usage, cost, commits, PRs, evals). The agent fetches the
+  schema once, writes Postgres SELECTs itself, and self-repairs from the
+  server's rejection reasons. Queries default to the current repo; pass
+  scope 'global' for org-wide. Requires `kcap login` and a kcap-server with
+  the /api/analytics endpoints.
+
+  `kcap setup` auto-registers `kcap-analytics` for every supported harness
+  (Claude Code, Codex, Cursor, Copilot, Gemini, OpenCode, Antigravity, Kiro),
+  same as `kcap-sessions` — it resolves its repo scope from cwd, not a
+  harness-passed arg. To add it by hand instead:
+
+    Claude Code:
+      claude mcp add kcap-analytics -- kcap mcp analytics
+
+    Codex (CLI or desktop app) — add to ~/.codex/config.toml:
+      [mcp_servers.kcap-analytics]
+      command = "kcap"
+      args    = ["mcp", "analytics"]
+      # desktop app launches with no shell PATH, so command
+      # needs an absolute path (e.g. /opt/homebrew/bin/kcap)
+
 INSTALL
 
-  `kcap setup` registers `kcap-sessions`, `kcap-review`, `kcap-memory`, and `kcap-flows`
+  `kcap setup` registers `kcap-sessions`, `kcap-review`, `kcap-memory`,
+  `kcap-flows`, and `kcap-analytics`
   for both Claude Code (via the plugin's `.mcp.json`) and Codex CLI (`kcap setup`
   / `kcap plugin install --codex` write them into `~/.codex/config.toml`),
   so no manual `claude mcp add` or TOML edit is needed. Enabling the kcap

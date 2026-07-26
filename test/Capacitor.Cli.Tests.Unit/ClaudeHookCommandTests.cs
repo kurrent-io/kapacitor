@@ -2,6 +2,8 @@ using System.Net;
 using System.Text.Json.Nodes;
 using Capacitor.Cli.Commands;
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Config;
+using Capacitor.Cli.SessionStartMemory;
 
 namespace Capacitor.Cli.Tests.Unit;
 
@@ -14,6 +16,275 @@ public class ClaudeHookCommandTests {
         using var fx = new Fixture();
         await fx.HandleAsync($$"""{"hook_event_name":"SessionStart","session_id":"{{Sid}}","cwd":"/tmp"}""");
         await Assert.That(fx.RouteOrder).Contains("session-start");
+    }
+
+    [Test]
+    public async Task memory_store_initialization_failure_does_not_suppress_session_start_capture() {
+        using var fx = new Fixture();
+
+        var exit = await ClaudeHookCommand.HandleCore(
+            fx.Client, AuthStatus.Ok, fx.Spool, System.Diagnostics.Stopwatch.GetTimestamp(),
+            "http://localhost", new StringReader(
+                $$"""{"hook_event_name":"SessionStart","session_id":"{{Sid}}","cwd":"/tmp"}"""),
+            memoryStoreFactory: () => throw new UnauthorizedAccessException("read-only store"));
+
+        await Assert.That(exit).IsEqualTo(0);
+        await Assert.That(fx.RouteOrder).Contains("session-start");
+    }
+
+    [Test, NotInParallel]
+    public async Task disabled_memory_index_does_not_construct_the_lease_store() {
+        using var fx = new Fixture();
+        fx.MemoryIndexBody = """[{"memory_id":"m1","slug":"s","audience":"org","description":"d","kind":"preference"}]"""; // decoy — must never be fetched
+        var storeConstructed = false;
+
+        var exit = await WithProfileAsync(new Profile { DisableMemoryIndex = true }, () =>
+            ClaudeHookCommand.HandleCore(
+                fx.Client, AuthStatus.Ok, fx.Spool, System.Diagnostics.Stopwatch.GetTimestamp(),
+                "http://localhost", new StringReader(
+                    $$"""{"hook_event_name":"SessionStart","session_id":"{{Sid}}","cwd":"/tmp"}"""),
+                memoryStoreFactory: () => {
+                    storeConstructed = true;
+                    return new SessionStartMemoryLeaseStore(Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N")));
+                }));
+
+        await Assert.That(exit).IsEqualTo(0);
+        await Assert.That(storeConstructed).IsFalse();
+        await Assert.That(fx.MemoryIndexRequested).IsFalse();
+        await Assert.That(fx.RouteOrder).Contains("session-start");
+    }
+
+    // ── SessionStart team-memory index: behavioral baseline ─────────────────────────────────
+    // Characterizes today's byte-level SessionStart output on the shared
+    // SessionStartMemoryOrchestrator/ContextProvider/LeaseStore foundation (StartMemoryIndexTask
+    // below) — memory-index GET runs parallel with the session-start POST, joined within the hook
+    // budget, composed with lessons/version-nudge into one hookSpecificOutput.additionalContext
+    // envelope — so a future change to that wiring can't silently regress it.
+
+    [Test, NotInParallel]
+    public async Task session_start_joins_lessons_nudge_and_memory_fragments_in_order() {
+        using var fx = new Fixture();
+        const string responseJson =
+            """{"top_clusters":[{"text":"seal secrets","category":"safety"},{"text":"run tests first","category":"agent_guidance"}],"version":"999.999.999"}""";
+        fx.RespondJson = responseJson;
+        fx.MemoryIndexBody = """[{"memory_id":"m1","slug":"s","audience":"org","description":"d","kind":"preference"}]""";
+
+        var sid = Guid.NewGuid().ToString("N");
+        var (exit, stdout) = await WithProfileAsync(new Profile(), () => RunCapturingStdoutAsync(() =>
+            fx.HandleAsync($$"""{"hook_event_name":"SessionStart","session_id":"{{sid}}","cwd":"/tmp","source":"startup"}""")));
+        await Assert.That(exit).IsEqualTo(0);
+
+        var responseNode     = JsonNode.Parse(responseJson);
+        var expectedLessons  = SessionGuidelinesEmitter.BuildFragment(responseNode, disabled: false);
+        var expectedNudge    = VersionNudgeEmitter.BuildFragment(responseNode, CapacitorVersion.CurrentDisplay());
+        var expectedMemory   = MemoryIndexEmitter.BuildFragment(JsonNode.Parse(fx.MemoryIndexBody), disabled: false);
+        var expectedEnvelope = SessionStartAdditionalContext.BuildEnvelope(expectedLessons, expectedNudge, expectedMemory);
+
+        // Byte-exact: today's wiring order is lessons, then nudge, then memory — joined by
+        // BuildEnvelope and written via a single Console.WriteLine (hence the trailing "\n").
+        await Assert.That(stdout).IsEqualTo(expectedEnvelope + "\n");
+
+        var ctx        = JsonNode.Parse(stdout)!["hookSpecificOutput"]!["additionalContext"]!.GetValue<string>();
+        var lessonsIdx = ctx.IndexOf("## Known patterns", StringComparison.Ordinal);
+        var nudgeIdx   = ctx.IndexOf("newer kcap version", StringComparison.Ordinal);
+        var memoryIdx  = ctx.IndexOf("Team memory", StringComparison.Ordinal);
+        await Assert.That(lessonsIdx).IsGreaterThanOrEqualTo(0);
+        await Assert.That(nudgeIdx).IsGreaterThan(lessonsIdx);
+        await Assert.That(memoryIdx).IsGreaterThan(nudgeIdx);
+    }
+
+    [Test, NotInParallel]
+    public async Task session_start_with_only_a_ready_memory_index_emits_just_the_memory_fragment() {
+        using var fx = new Fixture();
+        fx.RespondJson = "{}"; // no top_clusters/version — lessons and nudge fragments are both null
+        fx.MemoryIndexBody = """[{"memory_id":"m1","slug":"s","audience":"org","description":"d","kind":"preference"}]""";
+
+        var sid = Guid.NewGuid().ToString("N");
+        var (exit, stdout) = await WithProfileAsync(new Profile(), () => RunCapturingStdoutAsync(() =>
+            fx.HandleAsync($$"""{"hook_event_name":"SessionStart","session_id":"{{sid}}","cwd":"/tmp","source":"startup"}""")));
+        await Assert.That(exit).IsEqualTo(0);
+
+        var expectedMemory   = MemoryIndexEmitter.BuildFragment(JsonNode.Parse(fx.MemoryIndexBody), disabled: false);
+        var expectedEnvelope = SessionStartAdditionalContext.BuildEnvelope(null, null, expectedMemory);
+        await Assert.That(stdout).IsEqualTo(expectedEnvelope + "\n");
+        await Assert.That(stdout).Contains("Team memory");
+    }
+
+    [Test, NotInParallel]
+    public async Task session_start_with_an_empty_memory_index_array_emits_nothing() {
+        // CompleteWithoutContext disposition (a successful, empty fetch) — with no lessons/nudge
+        // either, BuildEnvelope collapses to null and NOTHING is written to stdout at all.
+        using var fx = new Fixture();
+        fx.RespondJson = "{}";
+        fx.MemoryIndexBody = "[]";
+
+        var sid = Guid.NewGuid().ToString("N");
+        var (exit, stdout) = await WithProfileAsync(new Profile(), () => RunCapturingStdoutAsync(() =>
+            fx.HandleAsync($$"""{"hook_event_name":"SessionStart","session_id":"{{sid}}","cwd":"/tmp","source":"startup"}""")));
+        await Assert.That(exit).IsEqualTo(0);
+        await Assert.That(fx.MemoryIndexRequested).IsTrue();
+        await Assert.That(stdout).IsEqualTo("");
+    }
+
+    [Test, NotInParallel]
+    public async Task session_start_with_a_204_memory_index_response_emits_nothing() {
+        // The provider special-cases 204 NoContent as CompleteWithoutContext without even
+        // reading a body.
+        using var fx = new Fixture();
+        fx.RespondJson = "{}";
+        fx.MemoryIndexStatus = HttpStatusCode.NoContent;
+        fx.MemoryIndexBody = "";
+
+        var sid = Guid.NewGuid().ToString("N");
+        var (exit, stdout) = await WithProfileAsync(new Profile(), () => RunCapturingStdoutAsync(() =>
+            fx.HandleAsync($$"""{"hook_event_name":"SessionStart","session_id":"{{sid}}","cwd":"/tmp","source":"startup"}""")));
+        await Assert.That(exit).IsEqualTo(0);
+        await Assert.That(fx.MemoryIndexRequested).IsTrue();
+        await Assert.That(stdout).IsEqualTo("");
+    }
+
+    [Test, NotInParallel]
+    public async Task session_start_with_a_5xx_memory_index_response_emits_nothing_and_does_not_fail_the_hook() {
+        // RetryableFailure disposition — fail-open: the hook still succeeds and nothing about
+        // the memory fetch surfaces in the envelope (there is none, since lessons/nudge are
+        // absent here too).
+        using var fx = new Fixture();
+        fx.RespondJson = "{}";
+        fx.MemoryIndexStatus = HttpStatusCode.InternalServerError;
+        fx.MemoryIndexBody = "";
+
+        var sid = Guid.NewGuid().ToString("N");
+        var (exit, stdout) = await WithProfileAsync(new Profile(), () => RunCapturingStdoutAsync(() =>
+            fx.HandleAsync($$"""{"hook_event_name":"SessionStart","session_id":"{{sid}}","cwd":"/tmp","source":"startup"}""")));
+        await Assert.That(exit).IsEqualTo(0);
+        await Assert.That(fx.MemoryIndexRequested).IsTrue();
+        await Assert.That(stdout).IsEqualTo("");
+    }
+
+    [Test, NotInParallel]
+    public async Task memory_fetch_is_not_repeated_on_a_second_session_start_for_the_same_session() {
+        // Once the shared lease store commits a disposition — Ready OR CompleteWithoutContext —
+        // for a session_id, a later SessionStart for that SAME session never re-fetches: a
+        // resolved, non-repeating lifecycle is exactly-once, not "repeat until non-empty".
+        using var fx = new Fixture();
+        fx.RespondJson = "{}";
+        fx.MemoryIndexBody = "[]"; // CompleteWithoutContext on the first call
+        var sid = Guid.NewGuid().ToString("N");
+        var payload = $$"""{"hook_event_name":"SessionStart","session_id":"{{sid}}","cwd":"/tmp","source":"startup"}""";
+
+        var (exit1, stdout1) = await WithProfileAsync(new Profile(), () => RunCapturingStdoutAsync(() => fx.HandleAsync(payload)));
+        await Assert.That(exit1).IsEqualTo(0);
+        await Assert.That(stdout1).IsEqualTo("");
+        await Assert.That(fx.MemoryIndexRequestCount).IsEqualTo(1);
+
+        // A decoy non-empty index — if the second call re-fetched, this WOULD surface.
+        fx.MemoryIndexBody = """[{"memory_id":"m1","slug":"s","audience":"org","description":"d","kind":"preference"}]""";
+
+        var (exit2, stdout2) = await WithProfileAsync(new Profile(), () => RunCapturingStdoutAsync(() => fx.HandleAsync(payload)));
+        await Assert.That(exit2).IsEqualTo(0);
+        await Assert.That(stdout2).IsEqualTo("");
+        await Assert.That(fx.MemoryIndexRequestCount).IsEqualTo(1); // NOT re-fetched
+    }
+
+    [Test, NotInParallel]
+    public async Task memory_index_get_timing_out_does_not_suppress_lessons_or_nudge() {
+        // The memory-index GET runs in parallel with the POST and is joined ONLY within the
+        // remaining hook budget: a GET that outlives that budget yields a null fragment
+        // (fail-open) without delaying — or breaking — the lessons fragment the same response
+        // already carries.
+        using var fx = new Fixture();
+        fx.MemoryIndexDelay = TimeSpan.FromSeconds(30); // never resolves inside the session-start budget
+        fx.RespondJson = """{"top_clusters":[{"text":"seal secrets","category":"safety"}]}""";
+
+        // Default (near-"now") processStart, exactly like this file's other hung-server tests
+        // (e.g. subagent_stop_against_hung_server_is_spooled_within_budget) — the full ~3.5s of
+        // session-start's usable budget (5s ceiling minus the 1.5s safety margin) is comfortably
+        // enough for watcher-start + repo enrichment + the fast, undelayed POST, but far short of
+        // the 30s memory-index delay above.
+        var sid = Guid.NewGuid().ToString("N");
+        var sw  = System.Diagnostics.Stopwatch.StartNew();
+        var (exit, stdout) = await WithProfileAsync(new Profile(), () => RunCapturingStdoutAsync(() =>
+            fx.HandleAsync(
+                $$"""{"hook_event_name":"SessionStart","session_id":"{{sid}}","cwd":"/tmp","source":"startup"}""")));
+        sw.Stop();
+
+        await Assert.That(exit).IsEqualTo(0);
+        await Assert.That(sw.Elapsed).IsLessThan(TimeSpan.FromSeconds(5)); // did not wait out the 30s delay
+        await Assert.That(stdout).Contains("## Known patterns"); // lessons fragment still injected
+        await Assert.That(stdout).DoesNotContain("Team memory"); // memory fragment never joined in time
+    }
+
+    [Test, NotInParallel]
+    public async Task exhausted_budget_before_the_memory_task_starts_never_touches_the_provider() {
+        // When HookBudget.Remaining("session-start") is already <= 0 by the time
+        // StartMemoryIndexTask is reached, the memory subsystem must never touch the network at
+        // all (same short-circuit as the `disabled` guard) — and, at that point, neither can the
+        // session-start POST itself, which the ordering/spool path below already covers.
+        using var fx = new Fixture();
+        fx.MemoryIndexBody = """[{"memory_id":"m1","slug":"s","audience":"org","description":"d","kind":"preference"}]"""; // decoy
+        fx.RespondJson = """{"top_clusters":[{"text":"seal secrets","category":"safety"}]}""";
+
+        var processStart = System.Diagnostics.Stopwatch.GetTimestamp()
+                         - (long)(4 * System.Diagnostics.Stopwatch.Frequency);
+
+        var sid = Guid.NewGuid().ToString("N");
+        var exit = await fx.HandleAsync(
+            $$"""{"hook_event_name":"SessionStart","session_id":"{{sid}}","cwd":"/tmp","source":"startup"}""",
+            processStart);
+
+        await Assert.That(exit).IsEqualTo(0);
+        await Assert.That(fx.MemoryIndexRequested).IsFalse();
+    }
+
+    [Test, NotInParallel]
+    public async Task memory_index_ready_is_discarded_when_the_session_start_post_fails() {
+        // GET-succeeds-but-POST-fails: the POST failure short-circuits BEFORE the response is
+        // ever read, so no envelope is built at all — even a Ready memory fragment never
+        // surfaces. The memory task may be left running in the background (abandoned).
+        using var fx = new Fixture(HttpStatusCode.InternalServerError);
+        fx.MemoryIndexBody = """[{"memory_id":"m1","slug":"s","audience":"org","description":"d","kind":"preference"}]""";
+
+        var sid = Guid.NewGuid().ToString("N");
+        var (exit, stdout) = await WithProfileAsync(new Profile(), () => RunCapturingStdoutAsync(() =>
+            fx.HandleAsync($$"""{"hook_event_name":"SessionStart","session_id":"{{sid}}","cwd":"/tmp","source":"startup"}""")));
+
+        await Assert.That(exit).IsEqualTo(0);
+        await Assert.That(stdout).IsEqualTo("");
+        await Assert.That(fx.SpoolFiles.Any()).IsTrue(); // still durably spooled for retry
+    }
+
+    /// <summary>Runs <paramref name="action"/> with <see cref="AppConfig.ResolvedProfile"/> set to
+    /// <paramref name="profile"/>, restoring whatever was resolved before (or the closest
+    /// equivalent to "untouched" — see <c>AppConfig.SetResolvedState</c>'s lack of an "unset"
+    /// primitive) regardless of run order or a mid-test exception.</summary>
+    static async Task<T> WithProfileAsync<T>(Profile profile, Func<Task<T>> action) {
+        var originalServerUrl = AppConfig.ResolvedServerUrl;
+        var originalResolved  = AppConfig.ResolvedProfile;
+        AppConfig.SetResolvedState("http://localhost", "default", profile);
+        try {
+            return await action();
+        } finally {
+            AppConfig.SetResolvedState(
+                originalServerUrl ?? "http://localhost",
+                originalResolved?.ProfileName ?? "default",
+                originalResolved?.Profile ?? new Profile());
+        }
+    }
+
+    /// <summary>Redirects <see cref="Console.Out"/> to a buffer for the duration of
+    /// <paramref name="action"/> (a fresh <see cref="StringWriter"/> with <c>NewLine = "\n"</c> so
+    /// the captured bytes are platform-independent), restoring the original writer even if
+    /// <paramref name="action"/> throws.</summary>
+    static async Task<(int Exit, string Stdout)> RunCapturingStdoutAsync(Func<Task<int>> action) {
+        var originalOut = Console.Out;
+        var writer = new StringWriter { NewLine = "\n" };
+        try {
+            Console.SetOut(writer);
+            var exit = await action();
+            return (exit, writer.ToString());
+        } finally {
+            Console.SetOut(originalOut);
+        }
     }
 
     // the session-start payload gains a best-effort workspace_root (the git repo root
@@ -337,6 +608,14 @@ public class ClaudeHookCommandTests {
         public string? RespondJson { get; set; }
         readonly HttpStatusCode _postStatus;
 
+        // Lets a test fake the shared SessionStart memory-index endpoint distinctly from the
+        // generic GET fallback below (which stays 404) — mirrors CursorHookCommandTests.Fixture.
+        public string         MemoryIndexBody         { get; set; } = "[]";
+        public HttpStatusCode MemoryIndexStatus        { get; set; } = HttpStatusCode.OK;
+        public TimeSpan       MemoryIndexDelay         { get; set; } = TimeSpan.Zero;
+        public bool           MemoryIndexRequested     => MemoryIndexRequestCount > 0;
+        public int            MemoryIndexRequestCount  { get; private set; }
+
         public Fixture(HttpStatusCode postStatus = HttpStatusCode.OK) {
             Directory.CreateDirectory(_tmpHome);
             _spoolPath  = Path.Combine(_tmpHome, "spool");
@@ -347,6 +626,13 @@ public class ClaudeHookCommandTests {
                 var path = req.RequestUri!.AbsolutePath;
                 Sent.Add($"{path}|{body}");
                 if (path.StartsWith("/hooks/")) RouteOrder.Add(path.Replace("/hooks/", ""));
+                if (path == "/api/memories/index") {
+                    MemoryIndexRequestCount++;
+                    if (MemoryIndexDelay > TimeSpan.Zero) await Task.Delay(MemoryIndexDelay, ct);
+                    return new HttpResponseMessage(MemoryIndexStatus) {
+                        Content = new System.Net.Http.StringContent(MemoryIndexBody, System.Text.Encoding.UTF8, "application/json")
+                    };
+                }
                 if (req.Method == HttpMethod.Get) return new HttpResponseMessage(HttpStatusCode.NotFound);
                 if (HoldOnPost > TimeSpan.Zero) await Task.Delay(HoldOnPost, ct);
                 var resp = new HttpResponseMessage(_postStatus);
@@ -357,7 +643,8 @@ public class ClaudeHookCommandTests {
 
         public Task<int> HandleAsync(string stdin, long processStart = 0) =>
             ClaudeHookCommand.HandleCore(Client, AuthStatus.Ok, Spool, processStart == 0 ? System.Diagnostics.Stopwatch.GetTimestamp() : processStart,
-                "http://localhost", new StringReader(stdin));
+                "http://localhost", new StringReader(stdin),
+                memoryStoreFactory: () => new SessionStartMemoryLeaseStore(Path.Combine(_tmpHome, "memory")));
 
         public IEnumerable<string> SpoolFiles =>
             Directory.Exists(_spoolPath) ? Directory.EnumerateFiles(_spoolPath) : [];

@@ -61,10 +61,24 @@ public class McpCanonicalContractTests {
     }
 
     [Test]
+    public async Task Codex_subset_includes_analytics() {
+        var names = KcapMcpServers.ForCodex.Select(s => s.Name).ToArray();
+        await Assert.That(names).Contains("kcap-analytics");
+    }
+
+    [Test]
     public async Task Cursor_subset_excludes_workitems_but_keeps_flows_and_memory() {
         var names = KcapMcpServers.ForCursor.Select(s => s.Name).ToArray();
         await Assert.That(names).DoesNotContain("kcap-workitems");
         await Assert.That(names).Contains("kcap-flows");
         await Assert.That(names).Contains("kcap-memory");
+    }
+
+    [Test]
+    public async Task Cursor_subset_includes_analytics() {
+        // kcap-analytics resolves repo context from the process CWD, so it rides the same
+        // writer path as kcap-sessions and is registered for every non-Claude JSON harness.
+        var names = KcapMcpServers.ForCursor.Select(s => s.Name).ToArray();
+        await Assert.That(names).Contains("kcap-analytics");
     }
 }

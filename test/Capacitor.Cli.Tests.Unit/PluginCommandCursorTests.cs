@@ -71,6 +71,8 @@ public class PluginCommandCursorTests {
         await Assert.That(servers.Select(kv => kv.Key)).Contains("kcap-memory");
         // kcap-workitems is Claude Code plugin only — not auto-registered for Cursor.
         await Assert.That(servers.Select(kv => kv.Key)).DoesNotContain("kcap-workitems");
+        // kcap-analytics rides the same CWD-resolved writer path as kcap-sessions.
+        await Assert.That(servers.Select(kv => kv.Key)).Contains("kcap-analytics");
         await Assert.That(servers["my-tool"]).IsNotNull(); // user server preserved
     }
 

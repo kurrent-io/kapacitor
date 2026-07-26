@@ -14,18 +14,31 @@ namespace Capacitor.Cli.Tests.Unit.Daemon;
 /// unit-tested (would require a full host boot).
 /// </summary>
 public class DaemonRunnerCursorAvailabilityTests {
-    /// <summary>Minimal <see cref="IHostedAgentRuntimeFactory"/> stand-in — only <see cref="Vendor"/>/<see cref="IsAvailable"/>/<see cref="SupportsUnattended"/> matter here.</summary>
+    /// <summary>Minimal <see cref="IHostedAgentRuntimeFactory"/> stand-in — only <see cref="Vendor"/>/<see cref="IsAvailable"/>/<see cref="SupportsUnattended"/>/<see cref="ReviewerModelResolver"/> matter here.</summary>
     sealed class FakeRuntimeFactory(
             string vendor, bool isAvailable, bool supportsUnattended = false,
-            bool supportsBorrowedReviewFlow = false) : IHostedAgentRuntimeFactory {
+            bool supportsBorrowedReviewFlow = false,
+            IReviewerModelResolver? reviewerModelResolver = null) : IHostedAgentRuntimeFactory {
         public string Vendor             { get; } = vendor;
         public bool   SupportsUnattended { get; } = supportsUnattended;
         public bool   SupportsBorrowedReviewFlow { get; } = supportsBorrowedReviewFlow;
+        public IReviewerModelResolver? ReviewerModelResolver { get; } = reviewerModelResolver;
 
         public bool IsAvailable() => isAvailable;
 
         public Task<HostedRuntimeStart> StartAsync(RuntimeStartContext ctx, CancellationToken ct) =>
             throw new NotSupportedException("not exercised by this test");
+    }
+
+    /// <summary>Fake reviewer-model resolver — only <see cref="Vendor"/>/<see cref="PolicyVersion"/>
+    /// matter for the capability-advertisement tests (advertisement is vendor-neutral: it reads
+    /// whether a resolver exists + its policy version, never a model string).</summary>
+    sealed class FakeReviewerModelResolver(string vendor, string policyVersion) : IReviewerModelResolver {
+        public string Vendor        { get; } = vendor;
+        public string PolicyVersion { get; } = policyVersion;
+
+        public ReviewerModelResolution Resolve(string requestedModel) =>
+            new(ReviewerModelDisposition.Unavailable);
     }
 
     [Test]
@@ -152,5 +165,40 @@ public class DaemonRunnerCursorAvailabilityTests {
         await Assert.That(DaemonRunner.CliVersionAllowed("2.0.0", ">=1.2.0 <2.0.0")).IsFalse();
         await Assert.That(DaemonRunner.CliVersionAllowed(null, ">=1.2.0")).IsFalse();
         await Assert.That(DaemonRunner.CliVersionAllowed("1.2.3", "")).IsFalse();
+    }
+
+    // === Reviewer model resolution: capability advertisement ===
+
+    [Test]
+    public async Task ComputeUnattendedVendorCapabilities_WithResolver_AdvertisesReviewerModelResolution() {
+        // Installed + unattended-certified + HAS a resolver ⇒ the vendor advertises reviewer-model
+        // resolution and its policy version.
+        IHostedAgentRuntimeFactory[] factories = [
+            new FakeRuntimeFactory("claude", isAvailable: true, supportsUnattended: true,
+                reviewerModelResolver: new FakeReviewerModelResolver("claude", "claude-reviewer-model-v1")),
+        ];
+
+        var capabilities = DaemonRunner.ComputeUnattendedVendorCapabilities(
+            factories, new DaemonConfig { ClaudePath = "/definitely/missing/claude" });
+
+        var claude = capabilities.Single(c => c.Vendor == "claude");
+        await Assert.That(claude.SupportsReviewerModelResolution).IsTrue();
+        await Assert.That(claude.ReviewerModelPolicyVersion).IsEqualTo("claude-reviewer-model-v1");
+    }
+
+    [Test]
+    public async Task ComputeUnattendedVendorCapabilities_WithoutResolver_DoesNotAdvertiseReviewerModelResolution() {
+        // Installed + unattended-certified but NO resolver ⇒ the vendor keeps its vendor-only
+        // unattended support but must advertise false/null (never widened to "supported").
+        IHostedAgentRuntimeFactory[] factories = [
+            new FakeRuntimeFactory("codex", isAvailable: true, supportsUnattended: true),
+        ];
+
+        var capabilities = DaemonRunner.ComputeUnattendedVendorCapabilities(
+            factories, new DaemonConfig { CodexPath = "/definitely/missing/codex" });
+
+        var codex = capabilities.Single(c => c.Vendor == "codex");
+        await Assert.That(codex.SupportsReviewerModelResolution).IsFalse();
+        await Assert.That(codex.ReviewerModelPolicyVersion).IsNull();
     }
 }

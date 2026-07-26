@@ -15,6 +15,10 @@
     "kcap-memory": {
       "command": "kcap",
       "args": ["mcp", "memory"]
+    },
+    "kcap-analytics": {
+      "command": "kcap",
+      "args": ["mcp", "analytics"]
     }
   }
 }

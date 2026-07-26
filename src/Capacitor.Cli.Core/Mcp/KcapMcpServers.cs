@@ -24,6 +24,8 @@ public static class KcapMcpServers {
             "Team memory — search, read, and save durable learnings."),
         new("kcap-workitems", ["mcp", "workitems"], NeedsProjectCwd: true,
             "Attach the current session to a work item (issue, PR, or a brand-new item), and list what a session is attached to."),
+        new("kcap-analytics", ["mcp", "analytics"], NeedsProjectCwd: true,
+            "Query the org's AI coding-agent analytics (sessions, tools, tokens, cost, commits, PRs, evals) with read-only SQL. Repo-aware: defaults to the current repo; pass scope 'global' for org-wide.", ReadOnly: true),
     ];
 
     /// <summary>Codex receives flows so any driver can explicitly route a reserved review alias
@@ -33,9 +35,7 @@ public static class KcapMcpServers {
         All.Where(s => s.Name != "kcap-workitems").ToArray();
 
     /// <summary>The shared set for every non-Claude JSON harness (Cursor, Copilot, OpenCode,
-    /// Kiro, Gemini, Antigravity) — omits `kcap-workitems` (Claude Code plugin only;
-    /// its session-id default rides the Claude hook env). Unlike Codex, these still get
-    /// `kcap-flows`.</summary>
+    /// Kiro, Gemini, Antigravity) — omits only `kcap-workitems` (Claude Code plugin only).</summary>
     public static IReadOnlyList<KcapMcpServer> ForCursor =>
         All.Where(s => s.Name != "kcap-workitems").ToArray();
 }

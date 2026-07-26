@@ -28,6 +28,12 @@
       "args": ["mcp", "workitems"],
       "cwd": "${CLAUDE_PROJECT_DIR}",
       "description": "Attach the current session to a work item (issue, PR, or a brand-new item) on the Capacitor server, and list the work items a session is attached to."
+    },
+    "kcap-analytics": {
+      "command": "kcap",
+      "args": ["mcp", "analytics"],
+      "cwd": "${CLAUDE_PROJECT_DIR}",
+      "description": "Query the org's AI coding-agent analytics (sessions, tools, tokens, cost, commits, PRs, evals) with governed read-only SQL. For 'what did we spend', 'which tools/models do we use', 'how many sessions' questions: call get_analytics_schema once, then query_analytics. Repo-aware: defaults to the current repo; pass scope 'global' for org-wide."
     }
   }
 }

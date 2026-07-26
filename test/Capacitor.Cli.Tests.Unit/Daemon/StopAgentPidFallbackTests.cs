@@ -6,9 +6,11 @@ namespace Capacitor.Cli.Tests.Unit;
 
 /// <summary>
 /// Phase B (D4 §6.4(3)): <c>HandleStopAgent</c> for an id not in the registry falls back to the
-/// PID record and reaps a matching live process by exact identity. OS-aware: Linux confirms the
-/// <c>KCAP_AGENT_ID</c> env and reaps; macOS 26 can't read the env, so it SPARES (ambiguity never
-/// kills). Partial of <see cref="AgentOrchestratorVendorTests"/> to call the private HandleStopAgent.
+/// PID record and reaps a matching live process by exact identity. OS-aware: Linux/Windows can prove
+/// ownership (Linux via the <c>KCAP_AGENT_ID</c> env) and reap; on macOS the outcome depends on the OS
+/// version's start-identity readability (redacted → spared, readable → reaped), so the test asserts the
+/// record is deleted iff the process was confirmed gone. Partial of
+/// <see cref="AgentOrchestratorVendorTests"/> to call the private HandleStopAgent.
 /// </summary>
 public partial class AgentOrchestratorVendorTests {
     [Test]
@@ -26,20 +28,21 @@ public partial class AgentOrchestratorVendorTests {
 
         await orch.HandleStopAgent("ghost");
 
-        // The record-pass reap kills once ownership is provable: Linux confirms via the KCAP_AGENT_ID
-        // env, Windows has no Unix env guard so an exact (pid, start-identity) match is sufficient. Only
-        // macOS 26 spares — its env is redacted, so the (Unix) env guard can't confirm and ambiguity
-        // never kills.
         if (!OperatingSystem.IsMacOS()) {
-            // Linux / Windows → reaped by identity, record deleted on confirmed death.
+            // Linux / Windows → ownership is provable (Linux confirms via the KCAP_AGENT_ID env,
+            // Windows via an exact (pid, start-identity) match), so the record-pass reap kills by
+            // identity and deletes the record on CONFIRMED death.
             dummy.WaitForExit(TimeSpan.FromSeconds(10));
             await Assert.That(dummy.HasExited).IsTrue();
             await Assert.That(orch.PidRecordsForTest().Any(r => r.AgentId == "ghost")).IsFalse();
         } else {
-            // macOS: env unreadable → SPARED; process still alive, record retained for a later sweep.
-            await Assert.That(dummy.HasExited).IsFalse();
-            await Assert.That(orch.PidRecordsForTest().Any(r => r.AgentId == "ghost")).IsTrue();
-            dummy.Kill();
+            // macOS → the outcome depends on this OS version's start-identity readability (older macOS
+            // redacts it → spared/retained; macOS 26+ reads it → reaped/deleted), so accept either but
+            // assert the real invariant: the record is deleted IFF the process was confirmed gone.
+            dummy.WaitForExit(TimeSpan.FromSeconds(10));
+            var retained = orch.PidRecordsForTest().Any(r => r.AgentId == "ghost");
+            await Assert.That(retained).IsEqualTo(!dummy.HasExited);
+            if (!dummy.HasExited) dummy.Kill();
         }
     }
 

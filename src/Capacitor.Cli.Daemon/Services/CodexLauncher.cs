@@ -22,7 +22,33 @@ internal sealed partial class CodexLauncher(
     public bool DisablesApprovalPrompts(LauncherContext ctx) => ctx.IsReviewFlow;
     public string BorrowedReviewContainment => "native-tool-clamp";
 
+    /// <summary>Codex owns its own reviewer-model policy (known OpenAI/Codex slug families →
+    /// slug-level equivalence key). Stateless singleton.</summary>
+    public IReviewerModelResolver? ReviewerModelResolver => CodexReviewerModelResolver.Instance;
+
     public bool IsAvailable() => CliResolver.Exists(CliPath);
+
+    /// <summary>
+    /// Enumerates the effective MCP server names a review-flow reviewer would otherwise inherit —
+    /// the recursion guard's foundation. Default runs <c>codex mcp list --json</c>
+    /// (<see cref="CodexMcpInventory.ListInheritedServerNames"/>), which reports the fully-composed
+    /// effective list (user <c>$CODEX_HOME/config.toml</c> <c>[mcp_servers]</c> AND active native
+    /// plugins), honouring <c>CODEX_HOME</c> exactly as the spawned reviewer will. Reading
+    /// <c>config.toml</c> alone (the pre-hardening behaviour) missed plugin-registered servers, so a
+    /// flow-capable plugin server would never be disabled. Injectable so <see cref="BuildArgs"/>
+    /// stays deterministic in unit tests. Throwing here is fail-closed — the launch is rejected
+    /// rather than proceeding with an incomplete view of what the reviewer inherits.
+    /// </summary>
+    internal Func<IReadOnlyList<string>> ReadInheritedMcpServerNames { get; init; } =
+        () => CodexMcpInventory.ListInheritedServerNames(config.CodexPath);
+
+    /// <summary>Inert <c>command</c> stamped on every disabled server's override. Codex requires a
+    /// transport to be present to accept an <c>mcp_servers.&lt;name&gt;</c> override — a plugin-provided
+    /// server has no transport at the config layer, so <c>enabled=false</c> alone fails config load
+    /// with "invalid transport" (verified against 0.144.3). Supplying this sentinel satisfies the
+    /// validator; it is never executed because the server is disabled, and Codex does not check that
+    /// the command exists for a disabled server, so the value is cross-platform safe.</summary>
+    internal const string DisabledServerSentinelCommand = "kcap-review-flow-isolation-disabled";
 
     static readonly string[] CriticalHookEvents = ["SessionStart", "Stop", "PermissionRequest"];
 
@@ -93,16 +119,20 @@ internal sealed partial class CodexLauncher(
             ctx.IsReviewFlow ? "never" : "on-request"
         };
 
-        // Review-flow reviewers get exactly ONE MCP server: kcap-flow-result, which can
-        // only submit a result — never start a flow. Clear-then-whitelist, in this order:
-        // the bare `mcp_servers={}` FIRST replaces the entire [mcp_servers] table from
-        // ~/.codex/config.toml; the dotted overrides then insert into the now-empty table.
-        // Dotted overrides alone MERGE into the user's table and would re-expose whatever MCP
-        // servers the user has registered (including a hand-registered kcap-flows with
-        // start_review_flow — the recursion guard would silently vanish).
+        // Review-flow reviewers get exactly ONE MCP server: kcap-flow-result (+ any
+        // allowlisted, non-flow-starting server) — it can only submit a result, never start a
+        // flow. Codex's `-c` overrides deep-merge into ~/.codex/config.toml (no analog of
+        // Claude's `--strict-mcp-config`), so we (1) DISABLE every inherited server — from
+        // config.toml AND native plugins, enumerated via `codex mcp list --json` — in one
+        // `-c mcp_servers={ … }` table override that handles dotted/plugin names too, then
+        // (2) force-enable exactly the whitelisted names with `enabled=true`. Otherwise a
+        // reviewer inherits every user MCP server (including a hand-registered kcap-flows with
+        // start_review_flow, vanishing the recursion guard), or — if the user's own config
+        // already disabled a whitelisted name — starts without its result-submission channel.
+        // Fail-closed: if the inherited set can't be enumerated, DisableInheritedMcpServers
+        // throws and the launch is rejected rather than proceeding with nothing disabled.
         if (ctx.IsReviewFlow) {
-            args.Add("-c");
-            args.Add("mcp_servers={}");
+            DisableInheritedMcpServers(args, ctx);
             AddFlowResultServer(args, ctx);
             AddAllowlistServers(args, ctx);
         }
@@ -127,6 +157,78 @@ internal sealed partial class CodexLauncher(
         return new([.. args], McpConfigPath: null);
     }
 
+    /// <summary>
+    /// Real, fail-closed MCP isolation for a review-flow reviewer: disables EVERY server the
+    /// reviewer would otherwise inherit — from the user's <c>$CODEX_HOME/config.toml</c> AND from
+    /// active native plugins (both reported by <see cref="ReadInheritedMcpServerNames"/> via
+    /// <c>codex mcp list --json</c>) — so only the servers we explicitly whitelist afterwards load.
+    ///
+    /// All disables go in ONE <c>-c mcp_servers={ … }</c> TOML-value override rather than per-server
+    /// dotted keys, because:
+    /// <list type="bullet">
+    ///   <item>A dotted/quoted server name (e.g. <c>"corp.flows"</c>) cannot be expressed in Codex's
+    ///     <c>-c</c> dotted-KEY path — it mis-splits and fails config load. A TOML-quoted key inside
+    ///     the VALUE (<c>mcp_servers={"corp.flows"={…}}</c>) targets it exactly, so a dotted flow
+    ///     server is disabled, not skipped (the pre-hardening code logged and LEFT it — the guard
+    ///     bypass this fix closes).</item>
+    ///   <item>A plugin-provided server has no transport at the config layer, so a bare
+    ///     <c>enabled=false</c> fails config load with "invalid transport"; stamping the inert
+    ///     <see cref="DisabledServerSentinelCommand"/> transport satisfies the validator while the
+    ///     server stays off.</item>
+    ///   <item>Multiple separate <c>-c mcp_servers={…}</c> overrides do NOT accumulate (last wins),
+    ///     whereas a single one deep-merges cleanly over the base file and composes with the dotted
+    ///     whitelist ENABLE overrides added afterwards (all verified against Codex 0.144.3).</item>
+    /// </list>
+    ///
+    /// Fail-closed: <see cref="ReadInheritedMcpServerNames"/> throws
+    /// <see cref="CodexReviewerMcpIsolationException"/> when the inherited set cannot be
+    /// authoritatively enumerated; that propagates out of <see cref="BuildArgs"/> and the
+    /// orchestrator rejects the launch — we never proceed having disabled nothing.
+    /// </summary>
+    void DisableInheritedMcpServers(List<string> args, LauncherContext ctx) {
+        var whitelisted = WhitelistedServerNames(ctx);
+
+        var entries = new List<string>();
+
+        foreach (var name in ReadInheritedMcpServerNames()) {
+            if (string.IsNullOrEmpty(name)) continue;
+            if (whitelisted.Contains(name)) continue;
+
+            // TomlString both quotes and escapes, so ANY name — dotted, quoted, or containing
+            // control chars — becomes a valid inline-table key that Codex resolves to exactly one
+            // server. The sentinel transport makes plugin-provided (transport-less) servers
+            // disable-able too.
+            entries.Add($"{TomlString(name)}={{enabled=false,command={TomlString(DisabledServerSentinelCommand)},args=[]}}");
+        }
+
+        if (entries.Count == 0) return;
+
+        args.Add("-c");
+        args.Add($"mcp_servers={{{string.Join(",", entries)}}}");
+    }
+
+    /// <summary>The MCP server names <see cref="AddFlowResultServer"/> +
+    /// <see cref="AddAllowlistServers"/> will enable — the disable pass must never disable one of
+    /// these. Empty when the daemon has no server URL / kcap path (nothing is whitelisted, so the
+    /// disable pass strips everything — the recursion-safe default).</summary>
+    HashSet<string> WhitelistedServerNames(LauncherContext ctx) {
+        var set = new HashSet<string>(StringComparer.Ordinal);
+
+        if (string.IsNullOrWhiteSpace(config.ServerUrl) || string.IsNullOrWhiteSpace(config.CapacitorPath)) return set;
+
+        set.Add("kcap-flow-result");
+
+        foreach (var name in ctx.McpAllowlist ?? []) {
+            var descriptor = KcapMcpRegistry.Resolve(name);
+
+            if (descriptor is null || descriptor.StartsFlows) continue;
+
+            set.Add(descriptor.Id);
+        }
+
+        return set;
+    }
+
     /// <summary>Registers the reviewer-side result-submission server. Skipped (zero
     /// servers — the recursion-safe default) when the daemon has no server URL or kcap path;
     /// the reviewer then falls back to the transcript marker per the prompt contract.</summary>
@@ -135,6 +237,12 @@ internal sealed partial class CodexLauncher(
 
         const string name = "kcap-flow-result";
 
+        // Force-enable: the disable pass above skips this name, but the user's OWN
+        // ~/.codex/config.toml may already have it (or never had it) set to enabled=false from
+        // a prior manual registration. `-c` deep-merges over that file, so skipping the disable
+        // is not enough on its own — an explicit enabled=true override wins regardless.
+        args.Add("-c");
+        args.Add($"mcp_servers.{name}.enabled=true");
         args.Add("-c");
         args.Add($"mcp_servers.{name}.command={TomlString(config.CapacitorPath)}");
         args.Add("-c");
@@ -172,6 +280,10 @@ internal sealed partial class CodexLauncher(
             var id       = descriptor.Id;
             var argsList = string.Join(",", descriptor.Args.Select(TomlString));
 
+            // Force-enable for the same reason as AddFlowResultServer: the user's own config
+            // may already carry this name disabled, and `-c` only deep-merges over it.
+            args.Add("-c");
+            args.Add($"mcp_servers.{id}.enabled=true");
             args.Add("-c");
             args.Add($"mcp_servers.{id}.command={TomlString(config.CapacitorPath)}");
             args.Add("-c");
@@ -319,4 +431,49 @@ internal sealed partial class CodexLauncher(
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "MCP allowlist entry '{Name}' can start flows — stripped (agent {AgentId})")]
     partial void LogAllowlistEntryStripped(string name, string agentId);
+}
+
+/// <summary>
+/// Codex-owned reviewer MODEL override policy. Recognizes the genuinely-known OpenAI/Codex model slug
+/// families (<c>gpt-*</c>, the <c>o1</c>/<c>o3</c>/<c>o4</c> reasoning series, and <c>codex-*</c>) and
+/// canonicalizes to a SLUG-level equivalence key (<c>codex/&lt;slug&gt;</c>). Unlike Claude, Codex slugs
+/// are stable — there is no alias→dated resolution — so the requested slug and the concrete launched
+/// slug match at the slug level, and the slug itself is the stable anchor. No central model table: this
+/// policy lives entirely inside the Codex launcher.
+/// </summary>
+internal sealed class CodexReviewerModelResolver : IReviewerModelResolver {
+    public static readonly CodexReviewerModelResolver Instance = new();
+
+    CodexReviewerModelResolver() { }
+
+    public string Vendor        => "codex";
+    public string PolicyVersion => "codex-reviewer-model-v1";
+
+    /// <summary>Genuinely-known OpenAI/Codex model-slug family prefixes. Recognizing by family prefix
+    /// (rather than an exhaustive dated catalog) keeps this minimal while covering <c>gpt-5</c>,
+    /// <c>gpt-5-codex</c>, <c>gpt-4.1</c>, the <c>o1</c>/<c>o3</c>/<c>o4</c> reasoning series, and
+    /// <c>codex-mini-latest</c>. A slug matching a family prefix but not a real model still fails at
+    /// launch (Codex rejects it), never a resolution-level false accept of another vendor's model.</summary>
+    static readonly string[] KnownPrefixes = ["gpt-", "o1", "o3", "o4", "codex"];
+
+    public ReviewerModelResolution Resolve(string requestedModel) {
+        if (!ReviewerModelSyntax.IsWellFormed(requestedModel))
+            return new(ReviewerModelDisposition.Invalid, DiagnosticCode: "malformed_model_id");
+
+        var raw   = requestedModel.Trim();
+        var lower = raw.ToLowerInvariant();
+
+        var recognized = KnownPrefixes.Any(p => lower.StartsWith(p, StringComparison.Ordinal));
+        if (!recognized)
+            return new(ReviewerModelDisposition.Unavailable);
+
+        // Codex slugs are stable (no alias→dated resolution), so the canonical slug itself is the
+        // stable equivalence anchor — the requested slug and the concrete launched slug match at the
+        // slug level.
+        return new(
+            ReviewerModelDisposition.Accept,
+            CanonicalRequestedModel: lower,
+            LaunchModel: raw,                   // passed through to the launcher verbatim
+            EquivalenceKey: $"codex/{lower}");  // anchor
+    }
 }

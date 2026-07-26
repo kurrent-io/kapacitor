@@ -24,6 +24,14 @@ public interface IMcpMarker {
 public sealed class McpMarker(string harness, Func<string, string>? markerPathFor = null) : IMcpMarker {
     const int Version = 1;
 
+    // Test seam: redirect the CENTRAL marker root (normally the user profile's `.kcap`) so unit tests
+    // never read/write the real shared `~/.kcap/mcp-markers` — a single process-global dir that races
+    // across parallel suites and pollutes the developer's home. Pinned once for the whole test
+    // assembly by `McpMarkerGlobalSetup` (mirrors `DaemonLockPaths.OverrideDirectoryForTesting` /
+    // `DaemonPathsGlobalSetup`). Volatile so the assembly-hook write publishes to every test thread.
+    static volatile string? _centralRootOverride;
+    internal static void OverrideCentralRootForTesting(string? kcapRoot) => _centralRootOverride = kcapRoot;
+
     public bool Owns(string configPath, string name, JsonNode entry) {
         if (!Owned(configPath).Contains(name)) return false;
         if (entry is not JsonObject obj) return false; // malformed/non-object entry → not ours; never throw
@@ -78,7 +86,8 @@ public sealed class McpMarker(string harness, Func<string, string>? markerPathFo
         if (isUserScope) return Path.Combine(dir, $".kcap-mcp-version-{Path.GetFileName(configPath)}");
 
         var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(Path.GetFullPath(configPath))))[..16].ToLowerInvariant();
-        return Path.Combine(home, ".kcap", "mcp-markers", $"{harness}-{hash}.json");
+        var centralRoot = _centralRootOverride ?? Path.Combine(home, ".kcap");
+        return Path.Combine(centralRoot, "mcp-markers", $"{harness}-{hash}.json");
     }
 
     static bool IsInsideRepo(string dir) {

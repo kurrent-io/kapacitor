@@ -417,6 +417,9 @@ record SessionSearchQuery(string Query, int? Limit = null);
 [JsonSerializable(typeof(McpError))]
 [JsonSerializable(typeof(SearchQuery))]
 [JsonSerializable(typeof(SessionSearchQuery))]
+// StartReviewFlowDto now also carries the optional reviewer-model override
+// (`model` + `client_flow_protocol_version: 3`); the added member rides this existing registration,
+// so the flows MCP v3 transport stays fully source-generated (AOT-safe, no reflection fallback).
 [JsonSerializable(typeof(StartReviewFlowDto))]
 [JsonSerializable(typeof(SubmitReviewRoundDto))]
 [JsonSerializable(typeof(SubmitReviewerResultDto))]

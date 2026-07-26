@@ -933,6 +933,11 @@ public sealed record CurationApplyResponse {
 [JsonSerializable(typeof(Auth.ProxyConfigResponse))]
 [JsonSerializable(typeof(Auth.DiscoveredTenant[]))]
 [JsonSerializable(typeof(LaunchAgentCommand))]
+// Task 8: reviewer-model launch block + preflight RPC + resolved report wire DTOs.
+[JsonSerializable(typeof(ExplicitReviewerModelLaunch))]
+[JsonSerializable(typeof(ReviewerModelResolveRequestV1))]
+[JsonSerializable(typeof(ReviewerModelResolveResponseV1))]
+[JsonSerializable(typeof(ExplicitReviewerModelResolvedV1))]
 [JsonSerializable(typeof(ReviewLaunchInfo))]
 [JsonSerializable(typeof(LaunchKind))]
 [JsonSerializable(typeof(FindRepoForRemoteRequest))]
@@ -1274,7 +1279,15 @@ public readonly record struct LaunchAgentCommand(
         string?            CommandId = null,
         // The server's vendor-specific unattended-review certification expectation.
         // Kept additive and optional so older servers and non-review launches remain compatible.
-        ReviewerCertificationRequirement? ReviewerCertification = null
+        ReviewerCertificationRequirement? ReviewerCertification = null,
+        // Task 8: optional, versioned explicit reviewer-MODEL launch block. Non-null ONLY for a
+        // protocol-v3 explicit-model reviewer launch the server drove through the daemon preflight;
+        // null for every legacy/interactive launch (which keeps the ReportAgentResolvedModel path
+        // unchanged). Appended last as an optional field so the SignalR positional/name binding stays
+        // wire-compatible with older daemons (ignore it) and older servers (never set it). The daemon
+        // launches with the exact LaunchModel VERBATIM and, post-launch, reports the concrete resolved
+        // model back keyed on LaunchAttemptId (see ExplicitReviewerModelResolvedV1).
+        ExplicitReviewerModelLaunch? ExplicitReviewerModel = null
     );
 
 public sealed record ReviewerCertificationRequirement(
@@ -1284,6 +1297,73 @@ public sealed record ReviewerCertificationRequirement(
     string Revision,
     string ExpectedDaemonConnectionId,
     string ExpectedCliVersion);
+
+/// <summary>Task 8: the server-pinned explicit reviewer-model launch parameters carried on
+/// <see cref="LaunchAgentCommand.ExplicitReviewerModel"/>. <see cref="LaunchModel"/> is the EXACT model
+/// the daemon must launch the reviewer with (threaded through verbatim — never recanonicalized);
+/// <see cref="LaunchAttemptId"/> is the durable launch-attempt id the daemon must echo in its post-launch
+/// <see cref="ExplicitReviewerModelResolvedV1"/> report so the server's one-shot waiter (keyed by
+/// <c>(agentId, launchAttemptId)</c>) can rendezvous; <see cref="PolicyVersion"/> and
+/// <see cref="EquivalenceKey"/> are the values the daemon's preflight already accepted, pinned so the
+/// server can validate the report by equality. <see cref="ReportProtocolVersion"/> versions the report
+/// contract (v1) additively.</summary>
+public sealed record ExplicitReviewerModelLaunch(
+    string LaunchAttemptId,
+    string LaunchModel,
+    string PolicyVersion,
+    string EquivalenceKey,
+    int    ReportProtocolVersion = 1);
+
+// ── Task 8: reviewer-model preflight RPC + resolved report wire DTOs ──────────────────────
+// These MATCH the server's DaemonCommands.cs shapes EXACTLY (field name/type/nullability) — the
+// System.Text.Json snake_case binding is name-based, so a rename on either side silently breaks the
+// wire. See kcap-server PR #1187 (Capacitor.Agents.ReviewerModelResolveRequestV1 / …ResponseV1 /
+// ExplicitReviewerModelResolvedV1).
+
+/// <summary>Server → daemon: "would <see cref="RequestedModel"/> launch under <see cref="Vendor"/>'s
+/// current reviewer-model policy?" — a SIDE-EFFECT-FREE preflight (the daemon resolves, never spawns).
+/// <see cref="RequestId"/> is the caller's launch-attempt id, echoed back verbatim so a stale/misrouted
+/// reply is rejected; <see cref="ExpectedPolicyVersion"/> is the RPC PROTOCOL version
+/// (<c>reviewer_model_resolve_v1</c>), echoed back so a protocol upgrade mid-flight is detected — it is
+/// NOT the per-vendor resolver policy version (that is carried separately on the resolved report).</summary>
+public sealed record ReviewerModelResolveRequestV1(
+    string RequestId,
+    string Vendor,
+    string RequestedModel,
+    string ExpectedPolicyVersion);
+
+/// <summary>Daemon → server reply to <see cref="ReviewerModelResolveRequestV1"/>.
+/// <see cref="Disposition"/> is exactly one of <c>"accepted"</c> / <c>"unavailable"</c> /
+/// <c>"invalid"</c> (any other value the server treats as malformed → unavailable). On
+/// <c>"accepted"</c>, <see cref="CanonicalRequestedModel"/> + <see cref="LaunchModel"/> are populated
+/// and <see cref="EquivalenceKey"/> is the stable anchor. On <c>"unavailable"</c>,
+/// <see cref="RecognizedVendor"/> optionally names a DIFFERENT advertised unattended vendor on this
+/// same daemon that recognized the model (→ the server reports a vendor mismatch). On <c>"invalid"</c>,
+/// <see cref="DiagnosticCode"/> optionally carries a bounded reason token.</summary>
+public sealed record ReviewerModelResolveResponseV1(
+    string  RequestId,
+    string  Vendor,
+    string  PolicyVersion,
+    string  Disposition,
+    string? CanonicalRequestedModel = null,
+    string? LaunchModel             = null,
+    string? EquivalenceKey          = null,
+    string? RecognizedVendor        = null,
+    string? DiagnosticCode          = null);
+
+/// <summary>Daemon → server (hub method <c>ReportExplicitReviewerModelResolved</c>): the CONCRETE model
+/// an explicit-model reviewer actually launched with, keyed by the preallocated <see cref="AgentId"/> +
+/// the durable <see cref="LaunchAttemptId"/>. <see cref="Vendor"/>/<see cref="PolicyVersion"/>/
+/// <see cref="EquivalenceKey"/> echo the values the preflight accepted so the server validates by
+/// equality; <see cref="ResolvedModel"/> is the exact concrete model id the server re-prices before
+/// recording the assignment.</summary>
+public sealed record ExplicitReviewerModelResolvedV1(
+    string AgentId,
+    string LaunchAttemptId,
+    string Vendor,
+    string ResolvedModel,
+    string PolicyVersion,
+    string EquivalenceKey);
 
 /// <summary>
 /// Discriminator for daemon launch commands. <see cref="Default"/> preserves
@@ -1649,7 +1729,14 @@ public sealed record UnattendedVendorCapability(
     string? CliVersion,
     string LauncherPolicyVersion,
     bool BorrowedReviewSupported,
-    string? BorrowedReviewContainment = null
+    string? BorrowedReviewContainment = null,
+    // True only when this vendor is installed, unattended-certified, and has a runtime resolver; the
+    // server refuses a v3 model override unless true. Defaults false — a legacy/mid-rollout daemon is
+    // never widened to "supported" by any fallback.
+    bool SupportsReviewerModelResolution = false,
+    // This vendor's reviewer-model policy version (distinct from LauncherPolicyVersion); the server
+    // echoes it to detect a mid-flight policy change. Null when no resolver is advertised.
+    string? ReviewerModelPolicyVersion = null
 );
 
 public readonly record struct AgentRegistered(

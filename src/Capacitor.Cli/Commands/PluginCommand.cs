@@ -472,14 +472,14 @@ public static class PluginCommand {
     }
 
     /// <summary>
-    /// Registers the kcap MCP servers, including non-auto-approved kcap-flows, in
+    /// Registers the kcap MCP servers (<see cref="KcapMcpServers.ForCodex"/>) in
     /// <c>~/.codex/config.toml</c> so Codex CLI loads them without a manual TOML edit.
     /// Never fails the install: a write error is a warning, not an error code.
     /// </summary>
     static async Task RegisterCodexMcpServersAsync(PluginEnvironment env) {
         switch (CodexConfigToml.RegisterKcapMcpServers(env.CodexConfigTomlPath)) {
             case CodexConfigToml.Change.Updated:
-                await env.Stdout.WriteLineAsync($"Codex MCP servers registered: kcap-review, kcap-sessions, kcap-flows, kcap-memory ({env.CodexConfigTomlPath}).");
+                await env.Stdout.WriteLineAsync($"Codex MCP servers registered: {string.Join(", ", KcapMcpServers.ForCodex.Select(s => s.Name))} ({env.CodexConfigTomlPath}).");
                 break;
             case CodexConfigToml.Change.Unchanged:
                 await env.Stdout.WriteLineAsync("Codex MCP servers already registered — no change needed.");

@@ -54,6 +54,16 @@ Gemini / Gemini CLI → `gemini`; Kiro / Kiro CLI → `kiro`; Pi → `pi`; OpenC
 Antigravity / agy → `agy`. Normalize only names bound to the reviewer role, honor negation and
 positive contrast, and ask rather than guessing when two reviewer candidates remain.
 
+For the reserved `spec-review`/`code-review` aliases only, `start_flow` also accepts a top-level
+`model` — a per-run reviewer model override. It REQUIRES `vendor` (there is no vendor→model table to
+infer one from — pass it only when the user explicitly named both a reviewer and a model) and is
+rejected for a `definition_yaml` (dynamic) or any custom multi-participant start, where each
+participant already pins its own `model` in the YAML instead (see "Composing a dynamic flow" below).
+Pass the model id/alias exactly as named, case-sensitive — never translate or guess it. Not every
+vendor supports this: the daemon must advertise a runtime model resolver for the selected vendor
+(Claude and Codex today; other vendors keep vendor-only overrides with no model choice) or the
+server rejects the override outright.
+
 ## Composing a dynamic flow
 
 If nothing in the catalog fits — no `definition_id` covers the roles or workflow you need — compose one inline instead: pass `definition_yaml` to `start_flow` in place of `definition_id`. Provide exactly one of the two, never both. (`start_review_flow` / `submit_review_round` stay catalog-only — this only applies to the generic `start_flow`.)
@@ -131,6 +141,7 @@ The server enforces per-run budgets; watch for these in tool error responses:
 - **`400` starting `no_daemon_available:`** — no connected daemon has the repo checked out. Tell the user to run `kcap agent` on a machine with the repo cloned (or pass an explicit `daemon_name` + `repo_path`).
 - **`400` starting `daemon_outdated:`** — the daemon's kcap is too old to host flow participants. Tell the user to update (`npm i -g @kurrent/kcap`) and restart `kcap agent`.
 - **`400` containing `participant_unreachable`** — that role's agent is in an ambiguous liveness state (its daemon disconnected or is restarting), so the server won't guess whether it's still alive rather than risk a duplicate launch. Retry the send shortly, or ask the user to stop the participant (dashboard/API) and then re-send to force a fresh relaunch.
+- **Reserved-alias reviewer-model errors** (only when you passed `model`): `reviewer_model_protocol_required` — the server/daemon doesn't support a model override yet; drop `model` and retry, or tell the user to update. `reviewer_model_unavailable` — no resolver for that vendor recognizes the model; ask for a different one or drop the override. `model_vendor_mismatch` — the model belongs to a different vendor than the one selected; ask the user which vendor they meant. `reviewer_model_safe_settlement_required` — the server can't safely reapply this model on a heal/relaunch; close the flow and start a new one. `reviewer_model_unpriceable` — the model has no resolvable pricing to budget-check; ask for a differently-named/priced model.
 - **A round result of `unclear` whose text is exactly `participant_died` or `participant_stopped`** — that role's agent crashed or was stopped mid-round. The run stays **open**: address the same role again with `send_to_participant` and it relaunches automatically — the fresh agent has **no memory of prior rounds**, so restate any context it needs in your message; its earlier spend still counts against the run budget. No need to close and restart the flow. Other roles are unaffected and remain addressable in the meantime.
 
 ## Workflow
@@ -182,7 +193,7 @@ report completion to user
 
 | Tool | Required args | Optional args | When to call |
 |---|---|---|---|
-| `start_flow` | Exactly one of `definition_id` (catalog id, e.g. `spec-review`, `code-review`, or a custom catalog id) or `definition_yaml` (inline dynamic definition — see "Composing a dynamic flow"); plus `target_kind` (what is being worked on: `spec`, `code`, `pr`, `branch`, `file`, etc.), `target_ref` (a path, branch name, or PR URL/number that identifies the target), `target_title` (short human-readable title), `context` (background context: what to focus on, constraints, definition of done) | `instructions`, `mode` (`context-only` — optional; by default, on the same machine, the participant's worktree is mirrored from your working tree including uncommitted changes, so it reads the actual source. Pass `context-only` to opt out and treat the submitted context as authoritative) | Once, at the start of a flow task. |
+| `start_flow` | Exactly one of `definition_id` (catalog id, e.g. `spec-review`, `code-review`, or a custom catalog id) or `definition_yaml` (inline dynamic definition — see "Composing a dynamic flow"); plus `target_kind` (what is being worked on: `spec`, `code`, `pr`, `branch`, `file`, etc.), `target_ref` (a path, branch name, or PR URL/number that identifies the target), `target_title` (short human-readable title), `context` (background context: what to focus on, constraints, definition of done) | `vendor` (reserved aliases only — explicit reviewer vendor; omit for server default), `model` (reserved aliases only — explicit reviewer model override; REQUIRES `vendor`, rejected on dynamic/multi-participant starts), `instructions`, `mode` (`context-only` — optional; by default, on the same machine, the participant's worktree is mirrored from your working tree including uncommitted changes, so it reads the actual source. Pass `context-only` to opt out and treat the submitted context as authoritative) | Once, at the start of a flow task. |
 | `send_to_participant` | `flow_run_id`, `participant` (role name declared in the flow definition's `participants` map; single-participant definitions use `reviewer` — an unknown role is rejected, naming the valid ones), `message` | `instructions`, `async` (defaults to `true`) | After addressing a non-clean result for that role, or to launch a role for the first time. Pass the same `flow_run_id`, the role's name, and the updated message. |
 | `get_flow_status` | `flow_run_id` | — | Poll or check the current status of a flow run (running, waiting, completed, failed). |
 | `close_flow` | `flow_run_id` | — | Only after the definition's clean signal — or when abandoning the task early; the run otherwise stays open until closed. |

@@ -3,7 +3,9 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json.Nodes;
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.Core.Cursor;
+using Capacitor.Cli.SessionStartMemory;
 
 namespace Capacitor.Cli.Commands;
 
@@ -20,26 +22,22 @@ public static class CursorHookCommand {
     static readonly TimeSpan HookPostTimeout  = TimeSpan.FromSeconds(1);
 
     /// <summary>
-    /// Production entry point. Two layers of budget enforcement:
-    ///   1. A linked <see cref="CancellationTokenSource"/> threaded into every
-    ///      call that honours it (auth-config discovery, HTTP POSTs in
-    ///      <see cref="HandleCore"/>, transcript backfill).
-    ///   2. A hard <see cref="Task.WhenAny"/> ceiling around the whole pipeline
-    ///      because some paths inside <c>TokenStore</c> (refresh against
-    ///      <c>/auth/refresh</c> or WorkOS's token endpoint) don't honour a
-    ///      <see cref="CancellationToken"/> and would otherwise sit on the
-    ///      default 100 s <see cref="HttpClient"/> timeout. If the hard
-    ///      ceiling fires we abandon the inner task — the process exits 0
-    ///      and the OS reclaims the socket. Cursor's agent loop is
-    ///      unblocked even when the auth path hangs.
+    /// Production entry point. Delegates straight to <see cref="HandleInternal"/> with
+    /// production factories — see that method's doc for how the single hard-cap deadline
+    /// (review finding 1) covers client/auth setup through dispatch.
     /// </summary>
-    public static Task<int> Handle(string baseUrl, TextReader stdin) =>
-        WithHardCap(HandleInternal(baseUrl, stdin), DispatcherBudget);
+    public static Task<int> Handle(string baseUrl, TextReader stdin) => HandleInternal(baseUrl, stdin);
 
     /// <summary>
-    /// Test seam for the hard-cap race. Returns 0 if the budget fires
-    /// before <paramref name="inner"/> completes; otherwise returns
-    /// <paramref name="inner"/>'s result.
+    /// Test seam for a bare hard-cap race over an arbitrary <see cref="Task{TResult}"/>. Kept
+    /// as a generic, independently-tested utility (mirrors <c>ClaudeHookCommand.WithHardCap</c>,
+    /// itself unused in that class's production path) — NOT used by <see cref="Handle"/>/
+    /// <see cref="HandleInternal"/>, which own their own single deadline race end-to-end (see
+    /// review finding 1: wrapping <em>another</em>, independent cap around an
+    /// already-self-capping inner phase created two competing timers aimed at the same
+    /// deadline, and the outer one — started earlier, before client/auth setup — could win
+    /// without knowing whether a {} was owed, while the abandoned inner still held the sole
+    /// stdout handle and could write late).
     /// </summary>
     internal static async Task<int> WithHardCap(Task<int> inner, TimeSpan budget) {
         var winner = await Task.WhenAny(inner, Task.Delay(budget));
@@ -47,9 +45,45 @@ public static class CursorHookCommand {
         return await inner;
     }
 
-    static async Task<int> HandleInternal(string baseUrl, TextReader stdin) {
+    /// <summary>
+    /// The single hard-cap deadline for the ENTIRE dispatch — client/auth setup through the
+    /// bounded async stdin read, recording-critical work, and memory (review finding 1).
+    /// There is exactly one race here: client/auth creation is bounded by its own
+    /// <see cref="Task.WhenAny"/> against the full <see cref="DispatcherBudget"/> (some
+    /// <c>TokenStore</c> paths don't honour a <see cref="CancellationToken"/> and would
+    /// otherwise sit on the default 100 s <see cref="HttpClient"/> timeout — this is the ONE
+    /// place that step can be abandoned), and — ONLY once that step has resolved within
+    /// budget — <see cref="HandleCore"/> is invoked with whatever's left, where its OWN
+    /// (unchanged, already-correct) internal race becomes the sole remaining decision-maker and
+    /// sole stdout writer for the rest of the dispatch. The two races are sequential, never
+    /// concurrent: HandleCore is never invoked until the auth race has already resolved, so
+    /// there is never a second, independent timer still live once HandleCore's own begins —
+    /// eliminating the pre-fix "two nested 2s caps that don't order" bug. On EITHER branch
+    /// timing out, the abandoned task never gets a chance to write (this method never invokes
+    /// HandleCore for a still-pending auth attempt, and disposes/observes it in the background).
+    /// <paramref name="clientFactory"/>/<paramref name="spoolFactory"/> default to real
+    /// construction; tests inject fakes so the guarantee can be exercised hermetically without a
+    /// real network call (mirrors <c>ClaudeHookCommand.HandleWithDeps</c>'s injectable
+    /// <c>clientFactory</c>).
+    /// </summary>
+    internal static async Task<int> HandleInternal(
+            string     baseUrl,
+            TextReader stdin,
+            TimeSpan?  budget = null,
+            Func<CancellationToken, Task<(HttpClient Client, AuthStatus Status)>>? clientFactory = null,
+            Func<HookSpool>? spoolFactory = null
+        ) {
+        var dispatcherBudget = budget ?? DispatcherBudget;
+        clientFactory ??= ct => HttpClientExtensions.CreateClientWithAuthStatusAsync(baseUrl, ct);
+        spoolFactory  ??= () => {
+            var s = new HookSpool(PathHelpers.ConfigPath("spool"));
+            MigrateLegacyCursorSpool(s, CursorPaths.SpoolDir());
+            s.ReapOlderThan(TimeSpan.FromDays(30));
+            return s;
+        };
+
         var sw = Stopwatch.StartNew();
-        using var cts = new CancellationTokenSource(DispatcherBudget);
+        using var cts = new CancellationTokenSource(dispatcherBudget);
         HttpClient? client = null;
         try {
             // Status-returning variant so a lapse doesn't write the per-turn "expired" stderr
@@ -58,14 +92,34 @@ public static class CursorHookCommand {
             // discard the backlog — so leave it intact for replay after the user re-runs
             // `kcap login`, and exit cleanly. Mirrors the Claude hook (#183); kcap status
             // surfaces the expired state. Cursor has no user-facing notice channel.
-            var (c, status) = await HttpClientExtensions.CreateClientWithAuthStatusAsync(baseUrl, cts.Token);
+            //
+            // Bounded by its OWN Task.WhenAny against the full budget (not merely the linked
+            // CancellationToken passed into it) — the one place client creation can be
+            // abandoned if some TokenStore path ignores cancellation. HandleCore is only ever
+            // reached once this resolves, so its own internal race never has a stale competing
+            // timer left over from this step.
+            var authBudget = dispatcherBudget - sw.Elapsed;
+            if (authBudget < TimeSpan.Zero) authBudget = TimeSpan.Zero;
+            var authTask   = clientFactory(cts.Token);
+            var authWinner = await Task.WhenAny(authTask, Task.Delay(authBudget));
+            if (authWinner != authTask) {
+                // Abandoned: observe the eventual terminal state so a late fault/dispose
+                // doesn't leak a client or surface as an UnobservedTaskException. No output is
+                // written — the event kind isn't even known yet at this point — and HandleCore
+                // is never invoked for this attempt, so a late write is structurally impossible.
+                _ = authTask.ContinueWith(static t => {
+                    if (t.IsFaulted) _ = t.Exception;
+                    else if (t.Status == TaskStatus.RanToCompletion) t.Result.Client.Dispose();
+                }, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+                return 0;
+            }
+
+            var (c, status) = await authTask;
             client = c;
             if (AgentHookPoster.IsAuthLapsed(status)) return 0;
 
-            var spool = new HookSpool(PathHelpers.ConfigPath("spool"));
-            MigrateLegacyCursorSpool(spool, CursorPaths.SpoolDir());
-            spool.ReapOlderThan(TimeSpan.FromDays(30));
-            var remaining = DispatcherBudget - sw.Elapsed;
+            var spool = spoolFactory();
+            var remaining = dispatcherBudget - sw.Elapsed;
             if (remaining <= TimeSpan.Zero) return 0;
             return await HandleCore(client, baseUrl, stdin, spool, remaining);
         } catch {
@@ -79,30 +133,106 @@ public static class CursorHookCommand {
 
     /// <summary>
     /// Test-friendly core. Caller owns the <see cref="HttpClient"/> and
-    /// <see cref="HookSpool"/>.
+    /// <see cref="HookSpool"/>. Races the entire inner phase against one absolute
+    /// <paramref name="budgetTotal"/> deadline (§2) and is the SOLE writer of
+    /// Cursor's stdout — the inner phase (<see cref="HandleCoreInner"/>) never touches
+    /// <see cref="Console.Out"/>, it only computes and returns the response. Exactly one
+    /// write happens per resolved <c>sessionStart</c>; every other resolved event, and any
+    /// unresolved/malformed input, writes nothing — byte-for-byte unchanged from before
+    /// this feature landed.
     /// </summary>
-    public static async Task<int> HandleCore(
+    internal static async Task<int> HandleCore(
             HttpClient client,
             string     baseUrl,
             TextReader stdin,
             HookSpool  spool,
-            TimeSpan   budgetTotal
+            TimeSpan   budgetTotal,
+            Func<bool, CancellationToken, Task<HttpClient>>? memoryClientFactory = null,
+            Func<SessionStartMemoryLeaseStore>?               memoryStoreFactory = null
+        ) {
+        using var cts = new CancellationTokenSource(budgetTotal);
+        var kindSignal = new ResolvedEventKindSignal();
+
+        var inner    = HandleCoreInner(client, baseUrl, stdin, spool, budgetTotal, cts.Token, kindSignal,
+                           memoryClientFactory, memoryStoreFactory);
+        var deadline = Task.Delay(budgetTotal);
+        var winner   = await Task.WhenAny(inner, deadline);
+
+        // On the deadline branch the inner is ABANDONED — never cancelled/awaited BY this
+        // method — so it holds no stdout handle and can never produce a late/second write,
+        // however long it eventually takes to unwind in the background. It IS, however,
+        // explicitly cancelled here: `cts` was constructed with its own `budgetTotal` timer
+        // (line above), so its token would likely transition to cancelled around the same
+        // wall-clock moment regardless — but that internal timer racing this method's own
+        // `using`-disposal at the very next statement is exactly that, a race, not a
+        // guarantee. Calling Cancel() deterministically (rather than trusting the timer to
+        // have already fired) is what makes the inner's cancellation-aware stdin read /
+        // HTTP calls (both bound to cts.Token) actually observe cancellation promptly. This
+        // also cancels the linked memory CTS in RunMemoryOrchestrationAsync — a cancelled
+        // fetch there leaves the lease uncommitted, which is already the intended, tested
+        // behavior (see CancelledFetch_leaves_lease_uncommitted).
+        if (winner != inner) cts.Cancel();
+
+        var response = winner == inner
+            ? await inner
+            : (kindSignal.Kind == "sessionStart" ? SessionStartMemoryOutputAdapters.Render(SessionStartHarness.Cursor, null) : null);
+
+        if (response is not null) Console.Write(response);
+        return 0;
+    }
+
+    /// <summary>
+    /// A write-once, thread-safe signal for the resolved <c>hook_event_name</c>, published
+    /// the instant <see cref="CursorHookEventMap.TryResolve"/> succeeds — before any
+    /// recording/memory work runs. Lets the OUTER deadline branch in <see cref="HandleCore"/>
+    /// (and <see cref="HandleCoreInner"/>'s own catch-all, where try-scoped locals are out of
+    /// scope) decide whether an abandoned/faulted invocation still owes a <c>sessionStart</c>
+    /// its single <c>{}</c> response.
+    /// </summary>
+    sealed class ResolvedEventKindSignal {
+        volatile string? _kind;
+        public void Publish(string kind) => _kind = kind;
+        public string? Kind => _kind;
+    }
+
+    /// <summary>
+    /// The actual dispatcher body (formerly the whole of <see cref="HandleCore"/>). NEVER
+    /// writes to <see cref="Console.Out"/> — every return path yields the response
+    /// <see cref="HandleCore"/> should emit for a resolved <c>sessionStart</c> (the rendered
+    /// memory envelope, or <c>{}</c> for every other fail-open path) or <c>null</c> for a
+    /// resolved non-<c>sessionStart</c> event / unresolved or malformed input.
+    /// </summary>
+    static async Task<string?> HandleCoreInner(
+            HttpClient client,
+            string     baseUrl,
+            TextReader stdin,
+            HookSpool  spool,
+            TimeSpan   budgetTotal,
+            CancellationToken ct,
+            ResolvedEventKindSignal kindSignal,
+            Func<bool, CancellationToken, Task<HttpClient>>? memoryClientFactory,
+            Func<SessionStartMemoryLeaseStore>?               memoryStoreFactory
         ) {
         var sw = Stopwatch.StartNew();
-        using var cts = new CancellationTokenSource(budgetTotal);
-        var ct = cts.Token;
         bool BudgetExpired() => sw.Elapsed >= budgetTotal;
 
         try {
             var body = await stdin.ReadToEndAsync(ct);
             JsonNode? node;
             try { node = JsonNode.Parse(body); }
-            catch { return 0; }
-            if (node is null) return 0;
+            catch { return null; }
+            if (node is null) return null;
 
             var eventName = TryGetString(node, "hook_event_name");
-            if (string.IsNullOrWhiteSpace(eventName)) return 0;
-            if (!CursorHookEventMap.TryResolve(eventName, out var mapping)) return 0;
+            if (string.IsNullOrWhiteSpace(eventName)) return null;
+            if (!CursorHookEventMap.TryResolve(eventName, out var mapping)) return null;
+            kindSignal.Publish(eventName);
+
+            // Every resolved sessionStart converges on this single response — {} unless
+            // Task 3's orchestrator (wired at the very end of this method for the top-level,
+            // non-child success path) supplies a Ready fragment instead.
+            string? EmptyOrNull() =>
+                eventName == "sessionStart" ? SessionStartMemoryOutputAdapters.Render(SessionStartHarness.Cursor, null) : null;
 
             NormalizeGuidField(node, "session_id");
             node["home_dir"] = PathHelpers.HomeDirectory;
@@ -132,7 +262,7 @@ public static class CursorHookCommand {
                 if (eventName == "beforeSubmitPrompt") CursorMarkers.CreateBarrier(sessionId, DateTimeOffset.UtcNow);
             }
 
-            if (sessionId is not null && DisabledSessions.IsDisabled(sessionId)) return 0;
+            if (sessionId is not null && DisabledSessions.IsDisabled(sessionId)) return EmptyOrNull();
 
             // bring CursorSubagentCorrelator into the live hook/backfill
             // path. Cursor is NOT watcher-backed, so the correlation must run right here in
@@ -168,6 +298,12 @@ public static class CursorHookCommand {
             }
             var isSubagentChild = subagentParentId is not null;
 
+            // Hoisted (rather than block-local) so the memory orchestration wired in
+            // at the end of this method — reached only for the same top-level, non-child
+            // sessionStart this block guards — can reuse the RAW workspace_roots[0] value as
+            // Cwd without re-deriving it.
+            string? workspaceRoot = null;
+
             // attach a `repository` node on sessionStart so the session groups
             // under its repo in the sidebar. Cursor payloads carry `workspace_roots`
             // rather than `cwd`, so the generic EnrichWithRepositoryInfo (which reads
@@ -178,7 +314,6 @@ public static class CursorHookCommand {
             if (eventName == "sessionStart" && !isSubagentChild) {
                 // Safe extract: workspace_roots[0] may be absent or a non-string; GetValue<string>
                 // would throw and (via the outer catch) drop the whole sessionStart hook.
-                string? workspaceRoot = null;
                 if (node["workspace_roots"] is JsonArray roots && roots.Count > 0
                  && roots[0] is JsonValue wv && wv.TryGetValue<string>(out var wr))
                     workspaceRoot = wr;
@@ -241,16 +376,19 @@ public static class CursorHookCommand {
             // SendSubagentLifecycleAsync, which never gives a correlated child its own top-level
             // lifecycle either). See HandleSubagentChildEventAsync for the divert.
             if (isSubagentChild) {
-                return await HandleSubagentChildEventAsync(
+                // §4/§5: a linked child short-circuits to {} (sessionStart) / nothing
+                // (everything else) before any orchestrator work — never entered for a child.
+                await HandleSubagentChildEventAsync(
                     client, baseUrl, spool, sessionId!, eventName, transcriptPath,
                     subagentParentId!, subagentAgentType!, BudgetExpired, ct);
+                return EmptyOrNull();
             }
 
             // Ordering guard: if a transient drain failure left this session's backlog in place,
             // spool the fresh event so an earlier queued event (e.g. sessionStart) is not overtaken.
             if (sessionId is not null && mapping.SpoolOnFailure && spool.HasBacklog(sessionId)) {
                 spool.Append(sessionId, mapping.RouteSegment, normalized);
-                return 0;
+                return EmptyOrNull();
             }
 
             if (BudgetExpired()) {
@@ -261,7 +399,7 @@ public static class CursorHookCommand {
                 if (mapping.SpoolOnFailure && sessionId is not null) {
                     spool.Append(sessionId, mapping.RouteSegment, normalized);
                 }
-                return 0;
+                return EmptyOrNull();
             }
 
             // For sessionEnd the server's HandleSessionEnd clears the per-session
@@ -290,7 +428,7 @@ public static class CursorHookCommand {
                 if (mapping.SpoolOnFailure && sessionId is not null) {
                     spool.Append(sessionId, mapping.RouteSegment, normalized);
                 }
-                return 0;
+                return EmptyOrNull();
             }
 
             var posted = await TryPostHookAsync(client, baseUrl, mapping.RouteSegment, normalized, ct);
@@ -322,12 +460,103 @@ public static class CursorHookCommand {
                     budget: BudgetExpired, ct);
             }
 
-            return 0;
+            // §3–§6: the memory index runs strictly AFTER all of the above
+            // recording-critical work, on whatever budget is left over, and only for a
+            // top-level (isSubagentChild already diverted above at line ~309) sessionStart.
+            if (eventName != "sessionStart") return null;
+            var fragment = await RunMemoryOrchestrationAsync(
+                client, baseUrl, sessionId, workspaceRoot, sw, budgetTotal, ct,
+                memoryClientFactory, memoryStoreFactory);
+            return SessionStartMemoryOutputAdapters.Render(SessionStartHarness.Cursor, fragment);
         } catch {
             // Fail-open per design: any exception (budget cancellation,
-            // transcript-file IO race, JSON quirk we missed) must never
-            // crash Cursor's agent loop.
-            return 0;
+            // transcript-file IO race, JSON quirk we missed) must never crash Cursor's agent
+            // loop. eventName may be out of scope here (the exception could predate its
+            // parse), so fall back to the published kind — the same signal the outer deadline
+            // branch reads.
+            return kindSignal.Kind == "sessionStart" ? SessionStartMemoryOutputAdapters.Render(SessionStartHarness.Cursor, null) : null;
+        }
+    }
+
+    /// <summary>
+    /// §3–§6: fetches the shared SessionStart memory index for a top-level
+    /// (non-child — <paramref name="sw"/>'s caller only reaches this once
+    /// <c>isSubagentChild</c> has already diverted) Cursor <c>sessionStart</c>, mirroring
+    /// <c>ClaudeHookCommand.StartMemoryIndexTask</c>: same shared store/provider/orchestrator,
+    /// no second auth/scope/HTTP path. Runs strictly AFTER recording-critical work — never
+    /// concurrently, never before — and only on whatever's left of <paramref name="budgetTotal"/>
+    /// (minus <see cref="HookBudget.Safety"/>); a cancelled fetch leaves the lease uncommitted
+    /// (retryable on a later hook) because the request's own <see cref="CancellationToken"/> is
+    /// bound to that SAME leftover budget via a linked <see cref="CancellationTokenSource"/> —
+    /// not a <c>WaitAsync</c> wrapper around an unbounded call.
+    /// </summary>
+    static async Task<string?> RunMemoryOrchestrationAsync(
+            HttpClient client,
+            string     baseUrl,
+            string?    sessionId,
+            string?    workspaceRoot,
+            Stopwatch  sw,
+            TimeSpan   budgetTotal,
+            CancellationToken dispatcherCt,
+            Func<bool, CancellationToken, Task<HttpClient>>? memoryClientFactory,
+            Func<SessionStartMemoryLeaseStore>?               memoryStoreFactory
+        ) {
+        if (sessionId is null) return null;
+
+        // An absent/blank Cursor workspace root must NOT fall through to the scope resolver's
+        // Directory.GetCurrentDirectory() fallback: that would derive a repo scope from the hook
+        // PROCESS's cwd and could inject an UNRELATED repository's memories into this session.
+        // With no authoritative workspace root there is no safe scope, so skip injection entirely.
+        if (string.IsNullOrWhiteSpace(workspaceRoot)) return null;
+
+        var memBudget = budgetTotal - sw.Elapsed - HookBudget.Safety;
+        if (memBudget <= TimeSpan.Zero) return null;
+
+        // Cursor never reads AppConfig anywhere else today — this is the one, new call site
+        // (mirrors ClaudeHookCommand's own `AppConfig.ResolvedProfile?.Profile?.DisableMemoryIndex
+        // is true` read).
+        var disabled = AppConfig.ResolvedProfile?.Profile?.DisableMemoryIndex is true;
+
+        try {
+            using var memCts = CancellationTokenSource.CreateLinkedTokenSource(dispatcherCt);
+            memCts.CancelAfter(memBudget);
+
+            var store = memoryStoreFactory?.Invoke() ?? new SessionStartMemoryLeaseStore();
+            var provider = new SessionStartMemoryContextProvider(
+                new SessionStartMemoryScopeResolver(),
+                memoryClientFactory ?? ((_, _) => Task.FromResult(client)),
+                disposeClients: memoryClientFactory is not null);
+
+            return await new SessionStartMemoryOrchestrator(store, provider).GetFragmentAsync(
+                // ClassificationAuthoritative is hardcoded true (not merely `!isSubagentChild`):
+                // this method is only ever reached from the top-level, non-child success path —
+                // a linked child returns {} before any orchestrator work, per §4/§5.
+                //
+                // Subagent-classification note (investigated, no behavior change): `!isSubagentChild`
+                // is NOT the same fact as "definitively no parent" — CursorLiveSubagentLinker.
+                // ResolveParent's own doc records that it can return null for a session that IS
+                // actually a subagent, merely because the parent's Task/Agent tool_use hasn't
+                // flushed to the parent's transcript yet at the child's first (and only)
+                // sessionStart hook. The linker has no signal to distinguish that "uncertain"
+                // case from a genuinely standalone top-level session: DiscoverSiblingTranscripts
+                // returns every session EVER recorded under the workspace's agent-transcripts/
+                // dir (no recency/mtime filter), so "candidates exist" is true for nearly every
+                // session after the very first one in a workspace and cannot be used as an
+                // uncertainty signal without suppressing memory injection for the common case.
+                // Threading `authoritative = !isSubagentChild` through so a suspected-uncertain
+                // classification maps to RetryLaterNoCommit would also be a functional dead end
+                // for Cursor specifically: unlike Claude (which can re-decide on a later resume
+                // sessionStart), Cursor's sessionStart fires exactly once per conversation with
+                // no persisted "retry" trigger, so RetryLaterNoCommit here means "this session
+                // never gets memory," not "deferred." Given no cheap signal exists and any
+                // conservative fix regresses the majority (genuine top-level) case, this was
+                // escalated rather than changed — see the fix-report for the full writeup.
+                new SessionMemoryLifecycle(SessionStartHarness.Cursor, sessionId, LifecycleInstanceId: null,
+                    IsTopLevel: true, ClassificationAuthoritative: true, SessionLifecycleReason.New,
+                    CallbackMayRepeat: false),
+                new SessionStartMemoryContextRequest(baseUrl, workspaceRoot, disabled, memBudget, memCts.Token));
+        } catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException) {
+            return null;
         }
     }
 

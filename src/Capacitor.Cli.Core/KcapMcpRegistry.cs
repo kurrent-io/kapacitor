@@ -14,6 +14,7 @@ public static class KcapMcpRegistry {
         ["kcap-memory"]    = new("kcap-memory",    ["mcp", "memory"],    false),
         ["kcap-flows"]     = new("kcap-flows",     ["mcp", "flows"],     true),
         ["kcap-workitems"] = new("kcap-workitems", ["mcp", "workitems"], false),
+        ["kcap-analytics"] = new("kcap-analytics", ["mcp", "analytics"], false),
     };
 
     /// <summary>Resolves an allowlist entry to its descriptor. Case-insensitive, trims

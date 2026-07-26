@@ -55,8 +55,11 @@
     <PropertyGroup Condition="!$(RuntimeIdentifier.StartsWith('win')) And !$([MSBuild]::IsOSPlatform('Windows'))">
         <PtyShimExt Condition="$([MSBuild]::IsOSPlatform('OSX'))">dylib</PtyShimExt>
         <PtyShimExt Condition="!$([MSBuild]::IsOSPlatform('OSX'))">so</PtyShimExt>
-        <!-- musl targets need the musl C library/toolchain, not glibc's cc -->
-        <PtyShimCc Condition="$(RuntimeIdentifier.Contains('musl'))">musl-gcc</PtyShimCc>
+        <!-- musl targets need the musl C library/toolchain, not glibc's cc. On a glibc host
+             that's the musl-gcc cross wrapper (musl-tools); on a musl-native host (Alpine,
+             detected via /etc/alpine-release) plain cc already targets musl and no musl-gcc
+             wrapper exists. -->
+        <PtyShimCc Condition="$(RuntimeIdentifier.Contains('musl')) And !Exists('/etc/alpine-release')">musl-gcc</PtyShimCc>
         <PtyShimCc Condition="'$(PtyShimCc)' == ''">cc</PtyShimCc>
     </PropertyGroup>
 

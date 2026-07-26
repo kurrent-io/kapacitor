@@ -21,6 +21,9 @@ internal sealed partial class ClaudeLauncher(
     // owned review-flow launches.
     public bool DisablesApprovalPrompts(LauncherContext ctx) =>
         ctx.IsReviewFlow && ctx.Work == WorkLocation.OwnedWorktree;
+    /// <summary>Claude owns its own reviewer-model policy (aliases + dated concrete ids → family-level
+    /// equivalence key). Stateless singleton.</summary>
+    public IReviewerModelResolver? ReviewerModelResolver => ClaudeReviewerModelResolver.Instance;
 
     public bool IsAvailable() => CliResolver.Exists(CliPath);
 
@@ -66,6 +69,21 @@ internal sealed partial class ClaudeLauncher(
             TrustWorktreeInClaudeConfig(ctx.Worktree.Path);
         } catch (Exception ex) {
             LogTrustWorktreeFailed(ex, ctx.AgentId);
+        }
+
+        // Unattended review-flow reviewers launch with `--permission-mode bypassPermissions`
+        // (see BuildArgs). On a host that hasn't accepted bypass mode, Claude blocks on a
+        // one-time consent dialog and the launch dies silently at the server's timeout.
+        // Pre-accept it here in user settings so the reviewer starts cleanly — only for the
+        // bypass path, since interactive agents never pass it and a human can dismiss any
+        // prompt. Best-effort: the PTY dialog detector is the fail-fast backstop if this didn't
+        // take.
+        if (ctx.IsReviewFlow) {
+            try {
+                AcceptBypassPermissionsMode();
+            } catch (Exception ex) {
+                LogBypassAcceptFailed(ex, ctx.AgentId);
+            }
         }
 
         try {
@@ -428,6 +446,63 @@ internal sealed partial class ClaudeLauncher(
     }
 
     /// <summary>
+    /// The user-settings boolean Claude 2.1.x reads to skip its Bypass-Permissions consent dialog.
+    /// Verified against the shipped 2.1.x binary: it reads this key from userSettings (and localSettings/
+    /// flagSettings/policySettings) and writes it to userSettings when the user accepts the dialog
+    /// interactively. The legacy <c>bypassPermissionsModeAccepted</c> flag in <c>~/.claude.json</c> was
+    /// migrated to this key and is no longer honored directly, so we write THIS one.
+    /// </summary>
+    internal const string BypassPermissionsAcceptedKey = "skipDangerousModePermissionPrompt";
+
+    /// <summary>
+    /// Records acceptance of Claude's Bypass-Permissions consent dialog in the user settings file
+    /// Claude reads (<c>$CLAUDE_CONFIG_DIR/settings.json</c> when set, else <c>~/.claude/settings.json</c>) —
+    /// the same effect as accepting the dialog once interactively, so an unattended reviewer never
+    /// wedges on it. The spawned Claude inherits <c>CLAUDE_CONFIG_DIR</c> from the daemon, so it reads
+    /// the same file this resolves.
+    /// </summary>
+    static void AcceptBypassPermissionsMode() => AcceptBypassPermissionsMode(ClaudePaths.UserSettings);
+
+    /// <summary>
+    /// Sets <see cref="BypassPermissionsAcceptedKey"/> = true in the settings file at
+    /// <paramref name="settingsPath"/>, merging into any existing settings and preserving every other
+    /// key. Idempotent. Deliberately does NOT overwrite a settings file it cannot parse — the file is
+    /// user-owned and may carry keys/comments the daemon must not destroy. Serialized under the same
+    /// lock as the other shared-config writes.
+    /// </summary>
+    internal static void AcceptBypassPermissionsMode(string settingsPath) {
+        lock (TrustWriteLock) {
+            JsonObject settings;
+
+            if (File.Exists(settingsPath)) {
+                JsonNode? parsed;
+                try {
+                    parsed = JsonNode.Parse(File.ReadAllText(settingsPath));
+                } catch {
+                    // Unparseable, user-owned settings — never clobber it.
+                    return;
+                }
+
+                if (parsed is not JsonObject obj) return; // a non-object root is not ours to rewrite
+                settings = obj;
+            } else {
+                settings = [];
+            }
+
+            var already = settings[BypassPermissionsAcceptedKey] is JsonValue v
+             && v.TryGetValue<bool>(out var b)
+             && b;
+
+            if (already) return;
+
+            // Bool literal assignment stays AOT-safe (matches the hasTrustDialogAccepted write above);
+            // JsonValue.Create<string> is the shape that trips IL3050, not this.
+            settings[BypassPermissionsAcceptedKey] = true;
+            WriteJsonAtomic(settingsPath, settings);
+        }
+    }
+
+    /// <summary>
     /// Loads a JSON object from disk, tolerating missing files and non-object roots
     /// by returning a fresh <see cref="JsonObject"/>. Ensures pre-trust logic never
     /// throws on an unexpected config shape and reintroduces the launch hang.
@@ -447,6 +522,11 @@ internal sealed partial class ClaudeLauncher(
     /// rename (POSIX <c>rename(2)</c> / Win32 <c>MoveFileEx</c> with replace).
     /// A crash or concurrent reader never sees a truncated file — either the
     /// previous contents or the new contents, never a partial write.
+    ///
+    /// On Unix the target's existing permissions are PRESERVED across the temp+rename: rename(2)
+    /// swaps in the temp's inode, so a temp created under the umask (0644) would silently RELAX a
+    /// 0600 <c>settings.json</c> (which may hold secrets under <c>env</c>). The temp is stamped with
+    /// the target's current mode before creation, or 0600 for a brand-new file. No-op on Windows.
     /// </summary>
     internal static void WriteJsonAtomic(string path, JsonNode root) {
         // The temp file is written alongside the target, so the destination dir must
@@ -455,17 +535,50 @@ internal sealed partial class ClaudeLauncher(
         // relocated config — create it so the trust write doesn't throw.
         if (Path.GetDirectoryName(path) is { Length: > 0 } dir) Directory.CreateDirectory(dir);
 
+        var createMode = ResolveCreateMode(path);
+
         var tmp = path + ".tmp-" + Environment.ProcessId + "-" + Guid.NewGuid().ToString("N");
-        File.WriteAllText(tmp, root.ToJsonString(IndentedJsonOpts));
+
+        var options = new FileStreamOptions { Mode = FileMode.Create, Access = FileAccess.Write };
+        if (createMode is { } m) options.UnixCreateMode = m;
 
         try {
+            using (var fs = new FileStream(tmp, options))
+            using (var writer = new StreamWriter(fs)) {
+                writer.Write(root.ToJsonString(IndentedJsonOpts));
+            }
+
             File.Move(tmp, path, overwrite: true);
+
+            // Re-assert the mode on the published path (belt-and-braces against what the rename
+            // carries across, and against `overwrite: true` replacing a differently-moded target).
+            if (createMode is { } published && !OperatingSystem.IsWindows()) {
+                try { File.SetUnixFileMode(path, published); } catch { /* best-effort */ }
+            }
         } catch {
             try { File.Delete(tmp); } catch {
                 /* best-effort */
             }
 
             throw;
+        }
+    }
+
+    /// <summary>
+    /// The Unix create-mode for a <see cref="WriteJsonAtomic"/> temp: the target's CURRENT mode when
+    /// it already exists (preserve it — never relax a locked-down settings file), else owner-only
+    /// 0600 for a brand-new file. <c>null</c> on Windows (no Unix mode to apply).
+    /// </summary>
+    static UnixFileMode? ResolveCreateMode(string targetPath) {
+        if (OperatingSystem.IsWindows()) return null;
+
+        try {
+            return File.Exists(targetPath)
+                ? File.GetUnixFileMode(targetPath)
+                : UnixFileMode.UserRead | UnixFileMode.UserWrite;
+        } catch {
+            // If the mode can't be read, fail safe to owner-only rather than the umask default.
+            return UnixFileMode.UserRead | UnixFileMode.UserWrite;
         }
     }
 
@@ -537,6 +650,9 @@ internal sealed partial class ClaudeLauncher(
     [LoggerMessage(Level = LogLevel.Warning, Message = "Failed to pre-trust worktree for agent {AgentId} (continuing)")]
     partial void LogTrustWorktreeFailed(Exception ex, string agentId);
 
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Failed to pre-accept bypass-permissions mode for agent {AgentId} (continuing; the reviewer may wedge on the consent dialog)")]
+    partial void LogBypassAcceptFailed(Exception ex, string agentId);
+
     [LoggerMessage(Level = LogLevel.Warning, Message = "Failed to merge tool permissions for agent {AgentId} (continuing)")]
     partial void LogToolPermissionsFailed(Exception ex, string agentId);
 
@@ -551,4 +667,83 @@ internal sealed partial class ClaudeLauncher(
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "MCP allowlist entry '{Name}' can start flows — stripped (agent {AgentId})")]
     partial void LogAllowlistEntryStripped(string name, string agentId);
+}
+
+/// <summary>
+/// Claude-owned reviewer MODEL override policy. Anthropic aliases (<c>opus</c>/<c>sonnet</c>/<c>haiku</c>)
+/// and the dated concrete ids they resolve to (<c>claude-sonnet-4-5-20250929</c>,
+/// <c>claude-3-5-sonnet-20241022</c>) both canonicalize to a FAMILY-level equivalence key
+/// (<c>claude/&lt;family&gt;</c>). That family-level identity is the anchor that stays stable across the
+/// Claude CLI's own alias→dated resolution — so the key produced for a requested <c>sonnet</c> at
+/// preflight equals the key produced for whatever dated sonnet the CLI actually launches, which the
+/// server validates by equality. No central model table: this policy lives entirely inside the Claude
+/// launcher.
+/// </summary>
+internal sealed class ClaudeReviewerModelResolver : IReviewerModelResolver {
+    public static readonly ClaudeReviewerModelResolver Instance = new();
+
+    ClaudeReviewerModelResolver() { }
+
+    public string Vendor        => "claude";
+    public string PolicyVersion => "claude-reviewer-model-v1";
+
+    /// <summary>Anthropic model families. Both a bare alias ("sonnet") and any claude-scoped dated
+    /// concrete id ("claude-sonnet-4-5-20250929", "claude-3-5-sonnet-20241022") that carries a family
+    /// token canonicalize to the family — that family is the stable equivalence anchor. Deliberately
+    /// minimal (no exhaustive dated catalog, no speculative aliases).</summary>
+    static readonly string[] Families = ["opus", "sonnet", "haiku"];
+
+    public ReviewerModelResolution Resolve(string requestedModel) {
+        if (!ReviewerModelSyntax.IsWellFormed(requestedModel))
+            return new(ReviewerModelDisposition.Invalid, DiagnosticCode: "malformed_model_id");
+
+        var raw   = requestedModel.Trim();
+        var lower = raw.ToLowerInvariant();
+
+        var family = ResolveFamily(lower);
+        if (family is null)
+            return new(ReviewerModelDisposition.Unavailable);
+
+        return new(
+            ReviewerModelDisposition.Accept,
+            CanonicalRequestedModel: lower,
+            LaunchModel: raw,                       // passed through to the launcher verbatim
+            EquivalenceKey: $"claude/{family}");    // anchor — stable across alias→dated resolution
+    }
+
+    /// <summary>Returns the family iff exactly one known family token identifies the input: a bare alias
+    /// ("sonnet"), or a claude-scoped id whose tokens include exactly one family token
+    /// ("claude-sonnet-4-5-20250929", "claude-3-5-sonnet-20241022"). An unrecognized string, or an
+    /// ambiguous id carrying two family tokens, returns null.</summary>
+    static string? ResolveFamily(string lower) {
+        foreach (var f in Families)
+            if (lower == f) return f;
+
+        // A concrete id must be claude-scoped so a stray token in some other vendor's slug can't match.
+        if (!lower.StartsWith("claude-", StringComparison.Ordinal)) return null;
+
+        string? found = null;
+        foreach (var f in Families) {
+            if (!ContainsToken(lower, f)) continue;
+            if (found is not null) return null;     // ambiguous — two family tokens
+            found = f;
+        }
+
+        return found;
+    }
+
+    /// <summary>Whether <paramref name="lower"/> contains <paramref name="token"/> delimited by
+    /// non-alphanumeric boundaries, so "opus" matches "claude-opus-4-1" but not "opusplan".</summary>
+    static bool ContainsToken(string lower, string token) {
+        var idx = lower.IndexOf(token, StringComparison.Ordinal);
+        while (idx >= 0) {
+            var beforeOk = idx == 0 || !char.IsLetterOrDigit(lower[idx - 1]);
+            var afterPos = idx + token.Length;
+            var afterOk  = afterPos >= lower.Length || !char.IsLetterOrDigit(lower[afterPos]);
+            if (beforeOk && afterOk) return true;
+            idx = lower.IndexOf(token, idx + 1, StringComparison.Ordinal);
+        }
+
+        return false;
+    }
 }
