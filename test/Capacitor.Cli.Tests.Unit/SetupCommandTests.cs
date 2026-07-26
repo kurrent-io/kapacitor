@@ -262,13 +262,56 @@ public class SetupCommandTests {
 
     [Test]
     public async Task GuidedTourCallToAction_prompt_is_a_trigger_in_the_skill_description() {
-        // The CTA sends users to a natural-language prompt, not a slash command. If that exact
-        // phrase isn't among the skill's advertised triggers, the only discovery path we ship
-        // depends on the agent guessing. Keep the two pinned together.
+        // Vendors match a user's message against the frontmatter `description:` only — the body
+        // is read after the skill fires. So asserting the phrase is somewhere in the file would
+        // pass even if it moved below the fences, where it can no longer trigger anything.
         var skill = Path.Combine(RepoRoot(), "kcap", "skills", "guided-tour", "SKILL.md");
 
         await Assert.That(File.Exists(skill)).IsTrue();
-        await Assert.That(await File.ReadAllTextAsync(skill)).Contains("Start kcap guided tour");
+
+        var description = FrontmatterDescription(await File.ReadAllTextAsync(skill));
+
+        await Assert.That(description).Contains("Start kcap guided tour");
+    }
+
+    /// <summary>
+    /// The value of the YAML frontmatter's <c>description:</c> field, flattened to one line.
+    /// Throws when there is no frontmatter — an unparseable SKILL.md must fail the test, not
+    /// silently return an empty string that a Contains assertion would report as a mismatch.
+    /// </summary>
+    static string FrontmatterDescription(string content) {
+        var lines = content.Replace("\r\n", "\n").Split('\n');
+
+        if (lines.Length < 2 || lines[0].Trim() != "---")
+            throw new InvalidOperationException("SKILL.md has no YAML frontmatter block.");
+
+        var value    = new List<string>();
+        var inValue  = false;
+
+        for (var i = 1; i < lines.Length; i++) {
+            var line = lines[i];
+
+            if (line.Trim() == "---") break;
+
+            if (line.StartsWith("description:", StringComparison.Ordinal)) {
+                inValue = true;
+                // Covers `description: text` as well as the block form `description: >-`.
+                value.Add(line["description:".Length..].Trim().TrimEnd('>', '|', '-').Trim());
+
+                continue;
+            }
+
+            if (!inValue) continue;
+
+            // An unindented line is the next top-level key, which ends this value.
+            if (line.Length > 0 && !char.IsWhiteSpace(line[0])) break;
+
+            value.Add(line.Trim());
+        }
+
+        if (!inValue) throw new InvalidOperationException("SKILL.md frontmatter has no description field.");
+
+        return string.Join(' ', value).Trim();
     }
 
     /// <summary>Walks up from the test binary to the repo root (the directory holding `kcap/`).</summary>
