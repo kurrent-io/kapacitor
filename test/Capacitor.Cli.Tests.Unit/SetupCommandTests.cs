@@ -254,9 +254,31 @@ public class SetupCommandTests {
     [Test]
     public async Task GuidedTourCallToAction_is_the_exact_agreed_wording() {
         // Pinned wording — this is the only discovery path for the guided-tour skill, and the
-        // invocation it names has to stay in sync with kcap/skills/guided-tour/SKILL.md.
+        // prompt it names must appear verbatim in that skill's description (asserted below)
+        // or the phrase we tell users to type won't reliably fire it.
         await Assert.That(SetupCommand.GuidedTourCallToAction).IsEqualTo(
-            "New here? Run /kcap:guided-tour in your agent for a guided tour of what got recorded.");
+            "Prompt \"Start kcap guided tour\" in your agent for a guided tour of Capacitor");
+    }
+
+    [Test]
+    public async Task GuidedTourCallToAction_prompt_is_a_trigger_in_the_skill_description() {
+        // The CTA sends users to a natural-language prompt, not a slash command. If that exact
+        // phrase isn't among the skill's advertised triggers, the only discovery path we ship
+        // depends on the agent guessing. Keep the two pinned together.
+        var skill = Path.Combine(RepoRoot(), "kcap", "skills", "guided-tour", "SKILL.md");
+
+        await Assert.That(File.Exists(skill)).IsTrue();
+        await Assert.That(await File.ReadAllTextAsync(skill)).Contains("Start kcap guided tour");
+    }
+
+    /// <summary>Walks up from the test binary to the repo root (the directory holding `kcap/`).</summary>
+    static string RepoRoot() {
+        var dir = AppContext.BaseDirectory;
+
+        while (dir is not null && !Directory.Exists(Path.Combine(dir, "kcap", "skills")))
+            dir = Path.GetDirectoryName(dir);
+
+        return dir ?? throw new DirectoryNotFoundException("Could not locate the repo root from the test binary.");
     }
 
     [Test]

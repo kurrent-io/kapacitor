@@ -109,10 +109,10 @@ When setup finishes, `kcap` sends a best-effort POST to the server's `/api/users
 
 Verify with `kcap whoami` and `kcap status`.
 
-Setup closes by pointing you at the guided tour — run `/kcap:guided-tour` in Claude Code (or ask
-your agent for "a Capacitor tour") to see what your team has recorded and work through per-use-case
-tutorials for evals, session recall, PR review, and analytics. It ships with the plugin and is
-also installed for Codex and the other `~/.agents/skills/` agents as `kcap-guided-tour`.
+Setup closes by pointing you at the guided tour. Prompt your agent with **"Start kcap guided tour"**
+(or, in Claude Code, `/kcap:guided-tour`) to see what your team has recorded and work through
+per-use-case tutorials for evals, session recall, PR review, and analytics. It ships with the plugin
+and is also installed for Codex and the other `~/.agents/skills/` agents as `kcap-guided-tour`.
 
 For non-interactive environments:
 

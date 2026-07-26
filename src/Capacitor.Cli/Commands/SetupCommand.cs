@@ -551,12 +551,14 @@ public static class SetupCommand {
     }
 
     /// <summary>
-    /// The end-of-setup nudge toward the guided-tour skill. Held as a constant (rather than
-    /// inlined into the markup) so the wording is pinned by a test and can't drift out of sync
-    /// with the skill's actual invocation name.
+    /// The end-of-setup nudge toward the guided-tour skill. A natural-language prompt rather
+    /// than a slash command, because the invocation differs per vendor (<c>/kcap:guided-tour</c>
+    /// via the Claude Code plugin, <c>kcap-guided-tour</c> under ~/.agents/skills) while the
+    /// prompt works everywhere. Held as a constant so the wording is pinned by a test and stays
+    /// in sync with the trigger phrases in the skill's description.
     /// </summary>
     internal const string GuidedTourCallToAction =
-        "New here? Run /kcap:guided-tour in your agent for a guided tour of what got recorded.";
+        "Prompt \"Start kcap guided tour\" in your agent for a guided tour of Capacitor";
 
     /// <summary>
     /// Whether Step 6's import eligibility auth requirement is met: provider <c>None</c> needs no

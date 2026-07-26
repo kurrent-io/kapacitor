@@ -4,7 +4,8 @@ description: >-
   Guided tour of Kurrent Capacitor for someone who has it installed but does not
   yet know what it does for them — "what does capacitor do for me", "what is
   capacitor", "is this thing doing anything", "what can kcap do", "just installed
-  capacitor, now what", "give me a tour" — or when they invoke /kcap:guided-tour
+  capacitor, now what", "give me a tour", "Start kcap guided tour" (the prompt
+  `kcap setup` tells them to type) — or when they invoke /kcap:guided-tour
   directly. Shows the team's recorded sessions, spend and errors, then offers
   per-use-case tutorial tours (evals, session recall, PR review, analytics). Also
   handles the missing pieces: offers to install kcap if it is not set up, and to
