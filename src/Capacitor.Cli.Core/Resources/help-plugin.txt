@@ -127,7 +127,8 @@ Options:
                       install never fails. Harmless to call by hand.
 
 Notes:
-  Skills install to ~/.agents/skills/kcap-{recap,errors,hide,disable,validate-plan}/.
+  Skills install to ~/.agents/skills/kcap-{recap,errors,hide,disable,
+  validate-plan,review-flows,guided-tour}/.
   Codex, Cursor, and any other agent that honors the .agents/skills convention
   will pick them up automatically.
 

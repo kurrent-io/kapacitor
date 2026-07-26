@@ -79,8 +79,10 @@ Each hook pipes its JSON payload through the `kcap` CLI, which enriches it with 
 - `validate-plan` / `kcap-validate-plan` — Verify that all planned items were completed
 - `disable` / `kcap-disable` — Stop recording and delete all server data for the current session
 - `hide` / `kcap-hide` — Hide the current session (owner-only visibility)
+- `review-flows` / `kcap-review-flows` — Run structured, iterative spec/code review loops
+- `guided-tour` / `kcap-guided-tour` — Onboarding tour: what Capacitor has recorded for your team, then per-use-case tutorials (evals, session recall, PR review, analytics)
 
-In Claude they're invoked as `/kcap:recap`, `/kcap:errors`, etc.
+In Claude they're invoked as `/kcap:recap`, `/kcap:errors`, `/kcap:guided-tour`, etc.
 
 ## Prerequisites
 
@@ -162,6 +164,10 @@ kcap/
       SKILL.md
     hide/
       SKILL.md
+    review-flows/
+      SKILL.md
+    guided-tour/
+      SKILL.md           — /kcap:guided-tour onboarding tour
 ```
 
 The two MCP files exist because Claude requires top-level `mcpServers` (camelCase) while Codex accepts only `mcp_servers` (snake_case) or a bare server map — the schemas don't overlap. Keep them in sync when adding or removing servers.

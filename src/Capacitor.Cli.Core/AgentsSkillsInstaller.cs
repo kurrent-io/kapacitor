@@ -26,7 +26,8 @@ public static class AgentsSkillsInstaller {
         "hide",
         "disable",
         "validate-plan",
-        "review-flows"
+        "review-flows",
+        "guided-tour"
     ];
 
     /// <summary>

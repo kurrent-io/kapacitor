@@ -3,7 +3,14 @@ using Capacitor.Cli.Core;
 namespace Capacitor.Cli.Tests.Unit;
 
 public class AgentsSkillsInstallerTests {
-    static readonly string[] SourceNames = ["recap", "errors", "disable", "hide", "validate-plan", "review-flows"];
+    static readonly string[] SourceNames = ["recap", "errors", "disable", "hide", "validate-plan", "review-flows", "guided-tour"];
+
+    [Test]
+    public async Task Mirror_of_SourceNames_matches_the_installer() {
+        // Every test below builds its fixture from the local mirror, so a skill added to the
+        // installer but not here would be silently uncovered. Pin the two together.
+        await Assert.That(SourceNames).IsEquivalentTo(AgentsSkillsInstaller.SourceNames);
+    }
 
     [Test]
     public async Task Install_copies_each_source_to_kcap_prefixed_target() {

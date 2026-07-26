@@ -109,6 +109,11 @@ When setup finishes, `kcap` sends a best-effort POST to the server's `/api/users
 
 Verify with `kcap whoami` and `kcap status`.
 
+Setup closes by pointing you at the guided tour — run `/kcap:guided-tour` in Claude Code (or ask
+your agent for "a Capacitor tour") to see what your team has recorded and work through per-use-case
+tutorials for evals, session recall, PR review, and analytics. It ships with the plugin and is
+also installed for Codex and the other `~/.agents/skills/` agents as `kcap-guided-tour`.
+
 For non-interactive environments:
 
 ```bash
@@ -620,7 +625,7 @@ kcap plugin install --codex --if-installed           # refresh Codex hooks only 
 kcap plugin install --if-installed                   # refresh Claude plugin registration only if previously installed (used by npm postinstall)
 ```
 
-Installing with `--codex` (or `--skills`) writes six skills under `~/.agents/skills/`:
+Installing with `--codex` (or `--skills`) writes seven skills under `~/.agents/skills/`:
 
 | Skill | Wraps | Purpose |
 |---|---|---|
@@ -630,8 +635,9 @@ Installing with `--codex` (or `--skills`) writes six skills under `~/.agents/ski
 | `kcap-disable` | `kcap disable` | Stop recording + delete server data |
 | `kcap-validate-plan` | `kcap validate-plan` | Verify plan items were completed |
 | `kcap-review-flows` | `kcap mcp flows` | Structured iterative spec/code review loops |
+| `kcap-guided-tour` | analytics + sessions MCP | Onboarding tour of what Capacitor has recorded |
 
-The first five (`kcap-recap`, `kcap-errors`, `kcap-hide`, `kcap-disable`, `kcap-validate-plan`) auto-resolve the active session from `CODEX_THREAD_ID`; pass `<sessionId>` explicitly to operate on a different session. `kcap-review-flows` works differently — it operates via flow IDs through `kcap mcp flows` rather than session auto-resolution; see [Flows MCP server (for agents)](#flows-mcp-server-for-agents) for details.
+The first five (`kcap-recap`, `kcap-errors`, `kcap-hide`, `kcap-disable`, `kcap-validate-plan`) auto-resolve the active session from `CODEX_THREAD_ID`; pass `<sessionId>` explicitly to operate on a different session. `kcap-review-flows` works differently — it operates via flow IDs through `kcap mcp flows` rather than session auto-resolution; see [Flows MCP server (for agents)](#flows-mcp-server-for-agents) for details. `kcap-guided-tour` shells out to `kcap whoami` and otherwise reads through the `kcap-analytics` and `kcap-sessions` MCP servers, so it needs those registered (setup does it) rather than a session id.
 
 > **Codex sandbox network access (AI-794).** The skills shell out to `kcap …`, which talks to the Capacitor server — but Codex runs the agent's shell tool in a `workspace-write` sandbox that **blocks network by default**, so the skills fail (or demand escalation) until network access is allowed. Both `kcap setup` (one yes/no prompt after the Codex hooks step) and `kcap plugin install --codex` enable it for you. They write a constrained allowlist to `~/.codex/config.toml` rather than opening the network wholesale:
 >

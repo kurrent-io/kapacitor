@@ -837,7 +837,9 @@ internal static class CodingAgentsStep {
         }
 
         writeLine($"  [green]✓[/] Agent skills installed (user: {Markup.Escape(paths.AgentsSkillsDir)})");
-        writeLine("    [dim]kcap-recap, kcap-errors, kcap-hide, kcap-disable, kcap-validate-plan, review-flows[/]");
+        // Derived from the installer's own list — a hand-maintained copy here had already
+        // drifted (missing review-flows' prefix) by the time guided-tour was added.
+        writeLine($"    [dim]{string.Join(", ", AgentsSkillsInstaller.SourceNames.Select(n => "kcap-" + n))}[/]");
 
         SweepLegacyCodexSkills(detected, paths, installers);
 

@@ -537,8 +537,26 @@ public static class SetupCommand {
         AnsiConsole.MarkupLine("\n[dim]Optional:[/] start the daemon with [cyan]kcap daemon start -d[/]");
         AnsiConsole.MarkupLine("[dim]Optional:[/] import past sessions with [cyan]kcap import --org[/]");
 
+        // Setup leaves the user recording but with no idea what that buys them. The guided-tour
+        // skill is the answer, and nothing else points at it — so this is the last thing printed,
+        // in a panel, on every successful run. It prints even when no hooks were installed: the
+        // user may already have sessions from a prior install, and the tour degrades to offering
+        // install/import when they don't.
+        AnsiConsole.Write(
+            new Panel($"[bold]{Markup.Escape(GuidedTourCallToAction)}[/]")
+                .BorderColor(Color.Green)
+                .Padding(1, 0));
+
         return 0;
     }
+
+    /// <summary>
+    /// The end-of-setup nudge toward the guided-tour skill. Held as a constant (rather than
+    /// inlined into the markup) so the wording is pinned by a test and can't drift out of sync
+    /// with the skill's actual invocation name.
+    /// </summary>
+    internal const string GuidedTourCallToAction =
+        "New here? Run /kcap:guided-tour in your agent for a guided tour of what got recorded.";
 
     /// <summary>
     /// Whether Step 6's import eligibility auth requirement is met: provider <c>None</c> needs no

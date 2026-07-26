@@ -252,6 +252,14 @@ public class SetupCommandTests {
     }
 
     [Test]
+    public async Task GuidedTourCallToAction_is_the_exact_agreed_wording() {
+        // Pinned wording — this is the only discovery path for the guided-tour skill, and the
+        // invocation it names has to stay in sync with kcap/skills/guided-tour/SKILL.md.
+        await Assert.That(SetupCommand.GuidedTourCallToAction).IsEqualTo(
+            "New here? Run /kcap:guided-tour in your agent for a guided tour of what got recorded.");
+    }
+
+    [Test]
     public async Task ResolveTenantArg_expands_bare_label_to_kcap_subdomain() {
         await Assert.That(SetupCommand.ResolveTenantArg("eventuous")).IsEqualTo("https://eventuous.kcap.ai");
     }
