@@ -274,7 +274,8 @@ public class PluginCommandCodexTests {
             "hide",
             "disable",
             "validate-plan",
-            "review-flows"
+            "review-flows",
+            "guided-tour"
         };
 
         await Assert.That(AgentsSkillsInstaller.SourceNames).IsEquivalentTo(expected);
