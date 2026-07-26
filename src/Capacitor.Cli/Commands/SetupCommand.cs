@@ -537,11 +537,8 @@ public static class SetupCommand {
         AnsiConsole.MarkupLine("\n[dim]Optional:[/] start the daemon with [cyan]kcap daemon start -d[/]");
         AnsiConsole.MarkupLine("[dim]Optional:[/] import past sessions with [cyan]kcap import --org[/]");
 
-        // Setup leaves the user recording but with no idea what that buys them. The guided-tour
-        // skill is the answer, and nothing else points at it — so this is the last thing printed,
-        // in a panel, on every successful run. It prints even when no hooks were installed: the
-        // user may already have sessions from a prior install, and the tour degrades to offering
-        // install/import when they don't.
+        // Prints even when no hooks were installed — the user may already have sessions from a
+        // prior install, and the tour handles having none.
         AnsiConsole.Write(
             new Panel($"[bold]{Markup.Escape(GuidedTourCallToAction)}[/]")
                 .BorderColor(Color.Green)
@@ -551,11 +548,8 @@ public static class SetupCommand {
     }
 
     /// <summary>
-    /// The end-of-setup nudge toward the guided-tour skill. A natural-language prompt rather
-    /// than a slash command, because the invocation differs per vendor (<c>/kcap:guided-tour</c>
-    /// via the Claude Code plugin, <c>kcap-guided-tour</c> under ~/.agents/skills) while the
-    /// prompt works everywhere. Held as a constant so the wording is pinned by a test and stays
-    /// in sync with the trigger phrases in the skill's description.
+    /// A prompt rather than a slash command, because the invocation differs per vendor. Pinned
+    /// against the skill's trigger list by <c>SetupCommandTests</c>.
     /// </summary>
     internal const string GuidedTourCallToAction =
         "Prompt \"Start kcap guided tour\" in your agent for a guided tour of Capacitor";
