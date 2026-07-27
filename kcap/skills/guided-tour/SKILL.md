@@ -136,42 +136,43 @@ to the first. The variant is the only thing about turn 1 that changes between ru
 
 ```
 1  # 👋 Welcome to the Capacitor Guided Tour
-   Your team's coding sessions are already recorded and searchable. Give me a few seconds to
-   pull your numbers, and I'll show you around.
+   Your team's coding sessions are already recorded and searchable. Hang tight for a few
+   seconds while I pull your numbers — then I'll show you around.
 
 2  # 🚀 Capacitor Guided Tour
    Let's start with what Capacitor already knows about your work. Fetching your sessions,
-   spend, and errors — a few seconds...
+   spend, and errors — give it a few seconds...
 
 3  # 👋 Welcome to the Capacitor Guided Tour
    One minute from now you'll know exactly what your coding agents have been up to. Loading
-   your session record...
+   your session record — hold on a moment...
 
 4  # 🚀 Capacitor Guided Tour
    Nothing to configure, nothing to read first — this tour runs on your own data.
-   Pulling it up now...
+   Pulling it up now — bear with me a few seconds...
 
 5  # 👋 Welcome to the Capacitor Guided Tour
    Every session your agents have run is already in the record. Let's see what's in yours —
-   one moment...
+   hang on, this takes a moment...
 
 6  # ⚡ Capacitor Guided Tour
-   Loading your session record — sessions, spend, tool errors. Seconds away.
+   Loading your session record — sessions, spend, tool errors. Hold tight, it's seconds away.
 
 7  # 👋 Welcome to the Capacitor Guided Tour
-   You've been building a session record without lifting a finger. Fetching yours now so we
-   can put it to work...
+   You've been building a session record without lifting a finger. Fetching yours now — sit
+   tight for a few seconds while I put it to work...
 
 8  # 🧭 The Capacitor Guided Tour
    I'll be your guide: first your numbers, then the fastest ways to get value from them.
-   Pulling your data...
+   Pulling your data — wait just a few seconds...
 
 9  # 👋 Welcome to the Capacitor Guided Tour
-   Warming up the memory banks... your team's sessions are on their way. This won't take long.
+   Warming up the memory banks... your team's sessions are on their way. Hang tight — this
+   won't take long.
 
 10 # 🚀 Capacitor Guided Tour
    Fewer repeated mistakes, cheaper sessions, answers from your team's history — that's the
-   tour in one line. Proof loads in a few seconds...
+   tour in one line. Proof loads in a few seconds — hold on...
 ```
 
 ## TEMPLATE PART B1 — the menu (beat 2, verbatim, blanks filled)
@@ -185,7 +186,7 @@ next. And because it spans every repo your team touches, it sees patterns no sin
 
 **Your team's sessions at a glance:**
 
-{{TABLE: repo | sessions | tool calls | cost | tool errors}}
+{{TABLE: repo | sessions | tool calls | LLM cost (USD) | tool errors}}
 
 ## 🧠 Session recall
 
