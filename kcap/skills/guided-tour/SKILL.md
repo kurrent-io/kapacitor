@@ -36,14 +36,15 @@ verbatim, and in that same message issue, in parallel:
   - `kcap whoami --no-update-check` → `<user>`
   - **Q-PR** and **Q-COST** below (neither needs `<user>`)
 Never emit the text alone and then start calling tools in a later message: that adds a whole
-round-trip for nothing.
+round-trip for nothing. **If the host defers MCP tools** (schemas load on demand via a
+ToolSearch-style call), load everything in ONE call in this same message — `query_analytics` at
+minimum — never one lookup per tool: each separate lookup is a full round-trip that serialises
+the beat.
 
-**Beat 2 — the menu body plus Q-DONE, in ONE message.** Emit TEMPLATE PART B1 with its blanks
-filled, and in that same message issue **Q-DONE** (needs `<user>` from whoami). The menu must
-never wait for the TODO lookup. If whoami failed, skip Q-DONE and go to WHEN SOMETHING IS
-MISSING.
+**Beat 2 — the menu body, in ONE message.** Emit TEMPLATE PART B1 with its blanks filled. If
+whoami failed, go to WHEN SOMETHING IS MISSING.
 
-**Beat 3 — emit TEMPLATE PART B2** (the TODO list), `{{TODOS}}` filled from Q-DONE. Do not
+**Beat 3 — emit TEMPLATE PART B2** (the TODO list), `{{TODOS}}` filled per THE BLANKS. Do not
 re-emit anything above it.
 
 **Degrade, never stall.** No retry loops, no alternative-query experiments, no schema fetch. If
@@ -94,8 +95,10 @@ ORDER BY SUM(p.cost_usd) DESC
 LIMIT 5
 ```
 
-**Q-PR** (default scope, current repo). Replaces `{{PR}}` in BOTH places. Every PR in this view
-has recorded sessions, so the demo cannot come back empty. The full `owner/repo#N` form is what
+**Q-PR** (`scope: "global"` — the repo-scoped default probes the cwd for a checkout and costs a
+retry when there is none; global needs neither). Replaces `{{PR}}` in BOTH places. Every PR in
+this view has recorded sessions, so the demo cannot come back empty, and the full ref works from
+any directory. The full `owner/repo#N` form is what
 the `kcap-review` tools accept as an explicit `pr` argument — a bare number typed in a later
 session on some other branch can fail to resolve, or resolve against the wrong repo. If no
 rows, keep `owner/repo#N` as a literal placeholder.
@@ -108,16 +111,12 @@ ORDER BY p.last_session_at DESC NULLS LAST
 LIMIT 1
 ```
 
-**Q-DONE** — `search_sessions` on the `kcap-sessions` MCP server; one call, two jobs.
-`repo: "all"`, `author: "<user>"`, `limit: 20`, `query:`
-`"PromptedStartEvalsTour PromptedStartSessionRecallTour PromptedStartPRReviewTour
-PromptedStartAnalyticsTour"`.
-  1. **TODO progress**: completion markers left by earlier tour answers (see MARKERS). A TODO
-     counts as done ONLY if a hit snippet shows its token immediately preceded by the
-     check-mark prefix (`✓` and a space). Bare tokens without the prefix also occur — in old
-     search inputs and skill text — and never count.
-  2. **The user's own session count**: the response's `resolved_author.session_count`. This
-     drives the Import TODO. `no_author_match: true` means zero.
+**Q-DONE — DISABLED, do not run it in turn 1.** It was a `search_sessions` marker lookup
+(`repo: "all"`, `author: "<user>"`, the four `PromptedStart…Tour` tokens), but even at
+`limit: 20` the snippet payload overflows (~100KB) and sinks the turn-1 budget. Re-enable only
+when the server offers a snippet-size cap or marker-only search. Until then TODO progress is not
+looked up: markers are still EMITTED at tour completion (see MARKERS) so history accrues for
+when this returns.
 
 ## The blanks
 
@@ -126,15 +125,17 @@ PromptedStartAnalyticsTour"`.
   or invent a row. If Q-COST returned nothing, replace the table with the import offer (see
   WHEN SOMETHING IS MISSING).
 - `{{PR}}` — Q-PR's `pr_ref` (`owner/repo#N`), in both places.
-- `{{TODOS}}` — render each line as `- [x] ~~text~~` when done, else `- [ ] text`:
+- `{{TODOS}}` — render each line as `- [x] ~~text~~` when done, else `- [ ] text`. With Q-DONE
+  disabled, only the first line's state is knowable in turn 1; render every other line unticked.
+  Lines completed EARLIER IN THIS CONVERSATION still get ticked when re-printing after a tour.
   | line | done when |
   |---|---|
   | Install `kcap` | `whoami` succeeded in beat 1 |
-  | Import a session | Q-DONE's `resolved_author.session_count` > 0 |
-  | Prompt ❯ `Start the session recall tour` | its marker found by Q-DONE |
-  | Prompt ❯ `Start the evals tour` | marker |
-  | Prompt ❯ `Start the PR review tour` | marker |
-  | Prompt ❯ `Start the analytics tour` | marker |
+  | Import a session | unticked for now (needs Q-DONE) |
+  | Prompt ❯ `Start the session recall tour` | completed this conversation |
+  | Prompt ❯ `Start the evals tour` | completed this conversation |
+  | Prompt ❯ `Start the PR review tour` | completed this conversation |
+  | Prompt ❯ `Start the analytics tour` | completed this conversation |
 
 ## TEMPLATE PART A — the welcome (beat 1, one variant, verbatim)
 
@@ -248,8 +249,9 @@ https://capacitor.kurrent.io/docs/getting-started/quickstart and walk them throu
 step by step — one instruction at a time, verify with `kcap whoami` at the end, then restart
 the tour properly. If they decline, give them the link and the one-line way to come back.
 
-**The user has no sessions of their own** (Q-DONE: `no_author_match` or `session_count` 0):
-after the menu, ask if they'd like to import their history. On yes, fetch
+**The user has no sessions of their own** (a tour's own author lookup — see the evals
+readiness check — finds none, or every query for their sessions comes back empty): ask if
+they'd like to import their history. On yes, fetch
 https://capacitor.kurrent.io/docs/getting-started/import-your-history/ , lay out the options it
 describes (which agents they use, what gets imported), and run the import they choose. Then
 re-show the table — it is the payoff.
@@ -271,7 +273,8 @@ space, then the item's marker written as ONE word:
 | PR review | `Prompted` + `StartPRReviewTour` |
 | analytics | `Prompted` + `StartAnalyticsTour` |
 
-The next guided tour, in any repo, finds them via Q-DONE and crosses the TODO out. (They are
+They persist in the session record so TODO progress can be looked up across sessions once
+Q-DONE returns (disabled for now — see THE QUERIES). (They are
 written split in this file on purpose: transcripts also record skill text and search inputs, and
 only the emitted `✓`-prefixed line may ever count as done.)
 
@@ -407,9 +410,10 @@ fresh workspace the later stages are simply empty — not broken, not misconfigu
 
 **Establish which stage they can reach BEFORE opening the tour, and never promise past it.**
 Two read-only checks, no writes:
-  - **Sessions to score**: `resolved_author.session_count` from Q-DONE, already fetched in
-    beat 2 of turn 1 (it needs `<user>` from whoami, so it cannot run in beat 1). One or two
-    sessions cannot produce a cross-session pattern.
+  - **Sessions to score**: one `search_sessions` call here — `author: "<user>"`, `limit: 1`,
+    empty query — and read the response's `resolved_author.session_count` (`no_author_match`
+    means zero). Do NOT widen the limit; the count rides the envelope, not the results. One or
+    two sessions cannot produce a cross-session pattern.
   - **Anything curated yet**: `kcap curate apply --dry-run` — reports what *would* be written
     and exits without writing. This is the one sanctioned use of `curate apply`; the bare
     writing form stays banned.
