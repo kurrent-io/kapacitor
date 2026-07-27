@@ -26,7 +26,7 @@ public static class PiMcpExtensionInstaller {
 
         import { spawn } from "node:child_process";
 
-        const KCAP_MCP_SERVERS = ["review", "sessions", "flows", "memory"];
+        const KCAP_MCP_SERVERS = ["review", "sessions", "flows", "memory", "analytics"];
         const HANDSHAKE_TIMEOUT_MS = 10000;
         // Generous — above the flows server's own round timeouts; only a backstop against a
         // stalled-but-not-exited server. A timeout surfaces as a tool failure (execute throws).
