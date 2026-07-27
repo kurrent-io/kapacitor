@@ -34,8 +34,9 @@ public class PiMcpExtensionInstallerTests {
 
         // Async factory (pi awaits it before session_start → tools ready turn 1).
         await Assert.That(content).Contains("export default async function");
-        // Bridges all four kcap servers.
-        await Assert.That(content).Contains("[\"review\", \"sessions\", \"flows\", \"memory\"]");
+        // Bridges every kcap server Pi ships, including analytics (the guided tour's menu
+        // query needs query_analytics — kcap-workitems stays Claude-plugin-only).
+        await Assert.That(content).Contains("[\"review\", \"sessions\", \"flows\", \"memory\", \"analytics\"]");
         // MCP handshake incl. the mandatory notifications/initialized.
         await Assert.That(content).Contains("initialize");
         await Assert.That(content).Contains("notifications/initialized");
