@@ -359,6 +359,36 @@ public class SetupCommandTests {
     }
 
     [Test]
+    public async Task ShouldOfferGuidedTour_uses_a_legacy_registered_marketplace_path() {
+        // IsInstalled recognises pre-rename keys (kurrent/kapacitor); the path reader must use
+        // the same key set, or the gate falls back to THIS build's plugin dir — which ships the
+        // skill — while Claude actually loads the legacy dir, which does not.
+        using var tmp          = new TempDir();
+        var       settingsPath = Path.Combine(tmp.Path, ".claude", "settings.json");
+        var       legacyDir    = Path.Combine(tmp.Path, "legacy-plugin");
+
+        Directory.CreateDirectory(Path.GetDirectoryName(settingsPath)!);
+        await File.WriteAllTextAsync(settingsPath, $$"""
+            {
+              "extraKnownMarketplaces": {
+                "kapacitor": { "source": { "source": "directory", "path": {{System.Text.Json.JsonSerializer.Serialize(legacyDir)}} } }
+              },
+              "enabledPlugins": { "kapacitor@kapacitor": true }
+            }
+            """);
+        Directory.CreateDirectory(Path.Combine(legacyDir, "skills", "recap"));
+
+        // Current build's plugin dir DOES ship the skill — the wrong fallback target.
+        var modernPlugin = Path.Combine(tmp.Path, "modern-plugin");
+        Directory.CreateDirectory(Path.Combine(modernPlugin, "skills", "guided-tour"));
+        await File.WriteAllTextAsync(Path.Combine(modernPlugin, "skills", "guided-tour", "SKILL.md"), "skill");
+
+        var paths = GuidedTourPaths(tmp.Path) with { PluginDir = modernPlugin };
+
+        await Assert.That(SetupCommand.ShouldOfferGuidedTour(true, settingsPath, paths)).IsFalse();
+    }
+
+    [Test]
     public async Task ShouldOfferGuidedTour_false_when_an_old_plugin_is_registered_and_pluginDir_is_null() {
         // Codex round 4: an older kcap plugin registered in settings, run from a layout where
         // ResolvePluginPath finds nothing. Registration alone must not advertise a skill the

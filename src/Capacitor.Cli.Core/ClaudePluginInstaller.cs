@@ -75,12 +75,19 @@ public static class ClaudePluginInstaller {
         try {
             if (!File.Exists(settingsPath)) return null;
             if (JsonNode.Parse(File.ReadAllText(settingsPath)) is not JsonObject root) return null;
+            if (root["extraKnownMarketplaces"] is not JsonObject marketplaces) return null;
 
-            var path = root["extraKnownMarketplaces"]?["kcap"]?["source"]?["path"];
+            // Same key set IsInstalled recognises, current shape first — the two must agree or
+            // the gate composing them falls back to the wrong directory for legacy installs.
+            foreach (var key in (string[]) ["kcap", "kurrent", "kapacitor"]) {
+                if (marketplaces[key]?["source"]?["path"] is JsonValue v
+                    && v.TryGetValue<string>(out var p)
+                    && !string.IsNullOrWhiteSpace(p)) {
+                    return p;
+                }
+            }
 
-            return path is JsonValue v && v.TryGetValue<string>(out var p) && !string.IsNullOrWhiteSpace(p)
-                ? p
-                : null;
+            return null;
         } catch {
             return null;
         }
