@@ -34,14 +34,14 @@ Budget: the welcome on screen immediately, the complete menu in ~12 seconds.
 **Beat 1 — welcome plus every independent call, in ONE message.** Emit TEMPLATE PART A
 verbatim, and in that same message issue, in parallel:
   - `kcap whoami --no-update-check` → `<user>`
-  - **Q-PR**, **Q-COST**, **Q-ERR** below (none of them needs `<user>`)
+  - **Q-PR** and **Q-COST** below (neither needs `<user>`)
 Never emit the text alone and then start calling tools in a later message: that adds a whole
 round-trip for nothing.
 
 **Beat 2 — the menu body plus Q-DONE, in ONE message.** Emit TEMPLATE PART B1 with its blanks
-filled (merge Q-COST and Q-ERR by repo; a repo missing from Q-ERR gets 0), and in that same
-message issue **Q-DONE** (needs `<user>` from whoami). The menu must never wait for the TODO
-lookup. If whoami failed, skip Q-DONE and go to WHEN SOMETHING IS MISSING.
+filled, and in that same message issue **Q-DONE** (needs `<user>` from whoami). The menu must
+never wait for the TODO lookup. If whoami failed, skip Q-DONE and go to WHEN SOMETHING IS
+MISSING.
 
 **Beat 3 — emit TEMPLATE PART B2** (the TODO list), `{{TODOS}}` filled from Q-DONE. Do not
 re-emit anything above it.
@@ -54,17 +54,18 @@ ask me to try again)*` where the table would go and finish the menu. The menu is
 
 **Use the SQL verbatim**, via the `query_analytics` tool on the `kcap-analytics` MCP server. The views are
 pre-named so you never call `get_analytics_schema` — that fetch is ~77KB and spills to disk.
-Q-COST and Q-ERR are TEAM-WIDE on purpose — no user filter in the SQL, so they can run in
-beat 1 before whoami returns. The personal-repo exclusion happens at RENDER time instead: when
-building `{{TABLE}}`, drop any row whose repo owner equals `<user>` (whoami has returned by
-then), and print at most 3 of what remains — the LIMIT 5 exists so the table survives that
-filtering. The table is about the team's shared work, not personal scratch repos.
+Q-COST is TEAM-WIDE on purpose — no user filter in the SQL, so it can run in beat 1 before
+whoami returns. The personal-repo exclusion happens at RENDER time instead: when building
+`{{TABLE}}`, drop any row whose repo owner equals `<user>` (whoami has returned by then), and
+print at most 3 of what remains — the LIMIT 5 exists so the table survives that filtering. The
+table is about the team's shared work, not personal scratch repos.
 
-**Q-COST** (`scope: "global"`):
-
-`v_an_cost` has one row per session PER MODEL, so it must be collapsed to one row per session
-before joining `v_an_sessions` — otherwise the join duplicates `duration_min` and the hours are
-whatever the fan-out makes them.
+**Q-COST** (`scope: "global"`) — the whole table in one call. Two grain notes baked into its
+shape: `v_an_cost` is one row per session PER MODEL, so it is collapsed to one row per session
+before anything joins it; and `tool calls` / `tool errors` both come from `v_an_session_steps`
+— the SAME view — so the error rate a reader computes from the two columns is internally
+consistent. Deliberately NOT selected: any duration column. `v_an_sessions.duration_min` is
+wall clock (sessions left open dominate it), and no honest hours figure exists in the views.
 
 ```sql
 WITH per_session AS (
@@ -72,31 +73,25 @@ WITH per_session AS (
   FROM v_an_cost c
   WHERE c.cost_usd IS NOT NULL
   GROUP BY c.repo_hash, c.session_id
+),
+steps AS (
+  SELECT st.session_id,
+         COUNT(*) FILTER (WHERE st.tool_name IS NOT NULL) AS tool_calls,
+         COUNT(*) FILTER (WHERE st.is_error) AS tool_errors
+  FROM v_an_session_steps st
+  GROUP BY st.session_id
 )
 SELECT r.owner || '/' || r.repo_name AS repo,
        COUNT(*) AS sessions,
-       ROUND(SUM(s.duration_min)/60.0, 1) AS hours,
-       ROUND(SUM(p.cost_usd)::numeric, 2) AS cost_usd
+       COALESCE(SUM(s.tool_calls), 0) AS tool_calls,
+       ROUND(SUM(p.cost_usd)::numeric, 2) AS cost_usd,
+       COALESCE(SUM(s.tool_errors), 0) AS tool_errors
 FROM per_session p
-JOIN v_an_sessions s     ON s.session_id = p.session_id
 JOIN v_an_repositories r ON r.repo_hash  = p.repo_hash
+LEFT JOIN steps s        ON s.session_id = p.session_id
 GROUP BY r.owner || '/' || r.repo_name
 ORDER BY SUM(p.cost_usd) DESC
 LIMIT 5
-```
-
-**Q-ERR** (`scope: "global"`). No user filter and NO `LIMIT`, both on purpose: it is a lookup
-consulted after Q-COST has already chosen the rows, not a row selector. Bounding it by error
-count would drop repos that rank high on cost but low on errors, and the missing-repo rule would
-then render them as `0`. `errors > 0` is the one safe prune — a repo with no errors renders `0`
-either way.
-
-```sql
-SELECT r.owner || '/' || r.repo_name AS repo, SUM(t.errors) AS errors
-FROM v_an_tool_usage t
-JOIN v_an_repositories r ON r.repo_hash = t.repo_hash
-WHERE t.errors > 0
-GROUP BY r.owner || '/' || r.repo_name
 ```
 
 **Q-PR** (default scope, current repo). Replaces `{{PR}}` in BOTH places. Every PR in this view
@@ -119,8 +114,8 @@ PromptedStartAnalyticsTour"`.
 
 ## The blanks
 
-- `{{TABLE}}` — Q-COST+Q-ERR merged; drop rows whose repo owner equals `<user>`; print at most
-  3 of what remains, exactly as returned: never round, pad,
+- `{{TABLE}}` — Q-COST's rows; drop any whose repo owner equals `<user>`; print at most 3 of
+  what remains, exactly as returned: never round, pad,
   or invent a row. If Q-COST returned nothing, replace the table with the import offer (see
   WHEN SOMETHING IS MISSING).
 - `{{PR}}` — Q-PR's number, in both places.
@@ -190,7 +185,7 @@ next. And because it spans every repo your team touches, it sees patterns no sin
 
 **Your team's sessions at a glance:**
 
-{{TABLE: repo | sessions | hours | cost | tool errors}}
+{{TABLE: repo | sessions | tool calls | cost | tool errors}}
 
 ## 🧠 Session recall
 
