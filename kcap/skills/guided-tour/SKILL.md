@@ -126,12 +126,13 @@ when this returns.
 - `{{PR}}` — Q-MENU's `pr_ref` (`owner/repo#N`, identical on every row), in both places. If it
   is NULL, keep `owner/repo#N` as a literal placeholder.
 - `{{TODOS}}` — render each line as `- [x] ~~text~~` when done, else `- [ ] text`. With Q-DONE
-  disabled, only the first line's state is knowable in turn 1; render every other line unticked.
-  Lines completed EARLIER IN THIS CONVERSATION still get ticked when re-printing after a tour.
+  disabled, only the install and import lines are knowable in turn 1; render the tour lines
+  unticked. Lines completed EARLIER IN THIS CONVERSATION still get ticked when re-printing
+  after a tour.
   | line | done when |
   |---|---|
   | Install `kcap` | `whoami` succeeded in beat 1 |
-  | Import a session | unticked for now (needs Q-DONE) |
+  | Import a session | Q-MENU returned at least one row with `sessions` ≥ 1 — judge on the RAW rows, before the render filter drops personal repos |
   | Prompt ❯ `Start the session recall tour` | completed this conversation |
   | Prompt ❯ `Start the evals tour` | completed this conversation |
   | Prompt ❯ `Start the PR review tour` | completed this conversation |
