@@ -197,35 +197,39 @@ next. And because it spans every repo your team touches, it sees patterns no sin
 
 ## 🧠 Session recall
 
+  Prompt ❯ `Start the session recall tour` to begin
+
 Searches what you actually discussed in past sessions — the questions, decisions and dead ends —
 so you can find whether a problem has come up before and how it was resolved.
   Prompt ❯ `What did I leave unfinished in my last session?`
   Prompt ❯ `Pick up where my last session left off`
-  Prompt ❯ `Start the session recall tour`
 
 ## 🧪 Evals
+
+  Prompt ❯ `Start the evals tour` to begin
 
 Scores a recorded session with an LLM judge against criteria like safety, plan adherence, quality
 and efficiency.
   Prompt ❯ `evaluate my last session`
   Prompt ❯ `Show the tool errors I keep repeating across sessions`
-  Prompt ❯ `Start the evals tour`
 
 ## 🔀 PR review
+
+  Prompt ❯ `Start the PR review tour` to begin
 
 Brings up the recorded sessions behind a pull request so a review can draw on why the code was
 written that way, not just what changed.
   Prompt ❯ `Review {{PR}} and its key decisions`
   Prompt ❯ `Why was {{PR}} implemented this way?`
-  Prompt ❯ `Start the PR review tour`
 
 ## 📊 Analytics
+
+  Prompt ❯ `Start the analytics tour` to begin
 
 Answers questions about spend, token usage, tool errors and session activity over your recorded
 sessions, as tables you can check.
   Prompt ❯ `What did I spend on coding agents last week?`
   Prompt ❯ `Do my error-heavy sessions cost more than my clean ones?`
-  Prompt ❯ `Start the analytics tour`
 ```
 
 ## TEMPLATE PART B2 — the TODOs (beat 3, verbatim, {{TODOS}} filled)
