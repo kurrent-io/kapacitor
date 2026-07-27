@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Daemon.Acp;
 
@@ -69,5 +70,26 @@ public class AcpUsageUpdateTests {
         await Assert.That(e.Cwd).IsNull();
         await Assert.That(e.RawSessionId).IsNull();
         await Assert.That(e.EndReason).IsNull();
+    }
+
+    [Test]
+    [Arguments("\"10\"")]   // string
+    [Arguments("true")]     // bool
+    [Arguments("null")]     // null
+    [Arguments("{}")]       // object
+    [Arguments("[]")]       // array
+    public async Task Wrong_typed_numeric_fields_degrade_to_absent_rather_than_throwing(string usedJson) {
+        // A vendor frame is untrusted input. JsonElement.TryGetInt64 THROWS on a non-Number
+        // ValueKind, so a helper that calls it unguarded would let a schema-drift frame escape
+        // Reduce() and kill the whole notification rather than dropping one bad update.
+        var el = JsonDocument.Parse($$"""{"sessionUpdate":"usage_update","used":{{usedJson}},"size":200000}""").RootElement;
+
+        await Assert.That(el.Num("used")).IsNull();
+    }
+
+    [Test]
+    public async Task Fractional_numbers_are_absent_not_truncated() {
+        var el = JsonDocument.Parse("""{"used":10.5}""").RootElement;
+        await Assert.That(el.Num("used")).IsNull();
     }
 }
