@@ -95,10 +95,17 @@ LIMIT 5
 ```
 
 **Q-PR** (default scope, current repo). Replaces `{{PR}}` in BOTH places. Every PR in this view
-has recorded sessions, so the demo cannot come back empty. If no rows, keep `XXX`.
+has recorded sessions, so the demo cannot come back empty. The full `owner/repo#N` form is what
+the `kcap-review` tools accept as an explicit `pr` argument — a bare number typed in a later
+session on some other branch can fail to resolve, or resolve against the wrong repo. If no
+rows, keep `owner/repo#N` as a literal placeholder.
 
 ```sql
-SELECT pr_number FROM v_an_prs ORDER BY last_session_at DESC NULLS LAST LIMIT 1
+SELECT r.owner || '/' || r.repo_name || '#' || p.pr_number AS pr_ref
+FROM v_an_prs p
+JOIN v_an_repositories r ON r.repo_hash = p.repo_hash
+ORDER BY p.last_session_at DESC NULLS LAST
+LIMIT 1
 ```
 
 **Q-DONE** — `search_sessions` on the `kcap-sessions` MCP server; one call, two jobs.
@@ -118,7 +125,7 @@ PromptedStartAnalyticsTour"`.
   what remains, exactly as returned: never round, pad,
   or invent a row. If Q-COST returned nothing, replace the table with the import offer (see
   WHEN SOMETHING IS MISSING).
-- `{{PR}}` — Q-PR's number, in both places.
+- `{{PR}}` — Q-PR's `pr_ref` (`owner/repo#N`), in both places.
 - `{{TODOS}}` — render each line as `- [x] ~~text~~` when done, else `- [ ] text`:
   | line | done when |
   |---|---|
@@ -167,11 +174,11 @@ to the first. The variant is the only thing about turn 1 that changes between ru
    Pulling your data — wait just a few seconds...
 
 9  # 👋 Welcome to the Capacitor Guided Tour
-   Warming up the memory banks... your team's sessions are on their way. Hang tight — this
+   Your sessions are already in the record and on their way here. Hang tight — this
    won't take long.
 
 10 # 🚀 Capacitor Guided Tour
-   Fewer repeated mistakes, cheaper sessions, answers from your team's history — that's the
+   Fewer repeated mistakes, answers straight from your own history — that's the
    tour in one line. Proof loads in a few seconds — hold on...
 ```
 
@@ -208,8 +215,8 @@ and efficiency.
 
 Brings up the recorded sessions behind a pull request so a review can draw on why the code was
 written that way, not just what changed.
-  Prompt ❯ `review PR# {{PR}}`
-  Prompt ❯ `Why was PR# {{PR}} implemented this way?`
+  Prompt ❯ `review {{PR}}`
+  Prompt ❯ `Why was {{PR}} implemented this way?`
   Prompt ❯ `Start the PR review tour`
 
 ## 📊 Analytics
@@ -327,12 +334,13 @@ query serves both
 `tool_name`, report `SUM(errors)` and `COUNT(DISTINCT session_id)`). The sessions count is the
 point: the same failure across N sessions means N sessions started without knowing about it.
 
-**`review PR# N`** — `kcap-review` MCP: `get_pr_summary`, then `get_transcript` /
+**`review <owner/repo#N>`** — `kcap-review` MCP: `get_pr_summary` with the full ref passed
+explicitly as `pr` (never rely on branch auto-detection here), then `get_transcript` /
 `search_context` for the reasoning. Show *why*, not just what changed. From the menu this is the
 BOUNDED form — summary plus the recorded reasoning behind the main changes, about a minute, NOT
 a line-by-line review of every file — and it ends with `Prompt ❯` offering the full deep review.
 
-**`Why was PR# {{PR}} implemented this way?`** — the reasoning half of the above on its own:
+**`Why was {{PR}} implemented this way?`** — the reasoning half of the above on its own:
 `get_pr_summary` for what changed, then `get_transcript` / `search_context` for the decisions
 and constraints behind it. Attribute per the accuracy rules — who proposed, who decided.
 
