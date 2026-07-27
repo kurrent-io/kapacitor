@@ -701,9 +701,11 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
             // dormant; it exists so the context chip lights up for every ACP-hosted vendor the
             // moment any of them ships it. Content-free unless both fields are present and
             // sane - a partial reading is worse than none, since `size` is the chip's
-            // denominator. `used > size` is kept: reported windows can be advisory. Any `cost`
-            // or unknown sibling fields are tolerated and ignored.
-            "usage_update" => update.Num("used") is { } used and >= 0 && update.Num("size") is { } size and > 0
+            // denominator. `used > size` is kept: reported windows can be advisory. A zero
+            // `used` is dropped to match the server's re-validation, where it would be
+            // durably appended yet invisible to every consumer (the peak comparison they all
+            // share ignores a zero candidate). Any `cost` or unknown siblings are ignored.
+            "usage_update" => update.Num("used") is { } used and > 0 && update.Num("size") is { } size and > 0
                 ? new AcpSessionUpdate(
                     AcpUpdateKind.UsageUpdate,
                     ContextUsedTokens: used,
