@@ -697,6 +697,20 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
                 Title: GetStringOrNull(update, "title"),
                 Raw: update),
 
+            // The ACP spec's Session Usage RFD. No vendor implements it yet, so this arm is
+            // dormant; it exists so the context chip lights up for every ACP-hosted vendor the
+            // moment any of them ships it. Content-free unless both fields are present and
+            // sane - a partial reading is worse than none, since `size` is the chip's
+            // denominator. `used > size` is kept: reported windows can be advisory. Any `cost`
+            // or unknown sibling fields are tolerated and ignored.
+            "usage_update" => update.Num("used") is { } used and >= 0 && update.Num("size") is { } size and > 0
+                ? new AcpSessionUpdate(
+                    AcpUpdateKind.UsageUpdate,
+                    ContextUsedTokens: used,
+                    ContextWindowTokens: size,
+                    Raw: update)
+                : new AcpSessionUpdate(AcpUpdateKind.Unknown, Raw: update),
+
             _ => new AcpSessionUpdate(AcpUpdateKind.Unknown, Raw: update),
         };
     }
@@ -783,15 +797,18 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
                     break;
 
                 case AcpUpdateKind.SessionInfo:
-                    // Session-title metadata is not transcript content: it must NOT close an open
-                    // chunk run. A session_info_update interleaved between two message/thought
-                    // chunks would otherwise flush the run mid-stream and split one contiguous
-                    // assistant message into two envelopes. Emit it standalone, leaving
-                    // _openRunKind/_openRunText untouched so the surrounding chunks still aggregate
-                    // into one run (the title is orderless metadata — its relative seq is immaterial).
-                    var titleEnvelope = AcpEventTranslator.Translate(update, seq: 0, NowIso(), logger: _logger, debugFrames: _debugFrames);
-                    if (titleEnvelope is { } t)
-                        EmitEnvelope(t);
+                case AcpUpdateKind.UsageUpdate:
+                    // Neither is transcript content, so neither must close an open chunk run. One
+                    // interleaved between two message/thought chunks would otherwise flush the run
+                    // mid-stream and split one contiguous assistant message into two envelopes.
+                    // Emit standalone, leaving _openRunKind/_openRunText untouched so the
+                    // surrounding chunks still aggregate into one run — both are orderless
+                    // metadata, so their relative seq is immaterial.
+                    var metaEnvelope = AcpEventTranslator.Translate(
+                        update, seq: 0, NowIso(), logger: _logger, debugFrames: _debugFrames,
+                        resolvedModel: _resolvedModel);
+                    if (metaEnvelope is { } m)
+                        EmitEnvelope(m);
                     break;
 
                 default:

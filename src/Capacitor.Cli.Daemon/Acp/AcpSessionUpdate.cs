@@ -20,6 +20,7 @@ internal enum AcpUpdateKind {
     Plan,
     AvailableCommands,
     SessionInfo,
+    UsageUpdate,
     Unknown,
 }
 
@@ -51,5 +52,7 @@ internal sealed record AcpSessionUpdate(
     string?       ToolInputJson  = null,
     string?       ToolResultText = null,
     bool          ToolIsError    = false,
+    long?         ContextUsedTokens   = null, // usage_update's `used` (context occupancy)
+    long?         ContextWindowTokens = null, // usage_update's `size` (window capacity)
     JsonElement?  Raw            = null
 );

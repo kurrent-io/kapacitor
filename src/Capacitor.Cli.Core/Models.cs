@@ -1166,6 +1166,7 @@ public static class AcpEventKind {
     public const string ToolResult         = "tool_result";
     public const string SessionTitle       = "session_title";
     public const string SessionEnded       = "session_ended";
+    public const string Usage              = "usage";
 }
 
 /// <summary>
@@ -1209,6 +1210,12 @@ public readonly record struct AcpEventEnvelope(
 
         // session_ended
         string? EndReason         = null,
+
+        // usage — context occupancy from the ACP Session Usage RFD. Additive and nullable, so
+        // ContractVersion stays 1: an older server ignores them. The resolved model rides the
+        // Model field above, stamped on every usage envelope.
+        long?   ContextUsedTokens   = null,
+        long?   ContextWindowTokens = null,
 
         // transcript-authoritative time (ISO-8601); server falls back to now if absent
         string? TimestampIso      = null

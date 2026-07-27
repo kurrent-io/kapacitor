@@ -67,7 +67,8 @@ internal static partial class AcpEventTranslator {
             string           timestampIso,
             string?          aggregatedText = null,
             ILogger?         logger         = null,
-            bool             debugFrames    = false) {
+            bool             debugFrames    = false,
+            string?          resolvedModel  = null) {
         switch (update.Kind) {
             case AcpUpdateKind.AgentMessageChunk:
                 return new AcpEventEnvelope(
@@ -102,6 +103,20 @@ internal static partial class AcpEventTranslator {
                     ToolCallId: update.ToolCallId,
                     ToolResult: update.ToolResultText,
                     ToolIsError: update.ToolIsError,
+                    TimestampIso: timestampIso);
+
+            case AcpUpdateKind.UsageUpdate:
+                // Reduce() already validated both fields, so a UsageUpdate here is always emittable.
+                // The resolved model is stamped on EVERY usage envelope: the server's mapper is a
+                // pure per-envelope function with no session-fold access, so attribution has to
+                // travel on the wire rather than be looked up server-side. A null model is
+                // harmless - the chip's denominator is the reading's own window.
+                return new AcpEventEnvelope(
+                    Seq: seq,
+                    Kind: AcpEventKind.Usage,
+                    Model: resolvedModel,
+                    ContextUsedTokens: update.ContextUsedTokens,
+                    ContextWindowTokens: update.ContextWindowTokens,
                     TimestampIso: timestampIso);
 
             case AcpUpdateKind.SessionInfo:
