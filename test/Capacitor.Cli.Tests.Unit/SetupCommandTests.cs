@@ -325,6 +325,30 @@ public class SetupCommandTests {
     }
 
     [Test]
+    public async Task AgentSetupSkipped_is_true_only_on_the_two_early_returns() {
+        // No agent detected, and user declined — the two paths that install nothing at all.
+        var noAgents = new CodingAgentsStep.Result(false, false, false, false, false, AgentSetupRan: false);
+
+        await Assert.That(noAgents.AgentSetupSkipped).IsTrue();
+    }
+
+    [Test]
+    public async Task AgentSetupSkipped_is_false_when_skills_were_already_current() {
+        // The trap: every Installed flag is false here too, because the installers skip work
+        // that's already done. Gating the guided-tour CTA on those flags would hide it from
+        // exactly the users who can use it — a machine that is fully wired up.
+        var alreadyCurrent = new CodingAgentsStep.Result(
+            ClaudeInstalled:       false,
+            CodexHooksInstalled:   false,
+            AgentSkillsInstalled:  false,
+            CursorHooksInstalled:  false,
+            CopilotHooksInstalled: false);
+
+        await Assert.That(alreadyCurrent.AnyHooksInstalled).IsFalse();
+        await Assert.That(alreadyCurrent.AgentSetupSkipped).IsFalse();
+    }
+
+    [Test]
     public async Task ResolveTenantArg_expands_bare_label_to_kcap_subdomain() {
         await Assert.That(SetupCommand.ResolveTenantArg("eventuous")).IsEqualTo("https://eventuous.kcap.ai");
     }

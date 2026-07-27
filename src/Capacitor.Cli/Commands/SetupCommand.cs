@@ -537,12 +537,15 @@ public static class SetupCommand {
         AnsiConsole.MarkupLine("\n[dim]Optional:[/] start the daemon with [cyan]kcap daemon start -d[/]");
         AnsiConsole.MarkupLine("[dim]Optional:[/] import past sessions with [cyan]kcap import --org[/]");
 
-        // Prints even when no hooks were installed — the user may already have sessions from a
-        // prior install, and the tour handles having none.
-        AnsiConsole.Write(
-            new Panel($"[bold]{Markup.Escape(GuidedTourCallToAction)}[/]")
-                .BorderColor(Color.Green)
-                .Padding(1, 0));
+        // Skipped agent setup means nothing is wired up to answer the prompt — pointing at the
+        // tour there would contradict the "no agent detected" warning printed moments earlier.
+        // An already-current install still prints: its Installed flags are false too.
+        if (!installResult.AgentSetupSkipped) {
+            AnsiConsole.Write(
+                new Panel($"[bold]{Markup.Escape(GuidedTourCallToAction)}[/]")
+                    .BorderColor(Color.Green)
+                    .Padding(1, 0));
+        }
 
         return 0;
     }
