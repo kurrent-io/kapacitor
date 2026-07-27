@@ -103,13 +103,13 @@ public static class AgentsSkillsInstaller {
     }
 
     /// <summary>
-    /// True when one specific owned skill is present under <paramref name="targetDir"/>. Narrower
-    /// than <see cref="IsInstalled"/>, which answers "has this installer ever run here" and is
-    /// also true for a machine carrying only skills from a version that predates
-    /// <paramref name="sourceName"/>.
+    /// True when one specific owned skill is usable under <paramref name="targetDir"/> — narrower
+    /// than <see cref="IsInstalled"/>. Checks the SKILL.md file, not the folder: a failed copy
+    /// can leave an empty folder behind.
     /// </summary>
     public static bool HasSkill(string targetDir, string sourceName) =>
-        Directory.Exists(Path.Combine(targetDir, "kcap-" + sourceName));
+        !string.IsNullOrEmpty(targetDir)
+     && File.Exists(Path.Combine(targetDir, "kcap-" + sourceName, "SKILL.md"));
 
     /// <summary>
     /// Returns the version string from the marker file, or null when the

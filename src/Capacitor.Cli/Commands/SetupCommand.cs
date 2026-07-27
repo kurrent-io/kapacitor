@@ -569,7 +569,7 @@ public static class SetupCommand {
     /// </summary>
     static bool ClaudeCarriesGuidedTour(string claudeSettingsPath, string? pluginDir) =>
         ClaudePluginInstaller.IsInstalled(claudeSettingsPath)
-     && (pluginDir is null || Directory.Exists(Path.Combine(pluginDir, "skills", GuidedTourSkillName)));
+     && (pluginDir is null || File.Exists(Path.Combine(pluginDir, "skills", GuidedTourSkillName, "SKILL.md")));
 
     /// <summary>Source folder name under <c>kcap/skills/</c>; <c>kcap-</c>-prefixed once installed.</summary>
     internal const string GuidedTourSkillName = "guided-tour";

@@ -363,9 +363,31 @@ public class SetupCommandTests {
         var       paths  = GuidedTourPaths(tmp.Path);
 
         Directory.CreateDirectory(Path.Combine(paths.AgentsSkillsDir, "kcap-guided-tour"));
+        await File.WriteAllTextAsync(
+            Path.Combine(paths.AgentsSkillsDir, "kcap-guided-tour", "SKILL.md"), "skill");
 
         await Assert.That(SetupCommand.ShouldOfferGuidedTour(
             true, Path.Combine(tmp.Path, ".claude", "settings.json"), paths)).IsTrue();
+    }
+
+    [Test]
+    public async Task ShouldOfferGuidedTour_false_when_the_skill_folder_is_empty() {
+        // A failed copy creates the folder before writing SKILL.md, so an empty folder means a
+        // broken install, not a usable skill.
+        using var tmp   = new TempDir();
+        var       paths = GuidedTourPaths(tmp.Path);
+
+        Directory.CreateDirectory(Path.Combine(paths.AgentsSkillsDir, "kcap-guided-tour"));
+
+        await Assert.That(SetupCommand.ShouldOfferGuidedTour(
+            true, Path.Combine(tmp.Path, ".claude", "settings.json"), paths)).IsFalse();
+    }
+
+    [Test]
+    public async Task HasSkill_empty_targetDir_is_false_not_a_cwd_probe() {
+        // Paths defaults some skill dirs to "" — Path.Combine("", ...) would otherwise probe a
+        // relative kcap-guided-tour against whatever directory setup was run from.
+        await Assert.That(AgentsSkillsInstaller.HasSkill("", "guided-tour")).IsFalse();
     }
 
     [Test]
@@ -374,10 +396,14 @@ public class SetupCommandTests {
         using var anti = new TempDir();
 
         Directory.CreateDirectory(Path.Combine(kiro.Path, "kiro-skills", "kcap-guided-tour"));
+        await File.WriteAllTextAsync(
+            Path.Combine(kiro.Path, "kiro-skills", "kcap-guided-tour", "SKILL.md"), "skill");
         await Assert.That(SetupCommand.ShouldOfferGuidedTour(
             true, Path.Combine(kiro.Path, "none.json"), GuidedTourPaths(kiro.Path))).IsTrue();
 
         Directory.CreateDirectory(Path.Combine(anti.Path, "antigravity-skills", "kcap-guided-tour"));
+        await File.WriteAllTextAsync(
+            Path.Combine(anti.Path, "antigravity-skills", "kcap-guided-tour", "SKILL.md"), "skill");
         await Assert.That(SetupCommand.ShouldOfferGuidedTour(
             true, Path.Combine(anti.Path, "none.json"), GuidedTourPaths(anti.Path))).IsTrue();
     }
@@ -412,6 +438,12 @@ public class SetupCommandTests {
         await Assert.That(SetupCommand.ShouldOfferGuidedTour(true, settingsPath, paths)).IsFalse();
 
         Directory.CreateDirectory(Path.Combine(pluginDir, "skills", "guided-tour"));
+
+        // Folder alone is still not enough — the file is the skill.
+        await Assert.That(SetupCommand.ShouldOfferGuidedTour(true, settingsPath, paths)).IsFalse();
+
+        await File.WriteAllTextAsync(
+            Path.Combine(pluginDir, "skills", "guided-tour", "SKILL.md"), "skill");
 
         await Assert.That(SetupCommand.ShouldOfferGuidedTour(true, settingsPath, paths)).IsTrue();
     }
