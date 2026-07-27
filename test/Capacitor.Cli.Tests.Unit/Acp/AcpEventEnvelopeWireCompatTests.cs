@@ -38,6 +38,8 @@ public class AcpEventEnvelopeWireCompatTests {
             RawSessionId:      "raw-sess-1",
             SessionMode:       "agent",
             EndReason:         "completed",
+            ContextUsedTokens:   142_000,
+            ContextWindowTokens: 200_000,
             TimestampIso:      "2026-07-08T00:00:00Z"
         );
 
@@ -59,6 +61,8 @@ public class AcpEventEnvelopeWireCompatTests {
         await Assert.That(json).Contains(@"""raw_session_id"":""raw-sess-1""");
         await Assert.That(json).Contains(@"""session_mode"":""agent""");
         await Assert.That(json).Contains(@"""end_reason"":""completed""");
+        await Assert.That(json).Contains(@"""context_used_tokens"":142000");
+        await Assert.That(json).Contains(@"""context_window_tokens"":200000");
         await Assert.That(json).Contains(@"""timestamp_iso"":""2026-07-08T00:00:00Z""");
 
         var back = JsonSerializer.Deserialize(json, CapacitorJsonContext.Default.AcpEventEnvelope);
@@ -66,6 +70,8 @@ public class AcpEventEnvelopeWireCompatTests {
         await Assert.That(back.Kind).IsEqualTo(AcpEventKind.ToolCall);
         await Assert.That(back.ToolInputJson).IsEqualTo("""{"command":"ls"}""");
         await Assert.That(back.ToolIsError).IsTrue();
+        await Assert.That(back.ContextUsedTokens).IsEqualTo(142_000L);
+        await Assert.That(back.ContextWindowTokens).IsEqualTo(200_000L);
     }
 
     [Test]
@@ -91,6 +97,7 @@ public class AcpEventEnvelopeWireCompatTests {
         await Assert.That(AcpEventKind.ToolResult).IsEqualTo("tool_result");
         await Assert.That(AcpEventKind.SessionTitle).IsEqualTo("session_title");
         await Assert.That(AcpEventKind.SessionEnded).IsEqualTo("session_ended");
+        await Assert.That(AcpEventKind.Usage).IsEqualTo("usage");
     }
 
     [Test]

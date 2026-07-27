@@ -58,10 +58,15 @@ public class AcpUsageUpdateTests {
     }
 
     [Test]
-    public async Task Usage_envelope_sets_no_field_outside_its_kind_group() {
+    public async Task Usage_envelope_sets_only_its_own_group_plus_shared_model_attribution() {
         // The envelope is flat and Kind-discriminated: exactly one per-kind group is populated.
+        // Model is the deliberate exception — SHARED attribution metadata, not a member of any
+        // single kind's group (session_started carries it too), because the server's mapper has
+        // no session-fold access and must read the model off the wire.
         var e = AcpEventTranslator.Translate(
             Usage(1_000, 200_000), seq: 4, TimestampIso, resolvedModel: "m")!.Value;
+
+        await Assert.That(e.Model).IsEqualTo("m");
 
         await Assert.That(e.Text).IsNull();
         await Assert.That(e.ToolCallId).IsNull();

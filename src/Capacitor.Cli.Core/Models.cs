@@ -1183,6 +1183,10 @@ public static class AcpEventKind {
 /// <c>AcpEventEnvelopeWireCompatTests</c> for the locked-in per-field wire-compat guard. Exactly one
 /// per-kind field group is populated for a given <see cref="Kind"/> (see
 /// <c>AcpEventTranslator.Translate</c>, which never sets a field outside its kind's group).
+/// <c>Model</c> is the one exception: it is SHARED attribution metadata rather than a member of a
+/// single kind's group — <c>session_started</c> carries it, and so does <c>usage</c>, because the
+/// server's mapper is a pure per-envelope function with no session-fold access, so the resolved
+/// model has to ride the wire on every reading that needs attribution.
 /// </summary>
 public readonly record struct AcpEventEnvelope(
         int     ContractVersion   = 1,
