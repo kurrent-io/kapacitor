@@ -194,30 +194,32 @@ next. And because it spans every repo your team touches, it sees patterns no sin
 
 ## 🧠 Session recall
 
-Ask "have we worked on this before?" and search the reasoning, not just the commits.
+Searches what your team actually discussed in past sessions, across every repo and teammate, so
+you can find whether a problem has come up before and how it was resolved.
   Prompt ❯ `has anyone hit this before?`
   Prompt ❯ `Recall the last 3 times I asked "why" in a session`
   Prompt ❯ `Start the session recall tour`
 
 ## 🧪 Evals
 
-Capacitor puts that record to work: it scans your sessions across repos and teammates to spot
-what keeps going wrong — recurring tool errors, the same problem solved twice, rules your agents
-relearn every session — and turns the lessons into repo guidance that targets exactly this waste.
+Scores a recorded session with an LLM judge against criteria like safety, plan adherence, quality
+and efficiency.
   Prompt ❯ `evaluate my last session`
   Prompt ❯ `Show my most common tool failures and how many sessions they span`
   Prompt ❯ `Start the evals tour`
 
 ## 🔀 PR review
 
-Review a PR with the reasoning behind it, not just the diff.
+Brings up the recorded sessions behind a pull request so a review can draw on why the code was
+written that way, not just what changed.
   Prompt ❯ `review PR# {{PR}}`
   Prompt ❯ `Find sessions related to PR# {{PR}}`
   Prompt ❯ `Start the PR review tour`
 
 ## 📊 Analytics
 
-Query token spend and usage patterns across the team, as tables you can audit.
+Answers questions about spend, token usage, tool errors and session activity across your org, as
+tables you can check.
   Prompt ❯ `what did we spend on agents last week?`
   Prompt ❯ `List my top 10 tool call errors`
   Prompt ❯ `Start the analytics tour`
@@ -354,7 +356,8 @@ fresh workspace the later stages are simply empty — not broken, not misconfigu
 **Establish which stage they can reach BEFORE opening the tour, and never promise past it.**
 Two read-only checks, no writes:
   - **Sessions to score**: `resolved_author.session_count` from Q-DONE, already fetched in
-    beat 1. One or two sessions cannot produce a cross-session pattern.
+    beat 2 of turn 1 (it needs `<user>` from whoami, so it cannot run in beat 1). One or two
+    sessions cannot produce a cross-session pattern.
   - **Anything curated yet**: `kcap curate apply --dry-run` — reports what *would* be written
     and exits without writing. This is the one sanctioned use of `curate apply`; the bare
     writing form stays banned.
