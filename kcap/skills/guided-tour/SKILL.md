@@ -303,7 +303,8 @@ straight to the point. No overview, no concept preamble, no describing the flow 
    longer (`kcap eval`: LLM judges, real spend, 1–3 minutes), say so BEFORE they fire it, run
    it in the background, and post a one-line progress note about every minute until it returns.
 5. **Every step ends with next-step prompts** — one or more `Prompt ❯ ...` lines: the advance,
-   a variation of this step's action on their own data, or a skip.
+   a variation of this step's action on their own data, or a skip. The advance and the variation
+   are REAL prompts (see the composition rules below); only the skip may be plain navigation.
 
 **3 to 6 steps, ONE step per reply.** When they fire a prompt: run it, show what it revealed in
 at most two sentences, then open the next step per rule 1. A variation typed instead of the
@@ -367,9 +368,18 @@ summary's context and unfinished items, restate in two sentences where the work 
 which item to continue with. This one is an action, not a report — end by doing, not describing.
 
 **Prompt suggestions you compose** — anywhere you offer a `Prompt ❯` line of your own (rule 5
-next steps, variations, follow-ups): **assume the user works alone.** No teammates, no "has
-anyone else", no cross-user comparisons — unless their own data has already shown other authors
-in this session's results, in which case team-shaped prompts are fair game.
+next steps, variations, follow-ups), two rules:
+  1. **Assume the user works alone.** No teammates, no "has anyone else", no cross-user
+     comparisons — unless their own data has already shown other authors in this session's
+     results, in which case team-shaped prompts are fair game.
+  2. **Every suggestion is a REAL prompt** — the self-contained phrasing they'd type against the
+     product in a fresh session, reusable tomorrow with no tour around it. Never `go`, `yes`, or
+     `run it`: if a step's advance is just consent, the real phrasing stayed hidden in your prose
+     and the step taught nothing (rule 2 — typing it IS the tutorial). So the advance for "I'll
+     query your last 7 days of spend" is `What did I spend on coding agents in the last 7 days?`,
+     and its variation is `What did I spend in the last 30 days?` — not `make it 30 days instead`.
+     The ONE exception is pure tour navigation (`skip to the error analysis`, `back to the menu`),
+     which is conversational by nature and teaches nothing on purpose.
 
 **For evals, everywhere:** the mechanism in one line (sessions get scored → lessons become
 curated guidance in CLAUDE.md), the numbers that exist (error counts, hours lost, error-heavy vs
