@@ -62,17 +62,26 @@ filtering. The table is about the team's shared work, not personal scratch repos
 
 **Q-COST** (`scope: "global"`):
 
+`v_an_cost` has one row per session PER MODEL, so it must be collapsed to one row per session
+before joining `v_an_sessions` — otherwise the join duplicates `duration_min` and the hours are
+whatever the fan-out makes them.
+
 ```sql
+WITH per_session AS (
+  SELECT c.repo_hash, c.session_id, SUM(c.cost_usd) AS cost_usd
+  FROM v_an_cost c
+  WHERE c.cost_usd IS NOT NULL
+  GROUP BY c.repo_hash, c.session_id
+)
 SELECT r.owner || '/' || r.repo_name AS repo,
-       COUNT(DISTINCT s.session_id) AS sessions,
-       ROUND(SUM(DISTINCT s.duration_min)/60.0, 1) AS hours,
-       ROUND(SUM(c.cost_usd)::numeric, 2) AS cost_usd
-FROM v_an_cost c
-JOIN v_an_sessions s     ON s.session_id = c.session_id
-JOIN v_an_repositories r ON r.repo_hash  = c.repo_hash
-WHERE c.cost_usd IS NOT NULL
+       COUNT(*) AS sessions,
+       ROUND(SUM(s.duration_min)/60.0, 1) AS hours,
+       ROUND(SUM(p.cost_usd)::numeric, 2) AS cost_usd
+FROM per_session p
+JOIN v_an_sessions s     ON s.session_id = p.session_id
+JOIN v_an_repositories r ON r.repo_hash  = p.repo_hash
 GROUP BY r.owner || '/' || r.repo_name
-ORDER BY SUM(c.cost_usd) DESC
+ORDER BY SUM(p.cost_usd) DESC
 LIMIT 5
 ```
 
