@@ -215,7 +215,7 @@ and efficiency.
 
 Brings up the recorded sessions behind a pull request so a review can draw on why the code was
 written that way, not just what changed.
-  Prompt ❯ `review {{PR}}`
+  Prompt ❯ `Review {{PR}} and its key decisions`
   Prompt ❯ `Why was {{PR}} implemented this way?`
   Prompt ❯ `Start the PR review tour`
 
@@ -334,7 +334,7 @@ query serves both
 `tool_name`, report `SUM(errors)` and `COUNT(DISTINCT session_id)`). The sessions count is the
 point: the same failure across N sessions means N sessions started without knowing about it.
 
-**`review <owner/repo#N>`** — `kcap-review` MCP: `get_pr_summary` with the full ref passed
+**`Review <owner/repo#N> and its key decisions`** — `kcap-review` MCP: `get_pr_summary` with the full ref passed
 explicitly as `pr` (never rely on branch auto-detection here), then `get_transcript` /
 `search_context` for the reasoning. Show *why*, not just what changed. From the menu this is the
 BOUNDED form — summary plus the recorded reasoning behind the main changes, about a minute, NOT
