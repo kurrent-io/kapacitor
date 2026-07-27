@@ -109,8 +109,7 @@ internal static class CodingAgentsStep {
             bool KiroMcpRegistered = false,
             bool KiroSkillsInstalled = false,
             bool PiMcpInstalled = false,
-            bool PiInstructionsInstalled = false,
-            bool AgentSetupRan = true
+            bool PiInstructionsInstalled = false
         ) {
         /// <summary>
         /// True when at least one agent's hooks were installed — i.e. there's a
@@ -121,13 +120,6 @@ internal static class CodingAgentsStep {
         /// </summary>
         internal bool AnyHooksInstalled =>
             ClaudeInstalled || CodexHooksInstalled || CursorHooksInstalled || CopilotHooksInstalled || GeminiHooksInstalled || KiroHooksInstalled || PiExtensionInstalled || OpenCodeExtensionInstalled || AntigravityHooksInstalled;
-
-        /// <summary>
-        /// False only on the two early returns — no agent detected, or the user declined. The
-        /// individual Installed flags can't answer this: they're also false when an install was
-        /// skipped as already-current, which is a wired-up machine, not an untouched one.
-        /// </summary>
-        internal bool AgentSetupSkipped => !AgentSetupRan;
     }
 
     /// <summary>
@@ -149,13 +141,13 @@ internal static class CodingAgentsStep {
         if (detected is { Claude: false, Codex: false, Cursor: false, Copilot: false, Gemini: false, Kiro: false, Pi: false, OpenCode: false, Antigravity: false }) {
             writeLine("  [yellow]⚠ No supported agent CLI detected.[/] Install Claude Code, Codex CLI, Cursor, Copilot CLI, Gemini CLI, Kiro CLI, Pi, OpenCode, or Antigravity to start capturing sessions.");
 
-            return Task.FromResult(new Result(false, false, false, false, false, AgentSetupRan: false));
+            return Task.FromResult(new Result(false, false, false, false, false));
         }
 
         if (!options.InstallAgents) {
             writeLine("  [dim]· Skipping kcap agent setup[/]");
 
-            return Task.FromResult(new Result(false, false, false, false, false, AgentSetupRan: false));
+            return Task.FromResult(new Result(false, false, false, false, false));
         }
 
         var claudeInstalled       = HandleClaude(options, detected, paths, installers, writeLine);

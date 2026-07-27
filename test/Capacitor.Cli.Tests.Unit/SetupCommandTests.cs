@@ -325,28 +325,92 @@ public class SetupCommandTests {
     }
 
     [Test]
-    public async Task AgentSetupSkipped_is_true_only_on_the_two_early_returns() {
-        // No agent detected, and user declined — the two paths that install nothing at all.
-        var noAgents = new CodingAgentsStep.Result(false, false, false, false, false, AgentSetupRan: false);
+    public async Task ShouldOfferGuidedTour_false_when_nothing_carries_the_skill() {
+        using var tmp = new TempDir();
 
-        await Assert.That(noAgents.AgentSetupSkipped).IsTrue();
+        await Assert.That(SetupCommand.ShouldOfferGuidedTour(
+            true, Path.Combine(tmp.Path, ".claude", "settings.json"), GuidedTourPaths(tmp.Path))).IsFalse();
     }
 
     [Test]
-    public async Task AgentSetupSkipped_is_false_when_skills_were_already_current() {
-        // The trap: every Installed flag is false here too, because the installers skip work
-        // that's already done. Gating the guided-tour CTA on those flags would hide it from
-        // exactly the users who can use it — a machine that is fully wired up.
-        var alreadyCurrent = new CodingAgentsStep.Result(
-            ClaudeInstalled:       false,
-            CodexHooksInstalled:   false,
-            AgentSkillsInstalled:  false,
-            CursorHooksInstalled:  false,
-            CopilotHooksInstalled: false);
+    public async Task ShouldOfferGuidedTour_false_when_no_agent_is_detected_even_if_skills_exist() {
+        // A machine carrying the skill but running no agent CLI has nothing to type the prompt
+        // into. Skill-presence alone is not enough — both halves are required.
+        using var tmp   = new TempDir();
+        var       paths = GuidedTourPaths(tmp.Path);
 
-        await Assert.That(alreadyCurrent.AnyHooksInstalled).IsFalse();
-        await Assert.That(alreadyCurrent.AgentSetupSkipped).IsFalse();
+        Directory.CreateDirectory(Path.Combine(paths.AgentsSkillsDir, "kcap-guided-tour"));
+
+        await Assert.That(SetupCommand.ShouldOfferGuidedTour(
+            false, Path.Combine(tmp.Path, ".claude", "settings.json"), paths)).IsFalse();
     }
+
+    [Test]
+    public async Task ShouldOfferGuidedTour_true_when_the_claude_plugin_is_registered() {
+        using var tmp          = new TempDir();
+        var       settingsPath = Path.Combine(tmp.Path, ".claude", "settings.json");
+
+        SetupCommand.InstallPlugin(settingsPath, "/opt/kcap");
+
+        await Assert.That(SetupCommand.ShouldOfferGuidedTour(true, settingsPath, GuidedTourPaths(tmp.Path))).IsTrue();
+    }
+
+    [Test]
+    public async Task ShouldOfferGuidedTour_true_when_shared_agent_skills_are_present() {
+        // The case a "was it installed THIS run?" gate gets wrong: skills already on disk mean a
+        // wired-up machine, but every installer reports false because there was no work to do.
+        using var tmp    = new TempDir();
+        var       paths  = GuidedTourPaths(tmp.Path);
+
+        Directory.CreateDirectory(Path.Combine(paths.AgentsSkillsDir, "kcap-guided-tour"));
+
+        await Assert.That(SetupCommand.ShouldOfferGuidedTour(
+            true, Path.Combine(tmp.Path, ".claude", "settings.json"), paths)).IsTrue();
+    }
+
+    [Test]
+    public async Task ShouldOfferGuidedTour_true_from_the_kiro_and_antigravity_skill_dirs() {
+        using var kiro = new TempDir();
+        using var anti = new TempDir();
+
+        Directory.CreateDirectory(Path.Combine(kiro.Path, "kiro-skills", "kcap-recap"));
+        await Assert.That(SetupCommand.ShouldOfferGuidedTour(
+            true, Path.Combine(kiro.Path, "none.json"), GuidedTourPaths(kiro.Path))).IsTrue();
+
+        Directory.CreateDirectory(Path.Combine(anti.Path, "antigravity-skills", "kcap-recap"));
+        await Assert.That(SetupCommand.ShouldOfferGuidedTour(
+            true, Path.Combine(anti.Path, "none.json"), GuidedTourPaths(anti.Path))).IsTrue();
+    }
+
+    /// <summary>Paths record carrying only the four fields GuidedTourReachable reads.</summary>
+    static CodingAgentsStep.Paths GuidedTourPaths(string root) =>
+        new(ClaudeSettingsPath:   Path.Combine(root, ".claude", "settings.json"),
+            ClaudeScopeLabel:     "user",
+            PluginDir:            null,
+            CodexHooksPath:       Path.Combine(root, "codex-hooks.json"),
+            CursorHooksPath:      Path.Combine(root, "cursor-hooks.json"),
+            CopilotHooksPath:     Path.Combine(root, "copilot-hooks.json"),
+            GeminiSettingsPath:   Path.Combine(root, "gemini-settings.json"),
+            AgentsSkillsDir:      Path.Combine(root, "agents-skills"),
+            LegacyCodexSkillsDir: Path.Combine(root, "legacy-codex-skills"),
+            KiroHooksPath:        Path.Combine(root, "kiro-hooks.json"),
+            PiExtensionPath:      Path.Combine(root, "pi-ext.ts"),
+            OpenCodeExtensionPath: Path.Combine(root, "oc-ext.ts"),
+            AntigravityHooksPath: Path.Combine(root, "antigravity-hooks.json"),
+            CodexConfigTomlPath:  Path.Combine(root, "config.toml"),
+            CursorMcpPath:        Path.Combine(root, "cursor-mcp.json"),
+            CopilotMcpPath:       Path.Combine(root, "copilot-mcp.json"),
+            CopilotInstructionsPath: Path.Combine(root, "copilot-instructions.md"),
+            GeminiInstructionsPath: Path.Combine(root, "GEMINI.md"),
+            AntigravityMcpPath:   Path.Combine(root, "antigravity-mcp.json"),
+            AntigravityInstructionsPath: Path.Combine(root, "antigravity-instructions.md"),
+            AntigravitySkillsDir: Path.Combine(root, "antigravity-skills"),
+            OpenCodeMcpPath:      Path.Combine(root, "oc-mcp.json"),
+            OpenCodeInstructionsPath: Path.Combine(root, "AGENTS.md"),
+            KiroMcpPath:          Path.Combine(root, "kiro-mcp.json"),
+            KiroSkillsDir:        Path.Combine(root, "kiro-skills"),
+            PiMcpExtensionPath:   Path.Combine(root, "pi-mcp.ts"),
+            PiAgentsMdPath:       Path.Combine(root, "pi-AGENTS.md"));
 
     [Test]
     public async Task ResolveTenantArg_expands_bare_label_to_kcap_subdomain() {

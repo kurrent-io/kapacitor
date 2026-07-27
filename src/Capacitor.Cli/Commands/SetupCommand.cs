@@ -537,10 +537,7 @@ public static class SetupCommand {
         AnsiConsole.MarkupLine("\n[dim]Optional:[/] start the daemon with [cyan]kcap daemon start -d[/]");
         AnsiConsole.MarkupLine("[dim]Optional:[/] import past sessions with [cyan]kcap import --org[/]");
 
-        // Skipped agent setup means nothing is wired up to answer the prompt — pointing at the
-        // tour there would contradict the "no agent detected" warning printed moments earlier.
-        // An already-current install still prints: its Installed flags are false too.
-        if (!installResult.AgentSetupSkipped) {
+        if (ShouldOfferGuidedTour(detectedSummary is not null, claudeSettingsPath, stepPaths)) {
             AnsiConsole.Write(
                 new Panel($"[bold]{Markup.Escape(GuidedTourCallToAction)}[/]")
                     .BorderColor(Color.Green)
@@ -549,6 +546,21 @@ public static class SetupCommand {
 
         return 0;
     }
+
+    /// <summary>
+    /// Whether to point the user at the guided tour. Both halves are required: an agent to type
+    /// the prompt into, and the skill actually on disk for one of them. Skill presence is read
+    /// from the filesystem rather than the install result, because the installers report false
+    /// when work was skipped as already-current — a wired-up machine re-running setup, which
+    /// must still get the CTA.
+    /// </summary>
+    internal static bool ShouldOfferGuidedTour(
+            bool anyAgentDetected, string claudeSettingsPath, CodingAgentsStep.Paths paths) =>
+        anyAgentDetected
+     && (ClaudePluginInstaller.IsInstalled(claudeSettingsPath)
+      || AgentsSkillsInstaller.IsInstalled(paths.AgentsSkillsDir)
+      || AgentsSkillsInstaller.IsInstalled(paths.KiroSkillsDir)
+      || AgentsSkillsInstaller.IsInstalled(paths.AntigravitySkillsDir));
 
     /// <summary>
     /// A prompt rather than a slash command, because the invocation differs per vendor. Pinned

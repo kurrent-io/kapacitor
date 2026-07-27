@@ -59,10 +59,16 @@ finishes `kcap setup` is told to run it.
    ```
 
    The string lives in an `internal const` so a unit test can pin the wording; rendering escapes
-   it into a Spectre panel for prominence rather than re-wording it inline. It prints
-   unconditionally on success — even a setup that installed no hooks leaves a user who may
-   already have sessions from a prior install, and the tour degrades gracefully when there is
-   nothing to show (it offers install/import instead).
+   it into a Spectre panel for prominence rather than re-wording it inline.
+
+   **Revised in review (round 2).** The CTA was originally specified to print unconditionally on
+   success. It doesn't: it prints only when the guided-tour skill is actually on disk for some
+   agent — the Claude plugin registration, the shared `~/.agents/skills` tree, or Kiro's or
+   Antigravity's own skills dir. Printing it unconditionally produced self-contradicting output
+   on a machine with no agent CLI ("No supported agent CLI detected", then "prompt your agent").
+   The check asks the filesystem rather than the install result, because the installers report
+   false when work was skipped as already-current — a wired-up machine re-running setup, which
+   must still get the CTA.
 
 6. **Version bump `kcap/.claude-plugin/plugin.json` 1.7.2 → 1.8.0.** Repo convention is a minor
    bump per feature (1.6.0 → 1.7.0 added the flows MCP server; patch bumps were skill-behavior
