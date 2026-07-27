@@ -85,12 +85,17 @@ ORDER BY SUM(p.cost_usd) DESC
 LIMIT 5
 ```
 
-**Q-ERR** (`scope: "global"`):
+**Q-ERR** (`scope: "global"`). No user filter and NO `LIMIT`, both on purpose: it is a lookup
+consulted after Q-COST has already chosen the rows, not a row selector. Bounding it by error
+count would drop repos that rank high on cost but low on errors, and the missing-repo rule would
+then render them as `0`. `errors > 0` is the one safe prune — a repo with no errors renders `0`
+either way.
 
 ```sql
 SELECT r.owner || '/' || r.repo_name AS repo, SUM(t.errors) AS errors
 FROM v_an_tool_usage t
 JOIN v_an_repositories r ON r.repo_hash = t.repo_hash
+WHERE t.errors > 0
 GROUP BY r.owner || '/' || r.repo_name
 ```
 
