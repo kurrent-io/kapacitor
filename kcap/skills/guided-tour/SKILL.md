@@ -190,10 +190,10 @@ next. And because it spans every repo your team touches, it sees patterns no sin
 
 ## 🧠 Session recall
 
-Searches what your team actually discussed in past sessions, across every repo and teammate, so
-you can find whether a problem has come up before and how it was resolved.
-  Prompt ❯ `has anyone hit this before?`
-  Prompt ❯ `Recall the last 3 times I asked "why" in a session`
+Searches what you actually discussed in past sessions — the questions, decisions and dead ends —
+so you can find whether a problem has come up before and how it was resolved.
+  Prompt ❯ `What did I leave unfinished in my last session?`
+  Prompt ❯ `Pick up where my last session left off`
   Prompt ❯ `Start the session recall tour`
 
 ## 🧪 Evals
@@ -201,7 +201,7 @@ you can find whether a problem has come up before and how it was resolved.
 Scores a recorded session with an LLM judge against criteria like safety, plan adherence, quality
 and efficiency.
   Prompt ❯ `evaluate my last session`
-  Prompt ❯ `Show my most common tool failures and how many sessions they span`
+  Prompt ❯ `Show the tool errors I keep repeating across sessions`
   Prompt ❯ `Start the evals tour`
 
 ## 🔀 PR review
@@ -209,15 +209,15 @@ and efficiency.
 Brings up the recorded sessions behind a pull request so a review can draw on why the code was
 written that way, not just what changed.
   Prompt ❯ `review PR# {{PR}}`
-  Prompt ❯ `Find sessions related to PR# {{PR}}`
+  Prompt ❯ `Why was PR# {{PR}} implemented this way?`
   Prompt ❯ `Start the PR review tour`
 
 ## 📊 Analytics
 
-Answers questions about spend, token usage, tool errors and session activity across your org, as
-tables you can check.
-  Prompt ❯ `what did we spend on agents last week?`
-  Prompt ❯ `List my top 10 tool call errors`
+Answers questions about spend, token usage, tool errors and session activity over your recorded
+sessions, as tables you can check.
+  Prompt ❯ `What did I spend on coding agents last week?`
+  Prompt ❯ `Do my error-heavy sessions cost more than my clean ones?`
   Prompt ❯ `Start the analytics tour`
 ```
 
@@ -315,21 +315,49 @@ Suggested live steps per tour —
   **analytics**: one spend query → the error-heavy vs clean session comparison → invite their
   own question and translate it to SQL.
 
-**`evaluate my last session`** — `kcap eval` on their most recent session id; say it takes a
-minute. If no judge is configured, explain what is missing.
+**`evaluate my last session`** — `kcap eval` runs LLM judges: 1–3 minutes and real spend, so the
+turn this prompt triggers must stay short. Say both facts and ask for their go FIRST; on yes, run
+it in the background where the harness supports that (progress note about every minute), else
+warn that the run will occupy the next few minutes before starting. If no judge is configured,
+explain what is missing.
 
-**`List my top 10 tool call errors` / `most common tool failures`** — one query serves both
+**`Show the tool errors I keep repeating across sessions` / `most common tool failures`** — one
+query serves both
 (`v_an_tool_usage` joined to `v_an_sessions`+`v_an_users`, `WHERE errors > 0`, group by
 `tool_name`, report `SUM(errors)` and `COUNT(DISTINCT session_id)`). The sessions count is the
 point: the same failure across N sessions means N sessions started without knowing about it.
 
-**`Find sessions related to PR# N` / `review PR# N`** — `kcap-review` MCP: `get_pr_summary`,
-then `get_transcript` / `search_context` for the reasoning. Show *why*, not just what changed.
+**`review PR# N`** — `kcap-review` MCP: `get_pr_summary`, then `get_transcript` /
+`search_context` for the reasoning. Show *why*, not just what changed. From the menu this is the
+BOUNDED form — summary plus the recorded reasoning behind the main changes, about a minute, NOT
+a line-by-line review of every file — and it ends with `Prompt ❯` offering the full deep review.
 
-**`Recall the last 3 times I asked "why"`** — do NOT pass "why" to `search_sessions` as the
-query; it is a stopword and returns noise. Instead: `search_sessions` with `author: <user>` and
-empty query for their recent sessions, open each with `get_session_transcript`, and scan
-**user-speaker turns** for questions starting with "why". Quote them verbatim with session ids.
+**`Why was PR# {{PR}} implemented this way?`** — the reasoning half of the above on its own:
+`get_pr_summary` for what changed, then `get_transcript` / `search_context` for the decisions
+and constraints behind it. Attribute per the accuracy rules — who proposed, who decided.
+
+**`What did I spend on coding agents last week?`** — one query over `v_an_cost` +
+`v_an_sessions` (pre-aggregate per session, as in Q-COST), `WHERE started_at` in the last 7
+days, filtered to `author: <user>`'s sessions via `v_an_users`. One table, no commentary padding.
+
+**`Do my error-heavy sessions cost more than my clean ones?`** — the correlation the honesty
+section blesses: aggregate errors and cost separately per session BEFORE joining, bucket
+sessions by error count, report avg cost and duration per bucket. Label it correlation, never
+causation, and never a savings figure.
+
+**`What did I leave unfinished in my last session?`** — `search_sessions` with `author: <user>`
+for their most recent session, then `get_session_summary`: the answer lives in the summary's
+Unfinished/Risks section. Quote it with the session id; if the summary has no such section, say
+so plainly rather than inferring one from the transcript.
+
+**`Pick up where my last session left off`** — same lookup, then actually resume: load the
+summary's context and unfinished items, restate in two sentences where the work stopped, and ask
+which item to continue with. This one is an action, not a report — end by doing, not describing.
+
+**Prompt suggestions you compose** — anywhere you offer a `Prompt ❯` line of your own (rule 5
+next steps, variations, follow-ups): **assume the user works alone.** No teammates, no "has
+anyone else", no cross-user comparisons — unless their own data has already shown other authors
+in this session's results, in which case team-shaped prompts are fair game.
 
 **For evals, everywhere:** the mechanism in one line (sessions get scored → lessons become
 curated guidance in CLAUDE.md), the numbers that exist (error counts, hours lost, error-heavy vs
