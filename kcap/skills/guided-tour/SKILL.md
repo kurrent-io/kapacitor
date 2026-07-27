@@ -34,7 +34,7 @@ Budget: the welcome on screen immediately, the complete menu in ~12 seconds.
 **Beat 1 — welcome plus every independent call, in ONE message.** Emit TEMPLATE PART A
 verbatim, and in that same message issue, in parallel:
   - `kcap whoami --no-update-check` → `<user>`
-  - **Q-PR** and **Q-COST** below (neither needs `<user>`)
+  - **Q-MENU** below (it does not need `<user>`)
 Never emit the text alone and then start calling tools in a later message: that adds a whole
 round-trip for nothing. **If the host defers MCP tools** (schemas load on demand via a
 ToolSearch-style call), load everything in ONE call in this same message — `query_analytics` at
@@ -55,18 +55,23 @@ ask me to try again)*` where the table would go and finish the menu. The menu is
 
 **Use the SQL verbatim**, via the `query_analytics` tool on the `kcap-analytics` MCP server. The views are
 pre-named so you never call `get_analytics_schema` — that fetch is ~77KB and spills to disk.
-Q-COST is TEAM-WIDE on purpose — no user filter in the SQL, so it can run in beat 1 before
+Q-MENU is TEAM-WIDE on purpose — no user filter in the SQL, so it can run in beat 1 before
 whoami returns. The personal-repo exclusion happens at RENDER time instead: when building
 `{{TABLE}}`, drop any row whose repo owner equals `<user>` (whoami has returned by then), and
 print at most 3 of what remains — the LIMIT 5 exists so the table survives that filtering. The
 table is about the team's shared work, not personal scratch repos.
 
-**Q-COST** (`scope: "global"`) — the whole table in one call. Two grain notes baked into its
-shape: `v_an_cost` is one row per session PER MODEL, so it is collapsed to one row per session
-before anything joins it; and `tool calls` / `tool errors` both come from `v_an_session_steps`
-— the SAME view — so the error rate a reader computes from the two columns is internally
-consistent. Deliberately NOT selected: any duration column. `v_an_sessions.duration_min` is
-wall clock (sessions left open dominate it), and no honest hours figure exists in the views.
+**Q-MENU** (`scope: "global"`) — the whole menu in ONE round trip: the table's rows plus
+`pr_ref` (the same value on every row) for `{{PR}}`. One call instead of two because every
+`query_analytics` call pays full transport; never split it back apart. Grain notes baked into
+its shape: `v_an_cost` is one row per session PER MODEL, so it is collapsed to one row per
+session before anything joins it; `tool calls` / `tool errors` both come from
+`v_an_session_steps` — the SAME view — so the error rate a reader computes from the two columns
+is internally consistent; and `pr_ref` is the full `owner/repo#N` form the `kcap-review` tools
+accept as an explicit `pr` argument — a bare number typed in a later session on some other
+branch can fail to resolve, or resolve against the wrong repo. Deliberately NOT selected: any
+duration column. `v_an_sessions.duration_min` is wall clock (sessions left open dominate it),
+and no honest hours figure exists in the views.
 
 ```sql
 WITH per_session AS (
@@ -81,34 +86,27 @@ steps AS (
          COUNT(*) FILTER (WHERE st.is_error) AS tool_errors
   FROM v_an_session_steps st
   GROUP BY st.session_id
+),
+latest_pr AS (
+  SELECT rp.owner || '/' || rp.repo_name || '#' || pr.pr_number AS pr_ref
+  FROM v_an_prs pr
+  JOIN v_an_repositories rp ON rp.repo_hash = pr.repo_hash
+  ORDER BY pr.last_session_at DESC NULLS LAST
+  LIMIT 1
 )
 SELECT r.owner || '/' || r.repo_name AS repo,
        COUNT(*) AS sessions,
        COALESCE(SUM(s.tool_calls), 0) AS tool_calls,
        ROUND(SUM(p.cost_usd)::numeric, 2) AS cost_usd,
-       COALESCE(SUM(s.tool_errors), 0) AS tool_errors
+       COALESCE(SUM(s.tool_errors), 0) AS tool_errors,
+       MAX(lp.pr_ref) AS pr_ref
 FROM per_session p
 JOIN v_an_repositories r ON r.repo_hash  = p.repo_hash
 LEFT JOIN steps s        ON s.session_id = p.session_id
+LEFT JOIN latest_pr lp   ON TRUE
 GROUP BY r.owner || '/' || r.repo_name
 ORDER BY SUM(p.cost_usd) DESC
 LIMIT 5
-```
-
-**Q-PR** (`scope: "global"` — the repo-scoped default probes the cwd for a checkout and costs a
-retry when there is none; global needs neither). Replaces `{{PR}}` in BOTH places. Every PR in
-this view has recorded sessions, so the demo cannot come back empty, and the full ref works from
-any directory. The full `owner/repo#N` form is what
-the `kcap-review` tools accept as an explicit `pr` argument — a bare number typed in a later
-session on some other branch can fail to resolve, or resolve against the wrong repo. If no
-rows, keep `owner/repo#N` as a literal placeholder.
-
-```sql
-SELECT r.owner || '/' || r.repo_name || '#' || p.pr_number AS pr_ref
-FROM v_an_prs p
-JOIN v_an_repositories r ON r.repo_hash = p.repo_hash
-ORDER BY p.last_session_at DESC NULLS LAST
-LIMIT 1
 ```
 
 **Q-DONE — DISABLED, do not run it in turn 1.** It was a `search_sessions` marker lookup
@@ -120,11 +118,13 @@ when this returns.
 
 ## The blanks
 
-- `{{TABLE}}` — Q-COST's rows; drop any whose repo owner equals `<user>`; print at most 3 of
+- `{{TABLE}}` — Q-MENU's rows (without the `pr_ref` column); drop any whose repo owner equals
+  `<user>`; print at most 3 of
   what remains, exactly as returned: never round, pad,
-  or invent a row. If Q-COST returned nothing, replace the table with the import offer (see
+  or invent a row. If Q-MENU returned nothing, replace the table with the import offer (see
   WHEN SOMETHING IS MISSING).
-- `{{PR}}` — Q-PR's `pr_ref` (`owner/repo#N`), in both places.
+- `{{PR}}` — Q-MENU's `pr_ref` (`owner/repo#N`, identical on every row), in both places. If it
+  is NULL, keep `owner/repo#N` as a literal placeholder.
 - `{{TODOS}}` — render each line as `- [x] ~~text~~` when done, else `- [ ] text`. With Q-DONE
   disabled, only the first line's state is knowable in turn 1; render every other line unticked.
   Lines completed EARLIER IN THIS CONVERSATION still get ticked when re-printing after a tour.
@@ -186,7 +186,7 @@ to the first. The variant is the only thing about turn 1 that changes between ru
 ## TEMPLATE PART B1 — the menu (beat 2, verbatim, blanks filled)
 
 ```
-# Capacitor — shared memory for your team's coding agents
+# ⚡ Capacitor — shared memory for your team's coding agents
 
 Capacitor captures every coding-agent session your team runs — Claude Code, Codex, Cursor,
 Copilot — into one searchable record, so the reasoning survives whichever agent you pick up
@@ -239,6 +239,8 @@ sessions, as tables you can check.
 ## ✅ Tour TODOs
 
 {{TODOS}}
+
+Learn more: https://capacitor.kurrent.io/docs
 ```
 
 ## WHEN SOMETHING IS MISSING
@@ -256,7 +258,7 @@ https://capacitor.kurrent.io/docs/getting-started/import-your-history/ , lay out
 describes (which agents they use, what gets imported), and run the import they choose. Then
 re-show the table — it is the payoff.
 
-**The whole table is empty** (Q-COST returned nothing): replace the table with *"Nothing
+**The whole table is empty** (Q-MENU returned nothing): replace the table with *"Nothing
 recorded yet — want me to import your history? It takes one command and I'll walk you through
 it."* and follow the import path above if they say yes.
 
@@ -289,6 +291,8 @@ number and what it teaches (`**Step 2 of 3 — your error hotspots**`); query re
 tables, never inline sentences of numbers; anything the user types or you run in fenced code;
 the step's single takeaway in bold. One idea per paragraph, two or three short paragraphs at
 most, then the `Prompt ❯` lines set off on their own lines. A wall of text loses the step.
+Every step — and turn 1 — closes with `Learn more: https://capacitor.kurrent.io/docs` after the
+`Prompt ❯` lines.
 
 **`Start the <use case> tour`** — the heart of the skill: a hands-on tutorial that gets
 straight to the point. No overview, no concept preamble, no describing the flow — DO things.
@@ -359,7 +363,7 @@ a line-by-line review of every file — and it ends with `Prompt ❯` offering t
 and constraints behind it. Attribute per the accuracy rules — who proposed, who decided.
 
 **`What did I spend on coding agents last week?`** — one query over `v_an_cost` +
-`v_an_sessions` (pre-aggregate per session, as in Q-COST), `WHERE started_at` in the last 7
+`v_an_sessions` (pre-aggregate per session, as in Q-MENU), `WHERE started_at` in the last 7
 days, filtered to `author: <user>`'s sessions via `v_an_users`. One table, no commentary padding.
 
 **`Do my error-heavy sessions cost more than my clean ones?`** — the correlation the honesty
