@@ -191,7 +191,7 @@ Capacitor captures every coding-agent session your team runs — Claude Code, Co
 Copilot — into one searchable record, so the reasoning survives whichever agent you pick up
 next. And because it spans every repo your team touches, it sees patterns no single session can.
 
-**Your team's sessions at a glance:**
+**Your team's coding agent sessions at a glance:**
 
 {{TABLE: repo | sessions | tool calls | LLM cost (USD) | tool errors}}
 
@@ -280,6 +280,12 @@ After a tour completes, also re-print the TODO list with that item ticked.
 ## Executing the menu
 
 Same voice throughout: upbeat, professional, confident.
+
+**Format every step for scanability, not as prose.** A bold one-line header carrying the step
+number and what it teaches (`**Step 2 of 3 — your error hotspots**`); query results as markdown
+tables, never inline sentences of numbers; anything the user types or you run in fenced code;
+the step's single takeaway in bold. One idea per paragraph, two or three short paragraphs at
+most, then the `Prompt ❯` lines set off on their own lines. A wall of text loses the step.
 
 **`Start the <use case> tour`** — the heart of the skill: a hands-on tutorial that gets
 straight to the point. No overview, no concept preamble, no describing the flow — DO things.
