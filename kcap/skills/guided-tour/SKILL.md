@@ -5,12 +5,12 @@ description: >-
   yet know what it does for them — "what does capacitor do for me", "what is
   capacitor", "is this thing doing anything", "what can kcap do", "just installed
   capacitor, now what", "give me a tour", "Start kcap guided tour" (the prompt
-  `kcap setup` tells them to type) — or when they invoke /kcap:guided-tour
-  directly. Shows the team's recorded sessions, spend and errors, then offers
+  `kcap setup` tells them to type) — or when they invoke this skill directly by
+  its listed name. Shows the team's recorded sessions, spend and errors, then offers
   per-use-case tutorial tours (evals, session recall, PR review, analytics). Also
   handles the missing pieces: offers to install kcap if it is not set up, and to
   import history if the user has no sessions. Not for general session recall on an
-  established user — that is kcap:recap.
+  established user — that is the recap skill.
 ---
 
 # Capacitor guided tour
