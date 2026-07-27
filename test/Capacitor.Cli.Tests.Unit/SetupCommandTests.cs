@@ -346,13 +346,39 @@ public class SetupCommandTests {
     }
 
     [Test]
-    public async Task ShouldOfferGuidedTour_true_when_the_claude_plugin_is_registered() {
+    public async Task ShouldOfferGuidedTour_true_when_the_registered_plugin_ships_the_skill() {
         using var tmp          = new TempDir();
         var       settingsPath = Path.Combine(tmp.Path, ".claude", "settings.json");
+        var       marketplace  = Path.Combine(tmp.Path, "plugin");
 
-        SetupCommand.InstallPlugin(settingsPath, "/opt/kcap");
+        SetupCommand.InstallPlugin(settingsPath, marketplace);
+        Directory.CreateDirectory(Path.Combine(marketplace, "skills", "guided-tour"));
+        await File.WriteAllTextAsync(Path.Combine(marketplace, "skills", "guided-tour", "SKILL.md"), "skill");
 
         await Assert.That(SetupCommand.ShouldOfferGuidedTour(true, settingsPath, GuidedTourPaths(tmp.Path))).IsTrue();
+    }
+
+    [Test]
+    public async Task ShouldOfferGuidedTour_false_when_an_old_plugin_is_registered_and_pluginDir_is_null() {
+        // Codex round 4: an older kcap plugin registered in settings, run from a layout where
+        // ResolvePluginPath finds nothing. Registration alone must not advertise a skill the
+        // registered directory does not ship.
+        using var tmp          = new TempDir();
+        var       settingsPath = Path.Combine(tmp.Path, ".claude", "settings.json");
+        var       oldPlugin    = Path.Combine(tmp.Path, "old-plugin");
+
+        SetupCommand.InstallPlugin(settingsPath, oldPlugin);
+        Directory.CreateDirectory(Path.Combine(oldPlugin, "skills", "recap")); // pre-guided-tour layout
+
+        var paths = GuidedTourPaths(tmp.Path); // PluginDir stays null
+
+        await Assert.That(SetupCommand.ShouldOfferGuidedTour(true, settingsPath, paths)).IsFalse();
+
+        // The registered dir gaining the skill flips it — the gate tracks what Claude loads.
+        Directory.CreateDirectory(Path.Combine(oldPlugin, "skills", "guided-tour"));
+        await File.WriteAllTextAsync(Path.Combine(oldPlugin, "skills", "guided-tour", "SKILL.md"), "skill");
+
+        await Assert.That(SetupCommand.ShouldOfferGuidedTour(true, settingsPath, paths)).IsTrue();
     }
 
     [Test]

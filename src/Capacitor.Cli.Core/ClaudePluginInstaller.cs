@@ -65,6 +65,27 @@ public static class ClaudePluginInstaller {
     static bool HasEnabledFlag(JsonObject enabled, string key) =>
         enabled[key] is JsonValue v && v.TryGetValue<bool>(out var on) && on;
 
+    /// <summary>
+    /// The directory Claude actually loads the kcap plugin from —
+    /// <c>extraKnownMarketplaces.kcap.source.path</c> in <paramref name="settingsPath"/> —
+    /// or null when nothing is registered or the file is unreadable. Distinct from where the
+    /// current build would install from: after an upgrade the two can differ.
+    /// </summary>
+    public static string? RegisteredMarketplacePath(string settingsPath) {
+        try {
+            if (!File.Exists(settingsPath)) return null;
+            if (JsonNode.Parse(File.ReadAllText(settingsPath)) is not JsonObject root) return null;
+
+            var path = root["extraKnownMarketplaces"]?["kcap"]?["source"]?["path"];
+
+            return path is JsonValue v && v.TryGetValue<string>(out var p) && !string.IsNullOrWhiteSpace(p)
+                ? p
+                : null;
+        } catch {
+            return null;
+        }
+    }
+
     public static string? ReadMarker(string settingsPath) {
         var dir = Path.GetDirectoryName(settingsPath);
         if (string.IsNullOrEmpty(dir)) return null;

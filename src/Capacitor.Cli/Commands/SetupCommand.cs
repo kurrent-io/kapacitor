@@ -563,13 +563,20 @@ public static class SetupCommand {
       || AgentsSkillsInstaller.HasSkill(paths.AntigravitySkillsDir, GuidedTourSkillName));
 
     /// <summary>
-    /// The plugin is registered AND the directory it points at actually ships the skill. A
-    /// resolved-but-stale plugin dir from an older install would otherwise pass on registration
-    /// alone. When the dir can't be resolved at all, registration is the best signal available.
+    /// The plugin is registered AND the directory Claude loads it from ships the skill. The
+    /// registered marketplace path in settings is the artifact that matters — <paramref
+    /// name="pluginDir"/> is only where THIS build would install from, and after an upgrade the
+    /// two can differ. Falls back to it when nothing is registered; false when neither resolves,
+    /// because an unverifiable skill must not be advertised.
     /// </summary>
-    static bool ClaudeCarriesGuidedTour(string claudeSettingsPath, string? pluginDir) =>
-        ClaudePluginInstaller.IsInstalled(claudeSettingsPath)
-     && (pluginDir is null || File.Exists(Path.Combine(pluginDir, "skills", GuidedTourSkillName, "SKILL.md")));
+    static bool ClaudeCarriesGuidedTour(string claudeSettingsPath, string? pluginDir) {
+        if (!ClaudePluginInstaller.IsInstalled(claudeSettingsPath)) return false;
+
+        var dir = ClaudePluginInstaller.RegisteredMarketplacePath(claudeSettingsPath) ?? pluginDir;
+
+        return dir is not null
+            && File.Exists(Path.Combine(dir, "skills", GuidedTourSkillName, "SKILL.md"));
+    }
 
     /// <summary>Source folder name under <c>kcap/skills/</c>; <c>kcap-</c>-prefixed once installed.</summary>
     internal const string GuidedTourSkillName = "guided-tour";
