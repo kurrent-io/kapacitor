@@ -129,8 +129,8 @@ PromptedStartAnalyticsTour"`.
   |---|---|
   | Install `kcap` | `whoami` succeeded in beat 1 |
   | Import a session | Q-DONE's `resolved_author.session_count` > 0 |
-  | Prompt ❯ `Start the evals tour` | its marker found by Q-DONE |
-  | Prompt ❯ `Start the session recall tour` | marker |
+  | Prompt ❯ `Start the session recall tour` | its marker found by Q-DONE |
+  | Prompt ❯ `Start the evals tour` | marker |
   | Prompt ❯ `Start the PR review tour` | marker |
   | Prompt ❯ `Start the analytics tour` | marker |
 
@@ -192,7 +192,12 @@ next. And because it spans every repo your team touches, it sees patterns no sin
 
 {{TABLE: repo | sessions | hours | cost | tool errors}}
 
-Learn how to reduce token cost and hours wasted — Prompt ❯ `Start the evals tour`
+## 🧠 Session recall
+
+Ask "have we worked on this before?" and search the reasoning, not just the commits.
+  Prompt ❯ `has anyone hit this before?`
+  Prompt ❯ `Recall the last 3 times I asked "why" in a session`
+  Prompt ❯ `Start the session recall tour`
 
 ## 🧪 Evals
 
@@ -202,13 +207,6 @@ relearn every session — and turns the lessons into repo guidance that targets 
   Prompt ❯ `evaluate my last session`
   Prompt ❯ `Show my most common tool failures and how many sessions they span`
   Prompt ❯ `Start the evals tour`
-
-## 🧠 Session recall
-
-Ask "have we worked on this before?" and search the reasoning, not just the commits.
-  Prompt ❯ `has anyone hit this before?`
-  Prompt ❯ `Recall the last 3 times I asked "why" in a session`
-  Prompt ❯ `Start the session recall tour`
 
 ## 🔀 PR review
 
@@ -259,8 +257,8 @@ space, then the item's marker written as ONE word:
 
 | completed tour | marker (join `Prompted` + id into one word) |
 |---|---|
-| evals | `Prompted` + `StartEvalsTour` |
 | session recall | `Prompted` + `StartSessionRecallTour` |
+| evals | `Prompted` + `StartEvalsTour` |
 | PR review | `Prompted` + `StartPRReviewTour` |
 | analytics | `Prompted` + `StartAnalyticsTour` |
 
@@ -289,7 +287,9 @@ straight to the point. No overview, no concept preamble, no describing the flow 
    nothing (a session-id lookup, a row count) you may run yourself; when awareness of it would
    reinforce their mental model, say what you are about to run and ask first.
 3. **Their data, always.** Every step runs on real sessions from their own record — that is
-   what makes it resonate. Nothing canned, nothing hypothetical.
+   what makes it resonate. Nothing canned, nothing hypothetical. The ONE sanctioned exception
+   is the not-yet-demonstrable evals path below, and only when the example is labelled as an
+   example out loud.
 4. **Respect the clock.** Prefer operations that finish in 30–90 seconds. If one will run
    longer (`kcap eval`: LLM judges, real spend, 1–3 minutes), say so BEFORE they fire it, run
    it in the background, and post a one-line progress note about every minute until it returns.
@@ -305,11 +305,13 @@ The FINAL step closes with: the one prompt worth remembering, the marker line, a
 re-printed TODO list.
 
 Suggested live steps per tour —
-  **evals**: `kcap eval` on their most recent session (say it takes a minute; if no judge is
-  configured, say exactly what is missing instead of failing quietly) → read the scores → show
-  where guidance would land (CLAUDE.md) without writing it.
   **session recall**: search something real from their top repo → open the best hit → show the
   question-shapes that work ("have we…", "why did we…", "who worked on…").
+  **evals**: read WHEN EVALS ARE NOT DEMONSTRABLE YET below BEFORE planning the steps — on a
+  young record the full pipeline cannot be shown, and the tour changes shape. When it can:
+  `kcap eval` on their most recent session (say it takes a minute; if no judge is
+  configured, say exactly what is missing instead of failing quietly) → read the scores → show
+  where guidance would land (CLAUDE.md) without writing it.
   **PR review**: `get_pr_summary` on `{{PR}}` → pull the reasoning behind one hunk → contrast
   with what the diff alone shows.
   **analytics**: one spend query → the error-heavy vs clean session comparison → invite their
@@ -334,6 +336,50 @@ empty query for their recent sessions, open each with `get_session_transcript`, 
 **For evals, everywhere:** the mechanism in one line (sessions get scored → lessons become
 curated guidance in CLAUDE.md), the numbers that exist (error counts, hours lost, error-heavy vs
 clean sessions), and **never a savings figure** — no measurement backs one yet.
+
+## WHEN EVALS ARE NOT DEMONSTRABLE YET
+
+Evals are a pipeline, not one call, and every stage needs both volume and elapsed time:
+
+```
+ one session ──`kcap eval`──► scores            LLM judges. 1–3 min, real spend.
+ many scored sessions ──────► facts             patterns only exist ACROSS sessions
+ enough facts ──────────────► promoted guidance  needs a body of facts, not one
+ promoted guidance ─────────► CLAUDE.md          via `curate apply`
+```
+
+Only the first arrow is on the tour's clock. The rest accrue over days of normal work. On a
+fresh workspace the later stages are simply empty — not broken, not misconfigured, just early.
+
+**Establish which stage they can reach BEFORE opening the tour, and never promise past it.**
+Two read-only checks, no writes:
+  - **Sessions to score**: `resolved_author.session_count` from Q-DONE, already fetched in
+    beat 1. One or two sessions cannot produce a cross-session pattern.
+  - **Anything curated yet**: `kcap curate apply --dry-run` — reports what *would* be written
+    and exits without writing. This is the one sanctioned use of `curate apply`; the bare
+    writing form stays banned.
+
+**If the full pipeline cannot be shown inside the tour's clock** — the common case on day one —
+switch from demonstration to onboarding, and **say which one they are getting.** Do not stage a
+curation demo on a record that cannot support one: an empty result presented as the payoff reads
+as a broken product, and it breaks the honesty rules besides.
+
+The fallback tour:
+  1. **Still run one real eval.** `kcap eval` on their most recent session, live. This works on
+     day one and it is the part that resonates — the scores are about their own work. Warn about
+     the 1–3 minutes first, run it in the background, post a progress note about every minute.
+  2. **Read those scores with them.** Real output, their session. This is a complete, honest
+     payoff on its own.
+  3. **Step through what the rest needs**, concretely and without hand-waving: more scored
+     sessions before facts appear, facts accumulating before anything is promoted, and only then
+     `curate apply` writing into CLAUDE.md. Give the shape of the wait in ordinary terms — a
+     working week of normal sessions, not a number you cannot support.
+  4. **Show what it will look like when it lands** — a short illustrative example of a promoted
+     guideline. Label it out loud as an illustration, every time: *"this is an example, not your
+     data — yours will come from your own sessions."* Never format it to look like a query result.
+  5. **Close with the prompt that starts the accumulation**, so the wait is doing something.
+
+Both shapes are a completed evals tour: emit the marker and tick the TODO either way.
 
 ## DOCS — the reference pages
 
@@ -378,6 +424,6 @@ page wins. If a fetch fails, say what you know and link the page rather than gue
 - **`kcap disable`** — it *deletes* that session's server-side data. Privacy answer: `kcap hide`
   (owner-only, reversible). Mention team visibility once, when first showing someone's session.
 - `get_analytics_schema` — the views you need are named in this file.
-- `curate apply` (writes files), `kcap-memory`, `kcap-flows` — typically empty or inert on a
-  fresh workspace.
+- `curate apply` (writes files) — `--dry-run` is the one permitted form, as the readiness check
+  above. `kcap-memory`, `kcap-flows` — typically empty or inert on a fresh workspace.
 - Unsolicited feature tours or per-person league tables.
