@@ -557,10 +557,22 @@ public static class SetupCommand {
     internal static bool ShouldOfferGuidedTour(
             bool anyAgentDetected, string claudeSettingsPath, CodingAgentsStep.Paths paths) =>
         anyAgentDetected
-     && (ClaudePluginInstaller.IsInstalled(claudeSettingsPath)
-      || AgentsSkillsInstaller.IsInstalled(paths.AgentsSkillsDir)
-      || AgentsSkillsInstaller.IsInstalled(paths.KiroSkillsDir)
-      || AgentsSkillsInstaller.IsInstalled(paths.AntigravitySkillsDir));
+     && (ClaudeCarriesGuidedTour(claudeSettingsPath, paths.PluginDir)
+      || AgentsSkillsInstaller.HasSkill(paths.AgentsSkillsDir,      GuidedTourSkillName)
+      || AgentsSkillsInstaller.HasSkill(paths.KiroSkillsDir,        GuidedTourSkillName)
+      || AgentsSkillsInstaller.HasSkill(paths.AntigravitySkillsDir, GuidedTourSkillName));
+
+    /// <summary>
+    /// The plugin is registered AND the directory it points at actually ships the skill. A
+    /// resolved-but-stale plugin dir from an older install would otherwise pass on registration
+    /// alone. When the dir can't be resolved at all, registration is the best signal available.
+    /// </summary>
+    static bool ClaudeCarriesGuidedTour(string claudeSettingsPath, string? pluginDir) =>
+        ClaudePluginInstaller.IsInstalled(claudeSettingsPath)
+     && (pluginDir is null || Directory.Exists(Path.Combine(pluginDir, "skills", GuidedTourSkillName)));
+
+    /// <summary>Source folder name under <c>kcap/skills/</c>; <c>kcap-</c>-prefixed once installed.</summary>
+    internal const string GuidedTourSkillName = "guided-tour";
 
     /// <summary>
     /// A prompt rather than a slash command, because the invocation differs per vendor. Pinned

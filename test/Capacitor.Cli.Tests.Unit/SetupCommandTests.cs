@@ -373,13 +373,47 @@ public class SetupCommandTests {
         using var kiro = new TempDir();
         using var anti = new TempDir();
 
-        Directory.CreateDirectory(Path.Combine(kiro.Path, "kiro-skills", "kcap-recap"));
+        Directory.CreateDirectory(Path.Combine(kiro.Path, "kiro-skills", "kcap-guided-tour"));
         await Assert.That(SetupCommand.ShouldOfferGuidedTour(
             true, Path.Combine(kiro.Path, "none.json"), GuidedTourPaths(kiro.Path))).IsTrue();
 
-        Directory.CreateDirectory(Path.Combine(anti.Path, "antigravity-skills", "kcap-recap"));
+        Directory.CreateDirectory(Path.Combine(anti.Path, "antigravity-skills", "kcap-guided-tour"));
         await Assert.That(SetupCommand.ShouldOfferGuidedTour(
             true, Path.Combine(anti.Path, "none.json"), GuidedTourPaths(anti.Path))).IsTrue();
+    }
+
+    [Test]
+    public async Task ShouldOfferGuidedTour_false_when_only_older_skills_are_installed() {
+        // An upgrade from a kcap that predates guided-tour leaves kcap-recap and friends on disk.
+        // "Has this installer ever run here" is true there; "can the user run the tour" is not.
+        using var tmp   = new TempDir();
+        var       paths = GuidedTourPaths(tmp.Path);
+
+        Directory.CreateDirectory(Path.Combine(paths.AgentsSkillsDir, "kcap-recap"));
+        Directory.CreateDirectory(Path.Combine(paths.AgentsSkillsDir, "kcap-errors"));
+
+        await Assert.That(AgentsSkillsInstaller.IsInstalled(paths.AgentsSkillsDir)).IsTrue();
+        await Assert.That(SetupCommand.ShouldOfferGuidedTour(
+            true, Path.Combine(tmp.Path, ".claude", "settings.json"), paths)).IsFalse();
+    }
+
+    [Test]
+    public async Task ShouldOfferGuidedTour_false_when_the_claude_plugin_dir_lacks_the_skill() {
+        // Registration alone isn't enough when the resolved plugin dir is a stale install.
+        using var tmp          = new TempDir();
+        var       settingsPath = Path.Combine(tmp.Path, ".claude", "settings.json");
+        var       pluginDir    = Path.Combine(tmp.Path, "stale-plugin");
+
+        SetupCommand.InstallPlugin(settingsPath, pluginDir);
+        Directory.CreateDirectory(Path.Combine(pluginDir, "skills", "recap"));
+
+        var paths = GuidedTourPaths(tmp.Path) with { PluginDir = pluginDir };
+
+        await Assert.That(SetupCommand.ShouldOfferGuidedTour(true, settingsPath, paths)).IsFalse();
+
+        Directory.CreateDirectory(Path.Combine(pluginDir, "skills", "guided-tour"));
+
+        await Assert.That(SetupCommand.ShouldOfferGuidedTour(true, settingsPath, paths)).IsTrue();
     }
 
     /// <summary>Paths record carrying only the four fields GuidedTourReachable reads.</summary>
