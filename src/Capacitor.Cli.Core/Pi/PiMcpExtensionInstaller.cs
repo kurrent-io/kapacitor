@@ -303,8 +303,8 @@ public static class PiMcpExtensionInstaller {
           }
 
           // Start (or re-establish) every server CONCURRENTLY — one 10s handshake budget each, so
-          // four hung servers add ~10s wall-clock, not 4x. Healthy servers register + route; a bad
-          // one is logged and skipped. Idempotent: a server already live is left as-is.
+          // hung servers add ~10s wall-clock total, not 10s per server. Healthy servers register +
+          // route; a bad one is logged and skipped. Idempotent: a server already live is left as-is.
           async function startBridge(): Promise<void> {
             if (startInFlight) return startInFlight;
             startInFlight = (async () => {
