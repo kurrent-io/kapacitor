@@ -1295,6 +1295,13 @@ static class McpFlowsServer {
     /// NEVER string-compares the three values — they legitimately differ (a requested alias resolves
     /// to a dated concrete id; the server already validated equivalence). They are surfaced for the
     /// caller to read, not to police.</summary>
+    static void AppendReviewerModelAudit(StringBuilder sb, JsonObject node) {
+        if (TryGetString(node, "requested_reviewer_model") is { } requested) { sb.Append("requested_reviewer_model: "); AppendLine(sb, requested); }
+        if (TryGetString(node, "applied_reviewer_model")   is { } applied)   { sb.Append("applied_reviewer_model: ");   AppendLine(sb, applied); }
+        if (TryGetString(node, "resolved_reviewer_model")  is { } resolved)  { sb.Append("resolved_reviewer_model: ");  AppendLine(sb, resolved); }
+        if (TryGetString(node, "reviewer_model_source")    is { } source)    { sb.Append("reviewer_model_source: ");    AppendLine(sb, source); }
+    }
+
     /// <summary>Renders the run's reviewer workspace decision. ONE helper, reached from every surface
     /// that formats a flow response, so no path can disagree with another about what the reviewer read.
     /// <para>An absent decision renders <c>unknown</c> and NEVER <c>borrowed</c> — guessing borrowed is
@@ -1331,13 +1338,6 @@ static class McpFlowsServer {
                 sb.Append("workspace: "); AppendLine(sb, mode);
                 break;
         }
-    }
-
-    static void AppendReviewerModelAudit(StringBuilder sb, JsonObject node) {
-        if (TryGetString(node, "requested_reviewer_model") is { } requested) { sb.Append("requested_reviewer_model: "); AppendLine(sb, requested); }
-        if (TryGetString(node, "applied_reviewer_model")   is { } applied)   { sb.Append("applied_reviewer_model: ");   AppendLine(sb, applied); }
-        if (TryGetString(node, "resolved_reviewer_model")  is { } resolved)  { sb.Append("resolved_reviewer_model: ");  AppendLine(sb, resolved); }
-        if (TryGetString(node, "reviewer_model_source")    is { } source)    { sb.Append("reviewer_model_source: ");    AppendLine(sb, source); }
     }
 
     /// <summary> E-c: deliver-once ack for pending messages. Callers must invoke this
@@ -1458,7 +1458,7 @@ static class McpFlowsServer {
                     ["target_kind"]  = new("string", "What is being reviewed: 'pr', 'branch', 'file', 'spec', 'plan', etc."),
                     ["target_ref"]   = new("string", "A reference to the target (PR URL, branch name, file path, etc.)."),
                     ["target_title"] = new("string", "Human-readable title for the target (PR title, spec name, etc.)."),
-                    ["context"]      = new("string", "Background context for the reviewer: what to focus on, constraints, definition of done. State where the changes live — the reviewer sees a mirror of the working tree you launched from only; if the changeset is elsewhere or incomplete there, say so and inline the relevant diffs. Whether it sees your UNCOMMITTED work is conditional: only when the run actually borrows your checkout. Responses report this as workspace: borrowed | fallback (<reason>) | unknown — for the reserved review aliases; other flow kinds report unknown. On fallback the reviewer read the last commit, so inline anything uncommitted that matters."),
+                    ["context"]      = new("string", "Background context for the reviewer: what to focus on, constraints, definition of done. State where the changes live — the reviewer sees a mirror of the working tree you launched from only; if the changeset is elsewhere or incomplete there, say so and inline the relevant diffs. Whether it sees your UNCOMMITTED work is conditional: only when the run actually borrows your checkout. Responses report this as workspace: borrowed | fallback (<reason>) | unknown — for the reserved review aliases; other flow kinds report unknown. On fallback your working tree was NOT borrowed, so inline anything uncommitted that matters."),
                     ["instructions"] = new("string", "Optional additional instructions for the reviewer agent."),
                     ["mode"]         = new("string", "Optional. Pass 'context-only' to have the reviewer treat the submitted context/diff as authoritative rather than reading the repository. By default the reviewer runs in a worktree mirrored from your working tree (uncommitted changes included) when it runs on the same machine, so it can ground the review in the actual source; passing 'context-only' opts out of that."),
                     ["vendor"]       = new("string", "Optional reviewer vendor for the reserved alias, independent of the driver harness. Omit to use the server's Flows:Review:DefaultVendor. The selected vendor must be installed and certified unattended on an eligible daemon; there is no silent fallback. Pass the lowercase canonical vendor token (e.g. 'claude', 'codex')."),
