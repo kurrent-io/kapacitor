@@ -97,17 +97,22 @@ internal interface IImportSource {
     bool SupportsTitleGeneration { get; }
 
     /// <summary>
-    /// True if a routed <see cref="ImportSessionAsync"/> call against an ALREADY-INGESTED session
-    /// can still POST transcript lines — to a nested child/subagent stream, the root's own content
-    /// being caught up by definition. Such a call can add publicly-visible content to a session
-    /// that already exists, so <c>--private</c> privatizes these sources independently of the
-    /// call's <see cref="ImportOutcome"/> (see <c>privateScopeSessionIds</c> in
+    /// True if a routed <see cref="ImportSessionAsync"/> call for a
+    /// <see cref="ImportCommand.ClassificationStatus.AlreadyLoaded"/> classification can still POST
+    /// transcript lines — to a nested child/subagent stream, the root's own content being caught up
+    /// by definition. Such a call can add publicly-visible content to a session that already
+    /// exists, so <c>--private</c> privatizes these sources independently of the call's
+    /// <see cref="ImportOutcome"/> (see <c>privateScopeSessionIds</c> in
     /// <see cref="ImportCommand"/>). The outcome can't be trusted to reveal the attach: a source
     /// may report a hardcoded <see cref="ImportOutcome.Skipped"/>, and any lifecycle POST can fail
     /// AFTER the child content persisted. The replayed session-start's <c>default_visibility</c>
     /// is a create-time hint, so it does nothing here either.
     ///
-    /// <para>Per-source values are pinned by <c>ReplayChildContentCapabilityTests</c>.</para>
+    /// <para>
+    /// <c>false</c> says only that the <c>AlreadyLoaded</c> call posts nothing — not that the
+    /// source never posts. New/Partial content paths are out of scope for this flag.
+    /// Per-source values are pinned by <c>ReplayChildContentCapabilityTests</c>.
+    /// </para>
     /// </summary>
     bool AttachesChildContentOnReplay { get; }
 

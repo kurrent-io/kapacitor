@@ -1192,9 +1192,12 @@ static class ImportCommand {
         // regardless of outcome.
         //
         // Scoped by AttachesChildContentOnReplay, not a vendor name: the source owning the
-        // child-import pass is what knows. A source whose replay posts nothing needs no post-hoc
-        // pass — its only content path is a New session, and under --private that is never stamped
-        // with a public default_visibility (server-side sessions are private by default).
+        // child-import pass is what knows. Excluding a source claims only that its AlreadyLoaded
+        // call posts nothing (OpenCode's returns before any POST; Copilot/Kiro/Pi have no child
+        // import at all) — NOT that it can never add content. Those sources do post on New and
+        // Partial, and a lifecycle POST failing after that content persisted leaves the same kind
+        // of gap for every routed vendor. That residual is deliberately a separate issue, not
+        // something this gate covers.
         var privateScopeSessionIds = new ConcurrentBag<string>();
 
         // Read-only inside the parallel loops below; resolved from the sources actually in play.
@@ -1377,9 +1380,10 @@ static class ImportCommand {
                 }
             }
 
-            // Every non-rendering effect of a routed call lives here so the TTY and non-TTY
-            // branches below differ ONLY in how they draw. Duplicating the privatize capture and
-            // the membership rule across both branches let them drift independently — and a
+            // Every non-rendering effect of a routed call lives here — the privatize capture, the
+            // counting resolution, the per-vendor tracker, importedSessionIds membership and the
+            // aggregate totals — so the TTY and non-TTY branches below differ ONLY in how they
+            // draw. Duplicating any of it across both branches let them drift independently, and a
             // regression in just one was invisible to tests that exercise a single display mode.
             // Returns the resolved outcome for the caller's switch, plus the raw one (its
             // `null when outcome is Skipped` arm needs it).
@@ -1423,6 +1427,15 @@ static class ImportCommand {
                     importedSessionIds.Add(c.SessionId);
                 }
 
+                // Aggregate Done-grid totals. Also a non-rendering effect, so it belongs here
+                // rather than once per renderer — the suppressed (`null`) cases contribute to no
+                // bucket, which is what keeps a replay off the totals.
+                switch (resolved) {
+                    case ImportOutcome.Loaded or ImportOutcome.Resumed: Interlocked.Increment(ref routedLoaded);   break;
+                    case ImportOutcome.Skipped:                         Interlocked.Increment(ref routedExcluded); break;
+                    case ImportOutcome.Failed:                          Interlocked.Increment(ref routedErrored);  break;
+                }
+
                 return (resolved, outcome);
             }
 
@@ -1443,24 +1456,18 @@ static class ImportCommand {
                                     switch (resolved) {
                                         case ImportOutcome.Loaded:
                                         case ImportOutcome.Resumed:
-                                            Interlocked.Increment(ref routedLoaded);
-
                                             AnsiConsole.MarkupLine(
                                                 $"[green]✓[/] Loading [cyan]{Markup.Escape(c.SessionId)}[/] ({Markup.Escape(c.Vendor)})"
                                             );
 
                                             break;
                                         case ImportOutcome.Skipped:
-                                            Interlocked.Increment(ref routedExcluded);
-
                                             AnsiConsole.MarkupLine(
                                                 $"[yellow]~[/] Skipping [cyan]{Markup.Escape(c.SessionId)}[/] (already current)"
                                             );
 
                                             break;
                                         case ImportOutcome.Failed:
-                                            Interlocked.Increment(ref routedErrored);
-
                                             AnsiConsole.MarkupLine(
                                                 $"[red]✗[/] Failed [cyan]{Markup.Escape(c.SessionId)}[/]"
                                             );
@@ -1499,17 +1506,14 @@ static class ImportCommand {
                         switch (resolved) {
                             case ImportOutcome.Loaded:
                             case ImportOutcome.Resumed:
-                                Interlocked.Increment(ref routedLoaded);
                                 display.Line($"Loading {c.SessionId} ({c.Vendor})");
 
                                 break;
                             case ImportOutcome.Skipped:
-                                Interlocked.Increment(ref routedExcluded);
                                 display.Line($"Skipping {c.SessionId} (already current)");
 
                                 break;
                             case ImportOutcome.Failed:
-                                Interlocked.Increment(ref routedErrored);
                                 display.Line($"Failed {c.SessionId}");
 
                                 break;
