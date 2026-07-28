@@ -38,14 +38,22 @@ namespace Capacitor.Cli.Tests.Integration;
 /// actually has &gt;1 vendor key and renders at all).</item>
 /// <item>The printed per-session line is the "Loading …" line, not the "Already loaded … (no new
 /// content)" no-op line.</item>
-/// <item>The session still does NOT join <c>importedSessionIds</c> — membership keys off the raw
-/// outcome (Skipped), independent of the Loaded resolution that drives 1–3. Privatization no
-/// longer rides on that membership, though: Antigravity declares
-/// <see cref="IImportSource.AttachesChildContentOnReplay"/>, so under <c>--private</c> the root is
-/// captured outcome-independently and gets exactly one <c>PUT .../visibility</c>. The child is
-/// nested content, not a routed classification of its own, so it contributes no PUT — which is
-/// what keeps this an assertion about membership rather than about "some PUT happened".</item>
+/// <item>Under <c>--private</c> the root gets exactly one <c>PUT .../visibility</c> — it is
+/// captured outcome-independently because Antigravity declares
+/// <see cref="IImportSource.AttachesChildContentOnReplay"/>. The nested child is not a routed
+/// classification of its own and contributes no PUT of its own.</item>
 /// </list>
+///
+/// <para>
+/// Effect 4 is NOT a guard on <c>importedSessionIds</c> membership, and must not be read as one.
+/// The privatize set is <c>HashSet(importedSessionIds) ∪ privateScopeSessionIds</c> and this root
+/// is already in the private scope, so rewiring membership to the resolved <c>Loaded</c> outcome
+/// would union the same single id and still emit exactly one PUT — verified by mutation. The
+/// Done-grid assertions do not expose it either (<c>ComputePerSourceFinalCounts</c> takes the
+/// routed early return and ignores its <c>imported</c> argument). That rule is pinned instead by
+/// <see cref="RoutedPrivatizeMembershipTests"/>, which uses a source outside the private scope so
+/// the union cannot absorb the difference.
+/// </para>
 /// </summary>
 public class AntigravitySkippedChildOverrideRoutedLoopTests : IDisposable {
     readonly WireMockServer _server         = WireMockServer.Start();
@@ -194,14 +202,14 @@ public class AntigravitySkippedChildOverrideRoutedLoopTests : IDisposable {
         await Assert.That(LineMatches(vendorRow, "Already loaded", 1)).IsTrue();
         await Assert.That(vendorRow).DoesNotContain("Excluded");
 
-        // --- Effect 4: the counting-only override must NOT change importedSessionIds membership.
-        // The RESOLVED outcome is Loaded (drives 1-3 above), but the RAW outcome is still Skipped,
-        // so the root never joins importedSessionIds. Privatization comes from the separate
-        // outcome-independent tracker instead (Antigravity's replay can attach child content), so
-        // forcePrivate: true yields exactly ONE PUT — the root's. The nested child is not a routed
-        // classification and contributes none; the Gemini fixture never reaches import (ProbeError)
-        // so it contributes none either. A second PUT here would mean membership had been rewired
-        // to the resolved outcome.
+        // --- Effect 4: under --private the root is privatized exactly once, via the
+        // outcome-independent tracker (Antigravity's replay can attach child content). The nested
+        // child is not a routed classification and contributes no PUT; the Gemini fixture never
+        // reaches import (ProbeError) so it contributes none either.
+        //
+        // This does NOT pin importedSessionIds membership — see the class doc: the private scope
+        // already covers this root, so the union makes raw-vs-resolved membership unobservable
+        // here. RoutedPrivatizeMembershipTests pins that.
         var putPaths = _server.LogEntries
             .Where(e => e.RequestMessage.Method == "PUT")
             .Select(e => e.RequestMessage.Path)
