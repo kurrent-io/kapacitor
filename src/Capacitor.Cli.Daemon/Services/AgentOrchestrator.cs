@@ -526,7 +526,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
         // The add-to-quarantine-before-remove-from-_agents invariant makes this ordering false-Dead-free.
         if (_agents.TryGetValue(agentId, out var a))
             return a.Status is "Starting" or "Running" ? AgentLiveness.Live : AgentLiveness.Quarantined;
-        if (_quarantine?.Snapshot().Any(q => q.Id == agentId) == true) return AgentLiveness.Quarantined;
+        if (_quarantine?.IsQuarantined(agentId) == true) return AgentLiveness.Quarantined;
         return AgentLiveness.Dead;
     }
 

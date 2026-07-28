@@ -209,6 +209,51 @@ public class SequencedCommandProcessorTests {
         await Assert.That(h.Acks[1].RejectionReason).IsEqualTo("semantic");
     }
 
+    // The liveness read is a delegate over the orchestrator's live lifecycle collections, and the proactive
+    // settle ack puts it on EVERY settled command (not just a duplicate replay). Holding _lock across it
+    // would push that read onto the critical path of concurrent SubmitAsync/AckPrefix callers, so both ack
+    // paths must build the ack after releasing the lock.
+    [Test] public async Task Liveness_is_never_read_while_the_processor_lock_is_held() {
+        SequencedCommandProcessor? proc = null;
+        var reads = 0;
+        var readsUnderLock = 0;
+
+        await using var p = proc = new SequencedCommandProcessor(
+            "e1",
+            _ => {
+                reads++;
+                if (proc!.LockHeldByCurrentThreadForTest) readsUnderLock++;
+                return AgentLiveness.Live;
+            },
+            _ => Task.CompletedTask, _ => Task.CompletedTask, NullLogger.Instance);
+
+        var item = new SequencedItem(SequencedKind.Launch, "e1", 1, "cmd1", "a1");
+        await p.SubmitAsync(item, () => Task.FromResult(new CommandOutcome(CommandOutcomeKind.LaunchExecuted, "a1", "sess")));
+        await p.SubmitAsync(item, () => Task.FromResult(new CommandOutcome(CommandOutcomeKind.LaunchExecuted)));
+
+        await Assert.That(reads).IsEqualTo(2);          // proactive settle ack + duplicate replay ack
+        await Assert.That(readsUnderLock).IsEqualTo(0); // neither one held _lock
+    }
+
+    // The ordering the lock move must NOT break: the cache records the outcome BEFORE the ack is built, so
+    // an ack can never advertise an outcome a concurrently-arriving duplicate would not yet see.
+    [Test] public async Task Proactive_ack_is_built_only_after_the_outcome_is_recorded_in_the_cache() {
+        SequencedCommandProcessor? proc = null;
+        long watermarkAtAckTime = -1;
+
+        await using var p = proc = new SequencedCommandProcessor(
+            "e1",
+            _ => { watermarkAtAckTime = proc!.LastProcessedSeq; return AgentLiveness.Live; },
+            _ => Task.CompletedTask, _ => Task.CompletedTask, NullLogger.Instance);
+
+        await p.SubmitAsync(new SequencedItem(SequencedKind.Launch, "e1", 1, "cmd1", "a1"),
+            () => Task.FromResult(new CommandOutcome(CommandOutcomeKind.LaunchExecuted)));
+
+        // The watermark only advances once the entry is marked Processed, so seeing 1 here proves the
+        // cache write happened first.
+        await Assert.That(watermarkAtAckTime).IsEqualTo(1L);
+    }
+
     // A duplicate of a non-rejected (executed) command has no cached reject reason -> null RejectionReason.
     [Test] public async Task Duplicate_of_an_executed_launch_has_no_rejection_reason() {
         var h = new Harness(); await using var p = h.P();

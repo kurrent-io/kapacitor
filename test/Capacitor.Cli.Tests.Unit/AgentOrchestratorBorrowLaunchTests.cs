@@ -99,18 +99,12 @@ public partial class AgentOrchestratorVendorTests {
     // ── Borrowed-snapshot regression net (two distinct checkouts) ─────────────────────────
     // docs/superpowers/specs/2026-07-27-ai1528-trust-by-default-borrowed-review-design.md
     //
-    // Until the capability gate above was removed this path had, on the evidence in that design,
-    // never executed in production — the daemon advertised no borrowed support, the server resolved
-    // workspace_mode=fallback, and reviewers ran in an owned worktree at the last commit. Its
-    // correctness was therefore unevidenced, which is what this test supplies.
-    //
     // TWO checkouts are mandatory. The orchestrator snapshots the borrow cwd's own canonical git
     // root, deliberately INDEPENDENT of the launch command's registered RepoPath, so a test pointing
-    // both at one directory satisfies every content assertion below while proving nothing about
+    // both at one directory would satisfy every content assertion below while proving nothing about
     // which checkout was selected — it would pass just as happily against the stale-base behavior
-    // this test exists to prevent. The launch below registers the DAEMON checkout as RepoPath and
-    // borrows the REQUESTER checkout, and the load-bearing assertion is that the snapshot's
-    // SourceRepo is the requester's git root.
+    // this test exists to prevent. So: RepoPath is the DAEMON checkout, the borrow cwd is the
+    // REQUESTER checkout, and the load-bearing assertion is the snapshot's SourceRepo.
 
     [Test]
     public async Task Borrowed_snapshot_is_built_from_the_requester_checkout_not_the_registered_repo() {
@@ -202,10 +196,9 @@ public partial class AgentOrchestratorVendorTests {
             // Baseline check 2 of 4 — after reviewer mutation.
             await AssertBaselineUnchanged(canonicalRequester, baseline, gitState, "after reviewer mutation");
 
-            // (5) Per-round refresh: the requester's new content appears, and every reviewer-only
-            // file AND its git metadata disappear. Asserting only "the reviewer's writes never
-            // reached the requester" would pass against a refresh that silently accumulates
-            // reviewer droppings round after round.
+            // (5) Per-round refresh: the requester's new content appears, and every reviewer-only file
+            // AND its git metadata disappear — asserting only that the reviewer's writes never reached
+            // the requester would pass against a refresh that accumulates droppings round after round.
             File.WriteAllText(Path.Combine(requesterRepo, "README.md"), "requester-modified-again");
             var refreshedBaseline = ContentBaseline(canonicalRequester);
             var refreshedGitState = GitState(canonicalRequester);

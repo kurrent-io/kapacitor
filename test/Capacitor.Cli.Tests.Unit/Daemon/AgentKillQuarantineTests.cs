@@ -27,6 +27,19 @@ public class AgentKillQuarantineTests {
         await Assert.That(snap[0].FlowRole).IsEqualTo("reviewer");
     }
 
+    // ReadLiveness consults this on every settled command's ack, so it asks by id rather than projecting
+    // a Snapshot and scanning it.
+    [Test]
+    public async Task IsQuarantined_answers_by_id() {
+        var q = new AgentKillQuarantine(NullLogger.Instance);
+
+        q.Add(new AgentKillQuarantine.Entry("q1", 1, "ident", "ReviewFlow", DateTimeOffset.UtcNow, null, null));
+
+        await Assert.That(q.IsQuarantined("q1")).IsTrue();
+        await Assert.That(q.IsQuarantined("q2")).IsFalse();
+        await Assert.That(q.IsQuarantined("Q1")).IsFalse();   // ordinal, like the backing dictionary
+    }
+
     [Test]
     public async Task Add_is_idempotent_per_agent_id() {
         var q = new AgentKillQuarantine(NullLogger.Instance);

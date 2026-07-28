@@ -1,17 +1,12 @@
 namespace Capacitor.Cli.Commands;
 
 /// <summary>
-/// The single injectable timing seam shared by the flows MCP server's two retry lanes — the
-/// start/submit POST helper (<c>SendWithSettlementRetryAsync</c>) and the round poll loop
-/// (<c>PollUntilTerminalAsync</c>). Clock reads, backoff/poll delays, per-request timeout sources
-/// and the deadline that cancels an in-flight POST all come from here, so tests drive a virtual
-/// clock with no wall-clock sleeps and no manually pre-cancelled tokens standing in for the real
-/// deadline logic.
-///
-/// <para>Production is backed by <see cref="TimeProvider.System"/>; every member is virtual so a
-/// test clock can override the three primitives (now / delay / timeout source) without the
-/// production types knowing anything about testing. See
-/// docs/superpowers/specs/2026-07-25-ai1526-concurrent-launch-settlement-admission-design.md (3.2 G).</para>
+/// The injectable timing seam shared by the flows MCP server's two retry lanes —
+/// <c>SendWithSettlementRetryAsync</c> (POST) and <c>PollUntilTerminalAsync</c> (poll). Every clock
+/// read, delay and timeout source routes through here so tests drive a virtual clock instead of
+/// wall-clock sleeps or pre-cancelled tokens standing in for the real deadline logic. Production is
+/// backed by <see cref="TimeProvider.System"/>. See
+/// docs/superpowers/specs/2026-07-25-ai1526-concurrent-launch-settlement-admission-design.md (3.2 G).
 /// </summary>
 internal class FlowRetryClock {
     readonly TimeProvider _time;
@@ -70,10 +65,8 @@ internal sealed class FlowDeadlineScope : IDisposable {
 /// <c>delay(n) = raw(n)/2 + U(0, raw(n)/2)</c>, then truncation to the caller's remaining budget.
 /// First retry is therefore 250–500ms and steady state 5–10s.
 ///
-/// <para>Only the schedule is shared: each lane keeps its own budget semantics (the POST lane's
-/// elapsed deadline vs the poll lane's <c>PollCap</c>) and passes its own remaining budget in, so a
-/// policy delay can never overshoot either. The jitter source is injectable so tests assert
-/// deterministic samples from a seeded RNG. See
+/// <para>Only the schedule is shared: each lane keeps its own budget semantics and passes its own
+/// remaining budget in, so a policy delay can never overshoot either. See
 /// docs/superpowers/specs/2026-07-25-ai1526-concurrent-launch-settlement-admission-design.md (3.2 G).</para>
 /// </summary>
 internal sealed class SettlementBackoff {

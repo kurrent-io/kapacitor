@@ -54,36 +54,54 @@ internal sealed class SequencedCommandProcessor : IAsyncDisposable {
     public long LastProcessedSeq   { get { lock (_lock) return _lastProcessedSeq; } }
 
     public Task SubmitAsync(SequencedItem item, Func<Task<CommandOutcome>> execute) {
+        CommandOutcome? replay;
+        Task result;
+
         lock (_lock) {
-            if (!string.Equals(item.Epoch, _epoch, StringComparison.Ordinal))
-                return RejectLocked(item, CommandRejectedReason.StaleEpoch);   // never touches THIS epoch's lane
-
-            if (_cache.TryGetValue(item.Seq, out var existing))
-                return HandleDuplicateLocked(item, existing);                   // Task 13 answers with CommandAck
-
-            if (item.Seq != _highestAcceptedSeq + 1)
-                return HandleNonNextLocked(item);                              // Task 15 sends wrong_next
-
-            if (_cache.Count >= _cacheBound)                                   // never evict unacked identity
-                return RejectLocked(item, CommandRejectedReason.Backpressure); // reopens only via a validated AckProcessedPrefix
-
-            // ACCEPT + lane-item, atomically under _lock.
-            _highestAcceptedSeq = item.Seq;
-            _cache[item.Seq] = new CacheEntry { CommandId = item.CommandId, Processed = false };
-            var done = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-            if (!_lane.Writer.TryWrite(new LaneItem(item, execute, done))) {
-                SynthesizeErrorLocked(item); // shutdown/allocation race: watermark must still advance
-                done.SetResult();
-            }
-            return done.Task;
+            result = SubmitLocked(item, execute, out replay);
         }
+
+        // _readLiveness is NEVER invoked under _lock (see BuildProcessedAck): the cached outcome is
+        // captured above, the ack is built and sent here.
+        if (replay is { } outcome) _ = _sendAck(BuildProcessedAck(item, outcome));
+
+        return result;
+    }
+
+    Task SubmitLocked(SequencedItem item, Func<Task<CommandOutcome>> execute, out CommandOutcome? replay) {
+        replay = null;
+
+        if (!string.Equals(item.Epoch, _epoch, StringComparison.Ordinal))
+            return RejectLocked(item, CommandRejectedReason.StaleEpoch);   // never touches THIS epoch's lane
+
+        if (_cache.TryGetValue(item.Seq, out var existing))
+            return HandleDuplicateLocked(item, existing, out replay);      // answered, never re-executed
+
+        if (item.Seq != _highestAcceptedSeq + 1)
+            return HandleNonNextLocked(item);
+
+        if (_cache.Count >= _cacheBound)                                   // never evict unacked identity
+            return RejectLocked(item, CommandRejectedReason.Backpressure); // reopens only via a validated AckProcessedPrefix
+
+        // ACCEPT + lane-item, atomically under _lock.
+        _highestAcceptedSeq = item.Seq;
+        _cache[item.Seq] = new CacheEntry { CommandId = item.CommandId, Processed = false };
+        var done = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        if (!_lane.Writer.TryWrite(new LaneItem(item, execute, done))) {
+            SynthesizeErrorLocked(item); // shutdown/allocation race: watermark must still advance
+            done.SetResult();
+        }
+        return done.Task;
     }
 
     /// <summary>Phase B2-b (sequenced-settlement design): an exact-duplicate <c>(Epoch, Seq, CommandId)</c>
     /// is ANSWERED, never re-executed — <c>Accepted</c> while still processing, or <c>Processed</c> with the
-    /// cached <c>OutcomeKind</c> + a LIVE <c>CurrentState</c> read. A DIFFERENT CommandId at an already-accepted
-    /// Seq is a protocol-invariant violation → <c>duplicate_collision</c>. Called under <c>_lock</c>.</summary>
-    Task HandleDuplicateLocked(SequencedItem item, CacheEntry existing) {
+    /// cached outcome. A DIFFERENT CommandId at an already-accepted Seq is a protocol-invariant violation →
+    /// <c>duplicate_collision</c>. Called under <c>_lock</c>; the processed arm only CAPTURES the cached
+    /// outcome, leaving the ack for <see cref="SubmitAsync"/> to build outside the lock.</summary>
+    Task HandleDuplicateLocked(SequencedItem item, CacheEntry existing, out CommandOutcome? replay) {
+        replay = null;
+
         if (!string.Equals(existing.CommandId, item.CommandId, StringComparison.Ordinal)) {
             // A DIFFERENT command claiming an accepted Seq — protocol invariant violation.
             _ = _sendRejected(new CommandRejected(item.Epoch, item.Seq, item.CommandId, CommandRejectedReason.DuplicateCollision, item.AgentId));
@@ -93,20 +111,24 @@ internal sealed class SequencedCommandProcessor : IAsyncDisposable {
         if (!existing.Processed)
             _ = _sendAck(new CommandAck(_epoch, item.Seq, item.CommandId, CommandAckState.Accepted));
         else
-            _ = _sendAck(BuildProcessedAckLocked(item, existing.Outcome));
+            replay = existing.Outcome;
 
         return Task.CompletedTask;
     }
 
     /// <summary>The terminal <c>Processed</c> ack for a settled command — the ONE builder shared by the
-    /// duplicate-replay path above and the proactive settle ack at the end of <see cref="RunLaneAsync"/>
-    /// (settlement-admission design §3.2 F), so a retransmission can never disagree with the proactive
-    /// send about outcome/agent/session/rejection-reason. <c>CurrentState</c> is read LIVE at ack time
-    /// (immutable execution fact vs current liveness); the readLiveness delegate reads the daemon
-    /// lifecycle collections with confirmed-death precedence. The CACHED rejection reason rides along so
-    /// a rejected launch stays distinguishable as daemon_capacity (requeue) vs semantic (fail) — the
-    /// exact lost-rejection case the identity cache answers. Called under <c>_lock</c>.</summary>
-    CommandAck BuildProcessedAckLocked(SequencedItem item, CommandOutcome outcome) {
+    /// duplicate-replay path and the proactive settle ack at the end of <see cref="RunLaneAsync"/>, so a
+    /// retransmission can never disagree with the proactive send about outcome/agent/session/rejection-reason.
+    /// The CACHED rejection reason rides along so a rejected launch stays distinguishable as daemon_capacity
+    /// (requeue) vs semantic (fail) — the exact lost-rejection case the identity cache answers.
+    ///
+    /// <para>MUST NOT be called under <c>_lock</c>. <c>CurrentState</c> is read LIVE at ack time through the
+    /// readLiveness delegate, which in production walks the orchestrator's lifecycle collections; every
+    /// settled command reaches this, so holding <c>_lock</c> across it would put that read on the critical
+    /// path of concurrent <see cref="SubmitAsync"/>/<see cref="AckPrefix"/> callers. Both callers record the
+    /// outcome in the cache first and build the ack after releasing the lock, which preserves the ordering
+    /// that matters: an ack can never advertise an outcome the cache has not recorded.</para></summary>
+    CommandAck BuildProcessedAck(SequencedItem item, CommandOutcome outcome) {
         var live   = _readLiveness(outcome.AgentId ?? item.AgentId);
         var reason = outcome.RejectReason is { } r ? RejectReasonWireToken(r) : null;
 
@@ -114,10 +136,10 @@ internal sealed class SequencedCommandProcessor : IAsyncDisposable {
             outcome.Kind, live, outcome.AgentId ?? item.AgentId, outcome.SessionId, reason);
     }
 
-    /// <summary>Settlement-admission design (§3.2 F): fire the proactive terminal ack without ever
-    /// letting the send fault the lane. The ack is best-effort telemetry — a disconnected/reconnecting
-    /// server just falls back to the periodic status-report reconcile — so a synchronous throw AND a
-    /// faulted task are both swallowed at Debug. Never awaited: the lane must not block on the wire.</summary>
+    /// <summary>Fire the proactive terminal ack without ever letting the send fault the lane. The ack is
+    /// best-effort telemetry — a disconnected/reconnecting server just falls back to the periodic
+    /// status-report reconcile — so a synchronous throw AND a faulted task are both swallowed at Debug.
+    /// Never awaited: the lane must not block on the wire.</summary>
     void SendProactiveAck(CommandAck ack) {
         try {
             var send = _sendAck(ack);
@@ -177,6 +199,11 @@ internal sealed class SequencedCommandProcessor : IAsyncDisposable {
     /// forcing the SynthesizeErrorLocked path deterministically (mirrors a shutdown race).</summary>
     internal void CompleteLaneForTest() => _lane.Writer.TryComplete();
 
+    /// <summary>Test seam: whether the CALLING thread currently holds <c>_lock</c>. Lets a test's
+    /// readLiveness delegate assert directly that <see cref="BuildProcessedAck"/> is never invoked
+    /// under the lock, with no timing or thread choreography.</summary>
+    internal bool LockHeldByCurrentThreadForTest => Monitor.IsEntered(_lock);
+
     async Task RunLaneAsync() {
         await foreach (var li in _lane.Reader.ReadAllAsync()) {
             CommandOutcome outcome;
@@ -192,16 +219,10 @@ internal sealed class SequencedCommandProcessor : IAsyncDisposable {
             if (outcome.Kind == CommandOutcomeKind.LaunchRejected && outcome.RejectReason is { } r)
                 _ = _sendRejected(new CommandRejected(li.Item.Epoch, li.Item.Seq, li.Item.CommandId, r, li.Item.AgentId));
 
-            CommandAck proactiveAck;
             lock (_lock) {
                 if (_cache.TryGetValue(li.Item.Seq, out var e)) { e.Processed = true; e.Outcome = outcome; }
                 AdvanceWatermarkLocked(); // contiguous terminal prefix — serial lane => normally == prior + 1,
                                           // but shared with SynthesizeErrorLocked so a race can never regress it
-                // Settlement-admission design (§3.2 F): built INSIDE the lock, immediately after the entry
-                // is marked Processed and the watermark advanced, so the ack can never advertise a terminal
-                // outcome the cache has not yet recorded (a duplicate arriving between the two would then
-                // answer differently). The send itself happens outside the lock.
-                proactiveAck = BuildProcessedAckLocked(li.Item, outcome);
             }
 
             // Settlement-admission design (§3.2 F): a FRESH terminal command is acked proactively, not just
@@ -210,7 +231,10 @@ internal sealed class SequencedCommandProcessor : IAsyncDisposable {
             // one-nonterminal-command-per-daemon invariant rejects any concurrent launch for that whole
             // window. The server's ack handler is idempotent against replays and unknown/stale acks, so
             // older servers accept it too and simply retire the slot earlier.
-            SendProactiveAck(proactiveAck);
+            //
+            // Built AFTER the cache entry is marked Processed (so the ack can never advertise an outcome
+            // the cache has not recorded) but OUTSIDE the lock — see BuildProcessedAck.
+            SendProactiveAck(BuildProcessedAck(li.Item, outcome));
             li.Done.SetResult();
         }
     }
