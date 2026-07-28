@@ -124,7 +124,7 @@ public class AntigravitySkippedChildOverrideRoutedLoopTests : IDisposable {
         Regex.IsMatch(text, $@"(?m)^\s*{Regex.Escape(label)}\s+{value}\s*$");
 
     [Test, NotInParallel]
-    public async Task already_loaded_root_with_new_child_content_counts_loaded_but_stays_out_of_private_set() {
+    public async Task already_loaded_root_with_new_child_content_counts_loaded_and_is_privatized_via_replay_scope() {
         WriteAntigravityTranscript(RootConvId, "build it");
         WriteAntigravityTranscript(ChildConvId, "sub task");
         WriteLinkage();

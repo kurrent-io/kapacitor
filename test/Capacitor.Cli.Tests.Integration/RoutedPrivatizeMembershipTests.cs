@@ -28,8 +28,17 @@ namespace Capacitor.Cli.Tests.Integration;
 /// the private scope — a combination no shipped source has, hence the probe below. It is
 /// deliberately contradictory (<see cref="IImportSource.AttachesChildContentOnReplay"/> is
 /// <c>false</c> while the call reports <c>SentChildContent: true</c>) precisely so the two
-/// mechanisms can be told apart: rewire either capture site to <c>resolved</c> and this test's
-/// zero-PUT assertion fails, while the Loaded-count assertion keeps passing.
+/// mechanisms can be told apart: key membership off <c>resolved</c> and this test's zero-PUT
+/// assertion fails, while the Loaded-count assertion keeps passing.
+/// </para>
+///
+/// <para>
+/// This exercises the non-TTY renderer only, which is sound because there is exactly ONE membership
+/// site to break: <c>HandleImport</c>'s <c>RecordRoutedResultAsync</c> performs the privatize
+/// capture, the counting resolution and the membership decision for both renderers, which differ
+/// only in how they draw. If that bookkeeping is ever inlined back into the two
+/// <c>Parallel.ForEachAsync</c> bodies, this test stops covering the TTY branch and a TTY variant
+/// (or an injectable display mode) becomes necessary.
 /// </para>
 /// </summary>
 public class RoutedPrivatizeMembershipTests : IDisposable {
