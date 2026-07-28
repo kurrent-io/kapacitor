@@ -305,9 +305,11 @@ static class McpFlowsServer {
         // nothing to refresh, so just pick up whatever is stored now.
         var rejected = client.DefaultRequestHeaders.Authorization?.Parameter;
 
+        // A failed rotation must not be worse than no rotation: fall back to whatever is stored so
+        // the pre-existing "re-read and resend once" recovery still happens.
         var refreshed = rejected is null
             ? await TokenStore.GetValidTokensAsync()
-            : await TokenStore.ForceRefreshAsync(rejected, ct);
+            : await TokenStore.ForceRefreshAsync(rejected, ct) ?? await TokenStore.GetValidTokensAsync();
 
         if (refreshed is null) return response; // genuinely not logged in; keep the original 401
 
