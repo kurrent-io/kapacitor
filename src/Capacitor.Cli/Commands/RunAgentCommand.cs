@@ -14,7 +14,7 @@ internal static class RunAgentCommand {
     public static async Task<int> RunAsync(string[] args) {
         if (NotSupportedOnWindows(out var rc)) return rc;
 
-        var parsed = RunAgentArgs.Parse(args);
+        var parsed = AgentStartArgs.Parse(args);
         if (parsed.Error is not null) {
             await Console.Error.WriteLineAsync($"kcap run-agent: {parsed.Error}");
 
