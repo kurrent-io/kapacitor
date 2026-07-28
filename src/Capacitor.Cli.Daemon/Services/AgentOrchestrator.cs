@@ -521,6 +521,49 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     /// hence no transient false Dead. Dead is returned only after the genuine drain (confirmed death). If that
     /// ordering invariant is ever broken, this must instead take the per-agent lifecycle lock. NotFound
     /// collapses to Dead here (see the appendix note) — both satisfy confirmed-absence.</summary>
+    /// <summary>Evaluates the reviewer certification arm-by-arm so a rejection can NAME the one that
+    /// failed. Extracted and internal so the arms are unit-testable — the previous inline expression
+    /// collapsed four distinguishable conditions into one boolean and one message, and that message
+    /// actively misdirected: it reported the certification revision (which matches on every one of
+    /// these paths) and told the operator to update a CLI that was usually fine.</summary>
+    internal static (bool Ok, string Reason) EvaluateReviewerCertification(
+            string vendor, string? probedVersion, string? currentConnectionId,
+            ReviewerCertificationRequirement certification) {
+        if (!string.Equals(certification.Vendor, vendor, StringComparison.Ordinal))
+            return (false, $"the launch is for '{vendor}' but the certification is for '{certification.Vendor}'");
+
+        if (!string.Equals(currentConnectionId, certification.ExpectedDaemonConnectionId, StringComparison.Ordinal))
+            return (false, "this daemon reconnected after the certification was issued " +
+                           "(connection id changed) — retry the flow");
+
+        if (!string.Equals(certification.RequiredLauncherPolicyVersion,
+                DaemonRunner.ClaudeLauncherPolicyVersion, StringComparison.Ordinal))
+            return (false, $"the server requires launcher policy '{certification.RequiredLauncherPolicyVersion}' " +
+                           $"but this daemon implements '{DaemonRunner.ClaudeLauncherPolicyVersion}' — " +
+                           "update kcap and restart the daemon");
+
+        // A NULL advertised version means the registration-time probe failed — a transient condition,
+        // not evidence the CLI changed. This arm exists to catch a CLI SWAP between advertisement and
+        // launch, and null-vs-value is not a swap. Treating it as one rejected every launch for the
+        // daemon's lifetime, and restarting on a loaded host merely re-poisoned the advertisement.
+        // A null advertised value falls through to the range check below, which is the real gate.
+        // Null OR empty: the property is declared non-nullable, but it is populated from a probe that
+        // returns null and arrives over JSON, so both shapes reach here in practice.
+        if (!string.IsNullOrEmpty(certification.ExpectedCliVersion) &&
+            !string.Equals(probedVersion, certification.ExpectedCliVersion, StringComparison.Ordinal))
+            return (false, $"the installed {vendor} CLI is '{Describe(probedVersion)}' but this daemon " +
+                           $"advertised '{certification.ExpectedCliVersion}' at registration — " +
+                           "restart the daemon so it re-advertises");
+
+        if (!DaemonRunner.CliVersionAllowed(probedVersion, certification.AllowedCliRanges))
+            return (false, $"the installed {vendor} CLI '{Describe(probedVersion)}' is outside the " +
+                           $"server's allowed range '{certification.AllowedCliRanges}'");
+
+        return (true, "");
+
+        static string Describe(string? version) => version ?? "(version probe failed)";
+    }
+
     internal AgentLiveness ReadLiveness(string agentId) {
         // Order matters: check _agents first (Live/Quarantined-by-status), then _quarantine, then Dead.
         // The add-to-quarantine-before-remove-from-_agents invariant makes this ordering false-Dead-free.
@@ -857,19 +900,14 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             var version = string.Equals(cmd.Vendor, "claude", StringComparison.Ordinal)
                 ? DaemonRunner.ProbeCliVersion(_config.ClaudePath)
                 : null;
-            var policyMatches = string.Equals(certification.Vendor, cmd.Vendor, StringComparison.Ordinal)
-                && string.Equals(_server.CurrentConnectionId,
-                    certification.ExpectedDaemonConnectionId, StringComparison.Ordinal)
-                && string.Equals(certification.RequiredLauncherPolicyVersion,
-                    DaemonRunner.ClaudeLauncherPolicyVersion, StringComparison.Ordinal)
-                && string.Equals(version, certification.ExpectedCliVersion, StringComparison.Ordinal)
-                && DaemonRunner.CliVersionAllowed(version, certification.AllowedCliRanges);
-            if (!policyMatches) {
+            var certificationCheck = EvaluateReviewerCertification(
+                cmd.Vendor, version, _server.CurrentConnectionId, certification);
+            if (!certificationCheck.Ok) {
                 _config.UnattendedVendorCapabilities =
                     DaemonRunner.ComputeUnattendedVendorCapabilities(_runtimeFactories.Values, _config);
                 try { await _server.ReRegisterAsync(); } catch { /* launch still fails closed */ }
                 await _server.LaunchFailedAsync(cmd.AgentId,
-                    $"reviewer_certification_changed: '{cmd.Vendor}' no longer matches server certification revision '{certification.Revision}'. Restart the daemon after updating the reviewer CLI.");
+                    $"reviewer_certification_changed: {certificationCheck.Reason}.");
                 return new CommandOutcome(
                     CommandOutcomeKind.LaunchRejected,
                     agentId,

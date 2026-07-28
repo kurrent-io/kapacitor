@@ -657,7 +657,29 @@ public static partial class DaemonRunner {
                 string.IsNullOrWhiteSpace(capability.CliVersion) ? UnknownCliVersion : capability.CliVersion);
     }
 
+    /// <summary>How long ONE version probe may take. The old 3s was too tight for a cold Node CLI
+    /// start on a loaded host, and a timeout here is not a harmless miss — see the retry note.</summary>
+    const int VersionProbeTimeoutMs = 10_000;
+
+    /// <summary>Probes are RETRIED because a single transient failure is durable and destructive.
+    /// The result is computed once at registration and advertised as ExpectedCliVersion for the
+    /// daemon's whole lifetime, so one timeout either drops the vendor from the unattended set
+    /// entirely, or — worse — makes every later launch fail the launch-time equality check against
+    /// the advertised null. Restarting on a still-loaded host reproduces it, so the documented
+    /// remedy does not reliably clear it either.</summary>
+    const int VersionProbeAttempts = 3;
+
     internal static string? ProbeCliVersion(string cliPath) {
+        for (var attempt = 1; attempt <= VersionProbeAttempts; attempt++) {
+            if (ProbeCliVersionOnce(cliPath) is { } version) return version;
+            // A cold Node start under load is the common cause; give the host a moment rather than
+            // hammering it three times in a row.
+            if (attempt < VersionProbeAttempts) Thread.Sleep(250 * attempt);
+        }
+        return null;
+    }
+
+    static string? ProbeCliVersionOnce(string cliPath) {
         try {
             using var process = Process.Start(new ProcessStartInfo {
                 FileName = cliPath,
@@ -666,7 +688,7 @@ public static partial class DaemonRunner {
                 RedirectStandardError = true,
                 ArgumentList = { "--version" }
             });
-            if (process is null || !process.WaitForExit(3000)) {
+            if (process is null || !process.WaitForExit(VersionProbeTimeoutMs)) {
                 try { process?.Kill(entireProcessTree: true); } catch { }
                 return null;
             }
