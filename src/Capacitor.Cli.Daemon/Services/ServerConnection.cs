@@ -79,7 +79,7 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
     public Func<string, Task<BorrowProbeResult>>? ProbeBorrowSourceHandler { get; set; }
 
     /// <summary>
-    /// Callback invoked at <see cref="RegisterDaemon"/> time to snapshot the
+    /// Callback invoked at <see cref="RegisterDaemonAsync"/> time to snapshot the
     /// agent IDs currently hosted by this daemon. The server uses this to
     /// reconcile its registry against the daemon's view. Set by
     /// <see cref="AgentOrchestrator"/> at startup; when null, an empty array
@@ -387,38 +387,88 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
         await ConnectWithRetryAsync(ct);
     }
 
-    async Task ConnectWithRetryAsync(CancellationToken ct) {
-        var delays  = new[] { 1, 2, 5, 10, 30 };
-        var attempt = 0;
+    /// <summary>
+    /// Serializes <see cref="ConnectWithRetryAsync"/> so the initial connect and every
+    /// <see cref="OnClosed"/>-triggered reconnect share ONE retry loop. Without this, each
+    /// close event spawned another concurrent loop against the same <see cref="HubConnection"/>;
+    /// the loser called <c>StartAsync</c> on a hub the winner had already started and got
+    /// "cannot be started if it is not in the Disconnected state" — forever, at Warning,
+    /// every 30s, against a perfectly healthy connection (issue #374).
+    /// </summary>
+    readonly SemaphoreSlim _connectLock = new(1, 1);
 
-        while (!ct.IsCancellationRequested) {
-            try {
-                LogConnecting(_config.ServerUrl);
-                await _hub.StartAsync(ct);
-                await RegisterDaemon();
-                _connectedTimestamp = Stopwatch.GetTimestamp();
-                LogConnected(_config.Name);
+    /// <summary>
+    /// Backoff schedule for <see cref="ConnectWithRetryAsync"/> (stays at the last entry once
+    /// exhausted). Settable so tests can drive the retry path without real multi-second waits.
+    /// </summary>
+    internal TimeSpan[] ConnectRetryDelays { get; set; } = [
+        TimeSpan.FromSeconds(1),
+        TimeSpan.FromSeconds(2),
+        TimeSpan.FromSeconds(5),
+        TimeSpan.FromSeconds(10),
+        TimeSpan.FromSeconds(30)
+    ];
 
-                return;
-            } catch (OperationCanceledException) when (ct.IsCancellationRequested) {
-                throw;
-            } catch (Exception ex) when (IsNameInUse(ex)) {
-                // server explicitly rejected this daemon because
-                // another live daemon owns the (owner, name) slot. Don't
-                // retry — retrying would just thrash the incumbent.
-                // RegisterDaemon already fired OnNameInUse before re-throwing
-                // here; we just need to propagate so DaemonRunner exits
-                // with code 3 instead of looping forever.
-                throw;
-            } catch (Exception ex) {
-                var delay = delays[Math.Min(attempt, delays.Length - 1)];
-                LogConnectionAttemptFailed(ex, attempt + 1, delay);
-                await Task.Delay(TimeSpan.FromSeconds(delay), ct);
-                attempt++;
+    /// <summary>Raw hub state — a seam so the retry loop's state checks are unit-testable
+    /// without a live SignalR transport.</summary>
+    internal virtual HubConnectionState HubState => _hub.State;
+
+    /// <summary>Raw <see cref="HubConnection.StartAsync"/> — a seam for the same reason.</summary>
+    internal virtual Task StartHubAsync(CancellationToken ct) => _hub.StartAsync(ct);
+
+    internal async Task ConnectWithRetryAsync(CancellationToken ct) {
+        await _connectLock.WaitAsync(ct);
+
+        try {
+            var attempt = 0;
+
+            while (!ct.IsCancellationRequested) {
+                try {
+                    // Another path may have healed the connection while this call was queued on
+                    // the lock or sleeping in backoff — SignalR's automatic reconnect
+                    // (OnReconnected → RegisterDaemonAsync) or the heartbeat's ReRegisterAsync.
+                    // A live, registered connection needs nothing from this loop.
+                    if (IsReady) return;
+
+                    // Only start a hub that is actually Disconnected. Connected means the
+                    // transport is fine and registration is the missing half (e.g. the previous
+                    // iteration's RegisterDaemonAsync threw after StartAsync succeeded).
+                    // Connecting/Reconnecting means automatic reconnect owns the transport;
+                    // RegisterDaemonAsync below fails ("connection is not active"), we back off,
+                    // and re-check — auto-reconnect terminally either restores the connection or
+                    // exhausts to Disconnected (firing Closed), so this converges.
+                    if (HubState == HubConnectionState.Disconnected) {
+                        LogConnecting(_config.ServerUrl);
+                        await StartHubAsync(ct);
+                    }
+
+                    await RegisterDaemonAsync();
+                    _connectedTimestamp = Stopwatch.GetTimestamp();
+                    LogConnected(_config.Name);
+
+                    return;
+                } catch (OperationCanceledException) when (ct.IsCancellationRequested) {
+                    throw;
+                } catch (Exception ex) when (IsNameInUse(ex)) {
+                    // server explicitly rejected this daemon because
+                    // another live daemon owns the (owner, name) slot. Don't
+                    // retry — retrying would just thrash the incumbent.
+                    // RegisterDaemonAsync already fired OnNameInUse before re-throwing
+                    // here; we just need to propagate so DaemonRunner exits
+                    // with code 3 instead of looping forever.
+                    throw;
+                } catch (Exception ex) {
+                    var delay = ConnectRetryDelays[Math.Min(attempt, ConnectRetryDelays.Length - 1)];
+                    LogConnectionAttemptFailed(ex, attempt + 1, delay.TotalSeconds);
+                    await Task.Delay(delay, ct);
+                    attempt++;
+                }
             }
-        }
 
-        ct.ThrowIfCancellationRequested();
+            ct.ThrowIfCancellationRequested();
+        } finally {
+            _connectLock.Release();
+        }
     }
 
     async Task OnClosed(Exception? ex) {
@@ -457,7 +507,7 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
     /// readiness on the heartbeat slot-displacement path (DaemonHeartbeatLoop.cs → ReRegisterAsync),
     /// where the transport stays up and no Reconnecting/Closed event fires.
     /// </summary>
-    Task RegisterDaemon() =>
+    internal virtual Task RegisterDaemonAsync() =>
         _gate.RunRegistrationAsync(
             daemonConnect: DaemonConnectAsync,
             reRegisterAgents: ReRegisterAgentsAndAcpBindingsAsync
@@ -467,7 +517,7 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
     /// Composes the existing per-agent re-registration hook with the ACP reconnect re-bind — AFTER
     /// agent re-registration, so per-session agent ownership is restored before an ACP binding tries
     /// to reference its agent. Both steps
-    /// run inside <see cref="RegisterDaemon"/>'s <see cref="RegistrationGate.RunRegistrationAsync"/>
+    /// run inside <see cref="RegisterDaemonAsync"/>'s <see cref="RegistrationGate.RunRegistrationAsync"/>
     /// bracket, i.e. strictly BEFORE <see cref="IsReady"/> can report true — <c>internal</c> (not
     /// <c>private</c>) so it can be driven directly in tests without a live hub connection.
     /// </summary>
@@ -539,7 +589,7 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
     /// <summary>
     /// Set by <see cref="AgentOrchestrator"/>: re-registers this daemon's live agents with the
     /// server (AgentRegistered + AgentStatusChanged) so per-session ownership is restored after a
-    /// (re-)connect. Invoked inside <see cref="RegisterDaemon"/> BEFORE readiness is restored, so
+    /// (re-)connect. Invoked inside <see cref="RegisterDaemonAsync"/> BEFORE readiness is restored, so
     /// a permission invoke gated on <see cref="IsReady"/> can't beat session-ownership recovery.
     /// Null until wired (early startup / tests) — treated as a no-op.
     /// </summary>
@@ -566,7 +616,7 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
     /// Auto-reconnect started: the transport is no longer Connected and the
     /// server-side registration for this connection is stale. Clear readiness so
     /// nothing invokes a daemon-scoped hub method until <see cref="OnReconnected"/>
-    /// re-runs <see cref="RegisterDaemon"/>.
+    /// re-runs <see cref="RegisterDaemonAsync"/>.
     /// </summary>
     Task OnReconnecting(Exception? error) {
         _gate.MarkUnregistered();
@@ -577,7 +627,7 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
     /// <summary>
     /// True when the hub is Connected AND this connection has completed a full
     /// (re-)registration — <c>DaemonConnect</c> AND per-agent re-registration (see
-    /// <see cref="RegisterDaemon"/>). The permission-request retry loop waits on this rather than
+    /// <see cref="RegisterDaemonAsync"/>). The permission-request retry loop waits on this rather than
     /// raw <see cref="HubConnectionState.Connected"/> so a retry can't race re-registration.
     /// <c>virtual</c> so unit tests can control readiness directly without a live SignalR transport
     /// (see the ACP hub-method tests).
@@ -590,7 +640,7 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
 
     async Task OnReconnected(string? connectionId) {
         LogReconnected();
-        await RegisterDaemon();
+        await RegisterDaemonAsync();
         _connectedTimestamp = Stopwatch.GetTimestamp();
     }
 
@@ -611,13 +661,13 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
     /// the heartbeat loop when the server reports it doesn't recognise this
     /// connection as a daemon (slot displaced or never registered).
     /// </summary>
-    public Task ReRegisterAsync() => RegisterDaemon();
+    public Task ReRegisterAsync() => RegisterDaemonAsync();
 
     /// <summary>
     /// Stops the underlying hub. <see cref="OnClosed"/> fires and calls
     /// <see cref="ConnectWithRetryAsync"/>, which establishes a fresh
     /// transport and a new server-side conn id, then re-registers via
-    /// <see cref="RegisterDaemon"/>. Used when the heartbeat ping times out
+    /// <see cref="RegisterDaemonAsync"/>. Used when the heartbeat ping times out
     /// or throws — the WebSocket is hung and only a fresh connection
     /// recovers it. StopAsync is capped at 5 s so a wedged transport
     /// can't stall the heartbeat loop indefinitely (Qodo).
@@ -863,7 +913,7 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
     /// FALSE. Gating this call on <see cref="IsReady"/> (the way the public wrapper does) would
     /// therefore deadlock: <see cref="IsReady"/> can only become true once this very method returns.
     /// The transport itself is already <see cref="HubConnectionState.Connected"/> by the time
-    /// <see cref="RegisterDaemon"/> runs (that is what triggered it), so invoking the raw hub method
+    /// <see cref="RegisterDaemonAsync"/> runs (that is what triggered it), so invoking the raw hub method
     /// here is safe — exactly the same reasoning that lets <see cref="AgentRegisteredAsync"/>/
     /// <see cref="AgentStatusChangedAsync"/> be called ungated from
     /// <c>AgentOrchestrator.ReRegisterAgentsAsync</c>. Best-effort per binding: one binding's re-bind
@@ -1147,7 +1197,7 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
     partial void LogConnected(string name);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Connection attempt {Attempt} failed, retrying in {Delay}s")]
-    partial void LogConnectionAttemptFailed(Exception ex, int attempt, int delay);
+    partial void LogConnectionAttemptFailed(Exception ex, int attempt, double delay);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "SignalR connection closed after {UptimeSeconds:F1}s uptime, will reconnect")]
     partial void LogConnectionClosed(Exception? ex, double uptimeSeconds);
