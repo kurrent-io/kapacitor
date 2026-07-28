@@ -1171,7 +1171,7 @@ static class ImportCommand {
         };
 
         ImportChainsResult importResult;
-        // Counts for routed-source imports (Cursor). These add on top of the
+        // Counts for routed-source imports. These add on top of the
         // chain-worker counts when both phases run.
         var routedLoaded   = 0;
         var routedErrored  = 0;
@@ -1362,7 +1362,7 @@ static class ImportCommand {
             importResult = new(0, 0, 0);
         }
 
-        // --- Routed-source import phase (Cursor) ---
+        // --- Routed-source import phase (every non-chain source) ---
         // Sessions without a FilePath are imported directly via the source's
         // ImportSessionAsync. They share the 4-worker concurrency budget with
         // the chain phase but run sequentially after it; the TTY renderer is
