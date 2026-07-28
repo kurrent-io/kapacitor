@@ -427,9 +427,13 @@ static class ImportCommand {
     /// The single aggregation boundary — what outcome should this routed call count as for
     /// the Done-grid's counters, per-vendor tracker, and printed line (
     /// <c>null</c> = suppressed, don't count at all). This is a COUNTING-ONLY boundary: it
-    /// deliberately does NOT drive <c>importedSessionIds</c> / <c>--private</c> membership, which
-    /// stays governed by the pre-existing suppression check and outcome switch, unchanged from
-    /// before this ticket — see the call sites below for the exact membership condition.
+    /// deliberately does NOT drive <c>importedSessionIds</c> membership, which stays governed by
+    /// the pre-existing suppression check and outcome switch — see the call sites below for the
+    /// exact membership condition. <c>--private</c> no longer rides on that membership alone
+    /// either: sources that can attach child content on a replay are captured outcome-independently
+    /// into <c>privateScopeSessionIds</c>, precisely because this resolver's inputs can't be
+    /// trusted to reveal an attach (a hardcoded Skipped, or a Failed lifecycle POST after the
+    /// content already persisted).
     /// <see cref="IsLifecycleOnlyRoutedReplay"/> requires <c>!sentChildContent</c> and
     /// <see cref="IsSkippedChildContentOverride"/> requires <c>sentChildContent</c>, so the two
     /// are mutually exclusive by construction — there's no ordering ambiguity between them.
@@ -1182,21 +1186,35 @@ static class ImportCommand {
         // ONLY to decide what gets privatized under --private — never fed into the Done-grid
         // counting (`importedSessionIds`/`doneBySource` stay exactly as they were; the
         // cosmetic double-count concern is intentionally left alone). `importedSessionIds`
-        // only gains a Cursor session id when this run did "real new work" by the
+        // only gains a session id when this run did "real new work" by the
         // Loaded/Failed/AlreadyLoaded + SentChildContent accounting — but privacy must NOT
         // depend on that classification: a lifecycle POST (subagent-stop/session-end) can fail
         // AFTER a child transcript has already persisted new content (this run's own
-        // ImportSessionAsync then returns Failed), or a later retry can see the child read as
-        // already-complete (SentChildContent=false) even though a PRIOR run attached new
-        // content that was never privatized. Either way `importedSessionIds` would exclude the
-        // session and a public session would stay public. So every Cursor routed classification
-        // this run touches — regardless of its outcome — is unconditionally captured here when
-        // --private is requested, and privatized at the end independent of Loaded/Failed/
-        // AlreadyLoaded/SentChildContent. Scoped to Cursor (vendor == "cursor") because
-        // SentChildContent/this lifecycle-after-content-persisted shape is Cursor-specific;
-        // every other routed vendor's own default_visibility-on-session-start stamp already
-        // privatizes atomically and isn't exposed to this gap.
+        // ImportSessionAsync then returns Failed), a source can report a hardcoded Skipped for a
+        // repair that DID attach a child (Antigravity), or a later retry can see the child read
+        // as already-complete (SentChildContent=false) even though a PRIOR run attached new
+        // content that was never privatized. In every one of those `importedSessionIds` would
+        // exclude the session and a public session would stay public. So each routed
+        // classification this run touches for a source that can attach child content on a replay
+        // — regardless of its outcome — is unconditionally captured here when --private is
+        // requested, and privatized at the end independent of Loaded/Failed/AlreadyLoaded/
+        // SentChildContent.
+        //
+        // Scoped by IImportSource.AttachesChildContentOnReplay rather than a vendor-name check:
+        // the risk is precisely "this call can add content to a session that ALREADY EXISTS", so
+        // the source that owns that child-import pass is what decides. A source whose replay can
+        // post nothing needs no post-hoc privatize — its only reachable content path is a New
+        // session, which under --private is never stamped with a public default_visibility in the
+        // first place (server-side sessions are private by default). Note the create-time stamp
+        // is NOT what protects the sources below: it does nothing to an already-existing session.
         var privateScopeSessionIds = new ConcurrentBag<string>();
+
+        // Resolved once from the sources actually in play, so a new source that imports children
+        // is covered the moment it declares the capability.
+        var replayChildContentVendors = byVendor.Values
+            .Where(s => s.AttachesChildContentOnReplay)
+            .Select(s => s.Vendor)
+            .ToHashSet(StringComparer.Ordinal);
 
         static (int Loaded, int Skipped, int Failed) AddRoutedOutcome(
                 (int Loaded, int Skipped, int Failed) prev,
@@ -1392,7 +1410,7 @@ static class ImportCommand {
                                     // declaration comment on privateScopeSessionIds. Deliberately
                                     // unconditional: even a Failed outcome (lifecycle POST failed
                                     // after content already persisted) must still get privatized.
-                                    if (forcePrivate && c.Vendor == "cursor") {
+                                    if (forcePrivate && replayChildContentVendors.Contains(c.Vendor)) {
                                         privateScopeSessionIds.Add(c.SessionId);
                                     }
 
@@ -1490,7 +1508,7 @@ static class ImportCommand {
 
                         // see the Tty branch above — unconditional
                         // privatization capture, independent of the outcome classification below.
-                        if (forcePrivate && c.Vendor == "cursor") {
+                        if (forcePrivate && replayChildContentVendors.Contains(c.Vendor)) {
                             privateScopeSessionIds.Add(c.SessionId);
                         }
 
@@ -1549,12 +1567,12 @@ static class ImportCommand {
         // --- --private: mark all imported sessions owner-only ---
         //
         // the privatize set is importedSessionIds (chain-phase +
-        // routed-phase "real new work") UNIONED with privateScopeSessionIds (every Cursor
-        // routed classification touched this run under --private, regardless of outcome — see
-        // its declaration above). The union — not a replacement — keeps chain-phase and
-        // non-Cursor routed privatization exactly as before; it only widens what Cursor
-        // contributes so privacy no longer depends on the Loaded/Failed/AlreadyLoaded/
-        // SentChildContent accounting used for import counts.
+        // routed-phase "real new work") UNIONED with privateScopeSessionIds (every routed
+        // classification touched this run under --private whose source can attach child content
+        // on a replay, regardless of outcome — see its declaration above). The union — not a
+        // replacement — keeps chain-phase and other routed privatization exactly as before; it
+        // only widens what those sources contribute so privacy no longer depends on the
+        // Loaded/Failed/AlreadyLoaded/SentChildContent accounting used for import counts.
         if (forcePrivate) {
             var toPrivatize = new HashSet<string>(importedSessionIds, StringComparer.Ordinal);
             toPrivatize.UnionWith(privateScopeSessionIds);

@@ -97,6 +97,7 @@ internal sealed class CursorImportSource : IImportSource {
     /// the server's title pipeline handles naming without help from the CLI.
     /// </summary>
     public bool SupportsTitleGeneration => false;
+    public bool AttachesChildContentOnReplay => true; // subagent lifecycle+content on replay
 
     /// <summary>
     /// Strip dashes from a Cursor session id. The server stores Cursor sessions

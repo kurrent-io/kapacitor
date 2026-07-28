@@ -19,6 +19,7 @@ internal sealed class CodexImportSource(string? rootOverride = null) : IImportSo
     public bool IsAvailable => Directory.Exists(_sessionsDir);
 
     public bool SupportsTitleGeneration => true;
+    public bool AttachesChildContentOnReplay => false; // chain-based: never routed
 
     public Task<IReadOnlyList<DiscoveredSession>> DiscoverAsync(DiscoveryFilters filters, CancellationToken ct) {
         var transcripts = CodexPaths.Discover(sessionsDir: _sessionsDir, since: filters.Since);

@@ -63,6 +63,7 @@ internal sealed class PiImportSource : IImportSource {
     /// still get an LLM title via the watcher's Pi-aware title extractors.
     /// </summary>
     public bool SupportsTitleGeneration => false;
+    public bool AttachesChildContentOnReplay => false; // no child import
 
     public async Task<IReadOnlyList<DiscoveredSession>> DiscoverAsync(DiscoveryFilters filters, CancellationToken ct) {
         if (!Directory.Exists(_sessionsDir)) return [];

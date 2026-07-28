@@ -18,6 +18,7 @@ internal sealed class ClaudeImportSource(string? rootOverride = null) : IImportS
     public bool IsAvailable => Directory.Exists(_projectsDir);
 
     public bool SupportsTitleGeneration => true;
+    public bool AttachesChildContentOnReplay => false; // chain-based: never routed
 
     public Task<IReadOnlyList<DiscoveredSession>> DiscoverAsync(DiscoveryFilters filters, CancellationToken ct) {
         var transcripts = ImportCommand.DiscoverTranscripts(_projectsDir);

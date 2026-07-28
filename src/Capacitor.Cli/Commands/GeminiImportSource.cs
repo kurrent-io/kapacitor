@@ -44,6 +44,7 @@ internal sealed class GeminiImportSource : IImportSource {
     /// message at session-end (same as the Copilot routed path).
     /// </summary>
     public bool SupportsTitleGeneration => false;
+    public bool AttachesChildContentOnReplay => true; // ImportSubagentsAsync resends on every replay
 
     public Task<IReadOnlyList<DiscoveredSession>> DiscoverAsync(DiscoveryFilters filters, CancellationToken ct) {
         var sessionFilter = filters.FilterSession is { } sf ? ImportCommand.NormalizeGuid(sf) : null;

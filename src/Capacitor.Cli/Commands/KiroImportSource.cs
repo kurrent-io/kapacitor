@@ -52,6 +52,7 @@ internal sealed class KiroImportSource : IImportSource {
     /// pipeline would only burn tokens to overwrite a good title.
     /// </summary>
     public bool SupportsTitleGeneration => false;
+    public bool AttachesChildContentOnReplay => false; // no child import
 
     public Task<IReadOnlyList<DiscoveredSession>> DiscoverAsync(DiscoveryFilters filters, CancellationToken ct) {
         var sessionFilter = filters.FilterSession is { } sf ? ImportCommand.NormalizeGuid(sf) : null;

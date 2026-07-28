@@ -29,6 +29,7 @@ internal sealed class OpenCodeImportSource : IImportSource {
     public string Vendor => "opencode";
     public bool   IsAvailable => File.Exists(_dbPath);
     public bool   SupportsTitleGeneration => false; // routed; native title forwarded via /hooks/set-title
+    public bool   AttachesChildContentOnReplay => false; // AlreadyLoaded early-returns before any POST
 
     static StringComparison PathComparison =>
         OperatingSystem.IsWindows() || OperatingSystem.IsMacOS()

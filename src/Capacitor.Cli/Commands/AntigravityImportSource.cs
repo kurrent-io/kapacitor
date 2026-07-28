@@ -53,6 +53,7 @@ internal sealed class AntigravityImportSource : IImportSource {
     public string Vendor => "antigravity";
     public bool   IsAvailable => Directory.Exists(BrainRoot);
     public bool   SupportsTitleGeneration => false; // server computes a fallback title at session-end
+    public bool   AttachesChildContentOnReplay => true;  // AlreadyLoaded repair branch imports children
 
     static void Log(string message) => Console.Error.WriteLine($"[{DateTimeOffset.Now:HH:mm:ss.fff}] [antigravity-import] {message}");
 

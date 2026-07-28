@@ -38,10 +38,13 @@ namespace Capacitor.Cli.Tests.Integration;
 /// actually has &gt;1 vendor key and renders at all).</item>
 /// <item>The printed per-session line is the "Loading …" line, not the "Already loaded … (no new
 /// content)" no-op line.</item>
-/// <item>The session does NOT join <c>importedSessionIds</c>: under <c>--private</c>, this
-/// manifests as ZERO <c>PUT .../visibility</c> calls for ANY session, because membership keys off
-/// the raw outcome (Skipped) independent of the Loaded resolution that drives 1–3, and Antigravity
-/// (unlike Cursor) has no separate outcome-independent privatize tracker.</item>
+/// <item>The session still does NOT join <c>importedSessionIds</c> — membership keys off the raw
+/// outcome (Skipped), independent of the Loaded resolution that drives 1–3. Privatization no
+/// longer rides on that membership, though: Antigravity declares
+/// <see cref="IImportSource.AttachesChildContentOnReplay"/>, so under <c>--private</c> the root is
+/// captured outcome-independently and gets exactly one <c>PUT .../visibility</c>. The child is
+/// nested content, not a routed classification of its own, so it contributes no PUT — which is
+/// what keeps this an assertion about membership rather than about "some PUT happened".</item>
 /// </list>
 /// </summary>
 public class AntigravitySkippedChildOverrideRoutedLoopTests : IDisposable {
@@ -191,12 +194,18 @@ public class AntigravitySkippedChildOverrideRoutedLoopTests : IDisposable {
         await Assert.That(LineMatches(vendorRow, "Already loaded", 1)).IsTrue();
         await Assert.That(vendorRow).DoesNotContain("Excluded");
 
-        // --- Effect 4: the counting-only override must NOT change --private membership. The
-        // RESOLVED outcome is Loaded (drives 1-3 above), but the RAW outcome is still Skipped, so
-        // the root never joins importedSessionIds — and (being a non-Cursor vendor) it has no
-        // separate outcome-independent privatize tracker either — so forcePrivate: true results
-        // in ZERO PUT /visibility calls for this run.
-        var putCalls = _server.LogEntries.Count(e => e.RequestMessage.Method == "PUT");
-        await Assert.That(putCalls).IsEqualTo(0);
+        // --- Effect 4: the counting-only override must NOT change importedSessionIds membership.
+        // The RESOLVED outcome is Loaded (drives 1-3 above), but the RAW outcome is still Skipped,
+        // so the root never joins importedSessionIds. Privatization comes from the separate
+        // outcome-independent tracker instead (Antigravity's replay can attach child content), so
+        // forcePrivate: true yields exactly ONE PUT — the root's. The nested child is not a routed
+        // classification and contributes none; the Gemini fixture never reaches import (ProbeError)
+        // so it contributes none either. A second PUT here would mean membership had been rewired
+        // to the resolved outcome.
+        var putPaths = _server.LogEntries
+            .Where(e => e.RequestMessage.Method == "PUT")
+            .Select(e => e.RequestMessage.Path)
+            .ToArray();
+        await Assert.That(putPaths).IsEquivalentTo([$"/api/sessions/{Root}/visibility"]);
     }
 }
