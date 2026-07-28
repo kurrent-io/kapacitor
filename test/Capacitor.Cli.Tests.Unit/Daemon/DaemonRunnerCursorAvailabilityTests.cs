@@ -1,6 +1,10 @@
 // test/Capacitor.Cli.Tests.Unit/Daemon/DaemonRunnerCursorAvailabilityTests.cs
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
+using Capacitor.Cli.Core;
 using Capacitor.Cli.Daemon;
 using Capacitor.Cli.Daemon.Services;
+using Microsoft.Extensions.Logging;
 
 namespace Capacitor.Cli.Tests.Unit.Daemon;
 
@@ -18,10 +22,12 @@ public class DaemonRunnerCursorAvailabilityTests {
     sealed class FakeRuntimeFactory(
             string vendor, bool isAvailable, bool supportsUnattended = false,
             bool supportsBorrowedReviewFlow = false,
-            IReviewerModelResolver? reviewerModelResolver = null) : IHostedAgentRuntimeFactory {
+            IReviewerModelResolver? reviewerModelResolver = null,
+            string? borrowedReviewContainment = null) : IHostedAgentRuntimeFactory {
         public string Vendor             { get; } = vendor;
         public bool   SupportsUnattended { get; } = supportsUnattended;
         public bool   SupportsBorrowedReviewFlow { get; } = supportsBorrowedReviewFlow;
+        public string? BorrowedReviewContainment  { get; } = borrowedReviewContainment;
         public IReviewerModelResolver? ReviewerModelResolver { get; } = reviewerModelResolver;
 
         public bool IsAvailable() => isAvailable;
@@ -85,7 +91,7 @@ public class DaemonRunnerCursorAvailabilityTests {
     }
 
     [Test]
-    public async Task ComputeUnattendedVendors_ExcludesAvailableCursor_WithoutCertification() {
+    public async Task ComputeUnattendedVendors_ExcludesAvailableCursor_WhenItDoesNotSupportUnattended() {
         IHostedAgentRuntimeFactory[] factories = [
             new FakeRuntimeFactory("claude", isAvailable: true, supportsUnattended: true),
             new FakeRuntimeFactory("codex", isAvailable: true, supportsUnattended: true),
@@ -140,11 +146,24 @@ public class DaemonRunnerCursorAvailabilityTests {
         await Assert.That(claude.BorrowedReviewSupported).IsFalse();
     }
 
+    // === Trust-by-default borrowed-review advertisement ===
+    // (docs/superpowers/specs/2026-07-27-ai1528-trust-by-default-borrowed-review-design.md)
+    //
+    // These replace an earlier test that pinned the opposite rule ("a Cursor build that doesn't
+    // match the validated-build record advertises BorrowedReviewSupported=false"). That gate is the
+    // bug: Cursor auto-updates, the daemon silently withdrew borrowed capability, and the server
+    // then resolved workspace_mode=fallback — reviewing a stale committed base with nobody told.
+
+    /// <summary>THE regression test for this bug. The configured Cursor path deliberately does not
+    /// resolve to the validated build (it does not resolve to any binary at all, which is a strictly
+    /// harder non-match than an updated build), and Cursor is STILL advertised borrowed-capable with
+    /// its containment token. Note the same inputs also drive the null-CliVersion path: an
+    /// unidentifiable build is still a trusted build.</summary>
     [Test]
-    public async Task ComputeUnattendedVendorCapabilities_WithMissingCursorArtifact_FailsClosed() {
+    public async Task ComputeUnattendedVendorCapabilities_CursorBuildNotMatchingValidationRecord_StillAdvertisesBorrowed() {
         IHostedAgentRuntimeFactory[] factories = [
             new FakeRuntimeFactory("cursor", isAvailable: true, supportsUnattended: true,
-                supportsBorrowedReviewFlow: true),
+                supportsBorrowedReviewFlow: true, borrowedReviewContainment: "independent-snapshot"),
         ];
 
         var capabilities = DaemonRunner.ComputeUnattendedVendorCapabilities(
@@ -152,11 +171,244 @@ public class DaemonRunnerCursorAvailabilityTests {
 
         await Assert.That(capabilities).Count().IsEqualTo(1);
         await Assert.That(capabilities[0].Vendor).IsEqualTo("cursor");
-        await Assert.That(capabilities[0].CliVersion).IsNull();
         await Assert.That(capabilities[0].LauncherPolicyVersion)
             .IsEqualTo(DaemonRunner.CursorLauncherPolicyVersion);
+        await Assert.That(capabilities[0].BorrowedReviewSupported).IsTrue();
+        await Assert.That(capabilities[0].BorrowedReviewContainment).IsEqualTo("independent-snapshot");
+        // An unprobeable version does not cost the vendor its capability.
+        await Assert.That(capabilities[0].CliVersion).IsNull();
+    }
+
+    /// <summary>The gate that REMAINS: borrowed support is exactly the factory's own
+    /// <see cref="IHostedAgentRuntimeFactory.SupportsBorrowedReviewFlow"/>, so a factory that does
+    /// not support borrowed review is still never advertised (and carries no containment token).
+    /// Cursor is used deliberately — the removed special case was Cursor-only, so proving the
+    /// remaining gate on Cursor proves it was not replaced by a blanket "always true".</summary>
+    [Test]
+    public async Task ComputeUnattendedVendorCapabilities_FactoryWithoutBorrowedSupport_IsNotAdvertised() {
+        IHostedAgentRuntimeFactory[] factories = [
+            new FakeRuntimeFactory("cursor", isAvailable: true, supportsUnattended: true,
+                supportsBorrowedReviewFlow: false, borrowedReviewContainment: "independent-snapshot"),
+        ];
+
+        var capabilities = DaemonRunner.ComputeUnattendedVendorCapabilities(
+            factories, new DaemonConfig { CursorPath = "/definitely/missing/cursor-agent" });
+
         await Assert.That(capabilities[0].BorrowedReviewSupported).IsFalse();
         await Assert.That(capabilities[0].BorrowedReviewContainment).IsNull();
+    }
+
+    /// <summary>The advertisement is a pure function of the factory flag for EVERY vendor token —
+    /// no residual per-vendor arm survives for Cursor or anyone else.</summary>
+    [Test]
+    [Arguments("cursor", true)]
+    [Arguments("cursor", false)]
+    [Arguments("copilot", true)]
+    [Arguments("copilot", false)]
+    [Arguments("claude", true)]
+    [Arguments("newvendor", true)]
+    public async Task ComputeUnattendedVendorCapabilities_BorrowedAdvertisementMirrorsTheFactoryFlag(
+            string vendor, bool supportsBorrowed) {
+        IHostedAgentRuntimeFactory[] factories = [
+            new FakeRuntimeFactory(vendor, isAvailable: true, supportsUnattended: true,
+                supportsBorrowedReviewFlow: supportsBorrowed,
+                borrowedReviewContainment: "independent-snapshot"),
+        ];
+
+        var capabilities = DaemonRunner.ComputeUnattendedVendorCapabilities(factories, new DaemonConfig());
+
+        await Assert.That(capabilities[0].BorrowedReviewSupported).IsEqualTo(supportsBorrowed);
+    }
+
+    // === Platform coverage ===
+    //
+    // Dropping the gate also dropped the macOS/arm64 preconditions that lived inside the
+    // validated-build record, so borrowed review is now advertised on EVERY OS and architecture
+    // where the vendor CLI is installed. The design accepts that expansion: the snapshot path
+    // (WorktreeManager.CreateBorrowedSnapshotAsync / SyncFromSourceAsync) is platform-neutral git +
+    // managed file operations with explicit Windows branches, and neither the ACP factory nor the
+    // Cursor descriptor carries any other OS/arch gate.
+    //
+    // Coverage matrix for that claim:
+    //   • linux-x64    — asserted, executed on CI's ubuntu-latest runner.
+    //   • windows-x64  — asserted, executed on CI's windows-latest runner.
+    //   • macos-arm64  — asserted, executed on maintainer machines (the suite's development host).
+    //   • macos-x64    — INTENTIONALLY UNTESTED. It has no runner in this repo's CI matrix, and
+    //     adding one is not worthwhile here: the unit suite has a known cluster of macOS-local
+    //     temp-path/parallel-load flakes that would make a macOS CI leg permanently red, and macOS
+    //     is already exercised on arm64 by maintainers. The residual risk is bounded by
+    //     AdvertisementPathHasNoBuildIdentityGate below, which proves — from any host — that no
+    //     platform-conditional build-identity check remains in either the advertisement or the
+    //     launch path, so no macos-x64-specific behavior can differ from macos-arm64 here.
+
+    /// <summary>Asserts the advertisement on whichever platform is executing, so the CI matrix
+    /// (linux-x64, windows-x64) plus maintainer runs (macos-arm64) each independently prove it. The
+    /// host is named in the assertion message so a platform-specific failure is legible.</summary>
+    [Test]
+    public async Task ComputeUnattendedVendorCapabilities_AdvertisesCursorBorrowed_OnTheExecutingPlatform() {
+        var host = $"{RuntimeInformation.RuntimeIdentifier} ({RuntimeInformation.OSDescription.Trim()})";
+        IHostedAgentRuntimeFactory[] factories = [
+            new FakeRuntimeFactory("cursor", isAvailable: true, supportsUnattended: true,
+                supportsBorrowedReviewFlow: true, borrowedReviewContainment: "independent-snapshot"),
+        ];
+
+        var capabilities = DaemonRunner.ComputeUnattendedVendorCapabilities(
+            factories, new DaemonConfig { CursorPath = "/definitely/missing/cursor-agent" });
+
+        await Assert.That(capabilities[0].BorrowedReviewSupported)
+            .IsTrue().Because($"borrowed review must be advertised on {host}");
+        await Assert.That(capabilities[0].BorrowedReviewContainment)
+            .IsEqualTo("independent-snapshot").Because($"containment must be advertised on {host}");
+    }
+
+    /// <summary>
+    /// A source-level guard, in the shape of <c>ReviewerModelVendorNeutralityGuardTests</c>: neither
+    /// the advertisement path (<c>DaemonRunner.cs</c>) nor the launch path
+    /// (<c>AcpHostedAgentRuntimeFactory.cs</c>) may consult the validated-build record. This is what
+    /// makes the platform matrix above sound — a re-introduced gate would fail here from ANY host,
+    /// including for the macos-x64 leg no runner executes, whereas a behavioral assertion can only
+    /// speak for the platform it runs on. The record's own file and its tests are of course allowed
+    /// to name it.
+    /// </summary>
+    [Test]
+    public async Task AdvertisementAndLaunchPaths_HaveNoBuildIdentityGate() {
+        var daemonSrc = Path.Combine(RepoRoot(), "src", "Capacitor.Cli.Daemon");
+        var guarded = new[] {
+            Path.Combine(daemonSrc, "DaemonRunner.cs"),
+            Path.Combine(daemonSrc, "Services", "AcpHostedAgentRuntimeFactory.cs"),
+        };
+
+        var violations = new List<string>();
+        foreach (var file in guarded) {
+            var lines = await File.ReadAllLinesAsync(file);
+            for (var i = 0; i < lines.Length; i++) {
+                if (lines[i].TrimStart().StartsWith("//", StringComparison.Ordinal)) continue;
+                if (lines[i].Contains("TryMatchValidatedBuild", StringComparison.Ordinal) ||
+                    lines[i].Contains("CursorBorrowedReviewArtifact", StringComparison.Ordinal))
+                    violations.Add($"{Path.GetFileName(file)}:{i + 1}: {lines[i].Trim()}");
+            }
+        }
+
+        await Assert.That(violations).IsEmpty();
+    }
+
+    /// <summary>Self-test for the guard above — it must actually detect a re-introduced gate rather
+    /// than pass because the file paths are wrong or the scan is inert.</summary>
+    [Test]
+    public async Task AdvertisementGuard_DetectsAReintroducedBuildIdentityGate() {
+        var dir = Directory.CreateTempSubdirectory("kcap-build-identity-guard-");
+        try {
+            var file = Path.Combine(dir.FullName, "DaemonRunner.cs");
+            await File.WriteAllLinesAsync(file, [
+                "// a comment naming TryMatchValidatedBuild must NOT count",
+                "var artifact = CursorBorrowedReviewValidation.TryMatchValidatedBuild(cliPath);",
+            ]);
+
+            var lines = await File.ReadAllLinesAsync(file);
+            var hits = lines
+                .Where(l => !l.TrimStart().StartsWith("//", StringComparison.Ordinal))
+                .Count(l => l.Contains("TryMatchValidatedBuild", StringComparison.Ordinal));
+
+            await Assert.That(hits).IsEqualTo(1);
+        } finally {
+            try { dir.Delete(recursive: true); } catch { }
+        }
+    }
+
+    /// <summary>Walks up from this file's compile-time path to the repo root, so the guard is
+    /// independent of the runner's working directory.</summary>
+    static string RepoRoot([CallerFilePath] string here = "") {
+        var dir = Path.GetDirectoryName(here);
+        while (dir is not null && !File.Exists(Path.Combine(dir, "Capacitor.slnx")))
+            dir = Path.GetDirectoryName(dir);
+
+        return dir ?? throw new InvalidOperationException($"Could not locate repo root walking up from {here}");
+    }
+
+    // === Startup identity logging ===
+
+    /// <summary>Records rendered log entries so the startup identity line can be asserted without
+    /// booting the DI host <c>RunAsync</c> builds.</summary>
+    sealed class CaptureLogger : ILogger {
+        public readonly List<(LogLevel Level, string Message)> Entries = [];
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool         IsEnabled(LogLevel logLevel)                            => true;
+
+        public void Log<TState>(LogLevel level, EventId id, TState state, Exception? ex, Func<TState, Exception?, string> formatter)
+            => Entries.Add((level, formatter(state, ex)));
+    }
+
+    [Test]
+    public async Task LogUnattendedVendorIdentities_EmitsOneInformationLinePerVendor_NamingTheProbedVersion() {
+        var logger = new CaptureLogger();
+
+        DaemonRunner.LogUnattendedVendorIdentities(logger, [
+            new("claude", "2.1.0", DaemonRunner.ClaudeLauncherPolicyVersion, false),
+            new("cursor", "2026.07.23-e383d2b", DaemonRunner.CursorLauncherPolicyVersion, true, "independent-snapshot"),
+        ]);
+
+        var info = logger.Entries.Where(e => e.Level == LogLevel.Information).ToList();
+        await Assert.That(info).Count().IsEqualTo(2);
+        await Assert.That(info).Contains(e => e.Message.Contains("claude") && e.Message.Contains("2.1.0"));
+        await Assert.That(info).Contains(e => e.Message.Contains("cursor") && e.Message.Contains("2026.07.23-e383d2b"));
+    }
+
+    /// <summary>A probe that produced nothing usable renders the literal <c>unknown</c> — never a
+    /// blank, never an omitted line — and the vendor keeps its borrowed capability, since an
+    /// unidentifiable build is still a trusted build.</summary>
+    [Test]
+    [Arguments(null)]
+    [Arguments("")]
+    [Arguments("   ")]
+    public async Task LogUnattendedVendorIdentities_NullOrBlankProbe_RendersUnknown_AndDoesNotAffectCapability(
+            string? probed) {
+        var logger = new CaptureLogger();
+        var capability = new UnattendedVendorCapability(
+            "cursor", probed, DaemonRunner.CursorLauncherPolicyVersion, true, "independent-snapshot");
+
+        DaemonRunner.LogUnattendedVendorIdentities(logger, [capability]);
+
+        var line = logger.Entries.Single(e => e.Level == LogLevel.Information).Message;
+        await Assert.That(line).Contains("unknown");
+        await Assert.That(capability.BorrowedReviewSupported).IsTrue();
+        await Assert.That(capability.BorrowedReviewContainment).IsEqualTo("independent-snapshot");
+    }
+
+    /// <summary>The wording must mark the value as a daemon-startup observation, so nobody reads it
+    /// as the build a later reviewer actually ran — an update after startup makes it stale, which is
+    /// precisely the situation that caused this bug.</summary>
+    [Test]
+    public async Task LogUnattendedVendorIdentities_WordsTheVersionAsAStartupObservation_NotALaunchFact() {
+        var logger = new CaptureLogger();
+
+        DaemonRunner.LogUnattendedVendorIdentities(logger, [
+            new("cursor", "2026.07.23-e383d2b", DaemonRunner.CursorLauncherPolicyVersion, true, "independent-snapshot"),
+        ]);
+
+        var line = logger.Entries.Single().Message;
+        await Assert.That(line).Contains("daemon startup");
+        await Assert.That(line).Contains("stale");
+    }
+
+    /// <summary>NEGATIVE test, and it is load-bearing: the startup line reports the version and
+    /// nothing else. Computing whether the installed build agrees with the validated-build record
+    /// would be automated version-drift detection — the thing this design deliberately does not do —
+    /// and would hand the demoted record a production caller. A test that demanded such an
+    /// assertion would drag the rejected behavior straight back in.</summary>
+    [Test]
+    public async Task LogUnattendedVendorIdentities_DoesNotCompareAgainstTheValidatedBuildRecord() {
+        var logger = new CaptureLogger();
+
+        DaemonRunner.LogUnattendedVendorIdentities(logger, [
+            new("cursor", "2026.07.23-e383d2b", DaemonRunner.CursorLauncherPolicyVersion, true, "independent-snapshot"),
+        ]);
+
+        var line = logger.Entries.Single().Message;
+        await Assert.That(line).DoesNotContain("2026.07.20-8cc9c0b");
+        foreach (var token in new[] { "certif", "validated", "mismatch", "drift", "uncertified" })
+            await Assert.That(line.Contains(token, StringComparison.OrdinalIgnoreCase))
+                .IsFalse().Because($"the startup identity line must not evaluate build agreement ('{token}')");
     }
 
     [Test]

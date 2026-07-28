@@ -356,6 +356,11 @@ public static partial class DaemonRunner {
         config.UnattendedVendors = ComputeUnattendedVendors(runtimeFactories);
         config.UnattendedVendorCapabilities = ComputeUnattendedVendorCapabilities(runtimeFactories, config);
 
+        // Which build of each unattended vendor was installed when this daemon started. Recorded at
+        // startup (like the Cursor-unavailable warning below) rather than per launch, and reported
+        // without any comparison against a validated-build record.
+        LogUnattendedVendorIdentities(logger, config.UnattendedVendorCapabilities);
+
         // IsAvailable()==false silently omits cursor from SupportedVendors above — correct
         // behavior (the launch dialog just won't offer Cursor), but gave operators no clue WHY. One
         // Warning at startup (not per-launch) so a missing/misconfigured cursor-agent install is
@@ -604,12 +609,12 @@ public static partial class DaemonRunner {
                 "copilot" => (config.CopilotPath, CopilotLauncherPolicyVersion),
                 _         => ("", $"{vendor}-unattended-v1")
             };
-            var cursorArtifact = vendor == "cursor"
-                ? CursorBorrowedReviewCertification.TryCertify(cliPath)
-                : null;
-            var borrowedSupported = vendor == "cursor"
-                ? factory.SupportsBorrowedReviewFlow && cursorArtifact is not null
-                : factory.SupportsBorrowedReviewFlow;
+            // Trust-by-default: a vendor's borrowed-review capability is a property of its FACTORY,
+            // never of the installed build's identity. Gating this on an exact-build match made an
+            // ordinary vendor auto-update silently withdraw the capability (and the server then
+            // resolved workspace_mode=fallback, reviewing a stale committed base with nobody told).
+            // See docs/superpowers/specs/2026-07-27-ai1528-trust-by-default-borrowed-review-design.md.
+            var borrowedSupported = factory.SupportsBorrowedReviewFlow;
             // Reviewer MODEL override support: advertised true ONLY when this vendor — already known
             // installed + unattended-certified by ComputeUnattendedVendors above — also carries a
             // runtime-owned resolver. Vendor-neutral: we read the factory's resolver + its policy
@@ -626,6 +631,30 @@ public static partial class DaemonRunner {
                 ReviewerModelPolicyVersion: modelResolver?.PolicyVersion));
         }
         return capabilities;
+    }
+
+    /// <summary>Rendered in place of a <c>CliVersion</c> the probe could not determine (spawn
+    /// failure, timeout, empty output, unparseable output). It is a reporting placeholder ONLY — an
+    /// unidentifiable build is still a trusted build and its capabilities are unaffected.</summary>
+    internal const string UnknownCliVersion = "unknown";
+
+    /// <summary>
+    /// One Information line per unattended vendor recording the CLI version probed at daemon
+    /// startup, so an operator reading the daemon's own log can tell which build was installed when
+    /// this daemon came up. Deliberately reports the version and NOTHING else: it does not compare
+    /// the installed build against any validated-build record (that would be exactly the automated
+    /// version-drift detection this design rejects), and no equivalent line is emitted per launch.
+    /// Pure over the computed capabilities — same reasoning as
+    /// <see cref="ShouldWarnCursorUnavailable"/> — so it is testable without booting the DI host.
+    /// See docs/superpowers/specs/2026-07-27-ai1528-trust-by-default-borrowed-review-design.md.
+    /// </summary>
+    internal static void LogUnattendedVendorIdentities(
+            ILogger logger, IEnumerable<UnattendedVendorCapability> capabilities) {
+        foreach (var capability in capabilities)
+            LogUnattendedVendorIdentity(
+                logger,
+                capability.Vendor,
+                string.IsNullOrWhiteSpace(capability.CliVersion) ? UnknownCliVersion : capability.CliVersion);
     }
 
     internal static string? ProbeCliVersion(string cliPath) {
@@ -676,6 +705,9 @@ public static partial class DaemonRunner {
 
     [LoggerMessage(Level = LogLevel.Information, Message = "kcap daemon '{Name}' starting, connecting to {ServerUrl}")]
     static partial void LogDaemonStarting(ILogger logger, string name, string serverUrl);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Unattended vendor '{Vendor}': CLI version {CliVersion}, as observed by probing the configured binary at daemon startup. That is a startup observation, not the build a later reviewer runs — if the vendor updates while this daemon keeps running, launches pick up the new build and this line stays stale until the daemon restarts.")]
+    static partial void LogUnattendedVendorIdentity(ILogger logger, string vendor, string cliVersion);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Cursor ACP runtime unavailable: cursor-agent CLI not found (looked for '{CursorPath}'). Cursor will not be offered as a hosted-agent vendor until this is fixed. Set KCAP_CURSOR_PATH to the cursor-agent executable, or install the Cursor CLI, then restart the daemon.")]
     static partial void LogCursorUnavailable(ILogger logger, string cursorPath);

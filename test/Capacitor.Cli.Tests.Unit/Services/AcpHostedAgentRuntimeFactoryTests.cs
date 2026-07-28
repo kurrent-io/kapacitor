@@ -1061,6 +1061,115 @@ public class AcpHostedAgentRuntimeFactoryTests {
         await Assert.That(ex.Message).Contains("snapshot materialization");
     }
 
+    // ── Trust-by-default borrowed-snapshot launch ─────────────────────────────────────────────
+    // docs/superpowers/specs/2026-07-27-ai1528-trust-by-default-borrowed-review-design.md
+    //
+    // A borrowed-snapshot Cursor launch used to resolve its binary through — and be re-gated on — an
+    // exact-build record, so an ordinary Cursor auto-update turned the launch into a hard
+    // `cursor_borrowed_artifact_not_certified` throw. Capability is now advertised for whatever
+    // build is installed, and the launch path must agree with that advertisement.
+
+    /// <summary>A snapshot-materialized borrowed review flow: <c>Work</c> is the daemon-owned
+    /// snapshot worktree (what the orchestrator hands the factory) with the borrowed-snapshot
+    /// marker set.</summary>
+    static RuntimeStartContext BorrowedSnapshotContext() =>
+        ReviewContext() with { Work = WorkLocation.OwnedWorktree, IsBorrowedSnapshot = true };
+
+    /// <summary>The borrowed-snapshot binary is the plainly configured one — the same path every
+    /// other vendor and every other launch shape uses. A configured path that matches no validated
+    /// build (this one resolves to nothing at all) must still be spawned verbatim.</summary>
+    [Test]
+    public async Task BuildProcessStartInfo_Cursor_BorrowedSnapshot_UsesTheConfiguredBinaryPath() {
+        var psi = AcpHostedAgentRuntimeFactory.BuildProcessStartInfo(
+            AcpVendorDescriptors.Cursor,
+            new DaemonConfig { CursorPath = "/definitely/not/a/validated/build/cursor-agent" },
+            BorrowedSnapshotContext());
+
+        await Assert.That(psi.FileName).IsEqualTo("/definitely/not/a/validated/build/cursor-agent");
+        await Assert.That(psi.ArgumentList.SequenceEqual(["acp", "--force", "--approve-mcps", "--trust"])).IsTrue();
+    }
+
+    /// <summary>THE launch-side regression test: a borrowed Cursor reviewer on a build that matches
+    /// no validated-build record SPAWNS instead of throwing
+    /// <c>cursor_borrowed_artifact_not_certified</c>.</summary>
+    [Test]
+    public async Task ReviewFlow_Cursor_BorrowedSnapshot_OnANonMatchingBuild_Spawns() {
+        var fake    = new FakeAcpAgent();
+        var spawns  = 0;
+        var factory = new AcpHostedAgentRuntimeFactory(
+            descriptor: AcpVendorDescriptors.Cursor,
+            config: new DaemonConfig { CursorPath = "/definitely/not/a/validated/build/cursor-agent" },
+            loggerFactory: NullLoggerFactory.Instance,
+            connection: new CaptureServerConnection(),
+            connectionSource: _ => {
+                Interlocked.Increment(ref spawns);
+                return (fake.ClientWriteStream, fake.ClientReadStream, new FakeAcpProcess());
+            });
+
+        using var cts = new CancellationTokenSource();
+        var fakeRunTask = fake.RunAsync(cts.Token);
+
+        var started = await factory.StartAsync(BorrowedSnapshotContext(), cts.Token).WaitAsync(HangGuard);
+
+        await Assert.That(Volatile.Read(ref spawns)).IsEqualTo(1);
+
+        cts.Cancel();
+        try { await fakeRunTask.WaitAsync(HangGuard); } catch (OperationCanceledException) { }
+        await started.Runtime.DisposeAsync();
+        await fake.DisposeAsync();
+    }
+
+    /// <summary>The gate that REMAINS: a snapshot-materialized launch handed to a vendor that does
+    /// not declare independent-snapshot containment is a wiring bug, and still fails before spawn.
+    /// Copilot declares native-tool-clamp containment, so it is the realistic mismatch.</summary>
+    [Test]
+    public async Task ReviewFlow_BorrowedSnapshot_ContainmentMismatch_StillThrowsBeforeSpawn() {
+        var (factory, spawns) = CountingSpawnFactory(AcpVendorDescriptors.Copilot);
+
+        var ex = await Assert.That(async () => await factory.StartAsync(
+                ReviewContext(["kcap-review"]) with { Work = WorkLocation.OwnedWorktree, IsBorrowedSnapshot = true },
+                CancellationToken.None))
+            .Throws<InvalidOperationException>();
+
+        await Assert.That(ex!.Message).IsEqualTo("borrowed_snapshot_containment_mismatch");
+        await Assert.That(spawns()).IsEqualTo(0);
+    }
+
+    /// <summary>NEGATIVE test: a launch logs no vendor version and no resolved binary path. Adding
+    /// either would be per-launch drift telemetry, which this design rejects — resolving a
+    /// meaningful path would require final-symlink inspection added specifically to reveal version
+    /// drift, and it would still be racy. A test demanding such a line would reintroduce the
+    /// rejected behavior.</summary>
+    [Test]
+    public async Task StartAsync_BorrowedSnapshot_LogsNoVendorVersionAndNoBinaryPath() {
+        var fake          = new FakeAcpAgent();
+        var loggerFactory = new CaptureLoggerFactory();
+        var binaryPath    = "/definitely/not/a/validated/build/cursor-agent";
+
+        var factory = new AcpHostedAgentRuntimeFactory(
+            descriptor: AcpVendorDescriptors.Cursor,
+            config: new DaemonConfig { CursorPath = binaryPath },
+            loggerFactory: loggerFactory,
+            connection: new CaptureServerConnection(),
+            connectionSource: _ => (fake.ClientWriteStream, fake.ClientReadStream, new FakeAcpProcess()));
+
+        using var cts = new CancellationTokenSource();
+        var fakeRunTask = fake.RunAsync(cts.Token);
+
+        var started = await factory.StartAsync(BorrowedSnapshotContext(), cts.Token).WaitAsync(HangGuard);
+
+        foreach (var (_, message) in loggerFactory.Logger.Entries) {
+            await Assert.That(message.Contains(binaryPath, StringComparison.Ordinal)).IsFalse();
+            await Assert.That(message.Contains("cursor-agent", StringComparison.Ordinal)).IsFalse();
+            await Assert.That(message.Contains(CursorBorrowedReviewValidation.Version, StringComparison.Ordinal)).IsFalse();
+        }
+
+        cts.Cancel();
+        try { await fakeRunTask.WaitAsync(HangGuard); } catch (OperationCanceledException) { }
+        await started.Runtime.DisposeAsync();
+        await fake.DisposeAsync();
+    }
+
     /// <summary>A full StartAsync for the Copilot descriptor: handshake completes, the started
     /// runtime's Vendor is `copilot`, and an interactive launch sends `mcpServers: []`.</summary>
     [Test]

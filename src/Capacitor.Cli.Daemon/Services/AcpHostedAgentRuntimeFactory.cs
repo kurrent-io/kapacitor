@@ -49,7 +49,7 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
         descriptor.BorrowedReviewContainment == AcpBorrowedReviewContainment.IndependentSnapshot;
     public string? BorrowedReviewContainment => descriptor.BorrowedReviewContainment switch {
         AcpBorrowedReviewContainment.NativeToolClamp => "native-tool-clamp",
-        AcpBorrowedReviewContainment.IndependentSnapshot => CursorBorrowedReviewCertification.Containment,
+        AcpBorrowedReviewContainment.IndependentSnapshot => CursorBorrowedReviewValidation.Containment,
         _ => null
     };
 
@@ -65,7 +65,7 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
         LogLaunching(ctx.AgentId, Vendor, ctx.Worktree.Path);
         AcpMetrics.Launches.Add(1);
 
-        ValidateBorrowedArtifact(ctx, descriptor, config);
+        ValidateBorrowedArtifact(ctx, descriptor);
 
         // Fail closed BEFORE _connectionSource spawns a child (a later gate would leak one). Null for
         // a non-review launch; the built MCP list for a valid review flow.
@@ -228,10 +228,11 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
             }
         }
 
-        var binaryPath = descriptor.Vendor == "cursor" && ctx.IsBorrowedSnapshot
-            ? CursorBorrowedReviewCertification.TryCertify(descriptor.ResolveBinaryPath(config))?.LauncherPath
-                ?? throw new InvalidOperationException("cursor_borrowed_artifact_not_certified")
-            : descriptor.ResolveBinaryPath(config);
+        // Every vendor — borrowed-snapshot review included — spawns the ordinary configured binary.
+        // Resolving a borrowed reviewer through an exact-build record instead made a vendor
+        // auto-update hard-fail the launch. See
+        // docs/superpowers/specs/2026-07-27-ai1528-trust-by-default-borrowed-review-design.md.
+        var binaryPath = descriptor.ResolveBinaryPath(config);
         var psi = new ProcessStartInfo(binaryPath, argv) {
             WorkingDirectory       = ctx.Worktree.Path,
             RedirectStandardInput  = true,
@@ -247,14 +248,16 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
         return psi;
     }
 
-    static void ValidateBorrowedArtifact(
-            RuntimeStartContext ctx, AcpVendorDescriptor descriptor, DaemonConfig config) {
+    /// <summary>Pre-spawn check that the descriptor's DECLARED containment agrees with the launch
+    /// context it was handed — a code-level invariant (a snapshot-materialized launch reaching a
+    /// vendor that does not declare independent-snapshot containment is a wiring bug). It is
+    /// deliberately NOT a build-identity check: capability is advertised for whatever build is
+    /// installed, so nothing here may consult a version record. See
+    /// docs/superpowers/specs/2026-07-27-ai1528-trust-by-default-borrowed-review-design.md.</summary>
+    static void ValidateBorrowedArtifact(RuntimeStartContext ctx, AcpVendorDescriptor descriptor) {
         if (!ctx.IsReviewFlow || !ctx.IsBorrowedSnapshot) return;
         if (descriptor.BorrowedReviewContainment != AcpBorrowedReviewContainment.IndependentSnapshot)
             throw new InvalidOperationException("borrowed_snapshot_containment_mismatch");
-        if (descriptor.Vendor == "cursor" &&
-            CursorBorrowedReviewCertification.TryCertify(descriptor.ResolveBinaryPath(config)) is null)
-            throw new InvalidOperationException("cursor_borrowed_artifact_not_certified");
     }
 
     /// <summary>Builds Copilot CLI's process-level stdio MCP config. Copilot's ACP capability
