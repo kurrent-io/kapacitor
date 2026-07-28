@@ -237,6 +237,9 @@ public class SequencedCommandProcessorTests {
 
     // The ordering the lock move must NOT break: the cache records the outcome BEFORE the ack is built, so
     // an ack can never advertise an outcome a concurrently-arriving duplicate would not yet see.
+    // NOT a regression net for the lock placement itself — it passes either way, since Monitor is
+    // reentrant and LastProcessedSeq would observe the same already-updated value from inside the lock.
+    // Lock placement is pinned by the test above; this one pins the ordering, which matters regardless.
     [Test] public async Task Proactive_ack_is_built_only_after_the_outcome_is_recorded_in_the_cache() {
         SequencedCommandProcessor? proc = null;
         long watermarkAtAckTime = -1;
@@ -252,6 +255,79 @@ public class SequencedCommandProcessorTests {
         // The watermark only advances once the entry is marked Processed, so seeing 1 here proves the
         // cache write happened first.
         await Assert.That(watermarkAtAckTime).IsEqualTo(1L);
+    }
+
+    // Ack construction lives INSIDE the send containment, not at the call site. readLiveness walks the
+    // orchestrator's live lifecycle collections, so it can throw; if it did, Send(Build(..)) would have
+    // evaluated Build before entering the try. From the lane that faults the consumer loop and leaves the
+    // item's Done unresolved — the submitter waits forever and every later command is stranded, which on
+    // the server side reads as a permanently held daemon capacity slot.
+    [Test] public async Task A_throwing_liveness_read_neither_faults_the_lane_nor_strands_the_submitter() {
+        var h = new Harness();
+        await using var p = new SequencedCommandProcessor(
+            "e1",
+            _ => throw new InvalidOperationException("liveness read blew up"),
+            a => { lock (h.Acks) h.Acks.Add(a); return Task.CompletedTask; },
+            r => { lock (h.Rejects) h.Rejects.Add(r); return Task.CompletedTask; },
+            NullLogger.Instance);
+
+        // Bounded, deliberately: without the fix this does not FAIL, it HANGS — the lane faults on the
+        // throw and never resolves Done. Verified by reverting the fix, where an unbounded await pinned
+        // the whole suite until the harness timeout. A CI job that times out is a much worse signal than
+        // a named assertion, so the wait is capped and the failure message says what it means.
+        var settled = p.SubmitAsync(h.Launch(1), () => Task.FromResult(new CommandOutcome(CommandOutcomeKind.LaunchExecuted)));
+        var finished = await Task.WhenAny(settled, Task.Delay(TimeSpan.FromSeconds(10)));
+        await Assert.That(finished == settled)
+            .IsTrue().Because("the lane faulted on the liveness throw and never resolved the submitter's Done");
+        await settled;
+
+        // The terminal FACT is still recorded — only the best-effort ack was lost.
+        await Assert.That(p.LastProcessedSeq).IsEqualTo(1L);
+
+        // The lane is still alive: a following command still executes and advances the watermark.
+        var second = false;
+        await p.SubmitAsync(h.Launch(2), () => { second = true; return Task.FromResult(new CommandOutcome(CommandOutcomeKind.LaunchExecuted)); });
+        await Assert.That(second).IsTrue();
+        await Assert.That(p.LastProcessedSeq).IsEqualTo(2L);
+    }
+
+    // The same containment on the RECOVERY path: a duplicate replay is what the server sends when it never
+    // got the terminal ack, and SubmitAsync is called from the hub — an escaping throw would surface there.
+    [Test] public async Task A_throwing_liveness_read_does_not_escape_a_duplicate_replay() {
+        var h = new Harness();
+        var throwOnRead = false;
+        await using var p = new SequencedCommandProcessor(
+            "e1",
+            _ => throwOnRead ? throw new InvalidOperationException("liveness read blew up") : AgentLiveness.Live,
+            a => { lock (h.Acks) h.Acks.Add(a); return Task.CompletedTask; },
+            r => { lock (h.Rejects) h.Rejects.Add(r); return Task.CompletedTask; },
+            NullLogger.Instance);
+
+        var item = h.Launch(1);
+        await p.SubmitAsync(item, () => Task.FromResult(new CommandOutcome(CommandOutcomeKind.LaunchExecuted)));
+
+        throwOnRead = true;
+        // The replay must not throw out of SubmitAsync into the hub.
+        await p.SubmitAsync(item, () => Task.FromResult(new CommandOutcome(CommandOutcomeKind.LaunchExecuted)));
+
+        await Assert.That(p.LastProcessedSeq).IsEqualTo(1L);
+    }
+
+    // A faulting SEND (as opposed to a faulting build) must be equally contained on the replay path — it
+    // used to be a bare `_ = _sendAck(...)`, so a synchronous throw escaped into the hub.
+    [Test] public async Task A_throwing_ack_send_does_not_escape_a_duplicate_replay() {
+        var sends = 0;
+        await using var p = new SequencedCommandProcessor(
+            "e1", _ => AgentLiveness.Live,
+            _ => { sends++; throw new InvalidOperationException("send blew up"); },
+            _ => Task.CompletedTask, NullLogger.Instance);
+
+        var item = new SequencedItem(SequencedKind.Launch, "e1", 1, "cmd1", "a1");
+        await p.SubmitAsync(item, () => Task.FromResult(new CommandOutcome(CommandOutcomeKind.LaunchExecuted)));
+        await p.SubmitAsync(item, () => Task.FromResult(new CommandOutcome(CommandOutcomeKind.LaunchExecuted)));
+
+        await Assert.That(sends).IsEqualTo(2);           // proactive + replay both attempted
+        await Assert.That(p.LastProcessedSeq).IsEqualTo(1L);
     }
 
     // A duplicate of a non-rejected (executed) command has no cached reject reason -> null RejectionReason.

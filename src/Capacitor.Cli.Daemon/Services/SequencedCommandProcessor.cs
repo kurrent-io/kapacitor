@@ -62,8 +62,11 @@ internal sealed class SequencedCommandProcessor : IAsyncDisposable {
         }
 
         // _readLiveness is NEVER invoked under _lock (see BuildProcessedAck): the cached outcome is
-        // captured above, the ack is built and sent here.
-        if (replay is { } outcome) _ = _sendAck(BuildProcessedAck(item, outcome));
+        // captured above, the ack is built and sent here — through the same containment the lane's
+        // proactive send uses, because this is the RECOVERY path (the server retransmitting a command
+        // whose terminal ack it never received) and an escaping throw here would surface in the hub
+        // handler while leaving the server's capacity slot held.
+        if (replay is { } outcome) SendSettledAck(item, outcome);
 
         return result;
     }
@@ -136,19 +139,27 @@ internal sealed class SequencedCommandProcessor : IAsyncDisposable {
             outcome.Kind, live, outcome.AgentId ?? item.AgentId, outcome.SessionId, reason);
     }
 
-    /// <summary>Fire the proactive terminal ack without ever letting the send fault the lane. The ack is
-    /// best-effort telemetry — a disconnected/reconnecting server just falls back to the periodic
-    /// status-report reconcile — so a synchronous throw AND a faulted task are both swallowed at Debug.
-    /// Never awaited: the lane must not block on the wire.</summary>
-    void SendProactiveAck(CommandAck ack) {
+    /// <summary>Build AND fire a settled command's terminal ack without ever letting it fault the caller.
+    /// The ack is best-effort telemetry — a disconnected/reconnecting server just falls back to the
+    /// periodic status-report reconcile — so a synchronous throw AND a faulted task are both swallowed
+    /// at Debug. Never awaited: neither the lane nor a hub callback may block on the wire.
+    ///
+    /// <para>The BUILD is deliberately inside the try. Passing a pre-built ack (
+    /// <c>Send(Build(..))</c>) evaluates the argument before entering the containment, so a throwing
+    /// <c>_readLiveness</c> escapes: from the lane it faults <see cref="RunLaneAsync"/> and leaves the
+    /// item's <c>Done</c> unresolved (hanging that submitter and stopping every later command), and from
+    /// <see cref="SubmitAsync"/> it escapes into the hub handler. Both callers reach this only AFTER the
+    /// outcome is recorded in the cache, so swallowing the ack costs at most one status-report interval
+    /// of slot latency — never a wrong or missing terminal fact.</para></summary>
+    void SendSettledAck(SequencedItem item, CommandOutcome outcome) {
         try {
-            var send = _sendAck(ack);
+            var send = _sendAck(BuildProcessedAck(item, outcome));
             if (send is { IsCompletedSuccessfully: false })
                 _ = send.ContinueWith(
-                    t => _logger.LogDebug(t.Exception, "SequencedCommandProcessor: proactive ack for seq {Seq} failed to send", ack.Seq),
+                    t => _logger.LogDebug(t.Exception, "SequencedCommandProcessor: settled ack for seq {Seq} failed to send", item.Seq),
                     CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted, TaskScheduler.Default);
         } catch (Exception ex) {
-            _logger.LogDebug(ex, "SequencedCommandProcessor: proactive ack for seq {Seq} threw", ack.Seq);
+            _logger.LogDebug(ex, "SequencedCommandProcessor: settled ack for seq {Seq} threw", item.Seq);
         }
     }
 
@@ -233,8 +244,12 @@ internal sealed class SequencedCommandProcessor : IAsyncDisposable {
             // older servers accept it too and simply retire the slot earlier.
             //
             // Built AFTER the cache entry is marked Processed (so the ack can never advertise an outcome
-            // the cache has not recorded) but OUTSIDE the lock — see BuildProcessedAck.
-            SendProactiveAck(BuildProcessedAck(li.Item, outcome));
+            // the cache has not recorded) but OUTSIDE the lock — see BuildProcessedAck. Construction is
+            // inside the containment too: SendProactiveAck(BuildProcessedAck(..)) would evaluate the
+            // argument BEFORE entering the try, so a throwing _readLiveness would fault RunLaneAsync and
+            // leave li.Done unresolved — hanging the submitter forever and killing the lane for every
+            // subsequent command.
+            SendSettledAck(li.Item, outcome);
             li.Done.SetResult();
         }
     }
