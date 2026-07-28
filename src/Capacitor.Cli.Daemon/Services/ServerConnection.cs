@@ -416,6 +416,14 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
     /// <summary>Raw <see cref="HubConnection.StartAsync"/> — a seam for the same reason.</summary>
     internal virtual Task StartHubAsync(CancellationToken ct) => _hub.StartAsync(ct);
 
+    /// <summary>Raw <see cref="HubConnection.StopAsync"/> — a seam so
+    /// <see cref="ForceReconnectAsync"/>'s wedged-transport cap is unit-testable.</summary>
+    internal virtual Task StopHubAsync(CancellationToken ct) => _hub.StopAsync(ct);
+
+    /// <summary>How long <see cref="ForceReconnectAsync"/> waits for the hub stop before
+    /// abandoning it. Settable so tests don't wait the real 5 s.</summary>
+    internal TimeSpan ForceStopCap { get; set; } = TimeSpan.FromSeconds(5);
+
     internal async Task ConnectWithRetryAsync(CancellationToken ct) {
         await _connectLock.WaitAsync(ct);
 
@@ -669,20 +677,28 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
     /// transport and a new server-side conn id, then re-registers via
     /// <see cref="RegisterDaemonAsync"/>. Used when the heartbeat ping times out
     /// or throws — the WebSocket is hung and only a fresh connection
-    /// recovers it. StopAsync is capped at 5 s so a wedged transport
-    /// can't stall the heartbeat loop indefinitely (Qodo).
+    /// recovers it. The stop is capped at <see cref="ForceStopCap"/> so a wedged
+    /// transport can't stall the heartbeat loop indefinitely (Qodo). The cap is
+    /// enforced from OUTSIDE via <c>WaitAsync</c>: <c>HubConnection.StopAsync</c>'s
+    /// cancellation token is dead in the pinned client (its connection-lock wait and
+    /// transport stop run on <c>token: default</c>), so passing the token in would
+    /// never actually bound the await. Abandoning the wait is safe — StopAsync
+    /// signals its internal stop token synchronously before its first await, so the
+    /// teardown is already underway; when it eventually completes, Closed fires and
+    /// <see cref="OnClosed"/> reconnects, and until then each heartbeat tick stays
+    /// bounded and keeps retrying.
     /// </summary>
     public async Task ForceReconnectAsync() {
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(_ct);
-        cts.CancelAfter(TimeSpan.FromSeconds(5));
+        cts.CancelAfter(ForceStopCap);
 
         try {
-            await _hub.StopAsync(cts.Token);
+            await StopHubAsync(CancellationToken.None).WaitAsync(cts.Token);
         } catch (OperationCanceledException) when (!_ct.IsCancellationRequested) {
-            // StopAsync didn't return in 5 s — transport is wedged. OnClosed
+            // StopAsync didn't return within the cap — transport is wedged. OnClosed
             // may still fire eventually, but we don't want to block the
             // heartbeat loop on it. The next tick will retry.
-            _logger.LogWarning("ForceReconnectAsync: StopAsync exceeded 5 s — abandoning wait");
+            _logger.LogWarning("ForceReconnectAsync: StopAsync exceeded {CapSeconds:F0} s — abandoning wait", ForceStopCap.TotalSeconds);
         }
     }
 

@@ -37,6 +37,14 @@ public class ConnectWithRetryTests {
         /// first loop mid-connect while a concurrent ConnectWithRetryAsync call is issued.</summary>
         public TaskCompletionSource? StartHold { get; set; }
 
+        /// <summary>When set, StopHubAsync returns this instead of completing — lets a test wedge
+        /// the transport stop that ForceReconnectAsync must abandon at its cap.</summary>
+        public TaskCompletionSource? StopHold { get; set; }
+
+        /// <summary>Fired synchronously on every RegisterDaemonAsync call — lets a test observe
+        /// failed attempts deterministically instead of sleeping.</summary>
+        public Action? OnRegisterAttempt { get; set; }
+
         internal override HubConnectionState HubState => State;
         internal override bool               IsReady  => Ready;
 
@@ -51,8 +59,17 @@ public class ConnectWithRetryTests {
             State = HubConnectionState.Connected;
         }
 
+        internal override Task StopHubAsync(CancellationToken ct) =>
+            StopHold?.Task ?? Task.CompletedTask;
+
         internal override Task RegisterDaemonAsync() {
             RegisterCalls++;
+            OnRegisterAttempt?.Invoke();
+
+            // Mirror the real hub-invoke contract: DaemonConnect can only succeed on a
+            // Connected transport ("cannot be called if the connection is not active").
+            if (State != HubConnectionState.Connected)
+                return Task.FromException(new InvalidOperationException("The 'InvokeCoreAsync' method cannot be called if the connection is not active"));
 
             if (FailRegisterRemaining > 0) {
                 FailRegisterRemaining--;
@@ -125,17 +142,38 @@ public class ConnectWithRetryTests {
             ConnectRetryDelays = FastDelays
         };
 
+        // Registration fails while the fake is Reconnecting (see RegisterDaemonAsync), so the
+        // loop must back off and retry. Observe two failed attempts deterministically before
+        // emulating SignalR's automatic reconnect healing the transport.
+        var twoAttemptsFailed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        conn.OnRegisterAttempt = () => {
+            if (conn.RegisterCalls >= 2) twoAttemptsFailed.TrySetResult();
+        };
+
         var loop = conn.ConnectWithRetryAsync(CancellationToken.None);
 
-        // Give the loop a few iterations against the Reconnecting hub, then emulate SignalR's
-        // automatic reconnect healing the transport and OnReconnected re-registering.
-        await Task.Delay(TimeSpan.FromMilliseconds(100));
+        await twoAttemptsFailed.Task.WaitAsync(HangGuard);
+        await Assert.That(loop.IsCompleted).IsFalse();
+
         conn.State = HubConnectionState.Connected;
-        conn.Ready = true;
 
         await loop.WaitAsync(HangGuard);
 
         await Assert.That(conn.StartCalls).IsEqualTo(0);
+        await Assert.That(conn.Ready).IsTrue();
+    }
+
+    [Test]
+    public async Task ForceReconnect_abandons_a_wedged_stop_at_the_cap() {
+        var conn = new RetryTestConnection {
+            ForceStopCap = TimeSpan.FromMilliseconds(50)
+        };
+        // Never completed: emulates the pinned client's StopAsync hanging on its internal
+        // connection-lock wait, which ignores the caller's cancellation token entirely.
+        conn.StopHold = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        // Must return at the cap instead of hanging the heartbeat tick forever.
+        await conn.ForceReconnectAsync().WaitAsync(HangGuard);
     }
 
     [Test]
