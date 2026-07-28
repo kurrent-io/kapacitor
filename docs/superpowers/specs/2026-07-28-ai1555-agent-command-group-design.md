@@ -102,7 +102,7 @@ An unknown subcommand prints usage to stderr and exits 1. `kcap agent --help` re
 | Value | Direction | Payload |
 |---|---|---|
 | `Stop = 8` | client → daemon | `Text` = agent id, or empty = all agents |
-| `StopAck = 70` | daemon → client | `Text` = stopped ids, one per line |
+| `StopAck = 70` | daemon → client | `Text` = one `id\tstatus` line per agent; status is `stopped` or `failed` |
 
 An id that is not in the live agent map falls through to `TryStopByPidRecordAsync` — the same
 survivor-reaping fallback the server-origin path uses, and the reason decision 5 sends full ids

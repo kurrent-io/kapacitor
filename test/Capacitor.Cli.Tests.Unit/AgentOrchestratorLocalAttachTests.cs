@@ -599,7 +599,7 @@ public partial class AgentOrchestratorVendorTests {
         var reply = await StopAndReadReply(orch, "priv-1");
 
         await Assert.That(reply!.Type).IsEqualTo(FrameType.StopAck);
-        await Assert.That(reply.Text).IsEqualTo("priv-1");
+        await Assert.That(reply.Text).IsEqualTo("priv-1\tstopped");
         await Assert.That(orch.GetAgentForTest("priv-1")!.Status).IsEqualTo("Completed");
         await Assert.That(server.Calls.Count).IsEqualTo(0);
     }
@@ -627,7 +627,7 @@ public partial class AgentOrchestratorVendorTests {
         var reply = await StopAndReadReply(orch, "");
 
         await Assert.That(reply!.Type).IsEqualTo(FrameType.StopAck);
-        await Assert.That(reply.Text.Split('\n')).IsEquivalentTo(new[] { "a-1", "a-2" });
+        await Assert.That(reply.Text.Split('\n')).IsEquivalentTo(new[] { "a-1\tstopped", "a-2\tstopped" });
         await Assert.That(orch.GetAgentForTest("a-1")!.Status).IsEqualTo("Completed");
         await Assert.That(orch.GetAgentForTest("a-2")!.Status).IsEqualTo("Completed");
     }
@@ -641,5 +641,43 @@ public partial class AgentOrchestratorVendorTests {
 
         await Assert.That(reply!.Type).IsEqualTo(FrameType.Error);
         await Assert.That(reply.Text).Contains("ghost");
+    }
+
+    [Test]
+    public async Task Local_stop_that_cannot_be_confirmed_reports_failed() {
+        var server = new TripwireServerConnection();
+        await using var orch = BuildOrchestrator(server, new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>());
+        // A pty that never reports HasExited, even past TerminateAsync — StopAgentCoreAsync's
+        // confirmation check must then report "failed" instead of claiming success.
+        orch.SeedAgentForTest("stuck-1", pty: new NeverExitsPtyProcess());
+
+        var reply = await StopAndReadReply(orch, "stuck-1");
+
+        await Assert.That(reply!.Type).IsEqualTo(FrameType.StopAck);
+        await Assert.That(reply.Text).IsEqualTo("stuck-1\tfailed");
+    }
+
+    /// <summary>A pty double whose process never exits — HasExited stays false even after
+    /// TerminateAsync — so a test can drive the "stop could not be confirmed" path without a
+    /// real hung process.</summary>
+    sealed class NeverExitsPtyProcess : IPtyProcess {
+        public int  Pid       => 4343;
+        public bool HasExited => false;
+        public int? ExitCode  => null;
+
+        public ValueTask DisposeAsync() => default;
+        public Task WaitForExitAsync(TimeSpan? _) => Task.CompletedTask;
+        public Task TerminateAsync(TimeSpan?   _) => Task.CompletedTask;
+
+#pragma warning disable CS1998
+        public async IAsyncEnumerable<byte[]> ReadOutputAsync([EnumeratorCancellation] CancellationToken _ = default) {
+            yield break;
+        }
+#pragma warning restore CS1998
+
+        public Task WriteAsync(string _) => Task.CompletedTask;
+        public Task WriteAsync(byte[] _) => Task.CompletedTask;
+        public void Resize(ushort     _, ushort __) { }
+        public void SendInterrupt() { }
     }
 }

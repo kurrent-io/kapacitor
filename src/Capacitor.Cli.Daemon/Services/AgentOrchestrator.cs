@@ -1681,9 +1681,12 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     /// <summary>
     /// The stop itself, with no caller-authorisation policy: graceful /exit, then terminate.
     /// Server-origin stops reach this through <see cref="HandleStopAgent"/> (which refuses
-    /// private agents); local-socket stops call it directly.
+    /// private agents); local-socket stops call it directly. Returns true once
+    /// <c>agent.Runtime.HasExited</c> confirms the process is actually gone after
+    /// <see cref="IHostedAgentRuntime.TerminateAsync"/>; false if that confirmation never lands
+    /// or any step above throws.
     /// </summary>
-    async Task StopAgentCoreAsync(AgentInstance agent) {
+    async Task<bool> StopAgentCoreAsync(AgentInstance agent) {
         var agentId = agent.Id;
 
         try {
@@ -1743,8 +1746,12 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             // during the graceful window above, the backstop call is a server-side no-op.
             await agent.ReadCts.CancelAsync();
             await agent.Runtime.TerminateAsync(TimeSpan.FromSeconds(10));
+
+            return agent.Runtime.HasExited;
         } catch (Exception ex) {
             LogStopError(ex, agentId);
+
+            return false;
         }
     }
 

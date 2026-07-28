@@ -19,5 +19,5 @@ public enum FrameType : byte {
     Error     = 67,
     AgentList = 68, // UTF-8 table payload: one `id\tstatus\tcwd` line per agent
     RestartAck = 69, // acknowledgement for Restart (Text = short status)
-    StopAck    = 70, // acknowledgement for Stop (Text = stopped ids, one per line)
+    StopAck    = 70, // acknowledgement for Stop (Text = one `id\tstatus` line per agent; status is "stopped" or "failed")
 }

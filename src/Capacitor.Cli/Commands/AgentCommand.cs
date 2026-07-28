@@ -67,7 +67,14 @@ internal static class AgentCommand {
             return 1;
         }
 
-        var sock = LocalSocketPaths.Socket(ResolveName(NameFrom(args)));
+        var (daemonName, daemonError) = DaemonNameFrom(args);
+        if (daemonError is not null) {
+            await Console.Error.WriteLineAsync($"kcap agent: {daemonError}");
+
+            return 1;
+        }
+
+        var sock = LocalSocketPaths.Socket(ResolveName(daemonName));
 
         if (!File.Exists(sock)) {
             await Console.Error.WriteLineAsync($"kcap: no daemon socket at {sock}");
@@ -99,7 +106,14 @@ internal static class AgentCommand {
             return 1;
         }
 
-        var name = ResolveName(NameFrom(args));
+        var (daemonName, daemonError) = DaemonNameFrom(args);
+        if (daemonError is not null) {
+            await Console.Error.WriteLineAsync($"kcap agent: {daemonError}");
+
+            return 1;
+        }
+
+        var name = ResolveName(daemonName);
         var sock = LocalSocketPaths.Socket(name);
 
         if (!File.Exists(sock)) {
@@ -157,11 +171,28 @@ internal static class AgentCommand {
             switch (resp?.Type) {
                 case FrameType.StopAck:
                     // Explicit type: `[]` has no natural type, so `var` would not compile here.
-                    string[] ids = resp.Text.Length == 0 ? [] : resp.Text.Split('\n');
-                    foreach (var id in ids) Console.WriteLine($"Stopped {id}.");
-                    if (ids.Length == 0) Console.WriteLine("No agents.");
+                    string[] lines = resp.Text.Length == 0 ? [] : resp.Text.Split('\n');
+                    if (lines.Length == 0) {
+                        Console.WriteLine("No agents.");
 
-                    return 0;
+                        return 0;
+                    }
+
+                    var anyFailed = false;
+
+                    foreach (var line in lines) {
+                        var parts = line.Split('\t');
+                        var id    = parts[0];
+
+                        if (parts is [_, "stopped"]) {
+                            Console.WriteLine($"Stopped {id}.");
+                        } else {
+                            Console.WriteLine($"Failed to stop {id} — see `kcap daemon logs`.");
+                            anyFailed = true;
+                        }
+                    }
+
+                    return anyFailed ? 1 : 0;
                 case FrameType.Error:
                     await Console.Error.WriteLineAsync($"kcap: {resp.Text}");
 
@@ -201,7 +232,14 @@ internal static class AgentCommand {
     }
 
     static async Task<int> ListAsync(string[] args) {
-        var sock = LocalSocketPaths.Socket(ResolveName(NameFrom(args)));
+        var (daemonName, daemonError) = DaemonNameFrom(args);
+        if (daemonError is not null) {
+            await Console.Error.WriteLineAsync($"kcap agent: {daemonError}");
+
+            return 1;
+        }
+
+        var sock = LocalSocketPaths.Socket(ResolveName(daemonName));
 
         if (!File.Exists(sock)) {
             Console.WriteLine("No local daemon running.");
@@ -334,10 +372,20 @@ internal static class AgentCommand {
         return DaemonNameResolver.Resolve(args, AppConfig.ResolvedProfile?.Profile?.Daemon?.Name);
     }
 
-    static string? NameFrom(string[] args) {
+    /// <summary>
+    /// Parses `--daemon &lt;name&gt;` out of the shared `ls`/`attach`/`stop` arg list. Absent
+    /// entirely resolves to (null, null) — meaning "use the default daemon", the correct existing
+    /// behaviour. Present with no value, or with a following flag instead of a value, is an error
+    /// rather than silently falling back to the default: a typo here must not retarget a
+    /// destructive `stop` at the wrong (and possibly unconfirmed, with `-y`) daemon.
+    /// </summary>
+    internal static (string? Name, string? Error) DaemonNameFrom(string[] args) {
         var i = Array.IndexOf(args, "--daemon");
+        if (i < 0) return (null, null);
 
-        return i >= 0 && i + 1 < args.Length ? args[i + 1] : null;
+        return i + 1 >= args.Length || args[i + 1].StartsWith('-')
+            ? (null, "--daemon requires a value")
+            : (args[i + 1], null);
     }
 
     /// <summary>A full agent id as minted by `Guid.NewGuid().ToString("N")`.</summary>

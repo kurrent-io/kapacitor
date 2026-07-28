@@ -34,4 +34,39 @@ public class AgentCommandRoutingTests {
         var (sub, _) = AgentCommand.SplitSubcommand(["agent", "frobnicate"]);
         await Assert.That(AgentCommand.KnownSubcommands).DoesNotContain(sub);
     }
+
+    [Test]
+    public async Task DaemonNameFrom_absent_flag_resolves_to_the_default() {
+        var (name, error) = AgentCommand.DaemonNameFrom(["ab12"]);
+        await Assert.That(name).IsNull();
+        await Assert.That(error).IsNull();
+    }
+
+    [Test]
+    public async Task DaemonNameFrom_returns_the_value() {
+        var (name, error) = AgentCommand.DaemonNameFrom(["ab12", "--daemon", "dev"]);
+        await Assert.That(name).IsEqualTo("dev");
+        await Assert.That(error).IsNull();
+    }
+
+    [Test]
+    public async Task DaemonNameFrom_as_the_final_token_is_an_error_not_a_silent_default() {
+        var (name, error) = AgentCommand.DaemonNameFrom(["--all", "-y", "--daemon"]);
+        await Assert.That(name).IsNull();
+        await Assert.That(error).IsNotNull();
+    }
+
+    [Test]
+    public async Task DaemonNameFrom_followed_by_a_flag_is_an_error_not_passed_through() {
+        var (name, error) = AgentCommand.DaemonNameFrom(["ab12", "--daemon", "-y"]);
+        await Assert.That(name).IsNull();
+        await Assert.That(error).IsNotNull();
+    }
+
+    [Test]
+    public async Task DaemonNameFrom_resolves_the_value_amid_other_flags() {
+        var (name, error) = AgentCommand.DaemonNameFrom(["--all", "-y", "--daemon", "dev"]);
+        await Assert.That(name).IsEqualTo("dev");
+        await Assert.That(error).IsNull();
+    }
 }

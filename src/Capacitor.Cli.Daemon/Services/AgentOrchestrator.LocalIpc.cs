@@ -20,16 +20,17 @@ internal partial class AgentOrchestrator {
     /// </summary>
     public async Task HandleLocalStopAsync(string agentId, Stream stream, CancellationToken ct) {
         if (agentId.Length == 0) {
-            var all = _agents.Values.ToList();
-            await Task.WhenAll(all.Select(StopAgentCoreAsync));
-            await FrameCodec.WriteAsync(stream, LocalFrame.StopAck(string.Join('\n', all.Select(a => a.Id))), ct);
+            var all     = _agents.Values.ToList();
+            var results = await Task.WhenAll(all.Select(StopAgentCoreAsync));
+            var lines   = all.Zip(results, (a, ok) => $"{a.Id}\t{StatusText(ok)}");
+            await FrameCodec.WriteAsync(stream, LocalFrame.StopAck(string.Join('\n', lines)), ct);
 
             return;
         }
 
         if (_agents.TryGetValue(agentId, out var agent)) {
-            await StopAgentCoreAsync(agent);
-            await FrameCodec.WriteAsync(stream, LocalFrame.StopAck(agentId), ct);
+            var ok = await StopAgentCoreAsync(agent);
+            await FrameCodec.WriteAsync(stream, LocalFrame.StopAck($"{agentId}\t{StatusText(ok)}"), ct);
 
             return;
         }
@@ -40,9 +41,11 @@ internal partial class AgentOrchestrator {
 
         await FrameCodec.WriteAsync(
             stream,
-            reaped ? LocalFrame.StopAck(agentId) : LocalFrame.Error($"no such agent {agentId}"),
+            reaped ? LocalFrame.StopAck($"{agentId}\t{StatusText(true)}") : LocalFrame.Error($"no such agent {agentId}"),
             ct);
     }
+
+    static string StatusText(bool confirmedStopped) => confirmedStopped ? "stopped" : "failed";
 
     /// <summary>
     /// Spawn a new agent from a local <c>agent start</c> request, then attach the requesting
