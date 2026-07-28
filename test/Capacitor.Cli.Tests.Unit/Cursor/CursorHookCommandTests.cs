@@ -807,24 +807,28 @@ public class CursorHookCommandTests {
         Func<SessionStartMemoryLeaseStore> storeFactory = () => new SessionStartMemoryLeaseStore(fx.MemoryStoreRoot, clock);
 
         // A memory-index client whose GET never completes on its own — it only ever resolves via
-        // the caller's cancellation, letting the provider's own linked/budget-bound
-        // CancellationTokenSource be what ends the fetch.
+        // the budget-bound linked token handed to the request itself.
         var handler = new CancelAwareHandler();
         using var neverRespondingClient = new HttpClient(handler);
 
         // Nothing here is wall-clock derived: the override pins the memory stage's budget, the stub
         // resolver keeps a git spawn out of it, and budgetTotal sits far enough above the inner
         // phase that the outer deadline can't pre-empt it. The 250ms is the cancellation window.
+        var elapsed = System.Diagnostics.Stopwatch.StartNew();
         var exit1 = await CursorHookCommand.HandleCore(
             fx.Client, "http://localhost", new StringReader(payload), fx.Spool, TimeSpan.FromSeconds(15),
             memoryClientFactory: (_, _) => Task.FromResult(neverRespondingClient),
             memoryStoreFactory: storeFactory,
             memoryBudgetOverride: TimeSpan.FromMilliseconds(250),
             memoryScopeResolver: new StubScopeResolver());
+        elapsed.Stop();
         await Assert.That(exit1).IsEqualTo(0);
-        // The fetch was entered and then cancelled — without this the rest of the test would
-        // still pass on a skipped first attempt, proving nothing.
+        // Entered rules out a skipped attempt (which would prove nothing); Cancelled rules out the
+        // request being abandoned by a wrapper while it kept running; and returning far inside the
+        // 15s deadline rules that deadline out as the thing that ended it, leaving the 250ms budget.
         await Assert.That(handler.Entered).IsTrue();
+        await Assert.That(handler.Cancelled).IsTrue();
+        await Assert.That(elapsed.Elapsed.TotalSeconds).IsLessThan(10);
 
         // Advance well past the 30s lease duration so the still-"leased" (never committed —
         // the cancellation raced RetryAsync's own fencing too) record from the first attempt
@@ -853,18 +857,26 @@ public class CursorHookCommandTests {
         var payload = $$"""{"hook_event_name":"sessionStart","session_id":"{{sid}}","workspace_roots":["{{ws}}"]}""";
         fx.MemoryIndexBody = """[{"memory_id":"m1","slug":"s","audience":"org","description":"d","kind":"preference"}]""";
 
+        var storeBuilt = false;
+
         var originalOut = Console.Out;
         var stdoutWriter = new StringWriter();
         try {
             Console.SetOut(stdoutWriter);
             var exit = await CursorHookCommand.HandleCore(
                 fx.Client, "http://localhost", new StringReader(payload), fx.Spool, TimeSpan.FromSeconds(15),
-                memoryStoreFactory: () => new SessionStartMemoryLeaseStore(fx.MemoryStoreRoot, new ManualTimeProvider()),
+                memoryStoreFactory: () => {
+                    storeBuilt = true;
+                    return new SessionStartMemoryLeaseStore(fx.MemoryStoreRoot, new ManualTimeProvider());
+                },
                 memoryBudgetOverride: TimeSpan.Zero);
 
             await Assert.That(exit).IsEqualTo(0);
             await Assert.That(fx.MemoryIndexRequested).IsFalse();
             await Assert.That(stdoutWriter.ToString()).IsEqualTo("{}\n");
+            // Pins THIS guard specifically: the provider would also decline a zero budget, but only
+            // the orchestration guard returns before the store is built.
+            await Assert.That(storeBuilt).IsFalse();
         } finally {
             Console.SetOut(originalOut);
         }
@@ -1070,12 +1082,19 @@ public class CursorHookCommandTests {
     // rather than committing a spurious "completed" record.
     sealed class CancelAwareHandler : HttpMessageHandler {
         volatile bool _entered;
-        // Separates "reached and cancelled" from "never fetched at all" — otherwise identical here.
+        volatile bool _cancelled;
+        // Separate "never fetched at all", "fetched and abandoned", and "fetched and cancelled".
         public bool Entered => _entered;
+        public bool Cancelled => _cancelled;
 
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct) {
             _entered = true;
-            await Task.Delay(Timeout.InfiniteTimeSpan, ct);
+            try {
+                await Task.Delay(Timeout.InfiniteTimeSpan, ct);
+            } catch (OperationCanceledException) {
+                _cancelled = true;
+                throw;
+            }
             return new HttpResponseMessage(HttpStatusCode.OK);
         }
     }
