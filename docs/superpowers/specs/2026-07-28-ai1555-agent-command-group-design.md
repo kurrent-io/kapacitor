@@ -104,8 +104,10 @@ An unknown subcommand prints usage to stderr and exits 1. `kcap agent --help` re
 | `Stop = 8` | client → daemon | `Text` = agent id, or empty = all agents |
 | `StopAck = 70` | daemon → client | `Text` = stopped ids, one per line |
 
-An unknown agent id still comes back as the existing `Error` frame. `LocalControlServer` gets a
-`case FrameType.Stop:` alongside Spawn/Attach/List/Restart.
+An id that is not in the live agent map falls through to `TryStopByPidRecordAsync` — the same
+survivor-reaping fallback the server-origin path uses, and the reason decision 5 sends full ids
+verbatim. Only when that also finds nothing does the daemon reply with the existing `Error`
+frame. `LocalControlServer` gets a `case FrameType.Stop:` alongside Spawn/Attach/List/Restart.
 
 **Version skew.** A *running older* daemon that receives frame type 8 throws
 `InvalidDataException` inside `FrameCodec.Decode` — before `LocalControlServer`'s switch is
