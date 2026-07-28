@@ -70,6 +70,45 @@ public class SequencedCommandProcessorTests {
         await Assert.That(h.Rejects.Single().Reason).IsEqualTo(CommandRejectedReason.InternalError); // synth emitted the reject
     }
 
+    // Settlement-admission design (§3.2 F): a FRESH terminal command is now acked proactively at the
+    // end of the lane, so the server retires its one-nonterminal slot within milliseconds of execution
+    // completing instead of waiting for the 60s status-report reconcile. Exactly one ack per settle.
+    [Test] public async Task Fresh_terminal_command_emits_exactly_one_proactive_processed_ack() {
+        var h = new Harness(); await using var p = h.P();
+        await p.SubmitAsync(h.Launch(1), () => Task.FromResult(new CommandOutcome(CommandOutcomeKind.LaunchExecuted, "a", "sess")));
+
+        var ack = h.Acks.Single();                                               // exactly one, no duplicate involved
+        await Assert.That(ack.Epoch).IsEqualTo("e1");
+        await Assert.That(ack.Seq).IsEqualTo(1L);
+        await Assert.That(ack.CommandId).IsEqualTo("cmd1");
+        await Assert.That(ack.State).IsEqualTo(CommandAckState.Processed);
+        await Assert.That(ack.OutcomeKind).IsEqualTo(CommandOutcomeKind.LaunchExecuted);
+        await Assert.That(ack.CurrentState).IsEqualTo(AgentLiveness.Live);
+        await Assert.That(ack.AgentId).IsEqualTo("a");
+        await Assert.That(ack.SessionId).IsEqualTo("sess");
+        await Assert.That(ack.RejectionReason).IsNull();
+    }
+
+    // The proactive ack is best-effort telemetry to the server: a send failure (server gone /
+    // reconnecting) must never fault the lane, block the watermark, or lose the Done completion.
+    [Test] public async Task Proactive_ack_send_failure_does_not_fault_the_lane() {
+        var acks = 0;
+        await using var p = new SequencedCommandProcessor(
+            "e1", _ => AgentLiveness.Live,
+            _ => { acks++; throw new InvalidOperationException("server gone"); },
+            _ => Task.CompletedTask, NullLogger.Instance);
+
+        await p.SubmitAsync(new SequencedItem(SequencedKind.Launch, "e1", 1, "cmd1", "a1"),
+            () => Task.FromResult(new CommandOutcome(CommandOutcomeKind.LaunchExecuted)));
+        await Assert.That(p.LastProcessedSeq).IsEqualTo(1L);   // settled despite the throwing ack
+
+        // The lane is still alive: a second command still executes and advances.
+        await p.SubmitAsync(new SequencedItem(SequencedKind.Launch, "e1", 2, "cmd2", "a2"),
+            () => Task.FromResult(new CommandOutcome(CommandOutcomeKind.LaunchExecuted)));
+        await Assert.That(p.LastProcessedSeq).IsEqualTo(2L);
+        await Assert.That(acks).IsEqualTo(2);
+    }
+
     [Test] public async Task Duplicate_of_a_processed_command_is_acked_with_outcome_and_live_state_not_reexecuted() {
         var h = new Harness(); await using var p = h.P();
         var runs = 0;
@@ -77,7 +116,12 @@ public class SequencedCommandProcessorTests {
         await p.SubmitAsync(item, () => { runs++; return Task.FromResult(new CommandOutcome(CommandOutcomeKind.LaunchExecuted, "a", "sess")); });
         await p.SubmitAsync(item, () => { runs++; return Task.FromResult(new CommandOutcome(CommandOutcomeKind.LaunchExecuted)); });
         await Assert.That(runs).IsEqualTo(1);                                    // no re-execution
-        var ack = h.Acks.Single();
+
+        // Two acks now: [0] the proactive settle ack from the lane, [1] the duplicate-replay ack.
+        // Both are Processed and carry the SAME cached outcome — the duplicate path is unchanged.
+        await Assert.That(h.Acks).HasCount().EqualTo(2);
+        await Assert.That(h.Acks[0].State).IsEqualTo(CommandAckState.Processed);  // proactive
+        var ack = h.Acks[1];                                                      // duplicate replay
         await Assert.That(ack.State).IsEqualTo(CommandAckState.Processed);
         await Assert.That(ack.OutcomeKind).IsEqualTo(CommandOutcomeKind.LaunchExecuted);
         await Assert.That(ack.CurrentState).IsEqualTo(AgentLiveness.Live);       // read live at ack time
@@ -110,9 +154,11 @@ public class SequencedCommandProcessorTests {
         await p.SubmitAsync(h.Launch(1), () => Task.FromResult(new CommandOutcome(CommandOutcomeKind.LaunchExecuted)));
         p.AckPrefix(new AckProcessedPrefix("e1", 5));   // over-ahead (> LastProcessedSeq) -> ignored
         p.AckPrefix(new AckProcessedPrefix("WRONG", 1));// stale epoch -> ignored
-        // A duplicate is still answerable (identity not evicted):
+        await Assert.That(h.Acks.Count).IsEqualTo(1);   // only the proactive settle ack so far
+        // A duplicate is still answerable (identity not evicted) — that adds the SECOND ack:
         await p.SubmitAsync(h.Launch(1), () => Task.FromResult(new CommandOutcome(CommandOutcomeKind.LaunchExecuted)));
-        await Assert.That(h.Acks.Count).IsEqualTo(1);
+        await Assert.That(h.Acks.Count).IsEqualTo(2);
+        await Assert.That(h.Acks[1].State).IsEqualTo(CommandAckState.Processed);
     }
 
     [Test] public async Task Non_next_future_seq_is_rejected_wrong_next_without_accepting() {
@@ -141,7 +187,12 @@ public class SequencedCommandProcessorTests {
         await p.SubmitAsync(item, () => Task.FromResult(
             new CommandOutcome(CommandOutcomeKind.LaunchRejected, "a", RejectReason: CommandRejectedReason.DaemonCapacity)));
         await p.SubmitAsync(item, () => Task.FromResult(new CommandOutcome(CommandOutcomeKind.LaunchExecuted)));
-        var ack = h.Acks.Single();
+
+        // [0] is the proactive settle ack, [1] the duplicate replay — BOTH must carry the wire token,
+        // since they are built from the same cached outcome by the one shared builder.
+        await Assert.That(h.Acks).HasCount().EqualTo(2);
+        await Assert.That(h.Acks[0].RejectionReason).IsEqualTo("daemon_capacity");   // proactive
+        var ack = h.Acks[1];                                                          // duplicate replay
         await Assert.That(ack.State).IsEqualTo(CommandAckState.Processed);
         await Assert.That(ack.OutcomeKind).IsEqualTo(CommandOutcomeKind.LaunchRejected);
         await Assert.That(ack.RejectionReason).IsEqualTo("daemon_capacity");
@@ -153,7 +204,9 @@ public class SequencedCommandProcessorTests {
         await p.SubmitAsync(item, () => Task.FromResult(
             new CommandOutcome(CommandOutcomeKind.LaunchRejected, "a", RejectReason: CommandRejectedReason.Semantic)));
         await p.SubmitAsync(item, () => Task.FromResult(new CommandOutcome(CommandOutcomeKind.LaunchExecuted)));
-        await Assert.That(h.Acks.Single().RejectionReason).IsEqualTo("semantic");
+        await Assert.That(h.Acks).HasCount().EqualTo(2);                              // proactive + duplicate replay
+        await Assert.That(h.Acks[0].RejectionReason).IsEqualTo("semantic");
+        await Assert.That(h.Acks[1].RejectionReason).IsEqualTo("semantic");
     }
 
     // A duplicate of a non-rejected (executed) command has no cached reject reason -> null RejectionReason.
@@ -162,6 +215,8 @@ public class SequencedCommandProcessorTests {
         var item = h.Launch(1);
         await p.SubmitAsync(item, () => Task.FromResult(new CommandOutcome(CommandOutcomeKind.LaunchExecuted, "a", "sess")));
         await p.SubmitAsync(item, () => Task.FromResult(new CommandOutcome(CommandOutcomeKind.LaunchExecuted)));
-        await Assert.That(h.Acks.Single().RejectionReason).IsNull();
+        await Assert.That(h.Acks).HasCount().EqualTo(2);                              // proactive + duplicate replay
+        await Assert.That(h.Acks[0].RejectionReason).IsNull();
+        await Assert.That(h.Acks[1].RejectionReason).IsNull();
     }
 }

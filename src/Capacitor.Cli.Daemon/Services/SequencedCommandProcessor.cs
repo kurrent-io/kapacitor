@@ -90,20 +90,44 @@ internal sealed class SequencedCommandProcessor : IAsyncDisposable {
             return Task.CompletedTask;
         }
 
-        if (!existing.Processed) {
+        if (!existing.Processed)
             _ = _sendAck(new CommandAck(_epoch, item.Seq, item.CommandId, CommandAckState.Accepted));
-        } else {
-            // CurrentState is read LIVE at ack time (immutable execution fact vs current liveness);
-            // the readLiveness delegate reads the daemon lifecycle collections with confirmed-death precedence.
-            var live = _readLiveness(existing.Outcome.AgentId ?? item.AgentId);
-            // Phase B2-b (sequenced-settlement design §5.5): carry the CACHED rejection reason so a
-            // retransmitted duplicate of a rejected launch is still distinguishable as daemon_capacity
-            // (requeue) vs semantic (fail) — the exact lost-rejection case the identity cache answers.
-            var reason = existing.Outcome.RejectReason is { } r ? RejectReasonWireToken(r) : null;
-            _ = _sendAck(new CommandAck(_epoch, item.Seq, item.CommandId, CommandAckState.Processed,
-                existing.Outcome.Kind, live, existing.Outcome.AgentId ?? item.AgentId, existing.Outcome.SessionId, reason));
-        }
+        else
+            _ = _sendAck(BuildProcessedAckLocked(item, existing.Outcome));
+
         return Task.CompletedTask;
+    }
+
+    /// <summary>The terminal <c>Processed</c> ack for a settled command — the ONE builder shared by the
+    /// duplicate-replay path above and the proactive settle ack at the end of <see cref="RunLaneAsync"/>
+    /// (settlement-admission design §3.2 F), so a retransmission can never disagree with the proactive
+    /// send about outcome/agent/session/rejection-reason. <c>CurrentState</c> is read LIVE at ack time
+    /// (immutable execution fact vs current liveness); the readLiveness delegate reads the daemon
+    /// lifecycle collections with confirmed-death precedence. The CACHED rejection reason rides along so
+    /// a rejected launch stays distinguishable as daemon_capacity (requeue) vs semantic (fail) — the
+    /// exact lost-rejection case the identity cache answers. Called under <c>_lock</c>.</summary>
+    CommandAck BuildProcessedAckLocked(SequencedItem item, CommandOutcome outcome) {
+        var live   = _readLiveness(outcome.AgentId ?? item.AgentId);
+        var reason = outcome.RejectReason is { } r ? RejectReasonWireToken(r) : null;
+
+        return new CommandAck(_epoch, item.Seq, item.CommandId, CommandAckState.Processed,
+            outcome.Kind, live, outcome.AgentId ?? item.AgentId, outcome.SessionId, reason);
+    }
+
+    /// <summary>Settlement-admission design (§3.2 F): fire the proactive terminal ack without ever
+    /// letting the send fault the lane. The ack is best-effort telemetry — a disconnected/reconnecting
+    /// server just falls back to the periodic status-report reconcile — so a synchronous throw AND a
+    /// faulted task are both swallowed at Debug. Never awaited: the lane must not block on the wire.</summary>
+    void SendProactiveAck(CommandAck ack) {
+        try {
+            var send = _sendAck(ack);
+            if (send is { IsCompletedSuccessfully: false })
+                _ = send.ContinueWith(
+                    t => _logger.LogDebug(t.Exception, "SequencedCommandProcessor: proactive ack for seq {Seq} failed to send", ack.Seq),
+                    CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted, TaskScheduler.Default);
+        } catch (Exception ex) {
+            _logger.LogDebug(ex, "SequencedCommandProcessor: proactive ack for seq {Seq} threw", ack.Seq);
+        }
     }
 
     /// <summary>Phase B2-b (sequenced-settlement design §5.5): the wire token a cached
@@ -168,11 +192,25 @@ internal sealed class SequencedCommandProcessor : IAsyncDisposable {
             if (outcome.Kind == CommandOutcomeKind.LaunchRejected && outcome.RejectReason is { } r)
                 _ = _sendRejected(new CommandRejected(li.Item.Epoch, li.Item.Seq, li.Item.CommandId, r, li.Item.AgentId));
 
+            CommandAck proactiveAck;
             lock (_lock) {
                 if (_cache.TryGetValue(li.Item.Seq, out var e)) { e.Processed = true; e.Outcome = outcome; }
                 AdvanceWatermarkLocked(); // contiguous terminal prefix — serial lane => normally == prior + 1,
                                           // but shared with SynthesizeErrorLocked so a race can never regress it
+                // Settlement-admission design (§3.2 F): built INSIDE the lock, immediately after the entry
+                // is marked Processed and the watermark advanced, so the ack can never advertise a terminal
+                // outcome the cache has not yet recorded (a duplicate arriving between the two would then
+                // answer differently). The send itself happens outside the lock.
+                proactiveAck = BuildProcessedAckLocked(li.Item, outcome);
             }
+
+            // Settlement-admission design (§3.2 F): a FRESH terminal command is acked proactively, not just
+            // a retransmitted duplicate. Without this the server only learns the command settled when its
+            // next periodic status report reconciles (up to one report interval later), and its
+            // one-nonterminal-command-per-daemon invariant rejects any concurrent launch for that whole
+            // window. The server's ack handler is idempotent against replays and unknown/stale acks, so
+            // older servers accept it too and simply retire the slot earlier.
+            SendProactiveAck(proactiveAck);
             li.Done.SetResult();
         }
     }
