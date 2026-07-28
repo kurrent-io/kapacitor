@@ -33,6 +33,82 @@ public class McpFlowsServerSettlementRetryTests {
         }
     };
 
+    // === SettlementBackoff: the delay schedule shared by the POST and poll lanes ===
+    //
+    // Pinned formula (settlement-admission design §3.2 G): for retry n (1-based),
+    // raw(n) = min(10s, 500ms · 2^(n−1)) with the cap applied BEFORE jitter, then equal jitter
+    // delay(n) = raw(n)/2 + U(0, raw(n)/2), then truncation to the caller's remaining budget.
+
+    [Test]
+    [Arguments(1, 500)]
+    [Arguments(2, 1_000)]
+    [Arguments(3, 2_000)]
+    [Arguments(4, 4_000)]
+    [Arguments(5, 8_000)]
+    [Arguments(6, 10_000)]   // capped
+    [Arguments(7, 10_000)]
+    [Arguments(40, 10_000)]  // a far-out ordinal must not overflow past the cap
+    public async Task Backoff_raw_is_exponential_and_capped_at_ten_seconds(int retry, int expectedMs) {
+        await Assert.That(SettlementBackoff.Raw(retry)).IsEqualTo(TimeSpan.FromMilliseconds(expectedMs));
+    }
+
+    [Test]
+    public async Task Backoff_applies_the_cap_before_jitter() {
+        // Cap-before-jitter: a saturated ordinal jitters around the 10s CAP (5–10s), never around
+        // the uncapped exponential (which at retry 8 would be 64s → 32–64s if capped afterwards).
+        var low  = new SettlementBackoff(() => 0.0);
+        var high = new SettlementBackoff(() => 0.999);
+
+        await Assert.That(low.Delay(8, TimeSpan.FromHours(1))).IsEqualTo(TimeSpan.FromSeconds(5));
+        await Assert.That(high.Delay(8, TimeSpan.FromHours(1))).IsLessThanOrEqualTo(TimeSpan.FromSeconds(10));
+        await Assert.That(high.Delay(8, TimeSpan.FromHours(1))).IsGreaterThan(TimeSpan.FromSeconds(9));
+    }
+
+    [Test]
+    public async Task Backoff_equal_jitter_puts_the_first_retry_in_250_to_500ms_and_steady_state_in_5_to_10s() {
+        var backoff = SettlementBackoff.Seeded(4242);
+        var budget  = TimeSpan.FromHours(1);   // never the binding constraint here
+
+        for (var i = 0; i < 50; i++) {
+            var first = backoff.Delay(1, budget);
+            await Assert.That(first).IsGreaterThanOrEqualTo(TimeSpan.FromMilliseconds(250));
+            await Assert.That(first).IsLessThanOrEqualTo(TimeSpan.FromMilliseconds(500));
+
+            var steady = backoff.Delay(9, budget);
+            await Assert.That(steady).IsGreaterThanOrEqualTo(TimeSpan.FromSeconds(5));
+            await Assert.That(steady).IsLessThanOrEqualTo(TimeSpan.FromSeconds(10));
+        }
+    }
+
+    [Test]
+    public async Task Backoff_truncates_to_the_remaining_budget() {
+        var backoff = new SettlementBackoff(() => 0.999);   // ~the top of the jitter band
+
+        // Budget shorter than the jittered delay -> exactly the budget, never past it.
+        await Assert.That(backoff.Delay(6, TimeSpan.FromSeconds(2))).IsEqualTo(TimeSpan.FromSeconds(2));
+        // Budget longer -> untruncated.
+        await Assert.That(backoff.Delay(1, TimeSpan.FromHours(1))).IsLessThanOrEqualTo(TimeSpan.FromMilliseconds(500));
+        // Exhausted / negative budget -> zero, never a negative delay.
+        await Assert.That(backoff.Delay(3, TimeSpan.Zero)).IsEqualTo(TimeSpan.Zero);
+        await Assert.That(backoff.Delay(3, TimeSpan.FromSeconds(-5))).IsEqualTo(TimeSpan.Zero);
+    }
+
+    [Test]
+    public async Task Backoff_is_deterministic_for_a_seeded_rng() {
+        // Two independently seeded instances produce the identical sequence — which is what lets the
+        // lane tests below assert the exact schedule the code under test will request.
+        var a = SettlementBackoff.Seeded(99);
+        var b = SettlementBackoff.Seeded(99);
+        var budget = TimeSpan.FromHours(1);
+
+        var fromA = Enumerable.Range(1, 8).Select(n => a.Delay(n, budget)).ToArray();
+        var fromB = Enumerable.Range(1, 8).Select(n => b.Delay(n, budget)).ToArray();
+
+        await Assert.That(fromA).IsEquivalentTo(fromB);
+        // ...and it is a real schedule, not a constant.
+        await Assert.That(fromA.Distinct().Count()).IsGreaterThan(1);
+    }
+
     // === TryParseCodedError: pure decode, shared by FormatFlowStartError and the retry gate ===
 
     [Test]
@@ -277,6 +353,54 @@ public class McpFlowsServerSettlementRetryTests {
 
         await Assert.That(server.LogEntries.Count(
             e => e.RequestMessage.Path == $"/api/flows/{flowRunId}")).IsEqualTo(2);
+    }
+
+    /// <summary>The poll lane shares the POST lane's backoff SCHEDULE but keeps its own budget: it
+    /// retries a settlement-busy GET on the exact same jittered ladder, bounded by the 8-minute
+    /// PollCap rather than by an attempt count, and never overshoots that cap.</summary>
+    [Test]
+    public async Task Poll_lane_settlement_retries_follow_the_shared_schedule_and_stop_at_poll_cap() {
+        const string flowRunId = "flow-poll-schedule";
+        const int    seed      = 7;
+        var          pollCap   = TimeSpan.FromMinutes(8);
+
+        using var server = WireMockServer.Start();
+        server.Given(Request.Create().WithPath("/api/flows/review/start/v2").UsingPost())
+              .RespondWith(Response.Create().WithStatusCode(200).WithHeader("Content-Type", "application/json")
+                  .WithBody($$"""{"flow_run_id":"{{flowRunId}}","round_id":"r1","round_number":1,"status":"running","result_kind":null,"result_text":null}"""));
+        // Never settles — the lane must keep retrying until its own cap, not until an attempt count.
+        server.Given(Request.Create().WithPath($"/api/flows/{flowRunId}").UsingGet())
+              .RespondWith(Response.Create().WithStatusCode(409).WithBody(
+                  """{"error":"flow_settlement_busy","message":"still settling"}"""));
+        using var client = new HttpClient();
+
+        var clock = Clock();
+        var response = await McpFlowsServer.HandleToolCallAsync(
+            JsonNode.Parse("1")!, ToolCallRequest("start_review_flow", StartArguments()),
+            client, server.Url!, cwd: "/tmp/cwd", repoRoot: null, repoInfo: null,
+            clock: clock, backoff: SettlementBackoff.Seeded(seed));
+
+        // The independently-seeded oracle: the same ladder, each rung truncated to what is left of
+        // the cap. This is the schedule the lane must have requested, rung for rung.
+        var expected  = new List<TimeSpan>();
+        var oracle    = SettlementBackoff.Seeded(seed);
+        var remaining = pollCap;
+        for (var n = 1; remaining > TimeSpan.Zero; n++) {
+            var next = oracle.Delay(n, remaining);
+            if (next <= TimeSpan.Zero) break;
+            expected.Add(next);
+            remaining -= next;
+        }
+
+        await Assert.That(clock.Delays).IsEquivalentTo(expected);
+        await Assert.That(clock.Delays.Count).IsGreaterThan(3);            // genuinely past the old 3-attempt bound
+        await Assert.That(clock.Elapsed).IsLessThanOrEqualTo(pollCap);     // never overshoots PollCap
+
+        // It stopped by exhausting the cap, not by turning the retryable busy into a hard error.
+        var result = JsonNode.Parse(response)!.AsObject();
+        await Assert.That(result["result"]!["isError"]).IsNull();
+        var text = result["result"]!["content"]![0]!["text"]!.GetValue<string>();
+        await Assert.That(text).Contains("Flow still running");
     }
 
     [Test]

@@ -124,9 +124,11 @@ static class McpFlowsServer {
             string              cwd,
             string?             repoRoot,
             RepositoryPayload?  repoInfo,
-            FlowRetryClock?     clock = null
+            FlowRetryClock?     clock = null,
+            SettlementBackoff?  backoff = null
         ) {
-        clock ??= FlowRetryClock.System;
+        clock   ??= FlowRetryClock.System;
+        backoff ??= SettlementBackoff.Default;
         var paramsNode = request["params"]?.AsObject();
         var toolName   = paramsNode?["name"]?.GetValue<string>();
         var arguments  = paramsNode?["arguments"]?.AsObject();
@@ -220,7 +222,7 @@ static class McpFlowsServer {
                 if (!postResponse.IsSuccessStatusCode)
                     return BuildToolResult(id, FormatFlowStartError((int)postResponse.StatusCode, postBody, wasDynamicStart), isError: true);
 
-                var (payload, isError) = await ResolveRoundResultAsync(client, apiRoot, postBody, toolName, wasDynamicStart, clock);
+                var (payload, isError) = await ResolveRoundResultAsync(client, apiRoot, postBody, toolName, wasDynamicStart, clock, backoff);
                 return BuildToolResult(id, payload, isError);
             }
 
@@ -797,7 +799,7 @@ static class McpFlowsServer {
     /// <paramref name="toolName"/> is the tool that initiated the round (one of
     /// start_review_flow/submit_review_round/start_flow/send_to_participant) — threaded through
     /// so the graceful-cap timeout message can point back at the matching status tool.</summary>
-    static async Task<PollResult> ResolveRoundResultAsync(HttpClient client, string apiRoot, string postBody, string toolName, bool wasDynamicStart, FlowRetryClock clock) {
+    static async Task<PollResult> ResolveRoundResultAsync(HttpClient client, string apiRoot, string postBody, string toolName, bool wasDynamicStart, FlowRetryClock clock, SettlementBackoff backoff) {
         if (TryFormatRoundlessStart(postBody, out var roundlessPendingIds) is { } roundless) {
             if (roundlessPendingIds.Count > 0 &&
                 JsonNode.Parse(postBody)?.AsObject()?["flow_run_id"]?.GetValue<string>() is { } roundlessRunId)
@@ -822,7 +824,7 @@ static class McpFlowsServer {
             return new(formatted, false);
         }
 
-        return await PollUntilTerminalAsync(client, apiRoot, flowRunId, roundNum.Value, toolName, wasDynamicStart, clock);
+        return await PollUntilTerminalAsync(client, apiRoot, flowRunId, roundNum.Value, toolName, wasDynamicStart, clock, backoff);
     }
 
     /// <summary>Tool family that started the round determines which status tool the graceful-cap
@@ -832,7 +834,7 @@ static class McpFlowsServer {
     static string StatusToolNameFor(string toolName) =>
         toolName is "start_review_flow" or "submit_review_round" ? "get_review_flow_status" : "get_flow_status";
 
-    static async Task<PollResult> PollUntilTerminalAsync(HttpClient client, string apiRoot, string flowRunId, int roundNumber, string toolName, bool wasDynamicStart, FlowRetryClock clock) {
+    static async Task<PollResult> PollUntilTerminalAsync(HttpClient client, string apiRoot, string flowRunId, int roundNumber, string toolName, bool wasDynamicStart, FlowRetryClock clock, SettlementBackoff backoff) {
         var url                   = $"{apiRoot}/api/flows/{Uri.EscapeDataString(flowRunId)}";
         var pollStartedAt         = clock.UtcNow;
         var deadline              = pollStartedAt + PollCap;
@@ -840,8 +842,9 @@ static class McpFlowsServer {
         var notFoundGraceDeadline = pollStartedAt + NotFoundGrace;
         var consecutiveTransient  = 0;
         var lastTransientError    = (string?)null;
-        // Separate, short-backoff budget for the two settlement-layer coded 409s — distinct from
-        // the network/5xx transient budget above, which uses the full 3s PollInterval.
+        // Retry ordinal for the two settlement-layer coded 409s, feeding the shared jittered backoff
+        // schedule — distinct from the network/5xx transient budget above, which uses the full 3s
+        // PollInterval. Reset on any successful GET, so a late busy starts the schedule over.
         var settlementRetriesUsed = 0;
 
         while (clock.UtcNow < deadline) {
@@ -876,14 +879,15 @@ static class McpFlowsServer {
                     var errBody = await resp.Content.ReadAsStringAsync();
 
                     // The same two settlement-layer coded 409s can also surface on the poll GET
-                    // (the server-side backstop mapping an escaped settlement conflict). Bounded,
-                    // short auto-retry before falling through to the immediate-fail path; every
-                    // other coded/uncoded 4xx is untouched.
+                    // (the server-side backstop mapping an escaped settlement conflict). This lane
+                    // shares the POST lane's jittered backoff SCHEDULE but keeps its own budget: the
+                    // retry is bounded by the loop's remaining PollCap, not by an attempt count, and
+                    // the policy delay is truncated so it can never overshoot that cap. Every other
+                    // coded/uncoded 4xx is untouched.
                     if (TryParseCodedError(errBody, out var code, out _) &&
-                            SettlementRetryableCodes.Contains(code!) &&
-                            settlementRetriesUsed < MaxSettlementRetries - 1) {
+                            SettlementRetryableCodes.Contains(code!)) {
                         settlementRetriesUsed++;
-                        await clock.DelayAsync(SettlementRetryDelay);
+                        await clock.DelayAsync(backoff.Delay(settlementRetriesUsed, deadline - clock.UtcNow));
                         continue;
                     }
 
