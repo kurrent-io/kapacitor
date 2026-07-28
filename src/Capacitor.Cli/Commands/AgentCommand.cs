@@ -29,6 +29,7 @@ internal static class AgentCommand {
         switch (sub) {
             case "start":  return await RunAsync(rest);
             case "ls":     return await ListAsync(rest);
+            case "stop":   return await StopAsync(rest);
             case "attach": return await AttachAsync(rest);
             default:
                 await Console.Error.WriteLineAsync($"kcap agent: unknown subcommand '{sub}'");
@@ -79,6 +80,102 @@ internal static class AgentCommand {
         if (agentId is null) return 1;
 
         return await LocalAgentClient.RunAsync(sock, new LocalFrame(FrameType.Attach) { Text = agentId }, CancellationToken.None);
+    }
+
+    static async Task<int> StopAsync(string[] args) {
+        var all = args.Contains("--all");
+        var yes = args.Contains("--yes") || args.Contains("-y");
+
+        if (!all && (args.Length == 0 || args[0].StartsWith('-'))) {
+            await Console.Error.WriteLineAsync("usage: kcap agent stop <agent-id> [--daemon <name>]");
+            await Console.Error.WriteLineAsync("       kcap agent stop --all [-y] [--daemon <name>]");
+
+            return 1;
+        }
+
+        var sock = LocalSocketPaths.Socket(ResolveName(NameFrom(args)));
+
+        if (!File.Exists(sock)) {
+            await Console.Error.WriteLineAsync($"kcap: no daemon socket at {sock}");
+
+            return 1;
+        }
+
+        string target;
+
+        if (all) {
+            var agents = await FetchAgentsAsync(sock);
+            if (agents is null) return 1;
+
+            if (agents.Count == 0) {
+                Console.WriteLine("No agents.");
+
+                return 0;
+            }
+
+            Console.WriteLine($"Found {agents.Count} agents:");
+            foreach (var a in agents) Console.WriteLine($"  • {a.Id}  {a.Repo}");
+
+            if (!yes) {
+                await Console.Out.WriteAsync($"Stop all {agents.Count}? [y/N] ");
+                var reply = await Console.In.ReadLineAsync();
+
+                if (!string.Equals(reply?.Trim(), "y", StringComparison.OrdinalIgnoreCase)) {
+                    await Console.Out.WriteLineAsync("Cancelled.");
+
+                    return 0;
+                }
+            }
+
+            target = "";
+        } else {
+            var resolved = await ResolveOrReportAsync(sock, args[0]);
+            if (resolved is null) return 1;
+
+            target = resolved;
+        }
+
+        return await SendStopAsync(sock, target);
+    }
+
+    static async Task<int> SendStopAsync(string sock, string agentId) {
+        try {
+            using var socket = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
+            await socket.ConnectAsync(new UnixDomainSocketEndPoint(sock));
+            await using var stream = new NetworkStream(socket, ownsSocket: false);
+
+            await FrameCodec.WriteAsync(stream, LocalFrame.Stop(agentId), default);
+            var resp = await FrameCodec.ReadAsync(stream, default);
+
+            switch (resp?.Type) {
+                case FrameType.StopAck:
+                    // Explicit type: `[]` has no natural type, so `var` would not compile here.
+                    string[] ids = resp.Text.Length == 0 ? [] : resp.Text.Split('\n');
+                    foreach (var id in ids) Console.WriteLine($"Stopped {id}.");
+                    if (ids.Length == 0) Console.WriteLine("No agents.");
+
+                    return 0;
+                case FrameType.Error:
+                    await Console.Error.WriteLineAsync($"kcap: {resp.Text}");
+
+                    return 1;
+                case null:
+                    // An older daemon can't decode frame type 8: it faults before its frame
+                    // switch and closes without replying, so we see a clean EOF.
+                    await Console.Error.WriteLineAsync(
+                        "kcap: this daemon is too old for `agent stop` — restart it with `kcap daemon restart`");
+
+                    return 1;
+                default:
+                    await Console.Error.WriteLineAsync($"kcap: unexpected daemon response to stop ({resp.Type})");
+
+                    return 1;
+            }
+        } catch (Exception ex) when (ex is SocketException or IOException) {
+            await Console.Error.WriteLineAsync($"kcap: cannot reach daemon: {ex.Message}");
+
+            return 1;
+        }
     }
 
     /// <summary>Resolves an id or prefix, printing the reason and returning null on failure.</summary>
