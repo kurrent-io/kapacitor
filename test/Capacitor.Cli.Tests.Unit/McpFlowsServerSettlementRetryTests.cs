@@ -18,6 +18,11 @@ public class McpFlowsServerSettlementRetryTests {
     // the requested schedule is directly assertable (VirtualFlowRetryClock.Delays).
     static VirtualFlowRetryClock Clock() => new();
 
+    /// <summary>Unwraps the settled-response arm; fails loudly (cast) if the helper exhausted its
+    /// deadline, which is never the expectation at these call sites.</summary>
+    static HttpResponseMessage ResponseOf(McpFlowsServer.SettlementSendResult result) =>
+        ((McpFlowsServer.SettlementSendResult.Response)result).Value;
+
     static JsonObject StartArguments() => new() {
         ["kind"]         = "code-review",
         ["target_kind"]  = "pr",
@@ -151,14 +156,16 @@ public class McpFlowsServerSettlementRetryTests {
         using var client = new HttpClient();
 
         var clock = Clock();
-        using var response = await McpFlowsServer.SendWithSettlementRetryAsync(
-            client, c => c.PostAsync($"{server.Url}/start", null), clock);
+        using var response = ResponseOf(await McpFlowsServer.SendWithSettlementRetryAsync(
+            client, (c, ct) => c.PostAsync($"{server.Url}/start", null, ct), clock, SettlementBackoff.Seeded(11)));
         var delays = clock.Delays;
 
         await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.OK);
         await Assert.That(server.LogEntries.Count()).IsEqualTo(2);
         await Assert.That(delays).HasCount().EqualTo(1);
-        await Assert.That(delays[0]).IsEqualTo(TimeSpan.FromMilliseconds(200));
+        // Equal jitter over the 500ms base: the first retry always lands in [250ms, 500ms].
+        await Assert.That(delays[0]).IsGreaterThanOrEqualTo(TimeSpan.FromMilliseconds(250));
+        await Assert.That(delays[0]).IsLessThanOrEqualTo(TimeSpan.FromMilliseconds(500));
     }
 
     [Test]
@@ -176,34 +183,39 @@ public class McpFlowsServerSettlementRetryTests {
         using var client = new HttpClient();
 
         var clock = Clock();
-        using var response = await McpFlowsServer.SendWithSettlementRetryAsync(
-            client, c => c.PostAsync($"{server.Url}/start", null), clock);
+        using var response = ResponseOf(await McpFlowsServer.SendWithSettlementRetryAsync(
+            client, (c, ct) => c.PostAsync($"{server.Url}/start", null, ct), clock, SettlementBackoff.Seeded(11)));
         var delays = clock.Delays;
 
         await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.OK);
         await Assert.That(server.LogEntries.Count()).IsEqualTo(2);
     }
 
+    /// <summary>A server that never settles exhausts the ELAPSED deadline, not an attempt count:
+    /// the helper keeps retrying on the shared schedule for the full 3 minutes of virtual time and
+    /// then reports the last coded rejection it saw, with no live response attached.</summary>
     [Test]
-    public async Task Exhaustion_after_max_attempts_returns_final_failing_response() {
+    public async Task Exhaustion_of_the_elapsed_deadline_returns_the_last_coded_error() {
         using var server = WireMockServer.Start();
         server.Given(Request.Create().WithPath("/start").UsingPost())
               .RespondWith(Response.Create().WithStatusCode(409).WithBody(
                   """{"error":"flow_settlement_busy","message":"still racing"}"""));
         using var client = new HttpClient();
 
-        var clock = Clock();
-        using var response = await McpFlowsServer.SendWithSettlementRetryAsync(
-            client, c => c.PostAsync($"{server.Url}/start", null), clock);
-        var delays = clock.Delays;
+        var clock  = Clock();
+        var result = await McpFlowsServer.SendWithSettlementRetryAsync(
+            client, (c, ct) => c.PostAsync($"{server.Url}/start", null, ct), clock, SettlementBackoff.Seeded(11));
 
-        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.Conflict);
-        // 3 total attempts (bounded), 2 waits in between.
-        await Assert.That(server.LogEntries.Count()).IsEqualTo(3);
-        await Assert.That(delays).HasCount().EqualTo(2);
+        var exhausted = result as McpFlowsServer.SettlementSendResult.DeadlineExhausted;
+        await Assert.That(exhausted).IsNotNull();
+        await Assert.That(exhausted!.LastCode).IsEqualTo("flow_settlement_busy");
+        await Assert.That(exhausted.LastMessage).IsEqualTo("still racing");
+        await Assert.That(exhausted.Elapsed).IsEqualTo(McpFlowsServer.SettlementElapsedDeadline);
+        await Assert.That(exhausted.Attempts).IsEqualTo(server.LogEntries.Count());
 
-        var body = await response.Content.ReadAsStringAsync();
-        await Assert.That(body).Contains("flow_settlement_busy");
+        // Far past the old 3-attempt bound, and it never overshot the deadline.
+        await Assert.That(exhausted.Attempts).IsGreaterThan(10);
+        await Assert.That(clock.Elapsed).IsEqualTo(McpFlowsServer.SettlementElapsedDeadline);
     }
 
     [Test]
@@ -215,8 +227,8 @@ public class McpFlowsServerSettlementRetryTests {
         using var client = new HttpClient();
 
         var clock = Clock();
-        using var response = await McpFlowsServer.SendWithSettlementRetryAsync(
-            client, c => c.PostAsync($"{server.Url}/start", null), clock);
+        using var response = ResponseOf(await McpFlowsServer.SendWithSettlementRetryAsync(
+            client, (c, ct) => c.PostAsync($"{server.Url}/start", null, ct), clock, SettlementBackoff.Seeded(11)));
         var delays = clock.Delays;
 
         await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.Conflict);
@@ -232,13 +244,151 @@ public class McpFlowsServerSettlementRetryTests {
         using var client = new HttpClient();
 
         var clock = Clock();
-        using var response = await McpFlowsServer.SendWithSettlementRetryAsync(
-            client, c => c.PostAsync($"{server.Url}/start", null), clock);
+        using var response = ResponseOf(await McpFlowsServer.SendWithSettlementRetryAsync(
+            client, (c, ct) => c.PostAsync($"{server.Url}/start", null, ct), clock, SettlementBackoff.Seeded(11)));
         var delays = clock.Delays;
 
         await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.BadRequest);
         await Assert.That(server.LogEntries.Count()).IsEqualTo(1);
         await Assert.That(delays).IsEmpty();
+    }
+
+    // === Elapsed deadline: token plumbing, request duration, caller cancellation ===
+
+    /// <summary>A fake handler that lets a test observe (and react to) the token the helper actually
+    /// hands to <see cref="HttpClient"/>, and simulate a request that HOLDS server-side.</summary>
+    sealed class TokenObservingHandler(Func<CancellationToken, Task<HttpResponseMessage>> respond) : HttpMessageHandler {
+        public int Requests { get; private set; }
+        public List<CancellationToken> SeenTokens { get; } = [];
+
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct) {
+            Requests++;
+            SeenTokens.Add(ct);
+            return await respond(ct);
+        }
+    }
+
+    static HttpResponseMessage Busy() => new(HttpStatusCode.Conflict) {
+        Content = new StringContent("""{"error":"flow_settlement_busy","message":"holding"}""")
+    };
+
+    /// <summary>The deadline token must genuinely reach HttpClient — this is impossible to pass if the
+    /// helper creates a CTS but never threads it into the send. The handler holds the "request" past
+    /// the deadline on the virtual clock and then observes its own token already cancelled.</summary>
+    [Test]
+    public async Task Deadline_token_reaches_the_in_flight_post_and_cancels_it() {
+        var clock = Clock();
+
+        var handler = new TokenObservingHandler(ct => {
+            // The attempt holds server-side for longer than the whole elapsed budget.
+            clock.Advance(McpFlowsServer.SettlementElapsedDeadline + TimeSpan.FromSeconds(30));
+            ct.ThrowIfCancellationRequested();          // only possible if the token got through
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK));
+        });
+        using var client = new HttpClient(handler) { BaseAddress = new Uri("http://settlement.test") };
+
+        var result = await McpFlowsServer.SendWithSettlementRetryAsync(
+            client, (c, ct) => c.PostAsync("/start", null, ct), clock, SettlementBackoff.Seeded(5));
+
+        var exhausted = result as McpFlowsServer.SettlementSendResult.DeadlineExhausted;
+        await Assert.That(exhausted).IsNotNull();
+        await Assert.That(exhausted!.Attempts).IsEqualTo(1);
+        await Assert.That(handler.Requests).IsEqualTo(1);           // abandoned, not retried past the deadline
+        await Assert.That(handler.SeenTokens[0].CanBeCanceled).IsTrue();
+        await Assert.That(handler.SeenTokens[0].IsCancellationRequested).IsTrue();
+        // No coded body was ever read on this attempt, so there is nothing to report but the shape.
+        await Assert.That(exhausted.LastCode).IsNull();
+    }
+
+    /// <summary>The budget counts REQUEST DURATION, not just the sum of the backoff delays — each
+    /// attempt may itself hold on a server-side admission wait. Simulated 60s-holding busy responses
+    /// therefore exhaust in a handful of attempts, well below the 10-minute MCP tool timeout.</summary>
+    [Test]
+    public async Task Elapsed_deadline_counts_request_duration_not_just_delay_sum() {
+        var clock   = Clock();
+        var handler = new TokenObservingHandler(_ => {
+            clock.Advance(TimeSpan.FromSeconds(60));    // the server held this POST for a full admission wait
+            return Task.FromResult(Busy());
+        });
+        using var client = new HttpClient(handler) { BaseAddress = new Uri("http://settlement.test") };
+
+        var result = await McpFlowsServer.SendWithSettlementRetryAsync(
+            client, (c, ct) => c.PostAsync("/start", null, ct), clock, SettlementBackoff.Seeded(5));
+
+        var exhausted = result as McpFlowsServer.SettlementSendResult.DeadlineExhausted;
+        await Assert.That(exhausted).IsNotNull();
+        await Assert.That(exhausted!.LastCode).IsEqualTo("flow_settlement_busy");
+        // ~3 x 60s of held requests plus backoff — a delay-only budget would have allowed dozens.
+        await Assert.That(handler.Requests).IsLessThanOrEqualTo(4);
+        await Assert.That(clock.Elapsed).IsLessThanOrEqualTo(TimeSpan.FromMinutes(10));   // under MCP_TOOL_TIMEOUT
+        await Assert.That(clock.Elapsed).IsGreaterThanOrEqualTo(McpFlowsServer.SettlementElapsedDeadline);
+    }
+
+    /// <summary>Caller-token cancellation is NOT the helper's deadline: it rethrows untouched rather
+    /// than being laundered into a deadline-exhausted result.</summary>
+    [Test]
+    public async Task Caller_token_cancellation_rethrows_untouched() {
+        var clock = Clock();
+        using var caller = new CancellationTokenSource();
+
+        var handler = new TokenObservingHandler(ct => {
+            caller.Cancel();                            // the CALLER gives up mid-flight
+            ct.ThrowIfCancellationRequested();
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK));
+        });
+        using var client = new HttpClient(handler) { BaseAddress = new Uri("http://settlement.test") };
+
+        await Assert.That(async () => await McpFlowsServer.SendWithSettlementRetryAsync(
+                client, (c, ct) => c.PostAsync("/start", null, ct), clock, SettlementBackoff.Seeded(5), caller.Token))
+            .Throws<OperationCanceledException>();
+    }
+
+    /// <summary>New-CLI burst degradation: enough slow predecessors ahead of this launch to cross the
+    /// deadline yields the documented coded timeout tool result, not a fault and not a success.</summary>
+    [Test]
+    public async Task Burst_deeper_than_the_deadline_degrades_to_the_documented_coded_timeout() {
+        var clock = Clock();
+
+        // Every attempt lands behind a predecessor still settling, each holding ~50s server-side.
+        var handler = new TokenObservingHandler(_ => {
+            clock.Advance(TimeSpan.FromSeconds(50));
+            return Task.FromResult(Busy());
+        });
+        using var client = new HttpClient(handler) { BaseAddress = new Uri("http://settlement.test") };
+
+        var result = await McpFlowsServer.SendWithSettlementRetryAsync(
+            client, (c, ct) => c.PostAsync("/start", null, ct), clock, SettlementBackoff.Seeded(5));
+
+        var exhausted = result as McpFlowsServer.SettlementSendResult.DeadlineExhausted;
+        await Assert.That(exhausted).IsNotNull();
+
+        var text = McpFlowsServer.FormatSettlementDeadlineError(exhausted!);
+        await Assert.That(text).StartsWith("Error (flow_settlement_busy)");
+        await Assert.That(text).Contains("retryable");
+        await Assert.That(text).Contains($"{exhausted!.Attempts} attempts");
+    }
+
+    [Test]
+    [Arguments(0, "0s")]
+    [Arguments(45, "45s")]
+    [Arguments(150, "2m 30s")]
+    [Arguments(180, "3m")]
+    public async Task Deadline_error_renders_elapsed_compactly(int seconds, string expected) {
+        var text = McpFlowsServer.FormatSettlementDeadlineError(
+            new McpFlowsServer.SettlementSendResult.DeadlineExhausted("flow_settlement_busy", "busy", 4, TimeSpan.FromSeconds(seconds)));
+
+        await Assert.That(text).Contains($"over {expected}");
+    }
+
+    [Test]
+    public async Task Deadline_error_singularizes_a_single_attempt_and_omits_an_absent_server_message() {
+        var text = McpFlowsServer.FormatSettlementDeadlineError(
+            new McpFlowsServer.SettlementSendResult.DeadlineExhausted(null, null, 1, TimeSpan.FromMinutes(3)));
+
+        await Assert.That(text).Contains("1 attempt over 3m");
+        await Assert.That(text).DoesNotContain("Last server message");
+        // An attempt that never read a coded body still names the code this lane exists to absorb.
+        await Assert.That(text).StartsWith("Error (flow_settlement_busy)");
     }
 
     // === Wired into the start path via HandleToolCallAsync (full dispatch) ===
@@ -275,25 +425,39 @@ public class McpFlowsServerSettlementRetryTests {
             e => e.RequestMessage.Path == "/api/flows/review/start/v2")).IsEqualTo(2);
     }
 
+    /// <summary>The tool-boundary mapping: an exhausted elapsed deadline becomes a normal MCP tool
+    /// error result carrying the last coded rejection plus attempt count and elapsed time — never an
+    /// unhandled stdio fault, and never phrased as fatal (the busy IS retryable).</summary>
     [Test]
-    public async Task Start_review_flow_exhausts_settlement_retries_and_surfaces_the_coded_message() {
+    public async Task Start_review_flow_maps_an_exhausted_deadline_to_a_coded_tool_error() {
         using var server = WireMockServer.Start();
         server.Given(Request.Create().WithPath("/api/flows/review/start/v2").UsingPost())
               .RespondWith(Response.Create().WithStatusCode(409).WithBody(
                   """{"error":"flow_settlement_busy","message":"A concurrent settlement operation is racing this flow run."}"""));
         using var client = new HttpClient();
 
+        var clock = Clock();
         var response = await McpFlowsServer.HandleToolCallAsync(
             JsonNode.Parse("1")!, ToolCallRequest("start_review_flow", StartArguments()),
-            client, server.Url!, cwd: "/tmp/cwd", repoRoot: null, repoInfo: null);
+            client, server.Url!, cwd: "/tmp/cwd", repoRoot: null, repoInfo: null,
+            clock: clock, backoff: SettlementBackoff.Seeded(3));
 
         var result = JsonNode.Parse(response)!.AsObject();
         await Assert.That(result["result"]!["isError"]!.GetValue<bool>()).IsTrue();
-        var text = result["result"]!["content"]![0]!["text"]!.GetValue<string>();
-        await Assert.That(text).Contains("flow_settlement_busy");
 
-        await Assert.That(server.LogEntries.Count(
-            e => e.RequestMessage.Path == "/api/flows/review/start/v2")).IsEqualTo(3);
+        var text     = result["result"]!["content"]![0]!["text"]!.GetValue<string>();
+        var attempts = server.LogEntries.Count(e => e.RequestMessage.Path == "/api/flows/review/start/v2");
+
+        await Assert.That(text).Contains("flow_settlement_busy");
+        await Assert.That(text).Contains($"{attempts} attempts");
+        await Assert.That(text).Contains("over 3m");
+        await Assert.That(text).Contains("retryable");
+        // The server's own last message rides along, so the caller sees what it kept hitting.
+        await Assert.That(text).Contains("A concurrent settlement operation is racing this flow run.");
+
+        // It genuinely used the elapsed budget rather than a small attempt cap.
+        await Assert.That(attempts).IsGreaterThan(10);
+        await Assert.That(clock.Elapsed).IsEqualTo(McpFlowsServer.SettlementElapsedDeadline);
     }
 
     [Test]
