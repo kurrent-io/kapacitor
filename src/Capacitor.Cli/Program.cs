@@ -274,12 +274,8 @@ switch (command) {
     }
     case "daemon":
         return await DaemonCommands.HandleAsync(args);
-    case "run-agent":
-        return await RunAgentCommand.RunAsync(args[1..]);
-    case "attach":
-        return await RunAgentCommand.AttachAsync(args[1..]);
-    case "ls":
-        return await RunAgentCommand.ListAsync(args[1..]);
+    case "agent":
+        return await AgentCommand.HandleAsync(args);
     case "setup":
         return await SetupCommand.HandleAsync(args);
     case "plugin":

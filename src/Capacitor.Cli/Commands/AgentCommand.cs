@@ -7,16 +7,39 @@ using Capacitor.Cli.Local;
 namespace Capacitor.Cli.Commands;
 
 /// <summary>
-/// `kcap run-agent` / `attach` / `ls` — drive a daemon-hosted agent from the local
-/// terminal over the daemon's local control socket (local-attach Phase 1).
+/// `kcap agent start|ls|stop|attach` — drive daemon-hosted agents from the local
+/// terminal over the daemon's local control socket.
 /// </summary>
-internal static class RunAgentCommand {
-    public static async Task<int> RunAsync(string[] args) {
+internal static class AgentCommand {
+    internal static readonly string[] KnownSubcommands = ["start", "ls", "stop", "attach"];
+
+    /// <summary>Bare `kcap agent` lists agents; otherwise argv[1] is the subcommand.</summary>
+    // "Rest" (capitalized) is a compiler-reserved tuple element name; "rest" is not.
+    internal static (string Sub, string[] rest) SplitSubcommand(string[] args) =>
+        args.Length > 1 ? (args[1], args[2..]) : ("ls", []);
+
+    public static async Task<int> HandleAsync(string[] args) {
         if (NotSupportedOnWindows(out var rc)) return rc;
 
+        var (sub, rest) = SplitSubcommand(args);
+
+        switch (sub) {
+            case "start":  return await RunAsync(rest);
+            case "ls":     return await ListAsync(rest);
+            case "attach": return await AttachAsync(rest);
+            default:
+                await Console.Error.WriteLineAsync($"kcap agent: unknown subcommand '{sub}'");
+                await Console.Error.WriteLineAsync($"Usage: kcap agent <{string.Join('|', KnownSubcommands)}>");
+                await Console.Error.WriteLineAsync("Run `kcap agent --help` for details.");
+
+                return 1;
+        }
+    }
+
+    static async Task<int> RunAsync(string[] args) {
         var parsed = AgentStartArgs.Parse(args);
         if (parsed.Error is not null) {
-            await Console.Error.WriteLineAsync($"kcap run-agent: {parsed.Error}");
+            await Console.Error.WriteLineAsync($"kcap agent start: {parsed.Error}");
 
             return 1;
         }
@@ -34,11 +57,9 @@ internal static class RunAgentCommand {
             : await LocalAgentClient.RunAsync(sock, spawn, CancellationToken.None);
     }
 
-    public static async Task<int> AttachAsync(string[] args) {
-        if (NotSupportedOnWindows(out var rc)) return rc;
-
+    static async Task<int> AttachAsync(string[] args) {
         if (args.Length == 0 || args[0].StartsWith('-')) {
-            await Console.Error.WriteLineAsync("usage: kcap attach <agent-id> [--name <daemon>]");
+            await Console.Error.WriteLineAsync("usage: kcap agent attach <agent-id> [--daemon <name>]");
 
             return 1;
         }
@@ -55,9 +76,7 @@ internal static class RunAgentCommand {
         return await LocalAgentClient.RunAsync(sock, new LocalFrame(FrameType.Attach) { Text = agentId }, CancellationToken.None);
     }
 
-    public static async Task<int> ListAsync(string[] args) {
-        if (NotSupportedOnWindows(out var rc)) return rc;
-
+    static async Task<int> ListAsync(string[] args) {
         var sock = LocalSocketPaths.Socket(ResolveName(NameFrom(args)));
 
         if (!File.Exists(sock)) {
@@ -107,7 +126,7 @@ internal static class RunAgentCommand {
         switch (f?.Type) {
             case FrameType.Attached:
                 var (id, _) = FrameCodec.Attached(f);
-                Console.WriteLine($"Started agent {id} (detached). Attach with: kcap attach {id}");
+                Console.WriteLine($"Started agent {id} (detached). Attach with: kcap agent attach {id}");
 
                 return 0;
             case FrameType.Error:
@@ -160,7 +179,7 @@ internal static class RunAgentCommand {
     }
 
     static string? NameFrom(string[] args) {
-        var i = Array.IndexOf(args, "--name");
+        var i = Array.IndexOf(args, "--daemon");
 
         return i >= 0 && i + 1 < args.Length ? args[i + 1] : null;
     }
@@ -172,7 +191,7 @@ internal static class RunAgentCommand {
 
     static bool NotSupportedOnWindows(out int rc) {
         if (OperatingSystem.IsWindows()) {
-            Console.Error.WriteLine("kcap run-agent/attach/ls is not supported on Windows yet.");
+            Console.Error.WriteLine("kcap agent is not supported on Windows yet.");
             rc = 1;
 
             return true;
