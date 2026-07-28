@@ -442,6 +442,37 @@ public class SequencedCommandProcessorTests {
         await Assert.That(sendsUnderLock).IsEqualTo(0);
     }
 
+    // NOTE on the `settled` ordering in RunLaneAsync (set at the cache+watermark commit, before any
+    // notification): there is deliberately NO test for it, because none can fail. With both diagnostics
+    // in SendContained guarded, no post-commit path can escape into the outer catch, so the overwrite it
+    // prevents is currently unreachable. The ordering stays as defence-in-depth against a future
+    // unguarded call on that path -- it is free and it removes a latent way to replay a cached
+    // LaunchRejected as a contradictory InternalError -- but shipping a test that passes with or without
+    // it would be worse than none: it would claim coverage that is not there.
+
+    // The hub-side callers have no outer per-item catch, so a transport throw followed by a LOGGING
+    // throw used to escape SubmitAsync entirely. Both diagnostics inside SendContained are guarded now.
+    [Test] public async Task A_throwing_transport_and_a_throwing_logger_do_not_escape_the_hub_paths() {
+        await using var p = new SequencedCommandProcessor(
+            "e1", _ => AgentLiveness.Live,
+            _ => throw new InvalidOperationException("ack send blew up"),
+            _ => throw new InvalidOperationException("rejection send blew up"),
+            new ThrowingLogger());
+
+        // Stale epoch and a gap: two locked reject paths, both reached straight from SubmitAsync.
+        await p.SubmitAsync(new SequencedItem(SequencedKind.Launch, "other-epoch", 1, "c1", "a1"),
+            () => Task.FromResult(new CommandOutcome(CommandOutcomeKind.LaunchExecuted)));
+        await p.SubmitAsync(new SequencedItem(SequencedKind.Launch, "e1", 9, "c2", "a2"),
+            () => Task.FromResult(new CommandOutcome(CommandOutcomeKind.LaunchExecuted)));
+
+        // A real command, then its duplicate replay -- the processed-replay ack path.
+        var item = new SequencedItem(SequencedKind.Launch, "e1", 1, "c3", "a3");
+        await p.SubmitAsync(item, () => Task.FromResult(new CommandOutcome(CommandOutcomeKind.LaunchExecuted)));
+        await p.SubmitAsync(item, () => Task.FromResult(new CommandOutcome(CommandOutcomeKind.LaunchExecuted)));
+
+        await Assert.That(p.LastProcessedSeq).IsEqualTo(1L);
+    }
+
     // A duplicate of a non-rejected (executed) command has no cached reject reason -> null RejectionReason.
     [Test] public async Task Duplicate_of_an_executed_launch_has_no_rejection_reason() {
         var h = new Harness(); await using var p = h.P();

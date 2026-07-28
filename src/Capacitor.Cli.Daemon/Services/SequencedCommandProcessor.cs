@@ -214,11 +214,27 @@ internal sealed class SequencedCommandProcessor : IAsyncDisposable {
             var sent = send();
             if (sent is { IsCompletedSuccessfully: false })
                 _ = sent.ContinueWith(
-                    t => _logger.LogDebug(t.Exception, "SequencedCommandProcessor: {What} for seq {Seq} failed to send", what, seq),
+                    // Guarded: an unguarded LogDebug here would fault this DISCARDED continuation on a
+                    // throwing provider — recreating the very unobserved-task-failure this wrapper exists
+                    // to prevent, in the code meant to report it.
+                    t => LogQuietly(t.Exception, "{What} for seq {Seq} failed to send", what, seq),
                     CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted, TaskScheduler.Default);
         } catch (Exception ex) {
-            _logger.LogDebug(ex, "SequencedCommandProcessor: {What} for seq {Seq} threw", what, seq);
+            // Guarded for the same reason, and a sharper one: the hub-side callers (stale epoch, gap,
+            // duplicate collision, accepted/processed replay) have NO outer per-item catch, so a
+            // transport throw followed by a logging throw escaped straight into the hub.
+            LogQuietly(ex, "{What} for seq {Seq} threw", what, seq);
         }
+    }
+
+    /// <summary>Diagnostics that cannot themselves become the failure. Every logging call on a
+    /// best-effort path routes through here — a throwing <c>ILogger</c> provider is a supported input,
+    /// not a contract violation, and losing a Debug line is always preferable to losing the operation
+    /// it was describing.</summary>
+    void LogQuietly(Exception? error, string template, string what, long seq) {
+        try {
+            _logger.LogDebug(error, "SequencedCommandProcessor: " + template, what, seq);
+        } catch { /* deliberately empty — see summary */ }
     }
 
     void SynthesizeErrorLocked(SequencedItem item, out CommandRejected? rejection) {
@@ -290,6 +306,15 @@ internal sealed class SequencedCommandProcessor : IAsyncDisposable {
                                               // but shared with SynthesizeErrorLocked so a race can never regress it
                 }
 
+                // Settled the instant the commit succeeds, BEFORE any notification. Setting this after
+                // the sends meant a throw escaping SendRejectedContained (transport throws, then its own
+                // LogDebug throws) reached the outer catch with settled still false, which then
+                // OVERWROTE the real terminal outcome with InternalError — a LaunchRejected already
+                // cached and possibly announced as daemon_capacity would replay later as a
+                // contradictory internal_error. The cache is authoritative from here on; announcing it
+                // is strictly best-effort and must never be able to rewrite it.
+                settled = true;
+
                 // Both notifications happen AFTER the outcome is recorded, and both are contained. They
                 // used to run BEFORE it: a synchronous throw from _sendRejected then escaped the lane
                 // with the command still marked nonterminal — the settlement fact lost to a failure in
@@ -307,7 +332,6 @@ internal sealed class SequencedCommandProcessor : IAsyncDisposable {
                 //
                 // Built AFTER the cache entry is marked Processed (so the ack can never advertise an
                 // outcome the cache has not recorded) but OUTSIDE the lock — see BuildProcessedAck.
-                settled = true;
                 SendSettledAck(li.Item, outcome);
             } catch (Exception ex) {
                 // Deliberately swallow-and-continue. Every diagnostic here is itself guarded, because
