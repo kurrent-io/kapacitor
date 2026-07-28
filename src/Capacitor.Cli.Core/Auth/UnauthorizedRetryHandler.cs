@@ -16,7 +16,7 @@ namespace Capacitor.Cli.Core.Auth;
 /// <c>HttpClientExtensions.CreateAuthenticatedClientAsync</c>, and call sites that used to run
 /// their own retry loop on top of that client have had theirs removed.
 /// </summary>
-internal sealed class UnauthorizedRetryHandler(StoredTokens initial) : DelegatingHandler {
+internal sealed class UnauthorizedRetryHandler(StoredTokens initial, string targetBaseUrl) : DelegatingHandler {
     // Swapped as a whole reference, never mutated in place, so concurrent requests either see the
     // old token or the new one. Volatile because requests on a long-lived client run on many
     // threads and a refresh on one must become visible to the rest.
@@ -37,7 +37,7 @@ internal sealed class UnauthorizedRetryHandler(StoredTokens initial) : Delegatin
         // `applied` — not a re-read of _current — is what this request actually sent. A peer
         // request may have refreshed in the meantime, and attributing the rejection to its fresh
         // token would rotate a credential that was never rejected.
-        var refreshed = await TokenStore.ForceRefreshAsync(applied.AccessToken, cancellationToken);
+        var refreshed = await TokenStore.ForceRefreshAsync(applied.AccessToken, targetBaseUrl, cancellationToken);
 
         if (refreshed is null) return response; // Nothing better to try — surface the original 401.
 
@@ -51,8 +51,10 @@ internal sealed class UnauthorizedRetryHandler(StoredTokens initial) : Delegatin
         return await base.SendAsync(request, cancellationToken);
     }
 
-    // Buffered content re-serializes from its byte array on every send; a stream-backed body is
-    // consumed by the first attempt and cannot be replayed. StringContent and FormUrlEncodedContent
-    // both derive from ByteArrayContent, so this covers every body the CLI sends.
-    static bool CanResend(HttpRequestMessage request) => request.Content is null or ByteArrayContent;
+    // Content that re-serializes on every send can be replayed; a stream-backed body is consumed
+    // by the first attempt and cannot. ByteArrayContent (and its StringContent /
+    // FormUrlEncodedContent subclasses) re-reads its buffer, and JsonContent re-serializes its
+    // value — omitting JsonContent would silently leave the JSON-posting call sites unprotected.
+    static bool CanResend(HttpRequestMessage request) =>
+        request.Content is null or ByteArrayContent or System.Net.Http.Json.JsonContent;
 }

@@ -68,7 +68,7 @@ internal sealed class SpoolDrainLoop {
             var (client, status) = await _clientFactory();
 
             using (client) {
-                if (status is AuthStatus.Expired or AuthStatus.NotAuthenticated) {
+                if (status is AuthStatus.Expired or AuthStatus.NotAuthenticated or AuthStatus.WrongServer) {
                     _logger.LogDebug("Spool-drain tick: auth lapsed — skipping this pass");
 
                     return;

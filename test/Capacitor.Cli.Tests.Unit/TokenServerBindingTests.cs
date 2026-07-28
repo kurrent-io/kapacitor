@@ -214,6 +214,47 @@ public class TokenServerBindingTests {
         await Assert.That(await TokenStore.ForceRefreshAsync("anything")).IsNull();
     }
 
+    [Test]
+    public async Task Force_refresh_refuses_to_adopt_a_peer_token_for_a_different_server() {
+        // The peer that replaced our rejected token may have logged into a DIFFERENT server. The
+        // dedup rule alone would hand that token back, and the caller would send it to the server
+        // that just rejected us.
+        await TokenStore.SaveAsync("default",
+            Tokens(serverUrl: OtherServer, username: "peer") with { AccessToken = "peer-token" });
+
+        var adopted = await TokenStore.ForceRefreshAsync("stale-rejected-token", Server);
+
+        await Assert.That(adopted).IsNull();
+    }
+
+    [Test]
+    public async Task Force_refresh_adopts_a_peer_token_bound_to_the_same_server() {
+        await TokenStore.SaveAsync("default",
+            Tokens(serverUrl: Server, username: "peer") with { AccessToken = "peer-token" });
+
+        var adopted = await TokenStore.ForceRefreshAsync("stale-rejected-token", Server);
+
+        await Assert.That(adopted?.AccessToken).IsEqualTo("peer-token");
+    }
+
+    [Test]
+    public async Task Accessor_rejects_a_token_swapped_to_another_server_after_the_first_read() {
+        // Models a concurrent login/repoint landing between the accessor's snapshot read and its
+        // load-and-refresh read: checking only the first snapshot would let the replacement through.
+        await TokenStore.SaveAsync("default", Tokens(serverUrl: null, username: "unbound"));
+
+        var resolution = await TokenStore.GetValidTokensForServerAsync(Server);
+        await Assert.That(resolution.Status).IsEqualTo(AuthStatus.Ok);
+
+        // Now the stored token is bound elsewhere — the next resolution must refuse it.
+        await TokenStore.SaveAsync("default", Tokens(serverUrl: OtherServer, username: "swapped"));
+
+        var after = await TokenStore.GetValidTokensForServerAsync(Server);
+
+        await Assert.That(after.Status).IsEqualTo(AuthStatus.WrongServer);
+        await Assert.That(after.Tokens).IsNull();
+    }
+
     // ── Round-trip ───────────────────────────────────────────────────────────
 
     [Test]

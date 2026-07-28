@@ -78,13 +78,13 @@ public static class HttpClientExtensions {
         // A forced refresh is only meaningful for a token we already hold and that the server
         // just rejected; the binding check below still gates whether it may be used at all.
         if (rejectedAccessToken is not null) {
-            await TokenStore.ForceRefreshAsync(rejectedAccessToken, ct);
+            await TokenStore.ForceRefreshAsync(rejectedAccessToken, baseUrl, ct);
         }
 
         var resolution = await TokenStore.GetValidTokensForServerAsync(baseUrl, ct);
 
         if (resolution is { Status: AuthStatus.Ok, Tokens: not null }) {
-            var client = NewClient(autoRetryUnauthorized ? new UnauthorizedRetryHandler(resolution.Tokens) : null);
+            var client = NewClient(autoRetryUnauthorized ? new UnauthorizedRetryHandler(resolution.Tokens, baseUrl) : null);
             client.DefaultRequestHeaders.Authorization = new("Bearer", resolution.Tokens.AccessToken);
 
             return (client, AuthStatus.Ok, resolution);

@@ -47,11 +47,12 @@ public static class WhoamiCommand {
             return 0;
         }
 
-        // ONE snapshot for everything below. The probe deliberately does not refresh, so the
-        // expiry printed here is always the expiry of the token that was probed — otherwise a
-        // refresh between the two could print one token's details and test another's.
-        var resolution = await TokenStore.GetValidTokensForServerAsync(baseUrl);
-        var snapshot   = resolution.Tokens ?? await TokenStore.LoadAsync();
+        // ONE raw snapshot for everything below — deliberately NOT the refresh-aware accessor.
+        // Diagnosing your auth must not mutate it: routing this through a refresh could rotate a
+        // WorkOS credential (single-use refresh token) as a side effect of merely running whoami,
+        // and would let the expiry printed here describe a different token than the one probed.
+        var profile  = await TokenStore.ResolveProfileNameAsync();
+        var snapshot = await TokenStore.LoadAsync();
 
         if (snapshot is null) {
             Console.Error.WriteLine("Not authenticated. Run `kcap login`.");
@@ -61,16 +62,16 @@ public static class WhoamiCommand {
 
         await Console.Out.WriteLineAsync($"Username: {snapshot.GitHubUsername}");
         await Console.Out.WriteLineAsync($"Provider: {snapshot.Provider}");
-        await Console.Out.WriteLineAsync($"Profile:  {resolution.ProfileName}");
+        await Console.Out.WriteLineAsync($"Profile:  {profile}");
         await Console.Out.WriteLineAsync($"Expires:  {snapshot.ExpiresAt:u}");
         await Console.Out.WriteLineAsync($"Server:   {baseUrl}");
         await Console.Out.WriteLineAsync($"Expired:  {(snapshot.IsExpired ? "yes" : "no")}");
 
         // A token minted elsewhere can never be accepted here, and no refresh can change that —
         // say so instead of spending a request to be told 401.
-        if (resolution.Status == AuthStatus.WrongServer) {
+        if (snapshot.ServerUrl is not null && !ServerIdentity.SameServer(snapshot.ServerUrl, baseUrl)) {
             await Console.Out.WriteLineAsync(
-                $"Server:   token was issued by {resolution.IssuedServerUrl} — run 'kcap login'");
+                $"Server:   token was issued by {snapshot.ServerUrl} — run 'kcap login'");
 
             return 1;
         }

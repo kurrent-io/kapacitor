@@ -279,6 +279,13 @@ public static class TokenStore {
     // An explicit --server-url / KCAP_URL override resolves no profile name at all (the resolver
     // returns null there), which correctly falls through to the on-disk active profile — the
     // server-binding check is what protects that path.
+    /// <summary>
+    /// The profile whose token file this process reads — exposed for diagnostics that need to
+    /// report it without triggering a load or refresh.
+    /// </summary>
+    public static Task<string> ResolveProfileNameAsync(CancellationToken ct = default) =>
+        ResolveActiveProfileAsync(ct);
+
     static async Task<string> ResolveActiveProfileAsync(CancellationToken ct = default) {
         if (AppConfig.ResolvedProfile?.ProfileName is { Length: > 0 } resolved) return resolved;
 
@@ -304,16 +311,30 @@ public static class TokenStore {
             return new(null, AuthStatus.NotAuthenticated, null, profile);
         }
 
-        if (snapshot.ServerUrl is not null && !ServerIdentity.SameServer(snapshot.ServerUrl, targetBaseUrl)) {
+        if (!BoundToTarget(snapshot, targetBaseUrl)) {
             return new(null, AuthStatus.WrongServer, snapshot.ServerUrl, profile);
         }
 
         var valid = await GetValidTokensAsync();
 
-        return valid is not null
+        if (valid is null) {
+            return new(null, AuthStatus.Expired, snapshot.ServerUrl, profile);
+        }
+
+        // Re-check: the load/refresh above re-reads storage, so a concurrent login or profile
+        // repoint could have replaced the token we vetted with one for a different server.
+        // Checking only the first snapshot would let that replacement through.
+        return BoundToTarget(valid, targetBaseUrl)
             ? new(valid, AuthStatus.Ok, valid.ServerUrl, profile)
-            : new(null, AuthStatus.Expired, snapshot.ServerUrl, profile);
+            : new(null, AuthStatus.WrongServer, valid.ServerUrl, profile);
     }
+
+    /// <summary>
+    /// Whether <paramref name="tokens"/> may be presented to <paramref name="targetBaseUrl"/>.
+    /// An unbound (pre-upgrade) token is permitted — there is nothing to contradict.
+    /// </summary>
+    static bool BoundToTarget(StoredTokens tokens, string targetBaseUrl) =>
+        tokens.ServerUrl is null || ServerIdentity.SameServer(tokens.ServerUrl, targetBaseUrl);
 
     public static async Task<StoredTokens?> GetValidTokensAsync() {
         var tokens = await LoadAsync();
@@ -355,8 +376,14 @@ public static class TokenStore {
     /// rotate a credential that was never rejected — and for WorkOS, whose refresh token is
     /// single-use, that is a real cost, not just extra traffic.
     /// </summary>
+    /// <param name="expectedServerUrl">
+    /// The server the caller is about to retry against. The lock may hand back a token a PEER
+    /// process persisted rather than one we rotated, and that peer could have logged into a
+    /// different server — so the adopted token is binding-checked before it is returned. Callers
+    /// that have no target (there are none today) may pass null to skip the check.
+    /// </param>
     public static async Task<StoredTokens?> ForceRefreshAsync(
-            string rejectedAccessToken, CancellationToken ct = default) {
+            string rejectedAccessToken, string? expectedServerUrl = null, CancellationToken ct = default) {
         var profile = await ResolveActiveProfileAsync(ct);
         var tokens = await LoadWithLegacyFallbackAsync(profile, ct);
         if (tokens is null) return null;
@@ -369,12 +396,16 @@ public static class TokenStore {
         };
         if (tokens.Provider is not (AuthProvider.WorkOS or AuthProvider.GitHubApp)) return null;
 
-        return await RefreshWithCrossProcessLockAsync(
+        var refreshed = await RefreshWithCrossProcessLockAsync(
             profile,
             tokens,
             refresh,
             needsRefresh: t => string.Equals(t.AccessToken, rejectedAccessToken, StringComparison.Ordinal),
             cancellationToken: ct);
+
+        if (refreshed is null || expectedServerUrl is null) return refreshed;
+
+        return BoundToTarget(refreshed, expectedServerUrl) ? refreshed : null;
     }
 
     // The decision the daemon's proactive-refresh tick makes each time it wakes. Kept a

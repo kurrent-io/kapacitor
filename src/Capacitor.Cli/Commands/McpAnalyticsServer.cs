@@ -149,8 +149,8 @@ static class McpAnalyticsServer {
 
         try {
             using var httpResponse = toolName switch {
-                "get_analytics_schema" => await SendWithRefreshRetryAsync(client, c => c.GetAsync($"{baseUrl}/api/analytics/schema")),
-                "query_analytics"      => await SendWithRefreshRetryAsync(client, c => c.PostAsync($"{baseUrl}/api/analytics/query", ToJsonContent(BuildQueryBody(arguments, cwdRepoHash)))),
+                "get_analytics_schema" => await SendWithRefreshRetryAsync(client, baseUrl, c => c.GetAsync($"{baseUrl}/api/analytics/schema")),
+                "query_analytics"      => await SendWithRefreshRetryAsync(client, baseUrl, c => c.PostAsync($"{baseUrl}/api/analytics/query", ToJsonContent(BuildQueryBody(arguments, cwdRepoHash)))),
                 _                      => throw new ArgumentException($"Unknown tool: {toolName}")
             };
 
@@ -237,7 +237,7 @@ static class McpAnalyticsServer {
         }
     }
 
-    static async Task<HttpResponseMessage> SendWithRefreshRetryAsync(HttpClient client, Func<HttpClient, Task<HttpResponseMessage>> send) {
+    static async Task<HttpResponseMessage> SendWithRefreshRetryAsync(HttpClient client, string baseUrl, Func<HttpClient, Task<HttpResponseMessage>> send) {
         var response = await send(client);
 
         if (response.StatusCode != HttpStatusCode.Unauthorized) return response;
@@ -253,8 +253,9 @@ static class McpAnalyticsServer {
         // A failed rotation must not be worse than no rotation: fall back to whatever is stored so
         // the pre-existing "re-read and resend once" recovery still happens.
         var refreshed = rejected is null
-            ? await TokenStore.GetValidTokensAsync()
-            : await TokenStore.ForceRefreshAsync(rejected) ?? await TokenStore.GetValidTokensAsync();
+            ? (await TokenStore.GetValidTokensForServerAsync(baseUrl)).Tokens
+            : await TokenStore.ForceRefreshAsync(rejected, baseUrl)
+              ?? (await TokenStore.GetValidTokensForServerAsync(baseUrl)).Tokens;
 
         if (refreshed is null) return response; // genuinely not logged in; keep the original 401
 

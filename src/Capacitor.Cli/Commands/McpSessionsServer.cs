@@ -143,11 +143,11 @@ static class McpSessionsServer {
 
         try {
             using var httpResponse = toolName switch {
-                "search_sessions"        => await SendWithRefreshRetryAsync(client, c => c.GetAsync(BuildSearchUrl(baseUrl, arguments, cwdRepoHash))),
-                "get_session_summary"    => await SendWithRefreshRetryAsync(client, c => c.GetAsync(BuildSummaryUrl(baseUrl, arguments))),
-                "get_session_transcript" => await SendWithRefreshRetryAsync(client, c => c.GetAsync(BuildTranscriptUrl(baseUrl, arguments))),
-                "get_turn"               => await SendWithRefreshRetryAsync(client, c => c.GetAsync(BuildTurnDetailUrl(baseUrl, arguments))),
-                "list_turns"             => await SendWithRefreshRetryAsync(client, c => c.GetAsync(BuildTurnsUrl(baseUrl, arguments))),
+                "search_sessions"        => await SendWithRefreshRetryAsync(client, baseUrl, c => c.GetAsync(BuildSearchUrl(baseUrl, arguments, cwdRepoHash))),
+                "get_session_summary"    => await SendWithRefreshRetryAsync(client, baseUrl, c => c.GetAsync(BuildSummaryUrl(baseUrl, arguments))),
+                "get_session_transcript" => await SendWithRefreshRetryAsync(client, baseUrl, c => c.GetAsync(BuildTranscriptUrl(baseUrl, arguments))),
+                "get_turn"               => await SendWithRefreshRetryAsync(client, baseUrl, c => c.GetAsync(BuildTurnDetailUrl(baseUrl, arguments))),
+                "list_turns"             => await SendWithRefreshRetryAsync(client, baseUrl, c => c.GetAsync(BuildTurnsUrl(baseUrl, arguments))),
                 _                        => throw new ArgumentException($"Unknown tool: {toolName}")
             };
 
@@ -182,7 +182,7 @@ static class McpSessionsServer {
     /// or refresh-token expired), the original 401 is returned and the caller surfaces the
     /// friendly "Not logged in" message.
     /// </summary>
-    static async Task<HttpResponseMessage> SendWithRefreshRetryAsync(HttpClient client, Func<HttpClient, Task<HttpResponseMessage>> send) {
+    static async Task<HttpResponseMessage> SendWithRefreshRetryAsync(HttpClient client, string baseUrl, Func<HttpClient, Task<HttpResponseMessage>> send) {
         var response = await send(client);
 
         if (response.StatusCode != HttpStatusCode.Unauthorized) return response;
@@ -198,8 +198,9 @@ static class McpSessionsServer {
         // A failed rotation must not be worse than no rotation: fall back to whatever is stored so
         // the pre-existing "re-read and resend once" recovery still happens.
         var refreshed = rejected is null
-            ? await TokenStore.GetValidTokensAsync()
-            : await TokenStore.ForceRefreshAsync(rejected) ?? await TokenStore.GetValidTokensAsync();
+            ? (await TokenStore.GetValidTokensForServerAsync(baseUrl)).Tokens
+            : await TokenStore.ForceRefreshAsync(rejected, baseUrl)
+              ?? (await TokenStore.GetValidTokensForServerAsync(baseUrl)).Tokens;
 
         if (refreshed is null) return response; // genuinely not logged in; keep the original 401
 

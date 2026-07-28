@@ -127,8 +127,8 @@ static class McpWorkItemsServer {
 
         try {
             using var httpResponse = toolName switch {
-                "declare_work_item"      => await SendWithRefreshRetryAsync(client, c => c.PostAsync($"{baseUrl}/api/work-items/declare", ToJsonContent(BuildDeclareBody(arguments)))),
-                "get_session_work_items" => await SendWithRefreshRetryAsync(client, c => c.GetAsync(BuildSessionUrl(baseUrl, arguments))),
+                "declare_work_item"      => await SendWithRefreshRetryAsync(client, baseUrl, c => c.PostAsync($"{baseUrl}/api/work-items/declare", ToJsonContent(BuildDeclareBody(arguments)))),
+                "get_session_work_items" => await SendWithRefreshRetryAsync(client, baseUrl, c => c.GetAsync(BuildSessionUrl(baseUrl, arguments))),
                 _                        => throw new ArgumentException($"Unknown tool: {toolName}")
             };
 
@@ -160,7 +160,7 @@ static class McpWorkItemsServer {
     /// or refresh-token expired), the original 401 is returned and the caller surfaces the
     /// friendly "Not logged in" message.
     /// </summary>
-    static async Task<HttpResponseMessage> SendWithRefreshRetryAsync(HttpClient client, Func<HttpClient, Task<HttpResponseMessage>> send) {
+    static async Task<HttpResponseMessage> SendWithRefreshRetryAsync(HttpClient client, string baseUrl, Func<HttpClient, Task<HttpResponseMessage>> send) {
         var response = await send(client);
 
         if (response.StatusCode != HttpStatusCode.Unauthorized) return response;
@@ -176,8 +176,9 @@ static class McpWorkItemsServer {
         // A failed rotation must not be worse than no rotation: fall back to whatever is stored so
         // the pre-existing "re-read and resend once" recovery still happens.
         var refreshed = rejected is null
-            ? await TokenStore.GetValidTokensAsync()
-            : await TokenStore.ForceRefreshAsync(rejected) ?? await TokenStore.GetValidTokensAsync();
+            ? (await TokenStore.GetValidTokensForServerAsync(baseUrl)).Tokens
+            : await TokenStore.ForceRefreshAsync(rejected, baseUrl)
+              ?? (await TokenStore.GetValidTokensForServerAsync(baseUrl)).Tokens;
 
         if (refreshed is null) return response; // genuinely not logged in; keep the original 401
 

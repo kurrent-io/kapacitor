@@ -134,6 +134,37 @@ public class UnauthorizedRetryHandlerTests {
     }
 
     [Test]
+    public async Task A_json_body_is_replayed_on_the_retry() {
+        // JsonContent re-serializes its value on every send, so it IS replayable. Excluding it
+        // would silently leave every JSON-posting call site without 401 recovery.
+        await TokenStore.SaveAsync("default", Token("peer-refreshed"));
+
+        var transport = new RecordingHandler(HttpStatusCode.Unauthorized, HttpStatusCode.OK);
+        using var client = Client(transport, Token("original"));
+
+        var response = await client.PostAsync("https://kcap.example.com/api/thing",
+            System.Net.Http.Json.JsonContent.Create(new { hello = "world" }));
+
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.OK);
+        await Assert.That(transport.SentTokens).IsEquivalentTo(["original", "peer-refreshed"]);
+    }
+
+    [Test]
+    public async Task A_peer_token_for_a_different_server_is_never_adopted() {
+        // The handler is pinned to one server; a peer login elsewhere must not be picked up and
+        // sent to it.
+        await TokenStore.SaveAsync("default", Token("peer-elsewhere") with { ServerUrl = "http://127.0.0.1:9" });
+
+        var transport = new RecordingHandler(HttpStatusCode.Unauthorized, HttpStatusCode.OK);
+        using var client = Client(transport, Token("original"));
+
+        var response = await client.GetAsync("https://kcap.example.com/api/thing");
+
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.Unauthorized);
+        await Assert.That(transport.SentTokens).IsEquivalentTo(["original"]);
+    }
+
+    [Test]
     public async Task A_non_replayable_body_is_not_retried() {
         // Resending a consumed stream would send an empty or corrupt body; surfacing the 401 is
         // the honest outcome.
@@ -170,7 +201,7 @@ public class UnauthorizedRetryHandlerTests {
     // ── Helpers ──────────────────────────────────────────────────────────────
 
     static HttpClient Client(RecordingHandler transport, StoredTokens initial) {
-        var retry = new UnauthorizedRetryHandler(initial) { InnerHandler = transport };
+        var retry = new UnauthorizedRetryHandler(initial, "https://kcap.example.com") { InnerHandler = transport };
 
         return new(retry);
     }

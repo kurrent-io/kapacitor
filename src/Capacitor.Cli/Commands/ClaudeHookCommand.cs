@@ -307,7 +307,7 @@ public static class ClaudeHookCommand {
         // Auth lapsed: do not POST (server would 401) and do not drain (a 401 would Drop the
         // spool backlog). Exit cleanly (0) so Claude shows no per-turn error banner; nudge once on
         // session-start via a systemMessage (shown to the user, not injected into the model context).
-        if (authStatus is AuthStatus.Expired or AuthStatus.NotAuthenticated) {
+        if (authStatus is AuthStatus.Expired or AuthStatus.NotAuthenticated or AuthStatus.WrongServer) {
             if (command == "session-start") {
                 var notice = new JsonObject {
                     ["systemMessage"] = authStatus == AuthStatus.Expired

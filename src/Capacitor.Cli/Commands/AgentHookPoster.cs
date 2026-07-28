@@ -45,7 +45,11 @@ internal enum HookPostOutcome {
 /// </summary>
 internal static class AgentHookPoster {
     /// <summary>Auth has genuinely lapsed → any POST would 401. <c>Ok</c> and <c>NoAuthRequired</c> are usable.</summary>
-    public static bool IsAuthLapsed(AuthStatus status) => status is AuthStatus.Expired or AuthStatus.NotAuthenticated;
+    // Anything that isn't a usable client is a lapse. WrongServer especially: the client carries no
+    // bearer, so posting anyway earns a 401 that the spool would classify as permanent and DROP —
+    // discarding lifecycle/transcript data over a fixable profile mismatch.
+    public static bool IsAuthLapsed(AuthStatus status) =>
+        status is AuthStatus.Expired or AuthStatus.NotAuthenticated or AuthStatus.WrongServer;
 
     /// <summary>
     /// Builds an auth-aware client for <paramref name="baseUrl"/> and POSTs <paramref name="body"/>

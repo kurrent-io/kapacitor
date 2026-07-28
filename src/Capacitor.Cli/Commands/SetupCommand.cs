@@ -132,6 +132,14 @@ public static class SetupCommand {
             var discovered = await RunDiscoveryAsync(args, forceDevice);
             if (discovered is null) return 1;
             (serverUrl, preAuthToken, provider, loginComplete) = discovered.Value;
+
+            // Discovery activates the tenant you picked, so the profile captured before it ran is
+            // now stale. Step 2 must save the token under the profile setup will actually
+            // configure, or the token lands on the old profile and the new one has none.
+            var afterDiscovery = await AppConfig.LoadProfileConfig();
+            activeProfile = string.IsNullOrWhiteSpace(afterDiscovery.ActiveProfile)
+                ? "default"
+                : afterDiscovery.ActiveProfile;
         }
 
         await Console.Out.WriteLineAsync();
@@ -844,6 +852,15 @@ public static class SetupCommand {
             var tokens = await TokenStore.LoadAsync(profile);
             if (tokens is null || tokens.IsExpired) {
                 Debug(tokens is null ? "skipped — no stored token" : "skipped — token expired");
+
+                return;
+            }
+
+            // Re-running setup to point an authenticated profile at a different server would
+            // otherwise send the previous server's bearer to the new one. Checked inline rather
+            // than through the resolving accessor to keep this path refresh-free and time-bound.
+            if (tokens.ServerUrl is not null && !ServerIdentity.SameServer(tokens.ServerUrl, serverUrl)) {
+                Debug($"skipped — stored token belongs to {tokens.ServerUrl}");
 
                 return;
             }

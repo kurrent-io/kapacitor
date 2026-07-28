@@ -166,13 +166,13 @@ static class McpFlowsServer {
 
                 var sendResult = toolName switch {
                     "start_review_flow"   => wasModelStart
-                        ? new SettlementSendResult.Response(await SendWithRefreshRetryAsync(client, (c, ct) => StartFlowAsync(c, apiRoot, arguments, cwd, repoRoot, repoInfo, kindArgName: "kind", ct: ct)))
-                        : await SendWithSettlementRetryAsync(client, (c, ct) => StartFlowAsync(c, apiRoot, arguments, cwd, repoRoot, repoInfo, kindArgName: "kind", ct: ct), clock, backoff),
+                        ? new SettlementSendResult.Response(await SendWithRefreshRetryAsync(client, apiRoot, (c, ct) => StartFlowAsync(c, apiRoot, arguments, cwd, repoRoot, repoInfo, kindArgName: "kind", ct: ct)))
+                        : await SendWithSettlementRetryAsync(client, apiRoot, (c, ct) => StartFlowAsync(c, apiRoot, arguments, cwd, repoRoot, repoInfo, kindArgName: "kind", ct: ct), clock, backoff),
                     "start_flow"          => wasModelStart
-                        ? new SettlementSendResult.Response(await SendWithRefreshRetryAsync(client, (c, ct) => StartFlowAsync(c, apiRoot, arguments, cwd, repoRoot, repoInfo, kindArgName: "definition_id", ct: ct)))
-                        : await SendWithSettlementRetryAsync(client, (c, ct) => StartFlowAsync(c, apiRoot, arguments, cwd, repoRoot, repoInfo, kindArgName: "definition_id", ct: ct), clock, backoff),
-                    "submit_review_round" => await SendWithSettlementRetryAsync(client, (c, ct) => SubmitRoundAsync(c, apiRoot, arguments, contextArgName: "context", participant: null, async: true, ct: ct), clock, backoff),
-                    _                     => await SendWithSettlementRetryAsync(client, (c, ct) => SubmitRoundAsync(c, apiRoot, arguments, contextArgName: "message", participant: GetRequiredArg(arguments, "participant"), async: ParseAsyncArg(arguments), ct: ct), clock, backoff)
+                        ? new SettlementSendResult.Response(await SendWithRefreshRetryAsync(client, apiRoot, (c, ct) => StartFlowAsync(c, apiRoot, arguments, cwd, repoRoot, repoInfo, kindArgName: "definition_id", ct: ct)))
+                        : await SendWithSettlementRetryAsync(client, apiRoot, (c, ct) => StartFlowAsync(c, apiRoot, arguments, cwd, repoRoot, repoInfo, kindArgName: "definition_id", ct: ct), clock, backoff),
+                    "submit_review_round" => await SendWithSettlementRetryAsync(client, apiRoot, (c, ct) => SubmitRoundAsync(c, apiRoot, arguments, contextArgName: "context", participant: null, async: true, ct: ct), clock, backoff),
+                    _                     => await SendWithSettlementRetryAsync(client, apiRoot, (c, ct) => SubmitRoundAsync(c, apiRoot, arguments, contextArgName: "message", participant: GetRequiredArg(arguments, "participant"), async: ParseAsyncArg(arguments), ct: ct), clock, backoff)
                 };
 
                 // Settlement-admission design (§3.2 G): the elapsed deadline is mapped HERE, at the
@@ -237,8 +237,8 @@ static class McpFlowsServer {
             }
 
             using var httpResponse = toolName switch {
-                "get_review_flow_status" or "get_flow_status" => await SendWithRefreshRetryAsync(client, (c, ct) => c.GetAsync(BuildFlowUrl(apiRoot, arguments), ct)),
-                "close_review_flow"      or "close_flow"      => await SendWithRefreshRetryAsync(client, (c, ct) => c.PostAsync(BuildFlowUrl(apiRoot, arguments) + "/close", null, ct)),
+                "get_review_flow_status" or "get_flow_status" => await SendWithRefreshRetryAsync(client, apiRoot, (c, ct) => c.GetAsync(BuildFlowUrl(apiRoot, arguments), ct)),
+                "close_review_flow"      or "close_flow"      => await SendWithRefreshRetryAsync(client, apiRoot, (c, ct) => c.PostAsync(BuildFlowUrl(apiRoot, arguments) + "/close", null, ct)),
                 _                                             => throw new ArgumentException($"Unknown tool: {toolName}")
             };
 
@@ -291,7 +291,8 @@ static class McpFlowsServer {
     /// friendly "Not logged in" message.
     /// </summary>
     static async Task<HttpResponseMessage> SendWithRefreshRetryAsync(
-            HttpClient client, Func<HttpClient, CancellationToken, Task<HttpResponseMessage>> send, CancellationToken ct = default
+            HttpClient client, string baseUrl, Func<HttpClient, CancellationToken, Task<HttpResponseMessage>> send,
+            CancellationToken ct = default
         ) {
         var response = await send(client, ct);
 
@@ -308,8 +309,9 @@ static class McpFlowsServer {
         // A failed rotation must not be worse than no rotation: fall back to whatever is stored so
         // the pre-existing "re-read and resend once" recovery still happens.
         var refreshed = rejected is null
-            ? await TokenStore.GetValidTokensAsync()
-            : await TokenStore.ForceRefreshAsync(rejected, ct) ?? await TokenStore.GetValidTokensAsync();
+            ? (await TokenStore.GetValidTokensForServerAsync(baseUrl, ct)).Tokens
+            : await TokenStore.ForceRefreshAsync(rejected, baseUrl, ct)
+              ?? (await TokenStore.GetValidTokensForServerAsync(baseUrl, ct)).Tokens;
 
         if (refreshed is null) return response; // genuinely not logged in; keep the original 401
 
@@ -397,6 +399,7 @@ static class McpFlowsServer {
     /// </summary>
     internal static async Task<SettlementSendResult> SendWithSettlementRetryAsync(
             HttpClient                                                    client,
+            string                                                        apiRoot,
             Func<HttpClient, CancellationToken, Task<HttpResponseMessage>> send,
             FlowRetryClock                                                clock,
             SettlementBackoff                                             backoff,
@@ -418,7 +421,7 @@ static class McpFlowsServer {
 
             HttpResponseMessage response;
             try {
-                response = await SendWithRefreshRetryAsync(client, send, scope.Token);
+                response = await SendWithRefreshRetryAsync(client, apiRoot, send, scope.Token);
             } catch (OperationCanceledException) when (scope.DeadlineFired && !callerToken.IsCancellationRequested) {
                 // OUR deadline cut an in-flight attempt short — that is an exhausted budget, not a
                 // failure to report. Caller cancellation deliberately falls through and rethrows.
@@ -984,7 +987,7 @@ static class McpFlowsServer {
             using var getCts = clock.CreateTimeoutSource(PerGetTimeout);
             HttpResponseMessage resp;
             try {
-                resp = await SendWithRefreshRetryAsync(client, (c, ct) => c.GetAsync(url, ct), getCts.Token);
+                resp = await SendWithRefreshRetryAsync(client, apiRoot, (c, ct) => c.GetAsync(url, ct), getCts.Token);
             } catch (Exception ex) when (ex is HttpRequestException or OperationCanceledException) {
                 // Fix #4: count network/TLS/timeout as transient; stop after budget.
                 consecutiveTransient++;
@@ -1336,6 +1339,7 @@ static class McpFlowsServer {
                 using var postCts = clock.CreateTimeoutSource(PerAckPostTimeout);
                 using var response = await SendWithRefreshRetryAsync(
                     client,
+                    apiRoot,
                     (c, ct) => c.PostAsync(url, JsonContent.Create(body, McpJsonContext.Default.AckFlowMessagesDto), ct),
                     postCts.Token
                 );
