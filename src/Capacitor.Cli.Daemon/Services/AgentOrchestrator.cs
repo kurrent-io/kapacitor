@@ -917,11 +917,30 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             var certificationCheck = EvaluateReviewerCertification(
                 cmd.Vendor, version, _server.CurrentConnectionId, certification);
             if (!certificationCheck.Ok) {
-                _config.UnattendedVendorCapabilities =
-                    DaemonRunner.ComputeUnattendedVendorCapabilities(_runtimeFactories.Values, _config);
-                try { await _server.ReRegisterAsync(); } catch { /* launch still fails closed */ }
+                // Codex review round 2 (P1): tell the caller FIRST. Recomputing capabilities re-runs
+                // the REGISTRATION probe — three 10s attempts plus backoff — so doing it before the
+                // notification meant a failed launch probe cost ~10s here and then ~30.75s more
+                // before the caller heard anything. The single-attempt launch probe did not bound the
+                // launch path at all while this sat in front of the rejection; my claim that it did
+                // was wrong.
                 await _server.LaunchFailedAsync(cmd.AgentId,
                     $"reviewer_certification_changed: {certificationCheck.Reason}.");
+
+                // The self-heal (recompute + re-advertise) is genuinely useful — a certification
+                // mismatch usually means the advertisement is stale — but nothing waits on it, and
+                // the caller already has its answer. Contained: a throw here must not surface as a
+                // second, different failure for a launch that has already been rejected.
+                _ = Task.Run(async () => {
+                    try {
+                        _config.UnattendedVendorCapabilities =
+                            DaemonRunner.ComputeUnattendedVendorCapabilities(_runtimeFactories.Values, _config);
+                        await _server.ReRegisterAsync();
+                    } catch (Exception ex) {
+                        _logger.LogDebug(ex,
+                            "Capability recompute after a certification rejection failed; the next " +
+                            "registration or launch re-evaluates it.");
+                    }
+                });
                 return new CommandOutcome(
                     CommandOutcomeKind.LaunchRejected,
                     agentId,
