@@ -941,7 +941,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
                 // Serialising publication is necessary; coalescing keeps a burst of rejections from
                 // queueing a refresh each, and the rerun pass guarantees the LAST write is the
                 // NEWEST computation.
-                _ = _capabilityRefresh.RequestAsync(
+                _capabilityRefresh.Trigger(
                     async () => {
                         _config.UnattendedVendorCapabilities =
                             DaemonRunner.ComputeUnattendedVendorCapabilities(_runtimeFactories.Values, _config);
