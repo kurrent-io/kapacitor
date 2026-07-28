@@ -148,13 +148,15 @@ public static class CursorHookCommand {
             HookSpool  spool,
             TimeSpan   budgetTotal,
             Func<bool, CancellationToken, Task<HttpClient>>? memoryClientFactory = null,
-            Func<SessionStartMemoryLeaseStore>?               memoryStoreFactory = null
+            Func<SessionStartMemoryLeaseStore>?               memoryStoreFactory = null,
+            TimeSpan?                                         memoryBudgetOverride = null,
+            ISessionStartMemoryScopeResolver?                 memoryScopeResolver = null
         ) {
         using var cts = new CancellationTokenSource(budgetTotal);
         var kindSignal = new ResolvedEventKindSignal();
 
         var inner    = HandleCoreInner(client, baseUrl, stdin, spool, budgetTotal, cts.Token, kindSignal,
-                           memoryClientFactory, memoryStoreFactory);
+                           memoryClientFactory, memoryStoreFactory, memoryBudgetOverride, memoryScopeResolver);
         var deadline = Task.Delay(budgetTotal);
         var winner   = await Task.WhenAny(inner, deadline);
 
@@ -211,7 +213,9 @@ public static class CursorHookCommand {
             CancellationToken ct,
             ResolvedEventKindSignal kindSignal,
             Func<bool, CancellationToken, Task<HttpClient>>? memoryClientFactory,
-            Func<SessionStartMemoryLeaseStore>?               memoryStoreFactory
+            Func<SessionStartMemoryLeaseStore>?               memoryStoreFactory,
+            TimeSpan?                                         memoryBudgetOverride,
+            ISessionStartMemoryScopeResolver?                 memoryScopeResolver
         ) {
         var sw = Stopwatch.StartNew();
         bool BudgetExpired() => sw.Elapsed >= budgetTotal;
@@ -466,7 +470,7 @@ public static class CursorHookCommand {
             if (eventName != "sessionStart") return null;
             var fragment = await RunMemoryOrchestrationAsync(
                 client, baseUrl, sessionId, workspaceRoot, sw, budgetTotal, ct,
-                memoryClientFactory, memoryStoreFactory);
+                memoryClientFactory, memoryStoreFactory, memoryBudgetOverride, memoryScopeResolver);
             return SessionStartMemoryOutputAdapters.Render(SessionStartHarness.Cursor, fragment);
         } catch {
             // Fail-open per design: any exception (budget cancellation,
@@ -499,7 +503,9 @@ public static class CursorHookCommand {
             TimeSpan   budgetTotal,
             CancellationToken dispatcherCt,
             Func<bool, CancellationToken, Task<HttpClient>>? memoryClientFactory,
-            Func<SessionStartMemoryLeaseStore>?               memoryStoreFactory
+            Func<SessionStartMemoryLeaseStore>?               memoryStoreFactory,
+            TimeSpan?                                         memoryBudgetOverride,
+            ISessionStartMemoryScopeResolver?                 memoryScopeResolver
         ) {
         if (sessionId is null) return null;
 
@@ -509,7 +515,9 @@ public static class CursorHookCommand {
         // With no authoritative workspace root there is no safe scope, so skip injection entirely.
         if (string.IsNullOrWhiteSpace(workspaceRoot)) return null;
 
-        var memBudget = budgetTotal - sw.Elapsed - HookBudget.Safety;
+        // Wall-clock derived in production; pinned by tests that must land on a KNOWN side of the
+        // no-budget guard below rather than on whatever a loaded CI runner leaves over.
+        var memBudget = memoryBudgetOverride ?? (budgetTotal - sw.Elapsed - HookBudget.Safety);
         if (memBudget <= TimeSpan.Zero) return null;
 
         // Cursor never reads AppConfig anywhere else today — this is the one, new call site
@@ -523,7 +531,7 @@ public static class CursorHookCommand {
 
             var store = memoryStoreFactory?.Invoke() ?? new SessionStartMemoryLeaseStore();
             var provider = new SessionStartMemoryContextProvider(
-                new SessionStartMemoryScopeResolver(),
+                memoryScopeResolver ?? new SessionStartMemoryScopeResolver(),
                 memoryClientFactory ?? ((_, _) => Task.FromResult(client)),
                 disposeClients: memoryClientFactory is not null);
 

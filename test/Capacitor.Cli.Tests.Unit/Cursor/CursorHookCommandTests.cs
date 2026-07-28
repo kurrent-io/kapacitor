@@ -806,20 +806,28 @@ public class CursorHookCommandTests {
         var clock = new ManualTimeProvider();
         Func<SessionStartMemoryLeaseStore> storeFactory = () => new SessionStartMemoryLeaseStore(fx.MemoryStoreRoot, clock);
 
-        // A memory-index client whose GET never completes on its own — it only ever
-        // resolves via the caller's cancellation, letting the provider's own
-        // linked/budget-bound CancellationTokenSource be what ends the fetch. A generous total
-        // budget (see Ready_fragment_emitted's comment) keeps memBudget comfortably positive
-        // under CI load, so the first attempt reliably reaches — and is cancelled by — the
-        // provider fetch rather than being skipped outright by the no-budget guard, which would
-        // let this test pass without ever exercising the cancellation path it's meant to prove.
-        using var neverRespondingClient = new HttpClient(new CancelAwareHandler());
+        // A memory-index client whose GET never completes on its own — it only ever resolves via
+        // the caller's cancellation, letting the provider's own linked/budget-bound
+        // CancellationTokenSource be what ends the fetch.
+        var handler = new CancelAwareHandler();
+        using var neverRespondingClient = new HttpClient(handler);
 
+        // Nothing here is derived from wall clock. memoryBudgetOverride pins what the memory stage
+        // gets (a runner slow enough to exhaust a derived budget would trip the no-budget guard and
+        // skip the very path under test); the stub resolver keeps a git spawn from eating that
+        // budget before the fetch is reached; and the total budget is generous so the outer
+        // deadline can never pre-empt the inner phase. The whole 250ms therefore belongs to the
+        // fetch — which is also all this test costs in wall time.
         var exit1 = await CursorHookCommand.HandleCore(
-            fx.Client, "http://localhost", new StringReader(payload), fx.Spool, TimeSpan.FromSeconds(4),
+            fx.Client, "http://localhost", new StringReader(payload), fx.Spool, TimeSpan.FromSeconds(60),
             memoryClientFactory: (_, _) => Task.FromResult(neverRespondingClient),
-            memoryStoreFactory: storeFactory);
+            memoryStoreFactory: storeFactory,
+            memoryBudgetOverride: TimeSpan.FromMilliseconds(250),
+            memoryScopeResolver: new StubScopeResolver());
         await Assert.That(exit1).IsEqualTo(0);
+        // The fetch was entered and then cancelled — without this the rest of the test would
+        // still pass on a skipped first attempt, proving nothing.
+        await Assert.That(handler.Entered).IsTrue();
 
         // Advance well past the 30s lease duration so the still-"leased" (never committed —
         // the cancellation raced RetryAsync's own fencing too) record from the first attempt
@@ -828,12 +836,42 @@ public class CursorHookCommandTests {
         fx.MemoryIndexBody = "[]";
 
         var exit2 = await CursorHookCommand.HandleCore(
-            fx.Client, "http://localhost", new StringReader(payload), fx.Spool, TimeSpan.FromSeconds(4),
-            memoryStoreFactory: storeFactory);
+            fx.Client, "http://localhost", new StringReader(payload), fx.Spool, TimeSpan.FromSeconds(60),
+            memoryStoreFactory: storeFactory,
+            memoryBudgetOverride: TimeSpan.FromSeconds(30),
+            memoryScopeResolver: new StubScopeResolver());
         await Assert.That(exit2).IsEqualTo(0);
         // The index GET fires again on fx.Client — proving the first, cancelled attempt's
         // lease was never spent as "completed".
         await Assert.That(fx.MemoryIndexRequested).IsTrue();
+    }
+
+    // The other side of the guard the test above deliberately stays clear of: a sessionStart that
+    // reaches the memory stage with nothing left of the budget skips the fetch outright and still
+    // emits its single {} — an asserted outcome here rather than an unnoticed pass over there.
+    [Test, NotInParallel]
+    public async Task ExhaustedMemoryBudget_skips_the_fetch_and_still_emits() {
+        using var fx = new Fixture();
+        var sid = Guid.NewGuid().ToString("N");
+        var ws = Path.GetTempPath().Replace('\\', '/').TrimEnd('/');
+        var payload = $$"""{"hook_event_name":"sessionStart","session_id":"{{sid}}","workspace_roots":["{{ws}}"]}""";
+        fx.MemoryIndexBody = """[{"memory_id":"m1","slug":"s","audience":"org","description":"d","kind":"preference"}]""";
+
+        var originalOut = Console.Out;
+        var stdoutWriter = new StringWriter();
+        try {
+            Console.SetOut(stdoutWriter);
+            var exit = await CursorHookCommand.HandleCore(
+                fx.Client, "http://localhost", new StringReader(payload), fx.Spool, TimeSpan.FromSeconds(60),
+                memoryStoreFactory: () => new SessionStartMemoryLeaseStore(fx.MemoryStoreRoot, new ManualTimeProvider()),
+                memoryBudgetOverride: TimeSpan.Zero);
+
+            await Assert.That(exit).IsEqualTo(0);
+            await Assert.That(fx.MemoryIndexRequested).IsFalse();
+            await Assert.That(stdoutWriter.ToString()).IsEqualTo("{}\n");
+        } finally {
+            Console.SetOut(originalOut);
+        }
     }
 
     // Task 1: the fixture must be able to serve GET /api/memories/index
@@ -1023,12 +1061,25 @@ public class CursorHookCommandTests {
         public void Advance(TimeSpan by) => _now += by;
     }
 
+    // Resolves instantly to a fixed scope. The real resolver spawns git, whose wall-clock cost
+    // would otherwise come out of the memory budget a test is trying to spend on the fetch.
+    sealed class StubScopeResolver : ISessionStartMemoryScopeResolver {
+        public Task<SessionStartMemoryScope> ResolveAsync(string? cwd, TimeSpan budget, CancellationToken ct) =>
+            Task.FromResult(new SessionStartMemoryScope(RepoHash: null, MachineTag: "test-machine"));
+    }
+
     // A GET that never resolves on its own — it only ends via the caller's own
     // cancellation, honoured properly (unlike StubHandler, which ignores its ct). Used to
     // prove a memory fetch cancelled at the budget deadline leaves the lease uncommitted
     // rather than committing a spurious "completed" record.
     sealed class CancelAwareHandler : HttpMessageHandler {
+        volatile bool _entered;
+        // Lets a test distinguish "the fetch was reached and cancelled" from "the fetch was
+        // never made at all" — outcomes this handler is otherwise indistinguishable between.
+        public bool Entered => _entered;
+
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct) {
+            _entered = true;
             await Task.Delay(Timeout.InfiniteTimeSpan, ct);
             return new HttpResponseMessage(HttpStatusCode.OK);
         }
