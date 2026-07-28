@@ -56,11 +56,19 @@ internal sealed class SequencedCommandProcessor : IAsyncDisposable {
     public Task SubmitAsync(SequencedItem item, Func<Task<CommandOutcome>> execute) {
         CommandOutcome? replay;
         bool acceptedReplay;
+        CommandRejected? rejection;
         Task result;
 
         lock (_lock) {
-            result = SubmitLocked(item, execute, out replay, out acceptedReplay);
+            result = SubmitLocked(item, execute, out replay, out acceptedReplay, out rejection);
         }
+
+        // Every wire send happens AFTER the lock is released. SendContained catches exceptions, but it
+        // still invokes the delegate immediately — it cannot stop synchronous serialization or a
+        // blocking transport from extending this processor's critical section and delaying concurrent
+        // SubmitAsync/AckPrefix callers. Containment and lock-scope are separate problems; this is the
+        // second one, and it applies to rejections exactly as it did to the duplicate answers.
+        if (rejection is { } toReject) SendRejectedContained(toReject);
 
         // The in-progress duplicate answer. Sent outside the lock and contained for the same reasons as
         // the settled one: a synchronous transport throw escaped into the hub, a faulted task went
@@ -81,28 +89,29 @@ internal sealed class SequencedCommandProcessor : IAsyncDisposable {
     }
 
     Task SubmitLocked(SequencedItem item, Func<Task<CommandOutcome>> execute,
-            out CommandOutcome? replay, out bool acceptedReplay) {
+            out CommandOutcome? replay, out bool acceptedReplay, out CommandRejected? rejection) {
         replay = null;
         acceptedReplay = false;
+        rejection = null;
 
         if (!string.Equals(item.Epoch, _epoch, StringComparison.Ordinal))
-            return RejectLocked(item, CommandRejectedReason.StaleEpoch);   // never touches THIS epoch's lane
+            return RejectLocked(item, CommandRejectedReason.StaleEpoch, out rejection); // never touches THIS epoch's lane
 
         if (_cache.TryGetValue(item.Seq, out var existing))
-            return HandleDuplicateLocked(item, existing, out replay, out acceptedReplay); // answered, never re-executed
+            return HandleDuplicateLocked(item, existing, out replay, out acceptedReplay, out rejection); // answered, never re-executed
 
         if (item.Seq != _highestAcceptedSeq + 1)
-            return HandleNonNextLocked(item);
+            return HandleNonNextLocked(item, out rejection);
 
         if (_cache.Count >= _cacheBound)                                   // never evict unacked identity
-            return RejectLocked(item, CommandRejectedReason.Backpressure); // reopens only via a validated AckProcessedPrefix
+            return RejectLocked(item, CommandRejectedReason.Backpressure, out rejection); // reopens only via a validated AckProcessedPrefix
 
         // ACCEPT + lane-item, atomically under _lock.
         _highestAcceptedSeq = item.Seq;
         _cache[item.Seq] = new CacheEntry { CommandId = item.CommandId, Processed = false };
         var done = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         if (!_lane.Writer.TryWrite(new LaneItem(item, execute, done))) {
-            SynthesizeErrorLocked(item); // shutdown/allocation race: watermark must still advance
+            SynthesizeErrorLocked(item, out rejection); // shutdown/allocation race: watermark must still advance
             done.SetResult();
         }
         return done.Task;
@@ -114,13 +123,14 @@ internal sealed class SequencedCommandProcessor : IAsyncDisposable {
     /// <c>duplicate_collision</c>. Called under <c>_lock</c>; the processed arm only CAPTURES the cached
     /// outcome, leaving the ack for <see cref="SubmitAsync"/> to build outside the lock.</summary>
     Task HandleDuplicateLocked(SequencedItem item, CacheEntry existing,
-            out CommandOutcome? replay, out bool acceptedReplay) {
+            out CommandOutcome? replay, out bool acceptedReplay, out CommandRejected? rejection) {
         replay = null;
         acceptedReplay = false;
+        rejection = null;
 
         if (!string.Equals(existing.CommandId, item.CommandId, StringComparison.Ordinal)) {
             // A DIFFERENT command claiming an accepted Seq — protocol invariant violation.
-            SendRejectedContained(new CommandRejected(item.Epoch, item.Seq, item.CommandId, CommandRejectedReason.DuplicateCollision, item.AgentId));
+            rejection = new CommandRejected(item.Epoch, item.Seq, item.CommandId, CommandRejectedReason.DuplicateCollision, item.AgentId);
             return Task.CompletedTask;
         }
 
@@ -179,10 +189,12 @@ internal sealed class SequencedCommandProcessor : IAsyncDisposable {
     /// <summary>Phase B2-b (sequenced-settlement design): a non-next Seq (a gap — Seq &gt; HighestAcceptedSeq+1,
     /// or a too-low already-retired Seq below the frontier) is NEVER accepted out of order. Emit wrong_next so
     /// the server's transport sequencer resyncs (nudge → observe → retransmit); accept path + watermark untouched.</summary>
-    Task HandleNonNextLocked(SequencedItem item) => RejectLocked(item, CommandRejectedReason.WrongNext);
+    Task HandleNonNextLocked(SequencedItem item, out CommandRejected? rejection) =>
+        RejectLocked(item, CommandRejectedReason.WrongNext, out rejection);
 
-    Task RejectLocked(SequencedItem item, CommandRejectedReason reason) {
-        SendRejectedContained(new CommandRejected(item.Epoch, item.Seq, item.CommandId, reason, item.AgentId));
+    /// <summary>Records WHICH rejection is owed; the caller sends it after releasing <c>_lock</c>.</summary>
+    Task RejectLocked(SequencedItem item, CommandRejectedReason reason, out CommandRejected? rejection) {
+        rejection = new CommandRejected(item.Epoch, item.Seq, item.CommandId, reason, item.AgentId);
         return Task.CompletedTask;
     }
 
@@ -209,7 +221,7 @@ internal sealed class SequencedCommandProcessor : IAsyncDisposable {
         }
     }
 
-    void SynthesizeErrorLocked(SequencedItem item) {
+    void SynthesizeErrorLocked(SequencedItem item, out CommandRejected? rejection) {
         // Lane-item creation failed AFTER acceptance (shutdown/allocation race) — an advertised-accepted
         // Seq with no processable item is impossible, so mark this Seq terminally errored and advance the
         // watermark THROUGH THE CONTIGUOUS PREFIX only. NEVER set _lastProcessedSeq = item.Seq directly:
@@ -220,7 +232,7 @@ internal sealed class SequencedCommandProcessor : IAsyncDisposable {
             CommandId = item.CommandId, Processed = true,
             Outcome = new CommandOutcome(CommandOutcomeKind.InternalError, item.AgentId) };
         AdvanceWatermarkLocked();
-        SendRejectedContained(new CommandRejected(item.Epoch, item.Seq, item.CommandId, CommandRejectedReason.InternalError, item.AgentId));
+        rejection = new CommandRejected(item.Epoch, item.Seq, item.CommandId, CommandRejectedReason.InternalError, item.AgentId);
     }
 
     /// <summary>The watermark is the contiguous terminal-processed prefix. Walk forward through Processed
@@ -245,9 +257,17 @@ internal sealed class SequencedCommandProcessor : IAsyncDisposable {
         await foreach (var li in _lane.Reader.ReadAllAsync()) {
             // Nothing between here and Done may escape. The lane is the SINGLE serial consumer: one
             // escaping exception kills it permanently, leaving this command nonterminal, its submitter
-            // waiting forever, and every queued command unrun — which the server reads as a
-            // permanently held daemon capacity slot. try/finally guarantees the submitter is released
-            // even if something unforeseen throws.
+            // waiting forever, and every queued command unrun — the server reads that as a permanently
+            // held daemon capacity slot.
+            //
+            // try/FINALLY alone was not enough (and the comment that said it was, was wrong): the
+            // finally releases the submitter but the exception still propagates out of the await
+            // foreach and faults the lane task — and it reports SUCCESS to a submitter whose command
+            // may never have been marked terminal. The realistic path is diagnostics: a logger provider
+            // throwing from the execute-fault LogWarning, or from SendContained's own catch. So there
+            // is a real per-item CATCH that synthesizes the terminal state when the normal path did not
+            // reach it, and the loop continues.
+            var settled = false;
             try {
                 CommandOutcome outcome;
                 CommandRejectedReason? rejection = null;
@@ -287,7 +307,24 @@ internal sealed class SequencedCommandProcessor : IAsyncDisposable {
                 //
                 // Built AFTER the cache entry is marked Processed (so the ack can never advertise an
                 // outcome the cache has not recorded) but OUTSIDE the lock — see BuildProcessedAck.
+                settled = true;
                 SendSettledAck(li.Item, outcome);
+            } catch (Exception ex) {
+                // Deliberately swallow-and-continue. Every diagnostic here is itself guarded, because
+                // the most likely cause of arriving in this catch is diagnostics throwing.
+                if (!settled)
+                    try {
+                        lock (_lock) {
+                            if (_cache.TryGetValue(li.Item.Seq, out var e)) {
+                                e.Processed = true;
+                                e.Outcome = new CommandOutcome(CommandOutcomeKind.InternalError, li.Item.AgentId);
+                            }
+                            AdvanceWatermarkLocked();
+                        }
+                    } catch { /* cache/watermark unreachable — the status-report reconcile is the backstop */ }
+                try {
+                    _logger.LogError(ex, "SequencedCommandProcessor: unhandled fault for seq {Seq} — lane continues", li.Item.Seq);
+                } catch { /* a throwing logger is exactly how we got here */ }
             } finally {
                 li.Done.SetResult();
             }

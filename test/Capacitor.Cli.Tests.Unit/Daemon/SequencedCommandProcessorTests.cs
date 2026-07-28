@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Daemon.Services;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Capacitor.Cli.Tests.Unit.Daemon;
@@ -379,6 +380,66 @@ public class SequencedCommandProcessorTests {
         release.SetResult();
         await first;
         await Assert.That(p.LastProcessedSeq).IsEqualTo(1L);
+    }
+
+    // The gap the outer try/finally did NOT close: a throwing ILogger provider. The execute-fault arm
+    // logs a warning, so a logger that throws used to fault the lane AFTER finally had already told the
+    // submitter the command completed -- success reported for a command left nonterminal, and every
+    // later command stranded. Both new tests use a throwing logger precisely because NullLogger cannot
+    // reach this path.
+    sealed class ThrowingLogger : ILogger {
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(LogLevel logLevel) => true;
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+                Func<TState, Exception?, string> formatter) =>
+            throw new InvalidOperationException("logger provider blew up");
+    }
+
+    [Test] public async Task A_throwing_logger_neither_faults_the_lane_nor_leaves_the_command_nonterminal() {
+        var h = new Harness();
+        await using var p = new SequencedCommandProcessor(
+            "e1", _ => AgentLiveness.Live,
+            a => { lock (h.Acks) h.Acks.Add(a); return Task.CompletedTask; },
+            _ => Task.CompletedTask,
+            new ThrowingLogger());
+
+        // An execution fault takes the LogWarning path, where the logger throws.
+        var settled = p.SubmitAsync(h.Launch(1), () => throw new InvalidOperationException("boom"));
+        var finished = await Task.WhenAny(settled, Task.Delay(TimeSpan.FromSeconds(10)));
+        await Assert.That(finished == settled)
+            .IsTrue().Because("the lane faulted on the logger throw and never resolved the submitter's Done");
+        await settled;
+
+        // The command is TERMINAL despite the fault -- the submitter was not told "done" over a
+        // still-nonterminal cache entry.
+        await Assert.That(p.LastProcessedSeq).IsEqualTo(1L);
+
+        // And the lane survived for the next command.
+        await p.SubmitAsync(h.Launch(2), () => Task.FromResult(new CommandOutcome(CommandOutcomeKind.LaunchExecuted)));
+        await Assert.That(p.LastProcessedSeq).IsEqualTo(2L);
+    }
+
+    // Rejections are captured under _lock and sent after release, so no transport delegate runs inside
+    // the processor's critical section. Asserted directly rather than by timing.
+    [Test] public async Task Rejection_sends_do_not_run_inside_the_processor_lock() {
+        SequencedCommandProcessor? proc = null;
+        var sends = 0;
+        var sendsUnderLock = 0;
+
+        await using var p = proc = new SequencedCommandProcessor(
+            "e1", _ => AgentLiveness.Live,
+            _ => Task.CompletedTask,
+            _ => { sends++; if (proc!.LockHeldByCurrentThreadForTest) sendsUnderLock++; return Task.CompletedTask; },
+            NullLogger.Instance);
+
+        // Stale epoch, then a gap -- two DIFFERENT locked reject paths.
+        await p.SubmitAsync(new SequencedItem(SequencedKind.Launch, "other-epoch", 1, "c1", "a1"),
+            () => Task.FromResult(new CommandOutcome(CommandOutcomeKind.LaunchExecuted)));
+        await p.SubmitAsync(new SequencedItem(SequencedKind.Launch, "e1", 7, "c2", "a2"),
+            () => Task.FromResult(new CommandOutcome(CommandOutcomeKind.LaunchExecuted)));
+
+        await Assert.That(sends).IsEqualTo(2);
+        await Assert.That(sendsUnderLock).IsEqualTo(0);
     }
 
     // A duplicate of a non-rejected (executed) command has no cached reject reason -> null RejectionReason.
