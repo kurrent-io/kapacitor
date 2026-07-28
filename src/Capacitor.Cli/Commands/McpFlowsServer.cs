@@ -1296,21 +1296,10 @@ static class McpFlowsServer {
     /// to a dated concrete id; the server already validated equivalence). They are surfaced for the
     /// caller to read, not to police.</summary>
     /// <summary>Renders the run's reviewer workspace decision. ONE helper, reached from every surface
-    /// that formats a flow response — start (roundless and rounded), the polled round result, status
-    /// and close — so no path can quietly disagree with another about what the reviewer actually read.
-    ///
-    /// <para>Three outcomes, and the third is the one that matters:</para>
-    /// <list type="bullet">
-    /// <item><c>borrowed</c> — the reviewer saw the requester's working tree, uncommitted work included.</item>
-    /// <item><c>fallback</c> — an owned worktree at the last commit, with the server's reason rendered
-    /// VERBATIM. No allowlist, no mapping table: a reason introduced server-side tomorrow reaches the
-    /// user unchanged. The caution line is the point — a reviewer that read the last commit did not
-    /// see uncommitted work, and a caller who assumed otherwise drew conclusions about code that was
-    /// never reviewed.</item>
-    /// <item>absent or null — rendered <c>unknown</c>, and NEVER as borrowed. An older server, a
-    /// multi-participant run, or a generic single-participant flow all land here. Guessing "borrowed"
-    /// would be the one wrong answer that reads as reassurance.</item>
-    /// </list></summary>
+    /// that formats a flow response, so no path can disagree with another about what the reviewer read.
+    /// <para>An absent decision renders <c>unknown</c> and NEVER <c>borrowed</c> — guessing borrowed is
+    /// the one wrong answer that reads as reassurance. Reasons render verbatim: nothing here
+    /// enumerates them, so a reason added server-side reaches the user unchanged.</para></summary>
     static void AppendWorkspaceDiagnostics(StringBuilder sb, JsonObject node) {
         var mode = TryGetString(node, "workspace_mode");
 
@@ -1323,7 +1312,13 @@ static class McpFlowsServer {
                 sb.Append("workspace: fallback");
                 if (reason is not null) { sb.Append(" ("); sb.Append(reason); sb.Append(')'); }
                 sb.AppendLine();
-                sb.AppendLine("  ⚠ The reviewer read a checkout at the last commit — it did NOT see uncommitted work.");
+                // Says only what is true for EVERY reason. The earlier wording claimed the reviewer
+                // "read a checkout at the last commit", which is false for context_only_requested —
+                // there the reviewer read the submitted context and no repository at all, so that
+                // phrasing would have had a caller believe committed code was reviewed when none was.
+                // Naming reasons individually would fix that case and reintroduce the allowlist this
+                // feature exists without; a claim accurate for all of them needs no enumeration.
+                sb.AppendLine("  ⚠ Your working tree was NOT borrowed — the reviewer did not see uncommitted work.");
                 break;
             }
             case null:

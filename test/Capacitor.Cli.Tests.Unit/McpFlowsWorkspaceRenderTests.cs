@@ -39,8 +39,9 @@ public class McpFlowsWorkspaceRenderTests {
         var text = Round(FallbackRound);
         await Assert.That(text).Contains("workspace: fallback (not_colocated)");
         // The caution is the whole point: a caller who assumes otherwise draws conclusions about
-        // code the reviewer never read.
-        await Assert.That(text).Contains("did NOT see uncommitted work");
+        // code the reviewer never read. Worded to be true for EVERY reason -- see the
+        // context-only case below.
+        await Assert.That(text).Contains("did not see uncommitted work");
     }
 
     // The single most important case. An older server, a multi-participant run and a generic
@@ -106,7 +107,24 @@ public class McpFlowsWorkspaceRenderTests {
         var text = Round("""{"flow_run_id":"f1","status":"clean","result_kind":"clean","workspace_mode":"fallback"}""");
         await Assert.That(text).Contains("workspace: fallback");
         await Assert.That(text).DoesNotContain("()");
-        await Assert.That(text).Contains("did NOT see uncommitted work");
+        await Assert.That(text).Contains("did not see uncommitted work");
+    }
+
+    // Qodo (#380, finding 3). The caution must be true for EVERY reason, not just the common ones.
+    // context_only_requested means the reviewer read the SUBMITTED CONTEXT and no repository at all —
+    // the earlier wording ("read a checkout at the last commit") would have had a caller believe
+    // committed code was reviewed when none was. Special-casing the reason would fix that one case
+    // and reintroduce the allowlist this feature exists without, so the claim is worded to hold
+    // universally instead.
+    [Test] public async Task A_context_only_fallback_does_not_claim_committed_code_was_reviewed() {
+        var text = Round("""{"flow_run_id":"f1","status":"clean","result_kind":"clean","workspace_mode":"fallback","fallback_reason":"context_only_requested"}""");
+
+        await Assert.That(text).Contains("workspace: fallback (context_only_requested)");
+        await Assert.That(text).Contains("did not see uncommitted work");
+
+        // The false claim, in any of its forms.
+        await Assert.That(text).DoesNotContain("last commit");
+        await Assert.That(text).DoesNotContain("checkout");
     }
 
     // A mode this build doesn't know (a future server, or "owned") is reported verbatim rather than

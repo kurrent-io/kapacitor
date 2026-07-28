@@ -416,6 +416,19 @@ It provides four generic tools:
 - **`get_flow_status`** — get the current status (running, waiting, completed, failed) and last result of a flow run.
 - **`close_flow`** — mark a completed flow run as closed.
 
+Every flow response reports which **workspace** the reviewer actually used, so you can tell whether it saw your uncommitted work:
+
+```
+workspace: borrowed (the reviewer saw your working tree, uncommitted changes included)
+
+workspace: fallback (not_colocated)
+  ⚠ Your working tree was NOT borrowed — the reviewer did not see uncommitted work.
+
+workspace: unknown
+```
+
+`fallback` carries the server's reason verbatim (`not_colocated`, `daemon_outdated`, `not_allowed`, `no_requesting_cwd`, `context_only_requested`, or any newer one — the CLI never translates or filters them). **`unknown` is not the same as borrowed**: it means no decision was disclosed — an older server, a multi-participant run, or a flow kind other than the reserved `spec-review`/`code-review` aliases. Treat it as "assume the reviewer did not see uncommitted work" and inline anything that matters. The line appears on start, every round, status and close.
+
 Responses from these tools may carry **`pending_messages`** — out-of-band notes participants push to the driver via `send_flow_message` (see the flow-result server below). The CLI acknowledges them to the server after rendering the response, so a message is normally shown once — but a failed acknowledgment redelivers it on a later call (at-least-once), so consumers should treat the `message_id` as the dedup key and react to each id only once.
 
 While the server is rebuilding its flows read model (a projection replay after a server upgrade), flow tools can return a coded **`server_catching_up`** error (HTTP 409) with the replay's progress. It is temporary and retryable: wait a few minutes and retry, or ask the user how to proceed. The CLI renders the same guidance on every surface — start/submit, status/close, and the flow-result sidecar tools.
