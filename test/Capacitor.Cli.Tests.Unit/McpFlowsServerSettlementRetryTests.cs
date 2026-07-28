@@ -559,6 +559,9 @@ public class McpFlowsServerSettlementRetryTests {
         await Assert.That(clock.Delays).IsEquivalentTo(expected);
         await Assert.That(clock.Delays.Count).IsGreaterThan(3);            // genuinely past the old 3-attempt bound
         await Assert.That(clock.Elapsed).IsLessThanOrEqualTo(pollCap);     // never overshoots PollCap
+        // ...and it is NOT subject to the POST lane's 3-minute elapsed deadline: this lane must be
+        // able to keep polling well past it, all the way to its own cap.
+        await Assert.That(clock.Elapsed).IsGreaterThan(McpFlowsServer.SettlementElapsedDeadline);
 
         // It stopped by exhausting the cap, not by turning the retryable busy into a hard error.
         var result = JsonNode.Parse(response)!.AsObject();
