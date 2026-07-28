@@ -3,16 +3,8 @@ using Capacitor.Cli.Daemon.Services;
 
 namespace Capacitor.Cli.Tests.Unit.Daemon;
 
-/// <summary>
-/// The reviewer-certification gate, arm by arm.
-///
-/// <para>Two defects motivated these. A transient `claude --version` probe timeout at daemon
-/// registration advertised a NULL CLI version for the daemon's lifetime; the launch-time equality
-/// check then compared that null against a successful probe and rejected every launch. And all four
-/// arms collapsed into one message that named the certification revision (which matched) and told
-/// the operator to update a CLI that was correct and in range — so the real cause was undiagnosable
-/// from the error alone.</para>
-/// </summary>
+/// <summary>Each arm of the reviewer-certification gate, including a failed version probe, and the
+/// requirement that every rejection names its own cause and remedy.</summary>
 public class ReviewerCertificationArmTests {
     const string Conn   = "conn-1";
     const string Policy = "claude-unattended-v1";

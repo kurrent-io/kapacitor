@@ -551,28 +551,22 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
         // launch, and null-vs-value is not a swap. Treating it as one rejected every launch for the
         // daemon's lifetime, and restarting on a loaded host merely re-poisoned the advertisement.
         // A null advertised value falls through to the range check below, which is the real gate.
-        // Codex review (P1 #2): a failed LAUNCH-time probe is its own condition, and it must be
-        // classified before the swap comparison. Previously, with a version advertised at
-        // registration and the launch probe timing out, the swap arm fired and told the operator the
-        // CLI had changed and to restart — when nothing had changed and restarting merely repeats
-        // the same transient failure. Fails closed either way; only the diagnosis and remedy differ.
+        // A failed LAUNCH probe is its own condition, classified before the swap arm: otherwise a
+        // timeout reads as "the CLI changed, restart", when nothing changed and restarting repeats
+        // it. Fails closed either way; only the diagnosis and remedy differ.
         if (string.IsNullOrEmpty(probedVersion))
             return (false, $"could not read the installed {vendor} CLI version (the version probe " +
                            "failed or timed out) — this is usually transient under load; retry the flow");
 
-        // Codex review (P2 #3): the RANGE is checked before the swap arm. Otherwise a CLI genuinely
-        // replaced with an out-of-range version reported only "restart the daemon so it
-        // re-advertises" — and restarting re-advertises the same out-of-range version, so the
-        // remedy could never work. Range first means the operator is told the thing they can act on.
+        // Range BEFORE swap: an out-of-range replacement would otherwise be told only to restart,
+        // and restarting re-advertises the same out-of-range version.
         if (!DaemonRunner.CliVersionAllowed(probedVersion, certification.AllowedCliRanges))
             return (false, $"the installed {vendor} CLI '{probedVersion}' is outside the " +
                            $"server's allowed range '{certification.AllowedCliRanges}'");
 
-        // Null OR empty advertised: the property is declared non-nullable, but it is populated from a
-        // probe that returns null and arrives over JSON, so both shapes reach here. A null
-        // advertisement means the REGISTRATION probe failed — transient, not evidence the CLI
-        // changed. This arm exists to catch a genuine SWAP between advertisement and launch, and
-        // null-vs-value is not a swap; the range check above is the real gate in that case.
+        // A missing advertised version means the registration probe failed — not evidence of a CLI
+        // swap, which is all this arm exists to catch. It falls through to the range check above.
+        // Null or empty: declared non-nullable, but populated from a probe returning null over JSON.
         if (!string.IsNullOrEmpty(certification.ExpectedCliVersion) &&
             !string.Equals(probedVersion, certification.ExpectedCliVersion, StringComparison.Ordinal))
             return (false, $"the installed {vendor} CLI is '{probedVersion}' but this daemon " +

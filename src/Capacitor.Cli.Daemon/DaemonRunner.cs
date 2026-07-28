@@ -657,44 +657,35 @@ public static partial class DaemonRunner {
                 string.IsNullOrWhiteSpace(capability.CliVersion) ? UnknownCliVersion : capability.CliVersion);
     }
 
-    /// <summary>How long ONE version probe may take. The old 3s was too tight for a cold Node CLI
-    /// start on a loaded host, and a timeout here is not a harmless miss — see the retry note.</summary>
+    /// <summary>Registration probe budget. Generous and retried because this result is cached for the
+    /// daemon's lifetime — one transient miss durably disables the vendor.</summary>
     const int VersionProbeTimeoutMs = 10_000;
+    const int VersionProbeAttempts  = 3;
 
-    /// <summary>Probes are RETRIED because a single transient failure is durable and destructive.
-    /// The result is computed once at registration and advertised as ExpectedCliVersion for the
-    /// daemon's whole lifetime, so one timeout either drops the vendor from the unattended set
-    /// entirely, or — worse — makes every later launch fail the launch-time equality check against
-    /// the advertised null. Restarting on a still-loaded host reproduces it, so the documented
-    /// remedy does not reliably clear it either.</summary>
-    const int VersionProbeAttempts = 3;
+    /// <summary>Launch probe budget, deliberately the ORIGINAL 3s and a single attempt: this runs on
+    /// the sequenced command lane, whose single serial consumer holds every later launch and stop
+    /// behind it. A miss here is transient and retryable, so it does not need the registration
+    /// budget — and inheriting it would have tripled the lane stall this change was meant to
+    /// improve.</summary>
+    const int LaunchVersionProbeTimeoutMs = 3_000;
 
-    /// <summary>Registration-time probe: retries, because the result is cached for the daemon's
-    /// lifetime and a single miss is durable and destructive. Blocking here is fine — registration is
-    /// not on a request path.</summary>
     internal static string? ProbeCliVersion(string cliPath) =>
-        ProbeCliVersion(cliPath, VersionProbeAttempts);
+        ProbeCliVersion(cliPath, VersionProbeAttempts, VersionProbeTimeoutMs);
 
-    /// <summary>Launch-time probe: ONE attempt, no backoff. Codex review (P1): the retry budget is
-    /// right for registration and wrong on the launch path — three 10s waits plus backoff is ~30.75s
-    /// of a thread-pool thread held before a launch can even be rejected, multiplied by concurrent
-    /// launches. The launch path does not need the retry anyway: a miss here is no longer
-    /// misclassified as a CLI swap (see EvaluateReviewerCertification), it produces a retryable
-    /// rejection, and the caller can simply try again.</summary>
+    /// <summary>Single attempt on the original short budget — see LaunchVersionProbeTimeoutMs.</summary>
     internal static string? ProbeCliVersionForLaunch(string cliPath) =>
-        ProbeCliVersion(cliPath, attempts: 1);
+        ProbeCliVersion(cliPath, attempts: 1, LaunchVersionProbeTimeoutMs);
 
-    static string? ProbeCliVersion(string cliPath, int attempts) {
+    static string? ProbeCliVersion(string cliPath, int attempts, int timeoutMs) {
         for (var attempt = 1; attempt <= attempts; attempt++) {
-            if (ProbeCliVersionOnce(cliPath) is { } version) return version;
-            // A cold Node start under load is the common cause; give the host a moment rather than
-            // hammering it several times in a row.
+            if (ProbeCliVersionOnce(cliPath, timeoutMs) is { } version) return version;
+            // A cold Node start under load is the usual cause; pause rather than hammering.
             if (attempt < attempts) Thread.Sleep(250 * attempt);
         }
         return null;
     }
 
-    static string? ProbeCliVersionOnce(string cliPath) {
+    static string? ProbeCliVersionOnce(string cliPath, int timeoutMs) {
         try {
             using var process = Process.Start(new ProcessStartInfo {
                 FileName = cliPath,
@@ -703,7 +694,7 @@ public static partial class DaemonRunner {
                 RedirectStandardError = true,
                 ArgumentList = { "--version" }
             });
-            if (process is null || !process.WaitForExit(VersionProbeTimeoutMs)) {
+            if (process is null || !process.WaitForExit(timeoutMs)) {
                 try { process?.Kill(entireProcessTree: true); } catch { }
                 return null;
             }
