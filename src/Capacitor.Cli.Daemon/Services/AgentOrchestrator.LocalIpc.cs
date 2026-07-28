@@ -4,7 +4,7 @@ namespace Capacitor.Cli.Daemon.Services;
 
 /// Local-socket entry points invoked by <see cref="LocalControlServer"/>.
 internal partial class AgentOrchestrator {
-    /// <summary>Reply to a <c>kcap ls</c> request with a tab-separated agent table.</summary>
+    /// <summary>Reply to a <c>kcap agent ls</c> request with a tab-separated agent table.</summary>
     public Task HandleLocalListAsync(Stream stream, CancellationToken ct) {
         var lines = _agents.Values.Select(a => $"{a.Id}\t{a.Status}\t{a.RepoPath}");
 
@@ -45,7 +45,7 @@ internal partial class AgentOrchestrator {
     }
 
     /// <summary>
-    /// Spawn a new agent from a local <c>run-agent</c> request, then attach the requesting
+    /// Spawn a new agent from a local <c>agent start</c> request, then attach the requesting
     /// client. The agent runs <b>PrivateLocal</b> (no per-agent server calls) in either an
     /// owned worktree (<c>--worktree</c>) or the user's borrowed cwd (default in-place).
     /// </summary>
@@ -130,7 +130,7 @@ internal partial class AgentOrchestrator {
         await AttachClientLoopAsync(agent, stream, ct);
     }
 
-    /// <summary>Attach an existing agent to a local client (used by <c>kcap attach</c>).</summary>
+    /// <summary>Attach an existing agent to a local client (used by <c>kcap agent attach</c>).</summary>
     public Task HandleLocalAttachAsync(string agentId, Stream stream, CancellationToken ct) {
         if (!_agents.TryGetValue(agentId, out var agent))
             return FrameCodec.WriteAsync(stream, LocalFrame.Error($"no such agent {agentId}"), ct);
@@ -215,8 +215,8 @@ internal partial class AgentOrchestrator {
 
             if (sink.Detached && !agent.Runtime.HasExited) {
                 // We dropped this client because its output overflowed — tell it so the user
-                // reattaches (a fresh `kcap attach` replays the buffer from a clean frame).
-                try { await Send(LocalFrame.Error("terminal output overflowed — detached; reattach with `kcap attach`")); } catch { /* client already gone */ }
+                // reattaches (a fresh `kcap agent attach` replays the buffer from a clean frame).
+                try { await Send(LocalFrame.Error("terminal output overflowed — detached; reattach with `kcap agent attach`")); } catch { /* client already gone */ }
             }
 
             if (agent.Runtime.HasExited) {

@@ -79,7 +79,7 @@ internal interface IHostedAgentLauncher {
     LaunchArgs BuildArgs(LauncherContext ctx);
 
     /// <summary>
-    /// Build argv for a local <c>run-agent</c> launch: emit only the mandatory daemon-level
+    /// Build argv for a local <c>agent start</c> launch: emit only the mandatory daemon-level
     /// flags this vendor must always set, then append the user's verbatim post-<c>--</c>
     /// args. Used by the local-attach path instead of <see cref="BuildArgs"/>.
     /// </summary>
@@ -110,7 +110,7 @@ internal sealed record LauncherContext(
     /// <see cref="Capacitor.Cli.Core.LaunchAgentCommand.McpAllowlist"/>. Launchers resolve each
     /// name against the kcap-owned MCP registry and materialize matching servers into the vendor's
     /// MCP config, stripping any flow-starting server regardless of listing. Null/local-spawn
-    /// launches (e.g. <c>kcap run-agent</c>) never set this.</summary>
+    /// launches (e.g. <c>kcap agent start</c>) never set this.</summary>
     public string[]? McpAllowlist { get; init; }
 }
 

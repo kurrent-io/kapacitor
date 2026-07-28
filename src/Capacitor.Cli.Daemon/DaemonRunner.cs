@@ -323,7 +323,7 @@ public static partial class DaemonRunner {
         builder.Services.AddSingleton<RestartCoordinator>();
         builder.Services.AddHostedService(sp => sp.GetRequiredService<RestartCoordinator>());
 
-        // Local control socket: lets `kcap run-agent`/`attach`/`ls` drive daemon-hosted
+        // Local control socket: lets `kcap agent start`/`attach`/`ls`/`stop` drive daemon-hosted
         // agents from the user's own terminal (AI local-attach Phase 1).
         builder.Services.AddSingleton<LocalControlServer>();
         builder.Services.AddHostedService(sp => sp.GetRequiredService<LocalControlServer>());

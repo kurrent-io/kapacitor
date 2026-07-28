@@ -396,7 +396,7 @@ internal sealed partial class CodexLauncher(
 
         foreach (var m in mandatory) {
             if (userArgs.Contains(m)) {
-                throw new ArgumentException($"{m} is set by kcap and cannot be overridden in `run-agent codex -- …`");
+                throw new ArgumentException($"{m} is set by kcap and cannot be overridden in `agent start codex -- …`");
             }
         }
 

@@ -74,7 +74,7 @@ internal interface IHostedAgentRuntime : IAsyncDisposable {
     Task SendSpecialKeyAsync(string key);
 
     /// <summary>
-    /// Raw byte input from a local-attached terminal (`kcap attach` Stdin frames). PTY runtimes
+    /// Raw byte input from a local-attached terminal (`kcap agent attach` Stdin frames). PTY runtimes
     /// write the bytes verbatim. Local attach is a PTY-only surface, so the ACP runtime throws
     /// <see cref="NotSupportedException"/>; the caller guards on <see cref="Vendor"/>.
     /// </summary>

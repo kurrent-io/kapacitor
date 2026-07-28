@@ -9,7 +9,7 @@ public enum FrameType : byte {
     Stdin   = 3,
     Resize  = 4,
     Detach  = 5,
-    List    = 6,   // request the daemon's agent list (for `kcap ls`)
+    List    = 6,   // request the daemon's agent list (for `kcap agent ls`)
     Restart = 7,   // request restart-after-update (Text = "when-idle"|"now"|"force")
     Stop    = 8,   // stop an agent (Text = agent id; empty = every agent this daemon hosts)
     // daemon → client

@@ -97,7 +97,7 @@ internal record AgentInstance(
     public bool IsPrivate { get; init; }
 
     /// <summary>
-    /// True for agents started from a local terminal (`kcap run-agent`), whether registered or
+    /// True for agents started from a local terminal (`kcap agent start`), whether registered or
     /// `--private`. Such an agent has a live local terminal as its primary surface, so the read
     /// loop streams to the server <b>non-blocking</b> (drop+count on a full backlog) rather than
     /// back-pressuring the PTY on a remote tunnel stall — the local terminal must not freeze when
