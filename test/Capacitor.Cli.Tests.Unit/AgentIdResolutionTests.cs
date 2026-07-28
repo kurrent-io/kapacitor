@@ -53,4 +53,14 @@ public class AgentIdResolutionTests {
         await Assert.That(id).IsNull();
         await Assert.That(err).IsNotNull();
     }
+
+    [Test]
+    public async Task An_uppercase_full_id_is_lowercased_so_the_ordinal_daemon_lookup_still_finds_it() {
+        // The daemon's own lookups (_agents.TryGetValue, TryStopByPidRecordAsync) are ordinal, so
+        // an uppercase full id must be normalized here — the same string truncated to a prefix
+        // already resolves fine via the case-insensitive StartsWith path above.
+        var (id, err) = AgentCommand.ResolveAgentId([], "0123456789ABCDEF0123456789ABCDEF");
+        await Assert.That(id).IsEqualTo("0123456789abcdef0123456789abcdef");
+        await Assert.That(err).IsNull();
+    }
 }

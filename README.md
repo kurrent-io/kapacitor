@@ -933,7 +933,7 @@ kcap agent stop ab12       # graceful /exit, then terminate
 kcap agent stop --all -y   # stop every agent this daemon hosts, no prompt
 ```
 
-Agent ids are long, so `attach` and `stop` accept **any unique prefix** — an ambiguous one lists the candidates instead of guessing. `stop --all` includes `--private` agents and prompts for confirmation unless you pass `-y`.
+Agent ids are long, so `attach` and `stop` accept **any unique prefix** — an ambiguous one lists the candidates instead of guessing. `stop --all` includes `--private` agents and prompts for confirmation unless you pass `-y`. `--all` stops **every** agent this daemon hosts, not just the ones you started from this CLI — including agents launched from the web UI and review-flow participants (e.g. reviewers mid-round). Making these commands flow-participant aware is tracked in [#379](https://github.com/kurrent-io/kcap-cli/issues/379).
 
 `agent start` auto-starts the daemon if one isn't already running. It needs a configured server (like the rest of kcap) — it is not an offline command. A locally-started agent appears in **your own** web UI (owner-only until you share it from the web UI); use `--private` to opt out of registration entirely. Unix only for now.
 

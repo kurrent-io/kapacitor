@@ -113,7 +113,12 @@ frame. `LocalControlServer` gets a `case FrameType.Stop:` alongside Spawn/Attach
 `InvalidDataException` inside `FrameCodec.Decode` — before `LocalControlServer`'s switch is
 reached — so it logs the fault and closes the connection with no reply. The client sees a bare
 EOF. `agent stop` therefore treats "connection closed before any reply" as
-`daemon is too old for 'agent stop' — restart it with 'kcap daemon restart'`.
+`this daemon is too old for 'agent stop' — restart it with 'kcap daemon restart --force --name
+<name>'`. Bare `kcap daemon restart` parses to mode `"now"`, which `HandleRestartAsync` refuses
+whenever the daemon is busy — and this daemon is guaranteed busy, since the user reached this
+message by trying to stop a running agent. Only `--force` bypasses that check, and the
+suggestion carries the resolved daemon name (`--name`, not `--daemon` — this is a `kcap daemon`
+command line) so it targets the same daemon the user was talking to.
 
 ## Daemon changes
 

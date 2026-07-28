@@ -6,7 +6,7 @@ using Capacitor.Cli.Local;
 
 namespace Capacitor.Cli.Commands;
 
-/// One row of the daemon's agent table (`id\tstatus\tcwd` on the wire).
+/// One row of the daemon's agent table (`id\tstatus\trepo` on the wire).
 internal readonly record struct AgentRow(string Id, string Status, string Repo);
 
 /// <summary>
@@ -17,8 +17,7 @@ internal static class AgentCommand {
     internal static readonly string[] KnownSubcommands = ["start", "ls", "stop", "attach"];
 
     /// <summary>Bare `kcap agent` lists agents; otherwise argv[1] is the subcommand.</summary>
-    // "Rest" (capitalized) is a compiler-reserved tuple element name; "rest" is not.
-    internal static (string Sub, string[] rest) SplitSubcommand(string[] args) =>
+    internal static (string Sub, string[] Args) SplitSubcommand(string[] args) =>
         args.Length > 1 ? (args[1], args[2..]) : ("ls", []);
 
     public static async Task<int> HandleAsync(string[] args) {
@@ -85,15 +84,23 @@ internal static class AgentCommand {
     static async Task<int> StopAsync(string[] args) {
         var all = args.Contains("--all");
         var yes = args.Contains("--yes") || args.Contains("-y");
+        var hasId = args.Length > 0 && !args[0].StartsWith('-');
 
-        if (!all && (args.Length == 0 || args[0].StartsWith('-'))) {
+        if (all && hasId) {
+            await Console.Error.WriteLineAsync("kcap agent stop: cannot combine an agent id with --all");
+
+            return 1;
+        }
+
+        if (!all && !hasId) {
             await Console.Error.WriteLineAsync("usage: kcap agent stop <agent-id> [--daemon <name>]");
             await Console.Error.WriteLineAsync("       kcap agent stop --all [-y] [--daemon <name>]");
 
             return 1;
         }
 
-        var sock = LocalSocketPaths.Socket(ResolveName(NameFrom(args)));
+        var name = ResolveName(NameFrom(args));
+        var sock = LocalSocketPaths.Socket(name);
 
         if (!File.Exists(sock)) {
             await Console.Error.WriteLineAsync($"kcap: no daemon socket at {sock}");
@@ -135,10 +142,10 @@ internal static class AgentCommand {
             target = resolved;
         }
 
-        return await SendStopAsync(sock, target);
+        return await SendStopAsync(sock, target, name);
     }
 
-    static async Task<int> SendStopAsync(string sock, string agentId) {
+    static async Task<int> SendStopAsync(string sock, string agentId, string daemonName) {
         try {
             using var socket = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
             await socket.ConnectAsync(new UnixDomainSocketEndPoint(sock));
@@ -161,9 +168,11 @@ internal static class AgentCommand {
                     return 1;
                 case null:
                     // An older daemon can't decode frame type 8: it faults before its frame
-                    // switch and closes without replying, so we see a clean EOF.
+                    // switch and closes without replying, so we see a clean EOF. `--force` is
+                    // the only restart mode that bypasses the busy check, and this daemon is
+                    // guaranteed busy — the agent we're trying to stop is still running.
                     await Console.Error.WriteLineAsync(
-                        "kcap: this daemon is too old for `agent stop` — restart it with `kcap daemon restart`");
+                        $"kcap: this daemon is too old for `agent stop` — restart it with `kcap daemon restart --force --name {daemonName}`");
 
                     return 1;
                 default:
@@ -180,7 +189,7 @@ internal static class AgentCommand {
 
     /// <summary>Resolves an id or prefix, printing the reason and returning null on failure.</summary>
     static async Task<string?> ResolveOrReportAsync(string sock, string given) {
-        if (IsFullAgentId(given)) return given; // skip the round-trip; ResolveAgentId agrees
+        if (IsFullAgentId(given)) return given.ToLowerInvariant(); // skip the round-trip; ResolveAgentId agrees
 
         var agents = await FetchAgentsAsync(sock);
         if (agents is null) return null;
@@ -215,7 +224,11 @@ internal static class AgentCommand {
         return 0;
     }
 
-    /// <summary>Asks the daemon for its agent table. Returns null after reporting a transport error.</summary>
+    /// <summary>
+    /// Asks the daemon for its agent table. Returns null — after reporting the reason — for any
+    /// non-answer: a closed connection, an Error frame, or an unexpected frame type. Only a real
+    /// AgentList frame with an empty payload is a genuinely empty table, so only that maps to [].
+    /// </summary>
     static async Task<IReadOnlyList<AgentRow>?> FetchAgentsAsync(string sock) {
         try {
             using var socket = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
@@ -225,7 +238,25 @@ internal static class AgentCommand {
             await FrameCodec.WriteAsync(stream, new LocalFrame(FrameType.List), default);
             var resp = await FrameCodec.ReadAsync(stream, default);
 
-            if (resp is null || resp.Type != FrameType.AgentList || resp.Text.Length == 0) return [];
+            if (resp is null) {
+                await Console.Error.WriteLineAsync("kcap: daemon closed the connection without replying to list");
+
+                return null;
+            }
+
+            if (resp.Type == FrameType.Error) {
+                await Console.Error.WriteLineAsync($"kcap: {resp.Text}");
+
+                return null;
+            }
+
+            if (resp.Type != FrameType.AgentList) {
+                await Console.Error.WriteLineAsync($"kcap: unexpected daemon response to list ({resp.Type})");
+
+                return null;
+            }
+
+            if (resp.Text.Length == 0) return [];
 
             return [.. resp.Text.Split('\n')
                 .Select(l => l.Split('\t'))
@@ -318,7 +349,10 @@ internal static class AgentCommand {
     /// reap by PID record. Anything shorter is a prefix and must match exactly one agent.
     /// </summary>
     internal static (string? Id, string? Error) ResolveAgentId(IReadOnlyList<AgentRow> agents, string given) {
-        if (IsFullAgentId(given)) return (given, null);
+        // Lowercase: the daemon's lookups (_agents.TryGetValue, TryStopByPidRecordAsync) are
+        // ordinal, so an uppercase full id must be normalized here to match the lowercase ids
+        // the daemon mints — the prefix path below is already case-insensitive.
+        if (IsFullAgentId(given)) return (given.ToLowerInvariant(), null);
 
         var hits = agents.Where(a => a.Id.StartsWith(given, StringComparison.OrdinalIgnoreCase)).ToList();
 

@@ -413,7 +413,7 @@ public partial class AgentOrchestratorVendorTests {
         );
         orch.RegisterAgentForTest(agent);
 
-        // Client sends one Stdin frame, then nothing (stream ends) — mirrors `kcap attach`
+        // Client sends one Stdin frame, then nothing (stream ends) — mirrors `kcap agent attach`
         // forwarding a keystroke to a runtime that can't accept raw input.
         var readBuf = new MemoryStream();
         await FrameCodec.WriteAsync(readBuf, LocalFrame.Stdin("x"u8.ToArray()), default);
@@ -614,6 +614,7 @@ public partial class AgentOrchestratorVendorTests {
 
         await Assert.That(reply!.Type).IsEqualTo(FrameType.StopAck);
         await Assert.That(server.Calls).Contains(nameof(ServerConnection.AgentStatusChangedAsync));
+        await Assert.That(server.Calls).Contains(nameof(ServerConnection.AppendAgentRunEventAsync));
     }
 
     [Test]
