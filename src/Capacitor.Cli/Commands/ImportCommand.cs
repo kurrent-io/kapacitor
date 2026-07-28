@@ -1182,35 +1182,22 @@ static class ImportCommand {
         // sub-grid attributes Skipped-at-import to Excluded (not Errored).
         var routedOutcomesByVendor = new ConcurrentDictionary<string, (int Loaded, int Skipped, int Failed)>(StringComparer.Ordinal);
 
-        // a SEPARATE tracker from `importedSessionIds`, used
-        // ONLY to decide what gets privatized under --private — never fed into the Done-grid
-        // counting (`importedSessionIds`/`doneBySource` stay exactly as they were; the
-        // cosmetic double-count concern is intentionally left alone). `importedSessionIds`
-        // only gains a session id when this run did "real new work" by the
-        // Loaded/Failed/AlreadyLoaded + SentChildContent accounting — but privacy must NOT
-        // depend on that classification: a lifecycle POST (subagent-stop/session-end) can fail
-        // AFTER a child transcript has already persisted new content (this run's own
-        // ImportSessionAsync then returns Failed), a source can report a hardcoded Skipped for a
-        // repair that DID attach a child (Antigravity), or a later retry can see the child read
-        // as already-complete (SentChildContent=false) even though a PRIOR run attached new
-        // content that was never privatized. In every one of those `importedSessionIds` would
-        // exclude the session and a public session would stay public. So each routed
-        // classification this run touches for a source that can attach child content on a replay
-        // — regardless of its outcome — is unconditionally captured here when --private is
-        // requested, and privatized at the end independent of Loaded/Failed/AlreadyLoaded/
-        // SentChildContent.
+        // A SEPARATE tracker from `importedSessionIds`, feeding ONLY the --private pass and never
+        // the Done-grid counting. Membership in `importedSessionIds` keys off the raw
+        // ImportOutcome, but privacy must not: a source can report a hardcoded Skipped for a repair
+        // that DID attach a child, a lifecycle POST can fail AFTER that child's content persisted,
+        // and a later retry can read the child as already-complete even though a PRIOR run
+        // attached content that was never privatized. Each case would exclude the session and
+        // leave a public session public, so every routed classification touched here is captured
+        // regardless of outcome.
         //
-        // Scoped by IImportSource.AttachesChildContentOnReplay rather than a vendor-name check:
-        // the risk is precisely "this call can add content to a session that ALREADY EXISTS", so
-        // the source that owns that child-import pass is what decides. A source whose replay can
-        // post nothing needs no post-hoc privatize — its only reachable content path is a New
-        // session, which under --private is never stamped with a public default_visibility in the
-        // first place (server-side sessions are private by default). Note the create-time stamp
-        // is NOT what protects the sources below: it does nothing to an already-existing session.
+        // Scoped by AttachesChildContentOnReplay, not a vendor name: the source owning the
+        // child-import pass is what knows. A source whose replay posts nothing needs no post-hoc
+        // pass — its only content path is a New session, and under --private that is never stamped
+        // with a public default_visibility (server-side sessions are private by default).
         var privateScopeSessionIds = new ConcurrentBag<string>();
 
-        // Resolved once from the sources actually in play, so a new source that imports children
-        // is covered the moment it declares the capability.
+        // Read-only inside the parallel loops below; resolved from the sources actually in play.
         var replayChildContentVendors = byVendor.Values
             .Where(s => s.AttachesChildContentOnReplay)
             .Select(s => s.Vendor)

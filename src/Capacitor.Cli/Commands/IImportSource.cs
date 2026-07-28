@@ -98,25 +98,16 @@ internal interface IImportSource {
 
     /// <summary>
     /// True if a routed <see cref="ImportSessionAsync"/> call against an ALREADY-INGESTED session
-    /// can still POST transcript lines — to a nested child/subagent stream, since the root's own
-    /// content is by definition already caught up. This is what makes the call able to add
-    /// publicly-visible content to a session that already exists, which is why <c>--private</c>
-    /// captures these sources outcome-independently (see <c>privateScopeSessionIds</c> in
-    /// <see cref="ImportCommand"/>): the replayed session-start's <c>default_visibility</c> is a
-    /// CREATE-time hint and does nothing to a session that already exists, and the call's own
-    /// <see cref="ImportOutcome"/> can't be trusted to reveal the attach (Antigravity's repair
-    /// branch reports a hardcoded <see cref="ImportOutcome.Skipped"/>; any vendor's lifecycle POST
-    /// can fail AFTER the child content persisted and report <see cref="ImportOutcome.Failed"/>).
+    /// can still POST transcript lines — to a nested child/subagent stream, the root's own content
+    /// being caught up by definition. Such a call can add publicly-visible content to a session
+    /// that already exists, so <c>--private</c> privatizes these sources independently of the
+    /// call's <see cref="ImportOutcome"/> (see <c>privateScopeSessionIds</c> in
+    /// <see cref="ImportCommand"/>). The outcome can't be trusted to reveal the attach: a source
+    /// may report a hardcoded <see cref="ImportOutcome.Skipped"/>, and any lifecycle POST can fail
+    /// AFTER the child content persisted. The replayed session-start's <c>default_visibility</c>
+    /// is a create-time hint, so it does nothing here either.
     ///
-    /// <para>
-    /// True for the three sources with a child-import pass reachable on a replay (Cursor,
-    /// Antigravity, Gemini). False for the chain-based sources (Claude, Codex — never routed) and
-    /// for Copilot/Kiro/Pi, which have no child import at all. Also false for OpenCode: it DOES
-    /// import descendants, but its ImportSessionAsync early-returns Skipped for AlreadyLoaded
-    /// before posting anything, so a replay cannot attach content — a contract pinned by
-    /// <c>ImportVisibilityTests.OpenCode_already_loaded_session_is_skipped_before_any_session_start</c>.
-    /// Flip this to true if that ever gains a repair pass.
-    /// </para>
+    /// <para>Per-source values are pinned by <c>ReplayChildContentCapabilityTests</c>.</para>
     /// </summary>
     bool AttachesChildContentOnReplay { get; }
 
