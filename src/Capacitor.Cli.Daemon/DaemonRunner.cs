@@ -669,12 +669,27 @@ public static partial class DaemonRunner {
     /// remedy does not reliably clear it either.</summary>
     const int VersionProbeAttempts = 3;
 
-    internal static string? ProbeCliVersion(string cliPath) {
-        for (var attempt = 1; attempt <= VersionProbeAttempts; attempt++) {
+    /// <summary>Registration-time probe: retries, because the result is cached for the daemon's
+    /// lifetime and a single miss is durable and destructive. Blocking here is fine — registration is
+    /// not on a request path.</summary>
+    internal static string? ProbeCliVersion(string cliPath) =>
+        ProbeCliVersion(cliPath, VersionProbeAttempts);
+
+    /// <summary>Launch-time probe: ONE attempt, no backoff. Codex review (P1): the retry budget is
+    /// right for registration and wrong on the launch path — three 10s waits plus backoff is ~30.75s
+    /// of a thread-pool thread held before a launch can even be rejected, multiplied by concurrent
+    /// launches. The launch path does not need the retry anyway: a miss here is no longer
+    /// misclassified as a CLI swap (see EvaluateReviewerCertification), it produces a retryable
+    /// rejection, and the caller can simply try again.</summary>
+    internal static string? ProbeCliVersionForLaunch(string cliPath) =>
+        ProbeCliVersion(cliPath, attempts: 1);
+
+    static string? ProbeCliVersion(string cliPath, int attempts) {
+        for (var attempt = 1; attempt <= attempts; attempt++) {
             if (ProbeCliVersionOnce(cliPath) is { } version) return version;
             // A cold Node start under load is the common cause; give the host a moment rather than
-            // hammering it three times in a row.
-            if (attempt < VersionProbeAttempts) Thread.Sleep(250 * attempt);
+            // hammering it several times in a row.
+            if (attempt < attempts) Thread.Sleep(250 * attempt);
         }
         return null;
     }

@@ -41,7 +41,9 @@ public class ReviewerCertificationArmTests {
     }
 
     // ...but a genuine swap must still be caught, or the relaxation above would gut the arm.
-    [Test] public async Task A_genuine_cli_swap_is_still_rejected() {
+    // In-range on purpose: an out-of-range replacement is the range arm's business (above), so this
+    // pins the swap arm specifically.
+    [Test] public async Task A_genuine_in_range_cli_swap_is_still_rejected() {
         var (ok, reason) = AgentOrchestrator.EvaluateReviewerCertification(
             "claude", "2.9.9", Conn, Cert(expectedCliVersion: "2.1.212"));
 
@@ -50,15 +52,45 @@ public class ReviewerCertificationArmTests {
         await Assert.That(reason).Contains("restart the daemon");
     }
 
-    // A null advertised version must still fall through to the RANGE check -- that is the real gate,
-    // and relaxing the equality arm must not let an out-of-range CLI through.
-    [Test] public async Task A_failed_probe_still_enforces_the_allowed_range() {
+    // A null ADVERTISED version must still fall through to the RANGE check -- that is the real gate,
+    // and relaxing the swap arm must not let an out-of-range CLI through.
+    [Test] public async Task A_null_advertisement_still_enforces_the_allowed_range() {
         var (ok, reason) = AgentOrchestrator.EvaluateReviewerCertification(
             "claude", "1.0.0", Conn, Cert(expectedCliVersion: null));
 
         await Assert.That(ok).IsFalse();
         await Assert.That(reason).Contains("outside");
         await Assert.That(reason).Contains(">=2.0.0 <3.0.0");
+    }
+
+    // Codex review P1 #2: a failed LAUNCH-time probe is not a swap. With a version advertised at
+    // registration and the launch probe timing out, the swap arm used to fire and tell the operator
+    // the CLI had changed and to restart -- when nothing changed and restarting repeats the failure.
+    [Test]
+    [Arguments(null)]
+    [Arguments("")]
+    public async Task A_failed_launch_probe_is_diagnosed_as_transient_not_as_a_swap(string? probed) {
+        var (ok, reason) = AgentOrchestrator.EvaluateReviewerCertification(
+            "claude", probed, Conn, Cert(expectedCliVersion: "2.1.212"));
+
+        await Assert.That(ok).IsFalse();               // still fails closed
+        await Assert.That(reason).Contains("probe");
+        await Assert.That(reason).Contains("retry");
+        await Assert.That(reason).DoesNotContain("advertised");   // not the swap story
+        await Assert.That(reason).DoesNotContain("restart");      // not the swap remedy
+    }
+
+    // Codex review P2 #3: a CLI genuinely replaced with an OUT-OF-RANGE version must be told about
+    // the range, not told to restart -- restarting re-advertises the same out-of-range version, so
+    // that remedy can never work.
+    [Test] public async Task An_out_of_range_replacement_reports_the_range_not_a_restart() {
+        var (ok, reason) = AgentOrchestrator.EvaluateReviewerCertification(
+            "claude", "9.9.9", Conn, Cert(expectedCliVersion: "2.1.212"));
+
+        await Assert.That(ok).IsFalse();
+        await Assert.That(reason).Contains("outside");
+        await Assert.That(reason).Contains(">=2.0.0 <3.0.0");
+        await Assert.That(reason).DoesNotContain("restart the daemon");
     }
 
     // Each arm names ITSELF. The old single message reported the certification revision -- which
@@ -81,14 +113,15 @@ public class ReviewerCertificationArmTests {
         await Assert.That(reason).Contains("retry");
     }
 
-    // The probe failing AND no advertised version: the message must say the probe failed rather than
-    // printing an empty string, which reads as "the CLI reports no version".
-    [Test] public async Task A_failed_probe_outside_range_says_the_probe_failed() {
+    // Probe failed AND nothing advertised: still the dedicated transient arm, never an empty-string
+    // version in the text (which would read as "the CLI reports no version").
+    [Test] public async Task A_failed_probe_with_no_advertisement_still_reports_the_probe() {
         var (ok, reason) = AgentOrchestrator.EvaluateReviewerCertification(
             "claude", null, Conn, Cert(expectedCliVersion: null));
 
         await Assert.That(ok).IsFalse();
-        await Assert.That(reason).Contains("version probe failed");
+        await Assert.That(reason).Contains("probe");
+        await Assert.That(reason).Contains("retry");
     }
 
     // No arm may claim the revision matched/mismatched -- the revision is equal on every failure
@@ -99,6 +132,7 @@ public class ReviewerCertificationArmTests {
             ("claude", "2.1.212", "conn-2", Cert()),
             ("claude", "2.9.9",   Conn,     Cert(expectedCliVersion: "2.1.212")),
             ("claude", "1.0.0",   Conn,     Cert(expectedCliVersion: null)),
+            ("claude", null,      Conn,     Cert(expectedCliVersion: "2.1.212")),
         }) {
             var (ok, reason) = AgentOrchestrator.EvaluateReviewerCertification(v, probed, conn, cert);
             await Assert.That(ok).IsFalse();
