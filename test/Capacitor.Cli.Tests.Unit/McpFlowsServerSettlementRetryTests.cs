@@ -14,7 +14,9 @@ namespace Capacitor.Cli.Tests.Unit;
 /// reached indirectly through HandleToolCallAsync).
 /// </summary>
 public class McpFlowsServerSettlementRetryTests {
-    static Func<TimeSpan, Task> NoDelay(List<TimeSpan> recorded) => ts => { recorded.Add(ts); return Task.CompletedTask; };
+    // Every wait in both retry lanes runs on the injected clock, so these tests are instant and
+    // the requested schedule is directly assertable (VirtualFlowRetryClock.Delays).
+    static VirtualFlowRetryClock Clock() => new();
 
     static JsonObject StartArguments() => new() {
         ["kind"]         = "code-review",
@@ -72,9 +74,10 @@ public class McpFlowsServerSettlementRetryTests {
               .RespondWith(Response.Create().WithStatusCode(200).WithBody("""{"flow_run_id":"f-new","status":"running"}"""));
         using var client = new HttpClient();
 
-        var delays = new List<TimeSpan>();
+        var clock = Clock();
         using var response = await McpFlowsServer.SendWithSettlementRetryAsync(
-            client, c => c.PostAsync($"{server.Url}/start", null), NoDelay(delays));
+            client, c => c.PostAsync($"{server.Url}/start", null), clock);
+        var delays = clock.Delays;
 
         await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.OK);
         await Assert.That(server.LogEntries.Count()).IsEqualTo(2);
@@ -96,9 +99,10 @@ public class McpFlowsServerSettlementRetryTests {
               .RespondWith(Response.Create().WithStatusCode(200).WithBody("""{"flow_run_id":"f-new","status":"running"}"""));
         using var client = new HttpClient();
 
-        var delays = new List<TimeSpan>();
+        var clock = Clock();
         using var response = await McpFlowsServer.SendWithSettlementRetryAsync(
-            client, c => c.PostAsync($"{server.Url}/start", null), NoDelay(delays));
+            client, c => c.PostAsync($"{server.Url}/start", null), clock);
+        var delays = clock.Delays;
 
         await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.OK);
         await Assert.That(server.LogEntries.Count()).IsEqualTo(2);
@@ -112,9 +116,10 @@ public class McpFlowsServerSettlementRetryTests {
                   """{"error":"flow_settlement_busy","message":"still racing"}"""));
         using var client = new HttpClient();
 
-        var delays = new List<TimeSpan>();
+        var clock = Clock();
         using var response = await McpFlowsServer.SendWithSettlementRetryAsync(
-            client, c => c.PostAsync($"{server.Url}/start", null), NoDelay(delays));
+            client, c => c.PostAsync($"{server.Url}/start", null), clock);
+        var delays = clock.Delays;
 
         await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.Conflict);
         // 3 total attempts (bounded), 2 waits in between.
@@ -133,9 +138,10 @@ public class McpFlowsServerSettlementRetryTests {
                   """{"error":"budget_unverifiable","message":"cannot verify spend"}"""));
         using var client = new HttpClient();
 
-        var delays = new List<TimeSpan>();
+        var clock = Clock();
         using var response = await McpFlowsServer.SendWithSettlementRetryAsync(
-            client, c => c.PostAsync($"{server.Url}/start", null), NoDelay(delays));
+            client, c => c.PostAsync($"{server.Url}/start", null), clock);
+        var delays = clock.Delays;
 
         await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.Conflict);
         await Assert.That(server.LogEntries.Count()).IsEqualTo(1); // no retry at all
@@ -149,9 +155,10 @@ public class McpFlowsServerSettlementRetryTests {
               .RespondWith(Response.Create().WithStatusCode(400).WithBody("plain text error, not JSON"));
         using var client = new HttpClient();
 
-        var delays = new List<TimeSpan>();
+        var clock = Clock();
         using var response = await McpFlowsServer.SendWithSettlementRetryAsync(
-            client, c => c.PostAsync($"{server.Url}/start", null), NoDelay(delays));
+            client, c => c.PostAsync($"{server.Url}/start", null), clock);
+        var delays = clock.Delays;
 
         await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.BadRequest);
         await Assert.That(server.LogEntries.Count()).IsEqualTo(1);

@@ -123,8 +123,10 @@ static class McpFlowsServer {
             string              baseUrl,
             string              cwd,
             string?             repoRoot,
-            RepositoryPayload?  repoInfo
+            RepositoryPayload?  repoInfo,
+            FlowRetryClock?     clock = null
         ) {
+        clock ??= FlowRetryClock.System;
         var paramsNode = request["params"]?.AsObject();
         var toolName   = paramsNode?["name"]?.GetValue<string>();
         var arguments  = paramsNode?["arguments"]?.AsObject();
@@ -163,12 +165,12 @@ static class McpFlowsServer {
                 using var postResponse = toolName switch {
                     "start_review_flow"   => wasModelStart
                         ? await SendWithRefreshRetryAsync(client, c => StartFlowAsync(c, apiRoot, arguments, cwd, repoRoot, repoInfo, kindArgName: "kind"))
-                        : await SendWithSettlementRetryAsync(client, c => StartFlowAsync(c, apiRoot, arguments, cwd, repoRoot, repoInfo, kindArgName: "kind"), Task.Delay),
+                        : await SendWithSettlementRetryAsync(client, c => StartFlowAsync(c, apiRoot, arguments, cwd, repoRoot, repoInfo, kindArgName: "kind"), clock),
                     "start_flow"          => wasModelStart
                         ? await SendWithRefreshRetryAsync(client, c => StartFlowAsync(c, apiRoot, arguments, cwd, repoRoot, repoInfo, kindArgName: "definition_id"))
-                        : await SendWithSettlementRetryAsync(client, c => StartFlowAsync(c, apiRoot, arguments, cwd, repoRoot, repoInfo, kindArgName: "definition_id"), Task.Delay),
-                    "submit_review_round" => await SendWithSettlementRetryAsync(client, c => SubmitRoundAsync(c, apiRoot, arguments, contextArgName: "context", participant: null, async: true), Task.Delay),
-                    _                     => await SendWithSettlementRetryAsync(client, c => SubmitRoundAsync(c, apiRoot, arguments, contextArgName: "message", participant: GetRequiredArg(arguments, "participant"), async: ParseAsyncArg(arguments)), Task.Delay)
+                        : await SendWithSettlementRetryAsync(client, c => StartFlowAsync(c, apiRoot, arguments, cwd, repoRoot, repoInfo, kindArgName: "definition_id"), clock),
+                    "submit_review_round" => await SendWithSettlementRetryAsync(client, c => SubmitRoundAsync(c, apiRoot, arguments, contextArgName: "context", participant: null, async: true), clock),
+                    _                     => await SendWithSettlementRetryAsync(client, c => SubmitRoundAsync(c, apiRoot, arguments, contextArgName: "message", participant: GetRequiredArg(arguments, "participant"), async: ParseAsyncArg(arguments)), clock)
                 };
 
                 var postBody = await postResponse.Content.ReadAsStringAsync();
@@ -218,7 +220,7 @@ static class McpFlowsServer {
                 if (!postResponse.IsSuccessStatusCode)
                     return BuildToolResult(id, FormatFlowStartError((int)postResponse.StatusCode, postBody, wasDynamicStart), isError: true);
 
-                var (payload, isError) = await ResolveRoundResultAsync(client, apiRoot, postBody, toolName, wasDynamicStart);
+                var (payload, isError) = await ResolveRoundResultAsync(client, apiRoot, postBody, toolName, wasDynamicStart, clock);
                 return BuildToolResult(id, payload, isError);
             }
 
@@ -249,7 +251,7 @@ static class McpFlowsServer {
                 // above, after the text is fully built — never before, never a superset.
                 var flowRunId = arguments?["flow_run_id"]?.GetValue<string>();
                 if (flowRunId is not null)
-                    await AckRenderedMessagesAsync(client, apiRoot, flowRunId, pendingIds, Task.Delay);
+                    await AckRenderedMessagesAsync(client, apiRoot, flowRunId, pendingIds, clock);
             } else if (toolName is "close_review_flow" or "close_flow") {
                 // E-c: render pending_messages but never ack them — the server delivers
                 // them atomically with the close, so there is nothing left to redeliver.
@@ -348,7 +350,7 @@ static class McpFlowsServer {
     /// attempt. Delay is injectable so unit tests run instantly.
     /// </summary>
     internal static async Task<HttpResponseMessage> SendWithSettlementRetryAsync(
-            HttpClient client, Func<HttpClient, Task<HttpResponseMessage>> send, Func<TimeSpan, Task> delay
+            HttpClient client, Func<HttpClient, Task<HttpResponseMessage>> send, FlowRetryClock clock
         ) {
         for (var attempt = 1;; attempt++) {
             var response = await SendWithRefreshRetryAsync(client, send);
@@ -361,7 +363,7 @@ static class McpFlowsServer {
                 return response;
 
             response.Dispose();
-            await delay(SettlementRetryDelay);
+            await clock.DelayAsync(SettlementRetryDelay);
         }
     }
 
@@ -795,11 +797,11 @@ static class McpFlowsServer {
     /// <paramref name="toolName"/> is the tool that initiated the round (one of
     /// start_review_flow/submit_review_round/start_flow/send_to_participant) — threaded through
     /// so the graceful-cap timeout message can point back at the matching status tool.</summary>
-    static async Task<PollResult> ResolveRoundResultAsync(HttpClient client, string apiRoot, string postBody, string toolName, bool wasDynamicStart) {
+    static async Task<PollResult> ResolveRoundResultAsync(HttpClient client, string apiRoot, string postBody, string toolName, bool wasDynamicStart, FlowRetryClock clock) {
         if (TryFormatRoundlessStart(postBody, out var roundlessPendingIds) is { } roundless) {
             if (roundlessPendingIds.Count > 0 &&
                 JsonNode.Parse(postBody)?.AsObject()?["flow_run_id"]?.GetValue<string>() is { } roundlessRunId)
-                await AckRenderedMessagesAsync(client, apiRoot, roundlessRunId, roundlessPendingIds, Task.Delay);
+                await AckRenderedMessagesAsync(client, apiRoot, roundlessRunId, roundlessPendingIds, clock);
 
             return new(roundless, false);
         }
@@ -815,12 +817,12 @@ static class McpFlowsServer {
 
             // flowRunId may be null here (unparseable body) — nothing to ack against.
             if (flowRunId is not null)
-                await AckRenderedMessagesAsync(client, apiRoot, flowRunId, pendingIds, Task.Delay);
+                await AckRenderedMessagesAsync(client, apiRoot, flowRunId, pendingIds, clock);
 
             return new(formatted, false);
         }
 
-        return await PollUntilTerminalAsync(client, apiRoot, flowRunId, roundNum.Value, toolName, wasDynamicStart);
+        return await PollUntilTerminalAsync(client, apiRoot, flowRunId, roundNum.Value, toolName, wasDynamicStart, clock);
     }
 
     /// <summary>Tool family that started the round determines which status tool the graceful-cap
@@ -830,9 +832,9 @@ static class McpFlowsServer {
     static string StatusToolNameFor(string toolName) =>
         toolName is "start_review_flow" or "submit_review_round" ? "get_review_flow_status" : "get_flow_status";
 
-    static async Task<PollResult> PollUntilTerminalAsync(HttpClient client, string apiRoot, string flowRunId, int roundNumber, string toolName, bool wasDynamicStart) {
+    static async Task<PollResult> PollUntilTerminalAsync(HttpClient client, string apiRoot, string flowRunId, int roundNumber, string toolName, bool wasDynamicStart, FlowRetryClock clock) {
         var url                   = $"{apiRoot}/api/flows/{Uri.EscapeDataString(flowRunId)}";
-        var pollStartedAt         = DateTimeOffset.UtcNow;
+        var pollStartedAt         = clock.UtcNow;
         var deadline              = pollStartedAt + PollCap;
         // Fix #3: anchor the 404 grace window to poll start, not to first-seen-404.
         var notFoundGraceDeadline = pollStartedAt + NotFoundGrace;
@@ -842,8 +844,8 @@ static class McpFlowsServer {
         // the network/5xx transient budget above, which uses the full 3s PollInterval.
         var settlementRetriesUsed = 0;
 
-        while (DateTimeOffset.UtcNow < deadline) {
-            using var getCts = new CancellationTokenSource(PerGetTimeout);
+        while (clock.UtcNow < deadline) {
+            using var getCts = clock.CreateTimeoutSource(PerGetTimeout);
             HttpResponseMessage resp;
             try {
                 resp = await SendWithRefreshRetryAsync(client, c => c.GetAsync(url, getCts.Token));
@@ -853,15 +855,15 @@ static class McpFlowsServer {
                 lastTransientError = ex.Message;
                 if (consecutiveTransient > MaxTransientRetries)
                     return new($"Error: poll failed after {MaxTransientRetries} consecutive network errors: {lastTransientError}", true);
-                await Task.Delay(PollInterval); continue;
+                await clock.DelayAsync(PollInterval); continue;
             }
 
             using (resp) {
                 if (resp.StatusCode == HttpStatusCode.NotFound) {
                     // Fix #3: 404 only gets the grace window anchored to poll start.
-                    if (DateTimeOffset.UtcNow > notFoundGraceDeadline)
+                    if (clock.UtcNow > notFoundGraceDeadline)
                         return new($"Error: flow_run_id {flowRunId} not found.", true);
-                    await Task.Delay(PollInterval); continue;
+                    await clock.DelayAsync(PollInterval); continue;
                 }
 
                 if (resp.StatusCode == HttpStatusCode.Unauthorized)
@@ -881,7 +883,7 @@ static class McpFlowsServer {
                             SettlementRetryableCodes.Contains(code!) &&
                             settlementRetriesUsed < MaxSettlementRetries - 1) {
                         settlementRetriesUsed++;
-                        await Task.Delay(SettlementRetryDelay);
+                        await clock.DelayAsync(SettlementRetryDelay);
                         continue;
                     }
 
@@ -894,7 +896,7 @@ static class McpFlowsServer {
                     lastTransientError = $"HTTP {statusCode}";
                     if (consecutiveTransient > MaxTransientRetries)
                         return new($"Error: poll failed after {MaxTransientRetries} consecutive server errors: {lastTransientError}", true);
-                    await Task.Delay(PollInterval); continue;
+                    await clock.DelayAsync(PollInterval); continue;
                 }
 
                 // Successful response — reset transient counters.
@@ -913,7 +915,7 @@ static class McpFlowsServer {
                 if (runStatus is "closed" or "failed") {
                     if (rn == roundNumber && rs is not null && TerminalRoundStatuses.Contains(rs)) {
                         var formatted = FormatPolledRoundResult(node!, flowRunId, out var pendingIds);
-                        await AckRenderedMessagesAsync(client, apiRoot, flowRunId, pendingIds, Task.Delay);
+                        await AckRenderedMessagesAsync(client, apiRoot, flowRunId, pendingIds, clock);
                         return new(formatted, false);
                     }
                     // Run became terminal before our round produced a result — explicit error.
@@ -923,11 +925,11 @@ static class McpFlowsServer {
                 // Only act on OUR round; an earlier projection may still show a prior round.
                 if (rn == roundNumber && rs is not null && TerminalRoundStatuses.Contains(rs)) {
                     var formatted = FormatPolledRoundResult(node!, flowRunId, out var pendingIds);
-                    await AckRenderedMessagesAsync(client, apiRoot, flowRunId, pendingIds, Task.Delay);
+                    await AckRenderedMessagesAsync(client, apiRoot, flowRunId, pendingIds, clock);
                     return new(formatted, false);
                 }
             }
-            await Task.Delay(PollInterval);
+            await clock.DelayAsync(PollInterval);
         }
 
         // Genuine 8-min cap: round still legitimately running.
@@ -1171,7 +1173,7 @@ static class McpFlowsServer {
     /// AFTER the response text has been fully formatted, passing only the ids that were actually
     /// rendered into that text — never before, never a superset. No-op (no HTTP call at all) when
     /// <paramref name="messageIds"/> is empty, which keeps this byte-compatible with servers that
-    /// predate the ack endpoint. Best-effort: one retry after <paramref name="delay"/>(2s) on any
+    /// predate the ack endpoint. Best-effort: one retry after 2s (on the injected <paramref name="clock"/>) on any
     /// failure (non-2xx or exception), then swallows and logs to stderr — the next status/round/
     /// close call will see the same messages still pending and re-render + re-ack them, so a lost
     /// ack only delays cleanup, it never drops a message.</summary>
@@ -1180,7 +1182,7 @@ static class McpFlowsServer {
             string                apiRoot,
             string                flowRunId,
             IReadOnlyList<string> messageIds,
-            Func<TimeSpan, Task>  delay
+            FlowRetryClock        clock
         ) {
         if (messageIds.Count == 0) return;
 
@@ -1194,7 +1196,7 @@ static class McpFlowsServer {
                 // round endpoints), so an unbounded ack POST could hang the tool response the
                 // driver is waiting on. A timeout surfaces as OperationCanceledException, which
                 // falls into the existing swallow-and-retry-once path below.
-                using var postCts = new CancellationTokenSource(PerAckPostTimeout);
+                using var postCts = clock.CreateTimeoutSource(PerAckPostTimeout);
                 using var response = await SendWithRefreshRetryAsync(
                     client,
                     c => c.PostAsync(url, JsonContent.Create(body, McpJsonContext.Default.AckFlowMessagesDto), postCts.Token)
@@ -1207,7 +1209,7 @@ static class McpFlowsServer {
 
         if (await TryPostAsync()) return;
 
-        await delay(TimeSpan.FromSeconds(2));
+        await clock.DelayAsync(TimeSpan.FromSeconds(2));
 
         if (await TryPostAsync()) return;
 

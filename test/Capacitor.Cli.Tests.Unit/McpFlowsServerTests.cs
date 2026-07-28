@@ -9,7 +9,9 @@ using WireMock.Server;
 namespace Capacitor.Cli.Tests.Unit;
 
 public class McpFlowsServerTests {
-    static Func<TimeSpan, Task> NoDelay(List<TimeSpan> recorded) => ts => { recorded.Add(ts); return Task.CompletedTask; };
+    // The ack retry's 2s wait now runs on the injected clock, so these tests stay instant while
+    // still asserting the real schedule (VirtualFlowRetryClock.Delays records every requested wait).
+    static VirtualFlowRetryClock Clock() => new();
 
     [Test]
     public async Task start_review_flow_description_discloses_the_paid_hosted_reviewer() {
@@ -251,7 +253,7 @@ public class McpFlowsServerTests {
               .RespondWith(Response.Create().WithStatusCode(200));
         using var client = new HttpClient();
 
-        await McpFlowsServer.AckRenderedMessagesAsync(client, server.Url!, "f1", ["m1", "m2"], NoDelay([]));
+        await McpFlowsServer.AckRenderedMessagesAsync(client, server.Url!, "f1", ["m1", "m2"], Clock());
 
         await Assert.That(server.LogEntries.Count()).IsEqualTo(1);
         var body = server.LogEntries.Single().RequestMessage.Body!;
@@ -268,8 +270,9 @@ public class McpFlowsServerTests {
               .RespondWith(Response.Create().WithStatusCode(500));
         using var client = new HttpClient();
 
-        var delays = new List<TimeSpan>();
-        await McpFlowsServer.AckRenderedMessagesAsync(client, server.Url!, "f1", ["m1"], NoDelay(delays));
+        var clock = Clock();
+        await McpFlowsServer.AckRenderedMessagesAsync(client, server.Url!, "f1", ["m1"], clock);
+        var delays = clock.Delays;
 
         await Assert.That(server.LogEntries.Count()).IsEqualTo(2);
         await Assert.That(delays).HasCount().EqualTo(1);
@@ -290,8 +293,9 @@ public class McpFlowsServerTests {
               .RespondWith(Response.Create().WithStatusCode(200).WithDelay(TimeSpan.FromMilliseconds(300)));
         using var client = new HttpClient { Timeout = TimeSpan.FromMilliseconds(50) };
 
-        var delays = new List<TimeSpan>();
-        await McpFlowsServer.AckRenderedMessagesAsync(client, server.Url!, "f1", ["m1"], NoDelay(delays));
+        var clock = Clock();
+        await McpFlowsServer.AckRenderedMessagesAsync(client, server.Url!, "f1", ["m1"], clock);
+        var delays = clock.Delays;
 
         // No exception propagated, and the retry-after-delay path still ran once — i.e. both the
         // initial attempt and the retry timed out and were swallowed rather than thrown.
@@ -303,7 +307,7 @@ public class McpFlowsServerTests {
         using var server = WireMockServer.Start();
         using var client = new HttpClient();
 
-        await McpFlowsServer.AckRenderedMessagesAsync(client, server.Url!, "f1", [], NoDelay([]));
+        await McpFlowsServer.AckRenderedMessagesAsync(client, server.Url!, "f1", [], Clock());
 
         await Assert.That(server.LogEntries.Count()).IsEqualTo(0);
     }
@@ -335,7 +339,7 @@ public class McpFlowsServerTests {
               .RespondWith(Response.Create().WithStatusCode(200));
         using var client = new HttpClient();
 
-        await McpFlowsServer.AckRenderedMessagesAsync(client, server.Url!, "f1", pendingIds, NoDelay([]));
+        await McpFlowsServer.AckRenderedMessagesAsync(client, server.Url!, "f1", pendingIds, Clock());
 
         await Assert.That(server.LogEntries.Count()).IsEqualTo(1);
         var ackBody = server.LogEntries.Single().RequestMessage.Body!;
