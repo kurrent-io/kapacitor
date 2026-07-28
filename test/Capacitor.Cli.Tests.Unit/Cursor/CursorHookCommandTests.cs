@@ -812,14 +812,11 @@ public class CursorHookCommandTests {
         var handler = new CancelAwareHandler();
         using var neverRespondingClient = new HttpClient(handler);
 
-        // Nothing here is derived from wall clock. memoryBudgetOverride pins what the memory stage
-        // gets (a runner slow enough to exhaust a derived budget would trip the no-budget guard and
-        // skip the very path under test); the stub resolver keeps a git spawn from eating that
-        // budget before the fetch is reached; and the total budget is generous so the outer
-        // deadline can never pre-empt the inner phase. The whole 250ms therefore belongs to the
-        // fetch — which is also all this test costs in wall time.
+        // Nothing here is wall-clock derived: the override pins the memory stage's budget, the stub
+        // resolver keeps a git spawn out of it, and budgetTotal sits far enough above the inner
+        // phase that the outer deadline can't pre-empt it. The 250ms is the cancellation window.
         var exit1 = await CursorHookCommand.HandleCore(
-            fx.Client, "http://localhost", new StringReader(payload), fx.Spool, TimeSpan.FromSeconds(60),
+            fx.Client, "http://localhost", new StringReader(payload), fx.Spool, TimeSpan.FromSeconds(15),
             memoryClientFactory: (_, _) => Task.FromResult(neverRespondingClient),
             memoryStoreFactory: storeFactory,
             memoryBudgetOverride: TimeSpan.FromMilliseconds(250),
@@ -836,9 +833,9 @@ public class CursorHookCommandTests {
         fx.MemoryIndexBody = "[]";
 
         var exit2 = await CursorHookCommand.HandleCore(
-            fx.Client, "http://localhost", new StringReader(payload), fx.Spool, TimeSpan.FromSeconds(60),
+            fx.Client, "http://localhost", new StringReader(payload), fx.Spool, TimeSpan.FromSeconds(15),
             memoryStoreFactory: storeFactory,
-            memoryBudgetOverride: TimeSpan.FromSeconds(30),
+            memoryBudgetOverride: TimeSpan.FromSeconds(10),
             memoryScopeResolver: new StubScopeResolver());
         await Assert.That(exit2).IsEqualTo(0);
         // The index GET fires again on fx.Client — proving the first, cancelled attempt's
@@ -846,9 +843,8 @@ public class CursorHookCommandTests {
         await Assert.That(fx.MemoryIndexRequested).IsTrue();
     }
 
-    // The other side of the guard the test above deliberately stays clear of: a sessionStart that
-    // reaches the memory stage with nothing left of the budget skips the fetch outright and still
-    // emits its single {} — an asserted outcome here rather than an unnoticed pass over there.
+    // The other side of that guard, asserted rather than left to a runner: no budget left means no
+    // fetch, and the sessionStart still emits its single {}.
     [Test, NotInParallel]
     public async Task ExhaustedMemoryBudget_skips_the_fetch_and_still_emits() {
         using var fx = new Fixture();
@@ -862,7 +858,7 @@ public class CursorHookCommandTests {
         try {
             Console.SetOut(stdoutWriter);
             var exit = await CursorHookCommand.HandleCore(
-                fx.Client, "http://localhost", new StringReader(payload), fx.Spool, TimeSpan.FromSeconds(60),
+                fx.Client, "http://localhost", new StringReader(payload), fx.Spool, TimeSpan.FromSeconds(15),
                 memoryStoreFactory: () => new SessionStartMemoryLeaseStore(fx.MemoryStoreRoot, new ManualTimeProvider()),
                 memoryBudgetOverride: TimeSpan.Zero);
 
@@ -1074,8 +1070,7 @@ public class CursorHookCommandTests {
     // rather than committing a spurious "completed" record.
     sealed class CancelAwareHandler : HttpMessageHandler {
         volatile bool _entered;
-        // Lets a test distinguish "the fetch was reached and cancelled" from "the fetch was
-        // never made at all" — outcomes this handler is otherwise indistinguishable between.
+        // Separates "reached and cancelled" from "never fetched at all" — otherwise identical here.
         public bool Entered => _entered;
 
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct) {

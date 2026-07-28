@@ -515,8 +515,7 @@ public static class CursorHookCommand {
         // With no authoritative workspace root there is no safe scope, so skip injection entirely.
         if (string.IsNullOrWhiteSpace(workspaceRoot)) return null;
 
-        // Wall-clock derived in production; pinned by tests that must land on a KNOWN side of the
-        // no-budget guard below rather than on whatever a loaded CI runner leaves over.
+        // Overridable so a test picks its side of the guard below, not the runner's load.
         var memBudget = memoryBudgetOverride ?? (budgetTotal - sw.Elapsed - HookBudget.Safety);
         if (memBudget <= TimeSpan.Zero) return null;
 
