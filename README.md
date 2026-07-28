@@ -20,7 +20,7 @@
   - Reviewing: [review](#pr-review-with-full-context) · [curate](#curate-guidelines)
   - MCP servers: [sessions](#sessions-mcp-server-for-agents) · [flows](#flows-mcp-server-for-agents) · [flow-result](#flow-result-mcp-server-hosted-reviewers) · [memory](#memory-mcp-server-for-agents)
   - Importing: [import](#loading-historical-sessions) · [remap](#renamed-repo-directories-kcap-remap)
-  - Agents & daemon: [daemon](#daemon) · [run-agent / attach / ls](#local-agents-run-agent--attach--ls) · [repos](#repository-paths)
+  - Agents & daemon: [daemon](#daemon) · [agent](#local-agents-kcap-agent) · [repos](#repository-paths)
   - Account: [projects](#projects) · [profiles](#profiles) · [config](#configuration) · [uninstall](#uninstalling) · [other](#other-commands)
 - [License](#license)
 
@@ -233,7 +233,7 @@ At a glance — each links to its section below:
 | [`kcap mcp <server>`](#sessions-mcp-server-for-agents) | Run an MCP server (sessions / flows / memory / …) for agents |
 | [`kcap curate apply`](#curate-guidelines) | Sync promoted guidelines into `CLAUDE.md` / `AGENTS.md` |
 | [`kcap daemon …`](#daemon) | Run and manage the agent daemon |
-| [`kcap run-agent` / `attach` / `ls`](#local-agents-run-agent--attach--ls) | Start and re-attach daemon-hosted local agents |
+| [`kcap agent`](#local-agents-kcap-agent) | Start, list, attach to, and stop daemon-hosted agents |
 | [`kcap repos`](#repository-paths) | Manage known repo paths for the launch dialog |
 | [`kcap projects` / `project`](#projects) | List and inspect projects |
 | [`kcap profile` / `use`](#profiles) | Manage and switch between servers/profiles |
@@ -908,29 +908,34 @@ A daemon killed by an uncatchable `SIGKILL` (macOS **jetsam** / Linux **OOM**, `
 - **`~/.config/kcap/daemon.out.log`** — a background (`-d`) daemon reopens its stdout/stderr onto this file, so a runtime "Fatal error." dump or native crash message (which bypasses the normal `daemon.log` pipeline) is captured here. (`kcap daemon start -d` wires this up automatically by passing the daemon a `--stderr-file` flag; you don't set it yourself.) A service-managed daemon captures the same output via its service log. An empty file means nothing was written to stderr — i.e. a `SIGKILL`, not a crash.
 - **Startup breadcrumb** — when a daemon starts and finds the previous instance's lock was left for the kernel to release (the signature of an uncatchable kill), it logs a `warning` to `daemon.log` naming the dead PID. If you see this recur, run the daemon as a service (`kcap daemon service install`) so it auto-restarts instead of staying down.
 
-### Local agents (run-agent / attach / ls)
+### Local agents (`kcap agent`)
 
 Start a coding agent from your own terminal that the daemon hosts for you. Because the daemon owns the agent (not your terminal), you can **detach and the agent keeps running**, then **re-attach later** — like `tmux` for your coding agent.
 
 ```bash
-kcap run-agent claude                       # start Claude in the current directory, attached
-kcap run-agent claude -- --model opus       # everything after `--` is passed to the agent CLI verbatim
-kcap run-agent codex --worktree -- -m gpt-5 # run in an isolated git worktree instead of in place
-kcap run-agent claude --detached            # start without attaching; prints the agent id
+kcap agent start claude                       # start Claude in the current directory, attached
+kcap agent start claude -- --model opus       # everything after `--` is passed to the agent CLI verbatim
+kcap agent start codex --worktree -- -m gpt-5 # run in an isolated git worktree instead of in place
+kcap agent start claude -d                    # start without attaching; prints the agent id
 ```
 
-- **`--` boundary:** flags before `--` are kcap's; everything after `--` is forwarded to the `claude`/`codex` CLI unchanged. kcap flags: `--worktree`, `--private`, `--name <daemon>`, `--detached`.
+- **`--` boundary:** flags before `--` are kcap's; everything after `--` is forwarded to the `claude`/`codex` CLI unchanged. kcap flags: `--worktree`, `--private`, `--daemon <name>`, `-d`/`--detach`.
 - **Visibility:** by default the agent is **registered with the server**, so it appears in your own web UI immediately and you can drive it from the browser — start in the terminal, continue from anywhere. It is **visible only to you** until you share it. Pass `--private` to keep it purely local: unregistered, not streamed to the server, and not shown in the web UI.
 - **Work location:** by default the agent runs **in place in your current directory** (it edits your real files). Pass `--worktree` to run in a throwaway git worktree instead.
 - **Detach** without stopping the agent with the prefix key **`Ctrl-Q` then `d`**. The agent keeps running in the daemon.
 - **Permissions:** for a registered agent, permission prompts appear in the web UI (the same dialog as hosted agents); with `--private`, prompts are answered natively in your terminal.
 
 ```bash
-kcap ls                 # list daemon-hosted agents (id, status, repo)
-kcap attach <agent-id>  # re-attach your terminal to a running agent
+kcap agent                 # no subcommand — same as `kcap agent ls`
+kcap agent ls              # list daemon-hosted agents (id, status, repo)
+kcap agent attach ab12     # re-attach your terminal (any unique id prefix works)
+kcap agent stop ab12       # graceful /exit, then terminate
+kcap agent stop --all -y   # stop every agent this daemon hosts, no prompt
 ```
 
-`run-agent` auto-starts the daemon if one isn't already running. It needs a configured server (like the rest of kcap) — it is not an offline command. A locally-started agent now appears in **your own** web UI (owner-only until you share it from the web UI); use `--private` to opt out of registration entirely. Unix only for now.
+Agent ids are long, so `attach` and `stop` accept **any unique prefix** — an ambiguous one lists the candidates instead of guessing. `stop --all` includes `--private` agents and prompts for confirmation unless you pass `-y`.
+
+`agent start` auto-starts the daemon if one isn't already running. It needs a configured server (like the rest of kcap) — it is not an offline command. A locally-started agent appears in **your own** web UI (owner-only until you share it from the web UI); use `--private` to opt out of registration entirely. Unix only for now.
 
 ### Repository paths
 
