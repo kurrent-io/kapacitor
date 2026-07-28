@@ -330,6 +330,57 @@ public class SequencedCommandProcessorTests {
         await Assert.That(p.LastProcessedSeq).IsEqualTo(1L);
     }
 
+    // A rejection is a NOTIFICATION, never the settlement fact. A throwing _sendRejected used to escape
+    // RunLaneAsync -- killing the single serial consumer, leaving the command nonterminal, stranding its
+    // submitter, and blocking every queued command. Same stranded-capacity class as the ack case.
+    [Test] public async Task A_throwing_rejection_send_neither_faults_the_lane_nor_loses_the_settlement() {
+        var h = new Harness();
+        await using var p = new SequencedCommandProcessor(
+            "e1", _ => AgentLiveness.Live,
+            a => { lock (h.Acks) h.Acks.Add(a); return Task.CompletedTask; },
+            _ => throw new InvalidOperationException("rejection send blew up"),
+            NullLogger.Instance);
+
+        // A LaunchRejected outcome takes the rejection-send path.
+        var settled = p.SubmitAsync(h.Launch(1), () => Task.FromResult(
+            new CommandOutcome(CommandOutcomeKind.LaunchRejected, "a1", null, CommandRejectedReason.DaemonCapacity)));
+        var finished = await Task.WhenAny(settled, Task.Delay(TimeSpan.FromSeconds(10)));
+        await Assert.That(finished == settled)
+            .IsTrue().Because("the lane faulted on the rejection-send throw and never resolved the submitter's Done");
+        await settled;
+
+        // The settlement fact survived the failed announcement, and the terminal ack still went out.
+        await Assert.That(p.LastProcessedSeq).IsEqualTo(1L);
+        await Assert.That(h.Acks.Count(a => a.State == CommandAckState.Processed)).IsEqualTo(1);
+
+        // The lane is still alive for the next command.
+        await p.SubmitAsync(h.Launch(2), () => Task.FromResult(new CommandOutcome(CommandOutcomeKind.LaunchExecuted)));
+        await Assert.That(p.LastProcessedSeq).IsEqualTo(2L);
+    }
+
+    // The in-progress duplicate answer: sent outside the lock and contained, so a transport throw cannot
+    // escape SubmitAsync into the hub or run inside the processor's critical section.
+    [Test] public async Task A_throwing_accepted_ack_send_does_not_escape_an_in_progress_duplicate() {
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var p = new SequencedCommandProcessor(
+            "e1", _ => AgentLiveness.Live,
+            _ => throw new InvalidOperationException("ack send blew up"),
+            _ => Task.CompletedTask, NullLogger.Instance);
+
+        var item = new SequencedItem(SequencedKind.Launch, "e1", 1, "cmd1", "a1");
+        var first = p.SubmitAsync(item, async () => {
+            await release.Task;
+            return new CommandOutcome(CommandOutcomeKind.LaunchExecuted);
+        });
+
+        // While the first is still executing, the duplicate takes the !Processed (Accepted) arm.
+        await p.SubmitAsync(item, () => Task.FromResult(new CommandOutcome(CommandOutcomeKind.LaunchExecuted)));
+
+        release.SetResult();
+        await first;
+        await Assert.That(p.LastProcessedSeq).IsEqualTo(1L);
+    }
+
     // A duplicate of a non-rejected (executed) command has no cached reject reason -> null RejectionReason.
     [Test] public async Task Duplicate_of_an_executed_launch_has_no_rejection_reason() {
         var h = new Harness(); await using var p = h.P();
