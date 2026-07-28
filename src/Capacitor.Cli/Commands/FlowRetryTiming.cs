@@ -5,8 +5,7 @@ namespace Capacitor.Cli.Commands;
 /// <c>SendWithSettlementRetryAsync</c> (POST) and <c>PollUntilTerminalAsync</c> (poll). Every clock
 /// read, delay and timeout source routes through here so tests drive a virtual clock instead of
 /// wall-clock sleeps or pre-cancelled tokens standing in for the real deadline logic. Production is
-/// backed by <see cref="TimeProvider.System"/>. See
-/// docs/superpowers/specs/2026-07-25-ai1526-concurrent-launch-settlement-admission-design.md (3.2 G).
+/// backed by <see cref="TimeProvider.System"/>.
 /// </summary>
 internal class FlowRetryClock {
     readonly TimeProvider _time;
@@ -66,8 +65,7 @@ internal sealed class FlowDeadlineScope : IDisposable {
 /// First retry is therefore 250–500ms and steady state 5–10s.
 ///
 /// <para>Only the schedule is shared: each lane keeps its own budget semantics and passes its own
-/// remaining budget in, so a policy delay can never overshoot either. See
-/// docs/superpowers/specs/2026-07-25-ai1526-concurrent-launch-settlement-admission-design.md (3.2 G).</para>
+/// remaining budget in, so a policy delay can never overshoot either.</para>
 /// </summary>
 internal sealed class SettlementBackoff {
     internal static readonly TimeSpan BaseDelay = TimeSpan.FromMilliseconds(500);

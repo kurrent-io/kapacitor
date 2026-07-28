@@ -387,8 +387,28 @@ public class McpFlowsServerSettlementRetryTests {
 
         await Assert.That(text).Contains("1 attempt over 3m");
         await Assert.That(text).DoesNotContain("Last server message");
-        // An attempt that never read a coded body still names the code this lane exists to absorb.
+        // An attempt that never read a coded body still names the code this lane exists to absorb --
+        // agents match on the token, so it stays stable.
         await Assert.That(text).StartsWith("Error (flow_settlement_busy)");
+
+        // ...but it must NOT claim the daemon was settling. Nothing observed that: the deadline
+        // cancelled the request before any coded response was parsed, and presenting the client's own
+        // default as a server verdict is what the README used to describe.
+        await Assert.That(text).Contains("this client's default");
+        await Assert.That(text).DoesNotContain("still settling a prior launch");
+    }
+
+    // The other side of the discriminator: once a coded response HAS been seen, the cause is a real
+    // observation and must still be stated.
+    [Test]
+    public async Task Deadline_error_states_the_settling_cause_when_a_coded_response_was_actually_seen() {
+        var text = McpFlowsServer.FormatSettlementDeadlineError(
+            new McpFlowsServer.SettlementSendResult.DeadlineExhausted(
+                "flow_settlement_busy", "daemon busy", 6, TimeSpan.FromMinutes(3)));
+
+        await Assert.That(text).Contains("still settling a prior launch");
+        await Assert.That(text).DoesNotContain("this client's default");
+        await Assert.That(text).Contains("Last server message: daemon busy");
     }
 
     // === Wired into the start path via HandleToolCallAsync (full dispatch) ===

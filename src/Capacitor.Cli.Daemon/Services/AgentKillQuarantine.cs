@@ -29,9 +29,8 @@ internal sealed class AgentKillQuarantine(ILogger logger) {
     /// <summary>Quarantine an agent whose death is unconfirmed (idempotent per agent id).</summary>
     public void Add(Entry entry) => _entries[entry.AgentId] = entry;
 
-    /// <summary>Allocation-free membership test — the lifecycle-state read (<c>ReadLiveness</c>) runs on
-    /// every settled command's ack, so it must not pay for a <see cref="Snapshot"/> projection just to
-    /// answer "is this id quarantined?".</summary>
+    /// <summary>Allocation-free membership test — <c>ReadLiveness</c> runs on every settled command's
+    /// ack and must not pay for a <see cref="Snapshot"/> projection to answer one id.</summary>
     public bool IsQuarantined(string agentId) => _entries.ContainsKey(agentId);
 
     /// <summary>Snapshot for <c>DaemonStatusReport.Quarantined</c>.</summary>

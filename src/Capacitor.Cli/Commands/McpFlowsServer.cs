@@ -858,14 +858,24 @@ static class McpFlowsServer {
     /// fact that retrying is still the right move. Only the POST lane can produce this; the poll
     /// lane has its own graceful-cap message and its own budget.</summary>
     internal static string FormatSettlementDeadlineError(SettlementSendResult.DeadlineExhausted exhausted) {
-        var code    = exhausted.LastCode ?? "flow_settlement_busy";
         var attempts = exhausted.Attempts == 1 ? "1 attempt" : $"{exhausted.Attempts} attempts";
         var elapsed  = FormatElapsed(exhausted.Elapsed);
         var detail   = string.IsNullOrWhiteSpace(exhausted.LastMessage) ? "" : $" Last server message: {exhausted.LastMessage}";
 
-        return $"Error ({code}): gave up after {attempts} over {elapsed} — the daemon is still settling " +
-               $"a prior launch and could not admit this one in time. This is retryable: try again in a " +
-               $"minute, or check for another review flow already running against the same daemon.{detail}";
+        // LastCode is null when the deadline cancelled an in-flight request before ANY coded response
+        // was parsed — the very first attempt can time out. Claiming "the daemon is still settling"
+        // there states a cause this client never observed, and printing the default code in the
+        // Error(...) position reads as though the server sent it. Keep the code token stable (agents
+        // match on it) but say plainly where it came from.
+        var code  = exhausted.LastCode ?? "flow_settlement_busy";
+        var cause = exhausted.LastCode is null
+            ? "no coded response arrived before the deadline, so the code above is this client's " +
+              "default rather than something the server reported"
+            : "the daemon is still settling a prior launch and could not admit this one in time";
+
+        return $"Error ({code}): gave up after {attempts} over {elapsed} — {cause}. This is retryable: " +
+               $"try again in a minute, or check for another review flow already running against the " +
+               $"same daemon.{detail}";
     }
 
     /// <summary>Compact, stable elapsed rendering for the deadline message (e.g. "3m", "2m 30s",

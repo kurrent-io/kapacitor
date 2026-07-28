@@ -78,11 +78,8 @@ internal sealed class SequencedCommandProcessor : IAsyncDisposable {
             SendContained(() => _sendAck(new CommandAck(_epoch, item.Seq, item.CommandId, CommandAckState.Accepted)),
                 item.Seq, "accepted ack");
 
-        // _readLiveness is NEVER invoked under _lock (see BuildProcessedAck): the cached outcome is
-        // captured above, the ack is built and sent here — through the same containment the lane's
-        // proactive send uses, because this is the RECOVERY path (the server retransmitting a command
-        // whose terminal ack it never received) and an escaping throw here would surface in the hub
-        // handler while leaving the server's capacity slot held.
+        // Recovery path: the server retransmitting a command whose terminal ack it never received.
+        // Built and sent outside _lock, contained — see SendSettledAck.
         if (replay is { } outcome) SendSettledAck(item, outcome);
 
         return result;
@@ -147,12 +144,11 @@ internal sealed class SequencedCommandProcessor : IAsyncDisposable {
     /// The CACHED rejection reason rides along so a rejected launch stays distinguishable as daemon_capacity
     /// (requeue) vs semantic (fail) — the exact lost-rejection case the identity cache answers.
     ///
-    /// <para>MUST NOT be called under <c>_lock</c>. <c>CurrentState</c> is read LIVE at ack time through the
-    /// readLiveness delegate, which in production walks the orchestrator's lifecycle collections; every
-    /// settled command reaches this, so holding <c>_lock</c> across it would put that read on the critical
-    /// path of concurrent <see cref="SubmitAsync"/>/<see cref="AckPrefix"/> callers. Both callers record the
-    /// outcome in the cache first and build the ack after releasing the lock, which preserves the ordering
-    /// that matters: an ack can never advertise an outcome the cache has not recorded.</para></summary>
+    /// <para>MUST NOT be called under <c>_lock</c>: <c>CurrentState</c> is read live through the
+    /// readLiveness delegate, which walks the orchestrator's lifecycle collections, and every settled
+    /// command reaches this — holding the lock across it would put that read on the critical path of
+    /// concurrent <see cref="SubmitAsync"/>/<see cref="AckPrefix"/> callers. Both callers commit the
+    /// outcome to the cache first, so an ack can never advertise an outcome the cache lacks.</para></summary>
     CommandAck BuildProcessedAck(SequencedItem item, CommandOutcome outcome) {
         var live   = _readLiveness(outcome.AgentId ?? item.AgentId);
         var reason = outcome.RejectReason is { } r ? RejectReasonWireToken(r) : null;
@@ -330,8 +326,7 @@ internal sealed class SequencedCommandProcessor : IAsyncDisposable {
                 // whole window. The server's ack handler is idempotent against replays and unknown/stale
                 // acks, so older servers accept it too and simply retire the slot earlier.
                 //
-                // Built AFTER the cache entry is marked Processed (so the ack can never advertise an
-                // outcome the cache has not recorded) but OUTSIDE the lock — see BuildProcessedAck.
+                // Built AFTER the cache commit above, outside the lock — see SendSettledAck.
                 SendSettledAck(li.Item, outcome);
             } catch (Exception ex) {
                 // Deliberately swallow-and-continue. Every diagnostic here is itself guarded, because
