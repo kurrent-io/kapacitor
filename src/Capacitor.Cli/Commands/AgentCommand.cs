@@ -6,6 +6,9 @@ using Capacitor.Cli.Local;
 
 namespace Capacitor.Cli.Commands;
 
+/// One row of the daemon's agent table (`id\tstatus\tcwd` on the wire).
+internal readonly record struct AgentRow(string Id, string Status, string Repo);
+
 /// <summary>
 /// `kcap agent start|ls|stop|attach` — drive daemon-hosted agents from the local
 /// terminal over the daemon's local control socket.
@@ -64,8 +67,7 @@ internal static class AgentCommand {
             return 1;
         }
 
-        var agentId = args[0];
-        var sock    = LocalSocketPaths.Socket(ResolveName(NameFrom(args)));
+        var sock = LocalSocketPaths.Socket(ResolveName(NameFrom(args)));
 
         if (!File.Exists(sock)) {
             await Console.Error.WriteLineAsync($"kcap: no daemon socket at {sock}");
@@ -73,7 +75,23 @@ internal static class AgentCommand {
             return 1;
         }
 
+        var agentId = await ResolveOrReportAsync(sock, args[0]);
+        if (agentId is null) return 1;
+
         return await LocalAgentClient.RunAsync(sock, new LocalFrame(FrameType.Attach) { Text = agentId }, CancellationToken.None);
+    }
+
+    /// <summary>Resolves an id or prefix, printing the reason and returning null on failure.</summary>
+    static async Task<string?> ResolveOrReportAsync(string sock, string given) {
+        if (IsFullAgentId(given)) return given; // skip the round-trip; ResolveAgentId agrees
+
+        var agents = await FetchAgentsAsync(sock);
+        if (agents is null) return null;
+
+        var (id, error) = ResolveAgentId(agents, given);
+        if (error is not null) await Console.Error.WriteLineAsync($"kcap: {error}");
+
+        return id;
     }
 
     static async Task<int> ListAsync(string[] args) {
@@ -85,6 +103,23 @@ internal static class AgentCommand {
             return 0;
         }
 
+        var agents = await FetchAgentsAsync(sock);
+        if (agents is null) return 1;
+
+        if (agents.Count == 0) {
+            Console.WriteLine("No agents.");
+
+            return 0;
+        }
+
+        Console.WriteLine($"{"AGENT",-34} {"STATUS",-10} REPO");
+        foreach (var a in agents) Console.WriteLine($"{a.Id,-34} {a.Status,-10} {a.Repo}");
+
+        return 0;
+    }
+
+    /// <summary>Asks the daemon for its agent table. Returns null after reporting a transport error.</summary>
+    static async Task<IReadOnlyList<AgentRow>?> FetchAgentsAsync(string sock) {
         try {
             using var socket = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
             await socket.ConnectAsync(new UnixDomainSocketEndPoint(sock));
@@ -93,23 +128,16 @@ internal static class AgentCommand {
             await FrameCodec.WriteAsync(stream, new LocalFrame(FrameType.List), default);
             var resp = await FrameCodec.ReadAsync(stream, default);
 
-            if (resp is null || resp.Type != FrameType.AgentList || resp.Text.Length == 0) {
-                Console.WriteLine("No agents.");
+            if (resp is null || resp.Type != FrameType.AgentList || resp.Text.Length == 0) return [];
 
-                return 0;
-            }
-
-            Console.WriteLine($"{"AGENT",-34} {"STATUS",-10} REPO");
-            foreach (var line in resp.Text.Split('\n')) {
-                var parts = line.Split('\t');
-                if (parts.Length == 3) Console.WriteLine($"{parts[0],-34} {parts[1],-10} {parts[2]}");
-            }
-
-            return 0;
+            return [.. resp.Text.Split('\n')
+                .Select(l => l.Split('\t'))
+                .Where(p => p.Length == 3)
+                .Select(p => new AgentRow(p[0], p[1], p[2]))];
         } catch (Exception ex) when (ex is SocketException or IOException) {
             await Console.Error.WriteLineAsync($"kcap: cannot reach daemon: {ex.Message}");
 
-            return 1;
+            return null;
         }
     }
 
@@ -182,6 +210,26 @@ internal static class AgentCommand {
         var i = Array.IndexOf(args, "--daemon");
 
         return i >= 0 && i + 1 < args.Length ? args[i + 1] : null;
+    }
+
+    /// <summary>A full agent id as minted by `Guid.NewGuid().ToString("N")`.</summary>
+    internal static bool IsFullAgentId(string s) => s.Length == 32 && s.All(char.IsAsciiHexDigit);
+
+    /// <summary>
+    /// A full 32-hex id is used verbatim — it may name an agent that survived a previous
+    /// daemon incarnation and so is absent from the live list, which the daemon can still
+    /// reap by PID record. Anything shorter is a prefix and must match exactly one agent.
+    /// </summary>
+    internal static (string? Id, string? Error) ResolveAgentId(IReadOnlyList<AgentRow> agents, string given) {
+        if (IsFullAgentId(given)) return (given, null);
+
+        var hits = agents.Where(a => a.Id.StartsWith(given, StringComparison.OrdinalIgnoreCase)).ToList();
+
+        return hits.Count switch {
+            1 => (hits[0].Id, null),
+            0 => (null, $"no agent matching '{given}'"),
+            _ => (null, $"'{given}' matches {hits.Count} agents:{string.Concat(hits.Select(h => $"\n  {h.Id}  {h.Repo}"))}"),
+        };
     }
 
     static (ushort Cols, ushort Rows) TermSize() {
