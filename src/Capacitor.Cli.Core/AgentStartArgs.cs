@@ -38,7 +38,11 @@ public sealed class AgentStartArgs {
                 case "-d" or "--detach":  r.Detached = true; break;
                 case "--private":         r.Private  = true; break;
                 case "--daemon":
-                    if (i + 1 >= kcap.Length) { r.Error = "--daemon requires a value"; return r; }
+                    if (i + 1 >= kcap.Length || string.IsNullOrEmpty(kcap[i + 1]) || kcap[i + 1].StartsWith('-')) {
+                        r.Error = "--daemon requires a value";
+
+                        return r;
+                    }
 
                     r.DaemonName = kcap[++i];
 

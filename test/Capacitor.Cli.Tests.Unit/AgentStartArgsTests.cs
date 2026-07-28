@@ -71,6 +71,22 @@ public class AgentStartArgsTests {
     }
 
     [Test]
+    public async Task Daemon_flag_followed_by_another_flag_is_an_error_not_passed_through() {
+        // Without the fix, `--daemon --private` would set DaemonName = "--private" and crash
+        // later in DaemonNameResolver.Resolve instead of failing cleanly here.
+        var a = AgentStartArgs.Parse(["claude", "--daemon", "--private"]);
+        await Assert.That(a.Error).IsNotNull();
+        await Assert.That(a.DaemonName).IsNull();
+    }
+
+    [Test]
+    public async Task Daemon_flag_with_an_empty_value_is_an_error() {
+        var a = AgentStartArgs.Parse(["claude", "--daemon", ""]);
+        await Assert.That(a.Error).IsNotNull();
+        await Assert.That(a.DaemonName).IsNull();
+    }
+
+    [Test]
     public async Task Removed_spellings_are_rejected_as_unknown_flags() {
         // The group deliberately keeps one spelling each: --daemon (was --name),
         // -d/--detach (was --detached). The old ones must not silently work.

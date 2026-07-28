@@ -125,10 +125,10 @@ public class FrameCodecTests {
     }
 
     [Test]
-    public async Task StopAck_round_trips_a_newline_separated_id_list() {
-        var r = await RoundTrip(LocalFrame.StopAck("id-one\nid-two"));
+    public async Task StopAck_round_trips_a_newline_separated_id_status_list() {
+        var r = await RoundTrip(LocalFrame.StopAck("id-one\tstopped\nid-two\tfailed"));
         await Assert.That(r.Type).IsEqualTo(FrameType.StopAck);
-        await Assert.That(r.Text.Split('\n')).IsEquivalentTo(new[] { "id-one", "id-two" });
+        await Assert.That(r.Text.Split('\n')).IsEquivalentTo(new[] { "id-one\tstopped", "id-two\tfailed" });
     }
 }
 

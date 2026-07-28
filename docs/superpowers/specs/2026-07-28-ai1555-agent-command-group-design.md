@@ -122,18 +122,26 @@ command line) so it targets the same daemon the user was talking to.
 
 ## Daemon changes
 
-`HandleStopAgent`'s body moves into `StopAgentCoreAsync(AgentInstance)`. `HandleStopAgent`
-keeps its `if (agent.IsPrivate) return;` guard in front of the call, so server-origin stops
-behave exactly as before. The core skips the two `_server.*` calls
-(`AgentStatusChangedAsync`, `AppendAgentRunEventAsync`) when the agent is private — an
-unregistered agent has no server-side row to update — and otherwise runs the existing sequence
-unchanged: graceful `/exit` → 15s wait → cancel `ReadCts` → `TerminateAsync(10s)`. The read
-loop's `finally` continues to handle session-end and owned-worktree cleanup.
+`HandleStopAgent`'s body moves into `StopAgentCoreAsync(AgentInstance)`, which now returns a
+`bool`: true once `agent.Runtime.HasExited` confirms the process is gone after
+`TerminateAsync(10s)`, false if that confirmation never lands or any step throws. Because
+`TerminateAsync`'s SIGKILL is followed by a single non-blocking `waitpid` — usually issued too
+soon to observe the reap — the core polls briefly (`WaitForExitAsync(2s)`) before giving up, so a
+successful kill on a hung agent isn't misreported as a failure. `HandleStopAgent` keeps its
+`if (agent.IsPrivate) return;` guard in front of the call and discards the returned bool, so
+server-origin stops behave exactly as before (as does `HandleStopAgentV2`). The core skips the
+two `_server.*` calls (`AgentStatusChangedAsync`, `AppendAgentRunEventAsync`) when the agent is
+private — an unregistered agent has no server-side row to update — and otherwise runs the
+existing sequence unchanged: graceful `/exit` → 15s wait → cancel `ReadCts` →
+`TerminateAsync(10s)`. The read loop's `finally` continues to handle session-end and
+owned-worktree cleanup.
 
 A new `HandleLocalStopAsync` in `AgentOrchestrator.LocalIpc.cs` calls `StopAgentCoreAsync`
-directly, bypassing the private guard per decision 7. For the stop-all case it runs the stops
-concurrently via `Task.WhenAll`: each stop can take up to 25s (15s graceful + 10s terminate),
-so serial teardown of five agents would take over two minutes.
+directly, bypassing the private guard per decision 7, and uses the returned bool to report each
+agent's outcome in the `StopAck` payload as `id\tstopped` or `id\tfailed`; the CLI exits 1 if any
+agent's stop could not be confirmed. For the stop-all case it runs the stops concurrently via
+`Task.WhenAll`: each stop can take up to 25s (15s graceful + 10s terminate), so serial teardown
+of five agents would take over two minutes.
 
 ## Documentation
 
@@ -155,7 +163,9 @@ Per the repo rule, these land in the same PR as the code:
 - Id-prefix resolution: unique match, no match, ambiguous match, full-32-hex passthrough.
 - `FrameCodecTests`: `Stop` and `StopAck` round-trips.
 - `AgentOrchestratorLocalAttachTests`: local stop of a **private** agent succeeds (the case the
-  server path refuses), stop-all stops every agent, unknown id yields `Error`.
+  server path refuses), stop-all stops every agent, unknown id yields `Error`, a stop whose
+  process never confirms exit reports `failed` (and the CLI exits non-zero), and a stop where the
+  reap lands just after `TerminateAsync`'s kill still reports `stopped`.
 - `dotnet publish -c Release` grepped for IL3050/IL2026 — `Program.cs` and the codec are
   AOT-sensitive and `dotnet build` does not surface those warnings.
 

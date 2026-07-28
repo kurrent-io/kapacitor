@@ -170,14 +170,13 @@ internal static class AgentCommand {
 
             switch (resp?.Type) {
                 case FrameType.StopAck:
-                    // Explicit type: `[]` has no natural type, so `var` would not compile here.
-                    string[] lines = resp.Text.Length == 0 ? [] : resp.Text.Split('\n');
-                    if (lines.Length == 0) {
+                    if (resp.Text.Length == 0) {
                         Console.WriteLine("No agents.");
 
                         return 0;
                     }
 
+                    var lines     = resp.Text.Split('\n');
                     var anyFailed = false;
 
                     foreach (var line in lines) {
@@ -383,9 +382,11 @@ internal static class AgentCommand {
         var i = Array.IndexOf(args, "--daemon");
         if (i < 0) return (null, null);
 
-        return i + 1 >= args.Length || args[i + 1].StartsWith('-')
+        var next = i + 1 < args.Length ? args[i + 1] : null;
+
+        return string.IsNullOrEmpty(next) || next.StartsWith('-')
             ? (null, "--daemon requires a value")
-            : (args[i + 1], null);
+            : (next, null);
     }
 
     /// <summary>A full agent id as minted by `Guid.NewGuid().ToString("N")`.</summary>

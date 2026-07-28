@@ -657,6 +657,23 @@ public partial class AgentOrchestratorVendorTests {
         await Assert.That(reply.Text).IsEqualTo("stuck-1\tfailed");
     }
 
+    [Test]
+    public async Task Local_stop_reports_stopped_when_the_reap_lands_just_after_the_kill() {
+        var server = new TripwireServerConnection();
+        await using var orch = BuildOrchestrator(server, new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>());
+        // Models the real UnixPtyProcess.TerminateAsync: it sends SIGKILL then issues one
+        // non-blocking waitpid immediately, too soon to see the reap — HasExited stays false right
+        // after TerminateAsync returns and only flips true once something polls again. Without
+        // StopAgentCoreAsync's post-terminate poll, this successful SIGKILL would be misreported
+        // as "failed".
+        orch.SeedAgentForTest("reaped-1", pty: new ReapsJustAfterKillPtyProcess());
+
+        var reply = await StopAndReadReply(orch, "reaped-1");
+
+        await Assert.That(reply!.Type).IsEqualTo(FrameType.StopAck);
+        await Assert.That(reply.Text).IsEqualTo("reaped-1\tstopped");
+    }
+
     /// <summary>A pty double whose process never exits — HasExited stays false even after
     /// TerminateAsync — so a test can drive the "stop could not be confirmed" path without a
     /// real hung process.</summary>
@@ -668,6 +685,44 @@ public partial class AgentOrchestratorVendorTests {
         public ValueTask DisposeAsync() => default;
         public Task WaitForExitAsync(TimeSpan? _) => Task.CompletedTask;
         public Task TerminateAsync(TimeSpan?   _) => Task.CompletedTask;
+
+#pragma warning disable CS1998
+        public async IAsyncEnumerable<byte[]> ReadOutputAsync([EnumeratorCancellation] CancellationToken _ = default) {
+            yield break;
+        }
+#pragma warning restore CS1998
+
+        public Task WriteAsync(string _) => Task.CompletedTask;
+        public Task WriteAsync(byte[] _) => Task.CompletedTask;
+        public void Resize(ushort     _, ushort __) { }
+        public void SendInterrupt() { }
+    }
+
+    /// <summary>A pty double modelling <c>UnixPtyProcess.TerminateAsync</c>'s real shape: SIGKILL
+    /// is sent, then a single non-blocking <c>waitpid</c> is issued immediately — too soon to
+    /// observe the reap, so <see cref="HasExited"/> is still false right after
+    /// <see cref="TerminateAsync"/> returns. It only flips true on a later poll, mirroring the
+    /// kernel reaping the child a moment after the kill.</summary>
+    sealed class ReapsJustAfterKillPtyProcess : IPtyProcess {
+        bool _terminateCalled;
+
+        public int  Pid       => 5252;
+        public bool HasExited { get; private set; }
+        public int? ExitCode  => HasExited ? 0 : null;
+
+        public ValueTask DisposeAsync() => default;
+
+        public Task TerminateAsync(TimeSpan? _) {
+            _terminateCalled = true; // SIGKILL sent; the immediate non-blocking waitpid misses the reap
+
+            return Task.CompletedTask;
+        }
+
+        public Task WaitForExitAsync(TimeSpan? _) {
+            if (_terminateCalled) HasExited = true; // the reap lands during this later poll
+
+            return Task.CompletedTask;
+        }
 
 #pragma warning disable CS1998
         public async IAsyncEnumerable<byte[]> ReadOutputAsync([EnumeratorCancellation] CancellationToken _ = default) {

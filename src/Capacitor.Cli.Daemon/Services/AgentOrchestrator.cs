@@ -1747,6 +1747,10 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             await agent.ReadCts.CancelAsync();
             await agent.Runtime.TerminateAsync(TimeSpan.FromSeconds(10));
 
+            // TerminateAsync's SIGKILL is followed by a single non-blocking waitpid, so the
+            // child is usually not reaped yet; poll briefly before calling the stop a failure.
+            if (!agent.Runtime.HasExited) await agent.Runtime.WaitForExitAsync(TimeSpan.FromSeconds(2));
+
             return agent.Runtime.HasExited;
         } catch (Exception ex) {
             LogStopError(ex, agentId);
