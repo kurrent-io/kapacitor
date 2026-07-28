@@ -21,6 +21,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # linux-x64 + windows-x64. macOS is NOT in this matrix: the unit suite has
+        # a known cluster of macOS-local temp-path/parallel-load flakes that would
+        # make a macOS leg permanently red. macOS arm64 is covered by maintainer
+        # runs; macOS x64 is intentionally untested. Platform-sensitive daemon
+        # behavior that must hold everywhere (e.g. the borrowed-review capability
+        # advertisement, which no longer carries any OS/arch precondition) is
+        # additionally pinned by host-independent source guards in the unit suite —
+        # see DaemonRunnerCursorAvailabilityTests' platform coverage matrix.
         os: [ubuntu-latest, windows-latest]
 
     steps:

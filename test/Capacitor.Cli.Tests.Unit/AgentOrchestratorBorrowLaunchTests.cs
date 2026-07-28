@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.LocalIpc;
 using Capacitor.Cli.Daemon;
@@ -92,6 +93,150 @@ public partial class AgentOrchestratorVendorTests {
             await Assert.That(Directory.Exists(ctx.Worktree.Path)).IsFalse();
         } finally {
             cleanup();
+        }
+    }
+
+    // ── Borrowed-snapshot regression net (two distinct checkouts) ─────────────────────────
+    // docs/superpowers/specs/2026-07-27-ai1528-trust-by-default-borrowed-review-design.md
+    //
+    // Until the capability gate above was removed this path had, on the evidence in that design,
+    // never executed in production — the daemon advertised no borrowed support, the server resolved
+    // workspace_mode=fallback, and reviewers ran in an owned worktree at the last commit. Its
+    // correctness was therefore unevidenced, which is what this test supplies.
+    //
+    // TWO checkouts are mandatory. The orchestrator snapshots the borrow cwd's own canonical git
+    // root, deliberately INDEPENDENT of the launch command's registered RepoPath, so a test pointing
+    // both at one directory satisfies every content assertion below while proving nothing about
+    // which checkout was selected — it would pass just as happily against the stale-base behavior
+    // this test exists to prevent. The launch below registers the DAEMON checkout as RepoPath and
+    // borrows the REQUESTER checkout, and the load-bearing assertion is that the snapshot's
+    // SourceRepo is the requester's git root.
+
+    [Test]
+    public async Task Borrowed_snapshot_is_built_from_the_requester_checkout_not_the_registered_repo() {
+        var (daemonRepo, cleanupDaemon) = CreateGitRepo();
+        var (requesterRepo, cleanupRequester) = CreateGitRepo();
+        try {
+            // The daemon-registered checkout is a decoy: everything in it is distinguishable from
+            // the requester's, so any content leaking from it is caught by value, not by absence.
+            File.WriteAllText(Path.Combine(daemonRepo, "README.md"), "daemon-checkout-decoy");
+            File.WriteAllText(Path.Combine(daemonRepo, "daemon-only.txt"), "daemon-only");
+            Git(daemonRepo, "add", "-A");
+            Git(daemonRepo, "commit", "-q", "-m", "daemon decoy");
+
+            // The requester carries all four shapes the snapshot has to get right.
+            Git(requesterRepo, "checkout", "-q", "-b", "feature");
+            File.WriteAllText(Path.Combine(requesterRepo, "branch-only.txt"), "branch-only-committed");
+            Git(requesterRepo, "add", "-A");
+            Git(requesterRepo, "commit", "-q", "-m", "branch-only commit");
+            File.WriteAllText(Path.Combine(requesterRepo, "README.md"), "requester-modified");
+            File.WriteAllText(Path.Combine(requesterRepo, "untracked.txt"), "requester-untracked");
+            File.WriteAllText(Path.Combine(requesterRepo, ".gitignore"), "ignored.txt\n");
+            File.WriteAllText(Path.Combine(requesterRepo, "ignored.txt"), "must-not-be-snapshotted");
+
+            var canonicalRequester = BorrowAuthorizer.Canonicalize(requesterRepo);
+            var canonicalDaemon    = BorrowAuthorizer.Canonicalize(daemonRepo);
+
+            var server  = new CaptureServerConnection();
+            var factory = new SpyHostedAgentRuntimeFactory("cursor") {
+                SupportsUnattended = true,
+                SupportsBorrowedReviewFlow = true,
+                BorrowedReviewRequiresIndependentSnapshot = true
+            };
+            await using var orch = BuildOrchestrator(
+                server, new SpyPtyProcessFactory(),
+                new Dictionary<string, IHostedAgentLauncher>(),
+                extraRuntimeFactories: [factory]);
+
+            var baseline = ContentBaseline(canonicalRequester);
+            var gitState = GitState(canonicalRequester);
+
+            var cmd = new LaunchAgentCommand(
+                "agent-two-checkout", "review", "default", null,
+                RepoPath: daemonRepo, null, null,
+                Vendor: "cursor", Kind: LaunchKind.ReviewFlow,
+                Borrowed: true, BorrowCwd: requesterRepo);
+
+            await orch.HandleLaunchAgentForTest(cmd);
+
+            await Assert.That(server.LaunchFailedCalls).IsEmpty();
+            var ctx = factory.LastContext!;
+
+            // (1) THE assertion that pins the fix: the snapshot was derived from the requester's git
+            // root, not the registered one. Everything below is secondary to this.
+            await Assert.That(ctx.Worktree.SourceRepo).IsEqualTo(canonicalRequester);
+            await Assert.That(ctx.Worktree.SourceRepo).IsNotEqualTo(canonicalDaemon);
+            await Assert.That(orch.GetAgentForTest(cmd.AgentId)!.BorrowedSnapshotSource)
+                .IsEqualTo(canonicalRequester);
+
+            // (2) Contents: branch-only commit, the MODIFIED tracked file, and the untracked file —
+            // none of which exist in the registered checkout — and not the ignored file.
+            var snapshot = ctx.Worktree.Path;
+            await Assert.That(File.ReadAllText(Path.Combine(snapshot, "branch-only.txt")))
+                .IsEqualTo("branch-only-committed");
+            await Assert.That(File.ReadAllText(Path.Combine(snapshot, "README.md")))
+                .IsEqualTo("requester-modified");
+            await Assert.That(File.ReadAllText(Path.Combine(snapshot, "untracked.txt")))
+                .IsEqualTo("requester-untracked");
+            await Assert.That(File.Exists(Path.Combine(snapshot, "ignored.txt"))).IsFalse();
+            await Assert.That(File.Exists(Path.Combine(snapshot, "daemon-only.txt"))).IsFalse();
+
+            // (3) The snapshot root is outside the source repo (not a linked worktree under it).
+            await Assert.That(snapshot).IsNotEqualTo(canonicalRequester);
+            await Assert.That(snapshot.StartsWith(
+                canonicalRequester.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar,
+                StringComparison.Ordinal)).IsFalse();
+
+            // Baseline check 1 of 4 — after snapshot creation.
+            await AssertBaselineUnchanged(canonicalRequester, baseline, gitState, "after snapshot creation");
+
+            // (4) Reviewer mutation stays inside the snapshot.
+            File.WriteAllText(Path.Combine(snapshot, "README.md"), "reviewer-clobbered");
+            File.WriteAllText(Path.Combine(snapshot, "reviewer-created.txt"), "reviewer dropping");
+            File.WriteAllText(Path.Combine(snapshot, ".git", "reviewer-metadata"), "reviewer dropping");
+            // The droppings must genuinely exist first, or the "they disappear" assertions below
+            // would be vacuously true.
+            await Assert.That(File.Exists(Path.Combine(snapshot, "reviewer-created.txt"))).IsTrue();
+            await Assert.That(File.Exists(Path.Combine(snapshot, ".git", "reviewer-metadata"))).IsTrue();
+
+            // Baseline check 2 of 4 — after reviewer mutation.
+            await AssertBaselineUnchanged(canonicalRequester, baseline, gitState, "after reviewer mutation");
+
+            // (5) Per-round refresh: the requester's new content appears, and every reviewer-only
+            // file AND its git metadata disappear. Asserting only "the reviewer's writes never
+            // reached the requester" would pass against a refresh that silently accumulates
+            // reviewer droppings round after round.
+            File.WriteAllText(Path.Combine(requesterRepo, "README.md"), "requester-modified-again");
+            var refreshedBaseline = ContentBaseline(canonicalRequester);
+            var refreshedGitState = GitState(canonicalRequester);
+            // The deliberate edit is the ONLY difference — so re-basing the baseline here cannot
+            // launder a corruption that happened in between.
+            await Assert.That(BaselineDifferences(baseline, refreshedBaseline)).IsEquivalentTo(["README.md"]);
+
+            await orch.HandleSendInputForTest(new SendInputCommand(cmd.AgentId, "next", null));
+
+            await Assert.That(File.ReadAllText(Path.Combine(snapshot, "README.md")))
+                .IsEqualTo("requester-modified-again");
+            await Assert.That(File.Exists(Path.Combine(snapshot, "reviewer-created.txt"))).IsFalse();
+            await Assert.That(File.Exists(Path.Combine(snapshot, ".git", "reviewer-metadata"))).IsFalse();
+            await Assert.That(File.ReadAllText(Path.Combine(snapshot, "branch-only.txt")))
+                .IsEqualTo("branch-only-committed");
+            await Assert.That(File.Exists(Path.Combine(snapshot, "ignored.txt"))).IsFalse();
+
+            // Baseline check 3 of 4 — after refresh.
+            await AssertBaselineUnchanged(canonicalRequester, refreshedBaseline, refreshedGitState, "after refresh");
+
+            // (6) Stop removes the daemon-owned snapshot and leaves the requester intact.
+            await orch.HandleStopAgentForTest(cmd.AgentId);
+            for (var i = 0; i < 100 && Directory.Exists(snapshot); i++) await Task.Delay(20);
+            await Assert.That(Directory.Exists(snapshot)).IsFalse();
+            await Assert.That(Directory.Exists(canonicalRequester)).IsTrue();
+
+            // Baseline check 4 of 4 — after stop.
+            await AssertBaselineUnchanged(canonicalRequester, refreshedBaseline, refreshedGitState, "after stop");
+        } finally {
+            cleanupRequester();
+            cleanupDaemon();
         }
     }
 
@@ -308,6 +453,70 @@ public partial class AgentOrchestratorVendorTests {
     }
 
     // ── Helpers / test doubles ─────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// A CONTENT baseline: relative path → SHA-256 of the file's bytes (plus its unix mode, where the
+    /// platform has one, since the snapshot builder preserves modes). Deliberately not
+    /// <see cref="SnapshotTree"/>, which records entry NAMES only and would miss in-place corruption
+    /// of a file it still sees listed.
+    ///
+    /// <para><c>.git</c> is excluded on purpose. Building a snapshot runs read-only git plumbing
+    /// (<c>bundle create</c>, <c>ls-files</c>) inside the source checkout, which may legitimately
+    /// refresh index stat metadata — hashing that would make the baseline flap for a reason unrelated
+    /// to the invariant. Git-state integrity is asserted separately and more meaningfully by
+    /// <see cref="GitState"/> (HEAD sha + porcelain status).</para>
+    /// </summary>
+    static SortedDictionary<string, string> ContentBaseline(string root) {
+        var baseline = new SortedDictionary<string, string>(StringComparer.Ordinal);
+        foreach (var path in Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories)) {
+            var rel = Path.GetRelativePath(root, path).Replace(Path.DirectorySeparatorChar, '/');
+            if (rel == ".git" || rel.StartsWith(".git/", StringComparison.Ordinal)) continue;
+
+            var hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(path)));
+            var mode = OperatingSystem.IsWindows() ? "" : $" mode={File.GetUnixFileMode(path)}";
+            baseline[rel] = hash + mode;
+        }
+
+        return baseline;
+    }
+
+    /// <summary>Relative paths whose content/mode differs between two baselines, including paths
+    /// present in only one of them.</summary>
+    static List<string> BaselineDifferences(
+            SortedDictionary<string, string> before, SortedDictionary<string, string> after) =>
+        before.Keys.Union(after.Keys, StringComparer.Ordinal)
+            .Where(k => !before.TryGetValue(k, out var b) ||
+                        !after.TryGetValue(k, out var a) ||
+                        !string.Equals(b, a, StringComparison.Ordinal))
+            .OrderBy(k => k, StringComparer.Ordinal)
+            .ToList();
+
+    /// <summary>HEAD sha + porcelain status — the requester's git state, asserted alongside the
+    /// content baseline (which skips <c>.git</c>) so a reviewer write into the source repository's
+    /// git directory could not pass unnoticed.</summary>
+    static string GitState(string repo) =>
+        GitCapture(repo, "rev-parse", "HEAD") + "\n" + GitCapture(repo, "status", "--porcelain");
+
+    static string GitCapture(string cwd, params string[] args) {
+        var psi = new ProcessStartInfo("git", args) {
+            WorkingDirectory       = cwd,
+            RedirectStandardOutput = true,
+            RedirectStandardError  = true
+        };
+        using var proc = Process.Start(psi)!;
+        var stdout = proc.StandardOutput.ReadToEnd();
+        proc.WaitForExit();
+
+        return stdout;
+    }
+
+    static async Task AssertBaselineUnchanged(
+            string root, SortedDictionary<string, string> expected, string expectedGitState, string when) {
+        await Assert.That(BaselineDifferences(expected, ContentBaseline(root)))
+            .IsEmpty().Because($"the requester checkout must be byte-identical {when}");
+        await Assert.That(GitState(root))
+            .IsEqualTo(expectedGitState).Because($"the requester's git state must be unchanged {when}");
+    }
 
     /// <summary>Sorted list of every file-system entry (relative path) under <paramref name="root"/>,
     /// so a before/after comparison catches ANY addition or removal in the user's tree.</summary>

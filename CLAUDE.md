@@ -13,8 +13,17 @@ registers `kcap-flows` without auto-approval and tracks only newly-created globa
 the string unattended-vendor list for compatibility and additionally advertise structured
 per-vendor CLI/launcher-policy capabilities. Cursor serves borrowed review context from a
 daemon-owned snapshot (dirty tracked and non-ignored untracked files, refreshed between rounds),
-because its zero-interaction modes may write; Claude borrowed-worktree review remains uncertified
+because its zero-interaction modes may write; Claude has no borrowed-review containment strategy
 and therefore fails closed to an owned worktree.
+
+Borrowed-review capability is **trust-by-default**: a vendor advertises it whenever its runtime
+factory declares a containment strategy, for whatever build of the vendor CLI is installed and on
+every platform. It is deliberately not gated on the installed binary matching a validated-build
+record — a vendor auto-update would then silently withdraw the capability and reviewers would fall
+back to a stale committed base. The daemon logs the CLI version it probed at startup (a startup
+observation, not a launch-time fact) and does no automated drift detection; a defective vendor
+release is handled by a human report and a corrected record. See
+`docs/superpowers/specs/2026-07-27-ai1528-trust-by-default-borrowed-review-design.md` in kcap-server.
 
 ## Tech stack
 
