@@ -839,6 +839,8 @@ static class McpFlowsServer {
             sb.Append("Multi-participant flow started — no round is in flight yet. Address a role with " +
                       "send_to_participant(flow_run_id, participant, message); each role's agent launches " +
                       "lazily on its first message.");
+            sb.AppendLine();
+            AppendWorkspaceDiagnostics(sb, node);
             pendingIds = AppendPendingMessages(sb, node);
             return sb.ToString();
         } catch {
@@ -1091,6 +1093,7 @@ static class McpFlowsServer {
             sb.Append("reviewer_vendor_source: "); AppendLine(sb, vendorSource);
         }
         AppendReviewerModelAudit(sb, node);
+        AppendWorkspaceDiagnostics(sb, node);
         if (!string.IsNullOrEmpty(resultText)) { sb.AppendLine(); sb.Append(resultText); }
 
         pendingIds = AppendPendingMessages(sb, node);
@@ -1127,6 +1130,7 @@ static class McpFlowsServer {
             if (appliedVendor is not null) { sb.Append("applied_reviewer_vendor: "); AppendLine(sb, appliedVendor); }
             if (vendorSource is not null) { sb.Append("reviewer_vendor_source: "); AppendLine(sb, vendorSource); }
             AppendReviewerModelAudit(sb, node);
+            AppendWorkspaceDiagnostics(sb, node);
 
             if (!string.IsNullOrEmpty(resultText)) {
                 sb.AppendLine();
@@ -1175,6 +1179,7 @@ static class McpFlowsServer {
             if (appliedVendor is not null) { sb.Append("applied_reviewer_vendor: "); AppendLine(sb, appliedVendor); }
             if (vendorSource is not null) { sb.Append("reviewer_vendor_source: "); AppendLine(sb, vendorSource); }
             AppendReviewerModelAudit(sb, node);
+            AppendWorkspaceDiagnostics(sb, node);
 
             if (!string.IsNullOrEmpty(lastResultKind)) {
                 sb.Append("result_kind: "); AppendLine(sb, lastResultKind);
@@ -1229,6 +1234,9 @@ static class McpFlowsServer {
             var sb = new StringBuilder();
             sb.Append("flow_run_id: "); AppendLine(sb, flowRunId);
             sb.Append("status: ");      AppendLine(sb, status);
+            // Close is often the LAST thing a caller reads, so it is the surface most likely to be
+            // the only record of what the reviewer actually saw.
+            AppendWorkspaceDiagnostics(sb, node);
 
             pendingIds = AppendPendingMessages(sb, node);
             return sb.ToString();
@@ -1287,6 +1295,49 @@ static class McpFlowsServer {
     /// NEVER string-compares the three values — they legitimately differ (a requested alias resolves
     /// to a dated concrete id; the server already validated equivalence). They are surfaced for the
     /// caller to read, not to police.</summary>
+    /// <summary>Renders the run's reviewer workspace decision. ONE helper, reached from every surface
+    /// that formats a flow response — start (roundless and rounded), the polled round result, status
+    /// and close — so no path can quietly disagree with another about what the reviewer actually read.
+    ///
+    /// <para>Three outcomes, and the third is the one that matters:</para>
+    /// <list type="bullet">
+    /// <item><c>borrowed</c> — the reviewer saw the requester's working tree, uncommitted work included.</item>
+    /// <item><c>fallback</c> — an owned worktree at the last commit, with the server's reason rendered
+    /// VERBATIM. No allowlist, no mapping table: a reason introduced server-side tomorrow reaches the
+    /// user unchanged. The caution line is the point — a reviewer that read the last commit did not
+    /// see uncommitted work, and a caller who assumed otherwise drew conclusions about code that was
+    /// never reviewed.</item>
+    /// <item>absent or null — rendered <c>unknown</c>, and NEVER as borrowed. An older server, a
+    /// multi-participant run, or a generic single-participant flow all land here. Guessing "borrowed"
+    /// would be the one wrong answer that reads as reassurance.</item>
+    /// </list></summary>
+    static void AppendWorkspaceDiagnostics(StringBuilder sb, JsonObject node) {
+        var mode = TryGetString(node, "workspace_mode");
+
+        switch (mode) {
+            case "borrowed":
+                sb.AppendLine("workspace: borrowed (the reviewer saw your working tree, uncommitted changes included)");
+                break;
+            case "fallback": {
+                var reason = TryGetString(node, "fallback_reason");
+                sb.Append("workspace: fallback");
+                if (reason is not null) { sb.Append(" ("); sb.Append(reason); sb.Append(')'); }
+                sb.AppendLine();
+                sb.AppendLine("  ⚠ The reviewer read a checkout at the last commit — it did NOT see uncommitted work.");
+                break;
+            }
+            case null:
+                sb.AppendLine("workspace: unknown");
+                break;
+            default:
+                // An owned worktree, or a mode this build has not heard of. Report it verbatim rather
+                // than collapsing it into one of the cases above — inventing a category is how a
+                // caller ends up trusting a decision the server never made.
+                sb.Append("workspace: "); AppendLine(sb, mode);
+                break;
+        }
+    }
+
     static void AppendReviewerModelAudit(StringBuilder sb, JsonObject node) {
         if (TryGetString(node, "requested_reviewer_model") is { } requested) { sb.Append("requested_reviewer_model: "); AppendLine(sb, requested); }
         if (TryGetString(node, "applied_reviewer_model")   is { } applied)   { sb.Append("applied_reviewer_model: ");   AppendLine(sb, applied); }
@@ -1412,7 +1463,7 @@ static class McpFlowsServer {
                     ["target_kind"]  = new("string", "What is being reviewed: 'pr', 'branch', 'file', 'spec', 'plan', etc."),
                     ["target_ref"]   = new("string", "A reference to the target (PR URL, branch name, file path, etc.)."),
                     ["target_title"] = new("string", "Human-readable title for the target (PR title, spec name, etc.)."),
-                    ["context"]      = new("string", "Background context for the reviewer: what to focus on, constraints, definition of done. State where the changes live — the reviewer sees a mirror of the working tree you launched from only; if the changeset is elsewhere or incomplete there, say so and inline the relevant diffs."),
+                    ["context"]      = new("string", "Background context for the reviewer: what to focus on, constraints, definition of done. State where the changes live — the reviewer sees a mirror of the working tree you launched from only; if the changeset is elsewhere or incomplete there, say so and inline the relevant diffs. Whether it sees your UNCOMMITTED work is conditional: only when the run actually borrows your checkout. Responses report this as workspace: borrowed | fallback (<reason>) | unknown — for the reserved review aliases; other flow kinds report unknown. On fallback the reviewer read the last commit, so inline anything uncommitted that matters."),
                     ["instructions"] = new("string", "Optional additional instructions for the reviewer agent."),
                     ["mode"]         = new("string", "Optional. Pass 'context-only' to have the reviewer treat the submitted context/diff as authoritative rather than reading the repository. By default the reviewer runs in a worktree mirrored from your working tree (uncommitted changes included) when it runs on the same machine, so it can ground the review in the actual source; passing 'context-only' opts out of that."),
                     ["vendor"]       = new("string", "Optional reviewer vendor for the reserved alias, independent of the driver harness. Omit to use the server's Flows:Review:DefaultVendor. The selected vendor must be installed and certified unattended on an eligible daemon; there is no silent fallback. Pass the lowercase canonical vendor token (e.g. 'claude', 'codex')."),
