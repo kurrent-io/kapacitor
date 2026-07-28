@@ -12,7 +12,10 @@ public static class VendorSelection {
         public bool HasError => Error is not null;
     }
 
-    static readonly string[] KnownVendorFlags = ["--claude", "--codex", "--cursor", "--copilot", "--gemini", "--kiro", "--pi", "--opencode", "--antigravity"];
+    // internal, not private: the driver-schema conformance suite pins its hand-written harness table
+    // against this list, so adding a tenth installable target fails there instead of silently leaving
+    // it uncovered. No enumeration of supported harnesses exists in production code otherwise.
+    internal static readonly string[] KnownVendorFlags = ["--claude", "--codex", "--cursor", "--copilot", "--gemini", "--kiro", "--pi", "--opencode", "--antigravity"];
 
     public static Result Parse(string[] args) {
         var vendors = new HashSet<string>(StringComparer.Ordinal);
