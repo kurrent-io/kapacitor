@@ -109,9 +109,11 @@ internal interface IImportSource {
     /// is a create-time hint, so it does nothing here either.
     ///
     /// <para>
-    /// <c>false</c> says only that the <c>AlreadyLoaded</c> call posts nothing — not that the
-    /// source never posts. New/Partial content paths are out of scope for this flag.
-    /// Per-source values are pinned by <c>ReplayChildContentCapabilityTests</c>.
+    /// <c>false</c> says only that the <c>AlreadyLoaded</c> call posts no transcript content — not
+    /// that it posts nothing at all (Copilot/Kiro/Pi still replay session-start/session-end
+    /// lifecycle there; they simply have no child import) and not that the source never adds
+    /// content (New/Partial paths are out of scope for this flag). Per-source values are pinned by
+    /// <c>ReplayChildContentCapabilityTests</c>.
     /// </para>
     /// </summary>
     bool AttachesChildContentOnReplay { get; }

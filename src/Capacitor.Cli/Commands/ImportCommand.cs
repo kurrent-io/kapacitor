@@ -1193,11 +1193,12 @@ static class ImportCommand {
         //
         // Scoped by AttachesChildContentOnReplay, not a vendor name: the source owning the
         // child-import pass is what knows. Excluding a source claims only that its AlreadyLoaded
-        // call posts nothing (OpenCode's returns before any POST; Copilot/Kiro/Pi have no child
-        // import at all) — NOT that it can never add content. Those sources do post on New and
-        // Partial, and a lifecycle POST failing after that content persisted leaves the same kind
-        // of gap for every routed vendor. That residual is deliberately a separate issue, not
-        // something this gate covers.
+        // call posts no transcript CONTENT — not that it posts nothing: Copilot/Kiro/Pi still
+        // replay session-start/session-end lifecycle there and simply have no child import, while
+        // OpenCode alone returns before any POST. Nor does it claim the source can never add
+        // content — all of them post on New and Partial, and a lifecycle POST failing after that
+        // content persisted leaves the same kind of gap for every routed vendor. That residual is
+        // deliberately a separate issue, not something this gate covers.
         var privateScopeSessionIds = new ConcurrentBag<string>();
 
         // Read-only inside the parallel loops below; resolved from the sources actually in play.
