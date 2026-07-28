@@ -247,6 +247,10 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     readonly IReadOnlyDictionary<string, IHostedAgentRuntimeFactory> _runtimeFactories;
     readonly ILogger<AgentOrchestrator>                        _logger;
 
+    /// <summary>Serialises + coalesces the background capability refresh fired after a certification
+    /// rejection. See SingleFlightRefresh for why bare fire-and-forget was unsafe here.</summary>
+    readonly SingleFlightRefresh _capabilityRefresh = new();
+
     // Hosted-agent PTYs are spawned at a fixed size and never resized. The daemon
     // reports these dims to the server right after the agent registers (and on
     // reconnect) so the read-only viewers (web/desktop xterm) lock to exactly the
@@ -928,19 +932,24 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
 
                 // The self-heal (recompute + re-advertise) is genuinely useful — a certification
                 // mismatch usually means the advertisement is stale — but nothing waits on it, and
-                // the caller already has its answer. Contained: a throw here must not surface as a
-                // second, different failure for a launch that has already been rejected.
-                _ = Task.Run(async () => {
-                    try {
+                // the caller already has its answer.
+                //
+                // SINGLE-FLIGHT, not bare fire-and-forget. Codex review round 3: concurrent rejected
+                // launches each starting an independent refresh reintroduces this PR's own bug — a
+                // slow failing refresh can complete AFTER a fast successful one and overwrite valid
+                // capabilities with a failed-probe null, durably disabling the reviewer again.
+                // Serialising publication is necessary; coalescing keeps a burst of rejections from
+                // queueing a refresh each, and the rerun pass guarantees the LAST write is the
+                // NEWEST computation.
+                _ = _capabilityRefresh.RequestAsync(
+                    async () => {
                         _config.UnattendedVendorCapabilities =
                             DaemonRunner.ComputeUnattendedVendorCapabilities(_runtimeFactories.Values, _config);
                         await _server.ReRegisterAsync();
-                    } catch (Exception ex) {
-                        _logger.LogDebug(ex,
-                            "Capability recompute after a certification rejection failed; the next " +
-                            "registration or launch re-evaluates it.");
-                    }
-                });
+                    },
+                    ex => _logger.LogDebug(ex,
+                        "Capability recompute after a certification rejection failed; the next " +
+                        "registration or launch re-evaluates it."));
                 return new CommandOutcome(
                     CommandOutcomeKind.LaunchRejected,
                     agentId,
