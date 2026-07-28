@@ -1,3 +1,12 @@
-kcap whoami — Show current authenticated user
+kcap whoami — Show current authenticated user and verify the server accepts your token
 
 Usage: kcap whoami
+
+Prints the stored identity (username, provider, profile, expiry) and then asks the
+server whether it actually accepts that token.
+
+Exit codes:
+  0  the server accepts the token, or acceptance could not be checked (server
+     unreachable, endpoint unavailable, or a server-side error)
+  1  no token stored, the server rejected the token, or the token was issued by a
+     different server than the one this profile targets — run `kcap login`

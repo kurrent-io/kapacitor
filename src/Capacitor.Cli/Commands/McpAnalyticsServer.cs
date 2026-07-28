@@ -45,7 +45,7 @@ static class McpAnalyticsServer {
                 return BuildToolResult(callId, HttpClientExtensions.SchemeMissingHint, isError: true);
 
             try {
-                client ??= await HttpClientExtensions.CreateAuthenticatedClientAsync(baseUrl);
+                client ??= await HttpClientExtensions.CreateAuthenticatedClientAsync(baseUrl, autoRetryUnauthorized: false);
                 return await HandleToolCallAsync(callId, callRequest, client, baseUrl, cwdRepoHash);
             } catch (Exception ex) {
                 await Console.Error.WriteLineAsync($"kcap mcp analytics: unexpected error handling tools/call: {ex}");
@@ -242,7 +242,17 @@ static class McpAnalyticsServer {
 
         if (response.StatusCode != HttpStatusCode.Unauthorized) return response;
 
-        var refreshed = await TokenStore.GetValidTokensAsync();
+        // Force a refresh against the token this client actually sent: the 401 proves the server
+        // rejected it even though it may still look unexpired locally, which a plain load would
+        // not heal. Passing the rejected token also means a peer process that already refreshed is
+        // adopted rather than rotated a second time. With no token attached at all — this MCP
+        // process outlives a `kcap login` that finished after the client was built — there is
+        // nothing to refresh, so just pick up whatever is stored now.
+        var rejected = client.DefaultRequestHeaders.Authorization?.Parameter;
+
+        var refreshed = rejected is null
+            ? await TokenStore.GetValidTokensAsync()
+            : await TokenStore.ForceRefreshAsync(rejected);
 
         if (refreshed is null) return response; // genuinely not logged in; keep the original 401
 

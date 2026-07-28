@@ -459,9 +459,9 @@ static partial class WatchCommand {
                 hubUrl,
                 options => {
                     options.AccessTokenProvider = async () => {
-                        var t = await TokenStore.GetValidTokensAsync();
+                        var resolution = await TokenStore.GetValidTokensForServerAsync(baseUrl);
 
-                        return t?.AccessToken;
+                        return resolution.Tokens?.AccessToken;
                     };
                 }
             )

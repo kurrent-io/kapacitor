@@ -256,12 +256,16 @@ public class SessionStartMemoryFoundationTests {
     [Test]
     public async Task Provider_refreshes_once_after_401_and_refuses_redirect_status() {
         var calls = 0;
-        var forceRefreshValues = new List<bool>();
-        var refreshing = new SessionStartMemoryContextProvider(new FixedScopeResolver(null, null), (forceRefresh, _) => {
-            forceRefreshValues.Add(forceRefresh);
+        var rejectedTokens = new List<string?>();
+        var refreshing = new SessionStartMemoryContextProvider(new FixedScopeResolver(null, null), (rejectedAccessToken, _) => {
+            rejectedTokens.Add(rejectedAccessToken);
             calls++;
             var status = calls == 1 ? HttpStatusCode.Unauthorized : HttpStatusCode.NoContent;
-            return Task.FromResult(new HttpClient(new StaticHandler(status, "")));
+            var client = new HttpClient(new StaticHandler(status, ""));
+            // The real factory attaches a bearer; the retry identifies which token was rejected
+            // by reading it back off the client that sent it.
+            client.DefaultRequestHeaders.Authorization = new("Bearer", calls == 1 ? "rejected-token" : "fresh-token");
+            return Task.FromResult(client);
         }, disposeClients: true);
         var request = new SessionStartMemoryContextRequest(
             "https://example.test", null, false, TimeSpan.FromSeconds(1), CancellationToken.None);
@@ -272,7 +276,7 @@ public class SessionStartMemoryFoundationTests {
             .GetAsync(request);
 
         await Assert.That(calls).IsEqualTo(2);
-        await Assert.That(forceRefreshValues).IsEquivalentTo([false, true]);
+        await Assert.That(rejectedTokens).IsEquivalentTo([null, "rejected-token"]);
         await Assert.That(healed.Disposition).IsEqualTo(SessionStartMemoryDisposition.CompleteWithoutContext);
         await Assert.That(redirected.Disposition).IsEqualTo(SessionStartMemoryDisposition.RetryableFailure);
     }

@@ -147,7 +147,7 @@ public static class CursorHookCommand {
             TextReader stdin,
             HookSpool  spool,
             TimeSpan   budgetTotal,
-            Func<bool, CancellationToken, Task<HttpClient>>? memoryClientFactory = null,
+            Func<string?, CancellationToken, Task<HttpClient>>? memoryClientFactory = null,
             Func<SessionStartMemoryLeaseStore>?               memoryStoreFactory = null,
             TimeSpan?                                         memoryBudgetOverride = null,
             ISessionStartMemoryScopeResolver?                 memoryScopeResolver = null
@@ -212,7 +212,7 @@ public static class CursorHookCommand {
             TimeSpan   budgetTotal,
             CancellationToken ct,
             ResolvedEventKindSignal kindSignal,
-            Func<bool, CancellationToken, Task<HttpClient>>? memoryClientFactory,
+            Func<string?, CancellationToken, Task<HttpClient>>? memoryClientFactory,
             Func<SessionStartMemoryLeaseStore>?               memoryStoreFactory,
             TimeSpan?                                         memoryBudgetOverride,
             ISessionStartMemoryScopeResolver?                 memoryScopeResolver
@@ -502,7 +502,7 @@ public static class CursorHookCommand {
             Stopwatch  sw,
             TimeSpan   budgetTotal,
             CancellationToken dispatcherCt,
-            Func<bool, CancellationToken, Task<HttpClient>>? memoryClientFactory,
+            Func<string?, CancellationToken, Task<HttpClient>>? memoryClientFactory,
             Func<SessionStartMemoryLeaseStore>?               memoryStoreFactory,
             TimeSpan?                                         memoryBudgetOverride,
             ISessionStartMemoryScopeResolver?                 memoryScopeResolver

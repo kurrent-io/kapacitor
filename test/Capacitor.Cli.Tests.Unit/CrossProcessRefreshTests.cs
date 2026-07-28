@@ -29,6 +29,9 @@ public class CrossProcessRefreshTests {
         if (Directory.Exists(TokensDir)) Directory.Delete(TokensDir, recursive: true);
         var cfg = Capacitor.Cli.Core.Config.AppConfig.GetConfigPath();
         if (File.Exists(cfg)) File.Delete(cfg);
+        // Token lookup now consults AppConfig.ResolvedProfile, so a value left behind by another
+        // test would redirect these reads to a different profile.
+        Capacitor.Cli.Core.Config.AppConfig.ResetResolvedStateForTesting();
     }
 
     static StoredTokens Token(string accessToken, DateTimeOffset expiresAt) => new() {

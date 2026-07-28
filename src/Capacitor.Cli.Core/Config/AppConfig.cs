@@ -249,6 +249,16 @@ public static class AppConfig {
         ResolvedProfile   = new ResolvedProfile(serverUrl, profileName, profile, null);
     }
 
+    /// <summary>
+    /// Test seam: clears the process-global resolved state. Token lookup consults
+    /// <see cref="ResolvedProfile"/>, so a value left behind by an earlier test would silently
+    /// redirect a later test's token reads to another profile.
+    /// </summary>
+    internal static void ResetResolvedStateForTesting() {
+        ResolvedServerUrl = null;
+        ResolvedProfile   = null;
+    }
+
     public static async Task<ProfileConfig> LoadProfileConfig(CancellationToken ct = default) {
         if (!File.Exists(ConfigPath))
             return new() { Profiles = new() { ["default"] = new() } };

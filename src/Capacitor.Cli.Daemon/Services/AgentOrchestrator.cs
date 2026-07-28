@@ -1893,10 +1893,10 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             try {
                 using var httpClient = _httpClientFactory.CreateClient("Attachments");
 
-                var tokens = await TokenStore.GetValidTokensAsync();
+                var resolution = await TokenStore.GetValidTokensForServerAsync(_config.ServerUrl);
 
-                if (tokens is not null) {
-                    httpClient.DefaultRequestHeaders.Authorization = new("Bearer", tokens.AccessToken);
+                if (resolution.Tokens is not null) {
+                    httpClient.DefaultRequestHeaders.Authorization = new("Bearer", resolution.Tokens.AccessToken);
                 }
 
                 var response = await httpClient.GetAsync($"/api/attachments/{id}");

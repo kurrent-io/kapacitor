@@ -5,7 +5,7 @@ namespace Capacitor.Cli.SessionStartMemory;
 
 internal sealed class SessionStartMemoryContextProvider(
     ISessionStartMemoryScopeResolver scopeResolver,
-    Func<bool, CancellationToken, Task<HttpClient>> clientFactory,
+    Func<string?, CancellationToken, Task<HttpClient>> clientFactory,
     Action<string>? diagnostic = null,
     bool disposeClients = false) {
 
@@ -19,11 +19,16 @@ internal sealed class SessionStartMemoryContextProvider(
             HttpClient? firstClient = null;
             HttpClient? refreshClient = null;
             try {
-                firstClient = await clientFactory(false, cts.Token);
+                firstClient = await clientFactory(null, cts.Token);
                 var response = await SendAsync(firstClient, request.BaseUrl, scope, cts.Token);
                 if (response.StatusCode == HttpStatusCode.Unauthorized) {
                     response.Dispose();
-                    refreshClient = await clientFactory(true, cts.Token);
+                    // Retry against the token this client actually sent, so a peer process that
+                    // refreshed in the meantime is adopted rather than rotated a second time. A
+                    // null here (no token was attached) simply means there is nothing to force —
+                    // the retry still picks up whatever is stored now.
+                    var rejected = firstClient.DefaultRequestHeaders.Authorization?.Parameter;
+                    refreshClient = await clientFactory(rejected, cts.Token);
                     response = await SendAsync(refreshClient, request.BaseUrl, scope, cts.Token);
                 }
                 using (response) {

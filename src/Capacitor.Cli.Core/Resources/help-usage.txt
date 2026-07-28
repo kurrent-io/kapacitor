@@ -7,7 +7,7 @@ Getting Started:
   status                           Show server, auth, and daemon status
   login                            Authenticate via OAuth (browser)
   logout                           Remove stored credentials
-  whoami                           Show current authenticated user
+  whoami                           Show current user; verify the server accepts your token
 
 Profiles:
   profile add <name> --server-url <url>  Add a server profile

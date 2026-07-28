@@ -1079,7 +1079,7 @@ Use `--keep-config` to preserve profiles, tokens, and ignore lists when you plan
 
 ```bash
 kcap status         # server health check
-kcap whoami         # show current authenticated user
+kcap whoami         # show current identity + ask the server if it accepts your token
 kcap login          # authenticate via OAuth (browser flow by default)
 kcap login --device # force device-code flow (use in SSH / headless envs)
 kcap update         # upgrade the CLI and refresh agent plugins (npm-global installs)

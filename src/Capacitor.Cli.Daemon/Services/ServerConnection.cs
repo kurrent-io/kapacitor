@@ -176,9 +176,9 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
                 $"{config.ServerUrl.TrimEnd('/')}/hubs/sessions",
                 options => {
                     options.AccessTokenProvider = async () => {
-                        var tokens = await TokenStore.GetValidTokensAsync();
+                        var resolution = await TokenStore.GetValidTokensForServerAsync(config.ServerUrl);
 
-                        return tokens?.AccessToken;
+                        return resolution.Tokens?.AccessToken;
                     };
                 }
             )
@@ -1145,10 +1145,10 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
                 while (!ct.IsCancellationRequested) {
                     try {
                         _httpClient ??= new();
-                        var tokens = await TokenStore.GetValidTokensAsync();
+                        var resolution = await TokenStore.GetValidTokensForServerAsync(_config.ServerUrl, ct);
 
-                        if (tokens?.AccessToken is not null) {
-                            _httpClient.DefaultRequestHeaders.Authorization = new("Bearer", tokens.AccessToken);
+                        if (resolution.Tokens?.AccessToken is not null) {
+                            _httpClient.DefaultRequestHeaders.Authorization = new("Bearer", resolution.Tokens.AccessToken);
                         }
 
                         var response = await _httpClient.PostAsync(url, new StringContent(payload, Encoding.UTF8, "application/json"), ct);

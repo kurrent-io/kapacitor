@@ -88,7 +88,7 @@ static class McpFlowResultServer {
                 if (toolName is not ("submit_review_result" or "send_flow_message"))
                     return BuildToolResult(callId, $"Error: Unknown tool: {toolName}", isError: true);
 
-                client ??= await HttpClientExtensions.CreateAuthenticatedClientAsync(baseUrl);
+                client ??= await HttpClientExtensions.CreateAuthenticatedClientAsync(baseUrl, autoRetryUnauthorized: false);
 
                 var (text, isError) = toolName switch {
                     "submit_review_result" => await SubmitCoreAsync(client, apiRoot, agentId, arguments, delay: Task.Delay),
@@ -306,7 +306,17 @@ static class McpFlowResultServer {
 
         if (response.StatusCode != HttpStatusCode.Unauthorized) return response;
 
-        var refreshed = await TokenStore.GetValidTokensAsync();
+        // Force a refresh against the token this client actually sent: the 401 proves the server
+        // rejected it even though it may still look unexpired locally, which a plain load would
+        // not heal. Passing the rejected token also means a peer process that already refreshed is
+        // adopted rather than rotated a second time. With no token attached at all — this MCP
+        // process outlives a `kcap login` that finished after the client was built — there is
+        // nothing to refresh, so just pick up whatever is stored now.
+        var rejected = client.DefaultRequestHeaders.Authorization?.Parameter;
+
+        var refreshed = rejected is null
+            ? await TokenStore.GetValidTokensAsync()
+            : await TokenStore.ForceRefreshAsync(rejected);
 
         if (refreshed is null) return response; // genuinely not logged in; keep the original 401
 

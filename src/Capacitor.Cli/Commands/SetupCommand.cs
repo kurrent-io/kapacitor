@@ -79,7 +79,7 @@ public static class SetupCommand {
         var existingProfile = await AppConfig.LoadProfileConfig();
         var activeProfile   = string.IsNullOrWhiteSpace(existingProfile.ActiveProfile) ? "default" : existingProfile.ActiveProfile;
         var existing        = existingProfile.Profiles.GetValueOrDefault(activeProfile);
-        var existingTokens  = await TokenStore.LoadAsync();
+        var existingTokens  = await TokenStore.LoadAsync(activeProfile);
 
         if (existing?.ServerUrl is not null && existingTokens is not null && !noPrompt) {
             var rerun = AnsiConsole.Prompt(
@@ -147,16 +147,16 @@ public static class SetupCommand {
         } else if (provider == AuthProvider.None) {
             await Console.Out.WriteLineAsync("  Auth provider is None — no login required.");
         } else if (preAuthToken is not null) {
-            var exchangeResult = await OAuthLoginFlow.ExchangeAndSaveAsync(serverUrl, preAuthToken, provider);
+            var exchangeResult = await OAuthLoginFlow.ExchangeAndSaveAsync(serverUrl, preAuthToken, provider, activeProfile);
             if (exchangeResult != 0) {
                 await Console.Error.WriteLineAsync("  Token exchange failed.");
                 return 1;
             }
             // Keep formatting consistent with the non-discovery branch
-            var tokens = await TokenStore.LoadAsync();
+            var tokens = await TokenStore.LoadAsync(activeProfile);
             AnsiConsole.MarkupLine($"  [green]✓[/] Logged in as [cyan]{Markup.Escape(tokens?.GitHubUsername ?? "?")}[/]");
         } else {
-            var loginResult = await OAuthLoginFlow.LoginWithDiscoveryAsync(serverUrl, forceDevice);
+            var loginResult = await OAuthLoginFlow.LoginWithDiscoveryAsync(serverUrl, forceDevice, activeProfile);
 
             if (loginResult != 0) {
                 await Console.Error.WriteLineAsync("  Login failed.");
@@ -164,7 +164,7 @@ public static class SetupCommand {
                 return 1;
             }
 
-            var tokens = await TokenStore.LoadAsync();
+            var tokens = await TokenStore.LoadAsync(activeProfile);
             await Console.Out.WriteLineAsync($"  ✓ Logged in as {tokens?.GitHubUsername}");
         }
 
@@ -436,7 +436,7 @@ public static class SetupCommand {
 
         // Save config
         var profileConfig  = await AppConfig.LoadProfileConfig();
-        var activeName     = profileConfig.ActiveProfile;
+        var activeName     = string.IsNullOrWhiteSpace(profileConfig.ActiveProfile) ? "default" : profileConfig.ActiveProfile;
         var defaultProfile = profileConfig.Profiles.GetValueOrDefault(activeName) ?? new Profile();
 
         defaultProfile = defaultProfile with {
@@ -458,12 +458,12 @@ public static class SetupCommand {
         // CLI/env/repo precedence and possibly landing on something else.
         AppConfig.SetResolvedState(serverUrl, activeName, defaultProfile);
 
-        var finalTokens = await TokenStore.LoadAsync();
+        var finalTokens = await TokenStore.LoadAsync(activeName);
 
         // tell the server this user has finished CLI setup, so the dashboard
         // can flip the new-tenant welcome modal from "Waiting for CLI to register"
         // to "Registered". Best-effort — never block setup completion on this.
-        await PingCliSetupAsync(serverUrl);
+        await PingCliSetupAsync(serverUrl, activeName);
 
         await Console.Out.WriteLineAsync();
 
@@ -486,8 +486,10 @@ public static class SetupCommand {
         // degrades to an ineligible (best-effort) skip rather than throwing out of setup — the
         // import path's own errors are caught inside RunImportStepAsync, and this eligibility
         // probe (awaited outside that boundary) must be equally non-fatal.
+        // Server-scoped: the import step is only actually authorized if the token both refreshes
+        // and belongs to the server we just configured.
         var authSatisfied = await IsAuthSatisfiedAsync(
-            provider, static async () => await TokenStore.GetValidTokensAsync() is not null);
+            provider, async () => (await TokenStore.GetValidTokensForServerAsync(serverUrl)).Tokens is not null);
 
         await RunImportStepAsync(
             currentRepo, authSatisfied, skipImport, noPrompt,
@@ -828,7 +830,7 @@ public static class SetupCommand {
     //     wall-clock bound is enforced independently of what HttpClient does
     //     internally. If the delay wins, HttpClient disposal on method-exit
     //     cancels the in-flight POST.
-    static async Task PingCliSetupAsync(string serverUrl) {
+    static async Task PingCliSetupAsync(string serverUrl, string profile) {
         // The ping is intentionally silent (see method-doc), which also hides why the
         // dashboard welcome modal never flips when it fails — e.g. a token the server
         // rejects or maps to a different identity. Set KCAP_DEBUG to surface the
@@ -839,7 +841,7 @@ public static class SetupCommand {
         }
 
         try {
-            var tokens = await TokenStore.LoadAsync();
+            var tokens = await TokenStore.LoadAsync(profile);
             if (tokens is null || tokens.IsExpired) {
                 Debug(tokens is null ? "skipped — no stored token" : "skipped — token expired");
 

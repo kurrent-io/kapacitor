@@ -246,32 +246,8 @@ switch (command) {
 
         return 0;
     }
-    case "whoami": {
-        var provider = await HttpClientExtensions.DiscoverProviderAsync(baseUrl!);
-
-        if (provider == "None") {
-            await Console.Out.WriteLineAsync("Provider: None (no authentication)");
-            await Console.Out.WriteLineAsync($"Server:   {baseUrl!}");
-
-            return 0;
-        }
-
-        var tokens = await TokenStore.LoadAsync();
-
-        if (tokens is null) {
-            Console.Error.WriteLine("Not authenticated. Run `kcap login`.");
-
-            return 1;
-        }
-
-        await Console.Out.WriteLineAsync($"Username: {tokens.GitHubUsername}");
-        await Console.Out.WriteLineAsync($"Provider: {tokens.Provider}");
-        await Console.Out.WriteLineAsync($"Expires:  {tokens.ExpiresAt:u}");
-        await Console.Out.WriteLineAsync($"Server:   {baseUrl!}");
-        await Console.Out.WriteLineAsync($"Expired:  {(tokens.IsExpired ? "yes" : "no")}");
-
-        return 0;
-    }
+    case "whoami":
+        return await WhoamiCommand.HandleAsync(baseUrl!);
     case "daemon":
         return await DaemonCommands.HandleAsync(args);
     case "run-agent":

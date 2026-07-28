@@ -149,7 +149,10 @@ public static class WorkOSDiscovery {
                 ExpiresAt      = TokenStore.JwtExpiry(switched.AccessToken),
                 GitHubUsername = username,
                 Provider       = AuthProvider.WorkOS,
-                ClientId       = clientId
+                ClientId       = clientId,
+                // The tenant's own origin: this token is org-scoped to the tenant we just switched
+                // into, and only that tenant's server will accept it.
+                ServerUrl      = ServerIdentity.Canonicalize(picked.Origin)
             });
 
         await Console.Out.WriteLineAsync($"Logged in as {username} → {picked.Label}");

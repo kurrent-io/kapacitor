@@ -48,7 +48,7 @@ static class McpFlowsServer {
 
             try {
                 if (client is null) {
-                    client = await HttpClientExtensions.CreateAuthenticatedClientAsync(baseUrl);
+                    client = await HttpClientExtensions.CreateAuthenticatedClientAsync(baseUrl, autoRetryUnauthorized: false);
                     // the review-flow endpoints long-poll (start_review_flow /
                     // submit_review_round block server-side up to ~10 min while the reviewer runs).
                     // The default 100s timeout would abort the POST, which the server sees as a
@@ -297,7 +297,17 @@ static class McpFlowsServer {
 
         if (response.StatusCode != HttpStatusCode.Unauthorized) return response;
 
-        var refreshed = await TokenStore.GetValidTokensAsync();
+        // Force a refresh against the token this client actually sent: the 401 proves the server
+        // rejected it even though it may still look unexpired locally, which a plain load would
+        // not heal. Passing the rejected token also means a peer process that already refreshed is
+        // adopted rather than rotated a second time. With no token attached at all — this MCP
+        // process outlives a `kcap login` that finished after the client was built — there is
+        // nothing to refresh, so just pick up whatever is stored now.
+        var rejected = client.DefaultRequestHeaders.Authorization?.Parameter;
+
+        var refreshed = rejected is null
+            ? await TokenStore.GetValidTokensAsync()
+            : await TokenStore.ForceRefreshAsync(rejected, ct);
 
         if (refreshed is null) return response; // genuinely not logged in; keep the original 401
 

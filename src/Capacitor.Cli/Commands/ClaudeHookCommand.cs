@@ -36,14 +36,14 @@ public static class ClaudeHookCommand {
             Task? updateCheckTask, TextWriter? stdout = null)
         => HandleWithDeps(spool, processStart, baseUrl, stdin, updateCheckTask,
             () => HttpClientExtensions.CreateClientWithAuthStatusAsync(baseUrl),
-            async (forceRefresh, ct) => (await HttpClientExtensions.CreateClientWithAuthStatusAsync(
-                baseUrl, ct, allowAutoRedirect: false, forceRefresh: forceRefresh)).Client,
+            async (rejectedAccessToken, ct) => (await HttpClientExtensions.CreateClientWithAuthStatusAsync(
+                baseUrl, ct, allowAutoRedirect: false, rejectedAccessToken: rejectedAccessToken)).Client,
             stdout);
 
     internal static async Task<int> HandleWithDeps(
             HookSpool spool, long processStart, string baseUrl, TextReader stdin, Task? updateCheckTask,
             Func<Task<(HttpClient Client, AuthStatus Status)>> clientFactory,
-            Func<bool, CancellationToken, Task<HttpClient>>? memoryClientFactory = null,
+            Func<string?, CancellationToken, Task<HttpClient>>? memoryClientFactory = null,
             TextWriter? stdout = null) {
         string body;
         try { body = await stdin.ReadToEndAsync(); } catch { return 0; }
@@ -181,7 +181,7 @@ public static class ClaudeHookCommand {
 
     internal static async Task<int> HandleCore(HttpClient client, AuthStatus authStatus, HookSpool spool,
         long processStart, string baseUrl, TextReader stdin, Task? updateCheckTask = null,
-        Func<bool, CancellationToken, Task<HttpClient>>? memoryClientFactory = null,
+        Func<string?, CancellationToken, Task<HttpClient>>? memoryClientFactory = null,
         Func<SessionStartMemoryLeaseStore>? memoryStoreFactory = null,
         TextWriter? stdout = null) {
         // Hook stdout (the SessionStart hookSpecificOutput envelope / systemMessage nudge) goes to the
@@ -811,7 +811,7 @@ public static class ClaudeHookCommand {
         bool disabled,
         SessionLifecycleReason reason,
         TimeSpan budget,
-        Func<bool, CancellationToken, Task<HttpClient>>? memoryClientFactory,
+        Func<string?, CancellationToken, Task<HttpClient>>? memoryClientFactory,
         Func<SessionStartMemoryLeaseStore>? memoryStoreFactory) {
         if (disabled || string.IsNullOrEmpty(nativeSessionId) || budget <= TimeSpan.Zero)
             return Task.FromResult<string?>(null);

@@ -663,9 +663,11 @@ public class McpFlowsServerTests {
 
     static async Task SeedDefaultTokenAsync() {
         // The active profile must resolve to "default" so GetValidTokensAsync() loads what we seed —
-        // clear any config.json a sibling token-store test may have left in the shared config dir.
+        // clear any config.json a sibling token-store test may have left in the shared config dir,
+        // and the process-global resolved profile, which token lookup now prefers over config.
         var cfg = Capacitor.Cli.Core.Config.AppConfig.GetConfigPath();
         if (File.Exists(cfg)) File.Delete(cfg);
+        Capacitor.Cli.Core.Config.AppConfig.ResetResolvedStateForTesting();
 
         await TokenStore.SaveAsync("default", new StoredTokens {
             AccessToken    = FreshBearer,

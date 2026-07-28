@@ -24,8 +24,29 @@ public record StoredTokens {
     [JsonPropertyName("client_id")]
     public string? ClientId { get; init; }
 
+    /// <summary>
+    /// Canonical URL of the server that minted this token (see <see cref="ServerIdentity"/>).
+    /// Null on files written before this field existed — those stay unenforced and are stamped
+    /// the next time a login or an unambiguous refresh rewrites them.
+    /// </summary>
+    [JsonPropertyName("server_url")]
+    public string? ServerUrl { get; init; }
+
     public bool IsExpired => DateTimeOffset.UtcNow >= ExpiresAt - TimeSpan.FromSeconds(30);
 }
+
+/// <summary>
+/// Outcome of resolving a token for a specific target server. <see cref="Tokens"/> is non-null
+/// only when <see cref="Status"/> is <see cref="AuthStatus.Ok"/> — a token bound to a different
+/// server is never handed out. <see cref="IssuedServerUrl"/> carries the (non-secret) diagnostic
+/// from the SAME snapshot the decision was made on, so a caller never has to re-read storage to
+/// build its message and can't race a concurrent profile/token change into a mismatched one.
+/// </summary>
+public sealed record TokenResolution(
+    StoredTokens? Tokens,
+    AuthStatus    Status,
+    string?       IssuedServerUrl,
+    string        ProfileName);
 
 // Outcome of a proactive-refresh tick (<see cref="TokenStore.RefreshIfExpiringAsync"/>).
 // NotDue = no-op (no tokens, the None provider, or the token still comfortably valid);
@@ -198,17 +219,34 @@ public static class TokenStore {
     // file is "not authenticated" — do NOT resurrect stale credentials from a legacy file whose
     // best-effort deletion previously failed. Shared by LoadAsync() and RefreshIfExpiringAsync so
     // both get the legacy fallback without re-resolving the active profile.
-    static async Task<StoredTokens?> LoadWithLegacyFallbackAsync(string profile) {
+    //
+    // The legacy file is a single global credential belonging to whichever profile was active
+    // before the per-profile store existed — its migration owner. Now that lookup follows the
+    // RESOLVED profile, an unscoped fallback would hand that credential to any repo-resolved
+    // profile that simply has no token yet (and it carries no ServerUrl, so the binding check
+    // can't catch it either). Restrict it to the migration owner.
+    static async Task<StoredTokens?> LoadWithLegacyFallbackAsync(string profile, CancellationToken ct = default) {
         var (state, tokens) = await ReadTokenFileAsync(ProfileTokenPath(profile));
 
         if (state == TokenFileState.Loaded) return tokens;
 
-        if (state == TokenFileState.Missing) {
+        if (state == TokenFileState.Missing && await IsLegacyOwnerAsync(profile, ct)) {
             var (_, legacy) = await ReadTokenFileAsync(LegacyTokenPath);
             return legacy;
         }
 
-        return null; // Unusable (corrupt) active profile
+        return null; // Unusable (corrupt), or a profile that doesn't own the legacy credential
+    }
+
+    // The legacy credential's owner is the on-disk active profile, with an absent/empty value
+    // normalizing to "default". Note this is deliberately NOT "profile == active || profile ==
+    // default": with active profile Y configured, a resolution that lands on "default" must not
+    // pick up Y's legacy credential.
+    static async Task<bool> IsLegacyOwnerAsync(string profile, CancellationToken ct) {
+        var cfg    = await AppConfig.LoadProfileConfig(ct);
+        var active = string.IsNullOrEmpty(cfg.ActiveProfile) ? "default" : cfg.ActiveProfile;
+
+        return string.Equals(profile, active, StringComparison.Ordinal);
     }
 
     public static async Task SaveAsync(StoredTokens tokens) {
@@ -235,9 +273,46 @@ public static class TokenStore {
         return Task.CompletedTask;
     }
 
+    // Which profile's token file this process should use. Prefer the profile the rest of the
+    // process already resolved (KCAP_PROFILE, repo .kcap.json, git-remote match, `kcap use`
+    // binding) so a repo bound to profile X doesn't silently send the active profile's token.
+    // An explicit --server-url / KCAP_URL override resolves no profile name at all (the resolver
+    // returns null there), which correctly falls through to the on-disk active profile — the
+    // server-binding check is what protects that path.
     static async Task<string> ResolveActiveProfileAsync(CancellationToken ct = default) {
+        if (AppConfig.ResolvedProfile?.ProfileName is { Length: > 0 } resolved) return resolved;
+
         var cfg = await AppConfig.LoadProfileConfig(ct);
         return string.IsNullOrEmpty(cfg.ActiveProfile) ? "default" : cfg.ActiveProfile;
+    }
+
+    /// <summary>
+    /// Resolves a token for a specific target server. This is the ONLY way a bearer token should
+    /// reach an outgoing request: a token bound to a different server is withheld here, before any
+    /// network call, instead of being sent and rejected with an opaque 401 the CLI cannot explain.
+    ///
+    /// The binding check deliberately runs on the raw snapshot BEFORE any refresh — refreshing a
+    /// token we are about to refuse to use would spend a rotating credential (and a round-trip to
+    /// its own server) for nothing.
+    /// </summary>
+    public static async Task<TokenResolution> GetValidTokensForServerAsync(
+            string targetBaseUrl, CancellationToken ct = default) {
+        var profile  = await ResolveActiveProfileAsync(ct);
+        var snapshot = await LoadWithLegacyFallbackAsync(profile, ct);
+
+        if (snapshot is null) {
+            return new(null, AuthStatus.NotAuthenticated, null, profile);
+        }
+
+        if (snapshot.ServerUrl is not null && !ServerIdentity.SameServer(snapshot.ServerUrl, targetBaseUrl)) {
+            return new(null, AuthStatus.WrongServer, snapshot.ServerUrl, profile);
+        }
+
+        var valid = await GetValidTokensAsync();
+
+        return valid is not null
+            ? new(valid, AuthStatus.Ok, valid.ServerUrl, profile)
+            : new(null, AuthStatus.Expired, snapshot.ServerUrl, profile);
     }
 
     public static async Task<StoredTokens?> GetValidTokensAsync() {
@@ -273,10 +348,17 @@ public static class TokenStore {
     /// Forces one provider refresh even when the locally cached access token has not expired.
     /// Used only after a server 401 proves that the otherwise-valid token is no longer accepted.
     /// The existing profile-scoped lock still serializes rotating credentials across processes.
+    ///
+    /// <paramref name="rejectedAccessToken"/> is the token the failing request actually sent.
+    /// Refreshing is conditional on the persisted token still BEING that one: if a peer process
+    /// rotated in between, its fresh token is adopted as-is. Refreshing unconditionally would
+    /// rotate a credential that was never rejected — and for WorkOS, whose refresh token is
+    /// single-use, that is a real cost, not just extra traffic.
     /// </summary>
-    public static async Task<StoredTokens?> ForceRefreshAsync(CancellationToken ct = default) {
+    public static async Task<StoredTokens?> ForceRefreshAsync(
+            string rejectedAccessToken, CancellationToken ct = default) {
         var profile = await ResolveActiveProfileAsync(ct);
-        var tokens = await LoadWithLegacyFallbackAsync(profile);
+        var tokens = await LoadWithLegacyFallbackAsync(profile, ct);
         if (tokens is null) return null;
 
         Func<StoredTokens, Task<StoredTokens?>> refresh = tokens.Provider switch {
@@ -288,7 +370,11 @@ public static class TokenStore {
         if (tokens.Provider is not (AuthProvider.WorkOS or AuthProvider.GitHubApp)) return null;
 
         return await RefreshWithCrossProcessLockAsync(
-            profile, tokens, refresh, needsRefresh: static _ => true, cancellationToken: ct);
+            profile,
+            tokens,
+            refresh,
+            needsRefresh: t => string.Equals(t.AccessToken, rejectedAccessToken, StringComparison.Ordinal),
+            cancellationToken: ct);
     }
 
     // The decision the daemon's proactive-refresh tick makes each time it wakes. Kept a
@@ -495,8 +581,16 @@ public static class TokenStore {
         RefreshGitHubAsync(tokens, CancellationToken.None);
 
     static async Task<StoredTokens?> RefreshGitHubAsync(StoredTokens tokens, CancellationToken ct) {
-        var baseUrl = AppConfig.ResolvedServerUrl ?? Environment.GetEnvironmentVariable("KCAP_URL") ?? "http://localhost:5108";
-        var url     = $"{baseUrl}/auth/refresh";
+        // A bound token refreshes against the server that minted it: /auth/refresh validates the
+        // existing token's signature, so posting it anywhere else can only fail — and would leak
+        // it to a server that never issued it.
+        var configured = AppConfig.ResolvedServerUrl ?? Environment.GetEnvironmentVariable("KCAP_URL");
+        var baseUrl    = tokens.ServerUrl ?? configured ?? "http://localhost:5108";
+        var url        = $"{baseUrl}/auth/refresh";
+
+        // Stamp an unbound (pre-upgrade) token only when the endpoint came from real configuration.
+        // The localhost default is a fallback, not evidence of where the token was minted.
+        var stamped = tokens.ServerUrl ?? (configured is not null ? ServerIdentity.Canonicalize(configured) : null);
 
         // PostWithRetryAsync runs EnsureAbsolute, which Environment.Exit(2)s on a scheme-less URL.
         // Refresh is reached from daemon/background callers via GetValidTokensAsync and must fail
@@ -534,7 +628,8 @@ public static class TokenStore {
             // written to the wrong profile if the active profile changes mid-refresh.
             return tokens with {
                 AccessToken = json.AccessToken,
-                ExpiresAt = DateTimeOffset.UtcNow.AddSeconds(json.ExpiresIn)
+                ExpiresAt = DateTimeOffset.UtcNow.AddSeconds(json.ExpiresIn),
+                ServerUrl = stamped
             };
         } catch {
             return null;

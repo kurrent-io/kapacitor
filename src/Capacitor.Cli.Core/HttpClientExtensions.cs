@@ -24,6 +24,13 @@ public enum AuthStatus {
 
     /// <summary>No token is stored at all — login required.</summary>
     NotAuthenticated,
+
+    /// <summary>
+    /// A token is stored, but it was minted by a different server than the one being targeted.
+    /// No refresh can heal this (the server validates the token's own signature) — only a login
+    /// against the target server, or switching to the profile that owns it.
+    /// </summary>
+    WrongServer,
 }
 
 public static class HttpClientExtensions {
@@ -36,29 +43,54 @@ public static class HttpClientExtensions {
     /// </summary>
     public static async Task<(HttpClient Client, AuthStatus Status)> CreateClientWithAuthStatusAsync(
         string? baseUrl = null, CancellationToken ct = default, bool allowAutoRedirect = true,
-        bool forceRefresh = false) {
-        var client = new HttpClient(new HttpClientHandler { AllowAutoRedirect = allowAutoRedirect });
+        string? rejectedAccessToken = null) {
+        var (client, status, _) = await CreateClientCoreAsync(baseUrl, ct, allowAutoRedirect,
+            rejectedAccessToken, autoRetryUnauthorized: false);
 
+        return (client, status);
+    }
+
+    /// <summary>
+    /// Shared client construction. Returns the resolution alongside the client so callers that
+    /// report a mismatch quote the issuing server from the same snapshot the decision used.
+    /// </summary>
+    static async Task<(HttpClient Client, AuthStatus Status, TokenResolution? Resolution)> CreateClientCoreAsync(
+        string? baseUrl, CancellationToken ct, bool allowAutoRedirect,
+        string? rejectedAccessToken, bool autoRetryUnauthorized) {
         baseUrl ??= AppConfig.ResolvedServerUrl ?? Environment.GetEnvironmentVariable("KCAP_URL") ?? "http://localhost:5108";
+
+        HttpClient NewClient(DelegatingHandler? retry = null) {
+            var primary = new HttpClientHandler { AllowAutoRedirect = allowAutoRedirect };
+
+            if (retry is null) return new(primary);
+
+            retry.InnerHandler = primary;
+
+            return new(retry);
+        }
+
         var provider = await DiscoverProviderAsync(baseUrl, ct);
 
         if (provider == "None") {
-            return (client, AuthStatus.NoAuthRequired); // No auth needed
+            return (NewClient(), AuthStatus.NoAuthRequired, null); // No auth needed
         }
 
-        var tokens = forceRefresh
-            ? await TokenStore.ForceRefreshAsync(ct)
-            : await TokenStore.GetValidTokensAsync();
-
-        if (tokens is not null) {
-            client.DefaultRequestHeaders.Authorization = new("Bearer", tokens.AccessToken);
-
-            return (client, AuthStatus.Ok);
+        // A forced refresh is only meaningful for a token we already hold and that the server
+        // just rejected; the binding check below still gates whether it may be used at all.
+        if (rejectedAccessToken is not null) {
+            await TokenStore.ForceRefreshAsync(rejectedAccessToken, ct);
         }
 
-        var stored = await TokenStore.LoadAsync();
+        var resolution = await TokenStore.GetValidTokensForServerAsync(baseUrl, ct);
 
-        return (client, stored is not null ? AuthStatus.Expired : AuthStatus.NotAuthenticated);
+        if (resolution is { Status: AuthStatus.Ok, Tokens: not null }) {
+            var client = NewClient(autoRetryUnauthorized ? new UnauthorizedRetryHandler(resolution.Tokens) : null);
+            client.DefaultRequestHeaders.Authorization = new("Bearer", resolution.Tokens.AccessToken);
+
+            return (client, AuthStatus.Ok, resolution);
+        }
+
+        return (NewClient(), resolution.Status, resolution);
     }
 
     /// <summary>
@@ -67,8 +99,15 @@ public static class HttpClientExtensions {
     /// server uses "None" provider, skips auth entirely. Interactive CLI commands use this; hook
     /// callers should prefer <see cref="CreateClientWithAuthStatusAsync"/> so they control messaging.
     /// </summary>
-    public static async Task<HttpClient> CreateAuthenticatedClientAsync(string? baseUrl = null, CancellationToken ct = default) {
-        var (client, status) = await CreateClientWithAuthStatusAsync(baseUrl, ct);
+    /// <param name="autoRetryUnauthorized">
+    /// Installs <see cref="UnauthorizedRetryHandler"/> so a 401 is transparently retried once after
+    /// a refresh. Pass <c>false</c> from callers that run their own 401-retry loop over the returned
+    /// client — the MCP servers do — so a single rejection isn't retried (and refreshed) twice.
+    /// </param>
+    public static async Task<HttpClient> CreateAuthenticatedClientAsync(string? baseUrl = null, CancellationToken ct = default,
+            bool autoRetryUnauthorized = true) {
+        var (client, status, resolution) = await CreateClientCoreAsync(baseUrl, ct, allowAutoRedirect: true,
+            rejectedAccessToken: null, autoRetryUnauthorized);
 
         switch (status) {
             case AuthStatus.Expired:
@@ -77,6 +116,13 @@ public static class HttpClientExtensions {
                 break;
             case AuthStatus.NotAuthenticated:
                 await Console.Error.WriteLineAsync("Not authenticated. Run 'kcap login' to authenticate.");
+
+                break;
+            case AuthStatus.WrongServer:
+                var target = baseUrl ?? AppConfig.ResolvedServerUrl ?? "the configured server";
+                await Console.Error.WriteLineAsync(
+                    $"Stored token was issued by {resolution?.IssuedServerUrl} but this command targets {target}. " +
+                    $"Run 'kcap login' (or switch profiles with 'kcap use') to authenticate against {target}.");
 
                 break;
         }
