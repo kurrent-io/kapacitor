@@ -50,6 +50,35 @@ public class ServerIdentityTests {
     }
 
     [Test]
+    // The canonical form always carries the EFFECTIVE port, which is what makes an implicit and an
+    // explicit default port compare equal.
+    [Arguments("https://kcap.example.com/", "https://kcap.example.com:443")]
+    [Arguments("https://KCAP.Example.COM:443", "https://kcap.example.com:443")]
+    [Arguments("http://localhost:5108", "http://localhost:5108")]
+    public async Task Stamping_yields_the_canonical_form(string input, string expected) {
+        var ok = ServerIdentity.TryCanonicalizeForStamping(input, out var canonical, out var error);
+
+        await Assert.That(ok).IsTrue();
+        await Assert.That(canonical).IsEqualTo(expected);
+        await Assert.That(error).IsEmpty();
+    }
+
+    [Test]
+    [Arguments("https://kcap.example.com?tenant=a")]
+    [Arguments("https://user:pw@kcap.example.com")]
+    [Arguments("ftp://kcap.example.com")]
+    [Arguments("kcap.example.com")]
+    public async Task Stamping_refuses_a_url_it_cannot_bind(string url) {
+        // A null ServerUrl means "pre-upgrade token, unenforced". Minting a NEW token with one
+        // would silently downgrade it to a credential any server is allowed to receive, so login
+        // must fail loudly instead.
+        var ok = ServerIdentity.TryCanonicalizeForStamping(url, out _, out var error);
+
+        await Assert.That(ok).IsFalse();
+        await Assert.That(error).Contains(url);
+    }
+
+    [Test]
     public async Task Unparseable_side_never_matches_a_valid_side() {
         // Fail closed: "we can't tell" must not read as "same server".
         await Assert.That(ServerIdentity.SameServer("not a url", "https://kcap.example.com")).IsFalse();

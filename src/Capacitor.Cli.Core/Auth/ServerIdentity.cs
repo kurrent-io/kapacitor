@@ -31,6 +31,29 @@ public static class ServerIdentity {
     }
 
     /// <summary>
+    /// Canonical form for stamping onto a freshly minted token, or an error message naming the
+    /// problem. A null <c>ServerUrl</c> means "pre-upgrade token, binding unenforced", so a NEW
+    /// token must never be saved with one: silently storing null here would downgrade a token we
+    /// could have bound into one that any server is allowed to receive.
+    /// </summary>
+    public static bool TryCanonicalizeForStamping(string? url, out string canonical, out string error) {
+        var result = Canonicalize(url);
+
+        if (result is null) {
+            canonical = "";
+            error     = $"Server URL '{url}' is not usable as a server identity — it must be an "
+                      + "absolute http(s) URL with no user info, query string, or fragment.";
+
+            return false;
+        }
+
+        canonical = result;
+        error     = "";
+
+        return true;
+    }
+
+    /// <summary>
     /// True when both sides name the same server. A non-canonicalizable side never matches:
     /// we fail closed to "no binding assertion can be made" rather than to a false match.
     /// </summary>

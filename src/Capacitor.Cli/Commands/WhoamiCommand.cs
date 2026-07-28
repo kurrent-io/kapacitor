@@ -6,12 +6,9 @@ using Capacitor.Cli.Core.Config;
 namespace Capacitor.Cli.Commands;
 
 /// <summary>
-/// Reports who you are AND whether the server agrees.
-///
-/// Printing local token metadata alone is misleading: "expires tomorrow" says only that a clock
-/// hasn't passed, not that any server accepts the token. That gap once turned a real 401 into a
-/// multi-day misdiagnosis, because whoami cheerfully reported a valid token for a server that was
-/// rejecting every request. So this asks the server directly.
+/// Reports the stored identity and whether the server actually accepts it. Local metadata alone
+/// is not an answer: "expires tomorrow" only says a clock hasn't passed, so a token the server
+/// rejects still looks valid. Hence the probe.
 /// </summary>
 public static class WhoamiCommand {
     /// <summary>Cheap authenticated GET used purely to ask "do you accept this token?".</summary>

@@ -318,13 +318,19 @@ public static class OAuthLoginFlow {
 
         var exchange = (await exchangeResponse.Content.ReadFromJsonAsync(CapacitorJsonContext.Default.TokenExchangeResponse))!;
 
+        if (!ServerIdentity.TryCanonicalizeForStamping(serverUrl, out var canonical, out var identityError)) {
+            Console.Error.WriteLine($"Error: {identityError}");
+
+            return 1;
+        }
+
         await TokenStore.SaveAsync(
             new() {
                 AccessToken    = exchange.AccessToken,
                 ExpiresAt      = DateTimeOffset.UtcNow.AddSeconds(exchange.ExpiresIn),
                 GitHubUsername = exchange.Username,
                 Provider       = provider,
-                ServerUrl      = ServerIdentity.Canonicalize(serverUrl)
+                ServerUrl      = canonical
             }
         );
 
@@ -371,6 +377,12 @@ public static class OAuthLoginFlow {
 
         var exchange = (await exchangeResponse.Content.ReadFromJsonAsync(CapacitorJsonContext.Default.TokenExchangeResponse))!;
 
+        if (!ServerIdentity.TryCanonicalizeForStamping(serverUrl, out var canonical, out var identityError)) {
+            Console.Error.WriteLine($"Error: {identityError}");
+
+            return 1;
+        }
+
         await TokenStore.SaveAsync(
             profile,
             new StoredTokens {
@@ -378,7 +390,7 @@ public static class OAuthLoginFlow {
                 ExpiresAt      = DateTimeOffset.UtcNow.AddSeconds(exchange.ExpiresIn),
                 GitHubUsername = exchange.Username,
                 Provider       = provider,
-                ServerUrl      = ServerIdentity.Canonicalize(serverUrl)
+                ServerUrl      = canonical
             }
         );
 
@@ -557,6 +569,12 @@ public static class OAuthLoginFlow {
 
         var username = WorkOSDisplayName(json.User);
 
+        if (!ServerIdentity.TryCanonicalizeForStamping(serverUrl, out var canonical, out var identityError)) {
+            Console.Error.WriteLine($"Error: {identityError}");
+
+            return 1;
+        }
+
         var saved = new StoredTokens {
             AccessToken    = json.AccessToken,
             RefreshToken   = json.RefreshToken,
@@ -566,7 +584,7 @@ public static class OAuthLoginFlow {
             ClientId       = clientId,
             // The kcap server we authenticated FOR — not api.workos.com, which issued the
             // token but says nothing about which Capacitor server will accept it.
-            ServerUrl      = ServerIdentity.Canonicalize(serverUrl)
+            ServerUrl      = canonical
         };
 
         if (profile is null) await TokenStore.SaveAsync(saved);

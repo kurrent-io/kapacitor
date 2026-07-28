@@ -471,7 +471,7 @@ public static class SetupCommand {
         // tell the server this user has finished CLI setup, so the dashboard
         // can flip the new-tenant welcome modal from "Waiting for CLI to register"
         // to "Registered". Best-effort — never block setup completion on this.
-        await PingCliSetupAsync(serverUrl, activeName);
+        await PingCliSetupAsync(serverUrl, activeName, provider);
 
         await Console.Out.WriteLineAsync();
 
@@ -838,7 +838,7 @@ public static class SetupCommand {
     //     wall-clock bound is enforced independently of what HttpClient does
     //     internally. If the delay wins, HttpClient disposal on method-exit
     //     cancels the in-flight POST.
-    static async Task PingCliSetupAsync(string serverUrl, string profile) {
+    static async Task PingCliSetupAsync(string serverUrl, string profile, string provider) {
         // The ping is intentionally silent (see method-doc), which also hides why the
         // dashboard welcome modal never flips when it fails — e.g. a token the server
         // rejects or maps to a different identity. Set KCAP_DEBUG to surface the
@@ -846,6 +846,15 @@ public static class SetupCommand {
         var  debug = Environment.GetEnvironmentVariable("KCAP_DEBUG") is { Length: > 0 };
         void Debug(string message) {
             if (debug) Console.Error.WriteLine($"[kcap] cli-setup ping: {message}");
+        }
+
+        // A None-provider server neither needs nor should receive a bearer. Setup performs no login
+        // on that path, so any token still in the profile belongs to whatever server it pointed at
+        // before — sending it here would disclose it to an unrelated host.
+        if (provider == AuthProvider.None) {
+            Debug("skipped — server requires no authentication");
+
+            return;
         }
 
         try {

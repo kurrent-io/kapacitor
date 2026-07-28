@@ -107,7 +107,11 @@ When setup finishes, `kcap` sends a best-effort POST to the server's `/api/users
 
 > **Restart your coding agent for live recording to begin.** Hooks only load at session start, so a session that was already running when you ran setup keeps running without them and won't stream live. Start a new session (or `claude --continue`) to pick the hooks up — setup prints this reminder when it installs any hooks. A manual `kcap import` of the in-progress session only yields a frozen snapshot.
 
-Verify with `kcap whoami` and `kcap status`.
+Verify with `kcap whoami` and `kcap status`. `kcap whoami` prints your identity and the profile it
+resolved, then asks the server whether it actually accepts your token — it exits non-zero if the
+server rejects it, or if the token was issued by a different server than the profile now targets
+(re-run `kcap login`). If the server can't be reached it says so and still exits 0, so it stays
+usable offline.
 
 Setup closes by pointing you at the guided tour. Prompt your agent with **"Start kcap guided tour"**
 (or, in Claude Code, `/kcap:guided-tour`) to see what your team has recorded and work through

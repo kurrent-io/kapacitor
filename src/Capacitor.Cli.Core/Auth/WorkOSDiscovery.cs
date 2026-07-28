@@ -135,6 +135,12 @@ public static class WorkOSDiscovery {
             return 1;
         }
 
+        if (!ServerIdentity.TryCanonicalizeForStamping(picked.Origin, out var canonical, out var identityError)) {
+            await Console.Error.WriteLineAsync($"Error: {identityError}");
+
+            return 1;
+        }
+
         var username = OAuthLoginFlow.WorkOSDisplayName(auth.User);
 
         var cfg = await AppConfig.LoadProfileConfig();
@@ -152,7 +158,7 @@ public static class WorkOSDiscovery {
                 ClientId       = clientId,
                 // The tenant's own origin: this token is org-scoped to the tenant we just switched
                 // into, and only that tenant's server will accept it.
-                ServerUrl      = ServerIdentity.Canonicalize(picked.Origin)
+                ServerUrl      = canonical
             });
 
         await Console.Out.WriteLineAsync($"Logged in as {username} → {picked.Label}");
