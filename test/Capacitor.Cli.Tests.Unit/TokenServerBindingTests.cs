@@ -255,6 +255,53 @@ public class TokenServerBindingTests {
         await Assert.That(after.Tokens).IsNull();
     }
 
+    // ── Recovery after a rejection ───────────────────────────────────────────
+
+    [Test]
+    public async Task Recovery_adopts_a_differing_stored_token_without_a_second_rotation() {
+        // A peer refresh (or a fresh login) landed while we were being rejected. The rotation
+        // attempt finds the stored token no longer matches the rejected one and returns it as-is.
+        await TokenStore.SaveAsync("default",
+            Tokens(serverUrl: Server, username: "peer") with { AccessToken = "peer-token" });
+
+        var recovered = await TokenStore.RecoverForServerAsync(Server, "rejected-token");
+
+        await Assert.That(recovered?.AccessToken).IsEqualTo("peer-token");
+    }
+
+    [Test]
+    public async Task Recovery_falls_back_to_the_stored_token_without_a_second_rotation() {
+        // Rotation was attempted and failed (unroutable refresh endpoint). The fallback is a RAW
+        // read: the same token comes back for one more attempt, and — the point of the finding —
+        // no second provider refresh is issued, so a single-use refresh token isn't re-spent.
+        await TokenStore.SaveAsync("default",
+            Tokens(serverUrl: OtherServer) with { AccessToken = "rejected-token" });
+
+        var recovered = await TokenStore.RecoverForServerAsync(OtherServer, "rejected-token");
+
+        await Assert.That(recovered?.AccessToken).IsEqualTo("rejected-token");
+    }
+
+    [Test]
+    public async Task Recovery_of_an_expired_token_does_not_refresh_twice() {
+        // The failure mode behind the finding: falling back to the refresh-aware accessor would
+        // see this expired token and rotate a SECOND time. A raw fallback returns it untouched.
+        await TokenStore.SaveAsync("default",
+            Tokens(serverUrl: OtherServer, expiresIn: TimeSpan.FromMinutes(-5)) with { AccessToken = "rejected-token" });
+
+        var recovered = await TokenStore.RecoverForServerAsync(OtherServer, "rejected-token");
+
+        await Assert.That(recovered?.AccessToken).IsEqualTo("rejected-token");
+    }
+
+    [Test]
+    public async Task Recovery_refuses_a_stored_token_bound_to_another_server() {
+        await TokenStore.SaveAsync("default",
+            Tokens(serverUrl: OtherServer) with { AccessToken = "elsewhere-token" });
+
+        await Assert.That(await TokenStore.RecoverForServerAsync(Server, "rejected-token")).IsNull();
+    }
+
     // ── Round-trip ───────────────────────────────────────────────────────────
 
     [Test]

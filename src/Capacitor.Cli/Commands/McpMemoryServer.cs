@@ -203,8 +203,7 @@ static class McpMemoryServer {
         // the pre-existing "re-read and resend once" recovery still happens.
         var refreshed = rejected is null
             ? (await TokenStore.GetValidTokensForServerAsync(baseUrl)).Tokens
-            : await TokenStore.ForceRefreshAsync(rejected, baseUrl)
-              ?? (await TokenStore.GetValidTokensForServerAsync(baseUrl)).Tokens;
+            : await TokenStore.RecoverForServerAsync(baseUrl, rejected);
 
         if (refreshed is null) return response; // genuinely not logged in; keep the original 401
 

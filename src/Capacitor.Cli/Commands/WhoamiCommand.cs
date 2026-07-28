@@ -52,7 +52,7 @@ public static class WhoamiCommand {
         // WorkOS credential (single-use refresh token) as a side effect of merely running whoami,
         // and would let the expiry printed here describe a different token than the one probed.
         var profile  = await TokenStore.ResolveProfileNameAsync();
-        var snapshot = await TokenStore.LoadAsync();
+        var snapshot = await TokenStore.LoadForProfileAsync(profile);
 
         if (snapshot is null) {
             Console.Error.WriteLine("Not authenticated. Run `kcap login`.");

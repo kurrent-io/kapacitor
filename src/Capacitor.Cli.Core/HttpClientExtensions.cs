@@ -75,10 +75,19 @@ public static class HttpClientExtensions {
             return (NewClient(), AuthStatus.NoAuthRequired, null); // No auth needed
         }
 
-        // A forced refresh is only meaningful for a token we already hold and that the server
-        // just rejected; the binding check below still gates whether it may be used at all.
+        // Recovery from a server rejection is self-contained: it already attempted a rotation and
+        // applied the binding check. Falling through to the resolving accessor afterwards would let
+        // an expired token be refreshed a SECOND time — re-spending a single-use WorkOS refresh
+        // token — so this path returns directly.
         if (rejectedAccessToken is not null) {
-            await TokenStore.ForceRefreshAsync(rejectedAccessToken, baseUrl, ct);
+            var recovered = await TokenStore.RecoverForServerAsync(baseUrl, rejectedAccessToken, ct);
+
+            if (recovered is null) return (NewClient(), AuthStatus.Expired, null);
+
+            var recoveredClient = NewClient(autoRetryUnauthorized ? new UnauthorizedRetryHandler(recovered, baseUrl) : null);
+            recoveredClient.DefaultRequestHeaders.Authorization = new("Bearer", recovered.AccessToken);
+
+            return (recoveredClient, AuthStatus.Ok, null);
         }
 
         var resolution = await TokenStore.GetValidTokensForServerAsync(baseUrl, ct);

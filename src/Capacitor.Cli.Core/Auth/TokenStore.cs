@@ -315,7 +315,10 @@ public static class TokenStore {
             return new(null, AuthStatus.WrongServer, snapshot.ServerUrl, profile);
         }
 
-        var valid = await GetValidTokensAsync();
+        // Pinned to the profile resolved above: re-resolving here would let a concurrent
+        // `kcap use` switch profiles mid-call and return another profile's token while
+        // TokenResolution.ProfileName still names the first one.
+        var valid = await GetValidTokensForProfileAsync(profile, ct);
 
         if (valid is null) {
             return new(null, AuthStatus.Expired, snapshot.ServerUrl, profile);
@@ -336,8 +339,47 @@ public static class TokenStore {
     static bool BoundToTarget(StoredTokens tokens, string targetBaseUrl) =>
         tokens.ServerUrl is null || ServerIdentity.SameServer(tokens.ServerUrl, targetBaseUrl);
 
-    public static async Task<StoredTokens?> GetValidTokensAsync() {
-        var tokens = await LoadAsync();
+    /// <summary>
+    /// Recovers a usable token after the server rejected <paramref name="rejectedAccessToken"/>.
+    ///
+    /// Rotation is attempted first. If it fails, the fallback is a RAW read — deliberately not the
+    /// refresh-aware accessor, which would see the same expired token and refresh a second time,
+    /// re-spending a WorkOS refresh token that is single-use.
+    ///
+    /// The raw result is returned even when it equals the rejected token. Resending it is usually
+    /// futile, but it is the recovery that shipped (a server that rejected transiently — a rolling
+    /// restart, a node with stale key material — accepts the very next attempt), and the callers
+    /// retry at most once either way.
+    /// </summary>
+    public static async Task<StoredTokens?> RecoverForServerAsync(
+            string targetBaseUrl, string rejectedAccessToken, CancellationToken ct = default) {
+        var rotated = await ForceRefreshAsync(rejectedAccessToken, targetBaseUrl, ct);
+
+        if (rotated is not null) return rotated;
+
+        var profile = await ResolveActiveProfileAsync(ct);
+        var stored  = await LoadWithLegacyFallbackAsync(profile, ct);
+
+        if (stored is null) return null;
+
+        return BoundToTarget(stored, targetBaseUrl) ? stored : null;
+    }
+
+    /// <summary>
+    /// Raw, refresh-free read for an explicitly named profile (honouring the owner-scoped legacy
+    /// fallback). For diagnostics that must observe exactly what is on disk without mutating it.
+    /// </summary>
+    public static Task<StoredTokens?> LoadForProfileAsync(string profile, CancellationToken ct = default) =>
+        LoadWithLegacyFallbackAsync(profile, ct);
+
+    public static async Task<StoredTokens?> GetValidTokensAsync() =>
+        await GetValidTokensForProfileAsync(await ResolveActiveProfileAsync());
+
+    // Load-and-refresh for ONE profile, resolved by the caller. Everything that refreshes goes
+    // through here so a single call never resolves the profile twice and can't straddle a
+    // concurrent profile switch.
+    static async Task<StoredTokens?> GetValidTokensForProfileAsync(string profile, CancellationToken ct = default) {
+        var tokens = await LoadWithLegacyFallbackAsync(profile, ct);
 
         if (tokens is null) {
             return null;
@@ -346,8 +388,6 @@ public static class TokenStore {
         if (!tokens.IsExpired) {
             return tokens;
         }
-
-        var profile = await ResolveActiveProfileAsync();
 
         // Both providers rotate/re-issue on refresh, so serialize across processes
         // (hooks, watcher, daemon, MCP share one token store) with a profile-scoped

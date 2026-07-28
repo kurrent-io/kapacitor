@@ -310,8 +310,7 @@ static class McpFlowsServer {
         // the pre-existing "re-read and resend once" recovery still happens.
         var refreshed = rejected is null
             ? (await TokenStore.GetValidTokensForServerAsync(baseUrl, ct)).Tokens
-            : await TokenStore.ForceRefreshAsync(rejected, baseUrl, ct)
-              ?? (await TokenStore.GetValidTokensForServerAsync(baseUrl, ct)).Tokens;
+            : await TokenStore.RecoverForServerAsync(baseUrl, rejected, ct);
 
         if (refreshed is null) return response; // genuinely not logged in; keep the original 401
 
