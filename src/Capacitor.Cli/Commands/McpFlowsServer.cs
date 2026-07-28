@@ -1319,13 +1319,21 @@ static class McpFlowsServer {
                 sb.Append("workspace: fallback");
                 if (reason is not null) { sb.Append(" ("); sb.Append(reason); sb.Append(')'); }
                 sb.AppendLine();
-                // Says only what is true for EVERY reason. The earlier wording claimed the reviewer
-                // "read a checkout at the last commit", which is false for context_only_requested —
-                // there the reviewer read the submitted context and no repository at all, so that
-                // phrasing would have had a caller believe committed code was reviewed when none was.
-                // Naming reasons individually would fix that case and reintroduce the allowlist this
-                // feature exists without; a claim accurate for all of them needs no enumeration.
-                sb.AppendLine("  ⚠ Your working tree was NOT borrowed — the reviewer did not see uncommitted work.");
+                // Says only what is true for EVERY reason, and only about the WORKING TREE.
+                //
+                // Two earlier wordings were both wrong in the same direction — asserting more than the
+                // CLI can know. "read a checkout at the last commit" is false for
+                // context_only_requested (no repository is read at all). "did not see uncommitted
+                // work" is ALSO false there: the caller may have inlined an uncommitted diff into the
+                // submitted context, so the reviewer saw uncommitted work — just not from the tree.
+                //
+                // The only claim that holds for every reason is about the automatic channel: the tree
+                // was not borrowed, so nothing uncommitted arrived that way. Naming reasons
+                // individually would fix each case and reintroduce the allowlist this feature exists
+                // without.
+                sb.AppendLine("  ⚠ Your working tree was NOT borrowed — uncommitted changes were not " +
+                              "included automatically. Anything uncommitted the reviewer saw came from " +
+                              "the context you submitted.");
                 break;
             }
             case null:

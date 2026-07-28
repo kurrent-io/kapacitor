@@ -41,7 +41,7 @@ public class McpFlowsWorkspaceRenderTests {
         // The caution is the whole point: a caller who assumes otherwise draws conclusions about
         // code the reviewer never read. Worded to be true for EVERY reason -- see the
         // context-only case below.
-        await Assert.That(text).Contains("did not see uncommitted work");
+        await Assert.That(text).Contains("not included automatically");
     }
 
     // The single most important case. An older server, a multi-participant run and a generic
@@ -107,7 +107,7 @@ public class McpFlowsWorkspaceRenderTests {
         var text = Round("""{"flow_run_id":"f1","status":"clean","result_kind":"clean","workspace_mode":"fallback"}""");
         await Assert.That(text).Contains("workspace: fallback");
         await Assert.That(text).DoesNotContain("()");
-        await Assert.That(text).Contains("did not see uncommitted work");
+        await Assert.That(text).Contains("not included automatically");
     }
 
     // Qodo (#380, finding 3). The caution must be true for EVERY reason, not just the common ones.
@@ -120,7 +120,7 @@ public class McpFlowsWorkspaceRenderTests {
         var text = Round("""{"flow_run_id":"f1","status":"clean","result_kind":"clean","workspace_mode":"fallback","fallback_reason":"context_only_requested"}""");
 
         await Assert.That(text).Contains("workspace: fallback (context_only_requested)");
-        await Assert.That(text).Contains("did not see uncommitted work");
+        await Assert.That(text).Contains("not included automatically");
 
         // The false claim, in any of its forms.
         await Assert.That(text).DoesNotContain("last commit");
