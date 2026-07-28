@@ -353,12 +353,14 @@ public static class TokenStore {
     /// </summary>
     public static async Task<StoredTokens?> RecoverForServerAsync(
             string targetBaseUrl, string rejectedAccessToken, CancellationToken ct = default) {
-        var rotated = await ForceRefreshAsync(rejectedAccessToken, targetBaseUrl, ct);
+        // Resolved ONCE for the whole operation: the rotation and the fallback read must describe
+        // the same profile even if `kcap use` runs during a slow rotation.
+        var profile = await ResolveActiveProfileAsync(ct);
+        var rotated = await ForceRefreshForProfileAsync(profile, rejectedAccessToken, targetBaseUrl, ct);
 
         if (rotated is not null) return rotated;
 
-        var profile = await ResolveActiveProfileAsync(ct);
-        var stored  = await LoadWithLegacyFallbackAsync(profile, ct);
+        var stored = await LoadWithLegacyFallbackAsync(profile, ct);
 
         if (stored is null) return null;
 
@@ -423,8 +425,15 @@ public static class TokenStore {
     /// that have no target (there are none today) may pass null to skip the check.
     /// </param>
     public static async Task<StoredTokens?> ForceRefreshAsync(
-            string rejectedAccessToken, string? expectedServerUrl = null, CancellationToken ct = default) {
-        var profile = await ResolveActiveProfileAsync(ct);
+            string rejectedAccessToken, string? expectedServerUrl = null, CancellationToken ct = default) =>
+        await ForceRefreshForProfileAsync(
+            await ResolveActiveProfileAsync(ct), rejectedAccessToken, expectedServerUrl, ct);
+
+    // Forced rotation for ONE profile, resolved by the caller — so a recovery that rotates and
+    // then falls back to a raw read cannot straddle a concurrent `kcap use` and return a
+    // different profile's token than the one it just tried to rotate.
+    static async Task<StoredTokens?> ForceRefreshForProfileAsync(
+            string profile, string rejectedAccessToken, string? expectedServerUrl, CancellationToken ct) {
         var tokens = await LoadWithLegacyFallbackAsync(profile, ct);
         if (tokens is null) return null;
 
