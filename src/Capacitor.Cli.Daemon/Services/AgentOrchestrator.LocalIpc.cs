@@ -12,6 +12,39 @@ internal partial class AgentOrchestrator {
     }
 
     /// <summary>
+    /// Stop one agent (or every agent, when <paramref name="agentId"/> is empty) on behalf of
+    /// `kcap agent stop`. Calls the stop core directly rather than <c>HandleStopAgent</c>: the
+    /// private-agent guard there defends against server-origin commands, and a request arriving
+    /// on the daemon's own 0600 socket is the owner's. Stops run concurrently — each can take up
+    /// to 25s (graceful wait plus terminate), so serial teardown would be unusable.
+    /// </summary>
+    public async Task HandleLocalStopAsync(string agentId, Stream stream, CancellationToken ct) {
+        if (agentId.Length == 0) {
+            var all = _agents.Values.ToList();
+            await Task.WhenAll(all.Select(StopAgentCoreAsync));
+            await FrameCodec.WriteAsync(stream, LocalFrame.StopAck(string.Join('\n', all.Select(a => a.Id))), ct);
+
+            return;
+        }
+
+        if (_agents.TryGetValue(agentId, out var agent)) {
+            await StopAgentCoreAsync(agent);
+            await FrameCodec.WriteAsync(stream, LocalFrame.StopAck(agentId), ct);
+
+            return;
+        }
+
+        // Not live here — it may be a survivor of a previous daemon incarnation, which the PID
+        // record can still reap. This is why the client sends full ids verbatim.
+        var reaped = await TryStopByPidRecordAsync(agentId);
+
+        await FrameCodec.WriteAsync(
+            stream,
+            reaped ? LocalFrame.StopAck(agentId) : LocalFrame.Error($"no such agent {agentId}"),
+            ct);
+    }
+
+    /// <summary>
     /// Spawn a new agent from a local <c>run-agent</c> request, then attach the requesting
     /// client. The agent runs <b>PrivateLocal</b> (no per-agent server calls) in either an
     /// owned worktree (<c>--worktree</c>) or the user's borrowed cwd (default in-place).

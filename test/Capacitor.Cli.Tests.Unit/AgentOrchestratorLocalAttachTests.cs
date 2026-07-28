@@ -579,4 +579,66 @@ public partial class AgentOrchestratorVendorTests {
                 string sessionId, string? toolName, JsonElement? toolInput, JsonElement? suggestions, CancellationToken ct = default
             ) { Calls.Add(nameof(RequestPermissionAsync)); return Task.FromResult(new PermissionDecision("deny", null, null)); }
     }
+
+    static async Task<LocalFrame?> StopAndReadReply(AgentOrchestrator orch, string agentId) {
+        using var client = new DuplexTestStream(new MemoryStream(), new MemoryStream());
+        await orch.HandleLocalStopAsync(agentId, client, default);
+        client.WrittenStream.Position = 0;
+
+        return await FrameCodec.ReadAsync(client.WrittenStream, default);
+    }
+
+    [Test]
+    public async Task Local_stop_stops_a_private_agent_without_touching_the_server() {
+        // The server-origin path refuses private agents by design; a local stop must not,
+        // or a `--private` agent could never be stopped from the CLI at all.
+        var server = new TripwireServerConnection();
+        await using var orch = BuildOrchestrator(server, new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>());
+        orch.SeedAgentForTest("priv-1", isPrivate: true);
+
+        var reply = await StopAndReadReply(orch, "priv-1");
+
+        await Assert.That(reply!.Type).IsEqualTo(FrameType.StopAck);
+        await Assert.That(reply.Text).IsEqualTo("priv-1");
+        await Assert.That(orch.GetAgentForTest("priv-1")!.Status).IsEqualTo("Completed");
+        await Assert.That(server.Calls.Count).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task Local_stop_of_a_registered_agent_still_reports_to_the_server() {
+        var server = new TripwireServerConnection();
+        await using var orch = BuildOrchestrator(server, new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>());
+        orch.SeedAgentForTest("pub-1");
+
+        var reply = await StopAndReadReply(orch, "pub-1");
+
+        await Assert.That(reply!.Type).IsEqualTo(FrameType.StopAck);
+        await Assert.That(server.Calls).Contains(nameof(ServerConnection.AgentStatusChangedAsync));
+    }
+
+    [Test]
+    public async Task Local_stop_with_an_empty_id_stops_every_agent() {
+        var server = new TripwireServerConnection();
+        await using var orch = BuildOrchestrator(server, new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>());
+        orch.SeedAgentForTest("a-1");
+        orch.SeedAgentForTest("a-2", isPrivate: true);
+
+        var reply = await StopAndReadReply(orch, "");
+
+        await Assert.That(reply!.Type).IsEqualTo(FrameType.StopAck);
+        await Assert.That(reply.Text.Split('\n')).IsEquivalentTo(new[] { "a-1", "a-2" });
+        await Assert.That(orch.GetAgentForTest("a-1")!.Status).IsEqualTo("Completed");
+        await Assert.That(orch.GetAgentForTest("a-2")!.Status).IsEqualTo("Completed");
+    }
+
+    [Test]
+    public async Task Local_stop_of_an_unknown_id_with_no_pid_record_is_an_error() {
+        var server = new TripwireServerConnection();
+        await using var orch = BuildOrchestrator(server, new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>());
+
+        var reply = await StopAndReadReply(orch, "ghost");
+
+        await Assert.That(reply!.Type).IsEqualTo(FrameType.Error);
+        await Assert.That(reply.Text).Contains("ghost");
+    }
 }

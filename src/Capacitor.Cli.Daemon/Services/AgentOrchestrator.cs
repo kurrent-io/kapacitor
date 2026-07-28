@@ -1671,7 +1671,20 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
 
         // Defence-in-depth: a --private agent is invisible to the server (unregistered, not in
         // LiveAgentIds), so never act on a server-origin command for one even if its id leaks.
+        // The local-socket path (HandleLocalStopAsync) deliberately bypasses this — that request
+        // comes from the owner of the 0600 socket, not from the server.
         if (agent.IsPrivate) return;
+
+        await StopAgentCoreAsync(agent);
+    }
+
+    /// <summary>
+    /// The stop itself, with no caller-authorisation policy: graceful /exit, then terminate.
+    /// Server-origin stops reach this through <see cref="HandleStopAgent"/> (which refuses
+    /// private agents); local-socket stops call it directly.
+    /// </summary>
+    async Task StopAgentCoreAsync(AgentInstance agent) {
+        var agentId = agent.Id;
 
         try {
             LogStopping(agentId);
@@ -1686,8 +1699,12 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             // (reviewer_ttl_expired / reviewer_idle_expired) — only overwrite the "agent_exited"
             // default, so server-side attribution can tell a TTL/idle reap from a user stop.
             if (agent.PendingEndReason == "agent_exited") agent.PendingEndReason = "agent_stopped";
-            _                      = _server.AgentStatusChangedAsync(agentId, "Completed", agent.SessionId);
-            _                      = _server.AppendAgentRunEventAsync(agentId, new AgentRunStopped("user", null));
+
+            // An unregistered agent has no server-side row to update.
+            if (!agent.IsPrivate) {
+                _ = _server.AgentStatusChangedAsync(agentId, "Completed", agent.SessionId);
+                _ = _server.AppendAgentRunEventAsync(agentId, new AgentRunStopped("user", null));
+            }
 
             // Try a graceful shutdown first: send /exit so claude can fire its own
             // session-end hook (drains transcript, writes SessionEnded + summary,
