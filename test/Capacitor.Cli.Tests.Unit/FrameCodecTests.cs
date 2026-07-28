@@ -109,6 +109,27 @@ public class FrameCodecTests {
 
         await Assert.That(() => FrameCodec.Spawn(frame)).Throws<InvalidDataException>();
     }
+
+    [Test]
+    public async Task Stop_round_trips_the_agent_id() {
+        var r = await RoundTrip(LocalFrame.Stop("ab12cd34ef56ab78cd90ef12ab34cd56"));
+        await Assert.That(r.Type).IsEqualTo(FrameType.Stop);
+        await Assert.That(r.Text).IsEqualTo("ab12cd34ef56ab78cd90ef12ab34cd56");
+    }
+
+    [Test]
+    public async Task Stop_with_an_empty_id_means_all_agents() {
+        var r = await RoundTrip(LocalFrame.Stop(""));
+        await Assert.That(r.Type).IsEqualTo(FrameType.Stop);
+        await Assert.That(r.Text).IsEqualTo("");
+    }
+
+    [Test]
+    public async Task StopAck_round_trips_a_newline_separated_id_list() {
+        var r = await RoundTrip(LocalFrame.StopAck("id-one\nid-two"));
+        await Assert.That(r.Type).IsEqualTo(FrameType.StopAck);
+        await Assert.That(r.Text.Split('\n')).IsEquivalentTo(new[] { "id-one", "id-two" });
+    }
 }
 
 /// Stream that returns at most `chunk` bytes per ReadAsync to simulate partial socket reads.

@@ -48,7 +48,8 @@ public static class FrameCodec {
         FrameType.Detach or FrameType.List  => [],
         FrameType.Exited                    => BeInt(f.ExitCode),
         FrameType.Error or FrameType.Attach or FrameType.AgentList
-            or FrameType.Restart or FrameType.RestartAck => Encoding.UTF8.GetBytes(f.Text),
+            or FrameType.Restart or FrameType.RestartAck
+            or FrameType.Stop or FrameType.StopAck => Encoding.UTF8.GetBytes(f.Text),
         FrameType.Attached or FrameType.Spawn => f.Bytes, // pre-encoded by Attached(...)/Spawn(...)
         _ => throw new InvalidDataException($"unencodable frame {f.Type}"),
     };
@@ -59,7 +60,8 @@ public static class FrameCodec {
         FrameType.Detach or FrameType.List => new(t),
         FrameType.Exited  => new(t) { ExitCode = BinaryPrimitives.ReadInt32BigEndian(p) },
         FrameType.Error or FrameType.Attach or FrameType.AgentList
-            or FrameType.Restart or FrameType.RestartAck => new(t) { Text = Encoding.UTF8.GetString(p) },
+            or FrameType.Restart or FrameType.RestartAck
+            or FrameType.Stop or FrameType.StopAck => new(t) { Text = Encoding.UTF8.GetString(p) },
         FrameType.Attached or FrameType.Spawn => new(t) { Bytes = p },
         _ => throw new InvalidDataException($"undecodable frame {t}"),
     };
