@@ -44,7 +44,12 @@ internal partial class AgentOrchestrator {
             var eligible  = all.Where(a => force || a.Kind == LaunchKind.Default).ToList();
             var results   = await Task.WhenAll(eligible.Select(StopAgentCoreAsync));
             var stopped   = eligible.Zip(results, (a, ok) => $"{a.Id}\t{StatusText(ok)}");
-            var skipped   = all.Except(eligible).Select(a => $"{a.Id}\tskipped");
+
+            // The exact negation of the eligible predicate above — not a set difference.
+            // AgentInstance is a record with mutable fields (Status, LastOutputAt, ...), so
+            // Except would hash teardown-mutable state while the eligible agents are still
+            // draining from the WhenAll above, and could misreport a stopped agent as skipped too.
+            var skipped = all.Where(a => !force && a.Kind != LaunchKind.Default).Select(a => $"{a.Id}\tskipped");
 
             await FrameCodec.WriteAsync(stream, LocalFrame.StopAck(string.Join('\n', stopped.Concat(skipped))), ct);
 
@@ -53,9 +58,14 @@ internal partial class AgentOrchestrator {
 
         if (_agents.TryGetValue(agentId, out var agent)) {
             if (!force && agent.Kind != LaunchKind.Default) {
+                // A flow participant going away mid-round strands the flow; a plain hosted
+                // review has no round to strand, just a result that will never come back.
+                var consequence = agent.Kind == LaunchKind.ReviewFlow
+                    ? "Stopping it mid-round leaves the flow without a participant."
+                    : "Stopping it discards the review before it can report back.";
+
                 await FrameCodec.WriteAsync(stream, LocalFrame.Error(
-                    $"{agentId} is a {ProtectionReason(agent)}. Stopping it mid-round leaves the flow "
-                  + "without a participant. Pass --force to stop it anyway."), ct);
+                    $"{agentId} is a {ProtectionReason(agent)}. {consequence} Pass --force to stop it anyway."), ct);
 
                 return;
             }
@@ -67,7 +77,8 @@ internal partial class AgentOrchestrator {
         }
 
         // Not live here — it may be a survivor of a previous daemon incarnation, which the PID
-        // record can still reap. Kind is unknown for those, so protection cannot apply.
+        // record can still reap. This is why the client sends full ids verbatim. Kind is
+        // unknown for those, so protection cannot apply.
         var reaped = await TryStopByPidRecordAsync(agentId);
 
         await FrameCodec.WriteAsync(

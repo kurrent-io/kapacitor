@@ -788,6 +788,23 @@ public partial class AgentOrchestratorVendorTests {
     }
 
     [Test]
+    public async Task Stopping_a_non_flow_review_agent_without_force_is_refused_with_an_accurate_message() {
+        var server = new TripwireServerConnection();
+        await using var orch = BuildOrchestrator(server, new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>());
+        orch.SeedAgentForTest("rev-1", kind: LaunchKind.Review);
+
+        var reply = await StopV2AndReadReply(orch, force: false, "rev-1");
+
+        await Assert.That(reply!.Type).IsEqualTo(FrameType.Error);
+        await Assert.That(reply.Text).Contains("review agent");
+        // Unlike a flow participant, a plain hosted review has no round or flow to strand —
+        // the refusal must not claim one.
+        await Assert.That(reply.Text).DoesNotContain("flow");
+        await Assert.That(reply.Text).Contains("--force");
+        await Assert.That(orch.GetAgentForTest("rev-1")!.Status).IsNotEqualTo("Completed");
+    }
+
+    [Test]
     public async Task Stop_all_without_force_skips_protected_agents_and_says_so() {
         var server = new TripwireServerConnection();
         await using var orch = BuildOrchestrator(server, new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>());
