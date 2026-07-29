@@ -67,7 +67,7 @@ static class CodexCliRunner {
             CancellationToken ct
         ) {
         // Resolve rather than pass "codex" verbatim: CreateProcess appends only .exe, so the
-        // npm-installed codex.cmd shim on Windows would never be found (AI-72).
+        // npm-installed codex.cmd shim on Windows would never be found.
         var exePath = CliExecutable.Resolve("codex");
 
         if (exePath is null) {

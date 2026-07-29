@@ -184,7 +184,7 @@ static class ClaudeCliRunner {
             CancellationToken ct
         ) {
         // Resolve rather than pass "claude" verbatim: CreateProcess appends only .exe, so the
-        // npm-installed claude.cmd shim on Windows would never be found (AI-72).
+        // npm-installed claude.cmd shim on Windows would never be found.
         var exePath = CliExecutable.Resolve("claude");
 
         if (exePath is null) {
