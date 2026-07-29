@@ -961,7 +961,7 @@ Agent ids are long, so `attach` and `stop` accept **any unique prefix** — an a
 - `kcap agent attach` on one is **read-only** — you see its output, your keystrokes are not delivered, and your terminal size is not applied to it.
 - `kcap agent stop` on one is **refused** unless you pass `--force`, and `stop --all` skips them and says how many it skipped.
 
-Enforcement is in the daemon, so this holds regardless of client version. It does not apply when talking to a daemon older than this feature — that daemon reports no kind, every agent reads as `agent`, and the protections do not engage until it restarts onto the new binary.
+Enforcement lives in the daemon, so a current CLI can't bypass it by skipping the check or lying about `--force`. That guarantee has two version-skew exceptions: an old `kcap` sends the legacy `Stop` request, which has no `--force` concept — the daemon treats that as `--force`, so an old client can silently force-stop a review or review-flow agent. And against an old daemon, `ls`/`attach` degrade silently (no kind reported, every agent reads as `agent`), but `stop` doesn't degrade — it sends a newer request format the old daemon can't decode, so the connection closes and the CLI tells you to restart the daemon instead of stopping anything.
 
 `agent start` auto-starts the daemon if one isn't already running, and needs a configured server for the daemon to record to. `ls`, `attach`, and `stop` only talk to the local socket, so they work without one. A locally-started agent appears in **your own** web UI (owner-only until you share it from the web UI); use `--private` to opt out of registration entirely. Unix only for now.
 

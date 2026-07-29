@@ -24,8 +24,10 @@ Options for start:
 Options for stop:
   --all                   Stop every agent, including --private ones. Review and
                           review-flow agents are skipped unless --force is given.
-  --force                 Include review and review-flow agents. Stopping a flow
-                          participant mid-round leaves the flow without it.
+  --force                 Stop a single review or review-flow agent that would
+                          otherwise be refused, or include them under --all.
+                          Stopping a flow participant mid-round leaves the flow
+                          without it.
   --yes, -y               Skip the confirmation prompt for --all
 
 Options for ls, attach, stop:
@@ -39,7 +41,8 @@ Review and flow agents:
   Agents the daemon runs as part of a review flow (KIND `review-flow`) or a PR
   review (`review`) are not yours to drive directly — they are addressed through
   the flow tools. `attach` gives you a read-only view of one: you see its output,
-  your input is not delivered. `stop` refuses unless you pass --force.
+  your input is not delivered, and your terminal size is not applied to it.
+  `stop` refuses unless you pass --force.
 
 Notes:
   The daemon owns the agent, not your terminal, so you can detach and the agent
