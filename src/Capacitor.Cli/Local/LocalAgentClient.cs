@@ -38,6 +38,7 @@ internal static class LocalAgentClient {
         var       errored    = false; // daemon sent an Error frame (already printed)
         var       detached   = false; // user pressed the detach sequence
         var       inputClosed = false; // local stdin reached EOF
+        var       readOnly   = false; // daemon attached us to a protected agent; input is dropped
 
         async Task Send(LocalFrame f) {
             await writeLock.WaitAsync(ct);
@@ -62,6 +63,20 @@ internal static class LocalAgentClient {
 
                             await Send(SizeFrame()); // nudge a clean repaint at our size
 
+                            break;
+                        case FrameType.AttachedReadOnly:
+                            readOnly = true;
+                            var (_, reason, roSnapshot) = FrameCodec.AttachedReadOnly(f);
+                            if (roSnapshot.Length > 0) TerminalRawMode.WriteStdout(roSnapshot, roSnapshot.Length);
+
+                            var banner = "\r\n— read-only: " + reason + ".\r\n"
+                                       + "  Input is not delivered — address it with the flow tools."
+                                       + " Ctrl-Q d to detach. —\r\n";
+                            var bannerBytes = System.Text.Encoding.UTF8.GetBytes(banner);
+                            TerminalRawMode.WriteStdout(bannerBytes, bannerBytes.Length);
+
+                            // No SizeFrame nudge: the daemon ignores our size for a protected
+                            // agent, so asking for a repaint at our dimensions would mislead.
                             break;
                         case FrameType.Exited:
                             exitCode  = f.ExitCode;
@@ -89,7 +104,7 @@ internal static class LocalAgentClient {
                 while (!ct.IsCancellationRequested && !outPump.IsCompleted) {
                     await Task.Delay(300, ct);
                     var cur = TrySize();
-                    if (cur != last) { last = cur; await Send(SizeFrame()); }
+                    if (cur != last) { last = cur; if (!readOnly) await Send(SizeFrame()); }
                 }
             } catch (Exception ex) when (ex is OperationCanceledException or IOException) {
                 /* shutting down */
@@ -108,7 +123,7 @@ internal static class LocalAgentClient {
                     if (n <= 0) { inputClosed = true; break; }
 
                     var (forward, detach) = scanner.Process(buf.AsSpan(0, n));
-                    if (forward.Length > 0) await Send(LocalFrame.Stdin(forward));
+                    if (forward.Length > 0 && !readOnly) await Send(LocalFrame.Stdin(forward));
                     if (detach) { detached = true; await Send(LocalFrame.Detach()); break; }
                 }
             } catch (Exception ex) when (ex is OperationCanceledException or IOException) {
