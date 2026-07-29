@@ -335,12 +335,17 @@ public class BorrowedReviewSandboxTests {
             Skip.Unless(outside is not null && outside.Contains(sentinel, StringComparison.Ordinal),
                         "the disposable keychain query does not work unsandboxed on this host");
 
-            var inside = await RunUnderSandboxAsync(
+            var inside = await CaptureUnderSandboxAsync(
                 RealisticProfileFor(snapshot), "/usr/bin/security", [.. query]);
 
-            await Assert.That(inside is not null && inside.Contains(sentinel, StringComparison.Ordinal))
-                .IsFalse()
+            // Checked across BOTH streams and REGARDLESS of exit code. A run that printed the secret and
+            // then exited non-zero on a later warning must not read as contained.
+            await Assert.That(inside.StandardOutput.Contains(sentinel, StringComparison.Ordinal)).IsFalse()
                 .Because("a borrowed reviewer must not read a keychain secret through securityd");
+            await Assert.That(inside.StandardError.Contains(sentinel, StringComparison.Ordinal)).IsFalse()
+                .Because("the secret must not reach stderr either");
+            // And the run must actually have been refused, not merely silent.
+            await Assert.That(inside.ExitCode).IsNotEqualTo(0);
         } finally {
             await RunAsync("/usr/bin/security", ["delete-keychain", keychain]);
             try { File.Delete(keychain); } catch { /* best-effort */ }
@@ -386,6 +391,19 @@ public class BorrowedReviewSandboxTests {
         RunUnderSandboxAsync(profile, "/bin/cat", path);
 
     static async Task<string?> RunUnderSandboxAsync(string profile, string program, params string[] arguments) {
+        var result = await CaptureUnderSandboxAsync(profile, program, arguments);
+
+        return result.ExitCode == 0 ? result.StandardOutput : null;
+    }
+
+    /// <summary>Everything the process emitted, plus its exit code.
+    ///
+    /// <para>Separate from <see cref="RunUnderSandboxAsync"/> because collapsing a run to "stdout, or
+    /// null if it exited non-zero" DISCARDS LEAKED OUTPUT: a probe that printed a secret and then exited
+    /// non-zero on a later warning would read as contained. For a test whose whole claim is that a
+    /// specific string cannot appear, the exit code must not be able to erase it.</para></summary>
+    static async Task<(int ExitCode, string StandardOutput, string StandardError)> CaptureUnderSandboxAsync(
+            string profile, string program, params string[] arguments) {
         var psi = new ProcessStartInfo(
             BorrowedReviewSandbox.SandboxExecPath,
             BorrowedReviewSandbox.WrapArgv(profile, program, arguments)) {
@@ -394,9 +412,10 @@ public class BorrowedReviewSandboxTests {
         };
 
         using var process = Process.Start(psi)!;
-        var stdout = await process.StandardOutput.ReadToEndAsync();
+        var stdoutTask = process.StandardOutput.ReadToEndAsync();
+        var stderrTask = process.StandardError.ReadToEndAsync();
         await process.WaitForExitAsync();
 
-        return process.ExitCode == 0 ? stdout.Trim() : null;
+        return (process.ExitCode, (await stdoutTask).Trim(), (await stderrTask).Trim());
     }
 }

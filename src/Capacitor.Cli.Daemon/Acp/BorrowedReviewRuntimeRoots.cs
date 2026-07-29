@@ -131,7 +131,17 @@ internal static class BorrowedReviewRuntimeRoots {
             if (parent is null || parent == current || IsUngrantableRoot(parent, home)) return null;
 
             if (exists(Path.Combine(parent, "bin")) && exists(Path.Combine(parent, "lib")))
-                return parent;
+                // `bin` + `lib` is a compatibility classifier, not a confidentiality-safe one, and BELOW
+                // THE USER'S HOME it is not safe at all: a source repository or a mixed-use ~/toolbox
+                // with ordinary bin/ and lib/ names matches it, and the exact-home exclusion does not
+                // apply because the match is a descendant rather than home itself.
+                //
+                // So an under-home prefix is refused outright. The consequence is real and deliberate: a
+                // per-user install (nvm, Volta, ~/.local) yields only the executable literal and the
+                // launch then fails loudly at exec instead of quietly reading the user's files. Admitting
+                // those layouts needs each one MEASURED — the same bar every other part of this feature is
+                // held to — and only the Homebrew prefix has been.
+                return IsWithin(parent, home) ? null : parent;
 
             current = parent;
         }

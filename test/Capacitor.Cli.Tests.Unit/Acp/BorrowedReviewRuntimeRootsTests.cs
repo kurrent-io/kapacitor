@@ -235,22 +235,36 @@ public class BorrowedReviewRuntimeRootsTests {
         await Assert.That(roots).DoesNotContain("/Users/dev");
     }
 
-    /// <summary>Rejecting home must not reject installations BENEATH it, or every per-user install
-    /// (npm prefix, volta, nvm, <c>~/.local</c>) loses its runtime roots and cannot start.</summary>
+    /// <summary>A prefix BENEATH the user's home is refused, even though it matches the shape rule.
+    ///
+    /// <para><c>bin</c> + <c>lib</c> is a compatibility classifier, not a confidentiality-safe one, and
+    /// below home it is not safe at all: a source repository or a mixed-use <c>~/toolbox</c> with
+    /// ordinary <c>bin/</c> and <c>lib/</c> names matches it, and the exact-home exclusion does not
+    /// apply because the match is a descendant rather than home itself. An earlier revision granted
+    /// exactly that, and the test that was supposed to cover per-user installs removed the sibling
+    /// <c>lib</c>, so it could not see the route.</para>
+    ///
+    /// <para>The cost is deliberate and stated rather than hidden: a per-user install (nvm, Volta,
+    /// <c>~/.local</c>) gets only the executable literal, so the launch fails loudly at exec instead of
+    /// quietly reading the user's files. Admitting one of those layouts requires MEASURING it, the same
+    /// bar the rest of this feature is held to; only the Homebrew prefix has been measured.</para></summary>
     [Test]
-    public async Task An_installation_beneath_the_user_home_still_resolves() {
-        const string home   = "/Users/dev";
-        const string prefix = home + "/.local";
-        string[] present = [prefix, $"{prefix}/bin", $"{prefix}/lib", $"{prefix}/share",
+    [Arguments("/Users/dev/.local")]
+    [Arguments("/Users/dev/toolbox")]
+    public async Task A_prefix_beneath_the_user_home_is_refused(string prefix) {
+        const string home = "/Users/dev";
+        string[] present = [home, prefix, $"{prefix}/bin", $"{prefix}/lib", $"{prefix}/share",
                             $"{prefix}/lib/node_modules/@vendor/tool"];
 
-        var roots = Resolve(
+        var grants = BorrowedReviewRuntimeRoots.Resolve(
             $"{prefix}/lib/node_modules/@vendor/tool/loader.js",
             path => present.Contains(Posix(path)), userHome: home);
 
-        await Assert.That(roots).Contains($"{prefix}/bin");
-        await Assert.That(roots).Contains($"{prefix}/lib");
-        await Assert.That(roots).DoesNotContain(home);
+        await Assert.That(grants.Directories).IsEmpty()
+            .Because($"{prefix} matches bin+lib but is user-controlled, so it is not a safe prefix");
+        // The program itself is still granted, so the failure is a loud exec error rather than silence.
+        await Assert.That(grants.Files.Select(Posix))
+            .Contains($"{prefix}/lib/node_modules/@vendor/tool/loader.js");
     }
 
     /// <summary>The same hole one level down: a real installation under <c>/opt/vendor</c> must still
