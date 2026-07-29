@@ -32,6 +32,23 @@ public class SessionStartMemoryFoundationTests {
         await Assert.That(id).IsEqualTo("a0d44a4a50594d1f9c932a1adce89c2e");
     }
 
+    // Kiro's agentSpawn fires per prompt, so an id spelled differently between firings would mean two
+    // lease keys and a re-injected index. Non-GUID ids must still be accepted (the dispatcher's id is
+    // whatever Kiro sends), so Kiro shares Claude's permissive arm rather than the fail-closed one.
+    [Test]
+    public async Task Kiro_uuid_identity_is_canonical_across_spellings_but_still_accepts_non_uuids() {
+        var dashed    = SessionStartMemoryIdentity.Create(SessionStartHarness.Kiro, "A0D44A4A-5059-4D1F-9C93-2A1ADCE89C2E", null);
+        var compact   = SessionStartMemoryIdentity.Create(SessionStartHarness.Kiro, "a0d44a4a50594d1f9c932a1adce89c2e", null);
+        var uppercase = SessionStartMemoryIdentity.Create(SessionStartHarness.Kiro, "A0D44A4A50594D1F9C932A1ADCE89C2E", null);
+
+        await Assert.That(compact).IsEqualTo(dashed);
+        await Assert.That(uppercase).IsEqualTo(dashed);
+
+        // Not fail-closed: an id that is not a GUID still yields a usable identity.
+        await Assert.That(SessionStartMemoryIdentity.NormalizeSessionId(SessionStartHarness.Kiro, "kiro-session"))
+            .IsEqualTo("kiro-session");
+    }
+
     [Test]
     public async Task Claude_uuid_identity_is_canonical_across_dashed_and_compact_forms() {
         var dashed = SessionStartMemoryIdentity.Create(

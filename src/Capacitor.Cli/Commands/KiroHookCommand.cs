@@ -36,14 +36,9 @@ static class KiroHookCommand {
     /// <summary>
     /// Writes the team-memory fragment as Kiro consumes it: raw text, no envelope.
     ///
-    /// <para>The shared adapter renders <c>""</c> for a null fragment, so every no-memory path
-    /// (opt-out, exclusion, provider failure, budget exhaustion, and — the common case here — a
-    /// repeat <c>agentSpawn</c> whose lease is already spent) writes ZERO bytes and leaves the
-    /// pre-memory behaviour of this hook byte-identical. Unlike the Codex and Copilot adapters
-    /// there is no null-case asymmetry to encode: Kiro's empty output IS the shared rendering.</para>
-    ///
-    /// <para>Serialized before the first byte is written so a renderer fault degrades to silence
-    /// rather than injecting a partial document into the model's context.</para>
+    /// <para>A null fragment writes ZERO bytes — the shared adapter's own Kiro rendering, so unlike
+    /// Codex and Copilot there is no null-case asymmetry to encode. Serialized before the first byte
+    /// so a renderer fault degrades to silence rather than injecting a partial document.</para>
     /// </summary>
     internal static void WriteAgentSpawnOutput(TextWriter writer, string? fragment) {
         string payload;
@@ -61,27 +56,21 @@ static class KiroHookCommand {
     /// Starts the shared memory fetch so it overlaps the lifecycle POST. Returns a task that never
     /// faults — every failure resolves to null, which the writer renders as zero bytes.
     ///
-    /// <para><b>The lease is load-bearing here, not incidental.</b> Kiro has no per-session hook:
-    /// <c>agentSpawn</c> fires on every prompt with the SAME session id, so without the shared
-    /// once-per-session lease the index would be re-injected — and re-charged — on every turn, and
-    /// would steadily bias the conversation. The lifecycle reason is therefore
-    /// <see cref="SessionLifecycleReason.RepeatedTurnCallback"/> with <c>CallbackMayRepeat: true</c>,
-    /// which the shared policy resolves to a lease-guarded decision. A genuinely new session brings a
-    /// new session id, hence a new lease key, hence a fresh injection — no Kiro-specific logic.</para>
+    /// <para><b>The lease is load-bearing here, not incidental.</b> <c>agentSpawn</c> fires on every
+    /// prompt with the SAME session id, so without the once-per-session lease the index would be
+    /// re-injected and re-charged every turn. Hence
+    /// <see cref="SessionLifecycleReason.RepeatedTurnCallback"/> + <c>CallbackMayRepeat: true</c>,
+    /// which the shared policy resolves to a lease-guarded decision. A new session brings a new
+    /// session id, hence a new lease key and a fresh injection — no Kiro-specific logic.</para>
     ///
-    /// <para>Deliberately no commit gate (unlike Copilot): this hook always exits 0 and Kiro always
-    /// consumes its stdout, so no POST OUTCOME can make a fetched fragment undeliverable, and the
-    /// lease may commit as soon as the fetch succeeds.</para>
+    /// <para>No commit gate (unlike Copilot), because no POST outcome can make a fetched fragment
+    /// undeliverable here. That covers the outcome only: the caller must ALSO keep anything slow from
+    /// sitting between the lease commit and the write, since Kiro only consumes stdout from a hook
+    /// that completed. See the call site, where both remaining awaits are budget-bounded.</para>
     ///
-    /// <para>That argument is about the outcome only, and it is not sufficient on its own — the
-    /// caller must ALSO guarantee nothing slow sits between the commit and the write. A hook killed
-    /// at Kiro's timeout while awaiting something else would leave the lease spent with nothing on
-    /// stdout, and every later <c>agentSpawn</c> would skip fetch and injection alike. Hence the
-    /// call site writes and flushes the fragment before it awaits the lifecycle POST.</para>
-    ///
-    /// <para><b>Scope safety:</b> the git root discovered from the payload is preferred and the
-    /// payload cwd is the fallback; with neither, injection is skipped rather than letting the shared
-    /// resolver fall back to the hook PROCESS's cwd and inject an unrelated repository's memories.</para>
+    /// <para><b>Scope safety:</b> git root preferred, payload cwd as fallback; with neither, injection
+    /// is skipped rather than letting the shared resolver fall back to the hook PROCESS's cwd and
+    /// inject an unrelated repository's memories.</para>
     /// </summary>
     static Task<string?> StartMemoryIndexTask(
             string     baseUrl,
@@ -257,12 +246,9 @@ static class KiroHookCommand {
         // durably spools the payload for a later drain pass. Only a permanent failure skips the
         // watcher this firing — agentSpawn fires again next prompt and retries.
         //
-        // Started but NOT awaited yet, so the POST cannot stand between a fetched fragment and
-        // stdout. PostWithRetryAsync carries a 30s retry budget — far beyond this hook's 5s — so
-        // awaiting it first meant a hung POST could burn the whole hook budget AFTER the orchestrator
-        // had already committed the once-per-session lease, leaving the lease spent, nothing written,
-        // and every later agentSpawn skipping both fetch and injection. Safe to run concurrently with
-        // the write below because the poster only ever writes to stderr, never stdout.
+        // Started but NOT awaited yet, so the POST cannot stand between a fetched fragment and stdout:
+        // PostWithRetryAsync retries for 30s, far beyond this hook's 5s ceiling. Safe to run
+        // concurrently with the write below because the poster only ever writes to stderr.
         var postTask = AgentHookPoster.PostOrSpoolAsync(
             baseUrl, "session-start/kiro", enriched, "kiro-hook",
             spool, sessionId, route: "session-start/kiro");
@@ -276,16 +262,14 @@ static class KiroHookCommand {
             await SessionStartMemoryHookSupport.AwaitBounded(memoryTask, processStart, "session-start"));
         await Console.Out.FlushAsync();
 
-        // The POST await is BOUNDED by what is left of the hook ceiling. Writing early is not enough on
-        // its own: Kiro appends stdout only from a hook that COMPLETED, so an invocation killed at
-        // Kiro's timeout while still awaiting a 30s-retrying POST discards the fragment anyway — and
-        // its lease is already committed, so no later agentSpawn would re-fetch. Recording is the
-        // retryable half of this hook (agentSpawn fires every prompt); the injection is once-per-
-        // session. So when the budget lapses we stop waiting, spool the payload durably, and exit 0.
+        // BOUNDED by what is left of the ceiling. Writing early is not sufficient on its own: Kiro
+        // appends stdout only from a hook that COMPLETED, so an invocation killed at Kiro's timeout
+        // discards the fragment even though the lease is already committed — and no later agentSpawn
+        // re-fetches. Recording is the retryable half here (agentSpawn fires every prompt); the
+        // injection is not. So on lapse we stop waiting, spool durably, and exit 0.
         //
-        // Double delivery is harmless: an in-flight POST that lands after this spools the same
-        // payload, and the server's deterministic lifecycle event id collapses the two onto one
-        // SessionStarted (the same property that makes per-prompt agentSpawn re-POSTs free).
+        // Double delivery is harmless: an in-flight POST landing after this spools the same payload,
+        // and the server's deterministic lifecycle event id collapses both onto one SessionStarted.
         HookPostOutcome outcome;
 
         try {
@@ -305,16 +289,11 @@ static class KiroHookCommand {
         // POSTs session-end/kiro when kiro-cli exits.
         var transcriptPath = KiroPaths.SessionJsonl(dashedSessionId);
 
-        // Bounded for exactly the same reason as the POST above, and it is the LAST unbounded step
-        // between the committed injection and the zero exit: Kiro consumes stdout only from a hook that
-        // completed, so anything here that outruns the ceiling gets this invocation killed and loses the
-        // already-spent lease. EnsureWatcherRunning is not cheap in the worst case — its stale-watcher
-        // path kills and respawns, waiting up to 5s for a graceful exit.
-        //
-        // Deferring is safe and cheap: watcher startup is idempotent and agentSpawn fires again on the
-        // very next prompt, so the cost is one prompt of unwatched transcript. A killed hook costs the
-        // whole session's memory injection. An abandoned in-flight spawn is fine for the same reason —
-        // the next firing reconciles it.
+        // Bounded for the same reason as the POST, and this is the LAST step between the committed
+        // injection and the zero exit. Not cheap in the worst case: the stale-watcher path kills and
+        // respawns, waiting up to 5s for a graceful exit. Deferring costs one prompt of unwatched
+        // transcript (startup is idempotent and agentSpawn fires again next prompt); a killed hook
+        // costs the whole session's injection. An abandoned in-flight spawn reconciles on that firing.
         try {
             await WatcherManager.EnsureWatcherRunning(
                 baseUrl, sessionId, transcriptPath,

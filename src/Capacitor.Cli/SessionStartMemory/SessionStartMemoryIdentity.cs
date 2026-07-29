@@ -21,7 +21,12 @@ internal static class SessionStartMemoryIdentity {
         if (string.IsNullOrEmpty(value)) return null;
         if (harness is SessionStartHarness.Cursor or SessionStartHarness.Copilot or SessionStartHarness.Antigravity)
             return Guid.TryParse(value, out var guid) ? guid.ToString("N") : null;
-        if (harness == SessionStartHarness.Claude)
+        // Permissive canonicalisation: a GUID in any spelling (dashed, compact, braced, either case)
+        // collapses to one identity, but a non-GUID id is still accepted verbatim rather than rejected.
+        // Kiro needs both halves — its session_id is a GUID and its agentSpawn hook fires per prompt, so
+        // two spellings across firings would mean two lease keys and a re-injected index; but it must not
+        // fail closed on an id that does not parse, or a harness change would silently disable injection.
+        if (harness is SessionStartHarness.Claude or SessionStartHarness.Kiro)
             return Guid.TryParse(value, out var guid) ? guid.ToString("N") : value;
         if (harness == SessionStartHarness.Pi)
             return PiSessionPathCanonicalizer.TryHash(value, out var hash) ? hash : null;
