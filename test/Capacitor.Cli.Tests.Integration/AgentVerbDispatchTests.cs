@@ -88,6 +88,15 @@ public class AgentVerbDispatchTests {
         await Assert.That(stderr).Contains("kcap agent start: no server configured");
     }
 
+    [Test]
+    public async Task Stop_accepts_the_force_flag_without_treating_it_as_an_id() {
+        // --force must parse as a flag, not as a positional agent id, or the usage line fires.
+        var (_, stderr, _) = await RunCli("agent stop --all --force -y --daemon kcap-dispatch-test-absent");
+
+        await Assert.That(stderr).DoesNotContain("cannot combine an agent id with --all");
+        await Assert.That(stderr).DoesNotContain("usage: kcap agent stop");
+    }
+
     static async Task<(string Stdout, string Stderr, int ExitCode)> RunCli(
             string argLine, bool clearServerUrl = false) {
         var binary = GetCliBinaryPath();
