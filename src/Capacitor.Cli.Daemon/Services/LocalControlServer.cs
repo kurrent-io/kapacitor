@@ -44,8 +44,14 @@ internal sealed partial class LocalControlServer(
                 case FrameType.Attach: await orchestrator.HandleLocalAttachAsync(first.Text, stream, ct); break;
                 case FrameType.List:   await orchestrator.HandleLocalListAsync(stream, ct); break;
                 case FrameType.Stop:   await orchestrator.HandleLocalStopAsync(first.Text, stream, ct); break;
+                case FrameType.StopV2: {
+                    var (force, id) = FrameCodec.StopV2(first);
+                    await orchestrator.HandleLocalStopV2Async(force, id, stream, ct);
+
+                    break;
+                }
                 case FrameType.Restart: await HandleRestartAsync(first.Text, stream, ct); break;
-                default: await FrameCodec.WriteAsync(stream, LocalFrame.Error($"expected Spawn/Attach/List/Stop/Restart, got {first.Type}"), ct); break;
+                default: await FrameCodec.WriteAsync(stream, LocalFrame.Error($"expected Spawn/Attach/List/Stop/StopV2/Restart, got {first.Type}"), ct); break;
             }
         } catch (Exception ex) when (ex is not OperationCanceledException) {
             LogConnectionError(ex);

@@ -22,23 +22,44 @@ internal partial class AgentOrchestrator {
     };
 
     /// <summary>
-    /// Stop one agent (or every agent, when <paramref name="agentId"/> is empty) on behalf of
-    /// `kcap agent stop`. Calls the stop core directly rather than <c>HandleStopAgent</c>: the
-    /// private-agent guard there defends against server-origin commands, and a request arriving
-    /// on the daemon's own 0600 socket is the owner's. Stops run concurrently — each can take up
-    /// to 25s (graceful wait plus terminate), so serial teardown would be unusable.
+    /// Serves the legacy <c>Stop</c> frame from older clients that predate --force. That frame
+    /// has no force concept, so it always behaves as if --force were passed: an older client
+    /// gets exactly its previous (unprotected) behaviour, and gains no new refusals it has no
+    /// way to override.
     /// </summary>
-    public async Task HandleLocalStopAsync(string agentId, Stream stream, CancellationToken ct) {
+    public Task HandleLocalStopAsync(string agentId, Stream stream, CancellationToken ct) =>
+        HandleLocalStopV2Async(force: true, agentId, stream, ct);
+
+    /// <summary>
+    /// `kcap agent stop` with protection. A review or flow agent is refused unless the user
+    /// passed --force; a stop-all reports them as `skipped` rather than silently omitting them.
+    /// Calls the stop core directly rather than <c>HandleStopAgent</c>: the private-agent guard
+    /// there defends against server-origin commands, and a request arriving on the daemon's own
+    /// 0600 socket is the owner's. Stops run concurrently — each can take up to 25s (graceful
+    /// wait plus terminate), so serial teardown would be unusable.
+    /// </summary>
+    public async Task HandleLocalStopV2Async(bool force, string agentId, Stream stream, CancellationToken ct) {
         if (agentId.Length == 0) {
-            var all     = _agents.Values.ToList();
-            var results = await Task.WhenAll(all.Select(StopAgentCoreAsync));
-            var lines   = all.Zip(results, (a, ok) => $"{a.Id}\t{StatusText(ok)}");
-            await FrameCodec.WriteAsync(stream, LocalFrame.StopAck(string.Join('\n', lines)), ct);
+            var all       = _agents.Values.ToList();
+            var eligible  = all.Where(a => force || a.Kind == LaunchKind.Default).ToList();
+            var results   = await Task.WhenAll(eligible.Select(StopAgentCoreAsync));
+            var stopped   = eligible.Zip(results, (a, ok) => $"{a.Id}\t{StatusText(ok)}");
+            var skipped   = all.Except(eligible).Select(a => $"{a.Id}\tskipped");
+
+            await FrameCodec.WriteAsync(stream, LocalFrame.StopAck(string.Join('\n', stopped.Concat(skipped))), ct);
 
             return;
         }
 
         if (_agents.TryGetValue(agentId, out var agent)) {
+            if (!force && agent.Kind != LaunchKind.Default) {
+                await FrameCodec.WriteAsync(stream, LocalFrame.Error(
+                    $"{agentId} is a {ProtectionReason(agent)}. Stopping it mid-round leaves the flow "
+                  + "without a participant. Pass --force to stop it anyway."), ct);
+
+                return;
+            }
+
             var ok = await StopAgentCoreAsync(agent);
             await FrameCodec.WriteAsync(stream, LocalFrame.StopAck($"{agentId}\t{StatusText(ok)}"), ct);
 
@@ -46,7 +67,7 @@ internal partial class AgentOrchestrator {
         }
 
         // Not live here — it may be a survivor of a previous daemon incarnation, which the PID
-        // record can still reap. This is why the client sends full ids verbatim.
+        // record can still reap. Kind is unknown for those, so protection cannot apply.
         var reaped = await TryStopByPidRecordAsync(agentId);
 
         await FrameCodec.WriteAsync(

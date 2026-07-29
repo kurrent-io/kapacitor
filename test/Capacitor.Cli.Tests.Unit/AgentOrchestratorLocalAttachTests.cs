@@ -752,6 +752,70 @@ public partial class AgentOrchestratorVendorTests {
         await Assert.That(reply.Text).IsEqualTo("reaped-1\tstopped");
     }
 
+    static async Task<LocalFrame?> StopV2AndReadReply(AgentOrchestrator orch, bool force, string agentId) {
+        using var client = new DuplexTestStream(new MemoryStream(), new MemoryStream());
+        await orch.HandleLocalStopV2Async(force, agentId, client, default);
+        client.WrittenStream.Position = 0;
+
+        return await FrameCodec.ReadAsync(client.WrittenStream, default);
+    }
+
+    [Test]
+    public async Task Stopping_a_flow_participant_without_force_is_refused() {
+        var server = new TripwireServerConnection();
+        await using var orch = BuildOrchestrator(server, new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>());
+        orch.SeedAgentForTest("flow-1", kind: LaunchKind.ReviewFlow, flowRunId: "flow-7f3a", flowRole: "reviewer");
+
+        var reply = await StopV2AndReadReply(orch, force: false, "flow-1");
+
+        await Assert.That(reply!.Type).IsEqualTo(FrameType.Error);
+        await Assert.That(reply.Text).Contains("review-flow");
+        await Assert.That(reply.Text).Contains("--force");
+        await Assert.That(orch.GetAgentForTest("flow-1")!.Status).IsNotEqualTo("Completed");
+    }
+
+    [Test]
+    public async Task Stopping_a_flow_participant_with_force_succeeds() {
+        var server = new TripwireServerConnection();
+        await using var orch = BuildOrchestrator(server, new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>());
+        orch.SeedAgentForTest("flow-1", kind: LaunchKind.ReviewFlow, flowRunId: "flow-7f3a", flowRole: "reviewer");
+
+        var reply = await StopV2AndReadReply(orch, force: true, "flow-1");
+
+        await Assert.That(reply!.Type).IsEqualTo(FrameType.StopAck);
+        await Assert.That(reply.Text).IsEqualTo("flow-1\tstopped");
+        await Assert.That(orch.GetAgentForTest("flow-1")!.Status).IsEqualTo("Completed");
+    }
+
+    [Test]
+    public async Task Stop_all_without_force_skips_protected_agents_and_says_so() {
+        var server = new TripwireServerConnection();
+        await using var orch = BuildOrchestrator(server, new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>());
+        orch.SeedAgentForTest("plain-1");
+        orch.SeedAgentForTest("flow-1", kind: LaunchKind.ReviewFlow, flowRunId: "flow-7f3a", flowRole: "reviewer");
+
+        var reply = await StopV2AndReadReply(orch, force: false, "");
+
+        var rows = reply!.Text.Split('\n').Select(l => l.Split('\t')).ToDictionary(p => p[0], p => p[1]);
+        await Assert.That(rows["plain-1"]).IsEqualTo("stopped");
+        await Assert.That(rows["flow-1"]).IsEqualTo("skipped");
+        await Assert.That(orch.GetAgentForTest("flow-1")!.Status).IsNotEqualTo("Completed");
+    }
+
+    [Test]
+    public async Task Stop_all_with_force_includes_protected_agents() {
+        var server = new TripwireServerConnection();
+        await using var orch = BuildOrchestrator(server, new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>());
+        orch.SeedAgentForTest("plain-1");
+        orch.SeedAgentForTest("flow-1", kind: LaunchKind.ReviewFlow, flowRunId: "flow-7f3a", flowRole: "reviewer");
+
+        var reply = await StopV2AndReadReply(orch, force: true, "");
+
+        var rows = reply!.Text.Split('\n').Select(l => l.Split('\t')).ToDictionary(p => p[0], p => p[1]);
+        await Assert.That(rows["plain-1"]).IsEqualTo("stopped");
+        await Assert.That(rows["flow-1"]).IsEqualTo("stopped");
+    }
+
     /// <summary>A pty double whose process never exits — HasExited stays false even after
     /// TerminateAsync — so a test can drive the "stop could not be confirmed" path without a
     /// real hung process.</summary>
