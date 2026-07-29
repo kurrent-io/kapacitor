@@ -70,8 +70,14 @@ static class KiroHookCommand {
     /// new session id, hence a new lease key, hence a fresh injection — no Kiro-specific logic.</para>
     ///
     /// <para>Deliberately no commit gate (unlike Copilot): this hook always exits 0 and Kiro always
-    /// consumes its stdout, so a fetched fragment is ALWAYS deliverable and the lease can commit as
-    /// soon as the fetch succeeds. The lifecycle POST outcome cannot make the output undeliverable.</para>
+    /// consumes its stdout, so no POST OUTCOME can make a fetched fragment undeliverable, and the
+    /// lease may commit as soon as the fetch succeeds.</para>
+    ///
+    /// <para>That argument is about the outcome only, and it is not sufficient on its own — the
+    /// caller must ALSO guarantee nothing slow sits between the commit and the write. A hook killed
+    /// at Kiro's timeout while awaiting something else would leave the lease spent with nothing on
+    /// stdout, and every later <c>agentSpawn</c> would skip fetch and injection alike. Hence the
+    /// call site writes and flushes the fragment before it awaits the lifecycle POST.</para>
     ///
     /// <para><b>Scope safety:</b> the git root discovered from the payload is preferred and the
     /// payload cwd is the fallback; with neither, injection is skipped rather than letting the shared
@@ -250,16 +256,27 @@ static class KiroHookCommand {
         // failure PostOrSpoolAsync already logged to stderr; a lapse or transient outage instead
         // durably spools the payload for a later drain pass. Only a permanent failure skips the
         // watcher this firing — agentSpawn fires again next prompt and retries.
-        var outcome = await AgentHookPoster.PostOrSpoolAsync(
+        //
+        // Started but NOT awaited yet, so the POST cannot stand between a fetched fragment and
+        // stdout. PostWithRetryAsync carries a 30s retry budget — far beyond this hook's 5s — so
+        // awaiting it first meant a hung POST could burn the whole hook budget AFTER the orchestrator
+        // had already committed the once-per-session lease, leaving the lease spent, nothing written,
+        // and every later agentSpawn skipping both fetch and injection. Safe to run concurrently with
+        // the write below because the poster only ever writes to stderr, never stdout.
+        var postTask = AgentHookPoster.PostOrSpoolAsync(
             baseUrl, "session-start/kiro", enriched, "kiro-hook",
             spool, sessionId, route: "session-start/kiro");
 
-        // Written BEFORE the watcher branch below and on EVERY outcome: this hook always exits 0 and
-        // Kiro always consumes its stdout, so the recording outcome must not decide whether the model
-        // gets its memory index. Emitting here also means a later EnsureWatcherRunning stall cannot
-        // strand an already-fetched fragment.
+        // The fragment reaches stdout as soon as the bounded fetch resolves — before the POST is
+        // awaited and before the watcher branch — so neither a slow POST nor a later
+        // EnsureWatcherRunning stall can strand an already-committed injection. Flushed explicitly:
+        // a fragment sitting in a buffer when Kiro's hook timeout kills the process is a fragment
+        // whose lease was spent for nothing.
         WriteAgentSpawnOutput(Console.Out,
             await SessionStartMemoryHookSupport.AwaitBounded(memoryTask, processStart, "session-start"));
+        await Console.Out.FlushAsync();
+
+        var outcome = await postTask;
 
         if (!AgentHookPoster.ShouldSpawnAfter(outcome)) return 0;
 

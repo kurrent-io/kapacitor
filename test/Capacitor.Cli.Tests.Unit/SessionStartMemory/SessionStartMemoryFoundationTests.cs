@@ -468,24 +468,42 @@ public class SessionStartMemoryFoundationTests {
     }
 
     // Two agentSpawn callbacks racing must not both fetch and inject.
+    //
+    // The race has to be REAL to prove anything. With an all-synchronous provider the four calls
+    // complete one after another as Task.WhenAll enumerates them, so the winner has already committed
+    // before the second caller is even constructed — the test then just repeats the sequential dedupe
+    // case above. So: dispatch on the thread pool, and hold the winner INSIDE its fetch until every
+    // caller has entered the orchestrator, which forces the others to contend for a held lease.
     [Test]
     public async Task Kiro_concurrent_agent_spawns_yield_exactly_one_injection() {
         var root = TempDir();
         try {
-            var calls = 0;
+            const int Callers = 4;
+            var entered  = 0;
+            var fetches  = 0;
+            var allInside = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
             var provider = new SessionStartMemoryContextProvider(new FixedScopeResolver(null, null),
-                (_, _) => {
-                    Interlocked.Increment(ref calls);
-                    return Task.FromResult(new HttpClient(new StaticHandler(HttpStatusCode.OK, OneMemoryJson)));
+                async (_, ct) => {
+                    Interlocked.Increment(ref fetches);
+                    // Hold the lease until the losers have had their chance to contend (or until the
+                    // request budget would lapse — never hang the suite on a missed signal).
+                    await Task.WhenAny(allInside.Task, Task.Delay(TimeSpan.FromSeconds(2), ct));
+
+                    return new HttpClient(new StaticHandler(HttpStatusCode.OK, OneMemoryJson));
                 });
             var store = new SessionStartMemoryLeaseStore(root);
 
-            var results = await Task.WhenAll(Enumerable.Range(0, 4).Select(_ =>
-                new SessionStartMemoryOrchestrator(store, provider)
-                    .GetFragmentAsync(KiroLifecycle("kiro-session"), KiroRequest(2))));
+            var results = await Task.WhenAll(Enumerable.Range(0, Callers).Select(_ => Task.Run(async () => {
+                if (Interlocked.Increment(ref entered) == Callers) allInside.TrySetResult();
 
+                return await new SessionStartMemoryOrchestrator(store, provider)
+                    .GetFragmentAsync(KiroLifecycle("kiro-session"), KiroRequest(5));
+            })));
+
+            await Assert.That(entered).IsEqualTo(Callers);
             await Assert.That(results.Count(r => r is not null)).IsEqualTo(1);
-            await Assert.That(calls).IsEqualTo(1);
+            await Assert.That(fetches).IsEqualTo(1);
         } finally { Directory.Delete(root, recursive: true); }
     }
 
