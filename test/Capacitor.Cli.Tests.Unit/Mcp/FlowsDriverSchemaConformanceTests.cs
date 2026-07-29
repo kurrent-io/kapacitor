@@ -540,11 +540,17 @@ public class FlowsDriverSchemaConformanceTests {
                                           StringComparison.OrdinalIgnoreCase)
             .Because("the driver must be told NOT to claim a reviewer it could not name");
 
-        // 2. WHY omitting the parameter is not neutral -- and specifically that the SERVER
-        //    substitutes its own default. Bare "default" was satisfiable by incidental prose.
-        await Assert.That(block).Contains("the server applies its", StringComparison.OrdinalIgnoreCase)
+        // 2. WHY omitting the parameter is not neutral -- specifically that the SERVER substitutes
+        //    its own configured default. Asserted as ONE contiguous phrase, which matters: a bare
+        //    Contains("default") was satisfiable by incidental prose, and splitting it into
+        //    Contains("the server applies its") + Contains("default") was no better, because both
+        //    blocks mention the server default AGAIN further down ("...explicitly asks for the
+        //    server default"). That second sentence would have satisfied the "default" half while
+        //    the consequence itself was edited into something else entirely. Whitespace is already
+        //    normalized, so a contiguous match is safe across the files' hard wrapping.
+        await Assert.That(block).Contains("the server applies its own configured default",
+                                          StringComparison.OrdinalIgnoreCase)
             .Because("without the consequence, 'do not claim it' reads as mere pedantry");
-        await Assert.That(block).Contains("default", StringComparison.OrdinalIgnoreCase);
 
         // 3. The actionable recovery. Documentation that names the failure but not the fix leaves
         //    the user stuck -- the design requires an actionable message, not just a warning.
