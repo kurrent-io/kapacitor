@@ -100,7 +100,7 @@ The setup wizard walks you through:
 2. **Login** — authenticates via your tenant's configured sign-in method; discovery completes the sign-in inline
 3. **Default visibility** — choose how your sessions are visible to others
 4. **Coding-agent hooks** — detects Claude Code and Codex CLI on `PATH`, Cursor by user-dir presence (`~/.cursor/`), GitHub Copilot CLI by `~/.copilot/` or `copilot` on `PATH`, Google Gemini CLI by `~/.gemini/` or `gemini` on `PATH`, AWS Kiro CLI by `~/.kiro/` or `kiro`/`kiro-cli` on `PATH`, Pi by `~/.pi/` or `pi` on `PATH`, SST OpenCode by `~/.config/opencode/` (or `~/.local/share/opencode/`) or `opencode` on `PATH`, and Google Antigravity by `~/.gemini/antigravity/` or `antigravity` on `PATH`, lists what it found, then asks **one** yes/no prompt to install kcap for every detected agent (hooks — or, for Pi/OpenCode/Antigravity, the live-ingest plugin — plus skills, instructions, and MCP) — plus a single shared set of agent skills under `~/.agents/skills/`, installed once when any of Codex, Cursor, Copilot, Gemini, Pi, or OpenCode is detected (Claude gets its skills from the bundled plugin; AWS Kiro and Google Antigravity read their own skills dirs — `~/.kiro/skills` and `~/.gemini/skills` respectively — so each gets its own copy there instead of the shared tree) — all user-wide. For Codex it also offers to enable **sandbox network access** for kcap (see below) — Codex blocks sandbox network by default, so the kcap skills can't reach the server without it. Each agent's own config-relocation environment variable is honored when set: `CLAUDE_CONFIG_DIR` (Claude), `CODEX_HOME` (Codex), `GEMINI_CLI_HOME` (Gemini — names the parent of `.gemini`), `KIRO_HOME` (Kiro), `COPILOT_HOME` (Copilot), `OPENCODE_CONFIG_DIR` (OpenCode), and `PI_CODING_AGENT_DIR` (Pi). Cursor's hooks path is fixed at `~/.cursor/hooks.json` and is not relocated.
-5. **Daemon** — configure the daemon name for remote agent execution
+5. **Daemon** — configure the daemon name for remote agent execution (the daemon verb is `kcap daemon`; the retired pre-rename `agent` verb prints a rename pointer and exits 2)
 6. **Import past sessions** — offers (default yes) to import this repository's past sessions across every detected agent, equivalent to `kcap import --repo .`. Only shown when the current directory is a git repo with a resolvable origin remote and your authentication requirements are satisfied — which includes no-auth servers (auth provider `None`, no token needed); otherwise it's skipped with the usual `kcap import` hint. Opt out with `--skip-import`.
 
 When setup finishes, `kcap` sends a best-effort POST to the server's `/api/users/me/cli-setup` endpoint so the dashboard can mark your CLI as registered and surface the import-past-sessions hint. The call is capped at 5 seconds and failures are silent — they do not affect setup completion.
@@ -598,6 +598,8 @@ kcap daemon restart --name laptop --force      # restart now even if busy (tears
 kcap daemon doctor                  # diagnose lock-file state for every daemon name
 kcap daemon doctor --clean          # also remove stale lock/pid files (held entries are never touched)
 ```
+
+The pre-rename daemon verb `agent` is retired, not aliased: `kcap agent …` prints a pointer to `kcap daemon start|stop|status` and exits with status 2.
 
 `KCAP_DAEMON_NAME` overrides the active profile's daemon name (superseded by an explicit `--name` flag).
 

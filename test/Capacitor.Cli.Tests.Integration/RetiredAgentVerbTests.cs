@@ -3,11 +3,8 @@ using System.Diagnostics;
 namespace Capacitor.Cli.Tests.Integration;
 
 /// <summary>
-/// `agent` was the daemon verb until May 2026. The rename left the dead verb in old
-/// transcripts, docs, and habits, and the generic unknown-command error sent people hunting
-/// for a daemon that was never down. The CLI answers it with a rename pointer — and
-/// deliberately NOT a working alias: the verb must stay dead, so the non-zero exit is pinned
-/// as hard as the message.
+/// The retired daemon verb must stay dead: `kcap agent …` answers with a rename pointer and a
+/// non-zero exit, pinned here through the real binary so it can never quietly become an alias.
 /// </summary>
 public class RetiredAgentVerbTests {
     [Test]

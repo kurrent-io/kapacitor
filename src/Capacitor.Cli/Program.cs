@@ -17,6 +17,16 @@ if (args.Length < 1) {
 
 var command = args[0];
 
+// The pre-rename daemon verb: reject it with a pointer, before any config/git/update work,
+// so the dead verb exits fast, offline, and deterministically. Deliberately not an alias —
+// exit 2, like the removed cursor import command.
+if (command is "agent") {
+    Console.Error.WriteLine("Unknown command: agent — the daemon verb was renamed to 'daemon'.");
+    Console.Error.WriteLine("Run `kcap daemon start|stop|status`, or `kcap --help`.");
+
+    return 2;
+}
+
 // Interactive commands block on synchronous Spectre.Console prompts. Install a
 // signal + parent-liveness safety net so an abandoned prompt (closed terminal,
 // killed launching agent, detached pseudo-console) can't orphan this process
@@ -77,17 +87,6 @@ if (command is "--help" or "-h" or "help") {
     await PrintUsage();
 
     return 0;
-}
-
-// `agent` was the daemon verb until May 2026; the rename left it alive in old transcripts,
-// docs, and habits, and the bare unknown-command error sent people hunting for a daemon that
-// was never down. Answer it with a pointer instead — deliberately NOT an alias: the verb
-// stays dead (exit 2, matching the removed cursor import command).
-if (command is "agent") {
-    Console.Error.WriteLine("Unknown command: agent — the daemon verb was renamed to 'daemon'.");
-    Console.Error.WriteLine("Run `kcap daemon start|stop|status`, or `kcap --help`.");
-
-    return 2;
 }
 
 // Per-command help: kcap <command> --help / -h
