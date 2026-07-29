@@ -12,6 +12,18 @@ namespace Capacitor.Cli.Tests.Unit.Acp;
 /// logs and <c>etc</c> holds service configuration, and a code reviewer has no business in either.</para>
 /// </summary>
 public class BorrowedReviewRuntimeRootsTests {
+    /// <summary>These fixtures are POSIX-absolute, and on Windows <see cref="Path.GetFullPath(string)"/>
+    /// anchors such a path to the current drive (<c>/opt/hb</c> becomes <c>D:\opt\hb</c>), so every
+    /// synthetic path would miss its fixture for a reason unrelated to the rules under test.
+    ///
+    /// <para>Skipped rather than made drive-aware because the resolver is macOS-only in production: it
+    /// exists to feed a <c>sandbox-exec</c> profile, and the policy table has no Windows entry. The
+    /// Linux CI leg runs these unchanged, so the rules stay covered.</para></summary>
+    [Before(Test)]
+    public void SkipOnWindows() =>
+        Skip.When(OperatingSystem.IsWindows(),
+                  "POSIX path fixtures; the resolver is only reachable on macOS.");
+
     /// <summary>A synthetic prefix laid out like Homebrew's, so the layout rules are assertable
     /// without depending on what happens to be installed on the host.</summary>
     static Func<string, bool> Prefix(string root) {
