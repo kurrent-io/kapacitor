@@ -276,7 +276,25 @@ static class KiroHookCommand {
             await SessionStartMemoryHookSupport.AwaitBounded(memoryTask, processStart, "session-start"));
         await Console.Out.FlushAsync();
 
-        var outcome = await postTask;
+        // The POST await is BOUNDED by what is left of the hook ceiling. Writing early is not enough on
+        // its own: Kiro appends stdout only from a hook that COMPLETED, so an invocation killed at
+        // Kiro's timeout while still awaiting a 30s-retrying POST discards the fragment anyway — and
+        // its lease is already committed, so no later agentSpawn would re-fetch. Recording is the
+        // retryable half of this hook (agentSpawn fires every prompt); the injection is once-per-
+        // session. So when the budget lapses we stop waiting, spool the payload durably, and exit 0.
+        //
+        // Double delivery is harmless: an in-flight POST that lands after this spools the same
+        // payload, and the server's deterministic lifecycle event id collapses the two onto one
+        // SessionStarted (the same property that makes per-prompt agentSpawn re-POSTs free).
+        HookPostOutcome outcome;
+
+        try {
+            outcome = await postTask.WaitAsync(HookBudget.Remaining(processStart, "session-start"));
+        } catch (TimeoutException) {
+            spool.Append(sessionId, "session-start/kiro", enriched);
+            // Spooled, not Failed: a drain pass will replay it, so capture must still start.
+            outcome = HookPostOutcome.Spooled;
+        }
 
         if (!AgentHookPoster.ShouldSpawnAfter(outcome)) return 0;
 

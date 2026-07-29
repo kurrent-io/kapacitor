@@ -467,42 +467,57 @@ public class SessionStartMemoryFoundationTests {
         } finally { Directory.Delete(root, recursive: true); }
     }
 
-    // Two agentSpawn callbacks racing must not both fetch and inject.
+    // A losing agentSpawn callback must be fenced by a lease that is genuinely HELD — not merely
+    // already-completed. This is ordered deterministically rather than raced, because a race is
+    // exactly what cannot be asserted: an all-synchronous provider lets the winner commit before the
+    // next caller is even constructed, and counting "how many callers started" proves nothing about
+    // whether any of them reached the lease.
     //
-    // The race has to be REAL to prove anything. With an all-synchronous provider the four calls
-    // complete one after another as Task.WhenAll enumerates them, so the winner has already committed
-    // before the second caller is even constructed — the test then just repeats the sequential dedupe
-    // case above. So: dispatch on the thread pool, and hold the winner INSIDE its fetch until every
-    // caller has entered the orchestrator, which forces the others to contend for a held lease.
+    // So: start the winner, wait until its provider signals from INSIDE the fetch (at which point the
+    // lease is provably held), run the losers to completion against that held lease, and only then
+    // release the winner. No timeout participates in the passing path.
     [Test]
-    public async Task Kiro_concurrent_agent_spawns_yield_exactly_one_injection() {
+    public async Task Kiro_agent_spawns_arriving_while_the_lease_is_held_are_fenced_out() {
         var root = TempDir();
         try {
-            const int Callers = 4;
-            var entered  = 0;
-            var fetches  = 0;
-            var allInside = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var fetches       = 0;
+            var winnerHolding = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var releaseWinner = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
             var provider = new SessionStartMemoryContextProvider(new FixedScopeResolver(null, null),
                 async (_, ct) => {
                     Interlocked.Increment(ref fetches);
-                    // Hold the lease until the losers have had their chance to contend (or until the
-                    // request budget would lapse — never hang the suite on a missed signal).
-                    await Task.WhenAny(allInside.Task, Task.Delay(TimeSpan.FromSeconds(2), ct));
+                    winnerHolding.TrySetResult();
+                    // Held until the losers have been through. The timeout is a suite-safety net only:
+                    // it is never reached on the passing path, and reaching it fails the test anyway
+                    // (the losers would no longer be contending for a held lease).
+                    await releaseWinner.Task.WaitAsync(TimeSpan.FromSeconds(10), ct);
 
                     return new HttpClient(new StaticHandler(HttpStatusCode.OK, OneMemoryJson));
                 });
             var store = new SessionStartMemoryLeaseStore(root);
 
-            var results = await Task.WhenAll(Enumerable.Range(0, Callers).Select(_ => Task.Run(async () => {
-                if (Interlocked.Increment(ref entered) == Callers) allInside.TrySetResult();
+            var winner = Task.Run(() => new SessionStartMemoryOrchestrator(store, provider)
+                .GetFragmentAsync(KiroLifecycle("kiro-session"), KiroRequest(20)));
 
-                return await new SessionStartMemoryOrchestrator(store, provider)
-                    .GetFragmentAsync(KiroLifecycle("kiro-session"), KiroRequest(5));
-            })));
+            // The winner is now inside its fetch, holding the lease.
+            await winnerHolding.Task;
 
-            await Assert.That(entered).IsEqualTo(Callers);
-            await Assert.That(results.Count(r => r is not null)).IsEqualTo(1);
+            var losers = await Task.WhenAll(Enumerable.Range(0, 3).Select(_ =>
+                new SessionStartMemoryOrchestrator(store, provider)
+                    .GetFragmentAsync(KiroLifecycle("kiro-session"), KiroRequest(20))));
+
+            // The winner is provably STILL inside its fetch, so the lease was genuinely held for the
+            // whole of the losers' run — this is what separates the test from the sequential case.
+            await Assert.That(winner.IsCompleted).IsFalse();
+
+            // Every loser was refused while that lease was held — and none of them fetched.
+            await Assert.That(losers.All(r => r is null)).IsTrue();
+            await Assert.That(fetches).IsEqualTo(1);
+
+            releaseWinner.TrySetResult();
+
+            await Assert.That(await winner).Contains("- s: d");
             await Assert.That(fetches).IsEqualTo(1);
         } finally { Directory.Delete(root, recursive: true); }
     }
