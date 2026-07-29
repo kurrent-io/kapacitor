@@ -1,4 +1,4 @@
-// Refreshes user-scope kcap agent installations so users pick up new or updated
+// Refreshes kcap's user-scope coding-agent installs so users pick up new or updated
 // skills, Codex/Cursor/Copilot hook commands, the Pi live-ingest extension, and
 // Claude plugin registration.
 //

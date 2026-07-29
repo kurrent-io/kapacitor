@@ -1,19 +1,13 @@
 namespace Capacitor.Cli.Tests.Unit;
 
 /// <summary>
-/// The daemon verb is `kcap daemon …`; the old verb was retired in May 2026 but kept resurfacing
-/// in shipped text — the flow skills taught it for two error codes long after the server corrected
-/// its own messages, overriding the fix downstream. This scan keeps the dead verb out of everything
-/// this repo ships to users and agents: the kcap/ plugin (skills included) and src/. Historical
-/// docs/ artifacts are deliberately out of scope, as is test/ (this file must name the phrase in
-/// order to ban it).
+/// Bans the retired daemon verb from shipped text. Historical docs/ artifacts are out of scope,
+/// as is test/ — this file must name the phrase in order to ban it.
 /// </summary>
 public class RetiredVerbScanTests {
-    /// <summary>Kept as a literal here, in a test, precisely because it must not appear anywhere
-    /// under the scanned roots.</summary>
     const string RetiredVerb = "kcap agent";
 
-    static readonly string[] ScannedRoots = ["kcap", "src"];
+    static readonly string[] ScannedRoots = ["kcap", "src", "npm"];
 
     /// <summary>Formats that cannot carry a readable instruction. Everything else under the
     /// scanned roots is text until proven otherwise — an allowlist of "text" extensions misses
@@ -23,8 +17,6 @@ public class RetiredVerbScanTests {
         ".woff", ".woff2", ".ttf", ".otf", ".eot",
         ".pdf", ".zip", ".gz", ".dll", ".dylib", ".so", ".exe"
     ];
-
-    static readonly string[] SkippedDirectories = ["bin", "obj", "node_modules"];
 
     static DirectoryInfo RepoRoot() {
         var dir = new DirectoryInfo(AppContext.BaseDirectory);
@@ -39,11 +31,15 @@ public class RetiredVerbScanTests {
             var root = Path.Combine(repoRoot, rootName);
             if (!Directory.Exists(root)) continue;
 
+            // npm/kcap/bin is shipped source (the launcher scripts), not build output — only the
+            // .NET roots skip bin/obj.
+            string[] skipped = rootName is "npm" ? ["node_modules"] : ["bin", "obj", "node_modules"];
+
             foreach (var path in Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories)) {
                 var segments = Path.GetRelativePath(root, path)
                     .Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
 
-                if (segments[..^1].Any(s => SkippedDirectories.Contains(s, StringComparer.OrdinalIgnoreCase))) continue;
+                if (segments[..^1].Any(s => skipped.Contains(s, StringComparer.OrdinalIgnoreCase))) continue;
                 if (BinaryExtensions.Contains(Path.GetExtension(path), StringComparer.OrdinalIgnoreCase)) continue;
 
                 yield return path;

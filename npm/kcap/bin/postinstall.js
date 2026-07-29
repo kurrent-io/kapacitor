@@ -2,7 +2,7 @@
 
 // Runs after `npm install -g @kurrent/kcap` (including upgrades).
 //
-// Refreshes user-scope kcap agent installations so users pick up new or updated
+// Refreshes kcap's user-scope coding-agent installs so users pick up new or updated
 // skills, hook commands, and Claude plugin registration without manually
 // re-running `kcap setup`. The actual refresh logic lives in refresh.js, shared
 // with the `kcap update` path.
