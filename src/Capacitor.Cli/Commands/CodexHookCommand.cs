@@ -119,6 +119,20 @@ static class CodexHookCommand {
     /// on a resume of the SAME session id is prevented by the shared lease keyed on
     /// (harness, session id) rather than by a reason we cannot observe.</para>
     /// </summary>
+    /// <summary>
+    /// The production memory-index client factory: an AUTHENTICATED client, and one that honours the
+    /// provider's 401-refresh contract. <c>/api/memories/index</c> is bearer-authenticated, and
+    /// <see cref="SessionStartMemoryContextProvider"/> deliberately hands the rejected bearer back to
+    /// this factory after a 401 so it can mint a fresh client. A bare <c>new HttpClient()</c> would
+    /// 401 on both the initial call AND the refresh, the provider would record a retryable failure,
+    /// and Codex would silently never receive memory context on any authenticated deployment.
+    /// Named (not inlined) so a test can assert the production path attaches credentials — the
+    /// writer-level tests cannot see this. Mirrors <c>ClaudeHookCommand</c>'s factory exactly.
+    /// </summary>
+    internal static Func<string?, CancellationToken, Task<HttpClient>> DefaultMemoryClientFactory(string baseUrl)
+        => async (rejectedAccessToken, ct) => (await HttpClientExtensions.CreateClientWithAuthStatusAsync(
+            baseUrl, ct, allowAutoRedirect: false, rejectedAccessToken: rejectedAccessToken)).Client;
+
     static Task<string?> StartMemoryIndexTask(
             string     baseUrl,
             string?    sessionId,
@@ -137,8 +151,10 @@ static class CodexHookCommand {
             var store = memoryStoreFactory?.Invoke() ?? new SessionStartMemoryLeaseStore();
             var provider = new SessionStartMemoryContextProvider(
                 new SessionStartMemoryScopeResolver(),
-                memoryClientFactory ?? ((_, ct) => Task.FromResult(new HttpClient())),
-                disposeClients: true);
+                memoryClientFactory ?? DefaultMemoryClientFactory(baseUrl),
+                // Only clients WE created are ours to dispose; an injected factory's client is
+                // owned by its caller and may be handed back again on the 401-refresh call.
+                disposeClients: memoryClientFactory is null);
 
             return new SessionStartMemoryOrchestrator(store, provider).GetFragmentAsync(
                 new SessionMemoryLifecycle(SessionStartHarness.Codex, sessionId!, LifecycleInstanceId: null,
