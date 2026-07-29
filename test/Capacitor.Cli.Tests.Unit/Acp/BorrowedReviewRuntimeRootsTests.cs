@@ -267,6 +267,59 @@ public class BorrowedReviewRuntimeRootsTests {
             .Contains($"{prefix}/lib/node_modules/@vendor/tool/loader.js");
     }
 
+    /// <summary>The under-home refusal survives a symlinked home, using REAL directories and a REAL
+    /// symlink rather than a fake probe.
+    ///
+    /// <para>Review's finding: the vendor path is symlink-resolved but home was compared as the logical
+    /// string, and lexical normalization does not bridge the two. With home reached through a symlink,
+    /// the physical candidate is not lexically "within" the logical home, so the refusal silently did
+    /// not apply — on macOS exactly, which ships <c>/home -> /System/Volumes/Data/home</c>.</para>
+    ///
+    /// <para>The assertion on the LOGICAL form is what makes this test meaningful: it confirms the two
+    /// forms genuinely differ here, so the refusal below can only come from comparing the physical
+    /// one.</para></summary>
+    [Test]
+    public async Task A_prefix_beneath_a_symlinked_home_is_still_refused() {
+        Skip.When(OperatingSystem.IsWindows(), "needs POSIX symlinks");
+
+        var root = Directory.CreateTempSubdirectory("kcap-symlink-home").FullName;
+        try {
+            var real   = Path.Combine(root, "real");
+            var linked = Path.Combine(root, "linked");
+            var prefix = Path.Combine(real, "dev", "toolbox");
+            Directory.CreateDirectory(Path.Combine(prefix, "bin"));
+            Directory.CreateDirectory(Path.Combine(prefix, "lib"));
+            Directory.CreateSymbolicLink(linked, real);
+
+            var logicalHome = Path.Combine(linked, "dev");
+            var binary      = Path.Combine(prefix, "bin", "copilot");
+            await File.WriteAllTextAsync(binary, "#!/bin/sh\n");
+
+            // The two forms really do differ, or this test would prove nothing.
+            await Assert.That(Path.GetFullPath(prefix)
+                .StartsWith(Path.GetFullPath(logicalHome), StringComparison.Ordinal)).IsFalse();
+
+            var grants = BorrowedReviewRuntimeRoots.Resolve(binary, userHome: logicalHome);
+
+            await Assert.That(grants.Directories).IsEmpty()
+                .Because("the prefix is beneath home once home is resolved to its physical form");
+        } finally {
+            try { Directory.Delete(root, true); } catch { /* best-effort */ }
+        }
+    }
+
+    /// <summary>An unusable home fails CLOSED: no home form means the under-home rule cannot be
+    /// evaluated, so no prefix is safe to admit.</summary>
+    [Test]
+    [Arguments("")]
+    [Arguments("   ")]
+    public async Task An_unusable_home_admits_no_prefix(string home) {
+        var grants = BorrowedReviewRuntimeRoots.Resolve(
+            "/opt/hb/lib/node_modules/@vendor/tool/loader.js", Prefix("/opt/hb"), userHome: home);
+
+        await Assert.That(grants.Directories).IsEmpty();
+    }
+
     /// <summary>The same hole one level down: a real installation under <c>/opt/vendor</c> must still
     /// resolve, so the root exclusion must not be implemented by refusing shallow paths generally.</summary>
     [Test]

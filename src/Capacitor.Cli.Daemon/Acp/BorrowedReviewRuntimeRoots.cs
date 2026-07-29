@@ -65,9 +65,16 @@ internal static class BorrowedReviewRuntimeRoots {
             Func<string, bool>? fileExists = null) {
         var dirExists  = directoryExists ?? Directory.Exists;
         var thisExists = fileExists ?? directoryExists ?? File.Exists;
-        var home       = userHome ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
         var roots      = new List<string>();
         var files      = new List<string>();
+
+        // BOTH forms of home, because the candidate paths below are PHYSICAL (the vendor path is
+        // symlink-resolved) while SpecialFolder.UserProfile is logical, and lexical normalization does
+        // not bridge the two. On a host where home or an ancestor is a symlink — macOS ships
+        // /home -> /System/Volumes/Data/home — a real prefix under home resolves to a physical path that
+        // is not lexically "within" the logical home, and the under-home refusal below would silently
+        // not apply. Comparing against both forms cannot be defeated by either one.
+        var home = HomeForms(userHome ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile));
 
         // A bare command name — the shipped default for every vendor path — must never reach here:
         // Path.GetFullPath would resolve it against the DAEMON'S CURRENT DIRECTORY, making that
@@ -121,7 +128,11 @@ internal static class BorrowedReviewRuntimeRoots {
     /// <c>bin</c> and <c>lib</c>. That shape is what makes this vendor-neutral and install-method
     /// neutral: it finds <c>/opt/homebrew</c>, <c>/usr/local</c>, an nvm/volta node root, or a
     /// self-contained vendor directory without any of them being named here.</summary>
-    static string? FindInstallationPrefix(string? start, Func<string, bool> exists, string home) {
+    static string? FindInstallationPrefix(
+            string? start, Func<string, bool> exists, IReadOnlyList<string> home) {
+        // No usable home form means the under-home refusal cannot be evaluated, so no prefix is safe.
+        if (home.Count == 0) return null;
+
         var current = start;
 
         for (var depth = 0; depth < MaxPrefixSearchDepth && current is not null; depth++) {
@@ -141,7 +152,7 @@ internal static class BorrowedReviewRuntimeRoots {
                 // launch then fails loudly at exec instead of quietly reading the user's files. Admitting
                 // those layouts needs each one MEASURED — the same bar every other part of this feature is
                 // held to — and only the Homebrew prefix has been.
-                return IsWithin(parent, home) ? null : parent;
+                return home.Any(h => IsWithin(parent, h)) ? null : parent;
 
             current = parent;
         }
@@ -160,8 +171,24 @@ internal static class BorrowedReviewRuntimeRoots {
     /// <para>Note this rejects home ITSELF, not installations beneath it: <c>~/.local</c> or
     /// <c>~/.volta/tools/image/node/22</c> are still valid prefixes, so a per-user install keeps
     /// working.</para></summary>
-    static bool IsUngrantableRoot(string path, string home) =>
-        SandboxPaths.IsFilesystemRoot(path) || IsSamePath(path, home);
+    static bool IsUngrantableRoot(string path, IReadOnlyList<string> home) =>
+        SandboxPaths.IsFilesystemRoot(path) || home.Any(h => IsSamePath(path, h));
+
+    /// <summary>Home in every form a comparison might need: as configured, and symlink-resolved.
+    ///
+    /// <para>Returns EMPTY when home is blank or cannot be inspected, which makes
+    /// <see cref="FindInstallationPrefix"/> refuse every prefix — fail closed. Treating an
+    /// unresolvable home as "nothing is under home" would quietly disable the guard on exactly the
+    /// hosts whose layout is unusual enough to be worth guarding.</para></summary>
+    static IReadOnlyList<string> HomeForms(string? home) {
+        if (string.IsNullOrWhiteSpace(home)) return [];
+
+        var physical = SandboxPaths.TryResolvePhysical(home);
+
+        if (physical is null) return [];
+
+        return physical.Equals(home, StringComparison.Ordinal) ? [home] : [home, physical];
+    }
 
     /// <summary>Whether <paramref name="candidate"/> is <paramref name="root"/> or sits beneath it.</summary>
     static bool IsWithin(string candidate, string root) {

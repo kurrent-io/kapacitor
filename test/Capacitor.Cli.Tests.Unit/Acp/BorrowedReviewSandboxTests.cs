@@ -105,7 +105,7 @@ public class BorrowedReviewSandboxTests {
     /// test implied it did. Probed: adding <c>(deny mach-lookup)</c> after the import kills the process
     /// before it emits a frame, so the import cannot simply be closed. What actually keeps the keychain
     /// out of reach is that the Security APIs still have to open the keychain FILE, which is denied —
-    /// asserted for real by <see cref="Enforcement_the_keychain_is_unreachable_through_securityd"/>.</para></summary>
+    /// asserted for real by <see cref="Enforcement_a_keychain_secret_is_readable_outside_the_sandbox_and_not_inside"/>.</para></summary>
     [Test]
     public async Task The_profile_emits_no_mach_lookup_grant_of_its_own() {
         await Assert.That(Profile()).DoesNotContain("(allow mach-lookup)");
@@ -221,7 +221,12 @@ public class BorrowedReviewSandboxTests {
         var profile = RealisticProfileFor(inside);
 
         await Assert.That(await CatUnderSandboxAsync(profile, insideFile)).IsEqualTo("INSIDE-OK");
-        await Assert.That(await CatUnderSandboxAsync(profile, outsideFile)).IsNull();
+
+        // Checked by CONTENT and independent of exit status, so a partial read cannot look like a denial.
+        var outsideRun = await CaptureUnderSandboxAsync(profile, "/bin/cat", outsideFile);
+        await Assert.That(outsideRun.StandardOutput).DoesNotContain("OUTSIDE-LEAKED");
+        await Assert.That(outsideRun.StandardError).DoesNotContain("OUTSIDE-LEAKED");
+        await Assert.That(outsideRun.ExitCode).IsNotEqualTo(0);
 
         Directory.Delete(root, recursive: true);
     }
@@ -258,8 +263,8 @@ public class BorrowedReviewSandboxTests {
 
         var snapshot = Directory.CreateTempSubdirectory("kcap-sandbox-sentinel").FullName;
         try {
-            await Assert.That(await CatUnderSandboxAsync(RealisticProfileFor(snapshot), target))
-                .IsNull().Because($"a borrowed reviewer must not be able to read the {what}");
+            await AssertRefusedWithNoOutputAsync(
+                RealisticProfileFor(snapshot), "/bin/cat", target, what);
         } finally {
             Directory.Delete(snapshot, recursive: true);
         }
@@ -279,9 +284,8 @@ public class BorrowedReviewSandboxTests {
 
         var snapshot = Directory.CreateTempSubdirectory("kcap-sandbox-sentinel").FullName;
         try {
-            // `ls` on a granted directory exits 0; on a denied one it cannot open it and exits non-zero.
-            await Assert.That(await RunUnderSandboxAsync(RealisticProfileFor(snapshot), "/bin/ls", directory))
-                .IsNull().Because($"a borrowed reviewer must not be able to enumerate {what}");
+            await AssertRefusedWithNoOutputAsync(
+                RealisticProfileFor(snapshot), "/bin/ls", directory, what);
         } finally {
             Directory.Delete(snapshot, recursive: true);
         }
@@ -389,6 +393,22 @@ public class BorrowedReviewSandboxTests {
     /// <summary>Returns the file's contents, or null if the sandbox refused the read.</summary>
     static Task<string?> CatUnderSandboxAsync(string profile, string path) =>
         RunUnderSandboxAsync(profile, "/bin/cat", path);
+
+    /// <summary>Asserts a run produced NO readable output and was refused.
+    ///
+    /// <para>Output is checked independently of exit status. "stdout, or null if it exited non-zero"
+    /// discards a partial read — an <c>ls</c> that emits some filenames and then errors, or a <c>cat</c>
+    /// that streams bytes before being cut off, would otherwise be reported as no read at all, which is
+    /// the exact claim these tests exist to make.</para></summary>
+    static async Task AssertRefusedWithNoOutputAsync(
+            string profile, string program, string target, string what) {
+        var run = await CaptureUnderSandboxAsync(profile, program, target);
+
+        await Assert.That(run.StandardOutput).IsEmpty()
+            .Because($"a borrowed reviewer must not read any of {what} ({target})");
+        await Assert.That(run.ExitCode).IsNotEqualTo(0)
+            .Because($"the read of {what} must be refused, not merely empty");
+    }
 
     static async Task<string?> RunUnderSandboxAsync(string profile, string program, params string[] arguments) {
         var result = await CaptureUnderSandboxAsync(profile, program, arguments);
