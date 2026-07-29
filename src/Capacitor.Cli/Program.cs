@@ -79,6 +79,17 @@ if (command is "--help" or "-h" or "help") {
     return 0;
 }
 
+// `agent` was the daemon verb until May 2026; the rename left it alive in old transcripts,
+// docs, and habits, and the bare unknown-command error sent people hunting for a daemon that
+// was never down. Answer it with a pointer instead — deliberately NOT an alias: the verb
+// stays dead (exit 2, matching the removed cursor import command).
+if (command is "agent") {
+    Console.Error.WriteLine("Unknown command: agent — the daemon verb was renamed to 'daemon'.");
+    Console.Error.WriteLine("Run `kcap daemon start|stop|status`, or `kcap --help`.");
+
+    return 2;
+}
+
 // Per-command help: kcap <command> --help / -h
 if (args.Skip(1).Any(a => a is "--help" or "-h")) {
     return await PrintCommandHelp(command);
