@@ -1322,8 +1322,12 @@ public class AcpHostedAgentRuntimeFactoryTests {
         var supported = CopilotBorrowedReviewPolicy.Resolve(
             OSPlatform.OSX, Architecture.Arm64, sandboxAvailable: true, authBrokerAvailable: true);
 
+        // A REAL executable, because the builder now resolves the configured value through PATH before
+        // drawing the profile — a fictional path fails closed, which is asserted separately below.
+        var realBinary = Environment.ProcessPath!;
+
         var psi = AcpHostedAgentRuntimeFactory.BuildProcessStartInfo(
-            AcpVendorDescriptors.Copilot, new DaemonConfig { CopilotPath = "/opt/bin/copilot" },
+            AcpVendorDescriptors.Copilot, new DaemonConfig { CopilotPath = realBinary },
             ctx, supported, BrokeredEnv());
         var argv = psi.ArgumentList.ToArray();
 
@@ -1332,10 +1336,37 @@ public class AcpHostedAgentRuntimeFactoryTests {
         await Assert.That(argv[1]).Contains("(deny default)");
         // The snapshot the reviewer was given is the one the profile grants.
         await Assert.That(argv[1]).Contains($"(subpath \"{ctx.Worktree.Path}\")");
-        await Assert.That(argv[2]).IsEqualTo("/opt/bin/copilot");
+        // The program under the sandbox is the RESOLVED absolute path, so what is granted and what runs
+        // are the same file.
+        await Assert.That(argv[2]).IsEqualTo(Path.GetFullPath(realBinary));
         // The vendor argv survives the wrap intact — the read tools are still there.
         foreach (var readTool in CopilotBorrowedReviewPolicy.ReadToolIds)
             await Assert.That(argv).Contains($"--available-tools={readTool}");
+    }
+
+    /// <summary>An unresolvable vendor path fails closed instead of being sandboxed by guesswork.
+    ///
+    /// <para>This is the other half of resolving through PATH. The severe route review found is that
+    /// every vendor path defaults to a bare command name (<c>"copilot"</c>), which
+    /// <see cref="Path.GetFullPath(string)"/> resolves against the DAEMON'S CURRENT DIRECTORY — so the
+    /// profile would have granted that directory recursively while <c>sandbox-exec</c> ran the real
+    /// binary from PATH. Resolving first fixes the common case; refusing an unresolvable value is what
+    /// stops the builder inventing a path when resolution fails.</para></summary>
+    [Test]
+    public async Task BuildProcessStartInfo_Copilot_BorrowedSnapshot_UnresolvableBinary_FailsClosed() {
+        var ctx = ReviewContext(["kcap-review"]) with {
+            Work = WorkLocation.OwnedWorktree, IsBorrowedSnapshot = true
+        };
+        var supported = CopilotBorrowedReviewPolicy.Resolve(
+            OSPlatform.OSX, Architecture.Arm64, sandboxAvailable: true, authBrokerAvailable: true);
+
+        var ex = Assert.Throws<InvalidOperationException>(() =>
+            AcpHostedAgentRuntimeFactory.BuildProcessStartInfo(
+                AcpVendorDescriptors.Copilot,
+                new DaemonConfig { CopilotPath = "/definitely/not/an/executable/copilot" },
+                ctx, supported, BrokeredEnv()));
+
+        await Assert.That(ex.Message).Contains("borrowed_review_vendor_binary_unresolved");
     }
 
     /// <summary>A nested borrowed cwd is sandboxed at the snapshot ROOT, not at the subdirectory the

@@ -27,11 +27,19 @@ internal static class BorrowedReviewSandbox {
     /// there is no launch that proceeds without the sandbox.</summary>
     internal static bool Available { get; } = File.Exists(SandboxExecPath);
 
-    /// <summary>Read-only system locations, none of which hold per-user data. <c>/Library</c> is
-    /// deliberately absent: probed as unnecessary, and <c>/Library/Application Support</c> alone makes
-    /// it a per-application data tree.</summary>
+    /// <summary>Read-only system locations, none of which hold per-user data.
+    ///
+    /// <para><c>/usr</c> is enumerated by subdirectory rather than granted whole, because
+    /// <c>/usr/local</c> is not sealed: it routinely holds an Intel Homebrew installation, global
+    /// package state and locally managed files. Granting <c>/usr</c> while removing
+    /// <c>/opt/homebrew</c> would have left the same gap by another route. <c>/Library</c> is
+    /// deliberately absent for the same reason — <c>/Library/Application Support</c> alone makes it a
+    /// per-application data tree — and both were probed as unnecessary.</para></summary>
     static IEnumerable<string> SystemReadPaths() {
-        yield return "/usr";
+        yield return "/usr/bin";
+        yield return "/usr/lib";
+        yield return "/usr/libexec";
+        yield return "/usr/share";
         yield return "/bin";
         yield return "/sbin";
         yield return "/System";
@@ -43,10 +51,11 @@ internal static class BorrowedReviewSandbox {
     /// <param name="stateRootPath">The per-launch vendor state directory backing <c>HOME</c> and
     /// <c>TMPDIR</c> — writable, and outside the snapshot so a per-round refresh neither wipes the
     /// running vendor's state nor presents that state to the reviewer as content under review.</param>
-    /// <param name="runtimeReadPaths">Read-only roots the vendor needs to start, from
+    /// <param name="runtime">Read-only grants the vendor needs to start, from
     /// <see cref="BorrowedReviewRuntimeRoots.Resolve"/>.</param>
     internal static string BuildProfile(
-            string snapshotPath, string stateRootPath, IReadOnlyList<string> runtimeReadPaths) {
+            string snapshotPath, string stateRootPath, BorrowedReviewRuntimeGrants runtime) {
+        var runtimeReadPaths = runtime.Directories;
         // A filesystem root here emits (subpath "/") and hands over the whole machine while the profile
         // still parses and every named-tree containment test stays green. The daemon-chosen paths throw
         // (a root there is an upstream bug worth surfacing); derived runtime roots are dropped, which
@@ -73,6 +82,12 @@ internal static class BorrowedReviewSandbox {
         foreach (var p in state)              sb.Append(Subpath(p));
         foreach (var p in SystemReadPaths())  sb.Append(Subpath(p));
         foreach (var p in runtimeReadPaths)   sb.Append(Subpath(p));
+        // Literals, not subpaths: these are individual config files whose directories hold adjacent
+        // secrets. Both forms are emitted because one of them is a symlink on a stock Homebrew.
+        foreach (var f in runtime.Files)      sb.Append(Literal(f));
+        foreach (var f in runtime.Files)
+            if (SandboxPaths.TryResolvePhysical(f) is { } resolvedFile && resolvedFile != f)
+                sb.Append(Literal(resolvedFile));
         sb.Append(')');
 
         sb.Append("(allow file-write*");
@@ -112,5 +127,6 @@ internal static class BorrowedReviewSandbox {
     // of its own (subpath "...") form and could re-grant the filesystem, so escape rather than trust
     // that daemon-owned paths are always tame.
     static string Subpath(string path) => $"(subpath \"{Escape(path)}\")";
+    static string Literal(string path) => $"(literal \"{Escape(path)}\")";
     static string Escape(string path)  => path.Replace("\\", "\\\\").Replace("\"", "\\\"");
 }

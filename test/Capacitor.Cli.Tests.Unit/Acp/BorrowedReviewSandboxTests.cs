@@ -19,7 +19,8 @@ public class BorrowedReviewSandboxTests {
 
     static string Profile(string snapshot = Snapshot, string stateRoot = StateRoot,
                           IReadOnlyList<string>? runtimeReads = null) =>
-        BorrowedReviewSandbox.BuildProfile(snapshot, stateRoot, runtimeReads ?? []);
+        BorrowedReviewSandbox.BuildProfile(
+            snapshot, stateRoot, new BorrowedReviewRuntimeGrants(runtimeReads ?? [], []));
 
     [Test]
     public async Task The_profile_denies_by_default_and_grants_the_snapshot() {
@@ -96,11 +97,17 @@ public class BorrowedReviewSandboxTests {
         await Assert.That(profile).DoesNotContain("(allow network*)");
     }
 
-    /// <summary>Unqualified <c>mach-lookup</c> was only ever needed to reach the keychain; brokered
-    /// authentication removed the reason, and a live run completed an authenticated <c>session/new</c>
-    /// without it.</summary>
+    /// <summary>The profile emits no <c>mach-lookup</c> grant of its own.
+    ///
+    /// <para><b>This is a statement about the generated string, not about reachable IPC, and the
+    /// distinction is load-bearing.</b> The imported <c>system.sb</c> re-grants broad XPC lookup, so
+    /// removing our own literal grant does NOT make securityd unreachable — an earlier revision of this
+    /// test implied it did. Probed: adding <c>(deny mach-lookup)</c> after the import kills the process
+    /// before it emits a frame, so the import cannot simply be closed. What actually keeps the keychain
+    /// out of reach is that the Security APIs still have to open the keychain FILE, which is denied —
+    /// asserted for real by <see cref="Enforcement_the_keychain_is_unreachable_through_securityd"/>.</para></summary>
     [Test]
-    public async Task The_profile_does_not_grant_unqualified_mach_lookup() {
+    public async Task The_profile_emits_no_mach_lookup_grant_of_its_own() {
         await Assert.That(Profile()).DoesNotContain("(allow mach-lookup)");
     }
 
@@ -151,7 +158,7 @@ public class BorrowedReviewSandboxTests {
     [Arguments(Snapshot, "/")]
     public async Task The_profile_refuses_to_be_drawn_at_a_filesystem_root(string snapshot, string stateRoot) {
         var ex = Assert.Throws<ArgumentException>(() =>
-            BorrowedReviewSandbox.BuildProfile(snapshot, stateRoot, []));
+            BorrowedReviewSandbox.BuildProfile(snapshot, stateRoot, BorrowedReviewRuntimeGrants.None));
 
         await Assert.That(ex.Message).Contains("filesystem root");
     }
@@ -275,6 +282,36 @@ public class BorrowedReviewSandboxTests {
             // `ls` on a granted directory exits 0; on a denied one it cannot open it and exits non-zero.
             await Assert.That(await RunUnderSandboxAsync(RealisticProfileFor(snapshot), "/bin/ls", directory))
                 .IsNull().Because($"a borrowed reviewer must not be able to enumerate {what}");
+        } finally {
+            Directory.Delete(snapshot, recursive: true);
+        }
+    }
+
+    /// <summary>The keychain is unreachable through securityd, not merely unreadable as a file.
+    ///
+    /// <para>This is the finding review pressed hardest and the one a <c>cat</c> on
+    /// <c>login.keychain-db</c> genuinely does not answer: the imported <c>system.sb</c> re-grants broad
+    /// XPC lookup, so the Security framework's IPC path to securityd stays open, and denying the
+    /// database file proves nothing about the API route. Probed: the API route fails anyway, because the
+    /// client side still has to open the keychain file — every call below returns a
+    /// <c>SecKeychain…: parameters were not valid</c> error rather than data.</para>
+    ///
+    /// <para><c>/usr/bin/security</c> is a real, unsandboxed-by-default consumer of those APIs and it
+    /// never asks permission, so it models the drifted vendor rather than a cooperative one.</para></summary>
+    [Test]
+    [Arguments("list-keychains")]
+    [Arguments("dump-keychain")]
+    public async Task Enforcement_the_keychain_is_unreachable_through_securityd(string subcommand) {
+        Skip.Unless(RuntimeInformation.IsOSPlatform(OSPlatform.OSX) && BorrowedReviewSandbox.Available,
+                    "needs macOS with sandbox-exec");
+        Skip.Unless(File.Exists("/usr/bin/security"), "needs /usr/bin/security");
+
+        var snapshot = Directory.CreateTempSubdirectory("kcap-sandbox-keychain").FullName;
+        try {
+            await Assert.That(await RunUnderSandboxAsync(
+                    RealisticProfileFor(snapshot), "/usr/bin/security", subcommand))
+                .IsNull()
+                .Because($"'security {subcommand}' must not reach the keychain through securityd");
         } finally {
             Directory.Delete(snapshot, recursive: true);
         }

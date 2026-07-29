@@ -318,10 +318,21 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
 
             stateRoot = WorktreeManager.VendorStateRootFor(snapshotRoot);
 
-            var profile = BorrowedReviewSandbox.BuildProfile(
-                snapshotRoot, stateRoot, BorrowedReviewRuntimeRoots.Resolve(binaryPath));
+            // Resolve through PATH before deriving grants, and spawn THAT path. The configured value
+            // defaults to a bare command name ("copilot"), which is not a path at all: deriving grants
+            // from it would resolve against the daemon's current directory and grant that directory
+            // recursively, while sandbox-exec separately executed the real binary from PATH. Resolving
+            // once and using the result for both the profile and the argv is what keeps "what is
+            // granted" and "what runs" the same program.
+            var vendorBinary = CliResolver.ResolveExecutable(binaryPath)
+                ?? throw new InvalidOperationException(
+                    $"borrowed_review_vendor_binary_unresolved: cannot resolve '{binaryPath}' to an "
+                  + "executable, so the sandbox cannot be drawn around it.");
 
-            argv       = [.. BorrowedReviewSandbox.WrapArgv(profile, binaryPath, argv)];
+            var profile = BorrowedReviewSandbox.BuildProfile(
+                snapshotRoot, stateRoot, BorrowedReviewRuntimeRoots.Resolve(vendorBinary));
+
+            argv       = [.. BorrowedReviewSandbox.WrapArgv(profile, vendorBinary, argv)];
             binaryPath = BorrowedReviewSandbox.SandboxExecPath;
         }
 

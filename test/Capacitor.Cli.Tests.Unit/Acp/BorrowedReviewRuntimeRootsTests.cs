@@ -32,7 +32,10 @@ public class BorrowedReviewRuntimeRootsTests {
             $"{root}/Cellar", $"{root}/Frameworks", $"{root}/share", $"{root}/include",
             $"{root}/etc", $"{root}/etc/openssl@3", $"{root}/etc/ca-certificates",
             $"{root}/etc/service-config", $"{root}/var", $"{root}/var/prometheus",
-            $"{root}/lib/node_modules/@vendor/tool"
+            $"{root}/lib/node_modules/@vendor/tool",
+            // The crypto LITERALS the resolver grants, plus a sibling secret it must not.
+            $"{root}/etc/openssl@3/openssl.cnf", $"{root}/etc/openssl@3/cert.pem",
+            $"{root}/etc/openssl@3/private/server.key", $"{root}/etc/ca-certificates/cert.pem"
         ];
 
         return path => present.Contains(Posix(path));
@@ -46,7 +49,11 @@ public class BorrowedReviewRuntimeRootsTests {
 
     static IReadOnlyList<string> Resolve(
             string binary, Func<string, bool> exists, string userHome = "/Users/nobody") =>
-        [.. BorrowedReviewRuntimeRoots.Resolve(binary, exists, userHome).Select(Posix)];
+        [.. BorrowedReviewRuntimeRoots.Resolve(binary, exists, userHome).Directories.Select(Posix)];
+
+    static IReadOnlyList<string> ResolveFiles(
+            string binary, Func<string, bool> exists, string userHome = "/Users/nobody") =>
+        [.. BorrowedReviewRuntimeRoots.Resolve(binary, exists, userHome).Files.Select(Posix)];
 
     static IReadOnlyList<string> Resolve(string binary, string prefixRoot) =>
         Resolve(binary, Prefix(prefixRoot));
@@ -56,8 +63,12 @@ public class BorrowedReviewRuntimeRootsTests {
         var roots = Resolve("/opt/hb/lib/node_modules/@vendor/tool/loader.js", "/opt/hb");
 
         foreach (var expected in new[] { "bin", "sbin", "lib", "libexec", "opt", "Cellar",
-                                         "Frameworks", "share", "include" })
+                                         "Frameworks", "include" })
             await Assert.That(roots).Contains($"/opt/hb/{expected}");
+
+        // NOT share: under a per-user prefix such as ~/.local that is the XDG application-data tree,
+        // not software payload. Probed as unnecessary for the vendor to start.
+        await Assert.That(roots).DoesNotContain("/opt/hb/share");
     }
 
     /// <summary>The whole point. <c>etc</c> and <c>var</c> are never granted as trees, and neither is
@@ -76,13 +87,46 @@ public class BorrowedReviewRuntimeRootsTests {
     /// <summary>The narrow exception, and it is load-bearing: a Homebrew Node reads
     /// <c>etc/openssl@3/openssl.cnf</c> before <c>main</c> and aborts with an OpenSSL configuration
     /// error without it. Probed — this was the last grant standing between the narrowed profile and a
-    /// vendor that would not start.</summary>
+    /// vendor that would not start.
+    ///
+    /// <para>Granted as individual FILES, not as their directories. An earlier revision granted
+    /// <c>etc/openssl@3</c> wholesale, which also admits <c>certs/</c>, <c>misc/</c> and by convention
+    /// <c>private/</c> — locally managed certificates and their keys. The fixture plants a
+    /// <c>private/server.key</c> so that regression cannot pass unnoticed.</para></summary>
     [Test]
-    public async Task Package_installed_crypto_config_is_granted_by_name() {
-        var roots = Resolve("/opt/hb/lib/node_modules/@vendor/tool/loader.js", "/opt/hb");
+    public async Task Package_installed_crypto_config_is_granted_as_files_not_directories() {
+        var binary = "/opt/hb/lib/node_modules/@vendor/tool/loader.js";
+        var files  = ResolveFiles(binary, Prefix("/opt/hb"));
+        var roots  = Resolve(binary, "/opt/hb");
 
-        await Assert.That(roots).Contains("/opt/hb/etc/openssl@3");
-        await Assert.That(roots).Contains("/opt/hb/etc/ca-certificates");
+        await Assert.That(files).Contains("/opt/hb/etc/openssl@3/openssl.cnf");
+        await Assert.That(files).Contains("/opt/hb/etc/ca-certificates/cert.pem");
+
+        // The containing directories are NOT granted, so the adjacent private key is unreachable.
+        await Assert.That(roots).DoesNotContain("/opt/hb/etc/openssl@3");
+        await Assert.That(roots).DoesNotContain("/opt/hb/etc/ca-certificates");
+        await Assert.That(files).DoesNotContain("/opt/hb/etc/openssl@3/private/server.key");
+    }
+
+    /// <summary>A bare command name grants nothing.
+    ///
+    /// <para>The severe route review found: every vendor path defaults to a bare command
+    /// (<c>"copilot"</c>), and <see cref="Path.GetFullPath(string)"/> resolves that against the DAEMON'S
+    /// CURRENT DIRECTORY — making that directory the package directory and granting it recursively,
+    /// while sandbox-exec separately executed the real binary from PATH. A daemon started from a source
+    /// checkout or a home directory would have handed the reviewer an unrelated tree with nothing in the
+    /// profile looking wrong. Callers now resolve through <c>CliResolver</c> first; this refuses the
+    /// class regardless.</para></summary>
+    [Test]
+    [Arguments("copilot")]
+    [Arguments("./copilot")]
+    [Arguments("bin/copilot")]
+    public async Task A_bare_or_relative_command_name_grants_nothing(string binary) {
+        var grants = BorrowedReviewRuntimeRoots.Resolve(binary, _ => true, userHome: "/Users/nobody");
+
+        await Assert.That(grants.Directories).IsEmpty()
+            .Because("a relative path would resolve against the daemon's current directory");
+        await Assert.That(grants.Files).IsEmpty();
     }
 
     [Test]
@@ -235,7 +279,7 @@ public class BorrowedReviewRuntimeRootsTests {
         const string binary = "/opt/homebrew/bin/copilot";
         Skip.Unless(File.Exists(binary), "Copilot CLI not installed on this host");
 
-        var roots    = BorrowedReviewRuntimeRoots.Resolve(binary);
+        var roots    = BorrowedReviewRuntimeRoots.Resolve(binary).Directories;
         var resolved = new FileInfo(binary).ResolveLinkTarget(returnFinalTarget: true)?.FullName ?? binary;
 
         await Assert.That(roots.Any(root =>
@@ -244,5 +288,6 @@ public class BorrowedReviewRuntimeRootsTests {
             .Because($"no resolved runtime root covers the real program at {resolved}");
         await Assert.That(roots).DoesNotContain("/opt/homebrew/var");
         await Assert.That(roots).DoesNotContain("/opt/homebrew/etc");
+        await Assert.That(roots).DoesNotContain("/opt/homebrew/share");
     }
 }
