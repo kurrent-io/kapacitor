@@ -352,10 +352,22 @@ public class FlowsDriverSchemaConformanceTests {
 
     // The two bundled static files are not written by an installer — Claude Code and Codex's native
     // plugin loader read them straight from the package — so they get their own arm.
+    /// <summary>The bundled static configs, kept as a list rather than inline [Arguments] so the
+    /// coverage assertion below can see them. Qodo flagged that "Codex" and "Codex plugin" both
+    /// reduce to --codex in the tripwire, so deleting the plugin arm left --codex green while one of
+    /// two INDEPENDENT Codex registration mechanisms went untested.</summary>
+    static readonly (string File, string Harness)[] BundledConfigs = [
+        (".mcp.json",       "Claude Code"),
+        (".codex-mcp.json", "Codex plugin"),
+    ];
+
+    public static IEnumerable<Func<(string File, string Harness)>> Bundled() =>
+        BundledConfigs.Select(b => (Func<(string, string)>)(() => b));
+
     [Test]
-    [Arguments(".mcp.json",       "Claude Code")]
-    [Arguments(".codex-mcp.json", "Codex plugin")]
-    public async Task Every_bundled_config_names_the_same_flows_server(string file, string harness) {
+    [MethodDataSource(nameof(Bundled))]
+    public async Task Every_bundled_config_names_the_same_flows_server((string File, string Harness) bundled) {
+        var (file, harness) = bundled;
         var p = Json(harness, "mcpServers")(Path.Combine(RepoKcapDir(), file));
 
         await Assert.That(p.Command).IsEqualTo(KcapMcpServers.Command);
@@ -433,6 +445,18 @@ public class FlowsDriverSchemaConformanceTests {
         } finally {
             dir.Delete(recursive: true);
         }
+    }
+
+    // Deleting a bundled arm can no longer go unnoticed: the covered set is compared against what is
+    // actually shipped in kcap/. A third bundled config, or a deleted arm, fails here.
+    [Test]
+    public async Task Every_bundled_mcp_config_shipped_in_the_package_is_covered() {
+        var shipped = Directory.EnumerateFiles(RepoKcapDir())
+            .Select(Path.GetFileName)
+            .Where(f => f!.EndsWith("mcp.json", StringComparison.Ordinal))
+            .ToArray();
+
+        await Assert.That(BundledConfigs.Select(b => b.File)).IsEquivalentTo(shipped);
     }
 
     // The projection list must cover exactly the JSON harnesses the installer table drives — no more,
