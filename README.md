@@ -473,13 +473,18 @@ A Copilot reviewer can read your working tree — uncommitted and untracked chan
 | **`sandbox-exec` present** | The reviewer process is confined to the snapshot. A host that cannot enforce that gets no borrowed review rather than an unconfined one. |
 | **A brokered token** in the daemon's environment — `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, or `GITHUB_TOKEN` | The sandbox deliberately does **not** grant your login keychain, so the reviewer authenticates from a token the daemon passes through. `kcap` never reads, stores, or prompts for one. |
 
+The token must be in the environment of the **daemon process itself** — not merely in the shell you start a review from. For a daemon you run yourself:
+
 ```bash
-# make a token available to the daemon before starting it
-export GH_TOKEN="$(gh auth token)"
-kcap daemon
+export GH_TOKEN="$(gh auth token)"   # or COPILOT_GITHUB_TOKEN / GITHUB_TOKEN
+kcap daemon start -d
 ```
 
-With any of the three missing, a Copilot borrowed request is refused up front with `vendor_containment_unreadable` naming the daemon and the remedies, and `mode="context-only"` still works. Nothing silently falls back to reviewing a stale committed base.
+> **A daemon installed with `kcap daemon service install` does NOT pick this up.** That command captures only a fixed set of variables into the OS service unit (`PATH`, `KCAP_PROFILE`, `KCAP_URL`, `KCAP_CONFIG_DIR`, `KCAP_CLAUDE_PATH`, `KCAP_CODEX_PATH`) — deliberately not credentials, since the unit file is written to disk. So a supervised daemon advertises no borrowed Copilot review, and every borrowed request is refused exactly as if the platform were unsupported.
+>
+> That is the honest current state rather than a recommendation: if you want borrowed Copilot review today, run the daemon yourself with the token exported. Injecting a credential into a launchd plist or systemd unit by hand works, but those files are world-readable by default — `chmod 600` them if you do, and prefer a short-lived token.
+
+With any of the three requirements missing, a Copilot borrowed request is refused up front with `vendor_containment_unreadable` naming the daemon and the remedies, and `mode="context-only"` still works. Nothing silently falls back to reviewing a stale committed base.
 
 The sandbox also gives the reviewer a **fresh, per-launch `HOME` and `TMPDIR`**, so it never sees your prior Copilot sessions, command history, or caches, and its own state is discarded when the review ends.
 
@@ -646,6 +651,8 @@ kcap daemon service uninstall              # stop and remove the service
 ```
 
 `install` pins the active profile via `KCAP_PROFILE` and captures your current `PATH` into the unit, so the supervised daemon resolves the same server URL, `claude`/`codex` binaries, and profile settings it would from your shell. Pass `--profile P` to pin a different profile, `--max-agents N` to bake an override, or `--no-start` to register without starting. The service restarts the daemon on crash/`SIGKILL` but **not** on a clean stop.
+
+The captured set is a fixed allowlist — `PATH`, `KCAP_PROFILE`, `KCAP_URL`, `KCAP_CONFIG_DIR`, `KCAP_CLAUDE_PATH`, `KCAP_CODEX_PATH` — and **nothing else from your shell reaches the service**, credentials included, because the unit file lands on disk. The one feature this currently costs is [borrowed-context Copilot review](#borrowed-context-copilot-reviews), which needs a token in the daemon's own environment and therefore only works on a daemon you start yourself.
 
 Because the service auto-restarts, stop a service-managed daemon with `kcap daemon service stop` (or `uninstall`) rather than `kcap daemon stop` — a raw stop would be relaunched immediately. `kcap daemon status` and `kcap daemon doctor` both report installed services.
 
