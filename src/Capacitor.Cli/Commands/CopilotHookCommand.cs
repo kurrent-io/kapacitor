@@ -3,6 +3,7 @@ using System.Text.Json.Nodes;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.Core.Copilot;
+using Capacitor.Cli.SessionStartMemory;
 
 namespace Capacitor.Cli.Commands;
 
@@ -34,9 +35,88 @@ namespace Capacitor.Cli.Commands;
 ///   notification → best-effort forward to the Claude-shaped /hooks/notification
 ///                  (Copilot's payload already carries message / title /
 ///                  notification_type in the compatible shape).
-/// Copilot treats hook stdout as optional, so this dispatcher emits nothing.
+/// Copilot treats hook stdout as optional. This dispatcher emits nothing for every event except
+/// sessionStart, which writes a single {"additionalContext":"…"} document when — and only when —
+/// a team-memory fragment is available to inject.
 /// </remarks>
 static class CopilotHookCommand {
+    /// <summary>
+    /// Writes the SessionStart memory envelope — and ONLY when there is something to inject.
+    ///
+    /// <para><b>Silence on no fragment is deliberate.</b> Copilot's <c>sessionStart</c> hook writes
+    /// nothing to stdout today and that is a working contract, so every no-memory path (opt-out,
+    /// exclusion, provider failure, budget exhaustion, ineligible source) stays byte-identical to
+    /// current behaviour rather than newly emitting <c>{}</c>. Emitting an empty object on paths that
+    /// never produced output would be an unforced change to the hook's wire behaviour for no gain —
+    /// the same reasoning applied to Codex's minimal handshake, and it matches the shared adapter's
+    /// own precedent of rendering empty output for Claude's no-fragment case.</para>
+    ///
+    /// <para>The payload is serialized before the first byte is written, so a renderer fault degrades
+    /// to silence rather than emitting a partial document — Copilot parses stdout as exactly one JSON
+    /// object.</para>
+    /// </summary>
+    internal static void WriteSessionStartOutput(TextWriter writer, string? fragment) {
+        if (fragment is null) return;
+
+        string payload;
+
+        try {
+            payload = SessionStartMemoryOutputAdapters.Render(SessionStartHarness.Copilot, fragment);
+        } catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException) {
+            return;
+        }
+
+        writer.Write(payload);
+    }
+
+    /// <summary>
+    /// Starts the shared memory fetch so it overlaps the lifecycle POST. Returns a task that never
+    /// faults — every failure resolves to null, which the writer renders as silence.
+    ///
+    /// <para><b>Scope safety:</b> the git root discovered from Copilot's payload <c>cwd</c> is
+    /// preferred and the cwd is the fallback; with neither, injection is skipped rather than letting
+    /// the shared resolver fall back to the hook PROCESS's cwd and inject an unrelated repository's
+    /// memories.</para>
+    ///
+    /// <para><b>Eligibility:</b> callers reach this only for a real UUID <c>sessionStart</c> (the
+    /// dispatcher drops tool-call-id subagent firings) and only for a non-excluded, enabled session.
+    /// Copilot DOES report a lifecycle <c>source</c> (<c>startup</c>/<c>new</c>/<c>resume</c>), so the
+    /// reason is mapped from it rather than assumed; re-injection across a resume of the same session
+    /// id is prevented by the shared lease keyed on (harness, session id).</para>
+    /// </summary>
+    static Task<string?> StartMemoryIndexTask(
+            string     baseUrl,
+            string     sessionId,
+            string?    scopeRoot,
+            string?    source,
+            bool       disabled,
+            TimeSpan   budget,
+            Func<string?, CancellationToken, Task<HttpClient>>? memoryClientFactory,
+            Func<SessionStartMemoryLeaseStore>?                 memoryStoreFactory) {
+        if (disabled || string.IsNullOrWhiteSpace(sessionId) || string.IsNullOrWhiteSpace(scopeRoot)
+         || budget <= TimeSpan.Zero
+         || !SessionStartMemoryHookSupport.CanAttempt(baseUrl))
+            return Task.FromResult<string?>(null);
+
+        try {
+            var store = memoryStoreFactory?.Invoke() ?? new SessionStartMemoryLeaseStore();
+            var provider = new SessionStartMemoryContextProvider(
+                new SessionStartMemoryScopeResolver(),
+                memoryClientFactory ?? SessionStartMemoryHookSupport.ClientFactory(baseUrl),
+                // Only clients we created are ours to dispose; an injected factory's client belongs
+                // to its caller and may be handed back again on the 401-refresh call.
+                disposeClients: memoryClientFactory is null);
+
+            return new SessionStartMemoryOrchestrator(store, provider).GetFragmentAsync(
+                new SessionMemoryLifecycle(SessionStartHarness.Copilot, sessionId, LifecycleInstanceId: null,
+                    IsTopLevel: true, ClassificationAuthoritative: true,
+                    SessionStartMemoryHookSupport.ReasonFor(source), CallbackMayRepeat: false),
+                new SessionStartMemoryContextRequest(baseUrl, scopeRoot, disabled, budget, CancellationToken.None));
+        } catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException) {
+            return Task.FromResult<string?>(null);
+        }
+    }
+
     // Mirror of ClaudeHookCommand.PreHookDrainCap: Copilot kills the
     // sessionEnd hook at its configured timeout (default 30s, but kcap.json
     // entries set 30 and users can lower it) — the drain must never starve the
@@ -47,7 +127,13 @@ static class CopilotHookCommand {
     // Copilot's turn loop. Single budget covers auth discovery + POST.
     static readonly TimeSpan NotificationPostBudget = TimeSpan.FromSeconds(2);
 
-    public static async Task<int> Handle(string baseUrl, TextReader stdin, string[] args) {
+    /// <param name="processStart">Monotonic hook-start stamp anchoring every budget computation;
+    /// defaults to now. Tests pass an older stamp to drive the budget-exhausted branch without sleeping.</param>
+    public static async Task<int> Handle(string baseUrl, TextReader stdin, string[] args,
+            long processStart = 0,
+            Func<string?, CancellationToken, Task<HttpClient>>? memoryClientFactory = null,
+            Func<SessionStartMemoryLeaseStore>?                 memoryStoreFactory  = null) {
+        var ps        = processStart == 0 ? System.Diagnostics.Stopwatch.GetTimestamp() : processStart;
         var eventName = GetArg(args, "--event");
 
         if (string.IsNullOrWhiteSpace(eventName)) {
@@ -114,7 +200,8 @@ static class CopilotHookCommand {
         }
 
         return eventName switch {
-            "sessionStart" => await HandleSessionStart(baseUrl, node, dashedSessionId, sessionId, cwd, activeProfile, spool),
+            "sessionStart" => await HandleSessionStart(baseUrl, node, dashedSessionId, sessionId, cwd, activeProfile, spool,
+                                  ps, memoryClientFactory, memoryStoreFactory),
             "sessionEnd"   => await HandleSessionEnd(baseUrl, node, dashedSessionId, sessionId, cwd),
             "agentStop"    => await HandleAgentStop(baseUrl, node, dashedSessionId, sessionId, cwd),
             "notification" => await HandleNotification(baseUrl, node, sessionId, cwd),
@@ -129,7 +216,10 @@ static class CopilotHookCommand {
             string    sessionId,
             string?   cwd,
             Profile?  activeProfile,
-            HookSpool spool
+            HookSpool spool,
+            long                                                processStart        = 0,
+            Func<string?, CancellationToken, Task<HttpClient>>? memoryClientFactory = null,
+            Func<SessionStartMemoryLeaseStore>?                 memoryStoreFactory  = null
         ) {
         var source = TryGetString(node, "source") is { Length: > 0 } s ? s : "startup";
 
@@ -178,12 +268,32 @@ static class CopilotHookCommand {
             return 0;
         }
 
+        // Start the team-memory fetch BEFORE the lifecycle POST so the two overlap; awaited
+        // (budget-capped) after it, immediately before this hook's only stdout write. Started after
+        // the exclusion/disabled early-outs above so an excluded repo never reaches the memory
+        // subsystem. The git root stamped onto the forwarded payload is the preferred scope; cwd is
+        // the fallback (never a process-cwd fallback — see StartMemoryIndexTask).
+        var memoryTask = StartMemoryIndexTask(
+            baseUrl, sessionId,
+            TryGetString(JsonNode.Parse(enriched), "workspace_root") ?? cwd,
+            source,
+            AppConfig.ResolvedProfile?.Profile?.DisableMemoryIndex is true,
+            HookBudget.Remaining(processStart, "session-start") - HookBudget.Safety,
+            memoryClientFactory, memoryStoreFactory);
+
         // Spawn-before-post: capture must start on Posted OR Spooled (auth lapse /
         // outage) — a doomed/delayed lifecycle POST must never withhold the watcher. Only a
         // permanent failure keeps the prior non-zero exit and skips the watcher.
         var outcome = await AgentHookPoster.PostOrSpoolAsync(
             baseUrl, "session-start/copilot", enriched, "copilot-hook",
             spool, sessionId, route: "session-start/copilot");
+
+        // Copilot parses this hook's stdout as its (optional) single JSON result document, so the
+        // envelope is written on every post-POST exit — including the no-watcher one, where the
+        // recording outcome must not decide whether the model gets its memory index. Silent when
+        // there is no fragment, which keeps all pre-existing paths byte-identical.
+        WriteSessionStartOutput(Console.Out,
+            await SessionStartMemoryHookSupport.AwaitBounded(memoryTask, processStart, "session-start"));
 
         if (!AgentHookPoster.ShouldSpawnAfter(outcome)) return outcome == HookPostOutcome.Failed ? 1 : 0;
 
