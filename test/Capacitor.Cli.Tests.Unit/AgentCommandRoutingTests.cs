@@ -88,4 +88,18 @@ public class AgentCommandRoutingTests {
         await Assert.That(name).IsNull();
         await Assert.That(error).IsNotNull();
     }
+
+    [Test]
+    public async Task Protected_agents_are_partitioned_out_for_the_confirmation_prompt() {
+        AgentRow[] agents = [
+            new("a1", "Running", "/r1", "agent", "", ""),
+            new("f1", "Running", "/r2", "review-flow", "flow-7f3a", "reviewer"),
+            new("v1", "Running", "/r3", "review", "", ""),
+        ];
+
+        var (stoppable, prot) = AgentCommand.PartitionByProtection(agents);
+
+        await Assert.That(stoppable).IsEquivalentTo(new[] { "a1" });
+        await Assert.That(prot).IsEquivalentTo(new[] { "f1", "v1" });
+    }
 }

@@ -469,6 +469,7 @@ public partial class AgentOrchestratorVendorTests {
     }
 
     [Test]
+    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task Local_socket_list_round_trips_registered_agents_over_a_real_socket() {
         if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
 
@@ -513,6 +514,70 @@ public partial class AgentOrchestratorVendorTests {
             DaemonLockPaths.OverrideDirectoryForTesting(null);
             try { Directory.Delete(sockDir.FullName, true); } catch { /* best-effort */ }
         }
+    }
+
+    /// <summary>
+    /// Pins the one hop nothing else exercises: <see cref="LocalControlServer"/> decoding a raw
+    /// StopV2 frame off a real socket and forwarding its force flag to the orchestrator. The codec
+    /// round-trip (FrameCodecTests) and the handler (StopV2AndReadReply above) are each covered in
+    /// isolation; only a real connection proves the server's frame switch wires them together.
+    /// </summary>
+    static async Task<LocalFrame?> StopV2OverRealSocketAsync(string daemonName, bool force, string agentId) {
+        var sockDir = Directory.CreateTempSubdirectory("kcap-sock-");
+        DaemonLockPaths.OverrideDirectoryForTesting(sockDir.FullName);
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+
+        LocalControlServer? listener = null;
+        AgentOrchestrator?  orch     = null;
+
+        try {
+            orch = BuildOrchestrator(new TripwireServerConnection(), new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>());
+            orch.SeedAgentForTest("flow-1", kind: LaunchKind.ReviewFlow, flowRunId: "flow-7f3a", flowRole: "reviewer");
+
+            var config = new DaemonConfig { Name = daemonName, ServerUrl = "http://127.0.0.1:1" };
+            listener = new LocalControlServer(config, orch, TestCoordinator(), NullLogger<LocalControlServer>.Instance);
+            await listener.StartAsync(cts.Token);
+
+            var sockPath = LocalSocketPaths.Socket(daemonName);
+            var deadline = DateTime.UtcNow.AddSeconds(5);
+            while (!File.Exists(sockPath) && DateTime.UtcNow < deadline) await Task.Delay(20, cts.Token);
+            await Assert.That(File.Exists(sockPath)).IsTrue();
+
+            using var sock = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
+            await sock.ConnectAsync(new UnixDomainSocketEndPoint(sockPath), cts.Token);
+            await using var stream = new NetworkStream(sock, ownsSocket: false);
+
+            await FrameCodec.WriteAsync(stream, LocalFrame.StopV2(force, agentId), cts.Token);
+
+            return await FrameCodec.ReadAsync(stream, cts.Token);
+        } finally {
+            if (orch is not null) await orch.DisposeAsync();
+            if (listener is not null) { await listener.StopAsync(CancellationToken.None); listener.Dispose(); }
+            DaemonLockPaths.OverrideDirectoryForTesting(null);
+            try { Directory.Delete(sockDir.FullName, true); } catch { /* best-effort */ }
+        }
+    }
+
+    [Test]
+    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
+    public async Task Local_socket_stopv2_without_force_refuses_a_protected_agent_end_to_end() {
+        if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
+
+        var resp = await StopV2OverRealSocketAsync("test-stopv2-refuse", force: false, "flow-1");
+
+        await Assert.That(resp!.Type).IsEqualTo(FrameType.Error);
+        await Assert.That(resp.Text).Contains("--force");
+    }
+
+    [Test]
+    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
+    public async Task Local_socket_stopv2_with_force_stops_a_protected_agent_end_to_end() {
+        if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
+
+        var resp = await StopV2OverRealSocketAsync("test-stopv2-force", force: true, "flow-1");
+
+        await Assert.That(resp!.Type).IsEqualTo(FrameType.StopAck);
+        await Assert.That(resp.Text).IsEqualTo("flow-1\tstopped");
     }
 
     [Test]

@@ -124,6 +124,7 @@ internal static class AgentCommand {
     static async Task<int> StopAsync(string[] args) {
         var all = args.Contains("--all");
         var yes = args.Contains("--yes") || args.Contains("-y");
+        var force = args.Contains("--force");
         var hasId = args.Length > 0 && !args[0].StartsWith('-');
 
         if (all && hasId) {
@@ -133,8 +134,8 @@ internal static class AgentCommand {
         }
 
         if (!all && !hasId) {
-            await Console.Error.WriteLineAsync("usage: kcap agent stop <agent-id> [--daemon <name>]");
-            await Console.Error.WriteLineAsync("       kcap agent stop --all [-y] [--daemon <name>]");
+            await Console.Error.WriteLineAsync("usage: kcap agent stop <agent-id> [--force] [--daemon <name>]");
+            await Console.Error.WriteLineAsync("       kcap agent stop --all [-y] [--force] [--daemon <name>]");
 
             return 1;
         }
@@ -167,11 +168,28 @@ internal static class AgentCommand {
                 return 0;
             }
 
-            Console.WriteLine($"Found {agents.Count} agents:");
-            foreach (var a in agents) Console.WriteLine($"  • {a.Id}  {a.Repo}");
+            var (stoppable, protectedIds) = PartitionByProtection(agents);
+            var targets = force ? agents.Select(a => a.Id).ToArray() : stoppable;
+
+            if (targets.Length == 0) {
+                Console.WriteLine(protectedIds.Length > 0
+                    ? $"No agents to stop. {protectedIds.Length} review agent(s) skipped — pass --force to include them."
+                    : "No agents.");
+
+                return 0;
+            }
+
+            Console.WriteLine($"Found {targets.Length} agents:");
+            foreach (var a in agents.Where(a => targets.Contains(a.Id))) Console.WriteLine($"  • {a.Id}  {a.Repo}");
+
+            if (!force && protectedIds.Length > 0) {
+                Console.WriteLine($"Skipping {protectedIds.Length} review agent(s) — pass --force to include them:");
+                foreach (var a in agents.Where(a => protectedIds.Contains(a.Id)))
+                    Console.WriteLine($"  • {a.Id}  {a.Kind}  {a.Repo}");
+            }
 
             if (!yes) {
-                await Console.Out.WriteAsync($"Stop all {agents.Count}? [y/N] ");
+                await Console.Out.WriteAsync($"Stop {targets.Length}? [y/N] ");
                 var reply = await Console.In.ReadLineAsync();
 
                 if (!string.Equals(reply?.Trim(), "y", StringComparison.OrdinalIgnoreCase)) {
@@ -189,51 +207,54 @@ internal static class AgentCommand {
             target = resolved;
         }
 
-        return await SendStopAsync(sock, target, name);
+        return await SendStopAsync(sock, target, name, force);
     }
 
-    static async Task<int> SendStopAsync(string sock, string agentId, string daemonName) {
+    static async Task<int> SendStopAsync(string sock, string agentId, string daemonName, bool force) {
         try {
             using var socket = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
             await socket.ConnectAsync(new UnixDomainSocketEndPoint(sock));
             await using var stream = new NetworkStream(socket, ownsSocket: false);
 
-            await FrameCodec.WriteAsync(stream, LocalFrame.Stop(agentId), default);
+            await FrameCodec.WriteAsync(stream, LocalFrame.StopV2(force, agentId), default);
             var resp = await FrameCodec.ReadAsync(stream, default);
 
             switch (resp?.Type) {
                 case FrameType.StopAck:
-                    if (resp.Text.Length == 0) {
-                        Console.WriteLine("No agents.");
+                    string[] lines = resp.Text.Length == 0 ? [] : resp.Text.Split('\n');
+                    if (lines.Length == 0) { Console.WriteLine("No agents."); return 0; }
 
-                        return 0;
-                    }
-
-                    var lines     = resp.Text.Split('\n');
-                    var anyFailed = false;
+                    var failed  = 0;
+                    var skipped = 0;
 
                     foreach (var line in lines) {
-                        var parts = line.Split('\t');
-                        var id    = parts[0];
+                        var parts  = line.Split('\t');
+                        var id     = parts[0];
+                        var status = parts.Length > 1 ? parts[1] : "failed";
 
-                        if (parts is [_, "stopped"]) {
-                            Console.WriteLine($"Stopped {id}.");
-                        } else {
-                            Console.WriteLine($"Failed to stop {id} — see `kcap daemon logs`.");
-                            anyFailed = true;
+                        switch (status) {
+                            case "stopped": Console.WriteLine($"Stopped {id}."); break;
+                            case "skipped": Console.WriteLine($"Skipped {id} — review agent; pass --force to stop it."); skipped++; break;
+                            default:        Console.Error.WriteLine($"Failed to stop {id} — see `kcap daemon logs`."); failed++; break;
                         }
                     }
 
-                    return anyFailed ? 1 : 0;
+                    if (skipped > 0)
+                        Console.WriteLine($"{skipped} review agent(s) left running — pass --force to stop them.");
+
+                    // Skipping is the documented default, not a failure, so it does not affect
+                    // the exit code.
+                    return failed > 0 ? 1 : 0;
                 case FrameType.Error:
                     await Console.Error.WriteLineAsync($"kcap: {resp.Text}");
 
                     return 1;
                 case null:
-                    // An older daemon can't decode frame type 8: it faults before its frame
-                    // switch and closes without replying, so we see a clean EOF. `--force` is
-                    // the only restart mode that bypasses the busy check, and this daemon is
-                    // guaranteed busy — the agent we're trying to stop is still running.
+                    // An older daemon can't decode frame type 10 (StopV2): it faults before its
+                    // frame switch and closes without replying, so we see a clean EOF. `--force`
+                    // here is the restart flag, not the stop flag — this daemon is guaranteed
+                    // busy since the stop it never understood never ran, so `restart` needs its
+                    // own override to proceed.
                     await Console.Error.WriteLineAsync(
                         $"kcap: this daemon is too old for `agent stop` — restart it with `kcap daemon restart --force --name {daemonName}`");
 
@@ -427,6 +448,12 @@ internal static class AgentCommand {
     /// Kinds the CLI refuses to mutate by accident: a reviewer mid-round is not the user's to
     /// type at or stop. Mirrors LaunchKind — anything that is not a plain agent is protected.
     internal static bool IsProtectedKind(string kind) => kind is "review" or "review-flow";
+
+    /// <summary>Splits an agent list into what `stop --all` will stop and what it will skip.</summary>
+    internal static (string[] Stoppable, string[] Protected) PartitionByProtection(IReadOnlyList<AgentRow> agents) => (
+        [.. agents.Where(a => !IsProtectedKind(a.Kind)).Select(a => a.Id)],
+        [.. agents.Where(a => IsProtectedKind(a.Kind)).Select(a => a.Id)]
+    );
 
     /// <summary>Tolerates a short row from an older daemon by defaulting the newer columns.</summary>
     internal static AgentRow ParseAgentRow(string line) {
