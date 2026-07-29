@@ -25,6 +25,12 @@ public sealed record HarnessMcpProjection(
 
     public JsonMcpConfigWriter.Change Unregister(string configPath) =>
         JsonMcpConfigWriter.Unregister(configPath, Shape, new McpMarker(Harness));
+
+    /// <summary>Whether kcap currently owns any entry in this harness's config — the "is the MCP
+    /// half already installed?" probe. Here rather than at the call site for the same reason as the
+    /// marker itself: a probe reading a DIFFERENT ownership tuple than the writer would report an
+    /// existing install as absent, and the refresh path would then skip it.</summary>
+    public bool OwnsAnything(string configPath) => new McpMarker(Harness).Owned(configPath).Any();
 }
 
 /// <summary>The JSON-config harnesses, and the single definition of what each one gets.

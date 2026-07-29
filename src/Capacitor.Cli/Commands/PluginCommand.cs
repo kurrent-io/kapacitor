@@ -762,7 +762,7 @@ public static class PluginCommand {
         // Cursor is user-scope only (no --project split like Codex), so the kcap MCP
         // entries are always unregistered here, independent of whether hooks.json
         // existed — the two files are unrelated on disk.
-        var mcpChange = JsonMcpConfigWriter.Unregister(env.CursorMcpJson, McpConfigShape.Standard, new McpMarker("cursor"));
+        var mcpChange = HarnessMcpProjections.Cursor.Unregister(env.CursorMcpJson);
         var mcpFailed = mcpChange == JsonMcpConfigWriter.Change.Failed;
 
         if (mcpChange == JsonMcpConfigWriter.Change.Updated) {
@@ -1107,7 +1107,7 @@ public static class PluginCommand {
 
         // MCP servers live in a separate file (~/.config/opencode/opencode.json) — unregister
         // regardless (Unregister owns the ownership-marker cleanup and no-ops when the file is absent).
-        var mcpChange = JsonMcpConfigWriter.Unregister(env.OpenCodeMcpConfigJson, McpConfigShape.OpenCode, new McpMarker("opencode"));
+        var mcpChange = HarnessMcpProjections.OpenCode.Unregister(env.OpenCodeMcpConfigJson);
         var mcpFailed = mcpChange == JsonMcpConfigWriter.Change.Failed;
 
         if (mcpChange == JsonMcpConfigWriter.Change.Updated) {
@@ -1261,7 +1261,7 @@ public static class PluginCommand {
 
         // MCP servers live in a separate mcp_config.json — unregister regardless (Unregister owns the
         // ownership-marker cleanup and no-ops when the file is absent).
-        var mcpChange = JsonMcpConfigWriter.Unregister(env.AntigravityMcpConfigJson, McpConfigShape.Standard, new McpMarker("antigravity"));
+        var mcpChange = HarnessMcpProjections.Antigravity.Unregister(env.AntigravityMcpConfigJson);
         var mcpFailed = mcpChange == JsonMcpConfigWriter.Change.Failed;
 
         if (mcpChange == JsonMcpConfigWriter.Change.Updated) {
@@ -1437,7 +1437,7 @@ public static class PluginCommand {
         // unregister them independently of whether the hooks file existed. Unregister owns
         // the ownership-marker cleanup: it clears the marker on any non-Failed outcome and
         // retains it on Failed so a retry can still identify the kcap-owned entries.
-        var mcpChange = JsonMcpConfigWriter.Unregister(env.CopilotMcpConfigJson, McpConfigShape.Copilot, new McpMarker("copilot"));
+        var mcpChange = HarnessMcpProjections.Copilot.Unregister(env.CopilotMcpConfigJson);
         var mcpFailed = mcpChange == JsonMcpConfigWriter.Change.Failed;
 
         if (mcpChange == JsonMcpConfigWriter.Change.Updated) {
@@ -1524,7 +1524,7 @@ public static class PluginCommand {
         // Kiro's MCP lives in a SEPARATE file (~/.kiro/settings/mcp.json), independent of the agent
         // clone — so a prior `--skip-kiro-hooks` (or a clone that failed because kiro-cli was missing)
         // can leave an MCP-only install with no agent marker.
-        var mcpInstalled = new McpMarker("kiro").Owned(mcpPath).Any();
+        var mcpInstalled = HarnessMcpProjections.Kiro.OwnsAnything(mcpPath);
 
         if (refreshOnly) {
             // Never touch a machine that never opted in (neither hooks nor MCP).
@@ -1645,7 +1645,7 @@ public static class PluginCommand {
 
         // MCP servers live in a separate settings/mcp.json — unregister independently of the agent
         // restore/removal (Unregister owns the ownership-marker cleanup and no-ops when absent).
-        var mcpChange = JsonMcpConfigWriter.Unregister(mcpPath, McpConfigShape.Standard, new McpMarker("kiro"));
+        var mcpChange = HarnessMcpProjections.Kiro.Unregister(mcpPath);
         var mcpFailed = mcpChange == JsonMcpConfigWriter.Change.Failed;
 
         if (mcpChange == JsonMcpConfigWriter.Change.Updated) {
@@ -2034,7 +2034,7 @@ public static class PluginCommand {
         // leave a STALE marker that could later misclassify a user-authored mcpServers.kcap-* entry as
         // kcap-owned. On an absent file it's a no-op (Unchanged) that still clears the marker and
         // never creates a config file.
-        var mcpChange = JsonMcpConfigWriter.Unregister(settingsPath, McpConfigShape.Gemini, new McpMarker("gemini"));
+        var mcpChange = HarnessMcpProjections.Gemini.Unregister(settingsPath);
         mcpFailed = mcpChange == JsonMcpConfigWriter.Change.Failed;
 
         if (mcpChange == JsonMcpConfigWriter.Change.Updated) {

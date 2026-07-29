@@ -408,6 +408,33 @@ public class FlowsDriverSchemaConformanceTests {
         await Assert.That(flows.ReadOnly).IsFalse();
     }
 
+    // Install/uninstall must read the SAME ownership tuple. Codex review round 3: the projection was
+    // added and consumed by the register paths only — the six remove paths and Kiro's "is the MCP half
+    // already installed?" probe still hard-coded shape and marker names. So changing a projection made
+    // new installs write under one ownership tuple while uninstall looked under the old one (stranding
+    // owned entries) and Kiro's refresh read an existing install as absent. Round-trip per harness.
+    [Test]
+    [MethodDataSource(nameof(Projections))]
+    public async Task A_registered_harness_config_is_fully_unregistered_again(HarnessMcpProjection projection) {
+        var dir  = Scratch($"roundtrip-{projection.Harness}-");
+        var path = Path.Combine(dir.FullName, "config.json");
+        try {
+            projection.Register(path, cwd: "/repo");
+            await Assert.That(projection.OwnsAnything(path)).IsTrue()
+                .Because("the probe must see what the writer just wrote");
+
+            projection.Unregister(path);
+
+            await Assert.That(projection.OwnsAnything(path)).IsFalse();
+            var root = (JsonObject)JsonNode.Parse(File.ReadAllText(path))!;
+            var left = (root[projection.Shape.BlockKey] as JsonObject)?.Count ?? 0;
+            await Assert.That(left).IsEqualTo(0)
+                .Because($"{projection.Harness} stranded kcap entries that uninstall could not see");
+        } finally {
+            dir.Delete(recursive: true);
+        }
+    }
+
     // The projection list must cover exactly the JSON harnesses the installer table drives — no more,
     // no fewer. A harness added to one and not the other is the same divergence in a new place.
     [Test]
