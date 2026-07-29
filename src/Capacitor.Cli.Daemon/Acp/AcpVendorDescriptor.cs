@@ -25,7 +25,28 @@ internal enum AcpUnattendedInteractionPolicy {
 }
 
 /// <summary>The security boundary used to serve borrowed-checkout context without exposing the
-/// caller's live checkout to an unattended reviewer.</summary>
+/// caller's live checkout to an unattended reviewer.
+///
+/// <para><b>These are not interchangeable labels, and the difference bit this feature once.</b> The
+/// token is reported to the server, which routes on it, so what each one PROMISES has to be stated
+/// rather than inferred from the name:</para>
+///
+/// <list type="bullet">
+/// <item><b>NativeToolClamp</b> — the reviewer runs directly in the caller's borrowed checkout and
+/// the vendor's own launch flags are the only thing keeping it from writing there. Containment and
+/// readability are coupled: the same clamp that blocks writing is what blocks reading. A vendor whose
+/// clamp is an OS sandbox keeps its read tools; a vendor whose clamp is a tool allowlist may end up
+/// with no tools at all, which is a reviewer that cannot see the code it was asked to review.</item>
+/// <item><b>IndependentSnapshot</b> — the daemon materializes the authorized contents into its own
+/// directory and the reviewer never touches the caller's checkout at all. Containment comes from the
+/// filesystem boundary, so the tool surface is free to be READABLE. This is the token that permits a
+/// read-capable launch, and it is why <see cref="CopilotBorrowedReviewPolicy"/> exists: Copilot is
+/// only borrowed-capable on a platform where its snapshot tool surface has been verified.</item>
+/// </list>
+///
+/// <para>Consequence worth stating plainly: a snapshot-materialized launch handed to a vendor
+/// declaring anything but <see cref="IndependentSnapshot"/> is a wiring bug, and is rejected before
+/// spawn.</para></summary>
 internal enum AcpBorrowedReviewContainment {
     None,
     NativeToolClamp,
@@ -188,8 +209,13 @@ internal static class AcpVendorDescriptors {
         ModelSelector:       ConfigOptionModelSelector.Instance,
         SupportsMcpServers:  false,
         ReviewFlowMcpTransport: AcpReviewFlowMcpTransport.CopilotAdditionalConfig,
-        SupportsBorrowedReviewFlow: true,
-        BorrowedReviewContainment: AcpBorrowedReviewContainment.NativeToolClamp,
+        // Borrowed review is DELIBERATELY not declared here. Copilot's borrowed capability is
+        // platform-resolved by CopilotBorrowedReviewPolicy, because the tool surface that makes a
+        // borrowed snapshot both readable and contained has only been verified on some platforms.
+        // Leaving a static declaration would put a second, always-stale answer in the codebase; a
+        // reader who consulted it would get a containment token that no longer describes the launch.
+        // If the platform special case were ever dropped, this default disables borrowed review
+        // rather than silently permitting an unverified surface — the safe direction to fail.
         UnattendedInteractionPolicy: AcpUnattendedInteractionPolicy.AutoApprove
     );
 }

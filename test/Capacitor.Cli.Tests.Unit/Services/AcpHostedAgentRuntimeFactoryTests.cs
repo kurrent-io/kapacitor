@@ -2,6 +2,7 @@ using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Acp;
 using Capacitor.Cli.Core.LocalIpc;
 using Capacitor.Cli.Daemon;
+using System.Runtime.InteropServices;
 using Capacitor.Cli.Daemon.Acp;
 using Capacitor.Cli.Daemon.Services;
 using Capacitor.Cli.Tests.Unit.Acp;
@@ -334,7 +335,10 @@ public class AcpHostedAgentRuntimeFactoryTests {
     /// by test plan items 5 and 6. <c>SupportsMcpServers</c> is parameterized since item 6(c) needs
     /// it <see langword="false"/> while items 6(a)/6(b) need it <see langword="true"/>; every other
     /// field is identical across both.</summary>
-    static AcpVendorDescriptor SyntheticDescriptor(bool supportsMcpServers) => new(
+    static AcpVendorDescriptor SyntheticDescriptor(
+            bool supportsMcpServers,
+            bool borrowedReview = false,
+            AcpBorrowedReviewContainment containment = AcpBorrowedReviewContainment.None) => new(
         Vendor:              "test-acp-vendor",
         ResolveBinaryPath:   _ => "test-acp-vendor-cli",
         ResolveDefaultModel: _ => null,
@@ -343,6 +347,8 @@ public class AcpHostedAgentRuntimeFactoryTests {
         SupportsUnattended:  true,
         ModelSelector:       NoOpModelSelector.Instance,
         SupportsMcpServers:  supportsMcpServers,
+        SupportsBorrowedReviewFlow: borrowedReview,
+        BorrowedReviewContainment:  containment,
         UnattendedInteractionPolicy: AcpUnattendedInteractionPolicy.AutoApprove
     );
 
@@ -873,14 +879,17 @@ public class AcpHostedAgentRuntimeFactoryTests {
             SyntheticDescriptor(supportsMcpServers: true),
             ReviewContext());
 
-    /// <summary>A borrowed Copilot reviewer passed the descriptor's capability-clamp gate and is
-    /// just as unattended as an owned-worktree reviewer. Its ACP permission request must therefore
-    /// resolve locally rather than waiting forever on a human interaction decision.</summary>
+    /// <summary>An unattended Copilot reviewer's ACP permission request must resolve locally rather
+    /// than waiting forever on a human decision.
+    ///
+    /// <para>Now exercised on an OWNED worktree: Copilot no longer accepts a raw borrowed cwd (it
+    /// requires snapshot materialization), so the old borrowed-cwd context is not a launchable
+    /// configuration any more.</para></summary>
     [Test]
-    public Task ReviewFlow_CopilotBorrowedCwd_Unattended_AutoApprovesPermission_WithoutRoutingToHuman() =>
+    public Task ReviewFlow_CopilotUnattended_AutoApprovesPermission_WithoutRoutingToHuman() =>
         AssertReviewFlowAutoApprovesPermissionAsync(
             AcpVendorDescriptors.Copilot,
-            ReviewContext(["kcap-review"]) with { Work = WorkLocation.BorrowedCwd });
+            ReviewContext(["kcap-review"]) with { Work = WorkLocation.OwnedWorktree });
 
     /// <summary>Cursor's launch flags are responsible for producing zero interaction frames. If a
     /// future Cursor build regresses and emits one anyway, kcap must not auto-approve it or route it
@@ -1032,20 +1041,79 @@ public class AcpHostedAgentRuntimeFactoryTests {
             .IsEqualTo("agent-\"quoted\"\\line\nnext");
     }
 
-    /// <summary>Copilot's process-level available-tools clamp removes every ambient shell/file
-    /// tool, so its unattended reviewer can safely use the server's default same-machine borrowed
-    /// checkout. Other ACP descriptors remain owned-worktree-only.</summary>
+    /// <summary>Copilot, like Cursor, cannot run directly in the requester's borrowed checkout — the
+    /// orchestrator must materialize a daemon-owned snapshot first.
+    ///
+    /// <para>This replaces a test that asserted the opposite ("is allowed and still clamped"), whose
+    /// doc comment recorded the premise this issue disproves: that the available-tools clamp removing
+    /// every ambient shell/file tool made a raw borrowed checkout safe. It did make it safe — and
+    /// also unreadable, which is the defect.</para></summary>
     [Test]
-    public async Task BuildProcessStartInfo_Copilot_BorrowedReviewFlow_IsAllowedAndStillClamped() {
+    public async Task BuildProcessStartInfo_Copilot_RawBorrowedReviewRequiresSnapshotMaterialization() {
         var ctx = ReviewContext(["kcap-review"]) with { Work = WorkLocation.BorrowedCwd };
 
-        var psi = AcpHostedAgentRuntimeFactory.BuildProcessStartInfo(
-            AcpVendorDescriptors.Copilot, new DaemonConfig(), ctx);
+        // Pinned to the supported entry: the claim is "even where borrowed review IS available,
+        // the raw checkout is refused". Reading the host's own entry would make this test pass
+        // vacuously wherever Copilot is unverified — it would take the not-supported arm instead.
+        var supported = CopilotBorrowedReviewPolicy.Resolve(OSPlatform.OSX, Architecture.Arm64);
+        var ex = Assert.Throws<InvalidOperationException>(() =>
+            AcpHostedAgentRuntimeFactory.BuildProcessStartInfo(
+                AcpVendorDescriptors.Copilot, new DaemonConfig(), ctx, supported));
 
-        await Assert.That(psi.ArgumentList).Contains("--allow-all-tools");
-        await Assert.That(psi.ArgumentList).Contains("--available-tools=kcap-flow-result-submit_review_result");
-        await Assert.That(psi.ArgumentList).Contains("--available-tools=kcap-flow-result-send_flow_message");
-        await Assert.That(psi.ArgumentList.Any(a => a.StartsWith("--available-tools=kcap-review-", StringComparison.Ordinal))).IsTrue();
+        await Assert.That(ex.Message).Contains("snapshot materialization");
+    }
+
+    /// <summary>The readable borrowed surface: a borrowed-SNAPSHOT Copilot review keeps the exclusive
+    /// allowlist and widens it with the verified read tools, so the reviewer can actually read the
+    /// snapshot it was given.
+    ///
+    /// <para>The allowlist stays exclusive on purpose. Live probing found <c>--deny-tool=write</c>
+    /// does not cover Copilot's file-create tool: a direct write to an outside absolute path is not
+    /// denied but raises a path-trust permission request, which this daemon's unattended policy
+    /// auto-approves. Exclusivity makes write/exec unrepresentable, so no such request exists.</para></summary>
+    [Test]
+    public async Task BuildProcessStartInfo_Copilot_BorrowedSnapshot_AllowsReadToolsWithinTheExclusiveAllowlist() {
+        var ctx = ReviewContext(["kcap-review"]) with {
+            Work = WorkLocation.OwnedWorktree, IsBorrowedSnapshot = true
+        };
+
+        // Explicit supported entry, so this asserts the argv on any host platform — the host's own
+        // entry may be unverified, which is a separate concern covered by the policy matrix.
+        var supported = CopilotBorrowedReviewPolicy.Resolve(OSPlatform.OSX, Architecture.Arm64);
+        var psi  = AcpHostedAgentRuntimeFactory.BuildProcessStartInfo(
+            AcpVendorDescriptors.Copilot, new DaemonConfig(), ctx, supported);
+        var argv = psi.ArgumentList.ToArray();
+
+        // The flow-result channel is still there...
+        await Assert.That(argv).Contains("--available-tools=kcap-flow-result-submit_review_result");
+        // ...and so are the read tools that fix this issue.
+        foreach (var readTool in CopilotBorrowedReviewPolicy.ReadToolIds)
+            await Assert.That(argv).Contains($"--available-tools={readTool}");
+
+        // Still EXCLUSIVE: nothing grants the write/exec surface.
+        await Assert.That(argv.Any(a => a is "--available-tools=create" or "--available-tools=edit"
+                                          or "--available-tools=bash")).IsFalse();
+    }
+
+    /// <summary>The paired direction, and the one most easily lost: a NON-borrowed Copilot review
+    /// (owned worktree, or context-only) keeps the flow-result-only clamp and gets no read tools.
+    ///
+    /// <para>That asymmetry is what makes the server's shipped read-blind rejection correct rather
+    /// than paranoid — it rejects precisely because a non-borrowed Copilot cannot read. Asserting
+    /// only the borrowed direction would pass against a build that widened every launch.</para></summary>
+    [Test]
+    public async Task BuildProcessStartInfo_Copilot_NonBorrowedReview_KeepsTheFlowResultOnlyClamp() {
+        var ctx = ReviewContext(["kcap-review"]) with { Work = WorkLocation.OwnedWorktree };
+
+        var supported = CopilotBorrowedReviewPolicy.Resolve(OSPlatform.OSX, Architecture.Arm64);
+        var argv = AcpHostedAgentRuntimeFactory
+            .BuildProcessStartInfo(AcpVendorDescriptors.Copilot, new DaemonConfig(), ctx, supported)
+            .ArgumentList.ToArray();
+
+        await Assert.That(argv).Contains("--available-tools=kcap-flow-result-submit_review_result");
+
+        foreach (var readTool in CopilotBorrowedReviewPolicy.ReadToolIds)
+            await Assert.That(argv).DoesNotContain($"--available-tools={readTool}");
     }
 
     /// <summary>Cursor cannot safely run directly in the borrowed checkout. The orchestrator must
@@ -1121,10 +1189,19 @@ public class AcpHostedAgentRuntimeFactoryTests {
 
     /// <summary>The gate that REMAINS: a snapshot-materialized launch handed to a vendor that does
     /// not declare independent-snapshot containment is a wiring bug, and still fails before spawn.
-    /// Copilot declares native-tool-clamp containment, so it is the realistic mismatch.</summary>
+    ///
+    /// <para>Copilot used to be the subject here, because its descriptor declared native-tool-clamp.
+    /// It no longer is: on a verified platform Copilot resolves to independent-snapshot, so pointing
+    /// this test at Copilot would assert the mismatch on an unverified host and DEADLOCK on a real
+    /// handshake on a verified one — a host-dependent test either way. A synthetic descriptor that
+    /// declares the mismatch outright keeps the gate covered on every platform.</para></summary>
     [Test]
     public async Task ReviewFlow_BorrowedSnapshot_ContainmentMismatch_StillThrowsBeforeSpawn() {
-        var (factory, spawns) = CountingSpawnFactory(AcpVendorDescriptors.Copilot);
+        var mismatched = SyntheticDescriptor(
+            supportsMcpServers: true,
+            borrowedReview:     true,
+            containment:        AcpBorrowedReviewContainment.NativeToolClamp);
+        var (factory, spawns) = CountingSpawnFactory(mismatched);
 
         var ex = await Assert.That(async () => await factory.StartAsync(
                 ReviewContext(["kcap-review"]) with { Work = WorkLocation.OwnedWorktree, IsBorrowedSnapshot = true },

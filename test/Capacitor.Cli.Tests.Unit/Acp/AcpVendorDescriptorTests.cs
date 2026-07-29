@@ -48,9 +48,13 @@ public class AcpVendorDescriptorTests {
         // ACP still advertises only HTTP/SSE, so session/new stdio forwarding stays disabled.
         await Assert.That(descriptor.SupportsMcpServers).IsFalse();
         await Assert.That(descriptor.ReviewFlowMcpTransport).IsEqualTo(AcpReviewFlowMcpTransport.CopilotAdditionalConfig);
-        await Assert.That(descriptor.SupportsBorrowedReviewFlow).IsTrue();
+        // Copilot's borrowed-review capability is NOT declared statically: it is resolved per
+        // platform by CopilotBorrowedReviewPolicy, because the tool surface that makes a borrowed
+        // snapshot readable AND contained has only been verified on some platforms. Pinning a static
+        // declaration here would pin an answer that no launch consults.
+        await Assert.That(descriptor.SupportsBorrowedReviewFlow).IsFalse();
         await Assert.That(descriptor.BorrowedReviewContainment)
-            .IsEqualTo(AcpBorrowedReviewContainment.NativeToolClamp);
+            .IsEqualTo(AcpBorrowedReviewContainment.None);
         await Assert.That(descriptor.ModelSelector).IsEqualTo(ConfigOptionModelSelector.Instance);
     }
 
