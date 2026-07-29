@@ -1098,7 +1098,7 @@ public class AcpHostedAgentRuntimeFactoryTests {
         // entry may be unverified, which is a separate concern covered by the policy matrix.
         var supported = CopilotBorrowedReviewPolicy.Resolve(OSPlatform.OSX, Architecture.Arm64, sandboxAvailable: true, authBrokerAvailable: true);
         var psi  = AcpHostedAgentRuntimeFactory.BuildProcessStartInfo(
-            AcpVendorDescriptors.Copilot, new DaemonConfig(), ctx, supported, BrokeredEnv());
+            AcpVendorDescriptors.Copilot, ResolvableConfig(), ctx, supported, BrokeredEnv());
         var argv = psi.ArgumentList.ToArray();
 
         // EXACT set equality, not contains-plus-a-denylist. A named-exclusion assertion only rules
@@ -1153,9 +1153,10 @@ public class AcpHostedAgentRuntimeFactoryTests {
             return;
         }
 
-        // Supported host: no policy argument, so this is the production path end to end.
+        // Supported host: no policy argument, so this is the production path end to end. The vendor
+        // path must still resolve, or the fail-closed guard fires for a reason unrelated to the argv.
         var emitted = AcpHostedAgentRuntimeFactory
-            .BuildProcessStartInfo(AcpVendorDescriptors.Copilot, new DaemonConfig(), ctx)
+            .BuildProcessStartInfo(AcpVendorDescriptors.Copilot, ResolvableConfig(), ctx)
             .ArgumentList.Where(a => a.StartsWith("--available-tools=")).ToArray();
 
         await Assert.That(emitted).IsEquivalentTo(ExpectedAvailableTools(
@@ -1393,7 +1394,7 @@ public class AcpHostedAgentRuntimeFactoryTests {
             OSPlatform.OSX, Architecture.Arm64, sandboxAvailable: true, authBrokerAvailable: true);
 
         var psi = AcpHostedAgentRuntimeFactory.BuildProcessStartInfo(
-            AcpVendorDescriptors.Copilot, new DaemonConfig(), ctx, supported, BrokeredEnv());
+            AcpVendorDescriptors.Copilot, ResolvableConfig(), ctx, supported, BrokeredEnv());
         var profile = psi.ArgumentList[1];
 
         await Assert.That(profile).Contains("(subpath \"/snap/borrowed-abc\")");
@@ -1451,7 +1452,7 @@ public class AcpHostedAgentRuntimeFactoryTests {
             OSPlatform.OSX, Architecture.Arm64, sandboxAvailable: true, authBrokerAvailable: true);
 
         var env = AcpHostedAgentRuntimeFactory.BuildProcessStartInfo(
-            AcpVendorDescriptors.Copilot, new DaemonConfig(), ctx, supported,
+            AcpVendorDescriptors.Copilot, ResolvableConfig(), ctx, supported,
             readEnvironmentVariable: name => name == "GH_TOKEN" ? "brokered-value" : null).Environment;
 
         await Assert.That(env[BorrowedReviewAuthBroker.TargetVariable]).IsEqualTo("brokered-value");
@@ -1561,6 +1562,15 @@ public class AcpHostedAgentRuntimeFactoryTests {
     /// <see cref="BuildProcessStartInfo_Copilot_BorrowedSnapshot_WithoutABrokeredToken_FailsClosed"/>.</para></summary>
     static Func<string, string?> BrokeredEnv() =>
         name => name == BorrowedReviewAuthBroker.TargetVariable ? "test-token" : null;
+
+    /// <summary>A config whose vendor path is a REAL, resolvable executable.
+    ///
+    /// <para>A borrowed-snapshot launch resolves the configured value through PATH before drawing the
+    /// sandbox, and fails closed when it cannot. The shipped default is the bare name <c>"copilot"</c>,
+    /// so any borrowed-argv test using <c>new DaemonConfig()</c> passes only on a machine that happens
+    /// to have Copilot installed — green locally, red on CI, which is exactly what happened. The test
+    /// host's own binary is guaranteed to exist and be executable everywhere.</para></summary>
+    static DaemonConfig ResolvableConfig() => new() { CopilotPath = Environment.ProcessPath! };
 
     /// <summary>The borrowed-snapshot binary is the plainly configured one — the same path every
     /// other vendor and every other launch shape uses. A configured path that matches no validated
