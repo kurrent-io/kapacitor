@@ -47,16 +47,26 @@ public class BorrowedReviewRuntimeRootsTests {
     /// there for a reason that has nothing to do with the grant rules they exist to pin.</summary>
     static string Posix(string path) => path.Replace('\\', '/');
 
+    /// <summary>Synthetic prefixes must be declared MEASURED, or the resolver correctly refuses them —
+    /// shape alone no longer earns a recursive grant. Each caller names the prefix it is exercising.</summary>
+    static BorrowedReviewRuntimeGrants Grants(
+            string binary, Func<string, bool> exists, string userHome = "/Users/nobody",
+            params string[] measured) =>
+        BorrowedReviewRuntimeRoots.Resolve(
+            binary, exists, userHome, measuredPrefixes: measured.Length == 0 ? ["/opt/hb"] : measured);
+
     static IReadOnlyList<string> Resolve(
-            string binary, Func<string, bool> exists, string userHome = "/Users/nobody") =>
-        [.. BorrowedReviewRuntimeRoots.Resolve(binary, exists, userHome).Directories.Select(Posix)];
+            string binary, Func<string, bool> exists, string userHome = "/Users/nobody",
+            params string[] measured) =>
+        [.. Grants(binary, exists, userHome, measured).Directories.Select(Posix)];
 
     static IReadOnlyList<string> ResolveFiles(
-            string binary, Func<string, bool> exists, string userHome = "/Users/nobody") =>
-        [.. BorrowedReviewRuntimeRoots.Resolve(binary, exists, userHome).Files.Select(Posix)];
+            string binary, Func<string, bool> exists, string userHome = "/Users/nobody",
+            params string[] measured) =>
+        [.. Grants(binary, exists, userHome, measured).Files.Select(Posix)];
 
     static IReadOnlyList<string> Resolve(string binary, string prefixRoot) =>
-        Resolve(binary, Prefix(prefixRoot));
+        Resolve(binary, Prefix(prefixRoot), "/Users/nobody", prefixRoot);
 
     [Test]
     public async Task The_software_subdirectories_of_the_discovered_prefix_are_granted() {
@@ -96,7 +106,7 @@ public class BorrowedReviewRuntimeRootsTests {
     [Test]
     public async Task Package_installed_crypto_config_is_granted_as_files_not_directories() {
         var binary = "/opt/hb/lib/node_modules/@vendor/tool/loader.js";
-        var files  = ResolveFiles(binary, Prefix("/opt/hb"));
+        var files  = ResolveFiles(binary, Prefix("/opt/hb"), "/Users/nobody", "/opt/hb");
         var roots  = Resolve(binary, "/opt/hb");
 
         await Assert.That(files).Contains("/opt/hb/etc/openssl@3/openssl.cnf");
@@ -135,7 +145,7 @@ public class BorrowedReviewRuntimeRootsTests {
     public async Task The_program_is_granted_as_a_file_and_its_package_only_inside_a_software_root() {
         var binary = "/opt/hb/lib/node_modules/@vendor/tool/loader.js";
 
-        await Assert.That(ResolveFiles(binary, Prefix("/opt/hb"))).Contains(binary);
+        await Assert.That(ResolveFiles(binary, Prefix("/opt/hb"), "/Users/nobody", "/opt/hb")).Contains(binary);
         await Assert.That(Resolve(binary, "/opt/hb")).Contains("/opt/hb/lib/node_modules/@vendor/tool");
     }
 
@@ -171,10 +181,51 @@ public class BorrowedReviewRuntimeRootsTests {
     public async Task A_prefix_is_discovered_by_shape_not_by_name() {
         const string prefix = "/opt/toolchains/node/22";
 
-        var roots = Resolve($"{prefix}/lib/node_modules/@vendor/tool/loader.js", prefix);
+        var roots = Resolve($"{prefix}/lib/node_modules/@vendor/tool/loader.js", Prefix(prefix),
+                            "/Users/nobody", prefix);
 
         await Assert.That(roots).Contains($"{prefix}/bin");
         await Assert.That(roots).Contains($"{prefix}/lib");
+    }
+
+    /// <summary>An UNMEASURED prefix earns no recursive grant, however convincing its shape.
+    ///
+    /// <para>Review's scenario: a configured vendor at <c>/private/tmp/reviewer/bin/copilot</c> beside a
+    /// <c>lib</c> matches the classifier while being a daemon-user-writable scratch directory outside
+    /// home, so neither the root nor the home exclusion catches it. Holding <c>bin</c> and <c>lib</c> is
+    /// a compatibility shape, not a trust boundary — it finds a candidate, and
+    /// <c>MeasuredPrefixes</c> decides whether that candidate is trusted.</para></summary>
+    [Test]
+    [Arguments("/private/tmp/reviewer")]
+    [Arguments("/Users/Shared/tools")]
+    [Arguments("/Volumes/work/toolchain")]
+    public async Task An_unmeasured_prefix_earns_no_recursive_grant(string prefix) {
+        string[] present = [prefix, $"{prefix}/bin", $"{prefix}/lib", $"{prefix}/share"];
+
+        var grants = BorrowedReviewRuntimeRoots.Resolve(
+            $"{prefix}/bin/copilot", path => present.Contains(Posix(path)),
+            userHome: "/Users/nobody", measuredPrefixes: ["/opt/homebrew"]);
+
+        await Assert.That(grants.Directories).IsEmpty()
+            .Because($"{prefix} has a plausible layout but has never been measured");
+        // Still granted as a file, so the launch fails loudly at exec rather than silently.
+        await Assert.That(grants.Files.Select(Posix)).Contains($"{prefix}/bin/copilot");
+    }
+
+    /// <summary>The shipped list is exactly what has been measured. A second entry appearing here
+    /// without a measurement is the regression this pins.</summary>
+    [Test]
+    public async Task The_real_resolver_admits_only_the_measured_homebrew_prefix() {
+        string[] present = ["/opt/homebrew", "/opt/homebrew/bin", "/opt/homebrew/lib",
+                            "/opt/other", "/opt/other/bin", "/opt/other/lib"];
+
+        var admitted = BorrowedReviewRuntimeRoots.Resolve(
+            "/opt/homebrew/bin/copilot", path => present.Contains(Posix(path)), userHome: "/Users/nobody");
+        var refused = BorrowedReviewRuntimeRoots.Resolve(
+            "/opt/other/bin/copilot", path => present.Contains(Posix(path)), userHome: "/Users/nobody");
+
+        await Assert.That(admitted.Directories.Select(Posix)).Contains("/opt/homebrew/lib");
+        await Assert.That(refused.Directories).IsEmpty();
     }
 
     /// <summary>Never the filesystem root, in EITHER of the two ways it can be reached.
@@ -256,9 +307,11 @@ public class BorrowedReviewRuntimeRootsTests {
         string[] present = [home, prefix, $"{prefix}/bin", $"{prefix}/lib", $"{prefix}/share",
                             $"{prefix}/lib/node_modules/@vendor/tool"];
 
+        // Declared measured on purpose: the refusal must come from the HOME rule, not from the
+        // measured-list rule, or this test would pass for the wrong reason.
         var grants = BorrowedReviewRuntimeRoots.Resolve(
             $"{prefix}/lib/node_modules/@vendor/tool/loader.js",
-            path => present.Contains(Posix(path)), userHome: home);
+            path => present.Contains(Posix(path)), userHome: home, measuredPrefixes: [prefix]);
 
         await Assert.That(grants.Directories).IsEmpty()
             .Because($"{prefix} matches bin+lib but is user-controlled, so it is not a safe prefix");
@@ -299,7 +352,8 @@ public class BorrowedReviewRuntimeRootsTests {
             await Assert.That(Path.GetFullPath(prefix)
                 .StartsWith(Path.GetFullPath(logicalHome), StringComparison.Ordinal)).IsFalse();
 
-            var grants = BorrowedReviewRuntimeRoots.Resolve(binary, userHome: logicalHome);
+            var grants = BorrowedReviewRuntimeRoots.Resolve(
+                binary, userHome: logicalHome, measuredPrefixes: [prefix]);
 
             await Assert.That(grants.Directories).IsEmpty()
                 .Because("the prefix is beneath home once home is resolved to its physical form");
@@ -315,7 +369,8 @@ public class BorrowedReviewRuntimeRootsTests {
     [Arguments("   ")]
     public async Task An_unusable_home_admits_no_prefix(string home) {
         var grants = BorrowedReviewRuntimeRoots.Resolve(
-            "/opt/hb/lib/node_modules/@vendor/tool/loader.js", Prefix("/opt/hb"), userHome: home);
+            "/opt/hb/lib/node_modules/@vendor/tool/loader.js", Prefix("/opt/hb"), userHome: home,
+            measuredPrefixes: ["/opt/hb"]);
 
         await Assert.That(grants.Directories).IsEmpty();
     }
@@ -326,7 +381,8 @@ public class BorrowedReviewRuntimeRootsTests {
     public async Task A_shallow_but_non_root_installation_still_resolves() {
         var roots = Resolve(
             "/opt/vendor/libexec/tool",
-            path => Posix(path) is "/opt/vendor/bin" or "/opt/vendor/lib" or "/opt/vendor/libexec");
+            path => Posix(path) is "/opt/vendor/bin" or "/opt/vendor/lib" or "/opt/vendor/libexec",
+            "/Users/nobody", "/opt/vendor");
 
         await Assert.That(roots).Contains("/opt/vendor/bin");
         await Assert.That(roots).Contains("/opt/vendor/lib");
@@ -347,7 +403,8 @@ public class BorrowedReviewRuntimeRootsTests {
         var roots = Resolve(
             "/opt/hb/lib/node_modules/@vendor/tool/loader.js",
             path => Posix(path) is "/opt/hb/bin" or "/opt/hb/lib"
-                                or "/opt/hb/lib/node_modules/@vendor/tool");
+                                or "/opt/hb/lib/node_modules/@vendor/tool",
+            "/Users/nobody", "/opt/hb");
 
         await Assert.That(roots).Contains("/opt/hb/bin");
         await Assert.That(roots).DoesNotContain("/opt/hb/Cellar");

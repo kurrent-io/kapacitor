@@ -48,6 +48,24 @@ internal static class BorrowedReviewRuntimeRoots {
         Path.Combine("etc", "ca-certificates", "cert.pem")
     ];
 
+    /// <summary>Installation prefixes whose layout has actually been MEASURED, and the only ones whose
+    /// software subdirectories are granted recursively.
+    ///
+    /// <para>Holding <c>bin</c> and <c>lib</c> is a compatibility shape, not a trust boundary, and it is
+    /// unsafe wherever it is applied: a configured vendor at <c>/private/tmp/reviewer/bin/copilot</c>
+    /// beside a <c>lib</c>, or anything under <c>/Users/Shared</c> or a mounted work directory, would
+    /// otherwise have had those trees granted recursively. Those locations are daemon-user-writable and
+    /// outside home, so neither the root nor the home exclusion catches them.</para>
+    ///
+    /// <para>So the shape is used to FIND a candidate and this list decides whether it may be trusted.
+    /// Only Apple Silicon Homebrew has been measured, and this feature is macOS/arm64-only, so the list
+    /// has one entry. Adding a per-user layout (nvm, Volta, <c>~/.local</c>) means measuring it against a
+    /// real vendor start — the same bar the platform gate is held to — not widening the classifier.</para>
+    ///
+    /// <para>A vendor installed anywhere else gets its executable literal and nothing more, so the
+    /// launch fails loudly at exec rather than quietly reading adjacent files.</para></summary>
+    static readonly string[] MeasuredPrefixes = ["/opt/homebrew"];
+
     /// <summary>How far up from the binary to look for an installation prefix before giving up.</summary>
     const int MaxPrefixSearchDepth = 16;
 
@@ -60,9 +78,11 @@ internal static class BorrowedReviewRuntimeRoots {
     /// pass an explicit value so the rule is assertable without depending on the real <c>HOME</c>.</param>
     /// <param name="fileExists">File probe, for the crypto literals. Defaults to
     /// <see cref="File.Exists"/>.</param>
+    /// <param name="measuredPrefixes">Test seam ONLY, for the synthetic layouts below. Production passes
+    /// null and gets <see cref="MeasuredPrefixes"/>.</param>
     internal static BorrowedReviewRuntimeGrants Resolve(
             string vendorBinaryPath, Func<string, bool>? directoryExists = null, string? userHome = null,
-            Func<string, bool>? fileExists = null) {
+            Func<string, bool>? fileExists = null, IReadOnlyList<string>? measuredPrefixes = null) {
         var dirExists  = directoryExists ?? Directory.Exists;
         var thisExists = fileExists ?? directoryExists ?? File.Exists;
         var roots      = new List<string>();
@@ -96,7 +116,8 @@ internal static class BorrowedReviewRuntimeRoots {
         // because ~/bin is neither.
         files.Add(resolved);
 
-        var prefix = FindInstallationPrefix(packageDirectory, dirExists, home);
+        var prefix = FindInstallationPrefix(
+            packageDirectory, dirExists, home, measuredPrefixes ?? MeasuredPrefixes);
 
         if (prefix is not null) {
             foreach (var subdirectory in SoftwareSubdirectories) {
@@ -126,10 +147,12 @@ internal static class BorrowedReviewRuntimeRoots {
 
     /// <summary>The nearest ancestor that looks like a Unix installation prefix — one holding both
     /// <c>bin</c> and <c>lib</c>. That shape is what makes this vendor-neutral and install-method
-    /// neutral: it finds <c>/opt/homebrew</c>, <c>/usr/local</c>, an nvm/volta node root, or a
-    /// self-contained vendor directory without any of them being named here.</summary>
+    /// neutral in HOW it searches — it finds a prefix without hard-coding a search path — but the
+    /// candidate it returns must then appear in <see cref="MeasuredPrefixes"/>. Shape alone decides
+    /// nothing: an unmeasured location yields no prefix, and therefore no recursive grant.</summary>
     static string? FindInstallationPrefix(
-            string? start, Func<string, bool> exists, IReadOnlyList<string> home) {
+            string? start, Func<string, bool> exists, IReadOnlyList<string> home,
+            IReadOnlyList<string> measured) {
         // No usable home form means the under-home refusal cannot be evaluated, so no prefix is safe.
         if (home.Count == 0) return null;
 
@@ -152,7 +175,12 @@ internal static class BorrowedReviewRuntimeRoots {
                 // launch then fails loudly at exec instead of quietly reading the user's files. Admitting
                 // those layouts needs each one MEASURED — the same bar every other part of this feature is
                 // held to — and only the Homebrew prefix has been.
-                return home.Any(h => IsWithin(parent, h)) ? null : parent;
+                // Shape found a candidate; only a MEASURED prefix may be trusted with a recursive
+                // grant. The under-home check is retained as defense in depth for any future measured
+                // entry that happens to live below home.
+                return home.Any(h => IsWithin(parent, h)) || !IsMeasured(parent, measured)
+                    ? null
+                    : parent;
 
             current = parent;
         }
@@ -189,6 +217,13 @@ internal static class BorrowedReviewRuntimeRoots {
 
         return physical.Equals(home, StringComparison.Ordinal) ? [home] : [home, physical];
     }
+
+    /// <summary>Whether <paramref name="candidate"/> is one of the measured prefixes, comparing both
+    /// the configured and symlink-resolved forms so a linked install location still matches.</summary>
+    static bool IsMeasured(string candidate, IReadOnlyList<string> measured) =>
+        measured.Any(prefix =>
+            IsSamePath(candidate, prefix) ||
+            (SandboxPaths.TryResolvePhysical(prefix) is { } physical && IsSamePath(candidate, physical)));
 
     /// <summary>Whether <paramref name="candidate"/> is <paramref name="root"/> or sits beneath it.</summary>
     static bool IsWithin(string candidate, string root) {
