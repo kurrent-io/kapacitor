@@ -122,8 +122,34 @@ public class FlowsDriverSchemaConformanceTests {
 
         var text = McpFlowsServer.FormatStatusResponse(statusJson);
 
-        await Assert.That(text).Contains("claude");
-        await Assert.That(text).Contains("sonnet");
+        // Assert the RENDERED labels, not the bare values. FormatStatusResponse catches formatter
+        // exceptions and returns the original JSON body, so "contains claude" was satisfied by the
+        // fallback — the test passed even if formatting failed completely or the audit rendering were
+        // deleted outright. (Flagged by codex round 2; I had listed it as suspect and left it.)
+        await Assert.That(text).Contains("applied_reviewer_vendor: claude");
+        await Assert.That(text).Contains("applied_reviewer_model: sonnet");
+        await Assert.That(text).Contains("requested_reviewer_vendor: claude");
+        await Assert.That(text).DoesNotContain("\"flow_run_id\"")
+            .Because("raw JSON in the output means the formatter fell back rather than rendering");
+    }
+
+    // The POLLED round path renders the same audit fields from its OWN copy of the code, and it is
+    // the one an agent reads on nearly every flow — status is the path you go to when something looks
+    // wrong. Found while mutation-testing the test above: mutating the audit block in
+    // FormatPolledRoundResult left it green, because the two formatters do not share the rendering.
+    [Test]
+    public async Task The_polled_round_path_also_surfaces_the_applied_participant_vendor() {
+        const string roundJson = """
+            {"flow_run_id":"f1","status":"clean","round_result_kind":"clean",
+             "requested_reviewer_vendor":"cursor","applied_reviewer_vendor":"cursor",
+             "reviewer_vendor_source":"explicit","applied_reviewer_model":"composer"}
+            """;
+
+        var text = McpFlowsServer.FormatPolledRoundResult(
+            System.Text.Json.Nodes.JsonNode.Parse(roundJson)!.AsObject(), "f1");
+
+        await Assert.That(text).Contains("applied_reviewer_vendor: cursor");
+        await Assert.That(text).Contains("applied_reviewer_model: composer");
     }
 
     // ── every driver projection reaches the same server ───────────────────────────────────────
@@ -154,11 +180,27 @@ public class FlowsDriverSchemaConformanceTests {
     public sealed record Arm(
         string                          Name,
         string                          Flag,
-        string?                         ClearEnvVar,
         Action<PluginEnvironment>       OptIn,
         Func<PluginEnvironment, string> ConfigPath,
         Func<string, Projection>        Extract,
         bool                            BareInstall = false);
+
+    /// <summary>Every environment variable any kcap path resolver consults. Kept together so a new
+    /// override cannot be added without this list being the obvious place to add it.</summary>
+    static readonly string[] PathOverrideVariables = [
+        "CODEX_HOME",            // CodexPaths
+        "COPILOT_HOME",          // CopilotPaths
+        "GEMINI_CLI_HOME",       // GeminiPaths — and AntigravityPaths, which reuses GeminiPaths.Root
+        "KIRO_HOME",             // KiroPaths
+        "OPENCODE_CONFIG_DIR",   // OpenCodePaths
+        "XDG_CONFIG_HOME",       // OpenCodePaths fallback
+        "XDG_DATA_HOME",         // OpenCodePaths plugin dir fallback
+    ];
+
+    sealed class EnvScopes(IEnumerable<string> keys) : IDisposable {
+        readonly List<EnvScope> _scopes = [.. keys.Select(k => new EnvScope(k, null))];
+        public void Dispose() { foreach (var s in _scopes) s.Dispose(); }
+    }
 
     sealed class EnvScope : IDisposable {
         readonly string  _key;
@@ -215,7 +257,7 @@ public class FlowsDriverSchemaConformanceTests {
     // MCP, mirroring each harness's own PluginCommand*Tests. That branch also skips the AgentDetector
     // "kcap on PATH" precheck, which a bare install would fail in CI.
     static readonly Arm[] Arms = [
-        new("Cursor", "--cursor", null,
+        new("Cursor", "--cursor",
             env => {
                 Directory.CreateDirectory(Path.GetDirectoryName(env.CursorUserHooksJson)!);
                 File.WriteAllText(env.CursorUserHooksJson,
@@ -223,29 +265,29 @@ public class FlowsDriverSchemaConformanceTests {
             },
             env => env.CursorMcpJson, Json("Cursor", "mcpServers")),
 
-        new("Copilot", "--copilot", "COPILOT_HOME",
+        new("Copilot", "--copilot",
             env => { PluginCommand.InstallCopilotHooks(env.CopilotKcapHooksJson);
                      CopilotHooksInstaller.DeleteMarker(env.CopilotKcapHooksJson); },
             env => env.CopilotMcpConfigJson, Json("Copilot", "mcpServers")),
 
-        new("Gemini", "--gemini", "GEMINI_HOME",
+        new("Gemini", "--gemini",
             env => { PluginCommand.InstallGeminiHooks(env.GeminiSettingsJson);
                      GeminiHooksInstaller.DeleteMarker(env.GeminiSettingsJson); },
             env => env.GeminiSettingsJson, Json("Gemini", "mcpServers")),
 
-        new("Kiro", "--kiro", "KIRO_HOME",
+        new("Kiro", "--kiro",
             env => { Directory.CreateDirectory(Path.GetDirectoryName(env.KiroKcapAgentJson)!);
                      File.WriteAllText(env.KiroKcapAgentJson, """{"name":"kcap","hooks":{}}""");
                      KiroHooksInstaller.WriteMarker(env.KiroKcapAgentJson, "kiro_default"); },
             env => env.KiroMcpJson, Json("Kiro", "mcpServers")),
 
-        new("Antigravity", "--antigravity", "GEMINI_CLI_HOME",
+        new("Antigravity", "--antigravity",
             env => { AntigravityHooksInstaller.Install(env.AntigravityHooksJson);
                      File.WriteAllText(Path.Combine(Path.GetDirectoryName(env.AntigravityHooksJson)!,
                          AntigravityHooksInstaller.MarkerFileName), "0.0.0-stale"); },
             env => env.AntigravityMcpConfigJson, Json("Antigravity", "mcpServers")),
 
-        new("OpenCode", "--opencode", "OPENCODE_CONFIG_DIR",
+        new("OpenCode", "--opencode",
             env => { Directory.CreateDirectory(Path.GetDirectoryName(env.OpenCodeKcapPlugin)!);
                      File.WriteAllText(env.OpenCodeKcapPlugin, "// stale"); },
             env => env.OpenCodeMcpConfigJson, Json("OpenCode", "mcp", argvArray: true)),
@@ -253,7 +295,7 @@ public class FlowsDriverSchemaConformanceTests {
         // Codex installs unconditionally rather than through the `--if-installed` refresh branch, so
         // it takes the bare-install path and needs a planted plugin root. Flagged here rather than
         // hidden, because it is the one arm whose invocation differs.
-        new("Codex", "--codex", null, _ => { }, env => env.CodexConfigTomlPath, FromToml,
+        new("Codex", "--codex", _ => { }, env => env.CodexConfigTomlPath, FromToml,
             BareInstall: true),
     ];
 
@@ -263,14 +305,24 @@ public class FlowsDriverSchemaConformanceTests {
     /// server subset, the shape, or drops flows entirely — which is exactly the drift this suite
     /// claims to catch.</summary>
     static async Task<Projection> InstallAndRead(Arm arm) {
-        using var clear = arm.ClearEnvVar is null ? null : new EnvScope(arm.ClearEnvVar, null);
-        using var home  = new FakeUserHome();
+        // EVERY known path override, cleared for EVERY arm — not a per-arm list. Codex review round
+        // 2 found three wrong: the Gemini arm cleared GEMINI_HOME, a name GeminiPaths does not read
+        // (it honours GEMINI_CLI_HOME); the Codex arm cleared nothing while CodexPaths still gives
+        // ambient CODEX_HOME precedence; and the OpenCode arm cleared OPENCODE_CONFIG_DIR but left
+        // its XDG_CONFIG_HOME fallback live. On any machine with one of those set, the opt-in, the
+        // installer and the extractor all resolve OUTSIDE the fake home — so this test could read and
+        // rewrite a developer's real harness config, and could pass against a pre-existing entry.
+        // A per-arm list is exactly the thing that was wrong, so there is no per-arm list.
+        using var overrides = new EnvScopes(PathOverrideVariables);
+        using var home      = new FakeUserHome();
         var env = TestEnv(home.Path, arm.BareInstall ? PlantFakePlugin() : null);
 
         arm.OptIn(env);
 
         string[] argv = arm.BareInstall
-            ? ["plugin", "install", arm.Flag]
+            // --skip-codex-network-access: a schema conformance test has no business reading or
+            // rewriting the profile's network-access config.
+            ? ["plugin", "install", arm.Flag, "--skip-codex-network-access"]
             : ["plugin", "install", arm.Flag, "--if-installed"];
         var exit = await PluginCommand.HandleAsync(argv, env);
         if (exit != 0) throw new InvalidOperationException($"{arm.Name}: installer exited {exit}");
@@ -328,6 +380,42 @@ public class FlowsDriverSchemaConformanceTests {
         } finally {
             dir.Delete(recursive: true);
         }
+    }
+
+    // ── one definition, both routes ───────────────────────────────────────────────────────────
+    //
+    // Codex review round 2: `kcap setup` registers MCP through its OWN delegates, independently of
+    // `kcap plugin install`. Mutating SetupCommand.RegisterCopilotMcp to drop flows or use a
+    // divergent shape left every installer-driven arm above green — a user could get a different
+    // tool surface depending on which command they ran, and this suite would not notice.
+    //
+    // Fixed structurally rather than by testing both routes: the (subset, shape, marker) tuple now
+    // lives once, in HarnessMcpProjections, and BOTH call sites consume it. There is no longer a
+    // second definition to diverge. These assertions pin that single definition.
+
+    public static IEnumerable<Func<HarnessMcpProjection>> Projections() =>
+        HarnessMcpProjections.All.Select(p => (Func<HarnessMcpProjection>)(() => p));
+
+    [Test]
+    [MethodDataSource(nameof(Projections))]
+    public async Task Every_harness_projection_includes_the_flows_server(HarnessMcpProjection projection) {
+        var flows = projection.Servers.SingleOrDefault(s => s.Name == "kcap-flows");
+
+        await Assert.That(flows).IsNotNull()
+            .Because($"{projection.Harness} would silently lose the ability to start a flow");
+        await Assert.That(flows!.Args).IsEquivalentTo(new[] { "mcp", "flows" }, CollectionOrdering.Matching);
+        // Flows launches a PAID hosted reviewer, so it must never be auto-approved on registration.
+        await Assert.That(flows.ReadOnly).IsFalse();
+    }
+
+    // The projection list must cover exactly the JSON harnesses the installer table drives — no more,
+    // no fewer. A harness added to one and not the other is the same divergence in a new place.
+    [Test]
+    public async Task The_projection_list_matches_the_json_installer_arms() {
+        var projected = HarnessMcpProjections.All.Select(p => p.Harness).ToArray();
+        var installed = Arms.Where(a => !a.BareInstall).Select(a => a.Flag.TrimStart('-')).ToArray();
+
+        await Assert.That(projected).IsEquivalentTo(installed);
     }
 
     // ── drift tripwires ───────────────────────────────────────────────────────────────────────

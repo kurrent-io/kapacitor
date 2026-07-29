@@ -723,8 +723,7 @@ public static class PluginCommand {
     /// not an error code.
     /// </summary>
     static async Task RegisterCursorMcpServersAsync(PluginEnvironment env) {
-        var change = JsonMcpConfigWriter.Register(
-            env.CursorMcpJson, KcapMcpServers.ForCursor, McpConfigShape.Standard, cwd: null, new McpMarker("cursor"));
+        var change = HarnessMcpProjections.Cursor.Register(env.CursorMcpJson);
 
         switch (change) {
             case JsonMcpConfigWriter.Change.Updated:
@@ -1055,8 +1054,7 @@ public static class PluginCommand {
     /// loads them without a manual JSON edit. Never fails the install: a write error is a warning.
     /// </summary>
     static async Task RegisterOpenCodeMcpServersAsync(PluginEnvironment env) {
-        var change = JsonMcpConfigWriter.Register(
-            env.OpenCodeMcpConfigJson, KcapMcpServers.ForCursor, McpConfigShape.OpenCode, cwd: null, new McpMarker("opencode"));
+        var change = HarnessMcpProjections.OpenCode.Register(env.OpenCodeMcpConfigJson);
 
         switch (change) {
             case JsonMcpConfigWriter.Change.Updated:
@@ -1194,8 +1192,7 @@ public static class PluginCommand {
     /// <summary>Registers the kcap MCP servers in Antigravity's own <c>~/.gemini/config/mcp_config.json</c>
     /// (Standard shape). Never fails the install: a write error is a warning.</summary>
     static async Task RegisterAntigravityMcpServersAsync(PluginEnvironment env) {
-        var change = JsonMcpConfigWriter.Register(
-            env.AntigravityMcpConfigJson, KcapMcpServers.ForCursor, McpConfigShape.Standard, cwd: null, new McpMarker("antigravity"));
+        var change = HarnessMcpProjections.Antigravity.Register(env.AntigravityMcpConfigJson);
 
         switch (change) {
             case JsonMcpConfigWriter.Change.Updated:
@@ -1384,8 +1381,7 @@ public static class PluginCommand {
     /// not an error code.
     /// </summary>
     static async Task RegisterCopilotMcpServersAsync(PluginEnvironment env) {
-        var change = JsonMcpConfigWriter.Register(
-            env.CopilotMcpConfigJson, KcapMcpServers.ForCursor, McpConfigShape.Copilot, cwd: null, new McpMarker("copilot"));
+        var change = HarnessMcpProjections.Copilot.Register(env.CopilotMcpConfigJson);
 
         switch (change) {
             case JsonMcpConfigWriter.Change.Updated:
@@ -1628,8 +1624,7 @@ public static class PluginCommand {
     /// fields (kcap leaves autoApprove unset). Never fails the install: a write error is a warning.
     /// </summary>
     static async Task RegisterKiroMcpServersAsync(PluginEnvironment env, string mcpPath) {
-        var change = JsonMcpConfigWriter.Register(
-            mcpPath, KcapMcpServers.ForCursor, McpConfigShape.Standard, cwd: null, new McpMarker("kiro"));
+        var change = HarnessMcpProjections.Kiro.Register(mcpPath);
 
         switch (change) {
             case JsonMcpConfigWriter.Change.Updated:
@@ -1975,8 +1970,7 @@ public static class PluginCommand {
     /// Never fails the install: a write error is a warning, not an error code.
     /// </summary>
     static async Task RegisterGeminiMcpServersAsync(PluginEnvironment env, string settingsPath) {
-        var change = JsonMcpConfigWriter.Register(
-            settingsPath, KcapMcpServers.ForCursor, McpConfigShape.Gemini, cwd: null, new McpMarker("gemini"));
+        var change = HarnessMcpProjections.Gemini.Register(settingsPath);
 
         switch (change) {
             case JsonMcpConfigWriter.Change.Updated:

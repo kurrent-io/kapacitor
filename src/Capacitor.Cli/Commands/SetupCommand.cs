@@ -344,10 +344,8 @@ public static class SetupCommand {
             RegisterCodexMcp:         () => CodexConfigToml.RegisterKcapMcpServers(),
             // every non-Claude JSON harness registers the ForCursor subset — kcap-workitems
             // is a Claude Code plugin-only tool (its session-id default rides the Claude hook env).
-            RegisterCursorMcp:        () => JsonMcpConfigWriter.Register(
-                CursorPaths.UserMcpJson(), KcapMcpServers.ForCursor, McpConfigShape.Standard, cwd: null, new McpMarker("cursor")),
-            RegisterCopilotMcp:       () => JsonMcpConfigWriter.Register(
-                CopilotPaths.McpConfigJson(), KcapMcpServers.ForCursor, McpConfigShape.Copilot, cwd: null, new McpMarker("copilot")),
+            RegisterCursorMcp:        () => HarnessMcpProjections.Cursor.Register(CursorPaths.UserMcpJson()),
+            RegisterCopilotMcp:       () => HarnessMcpProjections.Copilot.Register(CopilotPaths.McpConfigJson()),
             InstallCopilotInstructions: () => AgentInstructionsWriter.Write(
                 CopilotPaths.InstructionsMd(), KcapAgentInstructions.Body),
             // Skills are already current when the on-disk marker matches this build AND
@@ -355,18 +353,14 @@ public static class SetupCommand {
             // (mirrors PluginCommand's postinstall fast path). A missing/stale marker — or a
             // deleted skill folder — reads as "not current" → prompt + install (self-heals).
             AgentSkillsCurrent:       AgentsSkillsInstaller.IsCurrent,
-            RegisterOpenCodeMcp:      () => JsonMcpConfigWriter.Register(
-                OpenCodePaths.McpConfigJson(), KcapMcpServers.ForCursor, McpConfigShape.OpenCode, cwd: null, new McpMarker("opencode")),
+            RegisterOpenCodeMcp:      () => HarnessMcpProjections.OpenCode.Register(OpenCodePaths.McpConfigJson()),
             InstallOpenCodeInstructions: () => AgentInstructionsWriter.Write(
                 OpenCodePaths.AgentsMd(), KcapAgentInstructions.Body),
-            RegisterKiroMcp:          () => JsonMcpConfigWriter.Register(
-                KiroPaths.SettingsMcpJson(), KcapMcpServers.ForCursor, McpConfigShape.Standard, cwd: null, new McpMarker("kiro")),
-            RegisterGeminiMcp:        () => JsonMcpConfigWriter.Register(
-                GeminiPaths.SettingsJson(), KcapMcpServers.ForCursor, McpConfigShape.Gemini, cwd: null, new McpMarker("gemini")),
+            RegisterKiroMcp:          () => HarnessMcpProjections.Kiro.Register(KiroPaths.SettingsMcpJson()),
+            RegisterGeminiMcp:        () => HarnessMcpProjections.Gemini.Register(GeminiPaths.SettingsJson()),
             InstallGeminiInstructions: () => AgentInstructionsWriter.Write(
                 GeminiPaths.GeminiMd(), KcapAgentInstructions.Body),
-            RegisterAntigravityMcp:   () => JsonMcpConfigWriter.Register(
-                AntigravityPaths.McpConfigJson(), KcapMcpServers.ForCursor, McpConfigShape.Standard, cwd: null, new McpMarker("antigravity")),
+            RegisterAntigravityMcp:   () => HarnessMcpProjections.Antigravity.Register(AntigravityPaths.McpConfigJson()),
             InstallAntigravityInstructions: () => AgentInstructionsWriter.Write(
                 AntigravityPaths.InstructionsMd(), KcapAgentInstructions.Body),
             // Pi has no JSON MCP config — the "MCP" is a second extension file (kcap-mcp.ts).
