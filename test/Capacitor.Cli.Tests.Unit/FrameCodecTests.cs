@@ -130,6 +130,38 @@ public class FrameCodecTests {
         await Assert.That(r.Type).IsEqualTo(FrameType.StopAck);
         await Assert.That(r.Text.Split('\n')).IsEquivalentTo(new[] { "id-one\tstopped", "id-two\tfailed" });
     }
+
+    [Test]
+    [Arguments(true,  "ab12")]
+    [Arguments(false, "ab12")]
+    [Arguments(false, "")]
+    public async Task StopV2_round_trips_mode_and_id(bool force, string agentId) {
+        var r = await RoundTrip(LocalFrame.StopV2(force, agentId));
+        await Assert.That(r.Type).IsEqualTo(FrameType.StopV2);
+
+        var (gotForce, gotId) = FrameCodec.StopV2(r);
+        await Assert.That(gotForce).IsEqualTo(force);
+        await Assert.That(gotId).IsEqualTo(agentId);
+    }
+
+    [Test]
+    public async Task AttachedReadOnly_round_trips_id_reason_and_snapshot() {
+        var snapshot = new byte[] { 0x1b, 0x5b, 0x41, 0x00, 0xff };
+        var r = await RoundTrip(FrameCodec.AttachedReadOnly("ab12", "review-flow reviewer", snapshot));
+        await Assert.That(r.Type).IsEqualTo(FrameType.AttachedReadOnly);
+
+        var (id, reason, got) = FrameCodec.AttachedReadOnly(r);
+        await Assert.That(id).IsEqualTo("ab12");
+        await Assert.That(reason).IsEqualTo("review-flow reviewer");
+        await Assert.That(got).IsEquivalentTo(snapshot);
+    }
+
+    [Test]
+    public async Task AttachedReadOnly_round_trips_an_empty_snapshot() {
+        var r = await RoundTrip(FrameCodec.AttachedReadOnly("ab12", "review agent", []));
+        var (_, _, got) = FrameCodec.AttachedReadOnly(r);
+        await Assert.That(got).IsEmpty();
+    }
 }
 
 /// Stream that returns at most `chunk` bytes per ReadAsync to simulate partial socket reads.

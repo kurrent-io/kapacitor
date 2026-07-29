@@ -22,4 +22,5 @@ public sealed record LocalFrame(FrameType Type) {
     public static LocalFrame RestartAck(string status)  => new(FrameType.RestartAck) { Text = status };
     public static LocalFrame Stop(string agentId)       => new(FrameType.Stop)       { Text = agentId };
     public static LocalFrame StopAck(string payload)    => new(FrameType.StopAck)    { Text = payload };
+    public static LocalFrame StopV2(bool force, string agentId) => FrameCodec.StopV2(force, agentId);
 }

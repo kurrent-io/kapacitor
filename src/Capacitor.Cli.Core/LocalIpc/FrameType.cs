@@ -12,6 +12,7 @@ public enum FrameType : byte {
     List    = 6,   // request the daemon's agent list (for `kcap agent ls`)
     Restart = 7,   // request restart-after-update (Text = "when-idle"|"now"|"force")
     Stop    = 8,   // stop an agent (Text = agent id; empty = every agent this daemon hosts)
+    StopV2  = 10,  // stop with a force flag (see FrameCodec.StopV2); supersedes Stop
     // daemon → client
     Attached  = 64,
     Stdout    = 65,
@@ -20,4 +21,5 @@ public enum FrameType : byte {
     AgentList = 68, // UTF-8 table payload: one `id\tstatus\tcwd` line per agent
     RestartAck = 69, // acknowledgement for Restart (Text = short status)
     StopAck    = 70, // acknowledgement for Stop (Text = one `id\tstatus` line per agent; status is "stopped" or "failed")
+    AttachedReadOnly = 71, // Attached for a protected agent: id + reason + snapshot, no input accepted
 }

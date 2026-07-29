@@ -50,7 +50,8 @@ public static class FrameCodec {
         FrameType.Error or FrameType.Attach or FrameType.AgentList
             or FrameType.Restart or FrameType.RestartAck
             or FrameType.Stop or FrameType.StopAck => Encoding.UTF8.GetBytes(f.Text),
-        FrameType.Attached or FrameType.Spawn => f.Bytes, // pre-encoded by Attached(...)/Spawn(...)
+        FrameType.Attached or FrameType.Spawn
+            or FrameType.StopV2 or FrameType.AttachedReadOnly => f.Bytes, // pre-encoded by the helpers below
         _ => throw new InvalidDataException($"unencodable frame {f.Type}"),
     };
 
@@ -62,7 +63,8 @@ public static class FrameCodec {
         FrameType.Error or FrameType.Attach or FrameType.AgentList
             or FrameType.Restart or FrameType.RestartAck
             or FrameType.Stop or FrameType.StopAck => new(t) { Text = Encoding.UTF8.GetString(p) },
-        FrameType.Attached or FrameType.Spawn => new(t) { Bytes = p },
+        FrameType.Attached or FrameType.Spawn
+            or FrameType.StopV2 or FrameType.AttachedReadOnly => new(t) { Bytes = p },
         _ => throw new InvalidDataException($"undecodable frame {t}"),
     };
 
@@ -123,6 +125,35 @@ public static class FrameCodec {
     public static (string agentId, byte[] snapshot) Attached(LocalFrame f) {
         var o = 0; var id = ReadLp(f.Bytes, ref o);
         return (id, f.Bytes[o..]);
+    }
+
+    // --- StopV2 structured payload ---
+    public static LocalFrame StopV2(bool force, string agentId) {
+        using var ms = new MemoryStream();
+        ms.WriteByte((byte)(force ? 1 : 0));
+        WriteLp(ms, agentId);
+        return new(FrameType.StopV2) { Bytes = ms.ToArray(), Text = agentId };
+    }
+    public static (bool force, string agentId) StopV2(LocalFrame f) {
+        var o = 1;
+        return (f.Bytes[0] == 1, ReadLp(f.Bytes, ref o));
+    }
+
+    // --- AttachedReadOnly structured payload ---
+    // Length-prefixed id AND reason before the snapshot: the snapshot is the unbounded tail, so
+    // anything appended after it would be painted onto the user's terminal instead of parsed.
+    public static LocalFrame AttachedReadOnly(string agentId, string reason, byte[] snapshot) {
+        using var ms = new MemoryStream();
+        WriteLp(ms, agentId);
+        WriteLp(ms, reason);
+        ms.Write(snapshot);
+        return new(FrameType.AttachedReadOnly) { Bytes = ms.ToArray(), Text = agentId };
+    }
+    public static (string agentId, string reason, byte[] snapshot) AttachedReadOnly(LocalFrame f) {
+        var o = 0;
+        var id = ReadLp(f.Bytes, ref o);
+        var reason = ReadLp(f.Bytes, ref o);
+        return (id, reason, f.Bytes[o..]);
     }
 
     // --- byte helpers ---
