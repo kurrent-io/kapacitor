@@ -94,14 +94,20 @@ public class BorrowedReviewRuntimeRootsTests {
 
     /// <summary>A prefix is recognized by holding both <c>bin</c> and <c>lib</c>, which is what makes
     /// this neutral across install methods — Homebrew, <c>/usr/local</c>, an nvm/volta node root, or a
-    /// self-contained vendor directory — without any of them being named in the code.</summary>
+    /// self-contained vendor directory — without any of them being named in the code.
+    ///
+    /// <para>The fixture deliberately avoids <c>/home</c>, which is a symlink to
+    /// <c>/System/Volumes/Data/home</c> on macOS: the resolver would correctly resolve it and then miss
+    /// this synthetic layout, failing for a reason that is about the host rather than about the rule.
+    /// (That it does resolve symlinked ancestors is load-bearing for the sandbox and covered elsewhere.)</para></summary>
     [Test]
     public async Task A_prefix_is_discovered_by_shape_not_by_name() {
-        var roots = Resolve("/home/dev/.volta/tools/image/node/22/lib/node_modules/@vendor/tool/loader.js",
-                            "/home/dev/.volta/tools/image/node/22");
+        const string prefix = "/opt/toolchains/node/22";
 
-        await Assert.That(roots).Contains("/home/dev/.volta/tools/image/node/22/bin");
-        await Assert.That(roots).Contains("/home/dev/.volta/tools/image/node/22/lib");
+        var roots = Resolve($"{prefix}/lib/node_modules/@vendor/tool/loader.js", prefix);
+
+        await Assert.That(roots).Contains($"{prefix}/bin");
+        await Assert.That(roots).Contains($"{prefix}/lib");
     }
 
     /// <summary>Never the filesystem root, in EITHER of the two ways it can be reached.
