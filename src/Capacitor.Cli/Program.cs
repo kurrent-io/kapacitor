@@ -704,7 +704,7 @@ switch (command) {
             return await GeminiHookCommand.Handle(baseUrl!, Console.In);
         }
         if (args.Contains("--kiro")) {
-            return await KiroHookCommand.Handle(baseUrl!, Console.In, args);
+            return await KiroHookCommand.Handle(baseUrl!, Console.In, args, hookProcessStart);
         }
         if (args.Contains("--pi")) {
             return await PiHookCommand.Handle(baseUrl!, args);

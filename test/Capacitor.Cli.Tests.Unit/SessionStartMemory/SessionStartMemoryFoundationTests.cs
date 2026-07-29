@@ -359,6 +359,136 @@ public class SessionStartMemoryFoundationTests {
         } finally { Directory.Delete(root, recursive: true); }
     }
 
+    const string OneMemoryJson =
+        "[{\"memory_id\":\"1\",\"slug\":\"s\",\"audience\":\"org\",\"description\":\"d\",\"kind\":\"feedback\"}]";
+
+    // Exactly what KiroHookCommand builds: agentSpawn fires per PROMPT, so the callback repeats and
+    // the lease is the only thing preventing re-injection.
+    static SessionMemoryLifecycle KiroLifecycle(string sessionId) =>
+        new(SessionStartHarness.Kiro, sessionId, LifecycleInstanceId: null,
+            IsTopLevel: true, ClassificationAuthoritative: true,
+            SessionLifecycleReason.RepeatedTurnCallback, CallbackMayRepeat: true);
+
+    static SessionStartMemoryContextRequest KiroRequest(double seconds = 1) =>
+        new("https://example.test", null, false, TimeSpan.FromSeconds(seconds), CancellationToken.None);
+
+    // THE Kiro acceptance criterion. Kiro has no once-per-session hook: agentSpawn fires on every
+    // prompt with the same session id. Without the lease the index would be re-injected — and
+    // re-charged — every turn, and would steadily bias the conversation.
+    [Test]
+    public async Task Kiro_repeated_agent_spawn_injects_once_then_yields_nothing() {
+        var root = TempDir();
+        try {
+            var calls = 0;
+            var provider = new SessionStartMemoryContextProvider(new FixedScopeResolver(null, null),
+                (_, _) => {
+                    Interlocked.Increment(ref calls);
+                    return Task.FromResult(new HttpClient(new StaticHandler(HttpStatusCode.OK, OneMemoryJson)));
+                });
+            var orchestrator = new SessionStartMemoryOrchestrator(new SessionStartMemoryLeaseStore(root), provider);
+
+            var first  = await orchestrator.GetFragmentAsync(KiroLifecycle("kiro-session"), KiroRequest());
+            var second = await orchestrator.GetFragmentAsync(KiroLifecycle("kiro-session"), KiroRequest());
+            var third  = await orchestrator.GetFragmentAsync(KiroLifecycle("kiro-session"), KiroRequest());
+
+            await Assert.That(first).Contains("- s: d");
+            await Assert.That(second).IsNull();
+            await Assert.That(third).IsNull();
+
+            // Not merely "no output" — no repeat FETCH either, or every prompt would still pay the call.
+            await Assert.That(calls).IsEqualTo(1);
+        } finally { Directory.Delete(root, recursive: true); }
+    }
+
+    // A genuinely new Kiro session brings a new session id, hence a new lease key. No Kiro-specific
+    // "is this new?" logic exists or should: identity is the whole mechanism.
+    [Test]
+    public async Task Kiro_distinct_session_ids_inject_independently() {
+        var root = TempDir();
+        try {
+            var provider = new SessionStartMemoryContextProvider(new FixedScopeResolver(null, null),
+                (_, _) => Task.FromResult(new HttpClient(new StaticHandler(HttpStatusCode.OK, OneMemoryJson))));
+            var orchestrator = new SessionStartMemoryOrchestrator(new SessionStartMemoryLeaseStore(root), provider);
+
+            var a = await orchestrator.GetFragmentAsync(KiroLifecycle("session-a"), KiroRequest());
+            var b = await orchestrator.GetFragmentAsync(KiroLifecycle("session-b"), KiroRequest());
+
+            await Assert.That(a).Contains("- s: d");
+            await Assert.That(b).Contains("- s: d");
+        } finally { Directory.Delete(root, recursive: true); }
+    }
+
+    // A transient server failure must NOT burn the session's one injection — a later prompt's
+    // agentSpawn recovers it. Released means retry_pending behind a backoff, so the clock is advanced
+    // past the store's 1h cap rather than asserting an instant retry.
+    [Test]
+    public async Task Kiro_retryable_failure_lets_a_later_prompt_still_inject() {
+        var root = TempDir();
+        try {
+            var time = new ManualTimeProvider(new DateTimeOffset(2026, 7, 29, 0, 0, 0, TimeSpan.Zero));
+            var calls = 0;
+            var provider = new SessionStartMemoryContextProvider(new FixedScopeResolver(null, null),
+                (_, _) => Task.FromResult(new HttpClient(new StaticHandler(
+                    Interlocked.Increment(ref calls) == 1 ? HttpStatusCode.InternalServerError : HttpStatusCode.OK,
+                    OneMemoryJson))));
+            var orchestrator = new SessionStartMemoryOrchestrator(
+                new SessionStartMemoryLeaseStore(root, time), provider);
+
+            var failed = await orchestrator.GetFragmentAsync(KiroLifecycle("kiro-session"), KiroRequest());
+
+            time.Advance(TimeSpan.FromHours(2));
+
+            var recovered = await orchestrator.GetFragmentAsync(KiroLifecycle("kiro-session"), KiroRequest());
+
+            await Assert.That(failed).IsNull();
+            await Assert.That(recovered).Contains("- s: d");
+        } finally { Directory.Delete(root, recursive: true); }
+    }
+
+    // A successful-but-empty index must still COMMIT, or a team with no memories yet would re-fetch on
+    // every single Kiro prompt forever.
+    [Test]
+    public async Task Kiro_a_successful_empty_index_still_suppresses_later_prompts() {
+        var root = TempDir();
+        try {
+            var calls = 0;
+            var provider = new SessionStartMemoryContextProvider(new FixedScopeResolver(null, null),
+                (_, _) => {
+                    Interlocked.Increment(ref calls);
+                    return Task.FromResult(new HttpClient(new StaticHandler(HttpStatusCode.NoContent, "")));
+                });
+            var orchestrator = new SessionStartMemoryOrchestrator(new SessionStartMemoryLeaseStore(root), provider);
+
+            await orchestrator.GetFragmentAsync(KiroLifecycle("kiro-session"), KiroRequest());
+            var second = await orchestrator.GetFragmentAsync(KiroLifecycle("kiro-session"), KiroRequest());
+
+            await Assert.That(second).IsNull();
+            await Assert.That(calls).IsEqualTo(1);
+        } finally { Directory.Delete(root, recursive: true); }
+    }
+
+    // Two agentSpawn callbacks racing must not both fetch and inject.
+    [Test]
+    public async Task Kiro_concurrent_agent_spawns_yield_exactly_one_injection() {
+        var root = TempDir();
+        try {
+            var calls = 0;
+            var provider = new SessionStartMemoryContextProvider(new FixedScopeResolver(null, null),
+                (_, _) => {
+                    Interlocked.Increment(ref calls);
+                    return Task.FromResult(new HttpClient(new StaticHandler(HttpStatusCode.OK, OneMemoryJson)));
+                });
+            var store = new SessionStartMemoryLeaseStore(root);
+
+            var results = await Task.WhenAll(Enumerable.Range(0, 4).Select(_ =>
+                new SessionStartMemoryOrchestrator(store, provider)
+                    .GetFragmentAsync(KiroLifecycle("kiro-session"), KiroRequest(2))));
+
+            await Assert.That(results.Count(r => r is not null)).IsEqualTo(1);
+            await Assert.That(calls).IsEqualTo(1);
+        } finally { Directory.Delete(root, recursive: true); }
+    }
+
     [Test]
     public async Task Disabled_request_does_not_fetch_or_write_a_lease_record() {
         var root = TempDir();

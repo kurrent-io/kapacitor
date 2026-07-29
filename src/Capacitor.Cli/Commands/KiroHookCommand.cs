@@ -2,6 +2,7 @@ using System.Text.Json.Nodes;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.Core.Kiro;
+using Capacitor.Cli.SessionStartMemory;
 
 namespace Capacitor.Cli.Commands;
 
@@ -24,11 +25,97 @@ namespace Capacitor.Cli.Commands;
 ///                /hooks/session-end/kiro when it observes the kiro-cli process exit.
 ///   (any other) → no-op exit 0.
 ///
-/// Kiro treats non-empty hook stdout as re-injection (a stdout-writing hook loops
-/// the agent), so this dispatcher emits NOTHING on stdout — only stderr on error.
+/// Kiro appends non-empty hook stdout straight into agent context. That is exactly the
+/// team-memory injection channel for <c>agentSpawn</c> — but it is also why every OTHER event
+/// here still emits NOTHING (a stdout-writing <c>stop</c> hook re-injects and loops the agent),
+/// and why <c>agentSpawn</c>, which fires on EVERY prompt, must inject at most ONCE per session.
+/// The raw fragment is written with no JSON envelope and no diagnostics: whatever lands on stdout
+/// becomes conversation context verbatim.
 /// </remarks>
 static class KiroHookCommand {
-    public static async Task<int> Handle(string baseUrl, TextReader stdin, string[] args) {
+    /// <summary>
+    /// Writes the team-memory fragment as Kiro consumes it: raw text, no envelope.
+    ///
+    /// <para>The shared adapter renders <c>""</c> for a null fragment, so every no-memory path
+    /// (opt-out, exclusion, provider failure, budget exhaustion, and — the common case here — a
+    /// repeat <c>agentSpawn</c> whose lease is already spent) writes ZERO bytes and leaves the
+    /// pre-memory behaviour of this hook byte-identical. Unlike the Codex and Copilot adapters
+    /// there is no null-case asymmetry to encode: Kiro's empty output IS the shared rendering.</para>
+    ///
+    /// <para>Serialized before the first byte is written so a renderer fault degrades to silence
+    /// rather than injecting a partial document into the model's context.</para>
+    /// </summary>
+    internal static void WriteAgentSpawnOutput(TextWriter writer, string? fragment) {
+        string payload;
+
+        try {
+            payload = SessionStartMemoryOutputAdapters.Render(SessionStartHarness.Kiro, fragment);
+        } catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException) {
+            return;
+        }
+
+        writer.Write(payload);
+    }
+
+    /// <summary>
+    /// Starts the shared memory fetch so it overlaps the lifecycle POST. Returns a task that never
+    /// faults — every failure resolves to null, which the writer renders as zero bytes.
+    ///
+    /// <para><b>The lease is load-bearing here, not incidental.</b> Kiro has no per-session hook:
+    /// <c>agentSpawn</c> fires on every prompt with the SAME session id, so without the shared
+    /// once-per-session lease the index would be re-injected — and re-charged — on every turn, and
+    /// would steadily bias the conversation. The lifecycle reason is therefore
+    /// <see cref="SessionLifecycleReason.RepeatedTurnCallback"/> with <c>CallbackMayRepeat: true</c>,
+    /// which the shared policy resolves to a lease-guarded decision. A genuinely new session brings a
+    /// new session id, hence a new lease key, hence a fresh injection — no Kiro-specific logic.</para>
+    ///
+    /// <para>Deliberately no commit gate (unlike Copilot): this hook always exits 0 and Kiro always
+    /// consumes its stdout, so a fetched fragment is ALWAYS deliverable and the lease can commit as
+    /// soon as the fetch succeeds. The lifecycle POST outcome cannot make the output undeliverable.</para>
+    ///
+    /// <para><b>Scope safety:</b> the git root discovered from the payload is preferred and the
+    /// payload cwd is the fallback; with neither, injection is skipped rather than letting the shared
+    /// resolver fall back to the hook PROCESS's cwd and inject an unrelated repository's memories.</para>
+    /// </summary>
+    static Task<string?> StartMemoryIndexTask(
+            string     baseUrl,
+            string     sessionId,
+            string?    scopeRoot,
+            bool       disabled,
+            TimeSpan   budget,
+            Func<string?, CancellationToken, Task<HttpClient>>? memoryClientFactory,
+            Func<SessionStartMemoryLeaseStore>?                 memoryStoreFactory) {
+        if (disabled || string.IsNullOrWhiteSpace(sessionId) || string.IsNullOrWhiteSpace(scopeRoot)
+         || budget <= TimeSpan.Zero
+         || !SessionStartMemoryHookSupport.CanAttempt(baseUrl))
+            return Task.FromResult<string?>(null);
+
+        try {
+            var store = memoryStoreFactory?.Invoke() ?? new SessionStartMemoryLeaseStore();
+            var provider = new SessionStartMemoryContextProvider(
+                new SessionStartMemoryScopeResolver(),
+                memoryClientFactory ?? SessionStartMemoryHookSupport.ClientFactory(baseUrl),
+                // Only clients we created are ours to dispose; an injected factory's client belongs
+                // to its caller and may be handed back again on the 401-refresh call.
+                disposeClients: memoryClientFactory is null);
+
+            return new SessionStartMemoryOrchestrator(store, provider).GetFragmentAsync(
+                new SessionMemoryLifecycle(SessionStartHarness.Kiro, sessionId, LifecycleInstanceId: null,
+                    IsTopLevel: true, ClassificationAuthoritative: true,
+                    SessionLifecycleReason.RepeatedTurnCallback, CallbackMayRepeat: true),
+                new SessionStartMemoryContextRequest(baseUrl, scopeRoot, disabled, budget, CancellationToken.None));
+        } catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException) {
+            return Task.FromResult<string?>(null);
+        }
+    }
+
+    /// <param name="processStart">Monotonic hook-start stamp anchoring every budget computation;
+    /// defaults to now. Tests pass an older stamp to drive the budget-exhausted branch without sleeping.</param>
+    public static async Task<int> Handle(string baseUrl, TextReader stdin, string[] args,
+            long processStart = 0,
+            Func<string?, CancellationToken, Task<HttpClient>>? memoryClientFactory = null,
+            Func<SessionStartMemoryLeaseStore>?                 memoryStoreFactory  = null) {
+        var ps = processStart == 0 ? System.Diagnostics.Stopwatch.GetTimestamp() : processStart;
         // The installer always passes --event; default to agentSpawn so a
         // hand-rolled hook entry without it still records.
         var eventName = GetArg(args, "--event") ?? "agentSpawn";
@@ -85,7 +172,8 @@ static class KiroHookCommand {
             return 0;
         }
 
-        return await HandleAgentSpawn(baseUrl, node, dashedSessionId, sessionId, cwd, activeProfile, spool);
+        return await HandleAgentSpawn(baseUrl, node, dashedSessionId, sessionId, cwd, activeProfile, spool,
+                   ps, memoryClientFactory, memoryStoreFactory);
     }
 
     static async Task<int> HandleAgentSpawn(
@@ -95,7 +183,10 @@ static class KiroHookCommand {
             string    sessionId,
             string?   cwd,
             Profile?  activeProfile,
-            HookSpool spool
+            HookSpool spool,
+            long      processStart,
+            Func<string?, CancellationToken, Task<HttpClient>>? memoryClientFactory,
+            Func<SessionStartMemoryLeaseStore>?                 memoryStoreFactory
         ) {
         var forwarded = new JsonObject {
             ["hook_event_name"] = "agentSpawn",
@@ -137,6 +228,23 @@ static class KiroHookCommand {
             return 0;
         }
 
+        // Started BEFORE the lifecycle POST so the two overlap, and only after the disabled/
+        // excluded-path/excluded-repo early-outs above so an excluded repo never reaches the memory
+        // subsystem. The git root stamped onto the forwarded payload is the preferred scope; the
+        // payload cwd is the fallback (never a process-cwd fallback — see StartMemoryIndexTask).
+        // Ceiling: the generic 5s hook budget. kcap writes no `timeout_ms` into Kiro's agent hook
+        // entry, so Kiro's own default governs and the conservative shared ceiling is the safe floor.
+        var memoryTask = StartMemoryIndexTask(
+            baseUrl, sessionId,
+            TryGetString(JsonNode.Parse(enriched), "workspace_root") ?? cwd,
+            // The EFFECTIVE profile: ProfileResolver returns a null Profile whenever --server-url or
+            // KCAP_URL wins, so reading AppConfig.ResolvedProfile?.Profile here would silently ignore
+            // the user's opt-out on those deployments (the defect found reviewing the Copilot adapter).
+            activeProfile?.DisableMemoryIndex is true,
+            // Remaining() already reserves Safety — do not subtract it again.
+            HookBudget.Remaining(processStart, "session-start"),
+            memoryClientFactory, memoryStoreFactory);
+
         // Spawn-before-post: capture must start on Posted OR Spooled (auth lapse /
         // outage) — a doomed/delayed lifecycle POST must never withhold the watcher. On a real
         // failure PostOrSpoolAsync already logged to stderr; a lapse or transient outage instead
@@ -145,6 +253,13 @@ static class KiroHookCommand {
         var outcome = await AgentHookPoster.PostOrSpoolAsync(
             baseUrl, "session-start/kiro", enriched, "kiro-hook",
             spool, sessionId, route: "session-start/kiro");
+
+        // Written BEFORE the watcher branch below and on EVERY outcome: this hook always exits 0 and
+        // Kiro always consumes its stdout, so the recording outcome must not decide whether the model
+        // gets its memory index. Emitting here also means a later EnsureWatcherRunning stall cannot
+        // strand an already-fetched fragment.
+        WriteAgentSpawnOutput(Console.Out,
+            await SessionStartMemoryHookSupport.AwaitBounded(memoryTask, processStart, "session-start"));
 
         if (!AgentHookPoster.ShouldSpawnAfter(outcome)) return 0;
 
