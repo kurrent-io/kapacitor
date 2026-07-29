@@ -125,7 +125,7 @@ public class FlowsDriverSchemaConformanceTests {
         // Assert the RENDERED labels, not the bare values. FormatStatusResponse catches formatter
         // exceptions and returns the original JSON body, so "contains claude" was satisfied by the
         // fallback — the test passed even if formatting failed completely or the audit rendering were
-        // deleted outright. (Flagged by codex round 2; I had listed it as suspect and left it.)
+        // deleted outright.
         await Assert.That(text).Contains("applied_reviewer_vendor: claude");
         await Assert.That(text).Contains("applied_reviewer_model: sonnet");
         await Assert.That(text).Contains("requested_reviewer_vendor: claude");
@@ -305,14 +305,12 @@ public class FlowsDriverSchemaConformanceTests {
     /// server subset, the shape, or drops flows entirely — which is exactly the drift this suite
     /// claims to catch.</summary>
     static async Task<Projection> InstallAndRead(Arm arm) {
-        // EVERY known path override, cleared for EVERY arm — not a per-arm list. Codex review round
-        // 2 found three wrong: the Gemini arm cleared GEMINI_HOME, a name GeminiPaths does not read
-        // (it honours GEMINI_CLI_HOME); the Codex arm cleared nothing while CodexPaths still gives
-        // ambient CODEX_HOME precedence; and the OpenCode arm cleared OPENCODE_CONFIG_DIR but left
-        // its XDG_CONFIG_HOME fallback live. On any machine with one of those set, the opt-in, the
-        // installer and the extractor all resolve OUTSIDE the fake home — so this test could read and
-        // rewrite a developer's real harness config, and could pass against a pre-existing entry.
-        // A per-arm list is exactly the thing that was wrong, so there is no per-arm list.
+        // EVERY known path override, cleared for EVERY arm — deliberately not a per-arm list. If any
+        // one is missed, the opt-in, the installer and the extractor all resolve OUTSIDE the fake
+        // home: the test then reads and rewrites the developer's real harness config, and can pass
+        // against a pre-existing entry. The names are easy to get individually wrong (GeminiPaths
+        // reads GEMINI_CLI_HOME, not GEMINI_HOME; OpenCode falls back to XDG_CONFIG_HOME; CodexPaths
+        // gives ambient CODEX_HOME precedence), which is exactly why the list is not per-arm.
         using var overrides = new EnvScopes(PathOverrideVariables);
         using var home      = new FakeUserHome();
         var env = TestEnv(home.Path, arm.BareInstall ? PlantFakePlugin() : null);
@@ -353,9 +351,9 @@ public class FlowsDriverSchemaConformanceTests {
     // The two bundled static files are not written by an installer — Claude Code and Codex's native
     // plugin loader read them straight from the package — so they get their own arm.
     /// <summary>The bundled static configs, kept as a list rather than inline [Arguments] so the
-    /// coverage assertion below can see them. Qodo flagged that "Codex" and "Codex plugin" both
-    /// reduce to --codex in the tripwire, so deleting the plugin arm left --codex green while one of
-    /// two INDEPENDENT Codex registration mechanisms went untested.</summary>
+    /// coverage assertion below can see them. Both reduce to --codex in the tripwire, so an
+    /// inline arm could be deleted while one of two INDEPENDENT Codex registration mechanisms went
+    /// untested.</summary>
     static readonly (string File, string Harness)[] BundledConfigs = [
         (".mcp.json",       "Claude Code"),
         (".codex-mcp.json", "Codex plugin"),
@@ -396,14 +394,12 @@ public class FlowsDriverSchemaConformanceTests {
 
     // ── one definition, both routes ───────────────────────────────────────────────────────────
     //
-    // Codex review round 2: `kcap setup` registers MCP through its OWN delegates, independently of
-    // `kcap plugin install`. Mutating SetupCommand.RegisterCopilotMcp to drop flows or use a
-    // divergent shape left every installer-driven arm above green — a user could get a different
-    // tool surface depending on which command they ran, and this suite would not notice.
+    // `kcap setup` registers MCP through its own delegates, independently of `kcap plugin install`.
+    // Without a shared definition a user could get a different tool surface depending on which
+    // command they ran, and the installer-driven arms above would not notice.
     //
-    // Fixed structurally rather than by testing both routes: the (subset, shape, marker) tuple now
-    // lives once, in HarnessMcpProjections, and BOTH call sites consume it. There is no longer a
-    // second definition to diverge. These assertions pin that single definition.
+    // The (subset, shape, marker) tuple lives once, in HarnessMcpProjections, and BOTH call sites
+    // consume it, so there is no second definition to diverge. These assertions pin that definition.
 
     public static IEnumerable<Func<HarnessMcpProjection>> Projections() =>
         HarnessMcpProjections.All.Select(p => (Func<HarnessMcpProjection>)(() => p));
@@ -420,11 +416,11 @@ public class FlowsDriverSchemaConformanceTests {
         await Assert.That(flows.ReadOnly).IsFalse();
     }
 
-    // Install/uninstall must read the SAME ownership tuple. Codex review round 3: the projection was
-    // added and consumed by the register paths only — the six remove paths and Kiro's "is the MCP half
-    // already installed?" probe still hard-coded shape and marker names. So changing a projection made
-    // new installs write under one ownership tuple while uninstall looked under the old one (stranding
-    // owned entries) and Kiro's refresh read an existing install as absent. Round-trip per harness.
+    // Install/uninstall must read the SAME ownership tuple. If the remove paths or Kiro's "is the MCP
+    // half already installed?" probe hard-code shape and marker instead of going through the
+    // projection, changing a projection makes new installs write under one ownership tuple while
+    // uninstall looks under the old one — stranding entries kcap can no longer see — and the refresh
+    // reads an existing install as absent. Round-trip per harness.
     [Test]
     [MethodDataSource(nameof(Projections))]
     public async Task A_registered_harness_config_is_fully_unregistered_again(HarnessMcpProjection projection) {
