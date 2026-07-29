@@ -43,7 +43,7 @@ public class McpFlowsServerVendorOverrideTests {
         using var client = new HttpClient();
 
         using var response = await McpFlowsServer.StartFlowAsync(
-            client, server.Url!, StartArguments("claude"), cwd: "/tmp/cwd", repoRoot: null, repoInfo: null, kindArgName: "kind");
+            client, server.Url!, StartArguments("claude"), cwd: "/tmp/cwd", repoRoot: null, repoInfo: null, kindArgName: "kind", requestingSessionId: null);
 
         await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.OK);
         await Assert.That(server.LogEntries.Count()).IsEqualTo(1);
@@ -65,7 +65,7 @@ public class McpFlowsServerVendorOverrideTests {
         using var client = new HttpClient();
 
         using var response = await McpFlowsServer.StartFlowAsync(
-            client, server.Url!, StartArguments(vendor: null), cwd: "/tmp/cwd", repoRoot: null, repoInfo: null, kindArgName: "kind");
+            client, server.Url!, StartArguments(vendor: null), cwd: "/tmp/cwd", repoRoot: null, repoInfo: null, kindArgName: "kind", requestingSessionId: null);
 
         await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.OK);
         await Assert.That(server.LogEntries.Count()).IsEqualTo(1);
@@ -89,7 +89,7 @@ public class McpFlowsServerVendorOverrideTests {
         using var client = new HttpClient();
 
         using var response = await McpFlowsServer.StartFlowAsync(
-            client, server.Url!, StartArguments(vendor: null), cwd: "/tmp/cwd", repoRoot: null, repoInfo: null, kindArgName: "kind");
+            client, server.Url!, StartArguments(vendor: null), cwd: "/tmp/cwd", repoRoot: null, repoInfo: null, kindArgName: "kind", requestingSessionId: null);
 
         await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.OK);
     }

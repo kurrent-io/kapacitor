@@ -383,7 +383,7 @@ public class McpFlowsServerTests {
 
         using var response = await McpFlowsServer.StartFlowAsync(
             client, server.Url!, ModelStartArguments("claude", "opus"),
-            cwd: "/tmp/cwd", repoRoot: null, repoInfo: null, kindArgName: "kind");
+            cwd: "/tmp/cwd", repoRoot: null, repoInfo: null, kindArgName: "kind", requestingSessionId: null);
 
         await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.OK);
         await Assert.That(server.LogEntries.Count()).IsEqualTo(1);
@@ -407,7 +407,7 @@ public class McpFlowsServerTests {
 
         await Assert.That(async () => await McpFlowsServer.StartFlowAsync(
                 client, server.Url!, ModelStartArguments(vendor: null, model: "opus"),
-                cwd: "/tmp/cwd", repoRoot: null, repoInfo: null, kindArgName: "kind"))
+                cwd: "/tmp/cwd", repoRoot: null, repoInfo: null, kindArgName: "kind", requestingSessionId: null))
             .Throws<ArgumentException>();
 
         await Assert.That(server.LogEntries.Count()).IsEqualTo(0);
@@ -432,7 +432,7 @@ public class McpFlowsServerTests {
 
         await Assert.That(async () => await McpFlowsServer.StartFlowAsync(
                 client, server.Url!, args,
-                cwd: "/tmp/cwd", repoRoot: null, repoInfo: null, kindArgName: "definition_id"))
+                cwd: "/tmp/cwd", repoRoot: null, repoInfo: null, kindArgName: "definition_id", requestingSessionId: null))
             .Throws<ArgumentException>();
 
         await Assert.That(server.LogEntries.Count()).IsEqualTo(0);
@@ -448,7 +448,7 @@ public class McpFlowsServerTests {
 
         using var response = await McpFlowsServer.StartFlowAsync(
             client, server.Url!, ModelStartArguments(vendor: null, model: null),
-            cwd: "/tmp/cwd", repoRoot: null, repoInfo: null, kindArgName: "kind");
+            cwd: "/tmp/cwd", repoRoot: null, repoInfo: null, kindArgName: "kind", requestingSessionId: null);
 
         await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.OK);
         var hit = server.LogEntries.Single();
@@ -457,6 +457,42 @@ public class McpFlowsServerTests {
 
         var body = JsonNode.Parse(hit.RequestMessage.Body!)!.AsObject();
         await Assert.That(body["client_flow_protocol_version"]!.GetValue<int>()).IsEqualTo(2);
+    }
+
+    // --- Requester session id: threaded from the caller, never re-read from the environment ---
+
+    [Test]
+    [Arguments("start_review_flow", "/api/flows/review/start/v2")]
+    [Arguments("start_flow", "/api/flows/review/start/v2")]
+    public async Task HandleToolCall_posts_the_requesting_session_id_it_was_given(
+            string toolName, string expectedPath) {
+        // Guards the wiring the live defect ran through: RunAsync resolves the requesting session
+        // from the running harness and hands it down, so a stale KCAP_SESSION_ID in this process's
+        // environment can never reach the wire. If the dispatch stopped threading the value (or went
+        // back to reading the env inside StartFlowAsync), the posted body would carry null or
+        // whatever this test process inherited — not the id supplied here.
+        using var server = WireMockServer.Start();
+        server.Given(Request.Create().WithPath(expectedPath).UsingPost())
+            .RespondWith(Response.Create().WithStatusCode(200).WithBody(
+                """{"flow_run_id":"f1","status":"running","round_id":null,"round_number":null}"""));
+        using var client = new HttpClient();
+
+        var arguments = ModelStartArguments(vendor: null, model: null);
+        if (toolName == "start_flow") {
+            arguments["definition_id"] = arguments["kind"]!.GetValue<string>();
+            arguments.Remove("kind");
+        }
+
+        var response = await McpFlowsServer.HandleToolCallAsync(
+            JsonNode.Parse("1")!, ModelToolCall(toolName, arguments),
+            client, server.Url!, cwd: "/tmp/cwd", repoRoot: null, repoInfo: null,
+            requestingSessionId: "d15c0ffee0000000000000000000ba5e");
+
+        await Assert.That(JsonNode.Parse(response)!["result"]!["isError"]).IsNull();
+
+        var body = JsonNode.Parse(server.LogEntries.Single().RequestMessage.Body!)!.AsObject();
+        await Assert.That(body["requesting_session_id"]!.GetValue<string>())
+            .IsEqualTo("d15c0ffee0000000000000000000ba5e");
     }
 
     // --- CheckReviewerModelResult: pure decision logic ---

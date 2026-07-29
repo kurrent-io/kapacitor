@@ -1803,9 +1803,9 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             // PTY WaitForExitAsync(timeout) returns silently when the timeout elapses,
             // so a graceful-exit *timeout* doesn't throw. Check HasExited explicitly
             // so we can tell from logs whether the graceful path is actually working
-            // in production or if claude is consistently being SIGTERMed instead.
+            // in production or if this vendor's CLI is consistently being SIGTERMed instead.
             if (!agent.Runtime.HasExited) {
-                LogGracefulExitTimedOut(agentId, GracefulExitWait.TotalSeconds);
+                LogGracefulExitTimedOut(agentId, GracefulExitWait.TotalSeconds, agent.Vendor);
             }
 
             // Cancel the read loop and terminate the process. We deliberately do NOT end
@@ -2876,8 +2876,11 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     [LoggerMessage(Level = LogLevel.Warning, Message = "Graceful /exit failed for agent {AgentId}; falling back to SIGTERM")]
     partial void LogGracefulExitFailed(Exception ex, string agentId);
 
-    [LoggerMessage(Level = LogLevel.Warning, Message = "Graceful /exit window of {Seconds}s elapsed for agent {AgentId} without claude exiting; falling back to SIGTERM")]
-    partial void LogGracefulExitTimedOut(string agentId, double seconds);
+    // The vendor is a parameter, not the literal "claude": this path stops EVERY hosted vendor, and
+    // naming the wrong CLI in a stop diagnostic misdirects whoever is reading the daemon log to work
+    // out which reviewer failed to exit.
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Graceful /exit window of {Seconds}s elapsed for agent {AgentId} without {Vendor} exiting; falling back to SIGTERM")]
+    partial void LogGracefulExitTimedOut(string agentId, double seconds, string vendor);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Failed to end session for agent {AgentId} (server may not record SessionEnded)")]
     partial void LogEndSessionFailed(Exception ex, string agentId);

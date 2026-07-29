@@ -13,9 +13,15 @@ namespace Capacitor.Cli.Commands;
 
 static class McpFlowsServer {
     public static async Task<int> RunAsync(string baseUrl) {
-        var cwd      = Directory.GetCurrentDirectory();
-        var repoRoot = GitRepository.FindRoot(cwd);
-        var tools    = BuildToolsList();
+        // Requester context is resolved ONCE here, from the running harness rather than from the
+        // environment this process inherited — see HarnessRequesterContext for why an inherited
+        // KCAP_SESSION_ID / process cwd names the launching session instead of this driver. Both the
+        // session id and the working directory come from the same resolution, so a flow can never be
+        // attributed to one session while being reviewed in another session's checkout.
+        var requester = HarnessRequesterContext.Resolve();
+        var cwd       = requester.ProjectDir ?? Directory.GetCurrentDirectory();
+        var repoRoot  = GitRepository.FindRoot(cwd);
+        var tools     = BuildToolsList();
 
         RepositoryPayload? repoInfo = null;
         try {
@@ -57,7 +63,9 @@ static class McpFlowsServer {
                     client.Timeout = System.Threading.Timeout.InfiniteTimeSpan;
                 }
 
-                return await HandleToolCallAsync(callId, callRequest, client, baseUrl, cwd, repoRoot, repoInfo);
+                return await HandleToolCallAsync(
+                    callId, callRequest, client, baseUrl, cwd, repoRoot, repoInfo,
+                    requestingSessionId: requester.SessionId);
             } catch (Exception ex) {
                 // Unexpected: log the detail to stderr (not to the client, which could leak local
                 // paths from IO errors) and return a generic tool error, keeping the loop alive.
@@ -125,7 +133,12 @@ static class McpFlowsServer {
             string?             repoRoot,
             RepositoryPayload?  repoInfo,
             FlowRetryClock?     clock = null,
-            SettlementBackoff?  backoff = null
+            SettlementBackoff?  backoff = null,
+            // The requesting session, resolved by RunAsync from the running harness (never read from
+            // the environment down here — see HarnessRequesterContext). Optional so the tests that
+            // exercise routing/retry/error paths, where requester identity is irrelevant, can omit
+            // it; the production dispatch in RunAsync always supplies it.
+            string?             requestingSessionId = null
         ) {
         clock   ??= FlowRetryClock.System;
         backoff ??= SettlementBackoff.Default;
@@ -166,11 +179,11 @@ static class McpFlowsServer {
 
                 var sendResult = toolName switch {
                     "start_review_flow"   => wasModelStart
-                        ? new SettlementSendResult.Response(await SendWithRefreshRetryAsync(client, apiRoot, (c, ct) => StartFlowAsync(c, apiRoot, arguments, cwd, repoRoot, repoInfo, kindArgName: "kind", ct: ct)))
-                        : await SendWithSettlementRetryAsync(client, apiRoot, (c, ct) => StartFlowAsync(c, apiRoot, arguments, cwd, repoRoot, repoInfo, kindArgName: "kind", ct: ct), clock, backoff),
+                        ? new SettlementSendResult.Response(await SendWithRefreshRetryAsync(client, apiRoot, (c, ct) => StartFlowAsync(c, apiRoot, arguments, cwd, repoRoot, repoInfo, kindArgName: "kind", requestingSessionId: requestingSessionId, ct: ct)))
+                        : await SendWithSettlementRetryAsync(client, apiRoot, (c, ct) => StartFlowAsync(c, apiRoot, arguments, cwd, repoRoot, repoInfo, kindArgName: "kind", requestingSessionId: requestingSessionId, ct: ct), clock, backoff),
                     "start_flow"          => wasModelStart
-                        ? new SettlementSendResult.Response(await SendWithRefreshRetryAsync(client, apiRoot, (c, ct) => StartFlowAsync(c, apiRoot, arguments, cwd, repoRoot, repoInfo, kindArgName: "definition_id", ct: ct)))
-                        : await SendWithSettlementRetryAsync(client, apiRoot, (c, ct) => StartFlowAsync(c, apiRoot, arguments, cwd, repoRoot, repoInfo, kindArgName: "definition_id", ct: ct), clock, backoff),
+                        ? new SettlementSendResult.Response(await SendWithRefreshRetryAsync(client, apiRoot, (c, ct) => StartFlowAsync(c, apiRoot, arguments, cwd, repoRoot, repoInfo, kindArgName: "definition_id", requestingSessionId: requestingSessionId, ct: ct)))
+                        : await SendWithSettlementRetryAsync(client, apiRoot, (c, ct) => StartFlowAsync(c, apiRoot, arguments, cwd, repoRoot, repoInfo, kindArgName: "definition_id", requestingSessionId: requestingSessionId, ct: ct), clock, backoff),
                     "submit_review_round" => await SendWithSettlementRetryAsync(client, apiRoot, (c, ct) => SubmitRoundAsync(c, apiRoot, arguments, contextArgName: "context", participant: null, async: true, ct: ct), clock, backoff),
                     _                     => await SendWithSettlementRetryAsync(client, apiRoot, (c, ct) => SubmitRoundAsync(c, apiRoot, arguments, contextArgName: "message", participant: GetRequiredArg(arguments, "participant"), async: ParseAsyncArg(arguments), ct: ct), clock, backoff)
                 };
@@ -631,6 +644,10 @@ static class McpFlowsServer {
     /// schema can't express the xor, so exactly-one is enforced here, BEFORE any HTTP call;
     /// start_review_flow stays catalog-only (kind remains required there). Internal (not private)
     /// so unit tests can drive it directly against a WireMock stub.
+    /// <para><paramref name="requestingSessionId"/> is supplied by the caller (resolved once in
+    /// <see cref="RunAsync"/> from the running harness) and deliberately NOT read from the
+    /// environment here — an inherited <c>KCAP_SESSION_ID</c> names the session that launched this
+    /// one. It is a required parameter so no call site can acquire it ambiently by accident.</para>
     /// </summary>
     internal static async Task<System.Net.Http.HttpResponseMessage> StartFlowAsync(
             HttpClient         client,
@@ -640,6 +657,7 @@ static class McpFlowsServer {
             string?            repoRoot,
             RepositoryPayload? repoInfo,
             string             kindArgName,
+            string?            requestingSessionId,
             CancellationToken  ct = default
         ) {
         string? kind;
@@ -685,8 +703,6 @@ static class McpFlowsServer {
                     "Pass the lowercase canonical vendor token (e.g. 'claude', 'codex') the model belongs to.");
         }
 
-        var sessionId = ArgParsing.ResolveSessionIdFromEnv();
-
         // B2: this machine's stable id, matched server-side against each connected daemon's
         // registration id to prove the reviewer would run on the SAME host as this requester. Same
         // call the daemon reports at registration (ServerConnection), so the ids are identical — the
@@ -710,7 +726,7 @@ static class McpFlowsServer {
             TargetTitle:          targetTitle,
             Context:              context,
             Instructions:         instructions,
-            RequestingSessionId:  sessionId,
+            RequestingSessionId:  requestingSessionId,
             RequestingCwd:        cwd,
             RequestingRepoRoot:   repoRoot,
             RepoOwner:            repoInfo?.Owner,

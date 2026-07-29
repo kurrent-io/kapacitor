@@ -7,6 +7,7 @@ using Capacitor.Cli.Daemon;
 using Capacitor.Cli.Daemon.Pty;
 using Capacitor.Cli.Daemon.Services;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Capacitor.Cli.Tests.Unit;
@@ -59,7 +60,10 @@ public partial class AgentOrchestratorVendorTests {
             IReadOnlyDictionary<string, IHostedAgentLauncher>   launchers,
             string?                                             allowedRepoPath        = null,
             IEnumerable<IHostedAgentRuntimeFactory>?            extraRuntimeFactories  = null,
-            Action<DaemonConfig>?                               configure              = null
+            Action<DaemonConfig>?                               configure              = null,
+            // Defaults to NullLogger; a test that asserts on the orchestrator's own diagnostics
+            // (e.g. the graceful-stop timeout warning) passes a capturing logger instead.
+            ILogger<AgentOrchestrator>?                         logger                 = null
         ) {
         var config = new DaemonConfig {
             Name                = "test",
@@ -104,7 +108,7 @@ public partial class AgentOrchestratorVendorTests {
             launchers,
             runtimeFactories,
             new StubHostLifetime(),
-            NullLogger<AgentOrchestrator>.Instance
+            logger ?? NullLogger<AgentOrchestrator>.Instance
         );
     }
 

@@ -700,11 +700,34 @@ public static partial class DaemonRunner {
             }
             var output = process.StandardOutput.ReadToEnd().Trim();
             if (output.Length == 0) output = process.StandardError.ReadToEnd().Trim();
-            var token = output.Split(' ', StringSplitOptions.RemoveEmptyEntries)
-                .FirstOrDefault(part => part.Any(char.IsDigit));
-            return token?.TrimStart('v', 'V');
+            return ParseProbedVersion(output);
         } catch { return null; }
     }
+
+    /// <summary>
+    /// Extracts the version token from a vendor CLI's <c>--version</c> output. Pure (no process
+    /// spawn) so every vendor's real output shape is unit-testable.
+    ///
+    /// <para>Tokenises on ALL whitespace, not just spaces: a vendor whose <c>--version</c> prints more
+    /// than one line (GitHub Copilot CLI appends an "update available" line) would otherwise have the
+    /// newline and the next line's first word glued onto the version — e.g.
+    /// <c>"1.0.75.\nRun"</c> — because a line break is not a token separator. That value is then
+    /// advertised verbatim in the daemon's capability payload and fails
+    /// <see cref="CliVersionAllowed"/> outright, since it cannot parse as a version.</para>
+    ///
+    /// <para>Trailing sentence punctuation is stripped for the same reason: Copilot's version sits at
+    /// the end of a sentence ("GitHub Copilot CLI 1.0.75."), so the raw token carries a full stop
+    /// that no version parser accepts. Only trailing '.' / ',' are removed — a leading dot is never
+    /// part of a version, and every other vendor's token is unaffected.</para>
+    /// </summary>
+    internal static string? ParseProbedVersion(string output) {
+        var token = output
+            .Split(WhitespaceSeparators, StringSplitOptions.RemoveEmptyEntries)
+            .FirstOrDefault(part => part.Any(char.IsDigit));
+        return token?.TrimStart('v', 'V').TrimEnd('.', ',');
+    }
+
+    static readonly char[] WhitespaceSeparators = [' ', '\t', '\r', '\n'];
 
     internal static bool CliVersionAllowed(string? rawVersion, string ranges) {
         var normalized = (rawVersion ?? "").TrimStart('v', 'V').Split('-', '+')[0];
