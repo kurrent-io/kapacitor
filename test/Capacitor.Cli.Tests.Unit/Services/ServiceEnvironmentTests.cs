@@ -31,4 +31,32 @@ public class ServiceEnvironmentTests {
         var env = ServiceEnvironment.Build(profileName: "new", source: src);
         await Assert.That(env["KCAP_PROFILE"]).IsEqualTo("new");
     }
+
+    /// <summary>The token COMMAND is carried into the unit; a token is not.
+    ///
+    /// <para>This is the whole mechanism that lets a supervised daemon authenticate a contained borrowed
+    /// reviewer: the unit is a file on disk, so it may hold a command that prints a credential but never
+    /// the credential. Both halves are asserted together — capturing the command without excluding the
+    /// tokens would put a secret at rest, and excluding the tokens without capturing the command would
+    /// leave the feature unreachable.</para></summary>
+    [Test]
+    public async Task Build_captures_the_token_command_but_never_a_token() {
+        var src = new Dictionary<string, string> {
+            ["KCAP_COPILOT_TOKEN_CMD"] = "gh auth token",
+            ["COPILOT_GITHUB_TOKEN"]   = "secret-a",
+            ["GH_TOKEN"]               = "secret-b",
+            ["GITHUB_TOKEN"]           = "secret-c",
+        };
+
+        var env = ServiceEnvironment.Build(profileName: null, source: src);
+
+        await Assert.That(env["KCAP_COPILOT_TOKEN_CMD"]).IsEqualTo("gh auth token");
+        foreach (var secret in new[] { "COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN" })
+            await Assert.That(env.ContainsKey(secret)).IsFalse()
+                .Because($"{secret} is a credential and the unit is a file on disk");
+        // By value too, in case a future key name carries one through under a different spelling.
+        await Assert.That(env.Values).DoesNotContain("secret-a");
+        await Assert.That(env.Values).DoesNotContain("secret-b");
+        await Assert.That(env.Values).DoesNotContain("secret-c");
+    }
 }

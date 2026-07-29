@@ -309,12 +309,18 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
             // Either way the alternative to failing is a reviewer that falls back to the keychain the
             // profile no longer grants — i.e. a launch that cannot authenticate — so fail here, before
             // a child exists, with a reason an operator can act on.
+            // Resolved FRESH per launch, not reused from the startup probe: a token command exists so
+            // the operator can supply a rotating credential, and caching the first value would hand a
+            // reviewer an expired one for as long as the daemon happened to be up.
             brokeredToken = BorrowedReviewAuthBroker.TryResolve(
                     readEnvironmentVariable ?? Environment.GetEnvironmentVariable)
                 ?? throw new InvalidOperationException(
                     "borrowed_review_auth_unavailable: a contained borrowed reviewer authenticates from a "
-                  + $"brokered token because the sandbox does not grant the keychain. Set one of "
-                  + $"{string.Join(", ", BorrowedReviewAuthBroker.SourceVariables)} in the daemon's environment.");
+                  + "brokered token because the sandbox does not grant the keychain. Set one of "
+                  + $"{string.Join(", ", BorrowedReviewAuthBroker.SourceVariables)} in the daemon's "
+                  + $"environment, or {BorrowedReviewAuthBroker.CommandVariable} to a command that "
+                  + "prints one (the supported route for a supervised daemon, whose unit file must not "
+                  + "hold a credential).");
 
             stateRoot = WorktreeManager.VendorStateRootFor(snapshotRoot);
 

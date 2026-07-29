@@ -35,6 +35,7 @@ sealed partial class LaunchdServiceManager : IServiceManager {
         // idempotent: bootout an existing job (ignore failure), then rewrite + bootstrap.
         ServiceProcess.Run("launchctl", LaunchdUnit.BootoutArgs(Uid(), spec.ServiceId));
         File.WriteAllText(plistPath, LaunchdUnit.Plist(spec));
+        ServiceFiles.RestrictToOwner(plistPath);
         ServiceProcess.Check("launchctl", LaunchdUnit.BootstrapArgs(Uid(), plistPath)); // RunAtLoad starts it
         if (!startNow) ServiceProcess.Run("launchctl", LaunchdUnit.KillArgs(Uid(), spec.ServiceId));
     }

@@ -9,7 +9,16 @@ namespace Capacitor.Cli.Services;
 /// the KCAP_* keys and pin the profile via KCAP_PROFILE.
 /// </summary>
 static class ServiceEnvironment {
-    static readonly string[] Keys = ["PATH", "KCAP_CONFIG_DIR", "KCAP_PROFILE", "KCAP_URL", "KCAP_CLAUDE_PATH", "KCAP_CODEX_PATH"];
+    /// <summary>Variables carried from the installing shell into the service unit.
+    ///
+    /// <para>Credentials are deliberately absent: the unit is a file on disk, so a token in this list
+    /// would be a token at rest. <c>KCAP_COPILOT_TOKEN_CMD</c> is the exception that proves the rule —
+    /// it is a COMMAND that prints a token, not the token, so it is safe to persist and is what lets a
+    /// supervised daemon authenticate a contained borrowed reviewer at all.</para></summary>
+    static readonly string[] Keys = [
+        "PATH", "KCAP_CONFIG_DIR", "KCAP_PROFILE", "KCAP_URL", "KCAP_CLAUDE_PATH", "KCAP_CODEX_PATH",
+        "KCAP_COPILOT_TOKEN_CMD"
+    ];
 
     /// <summary>Production entry point: capture from the current process env.</summary>
     public static IReadOnlyDictionary<string, string> Capture(string? profileName) =>

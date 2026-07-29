@@ -41,6 +41,7 @@ sealed class WindowsScheduledTaskServiceManager : IServiceManager {
             // schtasks /XML wants UTF-16; the .cmd wrapper is fine as UTF-8.
             var encoding = f.Path.EndsWith(".task.xml", StringComparison.Ordinal) ? Encoding.Unicode : Encoding.UTF8;
             File.WriteAllText(f.Path, f.Content, encoding);
+            ServiceFiles.RestrictToOwner(f.Path);
         }
         var xmlPath = files.First(f => f.Path.EndsWith(".task.xml", StringComparison.Ordinal)).Path;
         ServiceProcess.Check("schtasks", WindowsTaskUnit.CreateArgs(spec.ServiceId, xmlPath));

@@ -26,6 +26,7 @@ sealed class SystemdServiceManager : IServiceManager {
     public void Install(ServiceSpec spec, bool startNow) {
         Directory.CreateDirectory(SystemdUnit.UserUnitDir());
         File.WriteAllText(SystemdUnit.UnitPath(spec.ServiceId), SystemdUnit.Unit(spec));
+        ServiceFiles.RestrictToOwner(SystemdUnit.UnitPath(spec.ServiceId));
         ServiceProcess.Check("systemctl", SystemdUnit.DaemonReloadArgs());
         ServiceProcess.Check("systemctl", SystemdUnit.EnableArgs(spec.ServiceId));
         if (startNow) ServiceProcess.Check("systemctl", SystemdUnit.RestartArgs(spec.ServiceId));
