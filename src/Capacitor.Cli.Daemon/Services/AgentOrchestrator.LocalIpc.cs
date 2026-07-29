@@ -148,7 +148,18 @@ internal partial class AgentOrchestrator {
         if (!_agents.TryGetValue(agentId, out var agent))
             return FrameCodec.WriteAsync(stream, LocalFrame.Error($"no such agent {agentId}"), ct);
 
-        return AttachClientLoopAsync(agent, stream, ct);
+        // A review or flow agent is addressed through the flow protocol, never by typing at it,
+        // so the daemon — not the client — decides this attach carries no input.
+        return AttachClientLoopAsync(agent, stream, ct, readOnly: agent.Kind != LaunchKind.Default);
+    }
+
+    /// Human-readable "why is this read-only", carried on the AttachedReadOnly frame.
+    static string ProtectionReason(AgentInstance agent) {
+        var kind = agent.Kind == LaunchKind.ReviewFlow ? "review-flow" : "review";
+        var role = string.IsNullOrEmpty(agent.FlowRole) ? "" : $", role {agent.FlowRole}";
+        var flow = string.IsNullOrEmpty(agent.FlowRunId) ? "" : $" (flow {agent.FlowRunId}{role})";
+
+        return $"{kind} agent{flow}";
     }
 
     /// <summary>
@@ -156,7 +167,8 @@ internal partial class AgentOrchestrator {
     /// client's input (stdin/resize) until it detaches or disconnects. The agent keeps
     /// running either way — the sink is just removed.
     /// </summary>
-    internal async Task AttachClientLoopAsync(AgentInstance agent, Stream stream, CancellationToken ct) {
+    internal async Task AttachClientLoopAsync(
+            AgentInstance agent, Stream stream, CancellationToken ct, bool readOnly = false) {
         // One NetworkStream, two writers (the sink's Stdout frames + Attached/Exited here):
         // serialise all writes through this lock. Reads (the input loop) are independent.
         var writeLock = new SemaphoreSlim(1, 1);
@@ -179,7 +191,9 @@ internal partial class AgentOrchestrator {
 
         try {
             // Bounded replay BEFORE any live chunk so the client paints a coherent screen.
-            await Send(FrameCodec.Attached(agent.Id, snapshot));
+            await Send(readOnly
+                ? FrameCodec.AttachedReadOnly(agent.Id, ProtectionReason(agent), snapshot)
+                : FrameCodec.Attached(agent.Id, snapshot));
             var pump = sink.RunAsync(ct);
 
             // Break this read loop when the agent exits on its own (CleanupAgentAsync trips
@@ -203,6 +217,8 @@ internal partial class AgentOrchestrator {
                     if (f is null || f.Type == FrameType.Detach) break;
 
                     if (f.Type == FrameType.Stdin) {
+                        if (readOnly) continue; // protected agent: input is never delivered
+
                         try {
                             await agent.Runtime.SendRawInputAsync(f.Bytes);
                         } catch (NotSupportedException) {
@@ -215,7 +231,9 @@ internal partial class AgentOrchestrator {
                             break;
                         }
                     } else if (f.Type == FrameType.Resize) {
-                        ApplyResizeClamp(agent, sink, f.Cols, f.Rows);
+                        // A read-only viewer must not enter ClientDims, or the min-clamp would
+                        // let an observer shrink the participant's terminal.
+                        if (!readOnly) ApplyResizeClamp(agent, sink, f.Cols, f.Rows);
                     }
                 }
             } catch (Exception ex) when (ex is EndOfStreamException or IOException or OperationCanceledException) {

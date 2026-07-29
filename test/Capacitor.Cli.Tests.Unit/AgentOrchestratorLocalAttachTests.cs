@@ -537,6 +537,52 @@ public partial class AgentOrchestratorVendorTests {
         await Assert.That(rows["flow-1"][5]).IsEqualTo("reviewer");
     }
 
+    [Test]
+    public async Task Attaching_to_a_flow_participant_is_read_only() {
+        var server = new TripwireServerConnection();
+        await using var orch = BuildOrchestrator(server, new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>());
+        var agent = orch.SeedAgentForTest("flow-1", kind: LaunchKind.ReviewFlow, flowRunId: "flow-7f3a", flowRole: "reviewer");
+
+        // Client sends input, then a resize, then detaches. None of the first two may land.
+        var readBuf = new MemoryStream();
+        await FrameCodec.WriteAsync(readBuf, LocalFrame.Stdin("hello"u8.ToArray()), default);
+        await FrameCodec.WriteAsync(readBuf, LocalFrame.Resize(40, 10), default);
+        await FrameCodec.WriteAsync(readBuf, LocalFrame.Detach(), default);
+        readBuf.Position = 0;
+        using var client = new DuplexTestStream(readBuf, new MemoryStream());
+
+        await orch.HandleLocalAttachAsync("flow-1", client, default);
+
+        client.WrittenStream.Position = 0;
+        var first = await FrameCodec.ReadAsync(client.WrittenStream, default);
+
+        await Assert.That(first!.Type).IsEqualTo(FrameType.AttachedReadOnly);
+        var (_, reason, _) = FrameCodec.AttachedReadOnly(first);
+        await Assert.That(reason).Contains("review-flow");
+        await Assert.That(reason).Contains("reviewer");
+
+        // The resize must not have been recorded, so the PTY is never clamped to the viewer.
+        await Assert.That(agent.ClientDims).IsEmpty();
+    }
+
+    [Test]
+    public async Task Attaching_to_a_plain_agent_stays_read_write() {
+        var server = new TripwireServerConnection();
+        await using var orch = BuildOrchestrator(server, new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>());
+        orch.SeedAgentForTest("plain-1");
+
+        var readBuf = new MemoryStream();
+        await FrameCodec.WriteAsync(readBuf, LocalFrame.Detach(), default);
+        readBuf.Position = 0;
+        using var client = new DuplexTestStream(readBuf, new MemoryStream());
+
+        await orch.HandleLocalAttachAsync("plain-1", client, default);
+
+        client.WrittenStream.Position = 0;
+        var first = await FrameCodec.ReadAsync(client.WrittenStream, default);
+        await Assert.That(first!.Type).IsEqualTo(FrameType.Attached);
+    }
+
     // ── Test doubles for the local-spawn lifecycle ──────────────────────
 
     sealed class EnvCapturingPtyFactory : IPtyProcessFactory {
