@@ -48,6 +48,14 @@ negation, omit the vendor when none is named, and ask when multiple candidates r
 catalog definitions keep their authored vendors unless an explicit single-participant override is
 requested; dynamic definitions always carry vendors per participant and reject a top-level override.
 
+**If `start_flow` has no `vendor` parameter**, your harness is holding an MCP tool schema it cached
+before kcap was upgraded, and kcap cannot refresh a schema the harness has already cached. A
+parameter you cannot see is one you cannot send: do **not** start a reserved review alias and then
+report that the named reviewer ran — without `vendor` the server applies its own configured default,
+which may be a different vendor. Tell the user to restart the harness session (or reconnect the
+`kcap-flows` MCP server) and start a fresh task; start without `vendor` only if they then explicitly
+ask for the server default.
+
 Canonical reviewer aliases for reserved review flows: Claude / Claude Code → `claude`; Codex /
 OpenAI Codex → `codex`; Cursor / cursor-agent → `cursor`; GitHub Copilot / Copilot CLI → `copilot`;
 Gemini / Gemini CLI → `gemini`; Kiro / Kiro CLI → `kiro`; Pi → `pi`; OpenCode → `opencode`;

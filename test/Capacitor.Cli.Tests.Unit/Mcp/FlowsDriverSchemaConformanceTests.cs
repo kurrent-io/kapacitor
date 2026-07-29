@@ -465,6 +465,61 @@ public class FlowsDriverSchemaConformanceTests {
         await Assert.That(projected).IsEquivalentTo(installed);
     }
 
+    // ── the stale-schema invariant ────────────────────────────────────────────────────────────
+    //
+    // Every assertion above proves the CURRENT binary ships a vendor-capable schema. None of them
+    // can help a harness that connected BEFORE the upgrade: MCP tool schemas are cached at connect
+    // time, so such a driver keeps offering a `start_review_flow` with no `vendor` property, and no
+    // amount of server- or CLI-side correctness can put the parameter back in its hands.
+    //
+    // For that window the ONLY protection is the instruction the driver reads — and unlike the MCP
+    // schema, the skills are plain files refreshed on disk by `kcap update`, so a stale-schema
+    // session still reads the current text. That makes this prose load-bearing rather than
+    // advisory: delete it and a driver whose schema lacks `vendor` will take the server default and
+    // report that the user's named reviewer ran, which is precisely the claim the design forbids.
+
+    /// <summary>The two skills that teach a driver to start a flow, and the anchor introducing the
+    /// stale-schema case in each.</summary>
+    static readonly (string Skill, string Anchor)[] FlowSkills = [
+        ("review-flows", "If `start_review_flow` has no `vendor` parameter"),
+        ("agent-flows",  "If `start_flow` has no `vendor` parameter"),
+    ];
+
+    public static IEnumerable<Func<(string Skill, string Anchor)>> FlowSkillFiles() =>
+        FlowSkills.Select(s => (Func<(string, string)>)(() => s));
+
+    [Test]
+    [MethodDataSource(nameof(FlowSkillFiles))]
+    public async Task Each_flow_skill_forbids_claiming_a_named_reviewer_it_could_not_request(
+            (string Skill, string Anchor) skill) {
+        var path = Path.Combine(RepoKcapDir(), "skills", skill.Skill, "SKILL.md");
+        var text = await File.ReadAllTextAsync(path);
+
+        var at = text.IndexOf(skill.Anchor, StringComparison.Ordinal);
+        await Assert.That(at).IsGreaterThanOrEqualTo(0)
+            .Because($"{skill.Skill} no longer covers a start tool whose schema predates `vendor`");
+
+        // Scope every remaining assertion to THIS section. Searching the whole file would pass on
+        // unrelated prose -- both skills already say "restart the harness" in their
+        // tools-not-loaded section, so a whole-file Contains("restart") is satisfied even with this
+        // guidance deleted outright.
+        var section = text[at..Math.Min(text.Length, at + 1400)];
+
+        // 1. The prohibition itself -- the load-bearing sentence.
+        await Assert.That(section.Contains("report that the named reviewer ran", StringComparison.Ordinal)
+                       || section.Contains("report that the named reviewer ran", StringComparison.OrdinalIgnoreCase)).IsTrue()
+            .Because("the driver must be told not to claim a reviewer it could not name");
+
+        // 2. WHY omitting the parameter is not neutral: the server substitutes its own default.
+        await Assert.That(section.Contains("default", StringComparison.OrdinalIgnoreCase)).IsTrue()
+            .Because("without the consequence, 'do not claim it' reads as mere pedantry");
+
+        // 3. The actionable recovery. Documentation that names the failure but not the fix leaves
+        //    the user stuck -- the design requires an actionable message, not just a warning.
+        await Assert.That(section.Contains("restart the harness", StringComparison.OrdinalIgnoreCase)).IsTrue()
+            .Because("the supported recovery is restarting the harness; kcap cannot refresh a cached schema");
+    }
+
     // ── drift tripwires ───────────────────────────────────────────────────────────────────────
 
     // Two independent copies of the kcap server list exist: KcapMcpServers.All (what gets registered

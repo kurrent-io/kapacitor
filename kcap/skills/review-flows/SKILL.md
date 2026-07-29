@@ -56,6 +56,27 @@ Cursor / cursor-agent → `cursor`; GitHub Copilot / Copilot CLI → `copilot`; 
 Normalize only the reviewer-role mention. Positive contrast (for example, “from Codex, ask Claude”)
 selects Claude; negated names are removed; two remaining reviewer candidates are ambiguous.
 
+### If `start_review_flow` has no `vendor` parameter
+
+Your harness caches the kcap MCP tool schema at the moment it connects to the server. If kcap was
+upgraded while this session was already running, you may still be looking at an older schema in
+which `start_review_flow` has no `vendor` property — and a parameter you cannot see is one you
+cannot send. kcap cannot refresh a schema the harness has already cached.
+
+When that happens and the user has named a reviewer:
+
+- **Do not start the flow and then report that the named reviewer ran.** Without `vendor` the
+  server applies its own configured default, which may be an entirely different vendor. Claiming
+  the named reviewer ran when you could not send the parameter is the single failure this
+  contract exists to prevent.
+- Tell the user their harness is holding a stale kcap MCP schema, and that the fix is to
+  restart the harness session (or reconnect the `kcap-flows` MCP server) and start a fresh task.
+- Start without `vendor` only if the user, having been told, explicitly asks for the server default.
+
+The `client_upgrade_required`, `flow_client_protocol_required`, and
+`flow_client_protocol_unsupported` errors below are the server-side half of the same rule: reserved
+review aliases fail closed on a stale client rather than silently substituting a reviewer.
+
 ## Choosing a reviewer model
 
 If the user names a specific model for the reviewer (e.g. "review with Claude opus", "use gpt-5-codex
