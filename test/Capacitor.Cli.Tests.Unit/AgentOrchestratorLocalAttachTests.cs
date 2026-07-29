@@ -541,7 +541,8 @@ public partial class AgentOrchestratorVendorTests {
     public async Task Attaching_to_a_flow_participant_is_read_only() {
         var server = new TripwireServerConnection();
         await using var orch = BuildOrchestrator(server, new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>());
-        var agent = orch.SeedAgentForTest("flow-1", kind: LaunchKind.ReviewFlow, flowRunId: "flow-7f3a", flowRole: "reviewer");
+        var pty   = new RecordingPtyProcess();
+        var agent = orch.SeedAgentForTest("flow-1", kind: LaunchKind.ReviewFlow, flowRunId: "flow-7f3a", flowRole: "reviewer", pty: pty);
 
         // Client sends input, then a resize, then detaches. None of the first two may land.
         var readBuf = new MemoryStream();
@@ -563,15 +564,21 @@ public partial class AgentOrchestratorVendorTests {
 
         // The resize must not have been recorded, so the PTY is never clamped to the viewer.
         await Assert.That(agent.ClientDims).IsEmpty();
+
+        // The stdin frame must never reach the runtime — this is the daemon-side guarantee
+        // itself, not just the client-observable frame type above.
+        await Assert.That(pty.Writes).IsEmpty();
     }
 
     [Test]
     public async Task Attaching_to_a_plain_agent_stays_read_write() {
         var server = new TripwireServerConnection();
         await using var orch = BuildOrchestrator(server, new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>());
-        orch.SeedAgentForTest("plain-1");
+        var pty = new RecordingPtyProcess();
+        orch.SeedAgentForTest("plain-1", pty: pty);
 
         var readBuf = new MemoryStream();
+        await FrameCodec.WriteAsync(readBuf, LocalFrame.Stdin("hello"u8.ToArray()), default);
         await FrameCodec.WriteAsync(readBuf, LocalFrame.Detach(), default);
         readBuf.Position = 0;
         using var client = new DuplexTestStream(readBuf, new MemoryStream());
@@ -581,6 +588,9 @@ public partial class AgentOrchestratorVendorTests {
         client.WrittenStream.Position = 0;
         var first = await FrameCodec.ReadAsync(client.WrittenStream, default);
         await Assert.That(first!.Type).IsEqualTo(FrameType.Attached);
+
+        // Mirrors the read-only test: an unprotected agent's stdin really does reach the PTY.
+        await Assert.That(pty.Writes).IsEquivalentTo(new[] { "hello" });
     }
 
     // ── Test doubles for the local-spawn lifecycle ──────────────────────
