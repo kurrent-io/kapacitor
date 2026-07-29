@@ -171,6 +171,12 @@ public class McpFlowsServerTests : IDisposable {
     /// otherwise leak that session's CLAUDE_CODE_SESSION_ID / CLAUDE_PROJECT_DIR into every spawned
     /// server and make requester-context assertions depend on who ran the tests. Every spawn helper
     /// goes through here so the child's harness identity is exactly what the test asked for.
+    ///
+    /// <para>CODEX_THREAD_ID is removed unconditionally: the resolver reads a co-present value as
+    /// "another harness is nested around us, so the Claude signals are unprovable" and deliberately
+    /// falls back to the ambient resolution. Leaving an inherited one in place would silently route
+    /// every requester-context test down the fallback branch whenever the suite is run from a Codex
+    /// session — a real hermeticity hole, not a theoretical one.</para>
     /// </summary>
     static void ApplyHarnessSignals(ProcessStartInfo psi, string? harnessSessionId, string? harnessProjectDir) {
         if (harnessSessionId is null) psi.Environment.Remove("CLAUDE_CODE_SESSION_ID");
@@ -178,6 +184,8 @@ public class McpFlowsServerTests : IDisposable {
 
         if (harnessProjectDir is null) psi.Environment.Remove("CLAUDE_PROJECT_DIR");
         else psi.Environment["CLAUDE_PROJECT_DIR"] = harnessProjectDir;
+
+        psi.Environment.Remove("CODEX_THREAD_ID");
     }
 
     static async Task<JsonObject> SendRequest(Process proc, JsonObject request, TimeSpan? timeout = null) {

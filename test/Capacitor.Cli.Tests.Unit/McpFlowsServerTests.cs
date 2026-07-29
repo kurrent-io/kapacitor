@@ -462,22 +462,32 @@ public class McpFlowsServerTests {
     // --- Requester session id: threaded from the caller, never re-read from the environment ---
 
     [Test]
-    [Arguments("start_review_flow", "/api/flows/review/start/v2")]
-    [Arguments("start_flow", "/api/flows/review/start/v2")]
+    // All FOUR start dispatch lambdas: catalog ("kind") and generic ("definition_id"), each in its
+    // no-model (settlement-retry, v2 route) and model-bearing (refresh-only, v3 route) form. A model
+    // start goes through a different send wrapper, so dropping the argument from just one of the four
+    // has to be caught here.
+    [Arguments("start_review_flow", null, "/api/flows/review/start/v2")]
+    [Arguments("start_flow", null, "/api/flows/review/start/v2")]
+    [Arguments("start_review_flow", "opus", "/api/flows/review/start/v3")]
+    [Arguments("start_flow", "opus", "/api/flows/review/start/v3")]
     public async Task HandleToolCall_posts_the_requesting_session_id_it_was_given(
-            string toolName, string expectedPath) {
+            string toolName, string? model, string expectedPath) {
         // Guards the wiring the live defect ran through: RunAsync resolves the requesting session
         // from the running harness and hands it down, so a stale KCAP_SESSION_ID in this process's
         // environment can never reach the wire. If the dispatch stopped threading the value (or went
         // back to reading the env inside StartFlowAsync), the posted body would carry null or
         // whatever this test process inherited — not the id supplied here.
         using var server = WireMockServer.Start();
-        server.Given(Request.Create().WithPath(expectedPath).UsingPost())
+        server.Given(Request.Create().WithPath("/api/flows/review/start/v2").UsingPost())
             .RespondWith(Response.Create().WithStatusCode(200).WithBody(
                 """{"flow_run_id":"f1","status":"running","round_id":null,"round_number":null}"""));
+        // The v3 route needs the model acknowledgement fields, or the response is rejected before the
+        // body assertion below is reached.
+        server.Given(Request.Create().WithPath("/api/flows/review/start/v3").UsingPost())
+            .RespondWith(Response.Create().WithStatusCode(200).WithBody(V3RunningWithAck));
         using var client = new HttpClient();
 
-        var arguments = ModelStartArguments(vendor: null, model: null);
+        var arguments = ModelStartArguments(vendor: model is null ? null : "claude", model: model);
         if (toolName == "start_flow") {
             arguments["definition_id"] = arguments["kind"]!.GetValue<string>();
             arguments.Remove("kind");
@@ -490,7 +500,12 @@ public class McpFlowsServerTests {
 
         await Assert.That(JsonNode.Parse(response)!["result"]!["isError"]).IsNull();
 
-        var body = JsonNode.Parse(server.LogEntries.Single().RequestMessage.Body!)!.AsObject();
+        // Exactly one POST, on the route this case is meant to exercise — so a case that silently
+        // fell through to the other wrapper can't pass by asserting the wrong request's body.
+        var hit = server.LogEntries.Single();
+        await Assert.That(hit.RequestMessage.Path).IsEqualTo(expectedPath);
+
+        var body = JsonNode.Parse(hit.RequestMessage.Body!)!.AsObject();
         await Assert.That(body["requesting_session_id"]!.GetValue<string>())
             .IsEqualTo("d15c0ffee0000000000000000000ba5e");
     }
