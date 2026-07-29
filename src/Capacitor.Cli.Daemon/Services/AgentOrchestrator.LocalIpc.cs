@@ -14,11 +14,16 @@ internal partial class AgentOrchestrator {
     }
 
     /// Wire spelling of <see cref="LaunchKind"/>. Kept separate from the enum name so the table
-    /// reads as a CLI column rather than a .NET identifier.
+    /// reads as a CLI column rather than a .NET identifier. A future kind that falls through the
+    /// switch reports its own enum name rather than masquerading as "agent" — the CLI's
+    /// `IsProtectedKind` then fails safe (protected) on anything it doesn't recognise, instead of
+    /// the daemon advertising an unprotected kind that its own `Kind != Default` checks would
+    /// still protect.
     static string KindText(LaunchKind kind) => kind switch {
+        LaunchKind.Default    => "agent",
         LaunchKind.Review     => "review",
         LaunchKind.ReviewFlow => "review-flow",
-        _                     => "agent",
+        _                     => kind.ToString(),
     };
 
     /// <summary>
@@ -77,8 +82,22 @@ internal partial class AgentOrchestrator {
         }
 
         // Not live here — it may be a survivor of a previous daemon incarnation, which the PID
-        // record can still reap. This is why the client sends full ids verbatim. Kind is
-        // unknown for those, so protection cannot apply.
+        // record can still reap. This is why the client sends full ids verbatim. The record
+        // carries the same Kind/FlowRunId/FlowRole the live agent would have, so protection still
+        // applies — a review-flow survivor from a prior incarnation is refused exactly like a
+        // live one. TryStopByPidRecordAsync itself stays policy-free (it's shared with the
+        // server-origin HandleStopAgent path); the decision is made here, before it ever runs.
+        if (!force && FindPidRecord(agentId) is { Kind: not nameof(LaunchKind.Default) } record) {
+            var consequence = record.Kind == nameof(LaunchKind.ReviewFlow)
+                ? "Stopping it mid-round leaves the flow without a participant."
+                : "Stopping it discards the review before it can report back.";
+
+            await FrameCodec.WriteAsync(stream, LocalFrame.Error(
+                $"{agentId} is a {ProtectionReason(record)}. {consequence} Pass --force to stop it anyway."), ct);
+
+            return;
+        }
+
         var reaped = await TryStopByPidRecordAsync(agentId);
 
         await FrameCodec.WriteAsync(
@@ -185,13 +204,25 @@ internal partial class AgentOrchestrator {
         return AttachClientLoopAsync(agent, stream, ct, readOnly: agent.Kind != LaunchKind.Default);
     }
 
-    /// Human-readable "why is this read-only", carried on the AttachedReadOnly frame.
-    static string ProtectionReason(AgentInstance agent) {
-        var kind = agent.Kind == LaunchKind.ReviewFlow ? "review-flow" : "review";
-        var role = string.IsNullOrEmpty(agent.FlowRole) ? "" : $", role {agent.FlowRole}";
-        var flow = string.IsNullOrEmpty(agent.FlowRunId) ? "" : $" (flow {agent.FlowRunId}{role})";
+    /// Human-readable "why is this read-only/refused", carried on the AttachedReadOnly frame and
+    /// the not-live StopV2 refusal below (which reads the same kind from a persisted PID record
+    /// instead of a live AgentInstance).
+    static string ProtectionReason(AgentInstance agent) => ProtectionReason(agent.Kind.ToString(), agent.FlowRunId, agent.FlowRole);
 
-        return $"{kind} agent{flow}";
+    static string ProtectionReason(AgentPidRecord record) => ProtectionReason(record.Kind, record.FlowRunId, record.FlowRole);
+
+    /// A kind this build doesn't recognise reports its own name rather than being mislabelled as
+    /// "review" — mirrors KindText's fail-safe shape.
+    static string ProtectionReason(string kind, string? flowRunId, string? flowRole) {
+        var label = kind switch {
+            nameof(LaunchKind.ReviewFlow) => "review-flow",
+            nameof(LaunchKind.Review)     => "review",
+            _                             => kind,
+        };
+        var role = string.IsNullOrEmpty(flowRole) ? "" : $", role {flowRole}";
+        var flow = string.IsNullOrEmpty(flowRunId) ? "" : $" (flow {flowRunId}{role})";
+
+        return $"{label} agent{flow}";
     }
 
     /// <summary>

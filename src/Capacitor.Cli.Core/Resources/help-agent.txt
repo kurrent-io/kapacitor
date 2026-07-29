@@ -5,10 +5,12 @@ Usage: kcap agent <subcommand>
 Subcommands:
   start <vendor> [flags] [-- <agent args>]
                           Start an agent the daemon hosts for you
-  ls                      List this daemon's agents (id, status, repo)
+  ls                      List this daemon's agents (id, status, kind, repo)
   attach <agent-id>       Attach your terminal to a running agent
-  stop <agent-id>         Stop an agent (graceful /exit, then terminate)
-  stop --all [-y]         Stop every agent this daemon hosts
+  stop <agent-id> [--force]
+                          Stop an agent (graceful /exit, then terminate)
+  stop --all [-y] [--force]
+                          Stop every agent this daemon hosts
 
 Running `kcap agent` with no subcommand lists agents.
 

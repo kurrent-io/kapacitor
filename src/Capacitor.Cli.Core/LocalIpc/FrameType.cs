@@ -18,7 +18,7 @@ public enum FrameType : byte {
     Stdout    = 65,
     Exited    = 66,
     Error     = 67,
-    AgentList = 68, // UTF-8 table payload: one `id\tstatus\tcwd` line per agent
+    AgentList = 68, // UTF-8 table payload: one `id\tstatus\trepo\tkind\tflowRunId\tflowRole` line per agent
     RestartAck = 69, // acknowledgement for Restart (Text = short status)
     StopAck    = 70, // acknowledgement for Stop (Text = one `id\tstatus` line per agent; status is "stopped", "skipped", or "failed")
     AttachedReadOnly = 71, // Attached for a protected agent: id + reason + snapshot, no input accepted

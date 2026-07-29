@@ -719,11 +719,19 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     /// on Unix, carries the expected <c>KCAP_AGENT_ID</c> env — ambiguity spares), reap it by identity
     /// and delete the record on confirmed death. This makes the server's registry-independent S2 stop
     /// effective even against a NEW daemon incarnation that never knew the agent in memory.</summary>
-    async Task<bool> TryStopByPidRecordAsync(string agentId) {
-        if (_pidRecords is null) return false;
+    /// <summary>Looks up a persisted PID record by agent id, or null if none exists. Read-only and
+    /// policy-free — shared by the reap below and by the local-stop protection check in
+    /// AgentOrchestrator.LocalIpc.cs, which decides whether to reap at all before this ever runs.</summary>
+    internal AgentPidRecord? FindPidRecord(string agentId) {
+        if (_pidRecords is null) return null;
 
         var record = _pidRecords.ReadAll().FirstOrDefault(r => r.AgentId == agentId);
-        if (record.AgentId != agentId) return false; // no record
+
+        return record.AgentId == agentId ? record : null;
+    }
+
+    async Task<bool> TryStopByPidRecordAsync(string agentId) {
+        if (FindPidRecord(agentId) is not { } record) return false;
 
         var confirmedGone = await ProcessReaper.ReapByRecordAsync(record, _logger, _shutdownCts.Token);
         if (confirmedGone) {
@@ -733,7 +741,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             // boot's OrphanReaper record pass re-derives it and Upsert (idempotent on the source-stable
             // (AgentId, OldEpoch) key) collapses onto the committed entry, then completes the delete.
             _resolvedLedger?.Upsert(agentId, record.DaemonEpoch, record.FlowRunId, record.FlowRole);
-            _pidRecords.Delete(agentId); // delete ONLY on confirmed death (spec §6.4(2))
+            _pidRecords?.Delete(agentId); // delete ONLY on confirmed death (spec §6.4(2))
         }
 
         return confirmedGone;

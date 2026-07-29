@@ -180,10 +180,15 @@ internal static class AgentCommand {
             }
 
             Console.WriteLine($"Found {targets.Length} agents:");
-            foreach (var a in agents.Where(a => targets.Contains(a.Id))) Console.WriteLine($"  • {a.Id}  {a.Repo}");
+            foreach (var a in agents.Where(a => targets.Contains(a.Id) && !protectedIds.Contains(a.Id)))
+                Console.WriteLine($"  • {a.Id}  {a.Repo}");
 
-            if (!force && protectedIds.Length > 0) {
-                Console.WriteLine($"Skipping {protectedIds.Length} review agent(s) — pass --force to include them:");
+            // Both branches label protected rows with their Kind before the [y/N] prompt, so the
+            // blast radius of --force is as visible as the default skip list is.
+            if (protectedIds.Length > 0) {
+                Console.WriteLine(force
+                    ? $"Including {protectedIds.Length} review agent(s):"
+                    : $"Skipping {protectedIds.Length} review agent(s) — pass --force to include them:");
                 foreach (var a in agents.Where(a => protectedIds.Contains(a.Id)))
                     Console.WriteLine($"  • {a.Id}  {a.Kind}  {a.Repo}");
             }
@@ -352,8 +357,11 @@ internal static class AgentCommand {
 
             if (resp.Text.Length == 0) return [];
 
+            // A row needs at least id/status/repo — fewer columns is unparseable, not a short row
+            // to default-fill (a repo path containing a stray tab could otherwise shift the kind
+            // column and mislabel an agent).
             return [.. resp.Text.Split('\n')
-                .Where(l => l.Length > 0)
+                .Where(l => l.Length > 0 && l.Split('\t').Length >= 3)
                 .Select(ParseAgentRow)];
         } catch (Exception ex) when (ex is SocketException or IOException) {
             await Console.Error.WriteLineAsync($"kcap: cannot reach daemon: {ex.Message}");
@@ -446,8 +454,10 @@ internal static class AgentCommand {
     }
 
     /// Kinds the CLI refuses to mutate by accident: a reviewer mid-round is not the user's to
-    /// type at or stop. Mirrors LaunchKind — anything that is not a plain agent is protected.
-    internal static bool IsProtectedKind(string kind) => kind is "review" or "review-flow";
+    /// type at or stop. Mirrors LaunchKind — anything that is not a plain agent is protected,
+    /// including a kind this build doesn't recognise: an unrecognised kind fails safe rather
+    /// than reading as stoppable.
+    internal static bool IsProtectedKind(string kind) => kind is not "agent";
 
     /// <summary>Splits an agent list into what `stop --all` will stop and what it will skip.</summary>
     internal static (string[] Stoppable, string[] Protected) PartitionByProtection(IReadOnlyList<AgentRow> agents) => (

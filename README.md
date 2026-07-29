@@ -948,7 +948,7 @@ kcap agent start claude -d                    # start without attaching; prints 
 
 ```bash
 kcap agent                 # no subcommand — same as `kcap agent ls`
-kcap agent ls              # list daemon-hosted agents (id, status, repo)
+kcap agent ls              # list daemon-hosted agents (id, status, kind, repo)
 kcap agent attach ab12     # re-attach your terminal (any unique id prefix works)
 kcap agent stop ab12       # graceful /exit, then terminate
 kcap agent stop --all -y   # stop every agent this daemon hosts, no prompt

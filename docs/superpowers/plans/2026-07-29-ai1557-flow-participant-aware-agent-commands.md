@@ -827,10 +827,15 @@ Replace the `--all` listing block (the `Console.WriteLine($"Found {agents.Count}
             }
 
             Console.WriteLine($"Found {targets.Length} agents:");
-            foreach (var a in agents.Where(a => targets.Contains(a.Id))) Console.WriteLine($"  • {a.Id}  {a.Repo}");
+            foreach (var a in agents.Where(a => targets.Contains(a.Id) && !protectedIds.Contains(a.Id)))
+                Console.WriteLine($"  • {a.Id}  {a.Repo}");
 
-            if (!force && protectedIds.Length > 0) {
-                Console.WriteLine($"Skipping {protectedIds.Length} review agent(s) — pass --force to include them:");
+            // The spec requires `--all --force` to show the blast radius too: both branches label
+            // protected rows with their Kind before the [y/N] prompt, not just the skip path.
+            if (protectedIds.Length > 0) {
+                Console.WriteLine(force
+                    ? $"Including {protectedIds.Length} review agent(s):"
+                    : $"Skipping {protectedIds.Length} review agent(s) — pass --force to include them:");
                 foreach (var a in agents.Where(a => protectedIds.Contains(a.Id)))
                     Console.WriteLine($"  • {a.Id}  {a.Kind}  {a.Repo}");
             }

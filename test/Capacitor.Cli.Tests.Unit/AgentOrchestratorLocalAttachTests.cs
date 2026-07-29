@@ -7,6 +7,7 @@ using Capacitor.Cli.Core.LocalIpc;
 using Capacitor.Cli.Daemon;
 using Capacitor.Cli.Daemon.Pty;
 using Capacitor.Cli.Daemon.Services;
+using Capacitor.Cli.Tests.Unit.Daemon;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Capacitor.Cli.Tests.Unit;
@@ -867,6 +868,49 @@ public partial class AgentOrchestratorVendorTests {
         await Assert.That(reply.Text).DoesNotContain("flow");
         await Assert.That(reply.Text).Contains("--force");
         await Assert.That(orch.GetAgentForTest("rev-1")!.Status).IsNotEqualTo("Completed");
+    }
+
+    [Test]
+    public async Task Stopping_a_prior_incarnation_flow_survivor_without_force_is_refused_before_reaping() {
+        // Not in _agents — this daemon incarnation never saw it — but its persisted PID record
+        // says it was a review-flow participant. The refusal must fire off the RECORD's Kind
+        // before TryStopByPidRecordAsync (and its live-process reap) ever runs.
+        var server = new TripwireServerConnection();
+        await using var orch = BuildOrchestrator(server, new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>());
+        orch.WritePidRecordForTest(new AgentPidRecord(
+            "ghost-flow", 999_999, "", PidIdentityKind.IdentityUnavailable, "ReviewFlow", "codex",
+            "flow-7f3a", "reviewer", orch.DaemonIdForTest, orch.DaemonEpochForTest, DateTimeOffset.UtcNow));
+
+        var reply = await StopV2AndReadReply(orch, force: false, "ghost-flow");
+
+        await Assert.That(reply!.Type).IsEqualTo(FrameType.Error);
+        await Assert.That(reply.Text).Contains("review-flow");
+        await Assert.That(reply.Text).Contains("--force");
+        // Refused before any reap attempt — the record is untouched.
+        await Assert.That(orch.PidRecordsForTest().Any(r => r.AgentId == "ghost-flow")).IsTrue();
+    }
+
+    [Test]
+    public async Task Stopping_a_prior_incarnation_flow_survivor_with_force_bypasses_the_kind_gate() {
+        // --force must reach TryStopByPidRecordAsync itself (kept policy-free) rather than being
+        // turned back by the new gate above it.
+        var server = new TripwireServerConnection();
+        await using var orch = BuildOrchestrator(server, new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>());
+
+        using var dummy = DummyProcess.StartSleep(30);
+        var pid      = dummy.Pid;
+        var identity = ProcessIdentity.Capture(pid)!;
+        dummy.Kill(); dummy.WaitForExit(TimeSpan.FromSeconds(5)); // confirmed dead before the reap runs
+
+        orch.WritePidRecordForTest(new AgentPidRecord(
+            "ghost-flow-2", pid, identity, PidIdentityKind.Present, "ReviewFlow", "codex",
+            "flow-7f3a", "reviewer", orch.DaemonIdForTest, orch.DaemonEpochForTest, DateTimeOffset.UtcNow));
+
+        var reply = await StopV2AndReadReply(orch, force: true, "ghost-flow-2");
+
+        await Assert.That(reply!.Type).IsEqualTo(FrameType.StopAck);
+        await Assert.That(reply.Text).IsEqualTo("ghost-flow-2\tstopped");
+        await Assert.That(orch.PidRecordsForTest().Any(r => r.AgentId == "ghost-flow-2")).IsFalse();
     }
 
     [Test]

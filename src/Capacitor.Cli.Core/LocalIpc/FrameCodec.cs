@@ -135,6 +135,7 @@ public static class FrameCodec {
         return new(FrameType.StopV2) { Bytes = ms.ToArray(), Text = agentId };
     }
     public static (bool force, string agentId) StopV2(LocalFrame f) {
+        Require(f.Bytes, 0, 1);
         var o = 1;
         return (f.Bytes[0] == 1, ReadLp(f.Bytes, ref o));
     }
