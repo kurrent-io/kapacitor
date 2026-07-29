@@ -11,6 +11,15 @@ public class AgentCommandRoutingTests {
     }
 
     [Test]
+    public async Task A_leading_flag_is_an_ls_option_not_a_subcommand() {
+        // `kcap agent --daemon dev` lists that daemon's agents; it is not a subcommand
+        // named `--daemon`, which is what a naive argv[1] split would report.
+        var (sub, rest) = AgentCommand.SplitSubcommand(["agent", "--daemon", "dev"]);
+        await Assert.That(sub).IsEqualTo("ls");
+        await Assert.That(rest).IsEquivalentTo(new[] { "--daemon", "dev" });
+    }
+
+    [Test]
     public async Task Subcommand_and_its_arguments_are_split() {
         var (sub, rest) = AgentCommand.SplitSubcommand(["agent", "stop", "ab12", "--daemon", "dev"]);
         await Assert.That(sub).IsEqualTo("stop");

@@ -85,7 +85,7 @@ if (args.Skip(1).Any(a => a is "--help" or "-h")) {
 }
 
 // Commands that don't need a server URL
-string[] offlineCommands = ["--help", "-h", "help", "--version", "-v", "logout", "cleanup", "config", "daemon", "setup", "status", "update", "plugin", "profile", "use", "repos", "login", "ignore", "remap", "uninstall", "cursor-verify-appendonly"];
+string[] offlineCommands = ["--help", "-h", "help", "--version", "-v", "logout", "cleanup", "config", "daemon", "setup", "status", "update", "plugin", "profile", "use", "repos", "login", "ignore", "remap", "uninstall", "cursor-verify-appendonly", "agent"];
 
 if (baseUrl is null && !offlineCommands.Contains(command)) {
     Console.Error.WriteLine("No server configured. Run `kcap setup` or set KCAP_URL.");
@@ -251,7 +251,7 @@ switch (command) {
     case "daemon":
         return await DaemonCommands.HandleAsync(args);
     case "agent":
-        return await AgentCommand.HandleAsync(args);
+        return await AgentCommand.HandleAsync(args, baseUrl);
     case "setup":
         return await SetupCommand.HandleAsync(args);
     case "plugin":

@@ -20,30 +20,41 @@ internal static class AgentCommand {
     /// start/stop the new group also owns.
     internal static readonly string[] DaemonOnlySubcommands = ["restart", "status", "logs", "doctor", "service"];
 
-    /// <summary>Bare `kcap agent` lists agents; otherwise argv[1] is the subcommand.</summary>
-    internal static (string Sub, string[] Args) SplitSubcommand(string[] args) =>
-        args.Length > 1 ? (args[1], args[2..]) : ("ls", []);
+    /// Global flags Program.cs reads off the raw argv and leaves in place. They are not this
+    /// group's to interpret, and the subcommand parsers reject unknown flags, so drop them first.
+    static readonly string[] GlobalFlags = ["--no-update-check"];
 
-    public static async Task<int> HandleAsync(string[] args) {
+    /// <summary>
+    /// Bare `kcap agent` lists agents, and so does a leading flag — `kcap agent --daemon dev`
+    /// is an `ls` with an option, not a subcommand named `--daemon`.
+    /// </summary>
+    internal static (string Sub, string[] Args) SplitSubcommand(string[] args) =>
+        args.Length > 1 && !args[1].StartsWith('-') ? (args[1], args[2..]) : ("ls", args[1..]);
+
+    public static async Task<int> HandleAsync(string[] args, string? baseUrl) {
+        var (sub, rest) = SplitSubcommand([.. args.Where(a => !GlobalFlags.Contains(a))]);
+
+        // `agent` was the daemon verb before it was renamed to `daemon`. The two groups still
+        // share start/stop, so those dispatch below; the rest only ever meant the daemon, and
+        // answering them with a bare usage line is how a healthy daemon reads as dead
+        // mid-diagnosis. Signposted ahead of the platform guard because `kcap daemon` works on
+        // Windows even though this group does not.
+        if (DaemonOnlySubcommands.Contains(sub)) {
+            await Console.Error.WriteLineAsync($"kcap agent: unknown subcommand '{sub}'");
+            await Console.Error.WriteLineAsync($"`{sub}` manages the daemon — run `kcap daemon {sub}`.");
+
+            return 1;
+        }
+
         if (NotSupportedOnWindows(out var rc)) return rc;
 
-        var (sub, rest) = SplitSubcommand(args);
-
         switch (sub) {
-            case "start":  return await RunAsync(rest);
+            case "start":  return await RunAsync(rest, baseUrl);
             case "ls":     return await ListAsync(rest);
             case "stop":   return await StopAsync(rest);
             case "attach": return await AttachAsync(rest);
             default:
                 await Console.Error.WriteLineAsync($"kcap agent: unknown subcommand '{sub}'");
-
-                // `agent` was the daemon verb before it was renamed to `daemon`. The two groups
-                // still share start/stop, so those dispatch here; the rest only ever meant the
-                // daemon, and answering them with a bare usage line is how a healthy daemon reads
-                // as dead mid-diagnosis.
-                if (DaemonOnlySubcommands.Contains(sub))
-                    await Console.Error.WriteLineAsync($"`{sub}` manages the daemon — run `kcap daemon {sub}`.");
-
                 await Console.Error.WriteLineAsync($"Usage: kcap agent <{string.Join('|', KnownSubcommands)}>");
                 await Console.Error.WriteLineAsync("Run `kcap agent --help` for details.");
 
@@ -51,7 +62,15 @@ internal static class AgentCommand {
         }
     }
 
-    static async Task<int> RunAsync(string[] args) {
+    static async Task<int> RunAsync(string[] args, string? baseUrl) {
+        // ls/stop/attach only ever talk to the local socket, so the group is offline-callable.
+        // Starting an agent is the one subcommand that needs a server for the daemon to record to.
+        if (baseUrl is null) {
+            await Console.Error.WriteLineAsync("kcap agent start: no server configured. Run `kcap setup` or set KCAP_URL.");
+
+            return 1;
+        }
+
         var parsed = AgentStartArgs.Parse(args);
         if (parsed.Error is not null) {
             await Console.Error.WriteLineAsync($"kcap agent start: {parsed.Error}");
