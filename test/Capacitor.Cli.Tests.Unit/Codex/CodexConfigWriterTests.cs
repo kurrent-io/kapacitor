@@ -1,3 +1,4 @@
+using Capacitor.Cli.Core;
 using Capacitor.Cli.Daemon.Services;
 using Microsoft.Extensions.Logging.Abstractions;
 using Tomlyn;
@@ -28,6 +29,14 @@ public class CodexConfigWriterTests {
     static TomlTable ReadToml(string path) =>
         TomlSerializer.Deserialize<TomlTable>(File.ReadAllText(path))!;
 
+    /// <summary>The <c>[projects]</c> key Codex itself would use — absolute, and lowercased on
+    /// Windows. Asserting on the raw input path would only hold on Unix.</summary>
+    static string Key(string worktreePath) => CodexPaths.NormalizeProjectKey(worktreePath);
+
+    /// <summary>A seeded <c>[projects.'…']</c> header under the normalised key. TOML literal
+    /// strings (single quotes) pass Windows backslashes through unescaped.</summary>
+    static string SeededHeader(string worktreePath) => $"[projects.'{Key(worktreePath)}']";
+
     [Test]
     public async Task Writes_initial_projects_table_when_config_toml_missing() {
         var (tmp, original) = ScopedHome();
@@ -41,7 +50,7 @@ public class CodexConfigWriterTests {
 
             var root     = ReadToml(configPath);
             var projects = (TomlTable)root["projects"];
-            var entry    = (TomlTable)projects["/tmp/some-worktree"];
+            var entry    = (TomlTable)projects[Key("/tmp/some-worktree")];
             await Assert.That((string)entry["trust_level"]).IsEqualTo("trusted");
         } finally { RestoreHome(original, tmp); }
     }
@@ -89,7 +98,7 @@ public class CodexConfigWriterTests {
 
             var projects = (TomlTable)root["projects"];
             await Assert.That((string)((TomlTable)projects["/existing/path"])["trust_level"]).IsEqualTo("trusted");
-            await Assert.That((string)((TomlTable)projects["/tmp/new-wt"])["trust_level"]).IsEqualTo("trusted");
+            await Assert.That((string)((TomlTable)projects[Key("/tmp/new-wt")])["trust_level"]).IsEqualTo("trusted");
         } finally { RestoreHome(original, tmp); }
     }
 
@@ -102,16 +111,16 @@ public class CodexConfigWriterTests {
 
             File.WriteAllText(
                 Path.Combine(codexDir, "config.toml"),
-                """
-                [projects."/tmp/wt"]
-                trust_level = "ask"
-                """
+                $"""
+                 {SeededHeader("/tmp/wt")}
+                 trust_level = "ask"
+                 """
             );
 
             CodexConfigWriter.TrustWorktree("/tmp/wt", NullLogger.Instance);
 
             var root  = ReadToml(Path.Combine(codexDir, "config.toml"));
-            var entry = (TomlTable)((TomlTable)root["projects"])["/tmp/wt"];
+            var entry = (TomlTable)((TomlTable)root["projects"])[Key("/tmp/wt")];
             await Assert.That((string)entry["trust_level"]).IsEqualTo("trusted");
         } finally { RestoreHome(original, tmp); }
     }
@@ -126,10 +135,10 @@ public class CodexConfigWriterTests {
 
             File.WriteAllText(
                 configPath,
-                """
-                [projects."/tmp/wt"]
-                trust_level = "trusted"
-                """
+                $"""
+                 {SeededHeader("/tmp/wt")}
+                 trust_level = "trusted"
+                 """
             );
             var originalMtime = File.GetLastWriteTimeUtc(configPath);
 
@@ -169,7 +178,7 @@ public class CodexConfigWriterTests {
             var projects   = (TomlTable)root["projects"];
 
             for (var i = 0; i < 20; i++) {
-                var entry = (TomlTable)projects[$"/tmp/wt-{i}"];
+                var entry = (TomlTable)projects[Key($"/tmp/wt-{i}")];
                 await Assert.That((string)entry["trust_level"]).IsEqualTo("trusted");
             }
         } finally { RestoreHome(original, tmp); }

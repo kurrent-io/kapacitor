@@ -183,8 +183,18 @@ static class ClaudeCliRunner {
             string?           systemPrompt,
             CancellationToken ct
         ) {
+        // Resolve rather than pass "claude" verbatim: CreateProcess appends only .exe, so the
+        // npm-installed claude.cmd shim on Windows would never be found (AI-72).
+        var exePath = CliExecutable.Resolve("claude");
+
+        if (exePath is null) {
+            log("claude not found on PATH");
+
+            return null;
+        }
+
         var psi = new ProcessStartInfo {
-            FileName               = "claude",
+            FileName               = exePath,
             WorkingDirectory       = workingDir,
             RedirectStandardOutput = true,
             RedirectStandardError  = true,

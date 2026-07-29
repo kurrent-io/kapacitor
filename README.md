@@ -582,7 +582,9 @@ After discovery, the import surfaces a one-shot report of any transcript working
 
 ### Daemon
 
-The daemon connects to the Capacitor server and runs Claude Code, Codex, or Cursor agents in isolated git worktrees, controlled from the dashboard. The daemon supports hosted Claude, Codex, and Cursor (`cursor` vendor) agents on macOS and Linux — choose the vendor from the dashboard's launch dialog. At startup the daemon probes `daemon.claude_path`, `daemon.codex_path`, and the Cursor CLI (`cursor-agent`, overridable via `KCAP_CURSOR_PATH` — see [Daemon config settings](#daemon-config-settings)) and advertises only the vendors it can actually spawn, so the launch dialog hides whichever agent isn't installed on the selected daemon.
+The daemon connects to the Capacitor server and runs Claude Code, Codex, or Cursor agents in isolated git worktrees, controlled from the dashboard. Hosted Claude and Codex agents run on macOS, Linux, **and Windows**; hosted Cursor (`cursor` vendor) is macOS and Linux only — choose the vendor from the dashboard's launch dialog. At startup the daemon probes `daemon.claude_path`, `daemon.codex_path`, and the Cursor CLI (`cursor-agent`, overridable via `KCAP_CURSOR_PATH` — see [Daemon config settings](#daemon-config-settings)) and advertises only the vendors it can actually spawn, so the launch dialog hides whichever agent isn't installed on the selected daemon.
+
+> **Windows and hosted Codex:** needs Windows 10 1809 (build 17763) or newer — Windows 11 recommended — because that's the floor for Codex's own Windows sandbox. Older builds don't advertise the `codex` vendor at all. The sandbox *implementation* (`elevated`, which needs one-time admin-approved `winget` setup, vs `unelevated`) is whatever your `~/.codex/config.toml` `[windows] sandbox` says; the daemon inherits it rather than overriding it. Codex is found on `PATH` whether installed via `winget` (`codex.exe`) or npm (`codex.cmd`).
 
 ```bash
 kcap daemon start                   # start in foreground (defaults --name to your OS username)

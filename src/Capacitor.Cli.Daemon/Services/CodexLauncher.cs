@@ -26,7 +26,24 @@ internal sealed partial class CodexLauncher(
     /// slug-level equivalence key). Stateless singleton.</summary>
     public IReviewerModelResolver? ReviewerModelResolver => CodexReviewerModelResolver.Instance;
 
-    public bool IsAvailable() => CliResolver.Exists(CliPath);
+    // Codex supports its Windows sandbox on Windows 10 1809 (build 17763) and newer only;
+    // Windows 11 is the recommended baseline. Older builds lack the APIs its restricted-token
+    // and ACL boundaries rely on, so the CLI is unusable there even when installed.
+    // https://developers.openai.com/codex/windows
+    const int MinWindowsBuild = 17763;
+
+    internal const string UnsupportedWindowsMessage =
+        "Hosted Codex agents need Windows 10 1809 (build 17763) or newer — Windows 11 recommended. " +
+        "Codex's Windows sandbox is unavailable on this host. "                                      +
+        "See https://developers.openai.com/codex/windows";
+
+    /// <summary>Non-Windows is always supported — the macOS/Linux path predates this gate.</summary>
+    internal static bool WindowsVersionSupported =>
+        !OperatingSystem.IsWindows() || OperatingSystem.IsWindowsVersionAtLeast(10, 0, MinWindowsBuild);
+
+    // Version gate BEFORE the PATH probe, so an unsupported host never advertises the vendor at
+    // all — the launch dialog hides Codex rather than offering a launch that cannot work.
+    public bool IsAvailable() => WindowsVersionSupported && CliResolver.Exists(CliPath);
 
     /// <summary>
     /// Enumerates the effective MCP servers a review-flow reviewer would otherwise inherit —
@@ -57,6 +74,11 @@ internal sealed partial class CodexLauncher(
     static readonly string[] CriticalHookEvents = ["SessionStart", "Stop", "PermissionRequest"];
 
     public void Prepare(LauncherContext ctx) {
+        // Step 0: refuse an unsupported Windows build before touching the worktree. IsAvailable
+        // normally keeps us off this path entirely; this catches an in-flight or stale-vendor-list
+        // launch and turns it into an actionable LaunchFailed instead of a spawn error.
+        if (!WindowsVersionSupported) throw new CodexUnsupportedWindowsException(UnsupportedWindowsMessage);
+
         // A borrowed cwd is the user's own repo: skip the repo-mutating steps (overlay,
         // ~/.codex trust write). Only the read-only hooks preflight runs for it.
         var owned = ctx.Work == WorkLocation.OwnedWorktree;

@@ -15,6 +15,25 @@ public static class CodexPaths {
     public static string UserHooksJson => Path.Combine(Home(), "hooks.json");
 
     /// <summary>
+    /// Matches Codex's <c>[projects."&lt;path&gt;"]</c> key normalisation: absolute, and on
+    /// Windows lowercased with backslashes preserved. Codex writes
+    /// <c>[projects."c:\\users\\me\\src\\repo"]</c> for <c>C:\Users\me\src\repo</c> — drive
+    /// letter included — so a raw mixed-case path is a different, case-sensitive TOML key and
+    /// our pre-trust write would be invisible to Codex, leaving it parked on the directory
+    /// trust prompt (the Codex analogue of the Claude trust hang in
+    /// <c>ClaudeLauncher.NormalizeClaudeProjectKey</c>).
+    ///
+    /// <para>Lowercasing is Windows-only and deliberately so: Unix filesystems are
+    /// case-sensitive, Codex does not fold case there, and the macOS/Linux hosted path
+    /// already works.</para>
+    /// </summary>
+    public static string NormalizeProjectKey(string path) {
+        var full = Path.GetFullPath(path);
+
+        return OperatingSystem.IsWindows() ? full.ToLowerInvariant() : full;
+    }
+
+    /// <summary>
     /// Walk <c>~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl</c>, optionally pruning
     /// directories below <paramref name="since"/>. Returns one entry per rollout
     /// with the session id parsed from the filename suffix

@@ -66,7 +66,8 @@ public static class CodexConfigToml {
             : Update(configPath ?? DefaultConfigPath, root => MutateNetworkAccess(root, allowDomains), out _);
 
     /// <summary>
-    /// Writes the per-worktree pre-trust entry:
+    /// Writes the per-worktree pre-trust entry, keyed in Codex's own normalised form (see
+    /// <see cref="CodexPaths.NormalizeProjectKey"/>):
     /// <code>
     /// [projects."/abs/worktree/path"]
     /// trust_level = "trusted"
@@ -438,7 +439,10 @@ public static class CodexConfigToml {
 
     static bool MutateTrust(TomlTable root, string worktreePath) {
         var projects = GetOrAddTable(root, "projects");
-        var entry    = GetOrAddTable(projects, worktreePath);
+        // TOML keys are case-sensitive, so the key has to be in the exact form Codex looks up
+        // — see CodexPaths.NormalizeProjectKey. Writing worktreePath verbatim leaves Codex on
+        // the trust prompt on Windows.
+        var entry = GetOrAddTable(projects, CodexPaths.NormalizeProjectKey(worktreePath));
 
         if (entry.TryGetValue("trust_level", out var existing) &&
             existing is string s && string.Equals(s, "trusted", StringComparison.Ordinal))

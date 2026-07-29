@@ -536,10 +536,12 @@ public class CodexLauncherTests {
             NewLauncher().Prepare(ctx);
 
             var configToml = File.ReadAllText(Path.Combine(home, ".codex", "config.toml"));
-            // The TOML writer emits the path as a basic (double-quoted) key, so
-            // backslashes are escaped per spec (\ → \\). Match the escaped form
-            // so the assertion holds on Windows too (no-op on POSIX paths).
-            var escapedWorktree = worktree.Replace("\\", "\\\\");
+            // The key is written in Codex's own normalised form (absolute, lowercased on
+            // Windows — see CodexPaths.NormalizeProjectKey), not the raw worktree path. The TOML
+            // writer then emits it as a basic (double-quoted) key, so backslashes are escaped
+            // per spec (\ → \\); match the escaped form so this holds on Windows too (both are
+            // no-ops on POSIX paths).
+            var escapedWorktree = CodexPaths.NormalizeProjectKey(worktree).Replace("\\", "\\\\");
             await Assert.That(configToml).Contains($"\"{escapedWorktree}\"");
             await Assert.That(configToml).Contains("trust_level = \"trusted\"");
         } finally {
