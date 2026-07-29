@@ -81,9 +81,24 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
         // a non-review launch; the built MCP list for a valid review flow.
         var reviewMcp = ValidateAndBuildReviewFlowMcp(ctx, descriptor, _policy);
 
-        var unattendedInteractionPolicy = ctx.IsReviewFlow
-            ? descriptor.UnattendedInteractionPolicy
-            : AcpUnattendedInteractionPolicy.Disabled;
+        // A BORROWED-SNAPSHOT launch always takes the Fail policy, whatever the vendor declares.
+        //
+        // This is the other half of the readable-allowlist change, and without it that change is a
+        // read-containment hole rather than a fix. Widening --available-tools to the read tools also
+        // widens what a path-taking read tool can be pointed at: Copilot answers an absolute path
+        // outside the snapshot with a session/request_permission ("Access paths outside trusted
+        // directories"), and AutoApprove grants exactly that shape without inspecting the tool. Probed
+        // live: with the read allowlist and an auto-approving bridge, a reviewer read a file outside
+        // the snapshot and echoed its contents back through the still-enabled result channel. The
+        // snapshot then bounds writes but not reads, which is not what independent-snapshot promises.
+        //
+        // Fail rather than deny-and-continue, and structural rather than matched on the frame's title
+        // (which is vendor prose and can change): under an exclusive read-only allowlist a correct
+        // launch raises ZERO interaction frames — verified live across every in-snapshot read — so one
+        // arriving means the reviewer is reaching past its boundary, and a reviewer doing that should
+        // not go on to produce a review. Same contract Cursor already runs under, so this is a no-op
+        // for Cursor and vendor-neutral for anything borrowed-capable later.
+        var unattendedInteractionPolicy = ResolveUnattendedInteractionPolicy(ctx, descriptor);
 
         var runtimeLogger = loggerFactory.CreateLogger<AcpHostedAgentRuntime>();
         var connLogger    = loggerFactory.CreateLogger<AcpConnection>();
@@ -135,6 +150,12 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
     /// <summary>
     /// Fail-closed validation + build of the review-flow MCP list, run as the FIRST thing in
     /// <see cref="StartAsync"/> — before <c>_connectionSource</c> can spawn a child. Returns
+    internal static AcpUnattendedInteractionPolicy ResolveUnattendedInteractionPolicy(
+            RuntimeStartContext ctx, AcpVendorDescriptor descriptor) =>
+        !ctx.IsReviewFlow                 ? AcpUnattendedInteractionPolicy.Disabled
+        : ctx.IsBorrowedSnapshot          ? AcpUnattendedInteractionPolicy.Fail
+        : descriptor.UnattendedInteractionPolicy;
+
     /// <see langword="null"/> for a non-review launch; for a review flow it throws unless the launch
     /// is safe to run unattended AND has a deliverable result channel AND every allowlist entry is an
     /// auto-approvable read-only server, then returns the built list. Work-location safety is

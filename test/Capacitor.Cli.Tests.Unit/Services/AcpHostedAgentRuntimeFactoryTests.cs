@@ -335,6 +335,23 @@ public class AcpHostedAgentRuntimeFactoryTests {
     /// by test plan items 5 and 6. <c>SupportsMcpServers</c> is parameterized since item 6(c) needs
     /// it <see langword="false"/> while items 6(a)/6(b) need it <see langword="true"/>; every other
     /// field is identical across both.</summary>
+    /// <summary>The COMPLETE set of <c>--available-tools</c> arguments a Copilot review launch may
+    /// emit: the reserved flow-result channel's two tools, every unattended-safe tool of each
+    /// allowlisted MCP server, plus whatever extra ids the borrowed policy contributes.
+    ///
+    /// <para>Derived from <c>KcapMcpRegistry</c> rather than hand-listed, so a server gaining a tool
+    /// updates the expectation with the production code — but derived only from the READ-ONLY
+    /// registry the review path already trusts, so the test still fails if the argv builder starts
+    /// emitting an id from anywhere else.</para></summary>
+    static string[] ExpectedAvailableTools(string[] allowlisted, IReadOnlyList<string> extra) => [
+        $"--available-tools={KcapMcpRegistry.ReservedResultChannelId}-submit_review_result",
+        $"--available-tools={KcapMcpRegistry.ReservedResultChannelId}-send_flow_message",
+        .. allowlisted.SelectMany(name => KcapMcpRegistry.ReviewFlowUnattendedSafeTools[name]
+                                             .Order(StringComparer.Ordinal)
+                                             .Select(t => $"--available-tools={name}-{t}")),
+        .. extra.Select(t => $"--available-tools={t}")
+    ];
+
     static AcpVendorDescriptor SyntheticDescriptor(
             bool supportsMcpServers,
             bool borrowedReview = false,
@@ -1084,15 +1101,104 @@ public class AcpHostedAgentRuntimeFactoryTests {
             AcpVendorDescriptors.Copilot, new DaemonConfig(), ctx, supported);
         var argv = psi.ArgumentList.ToArray();
 
-        // The flow-result channel is still there...
-        await Assert.That(argv).Contains("--available-tools=kcap-flow-result-submit_review_result");
-        // ...and so are the read tools that fix this issue.
-        foreach (var readTool in CopilotBorrowedReviewPolicy.ReadToolIds)
-            await Assert.That(argv).Contains($"--available-tools={readTool}");
+        // EXACT set equality, not contains-plus-a-denylist. A named-exclusion assertion only rules
+        // out the ids someone thought to name: a build that also emitted --available-tools=web_fetch,
+        // =task, =apply_patch, a future mutating alias, or a wildcard would satisfy every "contains"
+        // and every "does not contain create/edit/bash" check while handing the reviewer exactly the
+        // surface this issue exists to withhold. Exclusivity IS the security boundary, so the test
+        // has to pin the whole set.
+        var emitted = argv.Where(a => a.StartsWith("--available-tools=")).ToArray();
 
-        // Still EXCLUSIVE: nothing grants the write/exec surface.
-        await Assert.That(argv.Any(a => a is "--available-tools=create" or "--available-tools=edit"
-                                          or "--available-tools=bash")).IsFalse();
+        await Assert.That(emitted).IsEquivalentTo(ExpectedAvailableTools(
+            allowlisted: ["kcap-review"], extra: CopilotBorrowedReviewPolicy.ReadToolIds));
+
+        string[] expected = ExpectedAvailableTools(
+            allowlisted: ["kcap-review"], extra: CopilotBorrowedReviewPolicy.ReadToolIds);
+        // Duplicates would not change the effective set but would signal the argv builder losing
+        // track of what it emitted, so pin the count too.
+        await Assert.That(emitted.Length).IsEqualTo(expected.Length);
+        // No broad escape hatch alongside the allowlist.
+        await Assert.That(argv.Any(a => a.Contains("--allow-all-paths") || a.Contains("--yolo")
+                                     || a.Contains("--add-dir") || a.Contains("--deny-tool"))).IsFalse();
+    }
+
+    /// <summary>The seam the other argv tests deliberately bypass: production resolution, with NO
+    /// policy passed, on whatever host this runs on.
+    ///
+    /// <para>Every other borrowed-argv test pins an explicit supported entry so it can assert the
+    /// argv anywhere. That is right for those tests and wrong as the only coverage: it means a
+    /// regression that made <c>BuildProcessStartInfo</c> resolve from the static descriptor instead
+    /// of the policy would keep them all green — advertisement would still read supported while a
+    /// real spawn on a supported host received no read tools and reviewed blind, which is precisely
+    /// the advertise/spawn split this design exists to prevent.</para>
+    ///
+    /// <para>So this one asserts the IMPLICATION rather than a fixed argv: whatever the host's own
+    /// entry says it supports is what the host's own spawn must produce. It is meaningful on a
+    /// supported host and on an unsupported one, and it fails on either if the two diverge.</para></summary>
+    [Test]
+    public async Task BuildProcessStartInfo_Copilot_ProductionResolution_ArgvAgreesWithWhatThisHostAdvertises() {
+        var host = AcpHostedAgentRuntimeFactory.PolicyFor(AcpVendorDescriptors.Copilot);
+        var ctx  = ReviewContext(["kcap-review"]) with {
+            Work = WorkLocation.OwnedWorktree, IsBorrowedSnapshot = true
+        };
+
+        if (!host.Supported) {
+            // Unsupported host: the snapshot launch must not be buildable at all, let alone readable.
+            var ex = Assert.Throws<InvalidOperationException>(() =>
+                AcpHostedAgentRuntimeFactory.BuildProcessStartInfo(
+                    AcpVendorDescriptors.Copilot, new DaemonConfig(), ctx));
+
+            await Assert.That(ex.Message).IsEqualTo("borrowed_snapshot_containment_mismatch");
+
+            return;
+        }
+
+        // Supported host: no policy argument, so this is the production path end to end.
+        var emitted = AcpHostedAgentRuntimeFactory
+            .BuildProcessStartInfo(AcpVendorDescriptors.Copilot, new DaemonConfig(), ctx)
+            .ArgumentList.Where(a => a.StartsWith("--available-tools=")).ToArray();
+
+        await Assert.That(emitted).IsEquivalentTo(ExpectedAvailableTools(
+            allowlisted: ["kcap-review"], extra: host.ExtraBorrowedToolIds));
+    }
+
+    /// <summary>A borrowed snapshot never auto-approves an interaction frame, whatever the vendor
+    /// descriptor declares.
+    ///
+    /// <para>Without this the readable allowlist is a read-containment hole, not a fix: widening the
+    /// allowlist also widens what a path-taking read tool can be pointed at, Copilot answers an
+    /// outside-the-snapshot absolute path with a permission request, and AutoApprove grants it
+    /// without inspecting the tool. Probed live — a reviewer read a file outside the snapshot and
+    /// echoed it back through the result channel.</para></summary>
+    [Test]
+    [Arguments(true)]   // borrowed snapshot  -> Fail, overriding the descriptor
+    [Arguments(false)]  // owned worktree     -> the descriptor's own AutoApprove
+    public async Task ReviewFlow_Copilot_BorrowedSnapshot_TakesTheFailInteractionPolicy(bool borrowedSnapshot) {
+        // Pinned against the descriptor's own declaration, so this fails if the override is dropped
+        // AND if the non-borrowed path silently changes.
+        await Assert.That(AcpVendorDescriptors.Copilot.UnattendedInteractionPolicy)
+            .IsEqualTo(AcpUnattendedInteractionPolicy.AutoApprove);
+
+        var expected = borrowedSnapshot
+            ? AcpUnattendedInteractionPolicy.Fail
+            : AcpUnattendedInteractionPolicy.AutoApprove;
+
+        await Assert.That(AcpHostedAgentRuntimeFactory.ResolveUnattendedInteractionPolicy(
+                ReviewContext(["kcap-review"]) with {
+                    Work = WorkLocation.OwnedWorktree, IsBorrowedSnapshot = borrowedSnapshot
+                },
+                AcpVendorDescriptors.Copilot))
+            .IsEqualTo(expected);
+    }
+
+    /// <summary>A NON-review launch is unaffected: interaction stays Disabled (routed to a human),
+    /// which is what keeps an interactive session interactive.</summary>
+    [Test]
+    public async Task NonReviewLaunch_KeepsInteractionDisabled() {
+        await Assert.That(AcpHostedAgentRuntimeFactory.ResolveUnattendedInteractionPolicy(
+                MakeContext("agent-1") with { IsBorrowedSnapshot = true },
+                AcpVendorDescriptors.Copilot))
+            .IsEqualTo(AcpUnattendedInteractionPolicy.Disabled);
     }
 
     /// <summary>The paired direction, and the one most easily lost: a NON-borrowed Copilot review
