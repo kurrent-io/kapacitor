@@ -305,11 +305,26 @@ static class KiroHookCommand {
         // POSTs session-end/kiro when kiro-cli exits.
         var transcriptPath = KiroPaths.SessionJsonl(dashedSessionId);
 
-        await WatcherManager.EnsureWatcherRunning(
-            baseUrl, sessionId, transcriptPath,
-            agentId: null, sessionIdOverride: null, cwd: cwd,
-            skipTitle: false, vendor: "kiro"
-        );
+        // Bounded for exactly the same reason as the POST above, and it is the LAST unbounded step
+        // between the committed injection and the zero exit: Kiro consumes stdout only from a hook that
+        // completed, so anything here that outruns the ceiling gets this invocation killed and loses the
+        // already-spent lease. EnsureWatcherRunning is not cheap in the worst case — its stale-watcher
+        // path kills and respawns, waiting up to 5s for a graceful exit.
+        //
+        // Deferring is safe and cheap: watcher startup is idempotent and agentSpawn fires again on the
+        // very next prompt, so the cost is one prompt of unwatched transcript. A killed hook costs the
+        // whole session's memory injection. An abandoned in-flight spawn is fine for the same reason —
+        // the next firing reconciles it.
+        try {
+            await WatcherManager.EnsureWatcherRunning(
+                baseUrl, sessionId, transcriptPath,
+                agentId: null, sessionIdOverride: null, cwd: cwd,
+                skipTitle: false, vendor: "kiro"
+            ).WaitAsync(HookBudget.Remaining(processStart, "session-start"));
+        } catch (TimeoutException) {
+            // Budget exhausted (possibly already zero, which skips the attempt outright). The next
+            // agentSpawn ensures the watcher; exiting 0 now is what keeps the fragment deliverable.
+        }
 
         return 0;
     }
