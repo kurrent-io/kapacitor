@@ -1191,6 +1191,113 @@ public class AcpHostedAgentRuntimeFactoryTests {
             .IsEqualTo(expected);
     }
 
+    /// <summary>The production WIRING, not the resolver seam: a borrowed-snapshot launch reaches the
+    /// bridge with the Fail policy and its reviewer is reaped, even though its descriptor declares
+    /// <c>AutoApprove</c>.
+    ///
+    /// <para>The resolver test above proves <c>ResolveUnattendedInteractionPolicy</c> returns
+    /// <c>Fail</c>; it does NOT prove <c>StartAsync</c> carries that value into the runtime and the
+    /// bridge. A regression that left the helper intact and reverted the call site to the
+    /// descriptor's policy would keep it green and reopen the outside-read hole. The one existing
+    /// end-to-end reap test uses Cursor, whose descriptor already declares <c>Fail</c> — so it
+    /// cannot distinguish "the override works" from "the descriptor happened to agree".</para>
+    ///
+    /// <para>Uses a synthetic descriptor declaring <c>AutoApprove</c>, so the override is the ONLY
+    /// thing that can produce a reap here, and so this runs on every platform — Copilot's own entry
+    /// is unsupported off macOS/arm64 and <c>StartAsync</c> would reject the launch before the
+    /// bridge ever sees a frame.</para>
+    ///
+    /// <para>Only the permission frame is injected. That is sufficient rather than partial: the
+    /// bridge's <c>Fail</c> check precedes method dispatch and parameter parsing, so it is one
+    /// branch for both interaction methods, and <c>AcpInteractionBridgeTests</c>
+    /// <c>FailPolicy_AnyInteraction_SignalsReap_WithoutRoutingToHuman</c> already covers the method
+    /// axis. What is unproven WITHOUT this test is the wiring, and one frame proves the wiring.</para></summary>
+    [Test]
+    public async Task ReviewFlow_BorrowedSnapshot_PermissionFrame_IsReaped_EvenWhenTheDescriptorAutoApproves() {
+        var descriptor = SyntheticDescriptor(
+            supportsMcpServers: true,
+            borrowedReview:     true,
+            containment:        AcpBorrowedReviewContainment.IndependentSnapshot);
+
+        // Load-bearing: the descriptor's own policy is AutoApprove, so any reap below is the override.
+        await Assert.That(descriptor.UnattendedInteractionPolicy)
+            .IsEqualTo(AcpUnattendedInteractionPolicy.AutoApprove);
+
+        var fake       = new FakeAcpAgent();
+        var connection = new CaptureServerConnection();
+        var process    = new FakeAcpProcess();
+
+        var factory = new AcpHostedAgentRuntimeFactory(
+            descriptor: descriptor,
+            config: new DaemonConfig(),
+            loggerFactory: NullLoggerFactory.Instance,
+            connection: connection,
+            connectionSource: _ => (fake.ClientWriteStream, fake.ClientReadStream, process));
+
+        using var cts = new CancellationTokenSource();
+        var fakeRunTask = fake.RunAsync(cts.Token);
+        var started = await factory.StartAsync(
+            ReviewContext(["kcap-review"]) with {
+                Work = WorkLocation.OwnedWorktree, IsBorrowedSnapshot = true
+            }, cts.Token).WaitAsync(HangGuard);
+
+        // The exact frame the live probe produced when the reviewer reached outside the snapshot.
+        fake.EnqueuePermissionRequestDuringNextPrompt(
+            toolCallJson: """{"toolCallId":"call-1","title":"Access paths outside trusted directories","kind":"read"}""",
+            optionsJson: """[{"optionId":"allow_once","name":"Allow once","kind":"allow_once"}]""");
+        await started.Runtime.SendUserInputAsync("review").WaitAsync(HangGuard);
+
+        var deadline = DateTime.UtcNow + HangGuard;
+        while (!process.HasExited && DateTime.UtcNow < deadline)
+            await Task.Delay(10);
+
+        await Assert.That(process.HasExited).IsTrue();
+        // Not granted, and not routed to a human either — a borrowed reviewer has none attached.
+        await Assert.That(connection.RequestAcpInteractionAsyncCalled).IsFalse();
+
+        cts.Cancel();
+        try { await fakeRunTask.WaitAsync(HangGuard); } catch (OperationCanceledException) { }
+        await started.Runtime.DisposeAsync();
+        await fake.DisposeAsync();
+    }
+
+    /// <summary>The paired direction: a NON-borrowed review under the same synthetic descriptor
+    /// still auto-approves. Without this, a build that reaped every review-flow interaction frame —
+    /// breaking Copilot's ordinary owned-worktree reviews — would pass the test above.</summary>
+    [Test]
+    public async Task ReviewFlow_NonBorrowed_PermissionFrame_IsStillAutoApproved() {
+        var descriptor = SyntheticDescriptor(supportsMcpServers: true);
+        var fake       = new FakeAcpAgent();
+        var connection = new CaptureServerConnection();
+        var process    = new FakeAcpProcess();
+
+        var factory = new AcpHostedAgentRuntimeFactory(
+            descriptor: descriptor,
+            config: new DaemonConfig(),
+            loggerFactory: NullLoggerFactory.Instance,
+            connection: connection,
+            connectionSource: _ => (fake.ClientWriteStream, fake.ClientReadStream, process));
+
+        using var cts = new CancellationTokenSource();
+        var fakeRunTask = fake.RunAsync(cts.Token);
+        var started = await factory.StartAsync(
+            ReviewContext(["kcap-review"]) with { Work = WorkLocation.OwnedWorktree }, cts.Token)
+            .WaitAsync(HangGuard);
+
+        fake.EnqueuePermissionRequestDuringNextPrompt(
+            toolCallJson: """{"toolCallId":"call-1","title":"Read file"}""",
+            optionsJson: """[{"optionId":"allow_once","name":"Allow once","kind":"allow_once"}]""");
+        await started.Runtime.SendUserInputAsync("review").WaitAsync(HangGuard);
+
+        await Assert.That(process.HasExited).IsFalse();
+        await Assert.That(connection.RequestAcpInteractionAsyncCalled).IsFalse();
+
+        cts.Cancel();
+        try { await fakeRunTask.WaitAsync(HangGuard); } catch (OperationCanceledException) { }
+        await started.Runtime.DisposeAsync();
+        await fake.DisposeAsync();
+    }
+
     /// <summary>A NON-review launch is unaffected: interaction stays Disabled (routed to a human),
     /// which is what keeps an interactive session interactive.</summary>
     [Test]

@@ -238,6 +238,13 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
             throw new InvalidOperationException(
                 $"Vendor '{descriptor.Vendor}' does not support unattended (review-flow) launches.");
 
+        // Same defense-in-depth, for the containment invariant. StartAsync validates this too, but
+        // this is the seam that decides whether the READABLE argv is emitted, so an entry that does
+        // not promise independent-snapshot containment must not reach it — the pre-spawn check being
+        // one layer up is what would let a direct builder call (a test, a future caller, a refactor
+        // that inlines the spawn) produce a readable borrowed argv on an unverified platform.
+        ValidateBorrowedArtifact(ctx, resolved);
+
         // Defense-in-depth for the trust-at-spawn argv appended just below: a borrowed-cwd reviewer
         // would run in the requester's live checkout, so this refuses it here too. StartAsync's
         // pre-spawn validation is the primary gate; this backstops the default spawn path (a
