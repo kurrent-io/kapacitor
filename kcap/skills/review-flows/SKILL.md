@@ -73,9 +73,12 @@ When that happens and the user has named a reviewer:
   restart the harness session (or reconnect the `kcap-flows` MCP server) and start a fresh task.
 - Start without `vendor` only if the user, having been told, explicitly asks for the server default.
 
-The `client_upgrade_required`, `flow_client_protocol_required`, and
-`flow_client_protocol_unsupported` errors below are the server-side half of the same rule: reserved
-review aliases fail closed on a stale client rather than silently substituting a reviewer.
+**Nothing server-side catches this for you.** An omitted `vendor` is indistinguishable from a caller
+who deliberately wanted the server default — the request carries no trace of the name the user
+asked for, so there is nothing for the server to reject. The `client_upgrade_required`,
+`flow_client_protocol_required`, and `flow_client_protocol_unsupported` errors below are separate
+protections, against *protocol* skew; they do **not** fire on a cached schema that simply omits the
+parameter. In this window you are the only guard.
 
 ## Choosing a reviewer model
 
