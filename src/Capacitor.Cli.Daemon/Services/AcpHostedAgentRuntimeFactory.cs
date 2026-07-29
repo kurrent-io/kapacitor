@@ -287,8 +287,15 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
         // The read boundary. Only a borrowed snapshot is wrapped: every other launch either has no
         // borrowed content to protect or is already confined by the owned worktree it runs in.
         if (ctx.IsBorrowedSnapshot && resolved.RequiresProcessSandbox) {
+            // SnapshotRoot, not Path. When the borrowed cwd is below the repository root the
+            // snapshot's Path is the cwd-relative SUBDIRECTORY inside it, so granting Path would
+            // leave the reviewer unable to read the snapshot's parent files or its root .git — the
+            // original blind-review defect, reappearing for exactly the nested-cwd shape a real
+            // launch from `repo/src` produces. Path stays the working directory; the boundary is
+            // drawn at the root the daemon materialized.
             var profile = BorrowedReviewSandbox.BuildProfile(
-                ctx.Worktree.Path, Environment.GetFolderPath(Environment.SpecialFolder.UserProfile));
+                ctx.Worktree.SnapshotRoot ?? ctx.Worktree.Path,
+                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile));
 
             argv       = [.. BorrowedReviewSandbox.WrapArgv(profile, binaryPath, argv)];
             binaryPath = BorrowedReviewSandbox.SandboxExecPath;

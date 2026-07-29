@@ -1338,6 +1338,38 @@ public class AcpHostedAgentRuntimeFactoryTests {
             await Assert.That(argv).Contains($"--available-tools={readTool}");
     }
 
+    /// <summary>A nested borrowed cwd is sandboxed at the snapshot ROOT, not at the subdirectory the
+    /// reviewer happens to start in.
+    ///
+    /// <para>When the requester's cwd is below the repository root, the daemon's snapshot carries
+    /// <c>Path = &lt;snapshot&gt;/&lt;relative-cwd&gt;</c> and <c>SnapshotRoot = &lt;snapshot&gt;</c>.
+    /// Drawing the boundary at <c>Path</c> leaves the reviewer unable to read the snapshot's parent
+    /// files or its root <c>.git</c> — which is the original blind-review defect returning for a
+    /// perfectly ordinary launch shape (`kcap` invoked from `repo/src`). The root-equals-cwd test
+    /// above cannot catch it, because there the two are the same string.</para></summary>
+    [Test]
+    public async Task BuildProcessStartInfo_Copilot_BorrowedSnapshot_NestedCwd_SandboxesTheSnapshotRoot() {
+        var ctx = ReviewContext(["kcap-review"]) with {
+            Work = WorkLocation.OwnedWorktree,
+            IsBorrowedSnapshot = true,
+            Worktree = new WorktreeInfo(
+                Path:         "/snap/borrowed-abc/src/nested",
+                Branch:       "b",
+                SourceRepo:   "/repo",
+                SnapshotRoot: "/snap/borrowed-abc")
+        };
+        var supported = CopilotBorrowedReviewPolicy.Resolve(
+            OSPlatform.OSX, Architecture.Arm64, sandboxAvailable: true);
+
+        var psi = AcpHostedAgentRuntimeFactory.BuildProcessStartInfo(
+            AcpVendorDescriptors.Copilot, new DaemonConfig(), ctx, supported);
+        var profile = psi.ArgumentList[1];
+
+        await Assert.That(profile).Contains("(subpath \"/snap/borrowed-abc\")");
+        // ...and the reviewer still STARTS in the nested cwd it was given.
+        await Assert.That(psi.WorkingDirectory).IsEqualTo("/snap/borrowed-abc/src/nested");
+    }
+
     /// <summary>The paired direction for the sandbox: a NON-borrowed review spawns the vendor binary
     /// directly. Wrapping every launch would work and would be wrong — it would put an unnecessary
     /// deprecated dependency on the ordinary path and mask a regression in the borrowed one.</summary>
