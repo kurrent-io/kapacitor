@@ -302,6 +302,63 @@ public class SessionStartMemoryFoundationTests {
         } finally { Directory.Delete(root, recursive: true); }
     }
 
+    // A caller can only discover its fragment is undeliverable AFTER the fetch has run (Copilot's
+    // lifecycle POST failing permanently means the hook exits non-zero, and Copilot reads hook stdout
+    // only on a zero exit). A refused commit must therefore RELEASE the once-per-session lease rather
+    // than spend it — proved behaviourally: a later start of the SAME session still gets its fragment,
+    // which spending the lease makes permanently impossible.
+    //
+    // Released means retry_pending with a backoff, not immediately retryable, so the clock is advanced
+    // past the store's 1h backoff cap rather than asserting an instant second attempt.
+    [Test]
+    public async Task A_refused_commit_gate_releases_the_lease_so_a_later_start_still_injects() {
+        var root = TempDir();
+        try {
+            var time = new ManualTimeProvider(new DateTimeOffset(2026, 7, 29, 0, 0, 0, TimeSpan.Zero));
+            var provider = new SessionStartMemoryContextProvider(new FixedScopeResolver(null, null),
+                (_, _) => Task.FromResult(new HttpClient(new StaticHandler(HttpStatusCode.OK,
+                    "[{\"memory_id\":\"1\",\"slug\":\"s\",\"audience\":\"org\",\"description\":\"d\",\"kind\":\"feedback\"}]"))));
+            var orchestrator = new SessionStartMemoryOrchestrator(
+                new SessionStartMemoryLeaseStore(root, time), provider);
+            var lifecycle = new SessionMemoryLifecycle(SessionStartHarness.Copilot, "3f2504e0-4f89-41d3-9a0c-0305e82c3301", null,
+                true, true, SessionLifecycleReason.New, true);
+            var request = new SessionStartMemoryContextRequest(
+                "https://example.test", null, false, TimeSpan.FromSeconds(1), CancellationToken.None);
+
+            var refused = await orchestrator.GetFragmentAsync(lifecycle, request, _ => Task.FromResult(false));
+
+            time.Advance(TimeSpan.FromHours(2));
+
+            var retried = await orchestrator.GetFragmentAsync(lifecycle, request, _ => Task.FromResult(true));
+
+            await Assert.That(refused).IsNull();
+            await Assert.That(retried).Contains("- s: d");
+        } finally { Directory.Delete(root, recursive: true); }
+    }
+
+    // The gate must not become a second way to lose the fragment: granted behaves exactly as the
+    // ungated path, including still being once-per-session.
+    [Test]
+    public async Task A_granted_commit_gate_commits_the_lease_exactly_as_the_ungated_path() {
+        var root = TempDir();
+        try {
+            var provider = new SessionStartMemoryContextProvider(new FixedScopeResolver(null, null),
+                (_, _) => Task.FromResult(new HttpClient(new StaticHandler(HttpStatusCode.OK,
+                    "[{\"memory_id\":\"1\",\"slug\":\"s\",\"audience\":\"org\",\"description\":\"d\",\"kind\":\"feedback\"}]"))));
+            var orchestrator = new SessionStartMemoryOrchestrator(new SessionStartMemoryLeaseStore(root), provider);
+            var lifecycle = new SessionMemoryLifecycle(SessionStartHarness.Copilot, "3f2504e0-4f89-41d3-9a0c-0305e82c3301", null,
+                true, true, SessionLifecycleReason.New, true);
+            var request = new SessionStartMemoryContextRequest(
+                "https://example.test", null, false, TimeSpan.FromSeconds(1), CancellationToken.None);
+
+            var first = await orchestrator.GetFragmentAsync(lifecycle, request, _ => Task.FromResult(true));
+            var repeated = await orchestrator.GetFragmentAsync(lifecycle, request, _ => Task.FromResult(true));
+
+            await Assert.That(first).Contains("- s: d");
+            await Assert.That(repeated).IsNull();
+        } finally { Directory.Delete(root, recursive: true); }
+    }
+
     [Test]
     public async Task Disabled_request_does_not_fetch_or_write_a_lease_record() {
         var root = TempDir();

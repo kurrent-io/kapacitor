@@ -91,6 +91,7 @@ static class CopilotHookCommand {
             string?    source,
             bool       disabled,
             TimeSpan   budget,
+            Func<CancellationToken, Task<bool>>?                commitGate,
             Func<string?, CancellationToken, Task<HttpClient>>? memoryClientFactory,
             Func<SessionStartMemoryLeaseStore>?                 memoryStoreFactory) {
         if (disabled || string.IsNullOrWhiteSpace(sessionId) || string.IsNullOrWhiteSpace(scopeRoot)
@@ -111,7 +112,8 @@ static class CopilotHookCommand {
                 new SessionMemoryLifecycle(SessionStartHarness.Copilot, sessionId, LifecycleInstanceId: null,
                     IsTopLevel: true, ClassificationAuthoritative: true,
                     SessionStartMemoryHookSupport.ReasonFor(source), CallbackMayRepeat: false),
-                new SessionStartMemoryContextRequest(baseUrl, scopeRoot, disabled, budget, CancellationToken.None));
+                new SessionStartMemoryContextRequest(baseUrl, scopeRoot, disabled, budget, CancellationToken.None),
+                commitGate);
         } catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException) {
             return Task.FromResult<string?>(null);
         }
@@ -268,6 +270,11 @@ static class CopilotHookCommand {
             return 0;
         }
 
+        // Resolved from the lifecycle POST outcome below and consulted by the memory orchestrator just
+        // before it commits the once-per-session lease. MUST be set on every path that reaches the
+        // await, or the fetch task can never complete — hence the finally.
+        var deliverable = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+
         // Start the team-memory fetch BEFORE the lifecycle POST so the two overlap; awaited
         // (budget-capped) after it, immediately before this hook's only stdout write. Started after
         // the exclusion/disabled early-outs above so an excluded repo never reaches the memory
@@ -284,26 +291,34 @@ static class CopilotHookCommand {
             activeProfile?.DisableMemoryIndex is true,
             // Remaining() already reserves Safety — subtracting it again here halved the window.
             HookBudget.Remaining(processStart, "session-start"),
+            // Deliverability gate: the lease is committed only once the lifecycle POST has proved the
+            // output can actually be honoured. Resolved on EVERY path below, before the await.
+            _ => deliverable.Task,
             memoryClientFactory, memoryStoreFactory);
 
         // Spawn-before-post: capture must start on Posted OR Spooled (auth lapse /
         // outage) — a doomed/delayed lifecycle POST must never withhold the watcher. Only a
         // permanent failure keeps the prior non-zero exit and skips the watcher.
-        var outcome = await AgentHookPoster.PostOrSpoolAsync(
-            baseUrl, "session-start/copilot", enriched, "copilot-hook",
-            spool, sessionId, route: "session-start/copilot");
+        HookPostOutcome outcome;
+
+        try {
+            outcome = await AgentHookPoster.PostOrSpoolAsync(
+                baseUrl, "session-start/copilot", enriched, "copilot-hook",
+                spool, sessionId, route: "session-start/copilot");
+        } catch {
+            deliverable.TrySetResult(false);
+            throw;
+        }
+
+        // A permanent POST failure exits non-zero, and Copilot consumes this hook's stdout only on a
+        // ZERO exit — so the envelope could not be honoured there. Telling the orchestrator makes it
+        // RELEASE the once-per-session lease instead of spending it, so the next start of this session
+        // retries rather than being permanently denied its one injection.
+        deliverable.TrySetResult(outcome != HookPostOutcome.Failed);
 
         // Always awaited, on every outcome, so the fetch is never left dangling.
         var fragment = await SessionStartMemoryHookSupport.AwaitBounded(memoryTask, processStart, "session-start");
 
-        // A permanent POST failure exits non-zero, and Copilot consumes this hook's stdout only on a
-        // ZERO exit — so writing the envelope there would be discarded by the host. Skip it rather
-        // than emit output that cannot be honoured.
-        //
-        // Residual (deliberate, not a silent gap): the fetch may already have spent its
-        // once-per-session lease, so this session's index is lost rather than retried on resume.
-        // Holding the lease open until the exit code is known means restructuring the shared
-        // orchestrator's commit point, which Claude/Cursor/Codex also depend on — tracked separately.
         if (outcome == HookPostOutcome.Failed) return 1;
 
         // Copilot parses this hook's stdout as its (optional) single JSON result document. Silent when
