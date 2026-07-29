@@ -82,12 +82,14 @@ internal static class BorrowedReviewSandbox {
         foreach (var p in state)              sb.Append(Subpath(p));
         foreach (var p in SystemReadPaths())  sb.Append(Subpath(p));
         foreach (var p in runtimeReadPaths)   sb.Append(Subpath(p));
-        // Literals, not subpaths: these are individual config files whose directories hold adjacent
-        // secrets. Both forms are emitted because one of them is a symlink on a stock Homebrew.
+        // Literals, not subpaths: these are individual files whose directories hold adjacent secrets.
+        //
+        // Deliberately NOT symlink-resolved. An earlier revision also emitted each file's resolved
+        // target so that Homebrew's cert.pem (a link into ca-certificates) would match — but these
+        // prefixes are user-writable, so pointing an allowlisted filename at ~/.ssh/id_ed25519 would
+        // have emitted THAT as a literal and handed it to the reviewer. The legitimate target is named
+        // in the allowlist in its own right instead, so resolution buys nothing and costs a bypass.
         foreach (var f in runtime.Files)      sb.Append(Literal(f));
-        foreach (var f in runtime.Files)
-            if (SandboxPaths.TryResolvePhysical(f) is { } resolvedFile && resolvedFile != f)
-                sb.Append(Literal(resolvedFile));
         sb.Append(')');
 
         sb.Append("(allow file-write*");

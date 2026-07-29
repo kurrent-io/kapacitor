@@ -297,24 +297,68 @@ public class BorrowedReviewSandboxTests {
     /// <c>SecKeychain…: parameters were not valid</c> error rather than data.</para>
     ///
     /// <para><c>/usr/bin/security</c> is a real, unsandboxed-by-default consumer of those APIs and it
-    /// never asks permission, so it models the drifted vendor rather than a cooperative one.</para></summary>
+    /// never asks permission, so it models the drifted vendor rather than a cooperative one.</para>
+    ///
+    /// <para><b>Built around a known secret and a positive control</b>, because "the command exited
+    /// non-zero" is not containment: it is also what happens on a host with no login keychain, a locked
+    /// one, or an empty search list, and such a test would pass while the boundary was open. So this
+    /// creates a disposable keychain holding a sentinel, FIRST proves the exact query returns that
+    /// sentinel outside the sandbox, and only then requires it to be unavailable inside.</para>
+    ///
+    /// <para>Scope, stated honestly: this exercises the file-backed keychain that both the legacy
+    /// <c>SecKeychain</c> APIs and a default macOS <c>SecItemCopyMatching</c> read, which is what the
+    /// denied file closes. It does not probe the data-protection keychain, which is reached only with
+    /// entitlements an unsigned sandboxed vendor process does not carry.</para></summary>
     [Test]
-    [Arguments("list-keychains")]
-    [Arguments("dump-keychain")]
-    public async Task Enforcement_the_keychain_is_unreachable_through_securityd(string subcommand) {
+    public async Task Enforcement_a_keychain_secret_is_readable_outside_the_sandbox_and_not_inside() {
         Skip.Unless(RuntimeInformation.IsOSPlatform(OSPlatform.OSX) && BorrowedReviewSandbox.Available,
                     "needs macOS with sandbox-exec");
         Skip.Unless(File.Exists("/usr/bin/security"), "needs /usr/bin/security");
 
+        const string sentinel = "KEYCHAIN-SENTINEL-q4w5e6";
+        const string account  = "kcap-sandbox-probe";
         var snapshot = Directory.CreateTempSubdirectory("kcap-sandbox-keychain").FullName;
+        var keychain = Path.Combine(snapshot, "..", $"kcap-probe-{Guid.NewGuid():N}.keychain-db");
+        keychain = Path.GetFullPath(keychain);
+
         try {
-            await Assert.That(await RunUnderSandboxAsync(
-                    RealisticProfileFor(snapshot), "/usr/bin/security", subcommand))
-                .IsNull()
-                .Because($"'security {subcommand}' must not reach the keychain through securityd");
+            if (await RunAsync("/usr/bin/security", ["create-keychain", "-p", "probe-pw", keychain]) is null)
+                Skip.Test("cannot create a disposable keychain on this host");
+            await RunAsync("/usr/bin/security", ["unlock-keychain", "-p", "probe-pw", keychain]);
+            await RunAsync("/usr/bin/security",
+                ["add-generic-password", "-a", account, "-s", account, "-w", sentinel, keychain]);
+
+            string[] query = ["find-generic-password", "-a", account, "-s", account, "-w", keychain];
+
+            // Positive control: without it, everything below could pass vacuously.
+            var outside = await RunAsync("/usr/bin/security", query);
+            Skip.Unless(outside is not null && outside.Contains(sentinel, StringComparison.Ordinal),
+                        "the disposable keychain query does not work unsandboxed on this host");
+
+            var inside = await RunUnderSandboxAsync(
+                RealisticProfileFor(snapshot), "/usr/bin/security", [.. query]);
+
+            await Assert.That(inside is not null && inside.Contains(sentinel, StringComparison.Ordinal))
+                .IsFalse()
+                .Because("a borrowed reviewer must not read a keychain secret through securityd");
         } finally {
+            await RunAsync("/usr/bin/security", ["delete-keychain", keychain]);
+            try { File.Delete(keychain); } catch { /* best-effort */ }
             Directory.Delete(snapshot, recursive: true);
         }
+    }
+
+    /// <summary>Runs a program unsandboxed, returning stdout or null on a non-zero exit.</summary>
+    static async Task<string?> RunAsync(string program, string[] arguments) {
+        var psi = new ProcessStartInfo(program, arguments) {
+            RedirectStandardOutput = true, RedirectStandardError = true
+        };
+
+        using var process = Process.Start(psi)!;
+        var stdout = await process.StandardOutput.ReadToEndAsync();
+        await process.WaitForExitAsync();
+
+        return process.ExitCode == 0 ? stdout.Trim() : null;
     }
 
     /// <summary>A profile shaped like a real launch's: the runtime roots a real spawn would resolve
@@ -341,10 +385,10 @@ public class BorrowedReviewSandboxTests {
     static Task<string?> CatUnderSandboxAsync(string profile, string path) =>
         RunUnderSandboxAsync(profile, "/bin/cat", path);
 
-    static async Task<string?> RunUnderSandboxAsync(string profile, string program, string path) {
+    static async Task<string?> RunUnderSandboxAsync(string profile, string program, params string[] arguments) {
         var psi = new ProcessStartInfo(
             BorrowedReviewSandbox.SandboxExecPath,
-            BorrowedReviewSandbox.WrapArgv(profile, program, [path])) {
+            BorrowedReviewSandbox.WrapArgv(profile, program, arguments)) {
             RedirectStandardOutput = true,
             RedirectStandardError  = true
         };

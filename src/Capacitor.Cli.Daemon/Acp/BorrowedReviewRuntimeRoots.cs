@@ -83,10 +83,11 @@ internal static class BorrowedReviewRuntimeRoots {
         var resolved = SandboxPaths.TryResolvePhysical(vendorBinaryPath) ?? vendorBinaryPath;
         var packageDirectory = TryGetDirectory(resolved);
 
-        // The package directory itself, so an installation outside any recognizable prefix still
-        // yields a readable program.
-        if (packageDirectory is not null && !IsUngrantableRoot(packageDirectory, home) && dirExists(packageDirectory))
-            roots.Add(packageDirectory);
+        // The program itself, always, and as a LITERAL. Granting its containing directory instead
+        // would grant whatever else happens to live beside it — for an executable at ~/bin/copilot
+        // that is the user's whole scripts directory, which the root and home exclusions do not catch
+        // because ~/bin is neither.
+        files.Add(resolved);
 
         var prefix = FindInstallationPrefix(packageDirectory, dirExists, home);
 
@@ -102,6 +103,15 @@ internal static class BorrowedReviewRuntimeRoots {
 
                 if (thisExists(path)) files.Add(path);
             }
+
+            // The package payload — a node package needs its whole directory, not just its entry
+            // script — but ONLY once it is inside a software root this prefix already admits. An
+            // installation outside any recognizable layout gets the executable literal and nothing
+            // else, so a missing sibling fails loudly at exec instead of widening the profile.
+            if (packageDirectory is not null &&
+                roots.Any(root => IsWithin(packageDirectory, root)) &&
+                dirExists(packageDirectory))
+                roots.Add(packageDirectory);
         }
 
         return new([.. roots.Distinct(StringComparer.Ordinal)], [.. files.Distinct(StringComparer.Ordinal)]);
@@ -142,6 +152,17 @@ internal static class BorrowedReviewRuntimeRoots {
     /// working.</para></summary>
     static bool IsUngrantableRoot(string path, string home) =>
         SandboxPaths.IsFilesystemRoot(path) || IsSamePath(path, home);
+
+    /// <summary>Whether <paramref name="candidate"/> is <paramref name="root"/> or sits beneath it.</summary>
+    static bool IsWithin(string candidate, string root) {
+        var comparison = OperatingSystem.IsWindows() || OperatingSystem.IsMacOS()
+            ? StringComparison.OrdinalIgnoreCase
+            : StringComparison.Ordinal;
+        var trimmed = root.TrimEnd(Path.DirectorySeparatorChar);
+
+        return candidate.Equals(trimmed, comparison)
+            || candidate.StartsWith(trimmed + Path.DirectorySeparatorChar, comparison);
+    }
 
     static bool IsSamePath(string a, string b) {
         if (string.IsNullOrWhiteSpace(a) || string.IsNullOrWhiteSpace(b)) return false;

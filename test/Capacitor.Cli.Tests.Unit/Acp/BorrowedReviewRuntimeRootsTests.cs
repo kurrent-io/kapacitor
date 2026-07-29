@@ -129,11 +129,34 @@ public class BorrowedReviewRuntimeRootsTests {
         await Assert.That(grants.Files).IsEmpty();
     }
 
+    /// <summary>The program is granted as a FILE, and its package directory only because that
+    /// directory sits inside a software root this prefix already admits (<c>lib</c>).</summary>
     [Test]
-    public async Task The_binarys_own_package_directory_is_granted() {
-        var roots = Resolve("/opt/hb/lib/node_modules/@vendor/tool/loader.js", "/opt/hb");
+    public async Task The_program_is_granted_as_a_file_and_its_package_only_inside_a_software_root() {
+        var binary = "/opt/hb/lib/node_modules/@vendor/tool/loader.js";
 
-        await Assert.That(roots).Contains("/opt/hb/lib/node_modules/@vendor/tool");
+        await Assert.That(ResolveFiles(binary, Prefix("/opt/hb"))).Contains(binary);
+        await Assert.That(Resolve(binary, "/opt/hb")).Contains("/opt/hb/lib/node_modules/@vendor/tool");
+    }
+
+    /// <summary>An executable in an ordinary user directory grants the FILE and NOT its parent.
+    ///
+    /// <para>Review's unresolved half of the cwd finding: resolving the path fixed where it pointed but
+    /// not what got granted, so a real executable at <c>~/bin/copilot</c> still handed the reviewer all
+    /// of <c>~/bin</c> — unrelated scripts, credentials, whatever else lives there — and neither the
+    /// filesystem-root nor the exact-home exclusion catches <c>~/bin</c>, because it is neither.</para></summary>
+    [Test]
+    public async Task An_executable_in_a_plain_directory_does_not_grant_that_directory() {
+        const string home = "/Users/dev";
+        // ~/bin exists but there is no sibling lib, so no prefix is recognized.
+        var grants = BorrowedReviewRuntimeRoots.Resolve(
+            $"{home}/bin/copilot",
+            path => Posix(path) is $"{home}/bin" or home,
+            userHome: home);
+
+        await Assert.That(grants.Files.Select(Posix)).Contains($"{home}/bin/copilot");
+        await Assert.That(grants.Directories).IsEmpty()
+            .Because("the containing directory is user data, not a recognized package layout");
     }
 
     /// <summary>A prefix is recognized by holding both <c>bin</c> and <c>lib</c>, which is what makes
