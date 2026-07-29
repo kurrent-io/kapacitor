@@ -6,23 +6,17 @@ namespace Capacitor.Cli.Daemon.Acp;
 /// Supplies a borrowed reviewer's vendor credential from the daemon's OWN environment, so the
 /// sandbox never has to hand the reviewer the user's keychain.
 ///
-/// <para><b>Why this exists.</b> The reviewer has to authenticate before it can review anything, and
-/// the vendor's default answer is the login keychain — which the sandbox could only satisfy by
-/// granting <c>~/Library/Keychains</c>. That grant is recursive and credential-bearing, and it is
-/// reachable with <b>no</b> ACP interaction frame, so the <c>Fail</c> interaction policy never fires
-/// and the OS boundary permits the read. It was the single largest hole left in the profile.</para>
+/// <para>The keychain is how the vendor authenticates by default, and granting it meant a recursive,
+/// credential-bearing tree reachable with <b>no</b> ACP interaction frame — so the <c>Fail</c> policy
+/// never fired and only the OS boundary stood there. It was the largest hole the profile had left.</para>
 ///
-/// <para><b>What was decided, and what was deliberately NOT.</b> The daemon does not acquire
-/// credentials. It does not read a keychain, shell out to <c>gh auth token</c>, prompt, cache, or
-/// persist anything — any of which would make it a credential-handling component, which is a
-/// materially different thing to review and was not worth taking as a side effect of closing a
-/// sandbox grant. It only forwards a token the operator has ALREADY placed in its environment. If
-/// none is there, borrowed review is simply not offered (see
-/// <see cref="CopilotBorrowedReviewPolicy.Resolve"/>) and the server answers the honest
-/// <c>vendor_containment_unreadable</c> with the <c>context-only</c> remedy.</para>
-///
-/// <para>Deliberately env-only, with no <c>DaemonConfig</c> field: a config key invites writing a
-/// long-lived token into a config file on disk, which is worse than the keychain grant it replaces.</para>
+/// <para>The daemon does not ACQUIRE credentials: no keychain read, no shelling out to
+/// <c>gh auth token</c>, no prompt, no cache, no persistence — any of which would make it a
+/// credential-handling component, which was not worth taking as a side effect of closing a sandbox
+/// grant. It forwards a token the operator already placed in its environment; with none there,
+/// borrowed review is not offered at all (see <see cref="CopilotBorrowedReviewPolicy.Resolve"/>).
+/// Env-only, with no <c>DaemonConfig</c> field, because a config key invites a long-lived token on
+/// disk — worse than the grant it replaces.</para>
 /// </summary>
 internal static class BorrowedReviewAuthBroker {
     /// <summary>Where a token is read FROM, in precedence order — the same order the vendor itself

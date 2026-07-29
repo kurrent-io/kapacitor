@@ -23,11 +23,21 @@ public class BorrowedReviewRuntimeRootsTests {
             $"{root}/lib/node_modules/@vendor/tool"
         ];
 
-        return path => present.Contains(path.Replace('\\', '/'));
+        return path => present.Contains(Posix(path));
     }
 
+    /// <summary>Separators normalized to <c>/</c> so the POSIX-shaped fixtures below read the same on
+    /// every platform. The resolver joins with <see cref="Path.Combine"/>, which emits <c>\</c> on
+    /// Windows — the paths are equivalent, and asserting on the raw form would make these tests fail
+    /// there for a reason that has nothing to do with the grant rules they exist to pin.</summary>
+    static string Posix(string path) => path.Replace('\\', '/');
+
+    static IReadOnlyList<string> Resolve(
+            string binary, Func<string, bool> exists, string userHome = "/Users/nobody") =>
+        [.. BorrowedReviewRuntimeRoots.Resolve(binary, exists, userHome).Select(Posix)];
+
     static IReadOnlyList<string> Resolve(string binary, string prefixRoot) =>
-        BorrowedReviewRuntimeRoots.Resolve(binary, Prefix(prefixRoot));
+        Resolve(binary, Prefix(prefixRoot));
 
     [Test]
     public async Task The_software_subdirectories_of_the_discovered_prefix_are_granted() {
@@ -35,7 +45,7 @@ public class BorrowedReviewRuntimeRootsTests {
 
         foreach (var expected in new[] { "bin", "sbin", "lib", "libexec", "opt", "Cellar",
                                          "Frameworks", "share", "include" })
-            await Assert.That(roots).Contains(Path.Combine("/opt/hb", expected));
+            await Assert.That(roots).Contains($"/opt/hb/{expected}");
     }
 
     /// <summary>The whole point. <c>etc</c> and <c>var</c> are never granted as trees, and neither is
@@ -94,7 +104,7 @@ public class BorrowedReviewRuntimeRootsTests {
     [Arguments("/copilot")]
     [Arguments("/opt")]
     public async Task The_filesystem_root_is_never_granted(string binary) {
-        var roots = BorrowedReviewRuntimeRoots.Resolve(binary, _ => true);
+        var roots = Resolve(binary, _ => true);
 
         // Route 1: the root as a package directory.
         await Assert.That(roots).DoesNotContain("/");
@@ -106,14 +116,65 @@ public class BorrowedReviewRuntimeRootsTests {
         await Assert.That(roots).DoesNotContain("/var");
     }
 
+    /// <summary>The OTHER ungrantable root, and the one that matters most here: a home directory
+    /// holding <c>bin</c> and <c>lib</c> is an ordinary shape, and it matches the prefix rule. Granting
+    /// it would hand over <c>~/bin</c>, <c>~/lib</c>, <c>~/share</c>, <c>~/include</c> — user data, and
+    /// the exact class of grant this change exists to remove. The PR claims the profile grants nothing
+    /// under the user's home; without this it did not.</summary>
+    [Test]
+    public async Task The_user_home_is_never_treated_as_a_prefix() {
+        const string home = "/Users/dev";
+        string[] present = [
+            home, $"{home}/bin", $"{home}/lib", $"{home}/share", $"{home}/include",
+            $"{home}/lib/node_modules/@vendor/tool"
+        ];
+
+        var roots = Resolve(
+            $"{home}/lib/node_modules/@vendor/tool/loader.js",
+            path => present.Contains(Posix(path)), userHome: home);
+
+        await Assert.That(roots).DoesNotContain(home);
+        await Assert.That(roots).DoesNotContain($"{home}/bin");
+        await Assert.That(roots).DoesNotContain($"{home}/lib");
+        await Assert.That(roots).DoesNotContain($"{home}/share");
+        await Assert.That(roots).DoesNotContain($"{home}/include");
+    }
+
+    /// <summary>Home as the PACKAGE directory — the second route to the same grant, which a
+    /// prefix-only guard would miss. A binary resolving to <c>~/copilot</c> would otherwise grant the
+    /// whole home directory.</summary>
+    [Test]
+    public async Task The_user_home_is_never_granted_as_a_package_directory() {
+        var roots = Resolve("/Users/dev/copilot", _ => true, userHome: "/Users/dev");
+
+        await Assert.That(roots).DoesNotContain("/Users/dev");
+    }
+
+    /// <summary>Rejecting home must not reject installations BENEATH it, or every per-user install
+    /// (npm prefix, volta, nvm, <c>~/.local</c>) loses its runtime roots and cannot start.</summary>
+    [Test]
+    public async Task An_installation_beneath_the_user_home_still_resolves() {
+        const string home   = "/Users/dev";
+        const string prefix = home + "/.local";
+        string[] present = [prefix, $"{prefix}/bin", $"{prefix}/lib", $"{prefix}/share",
+                            $"{prefix}/lib/node_modules/@vendor/tool"];
+
+        var roots = Resolve(
+            $"{prefix}/lib/node_modules/@vendor/tool/loader.js",
+            path => present.Contains(Posix(path)), userHome: home);
+
+        await Assert.That(roots).Contains($"{prefix}/bin");
+        await Assert.That(roots).Contains($"{prefix}/lib");
+        await Assert.That(roots).DoesNotContain(home);
+    }
+
     /// <summary>The same hole one level down: a real installation under <c>/opt/vendor</c> must still
     /// resolve, so the root exclusion must not be implemented by refusing shallow paths generally.</summary>
     [Test]
     public async Task A_shallow_but_non_root_installation_still_resolves() {
-        var roots = BorrowedReviewRuntimeRoots.Resolve(
+        var roots = Resolve(
             "/opt/vendor/libexec/tool",
-            path => path.Replace('\\', '/') is "/opt/vendor/bin" or "/opt/vendor/lib"
-                                            or "/opt/vendor/libexec");
+            path => Posix(path) is "/opt/vendor/bin" or "/opt/vendor/lib" or "/opt/vendor/libexec");
 
         await Assert.That(roots).Contains("/opt/vendor/bin");
         await Assert.That(roots).Contains("/opt/vendor/lib");
@@ -126,15 +187,15 @@ public class BorrowedReviewRuntimeRootsTests {
     [Arguments("")]
     [Arguments("   ")]
     public async Task A_missing_binary_path_grants_nothing(string path) {
-        await Assert.That(BorrowedReviewRuntimeRoots.Resolve(path, _ => true)).IsEmpty();
+        await Assert.That(Resolve(path, _ => true)).IsEmpty();
     }
 
     [Test]
     public async Task Only_paths_that_exist_are_granted() {
-        var roots = BorrowedReviewRuntimeRoots.Resolve(
+        var roots = Resolve(
             "/opt/hb/lib/node_modules/@vendor/tool/loader.js",
-            path => path.Replace('\\', '/') is "/opt/hb/bin" or "/opt/hb/lib"
-                                            or "/opt/hb/lib/node_modules/@vendor/tool");
+            path => Posix(path) is "/opt/hb/bin" or "/opt/hb/lib"
+                                or "/opt/hb/lib/node_modules/@vendor/tool");
 
         await Assert.That(roots).Contains("/opt/hb/bin");
         await Assert.That(roots).DoesNotContain("/opt/hb/Cellar");

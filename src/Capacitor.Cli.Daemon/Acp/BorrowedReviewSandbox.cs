@@ -4,50 +4,20 @@ namespace Capacitor.Cli.Daemon.Acp;
 
 /// <summary>
 /// An OS-enforced filesystem boundary around a borrowed reviewer process, built as an inline
-/// <c>sandbox-exec</c> profile.
+/// <c>sandbox-exec</c> profile: deny by default, then grant two writable trees (the snapshot under
+/// review and a per-launch vendor state directory) plus the read-only paths the vendor needs to start.
 ///
-/// <para><b>Why this exists rather than trusting the tool allowlist.</b> The exclusive
-/// <c>--available-tools</c> allowlist makes write and exec unrepresentable, which is a real write
-/// boundary — but it is not a READ boundary. Widening the allowlist to the read tools also widens
-/// what a path-taking read tool can be pointed at, and the vendor's own answer to an out-of-bounds
-/// path is a permission request that an unattended daemon is in the business of answering. That
-/// makes read containment a property of the vendor build: it holds while the build keeps asking, and
-/// silently disappears in a build that stops. Confidentiality cannot rest on that — the reviewer runs
-/// unattended on prompt-injectable content and keeps an explicit result channel off the machine.</para>
+/// <para>The boundary is here, below the vendor, rather than in the tool allowlist because the
+/// allowlist bounds writes but not reads: the vendor's answer to an out-of-bounds path is a permission
+/// request, which an unattended daemon answers, so read containment would hold only while the build
+/// keeps asking. Nothing under the user's home is granted — <c>HOME</c>/<c>TMPDIR</c> are redirected
+/// (see <see cref="HomeDirectoryIn"/>), authentication is brokered
+/// (<see cref="BorrowedReviewAuthBroker"/>), and runtime paths are narrowed
+/// (<see cref="BorrowedReviewRuntimeRoots"/>) so the vendor can start without them.</para>
 ///
-/// <para>So the boundary is moved below the vendor entirely. The profile denies filesystem access by
-/// default and re-grants exactly two writable trees — the snapshot under review and a per-launch
-/// vendor state directory — plus the read-only system and runtime paths the vendor needs to start.</para>
-///
-/// <para><b>The profile no longer grants anything under the user's home.</b> An earlier revision had
-/// to grant recursive reads of <c>~/.copilot</c>, <c>~/Library/Keychains</c>, <c>/Library</c> and the
-/// whole of <c>/opt/homebrew</c> so the vendor could start and authenticate — all data-bearing, all
-/// reachable with no ACP interaction frame, so the <c>Fail</c> interaction policy never fired and the
-/// sandbox permitted the read. Three changes closed them, and each is load-bearing:</para>
-/// <list type="number">
-/// <item>a <b>per-launch state directory</b> supplies <c>HOME</c> and <c>TMPDIR</c>, so the reviewer
-/// gets an empty vendor profile instead of the user's prior sessions, command history and caches —
-/// and, incidentally, no longer needs write access to <c>/private/var/folders</c> or <c>/dev</c>;</item>
-/// <item><b>brokered authentication</b> (<see cref="BorrowedReviewAuthBroker"/>) replaces the keychain
-/// grant, which the previous profile granted for WRITE as well as read;</item>
-/// <item><b>runtime roots derived from the vendor binary</b>
-/// (<see cref="BorrowedReviewRuntimeRoots"/>) replace the whole-prefix grants, admitting software
-/// subdirectories while leaving configuration and service data unreadable.</item>
-/// </list>
-///
-/// <para><b>Every remaining grant was probed, not assumed.</b> Removing the <c>system.sb</c> import
-/// aborts the process before it emits a frame, so it stays. Unqualified <c>mach-lookup</c> and
-/// <c>network*</c> were both narrowed after live runs completed an authenticated <c>session/new</c>
-/// without them: the keychain was the only thing that ever needed the former.</para>
-///
-/// <para>Verified live end to end — under this profile a reviewer reads a snapshot's branch-only,
-/// tracked-modified and untracked content normally, while reads of the keychain, the user's vendor
-/// state, <c>/Library</c> and the prefix's config/data trees all fail <b>even when the permission
-/// request for them is explicitly granted</b>. That last clause is the whole point: it is what makes
-/// the boundary independent of what the vendor decides to ask.</para>
-///
-/// <para>This is the same containment class Codex already advertises as <c>native-tool-clamp</c> —
-/// an OS sandbox with the read tools intact — arrived at from the other direction.</para>
+/// <para>Design, probe results and the live evidence:
+/// <c>docs/superpowers/specs/2026-07-29-ai1584-borrowed-reviewer-sandbox-grants-design.md</c> in
+/// kcap-server.</para>
 /// </summary>
 internal static class BorrowedReviewSandbox {
     internal const string SandboxExecPath = "/usr/bin/sandbox-exec";
@@ -57,12 +27,9 @@ internal static class BorrowedReviewSandbox {
     /// there is no launch that proceeds without the sandbox.</summary>
     internal static bool Available { get; } = File.Exists(SandboxExecPath);
 
-    /// <summary>Read-only system locations, none of which hold per-user data.
-    ///
-    /// <para><c>/Library</c> is deliberately absent — it was in an earlier revision and is not needed
-    /// (probed: the vendor starts and authenticates without it), while
-    /// <c>/Library/Application Support</c> alone makes it a per-application data tree. Everything
-    /// vendor- or runtime-specific arrives through <see cref="BorrowedReviewRuntimeRoots"/> instead.</para></summary>
+    /// <summary>Read-only system locations, none of which hold per-user data. <c>/Library</c> is
+    /// deliberately absent: probed as unnecessary, and <c>/Library/Application Support</c> alone makes
+    /// it a per-application data tree.</summary>
     static IEnumerable<string> SystemReadPaths() {
         yield return "/usr";
         yield return "/bin";
@@ -80,12 +47,10 @@ internal static class BorrowedReviewSandbox {
     /// <see cref="BorrowedReviewRuntimeRoots.Resolve"/>.</param>
     internal static string BuildProfile(
             string snapshotPath, string stateRootPath, IReadOnlyList<string> runtimeReadPaths) {
-        // Belt and braces at the place that actually writes the grants. A filesystem root reaching any
-        // of these emits (subpath "/") and silently hands over the whole machine — a profile that still
-        // parses, a vendor that still starts, and every named-tree containment test still green. The
-        // two daemon-chosen paths THROW, because a root there means something upstream is badly wrong
-        // and a quiet fallback would hide it; the filesystem-derived runtime roots are dropped, because
-        // the launch then fails loudly at exec instead.
+        // A filesystem root here emits (subpath "/") and hands over the whole machine while the profile
+        // still parses and every named-tree containment test stays green. The daemon-chosen paths throw
+        // (a root there is an upstream bug worth surfacing); derived runtime roots are dropped, which
+        // fails loudly at exec instead.
         RejectFilesystemRoot(snapshotPath, nameof(snapshotPath));
         RejectFilesystemRoot(stateRootPath, nameof(stateRootPath));
 

@@ -5,21 +5,14 @@ namespace Capacitor.Cli.Daemon.Acp;
 /// runtime, and that runtime's shared libraries — derived from the vendor binary rather than granted
 /// as whole installation trees.
 ///
-/// <para><b>Why not just grant the prefix.</b> The profile used to grant all of <c>/opt/homebrew</c>
-/// and all of <c>/Library</c>. Both are data-bearing: on an ordinary developer machine
-/// <c>/opt/homebrew/var</c> holds service databases and logs (a local Prometheus TSDB, for one) and
-/// <c>/opt/homebrew/etc</c> holds service configuration. None of it is reachable through an ACP
-/// interaction frame, so the <c>Fail</c> policy never fires — the OS boundary was the only thing
-/// standing there, and it was open.</para>
+/// <para>An installation prefix is admitted by its SOFTWARE subdirectories only: <c>etc</c> and
+/// <c>var</c> are data-bearing (service configuration, service databases, logs) and reachable with no
+/// ACP interaction frame, so only the OS boundary stands there. The one exception is package-installed
+/// crypto configuration, named individually below, without which a Homebrew Node aborts before it can
+/// speak a frame.</para>
 ///
-/// <para>So the prefix is admitted by its SOFTWARE subdirectories only. <c>etc</c> and <c>var</c> are
-/// never granted wholesale; the sole exception is the handful of package-installed crypto
-/// configuration directories a TLS-using runtime reads during startup, named individually below —
-/// without them a Homebrew Node aborts before it can speak a single ACP frame.</para>
-///
-/// <para><b>Fail-loud, not fail-open.</b> A runtime whose files fall outside these roots does not get
-/// a silently widened profile: it fails to exec, with a dynamic-linker error naming the exact path.
-/// That is diagnosable and safe, which a broader default would not be.</para>
+/// <para>A runtime whose files fall outside these roots is not given a silently widened profile — it
+/// fails to exec with a dynamic-linker error naming the path.</para>
 /// </summary>
 internal static class BorrowedReviewRuntimeRoots {
     /// <summary>Subdirectories of a Unix installation prefix that hold executables, libraries and
@@ -47,9 +40,12 @@ internal static class BorrowedReviewRuntimeRoots {
     /// <param name="directoryExists">Directory probe. Production passes
     /// <see cref="Directory.Exists"/>; tests pass a fake so the layout rules are assertable against a
     /// synthetic prefix without creating one on disk.</param>
+    /// <param name="userHome">The daemon user's home directory, which is never itself granted. Tests
+    /// pass an explicit value so the rule is assertable without depending on the real <c>HOME</c>.</param>
     internal static IReadOnlyList<string> Resolve(
-            string vendorBinaryPath, Func<string, bool>? directoryExists = null) {
+            string vendorBinaryPath, Func<string, bool>? directoryExists = null, string? userHome = null) {
         var exists = directoryExists ?? Directory.Exists;
+        var home   = userHome ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
         var roots  = new List<string>();
 
         if (string.IsNullOrWhiteSpace(vendorBinaryPath)) return roots;
@@ -61,10 +57,10 @@ internal static class BorrowedReviewRuntimeRoots {
 
         // The package directory itself, so an installation outside any recognizable prefix still
         // yields a readable program.
-        if (packageDirectory is not null && !IsFilesystemRoot(packageDirectory) && exists(packageDirectory))
+        if (packageDirectory is not null && !IsUngrantableRoot(packageDirectory, home) && exists(packageDirectory))
             roots.Add(packageDirectory);
 
-        var prefix = FindInstallationPrefix(packageDirectory, exists);
+        var prefix = FindInstallationPrefix(packageDirectory, exists, home);
 
         if (prefix is not null)
             foreach (var subdirectory in SoftwareSubdirectories.Concat(CryptoConfigSubdirectories)) {
@@ -80,15 +76,14 @@ internal static class BorrowedReviewRuntimeRoots {
     /// <c>bin</c> and <c>lib</c>. That shape is what makes this vendor-neutral and install-method
     /// neutral: it finds <c>/opt/homebrew</c>, <c>/usr/local</c>, an nvm/volta node root, or a
     /// self-contained vendor directory without any of them being named here.</summary>
-    static string? FindInstallationPrefix(string? start, Func<string, bool> exists) {
+    static string? FindInstallationPrefix(string? start, Func<string, bool> exists, string home) {
         var current = start;
 
         for (var depth = 0; depth < MaxPrefixSearchDepth && current is not null; depth++) {
             var parent = TryGetDirectory(current);
 
-            // Stop at the filesystem root: "/" trivially has bin, and granting its software
-            // subdirectories would readmit most of the machine.
-            if (parent is null || parent == current || IsFilesystemRoot(parent)) return null;
+            // Stop, rather than continue upward: everything above an ungrantable root is broader still.
+            if (parent is null || parent == current || IsUngrantableRoot(parent, home)) return null;
 
             if (exists(Path.Combine(parent, "bin")) && exists(Path.Combine(parent, "lib")))
                 return parent;
@@ -99,7 +94,36 @@ internal static class BorrowedReviewRuntimeRoots {
         return null;
     }
 
-    static bool IsFilesystemRoot(string path) => SandboxPaths.IsFilesystemRoot(path);
+    /// <summary>Roots that must never become a grant, however the walk arrives at them.
+    ///
+    /// <para>Two of them, and both are reachable. <c>/</c> trivially holds <c>bin</c>, so a binary
+    /// resolving to <c>/copilot</c> would make the filesystem root its package directory. And a home
+    /// directory holding <c>bin</c> and <c>lib</c> — an ordinary shape — would match the prefix rule
+    /// and grant <c>~/bin</c>, <c>~/lib</c>, <c>~/share</c>, <c>~/include</c>: user data, and the exact
+    /// class of grant this change exists to remove.</para>
+    ///
+    /// <para>Note this rejects home ITSELF, not installations beneath it: <c>~/.local</c> or
+    /// <c>~/.volta/tools/image/node/22</c> are still valid prefixes, so a per-user install keeps
+    /// working.</para></summary>
+    static bool IsUngrantableRoot(string path, string home) =>
+        SandboxPaths.IsFilesystemRoot(path) || IsSamePath(path, home);
+
+    static bool IsSamePath(string a, string b) {
+        if (string.IsNullOrWhiteSpace(a) || string.IsNullOrWhiteSpace(b)) return false;
+
+        var comparison = OperatingSystem.IsWindows() || OperatingSystem.IsMacOS()
+            ? StringComparison.OrdinalIgnoreCase
+            : StringComparison.Ordinal;
+
+        try {
+            return string.Equals(Normalize(a), Normalize(b), comparison);
+        } catch (Exception) {
+            return false;
+        }
+
+        static string Normalize(string path) =>
+            Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar);
+    }
 
     static string? TryGetDirectory(string path) {
         try {

@@ -369,4 +369,60 @@ public class WorktreeManagerTests {
             try { Directory.Delete(root, true); } catch { }
         }
     }
+
+    /// <summary>A live launch's vendor state directory survives the sweep, and a dead one does not.
+    ///
+    /// <para>It holds the reviewer's whole <c>HOME</c> for the launch and is never itself an active
+    /// worktree path, so the sweep's plain active-path rule would delete it mid-review — a failure that
+    /// would present as an unreproducible vendor crash rather than as anything pointing here.</para></summary>
+    [Test]
+    public async Task CleanupOrphaned_KeepsALiveVendorStateDirectoryAndRemovesADeadOne() {
+        var root       = Path.Combine(Path.GetTempPath(), "kcap-cleanup-state-" + Guid.NewGuid().ToString("N")[..8]);
+        var snapshots  = Path.Combine(root, "borrowed-snapshots");
+        var activeRoot = Path.Combine(snapshots, "active");
+        var activeCwd  = Path.Combine(activeRoot, "src");
+        var liveState  = WorktreeManager.VendorStateRootFor(activeRoot);
+        var deadState  = WorktreeManager.VendorStateRootFor(Path.Combine(snapshots, "gone"));
+        try {
+            Directory.CreateDirectory(activeCwd);
+            Directory.CreateDirectory(liveState);
+            Directory.CreateDirectory(deadState);
+            var manager = new WorktreeManager(
+                new DaemonConfig { WorktreeRoot = root }, NullLogger<WorktreeManager>.Instance);
+
+            await manager.CleanupOrphanedAsync([activeCwd]);
+
+            await Assert.That(Directory.Exists(liveState)).IsTrue()
+                .Because("the running reviewer's HOME must survive the sweep");
+            await Assert.That(Directory.Exists(deadState)).IsFalse()
+                .Because("a state directory whose snapshot is gone is an orphan");
+        } finally {
+            try { Directory.Delete(root, true); } catch { }
+        }
+    }
+
+    /// <summary>An active SNAPSHOT whose own name ends in the state-directory suffix is not deleted.
+    ///
+    /// <para>Snapshot directories are named from the agent id, so this shape is reachable. Treating the
+    /// suffix as a classification — deriving an "owner" and testing only that — compares a live snapshot
+    /// against a path that does not exist and deletes the reviewer's worktree. The suffix is a hint;
+    /// the directory's own activeness is always checked first.</para></summary>
+    [Test]
+    public async Task CleanupOrphaned_KeepsAnActiveSnapshotWhoseNameEndsWithTheStateSuffix() {
+        var root       = Path.Combine(Path.GetTempPath(), "kcap-cleanup-collide-" + Guid.NewGuid().ToString("N")[..8]);
+        var activeRoot = Path.Combine(root, "borrowed-snapshots", "borrowed-agent" + WorktreeManager.VendorStateSuffix);
+        var activeCwd  = Path.Combine(activeRoot, "src");
+        try {
+            Directory.CreateDirectory(activeCwd);
+            var manager = new WorktreeManager(
+                new DaemonConfig { WorktreeRoot = root }, NullLogger<WorktreeManager>.Instance);
+
+            await manager.CleanupOrphanedAsync([activeCwd]);
+
+            await Assert.That(Directory.Exists(activeCwd)).IsTrue()
+                .Because("an active snapshot must survive regardless of what its name happens to end with");
+        } finally {
+            try { Directory.Delete(root, true); } catch { }
+        }
+    }
 }

@@ -512,21 +512,34 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
                 continue;
             var fullDir = Path.GetFullPath(dir).TrimEnd(Path.DirectorySeparatorChar);
 
-            // A per-launch vendor state directory is live exactly while the snapshot it sits beside
-            // is, but it is never itself an active worktree path — so it is matched through its owner.
-            // Without this the sweep reaps a running reviewer's HOME out from under it.
-            var owner = fullDir.EndsWith(VendorStateSuffix, StringComparison.OrdinalIgnoreCase)
-                ? fullDir[..^VendorStateSuffix.Length]
-                : fullDir;
-            var prefix = owner + Path.DirectorySeparatorChar;
-            if (activePaths.Any(path =>
-                    path.Equals(owner, StringComparison.OrdinalIgnoreCase) ||
-                    path.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)))
+            // Two ways to be live, and BOTH are checked. A directory is live if it is itself an active
+            // worktree (or contains one) — the original rule — or, for a per-launch vendor state
+            // directory, if the snapshot it sits beside is: a state directory is never itself an active
+            // worktree path, so without the second arm the sweep reaps a running reviewer's HOME.
+            //
+            // Checking the first arm unconditionally is what keeps the suffix a hint rather than a
+            // classification. Snapshot directories are named from the agent id, so one could legitimately
+            // end in the suffix; deriving an "owner" and testing only that would then compare an active
+            // snapshot against a path that does not exist and delete the live worktree.
+            if (IsActive(fullDir, activePaths)) continue;
+            if (fullDir.EndsWith(VendorStateSuffix, StringComparison.OrdinalIgnoreCase) &&
+                IsActive(fullDir[..^VendorStateSuffix.Length], activePaths))
                 continue;
 
             LogCleaningUp(dir);
             try { DeleteTreeNoFollow(dir); } catch (Exception ex) { LogCleanupFailed(ex, dir); }
         }
+    }
+
+    /// <summary>Whether <paramref name="candidate"/> is, or contains, an active worktree.</summary>
+    static bool IsActive(string candidate, string[] activePaths) {
+        if (candidate.Length == 0) return false;
+
+        var prefix = candidate + Path.DirectorySeparatorChar;
+
+        return activePaths.Any(path =>
+            path.Equals(candidate, StringComparison.OrdinalIgnoreCase) ||
+            path.StartsWith(prefix, StringComparison.OrdinalIgnoreCase));
     }
 
     /// <summary>Default timeout for local git operations (worktree add, init, commit, …).</summary>
