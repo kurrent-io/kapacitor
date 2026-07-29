@@ -1108,6 +1108,8 @@ static class McpFlowsServer {
         }
         AppendReviewerModelAudit(sb, node);
         AppendWorkspaceDiagnostics(sb, node);
+        // Before the result text: the driver should read the warning before the (suspect) result.
+        AppendReviewerVendorMismatchWarning(sb, node);
         if (!string.IsNullOrEmpty(resultText)) { sb.AppendLine(); sb.Append(resultText); }
 
         pendingIds = AppendPendingMessages(sb, node);
@@ -1205,6 +1207,7 @@ static class McpFlowsServer {
             }
 
             AppendParticipants(sb, node);
+            AppendReviewerVendorMismatchWarning(sb, node);
 
             pendingIds = AppendPendingMessages(sb, node);
             return sb.ToString();
@@ -1228,6 +1231,45 @@ static class McpFlowsServer {
             sb.Append(" model="); sb.Append(model); sb.Append(" status=");
             sb.AppendLine(stopped ? "stopped" : "running");
         }
+    }
+
+    /// <summary>Defensive cross-check of the run-level applied reviewer vendor against the
+    /// "reviewer" participant's vendor in the SAME response body — nothing re-validates the vendor
+    /// after the start-time echo check, so a wrongly-vendored reviewer (e.g. a heal relaunch that
+    /// resolved a different vendor than the run pinned) would otherwise reach the driver silently.
+    /// The local comparison also works against servers that predate the server-side check; the
+    /// server's <c>reviewer_vendor_mismatch</c> flag covers a response whose participant list is
+    /// read-model-lagged. Renders a warning instead of erroring the tool call: these responses
+    /// carry the round results and pending messages the driver still needs, and the driver decides
+    /// whether to close.</summary>
+    static void AppendReviewerVendorMismatchWarning(StringBuilder sb, JsonObject node) {
+        var applied = TryGetString(node, "applied_reviewer_vendor");
+
+        string? participantVendor = null;
+        if (applied is not null && node["participants"] is JsonArray participants)
+            foreach (var item in participants) {
+                if (item is not JsonObject p) continue;
+                if (!string.Equals(StringField(p, "role"), "reviewer", StringComparison.Ordinal)) continue;
+                var vendor = StringField(p, "vendor");
+                // An absent vendor in a partial body is not evidence of disagreement.
+                if (vendor.Length > 0 && !string.Equals(vendor, applied, StringComparison.Ordinal)) {
+                    participantVendor = vendor;
+                    break;
+                }
+            }
+
+        var serverFlagged =
+            node["reviewer_vendor_mismatch"] is JsonValue flag && flag.TryGetValue<bool>(out var b2) && b2;
+
+        if (participantVendor is null && !serverFlagged) return;
+
+        sb.AppendLine();
+        sb.Append("⚠ reviewer vendor mismatch: ");
+        sb.AppendLine(participantVendor is not null
+            ? $"participant 'reviewer' is '{participantVendor}' but applied_reviewer_vendor is '{applied}'."
+            : "the server flagged that the active reviewer's vendor disagrees with applied_reviewer_vendor.");
+        sb.AppendLine("  A different reviewer than this run reported may be doing the work — treat its " +
+                      "results as suspect: close the flow and report this.");
     }
 
     /// <summary>

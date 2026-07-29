@@ -140,6 +140,71 @@ public class McpFlowsServerTests {
         await Assert.That(text).Contains("applied_reviewer_vendor: claude");
         await Assert.That(text).Contains("reviewer_vendor_source: explicit");
         await Assert.That(text).Contains("reviewer: vendor=claude model=sonnet status=running");
+        // Agreement renders NO mismatch warning — the warning must exist only on disagreement.
+        await Assert.That(text).DoesNotContain("reviewer vendor mismatch");
+    }
+
+    [Test]
+    public async Task Status_response_warns_when_reviewer_vendor_disagrees_with_applied_echo() {
+        var body = """
+            {"flow_run_id":"f1","status":"running","definition_id":"code-review","target_title":"t",
+             "applied_reviewer_vendor":"codex",
+             "participants":[{"role":"reviewer","vendor":"claude","model":"sonnet","stopped":false}]}
+            """;
+
+        var text = McpFlowsServer.FormatStatusResponse(body);
+
+        await Assert.That(text).Contains("⚠ reviewer vendor mismatch: " +
+            "participant 'reviewer' is 'claude' but applied_reviewer_vendor is 'codex'.");
+        await Assert.That(text).Contains("treat its results as suspect: close the flow and report this");
+    }
+
+    [Test]
+    public async Task Status_response_warns_from_server_flag_even_without_participants() {
+        // A read-model-lagged response can omit the participant list while the server's own
+        // fold-side check still flagged the disagreement — the flag alone must warn.
+        var body = """
+            {"flow_run_id":"f1","status":"running","definition_id":"code-review","target_title":"t",
+             "applied_reviewer_vendor":"codex","reviewer_vendor_mismatch":true}
+            """;
+
+        var text = McpFlowsServer.FormatStatusResponse(body);
+
+        await Assert.That(text).Contains("⚠ reviewer vendor mismatch: " +
+            "the server flagged that the active reviewer's vendor disagrees with applied_reviewer_vendor.");
+    }
+
+    [Test]
+    public async Task Status_response_ignores_non_reviewer_vendor_differences() {
+        // The run-level echo describes only the "reviewer" role — a multi-participant flow's other
+        // roles legitimately run different vendors and must never trip the warning.
+        var body = """
+            {"flow_run_id":"f1","status":"running","definition_id":"pair-flow","target_title":"t",
+             "applied_reviewer_vendor":"codex",
+             "participants":[{"role":"tester","vendor":"claude","model":"sonnet","stopped":false},
+                             {"role":"reviewer","vendor":"codex","model":"default","stopped":false}]}
+            """;
+
+        var text = McpFlowsServer.FormatStatusResponse(body);
+
+        await Assert.That(text).DoesNotContain("reviewer vendor mismatch");
+    }
+
+    [Test]
+    public async Task Polled_round_result_warns_before_the_result_text_on_vendor_mismatch() {
+        var body = """
+            {"flow_run_id":"f1","round_number":2,"status":"findings","round_status":"findings",
+             "round_result_text":"FINDINGS:\n- looks fine",
+             "applied_reviewer_vendor":"codex",
+             "participants":[{"role":"reviewer","vendor":"claude","model":"sonnet","stopped":false}]}
+            """;
+
+        var text = McpFlowsServer.FormatPolledRoundResult(JsonNode.Parse(body)!.AsObject(), "f1");
+
+        var warningIndex = text.IndexOf("⚠ reviewer vendor mismatch", StringComparison.Ordinal);
+        var resultIndex  = text.IndexOf("FINDINGS:", StringComparison.Ordinal);
+        await Assert.That(warningIndex).IsGreaterThanOrEqualTo(0);
+        await Assert.That(resultIndex).IsGreaterThan(warningIndex);
     }
 
     [Test]
