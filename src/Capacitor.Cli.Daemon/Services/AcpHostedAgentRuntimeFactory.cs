@@ -226,9 +226,14 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
     /// machine's platform entry via <see cref="PolicyFor"/> — the same value the advertised capability
     /// is computed from, so argv and advertisement cannot disagree. Tests pass an explicit entry so
     /// the borrowed-snapshot argv is assertable on a platform whose own entry is unsupported.</param>
+    /// <param name="readEnvironmentVariable">Test seam ONLY, for the brokered credential. Production
+    /// passes null, which reads the daemon's real environment. Tests supply a fake so the borrowed argv
+    /// is assertable on a host with no token configured — and, more importantly, so the fail-closed
+    /// branch is assertable at all without mutating the test process's own environment.</param>
     internal static ProcessStartInfo BuildProcessStartInfo(
             AcpVendorDescriptor descriptor, DaemonConfig config, RuntimeStartContext ctx,
-            ResolvedBorrowedReviewPolicy? policy = null) {
+            ResolvedBorrowedReviewPolicy? policy = null,
+            Func<string, string?>? readEnvironmentVariable = null) {
         var resolved = policy ?? PolicyFor(descriptor);
         // Defense-in-depth: the orchestrator's UnattendedLaunchPolicy is expected to reject a
         // review-flow launch for a vendor that doesn't support it before this factory ever runs,
@@ -286,6 +291,9 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
 
         // The read boundary. Only a borrowed snapshot is wrapped: every other launch either has no
         // borrowed content to protect or is already confined by the owned worktree it runs in.
+        string? stateRoot = null;
+        string? brokeredToken = null;
+
         if (ctx.IsBorrowedSnapshot && resolved.RequiresProcessSandbox) {
             // SnapshotRoot, not Path. When the borrowed cwd is below the repository root the
             // snapshot's Path is the cwd-relative SUBDIRECTORY inside it, so granting Path would
@@ -293,9 +301,25 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
             // original blind-review defect, reappearing for exactly the nested-cwd shape a real
             // launch from `repo/src` produces. Path stays the working directory; the boundary is
             // drawn at the root the daemon materialized.
+            var snapshotRoot = ctx.Worktree.SnapshotRoot ?? ctx.Worktree.Path;
+
+            // Defense in depth. The policy already refuses to advertise borrowed review without a
+            // brokerable credential, so reaching here without one means the daemon's environment
+            // changed under a resolved policy or a caller supplied an entry the host cannot honour.
+            // Either way the alternative to failing is a reviewer that falls back to the keychain the
+            // profile no longer grants — i.e. a launch that cannot authenticate — so fail here, before
+            // a child exists, with a reason an operator can act on.
+            brokeredToken = BorrowedReviewAuthBroker.TryResolve(
+                    readEnvironmentVariable ?? Environment.GetEnvironmentVariable)
+                ?? throw new InvalidOperationException(
+                    "borrowed_review_auth_unavailable: a contained borrowed reviewer authenticates from a "
+                  + $"brokered token because the sandbox does not grant the keychain. Set one of "
+                  + $"{string.Join(", ", BorrowedReviewAuthBroker.SourceVariables)} in the daemon's environment.");
+
+            stateRoot = WorktreeManager.VendorStateRootFor(snapshotRoot);
+
             var profile = BorrowedReviewSandbox.BuildProfile(
-                ctx.Worktree.SnapshotRoot ?? ctx.Worktree.Path,
-                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile));
+                snapshotRoot, stateRoot, BorrowedReviewRuntimeRoots.Resolve(binaryPath));
 
             argv       = [.. BorrowedReviewSandbox.WrapArgv(profile, binaryPath, argv)];
             binaryPath = BorrowedReviewSandbox.SandboxExecPath;
@@ -312,6 +336,15 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
 
         if (!string.IsNullOrEmpty(ctx.ServerUrl))
             psi.Environment["KCAP_URL"] = ctx.ServerUrl;
+
+        if (stateRoot is not null) {
+            // HOME and TMPDIR both move into the per-launch root, which is what keeps the reviewer
+            // away from the user's vendor profile, command history and caches — and what removes the
+            // previous profile's blanket /private/var/folders and /dev write grants.
+            psi.Environment["HOME"]    = BorrowedReviewSandbox.HomeDirectoryIn(stateRoot);
+            psi.Environment["TMPDIR"]  = BorrowedReviewSandbox.TempDirectoryIn(stateRoot);
+            psi.Environment[BorrowedReviewAuthBroker.TargetVariable] = brokeredToken;
+        }
 
         return psi;
     }
@@ -388,6 +421,15 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
     static (Stream Input, Stream Output, IAcpProcess Process) StartRealProcess(
             AcpVendorDescriptor descriptor, DaemonConfig config, RuntimeStartContext ctx, ILoggerFactory loggerFactory) {
         var psi = BuildProcessStartInfo(descriptor, config, ctx);
+
+        // Materialize what the pure builder declared. Only a sandboxed borrowed launch carries these,
+        // and the vendor cannot create them itself: HOME must exist before the runtime starts, and the
+        // profile grants the state root rather than its parent.
+        if (psi.FileName == BorrowedReviewSandbox.SandboxExecPath &&
+            psi.Environment.TryGetValue("HOME", out var sandboxHome) && sandboxHome is { Length: > 0 })
+            BorrowedReviewSandbox.CreateStateDirectories(
+                Path.GetDirectoryName(sandboxHome)
+                ?? throw new InvalidOperationException("borrowed_review_state_root_unresolved"));
 
         var process = Process.Start(psi)
          ?? throw new InvalidOperationException($"Failed to start '{psi.FileName} {string.Join(' ', psi.ArgumentList)}' (Process.Start returned null).");

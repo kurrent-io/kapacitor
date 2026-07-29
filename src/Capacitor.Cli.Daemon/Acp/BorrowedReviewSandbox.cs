@@ -16,11 +16,35 @@ namespace Capacitor.Cli.Daemon.Acp;
 /// unattended on prompt-injectable content and keeps an explicit result channel off the machine.</para>
 ///
 /// <para>So the boundary is moved below the vendor entirely. The profile denies filesystem access by
-/// default and re-grants the snapshot plus the minimum needed to start the vendor: system and runtime
-/// paths, the vendor's own config/cache, and the keychain it authenticates against. Verified live —
-/// under this profile a reviewer reads the snapshot normally, and an outside read fails <b>even when
-/// the permission request for it is explicitly granted</b>. That last clause is the whole point: it is
-/// what makes the boundary independent of what the vendor decides to ask.</para>
+/// default and re-grants exactly two writable trees — the snapshot under review and a per-launch
+/// vendor state directory — plus the read-only system and runtime paths the vendor needs to start.</para>
+///
+/// <para><b>The profile no longer grants anything under the user's home.</b> An earlier revision had
+/// to grant recursive reads of <c>~/.copilot</c>, <c>~/Library/Keychains</c>, <c>/Library</c> and the
+/// whole of <c>/opt/homebrew</c> so the vendor could start and authenticate — all data-bearing, all
+/// reachable with no ACP interaction frame, so the <c>Fail</c> interaction policy never fired and the
+/// sandbox permitted the read. Three changes closed them, and each is load-bearing:</para>
+/// <list type="number">
+/// <item>a <b>per-launch state directory</b> supplies <c>HOME</c> and <c>TMPDIR</c>, so the reviewer
+/// gets an empty vendor profile instead of the user's prior sessions, command history and caches —
+/// and, incidentally, no longer needs write access to <c>/private/var/folders</c> or <c>/dev</c>;</item>
+/// <item><b>brokered authentication</b> (<see cref="BorrowedReviewAuthBroker"/>) replaces the keychain
+/// grant, which the previous profile granted for WRITE as well as read;</item>
+/// <item><b>runtime roots derived from the vendor binary</b>
+/// (<see cref="BorrowedReviewRuntimeRoots"/>) replace the whole-prefix grants, admitting software
+/// subdirectories while leaving configuration and service data unreadable.</item>
+/// </list>
+///
+/// <para><b>Every remaining grant was probed, not assumed.</b> Removing the <c>system.sb</c> import
+/// aborts the process before it emits a frame, so it stays. Unqualified <c>mach-lookup</c> and
+/// <c>network*</c> were both narrowed after live runs completed an authenticated <c>session/new</c>
+/// without them: the keychain was the only thing that ever needed the former.</para>
+///
+/// <para>Verified live end to end — under this profile a reviewer reads a snapshot's branch-only,
+/// tracked-modified and untracked content normally, while reads of the keychain, the user's vendor
+/// state, <c>/Library</c> and the prefix's config/data trees all fail <b>even when the permission
+/// request for them is explicitly granted</b>. That last clause is the whole point: it is what makes
+/// the boundary independent of what the vendor decides to ask.</para>
 ///
 /// <para>This is the same containment class Codex already advertises as <c>native-tool-clamp</c> —
 /// an OS sandbox with the read tools intact — arrived at from the other direction.</para>
@@ -33,62 +57,62 @@ internal static class BorrowedReviewSandbox {
     /// there is no launch that proceeds without the sandbox.</summary>
     internal static bool Available { get; } = File.Exists(SandboxExecPath);
 
-    /// <summary>Read-only paths the vendor needs to start that are NOT the snapshot. Deliberately
-    /// coarse for system locations and narrow for user ones: a broad <c>$HOME</c> grant would readmit
-    /// exactly the exfiltration this profile exists to stop, so only the vendor's own directories are
-    /// listed, plus <c>$HOME</c> itself as a literal (not a subpath) because the runtime stats it.</summary>
+    /// <summary>Read-only system locations, none of which hold per-user data.
+    ///
+    /// <para><c>/Library</c> is deliberately absent — it was in an earlier revision and is not needed
+    /// (probed: the vendor starts and authenticates without it), while
+    /// <c>/Library/Application Support</c> alone makes it a per-application data tree. Everything
+    /// vendor- or runtime-specific arrives through <see cref="BorrowedReviewRuntimeRoots"/> instead.</para></summary>
     static IEnumerable<string> SystemReadPaths() {
         yield return "/usr";
         yield return "/bin";
         yield return "/sbin";
         yield return "/System";
-        yield return "/Library";
-        yield return "/opt/homebrew";
         yield return "/private/var/select";
     }
 
     /// <summary>Builds the inline profile for one borrowed launch.</summary>
     /// <param name="snapshotPath">The daemon-owned snapshot the reviewer may read and write.</param>
-    /// <param name="home">The user's home directory, used to locate the vendor's own state.</param>
-    internal static string BuildProfile(string snapshotPath, string home) {
-        // Both the given path and its symlink-resolved form are granted. On macOS /tmp is a symlink
-        // to /private/tmp, and the sandbox matches on the RESOLVED path — granting only what the
-        // caller passed produces a reviewer that cannot read its own snapshot, which is the original
-        // bug wearing a different hat. Granting only the resolved form fails the other way when the
-        // path does not exist yet at build time and resolution returns null.
-        var snapshots = new List<string> { snapshotPath };
-        var resolved  = TryResolvePhysical(snapshotPath);
+    /// <param name="stateRootPath">The per-launch vendor state directory backing <c>HOME</c> and
+    /// <c>TMPDIR</c> — writable, and outside the snapshot so a per-round refresh neither wipes the
+    /// running vendor's state nor presents that state to the reviewer as content under review.</param>
+    /// <param name="runtimeReadPaths">Read-only roots the vendor needs to start, from
+    /// <see cref="BorrowedReviewRuntimeRoots.Resolve"/>.</param>
+    internal static string BuildProfile(
+            string snapshotPath, string stateRootPath, IReadOnlyList<string> runtimeReadPaths) {
+        // Belt and braces at the place that actually writes the grants. A filesystem root reaching any
+        // of these emits (subpath "/") and silently hands over the whole machine — a profile that still
+        // parses, a vendor that still starts, and every named-tree containment test still green. The
+        // two daemon-chosen paths THROW, because a root there means something upstream is badly wrong
+        // and a quiet fallback would hide it; the filesystem-derived runtime roots are dropped, because
+        // the launch then fails loudly at exec instead.
+        RejectFilesystemRoot(snapshotPath, nameof(snapshotPath));
+        RejectFilesystemRoot(stateRootPath, nameof(stateRootPath));
 
-        if (resolved is not null && !string.Equals(resolved, snapshotPath, StringComparison.Ordinal))
-            snapshots.Add(resolved);
-
-        string[] vendorState = [
-            Path.Combine(home, ".copilot"),
-            Path.Combine(home, "Library", "Caches", "copilot"),
-            // Authentication lives in the keychain; without it session/new answers
-            // "Authentication required" and the reviewer never starts.
-            Path.Combine(home, "Library", "Keychains")
-        ];
+        var snapshots = SandboxPaths.BothForms(snapshotPath);
+        var state     = SandboxPaths.BothForms(stateRootPath);
+        runtimeReadPaths = [.. runtimeReadPaths.Where(p => !SandboxPaths.IsFilesystemRoot(p))];
 
         var sb = new StringBuilder();
         sb.Append("(version 1)(deny default)(import \"system.sb\")");
-        sb.Append("(allow process-fork process-exec)(allow network*)(allow mach-lookup)");
+        sb.Append("(allow process-fork process-exec)");
+        // Outbound only: the reviewer calls the vendor's API and has no reason to listen. Unqualified
+        // network* additionally permitted inbound and bind.
+        sb.Append("(allow network-outbound)");
         // Metadata-only access is deliberately left open: the runtime stats paths it never reads, and
         // a stat leaks existence rather than contents.
         sb.Append("(allow file-read-metadata)");
 
         sb.Append("(allow file-read*");
         foreach (var p in snapshots)          sb.Append(Subpath(p));
+        foreach (var p in state)              sb.Append(Subpath(p));
         foreach (var p in SystemReadPaths())  sb.Append(Subpath(p));
-        foreach (var p in vendorState)        sb.Append(Subpath(p));
-        sb.Append(Literal(home));
+        foreach (var p in runtimeReadPaths)   sb.Append(Subpath(p));
         sb.Append(')');
 
         sb.Append("(allow file-write*");
-        foreach (var p in snapshots)   sb.Append(Subpath(p));
-        foreach (var p in vendorState) sb.Append(Subpath(p));
-        sb.Append(Subpath("/private/var/folders"));
-        sb.Append(Subpath("/dev"));
+        foreach (var p in snapshots) sb.Append(Subpath(p));
+        foreach (var p in state)     sb.Append(Subpath(p));
         sb.Append(')');
 
         return sb.ToString();
@@ -99,60 +123,29 @@ internal static class BorrowedReviewSandbox {
             string profile, string binaryPath, IEnumerable<string> argv) =>
         ["-p", profile, binaryPath, .. argv];
 
-    /// <summary>The physical path, with symlinked ANCESTORS resolved — not just a symlinked leaf.
-    ///
-    /// <para>Resolving only the leaf is not enough and the difference is not academic: on macOS both
-    /// <c>/tmp</c> and <c>/var</c> are symlinks, so a snapshot under either has a real path the leaf
-    /// is not a link to. The sandbox matches on the resolved path, so granting only what the caller
-    /// passed produces a reviewer that cannot read its own snapshot — the original bug, wearing a
-    /// different hat. Caught by the enforcement test, which is why that test runs a real process
-    /// instead of asserting on the profile string.</para></summary>
-    static string? TryResolvePhysical(string path) {
-        try {
-            var current = Path.GetFullPath(path);
+    /// <summary>The two subdirectories of the per-launch state root, handed to the vendor as
+    /// <c>HOME</c> and <c>TMPDIR</c>. Split so the vendor's profile and its scratch files are
+    /// distinguishable when a launch is being diagnosed.</summary>
+    internal static string HomeDirectoryIn(string stateRoot) => Path.Combine(stateRoot, "home");
+    internal static string TempDirectoryIn(string stateRoot) => Path.Combine(stateRoot, "tmp");
 
-            // Walk root-first so an ancestor's target is applied before the components below it.
-            for (var depth = 0; depth < 64; depth++) {
-                var link = FirstLinkedAncestor(current);
-
-                if (link is null) return current;
-
-                var target = new DirectoryInfo(link).ResolveLinkTarget(returnFinalTarget: true)?.FullName;
-
-                if (target is null) return current;
-
-                // Re-root the remainder of the path under the ancestor's target.
-                var remainder = current[link.Length..].TrimStart(Path.DirectorySeparatorChar);
-                current = remainder.Length == 0 ? target : Path.Combine(target, remainder);
-            }
-
-            return current;
-        } catch (Exception) {
-            // A path that cannot be inspected is not a reason to widen the profile — the unresolved
-            // form is still granted, and a genuinely wrong path fails loudly at spawn instead.
-            return null;
-        }
+    /// <summary>Materializes the per-launch state directories. Called at the spawn seam rather than
+    /// from the pure argv builder, which stays free of side effects.</summary>
+    internal static void CreateStateDirectories(string stateRoot) {
+        Directory.CreateDirectory(HomeDirectoryIn(stateRoot));
+        Directory.CreateDirectory(TempDirectoryIn(stateRoot));
     }
 
-    /// <summary>The shallowest ancestor of <paramref name="path"/> (inclusive) that is itself a
-    /// symlink, or null when none is.</summary>
-    static string? FirstLinkedAncestor(string path) {
-        var parts = path.Split(Path.DirectorySeparatorChar, StringSplitOptions.RemoveEmptyEntries);
-        var probe = "";
-
-        foreach (var part in parts) {
-            probe += Path.DirectorySeparatorChar + part;
-
-            if (new DirectoryInfo(probe).LinkTarget is not null) return probe;
-        }
-
-        return null;
+    static void RejectFilesystemRoot(string path, string parameterName) {
+        if (SandboxPaths.IsFilesystemRoot(path))
+            throw new ArgumentException(
+                $"A borrowed-review sandbox cannot be drawn at a filesystem root ('{path}') — that grant " +
+                "is the entire machine.", parameterName);
     }
 
     // Profile strings are SCM-quoted. A path containing a quote or backslash would otherwise break out
     // of its own (subpath "...") form and could re-grant the filesystem, so escape rather than trust
     // that daemon-owned paths are always tame.
     static string Subpath(string path) => $"(subpath \"{Escape(path)}\")";
-    static string Literal(string path) => $"(literal \"{Escape(path)}\")";
     static string Escape(string path)  => path.Replace("\\", "\\\\").Replace("\"", "\\\"");
 }

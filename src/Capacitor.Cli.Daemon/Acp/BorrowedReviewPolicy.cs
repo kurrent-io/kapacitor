@@ -82,41 +82,44 @@ internal static class CopilotBorrowedReviewPolicy {
     /// host that cannot is UNSUPPORTED, not "supported without the sandbox" — the readable allowlist
     /// and the OS boundary ship as one thing, and an entry that granted the first without the second
     /// would be the exact confidentiality gap this design exists to close.</param>
+    /// <param name="authBrokerAvailable">Whether this daemon can broker the reviewer's credential
+    /// from its own environment (<see cref="BorrowedReviewAuthBroker"/>). Gated HERE, at
+    /// advertisement, rather than checked at spawn: a daemon that cannot authenticate a contained
+    /// reviewer has no borrowed capability to offer, and saying so up front lets the server reject the
+    /// start with a coded reason plus the <c>context-only</c> remedy instead of the flow dying
+    /// mid-launch. The alternative — advertise, then fail on spawn — is strictly worse UX for exactly
+    /// the same security posture.</param>
     internal static ResolvedBorrowedReviewPolicy Resolve(
-            OSPlatform os, Architecture arch, bool sandboxAvailable) =>
-        os == OSPlatform.OSX && arch == Architecture.Arm64 && sandboxAvailable
+            OSPlatform os, Architecture arch, bool sandboxAvailable, bool authBrokerAvailable) =>
+        os == OSPlatform.OSX && arch == Architecture.Arm64 && sandboxAvailable && authBrokerAvailable
             ? new(true, AcpBorrowedReviewContainment.IndependentSnapshot, ReadToolIds,
                   RequiresProcessSandbox: true)
             : ResolvedBorrowedReviewPolicy.Unsupported;
 
     /// <summary>
-    /// This machine's entry — currently <b>unsupported on every platform, deliberately</b>.
+    /// This machine's entry — now resolved from <see cref="Resolve"/> rather than pinned unsupported.
     ///
-    /// <para><see cref="Resolve"/> above is the real, tested table and it stays exactly as it is;
-    /// what ships disabled is the decision to consult it. The reason is a specific unclosed gap
-    /// rather than doubt about the mechanism: the sandbox profile must still grant recursive reads of
-    /// <c>~/.copilot</c>, <c>~/Library/Keychains</c>, <c>/Library</c> and <c>/opt/homebrew</c> so the
-    /// vendor can start and authenticate, and those are data-bearing. A vendor build that silently
-    /// accepted an out-of-bounds path could point the allowlisted read tools at them and exfiltrate
-    /// through the result channel with <b>no</b> interaction frame — so the interaction <c>Fail</c>
-    /// policy never fires and the sandbox permits the read. The boundary is vendor-independent for
-    /// arbitrary paths; it is not yet vendor-independent for those four.</para>
+    /// <para>The gap that kept this disabled was the sandbox profile's own grants: it had to admit
+    /// recursive reads of <c>~/.copilot</c>, <c>~/Library/Keychains</c>, <c>/Library</c> and
+    /// <c>/opt/homebrew</c> so the vendor could start and authenticate. All four are data-bearing and
+    /// none is reachable through an ACP interaction frame, so the <c>Fail</c> policy never fired and
+    /// the OS boundary permitted the read — vendor-independent for arbitrary paths, but not for those
+    /// four. All four are now closed: a per-launch <c>HOME</c>/<c>TMPDIR</c> state directory,
+    /// <see cref="BorrowedReviewAuthBroker">brokered authentication</see> in place of the keychain
+    /// grant, and <see cref="BorrowedReviewRuntimeRoots">runtime roots derived from the vendor
+    /// binary</see> in place of the whole-prefix grants. Each is asserted unreadable by an enforcement
+    /// test that runs a real process — one that never asks permission, so it models the drifted build
+    /// rather than the cooperative one.</para>
     ///
-    /// <para>Closing it means a per-launch HOME/state directory, authentication brokered through
-    /// <c>COPILOT_GITHUB_TOKEN</c>/<c>GH_TOKEN</c> instead of the keychain grant, and runtime grants
-    /// narrowed to executables and packages rather than whole config trees. That makes the daemon a
-    /// credential-handling component, which is a decision in its own right and not one to take as a
-    /// side effect of a tool-allowlist fix.</para>
-    ///
-    /// <para>Everything else in this change is live and load-bearing: snapshot routing, the platform
-    /// table and its fail-closed wiring, the <c>Fail</c>-on-any-interaction override for borrowed
-    /// launches, the sandbox and its enforcement test, and the containment token contract. Flipping
-    /// this one line back to <c>Resolve(CurrentOs(), …)</c> is all that enabling costs once the
-    /// grants above are closed — and until then the server answers a Copilot borrowed request with
-    /// <c>vendor_containment_unreadable</c> plus the <c>context-only</c> remedy, which is honest.</para>
+    /// <para>Support is now conjunctive across three host facts — verified platform, an enforceable
+    /// sandbox, and a brokerable credential — and any one of them missing yields
+    /// <see cref="ResolvedBorrowedReviewPolicy.Unsupported"/>, so the server answers with
+    /// <c>vendor_containment_unreadable</c> plus the <c>context-only</c> remedy. That remains the
+    /// honest fallback; it is simply no longer the only outcome.</para>
     /// </summary>
     internal static ResolvedBorrowedReviewPolicy Current { get; } =
-        ResolvedBorrowedReviewPolicy.Unsupported;
+        Resolve(CurrentOs(), RuntimeInformation.ProcessArchitecture,
+                BorrowedReviewSandbox.Available, BorrowedReviewAuthBroker.Available);
 
     static OSPlatform CurrentOs() =>
         RuntimeInformation.IsOSPlatform(OSPlatform.OSX)     ? OSPlatform.OSX

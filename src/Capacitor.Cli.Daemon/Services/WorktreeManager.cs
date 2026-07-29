@@ -69,9 +69,27 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
         return new WorktreeInfo(worktreePath, "", repoPath, IsStandalone: true);
     }
 
+    /// <summary>Suffix marking a borrowed launch's per-launch vendor state directory, which sits
+    /// BESIDE the snapshot it belongs to. Outside the snapshot deliberately: a per-round refresh
+    /// replaces the snapshot's contents, which would both destroy the running vendor's state and
+    /// present that state to the reviewer as content under review.</summary>
+    public const string VendorStateSuffix = ".vendor-state";
+
+    /// <summary>The per-launch vendor state root for a borrowed snapshot. One definition, shared by
+    /// the launch path that fills it and the cleanup paths that remove it.</summary>
+    public static string VendorStateRootFor(string snapshotRoot) =>
+        snapshotRoot.TrimEnd(Path.DirectorySeparatorChar) + VendorStateSuffix;
+
     public static async Task RemoveAsync(WorktreeInfo worktree, bool deleteBranch = true) {
         if (worktree.IsStandalone) {
-            DeleteTreeNoFollow(worktree.SnapshotRoot ?? worktree.Path);
+            var root = worktree.SnapshotRoot ?? worktree.Path;
+
+            // The vendor state directory is the daemon's, holds the reviewer's whole HOME for this
+            // launch, and must not outlive it.
+            if (worktree.SnapshotRoot is not null)
+                DeleteTreeNoFollow(VendorStateRootFor(worktree.SnapshotRoot));
+
+            DeleteTreeNoFollow(root);
 
             return;
         }
@@ -493,9 +511,16 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
                 Path.GetFileName(dir).Equals(reservedDirectoryName, StringComparison.OrdinalIgnoreCase))
                 continue;
             var fullDir = Path.GetFullPath(dir).TrimEnd(Path.DirectorySeparatorChar);
-            var prefix = fullDir + Path.DirectorySeparatorChar;
+
+            // A per-launch vendor state directory is live exactly while the snapshot it sits beside
+            // is, but it is never itself an active worktree path — so it is matched through its owner.
+            // Without this the sweep reaps a running reviewer's HOME out from under it.
+            var owner = fullDir.EndsWith(VendorStateSuffix, StringComparison.OrdinalIgnoreCase)
+                ? fullDir[..^VendorStateSuffix.Length]
+                : fullDir;
+            var prefix = owner + Path.DirectorySeparatorChar;
             if (activePaths.Any(path =>
-                    path.Equals(fullDir, StringComparison.OrdinalIgnoreCase) ||
+                    path.Equals(owner, StringComparison.OrdinalIgnoreCase) ||
                     path.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)))
                 continue;
 

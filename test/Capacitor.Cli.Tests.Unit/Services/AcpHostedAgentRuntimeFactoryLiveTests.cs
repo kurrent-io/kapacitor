@@ -134,9 +134,26 @@ public class AcpHostedAgentRuntimeFactoryLiveTests {
         }
     }
 
+    // The three content classes a borrowed reviewer has to be able to see, and which a stale
+    // committed base would silently withhold. Named constants so the prompt, the fixture and the
+    // assertions cannot drift apart.
+    const string BranchOnlySentinel      = "BRANCH-ONLY-SENTINEL-a1b2c3";
+    const string TrackedModifiedSentinel = "TRACKED-MODIFIED-SENTINEL-d4e5f6";
+    const string UntrackedSentinel       = "UNTRACKED-SENTINEL-g7h8i9";
+
     /// <summary>Borrowed-snapshot certification probe: Cursor runs in a daemon-owned copy of the
     /// authorized checkout. Even an explicit mutation changes only that disposable snapshot; the
-    /// source checkout remains byte-identical and the result MCP completes with zero interaction.</summary>
+    /// source checkout remains byte-identical and the result MCP completes with zero interaction.
+    ///
+    /// <para><b>Extended with the three read sentinels</b>, carried from the borrowed-review
+    /// readability amendment's §5, which required them and recorded that they did not ship: this probe
+    /// previously created and read
+    /// a single COMMITTED file, which a reviewer working from a stale committed base would have read
+    /// just as successfully. That is the defect the whole borrowed-review effort exists to fix, and the
+    /// probe could not see it. Branch-only, tracked-modified and untracked content are now all present
+    /// in the source and all three must come back <b>through the result channel</b> — read by the
+    /// reviewer, not by the test process. A test-process read proves the snapshot builder works and
+    /// says nothing about whether a reviewer can see it.</para></summary>
     [Test]
     public async Task ReviewFlow_AgainstRealCursorAgentAcp_CallsResultMcp_WithZeroInteractionRequests() {
         Skip.Unless(
@@ -151,11 +168,22 @@ public class AcpHostedAgentRuntimeFactoryLiveTests {
         var mcpPath     = Path.Combine(rootDir.FullName, "fake-kcap");
         var protectedPath = Path.Combine(sourceDir.FullName, "protected.txt");
         File.WriteAllText(protectedPath, "ORIGINAL\n");
+        File.WriteAllText(Path.Combine(sourceDir.FullName, "tracked_modified.txt"), "BASE-ORIGINAL\n");
         RunGit(sourceDir.FullName, "init", "-q");
         RunGit(sourceDir.FullName, "config", "user.email", "test@example.com");
         RunGit(sourceDir.FullName, "config", "user.name", "Test");
-        RunGit(sourceDir.FullName, "add", "protected.txt");
+        RunGit(sourceDir.FullName, "add", "protected.txt", "tracked_modified.txt");
         RunGit(sourceDir.FullName, "commit", "-q", "-m", "initial");
+
+        // Branch-only: committed, but only on a branch the daemon's own checkout has never seen.
+        RunGit(sourceDir.FullName, "checkout", "-q", "-b", "feature");
+        File.WriteAllText(Path.Combine(sourceDir.FullName, "branch_only.txt"), BranchOnlySentinel + "\n");
+        RunGit(sourceDir.FullName, "add", "branch_only.txt");
+        RunGit(sourceDir.FullName, "commit", "-q", "-m", "branch-only commit");
+        // Tracked-but-dirty, and never-added: neither is reachable from any commit.
+        File.WriteAllText(Path.Combine(sourceDir.FullName, "tracked_modified.txt"), TrackedModifiedSentinel + "\n");
+        File.WriteAllText(Path.Combine(sourceDir.FullName, "untracked.txt"), UntrackedSentinel + "\n");
+
         File.WriteAllText(mcpPath, FakeFlowResultMcpScript);
         File.SetUnixFileMode(mcpPath,
             UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
@@ -184,7 +212,12 @@ public class AcpHostedAgentRuntimeFactoryLiveTests {
                 Vendor: "cursor",
                 SourceRepoPath: sourceDir.FullName,
                 Worktree: snapshot,
-                Prompt: "Read protected.txt. Try to replace it with MUTATED using any file-edit or shell tool available, but do not work around unavailable tools. Then call submit_review_result exactly once with verdict CLEAN and summary 'live borrowed certification'.",
+                Prompt: "Read all four of these files: protected.txt, branch_only.txt, "
+                      + "tracked_modified.txt, untracked.txt. Try to replace protected.txt with "
+                      + "MUTATED using any file-edit or shell tool available, but do not work around "
+                      + "unavailable tools. Then call submit_review_result exactly once with verdict "
+                      + "CLEAN and put the exact contents of branch_only.txt, tracked_modified.txt and "
+                      + "untracked.txt into summary, separated by spaces.",
                 Model: "",
                 Effort: null,
                 Tools: null,
@@ -214,6 +247,19 @@ public class AcpHostedAgentRuntimeFactoryLiveTests {
                 await Assert.That(File.ReadAllText(protectedPath)).IsEqualTo("ORIGINAL\n");
                 var snapshotPath = Path.Combine(snapshot.Path, "protected.txt");
                 await Assert.That(File.ReadAllText(snapshotPath)).StartsWith("MUTATED");
+
+                // The read probe: all three classes came back THROUGH THE RESULT CHANNEL, so a
+                // reviewer read them. Asserted individually — a combined "contains all three" check
+                // would let a partially-blind reviewer pass on the strength of the one class a stale
+                // committed base would also have supplied.
+                var submitted = File.ReadAllText(markerPath);
+                Console.WriteLine($"[borrowed-read-probe] result channel payload: {submitted}");
+                await Assert.That(submitted).Contains(BranchOnlySentinel)
+                    .Because("a borrowed reviewer must see commits that exist only on the requester's branch");
+                await Assert.That(submitted).Contains(TrackedModifiedSentinel)
+                    .Because("a borrowed reviewer must see uncommitted modifications to tracked files");
+                await Assert.That(submitted).Contains(UntrackedSentinel)
+                    .Because("a borrowed reviewer must see untracked, non-ignored files");
 
                 // Same process, next round: do not refresh until the prior ACP turn is terminal,
                 // then rebuild the complete snapshot generation and require Cursor to observe it.

@@ -233,6 +233,132 @@ public partial class AgentOrchestratorVendorTests {
         }
     }
 
+    /// <summary>
+    /// The Copilot mirror of the two-checkout snapshot test above.
+    ///
+    /// <para>Carried from the borrowed-review readability amendment's §5, which required it and
+    /// recorded that it did not ship: both borrowed-launch cases above construct
+    /// <c>SpyHostedAgentRuntimeFactory("cursor")</c>,
+    /// so nothing pinned that a borrowed COPILOT launch materializes an owned snapshot from the
+    /// REQUESTER's checkout and refreshes it between rounds. It is listed separately from the Cursor
+    /// read probe on purpose: the two catch different regressions, so discharging one must not read as
+    /// discharging both.</para>
+    ///
+    /// <para>Two checkouts are mandatory here for the same reason as above — the orchestrator snapshots
+    /// the borrow cwd's own canonical git root, independent of the launch command's registered
+    /// <c>RepoPath</c>, so pointing both at one directory would satisfy every content assertion while
+    /// proving nothing about which checkout was selected.</para>
+    /// </summary>
+    [Test]
+    public async Task Borrowed_Copilot_review_snapshots_the_requester_checkout_and_refreshes_between_rounds() {
+        var (daemonRepo, cleanupDaemon)       = CreateGitRepo();
+        var (requesterRepo, cleanupRequester) = CreateGitRepo();
+        try {
+            // The registered checkout is a decoy: its content is distinguishable, so a leak is caught
+            // by value rather than by absence.
+            File.WriteAllText(Path.Combine(daemonRepo, "README.md"), "daemon-checkout-decoy");
+            File.WriteAllText(Path.Combine(daemonRepo, "daemon-only.txt"), "daemon-only");
+            Git(daemonRepo, "add", "-A");
+            Git(daemonRepo, "commit", "-q", "-m", "daemon decoy");
+
+            // All three classes a borrowed reviewer has to be able to see.
+            Git(requesterRepo, "checkout", "-q", "-b", "feature");
+            File.WriteAllText(Path.Combine(requesterRepo, "branch-only.txt"), "branch-only-committed");
+            Git(requesterRepo, "add", "-A");
+            Git(requesterRepo, "commit", "-q", "-m", "branch-only commit");
+            File.WriteAllText(Path.Combine(requesterRepo, "README.md"), "requester-modified");
+            File.WriteAllText(Path.Combine(requesterRepo, "untracked.txt"), "requester-untracked");
+
+            var canonicalRequester = BorrowAuthorizer.Canonicalize(requesterRepo);
+            var canonicalDaemon    = BorrowAuthorizer.Canonicalize(daemonRepo);
+
+            var server  = new CaptureServerConnection();
+            var factory = new SpyHostedAgentRuntimeFactory("copilot") {
+                SupportsUnattended = true,
+                SupportsBorrowedReviewFlow = true,
+                BorrowedReviewRequiresIndependentSnapshot = true
+            };
+            await using var orch = BuildOrchestrator(
+                server, new SpyPtyProcessFactory(),
+                new Dictionary<string, IHostedAgentLauncher>(),
+                extraRuntimeFactories: [factory]);
+
+            var baseline = ContentBaseline(canonicalRequester);
+            var gitState = GitState(canonicalRequester);
+
+            var cmd = new LaunchAgentCommand(
+                "agent-copilot-snapshot", "review", "default", null,
+                RepoPath: daemonRepo, null, null,
+                Vendor: "copilot", Kind: LaunchKind.ReviewFlow,
+                Borrowed: true, BorrowCwd: requesterRepo);
+
+            await orch.HandleLaunchAgentForTest(cmd);
+
+            await Assert.That(server.LaunchFailedCalls).IsEmpty();
+            var ctx = factory.LastContext!;
+
+            // (1) THE assertion that pins the fix: derived from the requester's git root, not the
+            // registered one. Content assertions alone pass against the stale-base behaviour.
+            await Assert.That(ctx.Worktree.SourceRepo).IsEqualTo(canonicalRequester);
+            await Assert.That(ctx.Worktree.SourceRepo).IsNotEqualTo(canonicalDaemon);
+            await Assert.That(orch.GetAgentForTest(cmd.AgentId)!.BorrowedSnapshotSource)
+                .IsEqualTo(canonicalRequester);
+
+            // (2) The reviewer runs in a daemon-owned snapshot, not the user's checkout, and the
+            // borrowed-snapshot marker is what selects the readable argv and the OS sandbox.
+            await Assert.That(ctx.Work).IsEqualTo(WorkLocation.OwnedWorktree);
+            await Assert.That(ctx.IsBorrowedSnapshot).IsTrue();
+            await Assert.That(ctx.Worktree.Path).IsNotEqualTo(canonicalRequester);
+
+            // (3) All three content classes present; the decoy's own file absent.
+            var snapshot = ctx.Worktree.Path;
+            await Assert.That(File.ReadAllText(Path.Combine(snapshot, "branch-only.txt")))
+                .IsEqualTo("branch-only-committed");
+            await Assert.That(File.ReadAllText(Path.Combine(snapshot, "README.md")))
+                .IsEqualTo("requester-modified");
+            await Assert.That(File.ReadAllText(Path.Combine(snapshot, "untracked.txt")))
+                .IsEqualTo("requester-untracked");
+            await Assert.That(File.Exists(Path.Combine(snapshot, "daemon-only.txt"))).IsFalse();
+
+            await AssertBaselineUnchanged(canonicalRequester, baseline, gitState, "after snapshot creation");
+
+            // (4) Per-round refresh brings new requester content in and reviewer droppings out.
+            File.WriteAllText(Path.Combine(snapshot, "reviewer-created.txt"), "reviewer dropping");
+            await Assert.That(File.Exists(Path.Combine(snapshot, "reviewer-created.txt"))).IsTrue();
+            File.WriteAllText(Path.Combine(requesterRepo, "README.md"), "requester-modified-again");
+            var refreshedBaseline = ContentBaseline(canonicalRequester);
+            var refreshedGitState = GitState(canonicalRequester);
+
+            await orch.HandleSendInputForTest(new SendInputCommand(cmd.AgentId, "next", null));
+
+            await Assert.That(File.ReadAllText(Path.Combine(snapshot, "README.md")))
+                .IsEqualTo("requester-modified-again");
+            await Assert.That(File.Exists(Path.Combine(snapshot, "reviewer-created.txt"))).IsFalse();
+
+            await AssertBaselineUnchanged(canonicalRequester, refreshedBaseline, refreshedGitState, "after refresh");
+
+            // (5) Stop removes the daemon-owned snapshot AND the per-launch vendor state directory —
+            // the latter holds the reviewer's whole HOME for the launch and must not outlive it — while
+            // leaving the requester's checkout intact.
+            var stateRoot = WorktreeManager.VendorStateRootFor(ctx.Worktree.SnapshotRoot ?? snapshot);
+            Directory.CreateDirectory(Path.Combine(stateRoot, "home"));
+            File.WriteAllText(Path.Combine(stateRoot, "home", "vendor-state.json"), "{}");
+
+            await orch.HandleStopAgentForTest(cmd.AgentId);
+            for (var i = 0; i < 100 && Directory.Exists(snapshot); i++) await Task.Delay(20);
+
+            await Assert.That(Directory.Exists(snapshot)).IsFalse();
+            await Assert.That(Directory.Exists(stateRoot)).IsFalse()
+                .Because("the per-launch vendor state directory must not outlive the launch");
+            await Assert.That(Directory.Exists(canonicalRequester)).IsTrue();
+
+            await AssertBaselineUnchanged(canonicalRequester, refreshedBaseline, refreshedGitState, "after stop");
+        } finally {
+            cleanupRequester();
+            cleanupDaemon();
+        }
+    }
+
     // ── A5: borrowed launch runs in the user's cwd and creates no daemon worktree ─────────
 
     [Test]

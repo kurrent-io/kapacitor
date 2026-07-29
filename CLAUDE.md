@@ -16,6 +16,19 @@ daemon-owned snapshot (dirty tracked and non-ignored untracked files, refreshed 
 because its zero-interaction modes may write; Claude has no borrowed-review containment strategy
 and therefore fails closed to an owned worktree.
 
+Copilot also borrows from a daemon-owned snapshot, but its read boundary is an **OS sandbox**
+(`BorrowedReviewSandbox`, `sandbox-exec`, `(deny default)`) rather than a tool clamp, because the
+read tools it needs to see the snapshot are the same tools that could be pointed elsewhere. The
+profile grants nothing under the user's home: a per-launch `HOME`/`TMPDIR` state directory replaces
+the vendor's own config and cache grants, `BorrowedReviewAuthBroker` replaces the keychain grant with
+a token forwarded from the daemon's environment (the daemon never reads a keychain, shells out, or
+stores anything), and `BorrowedReviewRuntimeRoots` replaces whole-prefix grants with software
+subdirectories derived from the vendor binary — never the prefix's `etc`/`var`. Support is
+conjunctive: macOS/ARM64 **and** `sandbox-exec` **and** a brokerable token, or the capability is not
+advertised and the server answers `vendor_containment_unreadable` with the `context-only` remedy.
+Enforcement is asserted by tests that run a real process under the profile, because a model-layer
+refusal is not containment evidence.
+
 Borrowed-review capability is **trust-by-default**: a vendor advertises it whenever its runtime
 factory declares a containment strategy, for whatever build of the vendor CLI is installed and on
 every platform. It is deliberately not gated on the installed binary matching a validated-build

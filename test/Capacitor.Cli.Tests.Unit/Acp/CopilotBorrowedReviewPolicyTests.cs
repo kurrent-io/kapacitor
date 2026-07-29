@@ -30,7 +30,8 @@ public class CopilotBorrowedReviewPolicyTests {
 
     [Test]
     public async Task The_verified_platform_supports_borrowed_review_with_the_read_tools() {
-        var p = CopilotBorrowedReviewPolicy.Resolve(OSPlatform.OSX, Architecture.Arm64, sandboxAvailable: true);
+        var p = CopilotBorrowedReviewPolicy.Resolve(
+            OSPlatform.OSX, Architecture.Arm64, sandboxAvailable: true, authBrokerAvailable: true);
 
         await Assert.That(p.Supported).IsTrue();
         await Assert.That(p.Containment).IsEqualTo(AcpBorrowedReviewContainment.IndependentSnapshot);
@@ -49,7 +50,25 @@ public class CopilotBorrowedReviewPolicyTests {
     [Test]
     public async Task The_verified_platform_without_a_sandbox_is_unsupported() {
         var p = CopilotBorrowedReviewPolicy.Resolve(
-            OSPlatform.OSX, Architecture.Arm64, sandboxAvailable: false);
+            OSPlatform.OSX, Architecture.Arm64, sandboxAvailable: false, authBrokerAvailable: true);
+
+        await Assert.That(p.Supported).IsFalse();
+        await Assert.That(p.Containment).IsEqualTo(AcpBorrowedReviewContainment.None);
+        await Assert.That(p.ExtraBorrowedToolIds).IsEmpty();
+        await Assert.That(p.RequiresProcessSandbox).IsFalse();
+    }
+
+    /// <summary>The other half of the same pairing, and the reason support is gated on the broker at
+    /// ADVERTISEMENT rather than checked at spawn.
+    ///
+    /// <para>The sandbox no longer grants the keychain, so a daemon with no brokerable credential
+    /// cannot authenticate a contained reviewer at all. Advertising borrowed review anyway would trade
+    /// an honest, coded start rejection (plus the <c>context-only</c> remedy) for a flow that dies
+    /// mid-launch — the same security posture with strictly worse behaviour.</para></summary>
+    [Test]
+    public async Task The_verified_platform_without_a_brokerable_credential_is_unsupported() {
+        var p = CopilotBorrowedReviewPolicy.Resolve(
+            OSPlatform.OSX, Architecture.Arm64, sandboxAvailable: true, authBrokerAvailable: false);
 
         await Assert.That(p.Supported).IsFalse();
         await Assert.That(p.Containment).IsEqualTo(AcpBorrowedReviewContainment.None);
@@ -60,7 +79,8 @@ public class CopilotBorrowedReviewPolicyTests {
     [Test]
     [MethodDataSource(nameof(Unverified))]
     public async Task An_unverified_platform_fails_closed((OSPlatform Os, Architecture Arch) key) {
-        var p = CopilotBorrowedReviewPolicy.Resolve(key.Os, key.Arch, sandboxAvailable: true);
+        var p = CopilotBorrowedReviewPolicy.Resolve(
+            key.Os, key.Arch, sandboxAvailable: true, authBrokerAvailable: true);
 
         await Assert.That(p.Supported).IsFalse()
             .Because($"{key.Os}/{key.Arch} has no verified tool surface");
@@ -101,25 +121,58 @@ public class CopilotBorrowedReviewPolicyTests {
         await Assert.That(advertised.ExtraBorrowedToolIds).IsEquivalentTo(host.ExtraBorrowedToolIds);
     }
 
-    /// <summary>What actually ships: no platform advertises borrowed Copilot review yet.
+    /// <summary>What ships now: <c>Current</c> CONSULTS the table rather than being pinned unsupported.
     ///
-    /// <para>The table above is real and tested; this pins that it is not yet CONSULTED. The sandbox
-    /// still has to grant recursive reads of the vendor's state, the keychain, <c>/Library</c> and
-    /// <c>/opt/homebrew</c> to start and authenticate, and a build that silently accepted an outside
-    /// path could read those with no interaction frame — so <c>Fail</c> never fires and the sandbox
-    /// permits it. Enabling is one line, once those grants are closed.</para>
+    /// <para>This replaces the <c>No_platform_advertises_borrowed_review_yet</c> tripwire, which
+    /// existed because the profile still had to grant the vendor's state, the keychain,
+    /// <c>/Library</c> and the whole runtime prefix in order to start and authenticate. All four are
+    /// closed, so the tripwire is deleted rather than weakened — and the assertion that replaces it is
+    /// the one that still matters: whatever <c>Current</c> resolves to, it must be the SAME entry the
+    /// argv builder uses, and it must be one the table can actually produce.</para>
     ///
-    /// <para>This test is the tripwire for enabling by accident. Changing <c>Current</c> back to the
-    /// host lookup must be a deliberate act that also deletes this test, not something that slips
-    /// through in a refactor.</para></summary>
+    /// <para>Deliberately not asserted as <c>Supported = true</c>: that would fail on any CI host
+    /// without <c>sandbox-exec</c> or without a brokerable credential, which are exactly the hosts the
+    /// fail-closed arms exist for.</para></summary>
     [Test]
-    public async Task No_platform_advertises_borrowed_review_yet() {
-        await Assert.That(CopilotBorrowedReviewPolicy.Current.Supported).IsFalse();
-        await Assert.That(CopilotBorrowedReviewPolicy.Current.Containment)
-            .IsEqualTo(AcpBorrowedReviewContainment.None);
-        await Assert.That(CopilotBorrowedReviewPolicy.Current.ExtraBorrowedToolIds).IsEmpty();
-        await Assert.That(CopilotBorrowedReviewPolicy.Current.RequiresProcessSandbox).IsFalse();
+    public async Task The_host_entry_is_resolved_from_the_table_not_pinned() {
+        var current  = CopilotBorrowedReviewPolicy.Current;
+        var expected = CopilotBorrowedReviewPolicy.Resolve(
+            CurrentOsForTest(), RuntimeInformation.ProcessArchitecture,
+            BorrowedReviewSandbox.Available, BorrowedReviewAuthBroker.Available);
+
+        await Assert.That(current.Supported).IsEqualTo(expected.Supported);
+        await Assert.That(current.Containment).IsEqualTo(expected.Containment);
+        await Assert.That(current.ExtraBorrowedToolIds).IsEquivalentTo(expected.ExtraBorrowedToolIds);
+        await Assert.That(current.RequiresProcessSandbox).IsEqualTo(expected.RequiresProcessSandbox);
     }
+
+    /// <summary>A supported host entry can only ever be the sandboxed, readable one. This is the
+    /// invariant the deleted tripwire was standing in for: not "borrowed review is off", but "borrowed
+    /// review is never on without its boundary".</summary>
+    [Test]
+    public async Task A_supported_host_entry_always_carries_the_sandbox_and_the_read_tools() {
+        var current = CopilotBorrowedReviewPolicy.Current;
+
+        if (!current.Supported) {
+            await Assert.That(current.Containment).IsEqualTo(AcpBorrowedReviewContainment.None);
+            await Assert.That(current.ExtraBorrowedToolIds).IsEmpty();
+            await Assert.That(current.RequiresProcessSandbox).IsFalse();
+
+            return;
+        }
+
+        await Assert.That(current.RequiresProcessSandbox).IsTrue();
+        await Assert.That(current.Containment).IsEqualTo(AcpBorrowedReviewContainment.IndependentSnapshot);
+        await Assert.That(current.ExtraBorrowedToolIds).IsEquivalentTo(CopilotBorrowedReviewPolicy.ReadToolIds);
+        await Assert.That(BorrowedReviewSandbox.Available).IsTrue();
+        await Assert.That(BorrowedReviewAuthBroker.Available).IsTrue();
+    }
+
+    static OSPlatform CurrentOsForTest() =>
+        RuntimeInformation.IsOSPlatform(OSPlatform.OSX)       ? OSPlatform.OSX
+        : RuntimeInformation.IsOSPlatform(OSPlatform.Linux)   ? OSPlatform.Linux
+        : RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? OSPlatform.Windows
+        : OSPlatform.Create("UNKNOWN");
 
     // A vendor with no platform policy is unaffected: it still reads its own descriptor, so this
     // change cannot silently narrow Cursor or any future borrowed-capable vendor.
