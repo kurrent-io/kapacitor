@@ -17,6 +17,11 @@ public static class KcapMcpRegistry {
         ["kcap-analytics"] = new("kcap-analytics", ["mcp", "analytics"], false),
     };
 
+    /// <summary>Every registered id. Exposed so a conformance test can compare this list against the
+    /// canonical registration list in BOTH directions — a registry-only entry is allowlistable but
+    /// never registered with any harness, and checking only the other direction misses it.</summary>
+    public static IEnumerable<string> AllIds => Entries.Values.Select(d => d.Id);
+
     /// <summary>Resolves an allowlist entry to its descriptor. Case-insensitive, trims
     /// surrounding whitespace. A null or blank name — e.g. a wire-deserialized allowlist
     /// element — returns null rather than throwing, so callers can route it through the

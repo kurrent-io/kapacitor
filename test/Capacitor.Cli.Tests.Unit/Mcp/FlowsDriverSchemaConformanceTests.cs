@@ -2,7 +2,12 @@ using System.Text.Json.Nodes;
 using Capacitor.Cli.Commands;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Mcp;
+using Capacitor.Cli.Core.Antigravity;
+using Capacitor.Cli.Core.Copilot;
+using Capacitor.Cli.Core.Gemini;
+using Capacitor.Cli.Core.Kiro;
 using Capacitor.Cli.Core.Pi;
+using TUnit.Assertions.Enums;
 using Tomlyn;
 using Tomlyn.Model;
 
@@ -97,6 +102,10 @@ public class FlowsDriverSchemaConformanceTests {
         var props = Tool(toolName).InputSchema.Properties;
 
         await Assert.That(props.ContainsKey("model")).IsTrue();
+        // Structure as well as prose: a `model` retyped to boolean, or promoted into Required (which
+        // would break every caller relying on the vendor's default model), passed the prose check.
+        await Assert.That(props["model"].Type).IsEqualTo("string");
+        await Assert.That(Tool(toolName).InputSchema.Required).DoesNotContain("model");
         await Assert.That(props["model"].Description.Contains("requires 'vendor'", StringComparison.OrdinalIgnoreCase)).IsTrue()
             .Because("the schema cannot express the dependency, so the description must");
     }
@@ -140,85 +149,165 @@ public class FlowsDriverSchemaConformanceTests {
         throw new DirectoryNotFoundException("kcap/ not found above the test base dir");
     }
 
-    /// <summary>Registers through the REAL writer into a temp file, then reads the entry back. Going
-    /// through the writer rather than asserting on the descriptor is the point: a shape that mangles
-    /// the command (an argv array, a type field, a different block key) is exactly the drift that
-    /// would give one harness a different server.</summary>
-    static Projection ViaJsonWriter(string harness, McpConfigShape shape) {
-        var dir  = Scratch("json-");
-        var path = Path.Combine(dir.FullName, "config.json");
-        try {
-            var change = JsonMcpConfigWriter.Register(path, KcapMcpServers.ForCursor, shape,
-                cwd: "/repo", marker: new McpMarker(harness));
-            if (change == JsonMcpConfigWriter.Change.Failed)
-                throw new InvalidOperationException($"{harness}: writer failed");
+    /// <summary>One harness arm: how to make the installer believe the harness is present, where its
+    /// config lands, and how to read the <c>kcap-flows</c> entry back out.</summary>
+    public sealed record Arm(
+        string                          Name,
+        string                          Flag,
+        string?                         ClearEnvVar,
+        Action<PluginEnvironment>       OptIn,
+        Func<PluginEnvironment, string> ConfigPath,
+        Func<string, Projection>        Extract,
+        bool                            BareInstall = false);
 
-            var root  = (JsonObject)JsonNode.Parse(File.ReadAllText(path))!;
-            var entry = (JsonObject)root[shape.BlockKey]!["kcap-flows"]!;
-
-            // OpenCode folds the command and args into one argv array; everyone else splits them.
-            if (shape.CommandAsArgvArray) {
-                var argv = entry["command"]!.AsArray().Select(n => n!.GetValue<string>()).ToArray();
-                return new(harness, argv[0], argv[1..]);
-            }
-
-            return new(harness,
-                entry["command"]!.GetValue<string>(),
-                [.. entry["args"]!.AsArray().Select(n => n!.GetValue<string>())]);
-        } finally {
-            dir.Delete(recursive: true);
+    sealed class EnvScope : IDisposable {
+        readonly string  _key;
+        readonly string? _prev;
+        public EnvScope(string key, string? value) {
+            _key = key; _prev = Environment.GetEnvironmentVariable(key);
+            Environment.SetEnvironmentVariable(key, value);
         }
+        public void Dispose() => Environment.SetEnvironmentVariable(_key, _prev);
     }
 
-    static Projection FromStaticJson(string harness, string file) {
-        var root  = (JsonObject)JsonNode.Parse(File.ReadAllText(Path.Combine(RepoKcapDir(), file)))!;
-        var entry = (JsonObject)root["mcpServers"]!["kcap-flows"]!;
-        return new(harness,
-            entry["command"]!.GetValue<string>(),
+    static PluginEnvironment TestEnv(string home, string? pluginRoot = null) =>
+        new(HomeDirectory: home, ResolvePluginPath: () => pluginRoot,
+            Stdout: TextWriter.Null, Stderr: TextWriter.Null);
+
+    /// <summary>Codex is the one arm that does not use the `--if-installed` refresh branch (it
+    /// installs unconditionally), so it needs a resolvable plugin root carrying the skills source —
+    /// mirroring PluginCommandCodexTests.PlantFakePlugin.</summary>
+    static string PlantFakePlugin() {
+        var root = Scratch("codex-plugin-").FullName;
+        foreach (var name in AgentsSkillsInstaller.SourceNames) {
+            var dir = Path.Combine(root, "skills", name);
+            Directory.CreateDirectory(dir);
+            File.WriteAllText(Path.Combine(dir, "SKILL.md"), $"---\nname: {name}\n---\n# {name}");
+        }
+        return root;
+    }
+
+    /// <summary>Reads the flows entry from a written JSON config. <paramref name="argvArray"/> covers
+    /// OpenCode, which folds command and args into one array.</summary>
+    static Func<string, Projection> Json(string harness, string blockKey, bool argvArray = false) => path => {
+        var root  = (JsonObject)JsonNode.Parse(File.ReadAllText(path))!;
+        var block = root[blockKey] as JsonObject
+                 ?? throw new InvalidOperationException($"{harness}: no '{blockKey}' block written to {path}");
+        var entry = block["kcap-flows"] as JsonObject
+                 ?? throw new InvalidOperationException($"{harness}: kcap-flows not registered");
+
+        if (argvArray) {
+            var argv = entry["command"]!.AsArray().Select(n => n!.GetValue<string>()).ToArray();
+            return new(harness, argv[0], argv[1..]);
+        }
+        return new(harness, entry["command"]!.GetValue<string>(),
             [.. entry["args"]!.AsArray().Select(n => n!.GetValue<string>())]);
+    };
+
+    static Projection FromToml(string path) {
+        var servers = (TomlTable)TomlSerializer.Deserialize<TomlTable>(File.ReadAllText(path))!["mcp_servers"]!;
+        var entry   = (TomlTable)servers["kcap-flows"]!;
+        return new("Codex", (string)entry["command"]!,
+            [.. ((TomlArray)entry["args"]!).Select(a => (string)a!)]);
     }
 
-    static Projection FromCodexToml() {
-        var dir  = Scratch("codex-");
-        var path = Path.Combine(dir.FullName, "config.toml");
-        try {
-            var change = CodexConfigToml.RegisterKcapMcpServers(path);
-            if (!File.Exists(path)) throw new InvalidOperationException($"codex register -> {change}, no file at {path}");
-            var toml = File.ReadAllText(path);
+    // Each arm seeds "installed but stale" so `--if-installed` takes the refresh branch and registers
+    // MCP, mirroring each harness's own PluginCommand*Tests. That branch also skips the AgentDetector
+    // "kcap on PATH" precheck, which a bare install would fail in CI.
+    static readonly Arm[] Arms = [
+        new("Cursor", "--cursor", null,
+            env => {
+                Directory.CreateDirectory(Path.GetDirectoryName(env.CursorUserHooksJson)!);
+                File.WriteAllText(env.CursorUserHooksJson,
+                    """{"version":1,"hooks":{"sessionStart":[{"command":"kcap hook --cursor"}]}}""");
+            },
+            env => env.CursorMcpJson, Json("Cursor", "mcpServers")),
 
-            // Parsed shallowly on purpose: the assertion is which executable Codex will launch, and
-            // CodexConfigTomlTests already covers the TOML structure in depth.
-            var model = TomlSerializer.Deserialize<TomlTable>(toml)!;
-            var table = (TomlTable)((TomlTable)model["mcp_servers"]!)["kcap-flows"]!;
-            return new("Codex",
-                (string)table["command"]!,
-                [.. ((TomlArray)table["args"]!).Select(a => (string)a!)]);
-        } finally {
-            dir.Delete(recursive: true);
-        }
+        new("Copilot", "--copilot", "COPILOT_HOME",
+            env => { PluginCommand.InstallCopilotHooks(env.CopilotKcapHooksJson);
+                     CopilotHooksInstaller.DeleteMarker(env.CopilotKcapHooksJson); },
+            env => env.CopilotMcpConfigJson, Json("Copilot", "mcpServers")),
+
+        new("Gemini", "--gemini", "GEMINI_HOME",
+            env => { PluginCommand.InstallGeminiHooks(env.GeminiSettingsJson);
+                     GeminiHooksInstaller.DeleteMarker(env.GeminiSettingsJson); },
+            env => env.GeminiSettingsJson, Json("Gemini", "mcpServers")),
+
+        new("Kiro", "--kiro", "KIRO_HOME",
+            env => { Directory.CreateDirectory(Path.GetDirectoryName(env.KiroKcapAgentJson)!);
+                     File.WriteAllText(env.KiroKcapAgentJson, """{"name":"kcap","hooks":{}}""");
+                     KiroHooksInstaller.WriteMarker(env.KiroKcapAgentJson, "kiro_default"); },
+            env => env.KiroMcpJson, Json("Kiro", "mcpServers")),
+
+        new("Antigravity", "--antigravity", "GEMINI_CLI_HOME",
+            env => { AntigravityHooksInstaller.Install(env.AntigravityHooksJson);
+                     File.WriteAllText(Path.Combine(Path.GetDirectoryName(env.AntigravityHooksJson)!,
+                         AntigravityHooksInstaller.MarkerFileName), "0.0.0-stale"); },
+            env => env.AntigravityMcpConfigJson, Json("Antigravity", "mcpServers")),
+
+        new("OpenCode", "--opencode", "OPENCODE_CONFIG_DIR",
+            env => { Directory.CreateDirectory(Path.GetDirectoryName(env.OpenCodeKcapPlugin)!);
+                     File.WriteAllText(env.OpenCodeKcapPlugin, "// stale"); },
+            env => env.OpenCodeMcpConfigJson, Json("OpenCode", "mcp", argvArray: true)),
+
+        // Codex installs unconditionally rather than through the `--if-installed` refresh branch, so
+        // it takes the bare-install path and needs a planted plugin root. Flagged here rather than
+        // hidden, because it is the one arm whose invocation differs.
+        new("Codex", "--codex", null, _ => { }, env => env.CodexConfigTomlPath, FromToml,
+            BareInstall: true),
+    ];
+
+    /// <summary>Runs the REAL installer for one harness against a fake home and reads back what it
+    /// wrote. Going through <c>PluginCommand.HandleAsync</c> rather than reconstructing the writer
+    /// call is the whole point: a reconstruction stays green when the production wiring changes the
+    /// server subset, the shape, or drops flows entirely — which is exactly the drift this suite
+    /// claims to catch.</summary>
+    static async Task<Projection> InstallAndRead(Arm arm) {
+        using var clear = arm.ClearEnvVar is null ? null : new EnvScope(arm.ClearEnvVar, null);
+        using var home  = new FakeUserHome();
+        var env = TestEnv(home.Path, arm.BareInstall ? PlantFakePlugin() : null);
+
+        arm.OptIn(env);
+
+        string[] argv = arm.BareInstall
+            ? ["plugin", "install", arm.Flag]
+            : ["plugin", "install", arm.Flag, "--if-installed"];
+        var exit = await PluginCommand.HandleAsync(argv, env);
+        if (exit != 0) throw new InvalidOperationException($"{arm.Name}: installer exited {exit}");
+
+        var path = arm.ConfigPath(env);
+        if (!File.Exists(path)) throw new InvalidOperationException($"{arm.Name}: no config at {path}");
+
+        return arm.Extract(path);
     }
 
-    public static IEnumerable<Func<Projection>> DriverProjections() {
-        // The six harnesses that share the JSON writer, each through its own shape.
-        yield return () => ViaJsonWriter("Cursor",      McpConfigShape.Standard);
-        yield return () => ViaJsonWriter("Kiro",        McpConfigShape.Standard);
-        yield return () => ViaJsonWriter("Antigravity", McpConfigShape.Standard);
-        yield return () => ViaJsonWriter("Gemini",      McpConfigShape.Gemini);
-        yield return () => ViaJsonWriter("Copilot",     McpConfigShape.Copilot);
-        yield return () => ViaJsonWriter("OpenCode",    McpConfigShape.OpenCode);
-        // The three that do not.
-        yield return () => FromCodexToml();
-        yield return () => FromStaticJson("Claude Code",  ".mcp.json");
-        yield return () => FromStaticJson("Codex plugin", ".codex-mcp.json");
-    }
+    public static IEnumerable<Func<Arm>> InstallerArms() =>
+        Arms.Select(a => (Func<Arm>)(() => a));
 
     [Test]
-    [MethodDataSource(nameof(DriverProjections))]
-    public async Task Every_driver_projection_launches_the_same_flows_server(Projection p) {
+    [NotInParallel("HomeEnvVarMutation")]
+    [MethodDataSource(nameof(InstallerArms))]
+    public async Task Every_installed_driver_launches_the_same_flows_server(Arm arm) {
+        var p = await InstallAndRead(arm);
+
         await Assert.That(p.Command).IsEqualTo(KcapMcpServers.Command)
             .Because($"{p.Harness} must launch the same executable as every other driver");
-        await Assert.That(p.Args).IsEquivalentTo(new[] { "mcp", "flows" })
+        // ORDERED: argv order is semantic. An unordered comparison passes ["flows","mcp"], which
+        // launches nothing.
+        await Assert.That(p.Args).IsEquivalentTo(new[] { "mcp", "flows" }, CollectionOrdering.Matching)
             .Because($"{p.Harness} must reach the same subcommand, and therefore the same tool schema");
+    }
+
+    // The two bundled static files are not written by an installer — Claude Code and Codex's native
+    // plugin loader read them straight from the package — so they get their own arm.
+    [Test]
+    [Arguments(".mcp.json",       "Claude Code")]
+    [Arguments(".codex-mcp.json", "Codex plugin")]
+    public async Task Every_bundled_config_names_the_same_flows_server(string file, string harness) {
+        var p = Json(harness, "mcpServers")(Path.Combine(RepoKcapDir(), file));
+
+        await Assert.That(p.Command).IsEqualTo(KcapMcpServers.Command);
+        await Assert.That(p.Args).IsEquivalentTo(new[] { "mcp", "flows" }, CollectionOrdering.Matching);
     }
 
     // Pi is the outlier worth its own assertion: it does not write an MCP config at all. It emits a
@@ -254,17 +343,32 @@ public class FlowsDriverSchemaConformanceTests {
         var registry  = KcapMcpRegistry.Resolve("kcap-flows");
 
         await Assert.That(registry).IsNotNull();
-        await Assert.That(registry!.Args).IsEquivalentTo(canonical.Args);
+        // ORDERED -- ["flows","mcp"] is not the same command as ["mcp","flows"].
+        await Assert.That(registry!.Args).IsEquivalentTo(canonical.Args, CollectionOrdering.Matching);
         // And the recursion guard still knows flows starts flows — a hosted reviewer must never
         // receive it.
         await Assert.That(registry.StartsFlows).IsTrue();
     }
 
+    // BOTH directions. Canonical-only leaves a server registered with every harness but unresolvable
+    // as an allowlist entry; registry-only leaves one allowlistable but never registered anywhere.
+    // Checking one direction catches half the drift and reads like it catches all of it.
     [Test]
-    public async Task Every_canonical_server_resolves_in_the_flow_allowlist_registry() {
-        foreach (var s in KcapMcpServers.All)
-            await Assert.That(KcapMcpRegistry.Resolve(s.Name)).IsNotNull()
-                .Because($"{s.Name} is registered with harnesses but unresolvable as an allowlist entry");
+    public async Task The_two_server_lists_contain_exactly_the_same_servers() {
+        var canonical = KcapMcpServers.All.Select(s => s.Name).ToArray();
+        var registry  = KcapMcpRegistry.AllIds.ToArray();
+
+        await Assert.That(registry).IsEquivalentTo(canonical);
+    }
+
+    [Test]
+    public async Task Every_server_agrees_on_its_arguments_across_both_lists() {
+        foreach (var s in KcapMcpServers.All) {
+            var d = KcapMcpRegistry.Resolve(s.Name);
+            await Assert.That(d).IsNotNull().Because($"{s.Name} is unresolvable as an allowlist entry");
+            await Assert.That(d!.Args).IsEquivalentTo(s.Args, CollectionOrdering.Matching)
+                .Because($"{s.Name} launches different arguments depending on which list you read");
+        }
     }
 
     // The projection table above is hand-written, because no enumeration of supported harnesses
@@ -273,16 +377,16 @@ public class FlowsDriverSchemaConformanceTests {
     // Pinning against the flag arrays makes the omission fail here instead.
     [Test]
     public async Task The_projection_table_covers_every_harness_the_cli_claims_to_support() {
-        var covered = DriverProjections().Select(f => f().Harness)
-            .Select(h => h.Split(' ')[0].ToLowerInvariant())
-            .Append("pi")                                    // covered by its own bridge test above
+        // Match on the FLAG each arm actually drives, not on a display name split on whitespace —
+        // name-splitting matched by accident and would have kept passing for a harness whose arm was
+        // renamed rather than added.
+        var covered = Arms.Select(a => a.Flag)
+            .Append("--claude")   // bundled kcap/.mcp.json, covered by the static-config test
+            .Append("--pi")       // no MCP config at all, covered by the bridge test
             .ToHashSet(StringComparer.Ordinal);
 
-        var claimed = VendorSelection.KnownVendorFlags
-            .Select(f => f.TrimStart('-').ToLowerInvariant());
-
-        foreach (var harness in claimed)
-            await Assert.That(covered.Contains(harness)).IsTrue()
-                .Because($"--{harness} is an installable target with no driver-schema conformance coverage");
+        foreach (var flag in VendorSelection.KnownVendorFlags)
+            await Assert.That(covered.Contains(flag)).IsTrue()
+                .Because($"{flag} is an installable target with no driver-schema conformance coverage");
     }
 }
