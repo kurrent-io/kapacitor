@@ -2,6 +2,7 @@ using System.Text;
 using System.Text.Json.Nodes;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Config;
+using Capacitor.Cli.SessionStartMemory;
 // ReSharper disable ShortLivedHttpClient
 
 namespace Capacitor.Cli.Commands;
@@ -48,6 +49,45 @@ static class CodexHookCommand {
     internal static void WriteSessionScopedOutput(TextWriter writer) => writer.Write(SessionScopedOutputJson);
 
     /// <summary>
+    /// The SessionStart write, which — unlike Stop's — may carry a team-memory fragment.
+    /// Delegates the envelope to the shared <see cref="SessionStartMemoryOutputAdapters"/> so the
+    /// combined shape (<c>continue</c> + <c>hookSpecificOutput.additionalContext</c>) is rendered by
+    /// the same vendor-neutral code every harness uses; this adapter owns NO rendering of its own.
+    ///
+    /// <para><b>Absent-fragment invariant:</b> with <paramref name="fragment"/> null the adapter
+    /// returns the byte-for-byte <see cref="SessionScopedOutputJson"/> handshake, so every no-memory
+    /// path (opt-out, exclusion, provider failure, budget exhaustion) is indistinguishable from
+    /// pre-memory behaviour. <c>CodexSessionStartMemoryTests</c> pins that equality.</para>
+    ///
+    /// <para>The payload is serialized into a string BEFORE the first byte reaches
+    /// <paramref name="writer"/>, so a renderer/serializer fault cannot emit a partial rich object
+    /// followed by a second (minimal) one — that would break Codex's single-JSON-value contract.
+    /// Any such fault degrades to the minimal handshake instead.</para>
+    /// </summary>
+    internal static void WriteSessionStartOutput(TextWriter writer, string? fragment) {
+        string payload;
+
+        try {
+            // No fragment → the pre-existing constant, deliberately NOT the shared adapter's
+            // rendering of the same envelope. Both encode `{"continue":true}`, but the adapter
+            // appends a trailing newline to every envelope it renders (see its `json + "\n"`),
+            // which Claude and Cursor already ship. Adopting it here would change the bytes Codex
+            // receives on EVERY no-memory SessionStart — opt-out, exclusion, provider failure,
+            // budget exhaustion — for no gain. Byte-identity on that path is an acceptance
+            // criterion, so the constant wins; the adapter still owns the only shape that is
+            // actually new (the fragment-bearing one), where the trailing newline matches the
+            // sibling harnesses.
+            payload = fragment is null
+                ? SessionScopedOutputJson
+                : SessionStartMemoryOutputAdapters.Render(SessionStartHarness.Codex, fragment);
+        } catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException) {
+            payload = SessionScopedOutputJson;
+        }
+
+        writer.Write(payload);
+    }
+
+    /// <summary>
     /// Task 5: enforces the Codex stdout-first contract — <paramref name="writeStdout"/>
     /// (the synchronous handshake write) always completes before <paramref name="postStdoutWork"/>
     /// (the best-effort watcher-ensure + background spool drain) even starts. The parent Codex
@@ -62,7 +102,88 @@ static class CodexHookCommand {
         await postStdoutWork();
     }
 
-    public static async Task<int> Handle(string baseUrl, TextReader stdin) {
+    /// <summary>
+    /// Starts the shared SessionStart memory fetch so it overlaps the lifecycle POST
+    /// instead of serializing ahead of it — the same start-early/await-bounded shape
+    /// <c>ClaudeHookCommand.StartMemoryIndexTask</c> uses. Returns a task that NEVER faults:
+    /// every failure mode resolves to null, which the writer renders as the minimal handshake.
+    ///
+    /// <para><b>Scope safety:</b> a blank scope root is NOT passed through. The shared scope
+    /// resolver would otherwise fall back to the hook PROCESS's cwd and could inject an unrelated
+    /// repository's memories (the guard <c>CursorHookCommand.RunMemoryOrchestrationAsync</c>
+    /// documents). Codex's payload cwd — and the git root derived from it — are the only
+    /// authoritative roots; with neither, injection is skipped entirely.</para>
+    ///
+    /// <para><b>Once per session:</b> no lifecycle <c>source</c> exists on Codex's SessionStart
+    /// payload, so the reason is reported as <see cref="SessionLifecycleReason.New"/>. Re-injection
+    /// on a resume of the SAME session id is prevented by the shared lease keyed on
+    /// (harness, session id) rather than by a reason we cannot observe.</para>
+    /// </summary>
+    static Task<string?> StartMemoryIndexTask(
+            string     baseUrl,
+            string?    sessionId,
+            string?    scopeRoot,
+            bool       disabled,
+            TimeSpan   budget,
+            Func<string?, CancellationToken, Task<HttpClient>>? memoryClientFactory,
+            Func<SessionStartMemoryLeaseStore>?                 memoryStoreFactory) {
+        if (disabled || string.IsNullOrWhiteSpace(sessionId) || string.IsNullOrWhiteSpace(scopeRoot)
+         || budget <= TimeSpan.Zero)
+            return Task.FromResult<string?>(null);
+
+        // Construction itself stays inside the fail-open boundary: store-root validation and
+        // injected factories can throw synchronously.
+        try {
+            var store = memoryStoreFactory?.Invoke() ?? new SessionStartMemoryLeaseStore();
+            var provider = new SessionStartMemoryContextProvider(
+                new SessionStartMemoryScopeResolver(),
+                memoryClientFactory ?? ((_, ct) => Task.FromResult(new HttpClient())),
+                disposeClients: true);
+
+            return new SessionStartMemoryOrchestrator(store, provider).GetFragmentAsync(
+                new SessionMemoryLifecycle(SessionStartHarness.Codex, sessionId!, LifecycleInstanceId: null,
+                    IsTopLevel: true, ClassificationAuthoritative: true, SessionLifecycleReason.New,
+                    CallbackMayRepeat: false),
+                new SessionStartMemoryContextRequest(baseUrl, scopeRoot, disabled, budget, CancellationToken.None));
+        } catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException) {
+            return Task.FromResult<string?>(null);
+        }
+    }
+
+    /// <summary>
+    /// Awaits the memory fetch under the budget REMAINING at this instant — never the budget it
+    /// was started with. Codex blocks on this hook's stdout, so the wait is capped so the handshake
+    /// still lands inside the hook ceiling even when the fetch never returns: the cap is
+    /// <see cref="HookBudget.Remaining"/> minus <see cref="HookBudget.Safety"/>, the headroom
+    /// reserved for serialization + the write itself. On expiry the already-running fetch is
+    /// abandoned (not cancelled mid-flight — its own lease bookkeeping owns that) and null is
+    /// returned, so the write degrades to the minimal handshake rather than being delayed.
+    /// </summary>
+    static async Task<string?> AwaitMemoryFragmentAsync(Task<string?> task, long processStart) {
+        try {
+            var budget = HookBudget.Remaining(processStart, "session-start") - HookBudget.Safety;
+
+            if (budget <= TimeSpan.Zero)
+                return task.IsCompletedSuccessfully ? task.Result : null;
+
+            return await task.WaitAsync(budget);
+        } catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException) {
+            return null;
+        }
+    }
+
+    /// <param name="processStart">
+    /// Monotonic timestamp the hook process started, the anchor for every budget computation.
+    /// Defaults to "now" so production callers need not thread it; tests pass an older stamp to
+    /// drive the budget-exhausted branch deterministically instead of sleeping.
+    /// </param>
+    /// <param name="memoryClientFactory">Test seam: supplies the HTTP client for the memory fetch.</param>
+    /// <param name="memoryStoreFactory">Test seam: redirects the lease store off the real config root.</param>
+    public static async Task<int> Handle(string baseUrl, TextReader stdin,
+            long processStart = 0,
+            Func<string?, CancellationToken, Task<HttpClient>>? memoryClientFactory = null,
+            Func<SessionStartMemoryLeaseStore>?                 memoryStoreFactory  = null) {
+        var ps   = processStart == 0 ? System.Diagnostics.Stopwatch.GetTimestamp() : processStart;
         var body = await stdin.ReadToEndAsync();
 
         JsonNode? node;
@@ -149,7 +270,8 @@ static class CodexHookCommand {
 
         try {
             return eventName switch {
-                "SessionStart"      => await HandleSessionStart(baseUrl, node, activeProfile),
+                "SessionStart"      => await HandleSessionStart(baseUrl, node, activeProfile, ps,
+                                             memoryClientFactory, memoryStoreFactory),
                 "Stop"              => await HandleStop(baseUrl, node),
                 "PermissionRequest" => await HandlePermissionRequest(baseUrl, node),
                 "UserPromptSubmit"
@@ -190,7 +312,10 @@ static class CodexHookCommand {
         }
     }
 
-    static async Task<int> HandleSessionStart(string baseUrl, JsonNode node, Profile? activeProfile) {
+    static async Task<int> HandleSessionStart(string baseUrl, JsonNode node, Profile? activeProfile,
+            long                                                processStart        = 0,
+            Func<string?, CancellationToken, Task<HttpClient>>? memoryClientFactory = null,
+            Func<SessionStartMemoryLeaseStore>?                 memoryStoreFactory  = null) {
         // Stamp the user's configured default visibility onto the payload
         // BEFORE git enrichment so it survives the JsonString round-trip.
         // /hooks/session-start/codex shares SessionStartHook with the Claude
@@ -233,6 +358,19 @@ static class CodexHookCommand {
         // spawn-before-post. A lapsed-auth or transient/unreachable failure durably
         // spools the payload instead of dropping it (Spooled) — never AuthLapsed here, unlike the
         // legacy PostAsync path, so ShouldSpawnAfter below can safely spawn on Spooled too.
+        // Start the team-memory fetch BEFORE the lifecycle POST so the two overlap; it is awaited
+        // (budget-capped) immediately before the stdout write below, which is the only consumer.
+        // Deliberately started after the exclusion/disabled early-outs above so an excluded repo
+        // never reaches the memory subsystem at all.
+        var memoryTask = StartMemoryIndexTask(
+            baseUrl, sessionId,
+            // The git root discovered above (stamped onto the node) is preferred; the payload cwd is
+            // the fallback. Never a process-cwd fallback — see StartMemoryIndexTask's scope note.
+            TryGetString(enrichedNode, "workspace_root") ?? TryGetString(enrichedNode, "cwd"),
+            AppConfig.ResolvedProfile?.Profile?.DisableMemoryIndex is true,
+            HookBudget.Remaining(processStart, "session-start") - HookBudget.Safety,
+            memoryClientFactory, memoryStoreFactory);
+
         var spool = new HookSpool(PathHelpers.ConfigPath("spool"));
         var outcome = await AgentHookPoster.PostOrSpoolAsync(
             baseUrl, "session-start/codex", enriched, "codex-hook", spool,
@@ -245,8 +383,13 @@ static class CodexHookCommand {
         // RunSessionStartHandshakeForTest so the ordering is provable in isolation (see
         // CodexStdoutContractTests): a large/unreachable spool backlog behind postStdoutWork can
         // never delay or gate the write below.
+        // Resolve the optional memory fragment BEFORE entering the handshake, so the ordering seam
+        // still receives a synchronous write: the fragment is already a value by the time
+        // writeStdout runs, and the post-stdout work remains strictly after it.
+        var fragment = await AwaitMemoryFragmentAsync(memoryTask, processStart);
+
         await RunSessionStartHandshakeForTest(
-            writeStdout: () => WriteSessionScopedOutput(Console.Out),
+            writeStdout: () => WriteSessionStartOutput(Console.Out, fragment),
             postStdoutWork: () => RunPostStdoutWork(baseUrl, spool, enrichedNode, sessionId, outcome));
 
         return 0;
