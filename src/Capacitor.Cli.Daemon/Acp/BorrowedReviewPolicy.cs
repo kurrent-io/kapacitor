@@ -15,10 +15,16 @@ namespace Capacitor.Cli.Daemon.Acp;
 /// <param name="ExtraBorrowedToolIds">Tool ids added to the exclusive <c>--available-tools</c>
 /// allowlist for a BORROWED-SNAPSHOT review launch only. Empty for every other launch, which keeps
 /// the flow-result-only clamp — see <see cref="CopilotBorrowedReviewPolicy"/>.</param>
+/// <param name="RequiresProcessSandbox">Whether a borrowed-snapshot launch under this entry must be
+/// wrapped in an OS filesystem sandbox. Set wherever the readable allowlist is granted: widening the
+/// tool surface without an independent read boundary would leave confidentiality resting on the
+/// vendor continuing to ask permission for out-of-bounds paths. See
+/// <see cref="BorrowedReviewSandbox"/>.</param>
 internal sealed record ResolvedBorrowedReviewPolicy(
     bool                         Supported,
     AcpBorrowedReviewContainment Containment,
-    IReadOnlyList<string>        ExtraBorrowedToolIds
+    IReadOnlyList<string>        ExtraBorrowedToolIds,
+    bool                         RequiresProcessSandbox = false
 ) {
     /// <summary>A vendor with no platform-specific policy: whatever its descriptor declares, and no
     /// extra tool ids. This is every vendor except Copilot.</summary>
@@ -41,9 +47,11 @@ internal sealed record ResolvedBorrowedReviewPolicy(
 /// unattended interaction policy auto-approves exactly that shape. A deny-list therefore leaves the
 /// write path open while looking closed.</para>
 ///
-/// <para>Keeping <c>--available-tools</c> EXCLUSIVE and widening it to the read tools makes
+/// <para>Keeping <c>--available-tools</c> EXCLUSIVE and widening it to the read tools makes WRITE
 /// containment structural instead: no write or exec tool is representable at all, so there is no
-/// permission request for anything to grant. Verified live — with this allowlist Copilot reports
+/// permission request for anything to grant. READ containment is a separate problem and is NOT
+/// solved by the allowlist — see <see cref="BorrowedReviewSandbox"/>, which is why a supported entry
+/// requires an OS sandbox and a host that cannot provide one is unsupported. Verified live — with this allowlist Copilot reports
 /// <c>bash</c>, <c>create</c> and <c>edit</c> among its disabled tools, raises no permission request,
 /// and states plainly that it has no tool capable of writing.</para>
 ///
@@ -64,13 +72,20 @@ internal static class CopilotBorrowedReviewPolicy {
     /// <summary>Platform entries whose tool surface has been verified. Absent, unknown, or
     /// unverified ⇒ unsupported and fail closed. Pure and keyed only on OS + architecture: no
     /// probing, no vendor call, no version input — a compiled record of what was measured.</summary>
-    internal static ResolvedBorrowedReviewPolicy Resolve(OSPlatform os, Architecture arch) =>
-        os == OSPlatform.OSX && arch == Architecture.Arm64
-            ? new(true, AcpBorrowedReviewContainment.IndependentSnapshot, ReadToolIds)
+    /// <param name="sandboxAvailable">Whether this host can actually enforce the read boundary. A
+    /// host that cannot is UNSUPPORTED, not "supported without the sandbox" — the readable allowlist
+    /// and the OS boundary ship as one thing, and an entry that granted the first without the second
+    /// would be the exact confidentiality gap this design exists to close.</param>
+    internal static ResolvedBorrowedReviewPolicy Resolve(
+            OSPlatform os, Architecture arch, bool sandboxAvailable) =>
+        os == OSPlatform.OSX && arch == Architecture.Arm64 && sandboxAvailable
+            ? new(true, AcpBorrowedReviewContainment.IndependentSnapshot, ReadToolIds,
+                  RequiresProcessSandbox: true)
             : ResolvedBorrowedReviewPolicy.Unsupported;
 
     /// <summary>This machine's entry, resolved once.</summary>
-    internal static ResolvedBorrowedReviewPolicy Current { get; } = Resolve(CurrentOs(), RuntimeInformation.ProcessArchitecture);
+    internal static ResolvedBorrowedReviewPolicy Current { get; } =
+        Resolve(CurrentOs(), RuntimeInformation.ProcessArchitecture, BorrowedReviewSandbox.Available);
 
     static OSPlatform CurrentOs() =>
         RuntimeInformation.IsOSPlatform(OSPlatform.OSX)     ? OSPlatform.OSX

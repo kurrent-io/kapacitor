@@ -1072,7 +1072,7 @@ public class AcpHostedAgentRuntimeFactoryTests {
         // Pinned to the supported entry: the claim is "even where borrowed review IS available,
         // the raw checkout is refused". Reading the host's own entry would make this test pass
         // vacuously wherever Copilot is unverified — it would take the not-supported arm instead.
-        var supported = CopilotBorrowedReviewPolicy.Resolve(OSPlatform.OSX, Architecture.Arm64);
+        var supported = CopilotBorrowedReviewPolicy.Resolve(OSPlatform.OSX, Architecture.Arm64, sandboxAvailable: true);
         var ex = Assert.Throws<InvalidOperationException>(() =>
             AcpHostedAgentRuntimeFactory.BuildProcessStartInfo(
                 AcpVendorDescriptors.Copilot, new DaemonConfig(), ctx, supported));
@@ -1096,7 +1096,7 @@ public class AcpHostedAgentRuntimeFactoryTests {
 
         // Explicit supported entry, so this asserts the argv on any host platform — the host's own
         // entry may be unverified, which is a separate concern covered by the policy matrix.
-        var supported = CopilotBorrowedReviewPolicy.Resolve(OSPlatform.OSX, Architecture.Arm64);
+        var supported = CopilotBorrowedReviewPolicy.Resolve(OSPlatform.OSX, Architecture.Arm64, sandboxAvailable: true);
         var psi  = AcpHostedAgentRuntimeFactory.BuildProcessStartInfo(
             AcpVendorDescriptors.Copilot, new DaemonConfig(), ctx, supported);
         var argv = psi.ArgumentList.ToArray();
@@ -1308,6 +1308,53 @@ public class AcpHostedAgentRuntimeFactoryTests {
             .IsEqualTo(AcpUnattendedInteractionPolicy.Disabled);
     }
 
+    /// <summary>The sandbox is applied at the spawn, not merely described by the policy: the borrowed
+    /// launch runs <c>sandbox-exec</c> with the profile, and the vendor binary becomes its argument.
+    ///
+    /// <para>Asserting only that the entry sets <c>RequiresProcessSandbox</c> would pass against a
+    /// builder that read the flag and did nothing with it — the reviewer would then get the widened
+    /// read tools with no boundary at all, which is strictly worse than before this change.</para></summary>
+    [Test]
+    public async Task BuildProcessStartInfo_Copilot_BorrowedSnapshot_SpawnsUnderTheSandbox() {
+        var ctx = ReviewContext(["kcap-review"]) with {
+            Work = WorkLocation.OwnedWorktree, IsBorrowedSnapshot = true
+        };
+        var supported = CopilotBorrowedReviewPolicy.Resolve(
+            OSPlatform.OSX, Architecture.Arm64, sandboxAvailable: true);
+
+        var psi = AcpHostedAgentRuntimeFactory.BuildProcessStartInfo(
+            AcpVendorDescriptors.Copilot, new DaemonConfig { CopilotPath = "/opt/bin/copilot" },
+            ctx, supported);
+        var argv = psi.ArgumentList.ToArray();
+
+        await Assert.That(psi.FileName).IsEqualTo(BorrowedReviewSandbox.SandboxExecPath);
+        await Assert.That(argv[0]).IsEqualTo("-p");
+        await Assert.That(argv[1]).Contains("(deny default)");
+        // The snapshot the reviewer was given is the one the profile grants.
+        await Assert.That(argv[1]).Contains($"(subpath \"{ctx.Worktree.Path}\")");
+        await Assert.That(argv[2]).IsEqualTo("/opt/bin/copilot");
+        // The vendor argv survives the wrap intact — the read tools are still there.
+        foreach (var readTool in CopilotBorrowedReviewPolicy.ReadToolIds)
+            await Assert.That(argv).Contains($"--available-tools={readTool}");
+    }
+
+    /// <summary>The paired direction for the sandbox: a NON-borrowed review spawns the vendor binary
+    /// directly. Wrapping every launch would work and would be wrong — it would put an unnecessary
+    /// deprecated dependency on the ordinary path and mask a regression in the borrowed one.</summary>
+    [Test]
+    public async Task BuildProcessStartInfo_Copilot_NonBorrowedReview_SpawnsTheVendorDirectly() {
+        var ctx = ReviewContext(["kcap-review"]) with { Work = WorkLocation.OwnedWorktree };
+        var supported = CopilotBorrowedReviewPolicy.Resolve(
+            OSPlatform.OSX, Architecture.Arm64, sandboxAvailable: true);
+
+        var psi = AcpHostedAgentRuntimeFactory.BuildProcessStartInfo(
+            AcpVendorDescriptors.Copilot, new DaemonConfig { CopilotPath = "/opt/bin/copilot" },
+            ctx, supported);
+
+        await Assert.That(psi.FileName).IsEqualTo("/opt/bin/copilot");
+        await Assert.That(psi.ArgumentList.Any(a => a == "-p")).IsFalse();
+    }
+
     /// <summary>The paired direction, and the one most easily lost: a NON-borrowed Copilot review
     /// (owned worktree, or context-only) keeps the flow-result-only clamp and gets no read tools.
     ///
@@ -1318,7 +1365,7 @@ public class AcpHostedAgentRuntimeFactoryTests {
     public async Task BuildProcessStartInfo_Copilot_NonBorrowedReview_KeepsTheFlowResultOnlyClamp() {
         var ctx = ReviewContext(["kcap-review"]) with { Work = WorkLocation.OwnedWorktree };
 
-        var supported = CopilotBorrowedReviewPolicy.Resolve(OSPlatform.OSX, Architecture.Arm64);
+        var supported = CopilotBorrowedReviewPolicy.Resolve(OSPlatform.OSX, Architecture.Arm64, sandboxAvailable: true);
         var argv = AcpHostedAgentRuntimeFactory
             .BuildProcessStartInfo(AcpVendorDescriptors.Copilot, new DaemonConfig(), ctx, supported)
             .ArgumentList.ToArray();

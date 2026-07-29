@@ -30,23 +30,44 @@ public class CopilotBorrowedReviewPolicyTests {
 
     [Test]
     public async Task The_verified_platform_supports_borrowed_review_with_the_read_tools() {
-        var p = CopilotBorrowedReviewPolicy.Resolve(OSPlatform.OSX, Architecture.Arm64);
+        var p = CopilotBorrowedReviewPolicy.Resolve(OSPlatform.OSX, Architecture.Arm64, sandboxAvailable: true);
 
         await Assert.That(p.Supported).IsTrue();
         await Assert.That(p.Containment).IsEqualTo(AcpBorrowedReviewContainment.IndependentSnapshot);
         await Assert.That(p.ExtraBorrowedToolIds).IsEquivalentTo(CopilotBorrowedReviewPolicy.ReadToolIds);
+        // The readable allowlist and the OS read boundary ship as one thing.
+        await Assert.That(p.RequiresProcessSandbox).IsTrue();
+    }
+
+    /// <summary>The host that CAN run Copilot but CANNOT enforce the boundary is unsupported, not
+    /// "supported without the sandbox".
+    ///
+    /// <para>This is the load-bearing half of the pairing. The read tools are what make an outside
+    /// path reachable in the first place, so an entry granting them without the OS boundary would
+    /// leave confidentiality resting on the vendor continuing to ask permission — which is exactly
+    /// the dependency the sandbox exists to remove.</para></summary>
+    [Test]
+    public async Task The_verified_platform_without_a_sandbox_is_unsupported() {
+        var p = CopilotBorrowedReviewPolicy.Resolve(
+            OSPlatform.OSX, Architecture.Arm64, sandboxAvailable: false);
+
+        await Assert.That(p.Supported).IsFalse();
+        await Assert.That(p.Containment).IsEqualTo(AcpBorrowedReviewContainment.None);
+        await Assert.That(p.ExtraBorrowedToolIds).IsEmpty();
+        await Assert.That(p.RequiresProcessSandbox).IsFalse();
     }
 
     [Test]
     [MethodDataSource(nameof(Unverified))]
     public async Task An_unverified_platform_fails_closed((OSPlatform Os, Architecture Arch) key) {
-        var p = CopilotBorrowedReviewPolicy.Resolve(key.Os, key.Arch);
+        var p = CopilotBorrowedReviewPolicy.Resolve(key.Os, key.Arch, sandboxAvailable: true);
 
         await Assert.That(p.Supported).IsFalse()
             .Because($"{key.Os}/{key.Arch} has no verified tool surface");
         await Assert.That(p.Containment).IsEqualTo(AcpBorrowedReviewContainment.None);
         // The load-bearing half: an unverified platform must not be able to reach the readable argv.
         await Assert.That(p.ExtraBorrowedToolIds).IsEmpty();
+        await Assert.That(p.RequiresProcessSandbox).IsFalse();
     }
 
     // The allowlist must never carry the write/exec surface — that is what makes containment

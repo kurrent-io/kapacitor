@@ -283,6 +283,17 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
         // auto-update hard-fail the launch. See
         // docs/superpowers/specs/2026-07-27-ai1528-trust-by-default-borrowed-review-design.md.
         var binaryPath = descriptor.ResolveBinaryPath(config);
+
+        // The read boundary. Only a borrowed snapshot is wrapped: every other launch either has no
+        // borrowed content to protect or is already confined by the owned worktree it runs in.
+        if (ctx.IsBorrowedSnapshot && resolved.RequiresProcessSandbox) {
+            var profile = BorrowedReviewSandbox.BuildProfile(
+                ctx.Worktree.Path, Environment.GetFolderPath(Environment.SpecialFolder.UserProfile));
+
+            argv       = [.. BorrowedReviewSandbox.WrapArgv(profile, binaryPath, argv)];
+            binaryPath = BorrowedReviewSandbox.SandboxExecPath;
+        }
+
         var psi = new ProcessStartInfo(binaryPath, argv) {
             WorkingDirectory       = ctx.Worktree.Path,
             RedirectStandardInput  = true,
