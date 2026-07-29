@@ -467,24 +467,19 @@ public class FlowsDriverSchemaConformanceTests {
 
     // ── the stale-schema invariant ────────────────────────────────────────────────────────────
     //
-    // Every assertion above proves the CURRENT binary ships a vendor-capable schema. None of them
-    // can help a harness that connected BEFORE the upgrade: MCP tool schemas are cached at connect
-    // time, so such a driver keeps offering a `start_review_flow` with no `vendor` property, and no
-    // amount of server- or CLI-side correctness can put the parameter back in its hands.
+    // The assertions above prove the CURRENT binary ships a vendor-capable schema. None of them help
+    // a harness that connected BEFORE the upgrade: MCP schemas are cached at connect time, so that
+    // driver still sees no `vendor` property and no server- or CLI-side correctness can hand it one.
+    // The skill text is the only thing that still reaches such a session, which makes the prose
+    // below load-bearing rather than advisory -- delete it and a stale driver takes the server
+    // default and reports that the user's named reviewer ran, the exact claim the design forbids.
     //
-    // For that window the ONLY protection is the instruction the driver reads. The skills are plain
-    // files on disk, read fresh at session start, so they still reach a session whose MCP schema is
-    // frozen. That makes this prose load-bearing rather than advisory: delete it and a driver whose
-    // schema lacks `vendor` will take the server default and report that the user's named reviewer
-    // ran, which is precisely the claim the design forbids.
-    //
-    // NOTE on reach, which is NOT uniform across the two skills. `review-flows` is in
-    // AgentsSkillsInstaller.SourceNames, so `kcap update` refreshes it on every agent-skills surface
-    // -- and it is the one that covers `start_review_flow`, the reserved review alias the invariant
-    // is actually about. `agent-flows` is NOT in that list: it ships inside the package and reaches
-    // the plugin-loaded surfaces only. The assertion below is deliberately scoped to that reality
-    // rather than assuming parity; whether agent-flows should join the distributed set is a
-    // separate distribution decision, and the tripwire further down pins the half this relies on.
+    // Reach is NOT uniform across the two skills. `review-flows` is in
+    // AgentsSkillsInstaller.SourceNames (so `kcap update` refreshes it everywhere) and is the one
+    // covering `start_review_flow`, the reserved alias this is about; `agent-flows` is absent from
+    // that list and reaches only plugin-loaded surfaces. Scoped to that reality rather than assuming
+    // parity -- whether agent-flows should join the distributed set is a separate decision, and the
+    // tripwire below pins the half this relies on.
 
     /// <summary>The two skills that teach a driver to start a flow, and the heading introducing the
     /// stale-schema case in each.</summary>
@@ -496,19 +491,15 @@ public class FlowsDriverSchemaConformanceTests {
     public static IEnumerable<Func<(string Skill, string Anchor)>> FlowSkillFiles() =>
         FlowSkills.Select(s => (Func<(string, string)>)(() => s));
 
-    /// <summary>The normative block introduced by <paramref name="anchor"/>: everything from that
-    /// heading up to the next Markdown heading, with line wrapping normalized to single spaces.
+    /// <summary>The normative block introduced by <paramref name="anchor"/>: that heading to the
+    /// next Markdown heading, with line wrapping normalized to single spaces.
     ///
-    /// <para>A fixed character window was the first attempt and was already wrong: the review-flows
-    /// anchor's next <c>##</c> begins 1,326 characters later, so a 1,400-char window bled into the
-    /// following section — meaning unrelated later prose could satisfy an assertion, and a modest
-    /// edit could push the recovery sentence past the cutoff for a failure that reads as a false
-    /// alarm. Parsing to the heading makes the scope exactly the block being asserted about.</para>
-    ///
-    /// <para>Normalizing whitespace matters just as much: these files are hard-wrapped, so a phrase
-    /// split across two lines is invisible to a plain substring check. That is not hypothetical —
-    /// it fired on the first run of this test against wrapping that had split "restart the
-    /// harness".</para></summary>
+    /// <para>Both details were bought with failures. A fixed 1,400-char window came first and was
+    /// already bleeding into the next section — review-flows' next <c>##</c> starts at 1,326 — so
+    /// later prose could satisfy an assertion and a modest edit could push a required sentence past
+    /// the cutoff. And because these files are hard-wrapped, a phrase split across two lines is
+    /// invisible to a substring check; that fired on this test's first run, against wrapping that
+    /// had split "restart the harness".</para></summary>
     static string NormativeBlock(string text, string anchor) {
         var at = text.IndexOf(anchor, StringComparison.Ordinal);
         if (at < 0) return "";
