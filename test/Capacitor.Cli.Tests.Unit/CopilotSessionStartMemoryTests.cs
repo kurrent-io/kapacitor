@@ -101,4 +101,69 @@ public class CopilotSessionStartMemoryTests {
     public async Task an_absolute_base_url_is_permitted(string baseUrl) {
         await Assert.That(SessionStartMemoryHookSupport.CanAttempt(baseUrl)).IsTrue();
     }
+
+    // HookBudget.Remaining() ALREADY reserves Safety. Reserving it a second time (as the first cut of
+    // both this adapter and the Codex one did) collapses the usable window and silently discards a
+    // healthy response. Pinned with a stamp where the two differ decisively: with a 5s ceiling and a
+    // 1.5s safety, 2s elapsed leaves Remaining = 1.5s, whereas the double-reserved budget is exactly
+    // zero — so a fragment arriving 300ms from now is returned only if the budget is computed once.
+    [Test]
+    public async Task a_fragment_arriving_inside_the_remaining_budget_is_not_discarded() {
+        var twoSecondsAgo = System.Diagnostics.Stopwatch.GetTimestamp()
+                          - (long)(2.0 * System.Diagnostics.Stopwatch.Frequency);
+
+        var slow = Task.Run(async () => { await Task.Delay(300); return (string?)"## Team memory"; });
+
+        await Assert.That(await SessionStartMemoryHookSupport.AwaitBounded(slow, twoSecondsAgo, "session-start"))
+            .IsEqualTo("## Team memory");
+    }
+
+    // An exhausted budget must degrade to null rather than wait: 4.9s elapsed against a 5s ceiling
+    // leaves nothing once Safety is reserved.
+    [Test]
+    public async Task an_exhausted_budget_degrades_to_no_memory_without_waiting() {
+        var wayBack = System.Diagnostics.Stopwatch.GetTimestamp()
+                    - (long)(4.9 * System.Diagnostics.Stopwatch.Frequency);
+
+        var slow = Task.Run(async () => { await Task.Delay(5_000); return (string?)"## Team memory"; });
+
+        await Assert.That(await SessionStartMemoryHookSupport.AwaitBounded(slow, wayBack, "session-start"))
+            .IsNull();
+    }
+
+    /// <summary>Walks up from this file's compile-time path to the repo root.</summary>
+    static string RepoRoot([System.Runtime.CompilerServices.CallerFilePath] string here = "") {
+        var dir = Path.GetDirectoryName(here);
+
+        while (dir is not null && !File.Exists(Path.Combine(dir, "Capacitor.slnx")))
+            dir = Path.GetDirectoryName(dir);
+
+        return dir ?? throw new InvalidOperationException($"repo root not found from {here}");
+    }
+
+    // `disable_memory_index` must be read from the EFFECTIVE profile. ProfileResolver returns a null
+    // Profile whenever --server-url or KCAP_URL wins, so reading AppConfig.ResolvedProfile?.Profile
+    // silently ignored the user's opt-out on every KCAP_URL deployment — the configuration most
+    // hosted users run. Asserted at the source level because reaching this branch through Handle
+    // needs KCAP_CONFIG_DIR bound before PathHelpers' static init, which a parallel shared test
+    // assembly cannot guarantee.
+    [Test]
+    public async Task the_memory_opt_out_is_read_from_the_effective_profile_not_the_resolved_one() {
+        var source = await File.ReadAllTextAsync(
+            Path.Combine(RepoRoot(), "src", "Capacitor.Cli", "Commands", "CopilotHookCommand.cs"));
+
+        var start = source.IndexOf("var memoryTask = StartMemoryIndexTask(", StringComparison.Ordinal);
+        await Assert.That(start).IsGreaterThan(-1);
+
+        var callSite = source.Substring(start, Math.Min(900, source.Length - start));
+
+        await Assert.That(callSite).Contains("activeProfile?.DisableMemoryIndex is true");
+
+        // Comment lines stripped before the ban: the call site's own comment names the rejected
+        // ResolvedProfile to explain WHY it is wrong, and must not be read as a use of it.
+        var code = string.Join('\n', callSite.Split('\n')
+            .Where(line => !line.TrimStart().StartsWith("//", StringComparison.Ordinal)));
+
+        await Assert.That(code).DoesNotContain("ResolvedProfile");
+    }
 }

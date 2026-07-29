@@ -277,8 +277,13 @@ static class CopilotHookCommand {
             baseUrl, sessionId,
             TryGetString(JsonNode.Parse(enriched), "workspace_root") ?? cwd,
             source,
-            AppConfig.ResolvedProfile?.Profile?.DisableMemoryIndex is true,
-            HookBudget.Remaining(processStart, "session-start") - HookBudget.Safety,
+            // The EFFECTIVE profile, not AppConfig.ResolvedProfile?.Profile: ProfileResolver returns a
+            // null Profile whenever --server-url or KCAP_URL wins, and GetActiveProfileAsync (which
+            // produced this parameter) is what falls back to the on-disk active profile. Reading the
+            // resolved one silently ignored `disable_memory_index: true` for every KCAP_URL user.
+            activeProfile?.DisableMemoryIndex is true,
+            // Remaining() already reserves Safety — subtracting it again here halved the window.
+            HookBudget.Remaining(processStart, "session-start"),
             memoryClientFactory, memoryStoreFactory);
 
         // Spawn-before-post: capture must start on Posted OR Spooled (auth lapse /
@@ -288,14 +293,24 @@ static class CopilotHookCommand {
             baseUrl, "session-start/copilot", enriched, "copilot-hook",
             spool, sessionId, route: "session-start/copilot");
 
-        // Copilot parses this hook's stdout as its (optional) single JSON result document, so the
-        // envelope is written on every post-POST exit — including the no-watcher one, where the
-        // recording outcome must not decide whether the model gets its memory index. Silent when
-        // there is no fragment, which keeps all pre-existing paths byte-identical.
-        WriteSessionStartOutput(Console.Out,
-            await SessionStartMemoryHookSupport.AwaitBounded(memoryTask, processStart, "session-start"));
+        // Always awaited, on every outcome, so the fetch is never left dangling.
+        var fragment = await SessionStartMemoryHookSupport.AwaitBounded(memoryTask, processStart, "session-start");
 
-        if (!AgentHookPoster.ShouldSpawnAfter(outcome)) return outcome == HookPostOutcome.Failed ? 1 : 0;
+        // A permanent POST failure exits non-zero, and Copilot consumes this hook's stdout only on a
+        // ZERO exit — so writing the envelope there would be discarded by the host. Skip it rather
+        // than emit output that cannot be honoured.
+        //
+        // Residual (deliberate, not a silent gap): the fetch may already have spent its
+        // once-per-session lease, so this session's index is lost rather than retried on resume.
+        // Holding the lease open until the exit code is known means restructuring the shared
+        // orchestrator's commit point, which Claude/Cursor/Codex also depend on — tracked separately.
+        if (outcome == HookPostOutcome.Failed) return 1;
+
+        // Copilot parses this hook's stdout as its (optional) single JSON result document. Silent when
+        // there is no fragment, which keeps all pre-existing paths byte-identical.
+        WriteSessionStartOutput(Console.Out, fragment);
+
+        if (!AgentHookPoster.ShouldSpawnAfter(outcome)) return 0;
 
         await EnsureWatcherAsync(baseUrl, dashedSessionId, sessionId, node, cwd);
         return 0;

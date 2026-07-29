@@ -692,13 +692,13 @@ switch (command) {
             return await ClaudeHookCommand.Handle(baseUrl!, Console.In, updateCheckTask, hookProcessStart);
         }
         if (args.Contains("--codex")) {
-            return await CodexHookCommand.Handle(baseUrl!, Console.In);
+            return await CodexHookCommand.Handle(baseUrl!, Console.In, hookProcessStart);
         }
         if (args.Contains("--cursor")) {
             return await CursorHookCommand.Handle(baseUrl!, Console.In);
         }
         if (args.Contains("--copilot")) {
-            return await CopilotHookCommand.Handle(baseUrl!, Console.In, args);
+            return await CopilotHookCommand.Handle(baseUrl!, Console.In, args, hookProcessStart);
         }
         if (args.Contains("--gemini")) {
             return await GeminiHookCommand.Handle(baseUrl!, Console.In);

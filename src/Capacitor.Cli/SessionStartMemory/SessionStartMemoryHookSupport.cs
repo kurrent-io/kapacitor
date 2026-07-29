@@ -43,14 +43,18 @@ internal static class SessionStartMemoryHookSupport {
 
     /// <summary>
     /// Awaits an in-flight fragment fetch under the budget remaining AT THIS INSTANT — never the
-    /// budget it was started with — reserving <see cref="HookBudget.Safety"/> for serialization and
-    /// the write itself. On expiry the fetch is abandoned rather than cancelled mid-flight (its own
-    /// lease bookkeeping owns that) and null is returned, so the caller's output degrades to "no
-    /// memory" instead of being delayed past the harness's hook ceiling. Never throws.
+    /// budget it was started with. On expiry the fetch is abandoned rather than cancelled mid-flight
+    /// (its own lease bookkeeping owns that) and null is returned, so the caller's output degrades to
+    /// "no memory" instead of being delayed past the harness's hook ceiling. Never throws.
+    ///
+    /// <para><see cref="HookBudget.Remaining"/> ALREADY reserves <see cref="HookBudget.Safety"/> for
+    /// serialization and the write itself — do not subtract it again here or at the call site. Doing
+    /// so cut the usable window from 3.5s to 2s at a fresh hook start and silently discarded healthy
+    /// 2–3.5s responses that fit the intended ceiling.</para>
     /// </summary>
     public static async Task<string?> AwaitBounded(Task<string?> task, long processStart, string command) {
         try {
-            var budget = HookBudget.Remaining(processStart, command) - HookBudget.Safety;
+            var budget = HookBudget.Remaining(processStart, command);
 
             if (budget <= TimeSpan.Zero)
                 return task.IsCompletedSuccessfully ? task.Result : null;

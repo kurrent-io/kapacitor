@@ -185,14 +185,15 @@ static class CodexHookCommand {
     /// Awaits the memory fetch under the budget REMAINING at this instant — never the budget it
     /// was started with. Codex blocks on this hook's stdout, so the wait is capped so the handshake
     /// still lands inside the hook ceiling even when the fetch never returns: the cap is
-    /// <see cref="HookBudget.Remaining"/> minus <see cref="HookBudget.Safety"/>, the headroom
-    /// reserved for serialization + the write itself. On expiry the already-running fetch is
+    /// <see cref="HookBudget.Remaining"/>, which ALREADY reserves <see cref="HookBudget.Safety"/> as
+    /// headroom for serialization + the write itself — subtracting it again cut the usable window
+    /// from 3.5s to 2s at a fresh hook start. On expiry the already-running fetch is
     /// abandoned (not cancelled mid-flight — its own lease bookkeeping owns that) and null is
     /// returned, so the write degrades to the minimal handshake rather than being delayed.
     /// </summary>
     static async Task<string?> AwaitMemoryFragmentAsync(Task<string?> task, long processStart) {
         try {
-            var budget = HookBudget.Remaining(processStart, "session-start") - HookBudget.Safety;
+            var budget = HookBudget.Remaining(processStart, "session-start");
 
             if (budget <= TimeSpan.Zero)
                 return task.IsCompletedSuccessfully ? task.Result : null;
@@ -398,8 +399,13 @@ static class CodexHookCommand {
             // The git root discovered above (stamped onto the node) is preferred; the payload cwd is
             // the fallback. Never a process-cwd fallback — see StartMemoryIndexTask's scope note.
             TryGetString(enrichedNode, "workspace_root") ?? TryGetString(enrichedNode, "cwd"),
-            AppConfig.ResolvedProfile?.Profile?.DisableMemoryIndex is true,
-            HookBudget.Remaining(processStart, "session-start") - HookBudget.Safety,
+            // The EFFECTIVE profile, not AppConfig.ResolvedProfile?.Profile: ProfileResolver returns a
+            // null Profile whenever --server-url or KCAP_URL wins, and GetActiveProfileAsync (which
+            // produced activeProfile) is what falls back to the on-disk active profile. Reading the
+            // resolved one silently ignored `disable_memory_index: true` for every KCAP_URL user.
+            activeProfile?.DisableMemoryIndex is true,
+            // Remaining() already reserves Safety — subtracting it again here halved the window.
+            HookBudget.Remaining(processStart, "session-start"),
             memoryClientFactory, memoryStoreFactory);
 
         var spool = new HookSpool(PathHelpers.ConfigPath("spool"));
