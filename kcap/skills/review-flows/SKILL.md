@@ -105,8 +105,8 @@ After applying the role-surface safety gate, if `start_review_flow` / `submit_re
 
 ## Server errors to act on
 
-- **`400` starting `no_daemon_available:`** — no connected daemon has the repo checked out. Tell the user to run `kcap agent` on a machine with the repo cloned (or pass an explicit `daemon_name` + `repo_path`).
-- **`400` starting `daemon_outdated:`** — the daemon's kcap is too old to host flow participants. Tell the user to update (`npm i -g @kurrent/kcap`) and restart `kcap agent`.
+- **`400` starting `no_daemon_available:`** — no connected daemon has the repo checked out. Relay the server error's remediation verbatim — it names runnable commands: run `kcap daemon start -d` on a machine with the repo cloned (if the account already runs a daemon elsewhere, add a distinct name: `kcap daemon start -d --name <new-name>`), or pass an explicit `daemon_name` + `repo_path`.
+- **`400` starting `daemon_outdated:`** — the daemon's kcap is too old to host flow participants. Relay the server error's remediation verbatim — it names the outdated daemon and the fix: update kcap (`npm i -g @kurrent/kcap`), then restart that daemon by name (`kcap daemon stop --name <its-name>`, then `kcap daemon start -d --name <its-name>`; `kcap daemon status` lists names — a bare stop/start can target the wrong daemon).
 - **`reviewer_vendor_required`** — no explicit vendor and no server default; ask the user to name a reviewer or have an admin configure `Flows:Review:DefaultVendor`.
 - **`reviewer_vendor_unavailable`** — the selected vendor is not installed/certified unattended on an eligible daemon; do not silently fall back to another vendor.
 - **`client_upgrade_required`, `flow_client_protocol_required`, or `flow_client_protocol_unsupported`** — update kcap; reserved review aliases fail closed on stale clients.

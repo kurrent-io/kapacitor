@@ -1719,7 +1719,7 @@ public static class PluginCommand {
                 ? KiroHooksInstaller.ReadPreviousDefault(agentJsonPath) ?? "kiro_default"
                 : currentDefault;
 
-            // Clone the current default into the kcap agent (kiro-cli writes it to
+            // Clone the current default into kcap's Kiro agent (kiro-cli writes it to
             // the global agents dir, preserving tools/prompt). Skipped if kcap exists.
             if (!File.Exists(agentJsonPath)) {
                 if (!AgentDetector.IsInstalled(KiroBinary)) return false;

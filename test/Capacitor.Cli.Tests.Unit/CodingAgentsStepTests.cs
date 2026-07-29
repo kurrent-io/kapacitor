@@ -2189,7 +2189,7 @@ public class CodingAgentsStepTests {
         );
 
         await Assert.That(result).IsEqualTo(new Result(false, false, false, false, false));
-        await Assert.That(sink.Lines).Contains(l => l.Contains("Skipping kcap agent setup"));
+        await Assert.That(sink.Lines).Contains(l => l.Contains("Skipping coding-agent setup"));
     }
 
     [Test]

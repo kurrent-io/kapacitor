@@ -145,7 +145,7 @@ internal static class CodingAgentsStep {
         }
 
         if (!options.InstallAgents) {
-            writeLine("  [dim]· Skipping kcap agent setup[/]");
+            writeLine("  [dim]· Skipping coding-agent setup[/]");
 
             return Task.FromResult(new Result(false, false, false, false, false));
         }
