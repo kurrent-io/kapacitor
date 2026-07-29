@@ -1,3 +1,5 @@
+using System.Collections.Immutable;
+
 namespace Capacitor.Cli.Daemon.Acp;
 
 /// <summary>Read-only grants the vendor needs to start: whole <paramref name="Directories"/> for
@@ -64,7 +66,7 @@ internal static class BorrowedReviewRuntimeRoots {
     ///
     /// <para>A vendor installed anywhere else gets its executable literal and nothing more, so the
     /// launch fails loudly at exec rather than quietly reading adjacent files.</para></summary>
-    static readonly string[] MeasuredPrefixes = ["/opt/homebrew"];
+    internal static readonly ImmutableArray<string> MeasuredPrefixes = ["/opt/homebrew"];
 
     /// <summary>How far up from the binary to look for an installation prefix before giving up.</summary>
     const int MaxPrefixSearchDepth = 16;
@@ -196,9 +198,11 @@ internal static class BorrowedReviewRuntimeRoots {
     /// and grant <c>~/bin</c>, <c>~/lib</c>, <c>~/share</c>, <c>~/include</c>: user data, and the exact
     /// class of grant this change exists to remove.</para>
     ///
-    /// <para>Note this rejects home ITSELF, not installations beneath it: <c>~/.local</c> or
-    /// <c>~/.volta/tools/image/node/22</c> are still valid prefixes, so a per-user install keeps
-    /// working.</para></summary>
+    /// <para>This rejects home ITSELF; installations BENEATH home are refused separately, by
+    /// <see cref="FindInstallationPrefix"/>. So a per-user prefix — <c>~/.local</c>,
+    /// <c>~/.volta/tools/image/node/22</c>, an nvm root — does NOT work: it yields the executable
+    /// literal only, and the launch then fails loudly at exec. That is deliberate, because none of those
+    /// layouts appears in <see cref="MeasuredPrefixes"/>. Supporting one means measuring it.</para></summary>
     static bool IsUngrantableRoot(string path, IReadOnlyList<string> home) =>
         SandboxPaths.IsFilesystemRoot(path) || home.Any(h => IsSamePath(path, h));
 

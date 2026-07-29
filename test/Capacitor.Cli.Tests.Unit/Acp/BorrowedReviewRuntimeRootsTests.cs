@@ -212,10 +212,22 @@ public class BorrowedReviewRuntimeRootsTests {
         await Assert.That(grants.Files.Select(Posix)).Contains($"{prefix}/bin/copilot");
     }
 
-    /// <summary>The shipped list is exactly what has been measured. A second entry appearing here
-    /// without a measurement is the regression this pins.</summary>
+    /// <summary>The shipped trust boundary, pinned by VALUE.
+    ///
+    /// <para>An earlier version of this test asserted only that <c>/opt/homebrew</c> was admitted and one
+    /// arbitrary path refused — which stays green when a second entry is added, so it did not pin the
+    /// thing it claimed to. This list is now the confidentiality boundary, so any expansion has to fail
+    /// here and be looked at, whatever the new entry happens to be.</para></summary>
     [Test]
-    public async Task The_real_resolver_admits_only_the_measured_homebrew_prefix() {
+    public async Task The_measured_prefix_list_is_exactly_homebrew() {
+        await Assert.That(BorrowedReviewRuntimeRoots.MeasuredPrefixes.ToArray())
+            .IsEquivalentTo(["/opt/homebrew"])
+            .Because("every entry here grants software trees recursively and must be measured first");
+    }
+
+    /// <summary>...and the list is actually consulted, in both directions, through the production path.</summary>
+    [Test]
+    public async Task The_real_resolver_admits_the_measured_prefix_and_refuses_a_lookalike() {
         string[] present = ["/opt/homebrew", "/opt/homebrew/bin", "/opt/homebrew/lib",
                             "/opt/other", "/opt/other/bin", "/opt/other/lib"];
 
