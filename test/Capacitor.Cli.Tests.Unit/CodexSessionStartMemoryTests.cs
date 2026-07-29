@@ -86,6 +86,29 @@ public class CodexSessionStartMemoryTests {
             .IsEqualTo(fragment);
     }
 
+    // The authenticated-client helper validates the URL by printing a hint and calling
+    // Environment.Exit(2). Reaching that from SessionStart would kill the hook BEFORE the stdout
+    // handshake, so Codex would receive no output and reject the session — far worse than skipping
+    // an optional memory fragment. The guard must therefore reject anything unacceptable BEFORE
+    // auth discovery. (Asserting the predicate, not the exit: a test that actually tripped
+    // Environment.Exit would take the test host down with it.)
+    [Test]
+    [Arguments(null)]
+    [Arguments("")]
+    [Arguments("   ")]
+    [Arguments("localhost:5108")]
+    [Arguments("/relative/path")]
+    public async Task an_unusable_base_url_skips_memory_injection_instead_of_exiting(string? baseUrl) {
+        await Assert.That(CodexHookCommand.CanAttemptMemoryInjection(baseUrl)).IsFalse();
+    }
+
+    [Test]
+    [Arguments("http://localhost:5108")]
+    [Arguments("https://kurrent.kcap.ai")]
+    public async Task an_absolute_base_url_permits_memory_injection(string baseUrl) {
+        await Assert.That(CodexHookCommand.CanAttemptMemoryInjection(baseUrl)).IsTrue();
+    }
+
     /// <summary>Walks up from this file's compile-time path to the repo root.</summary>
     static string RepoRoot([CallerFilePath] string here = "") {
         var dir = Path.GetDirectoryName(here);

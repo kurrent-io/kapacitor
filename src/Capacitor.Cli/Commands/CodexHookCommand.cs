@@ -129,6 +129,14 @@ static class CodexHookCommand {
     /// Named (not inlined) so a test can assert the production path attaches credentials — the
     /// writer-level tests cannot see this. Mirrors <c>ClaudeHookCommand</c>'s factory exactly.
     /// </summary>
+    /// <summary>
+    /// Whether memory injection may attempt auth discovery for <paramref name="baseUrl"/> at all.
+    /// Guards the process-exiting URL validation inside the authenticated-client helper (see the
+    /// call-site comment): a blank or unacceptable URL must skip injection, never exit the hook.
+    /// </summary>
+    internal static bool CanAttemptMemoryInjection(string? baseUrl)
+        => !string.IsNullOrWhiteSpace(baseUrl) && HttpClientExtensions.IsAcceptableUrl(baseUrl);
+
     internal static Func<string?, CancellationToken, Task<HttpClient>> DefaultMemoryClientFactory(string baseUrl)
         => async (rejectedAccessToken, ct) => (await HttpClientExtensions.CreateClientWithAuthStatusAsync(
             baseUrl, ct, allowAutoRedirect: false, rejectedAccessToken: rejectedAccessToken)).Client;
@@ -144,6 +152,13 @@ static class CodexHookCommand {
         if (disabled || string.IsNullOrWhiteSpace(sessionId) || string.IsNullOrWhiteSpace(scopeRoot)
          || budget <= TimeSpan.Zero)
             return Task.FromResult<string?>(null);
+
+        // MUST precede any auth discovery: the authenticated-client helper funnels through
+        // EnsureAbsolute, which prints a hint and calls Environment.Exit(2) on a URL it cannot
+        // accept. Exiting here would kill the hook BEFORE the stdout handshake, so Codex would see
+        // no output at all and reject the session — the opposite of fail-open, and strictly worse
+        // than skipping an optional memory fragment. Mirrors PostBestEffortAsync's guard.
+        if (!CanAttemptMemoryInjection(baseUrl)) return Task.FromResult<string?>(null);
 
         // Construction itself stays inside the fail-open boundary: store-root validation and
         // injected factories can throw synchronously.
