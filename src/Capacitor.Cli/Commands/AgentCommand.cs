@@ -16,6 +16,10 @@ internal readonly record struct AgentRow(string Id, string Status, string Repo);
 internal static class AgentCommand {
     internal static readonly string[] KnownSubcommands = ["start", "ls", "stop", "attach"];
 
+    /// Verbs that only ever belonged to the pre-rename `agent` daemon group, minus the
+    /// start/stop the new group also owns.
+    internal static readonly string[] DaemonOnlySubcommands = ["restart", "status", "logs", "doctor", "service"];
+
     /// <summary>Bare `kcap agent` lists agents; otherwise argv[1] is the subcommand.</summary>
     internal static (string Sub, string[] Args) SplitSubcommand(string[] args) =>
         args.Length > 1 ? (args[1], args[2..]) : ("ls", []);
@@ -32,6 +36,14 @@ internal static class AgentCommand {
             case "attach": return await AttachAsync(rest);
             default:
                 await Console.Error.WriteLineAsync($"kcap agent: unknown subcommand '{sub}'");
+
+                // `agent` was the daemon verb before it was renamed to `daemon`. The two groups
+                // still share start/stop, so those dispatch here; the rest only ever meant the
+                // daemon, and answering them with a bare usage line is how a healthy daemon reads
+                // as dead mid-diagnosis.
+                if (DaemonOnlySubcommands.Contains(sub))
+                    await Console.Error.WriteLineAsync($"`{sub}` manages the daemon — run `kcap daemon {sub}`.");
+
                 await Console.Error.WriteLineAsync($"Usage: kcap agent <{string.Join('|', KnownSubcommands)}>");
                 await Console.Error.WriteLineAsync("Run `kcap agent --help` for details.");
 
