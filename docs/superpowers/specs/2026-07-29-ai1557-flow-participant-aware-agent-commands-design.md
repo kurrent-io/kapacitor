@@ -63,6 +63,7 @@ by accident.
 | Value | Direction | Payload |
 |---|---|---|
 | `StopV2 = 10` | client → daemon | `mode⇥agentId` — mode `normal`\|`force`; empty id = all eligible |
+| `AttachedReadOnly = 71` | daemon → client | `lp(agentId) + lp(reason) + snapshot` |
 
 Two payload extensions to existing frames:
 
@@ -70,11 +71,16 @@ Two payload extensions to existing frames:
   `agent`\|`review`\|`review-flow`; the flow fields are empty for non-flow agents.
 - **`StopAck`** rows keep the `id⇥status` shape, with `status` gaining `skipped` alongside the
   existing `stopped`\|`failed`.
-- **`Attached`** gains a trailing read-only flag and reason, appended after the existing payload.
-  This follows the precedent `FrameCodec.Spawn` already set for `isPrivate` ("APPENDED after
-  args: older parsers ignore trailing bytes").
 
-`Stop = 8` stays decodable so nothing regresses mid-upgrade, but the CLI only sends `StopV2`.
+**Why `AttachedReadOnly` is a new frame rather than a flag on `Attached`.** `Attached`'s payload
+is `lp(agentId) + snapshot`, and the decoder returns `f.Bytes[o..]` — the snapshot is *everything
+remaining*. A trailing flag would be swallowed into the replay buffer and painted onto the user's
+terminal. The `isPrivate` trick `FrameCodec.Spawn` uses works only because Spawn's payload is
+fully counted, so it does not transfer. A separate frame also fails closed: an older CLI cannot
+decode type 71, so it errors out instead of silently pumping stdin at a participant.
+
+`Stop = 8` and `Attached = 64` stay decodable so nothing regresses mid-upgrade; the CLI sends
+`StopV2` and the daemon sends `AttachedReadOnly` only for protected agents.
 
 ## Daemon changes
 
@@ -96,8 +102,9 @@ The `IsPrivate` guard on `HandleStopAgent` and the server-origin path are untouc
 - `AgentRow` gains `Kind`, `FlowRunId`, `FlowRole`. The parser accepts **3 or more** columns and
   defaults the new ones, so a running older daemon still lists correctly.
 - `ls` renders a `KIND` column, with the flow role appended for flow agents.
-- `attach` prints the read-only banner when the daemon reports the flag, and skips its own stdin
-  pump — cosmetic, since the daemon already drops it.
+- `attach` prints the read-only banner on `AttachedReadOnly`, and skips its own stdin pump, its
+  resize pump, and the `SizeFrame()` nudge it normally sends on attach. All three are cosmetic —
+  the daemon ignores them for a protected agent — but sending them would be misleading.
 - `stop` accepts `--force`, sends `StopV2`, and reports `skipped` rows distinctly from
   `stopped`. With `--all --force`, the confirmation prompt lists protected agents in their own
   labelled group, so the blast radius is visible before the user answers.
