@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using System.Runtime.InteropServices;
 
 namespace Capacitor.Cli.Daemon.Acp;
@@ -66,8 +67,13 @@ internal sealed record ResolvedBorrowedReviewPolicy(
 internal static class CopilotBorrowedReviewPolicy {
     /// <summary>The read/search tools a borrowed Copilot reviewer may use, on top of the flow-result
     /// channel. Deliberately excludes <c>bash</c>, <c>create</c> and <c>edit</c> — the exclusive
-    /// allowlist is what makes those unrepresentable.</summary>
-    internal static readonly string[] ReadToolIds = ["glob", "grep", "view"];
+    /// allowlist is what makes those unrepresentable.
+    ///
+    /// <para><see cref="ImmutableArray{T}"/> rather than <c>string[]</c> because this IS the tool
+    /// allowlist: a shared mutable array reaches the argv builder by reference, so any code holding
+    /// it could write <c>ReadToolIds[0] = "bash"</c> and silently hand every subsequent borrowed
+    /// reviewer a shell. A security boundary should not be a writable static.</para></summary>
+    internal static readonly ImmutableArray<string> ReadToolIds = ["glob", "grep", "view"];
 
     /// <summary>Platform entries whose tool surface has been verified. Absent, unknown, or
     /// unverified ⇒ unsupported and fail closed. Pure and keyed only on OS + architecture: no
