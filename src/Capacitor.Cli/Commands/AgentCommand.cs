@@ -6,8 +6,10 @@ using Capacitor.Cli.Local;
 
 namespace Capacitor.Cli.Commands;
 
-/// One row of the daemon's agent table (`id\tstatus\trepo` on the wire).
-internal readonly record struct AgentRow(string Id, string Status, string Repo);
+/// One row of the daemon's agent table (`id\tstatus\trepo\tkind\tflowRunId\tflowRole` on the
+/// wire). A daemon older than #379 sends only the first three; the rest default.
+internal readonly record struct AgentRow(
+    string Id, string Status, string Repo, string Kind, string FlowRunId, string FlowRole);
 
 /// <summary>
 /// `kcap agent start|ls|stop|attach` — drive daemon-hosted agents from the local
@@ -286,8 +288,11 @@ internal static class AgentCommand {
             return 0;
         }
 
-        Console.WriteLine($"{"AGENT",-34} {"STATUS",-10} REPO");
-        foreach (var a in agents) Console.WriteLine($"{a.Id,-34} {a.Status,-10} {a.Repo}");
+        Console.WriteLine($"{"AGENT",-34} {"STATUS",-10} {"KIND",-12} REPO");
+        foreach (var a in agents) {
+            var role = a.FlowRole.Length > 0 ? $"  [{a.FlowRole}]" : "";
+            Console.WriteLine($"{a.Id,-34} {a.Status,-10} {a.Kind,-12} {a.Repo}{role}");
+        }
 
         return 0;
     }
@@ -327,9 +332,8 @@ internal static class AgentCommand {
             if (resp.Text.Length == 0) return [];
 
             return [.. resp.Text.Split('\n')
-                .Select(l => l.Split('\t'))
-                .Where(p => p.Length == 3)
-                .Select(p => new AgentRow(p[0], p[1], p[2]))];
+                .Where(l => l.Length > 0)
+                .Select(ParseAgentRow)];
         } catch (Exception ex) when (ex is SocketException or IOException) {
             await Console.Error.WriteLineAsync($"kcap: cannot reach daemon: {ex.Message}");
 
@@ -418,6 +422,23 @@ internal static class AgentCommand {
         return string.IsNullOrEmpty(next) || next.StartsWith('-')
             ? (null, "--daemon requires a value")
             : (next, null);
+    }
+
+    /// Kinds the CLI refuses to mutate by accident: a reviewer mid-round is not the user's to
+    /// type at or stop. Mirrors LaunchKind — anything that is not a plain agent is protected.
+    internal static bool IsProtectedKind(string kind) => kind is "review" or "review-flow";
+
+    /// <summary>Tolerates a short row from an older daemon by defaulting the newer columns.</summary>
+    internal static AgentRow ParseAgentRow(string line) {
+        var p = line.Split('\t');
+
+        return new AgentRow(
+            p[0],
+            p.Length > 1 ? p[1] : "",
+            p.Length > 2 ? p[2] : "",
+            p.Length > 3 && p[3].Length > 0 ? p[3] : "agent",
+            p.Length > 4 ? p[4] : "",
+            p.Length > 5 ? p[5] : "");
     }
 
     /// <summary>A full agent id as minted by `Guid.NewGuid().ToString("N")`.</summary>

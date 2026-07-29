@@ -4,9 +4,9 @@ namespace Capacitor.Cli.Tests.Unit;
 
 public class AgentIdResolutionTests {
     static readonly AgentRow[] Agents = [
-        new("ab12cd34ef56ab78cd90ef12ab34cd56", "Running", "/repo/one"),
-        new("ab99887766554433221100aabbccddee", "Running", "/repo/two"),
-        new("ff00112233445566778899aabbccddee", "Completed", "/repo/three"),
+        new("ab12cd34ef56ab78cd90ef12ab34cd56", "Running", "/repo/one", "agent", "", ""),
+        new("ab99887766554433221100aabbccddee", "Running", "/repo/two", "agent", "", ""),
+        new("ff00112233445566778899aabbccddee", "Completed", "/repo/three", "agent", "", ""),
     ];
 
     [Test]
@@ -62,5 +62,34 @@ public class AgentIdResolutionTests {
         var (id, err) = AgentCommand.ResolveAgentId([], "0123456789ABCDEF0123456789ABCDEF");
         await Assert.That(id).IsEqualTo("0123456789abcdef0123456789abcdef");
         await Assert.That(err).IsNull();
+    }
+
+    [Test]
+    public async Task Row_from_a_current_daemon_carries_kind_and_flow() {
+        var row = AgentCommand.ParseAgentRow("ab12\tRunning\t/repo\treview-flow\tflow-7f3a\treviewer");
+        await Assert.That(row.Id).IsEqualTo("ab12");
+        await Assert.That(row.Status).IsEqualTo("Running");
+        await Assert.That(row.Repo).IsEqualTo("/repo");
+        await Assert.That(row.Kind).IsEqualTo("review-flow");
+        await Assert.That(row.FlowRunId).IsEqualTo("flow-7f3a");
+        await Assert.That(row.FlowRole).IsEqualTo("reviewer");
+    }
+
+    [Test]
+    public async Task Row_from_an_older_daemon_defaults_to_an_unprotected_agent() {
+        // An older daemon sends three columns. Treating the missing kind as `agent` is what
+        // makes the group keep working against it — protection simply does not engage.
+        var row = AgentCommand.ParseAgentRow("ab12\tRunning\t/repo");
+        await Assert.That(row.Kind).IsEqualTo("agent");
+        await Assert.That(row.FlowRunId).IsEqualTo("");
+        await Assert.That(row.FlowRole).IsEqualTo("");
+        await Assert.That(AgentCommand.IsProtectedKind(row.Kind)).IsFalse();
+    }
+
+    [Test]
+    public async Task Review_and_review_flow_are_protected_and_agent_is_not() {
+        await Assert.That(AgentCommand.IsProtectedKind("review")).IsTrue();
+        await Assert.That(AgentCommand.IsProtectedKind("review-flow")).IsTrue();
+        await Assert.That(AgentCommand.IsProtectedKind("agent")).IsFalse();
     }
 }

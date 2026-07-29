@@ -515,6 +515,28 @@ public partial class AgentOrchestratorVendorTests {
         }
     }
 
+    [Test]
+    public async Task Local_list_reports_each_agent_kind_and_flow_identity() {
+        var server = new TripwireServerConnection();
+        await using var orch = BuildOrchestrator(server, new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>());
+        orch.SeedAgentForTest("plain-1");
+        orch.SeedAgentForTest("rev-1", kind: LaunchKind.Review);
+        orch.SeedAgentForTest("flow-1", kind: LaunchKind.ReviewFlow, flowRunId: "flow-7f3a", flowRole: "reviewer");
+
+        using var client = new DuplexTestStream(new MemoryStream(), new MemoryStream());
+        await orch.HandleLocalListAsync(client, default);
+        client.WrittenStream.Position = 0;
+        var reply = await FrameCodec.ReadAsync(client.WrittenStream, default);
+
+        var rows = reply!.Text.Split('\n').Select(l => l.Split('\t')).ToDictionary(p => p[0], p => p);
+
+        await Assert.That(rows["plain-1"][3]).IsEqualTo("agent");
+        await Assert.That(rows["rev-1"][3]).IsEqualTo("review");
+        await Assert.That(rows["flow-1"][3]).IsEqualTo("review-flow");
+        await Assert.That(rows["flow-1"][4]).IsEqualTo("flow-7f3a");
+        await Assert.That(rows["flow-1"][5]).IsEqualTo("reviewer");
+    }
+
     // ── Test doubles for the local-spawn lifecycle ──────────────────────
 
     sealed class EnvCapturingPtyFactory : IPtyProcessFactory {

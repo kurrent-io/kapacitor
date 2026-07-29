@@ -1,3 +1,4 @@
+using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.LocalIpc;
 
 namespace Capacitor.Cli.Daemon.Services;
@@ -6,10 +7,19 @@ namespace Capacitor.Cli.Daemon.Services;
 internal partial class AgentOrchestrator {
     /// <summary>Reply to a <c>kcap agent ls</c> request with a tab-separated agent table.</summary>
     public Task HandleLocalListAsync(Stream stream, CancellationToken ct) {
-        var lines = _agents.Values.Select(a => $"{a.Id}\t{a.Status}\t{a.RepoPath}");
+        var lines = _agents.Values.Select(a =>
+            $"{a.Id}\t{a.Status}\t{a.RepoPath}\t{KindText(a.Kind)}\t{a.FlowRunId ?? ""}\t{a.FlowRole ?? ""}");
 
         return FrameCodec.WriteAsync(stream, new LocalFrame(FrameType.AgentList) { Text = string.Join('\n', lines) }, ct);
     }
+
+    /// Wire spelling of <see cref="LaunchKind"/>. Kept separate from the enum name so the table
+    /// reads as a CLI column rather than a .NET identifier.
+    static string KindText(LaunchKind kind) => kind switch {
+        LaunchKind.Review     => "review",
+        LaunchKind.ReviewFlow => "review-flow",
+        _                     => "agent",
+    };
 
     /// <summary>
     /// Stop one agent (or every agent, when <paramref name="agentId"/> is empty) on behalf of
