@@ -101,6 +101,26 @@ public class CopilotBorrowedReviewPolicyTests {
         await Assert.That(advertised.ExtraBorrowedToolIds).IsEquivalentTo(host.ExtraBorrowedToolIds);
     }
 
+    /// <summary>What actually ships: no platform advertises borrowed Copilot review yet.
+    ///
+    /// <para>The table above is real and tested; this pins that it is not yet CONSULTED. The sandbox
+    /// still has to grant recursive reads of the vendor's state, the keychain, <c>/Library</c> and
+    /// <c>/opt/homebrew</c> to start and authenticate, and a build that silently accepted an outside
+    /// path could read those with no interaction frame — so <c>Fail</c> never fires and the sandbox
+    /// permits it. Enabling is one line, once those grants are closed.</para>
+    ///
+    /// <para>This test is the tripwire for enabling by accident. Changing <c>Current</c> back to the
+    /// host lookup must be a deliberate act that also deletes this test, not something that slips
+    /// through in a refactor.</para></summary>
+    [Test]
+    public async Task No_platform_advertises_borrowed_review_yet() {
+        await Assert.That(CopilotBorrowedReviewPolicy.Current.Supported).IsFalse();
+        await Assert.That(CopilotBorrowedReviewPolicy.Current.Containment)
+            .IsEqualTo(AcpBorrowedReviewContainment.None);
+        await Assert.That(CopilotBorrowedReviewPolicy.Current.ExtraBorrowedToolIds).IsEmpty();
+        await Assert.That(CopilotBorrowedReviewPolicy.Current.RequiresProcessSandbox).IsFalse();
+    }
+
     // A vendor with no platform policy is unaffected: it still reads its own descriptor, so this
     // change cannot silently narrow Cursor or any future borrowed-capable vendor.
     [Test]

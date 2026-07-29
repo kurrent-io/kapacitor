@@ -83,9 +83,34 @@ internal static class CopilotBorrowedReviewPolicy {
                   RequiresProcessSandbox: true)
             : ResolvedBorrowedReviewPolicy.Unsupported;
 
-    /// <summary>This machine's entry, resolved once.</summary>
+    /// <summary>
+    /// This machine's entry — currently <b>unsupported on every platform, deliberately</b>.
+    ///
+    /// <para><see cref="Resolve"/> above is the real, tested table and it stays exactly as it is;
+    /// what ships disabled is the decision to consult it. The reason is a specific unclosed gap
+    /// rather than doubt about the mechanism: the sandbox profile must still grant recursive reads of
+    /// <c>~/.copilot</c>, <c>~/Library/Keychains</c>, <c>/Library</c> and <c>/opt/homebrew</c> so the
+    /// vendor can start and authenticate, and those are data-bearing. A vendor build that silently
+    /// accepted an out-of-bounds path could point the allowlisted read tools at them and exfiltrate
+    /// through the result channel with <b>no</b> interaction frame — so the interaction <c>Fail</c>
+    /// policy never fires and the sandbox permits the read. The boundary is vendor-independent for
+    /// arbitrary paths; it is not yet vendor-independent for those four.</para>
+    ///
+    /// <para>Closing it means a per-launch HOME/state directory, authentication brokered through
+    /// <c>COPILOT_GITHUB_TOKEN</c>/<c>GH_TOKEN</c> instead of the keychain grant, and runtime grants
+    /// narrowed to executables and packages rather than whole config trees. That makes the daemon a
+    /// credential-handling component, which is a decision in its own right and not one to take as a
+    /// side effect of a tool-allowlist fix.</para>
+    ///
+    /// <para>Everything else in this change is live and load-bearing: snapshot routing, the platform
+    /// table and its fail-closed wiring, the <c>Fail</c>-on-any-interaction override for borrowed
+    /// launches, the sandbox and its enforcement test, and the containment token contract. Flipping
+    /// this one line back to <c>Resolve(CurrentOs(), …)</c> is all that enabling costs once the
+    /// grants above are closed — and until then the server answers a Copilot borrowed request with
+    /// <c>vendor_containment_unreadable</c> plus the <c>context-only</c> remedy, which is honest.</para>
+    /// </summary>
     internal static ResolvedBorrowedReviewPolicy Current { get; } =
-        Resolve(CurrentOs(), RuntimeInformation.ProcessArchitecture, BorrowedReviewSandbox.Available);
+        ResolvedBorrowedReviewPolicy.Unsupported;
 
     static OSPlatform CurrentOs() =>
         RuntimeInformation.IsOSPlatform(OSPlatform.OSX)     ? OSPlatform.OSX
