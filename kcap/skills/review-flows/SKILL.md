@@ -125,7 +125,7 @@ After applying the role-surface safety gate, if `start_review_flow` / `submit_re
 4. **Only call `close_review_flow` after a `clean` result.** Then report completion to the user.
 5. **If reviewer output is unclear or requires user input**, pause and ask the user before proceeding.
 6. **For code review, do NOT ask the reviewer to run tests.** CI covers test execution; reviewer feedback is on correctness, design, and adherence to conventions.
-7. **State where your changes live.** The reviewer's worktree is mirrored from **your session's project directory** — the git root the flows MCP server resolved for this session — which is **not necessarily the directory you are working in now**. If you changed directory, are a subagent working in a different checkout, or the changeset lives in another worktree, another repository, or on another machine, the reviewer will not see it, and no tool parameter can redirect it. If any part of the changeset lives elsewhere (another git worktree, another repository, a different machine) or is not in that tree, say so explicitly in `context` and inline the relevant diffs or file contents — or pass `mode: "context-only"` so the reviewer treats your context as the sole source of truth. The reviewer is instructed to flag referenced changes it cannot find in its worktree; incomplete context wastes a full round.
+7. **State where your changes live.** The reviewer's worktree is mirrored from **this session's project directory** — the git root the flows MCP server resolved for the session — which is **not necessarily the directory you are working in now**, and no tool parameter can redirect it. So if you changed directory, are a subagent working in a different checkout, or any part of the changeset lives in another worktree, another repository, or on another machine, the reviewer will NOT see it: say so explicitly in `context`, give it an explicit commit range (never tell it `git diff origin/main...HEAD`), and inline the relevant diffs or file contents — or pass `mode: "context-only"` so the reviewer treats your context as the sole source of truth. The reviewer is instructed to flag referenced changes it cannot find in its worktree; incomplete context wastes a full round.
 
 ## Server errors to act on
 
@@ -169,8 +169,10 @@ if findings:
 ## Example (code review)
 
 ```
-# Step 1 — start (all five required args must be provided; on the same machine the reviewer sees
-# your working tree, uncommitted changes included — pass mode="context-only" to opt out)
+# Step 1 — start (all five required args must be provided; on the same machine the reviewer sees a
+# mirror of THIS SESSION's project directory — not necessarily the directory you are working in —
+# with uncommitted changes included only when your checkout is actually borrowed. Pass
+# mode="context-only" to opt out and make your context the sole source of truth.)
 start_review_flow(
   kind="code-review",
   target_kind="branch",
