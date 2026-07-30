@@ -127,15 +127,50 @@ internal static class MemoryIndexLiveCertHarness {
             }.ToJsonString()
         ]) + "\n";
 
-        var (exitCode, stdout, stderr) = await RunProcessAsync(
-            "kcap", ["mcp", "memory"], workingDirectory: null, timeout: TimeSpan.FromSeconds(60), stdin: stdin);
+        // Interactive, NOT write-all-then-close: an MCP server dispatches per line and stops at stdin
+        // EOF, so closing the stream up front raced the tools/call and only the initialize response
+        // ever came back. Stdin stays open until the id-2 response is read, then the child is killed —
+        // there is no point asking it to shut down cleanly when we already have the answer.
+        var psi = new ProcessStartInfo("kcap") {
+            UseShellExecute        = false,
+            RedirectStandardInput  = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError  = true
+        };
+        psi.ArgumentList.Add("mcp");
+        psi.ArgumentList.Add("memory");
 
-        if (stdout.Length == 0) {
+        // The child MUST NOT inherit this assembly's redirected KCAP_CONFIG_DIR (RepoPathStoreTests
+        // [Before(Assembly)]), or `kcap` reads the same empty throwaway config the in-process path did
+        // and answers "Not logged in" — the 401 in a different costume. Removing it lets the child
+        // resolve the real config, which is the whole point of going out-of-process.
+        psi.Environment.Remove("KCAP_CONFIG_DIR");
+
+        using var process = Process.Start(psi)
+            ?? throw new InvalidOperationException("Failed to start `kcap mcp memory`.");
+        OnProcessStarted?.Invoke(process.Id);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(90));
+
+        try {
+            await process.StandardInput.WriteAsync(stdin);
+            await process.StandardInput.FlushAsync(cts.Token);
+
+            while (await process.StandardOutput.ReadLineAsync(cts.Token) is { } line) {
+                if (line.Length == 0 || line[0] != '{') continue;
+
+                try {
+                    if (JsonNode.Parse(line) is JsonObject frame && frame["id"]?.GetValue<int>() == 2) return line;
+                } catch {
+                    // Not a JSON-RPC frame — keep reading.
+                }
+            }
+
             throw new InvalidOperationException(
-                $"`kcap mcp memory` {toolName} produced no stdout (exit {exitCode}): {stderr}");
+                $"`kcap mcp memory` {toolName} closed stdout before answering: {await process.StandardError.ReadToEndAsync(cts.Token)}");
+        } finally {
+            try { if (!process.HasExited) process.Kill(entireProcessTree: true); } catch { /* already exited */ }
         }
-
-        return stdout;
     }
 
     /// <summary>
@@ -154,15 +189,29 @@ internal static class MemoryIndexLiveCertHarness {
             ["global"]      = true
         });
 
-        // The id is dug out of the response text rather than a pinned envelope path: an MCP tool
-        // result nests its payload as a JSON string inside content[].text, and that wrapping is the
-        // server's business, not this cert's. Failing loudly here (rather than returning null and
-        // archiving nothing) is what stops a cert leaking a memory into every later run's index.
-        var id = System.Text.RegularExpressions.Regex.Match(stdout, "\"memory_id\"\\s*:\\s*\\\\?\"([^\"\\\\]+)");
+        // An MCP tool result nests its payload as a JSON *string* inside result.content[].text, so the
+        // id needs two parses, not a regex over the outer frame: the inner document's quotes arrive
+        // "-escaped, so no pattern matching a literal `"memory_id"` will ever fire.
+        //
+        // Failing loudly (rather than returning null and archiving nothing) is what stops a cert
+        // leaking its nonce memory into every later run's injected index.
+        return ExtractMemoryId(stdout)
+            ?? throw new InvalidOperationException($"save_memory returned no memory_id. stdout: {stdout}");
+    }
 
-        return id.Success
-            ? id.Groups[1].Value
-            : throw new InvalidOperationException($"save_memory returned no memory_id. stdout: {stdout}");
+    /// <summary>Digs the saved memory's id out of an MCP <c>tools/call</c> frame. Null if absent.</summary>
+    internal static string? ExtractMemoryId(string frame) {
+        try {
+            var text = JsonNode.Parse(frame)?["result"]?["content"]?[0]?["text"]?.GetValue<string>();
+            if (text is null) return null;
+
+            var payload = JsonNode.Parse(text);
+
+            return payload?["memory"]?["memory_id"]?.GetValue<string>()
+                ?? payload?["memory_id"]?.GetValue<string>();
+        } catch {
+            return null;
+        }
     }
 
     /// <summary>Best-effort cleanup: a leaked cert memory would pollute every later run's index.</summary>
@@ -243,6 +292,10 @@ internal static class MemoryIndexLiveCertHarness {
             WorkingDirectory       = workingDirectory ?? Environment.CurrentDirectory
         };
         foreach (var arg in args) psi.ArgumentList.Add(arg);
+
+        // Same reason as CallMemoryToolAsync: a `kcap config` child — and every harness CLI, which
+        // invokes `kcap hook` itself — must see the REAL config, not this assembly's throwaway one.
+        psi.Environment.Remove("KCAP_CONFIG_DIR");
 
         using var process = Process.Start(psi)
             ?? throw new InvalidOperationException($"Failed to start '{fileName}'.");
