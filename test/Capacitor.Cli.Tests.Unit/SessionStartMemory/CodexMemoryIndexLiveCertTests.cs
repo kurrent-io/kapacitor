@@ -25,7 +25,7 @@ public class CodexMemoryIndexLiveCertTests {
         var memoryId = await MemoryIndexLiveCertHarness.SaveNonceMemoryAsync(VendorLabel, nonce);
 
         try {
-            await MemoryIndexLiveCertHarness.RecordVersionAsync(VendorLabel, "codex", ["--version"]);
+            await MemoryIndexLiveCertHarness.RecordCertEnvironmentAsync(VendorLabel, "codex", ["--version"]);
 
             var answer = await RunCodexAsync(MemoryIndexLiveCertHarness.PositivePrompt);
 
@@ -45,6 +45,9 @@ public class CodexMemoryIndexLiveCertTests {
         Gate();
         var nonce   = MemoryIndexLiveCertHarness.NewNonce();
         var memoryId = await MemoryIndexLiveCertHarness.SaveNonceMemoryAsync(VendorLabel, nonce);
+
+        // Recorded here too: a stale PATH kcap makes a negative control pass vacuously.
+        await MemoryIndexLiveCertHarness.RecordCertEnvironmentAsync(VendorLabel, "codex", ["--version"]);
 
         var original = await MemoryIndexLiveCertHarness.ReadDisableMemoryIndexAsync();
 

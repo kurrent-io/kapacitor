@@ -34,7 +34,7 @@ public class KiroMemoryIndexLiveCertTests {
         var worktree = MemoryIndexLiveCertHarness.NewCertWorktree(VendorLabel);
 
         try {
-            await MemoryIndexLiveCertHarness.RecordVersionAsync(VendorLabel, "kiro-cli", ["--version"]);
+            await MemoryIndexLiveCertHarness.RecordCertEnvironmentAsync(VendorLabel, "kiro-cli", ["--version"]);
 
             var answer = await RunKiroAsync(worktree.FullName, MemoryIndexLiveCertHarness.PositivePrompt);
 
@@ -58,6 +58,9 @@ public class KiroMemoryIndexLiveCertTests {
         Gate();
         var nonce   = MemoryIndexLiveCertHarness.NewNonce();
         var memoryId = await MemoryIndexLiveCertHarness.SaveNonceMemoryAsync(VendorLabel, nonce);
+
+        // Recorded here too: a stale PATH kcap makes a negative control pass vacuously.
+        await MemoryIndexLiveCertHarness.RecordCertEnvironmentAsync(VendorLabel, "kiro-cli", ["--version"]);
 
         var worktree = MemoryIndexLiveCertHarness.NewCertWorktree(VendorLabel);
 
@@ -86,6 +89,9 @@ public class KiroMemoryIndexLiveCertTests {
         Gate();
         var nonce   = MemoryIndexLiveCertHarness.NewNonce();
         var memoryId = await MemoryIndexLiveCertHarness.SaveNonceMemoryAsync(VendorLabel, nonce);
+
+        // Recorded here too: a stale PATH kcap makes a negative control pass vacuously.
+        await MemoryIndexLiveCertHarness.RecordCertEnvironmentAsync(VendorLabel, "kiro-cli", ["--version"]);
 
         var original = await MemoryIndexLiveCertHarness.ReadDisableMemoryIndexAsync();
         var worktree = MemoryIndexLiveCertHarness.NewCertWorktree(VendorLabel);

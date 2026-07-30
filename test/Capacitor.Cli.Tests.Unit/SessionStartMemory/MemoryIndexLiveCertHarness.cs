@@ -305,6 +305,43 @@ internal static class MemoryIndexLiveCertHarness {
         }
     }
 
+    /// <summary>
+    /// Records the environment a cert actually exercised — the harness CLI's version AND, critically,
+    /// the <c>kcap</c> the harness HOOK will resolve from PATH, with its resolved path.
+    ///
+    /// <para><b>Why the kcap version is the one that matters.</b> A cert drives a harness, the harness
+    /// invokes <c>kcap</c> from PATH, and PATH points at the npm-installed build — NOT at the working
+    /// tree the cert was compiled from. So a cert can be green-lit against a `kcap` that predates the
+    /// very adapter under test, and it will report a confident, meaningless failure. That happened: all
+    /// three adapters merged 2026-07-29 while PATH still held 0.11.8 (tagged 2026-07-24), whose Codex,
+    /// Copilot and Kiro hooks contained zero memory references. Every symptom followed from that — the
+    /// Claude hook injecting fine (its adapter WAS in 0.11.8), the other three answering NONE, and the
+    /// negative controls "passing" vacuously because there was no injection to suppress. It cost two
+    /// sessions to find, and this one line would have made it obvious immediately.</para>
+    ///
+    /// <para>Called by every cert including the negative controls: a stale binary makes a negative
+    /// control pass for the wrong reason, which is worse than a visible failure.</para>
+    /// </summary>
+    public static async Task RecordCertEnvironmentAsync(
+            string vendorLabel, string harnessExe, IReadOnlyList<string> harnessVersionArgs) {
+        await RecordVersionAsync(vendorLabel, harnessExe, harnessVersionArgs);
+
+        // The hook's kcap, not the cert's assembly: version AND path, because the path is what reveals
+        // an npm install shadowing a locally built binary.
+        await RecordVersionAsync(vendorLabel, "kcap", ["--version"]);
+
+        try {
+            var (_, which, _) = await RunProcessAsync(
+                OperatingSystem.IsWindows() ? "where" : "which", ["kcap"], workingDirectory: null);
+
+            await Console.Out.WriteLineAsync(
+                $"[{vendorLabel}-memory-live] hooks will resolve kcap at: {which.Trim()}");
+        } catch (Exception ex) {
+            await Console.Error.WriteLineAsync(
+                $"[{vendorLabel}-memory-live] could not resolve the kcap on PATH: {ex.Message}");
+        }
+    }
+
     /// <summary>Test-only seam: notified with the PID of every spawned process, so the cleanup test
     /// can confirm a timed-out child is actually gone. Never set by production code.</summary>
     internal static Action<int>? OnProcessStarted;

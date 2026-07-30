@@ -209,12 +209,12 @@ AI-1456 child issue.
 | Harness | Shared foundation | Hook/extension wired | Live receipt | Upstream status |
 |---------|-------------------|----------------------|--------------|-----------------|
 | Claude Code | yes | yes | existing baseline | available |
-| Codex CLI | yes | yes (`SessionStart`'s `hookSpecificOutput.additionalContext`, combined with the `continue` handshake) | pending | available |
+| Codex CLI | yes | yes (`SessionStart`'s `hookSpecificOutput.additionalContext`, combined with the `continue` handshake) | **certified** — gated live cert, `codex-cli 0.144.3`, needs kcap ≥ the release carrying this adapter | available |
 | Cursor CLI (`cursor-agent`) | yes | yes | manual, recorded live-cert gate (needs `cursor-agent` + a reachable server + a memory in scope; not run in CI) | available — **supported** |
 | Cursor IDE (Agent Window) | yes | yes (same adapter — `sessionStart`'s `additional_context`) | **upstream-degraded**: the hook emits the correct JSON, but whether the IDE's Agent Window actually surfaces it to the model is not guaranteed — a known Cursor IDE limitation, not a `kcap` defect | hook output correct; model receipt not guaranteed |
-| GitHub Copilot CLI | yes | yes (`sessionStart`'s top-level `additionalContext`; silent when there is nothing to inject) | pending | available |
+| GitHub Copilot CLI | yes | yes (`sessionStart`'s top-level `additionalContext`; silent when there is nothing to inject) | **certified** — gated live cert, `copilot 1.0.75` | available |
 | Gemini CLI | yes | no | pending | available |
-| Kiro CLI | yes | yes (`agentSpawn` raw stdout — no envelope; Kiro appends hook stdout to agent context verbatim) | pending | available — injects **once per session** despite `agentSpawn` firing every prompt |
+| Kiro CLI | yes | yes (`agentSpawn` raw stdout — no envelope; Kiro appends hook stdout to agent context verbatim) | **certified** — gated live cert, `kiro-cli 2.12.1`, including a resumed second turn proving no re-injection | available — injects **once per session** despite `agentSpawn` firing every prompt |
 | Pi | yes | no | pending | extension bridge required |
 | OpenCode | yes | no | pending | extension bridge required |
 | Antigravity | yes | no | pending | `PreInvocation` adapter required |
