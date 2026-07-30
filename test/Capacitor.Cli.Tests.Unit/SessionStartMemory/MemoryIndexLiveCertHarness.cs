@@ -9,23 +9,18 @@ namespace Capacitor.Cli.Tests.Unit.SessionStartMemory;
 
 /// <summary>
 /// Shared scaffolding for the env-gated, per-harness "did the model actually receive the team-memory
-/// index?" certifications. Every vendor's cert needs the same five things — a live gate, a throwaway
-/// nonce memory, the real <c>disable_memory_index</c> profile flag, a bounded child process, and a
-/// defensive answer parse — so they live here once instead of per vendor.
+/// index?" certifications: gate, throwaway nonce memory, the real <c>disable_memory_index</c> flag, a
+/// bounded child process, and a defensive answer parse.
 ///
-/// <para><b>Why these certs exist at all.</b> The unit suites prove the BYTES each adapter emits.
-/// They cannot prove the harness surfaces those bytes to the model. Cursor IDE is the standing
-/// counterexample: byte-perfect <c>additional_context</c>, model receipt not guaranteed. Only a real
-/// turn distinguishes "we emitted it" from "the model got it".</para>
+/// <para>These exist because the unit suites prove the BYTES an adapter emits, not that the harness
+/// surfaces them to the model — Cursor IDE emits byte-perfect output the model may never see.</para>
 ///
-/// <para><b>Cost.</b> Nothing in CI: <see cref="SkipUnlessLiveGateReady"/> is the first statement in
-/// every cert, so the skip happens before any process launch or HTTP call. A run spends real model
-/// turns and touches the REAL server and the REAL profile config, so it is deliberately manual.</para>
+/// <para><b>Cost.</b> Zero in CI: <see cref="SkipUnlessLiveGateReady"/> is the first statement in every
+/// cert. A run spends real model turns and mutates the REAL server and profile config, so it is
+/// deliberately manual.</para>
 ///
-/// <para>The two pre-existing certs (<c>ClaudeMemoryIndexLiveCertTests</c>,
-/// <c>Cursor.CursorMemoryIndexLiveCertTests</c>) still carry their own private copies of this
-/// scaffold. They are certified and gated — hence not exercised by CI — so they are deliberately left
-/// alone here rather than refactored blind; migrating them is a follow-up.</para>
+/// <para>Claude's and Cursor's certs keep their own copies of this scaffold: they are gated, hence
+/// never exercised by CI, so refactoring them blind is the bigger risk. Migration is a follow-up.</para>
 /// </summary>
 internal static class MemoryIndexLiveCertHarness {
     public const string ServerUrlEnvVar = "KCAP_URL";
@@ -152,6 +147,12 @@ internal static class MemoryIndexLiveCertHarness {
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(90));
 
+        // Drained CONCURRENTLY with the stdout loop, not after it. Both pipes are redirected, so
+        // reading only one is the classic deadlock: a chatty child fills the stderr buffer, blocks on
+        // the write, and never emits the id-2 response — which would present as an unexplained 90s
+        // stall rather than as a pipe problem.
+        var stderrTask = process.StandardError.ReadToEndAsync(cts.Token);
+
         try {
             await process.StandardInput.WriteAsync(stdin);
             await process.StandardInput.FlushAsync(cts.Token);
@@ -167,9 +168,13 @@ internal static class MemoryIndexLiveCertHarness {
             }
 
             throw new InvalidOperationException(
-                $"`kcap mcp memory` {toolName} closed stdout before answering: {await process.StandardError.ReadToEndAsync(cts.Token)}");
+                $"`kcap mcp memory` {toolName} closed stdout before answering: {await stderrTask}");
         } finally {
             try { if (!process.HasExited) process.Kill(entireProcessTree: true); } catch { /* already exited */ }
+
+            // Observed so a faulted/cancelled drain cannot surface later as an unobserved task
+            // exception, and so the pipe finishes draining before the process handle is disposed.
+            try { await stderrTask; } catch { /* the real failure is whatever the caller is throwing */ }
         }
     }
 
@@ -357,21 +362,13 @@ internal static class MemoryIndexLiveCertHarness {
     }
 
     /// <summary>
-    /// Records the environment a cert actually exercised — the harness CLI's version AND, critically,
-    /// the <c>kcap</c> the harness HOOK will resolve from PATH, with its resolved path.
+    /// Records the harness CLI's version and — the one that actually matters — the <c>kcap</c> the
+    /// harness HOOK resolves from PATH, plus its resolved path.
     ///
-    /// <para><b>Why the kcap version is the one that matters.</b> A cert drives a harness, the harness
-    /// invokes <c>kcap</c> from PATH, and PATH points at the npm-installed build — NOT at the working
-    /// tree the cert was compiled from. So a cert can be green-lit against a `kcap` that predates the
-    /// very adapter under test, and it will report a confident, meaningless failure. That happened: all
-    /// three adapters merged 2026-07-29 while PATH still held 0.11.8 (tagged 2026-07-24), whose Codex,
-    /// Copilot and Kiro hooks contained zero memory references. Every symptom followed from that — the
-    /// Claude hook injecting fine (its adapter WAS in 0.11.8), the other three answering NONE, and the
-    /// negative controls "passing" vacuously because there was no injection to suppress. It cost two
-    /// sessions to find, and this one line would have made it obvious immediately.</para>
-    ///
-    /// <para>Called by every cert including the negative controls: a stale binary makes a negative
-    /// control pass for the wrong reason, which is worse than a visible failure.</para>
+    /// <para>PATH points at the npm install, not the tree the cert was compiled from, so a cert can run
+    /// against a <c>kcap</c> predating the adapter under test and report a confident, meaningless
+    /// failure. That happened for all three adapters and cost two sessions to find. Called by every
+    /// cert including the negative controls, which a stale binary makes pass vacuously.</para>
     /// </summary>
     public static async Task RecordCertEnvironmentAsync(
             string vendorLabel, string harnessExe, IReadOnlyList<string> harnessVersionArgs) {
