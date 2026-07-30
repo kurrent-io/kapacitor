@@ -204,26 +204,20 @@ public class CursorWatcherSpawnTests {
             // without re-running the correlator.
             CursorLiveSubagentLinker.SaveLink(child, parent, "task");
 
-            var subagentStartAttempts = 0;
-            using var handler = new StubHandler((req, _) => {
-                if (req.RequestUri!.AbsolutePath == "/hooks/subagent-start") {
-                    subagentStartAttempts++;
-                    return subagentStartAttempts == 1
-                        ? new HttpResponseMessage(HttpStatusCode.ServiceUnavailable) // spooled
-                        : new HttpResponseMessage(HttpStatusCode.OK);                // delivered on drain
-                }
-                return req.Method == HttpMethod.Get
+            using var handler = new StubHandler((req, _) =>
+                req.Method == HttpMethod.Get
                     ? new HttpResponseMessage(HttpStatusCode.NotFound)
-                    : new HttpResponseMessage(HttpStatusCode.OK);
-            });
+                    : new HttpResponseMessage(HttpStatusCode.OK));
             using var client = new HttpClient(handler);
             var spool = new HookSpool(Path.Combine(tmp.Path, "spool"));
 
-            // First invocation: the child's own sessionStart. subagent-start POSTs 503 → spooled.
-            await CursorHookCommand.HandleCore(
-                client, "http://s",
-                new StringReader($$"""{"hook_event_name":"sessionStart","session_id":"{{child}}","transcript_path":"{{childFile.Replace(@"\", @"\\")}}"}"""),
-                spool, TimeSpan.FromSeconds(2));
+            // Seed the undelivered subagent-start DIRECTLY (as a prior transient POST failure
+            // would have left it), rather than producing one by driving the child's own
+            // sessionStart. A real Cursor subagent child never fires sessionStart, so using it
+            // as the vehicle would bake in a trigger that cannot occur — see
+            // docs/superpowers/specs/2026-07-30-ai1505-cursor-subagent-classification-design.md
+            spool.Append(child, "subagent-start",
+                $$"""{"hook_event_name":"subagent_start","session_id":"{{parent}}","agent_id":"{{child}}","transcript_path":"{{childFile.Replace(@"\", @"\\")}}"}""");
 
             await Assert.That(spawned).IsEmpty(); // not yet acked
 
@@ -267,14 +261,12 @@ public class CursorWatcherSpawnTests {
             // HandleSubagentChildEventAsync without needing the correlator to re-run.
             CursorLiveSubagentLinker.SaveLink(child, parent, "task");
 
-            var subagentStartAttempts = 0;
-            var transcriptPosts       = 0;
+            var transcriptPosts = 0;
             using var handler = new StubHandler((req, _) => {
+                // Every subagent-start attempt 400s: a non-transient 4xx, which HookSpool treats
+                // as a permanent Drop (the entry is discarded, not re-queued).
                 if (req.RequestUri!.AbsolutePath == "/hooks/subagent-start") {
-                    subagentStartAttempts++;
-                    return subagentStartAttempts == 1
-                        ? new HttpResponseMessage(HttpStatusCode.ServiceUnavailable) // 1st live attempt: spooled (transient)
-                        : new HttpResponseMessage(HttpStatusCode.BadRequest);        // retry: non-transient 4xx -> permanently Dropped
+                    return new HttpResponseMessage(HttpStatusCode.BadRequest);
                 }
                 if (req.RequestUri!.AbsolutePath == "/hooks/transcript") {
                     transcriptPosts++;
@@ -289,11 +281,12 @@ public class CursorWatcherSpawnTests {
 
             var childFileEscaped = childFile.Replace(@"\", @"\\");
 
-            // 1st invocation: the child's own sessionStart. subagent-start POSTs 503 -> spooled.
-            await CursorHookCommand.HandleCore(
-                client, "http://s",
-                new StringReader($$"""{"hook_event_name":"sessionStart","session_id":"{{child}}","transcript_path":"{{childFileEscaped}}"}"""),
-                spool, TimeSpan.FromSeconds(2));
+            // Seed the undelivered subagent-start DIRECTLY, as a prior transient POST failure
+            // would have left it. Driving the child's own sessionStart to produce it would bake
+            // in a trigger a real Cursor child never fires — see
+            // docs/superpowers/specs/2026-07-30-ai1505-cursor-subagent-classification-design.md
+            spool.Append(child, "subagent-start",
+                $$"""{"hook_event_name":"subagent_start","session_id":"{{parent}}","agent_id":"{{child}}","transcript_path":"{{childFileEscaped}}"}""");
 
             await Assert.That(spawned).IsEmpty();
 
