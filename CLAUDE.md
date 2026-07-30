@@ -21,13 +21,21 @@ Copilot also borrows from a daemon-owned snapshot, but its read boundary is an *
 read tools it needs to see the snapshot are the same tools that could be pointed elsewhere. The
 profile grants nothing under the user's home: a per-launch `HOME`/`TMPDIR` state directory replaces
 the vendor's own config and cache grants, `BorrowedReviewAuthBroker` replaces the keychain grant with
-a token forwarded from the daemon's environment (the daemon never reads a keychain, shells out, or
-stores anything), and `BorrowedReviewRuntimeRoots` replaces whole-prefix grants with software
-subdirectories derived from the vendor binary — never the prefix's `etc`/`var`. Support is
+a token from the daemon's own environment, and `BorrowedReviewRuntimeRoots` replaces whole-prefix
+grants with software subdirectories derived from the vendor binary — never the prefix's `etc`/`var`. Support is
 conjunctive: macOS/ARM64 **and** `sandbox-exec` **and** a brokerable token, or the capability is not
 advertised and the server answers `vendor_containment_unreadable` with the `context-only` remedy.
 Enforcement is asserted by tests that run a real process under the profile, because a model-layer
 refusal is not containment evidence.
+
+The daemon never *looks* for a credential: no keychain read, no prompt, no cache, no persistence, no
+default command. It forwards a token the operator exported, or — for a supervised daemon, whose unit
+file must not hold a secret — runs the single command the operator configured in
+`KCAP_COPILOT_TOKEN_CMD`, and only when an actual borrowed launch needs one. Availability is
+deliberately passive (configuration presence, never execution): probing by running the command at
+startup would mint a credential nobody asked for, so a configured-but-broken command instead fails at
+spawn with the coded `borrowed_review_auth_unavailable`. Service units are written owner-only, and
+installation fails rather than leaving one readable.
 
 Borrowed-review capability is **trust-by-default**: a vendor advertises it whenever its runtime
 factory declares a containment strategy, for whatever build of the vendor CLI is installed and on
