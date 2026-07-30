@@ -29,7 +29,7 @@
 | `src/Capacitor.Cli/Commands/CursorHookCommand.cs` | Hook dispatcher; holds the memory note (D4) and the ack-gate comment (D4a.2) | Modify comments only |
 | `src/Capacitor.Cli/Commands/CursorLiveSubagentLinker.cs` | Marker store + correlator wrapper; holds the `SaveLink` comment (D4a.1) | Modify comments only |
 | `test/Capacitor.Cli.Tests.Unit/Cursor/CursorLiveSubagentIntegrationTests.cs` | Currently asserts the unreachable child-lifecycle architecture | Remove 4 tests, keep 3 |
-| `test/Capacitor.Cli.Tests.Unit/Cursor/CursorPayloadContractTests.cs` | **New** — pins the measured `sessionStart` payload contract (D3.1, D3.2) | Create |
+| `test/Capacitor.Cli.Tests.Unit/Cursor/CursorHookCommandTests.cs` | The two payload-contract pins (D3.1, D3.2) | Modify — **deviation from the original plan**, see below |
 | `test/Capacitor.Cli.Tests.Unit/Cursor/CursorSubagentStaleStateTests.cs` | **New** — pins D2a's decided stale-state behaviour incl. 2 characterization tests | Create |
 
 ---
@@ -590,6 +590,25 @@ git commit -m "test(cursor): seed subagent state directly instead of via child l
 ```
 
 ---
+
+## Deviations taken during implementation
+
+1. **Task 3's contract tests went into the existing `CursorHookCommandTests.cs`, not a new
+   file.** That suite already owns Cursor hook-command memory tests and has a `Fixture` with
+   exactly the seams needed (`MemoryIndexRequested`, `MemoryIndexBody`, `MemoryStoreRoot`,
+   `RouteOrder`, a stub scope resolver). Creating a parallel file would have duplicated all of
+   it. The stale-state tests still got their own file — they need no fixture.
+2. **Task 3's first pin is documented as NOT mutation-sensitive.** The plan assumed both pins
+   would fail under mutation. Deleting the `!string.IsNullOrEmpty(transcriptPath)` conjunct
+   leaves `SessionStart_with_null_transcript_path_…` passing, because a null path also fails
+   downstream. Rather than delete a weak test or overstate it, the limitation is recorded in
+   the test body with the mutation result that proved it. The second pin *is*
+   mutation-verified (inverting the call-site guard fails it).
+3. **Task 6 rewrote two tests rather than all of `:102–153`.** The direct-call tests at
+   `:102`, `:130` and `:157` pass an event name as a *parameter to the internal divert method* —
+   they test that method's branching, not the dispatcher turning a child lifecycle hook into
+   subagent lifecycle. Only the two dispatcher-level tests used a child `sessionStart` as a
+   vehicle, and both were reseeded.
 
 ## Self-Review
 
