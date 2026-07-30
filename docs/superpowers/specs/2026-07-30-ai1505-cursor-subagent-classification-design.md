@@ -1,6 +1,6 @@
 # AI-1505 — Cursor subagent classification and SessionStart memory injection
 
-**Status:** rev 5 — in spec review
+**Status:** rev 6 — in spec review
 **Supersedes the premise of:** AI-1461 code-review finding F2
 **Repo:** `kcap-cli`
 
@@ -301,12 +301,31 @@ Two durable artifacts can outlive a session: the link **marker**
 entry. `TryLoadLink` runs on every event (F4), so these are how the divert stays
 reachable.
 
-**Precondition for all of it.** Every state below requires the transcript-derived
-classification arm to have *run at least once*, since that is the only thing that
-attempts `SaveLink` or enters the divert. Per F1/F2 the arm never runs on the tested
-CLI surface, so none of these states arise there. They become live exactly when the
-arm does — i.e. on a surface where `sessionStart` carries a `transcript_path`. That is
-the §7 IDE unknown, which is a further reason the gate matters.
+**Precondition — production, not consumption.** Rev 5 said these states "become live
+exactly when the arm does". That conflated two different things and is corrected here.
+
+- **Production:** no *new, code-produced* state arises in a fresh installation on the
+  tested CLI surface, because the transcript-derived arm is the only thing that attempts
+  `SaveLink` or enters the divert, and per F1/F2 it never runs there. (Manual edits and
+  externally-created artifacts are outside that statement — the table lists them.)
+- **Consumption is independent and is *not* gated.** `TryLoadLink` (`:283`) and
+  `DrainAllAsync` (`:345`) run on every event regardless. A marker or spool entry
+  written earlier — by another surface, an older build, or a partially-successful
+  invocation — is therefore consumed by later `cursor-agent` hooks even though the arm
+  never runs on those invocations. F4 already says this; D2a must not contradict it.
+
+So the hazards below are gated by "such state exists", **not** by "the arm runs on the
+current surface". They can already be live on a machine with history. The §7 IDE probe
+is therefore not the only way to discover them.
+
+**This is an explicit risk acceptance, not an absence of risk.** Deferring the
+dual-routing remedy is accepted on the grounds that (a) the state requires an unusual
+production path, and (b) an audit of the developer's own machine on 2026-07-30 found
+**0 markers in `~/.config/kcap/cursor-subagent-links/`, 0 files in
+`~/.config/kcap/spool/`, and 0 subagent-ack markers** — one machine, so weak evidence,
+and not a basis for assuming the population is clean. §7 adds a read-only audit step so
+a second data point is collected cheaply; if stale state turns out to be common, the
+remedy stops being deferrable.
 
 **Rev 4's write-ordering invariant is WITHDRAWN — it was false on two counts**
 (spec review, round 3; both verified in source):
@@ -338,10 +357,10 @@ its own top-level session by the current hook's normal path. That is duplication
 graceful fallback. Three remedies exist — restore/validate the marker from the spooled
 payload before spawning, suppress ack+spawn when the marker is absent, or bound and
 accept the duplication — and **all are runtime changes, which this spec keeps out of
-scope.** It is therefore recorded as a known corrupt-state risk, gated behind the same
-precondition (the classification arm must run at all). If the §7 IDE probe shows the arm
-running on that surface, this becomes real work and should be fixed before anything
-depends on live linking.
+scope.** It is therefore recorded as a known corrupt-state risk under the explicit risk
+acceptance above — not as an impossibility. If the §7 IDE probe shows the arm running on
+that surface, **or** the audit finds stale marker/spool state in the wild, this becomes
+real work and should be fixed before anything depends on live linking.
 
 **On "diagnosable".** The in-code comment at `:625–631` calls the marker-only loss "an
 accepted, diagnosable loss", but the handler simply returns at `:631–633` with no log,
@@ -400,11 +419,22 @@ Add tests pinning the **measured** contract:
    to top-level; marker+spool converges start-first. **Plus the two failure-aware states
    rev 4 wrongly declared unproducible** — `SaveLink` write failure followed by a
    *successful* start POST (ack without marker), and `SaveLink` write failure followed
-   by a *spooled* start (spool without marker). The latter must assert the dual-routing
-   hazard it actually produces, so the risk is encoded rather than described.
+   by a *spooled* start (spool without marker).
 
-Each must fail when the behaviour it guards is removed; a pin that passes against a
-mutant proves nothing.
+These are **contract pins**, except as noted immediately below.
+
+**The dual-routing test is a characterization test, not a contract.** The
+spool-without-marker case currently produces duplicate routing, which D2a labels
+*unsupported*. Its test therefore records a known bug so the risk is encoded rather than
+merely described — it does **not** assert desired behaviour. It must be named and
+commented as such (e.g. `…_currently_dual_routes_known_risk`), and it is explicitly
+**excluded** from the mutation rule below: a future remedy is *expected* to make that
+assertion fail, at which point the test must be rewritten or deleted rather than
+"fixed". What the test legitimately pins is the write-failure setup and the fact that
+both routes occur today.
+
+Every other pin must fail when the behaviour it guards is removed; a pin that passes
+against a mutant proves nothing.
 
 ### D4 — Correct the in-code note
 
@@ -424,6 +454,25 @@ restating the analysis.
 
 Note: `scripts/check-linear-ids.sh` rejects `AI-<digits>` tokens in `src/**/*.cs` and
 `test/**/*.cs`. Reference this spec by path, not by issue id, in code comments.
+
+### D4a — Correct the two inline comments this spec proves false
+
+D2.1 requires doc comments generally and D4 targets the memory-classification note, but
+two *inline* comments make claims that D2a now disproves. Shipping the spec while
+leaving them in place would leave the source directly contradicting the design — the
+precise failure this issue exists to correct. Both are explicit acceptance criteria:
+
+1. **`CursorLiveSubagentLinker.cs:129–131`** currently says losing the marker "just
+   means later hooks for this child fall back to being treated as top-level … healed by
+   a later `kcap import --cursor`". That is only true when the write fails *before* any
+   start side effect. Because the fields are assigned before `SaveLink`
+   (`CursorHookCommand.cs:291–293`), the divert still runs, so a marker loss *followed
+   by* a start POST or spool leaves ack/watcher state with no marker and can dual-route.
+   The replacement must distinguish those two cases and name the dual-routing outcome.
+2. **`CursorHookCommand.cs:625–630`** calls the marker-only/no-ack outcome "an accepted,
+   diagnosable loss". D2a establishes it is **silent** — the handler returns at
+   `:631–633` with no log, metric or surfaced marker. The replacement must say
+   fail-closed **and silent**, with offline import as the recovery path.
 
 ### D5 — The IDE surface is an acceptance gate, not a caveat
 
@@ -512,7 +561,12 @@ named owner with IDE access; it is not scriptable from CI.
 2. Open it in Cursor and, in the Agent Window, delegate to a subagent — once with an
    unnamed `Task` delegation and once with the named `prober` subagent, mirroring the
    CLI matrix.
-3. Record, explicitly: the exact Cursor version and composer mode; whether a child
+3. **Before running it**, take a read-only audit of pre-existing state on that machine
+   and record the counts: files in `~/.config/kcap/cursor-subagent-links/`, files in
+   `~/.config/kcap/spool/`, and any subagent-ack markers. This is the second data point
+   for D2a's risk acceptance — if stale state is common in the wild, the dual-routing
+   remedy stops being deferrable. (Developer machine, 2026-07-30: all three were zero.)
+4. Record, explicitly: the exact Cursor version and composer mode; whether a child
    `sessionStart` fired; whether a child `sessionEnd` fired (F1 covers both, and rev 3's
    gate checked only the former); the child payload's `transcript_path`; whether any
    `subagentStart`/`subagentStop` fired; and the values of `is_background_agent`,
