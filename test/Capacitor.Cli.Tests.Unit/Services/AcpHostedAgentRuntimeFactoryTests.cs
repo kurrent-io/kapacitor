@@ -339,6 +339,85 @@ public class AcpHostedAgentRuntimeFactoryTests {
         await fake.DisposeAsync();
     }
 
+    /// <summary>The other half of "what crossed the wire": a session that WAS established and WAS handed
+    /// the surface must be recorded even when the launch then fails. StartAsync keeps working after
+    /// session/new — it awaits model selection, which propagates cancellation — so keying the emit on
+    /// StartAsync's normal return silently loses the record for an established session whose daemon
+    /// token was cancelled a moment later. Cancelling INSIDE model selection is the reachable
+    /// interleaving; without this test the completeness half of the audit claim is unpinned.</summary>
+    [Test]
+    public async Task StartAsync_ReviewFlow_CancelledDuringModelSelection_StillLogsTheEstablishedSurface() {
+        var fake          = new FakeAcpAgent();
+        var connection    = new CaptureServerConnection();
+        var loggerFactory = new CaptureLoggerFactory();
+
+        // Blocks in model selection — i.e. AFTER session/new has completed and SessionId is assigned —
+        // until the launch token is cancelled, then propagates like the real selector does.
+        var enteredSelection = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var selector         = new BlockingModelSelector(enteredSelection);
+
+        var factory = new AcpHostedAgentRuntimeFactory(
+            descriptor: SyntheticDescriptor(supportsMcpServers: true, modelSelector: selector),
+            config: new DaemonConfig(),
+            loggerFactory: loggerFactory,
+            connection: connection,
+            connectionSource: _ => (fake.ClientWriteStream, fake.ClientReadStream, new FakeAcpProcess()));
+
+        using var cts   = new CancellationTokenSource();
+        var fakeRunTask = fake.RunAsync(cts.Token);
+
+        var startTask = factory.StartAsync(ReviewContext(["kcap-review"]), cts.Token);
+
+        // Proves the wire state before cancelling: selection is only reached once session/new returned.
+        await enteredSelection.Task.WaitAsync(HangGuard);
+
+        var sent = await WaitForSessionNewServerNamesAsync(fake);
+        await Assert.That(sent).IsNotEmpty()
+            .Because("the surface must already have crossed the wire when selection is entered");
+
+        cts.Cancel();
+
+        await Assert.That(async () => await startTask.WaitAsync(HangGuard)).ThrowsException()
+            .Because("a cancelled launch must still fail; the record is what survives, not the launch");
+
+        var line = loggerFactory.Logger.Entries
+            .Select(e => e.Message)
+            .FirstOrDefault(m => m.Contains("ACP reviewer MCP surface"));
+
+        await Assert.That(line).IsNotNull()
+            .Because("the session was established and handed this surface — dropping the record because "
+                   + "cancellation arrived during model selection makes the audit log silently incomplete");
+
+        var logged = System.Text.RegularExpressions.Regex.Match(line!, @"servers=\[([^\]]*)\]").Groups[1].Value;
+        await Assert.That(logged).IsEqualTo(string.Join(",", sent))
+            .Because("the recorded surface must still equal what session/new carried");
+
+        // Exactly one line: the success path and the failure path must not both fire.
+        await Assert.That(loggerFactory.Logger.Entries.Count(e => e.Message.Contains("ACP reviewer MCP surface")))
+            .IsEqualTo(1);
+
+        try { await fakeRunTask.WaitAsync(HangGuard); } catch (OperationCanceledException) { }
+        await fake.DisposeAsync();
+    }
+
+    /// <summary>Parks in model selection until cancelled, so a test can occupy the window between a
+    /// completed session/new and StartAsync's return.</summary>
+    sealed class BlockingModelSelector(TaskCompletionSource entered) : IAcpModelSelector {
+        public async Task<string?> TrySelectAsync(
+                AcpConnection            connection,
+                string                   sessionId,
+                System.Text.Json.JsonElement sessionNewResult,
+                string?           requestedModel,
+                ILogger           logger,
+                CancellationToken ct) {
+            entered.TrySetResult();
+
+            await Task.Delay(Timeout.Infinite, ct).ConfigureAwait(false);
+
+            return null;
+        }
+    }
+
     /// <summary>Reads the server names session/new actually carried, so the log can be compared to the
     /// wire rather than to a restatement of the same intent.</summary>
     static async Task<string[]> WaitForSessionNewServerNamesAsync(FakeAcpAgent fake) {
@@ -500,14 +579,15 @@ public class AcpHostedAgentRuntimeFactoryTests {
     static AcpVendorDescriptor SyntheticDescriptor(
             bool supportsMcpServers,
             bool borrowedReview = false,
-            AcpBorrowedReviewContainment containment = AcpBorrowedReviewContainment.None) => new(
+            AcpBorrowedReviewContainment containment = AcpBorrowedReviewContainment.None,
+            IAcpModelSelector? modelSelector = null) => new(
         Vendor:              "test-acp-vendor",
         ResolveBinaryPath:   _ => "test-acp-vendor-cli",
         ResolveDefaultModel: _ => null,
         Argv:                ["acp", "--flag-a"],
         UnattendedTrustArgv: ["--trust"],
         SupportsUnattended:  true,
-        ModelSelector:       NoOpModelSelector.Instance,
+        ModelSelector:       modelSelector ?? NoOpModelSelector.Instance,
         SupportsMcpServers:  supportsMcpServers,
         SupportsBorrowedReviewFlow: borrowedReview,
         BorrowedReviewContainment:  containment,

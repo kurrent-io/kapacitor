@@ -137,7 +137,42 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
         // result channel's env includes the server URL and the flow agent id. The transport is logged
         // alongside because it decides HOW the surface reaches the vendor — session/new for most, a
         // process argument for Copilot — so the list alone would be ambiguous about what was sent.
-        // The emit site is deliberately after the handshake; see the call below.
+        // The emit site is keyed on session establishment, not on StartAsync returning; see
+        // LogSurfaceOnceIfEstablished below for why those are not the same moment.
+        var surfaceLogged = false;
+
+        // Emitted exactly when the surface has provably crossed the wire, and never before.
+        //
+        // The predicate is `runtime.SessionId is not null`, which the runtime assigns immediately
+        // after a successful `session/new` — the request that carries the MCP list. That makes the
+        // audit line true by construction in both directions:
+        //
+        //   - It cannot fire early. A rejected, malformed or cancelled `initialize` leaves SessionId
+        //     null, so no line claims this reviewer held [kcap-flow-result, …] when no reviewer
+        //     session ever existed. An audit log that can disagree with what was sent is worse than
+        //     no audit log.
+        //   - It cannot be skipped late. StartAsync does more work after session/new — notably
+        //     awaiting IAcpModelSelector.TrySelectAsync, which propagates OperationCanceledException
+        //     while `session/set_config_option` is in flight. Keying the emit on StartAsync's normal
+        //     return would drop the record for a session that WAS established and WAS handed the
+        //     surface, purely because the daemon token was cancelled a moment later. So the failure
+        //     path logs too, before disposal.
+        //
+        // Copilot's process-argument transport is applied earlier still, at spawn, so a non-null
+        // SessionId implies its surface was applied as well.
+        void LogSurfaceOnceIfEstablished() {
+            if (surfaceLogged || !ctx.IsReviewFlow || runtime.SessionId is null)
+                return;
+
+            surfaceLogged = true;
+
+            LogReviewerMcpSurface(
+                ctx.AgentId,
+                descriptor.Vendor,
+                descriptor.ReviewFlowMcpTransport.ToString(),
+                string.Join(",", (reviewMcp ?? []).Select(spec => spec.Name)));
+        }
+
         try {
             await runtime.StartAsync(
                 ctx.Worktree.Path,
@@ -147,6 +182,9 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
                 mcpServers
             ).ConfigureAwait(false);
         } catch {
+            // An established session is a fact the record must keep even though the launch failed.
+            LogSurfaceOnceIfEstablished();
+
             // The runtime owns both the connection and the process; dispose on a failed handshake
             // so a half-started child process is never leaked.
             await runtime.DisposeAsync().ConfigureAwait(false);
@@ -154,21 +192,7 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
             throw;
         }
 
-        // Emitted only now, AFTER the handshake, and that ordering is the whole point.
-        //
-        // StartAsync performs ACP `initialize` and then sends the list in `session/new`. Logging
-        // before that returns records a surface the vendor may never have received — a rejected,
-        // malformed or cancelled initialize would leave an audit line claiming this reviewer held
-        // [kcap-flow-result, …] when no reviewer session ever existed. An audit log that can disagree
-        // with what was actually sent is worse than no audit log, so the line is emitted once the
-        // handshake has succeeded for every transport: session/new has gone over the wire by then,
-        // and Copilot's process-argument config was applied even earlier, at spawn.
-        if (ctx.IsReviewFlow)
-            LogReviewerMcpSurface(
-                ctx.AgentId,
-                descriptor.Vendor,
-                descriptor.ReviewFlowMcpTransport.ToString(),
-                string.Join(",", (reviewMcp ?? []).Select(spec => spec.Name)));
+        LogSurfaceOnceIfEstablished();
 
         // The runtime IS the transcript source (it implements
         // IAcpTranscriptSource directly) — hand it back on HostedRuntimeStart so the orchestrator can
