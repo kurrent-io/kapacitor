@@ -54,6 +54,52 @@ public class CliExecutableTests {
         }
     }
 
+    /// <summary>The CreateProcessW-193 regression: npm installs an extensionless Git-Bash
+    /// <c>#!/bin/sh</c> shim RIGHT NEXT TO <c>codex.cmd</c>. A bare extensionless file is not
+    /// launchable via <c>CreateProcess</c> (error 193 — not a valid Win32 application), so with
+    /// both present the resolver must return the <c>.cmd</c>, never the shim.</summary>
+    [Test, NotInParallel]
+    public async Task Resolve_prefers_cmd_over_extensionless_twin_on_windows() {
+        if (!OperatingSystem.IsWindows()) return;
+
+        var dir  = Directory.CreateTempSubdirectory("kcap-cliexe-twin-").FullName;
+        var name = $"kcap-twinprobe-{Guid.NewGuid():N}";
+        var shim = Path.Combine(dir, name);          // extensionless "#!/bin/sh" shim
+        var cmd  = Path.Combine(dir, name + ".cmd");
+        await File.WriteAllTextAsync(shim, "#!/bin/sh\nexit 0\n");
+        await File.WriteAllTextAsync(cmd, "@echo off\r\n");
+
+        var savedPath = Environment.GetEnvironmentVariable("PATH");
+        Environment.SetEnvironmentVariable("PATH", $"{dir}{Path.PathSeparator}{savedPath}");
+
+        try {
+            await Assert.That(CliExecutable.Resolve(name)).IsEqualTo(cmd, StringComparison.OrdinalIgnoreCase);
+        } finally {
+            Environment.SetEnvironmentVariable("PATH", savedPath);
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    /// <summary>Same twin, reached through a rooted extensionless configured path
+    /// (<c>daemon.codex_path = C:\tools\codex</c>): must still land on <c>codex.cmd</c>, not the
+    /// extensionless shim beside it.</summary>
+    [Test]
+    public async Task Resolve_prefers_cmd_over_extensionless_twin_for_rooted_path_on_windows() {
+        if (!OperatingSystem.IsWindows()) return;
+
+        var dir  = Directory.CreateTempSubdirectory("kcap-cliexe-twinrooted-").FullName;
+        var stem = Path.Combine(dir, "codex");
+        await File.WriteAllTextAsync(stem, "#!/bin/sh\n");        // extensionless shim
+        await File.WriteAllTextAsync(stem + ".cmd", "@echo off\r\n");
+
+        try {
+            await Assert.That(CliExecutable.Resolve(stem))
+                .IsEqualTo(stem + ".cmd", StringComparison.OrdinalIgnoreCase);
+        } finally {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
     /// <summary>A configured <c>daemon.codex_path</c> may omit the extension; on Windows that
     /// must still land on the <c>.cmd</c> next to it rather than reporting "not installed".</summary>
     [Test]

@@ -40,7 +40,10 @@ public sealed class ConPtyProcess : IPtyProcess {
         _jobHandle    = jobHandle;
     }
 
-    static (string command, bool isCmd) ResolveCommand(string command) {
+    // Internal for unit tests: the extensionless-twin preference bug (returning npm's
+    // Git-Bash "#!/bin/sh" shim instead of codex.cmd, which CreateProcessW rejects with 193)
+    // is Windows-reality-specific and only reproducible by exercising this resolver directly.
+    internal static (string command, bool isCmd) ResolveCommand(string command) {
         if (Path.HasExtension(command) && File.Exists(command)) {
             return (command, command.EndsWith(".cmd", StringComparison.OrdinalIgnoreCase));
         }
@@ -60,18 +63,22 @@ public sealed class ConPtyProcess : IPtyProcess {
         var pathEnv = Environment.GetEnvironmentVariable("PATH") ?? "";
 
         foreach (var dir in pathEnv.Split(';', StringSplitOptions.RemoveEmptyEntries)) {
-            var exact = Path.Combine(dir, command);
-
-            if (File.Exists(exact)) {
-                return (exact, false);
-            }
-
+            // Windows launches a bare name through PATHEXT — codex.cmd, never the
+            // extensionless "#!/bin/sh" twin npm drops beside it (CreateProcessW fails 193
+            // on that script). Probe the executable extensions BEFORE the bare file so a
+            // .cmd/.exe always wins when both live in the same directory.
             foreach (var ext in new[] { ".exe", ".cmd" }) {
                 var candidate = Path.Combine(dir, command + ext);
 
                 if (File.Exists(candidate)) {
                     return (candidate, ext == ".cmd");
                 }
+            }
+
+            var exact = Path.Combine(dir, command);
+
+            if (File.Exists(exact)) {
+                return (exact, false);
             }
         }
 

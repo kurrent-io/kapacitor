@@ -64,23 +64,40 @@ public static class CliExecutable {
     public static bool Exists(string? command) => Resolve(command) is not null;
 
     /// <summary>
-    /// <paramref name="basePath"/> itself when executable, else (Windows only) the first
-    /// <c>PATHEXT</c> extension appended to it that is. Hits come back fully qualified —
-    /// callers hand the result straight to <c>ProcessStartInfo.FileName</c>, and
-    /// <c>CursorBorrowedReviewValidation</c> walks it as a path.
+    /// <paramref name="basePath"/> resolved to something Windows/Unix will actually launch.
+    /// On Unix that is the path itself when it carries an execute bit. On Windows a bare
+    /// extensionless file is NOT runnable via <c>CreateProcess</c> — npm installs a Git-Bash
+    /// <c>#!/bin/sh</c> shim (no extension) right beside <c>codex.cmd</c>, and handing that
+    /// script to <c>CreateProcess</c> fails with error 193 — so the base path wins only when
+    /// it already carries a <c>PATHEXT</c> extension; otherwise the first <c>PATHEXT</c>
+    /// candidate appended to it does. Hits come back fully qualified.
     /// </summary>
     static string? FirstCandidate(string basePath) {
-        if (IsExecutable(basePath)) return Full(basePath);
+        if (!OperatingSystem.IsWindows())
+            return IsExecutable(basePath) ? Full(basePath) : null;
 
-        if (!OperatingSystem.IsWindows()) return null;
+        if (HasExecutableExtension(basePath) && File.Exists(basePath)) return Full(basePath);
 
         foreach (var ext in WindowsExtensions()) {
             var candidate = basePath + ext;
 
-            if (IsExecutable(candidate)) return Full(candidate);
+            if (File.Exists(candidate)) return Full(candidate);
         }
 
         return null;
+    }
+
+    /// <summary>Whether <paramref name="path"/>'s extension is one <c>PATHEXT</c> lists — the
+    /// only files Windows launches by name. A bare extensionless twin never qualifies.</summary>
+    static bool HasExecutableExtension(string path) {
+        var ext = Path.GetExtension(path);
+
+        if (ext.Length == 0) return false;
+
+        foreach (var known in WindowsExtensions())
+            if (string.Equals(known, ext, StringComparison.OrdinalIgnoreCase)) return true;
+
+        return false;
     }
 
     /// <summary>Absolute form, or the path unchanged if it can't be expanded (a hit we could
