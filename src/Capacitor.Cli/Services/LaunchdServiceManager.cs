@@ -3,7 +3,7 @@ using System.Runtime.InteropServices;
 namespace Capacitor.Cli.Services;
 
 sealed partial class LaunchdServiceManager(UnitFileWriter? writeUnit = null) : IServiceManager {
-    readonly UnitFileWriter _writeUnit = writeUnit ?? ServiceFiles.WriteOwnerOnly;
+    readonly UnitFileWriter _writeUnit = writeUnit ?? ((path, content, encoding) => ServiceFiles.WriteOwnerOnly(path, content, encoding));
 
     /// <summary>The unit-writing half of <see cref="Install"/>, split out so it is testable without
     /// invoking launchctl.</summary>

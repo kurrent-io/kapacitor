@@ -88,36 +88,46 @@ internal static class BorrowedReviewTokenCommand {
         while (await reader.ReadAsync(sink, ct).ConfigureAwait(false) > 0) { }
     }
 
-    /// <summary>The first non-empty line, trimmed, up to <see cref="MaxTokenLength"/>. Token printers emit
-    /// a trailing newline and a token is never multi-line, so reading one line is sufficient — and the cap
-    /// is what keeps a command that prints megabytes from being a memory exhaustion vector.</summary>
+    /// <summary>The first non-empty line, trimmed, up to <see cref="MaxTokenLength"/> — later lines are
+    /// noise, and an over-cap line is rejected rather than truncated.
+    ///
+    /// <para>Reads to EOF <b>even after the candidate is settled</b>, keeping nothing further. Returning
+    /// early instead would stop consuming the pipe while <see cref="RunAsync"/> waits for exit, so a helper
+    /// printing a token plus a buffer's worth of diagnostics would block in <c>write</c> until the timeout
+    /// killed it — turning every such launch into a 10-second stall.</para></summary>
     static async Task<string?> ReadTokenLineAsync(StreamReader reader, CancellationToken ct) {
-        var buffer = new char[512];
-        var line   = new System.Text.StringBuilder();
+        var buffer   = new char[4096];
+        var line     = new System.Text.StringBuilder();
+        var settled  = false;   // candidate found: drain the rest, keep none of it
+        var rejected = false;   // over-cap: drain the rest, return null
 
         while (true) {
             var read = await reader.ReadAsync(buffer, ct).ConfigureAwait(false);
 
             if (read == 0) break;
+            if (settled || rejected) continue;
 
-            for (var i = 0; i < read; i++) {
+            for (var i = 0; i < read && !settled && !rejected; i++) {
                 if (buffer[i] == '\n') {
-                    if (line.ToString().Trim().Length > 0) return Finish(line);
+                    if (line.ToString().Trim().Length > 0) settled = true;
+                    else                                   line.Clear();   // skip a leading blank line
 
-                    line.Clear();   // skip a leading blank line
                     continue;
                 }
 
-                if (line.Length >= MaxTokenLength) return null;   // reject, never truncate
+                if (line.Length >= MaxTokenLength) {
+                    rejected = true;
+                    line.Clear();
+
+                    continue;
+                }
 
                 line.Append(buffer[i]);
             }
         }
 
-        return Finish(line);
-    }
+        if (rejected) return null;
 
-    static string? Finish(System.Text.StringBuilder line) {
         var trimmed = line.ToString().Trim();
 
         return trimmed.Length == 0 || trimmed.Length > MaxTokenLength ? null : trimmed;

@@ -1,7 +1,7 @@
 namespace Capacitor.Cli.Services;
 
 sealed class SystemdServiceManager(UnitFileWriter? writeUnit = null) : IServiceManager {
-    readonly UnitFileWriter _writeUnit = writeUnit ?? ServiceFiles.WriteOwnerOnly;
+    readonly UnitFileWriter _writeUnit = writeUnit ?? ((path, content, encoding) => ServiceFiles.WriteOwnerOnly(path, content, encoding));
 
     public string Describe() => "systemd --user unit";
 

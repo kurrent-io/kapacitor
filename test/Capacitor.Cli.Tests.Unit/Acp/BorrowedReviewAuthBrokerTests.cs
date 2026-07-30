@@ -278,23 +278,50 @@ public class BorrowedReviewAuthBrokerTests {
         await Assert.That(token!.Length).IsEqualTo(length);
     }
 
-    /// <summary>A command that floods stderr and then fails must not exhaust memory — stderr is drained
-    /// without being accumulated. Without the bound this allocates until the daemon dies.</summary>
+    /// <summary>A command that floods stderr and then fails must not exhaust memory, and must not stall:
+    /// stderr is drained without being accumulated. The elapsed bound is the load-bearing part — a version
+    /// that stopped draining would still return null, but only after the timeout killed the blocked child.</summary>
     [Test]
-    public async Task The_real_runner_survives_a_command_flooding_stderr() {
+    public async Task The_real_runner_survives_a_command_flooding_stderr_without_stalling() {
         Skip.When(OperatingSystem.IsWindows(), "POSIX shell command");
 
-        // ~32 MiB to stderr, then a nonzero exit.
-        await Assert.That(BorrowedReviewTokenCommand.Run(
-            "head -c 33554432 /dev/zero | tr '\\0' 'x' 1>&2; exit 1")).IsNull();
+        var (result, elapsed) = Timed(() => BorrowedReviewTokenCommand.Run(
+            "head -c 33554432 /dev/zero | tr '\\0' 'x' 1>&2; exit 1"));
+
+        await Assert.That(result).IsNull();
+        await Assert.That(elapsed).IsLessThan(BorrowedReviewTokenCommand.Timeout);
     }
 
-    /// <summary>Output on stdout is still bounded when the command floods THAT stream instead.</summary>
+    /// <summary>Same for a stdout flood: bounded, and finished well before the timeout.</summary>
     [Test]
-    public async Task The_real_runner_survives_a_command_flooding_stdout() {
+    public async Task The_real_runner_survives_a_command_flooding_stdout_without_stalling() {
         Skip.When(OperatingSystem.IsWindows(), "POSIX shell command");
 
-        await Assert.That(BorrowedReviewTokenCommand.Run(
-            "head -c 33554432 /dev/zero | tr '\\0' 'y'")).IsNull();
+        var (result, elapsed) = Timed(() => BorrowedReviewTokenCommand.Run(
+            "head -c 33554432 /dev/zero | tr '\\0' 'y'"));
+
+        await Assert.That(result).IsNull();
+        await Assert.That(elapsed).IsLessThan(BorrowedReviewTokenCommand.Timeout);
+    }
+
+    /// <summary>THE regression this pins: a helper that prints a valid token and then keeps talking. The
+    /// token must come back, and promptly. Returning as soon as the first line was seen stopped consuming
+    /// the pipe, so the helper blocked in `write` and every such launch cost the full timeout.</summary>
+    [Test]
+    public async Task A_token_followed_by_a_flood_of_diagnostics_still_resolves_promptly() {
+        Skip.When(OperatingSystem.IsWindows(), "POSIX shell command");
+
+        var (token, elapsed) = Timed(() => BorrowedReviewTokenCommand.Run(
+            "printf 'tok-first\\n'; head -c 33554432 /dev/zero | tr '\\0' 'z'"));
+
+        await Assert.That(token).IsEqualTo("tok-first");
+        await Assert.That(elapsed).IsLessThan(BorrowedReviewTokenCommand.Timeout);
+    }
+
+    static (string? Result, TimeSpan Elapsed) Timed(Func<string?> run) {
+        var started = DateTime.UtcNow;
+        var result  = run();
+
+        return (result, DateTime.UtcNow - started);
     }
 }

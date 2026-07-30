@@ -4,7 +4,7 @@ using Capacitor.Cli.Core;
 namespace Capacitor.Cli.Services;
 
 sealed class WindowsScheduledTaskServiceManager(UnitFileWriter? writeUnit = null) : IServiceManager {
-    readonly UnitFileWriter _writeUnit = writeUnit ?? ServiceFiles.WriteOwnerOnly;
+    readonly UnitFileWriter _writeUnit = writeUnit ?? ((path, content, encoding) => ServiceFiles.WriteOwnerOnly(path, content, encoding));
 
     public string Describe() => "Windows Scheduled Task";
 

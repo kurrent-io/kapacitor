@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using System.Text;
 using Capacitor.Cli.Services;
 
@@ -8,7 +9,10 @@ namespace Capacitor.Cli.Tests.Unit.Services;
 /// credential. <see cref="File.WriteAllText(string,string)"/> defaults to <c>-rw-r--r--</c> — verified on
 /// a real launchd install — so the write path has to establish owner-only mode itself, and prove it.
 /// </summary>
-public class ServiceFilesTests {
+public partial class ServiceFilesTests {
+    [LibraryImport("libc", EntryPoint = "umask")]
+    private static partial uint umask(uint mask);
+
     static string TempDir(string tag) {
         var dir = Path.Combine(Path.GetTempPath(), $"kcap-{tag}-{Guid.NewGuid():N}");
         Directory.CreateDirectory(dir);
@@ -74,21 +78,59 @@ public class ServiceFilesTests {
         }
     }
 
-    /// <summary>The content is never observable at a permissive mode. Asserted on the finished file rather
-    /// than by racing the writer: the staging inode is created exclusively WITH its mode, so there is no
-    /// instant at which populated content exists group- or world-readable.</summary>
+    /// <summary>The mode is EXACTLY owner read+write under either a permissive or a restrictive umask.
+    ///
+    /// <para>Both directions matter and a group/other-bits-only assertion catches neither. A permissive
+    /// umask (0000) is the leak case. A restrictive one (0777) is the opposite failure:
+    /// <c>UnixCreateMode</c> is filtered through the umask, so the file can land <c>0000</c> — which no
+    /// "nothing extra than owner-only" check rejects, and which launchd cannot read, so the install would
+    /// report success and produce a service that never starts.</para>
+    ///
+    /// <para>Serialized because the umask is process-global.</para></summary>
     [Test]
-    public async Task WriteOwnerOnly_never_exposes_content_under_a_permissive_umask() {
+    [NotInParallel]
+    [Arguments(0u)]
+    [Arguments(0x3Fu)]    // umask 077
+    [Arguments(0x1FFu)]   // umask 777
+    public async Task WriteOwnerOnly_produces_exactly_owner_read_write_under_any_umask(uint mask) {
         Skip.When(OperatingSystem.IsWindows(), "POSIX file modes");
 
-        var dir  = TempDir("umask");
-        var path = Path.Combine(dir, "unit.plist");
+        var dir      = TempDir("umask");
+        var path     = Path.Combine(dir, "unit.plist");
+        var previous = umask(mask);
         try {
             ServiceFiles.WriteOwnerOnly(path, "SECRET-COMMAND");
 
-            var mode = File.GetUnixFileMode(path);
-            await Assert.That(mode.HasFlag(UnixFileMode.GroupRead)).IsFalse();
-            await Assert.That(mode.HasFlag(UnixFileMode.OtherRead)).IsFalse();
+            await Assert.That(File.GetUnixFileMode(path))
+                .IsEqualTo(UnixFileMode.UserRead | UnixFileMode.UserWrite);
+            // The property that actually matters to launchd: the owner can still read it.
+            await Assert.That(await File.ReadAllTextAsync(path)).IsEqualTo("SECRET-COMMAND");
+        } finally {
+            umask(previous);
+            try { Directory.Delete(dir, true); } catch { /* best-effort */ }
+        }
+    }
+
+    /// <summary>If the final mode cannot be guaranteed, no unit is left at the live path.
+    ///
+    /// <para>The failure is injected, because on a normal filesystem a rename preserves the mode and this
+    /// branch is unreachable. It is worth proving anyway: an earlier revision ran the post-rename check
+    /// outside the cleanup scope, so a failure there threw while leaving a readable credential-bearing unit
+    /// exactly where launchd would consume it — a failed install that still published the secret.</para></summary>
+    [Test]
+    public async Task WriteOwnerOnly_removes_the_live_unit_when_the_final_check_fails() {
+        var dir  = TempDir("rollback");
+        var path = Path.Combine(dir, "unit.plist");
+        try {
+            var ex = Assert.Throws<InvalidOperationException>(() => ServiceFiles.WriteOwnerOnly(
+                path, "SECRET-COMMAND", null,
+                verifyFinal: _ => throw new InvalidOperationException("mode could not be guaranteed")));
+
+            await Assert.That(ex!.Message).Contains("guaranteed");
+            await Assert.That(File.Exists(path)).IsFalse()
+                .Because("a failed install must not leave a unit at the path launchd reads");
+            await Assert.That(Directory.GetFiles(dir)).IsEmpty()
+                .Because("the staging file must not survive either");
         } finally {
             try { Directory.Delete(dir, true); } catch { /* best-effort */ }
         }
