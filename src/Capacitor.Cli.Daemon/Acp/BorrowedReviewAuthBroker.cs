@@ -28,31 +28,25 @@ internal static class BorrowedReviewAuthBroker {
     /// precedence over stored credentials, which is what makes the keychain grant removable.</summary>
     internal const string TargetVariable = "COPILOT_GITHUB_TOKEN";
 
-    /// <summary>A command that PRINTS a token, for a daemon whose environment cannot safely hold one.
-    ///
-    /// <para>This is the supervised-daemon path. A service unit is a file on disk, so the token itself
-    /// must not live there — the unit carries this command instead, which is not a secret, and the value
-    /// is produced when needed and never persisted. See
-    /// <see cref="BorrowedReviewTokenCommand"/>.</para></summary>
+    /// <summary>A command that PRINTS a token — the supervised-daemon path, since a service unit is a
+    /// file on disk and may carry the command but not the credential. See
+    /// <see cref="BorrowedReviewTokenCommand"/>.</summary>
     internal const string CommandVariable = "KCAP_COPILOT_TOKEN_CMD";
 
-    /// <summary>Whether this daemon can broker a token at all, consumed at policy resolution so an
-    /// unbrokerable daemon advertises no borrowed review rather than advertising it and failing at
-    /// spawn.
+    /// <summary>Whether a token can be brokered, consumed at policy resolution so an unbrokerable daemon
+    /// advertises no borrowed review instead of failing at spawn.
     ///
-    /// <para>Probed ONCE, at startup. For a directly-set variable that is exact — a process's
-    /// environment does not change under it. For a <see cref="CommandVariable"/> it is a probe: the
-    /// command ran successfully once, so the configuration is real, and the value is discarded and
-    /// re-resolved per launch. A command that works at boot and breaks later still fails at spawn,
-    /// which no advertisement-time check can prevent; what this does remove from the mid-launch path is
-    /// the common case, a command that never worked.</para></summary>
-    internal static bool Available { get; } = TryResolve(Environment.GetEnvironmentVariable) is not null;
+    /// <para>Resolved once. For a variable that is exact; for a <see cref="CommandVariable"/> it is a
+    /// probe — the value is discarded and re-resolved per launch, so a rotated credential stays fresh. A
+    /// command that works at boot and breaks later still fails at spawn, which no advertisement-time
+    /// check can prevent; this removes the common case, a command that never worked.</para></summary>
+    static readonly Lazy<bool> Probe =
+        new(() => TryResolve(Environment.GetEnvironmentVariable) is not null);
 
-    /// <summary>The token, or null when none is configured.
-    ///
-    /// <para>Directly-set variables win over the command: they are unambiguous and free, and this keeps
-    /// the pre-existing behaviour of a self-run daemon exactly as it was. The command is the fallback
-    /// for the case a variable cannot serve.</para></summary>
+    internal static bool Available => Probe.Value;
+
+    /// <summary>The token, or null when none is configured. A directly-set variable wins over the
+    /// command — unambiguous, free, and unchanged from the pre-command behaviour.</summary>
     /// <param name="readVariable">Environment reader. Production passes
     /// <see cref="Environment.GetEnvironmentVariable(string)"/>; tests pass a fake so the resolution
     /// order is assertable without mutating the test process's own environment.</param>

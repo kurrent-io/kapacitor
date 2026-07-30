@@ -48,7 +48,7 @@ public class ServiceEnvironmentTests {
             ["GITHUB_TOKEN"]           = "secret-c",
         };
 
-        var env = ServiceEnvironment.Build(profileName: null, source: src);
+        var env = ServiceEnvironment.Build(profileName: null, source: src, isWindows: false);
 
         await Assert.That(env["KCAP_COPILOT_TOKEN_CMD"]).IsEqualTo("gh auth token");
         foreach (var secret in new[] { "COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN" })
@@ -58,5 +58,21 @@ public class ServiceEnvironmentTests {
         await Assert.That(env.Values).DoesNotContain("secret-a");
         await Assert.That(env.Values).DoesNotContain("secret-b");
         await Assert.That(env.Values).DoesNotContain("secret-c");
+    }
+
+    /// <summary>Excluded on Windows: borrowed review is macOS-only, so it would be inert there, and the
+    /// Windows unit is a <c>.cmd</c> wrapper emitting <c>set "K=V"</c> whose escaping does not cover a
+    /// quote — a quoted command would corrupt the wrapper and could run unintended content.</summary>
+    [Test]
+    public async Task Build_omits_the_token_command_on_windows() {
+        var src = new Dictionary<string, string> {
+            ["KCAP_COPILOT_TOKEN_CMD"] = "powershell -c \"Get-Secret tok\"",
+            ["PATH"]                   = "C:\\bin",
+        };
+
+        var env = ServiceEnvironment.Build(profileName: null, source: src, isWindows: true);
+
+        await Assert.That(env.ContainsKey("KCAP_COPILOT_TOKEN_CMD")).IsFalse();
+        await Assert.That(env["PATH"]).IsEqualTo("C:\\bin");
     }
 }

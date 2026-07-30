@@ -8,6 +8,47 @@ namespace Capacitor.Cli.Tests.Unit.Services;
 /// defaults to <c>-rw-r--r--</c>, which was verified on a real launchd install.
 /// </summary>
 public class ServiceFilesTests {
+    /// <summary>The write path leaves the finished unit owner-only, with the right content.</summary>
+    [Test]
+    public async Task WriteOwnerOnly_writes_the_content_and_leaves_it_owner_only() {
+        var path = Path.Combine(Path.GetTempPath(), $"kcap-write-{Guid.NewGuid():N}", "unit.plist");
+        try {
+            ServiceFiles.WriteOwnerOnly(path, "<plist>KCAP_COPILOT_TOKEN_CMD</plist>");
+
+            await Assert.That(await File.ReadAllTextAsync(path))
+                .IsEqualTo("<plist>KCAP_COPILOT_TOKEN_CMD</plist>");
+
+            Skip.When(OperatingSystem.IsWindows(), "POSIX file modes; Windows inherits the directory ACL");
+            var mode = File.GetUnixFileMode(path);
+            await Assert.That(mode.HasFlag(UnixFileMode.OtherRead)).IsFalse();
+            await Assert.That(mode.HasFlag(UnixFileMode.GroupRead)).IsFalse();
+        } finally {
+            try { Directory.Delete(Path.GetDirectoryName(path)!, true); } catch { /* best-effort */ }
+        }
+    }
+
+    /// <summary>No staging file is left behind, and an overwrite of an existing world-readable unit ends
+    /// up owner-only rather than inheriting the old mode.</summary>
+    [Test]
+    public async Task WriteOwnerOnly_overwrites_a_world_readable_unit_and_leaves_no_staging_file() {
+        var dir  = Path.Combine(Path.GetTempPath(), $"kcap-overwrite-{Guid.NewGuid():N}");
+        var path = Path.Combine(dir, "unit.plist");
+        Directory.CreateDirectory(dir);
+        try {
+            await File.WriteAllTextAsync(path, "old");   // created world-readable by default
+            ServiceFiles.WriteOwnerOnly(path, "new");
+
+            await Assert.That(await File.ReadAllTextAsync(path)).IsEqualTo("new");
+            await Assert.That(Directory.GetFiles(dir).Length).IsEqualTo(1)
+                .Because("the staging file must be moved, not left beside the unit");
+
+            Skip.When(OperatingSystem.IsWindows(), "POSIX file modes");
+            await Assert.That(File.GetUnixFileMode(path).HasFlag(UnixFileMode.OtherRead)).IsFalse();
+        } finally {
+            try { Directory.Delete(dir, true); } catch { /* best-effort */ }
+        }
+    }
+
     [Test]
     public async Task RestrictToOwner_removes_group_and_other_access() {
         Skip.When(OperatingSystem.IsWindows(), "POSIX file modes; Windows inherits the directory ACL");

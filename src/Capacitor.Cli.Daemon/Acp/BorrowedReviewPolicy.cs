@@ -83,15 +83,17 @@ internal static class CopilotBorrowedReviewPolicy {
     /// and the OS boundary ship as one thing, and an entry that granted the first without the second
     /// would be the exact confidentiality gap this design exists to close.</param>
     /// <param name="authBrokerAvailable">Whether this daemon can broker the reviewer's credential
-    /// from its own environment (<see cref="BorrowedReviewAuthBroker"/>). Gated HERE, at
+    /// (<see cref="BorrowedReviewAuthBroker"/>). A thunk, not a bool: answering it may run an
+    /// operator-configured command, and <c>&amp;&amp;</c> short-circuiting is what keeps that from
+    /// happening on a platform where borrowed review is impossible and the answer unused. Gated HERE, at
     /// advertisement, rather than checked at spawn: a daemon that cannot authenticate a contained
     /// reviewer has no borrowed capability to offer, and saying so up front lets the server reject the
     /// start with a coded reason plus the <c>context-only</c> remedy instead of the flow dying
     /// mid-launch. The alternative — advertise, then fail on spawn — is strictly worse UX for exactly
     /// the same security posture.</param>
     internal static ResolvedBorrowedReviewPolicy Resolve(
-            OSPlatform os, Architecture arch, bool sandboxAvailable, bool authBrokerAvailable) =>
-        os == OSPlatform.OSX && arch == Architecture.Arm64 && sandboxAvailable && authBrokerAvailable
+            OSPlatform os, Architecture arch, bool sandboxAvailable, Func<bool> authBrokerAvailable) =>
+        os == OSPlatform.OSX && arch == Architecture.Arm64 && sandboxAvailable && authBrokerAvailable()
             ? new(true, AcpBorrowedReviewContainment.IndependentSnapshot, ReadToolIds,
                   RequiresProcessSandbox: true)
             : ResolvedBorrowedReviewPolicy.Unsupported;
@@ -119,7 +121,7 @@ internal static class CopilotBorrowedReviewPolicy {
     /// </summary>
     internal static ResolvedBorrowedReviewPolicy Current { get; } =
         Resolve(CurrentOs(), RuntimeInformation.ProcessArchitecture,
-                BorrowedReviewSandbox.Available, BorrowedReviewAuthBroker.Available);
+                BorrowedReviewSandbox.Available, () => BorrowedReviewAuthBroker.Available);
 
     static OSPlatform CurrentOs() =>
         RuntimeInformation.IsOSPlatform(OSPlatform.OSX)     ? OSPlatform.OSX
