@@ -94,7 +94,11 @@ internal sealed record LauncherContext(
         string                            SourceRepoPath,
         WorktreeInfo                      Worktree,
         string?                           Prompt,
-        string                            Model,
+        // Nullable for the same reason as RuntimeStartContext.Model, which feeds it: a launch whose
+        // runtime cannot apply a model carries none. Both PTY launchers already handle absence —
+        // ClaudeLauncher via string.IsNullOrEmpty, CodexLauncher via AddModelArg's own null guard — so
+        // this makes the type match what they were already written to expect.
+        string?                           Model,
         string?                           Effort,
         string[]?                         Tools,
         bool                              IsReview,

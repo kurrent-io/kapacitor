@@ -18,7 +18,11 @@ namespace Capacitor.Cli.Daemon.Services;
 internal record AgentInstance(
         string                  Id,
         string?                 Prompt,
-        string                  Model,
+        // Nullable because "no model is being reported" is a real, intentional state: a runtime that
+        // cannot APPLY a caller-supplied model must not report one (see ModelSelectionLaunchPolicy).
+        // Declaring it non-null while storing null there would let a consumer dereference it with no
+        // warning on exactly the launches where it is absent.
+        string?                 Model,
         string?                 Effort,
         string                  RepoPath,
         string                  Vendor,
@@ -873,7 +877,9 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
         // process actually runs — the launch log, the runtime start context, and the registered
         // AgentInstance the server sees via RegisterAgentAsync / AgentRunStarted / every reconnect
         // re-registration — reads the same value. Null block ⇒ legacy path, cmd.Model unchanged.
-        var effectiveModel = cmd.ExplicitReviewerModel?.LaunchModel ?? model;
+        // Explicitly string?, not var: ModelSelectionLaunchPolicy below clears this when the selected
+        // runtime cannot apply a model, and "no model reported" must be representable in the type.
+        string? effectiveModel = cmd.ExplicitReviewerModel?.LaunchModel ?? model;
         var effort        = cmd.Effort;
         var repoPath      = cmd.RepoPath;
         var tools         = cmd.Tools;
@@ -905,21 +911,25 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
         // RuntimeStartContext.Model (where a no-op selector discards it) and the AgentInstance the
         // server sees — so without this, such a vendor runs its default while the live model chip and
         // hosted_agent_started analytics both claim the requested model is live.
-        switch (ModelSelectionLaunchPolicy.Evaluate(
-                    effectiveModel,
-                    runtimeFactory.SupportsModelSelection,
-                    cmd.ExplicitReviewerModel is not null)) {
-            case ModelSelectionDisposition.Reject:
+        var modelDisposition = ModelSelectionLaunchPolicy.Evaluate(
+            effectiveModel, runtimeFactory.SupportsModelSelection, cmd.ExplicitReviewerModel is not null);
+
+        if (modelDisposition != ModelSelectionDisposition.Honor) {
+            // Non-null by construction: Evaluate returns Honor whenever the requested model is
+            // null/blank, so reaching here means a model really was asked for. Captured before the
+            // clear below so the diagnostics can name it.
+            var unhonorableModel = effectiveModel!;
+
+            if (modelDisposition == ModelSelectionDisposition.Reject) {
                 await _server.LaunchFailedAsync(cmd.AgentId,
-                    ModelSelectionLaunchPolicy.RejectionReason(cmd.Vendor, effectiveModel!));
+                    ModelSelectionLaunchPolicy.RejectionReason(cmd.Vendor, unhonorableModel));
 
                 return new CommandOutcome(
                     CommandOutcomeKind.LaunchRejected, agentId, RejectReason: CommandRejectedReason.Semantic);
+            }
 
-            case ModelSelectionDisposition.ClearReportedModel:
-                LogModelSelectionUnsupported(cmd.Vendor, effectiveModel!);
-                effectiveModel = null;
-                break;
+            LogModelSelectionUnsupported(cmd.Vendor, unhonorableModel);
+            effectiveModel = null;
         }
 
         if (isReviewFlow && cmd.Borrowed && !runtimeFactory.SupportsBorrowedReviewFlow) {
@@ -2814,7 +2824,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     // ── LoggerMessage source-generated methods ────────────────────────────
 
     [LoggerMessage(Level = LogLevel.Information, Message = "Launching agent {AgentId} for {Repo} (effort={Effort}, model={Model})")]
-    partial void LogLaunching(string agentId, string repo, string effort, string model);
+    partial void LogLaunching(string agentId, string repo, string effort, string? model);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Vendor '{Vendor}' cannot apply a requested model; launching with its default and reporting no model instead of '{RequestedModel}', so the dashboard and analytics are not told a model is live that isn't.")]
     partial void LogModelSelectionUnsupported(string vendor, string requestedModel);

@@ -106,7 +106,11 @@ internal sealed record RuntimeStartContext(
         string            SourceRepoPath,
         WorktreeInfo      Worktree,
         string?           Prompt,
-        string            Model,
+        // Nullable: a launch whose runtime cannot APPLY a model carries none, rather than carrying one
+        // the process will not run (see ModelSelectionLaunchPolicy). Every launcher already treats an
+        // absent model as "use the vendor default" — Claude and the ACP factory via
+        // string.IsNullOrEmpty, Codex via AddModelArg — so null is the value they are prepared for.
+        string?           Model,
         string?           Effort,
         string[]?         Tools,
         bool              IsReview,
