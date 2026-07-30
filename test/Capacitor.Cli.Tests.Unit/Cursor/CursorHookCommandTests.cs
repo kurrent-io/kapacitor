@@ -689,6 +689,86 @@ public class CursorHookCommandTests {
         }
     }
 
+    // ---------------------------------------------------------------------------------
+    // Measured payload contract. A Cursor sessionStart payload carries a NULL
+    // transcript_path (verified against cursor-agent 2026.07.23-e383d2b; probe logs archived
+    // under docs/probes/2026-07-30-cursor-subagent-hooks/), which is why the transcript-derived
+    // subagent-classification arm has no producer. These pin that contract so the arm cannot be
+    // quietly assumed live again. See
+    // docs/superpowers/specs/2026-07-30-ai1505-cursor-subagent-classification-design.md
+    // ---------------------------------------------------------------------------------
+
+    [Test, NotInParallel]
+    public async Task SessionStart_with_null_transcript_path_stays_top_level_and_writes_no_link_marker() {
+        using var fx = new Fixture();
+        var sid = Guid.NewGuid().ToString("N");
+        var ws  = Path.GetTempPath().Replace('\\', '/').TrimEnd('/');
+        // The REAL shape: transcript_path is JSON null at sessionStart.
+        var payload = $$"""{"hook_event_name":"sessionStart","session_id":"{{sid}}","transcript_path":null,"workspace_roots":["{{ws}}"]}""";
+
+        var originalOut = Console.Out;
+        try {
+            Console.SetOut(new StringWriter());
+            var exit = await fx.HandleAsync(payload, budgetTotal: TimeSpan.FromSeconds(5));
+            await Assert.That(exit).IsEqualTo(0);
+        } finally {
+            Console.SetOut(originalOut);
+        }
+
+        // No marker => ResolveParent/SaveLink never ran, so the session was never classified as
+        // a subagent child...
+        await Assert.That(CursorLiveSubagentLinker.TryLoadLink(sid)).IsNull();
+        // ...and it took the ordinary top-level route rather than the subagent divert.
+        await Assert.That(fx.RouteOrder).Contains("session-start/cursor");
+        await Assert.That(fx.RouteOrder).DoesNotContain("subagent-start");
+
+        // HONEST SCOPE — this is an outcome pin, NOT a mutation-sensitive guard test for the
+        // `!string.IsNullOrEmpty(transcriptPath)` conjunct. Verified by mutation: deleting that
+        // conjunct leaves this test PASSING, because a null path also fails downstream
+        // (DiscoverSiblingTranscripts finds no directory and Correlate cannot read a null path),
+        // so the conjunct is not independently observable under the real payload.
+        // What it does protect: any future change that classifies a sessionStart from some OTHER
+        // source — deriving the transcripts dir from workspace_roots is the obvious candidate —
+        // has to keep this session top-level, or this test fails.
+    }
+
+    [Test, NotInParallel]
+    public async Task MemoryIndex_is_fetched_only_for_sessionStart() {
+        var sid = Guid.NewGuid().ToString("N");
+        var ws  = Path.GetTempPath().Replace('\\', '/').TrimEnd('/');
+        const string body = """[{"memory_id":"m1","slug":"s","audience":"org","description":"d","kind":"preference"}]""";
+
+        var originalOut = Console.Out;
+        try {
+            Console.SetOut(new StringWriter());
+
+            // Positive control FIRST. Without it this test could pass vacuously in an
+            // environment where memory injection is disabled outright.
+            using var starting = new Fixture();
+            starting.MemoryIndexBody = body;
+            await starting.HandleAsync(
+                $$"""{"hook_event_name":"sessionStart","session_id":"{{sid}}","workspace_roots":["{{ws}}"]}""",
+                budgetTotal: TimeSpan.FromSeconds(5));
+            await Assert.That(starting.MemoryIndexRequested).IsTrue();
+
+            // A postToolUse carries workspace_roots too (measured), so the only thing keeping it
+            // away from the orchestrator is the call-site guard.
+            using var other = new Fixture();
+            other.MemoryIndexBody = body;
+            await other.HandleAsync(
+                $$"""{"hook_event_name":"postToolUse","session_id":"{{Guid.NewGuid():N}}","workspace_roots":["{{ws}}"]}""",
+                budgetTotal: TimeSpan.FromSeconds(5));
+            await Assert.That(other.MemoryIndexRequested).IsFalse();
+        } finally {
+            Console.SetOut(originalOut);
+        }
+
+        // NOTE what this does and does not establish. It pins the ORCHESTRATOR CALL-SITE GUARD,
+        // an internal invariant. It does NOT prove ClassificationAuthoritative: true is
+        // warranted — that additionally needs the external fact that a subagent child never
+        // receives sessionStart, which is a vendor behaviour no unit test can establish.
+    }
+
     [Test, NotInParallel]
     public async Task OncePerConversation() {
         using var fx = new Fixture();
