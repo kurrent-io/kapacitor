@@ -413,8 +413,6 @@ static class CodexHookCommand {
             baseUrl, "session-start/codex", enriched, "codex-hook", spool,
             sessionId: sessionId ?? "", route: "session-start/codex");
 
-        if (outcome == HookPostOutcome.Failed) return 1;
-
         // Codex blocks on this hook's stdout — satisfy the handshake contract FIRST, and only
         // then run the best-effort watcher-ensure and the global spool drain. Routed through
         // RunSessionStartHandshakeForTest so the ordering is provable in isolation (see
@@ -423,13 +421,21 @@ static class CodexHookCommand {
         // Resolve the optional memory fragment BEFORE entering the handshake, so the ordering seam
         // still receives a synchronous write: the fragment is already a value by the time
         // writeStdout runs, and the post-stdout work remains strictly after it.
+        //
+        // The handshake now runs on EVERY outcome, including a permanent POST rejection. It used to be
+        // skipped by an early `return 1` above, which left Codex — a host that BLOCKS on this hook's
+        // stdout — with zero bytes: no `continue`, no context, just a wait for its hook timeout. The
+        // recording outcome must not decide whether the host can proceed.
         var fragment = await AwaitMemoryFragmentAsync(memoryTask, processStart);
 
         await RunSessionStartHandshakeForTest(
             writeStdout: () => WriteSessionStartOutput(Console.Out, fragment),
             postStdoutWork: () => RunPostStdoutWork(baseUrl, spool, enrichedNode, sessionId, outcome));
 
-        return 0;
+        // Non-zero on a permanent rejection is preserved — it is the signal the session was not
+        // recorded — but it is now reported AFTER the handshake rather than instead of it. The watcher
+        // still does not spawn: RunPostStdoutWork gates that on ShouldSpawnAfter(outcome).
+        return outcome == HookPostOutcome.Failed ? 1 : 0;
     }
 
     // Everything here runs AFTER Codex's stdout handshake and is best-effort: spawning the
