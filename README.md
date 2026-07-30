@@ -886,11 +886,33 @@ KCAP_CURSOR_PATH=/opt/cursor/bin/cursor-agent kcap daemon
 KCAP_CURSOR_MODEL=claude-opus-4-8 kcap daemon
 ```
 
-`KCAP_COPILOT_PATH` overrides the `copilot` binary the daemon spawns for **GitHub Copilot hosted agents** (`copilot --acp --stdio`), mirroring `KCAP_CURSOR_PATH` — the daemon now hosts Claude, Codex, Cursor, and Copilot. `KCAP_KIRO_PATH`, `KCAP_OPENCODE_PATH`, and `KCAP_GEMINI_PATH` remain **reserved** plumbing for the not-yet-hosted Kiro, OpenCode, and Gemini vendors, so setting those three has no observable effect yet.
+`KCAP_COPILOT_PATH` overrides the `copilot` binary the daemon spawns for **GitHub Copilot hosted agents** (`copilot --acp --stdio`), mirroring `KCAP_CURSOR_PATH` — the daemon now hosts Claude, Codex, Cursor, Copilot, and Kiro. `KCAP_OPENCODE_PATH` and `KCAP_GEMINI_PATH` remain **reserved** plumbing for the not-yet-hosted OpenCode and Gemini vendors, so setting those two has no observable effect yet.
 
 ```bash
 KCAP_COPILOT_PATH=/opt/copilot/bin/copilot kcap daemon
 ```
+
+`KCAP_KIRO_PATH` overrides the AWS Kiro CLI binary the daemon spawns for **Kiro hosted agents**
+(`kiro-cli acp`). It defaults to `kiro-cli` — the name a standard install puts on `PATH` — and only
+that one name is probed, so point this at your binary if yours is named differently. As with Cursor,
+if the daemon can't resolve it the `kiro` vendor is simply hidden from the launch dialog rather than
+failing at launch.
+
+```bash
+KCAP_KIRO_PATH=/opt/kiro/bin/kiro-cli kcap daemon
+```
+
+Two limits are worth knowing before you pick Kiro:
+
+- **Interactive hosting only.** Kiro cannot yet be selected as an unattended review-flow reviewer.
+  Kiro inherits the MCP servers from your global `~/.kiro/settings/mcp.json` into every ACP session,
+  which is exactly what you want for a session you are driving yourself, but means an unattended
+  reviewer would be handed the flow-starting `kcap-flows` server. Containment for that is tracked
+  separately.
+- **No model override.** A Kiro hosted agent always runs Kiro's own default model. Kiro's ACP
+  model-selection call is unverified and fails silently, so rather than report a model it might not be
+  running, kcap ignores a requested model for `kiro` and reports none — there is deliberately no
+  `KCAP_KIRO_MODEL`. A *pinned reviewer* model is refused outright rather than silently substituted.
 
 **Hosted Cursor agents run over ACP.** The `cursor` vendor is launched by the daemon as
 `cursor-agent acp` (Cursor's Agent Client Protocol server) in an isolated worktree, driven from the
