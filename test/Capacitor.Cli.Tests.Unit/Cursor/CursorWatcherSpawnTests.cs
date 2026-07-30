@@ -93,66 +93,16 @@ public class CursorWatcherSpawnTests {
         } finally { WatcherManager.SpawnOverrideForTesting = null; }
     }
 
-    // Task 12 — the child (subagent) watcher must never be spawned before the server
-    // has acknowledged the diverted subagent-start (2xx). A spooled start (POST failure) defers
-    // the spawn entirely; a later invocation whose spool drain finally delivers the start is
-    // what performs it. Invariant under test: no child transcript line — and here, no child
-    // watcher at all — exists before SubagentStarted lands.
-    [Test]
-    public async Task Child_watcher_not_spawned_when_subagent_start_spooled() {
-        using var tmp = new TempDir();
-        Environment.SetEnvironmentVariable("KCAP_CONFIG_DIR", tmp.Path);
-        try {
-            var spawned = new List<string>();
-            WatcherManager.SpawnOverrideForTesting = key => { spawned.Add(key); return Task.CompletedTask; };
-
-            // subagent-start POST fails (503 → spooled). A growing child transcript file exists.
-            using var handler = new StubHandler((_, _) => new HttpResponseMessage(HttpStatusCode.ServiceUnavailable));
-            using var client   = new HttpClient(handler);
-            var child  = NewSessionId();
-            var parent = NewSessionId();
-            var childFile = Path.Combine(tmp.Path, $"{child}.jsonl");
-            await File.WriteAllTextAsync(childFile, """{"role":"assistant","message":{"content":[]}}""" + "\n");
-
-            var spool = new HookSpool(Path.Combine(tmp.Path, "spool"));
-            await CursorHookCommand.HandleSubagentChildEventAsync(
-                client, "http://s", spool, child, "sessionStart", childFile, parent, "task",
-                budgetExpired: () => false, ct: CancellationToken.None);
-
-            await Assert.That(spawned).IsEmpty(); // start not acked → no child watcher
-        } finally {
-            WatcherManager.SpawnOverrideForTesting = null;
-            Environment.SetEnvironmentVariable("KCAP_CONFIG_DIR", null);
-        }
-    }
-
-    [Test]
-    public async Task Child_watcher_spawned_with_parent_child_key_once_subagent_start_is_acked() {
-        using var tmp = new TempDir();
-        Environment.SetEnvironmentVariable("KCAP_CONFIG_DIR", tmp.Path);
-        try {
-            var spawned = new List<string>();
-            WatcherManager.SpawnOverrideForTesting = key => { spawned.Add(key); return Task.CompletedTask; };
-
-            using var handler = new StubHandler((_, _) => new HttpResponseMessage(HttpStatusCode.OK));
-            using var client   = new HttpClient(handler);
-            var child  = NewSessionId();
-            var parent = NewSessionId();
-            var childFile = Path.Combine(tmp.Path, $"{child}.jsonl");
-            await File.WriteAllTextAsync(childFile, """{"role":"assistant","message":{"content":[]}}""" + "\n");
-
-            var spool = new HookSpool(Path.Combine(tmp.Path, "spool"));
-            await CursorHookCommand.HandleSubagentChildEventAsync(
-                client, "http://s", spool, child, "sessionStart", childFile, parent, "task",
-                budgetExpired: () => false, ct: CancellationToken.None);
-
-            await Assert.That(spawned).IsEquivalentTo([$"{parent}-{child}"]);
-        } finally {
-            WatcherManager.SpawnOverrideForTesting = null;
-            Environment.SetEnvironmentVariable("KCAP_CONFIG_DIR", null);
-        }
-    }
-
+    // Task 12's invariant — no child watcher before the diverted subagent-start is acked, and
+    // once acked the key is {parent}-{child} — is covered by
+    // Deferred_spool_drain_delivering_a_spooled_subagent_start_spawns_the_child_watcher below
+    // (it asserts `spawned` is empty until the drain delivers, then asserts the {parent}-{child}
+    // key) and by Later_nonterminal_child_hook_does_not_spawn_when_never_acked.
+    //
+    // Two tests that asserted the same thing by invoking the divert's start arm with a child
+    // `sessionStart` were removed: a real Cursor subagent child never fires that event, so they
+    // encoded a trigger that cannot occur. See
+    // docs/superpowers/specs/2026-07-30-ai1505-cursor-subagent-classification-design.md
     [Test]
     public async Task Child_watcher_not_spawned_when_the_parent_session_is_quarantined() {
         using var tmp = new TempDir();
@@ -169,9 +119,16 @@ public class CursorWatcherSpawnTests {
             await File.WriteAllTextAsync(childFile, """{"role":"assistant","message":{"content":[]}}""" + "\n");
             CursorMarkers.Quarantine(parent, "test");
 
+            // Seed the ack so the no-ack gate cannot be what suppresses the spawn — otherwise
+            // this test would pass for the wrong reason and prove nothing about quarantine. Then
+            // drive a NON-lifecycle hook: the self-heal spawn path a real child actually reaches.
+            // (This previously used a child `sessionStart`, an event a real Cursor subagent child
+            // never fires.)
+            CursorMarkers.MarkSubagentStartAcked(child);
+
             var spool = new HookSpool(Path.Combine(tmp.Path, "spool"));
             await CursorHookCommand.HandleSubagentChildEventAsync(
-                client, "http://s", spool, child, "sessionStart", childFile, parent, "task",
+                client, "http://s", spool, child, "afterAgentThought", childFile, parent, "task",
                 budgetExpired: () => false, ct: CancellationToken.None);
 
             await Assert.That(spawned).IsEmpty();
@@ -346,38 +303,6 @@ public class CursorWatcherSpawnTests {
                 budgetExpired: () => false, ct: CancellationToken.None);
 
             await Assert.That(spawned).IsEquivalentTo([$"{parent}-{child}"]);
-        } finally {
-            WatcherManager.SpawnOverrideForTesting = null;
-            Environment.SetEnvironmentVariable("KCAP_CONFIG_DIR", null);
-        }
-    }
-
-    // Retain the terminal no-spawn rule: sessionEnd must never trigger a self-heal spawn, even
-    // once the ack marker exists — subagent-stop is the child's last hook, and spawning a watcher
-    // moments before the session ends would be pure churn (mirrors ShouldSpawnWatcher's ①).
-    [Test]
-    public async Task Terminal_sessionEnd_child_hook_still_never_spawns_even_when_acked() {
-        using var tmp = new TempDir();
-        Environment.SetEnvironmentVariable("KCAP_CONFIG_DIR", tmp.Path);
-        try {
-            var spawned = new List<string>();
-            WatcherManager.SpawnOverrideForTesting = key => { spawned.Add(key); return Task.CompletedTask; };
-
-            var child     = NewSessionId();
-            var parent    = NewSessionId();
-            var childFile = Path.Combine(tmp.Path, $"{child}.jsonl");
-            await File.WriteAllTextAsync(childFile, """{"role":"assistant","message":{"content":[]}}""" + "\n");
-            CursorMarkers.MarkSubagentStartAcked(child);
-
-            using var handler = new StubHandler((_, _) => new HttpResponseMessage(HttpStatusCode.OK));
-            using var client  = new HttpClient(handler);
-            var spool = new HookSpool(Path.Combine(tmp.Path, "spool"));
-
-            await CursorHookCommand.HandleSubagentChildEventAsync(
-                client, "http://s", spool, child, "sessionEnd", childFile, parent, "task",
-                budgetExpired: () => false, ct: CancellationToken.None);
-
-            await Assert.That(spawned).IsEmpty();
         } finally {
             WatcherManager.SpawnOverrideForTesting = null;
             Environment.SetEnvironmentVariable("KCAP_CONFIG_DIR", null);

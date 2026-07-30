@@ -6,12 +6,20 @@ namespace Capacitor.Cli.Commands;
 /// <summary>
 /// Live-flow wrapper over <see cref="CursorSubagentCorrelator"/>.
 ///
-/// <see cref="CursorSubagentCorrelator"/> only runs on the historical <c>import</c> path
-/// today, so a live Cursor <c>Task</c>/<c>Agent</c> subagent is ingested as its own
-/// top-level session instead of nesting under its parent — the same problem fixed
-/// for import. Cursor is NOT watcher-backed (<see cref="CursorHookCommand"/> backfills each
-/// session's transcript over HTTP as hooks arrive), so the correlation has to run inline in
-/// that per-hook dispatcher rather than in a background watcher.
+/// A live Cursor <c>Task</c>/<c>Agent</c> subagent is ingested as its own top-level session
+/// instead of nesting under its parent. This type was built to correlate that link inline in
+/// the per-hook dispatcher (Cursor is NOT watcher-backed — <see cref="CursorHookCommand"/>
+/// backfills each session's transcript over HTTP as hooks arrive), on the assumption that the
+/// child's own <c>sessionStart</c> could carry out the decision.
+///
+/// <para>
+/// THAT ASSUMPTION IS FALSE, and the nesting is done elsewhere. Measurement shows a Cursor
+/// subagent child never fires <c>sessionStart</c> at all, and a <c>sessionStart</c> payload
+/// never carries a <c>transcript_path</c> — so this type's marker-writing arm has no producer
+/// (see the NO PRODUCER note below). Subagent nesting is delivered by
+/// <c>kcap import --cursor</c> plus the server-side adoption sweep, which run over COMPLETE
+/// transcripts — the only conditions under which prompt-hash correlation can succeed at all.
+/// </para>
 ///
 /// This type is a thin wrapper: <see cref="ResolveParent"/> reuses the exact same
 /// <see cref="CursorSubagentCorrelator.Correlate"/> prompt-hash matching the import path
@@ -56,13 +64,13 @@ public static class CursorLiveSubagentLinker {
     /// parents, which it already refuses to attribute).
     ///
     /// <para>
-    /// EVENTUAL CONSISTENCY: at the child's very first hook (<c>sessionStart</c>) the
-    /// parent's <c>Task</c>/<c>Agent</c> tool_use may not be flushed to the parent's
-    /// transcript file yet, so this can return null for a session that IS actually a
-    /// subagent. When that happens the child is (temporarily) ingested as its own
-    /// top-level session; a later <c>kcap import --cursor</c> re-runs the same
-    /// deterministic-id correlation over the by-then-complete transcripts and converges
-    /// it under the parent without duplicating content.
+    /// NOT AN EVENTUAL-CONSISTENCY RACE — this was previously documented as one. Measurement
+    /// shows the parent's <c>Task</c>/<c>Agent</c> tool_use stays unflushed for the WHOLE of the
+    /// child's hook window and lands only after the child's final hook, so correlation here is
+    /// not merely often unavailable, it is never available live. (The child's own side does
+    /// appear partway through; the parent's does not.) Correlation succeeds only over complete
+    /// transcripts — i.e. on the <c>kcap import --cursor</c> path plus the server-side adoption
+    /// sweep, which is where subagent nesting actually happens.
     /// </para>
     /// </summary>
     public static CursorSubagentCorrelator.SubagentLink? ResolveParent(
@@ -117,13 +125,18 @@ public static class CursorLiveSubagentLinker {
     public readonly record struct LinkMarker(string ParentSessionId, string SubagentType);
 
     /// <summary>
-    /// Loads a previously-persisted link decision for <paramref name="childSessionId"/>, if
-    /// any. <see cref="CursorHookCommand"/> is a fresh process per hook invocation, so the
-    /// decision made once at the child's <c>sessionStart</c> hook (see
-    /// <see cref="SaveLink"/>) is written to a small on-disk marker that every later hook
-    /// call for the same session (mid-lifecycle events, <c>sessionEnd</c>) can consult
-    /// without re-running the correlator — and, more importantly, without risking a
+    /// Loads a previously-persisted link decision for <paramref name="childSessionId"/>, if any.
+    /// <see cref="CursorHookCommand"/> is a fresh process per hook invocation, so the decision is
+    /// written to a small on-disk marker that every later hook call for the same session can
+    /// consult without re-running the correlator — and, more importantly, without risking a
     /// different answer once the top-level-vs-subagent choice has already been acted on.
+    ///
+    /// <para>
+    /// THIS METHOD IS LIVE even though <see cref="SaveLink"/> has no producer: it runs on EVERY
+    /// event, so a marker persisted by another surface or an older build is still consumed and
+    /// still activates the divert. It is the only one of the three durable artifacts that
+    /// affects classification.
+    /// </para>
     /// </summary>
     public static LinkMarker? TryLoadLink(string childSessionId) {
         try {
@@ -139,7 +152,12 @@ public static class CursorLiveSubagentLinker {
         }
     }
 
-    /// <summary>Persists the link decision made at a child's <c>sessionStart</c> hook.</summary>
+    /// <summary>
+    /// Persists a link decision. NO PRODUCER today — its only caller sits behind a guard that
+    /// requires both a <c>sessionStart</c> event and a non-empty <c>transcript_path</c>, and a
+    /// Cursor <c>sessionStart</c> never carries one. Note it also returns void and swallows
+    /// write failures; see the catch below for why that matters to the caller.
+    /// </summary>
     public static void SaveLink(string childSessionId, string parentSessionId, string subagentType) {
         try {
             Directory.CreateDirectory(MarkerDir);

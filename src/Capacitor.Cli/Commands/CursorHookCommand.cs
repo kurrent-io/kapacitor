@@ -268,15 +268,22 @@ public static class CursorHookCommand {
 
             if (sessionId is not null && DisabledSessions.IsDisabled(sessionId)) return EmptyOrNull();
 
-            // bring CursorSubagentCorrelator into the live hook/backfill
-            // path. Cursor is NOT watcher-backed, so the correlation must run right here in
-            // the per-hook CLI dispatcher rather than in a background watcher. The decision
-            // (linked to a parent, or not) is made once — at the child's own sessionStart —
-            // and persisted to a small on-disk marker (this process exits after every hook
-            // call, so nothing survives in memory across invocations); every later hook call
-            // for the same session_id (mid-lifecycle events, sessionEnd) consults the marker
-            // instead of re-running the correlator, so the top-level-vs-subagent choice can't
-            // flip mid-session once acted on.
+            // Subagent classification. Built to bring CursorSubagentCorrelator into the live
+            // hook path (Cursor is NOT watcher-backed, so it would have to run right here in the
+            // per-hook dispatcher), persisting the decision to an on-disk marker because this
+            // process exits after every hook call.
+            //
+            // In practice the two halves have very different lifetimes:
+            //  - TryLoadLink below is LIVE. It runs on every event, and a marker persisted by
+            //    another surface or an older build still activates the divert.
+            //  - The transcript-derived arm that WRITES a marker has NO PRODUCER: it needs both
+            //    a sessionStart and a non-empty transcript_path, and a Cursor sessionStart never
+            //    carries one. Nor would a subagent child reach it — a child never fires
+            //    sessionStart at all.
+            // So the "decision made once at the child's own sessionStart" this was designed
+            // around never happens. Subagent nesting is delivered by `kcap import --cursor` plus
+            // the server-side adoption sweep, over complete transcripts. See
+            // docs/superpowers/specs/2026-07-30-ai1505-cursor-subagent-classification-design.md
             string? subagentParentId  = null;
             string? subagentAgentType = null;
             if (sessionId is not null) {
@@ -570,12 +577,22 @@ public static class CursorHookCommand {
     /// <summary>
     /// the divert path for a Cursor hook belonging to a subagent child
     /// already linked to a parent (<see cref="CursorLiveSubagentLinker"/>). Mirrors
-    /// <c>CursorImportSource.SendSubagentLifecycleAsync</c> — only three things ever happen
+    /// <c>CursorImportSource.SendSubagentLifecycleAsync</c> — as designed, three things happen
     /// for a linked child, regardless of which Cursor hook fired: <c>subagent-start</c>
     /// (once, from its own <c>sessionStart</c>), transcript backfill routed under the parent
     /// with <c>agent_id=child</c> (on every hook — Cursor gives us no line-granular signal,
     /// so the watermark is just re-checked each time), and <c>subagent-stop</c> (once, from
-    /// its own <c>sessionEnd</c>). Every other Cursor hook for a linked child
+    /// its own <c>sessionEnd</c>).
+    ///
+    /// <para>
+    /// TWO OF THOSE THREE CANNOT HAPPEN. A Cursor subagent child fires neither
+    /// <c>sessionStart</c> nor <c>sessionEnd</c>, so the start and stop arms below are
+    /// unreachable from a real child; only the backfill arm can run, and only when a marker
+    /// already exists. The design above is therefore a description of intent, not of observed
+    /// behaviour — read it that way.
+    /// </para>
+    ///
+    /// Every other Cursor hook for a linked child
     /// (<c>beforeSubmitPrompt</c>/<c>afterAgentThought</c>/telemetry) carries no signal the
     /// import path can ever replay either (Cursor's on-disk transcript has no side channel
     /// for them), so — for live/import parity — they are simply not forwarded, rather than
