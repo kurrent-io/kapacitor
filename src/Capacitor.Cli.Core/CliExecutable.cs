@@ -76,28 +76,18 @@ public static class CliExecutable {
         if (!OperatingSystem.IsWindows())
             return IsExecutable(basePath) ? Full(basePath) : null;
 
-        if (HasExecutableExtension(basePath) && File.Exists(basePath)) return Full(basePath);
-
+        // Windows launches a bare name via PATHEXT — codex.cmd, never the extensionless
+        // "#!/bin/sh" twin npm drops beside it (CreateProcess can't run a shell script). Probe
+        // the PATHEXT candidates FIRST so a .cmd/.exe beats the twin, then fall back to the base
+        // path itself — for an already-extensioned path, or a genuinely extensionless executable
+        // that has no PATHEXT sibling.
         foreach (var ext in WindowsExtensions()) {
             var candidate = basePath + ext;
 
             if (File.Exists(candidate)) return Full(candidate);
         }
 
-        return null;
-    }
-
-    /// <summary>Whether <paramref name="path"/>'s extension is one <c>PATHEXT</c> lists — the
-    /// only files Windows launches by name. A bare extensionless twin never qualifies.</summary>
-    static bool HasExecutableExtension(string path) {
-        var ext = Path.GetExtension(path);
-
-        if (ext.Length == 0) return false;
-
-        foreach (var known in WindowsExtensions())
-            if (string.Equals(known, ext, StringComparison.OrdinalIgnoreCase)) return true;
-
-        return false;
+        return File.Exists(basePath) ? Full(basePath) : null;
     }
 
     /// <summary>Absolute form, or the path unchanged if it can't be expanded (a hit we could
