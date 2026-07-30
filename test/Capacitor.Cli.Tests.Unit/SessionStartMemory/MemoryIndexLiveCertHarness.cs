@@ -95,37 +95,80 @@ internal static class MemoryIndexLiveCertHarness {
     }
 
     /// <summary>
-    /// Saves a user-scoped, repo-independent ("global") memory whose description embeds the nonce,
-    /// through the same <c>POST /api/memories</c> contract <c>kcap mcp memory</c>'s
-    /// <c>save_memory</c> uses. Global sidesteps needing a real repo hash for a throwaway worktree.
+    /// Drives one <c>kcap mcp memory</c> tool call as a SUBPROCESS and returns its raw stdout.
+    ///
+    /// <para><b>Why a subprocess and not an in-process HttpClient.</b> This assembly redirects
+    /// <c>KCAP_CONFIG_DIR</c> to a throwaway directory for its whole lifetime
+    /// (<c>RepoPathStoreTests</c>'s <c>[Before(Assembly)]</c> hook), so in-process credential
+    /// resolution reads an EMPTY config: every authenticated call 401s with "Not authenticated" even
+    /// though `kcap whoami` succeeds in a shell a second earlier. A real `kcap` child reads the real
+    /// config, so routing the memory lifecycle through the CLI is the only way a cert in this assembly
+    /// can authenticate at all. It is also closer to what we are certifying — the same binary the
+    /// harness hook invokes.</para>
+    ///
+    /// <para>Speaks just enough MCP: initialize, initialized, then one <c>tools/call</c>, all written
+    /// up front. The server processes them in order and exits on stdin EOF, which is exactly the
+    /// write-then-close shape <see cref="RunProcessAsync"/> already provides.</para>
     /// </summary>
-    public static async Task<string> SaveNonceMemoryAsync(
-            HttpClient client, string baseUrl, string vendorLabel, string nonce) {
-        var body = McpMemoryServer.BuildSaveBody(new JsonObject {
+    static async Task<string> CallMemoryToolAsync(string toolName, JsonObject arguments) {
+        var stdin = string.Join('\n', [
+            new JsonObject {
+                ["jsonrpc"] = "2.0", ["id"] = 1, ["method"] = "initialize",
+                ["params"] = new JsonObject {
+                    ["protocolVersion"] = "2024-11-05",
+                    ["capabilities"]    = new JsonObject(),
+                    ["clientInfo"]      = new JsonObject { ["name"] = "kcap-live-cert", ["version"] = "1" }
+                }
+            }.ToJsonString(),
+            new JsonObject { ["jsonrpc"] = "2.0", ["method"] = "notifications/initialized" }.ToJsonString(),
+            new JsonObject {
+                ["jsonrpc"] = "2.0", ["id"] = 2, ["method"] = "tools/call",
+                ["params"] = new JsonObject { ["name"] = toolName, ["arguments"] = arguments }
+            }.ToJsonString()
+        ]) + "\n";
+
+        var (exitCode, stdout, stderr) = await RunProcessAsync(
+            "kcap", ["mcp", "memory"], workingDirectory: null, timeout: TimeSpan.FromSeconds(60), stdin: stdin);
+
+        if (stdout.Length == 0) {
+            throw new InvalidOperationException(
+                $"`kcap mcp memory` {toolName} produced no stdout (exit {exitCode}): {stderr}");
+        }
+
+        return stdout;
+    }
+
+    /// <summary>
+    /// Saves a user-scoped, repo-independent ("global") memory whose description embeds the nonce.
+    /// Global sidesteps needing a real repo hash for a throwaway worktree, and the description is
+    /// where the nonce must live: the injected index carries <c>slug: description</c> lines, so this
+    /// is what makes the cert answerable from injected context alone.
+    /// </summary>
+    public static async Task<string> SaveNonceMemoryAsync(string vendorLabel, string nonce) {
+        var stdout = await CallMemoryToolAsync("save_memory", new JsonObject {
             ["audience"]    = "user",
             ["slug"]        = $"live-cert-{nonce}",
             ["description"] = $"kcap {vendorLabel} memory live-cert nonce: {nonce}",
             ["content"]     = $"kcap {vendorLabel} memory live-cert nonce: {nonce}. Safe to archive after the run.",
             ["kind"]        = "reference",
             ["global"]      = true
-        }, cwdRepoHash: null, machineId: null);
+        });
 
-        using var resp = await client.PostAsJsonAsync($"{baseUrl}/api/memories", body);
-        resp.EnsureSuccessStatusCode();
-        var created = await resp.Content.ReadFromJsonAsync<JsonObject>();
+        // The id is dug out of the response text rather than a pinned envelope path: an MCP tool
+        // result nests its payload as a JSON string inside content[].text, and that wrapping is the
+        // server's business, not this cert's. Failing loudly here (rather than returning null and
+        // archiving nothing) is what stops a cert leaking a memory into every later run's index.
+        var id = System.Text.RegularExpressions.Regex.Match(stdout, "\"memory_id\"\\s*:\\s*\\\\?\"([^\"\\\\]+)");
 
-        return created?["memory_id"]?.GetValue<string>()
-            ?? throw new InvalidOperationException("Save response carried no memory_id.");
+        return id.Success
+            ? id.Groups[1].Value
+            : throw new InvalidOperationException($"save_memory returned no memory_id. stdout: {stdout}");
     }
 
     /// <summary>Best-effort cleanup: a leaked cert memory would pollute every later run's index.</summary>
-    public static async Task ArchiveMemoryAsync(HttpClient client, string baseUrl, string vendorLabel, string memoryId) {
+    public static async Task ArchiveMemoryAsync(string vendorLabel, string memoryId) {
         try {
-            using var resp = await client.DeleteAsync($"{baseUrl}/api/memories/{Uri.EscapeDataString(memoryId)}");
-            if (!resp.IsSuccessStatusCode) {
-                await Console.Error.WriteLineAsync(
-                    $"[{vendorLabel}-memory-live] failed to archive live-cert memory {memoryId}: HTTP {(int)resp.StatusCode}");
-            }
+            await CallMemoryToolAsync("archive_memory", new JsonObject { ["memory_id"] = memoryId });
         } catch (Exception ex) {
             await Console.Error.WriteLineAsync(
                 $"[{vendorLabel}-memory-live] failed to archive live-cert memory {memoryId}: {ex.Message}");

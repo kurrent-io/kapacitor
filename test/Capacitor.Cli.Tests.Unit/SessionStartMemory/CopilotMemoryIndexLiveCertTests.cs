@@ -1,5 +1,3 @@
-using Capacitor.Cli.Core;
-
 namespace Capacitor.Cli.Tests.Unit.SessionStartMemory;
 
 /// <summary>
@@ -27,12 +25,8 @@ public class CopilotMemoryIndexLiveCertTests {
     [Test, NotInParallel]
     public async Task Nonce_saved_as_a_memory_is_reproduced_by_a_real_copilot_session_start() {
         Gate();
-
-        var baseUrl = await MemoryIndexLiveCertHarness.InitializeAndResolveServerUrlAsync();
         var nonce   = MemoryIndexLiveCertHarness.NewNonce();
-
-        using var client = await HttpClientExtensions.CreateAuthenticatedClientAsync(baseUrl);
-        var memoryId = await MemoryIndexLiveCertHarness.SaveNonceMemoryAsync(client, baseUrl, VendorLabel, nonce);
+        var memoryId = await MemoryIndexLiveCertHarness.SaveNonceMemoryAsync(VendorLabel, nonce);
 
         try {
             await MemoryIndexLiveCertHarness.RecordVersionAsync(VendorLabel, "copilot", ["--version"]);
@@ -41,19 +35,15 @@ public class CopilotMemoryIndexLiveCertTests {
 
             await Assert.That(answer).Contains(nonce);
         } finally {
-            await MemoryIndexLiveCertHarness.ArchiveMemoryAsync(client, baseUrl, VendorLabel, memoryId);
+            await MemoryIndexLiveCertHarness.ArchiveMemoryAsync(VendorLabel, memoryId);
         }
     }
 
     [Test, NotInParallel]
     public async Task Disabled_memory_index_does_not_leak_the_nonce_to_a_real_copilot_session_start() {
         Gate();
-
-        var baseUrl = await MemoryIndexLiveCertHarness.InitializeAndResolveServerUrlAsync();
         var nonce   = MemoryIndexLiveCertHarness.NewNonce();
-
-        using var client = await HttpClientExtensions.CreateAuthenticatedClientAsync(baseUrl);
-        var memoryId = await MemoryIndexLiveCertHarness.SaveNonceMemoryAsync(client, baseUrl, VendorLabel, nonce);
+        var memoryId = await MemoryIndexLiveCertHarness.SaveNonceMemoryAsync(VendorLabel, nonce);
 
         var original = await MemoryIndexLiveCertHarness.ReadDisableMemoryIndexAsync();
 
@@ -65,7 +55,7 @@ public class CopilotMemoryIndexLiveCertTests {
             await Assert.That(answer).DoesNotContain(nonce);
         } finally {
             await MemoryIndexLiveCertHarness.RestoreDisableMemoryIndexAsync(original);
-            await MemoryIndexLiveCertHarness.ArchiveMemoryAsync(client, baseUrl, VendorLabel, memoryId);
+            await MemoryIndexLiveCertHarness.ArchiveMemoryAsync(VendorLabel, memoryId);
         }
     }
 

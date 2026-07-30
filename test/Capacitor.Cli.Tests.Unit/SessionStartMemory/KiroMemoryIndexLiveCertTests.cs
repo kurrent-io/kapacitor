@@ -1,5 +1,3 @@
-using Capacitor.Cli.Core;
-
 namespace Capacitor.Cli.Tests.Unit.SessionStartMemory;
 
 /// <summary>
@@ -30,12 +28,8 @@ public class KiroMemoryIndexLiveCertTests {
     [Test, NotInParallel]
     public async Task Nonce_saved_as_a_memory_is_reproduced_by_a_real_kiro_agent_spawn() {
         Gate();
-
-        var baseUrl = await MemoryIndexLiveCertHarness.InitializeAndResolveServerUrlAsync();
         var nonce   = MemoryIndexLiveCertHarness.NewNonce();
-
-        using var client = await HttpClientExtensions.CreateAuthenticatedClientAsync(baseUrl);
-        var memoryId = await MemoryIndexLiveCertHarness.SaveNonceMemoryAsync(client, baseUrl, VendorLabel, nonce);
+        var memoryId = await MemoryIndexLiveCertHarness.SaveNonceMemoryAsync(VendorLabel, nonce);
 
         var worktree = MemoryIndexLiveCertHarness.NewCertWorktree(VendorLabel);
 
@@ -47,7 +41,7 @@ public class KiroMemoryIndexLiveCertTests {
             await Assert.That(answer).Contains(nonce);
         } finally {
             TryDelete(worktree);
-            await MemoryIndexLiveCertHarness.ArchiveMemoryAsync(client, baseUrl, VendorLabel, memoryId);
+            await MemoryIndexLiveCertHarness.ArchiveMemoryAsync(VendorLabel, memoryId);
         }
     }
 
@@ -62,12 +56,8 @@ public class KiroMemoryIndexLiveCertTests {
     [Test, NotInParallel]
     public async Task A_resumed_kiro_session_does_not_get_the_index_injected_a_second_time() {
         Gate();
-
-        var baseUrl = await MemoryIndexLiveCertHarness.InitializeAndResolveServerUrlAsync();
         var nonce   = MemoryIndexLiveCertHarness.NewNonce();
-
-        using var client = await HttpClientExtensions.CreateAuthenticatedClientAsync(baseUrl);
-        var memoryId = await MemoryIndexLiveCertHarness.SaveNonceMemoryAsync(client, baseUrl, VendorLabel, nonce);
+        var memoryId = await MemoryIndexLiveCertHarness.SaveNonceMemoryAsync(VendorLabel, nonce);
 
         var worktree = MemoryIndexLiveCertHarness.NewCertWorktree(VendorLabel);
 
@@ -87,19 +77,15 @@ public class KiroMemoryIndexLiveCertTests {
             await Assert.That(second).DoesNotContain(nonce);
         } finally {
             TryDelete(worktree);
-            await MemoryIndexLiveCertHarness.ArchiveMemoryAsync(client, baseUrl, VendorLabel, memoryId);
+            await MemoryIndexLiveCertHarness.ArchiveMemoryAsync(VendorLabel, memoryId);
         }
     }
 
     [Test, NotInParallel]
     public async Task Disabled_memory_index_does_not_leak_the_nonce_to_a_real_kiro_agent_spawn() {
         Gate();
-
-        var baseUrl = await MemoryIndexLiveCertHarness.InitializeAndResolveServerUrlAsync();
         var nonce   = MemoryIndexLiveCertHarness.NewNonce();
-
-        using var client = await HttpClientExtensions.CreateAuthenticatedClientAsync(baseUrl);
-        var memoryId = await MemoryIndexLiveCertHarness.SaveNonceMemoryAsync(client, baseUrl, VendorLabel, nonce);
+        var memoryId = await MemoryIndexLiveCertHarness.SaveNonceMemoryAsync(VendorLabel, nonce);
 
         var original = await MemoryIndexLiveCertHarness.ReadDisableMemoryIndexAsync();
         var worktree = MemoryIndexLiveCertHarness.NewCertWorktree(VendorLabel);
@@ -113,7 +99,7 @@ public class KiroMemoryIndexLiveCertTests {
         } finally {
             TryDelete(worktree);
             await MemoryIndexLiveCertHarness.RestoreDisableMemoryIndexAsync(original);
-            await MemoryIndexLiveCertHarness.ArchiveMemoryAsync(client, baseUrl, VendorLabel, memoryId);
+            await MemoryIndexLiveCertHarness.ArchiveMemoryAsync(VendorLabel, memoryId);
         }
     }
 
