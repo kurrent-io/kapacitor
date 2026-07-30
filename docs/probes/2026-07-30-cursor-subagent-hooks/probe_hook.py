@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""AI-1505 probe hook: records every Cursor hook payload plus the on-disk
+"""Cursor hook probe: records every Cursor hook payload plus the on-disk
 agent-transcripts state at the instant the hook fired.
 
 Logs to a FILE; stdout carries ONLY the JSON response (never tee-wrap a

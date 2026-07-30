@@ -141,63 +141,59 @@ public class CursorSubagentStaleStateTests {
     [Test]
     public async Task Successful_start_with_a_failed_marker_write_leaves_ack_and_watcher_without_a_marker_known_risk() {
         using var tmp = new TempDir();
-        var child  = NewSessionId();
-        var parent = NewSessionId();
-        var childFile = Path.Combine(tmp.Path, $"{child}.jsonl");
-        await File.WriteAllTextAsync(childFile, """{"role":"assistant","message":{"content":[]}}""" + "\n");
+        var (parent, child, childPath) = SeedLinkedPair(tmp, "characterize the successful start");
 
         var spawned = new List<string>();
         WatcherManager.SpawnOverrideForTesting = key => { spawned.Add(key); return Task.CompletedTask; };
         var blocker = MarkerPath(child);
         try {
-            // A DIRECTORY where the marker FILE must go: File.WriteAllLines throws and SaveLink
-            // swallows it. (Chosen over redirecting KCAP_CONFIG_DIR, which PathHelpers resolves
-            // into a process-wide static readonly field.)
-            Directory.CreateDirectory(Path.GetDirectoryName(blocker)!);
-            Directory.CreateDirectory(blocker);
-            CursorLiveSubagentLinker.SaveLink(child, parent, "task");
-            await Assert.That(CursorLiveSubagentLinker.TryLoadLink(child)).IsNull();
+            BlockMarkerWrite(blocker);
 
-            using var handler = new StubHandler((req, _) =>
-                req.Method == HttpMethod.Get
+            var routes = new List<string>();
+            using var handler = new StubHandler((req, _) => {
+                routes.Add(req.RequestUri!.AbsolutePath);
+                return req.Method == HttpMethod.Get
                     ? new HttpResponseMessage(HttpStatusCode.NotFound)
-                    : new HttpResponseMessage(HttpStatusCode.OK));
+                    : new HttpResponseMessage(HttpStatusCode.OK);
+            });
             using var client = new HttpClient(handler);
             var spool = new HookSpool(Path.Combine(tmp.Path, "spool"));
 
-            // The caller proceeds regardless — it already holds parent/child in memory.
-            await CursorHookCommand.HandleSubagentChildEventAsync(
-                client, "http://s", spool, child, "sessionStart", childFile, parent, "task",
-                budgetExpired: () => false, CancellationToken.None);
+            // Drive the REAL CALLER, not the divert directly. That matters: the leading remedy
+            // changes the caller (make SaveLink report success and fail open before the start is
+            // posted), so a test that bypassed it by calling HandleSubagentChildEventAsync would
+            // keep passing after the remedy landed — defeating the whole point of a
+            // characterization test.
+            await CursorHookCommand.HandleCore(
+                client, "http://s",
+                new StringReader($$"""{"hook_event_name":"sessionStart","session_id":"{{child}}","transcript_path":"{{childPath.Replace(@"\", @"\\")}}"}"""),
+                spool, TimeSpan.FromSeconds(5));
 
-            // THE FINDING: ack + child watcher exist, with no marker to tie them to. Any later
-            // invocation misses TryLoadLink and routes this child as its own top-level session,
-            // while this watcher keeps feeding it under the parent — dual routing.
-            await Assert.That(CursorMarkers.HasSubagentStartAck(child)).IsTrue();
-            await Assert.That(spawned).IsEquivalentTo([$"{parent}-{child}"]);
+            // THE FINDING: the marker write failed, yet the start still went out, the ack was
+            // persisted and the {parent}-{child} watcher spawned — with no marker tying them to
+            // anything. Every later invocation misses TryLoadLink and routes this child
+            // top-level while that watcher keeps feeding it under the parent.
             await Assert.That(CursorLiveSubagentLinker.TryLoadLink(child)).IsNull();
+            await Assert.That(routes).Contains("/hooks/subagent-start");
+            await Assert.That(CursorMarkers.HasSubagentStartAck(child)).IsTrue();
+            await Assert.That(spawned).Contains($"{parent}-{child}");
         } finally {
             WatcherManager.SpawnOverrideForTesting = null;
-            try { Directory.Delete(blocker, true); } catch { /* best effort */ }
+            UnblockMarkerWrite(blocker);
+            TryDeleteMarker(child);
         }
     }
 
     [Test]
     public async Task Spooled_start_with_a_failed_marker_write_dual_routes_on_the_next_hook_known_risk() {
         using var tmp = new TempDir();
-        var child  = NewSessionId();
-        var parent = NewSessionId();
-        var childFile = Path.Combine(tmp.Path, $"{child}.jsonl");
-        await File.WriteAllTextAsync(childFile, """{"role":"assistant","message":{"content":[]}}""" + "\n");
+        var (parent, child, childPath) = SeedLinkedPair(tmp, "characterize the spooled start");
 
         var spawned = new List<string>();
         WatcherManager.SpawnOverrideForTesting = key => { spawned.Add(key); return Task.CompletedTask; };
         var blocker = MarkerPath(child);
         try {
-            Directory.CreateDirectory(Path.GetDirectoryName(blocker)!);
-            Directory.CreateDirectory(blocker);
-            CursorLiveSubagentLinker.SaveLink(child, parent, "task");
-            await Assert.That(CursorLiveSubagentLinker.TryLoadLink(child)).IsNull();
+            BlockMarkerWrite(blocker);
 
             var startAttempts = 0;
             var routes = new List<string>();
@@ -216,39 +212,88 @@ public class CursorSubagentStaleStateTests {
             using var client = new HttpClient(handler);
             var spool = new HookSpool(Path.Combine(tmp.Path, "spool"));
 
-            // First: the start POST fails and is spooled — with no marker on disk.
-            await CursorHookCommand.HandleSubagentChildEventAsync(
-                client, "http://s", spool, child, "sessionStart", childFile, parent, "task",
-                budgetExpired: () => false, CancellationToken.None);
+            // Again through the REAL CALLER — see the note in the test above.
+            await CursorHookCommand.HandleCore(
+                client, "http://s",
+                new StringReader($$"""{"hook_event_name":"sessionStart","session_id":"{{child}}","transcript_path":"{{childPath.Replace(@"\", @"\\")}}"}"""),
+                spool, TimeSpan.FromSeconds(5));
+
             await Assert.That(spool.HasBacklog(child)).IsTrue();
             await Assert.That(spawned).IsEmpty();
+            await Assert.That(CursorLiveSubagentLinker.TryLoadLink(child)).IsNull();
 
-            // Next hook for the same child. THE FINDING: the drain delivers the spooled start and
-            // spawns the {parent}-{child} watcher, while the hook itself — having missed
-            // TryLoadLink — takes the ordinary top-level route. The same child ends up ingested
-            // BOTH under the parent and as its own session.
+            // Next hook: the drain delivers the spooled start and spawns the agent-scoped
+            // watcher, while this invocation — having missed TryLoadLink — also takes the
+            // ordinary top-level route. THE FINDING: two watchers now tail the SAME transcript,
+            // one under the parent and one as the child's own session.
             routes.Clear();
             await CursorHookCommand.HandleCore(
                 client, "http://s",
-                new StringReader($$"""{"hook_event_name":"afterAgentResponse","session_id":"{{child}}","transcript_path":"{{childFile.Replace(@"\", @"\\")}}"}"""),
+                new StringReader($$"""{"hook_event_name":"afterAgentResponse","session_id":"{{child}}","transcript_path":"{{childPath.Replace(@"\", @"\\")}}"}"""),
                 spool, TimeSpan.FromSeconds(5));
 
-            // TWO watchers now tail the SAME transcript: one agent-scoped under the parent
-            // (spawned by the drain from the spooled payload) and one keyed on the bare child id
-            // (spawned by the ordinary top-level path, because TryLoadLink missed). That pair is
-            // the dual-routing finding in its most direct form.
             await Assert.That(spawned).Contains($"{parent}-{child}");   // under the parent
             await Assert.That(spawned).Contains(child);                 // ...and as its own session
-            await Assert.That(routes).Contains("/hooks/agent-response/cursor"); // top-level route too
+            await Assert.That(routes).Contains("/hooks/agent-response/cursor");
             await Assert.That(CursorLiveSubagentLinker.TryLoadLink(child)).IsNull();
         } finally {
             WatcherManager.SpawnOverrideForTesting = null;
-            try { Directory.Delete(blocker, true); } catch { /* best effort */ }
+            UnblockMarkerWrite(blocker);
+            TryDeleteMarker(child);
         }
+    }
+
+    /// <summary>
+    /// Builds a real Cursor <c>agent-transcripts/&lt;sid&gt;/&lt;sid&gt;.jsonl</c> parent+child
+    /// pair whose child's first user_query matches the parent's Task prompt, so the dispatcher's
+    /// own classification arm resolves the link. Returns dashless ids (what the hook normalizes
+    /// to) plus the child's transcript path.
+    /// </summary>
+    static (string Parent, string Child, string ChildPath) SeedLinkedPair(TempDir tmp, string prompt) {
+        var root = Path.Combine(tmp.Path, "agent-transcripts");
+        Directory.CreateDirectory(root);
+
+        var parentRaw = Guid.NewGuid().ToString();
+        var childRaw  = Guid.NewGuid().ToString();
+
+        var parentDir = Path.Combine(root, parentRaw);
+        Directory.CreateDirectory(parentDir);
+        var parentLine1 = """{"role":"user","message":{"content":[{"type":"text","text":"kick it off"}]}}""";
+        var parentLine2 = System.Text.Json.JsonSerializer.Serialize(new {
+            role = "assistant",
+            message = new { content = new object[] { new { type = "tool_use", name = "Task", input = new { prompt } } } },
+        });
+        File.WriteAllText(Path.Combine(parentDir, parentRaw + ".jsonl"), parentLine1 + "\n" + parentLine2 + "\n");
+
+        var childDir = Path.Combine(root, childRaw);
+        Directory.CreateDirectory(childDir);
+        var childPath = Path.Combine(childDir, childRaw + ".jsonl");
+        var childLine = System.Text.Json.JsonSerializer.Serialize(new {
+            role = "user",
+            message = new { content = new object[] { new { type = "text", text = $"<user_query>\n{prompt}\n</user_query>" } } },
+        });
+        File.WriteAllText(childPath, childLine + "\n");
+
+        return (parentRaw.Replace("-", ""), childRaw.Replace("-", ""), childPath);
+    }
+
+    /// <summary>
+    /// Makes the marker write fail by putting a DIRECTORY where the marker FILE must go, so
+    /// File.WriteAllLines throws and SaveLink swallows it. Chosen over redirecting
+    /// KCAP_CONFIG_DIR, which PathHelpers resolves into a process-wide static readonly field.
+    /// </summary>
+    static void BlockMarkerWrite(string markerPath) {
+        Directory.CreateDirectory(Path.GetDirectoryName(markerPath)!);
+        Directory.CreateDirectory(markerPath);
+    }
+
+    static void UnblockMarkerWrite(string markerPath) {
+        try { Directory.Delete(markerPath, true); } catch { /* best effort */ }
     }
 
     static void TryDeleteMarker(string child) {
         try { File.Delete(MarkerPath(child)); } catch { /* best effort */ }
+        try { File.Delete(CursorMarkers.SubagentStartAckPath(child)); } catch { /* best effort */ }
     }
 
     sealed class StubHandler(Func<HttpRequestMessage, string, HttpResponseMessage> impl) : HttpMessageHandler {
