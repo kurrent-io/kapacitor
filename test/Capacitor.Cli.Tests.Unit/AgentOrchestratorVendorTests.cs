@@ -998,6 +998,99 @@ public partial class AgentOrchestratorVendorTests {
 
     // ── Backward-compat matrix: which report channel a launch uses ──────────────────────────
 
+    /// <summary>
+    /// A vendor that cannot APPLY a model must not have one REPORTED for it.
+    ///
+    /// <para>Found by code review on the Kiro hosted-agent change. The orchestrator computes one
+    /// <c>effectiveModel</c> and uses it twice: as <c>RuntimeStartContext.Model</c> — where a no-op
+    /// selector silently discards it — and as the <c>AgentInstance</c> model published via
+    /// <c>AgentRegisteredAsync</c>, which drives the live model chip and <c>hosted_agent_started</c>
+    /// analytics. So the vendor ran its default while the dashboard claimed the requested model was
+    /// live: exactly the requested-vs-running mismatch the no-op selector was chosen to avoid.</para>
+    ///
+    /// <para>This is the paired assertion — the launch still SUCCEEDS (refusing would make such a
+    /// vendor unlaunchable from any caller that always sends a model) but reports no model.</para>
+    /// </summary>
+    [Test]
+    public async Task Interactive_launch_for_a_vendor_that_cannot_select_a_model_reports_no_model_and_still_launches() {
+        var (repoPath, cleanup) = CreateGitRepo();
+
+        try {
+            var server     = new CaptureServerConnection();
+            var ptyFactory = new SpyPtyProcessFactory();
+            var kiroSpy    = new SpyHostedAgentRuntimeFactory("kiro") {
+                EmitsTerminalOutput    = false,
+                SupportsModelSelection = false
+            };
+
+            await using var orch = BuildOrchestrator(
+                server, ptyFactory, new Dictionary<string, IHostedAgentLauncher>(),
+                allowedRepoPath: repoPath, extraRuntimeFactories: [kiroSpy]);
+
+            await orch.HandleLaunchAgentForTest(new LaunchAgentCommand(
+                AgentId: "agent-kiro-model",
+                Prompt: "do the thing",
+                Model: "claude-opus-4-8",   // requested, but this vendor cannot apply it
+                Effort: null,
+                RepoPath: repoPath,
+                Tools: null,
+                AttachmentIds: null,
+                Vendor: "kiro"));
+
+            // Not refused.
+            await Assert.That(server.LaunchFailedCalls).IsEmpty();
+            await Assert.That(kiroSpy.StartCalls).IsEqualTo(1);
+
+            // The model is cleared on BOTH paths — the reported one and the runtime context — so
+            // nothing downstream can resurrect it.
+            await Assert.That(server.AgentRegisteredCalls).Contains(("agent-kiro-model", (string?)null));
+            await Assert.That(kiroSpy.LastContext).IsNotNull();
+            await Assert.That(kiroSpy.LastContext!.Model).IsNull();
+        } finally {
+            cleanup();
+        }
+    }
+
+    /// <summary>The other half of <see cref="ModelSelectionLaunchPolicy"/>: a PINNED reviewer model is
+    /// different in kind from an interactive request. A review round's authority depends on which model
+    /// produced it, so silently reviewing with the vendor default — even with truthful metadata — is
+    /// worse than not reviewing. Reject, before any worktree or process side effects.</summary>
+    [Test]
+    public async Task Explicit_reviewer_model_is_rejected_for_a_vendor_that_cannot_select_a_model() {
+        var server     = new CaptureServerConnection();
+        var ptyFactory = new SpyPtyProcessFactory();
+        var kiroSpy    = new SpyHostedAgentRuntimeFactory("kiro") {
+            SupportsUnattended     = true,
+            SupportsModelSelection = false
+        };
+
+        await using var orch = BuildOrchestrator(
+            server, ptyFactory, new Dictionary<string, IHostedAgentLauncher>(),
+            extraRuntimeFactories: [kiroSpy]);
+
+        await orch.HandleLaunchAgentForTest(new LaunchAgentCommand(
+            AgentId: "agent-kiro-pinned",
+            Prompt: "review this",
+            Model: "opus",
+            Effort: null,
+            RepoPath: "/tmp/does-not-matter",
+            Tools: null,
+            AttachmentIds: null,
+            Vendor: "kiro",
+            ExplicitReviewerModel: new ExplicitReviewerModelLaunch(
+                LaunchAttemptId: "attempt-kiro", LaunchModel: "claude-opus-4-8",
+                PolicyVersion: "kiro-reviewer-model-v1", EquivalenceKey: "kiro/opus")));
+
+        await Assert.That(server.LaunchFailedCalls).Count().IsEqualTo(1);
+        await Assert.That(server.LaunchFailedCalls[0].AgentId).IsEqualTo("agent-kiro-pinned");
+        // Names the model it refused to fake, so the failure is actionable rather than generic.
+        await Assert.That(server.LaunchFailedCalls[0].Reason).Contains("claude-opus-4-8");
+
+        // Rejected before the runtime was ever started.
+        await Assert.That(kiroSpy.StartCalls).IsEqualTo(0);
+        await Assert.That(server.AgentRegisteredCalls).IsEmpty();
+    }
+
     [Test]
     public async Task NewNew_explicit_model_launch_reports_on_the_v3_channel_and_launches_verbatim_model() {
         var (repoPath, cleanup) = CreateGitRepo();
@@ -1200,6 +1293,11 @@ public partial class AgentOrchestratorVendorTests {
         /// <summary>Task 8: lets a test give this factory a reviewer-model resolver so the
         /// orchestrator's ResolveReviewerModel preflight handler can resolve against it.</summary>
         public IReviewerModelResolver? ReviewerModelResolver { get; init; }
+
+        /// <summary>Defaults to <c>true</c>, matching the interface default and every pre-existing
+        /// runtime. A test sets <c>false</c> to stand in for a vendor whose model-selection hook is a
+        /// no-op (Kiro today), exercising <see cref="ModelSelectionLaunchPolicy"/>.</summary>
+        public bool SupportsModelSelection { get; init; } = true;
 
         /// <summary>Threaded onto the <see cref="FakeHostedAgentRuntime"/> this factory returns —
         /// defaults to <c>false</c> (ACP-shaped) matching this factory's original "cursor" use, but

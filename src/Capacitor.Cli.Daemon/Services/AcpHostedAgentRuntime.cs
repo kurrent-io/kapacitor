@@ -278,12 +278,20 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
             : _vendor == AcpVendorDescriptors.Kiro.Vendor ? "kiro-cli"
             : _vendor;
 
+    // Kiro deliberately gets a hint that names NO command. Cursor and Copilot name a verified login
+    // subcommand; for Kiro no auth requirement, auth method, or login command was ever observed
+    // (`authMethods` came back empty and a prompt completed with no API key set), so inventing a
+    // `kiro-cli login` would be fabricated guidance. The generic fallback is also wrong here for the
+    // same reason DiagnosticBinary needed a branch: it interpolates the vendor KEY and would tell an
+    // operator to authenticate `kiro`, a command absent from a correct install.
     string DiagnosticAuthHint =>
         _vendor == AcpVendorDescriptors.Cursor.Vendor
             ? "run `cursor-agent login` and verify a Team-tier subscription"
             : _vendor == AcpVendorDescriptors.Copilot.Vendor
                 ? "run `copilot login` and verify GitHub Copilot access for your enterprise"
-                : $"authenticate `{_vendor}` and verify your subscription/entitlement";
+                : _vendor == AcpVendorDescriptors.Kiro.Vendor
+                    ? "verify Kiro CLI is signed in and your subscription/entitlement is active"
+                    : $"authenticate `{_vendor}` and verify your subscription/entitlement";
 
     public bool   HasExited           => _process.HasExited;
     public int?   ExitCode            => _process.ExitCode;

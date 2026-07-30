@@ -403,6 +403,9 @@ public class AcpHostedAgentRuntimeFactoryTests {
     /// <summary>Parks in model selection until cancelled, so a test can occupy the window between a
     /// completed session/new and StartAsync's return.</summary>
     sealed class BlockingModelSelector(TaskCompletionSource entered) : IAcpModelSelector {
+        // It does attempt selection (that is the point — it parks mid-attempt), so it reports true.
+        public bool CanSelectModel => true;
+
         public async Task<string?> TrySelectAsync(
                 AcpConnection            connection,
                 string                   sessionId,

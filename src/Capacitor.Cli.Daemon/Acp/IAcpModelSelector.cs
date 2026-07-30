@@ -30,6 +30,23 @@ namespace Capacitor.Cli.Daemon.Acp;
 /// never a bare `catch (Exception)` that would also eat cancellation).
 /// </summary>
 internal interface IAcpModelSelector {
+    /// <summary>
+    /// Whether this selector can actually apply a caller-requested model. <see langword="false"/> means
+    /// a requested model will be silently discarded, so callers must not REPORT one as the model the
+    /// process is running.
+    ///
+    /// <para>This lives on the selector, not as a parallel descriptor flag, because the selector object
+    /// is deliberately the single source of truth for model selection (see
+    /// <c>AcpVendorDescriptor</c>'s note on the removed <c>SupportsModelSelection</c> field — a second
+    /// boolean that also had to agree with the selector was dead state guarded asymmetrically). Asking
+    /// the selector cannot disagree with itself, and it works for a future vendor's own
+    /// implementation or a test double, neither of which is reference-equal to the two singletons
+    /// here.</para>
+    ///
+    /// <para>Consumers must not infer this by type-testing for <see cref="NoOpModelSelector"/>.</para>
+    /// </summary>
+    bool CanSelectModel { get; }
+
     Task<string?> TrySelectAsync(
         AcpConnection     connection,
         string            sessionId,
@@ -50,6 +67,11 @@ internal interface IAcpModelSelector {
 /// </summary>
 internal sealed class ConfigOptionModelSelector : IAcpModelSelector {
     public static readonly ConfigOptionModelSelector Instance = new();
+
+    /// <summary>This selector really does send <c>session/set_config_option</c>, so a requested model
+    /// may be applied. Note it can still fail to MATCH a model and return null — "can select" is a
+    /// capability, not a promise about a specific request.</summary>
+    public bool CanSelectModel => true;
 
     public async Task<string?> TrySelectAsync(
             AcpConnection connection, string sessionId, JsonElement sessionNewResult,
@@ -104,6 +126,11 @@ internal sealed class ConfigOptionModelSelector : IAcpModelSelector {
 /// boolean.</summary>
 internal sealed class NoOpModelSelector : IAcpModelSelector {
     public static readonly NoOpModelSelector Instance = new();
+
+    /// <summary>No hook exists, so a requested model is always discarded. Callers use this to avoid
+    /// REPORTING a model the process is not running — discarding the request quietly is fine, but
+    /// telling the dashboard and analytics that the discarded model is live is not.</summary>
+    public bool CanSelectModel => false;
 
     public Task<string?> TrySelectAsync(
             AcpConnection connection, string sessionId, JsonElement sessionNewResult,

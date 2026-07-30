@@ -69,6 +69,11 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
     /// support is untouched.</summary>
     public IReviewerModelResolver? ReviewerModelResolver => null;
 
+    /// <summary>Delegated to the descriptor's selector, which is the single source of truth for model
+    /// selection. Deliberately NOT a type test for <c>NoOpModelSelector</c>: a vendor's own selector
+    /// implementation, or a test double, is equally valid and would defeat one.</summary>
+    public bool SupportsModelSelection => descriptor.ModelSelector.CanSelectModel;
+
     public bool IsAvailable() => CliResolver.Exists(descriptor.ResolveBinaryPath(config));
 
     public async Task<HostedRuntimeStart> StartAsync(RuntimeStartContext ctx, CancellationToken ct) {

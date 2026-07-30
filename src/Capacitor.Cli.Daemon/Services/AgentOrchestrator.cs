@@ -901,6 +901,27 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             return new CommandOutcome(CommandOutcomeKind.LaunchRejected, agentId, RejectReason: CommandRejectedReason.Semantic);
         }
 
+        // A runtime that cannot APPLY a model must not REPORT one. effectiveModel above feeds both
+        // RuntimeStartContext.Model (where a no-op selector discards it) and the AgentInstance the
+        // server sees — so without this, such a vendor runs its default while the live model chip and
+        // hosted_agent_started analytics both claim the requested model is live.
+        switch (ModelSelectionLaunchPolicy.Evaluate(
+                    effectiveModel,
+                    runtimeFactory.SupportsModelSelection,
+                    cmd.ExplicitReviewerModel is not null)) {
+            case ModelSelectionDisposition.Reject:
+                await _server.LaunchFailedAsync(cmd.AgentId,
+                    ModelSelectionLaunchPolicy.RejectionReason(cmd.Vendor, effectiveModel!));
+
+                return new CommandOutcome(
+                    CommandOutcomeKind.LaunchRejected, agentId, RejectReason: CommandRejectedReason.Semantic);
+
+            case ModelSelectionDisposition.ClearReportedModel:
+                LogModelSelectionUnsupported(cmd.Vendor, effectiveModel!);
+                effectiveModel = null;
+                break;
+        }
+
         if (isReviewFlow && cmd.Borrowed && !runtimeFactory.SupportsBorrowedReviewFlow) {
             await _server.LaunchFailedAsync(cmd.AgentId,
                 $"Borrowed review flows are not certified for '{cmd.Vendor}'; retry with an owned review worktree.");
@@ -2794,6 +2815,9 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
 
     [LoggerMessage(Level = LogLevel.Information, Message = "Launching agent {AgentId} for {Repo} (effort={Effort}, model={Model})")]
     partial void LogLaunching(string agentId, string repo, string effort, string model);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Vendor '{Vendor}' cannot apply a requested model; launching with its default and reporting no model instead of '{RequestedModel}', so the dashboard and analytics are not told a model is live that isn't.")]
+    partial void LogModelSelectionUnsupported(string vendor, string requestedModel);
 
     [LoggerMessage(Level = LogLevel.Information, Message = "Agent {AgentId} spawned (PID={Pid}, worktree={Worktree}, vendor={Vendor})")]
     partial void LogAgentSpawned(string agentId, int pid, string worktree, string vendor);
