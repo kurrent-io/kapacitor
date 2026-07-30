@@ -24,10 +24,16 @@ fixes.
 
 ## 2. Method
 
-Three `cursor-agent` runs in a throwaway git workspace at
-`/private/tmp/kcap-cursor-subagent-probe-1505`, each prompted to delegate via the
-`Task` tool, each confirmed to have spawned a real subagent (`taskToolCall` observed
-in `--output-format stream-json`).
+Four `cursor-agent` runs in a throwaway git workspace at
+`/private/tmp/kcap-cursor-subagent-probe-1505`, each prompted to delegate, each
+confirmed to have spawned a real subagent — runs 1–3 via the `Task` tool
+(`taskToolCall` observed in `--output-format stream-json`), run 4 via a named custom
+subagent defined at `.cursor/agents/prober.md` (delegation confirmed by the child
+returning the workspace file's marker line).
+
+Also, a static scan of the CLI's JS bundles under
+`~/.local/share/cursor-agent/versions/2026.07.23-e383d2b/` for the hook-event registry
+and the `subagentStart` implementation (F6).
 
 Hooks were wired at **project level** (`<workspace>/.cursor/hooks.json`), which
 Cursor merges with the user-level config at higher precedence — so the probe never
@@ -136,7 +142,47 @@ Current Cursor documents `subagentStart`/`subagentStop` hooks carrying an explic
 `parent_conversation_id`, `subagent_id`, `subagent_type`, `task` and `tool_call_id` —
 exactly the link `CursorSubagentCorrelator`'s doc comment says Cursor does not
 provide, and one that needs no transcript at all. Neither fired in
-`cursor-agent 2026.07.23-e383d2b` despite a real subagent running in all three runs.
+`cursor-agent 2026.07.23-e383d2b` despite a real subagent running in every run. F6
+establishes why.
+
+### F6 — `subagentStart` is implemented in the CLI but not dispatched by this version
+
+Scanning the CLI's JS bundles (`~/.local/share/cursor-agent/versions/2026.07.23-e383d2b/`)
+shows `subagentStart` is not merely a documented name — it is fully built:
+
+- `index.js` contains the payload builder (`subagent_id`, `subagent_type`, `task`,
+  `parent_conversation_id`, `tool_call_id`, `subagent_model`, `is_parallel_worker`,
+  `git_branch`) and the `executeHookForStep(_E.subagentStart, …)` call;
+- the response validator accepts `permission` ∈ {`allow`, `deny`, `ask`};
+- it appears in the hook-name registry and the `matcher` resolver (which keys
+  `subagentStart`/`subagentStop` off `subagent_type`; an absent/empty/`*` matcher
+  matches all, so the probe's matcher-less config was not the reason).
+
+**The response type accepts `additional_context`** — `SubagentStartRequestResponse({permission, userMessage, additionalContext: …})` — which the published docs omit. Recorded
+because it means a per-subagent injection channel exists should we ever want one. We
+deliberately do not want one here: the parent has already been injected, and injecting
+a subagent again is the redundancy AI-1461 was trying to avoid.
+
+Run 4 tested the leading hypothesis that dispatch requires a *named* subagent type
+(runs 1–3 produced `subagentType: {unspecified: {}}`, whereas the one real pre-existing
+pair on disk shows `subagent_type: generalPurpose`). A custom subagent was defined at
+`.cursor/agents/prober.md` and invoked by name; delegation genuinely occurred (the
+child returned the file's marker line, and the parent reported it). Hooks fired:
+
+| Session | Role | Hooks fired |
+|---|---|---|
+| `f7075537` | parent | `sessionStart`, `afterAgentThought`, `preToolUse`, `afterAgentThought`, `sessionEnd` |
+| `db7f7278` | child | `afterAgentThought`, `preToolUse`, `beforeReadFile`, `postToolUse`, `afterAgentThought` |
+
+Still no `subagentStart`/`subagentStop`. Across 4 runs and 2 subagent kinds, zero.
+
+The hook is driven by an inbound request from the agent service (the handler switches
+on `x.request.value` with `case:"subagentStart"`), so dispatch is gated server-side or
+behind a newer protocol version — not by anything a client config can enable.
+**`subagentStart` therefore cannot be wired today.**
+
+Run 4 also re-confirms F1 on a second subagent kind: the child fired five hooks and
+neither `sessionStart` nor `sessionEnd`, while the parent fired both.
 
 ## 4. Decisions
 
@@ -151,45 +197,81 @@ heuristic with a nonzero false-positive rate would cost a genuine top-level sess
 its memory index forever to prevent a bounded, benign redundancy that does not
 happen.
 
-### D2 — Remove the inert live-linking path
+### D2 — Keep the inert live-linking path, documented as inert
 
-Behaviour-preserving: the code provably never executes, so runtime behaviour is
-unchanged. Subagent nesting continues to come from `kcap import --cursor` and the
-server-side `CursorSubagentAdoptionSweep`, which operate on complete transcripts —
-the only conditions under which correlation can work.
+The path is **retained, not removed.** F6 shows `subagentStart` is already built into
+the CLI and carries an authoritative `parent_conversation_id`; only its dispatch is
+missing. If Cursor turns dispatch on, this code is the natural landing site — the
+marker store, the divert, and the payload builders are exactly what a
+`subagentStart`-driven linker needs. Deleting it would mean rebuilding it.
 
-Removal surface, with transitive-dead proof:
+The defect being fixed is therefore **not** the code's existence; it is that the code
+*reads as live* and its tests assert it works in production. Retention is only safe if
+inertness is explicit and enforced, so this decision carries obligations:
 
-| Element | Why dead |
+1. **Every element carries a doc comment stating it is currently unreachable**, why
+   (the two unsatisfiable conjuncts of F4), and the precise condition that would make
+   it reachable (a `subagentStart` dispatch writing the marker). A reader must not be
+   able to mistake it for a working feature — that mistake is what produced AI-1505.
+2. **Inertness is tested, not merely asserted** (D3). An undocumented, untested inert
+   path decays back into the same trap.
+3. **The reachability condition is single-sourced** — the doc comments point at this
+   spec rather than each restating the analysis, so a future change updates one place.
+
+Elements retained and to be annotated, with the transitive-dead proof that justifies
+calling them inert:
+
+| Element | Why currently unreachable |
 |---|---|
 | `CursorHookCommand.cs:283–301` classification block | Guard unsatisfiable (F4) |
 | `HandleSubagentChildEventAsync` + its `isSubagentChild` divert (`:382–389`, `:585+`) | Only reachable via a marker that is never written |
 | `CursorLiveSubagentLinker` (`TryLoadLink`, `SaveLink`, `ResolveParent`, `DiscoverSiblingTranscripts`, `BuildSubagentStartPayload`, `BuildSubagentStopPayload`) | Sole consumer is the block above |
-| `subagent-start` spool-drain arm (`:359`) and `MaybeSpawnChildWatcherFromPayloadAsync` (`:756`) | The sole producer of a Cursor `subagent-start` spool entry is `:602`, inside the dead divert |
+| `subagent-start` spool-drain arm (`:359`) and `MaybeSpawnChildWatcherFromPayloadAsync` (`:756`) | The sole producer of a Cursor `subagent-start` spool entry is `:602`, inside the divert |
 | `CursorMarkers` subagent-ack helpers (`CursorMarkers.cs:146–160`) | Only referenced by the divert |
 
-`CursorSubagentCorrelator` is **retained** — the import path genuinely uses it.
+A second reason to retain rather than delete: the divert's *shape* is wrong for a
+`subagentStart` world (it emits `subagent-start` from the child's `sessionStart` and
+`subagent-stop` from its `sessionEnd`, neither of which a child fires — F1). The doc
+comments must say so, so that whoever revives it knows the trigger has to move to the
+parent's `subagentStart`/`subagentStop`, not just be switched on.
+
+`CursorSubagentCorrelator` is likewise retained — the import path genuinely uses it,
+and it is the only place correlation can work at all (F3).
 
 No data migration is needed: since no marker is ever written, no user has a populated
 `~/.config/kcap/cursor-subagent-links/` to clean up.
 
-### D3 — Replace the fiction-feeding tests with contract tests
+### D3 — Relabel the forward-looking tests; add contract tests that pin reality
 
-Delete or rewrite the suites that assert the dead branch
-(`CursorLiveSubagentIntegrationTests`, `CursorLiveSubagentLinkerTests`, the
-`SaveLink`-based fixtures in `CursorWatcherSpawnTests`, `CursorHookCommandTests`,
-`CursorImportSourceTests` — the last uses `SaveLink` purely as setup and does not read
-markers in production code).
+Since D2 retains the code, its tests are retained too — but they must stop claiming to
+describe production.
 
-Add tests pinning the **measured** payload contract, so the dead branch cannot be
-rebuilt on the old assumption:
+- **`CursorLiveSubagentLinkerTests` stays as-is.** It exercises pure functions
+  (`ResolveParent`, `DiscoverSiblingTranscripts`, marker round-trip) against inputs it
+  constructs itself. Those assertions are honest: they describe the functions, not the
+  live wiring.
+- **`CursorLiveSubagentIntegrationTests` is relabelled forward-looking.** Its fixture
+  supplies a non-null `transcript_path` at `sessionStart` (`:236`), which the harness
+  never produces (F2). The suite keeps its coverage value for a future
+  `subagentStart`-driven revival, but must carry a header comment stating that its
+  payload shape is **synthetic and does not occur in production today**, pointing at
+  this spec. Same for the `SaveLink`-based fixtures in `CursorWatcherSpawnTests`,
+  `CursorHookCommandTests` and `CursorImportSourceTests` (the last uses `SaveLink`
+  purely as setup; no production code reads markers on the import path).
 
-1. A `sessionStart` payload carries a null `transcript_path`; the hook must not
-   attempt transcript-derived work from it.
-2. Memory injection is reached only on `sessionStart`, and `ClassificationAuthoritative`
-   is `true` by construction.
+Add tests pinning the **measured** contract, so the inert path cannot be quietly
+assumed live again:
 
-These convert the probe's evidence into a regression guard.
+1. A realistic `sessionStart` payload carries a null `transcript_path`, and the
+   classification block does not run for it.
+2. Memory injection is reached only on `sessionStart`, so
+   `ClassificationAuthoritative: true` holds by construction.
+3. A detection test for F6: if a `subagentStart` payload ever arrives, it must not be
+   silently ignored. This is the cheap tripwire that tells us dispatch turned on
+   without anyone re-running the probe.
+
+Each of these must fail when the behaviour it guards is removed; a pin that passes
+against a mutant proves nothing.
 
 ### D4 — Correct the in-code note
 
@@ -204,35 +286,55 @@ Note: `scripts/check-linear-ids.sh` rejects `AI-<digits>` tokens in `src/**/*.cs
 
 ## 5. Testing strategy
 
-- **Unit/contract:** the two pins in D3, plus whatever remains of the Cursor hook
-  dispatcher suites after the dead-branch tests are removed.
+- **Unit/contract:** the three pins in D3, alongside the existing Cursor hook
+  dispatcher suites (retained and relabelled, not removed).
 - **Mutation check:** each new pin must fail when the behaviour it guards is removed.
   A test that still passes with the guard deleted proves nothing.
 - **Regression:** the full `Capacitor.Cli.Tests.Unit` suite plus the integration
   suite. Note the known ~42 pre-existing macOS failures (MCP-registration /
   config-file / uninstall tests) — compare against a baseline rather than expecting
   green.
-- **No new live-cert gate.** This change removes behaviour; there is nothing new for a
-  harness to surface.
+- **No new live-cert gate.** This change alters no runtime behaviour at all — it is
+  documentation plus tests over a path that never executes — so there is nothing new
+  for a harness to surface.
 
-## 6. Follow-up (separate issue, to be scheduled, not parked)
+## 6. The `subagentStart` question — resolved in scope, not deferred
 
-Adopt Cursor's native `subagentStart` for live subagent nesting (F5). It carries an
-explicit `parent_conversation_id` and needs no transcript, so it is the only mechanism
-that could ever do live nesting correctly. It did not fire in the CLI, so the first
-step is determining where it *is* available (IDE vs CLI, version floor). This is a new
-capability rather than the defect fixed here, which is why it is scoped out — but it
-should be filed and scheduled, not left implicit.
+This was originally scoped out as a follow-up issue. It is folded in here instead, and
+F6 answers it: **`subagentStart` cannot be wired today.** It is fully implemented in
+the CLI bundle, but dispatch is driven by an inbound request from the agent service, so
+it is gated server-side or behind a newer protocol — nothing a client config can turn
+on. Four runs across two subagent kinds produced zero `subagentStart` events.
+
+So the deliverable is not "wire it" but "be ready and notice when it lands":
+
+- D2 keeps the linker as its landing site, with doc comments recording that the trigger
+  must move to the parent's `subagentStart`/`subagentStop` (the child fires neither
+  `sessionStart` nor `sessionEnd`).
+- D3.3 adds the tripwire so a newly-dispatched `subagentStart` is not silently dropped.
+- F6 records the payload contract (`parent_conversation_id`, `subagent_id`,
+  `subagent_type`, `tool_call_id`) and the `additional_context` capability, so a future
+  implementation does not have to re-derive it from a JS bundle.
+
+Nothing here is left for a future issue to discover.
 
 ## 7. Assumptions and residual risk
 
 **All findings are `cursor-agent` CLI 2026.07.23-e383d2b.** The Cursor IDE Agent
 Window was not exercised; driving it is not scriptable from the working environment.
-The IDE is also the surface where `subagentStart` most plausibly does fire.
+The IDE is also the surface where `subagentStart` most plausibly does fire — the one
+real pre-existing parent/child pair on disk carries a named `subagent_type:
+generalPurpose`, which the CLI never produced.
 
-If the IDE fires `sessionStart` for subagent children, F1 would not hold there and D2
-would need reconsidering — though D1 would still stand, since F3 (no correlatable data
-at any live moment) is a property of transcript flush timing, not of hook wiring.
+Choosing retention over removal (D2) substantially de-risks this gap. Had the plan
+been deletion, an IDE that fires `sessionStart` for children would have meant deleting
+a path that was live on another surface. Retention makes the IDE question a
+documentation-accuracy question rather than a correctness one: the worst case is that
+the "currently unreachable" comments are too absolute for the IDE and need qualifying.
+
+D1 stands regardless of surface. F3 — no correlatable data at any live moment — is a
+property of transcript flush timing, not of hook wiring, so the recency heuristic is
+unbuildable on the IDE too.
 
 Re-test recipe: restore `.cursor/hooks.json` and `probe_hook.py` from the probe
 workspace into an IDE-opened throwaway repo, run a prompt that forces a `Task`
