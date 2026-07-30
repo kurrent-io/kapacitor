@@ -108,6 +108,15 @@ public class CodexLauncherTests {
     }
 
     [Test]
+    public async Task BuildArgs_bypasses_hook_trust_for_hosted_and_review_flow() {
+        // codex 0.146+ parks the interactive session on a "Hooks need review" prompt for hooks
+        // it hasn't persisted trust for; an unattended hosted launch has no one to answer it and
+        // hangs forever. kcap owns these hooks, so every hosted launch must bypass the gate.
+        await Assert.That(NewLauncher().BuildArgs(NewCtx()).Args).Contains("--dangerously-bypass-hook-trust");
+        await Assert.That(NewLauncher().BuildArgs(NewCtx(isReviewFlow: true)).Args).Contains("--dangerously-bypass-hook-trust");
+    }
+
+    [Test]
     public async Task BuildArgs_includes_cd_with_worktree_path() {
         var args = NewLauncher().BuildArgs(NewCtx()).Args;
         var cdIdx = Array.IndexOf(args, "--cd");
@@ -728,6 +737,7 @@ public class CodexLauncherTests {
             "--cd", "/tmp/wt",
             "--sandbox", "workspace-write",
             "--ask-for-approval", "never",
+            "--dangerously-bypass-hook-trust",
             "-c", "mcp_servers.kcap-flow-result.enabled=true",
             "-c", "mcp_servers.kcap-flow-result.command=\"/opt/kcap\"",
             "-c", "mcp_servers.kcap-flow-result.args=[\"mcp\",\"flow-result\"]",

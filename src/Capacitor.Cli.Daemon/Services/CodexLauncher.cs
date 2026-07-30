@@ -145,6 +145,13 @@ internal sealed partial class CodexLauncher(
             ctx.IsReviewFlow ? "never" : "on-request"
         };
 
+        // codex 0.146+ parks the interactive session on a "Hooks need review" prompt for any hook
+        // it hasn't persisted trust for. A hosted launch has no one to answer it, so it hangs at
+        // "Waiting for session to start". kcap installs and owns these hooks (it vets the source),
+        // so bypass the per-invocation trust gate — same posture as the sandbox/approval flags
+        // above. Global flag, so it also covers unattended review-flow reviewers.
+        args.Add("--dangerously-bypass-hook-trust");
+
         // Review-flow reviewers get exactly ONE MCP server: kcap-flow-result (+ any
         // allowlisted, non-flow-starting server) — it can only submit a result, never start a
         // flow. Codex's `-c` overrides deep-merge into ~/.codex/config.toml (no analog of
