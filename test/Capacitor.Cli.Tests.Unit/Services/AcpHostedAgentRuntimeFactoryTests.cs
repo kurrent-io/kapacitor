@@ -72,6 +72,45 @@ public class AcpHostedAgentRuntimeFactoryTests {
         IsReview: false, IsReviewFlow: false, Review: null,
         Cols: 80, Rows: 24, ServerUrl: null, DaemonBridgeUrl: null, CapacitorPath: "/usr/local/bin/kcap");
 
+    /// <summary>
+    /// The PRODUCTION factory must report its descriptor's model-selection capability. This is the seam
+    /// the orchestrator reads, and nothing else asserted it.
+    ///
+    /// <para>Found by code review, and confirmed by mutation: deleting
+    /// <c>AcpHostedAgentRuntimeFactory.SupportsModelSelection</c> makes it fall back to the interface's
+    /// default <c>true</c> — silently reintroducing the reported-vs-running model mismatch — and **all
+    /// 206 other tests still passed**. The descriptor tests proved
+    /// <c>Kiro.ModelSelector.CanSelectModel == false</c>, and the orchestrator tests proved the behaviour
+    /// when a SPY factory reports false, but nothing connected the two through the real factory.</para>
+    ///
+    /// <para>Cursor and Copilot are asserted alongside Kiro deliberately: a mutation that hard-coded
+    /// <c>false</c> instead of delegating would satisfy a Kiro-only assertion while breaking model
+    /// selection for the two vendors that do support it.</para>
+    ///
+    /// <para><b>Read through <see cref="IHostedAgentRuntimeFactory"/>, not the concrete type</b>, because
+    /// that is how <c>AgentOrchestrator</c> consumes it — and because it makes the guard behavioural
+    /// rather than incidental. Typed concretely, deleting the override produces a COMPILE error (a
+    /// default interface member is not accessible through the implementing type), which happens to break
+    /// the build but never exercises the value the orchestrator would actually observe. Through the
+    /// interface, the deletion instead surfaces as the interface default <c>true</c> and fails this test
+    /// on the exact value that would have caused the reported-vs-running mismatch.</para>
+    /// </summary>
+    [Test]
+    public async Task SupportsModelSelection_DelegatesToTheDescriptorsSelector_ForEachRealVendor() {
+        static IHostedAgentRuntimeFactory Build(AcpVendorDescriptor descriptor) =>
+            new AcpHostedAgentRuntimeFactory(descriptor: descriptor,
+                config: new DaemonConfig(),
+                loggerFactory: NullLoggerFactory.Instance,
+                connection: new CaptureServerConnection(),
+                // Never spawns: this test only reads a capability property, never calls StartAsync.
+                connectionSource: _ => throw new InvalidOperationException(
+                    "SupportsModelSelection must not spawn a process."));
+
+        await Assert.That(Build(AcpVendorDescriptors.Kiro).SupportsModelSelection).IsFalse();
+        await Assert.That(Build(AcpVendorDescriptors.Cursor).SupportsModelSelection).IsTrue();
+        await Assert.That(Build(AcpVendorDescriptors.Copilot).SupportsModelSelection).IsTrue();
+    }
+
     [Test]
     public async Task StartAsync_WiresRequestInteractionDelegate_DispatchesInboundPermissionRequestToTheBridge() {
         var fake       = new FakeAcpAgent();
