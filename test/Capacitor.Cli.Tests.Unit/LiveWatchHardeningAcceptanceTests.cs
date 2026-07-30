@@ -88,8 +88,8 @@ public class LiveWatchHardeningAcceptanceTests {
 
         // Task 6's actual regressions: each vendor's own bespoke gate must agree with the shared
         // predicate, not just re-derive it independently.
-        await Assert.That(AntigravityHookCommand.SpawnGateForTest(HookPostOutcome.Spooled)).IsTrue();
-        await Assert.That(GeminiHookCommand.SpawnGateForTest(HookPostOutcome.Spooled)).IsTrue();
+        await Assert.That(AntigravityHookCommand.SpawnGateForTest(HookPostOutcome.Spooled, "http://localhost:1")).IsTrue();
+        await Assert.That(GeminiHookCommand.SpawnGateForTest(HookPostOutcome.Spooled, "http://localhost:1")).IsTrue();
     }
 
     // ── 2. Codex stdout-first, proven against a real large/unreachable spool backlog ─────────

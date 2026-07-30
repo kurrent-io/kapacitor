@@ -691,7 +691,10 @@ switch (command) {
         // own drain in the BACKGROUND, after satisfying its synchronous stdout contract.
         // Cross-process-throttled (~30s) and auth-gated inside DrainSpoolsAsync, so this adds no
         // per-invocation network cost beyond a disk stat on the vast majority of firings.
-        if (!args.Contains("--codex") && baseUrl is not null && HttpClientExtensions.IsAcceptableUrl(baseUrl)) {
+        // No acceptability conjunct here: DrainSpoolsAsync owns that decision, and it reaps both
+        // spools BEFORE returning. Gating the call would mean a config broken for weeks never reaps
+        // anything, and the per-session cap does not bound the number of stale files.
+        if (!args.Contains("--codex") && baseUrl is not null) {
             await AgentHookPoster.DrainSpoolsAsync(
                 baseUrl,
                 new HookSpool(PathHelpers.ConfigPath("spool")),

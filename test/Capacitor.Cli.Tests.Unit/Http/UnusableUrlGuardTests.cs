@@ -130,4 +130,80 @@ public class UnusableUrlGuardTests : IDisposable {
 
         await Assert.That(sw.Elapsed).IsLessThan(TimeSpan.FromSeconds(2));
     }
+
+    [Test]
+    [Arguments("ses_A")]
+    [Arguments("SES_a")]
+    [Arguments("Mixed_Case_Id")]
+    public async Task Uppercase_non_guid_keys_are_rejected_rather_than_colliding(string sessionId) {
+        // The id is preserved byte-for-byte AND is the filename, so admitting both cases would let
+        // two distinct sessions address one file on macOS/Windows. Rejection is reported, not silent.
+        await Assert.That(new HookSpool(_dir).Append(sessionId, "session-start/opencode", "{}")).IsFalse();
+    }
+
+    [Test]
+    public async Task Legacy_uppercase_guid_keys_still_work() {
+        // Mixed case is fine for a 32-hex GUID: those are the same id either way.
+        await Assert.That(new HookSpool(_dir).Append("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "session-start/claude", "{}")).IsTrue();
+    }
+
+    /// <summary>
+    /// The gates live in HandleCore, which the degraded arm never reaches — without the extracted
+    /// helper an unusable URL would capture a session the user explicitly disabled.
+    ///
+    /// <para>Uses the process's REAL resolved config dir with a random id, because
+    /// <c>PathHelpers.ConfigDir</c> is a static readonly resolved at type load: setting
+    /// KCAP_CONFIG_DIR from inside a test has no effect. The marker is removed in a finally.</para>
+    /// </summary>
+    [Test]
+    public async Task Suppresses_a_disabled_session_given_a_dashed_payload_id() {
+        var dashed   = Guid.NewGuid().ToString();
+        var dashless = dashed.Replace("-", "");
+        var marker   = Path.Combine(PathHelpers.ConfigPath("disabled"), dashless);
+
+        Directory.CreateDirectory(PathHelpers.ConfigPath("disabled"));
+        File.WriteAllText(marker, "");
+
+        try {
+            // Dashed id in the payload, dashless marker on disk. DisabledSessions does no
+            // normalization, so passing the raw payload id straight through would miss it entirely.
+            var body = $$"""{"session_id":"{{dashed}}","hook_event_name":"SessionStart"}""";
+
+            await Assert.That(await ClaudeHookCommand.ShouldSuppressCaptureAsync(
+                dashless, body, "session-start", activeProfile: null, processStart: Stopwatch.GetTimestamp())).IsTrue();
+        } finally {
+            try { File.Delete(marker); } catch { }
+        }
+    }
+
+    [Test]
+    public async Task Session_end_suppression_also_clears_the_marker() {
+        var sid    = Guid.NewGuid().ToString("N");
+        var marker = Path.Combine(PathHelpers.ConfigPath("disabled"), sid);
+
+        Directory.CreateDirectory(PathHelpers.ConfigPath("disabled"));
+        File.WriteAllText(marker, "");
+
+        try {
+            var body = $$"""{"session_id":"{{sid}}","hook_event_name":"SessionEnd"}""";
+
+            await Assert.That(await ClaudeHookCommand.ShouldSuppressCaptureAsync(
+                sid, body, "session-end", activeProfile: null, processStart: Stopwatch.GetTimestamp())).IsTrue();
+
+            // Collapsing the gate into a plain boolean would have dropped this cleanup.
+            await Assert.That(File.Exists(marker)).IsFalse();
+        } finally {
+            try { File.Delete(marker); } catch { }
+        }
+    }
+
+    [Test]
+    public async Task Does_not_suppress_an_ordinary_session() {
+        // The negative control: without it, a helper that always returned true would pass above.
+        var sid  = Guid.NewGuid().ToString("N");
+        var body = $$"""{"session_id":"{{sid}}","hook_event_name":"SessionStart"}""";
+
+        await Assert.That(await ClaudeHookCommand.ShouldSuppressCaptureAsync(
+            sid, body, "session-start", activeProfile: null, processStart: Stopwatch.GetTimestamp())).IsFalse();
+    }
 }

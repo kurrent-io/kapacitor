@@ -17,6 +17,27 @@ public class UnusableUrlDiagnosticTests {
         await Assert.That(s).Contains("evil.example.com");
     }
 
+    /// <summary>
+    /// A URL whose userinfo ends at the '@' is exactly the malformed shape this path exists to
+    /// render, and it is the one an "is there anything after the @?" guard lets through intact.
+    /// </summary>
+    [Test]
+    [Arguments("https://user:sup3rs3cret@")]
+    [Arguments("user:sup3rs3cret@")]
+    [Arguments("sup3rs3cret@")]
+    public async Task Sanitize_drops_credentials_even_when_nothing_follows_the_at(string url) {
+        var s = UnusableUrlDiagnostic.Sanitize(url);
+
+        await Assert.That(s).DoesNotContain("sup3rs3cret");
+    }
+
+    [Test]
+    public async Task Build_drops_credentials_even_when_nothing_follows_the_at() {
+        var msg = UnusableUrlDiagnostic.Build(UrlSource.Profile, "https://user:sup3rs3cret@", "dropped");
+
+        await Assert.That(msg).DoesNotContain("sup3rs3cret");
+    }
+
     [Test]
     public async Task Sanitize_strips_control_characters_so_a_line_cannot_be_injected() {
         var s = UnusableUrlDiagnostic.Sanitize("localhost:5108\r\n[kcap] everything is fine");

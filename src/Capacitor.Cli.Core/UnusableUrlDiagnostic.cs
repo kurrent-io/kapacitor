@@ -33,8 +33,11 @@ public static class UnusableUrlDiagnostic {
         var stripped = new string(rawUrl.Where(c => !char.IsControl(c)).ToArray());
 
         // Drop user:pass@ — take the LAST '@' so an embedded one cannot smuggle credentials past.
+        // Slice on ANY '@', including a trailing one: "https://user:secret@" is exactly the kind of
+        // malformed value this path exists to render, and requiring a character after '@' left the
+        // credential intact on it.
         var at = stripped.LastIndexOf('@');
-        if (at >= 0 && at + 1 < stripped.Length) stripped = stripped[(at + 1)..];
+        if (at >= 0) stripped = stripped[(at + 1)..];
 
         if (stripped.Length == 0) return "(empty)";
 

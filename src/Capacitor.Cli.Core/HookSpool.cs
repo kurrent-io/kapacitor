@@ -343,6 +343,10 @@ public sealed partial class HookSpool(string spoolDir, int capBytes = HookSpool.
     // be widened but never transformed (hashing would fabricate an id on the wire). Excludes '.', '/'
     // and '\\', preserving both the path-traversal property and the parse-before-first-dot split.
     // Vendors such as OpenCode use ids like "ses_7f3a9c21b8", which the old form silently dropped.
-    [GeneratedRegex("^[A-Za-z0-9_-]{1,64}$", RegexOptions.Compiled)]
+    // The widened arm is deliberately LOWERCASE-only: the id is preserved byte-for-byte and is the
+    // filename, so admitting both cases would let "ses_A" and "ses_a" -- two distinct sessions --
+    // address one file on macOS/Windows. The legacy 32-hex arm keeps mixed case because those are
+    // the same GUID either way. An uppercase vendor id is rejected, which Append now reports.
+    [GeneratedRegex("^(?:[0-9a-fA-F]{32}|[a-z0-9_-]{1,64})$", RegexOptions.Compiled)]
     private static partial Regex SafeSessionIdRegex();
 }

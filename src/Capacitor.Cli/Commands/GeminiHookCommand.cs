@@ -157,7 +157,7 @@ static class GeminiHookCommand {
     /// <summary>Test seam mirroring <see cref="AgentHookPoster.ShouldSpawnAfter"/> — session-start
     /// capture must start on <c>Posted</c> OR <c>Spooled</c>, never gated behind lifecycle-POST
     /// delivery.</summary>
-    internal static bool SpawnGateForTest(HookPostOutcome o, string? baseUrl = "http://localhost:5108")
+    internal static bool SpawnGateForTest(HookPostOutcome o, string? baseUrl)
         => AgentHookPoster.ShouldSpawnAfter(o, baseUrl);
 
     static async Task<int> HandleSessionEnd(string baseUrl, JsonNode node, string sessionId, string? cwd) {

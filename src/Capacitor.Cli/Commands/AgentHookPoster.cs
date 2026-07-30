@@ -128,9 +128,10 @@ internal static class AgentHookPoster {
         // its existing tests keep exercising the real post logic. An unusable URL is routed into the
         // same "cannot post now" arm an auth lapse already uses: persist and let the caller continue.
         if (!HookHttp.IsPostable(baseUrl)) {
-            var spooled    = spool.Append(sessionId, route, body);
+            var spooled     = spool.Append(sessionId, route, body);
             var disposition = spooled ? $"{endpoint} spooled, not sent" : $"{endpoint} dropped (spool write failed)";
             Console.Error.WriteLine(UnusableUrlDiagnostic.Build(AppConfig.ResolvedUrlSource, baseUrl, disposition));
+
             return Task.FromResult(spooled ? HookPostOutcome.Spooled : HookPostOutcome.Skipped);
         }
 
@@ -163,6 +164,20 @@ internal static class AgentHookPoster {
     public static bool ShouldSpawnAfter(HookPostOutcome outcome, string? baseUrl) =>
         outcome is HookPostOutcome.Posted or HookPostOutcome.Spooled or HookPostOutcome.Skipped
      && HookHttp.IsPostable(baseUrl);
+
+
+    /// <summary>
+    /// Maps an append attempt onto an honest outcome. <c>Spooled</c> promises a later replay, so it
+    /// may only be reported when something was actually written; a rejected key or a disk fault is
+    /// <c>Skipped</c>, with a line saying the payload was lost.
+    /// </summary>
+    static HookPostOutcome SpoolOrSkip(HookSpool spool, string sessionId, string route, string body, string agentTag) {
+        if (spool.Append(sessionId, route, body)) return HookPostOutcome.Spooled;
+
+        Console.Error.WriteLine($"[kcap] {agentTag} {route}: dropped — the spool write failed");
+
+        return HookPostOutcome.Skipped;
+    }
 
     /// <summary>Minimum wall-clock gap between drain attempts (see <see cref="DrainSpoolsAsync"/>).</summary>
     static readonly TimeSpan DrainThrottle = TimeSpan.FromSeconds(30);
@@ -276,9 +291,7 @@ internal static class AgentHookPoster {
         using (client) {
             // Auth lapsed → the POST would 401. Spool for replay after `kcap login`; caller still spawns.
             if (IsAuthLapsed(status)) {
-                spool.Append(sessionId, route, body);
-
-                return HookPostOutcome.Spooled;
+                return SpoolOrSkip(spool, sessionId, route, body, agentTag);
             }
 
             using var content = new StringContent(body, Encoding.UTF8, "application/json");
@@ -294,9 +307,7 @@ internal static class AgentHookPoster {
 
                 // Transient (server down / rate-limit) → spool for retry; a permanent 4xx is a real failure.
                 if (code is >= 500 or 408 or 429) {
-                    spool.Append(sessionId, route, body);
-
-                    return HookPostOutcome.Spooled;
+                    return SpoolOrSkip(spool, sessionId, route, body, agentTag);
                 }
 
                 Console.Error.WriteLine($"[kcap] {agentTag} {endpoint}: HTTP {code}");
@@ -304,9 +315,7 @@ internal static class AgentHookPoster {
                 return HookPostOutcome.Failed;
             } catch (HttpRequestException) {
                 // Unreachable after retries → transient; spool for a later drain rather than lose it.
-                spool.Append(sessionId, route, body);
-
-                return HookPostOutcome.Spooled;
+                return SpoolOrSkip(spool, sessionId, route, body, agentTag);
             }
         }
     }
