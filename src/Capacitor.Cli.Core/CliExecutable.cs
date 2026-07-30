@@ -2,22 +2,14 @@ namespace Capacitor.Cli.Core;
 
 /// <summary>
 /// Resolves a CLI command (<c>"codex"</c>, <c>"claude"</c>, or a configured path) to a
-/// concrete executable the way a shell would: direct check for a rooted path, otherwise a
-/// <c>PATH</c> walk, plus <c>PATHEXT</c> candidates on Windows. On Unix a candidate must
-/// carry at least one execute bit.
+/// concrete executable like a shell would: a rooted path directly, otherwise a <c>PATH</c>
+/// walk with <c>PATHEXT</c> candidates on Windows (execute-bit check on Unix).
 ///
-/// <para>Resolution is required — not a nicety — for
-/// <see cref="System.Diagnostics.ProcessStartInfo.FileName"/> with
-/// <c>UseShellExecute = false</c>: that path goes through <c>CreateProcess</c>, which
-/// appends only <c>.exe</c>. npm installs the agent CLIs on Windows as a <c>.cmd</c> shim
-/// with no <c>.exe</c> alongside, so a bare <c>"codex"</c>/<c>"claude"</c> fails outright
-/// with "The system cannot find the file specified" — which is how headless title and
-/// what's-done generation silently degraded on Windows.</para>
-///
-/// <para>Handing the resolved full path to <c>FileName</c> is sufficient: .NET 8+ applies
-/// cmd-specific argument escaping when the target is a <c>.cmd</c>/<c>.bat</c>, so a
-/// <c>cmd.exe /c</c> wrapper is NOT needed here — and adding one would reintroduce the
-/// argument-injection hazard that escaping fix closed.</para>
+/// <para>Required because <c>ProcessStartInfo.FileName</c> with <c>UseShellExecute = false</c>
+/// goes through <c>CreateProcess</c>, which appends only <c>.exe</c> — so a bare
+/// <c>"codex"</c>/<c>"claude"</c> never finds npm's extensionless <c>.cmd</c> shims. Handing
+/// the resolved path to <c>FileName</c> is enough; .NET escapes <c>.cmd</c>/<c>.bat</c> args
+/// itself, so no <c>cmd.exe /c</c> wrapper (which would reopen an argument-injection hole).</para>
 /// </summary>
 public static class CliExecutable {
     /// <summary>

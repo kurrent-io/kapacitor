@@ -15,17 +15,11 @@ public static class CodexPaths {
     public static string UserHooksJson => Path.Combine(Home(), "hooks.json");
 
     /// <summary>
-    /// Matches Codex's <c>[projects."&lt;path&gt;"]</c> key normalisation: absolute, and on
-    /// Windows lowercased with backslashes preserved. Codex writes
-    /// <c>[projects."c:\\users\\me\\src\\repo"]</c> for <c>C:\Users\me\src\repo</c> — drive
-    /// letter included — so a raw mixed-case path is a different, case-sensitive TOML key and
-    /// our pre-trust write would be invisible to Codex, leaving it parked on the directory
-    /// trust prompt (the Codex analogue of the Claude trust hang in
-    /// <c>ClaudeLauncher.NormalizeClaudeProjectKey</c>).
-    ///
-    /// <para>Lowercasing is Windows-only and deliberately so: Unix filesystems are
-    /// case-sensitive, Codex does not fold case there, and the macOS/Linux hosted path
-    /// already works.</para>
+    /// Matches Codex's own <c>[projects."&lt;path&gt;"]</c> key form: absolute, and on Windows
+    /// lowercased (backslashes kept). TOML keys are case-sensitive, so a raw mixed-case path is
+    /// a different key — the pre-trust write is then invisible to Codex and it parks on the
+    /// directory-trust prompt. Windows-only: Unix filesystems are case-sensitive and Codex does
+    /// not fold case there.
     /// </summary>
     public static string NormalizeProjectKey(string path) {
         var full = Path.GetFullPath(path);
