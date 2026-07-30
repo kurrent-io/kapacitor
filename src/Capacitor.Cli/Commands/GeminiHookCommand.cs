@@ -146,7 +146,7 @@ static class GeminiHookCommand {
             baseUrl, "session-start/gemini", enriched, "gemini-hook",
             spool, sessionId, route: "session-start/gemini");
 
-        if (!AgentHookPoster.ShouldSpawnAfter(outcome)) return outcome == HookPostOutcome.Failed ? 1 : 0;
+        if (!AgentHookPoster.ShouldSpawnAfter(outcome, baseUrl)) return outcome == HookPostOutcome.Failed ? 1 : 0;
 
         // Task 6: await (was fire-and-forget) so a spawn failure is observed here rather
         // than silently swallowed, and the process isn't torn down before the spawn completes.
@@ -157,7 +157,8 @@ static class GeminiHookCommand {
     /// <summary>Test seam mirroring <see cref="AgentHookPoster.ShouldSpawnAfter"/> — session-start
     /// capture must start on <c>Posted</c> OR <c>Spooled</c>, never gated behind lifecycle-POST
     /// delivery.</summary>
-    internal static bool SpawnGateForTest(HookPostOutcome o) => AgentHookPoster.ShouldSpawnAfter(o);
+    internal static bool SpawnGateForTest(HookPostOutcome o, string? baseUrl = "http://localhost:5108")
+        => AgentHookPoster.ShouldSpawnAfter(o, baseUrl);
 
     static async Task<int> HandleSessionEnd(string baseUrl, JsonNode node, string sessionId, string? cwd) {
         var transcriptPath = TryGetString(node, "transcript_path");

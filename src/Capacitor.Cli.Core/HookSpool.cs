@@ -37,15 +37,22 @@ public sealed partial class HookSpool(string spoolDir, int capBytes = HookSpool.
     string? LivePathFor(string sessionId) =>
         SafeSessionId.IsMatch(sessionId) ? Path.Combine(spoolDir, $"{sessionId}.jsonl") : null;
 
-    public void Append(string sessionId, string route, string rawPayloadJson) {
+    /// <summary>
+    /// Appends one payload for a later drain pass. Returns whether it was actually persisted, so a
+    /// caller cannot report "spooled" after a rejected key or a disk/permission fault.
+    /// </summary>
+    public bool Append(string sessionId, string route, string rawPayloadJson) {
         var path = LivePathFor(sessionId);
-        if (path is null) return;
+        if (path is null) return false;
         try {
             Directory.CreateDirectory(spoolDir);
             var line = new JsonObject { ["route"] = route, ["body"] = rawPayloadJson }.ToJsonString();
             EnsureUnderCap(path, Encoding.UTF8.GetByteCount(line) + 1);
             File.AppendAllText(path, $"{line}\n");
-        } catch { /* best effort */ }
+            return true;
+        } catch {
+            return false;
+        }
     }
 
     void EnsureUnderCap(string path, int incomingBytes) {
@@ -331,6 +338,11 @@ public sealed partial class HookSpool(string spoolDir, int capBytes = HookSpool.
         } catch { }
     }
 
-    [GeneratedRegex("^[0-9a-fA-F]{32}$", RegexOptions.Compiled)]
+    // Filename-safe superset of the old dashless-GUID form. The filename IS the session id --
+    // LifecycleSpoolDrain posts it verbatim as session_id for session-needs-import -- so the key may
+    // be widened but never transformed (hashing would fabricate an id on the wire). Excludes '.', '/'
+    // and '\\', preserving both the path-traversal property and the parse-before-first-dot split.
+    // Vendors such as OpenCode use ids like "ses_7f3a9c21b8", which the old form silently dropped.
+    [GeneratedRegex("^[A-Za-z0-9_-]{1,64}$", RegexOptions.Compiled)]
     private static partial Regex SafeSessionIdRegex();
 }

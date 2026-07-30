@@ -280,7 +280,7 @@ static class KiroHookCommand {
             outcome = HookPostOutcome.Spooled;
         }
 
-        if (!AgentHookPoster.ShouldSpawnAfter(outcome)) return 0;
+        if (!AgentHookPoster.ShouldSpawnAfter(outcome, baseUrl)) return 0;
 
         // The watcher tails Kiro's own append-only session log
         // ~/.kiro/sessions/cli/{id}.jsonl (the file is named with the dashed id).

@@ -1,5 +1,6 @@
 using System.Text;
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Config;
 
 namespace Capacitor.Cli.Commands;
 
@@ -27,7 +28,15 @@ internal enum HookPostOutcome {
     /// <summary>The POST could not be delivered now (auth lapsed or a transient/unreachable failure) so
     /// the payload was durably spooled for a later drain pass. NOT delivered — but the caller should still
     /// proceed to spawn the watcher (spawn-before-post): capture must not depend on lifecycle delivery.</summary>
-    Spooled
+    Spooled,
+
+    /// <summary>
+    /// Nothing was delivered AND nothing was persisted — the server URL is unusable, or the spool
+    /// append itself failed. Distinct from <see cref="Failed"/>, which every caller maps to a non-zero
+    /// exit; a hook must still exit 0 here. Distinct from <see cref="Spooled"/>, which promises a later
+    /// replay this outcome cannot.
+    /// </summary>
+    Skipped
 }
 
 /// <summary>
@@ -56,8 +65,16 @@ internal static class AgentHookPoster {
     /// to <c>{baseUrl}/hooks/{endpoint}</c>, skipping the POST when auth has lapsed.
     /// <paramref name="agentTag"/> is the stderr prefix on a real failure, e.g. <c>"codex-hook"</c>.
     /// </summary>
-    public static Task<HookPostOutcome> PostAsync(string baseUrl, string endpoint, string body, string agentTag)
-        => PostAsync(() => HttpClientExtensions.CreateClientWithAuthStatusAsync(baseUrl), baseUrl, endpoint, body, agentTag);
+    public static Task<HookPostOutcome> PostAsync(string baseUrl, string endpoint, string body, string agentTag) {
+        // Guard BEFORE the factory closure is constructed. There is no spool on this path, so the
+        // payload is dropped — Skipped, never Failed, which every caller maps to a non-zero exit.
+        if (!HookHttp.IsPostable(baseUrl)) {
+            Console.Error.WriteLine(UnusableUrlDiagnostic.Build(AppConfig.ResolvedUrlSource, baseUrl, $"{endpoint} dropped, not sent"));
+            return Task.FromResult(HookPostOutcome.Skipped);
+        }
+
+        return PostAsync(() => HttpClientExtensions.CreateClientWithAuthStatusAsync(baseUrl), baseUrl, endpoint, body, agentTag);
+    }
 
     /// <summary>
     /// Core with an injectable <paramref name="clientFactory"/> (test seam — lets tests control the
@@ -106,9 +123,20 @@ internal static class AgentHookPoster {
     /// </summary>
     public static Task<HookPostOutcome> PostOrSpoolAsync(
             string baseUrl, string endpoint, string body, string agentTag,
-            HookSpool spool, string sessionId, string route)
-        => PostOrSpoolAsync(() => HttpClientExtensions.CreateClientWithAuthStatusAsync(baseUrl),
-                            baseUrl, endpoint, body, agentTag, spool, sessionId, route);
+            HookSpool spool, string sessionId, string route) {
+        // Guard BEFORE the factory closure is constructed, so the injectable core stays untouched and
+        // its existing tests keep exercising the real post logic. An unusable URL is routed into the
+        // same "cannot post now" arm an auth lapse already uses: persist and let the caller continue.
+        if (!HookHttp.IsPostable(baseUrl)) {
+            var spooled    = spool.Append(sessionId, route, body);
+            var disposition = spooled ? $"{endpoint} spooled, not sent" : $"{endpoint} dropped (spool write failed)";
+            Console.Error.WriteLine(UnusableUrlDiagnostic.Build(AppConfig.ResolvedUrlSource, baseUrl, disposition));
+            return Task.FromResult(spooled ? HookPostOutcome.Spooled : HookPostOutcome.Skipped);
+        }
+
+        return PostOrSpoolAsync(() => HttpClientExtensions.CreateClientWithAuthStatusAsync(baseUrl),
+                                baseUrl, endpoint, body, agentTag, spool, sessionId, route);
+    }
 
     /// <summary>
     /// spawn-before-post decision. Capture must start regardless of whether the lifecycle
@@ -122,8 +150,19 @@ internal static class AgentHookPoster {
     /// which returns <c>Spooled</c> (never <c>AuthLapsed</c>) on a lapse — so capture-on-lapse is
     /// preserved for them via the spool, not via this predicate.
     /// </summary>
-    public static bool ShouldSpawnAfter(HookPostOutcome outcome) =>
-        outcome is HookPostOutcome.Posted or HookPostOutcome.Spooled;
+    /// <para><c>Skipped</c> DOES spawn when the URL is usable: the server supports a transcript
+    /// arriving before its session-start (<c>ActiveSessionRegistry.EnsureEntryExistsAsync</c> creates
+    /// the entry, owner-only until a later start reconciles it), so suppressing capture after a spool
+    /// write failure would guarantee loss the server is designed to recover.</para>
+    ///
+    /// <para>An unusable <paramref name="baseUrl"/> never spawns, whatever the outcome. A watcher
+    /// streams to SignalR and only spools an undelivered tail at shutdown, so one that can never
+    /// connect captures nothing — spawning it would write a PID file asserting capture that is not
+    /// happening. The URL is a parameter rather than a second conjunct at each call site so a caller
+    /// cannot forget it.</para>
+    public static bool ShouldSpawnAfter(HookPostOutcome outcome, string? baseUrl) =>
+        outcome is HookPostOutcome.Posted or HookPostOutcome.Spooled or HookPostOutcome.Skipped
+     && HookHttp.IsPostable(baseUrl);
 
     /// <summary>Minimum wall-clock gap between drain attempts (see <see cref="DrainSpoolsAsync"/>).</summary>
     static readonly TimeSpan DrainThrottle = TimeSpan.FromSeconds(30);
@@ -165,17 +204,29 @@ internal static class AgentHookPoster {
     /// Never throws — a spool-drain hiccup must not disrupt the vendor's own hook.
     /// </summary>
     public static async Task DrainSpoolsAsync(
-            string baseUrl, HookSpool lifecycle, TranscriptSpool transcript, string? sessionId) {
+            string baseUrl, HookSpool lifecycle, TranscriptSpool transcript, string? sessionId,
+            Func<CancellationToken, Task<(HttpClient Client, AuthStatus Status)>>? clientFactory = null) {
         if (!TryClaimDrainAttempt(lifecycle.Dir)) return; // throttled — a recent attempt already ran
 
+        // Retention runs even when delivery cannot: the reap lives here, and Program.cs skips this
+        // whole call while the URL is unacceptable, so an indefinitely broken config would otherwise
+        // never reap anything.
         lifecycle.ReapOlderThan(TimeSpan.FromDays(30));
         transcript.ReapOlderThan(TimeSpan.FromDays(30));
+
+        // Distinct from the POST guards' diagnostic: a reader must be able to tell which guard fired,
+        // and a test must be able to prove THIS one did.
+        if (!HookHttp.IsPostable(baseUrl)) {
+            Console.Error.WriteLine(UnusableUrlDiagnostic.Build(AppConfig.ResolvedUrlSource, baseUrl, "spool drain skipped (backlog retained)"));
+            return;
+        }
 
         var budget = TimeSpan.FromSeconds(1.5);
 
         try {
             using var cts = new CancellationTokenSource(budget);
-            var (client, status) = await HttpClientExtensions.CreateClientWithAuthStatusAsync(baseUrl, cts.Token);
+            var factory = clientFactory ?? (ct => HttpClientExtensions.CreateClientWithAuthStatusAsync(baseUrl, ct));
+            var (client, status) = await factory(cts.Token);
 
             using (client) {
                 if (IsAuthLapsed(status)) return;

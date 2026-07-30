@@ -62,9 +62,25 @@ public static class ClaudeHookCommand {
         } catch { }
 
         var clientCap = HookBudget.Remaining(processStart, command ?? "stop");
-        var created   = await CreateClientWithinBudgetAsync(clientFactory, clientCap);
+
+        // Skip client construction entirely for an unusable URL: the factory funnels into
+        // EnsureAbsolute, and this runs before ANY dispatch, so every Claude event would die here.
+        // Falling into the same degraded arm a client-creation timeout already uses keeps capture
+        // and the spool intact without inventing a second disposition.
+        var created = HookHttp.IsPostable(baseUrl)
+            ? await CreateClientWithinBudgetAsync(clientFactory, clientCap)
+            : null;
 
         if (created is null) {
+            // The degraded arm bypasses HandleCore, so its disabled/exclusion gates must run here.
+            var activeProfile = await AppConfig.GetActiveProfileAsync();
+            if (await ShouldSuppressCaptureAsync(sessionId, body, command, activeProfile, processStart)) return 0;
+
+            if (!HookHttp.IsPostable(baseUrl)) {
+                await Console.Error.WriteLineAsync(
+                    UnusableUrlDiagnostic.Build(AppConfig.ResolvedUrlSource, baseUrl, $"{command ?? "hook"} spooled, not sent"));
+            }
+
             // Auth/client creation exceeded the hook budget (hung /auth/config or refresh during an
             // outage). The watcher and the spool need no client — start capture and persist the
             // lifecycle event so neither the transcript nor the session record is lost.
@@ -160,6 +176,30 @@ public static class ClaudeHookCommand {
     // (caller should skip capture). The fallback repo detection is budgeted so a slow git/gh
     // probe can't blow the hook deadline; if it can't resolve in time we fail open to capturing
     // (the per-cwd cache makes subsequent sessions in an excluded repo resolve and exclude promptly).
+    /// <summary>
+    /// The disabled-session and repo/path exclusion gates, callable from the degraded path.
+    ///
+    /// <para>Both live inside <c>HandleCore</c>, which is reached only when a client was created. The
+    /// degraded branch spawns a watcher and spools without them — so routing an unusable URL there
+    /// unguarded would deterministically capture sessions the user ran `kcap disable` on, or repos
+    /// they excluded. That is a privacy regression a fix must not introduce.</para>
+    ///
+    /// <para>Takes the ALREADY-CANONICAL (dashless) session id: DisabledSessions looks a marker up by
+    /// filename with no normalization, while the raw payload id is still dashed. Takes processStart
+    /// because the exclusion check needs it for its remaining hook budget. Preserves the session-end
+    /// marker cleanup, which a plain boolean would have dropped.</para>
+    /// </summary>
+    internal static async Task<bool> ShouldSuppressCaptureAsync(
+            string? canonicalSessionId, string body, string? command, Profile? activeProfile, long processStart) {
+        if (canonicalSessionId is not null && DisabledSessions.IsDisabled(canonicalSessionId)) {
+            if (command == "session-end") DisabledSessions.RemoveMarker(canonicalSessionId);
+            return true;
+        }
+
+        return command is not null
+            && await IsSessionExcludedAsync(activeProfile, body, processStart, command);
+    }
+
     internal static async Task<bool> IsSessionExcludedAsync(Profile? profile, string body, long processStart, string command) {
         if (profile?.ExcludedRepos is { Length: > 0 } repos
          && await RepoExclusion.IsExcludedAsync(body, repos, HookBudget.Remaining(processStart, command))) {

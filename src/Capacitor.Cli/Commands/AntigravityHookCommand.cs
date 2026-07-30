@@ -155,7 +155,8 @@ static class AntigravityHookCommand {
 
     /// <summary>Test seam mirroring <see cref="AgentHookPoster.ShouldSpawnAfter"/> — capture must
     /// start on <c>Posted</c> OR <c>Spooled</c>, never gated behind lifecycle-POST delivery.</summary>
-    internal static bool SpawnGateForTest(HookPostOutcome o) => AgentHookPoster.ShouldSpawnAfter(o);
+    internal static bool SpawnGateForTest(HookPostOutcome o, string? baseUrl = "http://localhost:5108")
+        => AgentHookPoster.ShouldSpawnAfter(o, baseUrl);
 
     /// <summary>The event name — the first positional token after <c>--antigravity</c>.</summary>
     internal static string? EventArg(string[] args) {

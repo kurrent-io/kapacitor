@@ -119,7 +119,7 @@ static class OpenCodeHookCommand {
             baseUrl, "session-start/opencode", enriched, "opencode-hook",
             spool, sessionId, route: "session-start/opencode");
 
-        if (!AgentHookPoster.ShouldSpawnAfter(outcome)) return 0;
+        if (!AgentHookPoster.ShouldSpawnAfter(outcome, baseUrl)) return 0;
 
         await WatcherManager.EnsureWatcherRunning(
             baseUrl, sessionId, file,

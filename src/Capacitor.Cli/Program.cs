@@ -58,6 +58,16 @@ if (Environment.GetEnvironmentVariable("KCAP_SKIP") is "1"
 
 var hookProcessStart = System.Diagnostics.Stopwatch.GetTimestamp();
 var isHook = command == "hook";
+
+// Agent-spawned commands owe an output contract, or must leave no orphaned child, so an unusable
+// server URL must not kill them mid-contract — EnsureAbsolute throws for them instead of exiting.
+// Interactive commands keep exiting 2 with the actionable hint, which is the right UX with a user
+// present. This covers the agent-spawned population only; it is not a claim that every reachable
+// URL consumer has been enumerated, and the explicit guards own what actually happens.
+ProcessUrlPolicy.Current = CrashReporter.IsFailOpenCommand(command)
+    ? UrlFailurePolicy.Throw
+    : UrlFailurePolicy.FailFast;
+
 var baseUrl = await AppConfig.ResolveServerUrl(args, gitTimeoutMs: isHook ? 1000 : 5000);
 
 // Fire-and-forget update check (prints hint to stderr after command finishes).

@@ -164,6 +164,11 @@ public sealed partial class TranscriptSpool(string spoolDir, long capBytes = Tra
         } catch { }
     }
 
-    [GeneratedRegex("^[0-9a-fA-F]{32}$", RegexOptions.Compiled)]
+    // Filename-safe superset of the old dashless-GUID form. The filename IS the session id --
+    // LifecycleSpoolDrain posts it verbatim as session_id for session-needs-import -- so the key may
+    // be widened but never transformed (hashing would fabricate an id on the wire). Excludes '.', '/'
+    // and '\\', preserving both the path-traversal property and the parse-before-first-dot split.
+    // Vendors such as OpenCode use ids like "ses_7f3a9c21b8", which the old form silently dropped.
+    [GeneratedRegex("^[A-Za-z0-9_-]{1,64}$", RegexOptions.Compiled)]
     private static partial Regex SafeSessionIdRegex();
 }

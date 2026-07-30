@@ -451,6 +451,15 @@ static partial class WatchCommand {
 
         Log($"Watching {transcriptPath} for session {sessionId}" + (agentId is not null ? $" agent {agentId}" : ""));
 
+        // SignalR's WithUrl builds a Uri synchronously, so a relative value fails right here — before
+        // the connect/retry loop and independently of EnsureAbsolute. `watch` is not a fail-open
+        // command, so the top-level catch turns that into an opaque exit 1. Validate first so a
+        // hand-run watcher gets the actionable hint and the same exit 2 every interactive command gives.
+        if (!HookHttp.IsPostable(baseUrl)) {
+            Console.Error.WriteLine(HttpClientExtensions.SchemeMissingHint);
+            return 2;
+        }
+
         // Build SignalR hub connection
         var hubUrl = $"{baseUrl}/hubs/sessions";
 

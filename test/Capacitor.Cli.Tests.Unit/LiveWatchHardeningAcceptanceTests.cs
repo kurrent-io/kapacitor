@@ -81,7 +81,7 @@ public class LiveWatchHardeningAcceptanceTests {
                     agentTag: route, spool, sessionId, route);
 
                 await Assert.That(outcome).IsEqualTo(HookPostOutcome.Spooled);
-                await Assert.That(AgentHookPoster.ShouldSpawnAfter(outcome)).IsTrue();
+                await Assert.That(AgentHookPoster.ShouldSpawnAfter(outcome, "http://localhost:1")).IsTrue();
                 await Assert.That(spool.HasBacklog(sessionId)).IsTrue(); // capture-on-lapse via the spool
             } finally { try { Directory.Delete(dir, true); } catch { } }
         }

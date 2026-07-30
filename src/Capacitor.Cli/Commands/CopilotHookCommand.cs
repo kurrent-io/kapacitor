@@ -325,7 +325,7 @@ static class CopilotHookCommand {
         // there is no fragment, which keeps all pre-existing paths byte-identical.
         WriteSessionStartOutput(Console.Out, fragment);
 
-        if (!AgentHookPoster.ShouldSpawnAfter(outcome)) return 0;
+        if (!AgentHookPoster.ShouldSpawnAfter(outcome, baseUrl)) return 0;
 
         await EnsureWatcherAsync(baseUrl, dashedSessionId, sessionId, node, cwd);
         return 0;

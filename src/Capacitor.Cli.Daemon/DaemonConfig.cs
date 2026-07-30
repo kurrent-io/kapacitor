@@ -172,7 +172,7 @@ public class DaemonConfig {
         if (string.IsNullOrWhiteSpace(ServerUrl)) {
             errors.Add("ServerUrl is required");
         } else if (!Uri.TryCreate(ServerUrl, UriKind.Absolute, out var uri) || uri.Scheme is not ("http" or "https")) {
-            errors.Add($"ServerUrl must be a valid http/https URL, got: {ServerUrl}");
+            errors.Add($"ServerUrl must be a valid http/https URL, got: {UnusableUrlDiagnostic.Sanitize(ServerUrl)}");
         }
 
         if (MaxConcurrentAgents < 1) {

@@ -12,7 +12,12 @@ static class McpJudgeServer {
     /// Run as a session-scoped MCP server. All tool calls must use <paramref name="expectedSessionId"/>.
     /// </summary>
     public static async Task<int> RunAsync(string baseUrl, string expectedSessionId) {
-        using var client = await HttpClientExtensions.CreateAuthenticatedClientAsync(baseUrl);
+        // Validate the shape locally, then defer client construction to the first tools/call —
+        // the shape every sibling MCP server already uses. Judge was the only one building its
+        // client up front, so an unusable URL reached EnsureAbsolute and killed the process
+        // BEFORE the JSON-RPC handshake, leaving the judge run to fail opaquely.
+        var urlOk = HttpClientExtensions.IsAcceptableUrl(baseUrl);
+        HttpClient? client = null;
 
         var tools = BuildToolsList();
 
@@ -44,7 +49,7 @@ static class McpJudgeServer {
             var response = method switch {
                 "initialize" => BuildInitializeResponse(id, request),
                 "tools/list" => BuildToolsListResponse(id, tools),
-                "tools/call" => await HandleToolCallAsync(id, request, client, baseUrl, expectedSessionId),
+                "tools/call" => await DispatchToolCallAsync(id, request),
                 _            => McpProtocol.TryHandleStandardMethod(method, id)
                                 ?? BuildErrorResponse(id, -32601, $"Method not found: {method}")
             };
@@ -53,6 +58,15 @@ static class McpJudgeServer {
         }
 
         return 0;
+
+        // Report an unusable server_url as a JSON-RPC tool error rather than dying: a server is
+        // expected to keep serving, and the caller can see the reason.
+        async Task<string> DispatchToolCallAsync(JsonNode callId, JsonObject callRequest) {
+            if (!urlOk) return BuildToolResult(callId, HttpClientExtensions.SchemeMissingHint, isError: true);
+
+            client ??= await HttpClientExtensions.CreateAuthenticatedClientAsync(baseUrl);
+            return await HandleToolCallAsync(callId, callRequest, client, baseUrl, expectedSessionId);
+        }
     }
 
     /// <summary>Test hook: execute a tool-call handler and return the JSON-RPC envelope.</summary>

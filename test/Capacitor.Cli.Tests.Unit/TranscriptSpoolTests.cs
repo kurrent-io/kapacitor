@@ -49,13 +49,39 @@ public class TranscriptSpoolTests {
         } finally { try { Directory.Delete(dir, true); } catch { } }
     }
 
+    /// <summary>
+    /// The key must stay filename-safe: it becomes the basename, and the drain parses the prefix
+    /// before the first dot. Anything carrying a separator is still rejected.
+    /// </summary>
     [Test]
-    public async Task Append_ignores_malformed_session_id() {
+    [Arguments("has.a.dot")]
+    [Arguments("has/slash")]
+    [Arguments("has\\backslash")]
+    [Arguments("")]
+    public async Task Append_ignores_a_session_id_that_would_break_path_parsing(string sessionId) {
         var dir = TmpDir();
         try {
             var spool = new TranscriptSpool(dir);
-            var r = spool.Append("not-a-valid-sid", """{"n":1}""");
+            var r = spool.Append(sessionId, """{"n":1}""");
             await Assert.That(r).IsEqualTo(TranscriptSpool.AppendResult.Ignored);
+        } finally { try { Directory.Delete(dir, true); } catch { } }
+    }
+
+    /// <summary>
+    /// Vendor ids that are not dashless GUIDs are accepted. The old 32-hex-only rule silently
+    /// dropped every OpenCode payload, so its transcript spool never held anything.
+    /// </summary>
+    [Test]
+    [Arguments("ses_7f3a9c21b8")]
+    [Arguments("not-a-valid-sid")]
+    [Arguments("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")]
+    public async Task Append_accepts_any_filename_safe_session_id(string sessionId) {
+        var dir = TmpDir();
+        try {
+            var spool = new TranscriptSpool(dir);
+            var r = spool.Append(sessionId, """{"n":1}""");
+            await Assert.That(r).IsNotEqualTo(TranscriptSpool.AppendResult.Ignored);
+            await Assert.That(spool.HasBacklog(sessionId)).IsTrue();
         } finally { try { Directory.Delete(dir, true); } catch { } }
     }
 

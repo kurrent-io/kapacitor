@@ -82,6 +82,15 @@ public static class CursorHookCommand {
             return s;
         };
 
+        // At this point the event kind and session id are not yet parsed, so there is nothing to spool
+        // and no way to know which stdout contract to write. Match Cursor's own auth-abandon arm: no
+        // spool, no stdout, exit 0 — but still write the diagnostic, which needs only the URL.
+        if (!HookHttp.IsPostable(baseUrl)) {
+            await Console.Error.WriteLineAsync(
+                UnusableUrlDiagnostic.Build(AppConfig.ResolvedUrlSource, baseUrl, "cursor hook skipped"));
+            return 0;
+        }
+
         var sw = Stopwatch.StartNew();
         using var cts = new CancellationTokenSource(dispatcherBudget);
         HttpClient? client = null;

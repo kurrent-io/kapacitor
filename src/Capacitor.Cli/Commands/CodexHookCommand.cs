@@ -450,7 +450,7 @@ static class CodexHookCommand {
 
         _ = AgentHookPoster.DrainSpoolsAsync(baseUrl, spool, transcriptSpool, sessionId);
 
-        if (!AgentHookPoster.ShouldSpawnAfter(outcome)) return Task.CompletedTask;
+        if (!AgentHookPoster.ShouldSpawnAfter(outcome, baseUrl)) return Task.CompletedTask;
 
         var transcript = TryGetString(enrichedNode, "transcript_path");
         var cwd        = TryGetString(enrichedNode, "cwd");
