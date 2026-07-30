@@ -535,29 +535,22 @@ public static class CursorHookCommand {
                 disposeClients: memoryClientFactory is not null);
 
             return await new SessionStartMemoryOrchestrator(store, provider).GetFragmentAsync(
-                // ClassificationAuthoritative is hardcoded true (not merely `!isSubagentChild`):
-                // this method is only ever reached from the top-level, non-child success path —
-                // a linked child returns {} before any orchestrator work, per §4/§5.
+                // ClassificationAuthoritative is hardcoded true, and this is VALID UNDER THE
+                // MEASURED EVENT CONTRACT rather than proven from this file alone:
                 //
-                // Subagent-classification note (investigated, no behavior change): `!isSubagentChild`
-                // is NOT the same fact as "definitively no parent" — CursorLiveSubagentLinker.
-                // ResolveParent's own doc records that it can return null for a session that IS
-                // actually a subagent, merely because the parent's Task/Agent tool_use hasn't
-                // flushed to the parent's transcript yet at the child's first (and only)
-                // sessionStart hook. The linker has no signal to distinguish that "uncertain"
-                // case from a genuinely standalone top-level session: DiscoverSiblingTranscripts
-                // returns every session EVER recorded under the workspace's agent-transcripts/
-                // dir (no recency/mtime filter), so "candidates exist" is true for nearly every
-                // session after the very first one in a workspace and cannot be used as an
-                // uncertainty signal without suppressing memory injection for the common case.
-                // Threading `authoritative = !isSubagentChild` through so a suspected-uncertain
-                // classification maps to RetryLaterNoCommit would also be a functional dead end
-                // for Cursor specifically: unlike Claude (which can re-decide on a later resume
-                // sessionStart), Cursor's sessionStart fires exactly once per conversation with
-                // no persisted "retry" trigger, so RetryLaterNoCommit here means "this session
-                // never gets memory," not "deferred." Given no cheap signal exists and any
-                // conservative fix regresses the majority (genuine top-level) case, this was
-                // escalated rather than changed — see the fix-report for the full writeup.
+                //  - What the source constructs: this method has exactly one call site, behind
+                //    `if (eventName != "sessionStart") return null`. That is an internal
+                //    invariant a unit test can pin.
+                //  - What makes the flag WARRANTED: on cursor-agent 2026.07.23-e383d2b a
+                //    subagent child never fires sessionStart at all (measured over four probe
+                //    runs and two subagent kinds), so this method is never reached for a child.
+                //    That is an external vendor behaviour a Cursor update could change.
+                //
+                // Deliberately NOT described as "correct by construction" — the dependency on
+                // the vendor contract must stay visible so a future reader knows what to
+                // re-check. Evidence, the re-probe procedure, and the untested Cursor IDE gap
+                // are in
+                // docs/superpowers/specs/2026-07-30-ai1505-cursor-subagent-classification-design.md
                 new SessionMemoryLifecycle(SessionStartHarness.Cursor, sessionId, LifecycleInstanceId: null,
                     IsTopLevel: true, ClassificationAuthoritative: true, SessionLifecycleReason.New,
                     CallbackMayRepeat: false),
@@ -627,7 +620,13 @@ public static class CursorHookCommand {
         // poster callback) — the entry vanishes from the spool, so HasBacklog goes false even
         // though no AgentSubsession stream was ever opened server-side. Gate on the durable
         // positive-ack marker instead of "no backlog" so a dropped start permanently blocks this
-        // child (an accepted, diagnosable loss — the same posture as D0's quarantine).
+        // child.
+        //
+        // This is fail-closed and SILENT: the return below emits no log, metric or surfaced
+        // marker, so the loss is NOT diagnosable from the running system. Accepted to preserve
+        // start-before-content ordering; the child's live capture is recovered only by
+        // `kcap import --cursor` plus the server-side adoption sweep. The full state table is in
+        // docs/superpowers/specs/2026-07-30-ai1505-cursor-subagent-classification-design.md (D2a).
         if (!isStart && !CursorMarkers.HasSubagentStartAck(childSessionId)) {
             return 0;
         }

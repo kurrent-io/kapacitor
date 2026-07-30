@@ -126,9 +126,22 @@ public static class CursorLiveSubagentLinker {
             Directory.CreateDirectory(MarkerDir);
             File.WriteAllLines(Path.Combine(MarkerDir, childSessionId), [parentSessionId, subagentType]);
         } catch {
-            // Fail-open: losing the marker just means later hooks for this child fall back
-            // to being treated as top-level — the same eventual-consistency gap documented
-            // on ResolveParent, healed by a later `kcap import --cursor`.
+            // Fail-open, but the consequence depends on WHEN the write failed, and the
+            // optimistic reading is only half the story:
+            //
+            //  - Failure with no start side effect yet: later hooks miss TryLoadLink and treat
+            //    the child as top-level. Recovered by a later `kcap import --cursor`.
+            //  - Failure followed by a start POST or spool: the caller assigned
+            //    subagentParentId BEFORE calling this method, so the divert still runs. A
+            //    successful start marks the ack and spawns the {parent}-{child} watcher; a
+            //    failed one spools an entry whose later drain does the same. Either way the
+            //    child transcript can be routed BOTH under the parent and as its own
+            //    top-level session — duplication, not a graceful fallback.
+            //
+            // A known, accepted corrupt-state risk; remedies are recorded in
+            // docs/superpowers/specs/2026-07-30-ai1505-cursor-subagent-classification-design.md
+            // (D2a). It has no producer on the measured cursor-agent contract, because the
+            // only caller sits behind a guard that never opens there.
         }
     }
 
