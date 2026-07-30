@@ -233,6 +233,87 @@ public class AcpHostedAgentRuntimeFactoryTests {
         public void    Dispose() { }
     }
 
+    /// <summary>An unattended reviewer's MCP surface is auditable after the fact.
+    ///
+    /// <para>The isolation guarantee — result channel present, every flow-STARTING server absent — is
+    /// enforced in code and pinned byte-exactly by the session/new payload test. Neither of those
+    /// helps an operator asking "what tools did THAT reviewer have?" once the process has exited,
+    /// which it always has by the time anyone asks. Settling exactly that question during this work
+    /// meant catching a live reviewer with <c>ps</c> and reading its argv.</para>
+    ///
+    /// <para>Asserts the transport too, because the list alone is ambiguous: most vendors receive the
+    /// surface via <c>session/new</c>, Copilot via a process argument, so "servers=[…]" without the
+    /// transport does not say what was actually sent.</para></summary>
+    [Test]
+    public async Task StartAsync_ReviewFlow_LogsTheResolvedReviewerMcpSurface() {
+        var fake          = new FakeAcpAgent();
+        var connection    = new CaptureServerConnection();
+        var loggerFactory = new CaptureLoggerFactory();
+
+        var factory = new AcpHostedAgentRuntimeFactory(
+            descriptor: SyntheticDescriptor(supportsMcpServers: true),
+            config: new DaemonConfig(),
+            loggerFactory: loggerFactory,
+            connection: connection,
+            connectionSource: _ => (fake.ClientWriteStream, fake.ClientReadStream, new FakeAcpProcess()));
+
+        using var cts   = new CancellationTokenSource();
+        var fakeRunTask = fake.RunAsync(cts.Token);
+        var started     = await factory.StartAsync(
+            ReviewContext(["kcap-review"]) with { AgentId = "agent-mcp-surface" }, cts.Token)
+            .WaitAsync(HangGuard);
+
+        var line = loggerFactory.Logger.Entries
+            .Where(e => e.Level == LogLevel.Information)
+            .Select(e => e.Message)
+            .FirstOrDefault(m => m.Contains("ACP reviewer MCP surface"));
+
+        await Assert.That(line).IsNotNull()
+            .Because("the reviewer's MCP surface must be observable in the record, not only in a test");
+        // The result channel is the deliverable half...
+        await Assert.That(line!).Contains(KcapMcpRegistry.ReservedResultChannelId);
+        // ...the allowlisted context server is the other half...
+        await Assert.That(line!).Contains("kcap-review");
+        // ...and a flow-STARTING server must never appear, which is the whole point of the isolation.
+        await Assert.That(line!).DoesNotContain("kcap-flows");
+        // Transport, so the list is unambiguous about what was actually sent.
+        await Assert.That(line!).Contains(AcpReviewFlowMcpTransport.SessionNew.ToString());
+        await Assert.That(line!).Contains("agent-mcp-surface");
+
+        cts.Cancel();
+        try { await fakeRunTask.WaitAsync(HangGuard); } catch (OperationCanceledException) { }
+        await started.Runtime.DisposeAsync();
+        await fake.DisposeAsync();
+    }
+
+    /// <summary>The paired direction: a NON-review launch logs no reviewer surface. Logging it for
+    /// every launch would bury the signal an auditor is looking for in ordinary interactive noise.</summary>
+    [Test]
+    public async Task StartAsync_NonReviewLaunch_LogsNoReviewerMcpSurface() {
+        var fake          = new FakeAcpAgent();
+        var connection    = new CaptureServerConnection();
+        var loggerFactory = new CaptureLoggerFactory();
+
+        var factory = new AcpHostedAgentRuntimeFactory(
+            descriptor: AcpVendorDescriptors.Cursor,
+            config: new DaemonConfig { CursorPath = "cursor-agent" },
+            loggerFactory: loggerFactory,
+            connection: connection,
+            connectionSource: _ => (fake.ClientWriteStream, fake.ClientReadStream, new FakeAcpProcess()));
+
+        using var cts   = new CancellationTokenSource();
+        var fakeRunTask = fake.RunAsync(cts.Token);
+        var started     = await factory.StartAsync(MakeContext("agent-plain"), cts.Token).WaitAsync(HangGuard);
+
+        await Assert.That(loggerFactory.Logger.Entries.Any(e => e.Message.Contains("ACP reviewer MCP surface")))
+            .IsFalse();
+
+        cts.Cancel();
+        try { await fakeRunTask.WaitAsync(HangGuard); } catch (OperationCanceledException) { }
+        await started.Runtime.DisposeAsync();
+        await fake.DisposeAsync();
+    }
+
     [Test]
     public async Task StartAsync_LogsAcpHostedAgentLaunch_WithAgentIdVendorAndCwd() {
         var fake           = new FakeAcpAgent();
