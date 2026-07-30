@@ -18,8 +18,8 @@ namespace Capacitor.Cli.Tests.Integration;
 /// stdout. The non-zero exit is still reported (the session genuinely was not recorded), just after
 /// the handshake rather than instead of it.</para>
 ///
-/// <para>This is the sibling of the AI-1586-family hazard where a hook exits before satisfying a
-/// stdout-blocking host.</para>
+/// <para>Same family as the other known hazard where a hook exits before satisfying a stdout-blocking
+/// host — the unguarded auth discovery in the lifecycle poster, tracked separately.</para>
 /// </summary>
 public class CodexSessionStartHandshakeOnPostFailureTests : IDisposable {
     readonly WireMockServer _server         = WireMockServer.Start();
