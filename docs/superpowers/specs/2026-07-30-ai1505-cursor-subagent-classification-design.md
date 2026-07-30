@@ -1,6 +1,6 @@
 # AI-1505 — Cursor subagent classification and SessionStart memory injection
 
-**Status:** rev 6 — in spec review
+**Status:** rev 7 — in spec review
 **Supersedes the premise of:** AI-1461 code-review finding F2
 **Repo:** `kcap-cli`
 
@@ -57,6 +57,7 @@ auditable:
 | F6 bundle scan | **Partially** — `bundle-scan.md` carries the exact version string, SHA-256 of each bundle file containing the symbol, the extraction command, and bounded verbatim excerpts. The bundles themselves are a third-party install and are deliberately **not vendored**, so full re-derivation needs that `cursor-agent` version installed. |
 | F1 run-1/run-2 server corroboration | **No, not reproducibly** — `server-corroboration.md` records the exact SQL and a transcribed (not verbatim: `role` is an added annotation, all-NULL `repo_hash` omitted) result table, from a point-in-time query against a live tenant rather than a fixture |
 | F7 | **Yes** — pure source claim, verifiable in `src/` at this revision |
+| D2a machine-state audit | **Commands yes, result no** — `state-audit.md` carries the exact read-only commands (re-runnable anywhere), but the recorded counts are point-in-time on one machine, like the server corroboration |
 
 The harness re-runs in minutes, which is what makes the §6 re-probe procedure cheap.
 
@@ -320,12 +321,14 @@ is therefore not the only way to discover them.
 
 **This is an explicit risk acceptance, not an absence of risk.** Deferring the
 dual-routing remedy is accepted on the grounds that (a) the state requires an unusual
-production path, and (b) an audit of the developer's own machine on 2026-07-30 found
-**0 markers in `~/.config/kcap/cursor-subagent-links/`, 0 files in
-`~/.config/kcap/spool/`, and 0 subagent-ack markers** — one machine, so weak evidence,
-and not a basis for assuming the population is clean. §7 adds a read-only audit step so
-a second data point is collected cheaply; if stale state turns out to be common, the
-remedy stops being deferrable.
+production path, and (b) a read-only audit of the developer's own machine on 2026-07-30
+found **zero** link markers, spool files, spooled `subagent-start` entries, and
+subagent-start-ack markers. The exact commands and their output are archived at
+`docs/probes/2026-07-30-cursor-subagent-hooks/state-audit.md` so this ground is
+auditable rather than asserted. It is one machine at one moment — weak evidence, and
+explicitly not a basis for assuming the population is clean. §7 adds the same read-only
+audit as a step so a second data point is collected cheaply; if stale state turns out to
+be common, the remedy stops being deferrable.
 
 **Rev 4's write-ordering invariant is WITHDRAWN — it was false on two counts**
 (spec review, round 3; both verified in source):
@@ -347,20 +350,38 @@ not only by external deletion. They cannot be asserted unproducible.
 | Marker only, no ack | **Ordinary partial failure** — start spooled after a transient failure, retry hits a permanent 4xx, entry dropped (exactly what `Permanently_dropped_subagent_start_gates_all_child_transcript_delivery_forever`, `CursorWatcherSpawnTests.cs:254–318`, already demonstrates); also a crash after `SaveLink` | Divert active; every non-start hook returns at the `HasSubagentStartAck` gate (`:631–633`) — child's raw events **and** transcript backfill suppressed indefinitely | **Keep fail-closed**, to preserve start-before-content ordering. Accepted cost: that child's live capture is lost until `kcap import --cursor` + the server adoption sweep. |
 | Marker + valid spool entry | Normal recovery path | Drain redelivers start-first, marks the ack, converges as designed | **Keep.** Pin the start-before-stop ordering invariant. |
 | Spool entry, no marker | `SaveLink` write failure, then a spooled start | On drain (`:345–360`) the callback runs `MaybeSpawnChildWatcherFromPayloadAsync` (`:756–769`), which marks the ack and spawns a `{parent}-{child}` watcher — while the current hook, having missed `TryLoadLink` at `:283`, continues down the **top-level** path (`:382–389` skipped, `:438–464` runs) | **Unsupported corrupt state — NOT benign.** See the dual-routing hazard below. No runtime change in scope; documented as a known risk. |
-| Ack, no marker | `SaveLink` write failure, then a successful start POST | Top-level path on subsequent hooks | Same: unsupported corrupt state, documented. |
+| Ack, no marker | `SaveLink` write failure, then a **successful** start POST | The *same* invocation marks the ack (`:689–692`), spawns the `{parent}-{child}` watcher (`:697–699`) and backfills the child transcript under the parent (`:703–706`); later invocations miss `TryLoadLink` and run top-level | **Unsupported corrupt state — also dual-routes**, with no spool drain involved. See below. |
 | Malformed / truncated marker | Partial write, manual edit | `TryLoadLink` requires ≥2 lines with a non-empty first (`CursorLiveSubagentLinker.cs:113–116`); otherwise null | **Keep fail-open to top-level.** Already the safe direction; pin it. |
 
-**Dual-routing hazard (rev 4 wrongly called this benign).** In the spool-without-marker
-state the same child transcript can be routed *twice*: once agent-scoped under the
-parent by the watcher that `MaybeSpawnChildWatcherFromPayloadAsync` spawns, and once as
-its own top-level session by the current hook's normal path. That is duplication, not a
-graceful fallback. Three remedies exist — restore/validate the marker from the spooled
-payload before spawning, suppress ack+spawn when the marker is absent, or bound and
-accept the duplication — and **all are runtime changes, which this spec keeps out of
-scope.** It is therefore recorded as a known corrupt-state risk under the explicit risk
-acceptance above — not as an impossibility. If the §7 IDE probe shows the arm running on
-that surface, **or** the audit finds stale marker/spool state in the wild, this becomes
-real work and should be fixed before anything depends on live linking.
+**Dual-routing hazard — BOTH `SaveLink`-failure states, not just the spooled one.**
+Rev 4 called this benign; rev 5 corrected that but scoped it to spool-without-marker
+only. Rev 6 corrects the scope: the root cause is that `SaveLink` failing silently does
+not stop the start's side effects, so *whichever* way the start completes, the child can
+end up routed twice.
+
+| Path | How the child gets routed under the parent | How it also gets routed top-level |
+|---|---|---|
+| Start POST **succeeds** (ack, no marker) | Same invocation marks the ack (`:689–692`), spawns the `{parent}-{child}` watcher (`:697–699`) and backfills under the parent (`:703–706`) | Later invocations miss `TryLoadLink` (`:283`) and take the normal top-level path |
+| Start POST **fails → spooled** (spool, no marker) | A later drain (`:345–360`) calls `MaybeSpawnChildWatcherFromPayloadAsync` (`:756–769`), which marks the ack and spawns the same watcher | The same invocation, having missed `TryLoadLink`, continues top-level (`:438–464`) |
+
+Either way the same child transcript is ingested both agent-scoped under the parent and
+as its own top-level session. That is duplication, not a graceful fallback.
+
+Candidate remedies, all **runtime changes this spec keeps out of scope**:
+
+1. **Prevent the side effects when the marker did not persist** — have `SaveLink` report
+   success and fail open to top-level *before* posting the start. This is the only
+   remedy that covers the successful-live-start case, since there is no spooled payload
+   to repair from after the process exits. It is therefore the most likely correct fix.
+2. Restore/validate the marker from the spooled payload before spawning — **spooled case
+   only**; cannot repair the ack case.
+3. Suppress ack+spawn whenever the marker is absent.
+4. Bound and accept the duplication.
+
+Recorded as a known corrupt-state risk under the explicit risk acceptance above — not as
+an impossibility. If the §7 IDE probe shows the arm running on that surface, **or** the
+audit finds stale marker/spool/ack state in the wild, this becomes real work and should
+be fixed before anything depends on live linking.
 
 **On "diagnosable".** The in-code comment at `:625–631` calls the marker-only loss "an
 accepted, diagnosable loss", but the handler simply returns at `:631–633` with no log,
@@ -423,15 +444,15 @@ Add tests pinning the **measured** contract:
 
 These are **contract pins**, except as noted immediately below.
 
-**The dual-routing test is a characterization test, not a contract.** The
-spool-without-marker case currently produces duplicate routing, which D2a labels
-*unsupported*. Its test therefore records a known bug so the risk is encoded rather than
-merely described — it does **not** assert desired behaviour. It must be named and
-commented as such (e.g. `…_currently_dual_routes_known_risk`), and it is explicitly
-**excluded** from the mutation rule below: a future remedy is *expected* to make that
-assertion fail, at which point the test must be rewritten or deleted rather than
-"fixed". What the test legitimately pins is the write-failure setup and the fact that
-both routes occur today.
+**Both `SaveLink`-failure tests are characterization tests, not contracts.** Per D2a the
+duplicate routing occurs on *both* paths — ack-without-marker and spool-without-marker —
+and both are labelled *unsupported*. Their tests therefore record a known bug so the risk
+is encoded rather than merely described; they do **not** assert desired behaviour. Both
+must be named and commented as such (e.g. `…_currently_dual_routes_known_risk`), and both
+are explicitly **excluded** from the mutation rule below: remedy 1 in D2a (fail open to
+top-level when the marker did not persist) is *expected* to make both assertions fail, at
+which point they must be rewritten or deleted rather than "fixed". What they legitimately
+pin is the `SaveLink`-write-failure setup and the fact that both routes occur today.
 
 Every other pin must fail when the behaviour it guards is removed; a pin that passes
 against a mutant proves nothing.
@@ -561,11 +582,14 @@ named owner with IDE access; it is not scriptable from CI.
 2. Open it in Cursor and, in the Agent Window, delegate to a subagent — once with an
    unnamed `Task` delegation and once with the named `prober` subagent, mirroring the
    CLI matrix.
-3. **Before running it**, take a read-only audit of pre-existing state on that machine
-   and record the counts: files in `~/.config/kcap/cursor-subagent-links/`, files in
-   `~/.config/kcap/spool/`, and any subagent-ack markers. This is the second data point
-   for D2a's risk acceptance — if stale state is common in the wild, the dual-routing
-   remedy stops being deferrable. (Developer machine, 2026-07-30: all three were zero.)
+3. **Before running it**, take the read-only state audit — run the commands in
+   `docs/probes/2026-07-30-cursor-subagent-hooks/state-audit.md` verbatim so the counts
+   are comparable with the first data point. They cover `cursor-subagent-links/`,
+   `spool/` (total and those containing `subagent-start`), and the ack directory
+   `cursor-subagent-start-ack/`, all under `${KCAP_CONFIG_DIR:-$HOME/.config/kcap}`, and
+   all **recursive** (`find -type f`). This is the second data point for D2a's risk
+   acceptance — if stale state is common in the wild, the dual-routing remedy stops being
+   deferrable. (Developer machine, 2026-07-30: all four counts zero.)
 4. Record, explicitly: the exact Cursor version and composer mode; whether a child
    `sessionStart` fired; whether a child `sessionEnd` fired (F1 covers both, and rev 3's
    gate checked only the former); the child payload's `transcript_path`; whether any
