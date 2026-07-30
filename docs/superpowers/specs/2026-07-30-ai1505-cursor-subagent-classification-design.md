@@ -1,6 +1,6 @@
 # AI-1505 — Cursor subagent classification and SessionStart memory injection
 
-**Status:** rev 3 — in spec review
+**Status:** rev 4 — in spec review
 **Supersedes the premise of:** AI-1461 code-review finding F2
 **Repo:** `kcap-cli`
 
@@ -48,9 +48,17 @@ Also a static scan of the CLI's JS bundles under
 and the `subagentStart` implementation (F6).
 
 **Artifacts are archived in-repo** at `docs/probes/2026-07-30-cursor-subagent-hooks/`
-(`probe_hook.py`, `hooks.json`, `prober.md`, `probe-run3.log`, `probe-run4.log`; home
-paths and the user email redacted), so every claim below is auditable from the
-revision that makes it, and the probe is re-runnable on a version bump.
+with home paths and the user email redacted. What this does and does not make
+auditable:
+
+| Claim | Auditable from the repo? |
+|---|---|
+| F1 (runs 3–4), F2, F3 timeline | **Yes** — `probe-run3.log`, `probe-run4.log`, plus the harness (`probe_hook.py`, `hooks.json`, `prober.md`) |
+| F6 bundle scan | **Partially** — `bundle-scan.md` carries the exact version string, SHA-256 of each bundle file containing the symbol, the extraction command, and bounded verbatim excerpts. The bundles themselves are a third-party install and are deliberately **not vendored**, so full re-derivation needs that `cursor-agent` version installed. |
+| F1 run-1/run-2 server corroboration | **No, not reproducibly** — `server-corroboration.md` records the exact SQL and its verbatim result, but it is a point-in-time query against a live tenant, not a fixture |
+| F7 | **Yes** — pure source claim, verifiable in `src/` at this revision |
+
+The harness re-runs in minutes, which is what makes the §6 re-probe procedure cheap.
 
 ## 3. Findings
 
@@ -165,7 +173,9 @@ why, and why we cannot use it yet.
 
 ### F6 — `subagentStart` is implemented in the CLI but was not dispatched in the tested version
 
-Scanning the CLI's JS bundles shows `subagentStart` is not merely a documented name:
+Scanning the CLI's JS bundles (evidence, hashes and extraction command archived at
+`docs/probes/2026-07-30-cursor-subagent-hooks/bundle-scan.md`) shows `subagentStart` is
+not merely a documented name:
 
 - `index.js` contains the payload builder (`subagent_id`, `subagent_type`, `task`,
   `parent_conversation_id`, `tool_call_id`, `subagent_model`, `is_parallel_worker`,
@@ -219,15 +229,19 @@ existence of coarse signals. The rejection therefore rests on two other grounds:
 1. **Nothing to prevent on the tested surface.** By F1 a child never reaches the
    injection path, so a suppression signal has no harm to avert.
 2. **Asymmetric, permanent cost of a false positive.** `sessionStart` fires once per
-   Cursor conversation, and of the events we handle only `sessionStart` accepts
-   `additional_context`. A wrongly-suppressed session loses its memory index for good,
-   whereas the averted harm is one redundant index in a subagent.
+   Cursor conversation, and **the kcap dispatcher emits injected context only on
+   `sessionStart`** — so within the adapter as built, a suppressed injection has no
+   later retry. (Upstream capability is broader: Cursor also accepts
+   `additional_context` on `postToolUse`, and per F6 on `subagentStart`. The
+   permanence is a property of our implementation, not of Cursor.) A wrongly-suppressed
+   session loses its memory index for good, whereas the averted harm is one redundant
+   index in a subagent.
 
-Deferred-channel alternatives are considered and rejected rather than ruled out:
-`postToolUse` also accepts `additional_context`, so injection *could* in principle be
-deferred to a post-tool moment when correlation is possible. Rejected because it would
-inject mid-turn rather than into initial context (changing what the adapter means),
-would fire per-tool-call and so needs its own dedupe, and buys nothing while (1) holds.
+Deferred-channel alternatives are considered and rejected rather than ruled out: since
+`postToolUse` accepts `additional_context`, injection *could* in principle be deferred
+to a post-tool moment when correlation is possible. Rejected because it would inject
+mid-turn rather than into initial context (changing what the adapter means), would fire
+per-tool-call and so needs its own dedupe, and buys nothing while (1) holds.
 Revisit only if the IDE gate in §7 shows children do reach injection.
 
 This decision is **scoped to `cursor-agent 2026.07.23-e383d2b`.** It is not asserted for
@@ -256,10 +270,9 @@ obligations:
    two unsatisfiable conjuncts of F4), that a native revival needs a *different
    trigger* (D2 above), and that registration + event-mapping must also change (F7).
 2. **Inertness is tested, not merely asserted** (D3).
-3. **Stale persistent state has defined behaviour.** Because `TryLoadLink` runs on
-   every event (F4), a pre-existing marker still activates the divert. Audit and pin
-   what happens for a stale marker and a stale `subagent-start` spool entry rather than
-   assuming neither exists.
+3. **Stale persistent state has *decided* behaviour** — see D2a. Rev 3 only said each
+   state would be "pinned", which would have frozen whatever the code happens to do.
+   D2a decides each case first.
 4. **The reachability condition is single-sourced** — comments point at this spec
    rather than each restating the analysis.
 
@@ -278,8 +291,33 @@ calls it (`CursorImportSource.cs:291–294`), and per F3 the offline path is the
 place correlation can succeed.
 
 No marker-cleanup migration is proposed, but the "no user has a populated directory"
-claim from rev 2 is withdrawn: it rested on one empty machine. D3 covers stale state by
-pinning behaviour instead.
+claim from rev 2 is withdrawn: it rested on one empty machine. D2a decides what happens
+if such state does exist.
+
+### D2a — Decided behaviour for stale persistent state
+
+Two durable artifacts can outlive a session: the link **marker**
+(`~/.config/kcap/cursor-subagent-links/<child>`) and a spooled **`subagent-start`**
+entry. `TryLoadLink` runs on every event (F4), so these are the only ways the divert is
+reachable today. Write ordering constrains which combinations a code path can produce:
+`SaveLink` (`:293`) precedes entry into `HandleSubagentChildEventAsync`, which is the
+sole producer of a `subagent-start` spool entry (`:602`, spooled `:685`) and the sole
+caller of `MarkSubagentStartAcked` (`:689`). **Therefore no code path can produce spool
+or ack state without a marker**; those combinations require external deletion of the
+marker file.
+
+| State | Reachable how | Current behaviour | Decision |
+|---|---|---|---|
+| Marker only, no ack | External / other surface | Divert active; every non-start hook returns at the `HasSubagentStartAck` gate (`:631–633`) — child's raw events **and** transcript backfill suppressed indefinitely | **Keep fail-closed.** This is the existing documented posture ("an accepted, diagnosable loss — the same posture as D0's quarantine"). Accepted cost: that child's live capture is lost; recovery is `kcap import --cursor` plus the server-side adoption sweep. Pin it so it is a decision, not an accident. |
+| Marker + valid spool entry | Normal recovery path | Drain redelivers start-first, marks the ack, then converges as designed | **Keep.** Pin the start-before-stop ordering invariant. |
+| Spool entry, no marker | **Not producible by any code path**; needs marker deletion | Drain marks the ack and may spawn a child watcher, but `TryLoadLink` misses so the hook follows the top-level path | **Assert the invariant** rather than support the state: test that no code path yields spool-without-marker. If it occurs anyway, the top-level fallback is benign (session ingested top-level, healed offline), so no cleanup is added. |
+| Ack, no marker | Same as above | Top-level path | Same as above. |
+| Malformed / truncated marker | Partial write, manual edit | `TryLoadLink` requires ≥2 lines with a non-empty first (`CursorLiveSubagentLinker.cs:113–116`) and otherwise returns null | **Keep fail-open to top-level.** Already the safe direction; pin it. |
+
+The asymmetry is deliberate: a *malformed* marker fails **open** (top-level, benign),
+whereas a *well-formed* marker without an ack fails **closed** (suppressed, recoverable
+offline). Both are defensible, but only because the offline path exists — which is the
+same reason D1 and F3 lean on it.
 
 ### D3 — Rewrite the wrong-architecture tests; drop the vacuous tripwire
 
@@ -291,8 +329,20 @@ pinning behaviour instead.
   `subagent-stop` (`:19–33`, `:69–85`), which D2 identifies as precisely the wrong
   trigger. A comment cannot convert those assertions into coverage for a native parent
   event; leaving them preserves an obsolete contract and recreates the false
-  confidence. Retain only the narrowly useful marker-driven mid-lifecycle, backfill and
-  ordering tests, whose value is independent of how the marker was produced.
+  confidence.
+
+  Rev 3's "retain the mid-lifecycle/backfill/ordering tests" was too broad — spec
+  review showed it still admits the obsolete contract. The precise cut:
+
+  | Test shape | Disposition |
+  |---|---|
+  | Child `sessionStart` → `subagent-start`, child `sessionEnd` → `subagent-stop` (`:19–33`, `:69–85`) | **Remove.** Asserts the wrong trigger. |
+  | Stop-ordering behaviour, e.g. `linked_child_subagent_stop_is_not_delivered_ahead_of_a_spooled_subagent_start` (`:107–136`) | **Remove/defer.** Its invariant is real but is expressed through child `sessionEnd`; how `subagentStop` is keyed and spooled is undefined until a native design exists. |
+  | Watcher order/ack tests that *generate* the start via child `sessionStart` (`CursorWatcherSpawnTests.cs:102–153`, `190–239`, `254–318`) | **Rewrite** to seed the required persistent state (marker/ack/spool) directly, per D2a, instead of driving it through a child lifecycle hook. |
+  | Marker lookup, ack gating, child transcript backfill and watcher self-heal, where setup seeds valid state directly | **Retain.** Value is independent of how the marker was produced. |
+
+  Rule of thumb for the rewrite: a retained test may *depend on* marker/ack state, but
+  must not *assert that a child lifecycle hook produces it*.
 - **The rev 2 "tripwire" test is dropped.** F7 shows it could not work: a unit test
   feeding a `subagentStart` payload proves nothing about real installations, because
   neither `CursorHooksParser.CursorHookEvents` nor `CursorHookEventMap` contains the
@@ -306,10 +356,14 @@ Add tests pinning the **measured** contract:
 
 1. A realistic `sessionStart` payload carries a null `transcript_path`, and the
    transcript-derived classification arm does not run for it.
-2. Memory injection is reached only on `sessionStart`, so
-   `ClassificationAuthoritative: true` holds by construction.
-3. Stale-state behaviour (D2.3): a pre-existing marker, and a pre-existing
-   `subagent-start` spool entry, each have pinned, intentional behaviour.
+2. **The orchestrator call-site guard**: memory injection is invoked only from the
+   `sessionStart` branch. Named for what it actually proves — an *internal* invariant.
+   It does **not** prove `ClassificationAuthoritative: true` is warranted; that also
+   requires the external fact that a child never receives `sessionStart` (F1), which is
+   an empirical vendor contract no unit test can establish.
+3. Stale-state behaviour per D2a: marker-only fails closed; malformed marker fails open
+   to top-level; marker+spool converges start-first; and spool-without-marker is
+   asserted unproducible rather than supported.
 
 Each must fail when the behaviour it guards is removed; a pin that passes against a
 mutant proves nothing.
@@ -318,10 +372,17 @@ mutant proves nothing.
 
 The note at `CursorHookCommand.cs:538–561` asserts a residual risk that does not occur
 on the tested surface and attributes the decision to "no cheap signal exists." Replace
-with the measured reason, **explicitly scoped to the tested CLI version**: a Cursor
-subagent child never fires `sessionStart`, so this method is unreachable for a child
-and `ClassificationAuthoritative: true` is correct by construction. Cite this spec
-rather than restating the analysis.
+with the measured reason, **explicitly scoped to the tested CLI version**: on
+`cursor-agent 2026.07.23-e383d2b` a subagent child never fires `sessionStart`, so this
+method is not reached for a child and `ClassificationAuthoritative: true` is **valid
+under that measured event contract**.
+
+The phrase "correct by construction" is deliberately **not** used. The source
+constructs only "the orchestrator is invoked only from `sessionStart`"; the part that
+makes the flag *warranted* is an external, empirically-observed vendor behaviour that a
+Cursor update could change. The comment must make that dependency visible rather than
+read as a proof, so a future reader knows what to re-check. Cite this spec rather than
+restating the analysis.
 
 Note: `scripts/check-linear-ids.sh` rejects `AI-<digits>` tokens in `src/**/*.cs` and
 `test/**/*.cs`. Reference this spec by path, not by issue id, in code comments.
@@ -371,31 +432,57 @@ where `subagentStart` most plausibly does fire — the one real pre-existing par
 pair on disk carries a named `subagent_type: generalPurpose`, which the CLI never
 produced.
 
-This is a **correctness gap, not a documentation gap.** If an IDE subagent child fires
-`sessionStart`, then — because `transcript_path` is null there (F2) — the classification
-block is skipped, `isSubagentChild` is false, and the child **does** receive the memory
-index. That is exactly the harm AI-1505 was filed about, and D1's first ground would not
-hold on that surface.
+This is a potential **correctness gap, not a documentation gap** — but the conditional
+must be stated carefully, because rev 3 leaked a CLI-only fact into an IDE prediction.
+F2 (`transcript_path` null at `sessionStart`) is measured on the CLI **only**. So:
 
-**Gate:** before this spec's conclusions are treated as settled, run the archived probe
-against the IDE:
+- **If** an IDE child fires `sessionStart` **and** that payload's `transcript_path` is
+  null, the classification block is skipped, `isSubagentChild` is false, and the child
+  **does** receive the memory index — exactly the harm AI-1505 was filed about, and
+  D1's first ground fails on that surface.
+- **If** an IDE child fires `sessionStart` **with** a populated `transcript_path`, the
+  transcript-derived arm can actually run; it may still fail to correlate (F3's flush
+  timing is likely to apply), but the failure mode differs and must be measured, not
+  predicted.
+
+The IDE sample must therefore **record `transcript_path`**, not assume it.
+
+**Merge-blocking status:** this gate is **not** pre-merge Definition of Done, and the
+change may ship without it. Justification: the shipped change alters no runtime
+behaviour, and every claim it makes is scoped to the tested CLI version, so an IDE
+result cannot invalidate what is shipped — it can only *widen* (or refuse to widen) the
+scope. The gate is a condition on generalising the conclusions, and on closing AI-1505
+as "premise falsified" rather than "premise falsified for `cursor-agent`". It needs a
+named owner with IDE access; it is not scriptable from CI.
+
+**Procedure:**
 
 1. Copy `docs/probes/2026-07-30-cursor-subagent-hooks/{probe_hook.py,hooks.json,prober.md}`
-   into a throwaway repo (fix the absolute paths in `hooks.json` and the `LOG` constant).
-2. Open it in Cursor and, in the Agent Window, ask the agent to delegate to a subagent.
-3. Inspect `probe.log` for (a) a `sessionStart` whose `session_id` differs from the
-   parent's, and (b) any `subagentStart` line.
+   into a throwaway repo (fix the absolute paths in `hooks.json` and the `LOG`
+   constant).
+2. Open it in Cursor and, in the Agent Window, delegate to a subagent — once with an
+   unnamed `Task` delegation and once with the named `prober` subagent, mirroring the
+   CLI matrix.
+3. Record, explicitly: the exact Cursor version and composer mode; whether a child
+   `sessionStart` fired; whether a child `sessionEnd` fired (F1 covers both, and rev 3's
+   gate checked only the former); the child payload's `transcript_path`; whether any
+   `subagentStart`/`subagentStop` fired; and the values of `is_background_agent`,
+   `conversation_id`, `generation_id` and `session_id` on both parent and child — the
+   candidate signals the CLI runs never let us evaluate.
 
 Outcomes:
 
-- **No child `sessionStart`, no `subagentStart`:** F1/D1 generalise; drop the scoping
-  qualifiers.
-- **Child fires `sessionStart`:** D1 must be reopened for the IDE — the requested
-  heuristic (or a `conversation_id`/`generation_id` relationship, or
-  `is_background_agent`, none of which the CLI runs let us evaluate) becomes relevant,
-  and the injected-memory harm is real.
-- **`subagentStart` fires:** F7's registration/mapping gap becomes the blocking work,
-  and D2's landing site gets used.
+- **No child `sessionStart` or `sessionEnd`, no native events:** F1/D1 extend to the
+  tested IDE version and mode. **Scoping qualifiers are narrowed, not dropped** — one
+  IDE run establishes a version/mode/subagent-kind data point, never a
+  version-independent Cursor contract. Rev 3 wrongly said the qualifiers could be
+  dropped.
+- **Child fires `sessionStart`:** reopen D1 for the IDE. The requested heuristic, or a
+  `conversation_id`/`generation_id` relationship, or `is_background_agent`, becomes
+  relevant, and the injected-memory harm is real. Branch on the recorded
+  `transcript_path` per the conditional above.
+- **Native `subagentStart`/`subagentStop` fires:** F7's registration/mapping gap becomes
+  the blocking work, and D2's landing site gets used.
 
 Independently of the outcome, F3 constrains only deterministic prompt-hash correlation;
 it does not by itself decide the IDE case.
