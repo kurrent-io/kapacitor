@@ -1,6 +1,6 @@
 # AI-1505 — Cursor subagent classification and SessionStart memory injection
 
-**Status:** rev 7 — in spec review
+**Status:** rev 8 — in spec review
 **Supersedes the premise of:** AI-1461 code-review finding F2
 **Repo:** `kcap-cli`
 
@@ -297,10 +297,18 @@ if such state does exist.
 
 ### D2a — Decided behaviour for stale persistent state
 
-Two durable artifacts can outlive a session: the link **marker**
-(`~/.config/kcap/cursor-subagent-links/<child>`) and a spooled **`subagent-start`**
-entry. `TryLoadLink` runs on every event (F4), so these are how the divert stays
-reachable.
+**Three** durable artifacts can outlive a session:
+
+1. the link **marker** (`cursor-subagent-links/<child>`), read by `TryLoadLink`;
+2. a spooled **`subagent-start`** entry (`spool/`, in any of the three backlog forms
+   `HookSpool` recognises — `<sid>.jsonl`, `<sid>.<pid-seq>.draining`,
+   `<sid>.ordered-*`);
+3. the **subagent-start ack marker** (`cursor-subagent-start-ack/<child>`,
+   `CursorMarkers.SubagentStartAckPath`), which is independently durable and is what
+   makes the ack-without-marker state below persist.
+
+All paths are under `${KCAP_CONFIG_DIR:-$HOME/.config/kcap}`. `TryLoadLink` runs on
+every event (F4), so these are how the divert stays reachable.
 
 **Precondition — production, not consumption.** Rev 5 said these states "become live
 exactly when the arm does". That conflated two different things and is corrected here.
@@ -322,8 +330,8 @@ is therefore not the only way to discover them.
 **This is an explicit risk acceptance, not an absence of risk.** Deferring the
 dual-routing remedy is accepted on the grounds that (a) the state requires an unusual
 production path, and (b) a read-only audit of the developer's own machine on 2026-07-30
-found **zero** link markers, spool files, spooled `subagent-start` entries, and
-subagent-start-ack markers. The exact commands and their output are archived at
+found zero link markers, zero ack markers, and zero spool backlog in all three forms
+HookSpool recognises. The exact commands and their output are archived at
 `docs/probes/2026-07-30-cursor-subagent-hooks/state-audit.md` so this ground is
 auditable rather than asserted. It is one machine at one moment — weak evidence, and
 explicitly not a basis for assuming the population is clean. §7 adds the same read-only
