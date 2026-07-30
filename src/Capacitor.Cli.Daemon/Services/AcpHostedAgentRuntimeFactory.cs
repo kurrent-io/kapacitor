@@ -137,13 +137,7 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
         // result channel's env includes the server URL and the flow agent id. The transport is logged
         // alongside because it decides HOW the surface reaches the vendor — session/new for most, a
         // process argument for Copilot — so the list alone would be ambiguous about what was sent.
-        if (ctx.IsReviewFlow)
-            LogReviewerMcpSurface(
-                ctx.AgentId,
-                descriptor.Vendor,
-                descriptor.ReviewFlowMcpTransport.ToString(),
-                string.Join(",", (reviewMcp ?? []).Select(spec => spec.Name)));
-
+        // The emit site is deliberately after the handshake; see the call below.
         try {
             await runtime.StartAsync(
                 ctx.Worktree.Path,
@@ -159,6 +153,22 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
 
             throw;
         }
+
+        // Emitted only now, AFTER the handshake, and that ordering is the whole point.
+        //
+        // StartAsync performs ACP `initialize` and then sends the list in `session/new`. Logging
+        // before that returns records a surface the vendor may never have received — a rejected,
+        // malformed or cancelled initialize would leave an audit line claiming this reviewer held
+        // [kcap-flow-result, …] when no reviewer session ever existed. An audit log that can disagree
+        // with what was actually sent is worse than no audit log, so the line is emitted once the
+        // handshake has succeeded for every transport: session/new has gone over the wire by then,
+        // and Copilot's process-argument config was applied even earlier, at spawn.
+        if (ctx.IsReviewFlow)
+            LogReviewerMcpSurface(
+                ctx.AgentId,
+                descriptor.Vendor,
+                descriptor.ReviewFlowMcpTransport.ToString(),
+                string.Join(",", (reviewMcp ?? []).Select(spec => spec.Name)));
 
         // The runtime IS the transcript source (it implements
         // IAcpTranscriptSource directly) — hand it back on HostedRuntimeStart so the orchestrator can

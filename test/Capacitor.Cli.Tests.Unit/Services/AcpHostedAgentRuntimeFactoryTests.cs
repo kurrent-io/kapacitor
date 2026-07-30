@@ -233,19 +233,21 @@ public class AcpHostedAgentRuntimeFactoryTests {
         public void    Dispose() { }
     }
 
-    /// <summary>An unattended reviewer's MCP surface is auditable after the fact.
+    /// <summary>An unattended reviewer's MCP surface is auditable after the fact, and the logged
+    /// names are the RESOLVED names — not the caller's raw allowlist.
     ///
-    /// <para>The isolation guarantee — result channel present, every flow-STARTING server absent — is
-    /// enforced in code and pinned byte-exactly by the session/new payload test. Neither of those
-    /// helps an operator asking "what tools did THAT reviewer have?" once the process has exited,
-    /// which it always has by the time anyone asks. Settling exactly that question during this work
-    /// meant catching a live reviewer with <c>ps</c> and reading its argv.</para>
+    /// <para>The first version of this test was vacuous in the way that matters, and review caught it:
+    /// it fed the already-canonical <c>["kcap-review"]</c> and asserted with Contains/DoesNotContain,
+    /// so a build logging <c>ctx.McpAllowlist</c> verbatim — before canonicalisation, dedup, and
+    /// stripping of flow-STARTING servers — passed every assertion. Worse, the
+    /// <c>DoesNotContain("kcap-flows")</c> was meaningless because that value was never supplied.</para>
     ///
-    /// <para>Asserts the transport too, because the list alone is ambiguous: most vendors receive the
-    /// surface via <c>session/new</c>, Copilot via a process argument, so "servers=[…]" without the
-    /// transport does not say what was actually sent.</para></summary>
+    /// <para>So the input is deliberately hostile: mixed case, surrounding whitespace, a duplicate, a
+    /// redundant explicit result channel, and <c>kcap-flows</c> itself — the one server that must never
+    /// survive. The assertion is then EXACT and ordered, because only an exact comparison can tell the
+    /// resolved surface from the requested one.</para></summary>
     [Test]
-    public async Task StartAsync_ReviewFlow_LogsTheResolvedReviewerMcpSurface() {
+    public async Task StartAsync_ReviewFlow_LogsTheRESOLVEDReviewerMcpSurface_NotTheRawAllowlist() {
         var fake          = new FakeAcpAgent();
         var connection    = new CaptureServerConnection();
         var loggerFactory = new CaptureLoggerFactory();
@@ -259,9 +261,20 @@ public class AcpHostedAgentRuntimeFactoryTests {
 
         using var cts   = new CancellationTokenSource();
         var fakeRunTask = fake.RunAsync(cts.Token);
-        var started     = await factory.StartAsync(
-            ReviewContext(["kcap-review"]) with { AgentId = "agent-mcp-surface" }, cts.Token)
-            .WaitAsync(HangGuard);
+
+        // Hostile but VALID input: casing, whitespace, a duplicate, and a redundant explicit result
+        // channel. Deliberately no `kcap-flows` — on this path a flow-starting server does not get
+        // silently stripped, it makes the whole launch throw "not auto-approvable" before any spawn
+        // (pinned by ReviewFlow_NonAutoApprovableAllowlistEntry_ThrowsBeforeSpawn). That is a stronger
+        // isolation guarantee than filtering, so the surface log can never be the thing that catches
+        // it; what this test must catch is the log echoing the RAW allowlist instead of the resolved
+        // one, which casing/whitespace/duplicates expose on their own.
+        var ctx = ReviewContext([
+            "  KCAP-Review  ", "kcap-review",
+            KcapMcpRegistry.ReservedResultChannelId
+        ]) with { AgentId = "agent-mcp-surface" };
+
+        var started = await factory.StartAsync(ctx, cts.Token).WaitAsync(HangGuard);
 
         var line = loggerFactory.Logger.Entries
             .Where(e => e.Level == LogLevel.Information)
@@ -270,13 +283,21 @@ public class AcpHostedAgentRuntimeFactoryTests {
 
         await Assert.That(line).IsNotNull()
             .Because("the reviewer's MCP surface must be observable in the record, not only in a test");
-        // The result channel is the deliverable half...
-        await Assert.That(line!).Contains(KcapMcpRegistry.ReservedResultChannelId);
-        // ...the allowlisted context server is the other half...
-        await Assert.That(line!).Contains("kcap-review");
-        // ...and a flow-STARTING server must never appear, which is the whole point of the isolation.
-        await Assert.That(line!).DoesNotContain("kcap-flows");
-        // Transport, so the list is unambiguous about what was actually sent.
+
+        // EXACT, ordered — the load-bearing assertion. Anything logging the raw allowlist fails here.
+        var logged = System.Text.RegularExpressions.Regex.Match(line!, @"servers=\[([^\]]*)\]").Groups[1].Value;
+        var sent   = await WaitForSessionNewServerNamesAsync(fake);
+
+        await Assert.That(logged).IsEqualTo(string.Join(",", sent))
+            .Because("the logged surface must equal what session/new actually carried");
+        // Resolved, not echoed: the raw input had three entries with mixed casing, padding and a
+        // duplicate; the surface must be canonical and deduplicated. A build logging ctx.McpAllowlist
+        // verbatim fails here on every count.
+        await Assert.That(logged.Split(',').Count(n => n == "kcap-review")).IsEqualTo(1);
+        await Assert.That(logged).DoesNotContain("KCAP-Review");
+        await Assert.That(logged).DoesNotContain(" ");
+        await Assert.That(logged.Split(',').Length).IsEqualTo(2);
+        await Assert.That(logged).Contains(KcapMcpRegistry.ReservedResultChannelId);
         await Assert.That(line!).Contains(AcpReviewFlowMcpTransport.SessionNew.ToString());
         await Assert.That(line!).Contains("agent-mcp-surface");
 
@@ -284,6 +305,49 @@ public class AcpHostedAgentRuntimeFactoryTests {
         try { await fakeRunTask.WaitAsync(HangGuard); } catch (OperationCanceledException) { }
         await started.Runtime.DisposeAsync();
         await fake.DisposeAsync();
+    }
+
+    /// <summary>The audit line must describe what CROSSED THE WIRE, not what was resolved. A failed
+    /// handshake must leave no surface line at all — otherwise the record claims a reviewer held tools
+    /// when no reviewer session ever existed, which is worse than having no record.</summary>
+    [Test]
+    public async Task StartAsync_ReviewFlow_FailedHandshake_LogsNoReviewerMcpSurface() {
+        var fake          = new FakeAcpAgent();
+        var connection    = new CaptureServerConnection();
+        var loggerFactory = new CaptureLoggerFactory();
+        fake.FailNextInitialize(-32000, "initialize rejected");
+
+        var factory = new AcpHostedAgentRuntimeFactory(
+            descriptor: SyntheticDescriptor(supportsMcpServers: true),
+            config: new DaemonConfig(),
+            loggerFactory: loggerFactory,
+            connection: connection,
+            connectionSource: _ => (fake.ClientWriteStream, fake.ClientReadStream, new FakeAcpProcess()));
+
+        using var cts   = new CancellationTokenSource();
+        var fakeRunTask = fake.RunAsync(cts.Token);
+
+        await Assert.That(async () => await factory.StartAsync(
+            ReviewContext(["kcap-review"]), cts.Token).WaitAsync(HangGuard)).ThrowsException();
+
+        await Assert.That(loggerFactory.Logger.Entries.Any(e => e.Message.Contains("ACP reviewer MCP surface")))
+            .IsFalse()
+            .Because("a reviewer that never completed its handshake received no surface to record");
+
+        cts.Cancel();
+        try { await fakeRunTask.WaitAsync(HangGuard); } catch (OperationCanceledException) { }
+        await fake.DisposeAsync();
+    }
+
+    /// <summary>Reads the server names session/new actually carried, so the log can be compared to the
+    /// wire rather than to a restatement of the same intent.</summary>
+    static async Task<string[]> WaitForSessionNewServerNamesAsync(FakeAcpAgent fake) {
+        var json = await WaitForSessionNewMcpServersJsonAsync(fake);
+
+        return System.Text.Json.JsonDocument.Parse(json).RootElement
+            .EnumerateArray()
+            .Select(e => e.GetProperty("name").GetString()!)
+            .ToArray();
     }
 
     /// <summary>The paired direction: a NON-review launch logs no reviewer surface. Logging it for
