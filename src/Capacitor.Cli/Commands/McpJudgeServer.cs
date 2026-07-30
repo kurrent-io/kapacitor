@@ -27,6 +27,7 @@ static class McpJudgeServer {
         await using var writer = new StreamWriter(stdout, new UTF8Encoding(false));
         writer.AutoFlush = true;
 
+        try {
         while (await reader.ReadLineAsync() is { } line) {
             if (string.IsNullOrWhiteSpace(line)) continue;
 
@@ -55,6 +56,10 @@ static class McpJudgeServer {
             };
 
             await writer.WriteLineAsync(response);
+        }
+        } finally {
+            // Deferring construction must not also defer disposal: the loop ends when stdin closes.
+            client?.Dispose();
         }
 
         return 0;

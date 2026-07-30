@@ -12,17 +12,12 @@ public enum UrlFailurePolicy {
 /// <summary>
 /// Process-wide selector for <see cref="UrlFailurePolicy"/>, set once at entry.
 ///
-/// <para>Defaults to <see cref="UrlFailurePolicy.FailFast"/> so interactive commands keep exiting 2
-/// with an actionable hint — the right UX when a user is present. Agent-spawned commands switch to
-/// <see cref="UrlFailurePolicy.Throw"/> because they owe an output contract (a hook whose host blocks
-/// on stdout) or must leave no orphaned child, and <c>Environment.Exit</c> is uncatchable: it bypasses
-/// the fail-open <c>catch</c> every vendor hook already has, so the harness sees no output at all and
-/// rejects the session.</para>
+/// <para>Agent-spawned commands need <see cref="UrlFailurePolicy.Throw"/> because
+/// <c>Environment.Exit</c> is uncatchable: it bypasses the fail-open <c>catch</c> every vendor hook
+/// has, so a hook dies before its stdout contract and the harness rejects the session.</para>
 ///
-/// <para>This selector prevents process <em>death</em>. It does not decide disposition — whether a
-/// payload is spooled, a watcher is spawned, or a protocol error is returned is owned by the explicit
-/// <see cref="HookHttp.IsPostable"/> guards at each seam. Nor is it a claim that the reachable surface
-/// has been enumerated; it has not been, five times over.</para>
+/// <para>This prevents process death only. Disposition — spool, skip, or protocol error — belongs to
+/// the <see cref="HookHttp.IsPostable"/> guards at each seam.</para>
 /// </summary>
 public static class ProcessUrlPolicy {
     public static UrlFailurePolicy Current { get; set; } = UrlFailurePolicy.FailFast;
