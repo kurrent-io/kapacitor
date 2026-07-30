@@ -116,10 +116,17 @@ public class UnusableUrlHookMatrixTests : IDisposable {
         await Assert.That(r.ExitCode).IsNotEqualTo(2);
     }
 
-    /// <summary>Negative control: interactive commands must keep failing fast.</summary>
+    /// <summary>
+    /// Negative control: interactive commands must keep failing fast.
+    ///
+    /// <para>The session id is passed EXPLICITLY. Without it, <c>recap</c> resolves one from ambient
+    /// state — so this passed locally (inside a coding-agent session) while exiting 1 on the usage
+    /// message in CI, never reaching the URL validation it exists to check. <c>RunAsync</c> also
+    /// clears the ambient variable so the result cannot depend on where the suite runs.</para>
+    /// </summary>
     [Test]
     public async Task Interactive_command_still_exits_2_with_the_hint() {
-        var r = await RunAsync(["recap"], "ftp://host", stdin: "");
+        var r = await RunAsync(["recap", "0123456789abcdef0123456789abcdef"], "ftp://host", stdin: "");
 
         await Assert.That(r.ExitCode).IsEqualTo(2);
         await Assert.That(r.Stderr).Contains("server_url is missing a scheme");
@@ -160,6 +167,8 @@ public class UnusableUrlHookMatrixTests : IDisposable {
                 ["KCAP_URL"]           = url,
                 ["KCAP_CONFIG_DIR"]    = _cfgDir,
                 ["KCAP_NO_UPDATE_CHECK"] = "1",
+                // Ambient session state must not decide what these cases exercise.
+                ["KCAP_SESSION_ID"]      = "",
             },
         };
 
