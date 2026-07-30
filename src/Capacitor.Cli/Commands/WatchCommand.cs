@@ -182,6 +182,17 @@ static partial class WatchCommand {
             int?    parentPid = null,
             string  vendor    = "claude"
         ) {
+        // BEFORE the log redirection below: SignalR's WithUrl builds a Uri synchronously, so a
+        // relative value fails there — ahead of the connect/retry loop and independently of
+        // EnsureAbsolute — and `watch` is not fail-open, so the top-level catch turns that into an
+        // opaque exit 1. Validating here gives a hand-run watcher the actionable hint on the real
+        // stderr and the same exit 2 every interactive command gives; a few lines later Console.Error
+        // is a log file nobody is looking at.
+        if (!HookHttp.IsPostable(baseUrl)) {
+            Console.Error.WriteLine(HttpClientExtensions.SchemeMissingHint);
+            return 2;
+        }
+
         // Redirect all output to a log file so we don't hold parent's pipe FDs open
         var logDir = PathHelpers.ConfigPath("logs");
         Directory.CreateDirectory(logDir);
@@ -450,15 +461,6 @@ static partial class WatchCommand {
         }
 
         Log($"Watching {transcriptPath} for session {sessionId}" + (agentId is not null ? $" agent {agentId}" : ""));
-
-        // SignalR's WithUrl builds a Uri synchronously, so a relative value fails right here — before
-        // the connect/retry loop and independently of EnsureAbsolute. `watch` is not a fail-open
-        // command, so the top-level catch turns that into an opaque exit 1. Validate first so a
-        // hand-run watcher gets the actionable hint and the same exit 2 every interactive command gives.
-        if (!HookHttp.IsPostable(baseUrl)) {
-            Console.Error.WriteLine(HttpClientExtensions.SchemeMissingHint);
-            return 2;
-        }
 
         // Build SignalR hub connection
         var hubUrl = $"{baseUrl}/hubs/sessions";
