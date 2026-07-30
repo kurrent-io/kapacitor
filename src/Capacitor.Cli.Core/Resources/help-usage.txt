@@ -28,7 +28,7 @@ Configuration:
 
 Agents:
   agent start <vendor> [-d] [--worktree] [--private] [-- <args>]  Start a daemon-hosted agent
-  agent ls                         List this daemon's agents (id, status, repo)
+  agent ls                         List this daemon's agents (id, status, kind, repo)
   agent attach <id>                Attach your terminal to a running agent (id prefix ok)
   agent stop <id> | --all [-y] [--force]  Stop one agent, or all of them
 
