@@ -15,9 +15,12 @@ WHERE session_id LIKE '17e20135%' OR session_id LIKE '41841599%'
 ORDER BY started_at
 ```
 
-Result (verbatim, `repo_hash` NULL for all four — the probe workspace has no remote):
+Result — **transcribed, not verbatim**: the `role` column is an annotation added here
+(the SQL does not select it), and `repo_hash` is selected by the SQL but omitted from
+this table because it was NULL for all four rows (the probe workspace has no remote).
+Every other value is as returned.
 
-| session_id | role | model | status | event_count | started_at | ended_at |
+| session_id | role *(annotation)* | model | status | event_count | started_at | ended_at |
 |---|---|---|---|---|---|---|
 | `17e20135185149e6a2b8ea81ce4329c8` | run-1 parent | `claude-4.5-sonnet-thinking` | 1 | 9 | 2026-07-30T13:16:27.273292Z | 2026-07-30T13:17:02.502040Z |
 | `30b68e33c13f444d8d31bf9539a42a28` | run-1 child  | **NULL** | 1 | 8 | 2026-07-30T13:16:41.542913Z | 2026-07-30T13:16:52.799111Z |

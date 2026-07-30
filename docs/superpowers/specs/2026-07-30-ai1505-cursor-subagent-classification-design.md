@@ -1,6 +1,6 @@
 # AI-1505 — Cursor subagent classification and SessionStart memory injection
 
-**Status:** rev 4 — in spec review
+**Status:** rev 5 — in spec review
 **Supersedes the premise of:** AI-1461 code-review finding F2
 **Repo:** `kcap-cli`
 
@@ -55,7 +55,7 @@ auditable:
 |---|---|
 | F1 (runs 3–4), F2, F3 timeline | **Yes** — `probe-run3.log`, `probe-run4.log`, plus the harness (`probe_hook.py`, `hooks.json`, `prober.md`) |
 | F6 bundle scan | **Partially** — `bundle-scan.md` carries the exact version string, SHA-256 of each bundle file containing the symbol, the extraction command, and bounded verbatim excerpts. The bundles themselves are a third-party install and are deliberately **not vendored**, so full re-derivation needs that `cursor-agent` version installed. |
-| F1 run-1/run-2 server corroboration | **No, not reproducibly** — `server-corroboration.md` records the exact SQL and its verbatim result, but it is a point-in-time query against a live tenant, not a fixture |
+| F1 run-1/run-2 server corroboration | **No, not reproducibly** — `server-corroboration.md` records the exact SQL and a transcribed (not verbatim: `role` is an added annotation, all-NULL `repo_hash` omitted) result table, from a point-in-time query against a live tenant rather than a fixture |
 | F7 | **Yes** — pure source claim, verifiable in `src/` at this revision |
 
 The harness re-runs in minutes, which is what makes the §6 re-probe procedure cheap.
@@ -298,26 +298,61 @@ if such state does exist.
 
 Two durable artifacts can outlive a session: the link **marker**
 (`~/.config/kcap/cursor-subagent-links/<child>`) and a spooled **`subagent-start`**
-entry. `TryLoadLink` runs on every event (F4), so these are the only ways the divert is
-reachable today. Write ordering constrains which combinations a code path can produce:
-`SaveLink` (`:293`) precedes entry into `HandleSubagentChildEventAsync`, which is the
-sole producer of a `subagent-start` spool entry (`:602`, spooled `:685`) and the sole
-caller of `MarkSubagentStartAcked` (`:689`). **Therefore no code path can produce spool
-or ack state without a marker**; those combinations require external deletion of the
-marker file.
+entry. `TryLoadLink` runs on every event (F4), so these are how the divert stays
+reachable.
+
+**Precondition for all of it.** Every state below requires the transcript-derived
+classification arm to have *run at least once*, since that is the only thing that
+attempts `SaveLink` or enters the divert. Per F1/F2 the arm never runs on the tested
+CLI surface, so none of these states arise there. They become live exactly when the
+arm does — i.e. on a surface where `sessionStart` carries a `transcript_path`. That is
+the §7 IDE unknown, which is a further reason the gate matters.
+
+**Rev 4's write-ordering invariant is WITHDRAWN — it was false on two counts**
+(spec review, round 3; both verified in source):
+
+1. `SaveLink` is **best-effort**: it swallows every directory/write failure
+   (`CursorLiveSubagentLinker.cs:124–132`). `subagentParentId`/`subagentAgentType` are
+   assigned at `CursorHookCommand.cs:291–292` **before** the `SaveLink` call at `:293`,
+   so a failed marker write still leaves `isSubagentChild` true and still enters
+   `HandleSubagentChildEventAsync`. From there a failed start POST spools a
+   `subagent-start` (`:675–686`) and a successful one marks the ack (`:689–692`) —
+   **both without a marker**.
+2. `MarkSubagentStartAcked` has **two** production callers (`:692` and `:768`), not one.
+
+So spool-without-marker and ack-without-marker are *producible by ordinary failure*,
+not only by external deletion. They cannot be asserted unproducible.
 
 | State | Reachable how | Current behaviour | Decision |
 |---|---|---|---|
-| Marker only, no ack | External / other surface | Divert active; every non-start hook returns at the `HasSubagentStartAck` gate (`:631–633`) — child's raw events **and** transcript backfill suppressed indefinitely | **Keep fail-closed.** This is the existing documented posture ("an accepted, diagnosable loss — the same posture as D0's quarantine"). Accepted cost: that child's live capture is lost; recovery is `kcap import --cursor` plus the server-side adoption sweep. Pin it so it is a decision, not an accident. |
-| Marker + valid spool entry | Normal recovery path | Drain redelivers start-first, marks the ack, then converges as designed | **Keep.** Pin the start-before-stop ordering invariant. |
-| Spool entry, no marker | **Not producible by any code path**; needs marker deletion | Drain marks the ack and may spawn a child watcher, but `TryLoadLink` misses so the hook follows the top-level path | **Assert the invariant** rather than support the state: test that no code path yields spool-without-marker. If it occurs anyway, the top-level fallback is benign (session ingested top-level, healed offline), so no cleanup is added. |
-| Ack, no marker | Same as above | Top-level path | Same as above. |
-| Malformed / truncated marker | Partial write, manual edit | `TryLoadLink` requires ≥2 lines with a non-empty first (`CursorLiveSubagentLinker.cs:113–116`) and otherwise returns null | **Keep fail-open to top-level.** Already the safe direction; pin it. |
+| Marker only, no ack | **Ordinary partial failure** — start spooled after a transient failure, retry hits a permanent 4xx, entry dropped (exactly what `Permanently_dropped_subagent_start_gates_all_child_transcript_delivery_forever`, `CursorWatcherSpawnTests.cs:254–318`, already demonstrates); also a crash after `SaveLink` | Divert active; every non-start hook returns at the `HasSubagentStartAck` gate (`:631–633`) — child's raw events **and** transcript backfill suppressed indefinitely | **Keep fail-closed**, to preserve start-before-content ordering. Accepted cost: that child's live capture is lost until `kcap import --cursor` + the server adoption sweep. |
+| Marker + valid spool entry | Normal recovery path | Drain redelivers start-first, marks the ack, converges as designed | **Keep.** Pin the start-before-stop ordering invariant. |
+| Spool entry, no marker | `SaveLink` write failure, then a spooled start | On drain (`:345–360`) the callback runs `MaybeSpawnChildWatcherFromPayloadAsync` (`:756–769`), which marks the ack and spawns a `{parent}-{child}` watcher — while the current hook, having missed `TryLoadLink` at `:283`, continues down the **top-level** path (`:382–389` skipped, `:438–464` runs) | **Unsupported corrupt state — NOT benign.** See the dual-routing hazard below. No runtime change in scope; documented as a known risk. |
+| Ack, no marker | `SaveLink` write failure, then a successful start POST | Top-level path on subsequent hooks | Same: unsupported corrupt state, documented. |
+| Malformed / truncated marker | Partial write, manual edit | `TryLoadLink` requires ≥2 lines with a non-empty first (`CursorLiveSubagentLinker.cs:113–116`); otherwise null | **Keep fail-open to top-level.** Already the safe direction; pin it. |
 
-The asymmetry is deliberate: a *malformed* marker fails **open** (top-level, benign),
+**Dual-routing hazard (rev 4 wrongly called this benign).** In the spool-without-marker
+state the same child transcript can be routed *twice*: once agent-scoped under the
+parent by the watcher that `MaybeSpawnChildWatcherFromPayloadAsync` spawns, and once as
+its own top-level session by the current hook's normal path. That is duplication, not a
+graceful fallback. Three remedies exist — restore/validate the marker from the spooled
+payload before spawning, suppress ack+spawn when the marker is absent, or bound and
+accept the duplication — and **all are runtime changes, which this spec keeps out of
+scope.** It is therefore recorded as a known corrupt-state risk, gated behind the same
+precondition (the classification arm must run at all). If the §7 IDE probe shows the arm
+running on that surface, this becomes real work and should be fixed before anything
+depends on live linking.
+
+**On "diagnosable".** The in-code comment at `:625–631` calls the marker-only loss "an
+accepted, diagnosable loss", but the handler simply returns at `:631–633` with no log,
+metric, or marker surfaced. Rev 4 repeated that word uncritically. Corrected: this spec
+accepts **silent** live-capture loss until an offline import, and does not claim a
+diagnostic exists. Adding one is a reasonable follow-up but is not proposed here.
+
+The remaining asymmetry is deliberate: a *malformed* marker fails **open** (top-level),
 whereas a *well-formed* marker without an ack fails **closed** (suppressed, recoverable
-offline). Both are defensible, but only because the offline path exists — which is the
-same reason D1 and F3 lean on it.
+offline). Both are defensible only because the offline path exists — the same reason D1
+and F3 lean on it.
 
 ### D3 — Rewrite the wrong-architecture tests; drop the vacuous tripwire
 
@@ -362,8 +397,11 @@ Add tests pinning the **measured** contract:
    requires the external fact that a child never receives `sessionStart` (F1), which is
    an empirical vendor contract no unit test can establish.
 3. Stale-state behaviour per D2a: marker-only fails closed; malformed marker fails open
-   to top-level; marker+spool converges start-first; and spool-without-marker is
-   asserted unproducible rather than supported.
+   to top-level; marker+spool converges start-first. **Plus the two failure-aware states
+   rev 4 wrongly declared unproducible** — `SaveLink` write failure followed by a
+   *successful* start POST (ack without marker), and `SaveLink` write failure followed
+   by a *spooled* start (spool without marker). The latter must assert the dual-routing
+   hazard it actually produces, so the risk is encoded rather than described.
 
 Each must fail when the behaviour it guards is removed; a pin that passes against a
 mutant proves nothing.
@@ -457,9 +495,20 @@ named owner with IDE access; it is not scriptable from CI.
 
 **Procedure:**
 
-1. Copy `docs/probes/2026-07-30-cursor-subagent-hooks/{probe_hook.py,hooks.json,prober.md}`
-   into a throwaway repo (fix the absolute paths in `hooks.json` and the `LOG`
-   constant).
+1. Recreate the layout in a throwaway git repo at `<WS>` — the destinations matter,
+   since Cursor resolves project hooks and named agents by exact path:
+
+   | Archived file | Destination |
+   |---|---|
+   | `hooks.json` | `<WS>/.cursor/hooks.json` |
+   | `prober.md` | `<WS>/.cursor/agents/prober.md` |
+   | `probe_hook.py` | `<WS>/probe_hook.py` (any stable absolute path) |
+   | — | log written to `<WS>/probe.log` |
+
+   Then edit the absolute paths: every `command` in `hooks.json` must point at the real
+   `probe_hook.py` location, and the `LOG` constant inside `probe_hook.py` must point at
+   the intended `probe.log`. Add a `NOTE.md` with a distinctive marker line for the
+   subagent to read back.
 2. Open it in Cursor and, in the Agent Window, delegate to a subagent — once with an
    unnamed `Task` delegation and once with the named `prober` subagent, mirroring the
    CLI matrix.
