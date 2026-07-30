@@ -116,6 +116,57 @@ public class MemoryIndexLiveCertHarnessTests {
         await Assert.That(MemoryIndexLiveCertHarness.ArchiveSucceeded(frame)).IsFalse();
     }
 
+    // Restoring the REAL profile flag is this file's highest-consequence action: a wrong value leaves a
+    // developer's machine with memory injection in the wrong state, silently, for days. So the read
+    // must never guess — an unreadable config has to be distinguishable from a genuinely unset flag,
+    // because the two imply opposite restores.
+    [Test]
+    public async Task A_missing_active_profile_is_a_read_failure_not_an_absent_flag() {
+        var source = await File.ReadAllTextAsync(HarnessSourcePath());
+
+        var start = source.IndexOf("public static async Task<bool?> ReadDisableMemoryIndexAsync()", StringComparison.Ordinal);
+        await Assert.That(start).IsGreaterThan(-1);
+
+        var body = source.Substring(start, Math.Min(1600, source.Length - start));
+
+        // Every failure branch throws; only the genuinely-unset case may return null.
+        await Assert.That(body).Contains("throw new InvalidOperationException");
+        await Assert.That(body).DoesNotContain("return null;");
+    }
+
+    // A discarded exit code here makes a negative control pass vacuously (injection was never actually
+    // disabled) or leaves the real profile disabled after the run. The pre-existing Claude cert asserts
+    // it; an earlier draft of this shared harness dropped that guard.
+    [Test]
+    public async Task Setting_the_real_flag_fails_loudly_rather_than_discarding_the_exit_code() {
+        var source = await File.ReadAllTextAsync(HarnessSourcePath());
+
+        var start = source.IndexOf("public static async Task SetDisableMemoryIndexAsync(bool value)", StringComparison.Ordinal);
+        await Assert.That(start).IsGreaterThan(-1);
+
+        var body = source.Substring(start, Math.Min(900, source.Length - start));
+
+        await Assert.That(body).Contains("exitCode != 0");
+        await Assert.That(body).Contains("throw new InvalidOperationException");
+    }
+
+    // A restore that silently no-ops is indistinguishable from success without a read-back.
+    [Test]
+    public async Task Restoring_the_real_flag_reads_it_back_to_confirm() {
+        var source = await File.ReadAllTextAsync(HarnessSourcePath());
+
+        var start = source.IndexOf("public static async Task RestoreDisableMemoryIndexAsync(bool? original)", StringComparison.Ordinal);
+        await Assert.That(start).IsGreaterThan(-1);
+
+        var body = source.Substring(start, Math.Min(900, source.Length - start));
+
+        await Assert.That(body).Contains("ReadDisableMemoryIndexAsync");
+        await Assert.That(body).Contains("readBack != target");
+    }
+
+    static string HarnessSourcePath() => Path.Combine(
+        RepoRoot(), "test", "Capacitor.Cli.Tests.Unit", "SessionStartMemory", "MemoryIndexLiveCertHarness.cs");
+
     /// <summary>Walks up from this file's compile-time path to the repo root.</summary>
     static string RepoRoot([System.Runtime.CompilerServices.CallerFilePath] string here = "") {
         var dir = Path.GetDirectoryName(here);

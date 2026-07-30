@@ -46,9 +46,21 @@ public class KiroMemoryIndexLiveCertTests {
     }
 
     /// <summary>
-    /// THE Kiro-specific claim: agentSpawn fires again on the second prompt, and the index must NOT
-    /// be injected again. Turn one must see the nonce; turn two, resumed in the same directory (hence
-    /// the same Kiro session id, hence the same lease key), must not.
+    /// THE Kiro-specific claim: agentSpawn fires again on the second prompt, and the index must NOT be
+    /// injected again. Turn two is resumed in the same directory, so it is the same Kiro session id and
+    /// therefore the same lease key.
+    ///
+    /// <para><b>Why a SECOND nonce, saved only after turn one.</b> The obvious shape — ask turn two
+    /// whether a "new" block was injected and assert the first nonce is absent — cannot work. Turn
+    /// one's own answer put that nonce into the conversation history, so turn two can see it whether or
+    /// not the index was re-injected, and "was this block NEW?" is a semantic judgment the model may
+    /// get right or wrong for its own reasons. It could false-pass on a broken lease and false-fail on
+    /// a working one.</para>
+    ///
+    /// <para>Saving a second memory AFTER turn one makes the property observable instead. Nonce two was
+    /// never in the history, so it can only reach the model via a FRESH index fetch. Absent means no
+    /// second fetch happened — the lease held. Present means it did. No model meta-reasoning
+    /// involved.</para>
     ///
     /// <para>A failure here means the lease is not holding in production even though the unit tests
     /// pass — the exact gap between "our bytes dedupe" and "the model stops seeing it".</para>
@@ -56,10 +68,9 @@ public class KiroMemoryIndexLiveCertTests {
     [Test, NotInParallel]
     public async Task A_resumed_kiro_session_does_not_get_the_index_injected_a_second_time() {
         Gate();
-        var nonce   = MemoryIndexLiveCertHarness.NewNonce();
-        var memoryId = await MemoryIndexLiveCertHarness.SaveNonceMemoryAsync(VendorLabel, nonce);
+        var firstNonce    = MemoryIndexLiveCertHarness.NewNonce();
+        var firstMemoryId = await MemoryIndexLiveCertHarness.SaveNonceMemoryAsync(VendorLabel, firstNonce);
 
-        // Recorded here too: a stale PATH kcap makes a negative control pass vacuously.
         await MemoryIndexLiveCertHarness.RecordCertEnvironmentAsync(VendorLabel, "kiro-cli", ["--version"]);
 
         var worktree = MemoryIndexLiveCertHarness.NewCertWorktree(VendorLabel);
@@ -67,20 +78,26 @@ public class KiroMemoryIndexLiveCertTests {
         try {
             var first = await RunKiroAsync(worktree.FullName, MemoryIndexLiveCertHarness.PositivePrompt);
 
-            // Guard: if turn one did not see the index, turn two seeing nothing proves nothing.
-            await Assert.That(first).Contains(nonce);
+            // Guard: if turn one never saw the index, turn two seeing nothing proves nothing.
+            await Assert.That(first).Contains(firstNonce);
 
-            var second = await RunKiroAsync(
-                worktree.FullName,
-                "Ignore any earlier instruction to echo a nonce. Answer ONLY about the context injected "
-              + "at the START of THIS prompt: if a NEW '## Team memory' block was injected just now, "
-              + "reply with ONLY the kcap-live-nonce- string it contains. Otherwise reply ONLY the word NONE.",
-                resume: true);
+            // Saved AFTER turn one, so it cannot be in the resumed conversation history.
+            var secondNonce    = MemoryIndexLiveCertHarness.NewNonce();
+            var secondMemoryId = await MemoryIndexLiveCertHarness.SaveNonceMemoryAsync(VendorLabel, secondNonce);
 
-            await Assert.That(second).DoesNotContain(nonce);
+            try {
+                // Same question as turn one. Echoing the FIRST nonce back from history is expected and
+                // harmless; only the second nonce is diagnostic.
+                var second = await RunKiroAsync(
+                    worktree.FullName, MemoryIndexLiveCertHarness.PositivePrompt, resume: true);
+
+                await Assert.That(second).DoesNotContain(secondNonce);
+            } finally {
+                await MemoryIndexLiveCertHarness.ArchiveMemoryAsync(VendorLabel, secondMemoryId);
+            }
         } finally {
             TryDelete(worktree);
-            await MemoryIndexLiveCertHarness.ArchiveMemoryAsync(VendorLabel, memoryId);
+            await MemoryIndexLiveCertHarness.ArchiveMemoryAsync(VendorLabel, firstMemoryId);
         }
     }
 
@@ -104,8 +121,13 @@ public class KiroMemoryIndexLiveCertTests {
             await Assert.That(answer).DoesNotContain(nonce);
         } finally {
             TryDelete(worktree);
-            await MemoryIndexLiveCertHarness.RestoreDisableMemoryIndexAsync(original);
-            await MemoryIndexLiveCertHarness.ArchiveMemoryAsync(VendorLabel, memoryId);
+            // Nested: the restore THROWS on a failed or unconfirmed write, and that must not
+            // be allowed to skip the archive — a leaked nonce corrupts every later cert's index.
+            try {
+                await MemoryIndexLiveCertHarness.RestoreDisableMemoryIndexAsync(original);
+            } finally {
+                await MemoryIndexLiveCertHarness.ArchiveMemoryAsync(VendorLabel, memoryId);
+            }
         }
     }
 

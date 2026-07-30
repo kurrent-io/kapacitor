@@ -258,22 +258,39 @@ internal static class MemoryIndexLiveCertHarness {
     }
 
     /// <summary>
-    /// Reads the active profile's <c>disable_memory_index</c> via <c>kcap config show</c>. Null when
-    /// unset or unreadable. Callers restore what they read, so a run leaves the machine as it found it.
+    /// Reads the active profile's <c>disable_memory_index</c>. Null means the flag is **genuinely
+    /// absent**; an unreadable config, unparseable output or missing active profile THROWS.
+    ///
+    /// <para>That distinction is the whole point. Collapsing "could not read" into the same null as
+    /// "not set" means a restore writes <c>false</c> over a real <c>true</c> — silently re-enabling
+    /// memory injection for a developer who deliberately opted out. Failing closed on an unknown
+    /// starting value is the only safe option, because this method's result is what the restore
+    /// writes back to a real machine.</para>
     /// </summary>
     public static async Task<bool?> ReadDisableMemoryIndexAsync() {
-        var (exitCode, stdout, _) = await RunProcessAsync("kcap", ["config", "show"], workingDirectory: null);
-        if (exitCode != 0) return null;
+        var (exitCode, stdout, stderr) = await RunProcessAsync("kcap", ["config", "show"], workingDirectory: null);
+
+        if (exitCode != 0) {
+            throw new InvalidOperationException(
+                $"`kcap config show` failed (exit {exitCode}) — refusing to guess the current "
+              + $"disable_memory_index, since restoring the wrong value changes a real setting: {stderr}");
+        }
+
+        JsonNode? root;
 
         try {
-            var root          = JsonNode.Parse(ExtractLeadingJsonBlock(stdout));
-            var activeProfile = root?["active_profile"]?.GetValue<string>();
-            if (activeProfile is null) return null;
-
-            return root?["profiles"]?[activeProfile]?["disable_memory_index"]?.GetValue<bool>();
-        } catch {
-            return null;
+            root = JsonNode.Parse(ExtractLeadingJsonBlock(stdout));
+        } catch (Exception ex) {
+            throw new InvalidOperationException(
+                $"could not parse `kcap config show` output — refusing to guess disable_memory_index: {ex.Message}");
         }
+
+        var activeProfile = root?["active_profile"]?.GetValue<string>()
+            ?? throw new InvalidOperationException(
+                "`kcap config show` reported no active_profile — refusing to guess disable_memory_index.");
+
+        // Null HERE is meaningful: the flag really is unset on the active profile.
+        return root?["profiles"]?[activeProfile]?["disable_memory_index"]?.GetValue<bool>();
     }
 
     /// <summary>
@@ -284,16 +301,50 @@ internal static class MemoryIndexLiveCertHarness {
         stdout.Replace("\r\n", "\n").Split("\n\n", 2)[0];
 
     /// <summary>
-    /// Restores the flag to what was observed. `kcap config` has no unset primitive, so an
-    /// originally-absent (null) flag is restored as "false" — observably identical, since both read
-    /// as not-disabled via `is true`.
+    /// Restores the flag to what was observed, then READS IT BACK to confirm. `kcap config` has no
+    /// unset primitive, so an originally-absent (null) flag is restored as <c>false</c> — observably
+    /// identical, since both read as not-disabled via <c>is true</c>.
+    ///
+    /// <para>The read-back exists because a silent restore failure is this file's worst outcome: it
+    /// leaves memory injection DISABLED on a real machine while the cert reports success, and nothing
+    /// downstream would notice for days.</para>
     /// </summary>
-    public static Task RestoreDisableMemoryIndexAsync(bool? original) =>
-        SetDisableMemoryIndexAsync((original ?? false));
+    public static async Task RestoreDisableMemoryIndexAsync(bool? original) {
+        var target = original ?? false;
 
-    public static async Task SetDisableMemoryIndexAsync(bool value) =>
-        await RunProcessAsync("kcap", ["config", "set", "disable_memory_index", value ? "true" : "false"],
-            workingDirectory: null);
+        await SetDisableMemoryIndexAsync(target);
+
+        var readBack = await ReadDisableMemoryIndexAsync() ?? false;
+
+        if (readBack != target) {
+            throw new InvalidOperationException(
+                $"disable_memory_index did NOT restore: wanted {target}, read back {readBack}. "
+              + "Fix this by hand — `kcap config set disable_memory_index "
+              + $"{(target ? "true" : "false")}` — memory injection may be left in the wrong state.");
+        }
+    }
+
+    /// <summary>
+    /// Sets the REAL profile flag, and fails loudly if the subprocess did not succeed.
+    ///
+    /// <para>Discarding this exit code is not a cosmetic gap. A failed <c>true</c> makes the negative
+    /// control vacuous (it observes no injection because injection was never disabled, and passes for
+    /// the wrong reason); a failed restore leaves a developer's machine with memory injection off. The
+    /// pre-existing Claude cert asserts this exit code, and an earlier draft of this shared harness
+    /// dropped that guard.</para>
+    /// </summary>
+    public static async Task SetDisableMemoryIndexAsync(bool value) {
+        var (exitCode, _, stderr) = await RunProcessAsync(
+            "kcap", ["config", "set", "disable_memory_index", value ? "true" : "false"], workingDirectory: null);
+
+        if (exitCode != 0) {
+            throw new InvalidOperationException(
+                $"`kcap config set disable_memory_index {(value ? "true" : "false")}` failed (exit {exitCode}): {stderr}. "
+              + (value
+                  ? "Aborting rather than run a negative control that would pass vacuously."
+                  : "THE REAL PROFILE MAY STILL HAVE MEMORY INJECTION DISABLED — check `kcap config show`."));
+        }
+    }
 
     public static async Task RecordVersionAsync(string vendorLabel, string fileName, IReadOnlyList<string> args) {
         try {

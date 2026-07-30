@@ -57,8 +57,13 @@ public class CopilotMemoryIndexLiveCertTests {
 
             await Assert.That(answer).DoesNotContain(nonce);
         } finally {
-            await MemoryIndexLiveCertHarness.RestoreDisableMemoryIndexAsync(original);
-            await MemoryIndexLiveCertHarness.ArchiveMemoryAsync(VendorLabel, memoryId);
+            // Nested: the restore THROWS on a failed or unconfirmed write, and that must not
+            // be allowed to skip the archive — a leaked nonce corrupts every later cert's index.
+            try {
+                await MemoryIndexLiveCertHarness.RestoreDisableMemoryIndexAsync(original);
+            } finally {
+                await MemoryIndexLiveCertHarness.ArchiveMemoryAsync(VendorLabel, memoryId);
+            }
         }
     }
 

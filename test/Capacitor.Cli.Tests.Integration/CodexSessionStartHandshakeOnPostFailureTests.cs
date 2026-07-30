@@ -40,7 +40,7 @@ public class CodexSessionStartHandshakeOnPostFailureTests : IDisposable {
         }
     }
 
-    [Test, NotInParallel("AppConfig_FileState")]
+    [Test, NotInParallel]
     public async Task A_rejected_lifecycle_post_still_satisfies_the_blocking_stdout_handshake() {
         var config = new ProfileConfig {
             ActiveProfile = "work",
