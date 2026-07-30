@@ -174,13 +174,20 @@ silent availability change. **Decision — CORRECTED: default to `"kiro-cli"`.**
 argument that does not hold: **measured**, `kiro` is absent from PATH while `kiro-cli` is present, and
 `PluginCommand.KiroBinary` is `"kiro-cli"`. No descriptor consumed `KiroPath` before this issue, so there
 is no compatibility to preserve — and keeping `"kiro"` would have silently never advertised Kiro on a
-standard install until a user discovered `KCAP_KIRO_PATH`. Acceptance needs a **zero-configuration**
-availability test against the supported install, not only env precedence. Do not probe both names. A dual-name probe makes
-advertised availability depend on install layout in a way that is hard to reason about or test, and
-changing the default would be a silent compatibility break for anyone relying on it. Users whose binary
-is `kiro-cli` set `KCAP_KIRO_PATH`, which takes precedence over the default — add acceptance for that
-precedence. `KiroModel` is not added either, since model override is out of scope for AI-1410; it
-arrives with the follow-up that needs it. Availability stays `CliResolver.Exists(KiroPath)`; advertise `kiro` in
+standard install until a user discovered `KCAP_KIRO_PATH`.
+
+Two consequences, and an earlier draft of this section contradicted itself by keeping the old
+argument's tail after reversing the decision:
+
+* **Do not probe both names.** A dual-name probe makes advertised availability depend on install
+  layout in a way that is hard to reason about and hard to test. One default, one override.
+* **Acceptance needs a zero-configuration availability test** against the supported install — Kiro is
+  advertised with no `KCAP_KIRO_PATH` set — *in addition to* an env-precedence test. The precedence
+  test alone is what let the wrong default survive review: it passes identically whichever name the
+  default holds.
+
+`KiroModel` is not added either, since model override is out of scope for AI-1410; it arrives with the
+follow-up that needs it. Availability stays `CliResolver.Exists(KiroPath)`; advertise `kiro` in
 `SupportedVendors` only when it resolves.
 
 ## Verification checklist

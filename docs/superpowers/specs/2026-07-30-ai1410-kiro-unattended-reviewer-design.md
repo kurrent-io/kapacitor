@@ -73,19 +73,34 @@ home, with the probe MCP server injected via `session/new.mcpServers`:
 * the probe server logged a real **`tools/call`** and its nonce reached the model;
 * **no authentication error of any kind** — nothing on stderr, no auth frame, no failure.
 
-**Therefore Kiro's credentials do NOT live under `KIRO_HOME`.** That is the finding that collapses most
-of this section's complexity: there is nothing secret to copy into a reviewer home, so the design needs
-no credential source, refresh/expiry handling, atomic secret materialization, symlink validation of
-copied secrets, or secret-bearing cleanup. A reviewer home contains **nothing sensitive**.
+**Therefore Kiro's credentials do NOT live under `KIRO_HOME`,** for the auth configuration measured.
+That collapses the *inbound* half of this section: nothing secret has to be copied INTO a reviewer
+home, so the design needs no credential source, no refresh/expiry handling, no atomic secret
+materialization, and no symlink validation of copied secrets.
 
-What remains to specify is small:
+**But an earlier draft then concluded "a reviewer home contains nothing sensitive", and that is
+wrong.** The inbound direction is not the only one. `KiroPaths.ConfigRoot` reads `KIRO_HOME` first, so
+`SessionsDir()` resolves to `{KIRO_HOME}/sessions/cli` — meaning **Kiro writes the reviewer's own
+conversation JSONL into the isolated home**, and that transcript contains the review context it was
+given: the caller's diff, source excerpts, and the reviewer's findings. A reviewer home is therefore
+**write-sensitive even though it is read-empty**, and it is created on a shared multi-tenant daemon
+host.
 
-* **Contents:** nothing. Create it empty. `settings/mcp.json` and the user's agents are excluded by
-  simply not being there, which is why the mechanism works.
-* **Permissions:** owner-only anyway, on principle rather than because of secrets.
-* **Concurrency:** one home per reviewer launch, so concurrent reviews cannot race shared state.
-* **Cleanup, including after a daemon crash** — see §4b, which is now a plain temp-directory sweep
-  rather than a secret-handling problem.
+The practical difference: permissions and cleanup are **security requirements with a stated threat**,
+not tidiness. Concretely —
+
+* **Contents at creation:** nothing. Create it empty. `settings/mcp.json` and the user's agents are
+  excluded by simply not being there, which is why the mechanism works.
+* **Permissions:** `0700`, owner-only, set **at creation** rather than after — a world-readable window
+  between `mkdir` and `chmod` is exactly long enough to leak a transcript on a shared host. Do not
+  place the home inside a world-writable shared temp path that another user could pre-create or
+  substitute; root it under a daemon-owned directory.
+* **Concurrency:** one home per reviewer launch, so concurrent reviews cannot race shared state — and,
+  now that the home is transcript-bearing, so one caller's review context is never readable from
+  another caller's reviewer home.
+* **Cleanup, including after a daemon crash** — see §4b. This is a transcript-disposal requirement, not
+  merely a disk-hygiene one, which is why §4b specifies reaping the process before deleting the tree
+  rather than deleting opportunistically.
 
 Because this touches daemon process launch rather than the installer it is still the largest item here,
 but it is now a small, measured one.
@@ -194,16 +209,89 @@ Borrowed review stays **off**. It needs a containment-token decision
 the descriptor's own doc comment is explicit that guessing that token wrong is a wiring bug. Out of
 scope here; its own issue once basic reviewing works.
 
+### 4a. Model override, and what the daemon may advertise
+
+Model override is **out of scope for this issue** — AI-1404 ships `NoOpModelSelector.Instance` because
+`session/set_config_option` is unproven on Kiro and the selector fails silently when it does not take.
+This section exists because two earlier references pointed at a "§4a" that was never written, so the
+decision had no home and could be re-litigated by whoever implemented it.
+
+The load-bearing part is not the deferral, it is **refusing rather than ignoring**:
+
+* Do **not** wire `AcpHostedAgentRuntimeFactory.ReviewerModelResolver` for Kiro. It is `null` at this
+  base, which is why the server already refuses an ACP review-flow model override. That refusal is the
+  correct behaviour and must be preserved deliberately, not inherited by accident.
+* A Kiro reviewer launched with a caller-supplied model must **fail with a coded error**, never accept
+  the request and run the vendor default. A silently-ignored `model=` is the worst outcome available
+  here: the round completes, the result looks authoritative, and nothing anywhere records that the
+  requested model was not the model that reviewed the code.
+* Correspondingly, `ResolveDefaultModel: _ => null` and `NoOpModelSelector` must both hold. Per AI-1404
+  Premise 3, `ResolveDefaultModel: null` alone is **not** sufficient — `ResolveRequestedModel`
+  prioritises `RuntimeStartContext.Model`, so a dashboard-supplied model still reaches a live selector.
+
+**Availability advertisement is static, and must be gated on resolution, not on the descriptor
+existing.** `SupportsUnattended: true` is what makes `vendor="kiro"` selectable as a reviewer, and a
+daemon that advertises Kiro on a host where `kiro-cli` is absent converts a clean
+`no_daemon_available` into a launch failure mid-round. Advertise the reviewer capability only when
+`CliResolver.Exists(KiroPath)` — the same gate AI-1404 applies to interactive hosting.
+
+### 4b. Reviewer-home lifecycle and crash cleanup
+
+Because the home is transcript-bearing (see the isolated-`KIRO_HOME` decision above), disposal is a
+security requirement. This is the one item that touches daemon process launch, so specify it exactly:
+
+* **Naming:** `kcap-kiro-reviewer-<daemonEpoch>-<launchId>` under a **daemon-owned** root, not directly
+  in the shared system temp dir. `daemonEpoch` is fixed once per daemon process start; `launchId` is
+  per reviewer launch.
+* **Startup sweep, epoch-keyed:** on daemon start, delete every `kcap-kiro-reviewer-*` directory whose
+  epoch is **not** the current epoch. This is what recovers from a crash or `SIGKILL`, and the epoch key
+  is what makes it safe for a second daemon on the same host — a sweep that deleted every matching
+  directory would delete a *live* peer's reviewer home mid-review.
+* **Reap before delete:** terminate the reviewer process and confirm exit before deleting its tree.
+  Deleting under a live Kiro leaves it writing transcript lines into an unlinked or recreated path, and
+  on a crash-recovery pass the owning process may still be alive.
+* **No symlink following** when deleting, and **assert the resolved path is still inside the daemon root**
+  before recursing. Both are the standard recursive-delete hazards; the transcript content is the reason
+  they matter here rather than being theoretical.
+* **Failure handling:** log and continue. A home that cannot be deleted must not fail the review round
+  or block daemon startup — but it must be logged at warning with the path, because a persistent
+  failure is undisposed review context accumulating on disk.
+* **The installer is not involved, and must not be changed.** It is tempting to "fix" the blocker by
+  having `PluginCommand.InstallKiro` stop registering the four servers in global
+  `~/.kiro/settings/mcp.json`, or by removing them at reviewer launch. Both are wrong: those servers
+  are what make kcap work for the user's own interactive Kiro sessions, and mutating a user's global
+  config as a side effect of someone else's review flow is a far worse failure than the one being
+  solved. Containment stays entirely inside the daemon-owned home.
+
 ### 5. Auth
 
 `authMethods: []` shows no ACP-mediated auth flow, and a prompt completed with no `KIRO_API_KEY` set —
 but on one machine, which may have had cached credentials. That proves **no pre-checkable signal**, not
 "no auth requirement" and not "no tier gate".
 
-So: build no pre-check, and fail on the real launch/prompt error with a coded diagnostic. And the
-criterion "a tier/auth failure surfaces a coded error" needs a reproducible way to exercise it —
-an isolated unauthenticated `KIRO_HOME` if that reproduces, otherwise a fake ACP peer returning the
-measured auth-failure shape. Without one it cannot be closed.
+So: build no pre-check, and fail on the real launch/prompt error with a coded diagnostic.
+
+**The acceptance criterion "a tier/auth failure surfaces a coded error" cannot be closed as written, and
+an earlier draft of this section proposed two ways to exercise it that do not exist.** Both are now
+ruled out on evidence:
+
+* *"An isolated unauthenticated `KIRO_HOME` if that reproduces"* — **measured not to reproduce.** The
+  isolated-empty-home probe completed `initialize`, `session/new` and a full `session/prompt` to
+  `end_turn` with no auth error at all. That is the same measurement that proved credentials live
+  outside `KIRO_HOME`; it necessarily also means an empty home does not produce an unauthenticated Kiro.
+* *"Otherwise a fake ACP peer returning the measured auth-failure shape"* — **no auth-failure shape was
+  ever measured.** Not one auth error was observed in any probe. Specifying a fake peer would mean
+  inventing a frame shape and then asserting our handling of our own invention: a test that passes by
+  construction and proves nothing about Kiro.
+
+**Decision: drop the auth-specific criterion from this issue** and replace it with the vendor-agnostic
+property that is actually testable — *a reviewer whose launch or first prompt fails surfaces a coded
+error rather than hanging the round* — exercised with a synthetic non-auth failure (an unresolvable
+binary path, and a peer that exits before responding to `initialize`). That covers the real risk the
+criterion was reaching for, which is a **wedged round**, and it does so without a fabricated fixture.
+
+If a genuine auth/tier failure is ever observed in the field, capture its shape then and add the
+specific assertion. Until it is observed, there is nothing to assert against.
 
 ## Verification
 
@@ -214,7 +302,16 @@ measured auth-failure shape. Without one it cannot be closed.
 - [ ] `kcap-flows` is NOT present in the reviewer's session (the §"blocker" suppression works)
 - [ ] Reviewer session captured and reaped; no orphan
 - [ ] Runs at the vendor default model — override is explicitly out of scope
-- [ ] A tier/auth failure surfaces a coded error instead of a hung round, exercised by a defined setup
+- [ ] A caller-supplied model is **refused with a coded error**, not silently ignored (§4a)
+- [ ] A failed launch / failed first prompt surfaces a coded error instead of a hung round, exercised by
+      a synthetic non-auth failure — unresolvable binary, and a peer that exits before `initialize`
+      (§5; the auth-specific criterion is deliberately dropped as unclosable)
+- [ ] The reviewer home is created `0700` at creation time, under a daemon-owned root (§4b)
+- [ ] A stale reviewer home from a *previous* daemon epoch is swept at startup, and a *current*-epoch
+      home belonging to a live peer is NOT (§4b)
+- [ ] The reviewer process is reaped before its home is deleted (§4b)
+- [ ] The user's global `~/.kiro/settings/mcp.json` is byte-identical after a reviewer round (§4b —
+      containment never mutates user config)
 - [ ] **Negative:** an untrusted / write-capable / out-of-worktree request is denied or reaps the
       reviewer (see §2) — not merely absent
 - [ ] The effective callable tool surface excludes global servers, inspected directly
