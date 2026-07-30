@@ -1,6 +1,6 @@
 # AI-1505 — Cursor subagent classification and SessionStart memory injection
 
-**Status:** rev 9 — in spec review
+**Status:** rev 10 — in spec review
 **Supersedes the premise of:** AI-1461 code-review finding F2
 **Repo:** `kcap-cli`
 
@@ -310,18 +310,24 @@ if such state does exist.
 All paths are under `${KCAP_CONFIG_DIR:-$HOME/.config/kcap}`. They are consumed by three
 *different* mechanisms, and conflating them is what produced rev 8's error here:
 
-- **Only the link marker controls classification.** `TryLoadLink` (`:283`) runs on every
-  event (F4), and a valid marker is the *sole* way `isSubagentChild` becomes true and
-  the divert is entered.
+- **Among the three persisted artifacts, only the link marker affects classification**,
+  and it is the sole way a *later* invocation can recover it (`TryLoadLink`, `:283`,
+  runs on every event — F4). Classification is not exclusively marker-driven, though:
+  within the originating invocation, a successful `ResolveParent` sets
+  `subagentParentId` in memory (`:290–292`) and makes `isSubagentChild` true whether or
+  not a marker previously existed — and, per the `SaveLink` failure analysis below, even
+  if the marker write then fails.
 - **The spool entry is consumed independently**, by `DrainAllAsync` (`:345`), regardless
   of classification — which is exactly why spool-without-marker dual-routes: the drain
   acts while the hook itself does *not* divert.
 - **The ack marker only gates behaviour inside the divert** (`:631–633`); it is never
-  consulted unless a link marker has already activated it.
+  consulted unless classification already activated it.
 
-So the states below are not "three ways the divert stays reachable". Two of them are
-states in which the divert is specifically *not* entered while parent-scoped side
-effects happen anyway.
+So these are not "three ways the divert stays reachable". Two specific *combinations* —
+**spool-without-marker** and **ack-without-marker** — are states in which a later
+invocation does not divert while parent-scoped side effects happen anyway. Both
+artifacts can equally coexist *with* a valid marker, which is the normal case where the
+divert is entered and everything converges.
 
 **Precondition — production, not consumption.** Rev 5 said these states "become live
 exactly when the arm does". That conflated two different things and is corrected here.
