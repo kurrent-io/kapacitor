@@ -1233,15 +1233,11 @@ static class McpFlowsServer {
         }
     }
 
-    /// <summary>Defensive cross-check of the run-level applied reviewer vendor against the
-    /// "reviewer" participant's vendor in the SAME response body — nothing re-validates the vendor
-    /// after the start-time echo check, so a wrongly-vendored reviewer (e.g. a heal relaunch that
-    /// resolved a different vendor than the run pinned) would otherwise reach the driver silently.
-    /// The local comparison also works against servers that predate the server-side check; the
-    /// server's <c>reviewer_vendor_mismatch</c> flag covers a response whose participant list is
-    /// read-model-lagged. Renders a warning instead of erroring the tool call: these responses
-    /// carry the round results and pending messages the driver still needs, and the driver decides
-    /// whether to close.</summary>
+    /// <summary>Warns when the "reviewer" participant's vendor disagrees with the run-level
+    /// <c>applied_reviewer_vendor</c> in the same body, or the server set
+    /// <c>reviewer_vendor_mismatch</c> (covers a lagged participant list; the local comparison
+    /// covers older servers). A warning, not a tool error — the response still carries results
+    /// and pending messages, and the driver decides whether to close.</summary>
     static void AppendReviewerVendorMismatchWarning(StringBuilder sb, JsonObject node) {
         var applied = TryGetString(node, "applied_reviewer_vendor");
 
