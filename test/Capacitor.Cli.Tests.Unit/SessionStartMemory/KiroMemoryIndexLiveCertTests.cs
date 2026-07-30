@@ -21,7 +21,7 @@ namespace Capacitor.Cli.Tests.Unit.SessionStartMemory;
 /// inside ONE interactive process (PTY automation), which this suite does not do; the lease stays
 /// covered by the <c>Kiro_*</c> cases in <c>SessionStartMemoryFoundationTests</c>.</para>
 ///
-/// <para>All three tests are <c>[NotInParallel]</c>: the negative control mutates the REAL
+/// <para>Both tests are <c>[NotInParallel]</c>: the negative control mutates the REAL
 /// process-global <c>disable_memory_index</c> config.</para>
 /// </summary>
 public class KiroMemoryIndexLiveCertTests {
@@ -36,10 +36,12 @@ public class KiroMemoryIndexLiveCertTests {
     [Test, NotInParallel]
     public async Task Nonce_saved_as_a_memory_is_reproduced_by_a_real_kiro_agent_spawn() {
         Gate();
-        var nonce   = MemoryIndexLiveCertHarness.NewNonce();
-        var memoryId = await MemoryIndexLiveCertHarness.SaveNonceMemoryAsync(VendorLabel, nonce);
+        var nonce = MemoryIndexLiveCertHarness.NewNonce();
 
+        // Worktree first: it is local and can throw (permissions, disk, temp state), and creating it
+        // after the remote save would strand a real memory outside the archive-protecting try.
         var worktree = MemoryIndexLiveCertHarness.NewCertWorktree(VendorLabel);
+        var memoryId = await MemoryIndexLiveCertHarness.SaveNonceMemoryAsync(VendorLabel, nonce);
 
         try {
             await MemoryIndexLiveCertHarness.RecordCertEnvironmentAsync(VendorLabel, "kiro-cli", ["--version"]);
@@ -64,9 +66,11 @@ public class KiroMemoryIndexLiveCertTests {
         // save would strand a real memory outside the archive-protecting try below.
         var original = await MemoryIndexLiveCertHarness.ReadDisableMemoryIndexAsync();
 
-        var nonce    = MemoryIndexLiveCertHarness.NewNonce();
-        var memoryId = await MemoryIndexLiveCertHarness.SaveNonceMemoryAsync(VendorLabel, nonce);
+        var nonce = MemoryIndexLiveCertHarness.NewNonce();
+
+        // Worktree before the remote save, for the same reason as the positive cert above.
         var worktree = MemoryIndexLiveCertHarness.NewCertWorktree(VendorLabel);
+        var memoryId = await MemoryIndexLiveCertHarness.SaveNonceMemoryAsync(VendorLabel, nonce);
 
         try {
             await MemoryIndexLiveCertHarness.SetDisableMemoryIndexAsync(true);
