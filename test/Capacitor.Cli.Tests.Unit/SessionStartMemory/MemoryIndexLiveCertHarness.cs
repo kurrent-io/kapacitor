@@ -214,13 +214,46 @@ internal static class MemoryIndexLiveCertHarness {
         }
     }
 
-    /// <summary>Best-effort cleanup: a leaked cert memory would pollute every later run's index.</summary>
+    /// <summary>
+    /// Cleanup. A leaked cert memory is not cosmetic: it lands in the REAL injected index and every
+    /// later cert then sees a stale nonce, so a positive test can pass on the wrong evidence.
+    ///
+    /// <para>The parameter is <c>id</c>, NOT <c>memory_id</c> — <c>save_memory</c> RETURNS
+    /// <c>memory_id</c> and <c>archive_memory</c> ACCEPTS <c>id</c>, and sending the save's name back
+    /// silently archived nothing. 13 cert memories leaked into the live index before that was caught,
+    /// because the failure was swallowed here.</para>
+    ///
+    /// <para>Failures are therefore reported loudly AND verified: the tool's own <c>ok</c> is checked
+    /// rather than assuming a returned frame means success. Still non-throwing — a cert must not fail
+    /// on cleanup and mask its real verdict — but it can no longer fail in silence.</para>
+    /// </summary>
     public static async Task ArchiveMemoryAsync(string vendorLabel, string memoryId) {
         try {
-            await CallMemoryToolAsync("archive_memory", new JsonObject { ["memory_id"] = memoryId });
+            var frame = await CallMemoryToolAsync("archive_memory", new JsonObject { ["id"] = memoryId });
+
+            if (!ArchiveSucceeded(frame)) {
+                await Console.Error.WriteLineAsync(
+                    $"[{vendorLabel}-memory-live] LEAKED live-cert memory {memoryId} — archive_memory did not "
+                  + $"confirm success. Archive it manually or later certs may read a stale nonce. Frame: {frame}");
+            }
         } catch (Exception ex) {
             await Console.Error.WriteLineAsync(
-                $"[{vendorLabel}-memory-live] failed to archive live-cert memory {memoryId}: {ex.Message}");
+                $"[{vendorLabel}-memory-live] LEAKED live-cert memory {memoryId} — archive threw: {ex.Message}");
+        }
+    }
+
+    /// <summary>True only on an explicit success from the tool; an error frame or a missing/false
+    /// <c>ok</c> both count as failure, so "no news" is never mistaken for "archived".</summary>
+    internal static bool ArchiveSucceeded(string frame) {
+        try {
+            var result = JsonNode.Parse(frame)?["result"];
+            if (result?["isError"]?.GetValue<bool>() == true) return false;
+
+            var text = result?["content"]?[0]?["text"]?.GetValue<string>();
+
+            return text is not null && JsonNode.Parse(text)?["ok"]?.GetValue<bool>() == true;
+        } catch {
+            return false;
         }
     }
 

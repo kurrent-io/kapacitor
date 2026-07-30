@@ -95,6 +95,56 @@ public class MemoryIndexLiveCertHarnessTests {
         }
     }
 
+    // 13 cert memories leaked into the live index because archive_memory was sent `memory_id` (what
+    // save_memory RETURNS) instead of `id` (what archive_memory ACCEPTS), and the failure was
+    // swallowed. A leaked nonce is not cosmetic — it enters the REAL injected index, so a later
+    // positive cert can pass on a stale nonce rather than the one it just saved.
+    [Test]
+    public async Task An_explicit_ok_is_the_only_thing_counted_as_archived() {
+        await Assert.That(MemoryIndexLiveCertHarness.ArchiveSucceeded(
+            """{"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"{\"ok\":true}"}]}}"""))
+            .IsTrue();
+    }
+
+    [Test]
+    [Arguments("""{"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"Not logged in."}],"isError":true}}""")]
+    [Arguments("""{"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"{\"ok\":false}"}]}}""")]
+    [Arguments("""{"jsonrpc":"2.0","id":2,"result":{"content":[]}}""")]
+    [Arguments("""{"jsonrpc":"2.0","id":2,"error":{"code":-32602,"message":"unknown argument memory_id"}}""")]
+    [Arguments("not json at all")]
+    public async Task Anything_short_of_an_explicit_ok_is_treated_as_a_leak(string frame) {
+        await Assert.That(MemoryIndexLiveCertHarness.ArchiveSucceeded(frame)).IsFalse();
+    }
+
+    /// <summary>Walks up from this file's compile-time path to the repo root.</summary>
+    static string RepoRoot([System.Runtime.CompilerServices.CallerFilePath] string here = "") {
+        var dir = Path.GetDirectoryName(here);
+
+        while (dir is not null && !File.Exists(Path.Combine(dir, "Capacitor.slnx")))
+            dir = Path.GetDirectoryName(dir);
+
+        return dir ?? throw new InvalidOperationException($"repo root not found from {here}");
+    }
+
+    // The other half of the leak, which no assertion on a response frame can catch: the ARGUMENT NAME.
+    // save_memory returns `memory_id`; archive_memory accepts `id`. Sending the former archived nothing
+    // and returned a frame that looked fine. Pinned at the source, since reaching it for real needs a
+    // live authenticated server.
+    [Test]
+    public async Task Archive_is_called_with_id_not_the_memory_id_that_save_returns() {
+        var source = await File.ReadAllTextAsync(Path.Combine(
+            RepoRoot(), "test", "Capacitor.Cli.Tests.Unit", "SessionStartMemory",
+            "MemoryIndexLiveCertHarness.cs"));
+
+        var start = source.IndexOf("CallMemoryToolAsync(\"archive_memory\"", StringComparison.Ordinal);
+        await Assert.That(start).IsGreaterThan(-1);
+
+        var callSite = source.Substring(start, Math.Min(160, source.Length - start));
+
+        await Assert.That(callSite).Contains("[\"id\"]");
+        await Assert.That(callSite).DoesNotContain("memory_id");
+    }
+
     [Test]
     public async Task A_timed_out_process_is_killed_rather_than_left_running() {
         var (fileName, args) = OperatingSystem.IsWindows()
