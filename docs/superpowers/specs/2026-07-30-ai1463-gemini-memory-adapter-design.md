@@ -105,11 +105,35 @@ Gemini emits only `startup` / `resume` / `clear`, so:
 `CallbackMayRepeat: false`. Gemini's `SessionStart` is a session-level event, not a per-turn callback —
 unlike Kiro's `agentSpawn`, which fires per prompt and needed `RepeatedTurnCallback`.
 
-**Open for review:** whether `clear` should inject. It is a context reset within one session id, so the
-model has lost the earlier injection and arguably *should* be re-injected — but the lease is keyed on
-session id and will suppress it. Flagging rather than silently picking: the safe default is to let the
-lease suppress, matching Claude's behaviour, and revisit only if a user reports a missing index after
-`/clear`.
+**RESOLVED by review — `clear` MUST re-inject; `resume` must not.** My original proposal (let the lease
+suppress both, matching Claude) was wrong, and the reason is decisive: `clear` *removes the model context
+that held the injection*. Suppressing it means "once per session" stops achieving the stated goal — the
+index is simply unavailable for the rest of that session, silently. That is a feature gap dressed up as
+idempotence.
+
+The two cases are genuinely different:
+
+| Source | Model context | Correct behaviour |
+|---|---|---|
+| `resume` | earlier injection still in context (same transcript continues) | **suppress** — re-injecting duplicates |
+| `clear` | earlier injection destroyed | **re-inject** — otherwise the feature is gone |
+
+**Lease rule: the lease key gains a context generation.** A session-id-only key cannot express this. Key
+the lease on `(sessionId, generation)` where the generation increments on each `clear`, so:
+
+* `startup` → generation 0, injects.
+* `resume` → generation unchanged, lease held, suppressed.
+* `clear` → generation +1, fresh lease, injects.
+* second `clear` → generation +2, injects again.
+
+The generation must be **durable** alongside the lease (a hook process is short-lived and cannot hold it
+in memory) and must not be inferable from the transcript, since `clear` does not start a new one. The
+simplest durable form is a per-session counter in the lease store incremented on a `clear`-sourced
+`SessionStart`.
+
+**Acceptance coverage is required for the sequences, not just the states:** `startup → resume` (exactly
+one output), `startup → clear` (a second output), `clear → clear` (a third). A test that only checks
+"clear injects" would pass with a broken generation counter that always injects.
 
 ### 2.3 Re-injection on `resume` is suppressed by the lease, deliberately
 
@@ -144,30 +168,107 @@ decide whether to *continue*.
 Gemini's parsed decision fields (same static scan): `continue`, `decision`, `stopReason`,
 `systemMessage`, `suppressOutput`.
 
-### 3.1 Contract
+### 3.1 Contract — now MEASURED from Gemini's own hook runner, not assumed
 
-Emitting `{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"…"}}` — with **no**
-`continue`, `decision` or `stopReason` — must mean "allow, and here is extra context". That is Claude's
-semantics for the identical envelope, and Gemini parses the identical field names.
+The review correctly refused to accept this on field-name hit counts. It has since been read out of the
+installed `@google/gemini-cli` bundle. Three facts, each load-bearing:
 
-**This must be verified live, not assumed.** A regression here does not degrade gracefully: it could
-block or abort the user's Gemini session at startup. It is the reason §5's live cert is mandatory rather
-than nice-to-have.
+**(1) Blocking requires an explicit decision. A `hookSpecificOutput`-only payload cannot block.**
 
-### 3.2 Fail-open, byte-identical to today
+```js
+isBlockingDecision() { return this.decision === "block" || this.decision === "deny" }
+```
 
-On **any** failure — null fragment, opt-out, budget exhausted, lease held, serialization error — write
-**nothing**. Not `{}`, not an empty object: zero bytes, exactly today's behaviour.
+`decision` is `undefined` in our envelope, so this is `false`. The output object's constructor reads
+`continue`, `stopReason`, `suppressOutput`, `systemMessage`, `decision`, `reason`, `hookSpecificOutput`
+independently — absence of the decision fields is not a blocking state.
 
-`SessionStartMemoryOutputAdapters.Render` already returns `""` for a null fragment, so this falls out of
-the existing contract, and the Kiro adapter's `WriteAgentSpawnOutput` already models the
-catch-and-emit-nothing shape:
+**(2) `additionalContext` is consumed through a string-typed accessor:**
+
+```js
+getAdditionalContext() {
+  if (this.hookSpecificOutput && "additionalContext" in this.hookSpecificOutput) {
+    const context = this.hookSpecificOutput["additionalContext"];
+    if (typeof context !== "string") { … }
+```
+
+So the fragment must be a JSON **string**, which is what `HookMemoryOutput` already produces. A non-string
+would be rejected rather than blocking.
+
+**(3) Malformed or truncated stdout is fail-open, not blocking** — this is the answer to the review's
+residual-risk demand in §3.3:
+
+```js
+const textToParse = stdout.trim() || stderr.trim();
+try   { let parsed = JSON.parse(textToParse); if (typeof parsed === "string") parsed = JSON.parse(parsed); … }
+catch { output = this.convertPlainTextToHookOutput(…, exitCode || EXIT_CODE_SUCCESS); }
+```
+
+A parse failure degrades to a plain-text hook output. It does **not** synthesise a block. So a partial
+write cannot block the session — it can only produce a junk context string.
+
+### 3.1a NEW HAZARD found while verifying: empty stdout falls back to STDERR
+
+Look again at the first line above:
+
+```js
+const textToParse = stdout.trim() || stderr.trim();
+```
+
+**When stdout is empty, Gemini parses the hook's STDERR as its output.** kcap writes diagnostics to
+stderr — `AgentHookPoster` logs there on a failed POST, and the auth-lapse notice is a stderr write.
+
+Consequences, and they invert part of the original design intuition:
+
+* "Emit nothing to stdout" is **not inert** for Gemini whenever stderr is non-empty. This is
+  *pre-existing* behaviour — today's dispatcher never writes stdout, so any stderr diagnostic is already
+  being parsed as hook output — but it was not previously understood, and it means the fail-open path is
+  noisier than assumed.
+* It makes writing the envelope on the failed-POST path **protective rather than merely harmless**: a
+  populated stdout wins the `||`, so it *prevents* our stderr diagnostic from being interpreted as the
+  hook's decision channel.
+* Since a parse failure only yields plain text (fact 3), the pre-existing behaviour is not a live bug.
+  It is recorded here because it is the kind of thing that becomes a bug the moment someone adds a
+  `decision`-shaped word to a stderr message.
+
+**This does not need fixing in this issue**, but it must not be silently discovered again — noted in §7.
+
+### 3.2 Fail-open — corrected: "zero bytes on any failure" was too strong
+
+The review was right that the original claim could not hold. Rendering to a string first covers
+*serialization* failure, but `writer.Write(payload)` can throw **after a partial write**, and the shown
+`try` did not cover the write at all. Corrected contract:
+
+1. **Render completely, then perform exactly one write.** No incremental/streaming construction, so
+   there is one failure point rather than many.
+2. **A write exception must not change the command's pre-existing exit code.** Catch it, swallow it
+   (non-fatal), and return whatever the POST path would have returned.
+3. **A partial write is a bounded, non-blocking risk, not an unbounded one** — established by §3.1
+   fact (3): truncated JSON fails `JSON.parse` and degrades to plain text. The worst case is a junk
+   context string, never a block. This is the residual risk the review asked to have verified or
+   documented; it is now verified.
+4. **Do not claim atomicity we do not have.** A single `Write` of a small payload to a pipe is not
+   guaranteed atomic, and application code cannot retract bytes already written. The mitigation is (3),
+   not a stronger write.
 
 ```csharp
-try   { payload = SessionStartMemoryOutputAdapters.Render(SessionStartHarness.Gemini, fragment); }
-catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException) { return; }
-writer.Write(payload);
+static void WriteSessionStartOutput(TextWriter writer, string? fragment) {
+    string payload;
+    try { payload = SessionStartMemoryOutputAdapters.Render(SessionStartHarness.Gemini, fragment); }
+    catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException) { return; }
+
+    // Separate try: a write that throws mid-payload must not alter the exit code. Truncated JSON is
+    // fail-open on Gemini's side (§3.1 fact 3), so there is nothing to repair here.
+    try { writer.Write(payload); }
+    catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException) { }
+}
 ```
+
+`Render` returns `""` for a null fragment, so opt-out / budget-exhausted / lease-held all produce zero
+bytes naturally.
+
+**Tests required by this section:** a writer that throws *before* writing anything, and a writer that
+throws *after* a partial write — both asserting the exit code is unchanged.
 
 ### 3.3 Ordering: write stdout BEFORE any non-zero return
 
@@ -187,19 +288,34 @@ failed-POST path.
 Rationale: the memory index is independent of lifecycle capture. A server that rejects the
 `session-start` POST has not invalidated an index we already fetched, and the user should still get it.
 
-**Open for review — and I want a second opinion.** Does Gemini read a hook's stdout when the hook exits
-**non-zero**? If it discards it, writing before `return 1` is harmless but pointless, and the lease would
-be burned for an injection the model never saw — which is what the Copilot adapter's `commitGate` was
-built to prevent. Two candidate answers:
+**RESOLVED by measurement — option (a), no commit gate.** The review was right to call this blocking: my
+recommendation rested on a behaviour the spec never established. It has now been read from Gemini's hook
+runner:
 
-* **(a) Keep exit codes unchanged**, write stdout first, accept that a failed-POST session may burn its
-  lease. Simplest, and a failed POST is already an error path the user sees on stderr.
-* **(b) Add a commit gate** like Copilot's: only complete the lease when the output was plausibly
-  delivered (i.e. we are returning 0), otherwise release it for retry on the next `resume`.
+```js
+child.on("close", (exitCode) => {
+    const textToParse = stdout.trim() || stderr.trim();     // ← no exit-code gate
+    try { let parsed = JSON.parse(textToParse); … } catch { … }
+    return { success: exitCode === EXIT_CODE_SUCCESS, stdout, exitCode: exitCode || EXIT_CODE_SUCCESS, … };
+});
+```
 
-Recommendation: **(b)**, because Gemini's `resume` gives a natural, frequent retry opportunity that
-Copilot did not have, so releasing the lease has a real chance of succeeding later. But it costs a
-`commitGate` wire-up, so (a) is defensible if the reviewer disagrees.
+**Gemini parses hook stdout unconditionally.** The exit code is recorded as `success` but does not gate
+parsing. So stdout on a non-zero exit is *not* discarded — which removes the entire premise for a commit
+gate, since the lease is not burned for an undelivered injection.
+
+Two supporting reasons this is right rather than merely permitted:
+
+* The review's own objection to (b) is decisive against it: *"the spec must not rely on a later `resume`:
+  a startup hook failure may prevent the session from reaching a resumable state."* Option (b) depended
+  on that retry existing; option (a) depends on nothing.
+* Per §3.1a, writing stdout on the failed-POST path is actively **protective** — a populated stdout wins
+  the `stdout || stderr` selection and stops our stderr diagnostic being parsed as the hook's output.
+
+**Residual gap, stated honestly:** this establishes stdout is *parsed* on a non-zero exit. Whether the
+consuming layer *additionally* gates on `success` before applying `getAdditionalContext()` was not traced
+to a definitive call site. It does not change the decision — (b)'s rationale is void either way — but the
+live cert must include a non-zero-exit case (§5) so the end-to-end answer is measured, not inferred.
 
 ## 4. Files
 
@@ -221,9 +337,49 @@ Layers, per the project's per-vendor convention:
 3. **Integration** — WireMock 400 on `session-start/gemini` asserting the exit code AND parseable stdout,
    mirroring `CodexSessionStartHandshakeOnPostFailureTests`.
 4. **Live cert** — `GeminiMemoryIndexLiveCertTests`, gated on `KCAP_GEMINI_MEMORY_LIVE=1` + `KCAP_URL`,
-   reusing `MemoryIndexLiveCertHarness`. Positive: a nonce saved as a memory is reproduced by a real
-   `gemini` turn. Negative control: with `disable_memory_index` set, the nonce does **not** appear.
-   `[NotInParallel]` — the negative control mutates process-global config.
+   reusing `MemoryIndexLiveCertHarness`. `[NotInParallel]`.
+
+   * **Positive:** a nonce saved as a memory is reproduced by a real `gemini` turn — *and the turn
+     completes successfully*. Nonce reproduction alone is insufficient: the review noted the harness could
+     mask a failed invocation, so the cert must assert turn completion (exit status + no
+     blocking/stop decision), which is what actually verifies §3.1.
+   * **Negative control:** with `disable_memory_index` set, the nonce does **not** appear.
+   * **Non-zero-exit case** (new, from §3.3's residual gap): drive a `SessionStart` whose POST fails so
+     the hook exits non-zero while emitting recognisable `additionalContext`, then assert the session
+     continues **and** record whether the model received the context. This is the only way to settle
+     whether the consuming layer gates on `success`.
+
+   **Cleanup and isolation are explicit requirements, not `[NotInParallel]` side effects.** The review is
+   right that `[NotInParallel]` only prevents concurrency — it restores nothing. The existing
+   `MemoryIndexLiveCertHarness` already provides `ReadDisableMemoryIndexAsync` /
+   `SetDisableMemoryIndexAsync` / `RestoreDisableMemoryIndexAsync`, and the Kiro cert already nests the
+   restore inside a `finally` *inside* the archive `finally` (so a throwing restore cannot skip the
+   memory archive). Reuse that shape exactly, and additionally:
+
+   * snapshot **before** anything is created, and restore in `finally` — **including restoring the unset
+     state**, not just `false`;
+   * assert the **positive** control runs with opt-out *disabled*, so a leaked `true` from an earlier
+     failed run cannot make the positive test pass vacuously;
+   * archive the nonce memory unconditionally — a leaked nonce corrupts every later cert's index. (The
+     Kiro cert work leaked 13 memories exactly this way; `archive_memory` takes `id`, not `memory_id`.)
+
+### 5.2 Supported Gemini version boundary
+
+The review is right that this is unspecified and that changing zero-stdout → decision-payload affects any
+installed version running the hook.
+
+* **Verified against `gemini 0.53.0`** — every §3.1 fact is read from that bundle. Facts about
+  `isBlockingDecision`, the unconditional parse, and the `stdout || stderr` fallback are version-specific
+  observations, not guarantees.
+* **Minimum supported: 0.53.0.** Below it, the hook-output contract is unverified.
+* **The live cert must record and assert the exact binary version** (`gemini --version`), mirroring
+  `RecordCertEnvironmentAsync` in the existing harness — a cert that passes against an unknown build tells
+  us nothing, which is precisely how the AI-1592 memory-cert failures were misdiagnosed (a stale installed
+  binary, not a code defect).
+* **On an older/unknown version: still emit.** Suppressing would silently disable the feature, and the
+  measured fail-open behaviour (§3.1 fact 3 — malformed or unrecognised stdout degrades to plain text
+  rather than blocking) means a wrong guess is not dangerous. Do **not** add a version gate that declines
+  installation; that trades a benign degradation for a silent feature loss.
 
 **Every guard assertion must be mutation-proven.** The Kiro work shipped a vacuous guard test that
 passed with the guard removed; the standard here is that deleting the guard fails exactly the intended
@@ -235,7 +391,15 @@ The live cert is the only thing that verifies §3.1 — that a `hookSpecificOutp
 disturb Gemini's decision channel. A green unit suite proves the bytes we emit, not that Gemini accepts
 them. If the cert cannot be run, this issue should not be called done.
 
-## 6. Out of scope
+## 6. Follow-ups this work surfaces but does not fix
+
+* **`stdout.trim() || stderr.trim()` (§3.1a).** Gemini parses a hook's **stderr** as its output whenever
+  stdout is empty. kcap writes diagnostics to stderr, so this already happens today on every failed-POST
+  session across the Gemini hook. It is currently benign — a parse failure degrades to plain text — but it
+  is one carelessly-worded stderr message away from being a real bug, and it means kcap's stderr is
+  semantically part of Gemini's hook contract. Worth its own issue rather than a comment.
+
+## 7. Out of scope
 
 * Gemini hosted agents (AI-899) and the Gemini reviewer (AI-1413) — separate issues, separate epics.
 * `SessionEnd` / `Notification` behaviour — untouched.
