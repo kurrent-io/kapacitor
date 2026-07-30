@@ -78,19 +78,23 @@ public class CursorLiveSubagentIntegrationTests {
     /// </summary>
     [Test]
     public async Task live_agent_id_matches_the_dashless_id_the_import_path_would_use() {
-        using var fx = new Fixture();
-        var (_, childId, childPath) = fx.SetupLinkedPair("parity check");
+        // Exercises the payload seam DIRECTLY. This previously drove a child sessionStart and
+        // asserted a subagent-start came back — the exact child-lifecycle trigger this suite no
+        // longer asserts (see the class doc). The parity property lives in the builder, not in
+        // how the builder happens to be reached, so nothing is lost by testing it here.
+        var childRaw = Guid.NewGuid().ToString();  // dashed, as Cursor emits
+        var childId  = CursorImportSource.NormalizeCursorSessionId(childRaw);
+        var parentId = CursorImportSource.NormalizeCursorSessionId(Guid.NewGuid().ToString());
 
-        await fx.HandleAsync(childId, "sessionStart", childPath);
+        var body = CursorLiveSubagentLinker.BuildSubagentStartPayload(
+            parentId, childId, "task", "/tmp/parity.jsonl");
 
-        var startBody = JsonNode.Parse(fx.SentToHook("subagent-start"))!;
-        var liveAgentId = startBody["agent_id"]!.GetValue<string>();
-
+        var liveAgentId = body["agent_id"]!.GetValue<string>();
         // Mirrors CursorImportSource.NormalizeCursorSessionId, the import path's own
         // dashless-id convention (CursorImportSource.cs:91,468).
-        var importAgentId = childId; // fx already hands back the dashless id (see SetupLinkedPair)
-        await Assert.That(liveAgentId).IsEqualTo(importAgentId);
+        await Assert.That(liveAgentId).IsEqualTo(childId);
         await Assert.That(liveAgentId.Contains('-')).IsFalse();
+        await Assert.That(body["session_id"]!.GetValue<string>()).IsEqualTo(parentId);
     }
 
     sealed class Fixture : IDisposable {

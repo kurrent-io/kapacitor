@@ -715,8 +715,10 @@ public class CursorHookCommandTests {
             Console.SetOut(originalOut);
         }
 
-        // No marker => ResolveParent/SaveLink never ran, so the session was never classified as
-        // a subagent child...
+        // No link was persisted, so nothing classified this session as a subagent child. Note
+        // what is NOT claimed: this does not prove ResolveParent/SaveLink went unexecuted —
+        // ResolveParent can run and return null, and SaveLink can run and swallow a write
+        // failure. The assertion is about the persisted outcome only.
         await Assert.That(CursorLiveSubagentLinker.TryLoadLink(sid)).IsNull();
         // ...and it took the ordinary top-level route rather than the subagent divert.
         await Assert.That(fx.RouteOrder).Contains("session-start/cursor");
