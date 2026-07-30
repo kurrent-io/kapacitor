@@ -11,19 +11,150 @@ live there and are not repeated.
 
 ## Readiness
 
-The MCP result channel is a GO (below). The **containment mechanism is not settled**, and the reason is
-a measurement rather than an omission: §1.2 found that a trusted `fs_read` reads the whole filesystem, so
-`--trust-tools` scoping is not the read boundary the earlier draft assumed. Two things must happen before
-anyone implements this:
+**Containment decision: OS SANDBOX** (taken 2026-07-30). Not an accepted-risk read surface.
 
-1. **Decide §1.2** — OS sandbox (the Copilot `sandbox-exec` route) versus explicitly accepting an
-   owned-worktree-only read surface with the residual risk written down. This is a product/security call,
-   not an implementation detail.
-2. **Probe §1.5** — namespaced `@kcap-flow-result/...` trust on the ACP path. If the reviewer cannot call
-   `flow-result` without approval it cannot deliver a result at all, and it would present as a silent
-   round timeout rather than an error.
+That decision is sound and is the right one. It is also, as measured immediately afterwards, **not
+currently achievable for Kiro** — the sandbox and Kiro's authentication are in direct conflict. See
+§1.6, which is now the single blocker. Nothing else is open except the §1.5 probe.
 
-Everything else in this spec is decided and measured.
+| Item | State |
+|---|---|
+| MCP result channel (`SessionNew`) | ✅ measured GO |
+| Containment mechanism | ✅ decided: OS sandbox, reusing `BorrowedReviewSandbox` |
+| Sandbox × Kiro auth | ⛔ **BLOCKED — see §1.6** |
+| `@kcap-flow-result/...` namespaced trust on the ACP path | ❓ unmeasured (§1.5) |
+| Everything else | ✅ decided and measured |
+
+### 1.6 The sandbox decision collides with Kiro's authentication (measured)
+
+**The mechanism already exists and should be reused, not reinvented.** `BorrowedReviewSandbox`
+(shipped by AI-1584) builds an inline `sandbox-exec` profile: deny by default, grant a writable tree
+plus the read-only paths the vendor needs to start, redirect `HOME`/`TMPDIR` into a per-launch state
+root, and grant **nothing** under the user's home. `Available` is `File.Exists("/usr/bin/sandbox-exec")`
+and is fail-closed — *"a false here means the platform entry is unsupported; there is no launch that
+proceeds without the sandbox."*
+
+Its doc comment already states, independently, the exact conclusion §1.2's probe reached:
+
+> The boundary is here, below the vendor, rather than in the tool allowlist because the allowlist bounds
+> writes but not reads: the vendor's answer to an out-of-bounds path is a permission request, which an
+> unattended daemon answers, so read containment would hold only while the build keeps asking.
+
+So Kiro is in the position that machinery was built for. Three consequences follow, and the third is
+the blocker.
+
+**(a) Kiro unattended must be platform-gated, like Copilot borrowed review.** Because containment now
+*is* the sandbox, a host without `sandbox-exec` must not offer a Kiro reviewer at all — otherwise a
+Linux daemon advertises a reviewer with no boundary. This is the `CopilotBorrowedReviewPolicy` shape:
+resolve per platform, default to unavailable.
+
+**(b) The sandbox probably subsumes the isolated `KIRO_HOME`.** `KiroPaths.ConfigRoot` falls back to
+`$HOME/.kiro` when `KIRO_HOME` is unset, and the sandbox redirects `HOME` into a per-launch state root
+— so the global `settings/mcp.json` suppression that the isolated-home mechanism was chosen for comes
+free. Keep `KIRO_HOME` set explicitly anyway: it is one env var, and relying on a `HOME`-fallback for a
+security-relevant suppression is a worse contract than stating it. Same for the transcript-bearing
+concern — the reviewer's JSONL now lands in the per-launch state root, which is already isolated and
+cleaned up, so §4b's requirements are satisfied by construction rather than by our own sweep.
+
+**(c) ⛔ Kiro cannot authenticate inside the sandbox.** This is the blocker, and it was measured.
+
+Kiro's credentials are **not** under `~/.kiro` and **not** in `~/.aws`. They live at:
+
+```
+~/Library/Application Support/kiro-cli/
+    data.sqlite3      (mode 0600)   ← credential/session store
+    .refresh.lock     (mode 0600)   ← token-refresh lock ⇒ a ROTATING credential
+    bun, node, tui.js, *.sha256     ← the runtime Kiro needs to START
+    kas/, knowledge_bases/, shell/
+```
+
+That location is what the AI-1404 probe actually established: a full turn completed in an empty
+`KIRO_HOME` because the credential was never in `KIRO_HOME` to begin with. The earlier wording
+"credentials do NOT live under `KIRO_HOME`" was right but imprecise — they are now located.
+
+**Measured behaviour when that path is unavailable:** running `kiro-cli chat --no-interactive` with
+`HOME` redirected to an empty directory (exactly what the sandbox does) does not fail with a coded auth
+error. It enters an **interactive browser login** — output cycling
+`Opening browser... | Press ^C to cancel` — and never completes. For an unattended reviewer that is the
+**wedge** condition this whole design exists to prevent: no error to classify, no frame to fail on, just
+a round that never returns.
+
+Two further complications the same listing creates:
+
+* **The runtime and the credential are co-located.** `bun`/`node`/`tui.js` live in the same directory as
+  `data.sqlite3`, and Kiro needs them to start. So the grant cannot be all-or-nothing: it must be
+  **file-granular** — allow the runtime files and `shell/`, deny `data.sqlite3`, `.refresh.lock`,
+  `kas/`, `knowledge_bases/`.
+* **The credential rotates.** A read-only grant cannot refresh it; a read-write grant lets an
+  unattended reviewer mutate the operator's own Kiro auth state. This is precisely the shape that made
+  Copilot use a broker rather than a grant.
+
+#### The options, and why none is free
+
+1. **Broker a non-interactive credential** (the `BorrowedReviewAuthBroker` pattern: the daemon forwards
+   a token from its own environment, never looking one up). **This is the recommended route, and a
+   static scan says the code path exists.** Kiro's own `tui.js` and launcher reference:
+
+   ```
+   KIRO_API_KEY            ← a non-interactive credential env var
+   KIRO_AUTH_PORTAL_URL    ← the interactive browser flow observed above
+   KIRO_APERTURE_URL
+   ```
+
+   `KIRO_API_KEY` is exactly the shape `BorrowedReviewAuthBroker` already forwards, so if it is honoured
+   this slots into existing machinery rather than needing new work.
+
+   **This also partly vindicates AI-1404's Premise 1, which that spec recorded as "NOT REPRODUCED".**
+   The premise was *"headless requires a paid-tier `KIRO_API_KEY`"*. What AI-1404 actually disproved was
+   the narrower claim that a key is **required** — a turn completed without one. It did not disprove
+   that the key is **supported**, and it is: the variable is referenced in Kiro's own code. The two
+   findings are consistent — the key was unnecessary there only because the sqlite credential was
+   present. `authMethods: []` likewise means "no ACP-*mediated* auth flow", not "no credential input".
+
+   **What remains untested, and why I stopped:** whether setting `KIRO_API_KEY` actually bypasses the
+   browser login for `chat`/`acp`. Confirming that requires a **real** key, and acquiring or minting one
+   is not something this work should do — it would breach the no-credential-acquisition invariant. It is
+   also unnecessary to test it that way: the broker model *is* "the operator places a credential in the
+   daemon's environment", so the operator supplying a key is both the test and the shipping
+   configuration. **Next step is therefore an operator-supplied `KIRO_API_KEY` in a sandboxed launch**,
+   asserting the browser flow does not start and a turn completes.
+2. **Grant `data.sqlite3` + `.refresh.lock` read-write into the sandbox.** Reopens exactly the hole
+   AI-1584 closed for Copilot — a credential-bearing, mutable path reachable with no interaction frame,
+   so `Fail` never fires and only the OS boundary stands. Narrower than granting a keychain, but the
+   same *kind* of thing, and it lets a reviewer rotate the operator's auth. If chosen, it must be an
+   explicit, written decision with the residual risk named — not a quiet grant added to the profile.
+3. **Do not ship a Kiro reviewer.** Kiro stays interactive-hosting-only (AI-1404, already shipped and
+   working). Costs nothing, forecloses nothing, and is honest until option 1 is proven.
+
+**Recommendation: option 1, and if `KIRO_API_KEY` turns out not to be honoured, option 3 rather than
+option 2.** Option 2 spends the exact security property the sandbox was chosen for, which would make the
+containment decision self-defeating.
+
+#### Implementation shape, once auth is settled
+
+Assuming option 1 holds, the work is bounded and mostly reuse:
+
+1. **Extend the sandbox to the owned-worktree unattended path.** Today `BorrowedReviewSandbox` is applied
+   only on a *borrowed* launch. Kiro's exposure is on OWNED worktrees, so the wrap must apply whenever an
+   unattended Kiro reviewer launches — that is the one genuinely new piece of wiring.
+2. **File-granular grant** inside `~/Library/Application Support/kiro-cli`: allow `bun`, `node`,
+   `tui.js`, the `*.sha256` files and `shell/`; deny `data.sqlite3`, `.refresh.lock`, `kas/`,
+   `knowledge_bases/`. (`BorrowedReviewRuntimeRoots.Resolve` is the existing seam for start-time
+   read grants.)
+3. **Platform gate** mirroring `CopilotBorrowedReviewPolicy`: no `sandbox-exec` ⇒ Kiro is not offered as
+   a reviewer. Fail closed, never unsandboxed.
+4. **Broker `KIRO_API_KEY`** through `BorrowedReviewAuthBroker`; with nothing configured, do not offer
+   the reviewer.
+5. Then, and only then, the §1.5 `@kcap-flow-result/...` trust probe.
+
+Note what drops out: §4b's bespoke `0700` + epoch-keyed sweep is no longer ours to build, because the
+per-launch sandbox state root already provides isolation and cleanup. Keep the requirement stated, but
+implement it by reusing the state root rather than a second mechanism.
+
+### 1.5-bis Note on ordering
+
+The `@kcap-flow-result/...` trust probe (§1.5) is now **downstream** of §1.6: there is no point
+measuring the reviewer's tool surface until a reviewer can authenticate inside the boundary at all.
 
 ## The go/no-go, resolved: GO
 
@@ -198,19 +329,19 @@ lesson the Copilot borrowed-review work already learned and encoded in
 read tool can be pointed at, so the boundary is an OS sandbox rather than the vendor's own permission
 prompts."* Kiro is in exactly that position.
 
-**Consequence for this issue.** Scoped trust alone does not make a contained reviewer. Options, in
-preference order:
+**Consequence for this issue.** Scoped trust alone does not make a contained reviewer.
 
-1. **OS sandbox** (`sandbox-exec` on macOS, the mechanism Copilot borrowed review already uses) confining
-   reads to the review worktree plus what the CLI needs to start. This is the only option that actually
-   bounds reads.
-2. **Accept the read surface explicitly**, scoped to OWNED worktrees only (borrowed review stays off
-   regardless), with the residual risk written down: a reviewer can read anything the daemon user can.
-   Only defensible on a single-tenant host where the reviewer is already trusted with the repository.
+**RESOLVED 2026-07-30: OS sandbox** — `sandbox-exec`, reusing the `BorrowedReviewSandbox` machinery
+AI-1584 already shipped for Copilot borrowed review. The alternative that was on the table — accepting
+the read surface on owned worktrees with the residual risk written down — was **rejected**: a reviewer
+able to read anything the daemon user can is not a boundary, only a smaller blast radius.
 
-Option 2 must not be chosen silently. If it is chosen, the *reason* it is tolerable is the isolated
-`KIRO_HOME` plus owned-worktree-only scope, not the trust list — and the spec must say so, because a
-later reader will otherwise assume `--trust-tools` was the boundary.
+Scoped trust is still applied, but its role changes: it is now defence-in-depth over the tool surface,
+**not** the containment boundary. Nothing in §1.1–§1.4 should be read as providing filesystem
+containment.
+
+**See §1.6** — implementing that decision surfaced a hard blocker in Kiro's authentication, which is now
+the only thing standing between this spec and implementation.
 
 #### 1.3 Writes and shell ARE blocked — but check WHY
 
