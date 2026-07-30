@@ -132,19 +132,14 @@ public class UnusableUrlGuardTests : IDisposable {
     }
 
     [Test]
-    [Arguments("ses_A")]
-    [Arguments("SES_a")]
-    [Arguments("Mixed_Case_Id")]
-    public async Task Uppercase_non_guid_keys_are_rejected_rather_than_colliding(string sessionId) {
-        // The id is preserved byte-for-byte AND is the filename, so admitting both cases would let
-        // two distinct sessions address one file on macOS/Windows. Rejection is reported, not silent.
-        await Assert.That(new HookSpool(_dir).Append(sessionId, "session-start/opencode", "{}")).IsFalse();
-    }
-
-    [Test]
-    public async Task Legacy_uppercase_guid_keys_still_work() {
-        // Mixed case is fine for a 32-hex GUID: those are the same id either way.
-        await Assert.That(new HookSpool(_dir).Append("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "session-start/claude", "{}")).IsTrue();
+    [Arguments("ses_619a78374ffe7o0x1iTK74jFRg")]
+    [Arguments("ses_ABCDEF")]
+    [Arguments("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")]
+    public async Task Mixed_case_vendor_ids_are_accepted(string sessionId) {
+        // OpenCode ids are base62 and genuinely mixed case; rejecting them would lose the session
+        // outright. Case safety on the filesystem is handled by escaping the filename, not by
+        // narrowing what is admitted.
+        await Assert.That(new HookSpool(_dir).Append(sessionId, "session-start/opencode", "{}")).IsTrue();
     }
 
     /// <summary>

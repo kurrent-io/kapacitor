@@ -31,10 +31,10 @@ public sealed partial class TranscriptSpool(string spoolDir, long capBytes = Tra
     internal string Dir => spoolDir;
 
     string? LivePathFor(string sessionId) =>
-        SafeSessionId.IsMatch(sessionId) ? Path.Combine(spoolDir, $"{sessionId}.transcript.jsonl") : null;
+        SafeSessionId.IsMatch(sessionId) ? Path.Combine(spoolDir, $"{EncodeKey(sessionId)}.transcript.jsonl") : null;
 
     string? MarkerPathFor(string sessionId) =>
-        SafeSessionId.IsMatch(sessionId) ? Path.Combine(spoolDir, $"{sessionId}.needs-import") : null;
+        SafeSessionId.IsMatch(sessionId) ? Path.Combine(spoolDir, $"{EncodeKey(sessionId)}.needs-import") : null;
 
     public AppendResult Append(string sessionId, string batchJson) {
         var path = LivePathFor(sessionId);
@@ -84,10 +84,46 @@ public sealed partial class TranscriptSpool(string spoolDir, long capBytes = Tra
     }
 
     /// <summary>True if this session still has undelivered spool entries (live .jsonl or .draining temp).</summary>
+
+    // ---- filename key encoding -------------------------------------------------------------
+    //
+    // Session ids are case-SENSITIVE and are preserved byte-for-byte (OpenCode's are base62 --
+    // "ses_619a78374ffe7o0x1iTK74jFRg"), but macOS and Windows filesystems are case-INSENSITIVE, so
+    // using the raw id as the filename would let two distinct sessions address one file: their
+    // lifecycle entries would interleave and one session's ended marker would discard the other's
+    // remainder.
+    //
+    // So the id is escaped into a single-case filename key and decoded back on the way out. '~' is
+    // the escape and cannot occur in an admitted id, which keeps the mapping unambiguous and
+    // reversible -- the drain posts the DECODED id as session_id, so a lossy or one-way transform
+    // (a hash, or lowercasing) would put a fabricated id on the wire.
+    static string EncodeKey(string sessionId) {
+        var sb = new StringBuilder(sessionId.Length + 8);
+
+        foreach (var c in sessionId) {
+            if (char.IsAsciiLetterUpper(c)) sb.Append('~').Append(char.ToLowerInvariant(c));
+            else sb.Append(c);
+        }
+
+        return sb.ToString();
+    }
+
+    static string? DecodeKey(string key) {
+        var sb = new StringBuilder(key.Length);
+
+        for (var i = 0; i < key.Length; i++) {
+            if (key[i] != '~') { sb.Append(key[i]); continue; }
+            if (++i >= key.Length || !char.IsAsciiLetterLower(key[i])) return null; // malformed
+            sb.Append(char.ToUpperInvariant(key[i]));
+        }
+
+        return sb.ToString();
+    }
+
     public bool HasBacklog(string sessionId) =>
         SafeSessionId.IsMatch(sessionId) && Directory.Exists(spoolDir)
-        && (File.Exists(Path.Combine(spoolDir, $"{sessionId}.transcript.jsonl"))
-            || Directory.EnumerateFiles(spoolDir, $"{sessionId}.*.transcript.draining").Any());
+        && (File.Exists(Path.Combine(spoolDir, $"{EncodeKey(sessionId)}.transcript.jsonl"))
+            || Directory.EnumerateFiles(spoolDir, $"{EncodeKey(sessionId)}.*.transcript.draining").Any());
 
     /// <summary>Every distinct session id with a live .jsonl, a recovered .draining temp, or a
     /// needs-import marker (a marker can outlive its transcript file if a prior pass ran out of
@@ -106,22 +142,22 @@ public sealed partial class TranscriptSpool(string spoolDir, long capBytes = Tra
         var name = Path.GetFileName(filePath);
         var dot  = name.IndexOf('.');
         if (dot <= 0) return null;
-        var sid = name[..dot];
-        return SafeSessionId.IsMatch(sid) ? sid : null;
+        var decoded = DecodeKey(name[..dot]);
+        return decoded is not null && SafeSessionId.IsMatch(decoded) ? decoded : null;
     }
 
     public async Task DrainAsync(string sessionId, Func<string, Task<DrainOutcome>> poster, Func<bool> expired, CancellationToken ct) {
         var live = LivePathFor(sessionId);
         if (live is null || !Directory.Exists(spoolDir)) return;
 
-        foreach (var temp in Directory.EnumerateFiles(spoolDir, $"{sessionId}.*.transcript.draining").OrderBy(File.GetCreationTimeUtc)) {
+        foreach (var temp in Directory.EnumerateFiles(spoolDir, $"{EncodeKey(sessionId)}.*.transcript.draining").OrderBy(File.GetCreationTimeUtc)) {
             if (expired() || ct.IsCancellationRequested) return;
             if (await DrainFileAsync(temp, poster, expired, ct)) return; // transient → stop, keep remainder
         }
 
         if (!File.Exists(live) || expired() || ct.IsCancellationRequested) return;
 
-        var rotated = Path.Combine(spoolDir, $"{sessionId}.{Environment.ProcessId}-{Interlocked.Increment(ref seqCounter)}.transcript.draining");
+        var rotated = Path.Combine(spoolDir, $"{EncodeKey(sessionId)}.{Environment.ProcessId}-{Interlocked.Increment(ref seqCounter)}.transcript.draining");
         try { File.Move(live, rotated); }
         catch { return; } // lost the atomic-rename race (or vanished) — the winner handles it
         await DrainFileAsync(rotated, poster, expired, ct);
@@ -169,10 +205,6 @@ public sealed partial class TranscriptSpool(string spoolDir, long capBytes = Tra
     // be widened but never transformed (hashing would fabricate an id on the wire). Excludes '.', '/'
     // and '\\', preserving both the path-traversal property and the parse-before-first-dot split.
     // Vendors such as OpenCode use ids like "ses_7f3a9c21b8", which the old form silently dropped.
-    // The widened arm is deliberately LOWERCASE-only: the id is preserved byte-for-byte and is the
-    // filename, so admitting both cases would let "ses_A" and "ses_a" -- two distinct sessions --
-    // address one file on macOS/Windows. The legacy 32-hex arm keeps mixed case because those are
-    // the same GUID either way. An uppercase vendor id is rejected, which Append now reports.
-    [GeneratedRegex("^(?:[0-9a-fA-F]{32}|[a-z0-9_-]{1,64})$", RegexOptions.Compiled)]
+    [GeneratedRegex("^[A-Za-z0-9_-]{1,64}$", RegexOptions.Compiled)]
     private static partial Regex SafeSessionIdRegex();
 }

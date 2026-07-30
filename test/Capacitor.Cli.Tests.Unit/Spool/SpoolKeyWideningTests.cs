@@ -12,8 +12,10 @@ namespace Capacitor.Cli.Tests.Unit.Spool;
 /// while nothing was written.</para>
 /// </summary>
 public class SpoolKeyWideningTests : IDisposable {
-    // A real OpenCode id shape: never 32 hex, with or without dash-stripping.
-    const string OpenCodeId = "ses_7f3a9c21b8";
+    // A REAL OpenCode id: its generator appends a base62 suffix, so ids are MIXED CASE. An earlier
+    // version of this test invented a lowercase-only value, which masked a fix that would have
+    // rejected almost every genuine OpenCode session.
+    const string OpenCodeId = "ses_619a78374ffe7o0x1iTK74jFRg";
 
     readonly string _dir  = Path.Combine(Path.GetTempPath(), $"kcap-widen-{Guid.NewGuid():N}");
     readonly string _tdir = Path.Combine(Path.GetTempPath(), $"kcap-widen-t-{Guid.NewGuid():N}");
@@ -23,13 +25,20 @@ public class SpoolKeyWideningTests : IDisposable {
     }
 
     [Test]
-    public async Task Lifecycle_basename_is_the_raw_id_not_a_digest() {
+    public async Task Lifecycle_filename_is_a_reversible_escape_not_a_digest() {
         var spool = new HookSpool(_dir);
 
-        await Assert.That(spool.Append(OpenCodeId, "session-start/opencode", """{"session_id":"ses_7f3a9c21b8"}""")).IsTrue();
-        // The exact basename, which is what discriminates widening from hashing — a hashing
-        // implementation would also keep the raw id inside the payload.
-        await Assert.That(File.Exists(Path.Combine(_dir, $"{OpenCodeId}.jsonl"))).IsTrue();
+        await Assert.That(spool.Append(OpenCodeId, "session-start/opencode", """{"session_id":"x"}""")).IsTrue();
+
+        var files = Directory.GetFiles(_dir, "*.jsonl");
+        await Assert.That(files.Length).IsEqualTo(1);
+
+        var basename = Path.GetFileNameWithoutExtension(files[0]);
+
+        // Single-cased for filesystem safety, but every original character is still recoverable —
+        // a digest would lose the id, and the drain posts it back as session_id.
+        await Assert.That(basename).IsEqualTo(basename.ToLowerInvariant());
+        await Assert.That(basename.Replace("~", "")).IsEqualTo(OpenCodeId.ToLowerInvariant());
         await Assert.That(spool.HasBacklog(OpenCodeId)).IsTrue();
     }
 
@@ -53,8 +62,10 @@ public class SpoolKeyWideningTests : IDisposable {
     }
 
     [Test]
-    [Arguments("ses_7f3a9c21b8")]
-    [Arguments("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")] // the pre-existing dashless-GUID form still works
+    [Arguments("ses_619a78374ffe7o0x1iTK74jFRg")]      // real, mixed-case
+    [Arguments("ses_ABCDEF")]                           // all-uppercase suffix
+    [Arguments("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")]     // the pre-existing dashless-GUID form
+    [Arguments("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")]     // and its uppercase spelling
     [Arguments("a-b_c-123")]
     public async Task Widened_keys_survive_a_drain_round_trip(string sessionId) {
         var spool = new HookSpool(_dir);
@@ -82,5 +93,55 @@ public class SpoolKeyWideningTests : IDisposable {
     [Arguments("")]
     public async Task Keys_that_would_break_path_parsing_are_still_rejected(string sessionId) {
         await Assert.That(new HookSpool(_dir).Append(sessionId, "session-start/opencode", "{}")).IsFalse();
+    }
+
+    /// <summary>
+    /// Two ids differing ONLY by case are distinct sessions and must not share a file. The filename
+    /// is escaped into a single case for exactly this reason — on macOS/Windows the raw ids would
+    /// collide, interleaving one session's payloads into the other's spool.
+    /// </summary>
+    [Test]
+    public async Task Ids_differing_only_by_case_do_not_share_a_spool_file() {
+        var spool = new HookSpool(_dir);
+
+        await Assert.That(spool.Append("ses_aBcD", "session-start/opencode", """{"which":"lower"}""")).IsTrue();
+        await Assert.That(spool.Append("ses_AbCd", "session-start/opencode", """{"which":"upper"}""")).IsTrue();
+
+        // Two distinct files on disk — on a case-insensitive filesystem the raw ids would be one.
+        var files = Directory.GetFiles(_dir, "*.jsonl");
+        await Assert.That(files.Length).IsEqualTo(2);
+
+        // And neither file holds the other session's payload.
+        foreach (var f in files) {
+            var text = File.ReadAllText(f);
+            await Assert.That(text.Contains("lower") && text.Contains("upper")).IsFalse();
+        }
+
+        await Assert.That(spool.HasBacklog("ses_aBcD")).IsTrue();
+        await Assert.That(spool.HasBacklog("ses_AbCd")).IsTrue();
+    }
+
+    /// <summary>
+    /// The escape is reversible: the drain posts the DECODED id, so a lossy transform would put a
+    /// fabricated session_id on the wire.
+    /// </summary>
+    [Test]
+    [Arguments("ses_619a78374ffe7o0x1iTK74jFRg")]
+    [Arguments("ses_ABCDEF")]
+    [Arguments("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")]
+    public async Task The_drained_session_id_is_the_original_byte_for_byte(string sessionId) {
+        var spool = new HookSpool(_dir);
+        spool.Append(sessionId, "session-start/opencode", $$"""{"session_id":"{{sessionId}}"}""");
+
+        string? posted = null;
+
+        await spool.DrainAllAsync(
+            currentSessionId: null,
+            poster: (_, body) => { posted = body; return Task.FromResult(DrainOutcome.Delivered); },
+            budget: TimeSpan.FromSeconds(5),
+            ct: CancellationToken.None);
+
+        await Assert.That(posted).IsNotNull();
+        await Assert.That(posted!).Contains(sessionId);
     }
 }
