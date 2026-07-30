@@ -65,24 +65,30 @@ isolated `KIRO_HOME` owned by the daemon for reviewer launches.
 This is a decision, not a candidate list. The prior draft's matrix is collapsed to the one cell that
 mattered.
 
-**What that obliges the design to specify** — an isolated home is a filesystem boundary, so everything
-the reviewer needs must be deliberately placed and everything else deliberately withheld:
+**Validated for the operation this issue actually performs** — not just handshake. In an isolated empty
+home, with the probe MCP server injected via `session/new.mcpServers`:
 
-* **Credentials.** Kiro must still authenticate. Determine what under `KIRO_HOME` carries auth and
-  place exactly that, or confirm auth lives outside `KIRO_HOME` entirely. *Unresolved — must be probed
-  before implementation, and it is the one item that could invalidate this mechanism.*
-* **Deliberately excluded:** `settings/mcp.json` (the whole point), the user's agents, and anything
-  granting write or flow-starting capability.
-* **Placed if required:** only the injected `flow-result` server, which arrives via
-  `session/new.mcpServers` rather than the home, so probably nothing.
-* **Permissions and cleanup:** owner-only; removed when the reviewer is reaped, including on crash.
-* **Concurrency:** one home per reviewer launch, so two concurrent reviews cannot share or race state.
-* **Preflight:** `ComputeUnattendedVendors` must not advertise `kiro` until the daemon can create an
-  isolated home AND authenticate inside it. A failure here refuses the launch with a coded error rather
-  than wedging a round.
+* `session/new` succeeded;
+* `session/prompt` completed `end_turn`;
+* the probe server logged a real **`tools/call`** and its nonce reached the model;
+* **no authentication error of any kind** — nothing on stderr, no auth frame, no failure.
 
-Because this touches daemon process launch rather than the installer, it remains the largest item in
-the issue — but it is now a known quantity rather than an unknown one.
+**Therefore Kiro's credentials do NOT live under `KIRO_HOME`.** That is the finding that collapses most
+of this section's complexity: there is nothing secret to copy into a reviewer home, so the design needs
+no credential source, refresh/expiry handling, atomic secret materialization, symlink validation of
+copied secrets, or secret-bearing cleanup. A reviewer home contains **nothing sensitive**.
+
+What remains to specify is small:
+
+* **Contents:** nothing. Create it empty. `settings/mcp.json` and the user's agents are excluded by
+  simply not being there, which is why the mechanism works.
+* **Permissions:** owner-only anyway, on principle rather than because of secrets.
+* **Concurrency:** one home per reviewer launch, so concurrent reviews cannot race shared state.
+* **Cleanup, including after a daemon crash** — see §4b, which is now a plain temp-directory sweep
+  rather than a secret-handling problem.
+
+Because this touches daemon process launch rather than the installer it is still the largest item here,
+but it is now a small, measured one.
 
 ## Acceptance criterion that must be rewritten
 

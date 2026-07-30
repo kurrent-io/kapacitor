@@ -88,8 +88,13 @@ The selector parses `session/new`'s `models.availableModels` and then sends
 shape it needs. Its write half (`session/set_config_option` actually taking effect) is **still
 unverified** and must be measured before relying on it.
 
-Two consequences. First, do not add a "`--model` observable in the launch argv" acceptance item: the
-descriptor below never appends `--model`, so it would be unclosable. Second,
+**Decision: Kiro ships with `NoOpModelSelector` and no model override in either issue.** An earlier draft
+kept `ConfigOptionModelSelector` while AI-1410 deferred override — two implementers could then ship
+opposite behaviour, each following part of the spec. Note that `ResolveDefaultModel: null` is NOT
+sufficient on its own: `ResolveRequestedModel` prioritises `RuntimeStartContext.Model`, so a
+dashboard-supplied model would still reach a live selector. The selector itself has to be the no-op.
+
+Also,
 `AcpHostedAgentRuntimeFactory.ReviewerModelResolver` is `null` at this base, so the daemon advertises
 no reviewer-model-resolution capability and the server refuses an ACP review-flow model override
 today. Reviewer model override is therefore an AI-1410 dependency, not a free inheritance.
@@ -139,7 +144,7 @@ public static readonly AcpVendorDescriptor Kiro = new(
     Argv:                ["acp"],
     UnattendedTrustArgv: [],            // AI-1410 owns this; empty keeps unattended off
     SupportsUnattended:  false,         // flipped by AI-1410
-    ModelSelector:       ConfigOptionModelSelector.Instance,
+    ModelSelector:       NoOpModelSelector.Instance,   // see Premise 3 — override deferred
     SupportsMcpServers:  true,          // measured: stdio servers in session/new ARE honoured
     SupportsBorrowedReviewFlow: false   // AI-1410 decides; default off is the safe direction
 );
@@ -187,8 +192,8 @@ Mirrors the Copilot child, minus what has already been measured:
 - [ ] Clean stop; no orphaned child
 - [ ] `SupportedVendors` advertises `kiro` only when the binary resolves
 - [ ] End-to-end capture: the hosted session appears with vendor `kiro`
-- [ ] Model override actually takes effect — measured via `session/set_config_option`, NOT by
-      inspecting argv (see Premise 3)
+- [ ] No model override is attempted — `NoOpModelSelector` is wired, and a dashboard-supplied model is
+      NOT silently honoured (see Premise 3)
 - [ ] Confirm the ACP-reported agent version is logged
 
 Explicitly **not** in this checklist: canonical token counts (absent from ACP; credits remain via
