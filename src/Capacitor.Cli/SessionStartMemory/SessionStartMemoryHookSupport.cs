@@ -22,10 +22,10 @@ internal static class SessionStartMemoryHookSupport {
     /// session — strictly worse than silently skipping an optional memory fragment.</para>
     ///
     /// <para>Deliberately the SAME predicate <c>EnsureAbsolute</c> itself uses, so this guard can
-    /// never disagree with the validator it exists to protect.</para>
+    /// never disagree with the validator it exists to protect. Single-sourced through
+    /// <see cref="HookHttp.IsPostable"/>.</para>
     /// </summary>
-    public static bool CanAttempt(string? baseUrl)
-        => !string.IsNullOrWhiteSpace(baseUrl) && HttpClientExtensions.IsAcceptableUrl(baseUrl);
+    public static bool CanAttempt(string? baseUrl) => HookHttp.IsPostable(baseUrl);
 
     /// <summary>
     /// The production memory-index client factory: authenticated, and honouring the provider's
