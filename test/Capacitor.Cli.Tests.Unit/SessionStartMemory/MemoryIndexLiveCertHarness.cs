@@ -58,6 +58,28 @@ internal static class MemoryIndexLiveCertHarness {
     public static string NegativePrompt => PositivePrompt;
 
     /// <summary>
+    /// A second-turn probe with a DISTINCT prefix from <see cref="NewNonce"/>.
+    ///
+    /// <para>Needed because a re-injection test cannot share a pattern with the memory it is trying to
+    /// distinguish itself from. If both matched <c>kcap-live-nonce-</c> and the lease broke, the
+    /// re-injected index would carry both, and a prompt asking for "a string of that form" lets the
+    /// model return the FIRST one — which the history has already reinforced — so an assertion that the
+    /// second is absent passes while a second fetch demonstrably happened.</para>
+    /// </summary>
+    public static string NewSecondTurnProbe() => $"kcap-live-probe2-{Guid.NewGuid():N}";
+
+    /// <summary>
+    /// Asks only about <see cref="NewSecondTurnProbe"/>'s prefix, and explicitly tells the model to
+    /// disregard the first-turn pattern. Deliberately does NOT contain the probe's random suffix: the
+    /// model must read it from injected context, not echo it back out of the question.
+    /// </summary>
+    public static string SecondTurnProbePrompt =>
+        "A block headed '## Team memory' may have been injected into your context at the start of THIS "
+      + "prompt. If it contains a string of the form kcap-live-probe2- followed by 32 hex characters, "
+      + "reply with ONLY that exact string and nothing else. Otherwise reply with ONLY the word NONE. "
+      + "Disregard any kcap-live-nonce- string entirely; it is not what this question asks about.";
+
+    /// <summary>
     /// Gate. MUST be the first statement in every cert: it returns before any process launch, HTTP
     /// call, or memory write, which is what keeps CI spend at exactly zero.
     /// </summary>

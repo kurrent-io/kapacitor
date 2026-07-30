@@ -43,13 +43,16 @@ public class CodexMemoryIndexLiveCertTests {
     [Test, NotInParallel]
     public async Task Disabled_memory_index_does_not_leak_the_nonce_to_a_real_codex_session_start() {
         Gate();
-        var nonce   = MemoryIndexLiveCertHarness.NewNonce();
-        var memoryId = await MemoryIndexLiveCertHarness.SaveNonceMemoryAsync(VendorLabel, nonce);
 
         // Recorded here too: a stale PATH kcap makes a negative control pass vacuously.
         await MemoryIndexLiveCertHarness.RecordCertEnvironmentAsync(VendorLabel, "codex", ["--version"]);
 
+        // Read BEFORE anything is created. This throws on an unreadable config, and doing it after the
+        // save would strand a real memory outside the archive-protecting try below.
         var original = await MemoryIndexLiveCertHarness.ReadDisableMemoryIndexAsync();
+
+        var nonce    = MemoryIndexLiveCertHarness.NewNonce();
+        var memoryId = await MemoryIndexLiveCertHarness.SaveNonceMemoryAsync(VendorLabel, nonce);
 
         try {
             await MemoryIndexLiveCertHarness.SetDisableMemoryIndexAsync(true);
