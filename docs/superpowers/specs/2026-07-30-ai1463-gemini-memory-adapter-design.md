@@ -135,6 +135,36 @@ simplest durable form is a per-session counter in the lease store incremented on
 one output), `startup → clear` (a second output), `clear → clear` (a third). A test that only checks
 "clear injects" would pass with a broken generation counter that always injects.
 
+#### 2.2a The generation needs an atomic contract, not a table (round-2 finding 2)
+
+The table above describes intent, not a mechanism — and as the review noted, an unsynchronised counter
+races. Required contract:
+
+**Operations**, keyed by `(harness, normalizedSessionId)` so the namespace cannot collide with another
+vendor's session id:
+
+* `ReadOrInitGeneration` — on `startup` / `resume`. Idempotent, no mutation.
+* `IncrementAndReserve` — on `clear`. **One atomic operation** that advances the generation *and* acquires
+  the lease for the new generation. Splitting these is the race the review identified: a `resume` landing
+  between an increment and a separate lease acquisition would acquire the *new* generation and inject,
+  while the `clear` that caused the increment then finds the lease held and stays silent — the exact
+  inversion of intended behaviour.
+
+**Fault behaviour, each of which needs a test:**
+
+| Situation | Required behaviour |
+|---|---|
+| process dies after increment, before output/lease completion | generation stays advanced; lease is **not** completed, so the next `SessionStart` for that generation may inject. Losing one injection is acceptable; a permanently-stuck generation is not. |
+| memory provider fails on `clear` | generation stays advanced, lease released (not completed) — same as any provider failure |
+| duplicate `clear` delivery (same event twice) | must **not** advance twice. Requires an idempotency key on the delivery, not just the counter — otherwise both injections fire |
+| `SessionEnd` / lease expiry | generation state is cleaned up with the session's lease records; it must not accumulate per-session rows indefinitely |
+
+**Tests must include concurrency and fault transitions, not only the three sequential happy paths** — a
+sequential-only suite passes against a non-atomic implementation.
+
+**This changes the file scope.** See §4, corrected: this is no longer a two-file change, and it *does*
+touch the foundation.
+
 ### 2.3 Re-injection on `resume` is suppressed by the lease, deliberately
 
 Because `resume` re-fires on the same session id, `SessionStartMemoryLeaseStore` will already hold a
@@ -233,7 +263,35 @@ Consequences, and they invert part of the original design intuition:
 
 **This does not need fixing in this issue**, but it must not be silently discovered again — noted in §7.
 
-### 3.2 Fail-open — corrected: "zero bytes on any failure" was too strong
+### 3.2-pre The fail-open path must EMIT, not stay silent (round-2 finding 3, in scope)
+
+**This reverses the "zero bytes" decision below, and the review is right to put it in scope rather than
+defer it.** §3.1a established that empty stdout makes Gemini parse **stderr** instead. The adapter's
+stated guarantee is that the no-fragment / opt-out / budget / failure paths are *inert*. Measurement
+proves they are not: those are exactly the paths where `AgentHookPoster` and the auth-lapse notice write
+to stderr, so "emit nothing" hands kcap diagnostics — potentially including server URLs and auth state —
+to Gemini as model-visible hook output.
+
+The worst case is the one the review named, and it is genuinely bad: **with memory injection opted out, a
+failed lifecycle POST can still inject kcap text into the model's context.** A user who disabled the
+feature gets kcap prose in their session anyway.
+
+**Decision: on Gemini `SessionStart`, always write a valid JSON hook result.** When there is no memory
+fragment for any reason, emit an explicit allow-with-no-context object rather than zero bytes, so stdout
+wins the `stdout || stderr` selection and the diagnostics are never parsed as hook output.
+
+* This is a **deliberate divergence** from the other five adapters, which emit nothing on the empty path.
+  It is justified by a Gemini-specific runner behaviour, and the reason must be stated at the call site so
+  nobody "harmonises" it back later.
+* Scope: `SessionStart` only. `SessionEnd` / `Notification` keep today's behaviour and remain the §6
+  follow-up — they are not paths this issue redesigns.
+* **Residual, documented:** if the stdout write itself fails wholly or partially (§3.2), stderr can still
+  be exposed. Application code cannot prevent that; it is bounded by §3.1 fact (3).
+
+**Acceptance:** failed POST + null fragment, failed POST + opt-out, and failed POST + provider failure —
+each asserting kcap diagnostics are **not** consumed as hook context.
+
+### 3.2 Write mechanics — "zero bytes on any failure" was too strong
 
 The review was right that the original claim could not hold. Rendering to a string first covers
 *serialization* failure, but `writer.Write(payload)` can throw **after a partial write**, and the shown
@@ -312,17 +370,55 @@ Two supporting reasons this is right rather than merely permitted:
 * Per §3.1a, writing stdout on the failed-POST path is actively **protective** — a populated stdout wins
   the `stdout || stderr` selection and stops our stderr diagnostic being parsed as the hook's output.
 
-**Residual gap, stated honestly:** this establishes stdout is *parsed* on a non-zero exit. Whether the
-consuming layer *additionally* gates on `success` before applying `getAdditionalContext()` was not traced
-to a definitive call site. It does not change the decision — (b)'s rationale is void either way — but the
-live cert must include a non-zero-exit case (§5) so the end-to-end answer is measured, not inferred.
+**CORRECTED after round 2 — the decision is CONDITIONAL, and my asymmetry argument was backwards.**
+
+The review is right that parsing is not consuming. If a downstream `success` gate exists, that is
+*semantically identical to discarding stdout* for this feature: the model receives no index while option
+(a) has permanently completed the lease. So measurement (4) alone does not settle it.
+
+It also correctly refuted my "resume may never occur" argument, which I had inverted:
+
+* if no resume occurs, **releasing is harmless** — nothing is lost;
+* if the session does resume, **releasing is what permits recovery**;
+* and conversely, if context *is* consumed on the failed invocation, releasing risks a **duplicate** later.
+
+So the risk is asymmetric in favour of (b), not (a).
+
+**The decision is therefore load-bearing on a test result, not on this document:**
+
+| Real-Gemini non-zero-exit test outcome | Design |
+|---|---|
+| turn continues **and** the nonce is consumed | option **(a)** — no gate; the injection was delivered |
+| turn continues but the nonce is **not** consumed | option **(b)** — gate/release, so a later `resume` recovers |
+| turn does not continue | neither: escalate — a failed POST aborting the user's session is its own defect |
+
+**This issue does not ship because the test was added; it ships on what the test returns.** Implementation
+should provide the release path behind the gate seam so switching to (b) is a wiring change, not a
+redesign.
+
+Supporting (not decisive) evidence for the "consumed" branch: the `getAdditionalContext()` call sites in
+the bundle read it after only `shouldStopExecution()` / `isBlockingDecision()` checks, with no visible
+`success` gate — but those are the BeforeAgent / AfterTool paths, and the `SessionStart`-specific consumer
+was not definitively located. Treat as a prior, not proof.
 
 ## 4. Files
 
-* `src/Capacitor.Cli/Commands/GeminiHookCommand.cs` — orchestrator call, stdout write, budget.
+**CORRECTED (round-2 finding 2).** The original claim — two files, no foundation changes, and "a foundation
+change signals the envelope was incomplete" — was wrong, and self-contradictory once §2.2a's generation
+rule was adopted. The generation is a *lease-store* concept, not an envelope one, so touching the
+foundation here says nothing about the envelope.
+
+* `src/Capacitor.Cli/Commands/GeminiHookCommand.cs` — orchestrator call, stdout write, budget, `source` →
+  lifecycle mapping.
 * `src/Capacitor.Cli/Program.cs` — thread `hookProcessStart` into the `--gemini` dispatch.
-* No foundation changes expected (§1). If one proves necessary, that is a signal to re-check whether the
-  envelope really was complete.
+* **`src/Capacitor.Cli/SessionStartMemory/SessionStartMemoryLeaseStore.cs`** — the atomic
+  `ReadOrInitGeneration` / `IncrementAndReserve` operations and generation-aware lease keys (§2.2a).
+* **`src/Capacitor.Cli/SessionStartMemory/SessionStartMemoryOrchestrator.cs`** — accept and thread the
+  generation; expose the release seam that option (b) in §3.3 would wire.
+* Possibly `SessionStartMemoryContracts.cs` — if the generation belongs on the request/lifecycle record.
+* Foundation **tests** change accordingly; the five merged adapters must be verified unaffected, since a
+  generation-aware key touches a shared store. **A default generation of 0 for every existing harness must
+  keep their behaviour byte-identical** — that is a required regression assertion, not an assumption.
 
 ## 5. Test plan
 
@@ -376,10 +472,16 @@ installed version running the hook.
   `RecordCertEnvironmentAsync` in the existing harness — a cert that passes against an unknown build tells
   us nothing, which is precisely how the AI-1592 memory-cert failures were misdiagnosed (a stale installed
   binary, not a code defect).
-* **On an older/unknown version: still emit.** Suppressing would silently disable the feature, and the
-  measured fail-open behaviour (§3.1 fact 3 — malformed or unrecognised stdout degrades to plain text
-  rather than blocking) means a wrong guess is not dangerous. Do **not** add a version gate that declines
-  installation; that trades a benign degradation for a silent feature loss.
+* **CORRECTED (round-2 finding 4): the "benign degradation" rationale over-extrapolated.** The plain-text
+  fail-open path, the independent field parsing and the non-blocking defaults were measured **only in
+  0.53.0**. An older or future runner need not behave that way, so I cannot claim a wrong guess is safe
+  on a version I have not measured.
+  * **Below 0.53.0: unsupported.** Stated plainly, rather than dressed up as benign degradation. We still
+    emit (a version gate would trade a *known* feature loss for an *unknown* risk), but the behaviour is
+    explicitly out of contract and a report from such a version is not a regression against this spec.
+  * **Newer/unknown versions: accepted, documented compatibility risk.** The 0.53.0 cert cannot establish
+    their semantics. The mitigation is that the cert asserts the version it ran against, so a future
+    failure is diagnosable rather than mysterious — not a claim that newer versions are safe.
 
 **Every guard assertion must be mutation-proven.** The Kiro work shipped a vacuous guard test that
 passed with the guard removed; the standard here is that deleting the guard fails exactly the intended
