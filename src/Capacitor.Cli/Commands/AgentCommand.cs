@@ -357,12 +357,20 @@ internal static class AgentCommand {
 
             if (resp.Text.Length == 0) return [];
 
-            // A row needs at least id/status/repo — fewer columns is unparseable, not a short row
-            // to default-fill (a repo path containing a stray tab could otherwise shift the kind
-            // column and mislabel an agent).
-            return [.. resp.Text.Split('\n')
-                .Where(l => l.Length > 0 && l.Split('\t').Length >= 3)
-                .Select(ParseAgentRow)];
+            // Exactly 3 columns is an older daemon; exactly 6 is a current one. Any other width
+            // means the row was corrupted in transit — most plausibly a delimiter inside a
+            // free-form field — and a shifted kind column would misreport what `stop --all` is
+            // about to do. Refuse the whole table rather than consent to a guess.
+            string[] rows = [.. resp.Text.Split('\n').Where(l => l.Length > 0)];
+
+            if (rows.Any(l => l.Split('\t').Length is not (3 or 6))) {
+                await Console.Error.WriteLineAsync(
+                    "kcap: daemon sent a malformed agent table (unexpected column count); refusing to act on it");
+
+                return null;
+            }
+
+            return [.. rows.Select(ParseAgentRow)];
         } catch (Exception ex) when (ex is SocketException or IOException) {
             await Console.Error.WriteLineAsync($"kcap: cannot reach daemon: {ex.Message}");
 

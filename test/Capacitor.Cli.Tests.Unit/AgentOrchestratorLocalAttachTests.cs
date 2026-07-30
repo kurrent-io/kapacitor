@@ -1003,4 +1003,30 @@ public partial class AgentOrchestratorVendorTests {
         public void Resize(ushort     _, ushort __) { }
         public void SendInterrupt() { }
     }
+    [Test]
+    public async Task Local_list_neutralises_delimiters_inside_a_free_form_field() {
+        // Repo paths and flow roles are free-form and may legally hold a tab or newline. Emitted
+        // raw they would shift the reader's columns or split the row, and the CLI keys
+        // `stop --all`'s confirmation off the kind column — so a corrupted row would understate
+        // the blast radius the user is agreeing to.
+        var server = new TripwireServerConnection();
+        await using var orch = BuildOrchestrator(server, new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>());
+        orch.SeedAgentForTest("tabby-1", kind: LaunchKind.ReviewFlow,
+            flowRunId: "flow\t7f3a", flowRole: "rev\niewer");
+
+        using var client = new DuplexTestStream(new MemoryStream(), new MemoryStream());
+        await orch.HandleLocalListAsync(client, default);
+        client.WrittenStream.Position = 0;
+        var reply = await FrameCodec.ReadAsync(client.WrittenStream, default);
+
+        var rows = reply!.Text.Split('\n');
+        await Assert.That(rows.Length).IsEqualTo(1);
+
+        var cols = rows[0].Split('\t');
+        await Assert.That(cols.Length).IsEqualTo(6);
+        await Assert.That(cols[3]).IsEqualTo("review-flow");
+        await Assert.That(cols[4]).IsEqualTo("flow 7f3a");
+        await Assert.That(cols[5]).IsEqualTo("rev iewer");
+    }
+
 }

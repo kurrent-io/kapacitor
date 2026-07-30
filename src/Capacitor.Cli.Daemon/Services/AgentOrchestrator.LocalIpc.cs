@@ -8,10 +8,19 @@ internal partial class AgentOrchestrator {
     /// <summary>Reply to a <c>kcap agent ls</c> request with a tab-separated agent table.</summary>
     public Task HandleLocalListAsync(Stream stream, CancellationToken ct) {
         var lines = _agents.Values.Select(a =>
-            $"{a.Id}\t{a.Status}\t{a.RepoPath}\t{KindText(a.Kind)}\t{a.FlowRunId ?? ""}\t{a.FlowRole ?? ""}");
+            $"{a.Id}\t{a.Status}\t{Cell(a.RepoPath)}\t{KindText(a.Kind)}\t{Cell(a.FlowRunId)}\t{Cell(a.FlowRole)}");
 
         return FrameCodec.WriteAsync(stream, new LocalFrame(FrameType.AgentList) { Text = string.Join('\n', lines) }, ct);
     }
+
+    /// <summary>
+    /// Neutralises the table's own delimiters in a free-form field. A repo path may legally
+    /// contain a tab or newline, which would shift the reader's columns or split the row — and the
+    /// CLI keys `stop --all`'s confirmation off the kind column, so a shifted row understates the
+    /// blast radius the user is agreeing to.
+    /// </summary>
+    static string Cell(string? value) =>
+        value is null ? "" : value.Replace('\t', ' ').Replace('\n', ' ').Replace('\r', ' ');
 
     /// Wire spelling of <see cref="LaunchKind"/>. Kept separate from the enum name so the table
     /// reads as a CLI column rather than a .NET identifier. A future kind that falls through the
