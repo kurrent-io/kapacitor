@@ -144,4 +144,59 @@ public class SpoolKeyWideningTests : IDisposable {
         await Assert.That(posted).IsNotNull();
         await Assert.That(posted!).Contains(sessionId);
     }
+
+    /// <summary>
+    /// Upgrade safety. These files are written RAW, exactly as a pre-upgrade kcap left them —
+    /// creating them through <c>Append</c> would run the new encoder and never reach this shape.
+    /// A dashless GUID must therefore keep its historical filename: two hex spellings differing only
+    /// by case are the same id, so they need no escaping and must not be renamed out from under a
+    /// running install.
+    /// </summary>
+    [Test]
+    [Arguments("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")]
+    [Arguments("aAbBcCdDeEfF00112233445566778899")]
+    [Arguments("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")]
+    public async Task A_legacy_raw_spool_file_is_still_found_and_drained(string legacyId) {
+        Directory.CreateDirectory(_dir);
+        var legacyPath = Path.Combine(_dir, $"{legacyId}.jsonl");
+        File.WriteAllText(legacyPath,
+            $$"""{"route":"session-start/claude","body":"{\"session_id\":\"{{legacyId}}\"}"}""" + "\n");
+
+        var spool = new HookSpool(_dir);
+
+        // Found by the id-keyed lookup...
+        await Assert.That(spool.HasBacklog(legacyId)).IsTrue();
+
+        // ...and by the directory sweep, which must hand back the id the file was named with.
+        string? posted = null;
+        await spool.DrainAllAsync(
+            currentSessionId: null,
+            poster: (_, body) => { posted = body; return Task.FromResult(DrainOutcome.Delivered); },
+            budget: TimeSpan.FromSeconds(5),
+            ct: CancellationToken.None);
+
+        await Assert.That(posted).IsNotNull();
+        await Assert.That(posted!).Contains(legacyId);
+        await Assert.That(File.Exists(legacyPath)).IsFalse(); // consumed, not stranded
+    }
+
+    [Test]
+    public async Task A_legacy_raw_ended_marker_is_still_honoured() {
+        // If the marker were invisible the drain would forget a terminal event had been delivered and
+        // let a straggler through after session end.
+        const string legacyId = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+        Directory.CreateDirectory(_dir);
+        File.WriteAllText(Path.Combine(_dir, $".ended-{legacyId}"), "");
+
+        await Assert.That(new HookSpool(_dir).IsMarkedEnded(legacyId)).IsTrue();
+    }
+
+    [Test]
+    public async Task A_legacy_raw_transcript_file_is_still_found() {
+        const string legacyId = "aAbBcCdDeEfF00112233445566778899";
+        Directory.CreateDirectory(_tdir);
+        File.WriteAllText(Path.Combine(_tdir, $"{legacyId}.transcript.jsonl"), "{\"n\":1}\n");
+
+        await Assert.That(new TranscriptSpool(_tdir).HasBacklog(legacyId)).IsTrue();
+    }
 }

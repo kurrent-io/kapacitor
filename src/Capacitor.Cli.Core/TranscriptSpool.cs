@@ -24,7 +24,8 @@ public sealed partial class TranscriptSpool(string spoolDir, long capBytes = Tra
         Ignored,           // discarded before any spool interaction (malformed session id) — never a real append
     }
 
-    static readonly Regex SafeSessionId = SafeSessionIdRegex();
+    static readonly Regex SafeSessionId  = SafeSessionIdRegex();
+    static readonly Regex LegacyGuidKey = LegacyGuidKeyRegex();
     static int seqCounter;
 
     /// <summary>The directory where spool files are stored.</summary>
@@ -98,6 +99,12 @@ public sealed partial class TranscriptSpool(string spoolDir, long capBytes = Tra
     // reversible -- the drain posts the DECODED id as session_id, so a lossy or one-way transform
     // (a hash, or lowercasing) would put a fabricated id on the wire.
     static string EncodeKey(string sessionId) {
+        // A dashless GUID is left EXACTLY as-is. Two hex spellings differing only by case are the
+        // SAME id, so they neither need disambiguating nor may be renamed: this is the entire
+        // population the pre-upgrade grammar admitted, so every spool file already on disk keeps its
+        // historical name and stays readable. Escaping applies only to the ids that are new here.
+        if (LegacyGuidKey.IsMatch(sessionId)) return sessionId;
+
         var sb = new StringBuilder(sessionId.Length + 8);
 
         foreach (var c in sessionId) {
@@ -205,6 +212,10 @@ public sealed partial class TranscriptSpool(string spoolDir, long capBytes = Tra
     // be widened but never transformed (hashing would fabricate an id on the wire). Excludes '.', '/'
     // and '\\', preserving both the path-traversal property and the parse-before-first-dot split.
     // Vendors such as OpenCode use ids like "ses_7f3a9c21b8", which the old form silently dropped.
+    /// <summary>The pre-upgrade key space: a dashless GUID, case-insensitively one id.</summary>
+    [GeneratedRegex("^[0-9a-fA-F]{32}$", RegexOptions.Compiled)]
+    private static partial Regex LegacyGuidKeyRegex();
+
     [GeneratedRegex("^[A-Za-z0-9_-]{1,64}$", RegexOptions.Compiled)]
     private static partial Regex SafeSessionIdRegex();
 }

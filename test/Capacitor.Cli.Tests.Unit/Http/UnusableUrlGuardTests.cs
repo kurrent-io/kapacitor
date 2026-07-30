@@ -121,14 +121,21 @@ public class UnusableUrlGuardTests : IDisposable {
     }
 
     [Test]
-    public async Task InlineDrain_returns_without_building_a_client() {
-        // Runs on session-end BEFORE the lifecycle POST; its own client takes no baseUrl and
-        // re-resolves the same unusable value. Completing quickly is the observable: an unguarded
-        // call would exit the process outright.
-        var sw = Stopwatch.StartNew();
-        await WatcherManager.InlineDrainAsync(BadUrl, Sid, Path.Combine(_dir, "t.jsonl"), agentId: null);
+    public async Task InlineDrain_emits_its_own_guard_diagnostic() {
+        // A stopwatch assertion here was vacuous: the unguarded path can also return quickly. The
+        // proof is the diagnostic, which only this guard emits — distinct from the POST guard's and
+        // from the drain guard's, so it cannot be satisfied by a neighbouring path.
+        var captured = new StringWriter();
+        var prior    = Console.Error;
+        Console.SetError(captured);
 
-        await Assert.That(sw.Elapsed).IsLessThan(TimeSpan.FromSeconds(2));
+        try {
+            await WatcherManager.InlineDrainAsync(BadUrl, Sid, Path.Combine(_dir, "t.jsonl"), agentId: null);
+        } finally {
+            Console.SetError(prior);
+        }
+
+        await Assert.That(captured.ToString()).Contains($"inline drain skipped for {Sid}");
     }
 
     [Test]
