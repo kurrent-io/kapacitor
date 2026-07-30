@@ -20,6 +20,25 @@ namespace Capacitor.Cli.Commands;
 /// live-then-import of the same session converges on the same deterministic
 /// <c>AgentSubsession-{parent}-{child}</c> stream instead of duplicating the subagent's
 /// lifecycle/content (ties to A1).
+///
+/// <para>
+/// NO PRODUCER TODAY. The only caller that writes a marker sits behind a guard requiring
+/// BOTH <c>eventName == "sessionStart"</c> AND a non-empty <c>transcript_path</c>, and on the
+/// measured cursor-agent contract neither holds: a sessionStart payload always carries a null
+/// transcript_path, and a subagent child never fires sessionStart at all. So
+/// <see cref="SaveLink"/> never runs there. <see cref="TryLoadLink"/> DOES still run on every
+/// event, so a marker persisted by another surface or an older build is still consumed.
+/// </para>
+/// <para>
+/// Retained rather than deleted because Cursor already implements a native
+/// <c>subagentStart</c> hook carrying an explicit parent id; if its dispatch is enabled, the
+/// marker store and the marker-driven gate are reusable. The lifecycle builders below are NOT:
+/// they key off the CHILD's sessionStart/sessionEnd, which a child never fires, so a native
+/// revival must trigger from the PARENT's subagentStart/subagentStop — and must also add the
+/// event to CursorHooksParser.CursorHookEvents and CursorHookEventMap, neither of which lists
+/// it today. See
+/// docs/superpowers/specs/2026-07-30-ai1505-cursor-subagent-classification-design.md
+/// </para>
 /// </summary>
 public static class CursorLiveSubagentLinker {
     // Bounds the sibling-transcript scan so a workspace with a very long history can't blow

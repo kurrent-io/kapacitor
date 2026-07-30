@@ -283,6 +283,13 @@ public static class CursorHookCommand {
                 var marker = CursorLiveSubagentLinker.TryLoadLink(sessionId);
                 if (marker is { } m) {
                     (subagentParentId, subagentAgentType) = (m.ParentSessionId, m.SubagentType);
+                // NO PRODUCER on the measured cursor-agent contract: a sessionStart payload
+                // always carries a null transcript_path, so this arm never opens. (The
+                // TryLoadLink gate above is NOT inert — it runs on every event and still
+                // consumes a marker persisted by another surface or an older build.)
+                // Kept as the landing site for a native subagentStart revival; see
+                // docs/superpowers/specs/2026-07-30-ai1505-cursor-subagent-classification-design.md
+                // for why the trigger must move to the parent's hooks.
                 } else if (eventName == "sessionStart" && !string.IsNullOrEmpty(transcriptPath)) {
                     try {
                         var candidates = CursorLiveSubagentLinker.DiscoverSiblingTranscripts(transcriptPath);
@@ -574,6 +581,16 @@ public static class CursorHookCommand {
     /// for them), so — for live/import parity — they are simply not forwarded, rather than
     /// being appended to a phantom <c>AgentSession-{child}</c> stream that never got a
     /// <c>SessionStarted</c>.
+    ///
+    /// <para>
+    /// UNREACHABLE in a fresh installation on the measured cursor-agent contract: entry requires
+    /// <c>isSubagentChild</c>, which requires a marker that has no producer there. It remains
+    /// reachable from a marker persisted by another surface or an older build. Note also that
+    /// the sessionStart/sessionEnd arms below can never fire from a real child, which never
+    /// emits either event — a native revival must be driven by the PARENT's subagentStart /
+    /// subagentStop instead. See
+    /// docs/superpowers/specs/2026-07-30-ai1505-cursor-subagent-classification-design.md
+    /// </para>
     /// </summary>
     internal static async Task<int> HandleSubagentChildEventAsync(
             HttpClient        client,
