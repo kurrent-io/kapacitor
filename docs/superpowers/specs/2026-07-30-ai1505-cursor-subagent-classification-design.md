@@ -1,6 +1,6 @@
 # AI-1505 — Cursor subagent classification and SessionStart memory injection
 
-**Status:** rev 8 — in spec review
+**Status:** rev 9 — in spec review
 **Supersedes the premise of:** AI-1461 code-review finding F2
 **Repo:** `kcap-cli`
 
@@ -307,8 +307,21 @@ if such state does exist.
    `CursorMarkers.SubagentStartAckPath`), which is independently durable and is what
    makes the ack-without-marker state below persist.
 
-All paths are under `${KCAP_CONFIG_DIR:-$HOME/.config/kcap}`. `TryLoadLink` runs on
-every event (F4), so these are how the divert stays reachable.
+All paths are under `${KCAP_CONFIG_DIR:-$HOME/.config/kcap}`. They are consumed by three
+*different* mechanisms, and conflating them is what produced rev 8's error here:
+
+- **Only the link marker controls classification.** `TryLoadLink` (`:283`) runs on every
+  event (F4), and a valid marker is the *sole* way `isSubagentChild` becomes true and
+  the divert is entered.
+- **The spool entry is consumed independently**, by `DrainAllAsync` (`:345`), regardless
+  of classification — which is exactly why spool-without-marker dual-routes: the drain
+  acts while the hook itself does *not* divert.
+- **The ack marker only gates behaviour inside the divert** (`:631–633`); it is never
+  consulted unless a link marker has already activated it.
+
+So the states below are not "three ways the divert stays reachable". Two of them are
+states in which the divert is specifically *not* entered while parent-scoped side
+effects happen anyway.
 
 **Precondition — production, not consumption.** Rev 5 said these states "become live
 exactly when the arm does". That conflated two different things and is corrected here.
