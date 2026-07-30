@@ -47,9 +47,13 @@ A full `initialize` → `session/new` → `session/prompt` loop completed with `
 `KIRO_API_KEY` set in the environment**. So there is no auth handshake and no tier gate at
 initialize/new/prompt on the account this was measured with.
 
-This does **not** prove no account tier can ever be blocked — only that the gate the original design
-feared does not exist at the protocol level. Keep a clear diagnostic for a launch-time auth failure,
-but do not build a tier pre-check: there is nothing to check.
+**Hedge this consistently — an earlier draft of this spec did not.** `authMethods: []` shows there is
+no ACP-mediated auth flow. A prompt succeeding without the variable on ONE machine may simply be using
+cached credentials, so it proves neither "no auth requirement" nor "no tier gate".
+
+The justified conclusion is only this: **there is no reliable protocol or API-key signal to build a
+pre-check on**, so fail on the actual launch/prompt error instead. Anywhere this spec or AI-1410 says
+"no gate exists", read it as "no pre-checkable gate signal exists".
 
 ### Premise 2 — "ACP usage reporting may close Kiro's token gap". IT DOES NOT.
 
@@ -64,14 +68,31 @@ Across a complete prompt turn, **zero** frames carried any of `usage`, `tokens`,
   3  session/update
 ```
 
-So AI-888's "Kiro emits no token counts" stands, and hosting Kiro over ACP does **not** improve its
-cost story. Anything downstream that prices a Kiro session still has nothing to price. Say so rather
-than leaving the hope in the issue.
+So ACP adds no **canonical token counters**, and AI-888's finding stands for tokens.
 
-### Premise 3 — model selection works. CONFIRMED.
+**Do not over-read this into "Kiro cost is unobservable" — that would be wrong.** `KiroUsage.cs`
+already reads billing `metering_usage` credits from Kiro's on-disk session metadata. What is measured
+here is narrower: no canonical token fields appeared in the frames inspected, for this version, on this
+turn. It does not establish absence from `session/load`, other extensions, or the on-disk sidecar.
 
-`--model` is a real flag, so `ConfigOptionModelSelector` (the same selector Cursor and Copilot use)
-applies. AI-1401's model pass-through needs no Kiro-specific work.
+The honest statement is: ACP gives no token counts, credits remain available via the existing sidecar
+path, and any downstream requirement should say which of the two it actually needs.
+
+### Premise 3 — model selection. PARTLY CONFIRMED; my first reading was wrong.
+
+`--model` is a real spawn flag, but that is **not** the mechanism `ConfigOptionModelSelector` uses.
+The selector parses `session/new`'s `models.availableModels` and then sends
+`session/set_config_option` — a spawn flag proves nothing about it.
+
+**Measured:** `session/new` returns BOTH `modes` and `models`, so the selector's read half has the
+shape it needs. Its write half (`session/set_config_option` actually taking effect) is **still
+unverified** and must be measured before relying on it.
+
+Two consequences. First, do not add a "`--model` observable in the launch argv" acceptance item: the
+descriptor below never appends `--model`, so it would be unclosable. Second,
+`AcpHostedAgentRuntimeFactory.ReviewerModelResolver` is `null` at this base, so the daemon advertises
+no reviewer-model-resolution capability and the server refuses an ACP review-flow model override
+today. Reviewer model override is therefore an AI-1410 dependency, not a free inheritance.
 
 ## New facts the original design did not have
 
@@ -80,14 +101,21 @@ for. **Decision: do not pass it.** Pinning a version means owning an upgrade tre
 from what a user gets interactively; the default is what Kiro tests. Revisit only if a measured
 behavioural difference forces it.
 
-**`session/new` returns `modes`.** ACP "modes" are Kiro *agents*: `availableModes` was
-`[kcap, kiro_default, kiro_planner]` with `currentModeId: kcap` — our own installed agent, selected by
-default because `kcap plugin install` wrote `~/.kiro/agents/kcap.json`.
+**`session/new` returns BOTH `modes` and `models`.** ACP "modes" are Kiro *agents*: `availableModes`
+was `[kcap, kiro_default, kiro_planner]` with `currentModeId: kcap` — our own installed agent. A
+`models` object is present alongside it, which is what `ConfigOptionModelSelector` reads (see Premise 3).
+An earlier probe of mine printed a truncated response and I wrongly concluded `models` was absent;
+stated here so the correction is on the record.
 
-**Kiro auto-loads its agent config's MCP servers into an ACP session.** With `mcpServers: []` in
+**Kiro inherits pre-configured MCP servers into an ACP session.** With `mcpServers: []` in
 `session/new`, Kiro still initialized `kcap-flows`, `kcap-review`, `kcap-sessions` and `kcap-memory`.
-Harmless for an interactive hosted agent — it is what the user would get anyway — but it is a hazard
-for the unattended reviewer, so AI-1410 owns it, not this issue.
+
+**Where from matters, and an earlier draft of this spec guessed wrong.** It attributed them to
+`~/.kiro/agents/kcap.json`. They are in fact registered by `PluginCommand.InstallKiro` into GLOBAL
+`~/.kiro/settings/mcp.json` — verified by inspecting that file, which contains exactly those four
+names. Global settings are documented as independent of the agent file, so *switching agents does not
+suppress them*. Harmless for interactive hosting; a hard blocker for the unattended reviewer, and
+AI-1410 now owns finding a mechanism that demonstrably excludes global servers.
 
 **`promptCapabilities.embeddedContext: false`** (Copilot: `true`). Kiro cannot take embedded context
 resources in a prompt; context must be plain text. Interactive hosting does not care. AI-1410 does.
@@ -125,8 +153,21 @@ http/sse only, so interactive `session/new` stdio servers stay disabled."* Kiro 
 stdio despite not advertising it. Copilot's line is an empirical finding about Copilot, not a rule
 about ACP, and must not be generalised.
 
-Config surface: add `KiroPath` (default `kiro-cli`) and `KiroModel` to `DaemonConfig`, mirroring
-`CursorPath`/`CursorModel`. Availability is `CliResolver.Exists(KiroPath)`; advertise `kiro` in
+**And `server_initialized` alone would NOT have been sufficient evidence** — it proves a server
+started, not that its tools are discoverable or callable. A tool can be omitted from `tools/list`,
+refused by trust policy, mis-namespaced, or fail at `tools/call`. So the claim was re-probed properly:
+a purpose-built stdio server exposing one uniquely named tool was injected, Kiro was asked to call it,
+and the server's own log recorded `initialize` → `tools/list` → **`tools/call`**, with the tool's nonce
+reaching the model and the turn ending `end_turn`. That is what justifies `SupportsMcpServers: true`.
+
+By the same standard, Copilot's `SupportsMcpServers: false` should only change if an equivalent
+call-level probe against Copilot succeeds. Do not flip it on the strength of Kiro's result.
+
+Config surface — **corrected**: `DaemonConfig.KiroPath` **already exists** with default `"kiro"`, not
+`"kiro-cli"`. The spec previously said to add it, which would have produced duplicate plumbing or a
+silent availability change. Decide explicitly between (a) keeping `"kiro"`, (b) probing both
+executable names, or (c) migrating the default — and add acceptance for `KCAP_KIRO_PATH`. Only
+`KiroModel` is genuinely new. Availability stays `CliResolver.Exists(KiroPath)`; advertise `kiro` in
 `SupportedVendors` only when it resolves.
 
 ## Verification checklist
@@ -138,7 +179,8 @@ Mirrors the Copilot child, minus what has already been measured:
 - [ ] Clean stop; no orphaned child
 - [ ] `SupportedVendors` advertises `kiro` only when the binary resolves
 - [ ] End-to-end capture: the hosted session appears with vendor `kiro`
-- [ ] Model override reaches the agent (`--model` observable in the launch argv)
+- [ ] Model override actually takes effect — measured via `session/set_config_option`, NOT by
+      inspecting argv (see Premise 3)
 - [ ] Confirm the ACP-reported agent version is logged
 
 Explicitly **not** in this checklist: token counts (measured absent), auth/tier pre-check (no gate

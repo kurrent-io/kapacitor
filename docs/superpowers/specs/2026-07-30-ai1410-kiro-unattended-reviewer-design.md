@@ -10,9 +10,18 @@ live there and are not repeated.
 ## The go/no-go, resolved: GO
 
 The original design listed *"verify `mcpServers` honoring (go/no-go for the flow-result channel)"* as
-an open question. It is now **measured and answered**: a stdio MCP server passed in
-`session/new.mcpServers` (`command: kcap`, `args: [mcp, memory]`) produced
-`_kiro.dev/mcp/server_initialized` naming that server.
+an open question. It is now measured and answered — but the FIRST answer was on insufficient evidence
+and is recorded here as a caution.
+
+An initial probe showed `_kiro.dev/mcp/server_initialized` naming an injected stdio server, and an
+earlier draft of this spec called GO on that. **That was premature**: `server_initialized` proves a
+server process started, not that its tools are discoverable or invocable — a tool can be missing from
+`tools/list`, refused by trust policy, mis-namespaced, or fail at `tools/call`.
+
+Re-probed at the call level: a purpose-built stdio server exposing one uniquely named tool was passed
+in `session/new.mcpServers`, Kiro was asked to call it, and **the server's own log recorded
+`initialize` → `tools/list` → `tools/call`**, with the tool's nonce reaching the model and the turn
+ending `end_turn` under `--trust-all-tools`. That is a real GO.
 
 So Kiro can carry the injected `flow-result` channel over `session/new`, meaning
 `ReviewFlowMcpTransport: SessionNew` — the Cursor route, not Copilot's `--additional-mcp-config`
@@ -24,29 +33,51 @@ Worth stating because it looks contradictory: Kiro advertises `mcpCapabilities: 
 and the Copilot descriptor reads that same shape as *"stdio servers stay disabled."* That is an
 empirical finding about Copilot, not a rule about ACP. Kiro honours stdio without advertising it.
 
-## The blocker the original design did not know about
+## The blocker — and my first proposed mechanism was wrong
 
-**Kiro auto-loads its agent config's MCP servers into every ACP session.** Measured: with
-`mcpServers: []`, Kiro still initialized `kcap-flows`, `kcap-review`, `kcap-sessions` and
-`kcap-memory` from `~/.kiro/agents/kcap.json`.
+**Kiro inherits pre-configured MCP servers into every ACP session.** Measured: with `mcpServers: []`,
+Kiro still initialized `kcap-flows`, `kcap-review`, `kcap-sessions` and `kcap-memory`.
 
-For an unattended reviewer that is not cosmetic — **`kcap-flows` would let a reviewer start nested
-review flows.** The `review-flows` skill already tells a hosted reviewer not to, and the platform
-strips MCP servers from hosted reviewers precisely so it *cannot*. Copilot handles this with
-`--disable-builtin-mcps` in its unattended trust argv. **Kiro has no equivalent flag.**
+For an unattended reviewer this is not cosmetic — **`kcap-flows` would let a reviewer start nested
+review flows.** The `review-flows` skill tells hosted reviewers not to, and the platform strips MCP
+servers from hosted reviewers precisely so it *cannot*. Copilot handles this with
+`--disable-builtin-mcps`; Kiro has no equivalent flag.
 
-Options, in preference order:
+### Why the obvious fix does not work
 
-1. **`--agent <name>` with a purpose-built minimal reviewer agent.** Kiro's MCP servers come from the
-   agent config, and `session/new` confirmed `availableModes` are agents. A `kcap-reviewer` agent
-   carrying no MCP servers is the mechanism Kiro actually gives us. Cost: `kcap plugin install` must
-   write a second agent file, and the reviewer launch must pin it.
-2. **ACP `session/setMode`** to switch to a leaner mode after `session/new` — worse: the servers are
-   already initialized by then.
-3. **Ship without suppression.** Rejected. It hands a reviewer the tool that starts reviewers.
+An earlier draft proposed a purpose-built minimal agent selected via `--agent kcap-reviewer`, reasoning
+that Kiro's MCP servers come from the agent config. **That reasoning was wrong.**
+`PluginCommand.InstallKiro` registers those four servers in GLOBAL `~/.kiro/settings/mcp.json` — and
+inspecting that file confirms it contains exactly `kcap-review`, `kcap-sessions`, `kcap-flows`,
+`kcap-memory`. Both `PluginCommand.cs` and `KiroPaths.cs` document that file as independent of
+`~/.kiro/agents/kcap.json`. So **selecting a different agent may leave `kcap-flows` fully exposed.**
 
-**This decision must be made before implementation**, and option 1 changes the installer, so it is
-the largest single piece of work in this issue — larger than the descriptor change.
+`session/setMode` remains too late (servers are already initialized by `session/new`), but that only
+rules out one alternative; it does not rescue the agent approach.
+
+### Required before implementation: a source-isolation matrix
+
+The mechanism cannot be chosen from what is currently known. Run a matrix against a temporary
+`KIRO_HOME`:
+
+| global `settings/mcp.json` | selected agent declares MCP | expected |
+|---|---|---|
+| present | none | does `kcap-flows` still initialize? |
+| present | minimal agent | does agent selection suppress global? |
+| absent | none | baseline — nothing inherited |
+| absent | minimal agent | agent-only inheritance |
+
+Then pick a mechanism that **demonstrably excludes global servers**. Candidates, none yet validated:
+an isolated reviewer `KIRO_HOME`; a launch-time config boundary; or upstream support for suppression.
+
+Acceptance must inspect the **effective callable tool surface** — what the reviewer can actually
+invoke — not merely which mode was selected. `server_initialized` absence is necessary but not
+sufficient, for the same reason its presence was not sufficient above.
+
+**Estimate correction.** An earlier draft called this "a second agent file + descriptor change" and
+the largest piece of work. It is larger and less certain than that: the mechanism is unknown, an
+isolated `KIRO_HOME` would touch daemon process launch rather than just the installer, and the matrix
+itself is real investigation. This is the item that should gate scheduling.
 
 ## Acceptance criterion that must be rewritten
 
@@ -55,10 +86,15 @@ The issue currently says:
 > `start_review_flow(kind="spec-review", vendor="kiro", model="<priced-model>")` completes a real
 > round unattended end-to-end with the model honored.
 
-**"priced-model" is unsatisfiable.** Kiro's ACP reports no token usage at all (measured — see the
-companion spec), so nothing prices a Kiro reviewer round and the AI-1402 pricing clamp has no input.
-The criterion should assert the model is *honoured*, and state explicitly that cost is not observable
-for Kiro. Leaving "priced" in makes the issue unclosable for a reason unrelated to the work.
+**"priced-model" is very likely unsatisfiable, but state the reason precisely.** ACP surfaced no
+canonical token counters (measured). It does **not** follow that Kiro cost is unobservable:
+`KiroUsage.cs` already reads billing `metering_usage` credits from Kiro's on-disk session metadata.
+
+So the rewrite must say which input the AI-1402 pricing clamp actually needs. If it requires canonical
+token counts against a priced model, Kiro cannot satisfy it and the criterion should assert the model is
+*honoured* while recording that token-based cost is unavailable. If credits suffice, the criterion may
+be satisfiable through the existing sidecar. **Resolve this against the clamp's real requirement before
+rewriting the issue** — do not assert "no cost data" when a credits path exists.
 
 ## Design
 
@@ -81,14 +117,26 @@ reviewer must be able to *call* `flow-result` without a prompt, and that likely 
 `@kcap-flow-result/...` in the trust set. **Verify this explicitly** — a reviewer that cannot call
 `flow-result` without approval cannot deliver a result at all, and would present as a silent timeout.
 
-### 2. Interaction policy
+### 2. Interaction policy — an earlier draft of this spec had a security hole here
 
-`UnattendedInteractionPolicy: AutoApprove` — the Copilot posture, not Cursor's `Fail`.
+The earlier proposal was `AutoApprove` (the Copilot posture) on the grounds that Kiro's known upstream
+prompt leaks (#7398) make a frame expected rather than exceptional, so `Fail` would be flaky.
 
-Cursor earns `Fail` because its own flags are contractually sufficient to suppress interaction frames,
-so a frame means regression. Kiro has *known upstream prompt leaks* (#7398), so a frame is expected
-rather than exceptional, and failing the round on one would make Kiro reviewers flaky by design.
-Revisit once the leaks are fixed upstream.
+**That combination is unsafe and it undoes §1.** `AcpInteractionBridge` documents that `AutoApprove`
+selects an allow option and **does not inspect the tool**. So on exactly the fallback path this design
+expects to exercise, a leaked request for a tool deliberately excluded from `--trust-tools` — a
+write-capable shell command, an out-of-worktree path, anything — is auto-approved. Scoped trust would
+provide no protection whatsoever, and "zero human-routed interactions" would not detect it: the frames
+were handled, just not safely.
+
+**Requirement:** either an allowlist-aware unattended policy that approves only frames matching the
+scoped trust set, or `Fail` on any non-matching frame. Falling back to `--trust-all-tools` makes the
+gap wider, not narrower, and is not an acceptable resolution.
+
+Acceptance needs **negative** criteria, which the earlier draft lacked entirely: an untrusted,
+write-capable, or out-of-bounds request must be denied or must terminate the reviewer, while the known
+safe read and `flow-result` requests still succeed. Without those, this policy is untested by
+construction.
 
 ### 3. Prompt shape
 
@@ -115,9 +163,14 @@ scope here; its own issue once basic reviewing works.
 
 ### 5. Auth
 
-`authMethods: []` and a real prompt completed with no `KIRO_API_KEY` (measured), so there is no auth
-handshake to satisfy and no tier pre-check to build. A launch-time failure must still fail fast with a
-coded diagnostic rather than wedge a round — but that is the generic path, not Kiro-specific.
+`authMethods: []` shows no ACP-mediated auth flow, and a prompt completed with no `KIRO_API_KEY` set —
+but on one machine, which may have had cached credentials. That proves **no pre-checkable signal**, not
+"no auth requirement" and not "no tier gate".
+
+So: build no pre-check, and fail on the real launch/prompt error with a coded diagnostic. And the
+criterion "a tier/auth failure surfaces a coded error" needs a reproducible way to exercise it —
+an isolated unauthenticated `KIRO_HOME` if that reproduces, otherwise a fake ACP peer returning the
+measured auth-failure shape. Without one it cannot be closed.
 
 ## Verification
 
@@ -127,8 +180,13 @@ coded diagnostic rather than wedge a round — but that is the generic path, not
 - [ ] `flow-result` is callable without approval (the §1 namespacing question)
 - [ ] `kcap-flows` is NOT present in the reviewer's session (the §"blocker" suppression works)
 - [ ] Reviewer session captured and reaped; no orphan
-- [ ] Model override honoured — asserted as honoured, not as priced
-- [ ] A tier/auth failure surfaces a coded error instead of a hung round
+- [ ] Model override honoured — via `session/set_config_option`, and only once an ACP
+      `ReviewerModelResolver` exists
+- [ ] A tier/auth failure surfaces a coded error instead of a hung round, exercised by a defined setup
+- [ ] **Negative:** an untrusted / write-capable / out-of-worktree request is denied or reaps the
+      reviewer (see §2) — not merely absent
+- [ ] The effective callable tool surface excludes global servers, inspected directly
+- [ ] A missing reviewer configuration refuses the launch with a coded error rather than wedging
 
 ## Out of scope
 
