@@ -2,7 +2,16 @@ using System.Runtime.InteropServices;
 
 namespace Capacitor.Cli.Services;
 
-sealed partial class LaunchdServiceManager : IServiceManager {
+sealed partial class LaunchdServiceManager(UnitFileWriter? writeUnit = null) : IServiceManager {
+    readonly UnitFileWriter _writeUnit = writeUnit ?? ServiceFiles.WriteOwnerOnly;
+
+    /// <summary>The unit-writing half of <see cref="Install"/>, split out so it is testable without
+    /// invoking launchctl.</summary>
+    internal void WriteUnitFiles(ServiceSpec spec) {
+        Directory.CreateDirectory(LaunchdUnit.AgentsDir());
+        _writeUnit(LaunchdUnit.PlistPath(spec.ServiceId), LaunchdUnit.Plist(spec), null);
+    }
+
     [LibraryImport("libc", EntryPoint = "getuid")]
     private static partial uint getuid();
 
@@ -30,11 +39,10 @@ sealed partial class LaunchdServiceManager : IServiceManager {
     }
 
     public void Install(ServiceSpec spec, bool startNow) {
-        Directory.CreateDirectory(LaunchdUnit.AgentsDir());
         var plistPath = LaunchdUnit.PlistPath(spec.ServiceId);
         // idempotent: bootout an existing job (ignore failure), then rewrite + bootstrap.
         ServiceProcess.Run("launchctl", LaunchdUnit.BootoutArgs(Uid(), spec.ServiceId));
-        ServiceFiles.WriteOwnerOnly(plistPath, LaunchdUnit.Plist(spec));
+        WriteUnitFiles(spec);
         ServiceProcess.Check("launchctl", LaunchdUnit.BootstrapArgs(Uid(), plistPath)); // RunAtLoad starts it
         if (!startNow) ServiceProcess.Run("launchctl", LaunchdUnit.KillArgs(Uid(), spec.ServiceId));
     }

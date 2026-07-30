@@ -1,41 +1,66 @@
+using System.Text;
 using Capacitor.Cli.Services;
 
 namespace Capacitor.Cli.Tests.Unit.Services;
 
 /// <summary>
-/// Service unit files must not be world-readable. They already carried the server URL and profile, and
-/// now carry a command that produces a credential; <see cref="File.WriteAllText(string,string)"/>
-/// defaults to <c>-rw-r--r--</c>, which was verified on a real launchd install.
+/// A service unit carries the server URL, the profile, and possibly a command that produces a
+/// credential. <see cref="File.WriteAllText(string,string)"/> defaults to <c>-rw-r--r--</c> — verified on
+/// a real launchd install — so the write path has to establish owner-only mode itself, and prove it.
 /// </summary>
 public class ServiceFilesTests {
-    /// <summary>The write path leaves the finished unit owner-only, with the right content.</summary>
+    static string TempDir(string tag) {
+        var dir = Path.Combine(Path.GetTempPath(), $"kcap-{tag}-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(dir);
+
+        return dir;
+    }
+
     [Test]
     public async Task WriteOwnerOnly_writes_the_content_and_leaves_it_owner_only() {
-        var path = Path.Combine(Path.GetTempPath(), $"kcap-write-{Guid.NewGuid():N}", "unit.plist");
+        var dir  = TempDir("write");
+        var path = Path.Combine(dir, "unit.plist");
         try {
             ServiceFiles.WriteOwnerOnly(path, "<plist>KCAP_COPILOT_TOKEN_CMD</plist>");
 
             await Assert.That(await File.ReadAllTextAsync(path))
                 .IsEqualTo("<plist>KCAP_COPILOT_TOKEN_CMD</plist>");
 
-            Skip.When(OperatingSystem.IsWindows(), "POSIX file modes; Windows inherits the directory ACL");
-            var mode = File.GetUnixFileMode(path);
-            await Assert.That(mode.HasFlag(UnixFileMode.OtherRead)).IsFalse();
-            await Assert.That(mode.HasFlag(UnixFileMode.GroupRead)).IsFalse();
+            Skip.When(OperatingSystem.IsWindows(), "POSIX modes; Windows inherits the directory ACL");
+            await Assert.That(File.GetUnixFileMode(path))
+                .IsEqualTo(UnixFileMode.UserRead | UnixFileMode.UserWrite);
         } finally {
-            try { Directory.Delete(Path.GetDirectoryName(path)!, true); } catch { /* best-effort */ }
+            try { Directory.Delete(dir, true); } catch { /* best-effort */ }
         }
     }
 
-    /// <summary>No staging file is left behind, and an overwrite of an existing world-readable unit ends
-    /// up owner-only rather than inheriting the old mode.</summary>
+    /// <summary>The default write mode really is world-readable, so the assertion above is not vacuous.
+    /// Without this, a platform that already wrote 0600 would make the whole file pass while the write
+    /// path did nothing.</summary>
+    [Test]
+    public async Task The_default_write_mode_is_world_readable_so_the_fix_is_load_bearing() {
+        Skip.When(OperatingSystem.IsWindows(), "POSIX file modes");
+
+        var dir  = TempDir("default");
+        var path = Path.Combine(dir, "unit.plist");
+        try {
+            await File.WriteAllTextAsync(path, "<plist/>");
+
+            await Assert.That(File.GetUnixFileMode(path).HasFlag(UnixFileMode.OtherRead)).IsTrue()
+                .Because("if this stops being true, WriteOwnerOnly is no longer what protects the unit");
+        } finally {
+            try { Directory.Delete(dir, true); } catch { /* best-effort */ }
+        }
+    }
+
+    /// <summary>Overwriting an existing world-readable unit ends up owner-only rather than inheriting the
+    /// old mode, and no staging file is left beside it.</summary>
     [Test]
     public async Task WriteOwnerOnly_overwrites_a_world_readable_unit_and_leaves_no_staging_file() {
-        var dir  = Path.Combine(Path.GetTempPath(), $"kcap-overwrite-{Guid.NewGuid():N}");
+        var dir  = TempDir("overwrite");
         var path = Path.Combine(dir, "unit.plist");
-        Directory.CreateDirectory(dir);
         try {
-            await File.WriteAllTextAsync(path, "old");   // created world-readable by default
+            await File.WriteAllTextAsync(path, "old");
             ServiceFiles.WriteOwnerOnly(path, "new");
 
             await Assert.That(await File.ReadAllTextAsync(path)).IsEqualTo("new");
@@ -49,54 +74,120 @@ public class ServiceFilesTests {
         }
     }
 
+    /// <summary>The content is never observable at a permissive mode. Asserted on the finished file rather
+    /// than by racing the writer: the staging inode is created exclusively WITH its mode, so there is no
+    /// instant at which populated content exists group- or world-readable.</summary>
     [Test]
-    public async Task RestrictToOwner_removes_group_and_other_access() {
-        Skip.When(OperatingSystem.IsWindows(), "POSIX file modes; Windows inherits the directory ACL");
-
-        var path = Path.Combine(Path.GetTempPath(), $"kcap-unit-{Guid.NewGuid():N}.plist");
-        try {
-            // Written exactly the way the service managers write it, so the starting mode is the real
-            // default rather than something this test chose.
-            await File.WriteAllTextAsync(path, "<plist/>");
-
-            ServiceFiles.RestrictToOwner(path);
-            var mode = File.GetUnixFileMode(path);
-
-            await Assert.That(mode.HasFlag(UnixFileMode.OtherRead)).IsFalse();
-            await Assert.That(mode.HasFlag(UnixFileMode.GroupRead)).IsFalse();
-            await Assert.That(mode.HasFlag(UnixFileMode.OtherWrite)).IsFalse();
-            await Assert.That(mode.HasFlag(UnixFileMode.GroupWrite)).IsFalse();
-            // Still usable by its owner — launchd/systemd read it as the same user.
-            await Assert.That(mode.HasFlag(UnixFileMode.UserRead)).IsTrue();
-            await Assert.That(mode.HasFlag(UnixFileMode.UserWrite)).IsTrue();
-        } finally {
-            try { File.Delete(path); } catch { /* best-effort */ }
-        }
-    }
-
-    /// <summary>The default really is world-readable, so the assertion above is not vacuous. Without
-    /// this, a platform that happened to write 0600 already would make the test pass while
-    /// <see cref="ServiceFiles.RestrictToOwner"/> did nothing.</summary>
-    [Test]
-    public async Task The_default_write_mode_is_world_readable_so_the_fix_is_load_bearing() {
+    public async Task WriteOwnerOnly_never_exposes_content_under_a_permissive_umask() {
         Skip.When(OperatingSystem.IsWindows(), "POSIX file modes");
 
-        var path = Path.Combine(Path.GetTempPath(), $"kcap-unit-default-{Guid.NewGuid():N}.plist");
+        var dir  = TempDir("umask");
+        var path = Path.Combine(dir, "unit.plist");
         try {
-            await File.WriteAllTextAsync(path, "<plist/>");
+            ServiceFiles.WriteOwnerOnly(path, "SECRET-COMMAND");
 
-            await Assert.That(File.GetUnixFileMode(path).HasFlag(UnixFileMode.OtherRead)).IsTrue()
-                .Because("if this ever stops being true, RestrictToOwner is no longer the thing protecting the unit");
+            var mode = File.GetUnixFileMode(path);
+            await Assert.That(mode.HasFlag(UnixFileMode.GroupRead)).IsFalse();
+            await Assert.That(mode.HasFlag(UnixFileMode.OtherRead)).IsFalse();
         } finally {
-            try { File.Delete(path); } catch { /* best-effort */ }
+            try { Directory.Delete(dir, true); } catch { /* best-effort */ }
         }
     }
 
-    /// <summary>A path that cannot be chmod'ed must not fail an otherwise valid install.</summary>
+    /// <summary>Installing into a directory other local accounts can write is refused: owner-only mode on
+    /// the unit is no protection if someone else can replace the unit and choose what the daemon runs.</summary>
     [Test]
-    public async Task RestrictToOwner_on_a_missing_path_does_not_throw() {
-        ServiceFiles.RestrictToOwner(Path.Combine(Path.GetTempPath(), $"kcap-absent-{Guid.NewGuid():N}"));
+    public async Task WriteOwnerOnly_refuses_a_world_writable_directory() {
+        Skip.When(OperatingSystem.IsWindows(), "POSIX file modes");
 
-        await Assert.That(true).IsTrue();
+        var dir = TempDir("worldwritable");
+        try {
+            File.SetUnixFileMode(dir,
+                UnixFileMode.UserRead  | UnixFileMode.UserWrite  | UnixFileMode.UserExecute |
+                UnixFileMode.OtherRead | UnixFileMode.OtherWrite | UnixFileMode.OtherExecute);
+
+            var ex = Assert.Throws<InvalidOperationException>(
+                () => ServiceFiles.WriteOwnerOnly(Path.Combine(dir, "unit.plist"), "x"));
+
+            await Assert.That(ex!.Message).Contains("writable");
+            await Assert.That(File.Exists(Path.Combine(dir, "unit.plist"))).IsFalse();
+        } finally {
+            try {
+                File.SetUnixFileMode(dir,
+                    UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+                Directory.Delete(dir, true);
+            } catch { /* best-effort */ }
+        }
     }
+
+    /// <summary>A pre-existing entry at the staging path is not followed or truncated — the staging inode
+    /// is created exclusively. The name carries a full GUID, so this asserts the mechanism rather than a
+    /// realistic collision.</summary>
+    [Test]
+    public async Task WriteOwnerOnly_leaves_an_unrelated_file_in_the_directory_alone() {
+        var dir       = TempDir("staging");
+        var path      = Path.Combine(dir, "unit.plist");
+        var bystander = Path.Combine(dir, "unit.plist.tmp-not-ours");
+        try {
+            await File.WriteAllTextAsync(bystander, "PRE-EXISTING");
+            ServiceFiles.WriteOwnerOnly(path, "new");
+
+            await Assert.That(await File.ReadAllTextAsync(bystander)).IsEqualTo("PRE-EXISTING");
+            await Assert.That(await File.ReadAllTextAsync(path)).IsEqualTo("new");
+        } finally {
+            try { Directory.Delete(dir, true); } catch { /* best-effort */ }
+        }
+    }
+
+    // ── manager wiring ───────────────────────────────────────────────────────────────────────────
+    //
+    // Each manager's Install invokes launchctl/systemctl/schtasks, so the write half is split out and
+    // driven with an injected writer. Without this, all of the above could hold while a manager still
+    // called File.WriteAllText directly.
+
+    [Test]
+    public async Task Launchd_writes_its_plist_through_the_secure_writer() {
+        var seen = new List<string>();
+        var mgr  = new LaunchdServiceManager((path, content, _) => seen.Add(path + "|" + content));
+
+        mgr.WriteUnitFiles(Spec());
+
+        await Assert.That(seen.Count).IsEqualTo(1);
+        await Assert.That(seen[0]).Contains(".plist");
+        await Assert.That(seen[0]).Contains("KCAP_COPILOT_TOKEN_CMD");
+    }
+
+    [Test]
+    public async Task Systemd_writes_its_unit_through_the_secure_writer() {
+        var seen = new List<string>();
+        var mgr  = new SystemdServiceManager((path, content, _) => seen.Add(path + "|" + content));
+
+        mgr.WriteUnitFiles(Spec());
+
+        await Assert.That(seen.Count).IsEqualTo(1);
+        await Assert.That(seen[0]).Contains(".service");
+        await Assert.That(seen[0]).Contains("KCAP_COPILOT_TOKEN_CMD");
+    }
+
+    /// <summary>Windows writes two files and both go through the writer — the task XML as UTF-16, the
+    /// wrapper as UTF-8. (The token command itself is excluded from the captured environment on Windows;
+    /// this asserts the write wiring, not that variable.)</summary>
+    [Test]
+    public async Task Windows_writes_both_units_through_the_secure_writer() {
+        var seen = new List<(string Path, Encoding? Encoding)>();
+        var mgr  = new WindowsScheduledTaskServiceManager((path, _, encoding) => seen.Add((path, encoding)));
+
+        mgr.WriteUnitFiles(Spec());
+
+        await Assert.That(seen.Count).IsEqualTo(2);
+        await Assert.That(seen.Any(f => f.Path.EndsWith(".task.xml") && Equals(f.Encoding, Encoding.Unicode))).IsTrue();
+        await Assert.That(seen.Any(f => f.Path.EndsWith(".cmd") && Equals(f.Encoding, Encoding.UTF8))).IsTrue();
+    }
+
+    static ServiceSpec Spec() => new(
+        ServiceId:        "test",
+        DaemonBinaryPath: "/opt/kcap/kcap-daemon",
+        LogPath:          "/tmp/kcap-test.log",
+        Environment:      new Dictionary<string, string> { ["KCAP_COPILOT_TOKEN_CMD"] = "gh auth token" },
+        ExtraArgs:        []);
 }

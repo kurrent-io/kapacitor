@@ -216,4 +216,85 @@ public class BorrowedReviewAuthBrokerTests {
 
         await Assert.That(resolved).IsEqualTo("from-variable");
     }
+
+    // ── availability is PASSIVE ───────────────────────────────────────────────────────────────────
+    //
+    // The daemon must not mint a credential nobody asked for. An earlier revision probed by RUNNING the
+    // command once at startup, which bought a better diagnostic by breaking exactly the invariant this
+    // class exists to state.
+
+    [Test]
+    public async Task Availability_is_true_for_a_configured_command_without_running_it() {
+        var (run, calls) = Command("from-command");
+
+        await Assert.That(BorrowedReviewAuthBroker.IsConfigured(
+            Env((BorrowedReviewAuthBroker.CommandVariable, "gh auth token")))).IsTrue();
+        await Assert.That(calls()).IsEqualTo(0);
+
+        // And nothing on the availability path can reach the runner at all: IsConfigured takes no runner.
+        _ = run;
+    }
+
+    [Test]
+    [Arguments("COPILOT_GITHUB_TOKEN")]
+    [Arguments("GH_TOKEN")]
+    [Arguments("GITHUB_TOKEN")]
+    public async Task Availability_is_true_for_any_directly_set_variable(string name) {
+        await Assert.That(BorrowedReviewAuthBroker.IsConfigured(Env((name, "tok")))).IsTrue();
+    }
+
+    [Test]
+    [Arguments("")]
+    [Arguments("   ")]
+    public async Task Availability_is_false_when_nothing_usable_is_configured(string blank) {
+        await Assert.That(BorrowedReviewAuthBroker.IsConfigured(
+            Env(("GH_TOKEN", blank), (BorrowedReviewAuthBroker.CommandVariable, blank)))).IsFalse();
+    }
+
+    // ── bounded output ───────────────────────────────────────────────────────────────────────────
+
+    /// <summary>A command printing far more than a token is rejected, not truncated: a mangled prefix must
+    /// never be handed to a vendor as a credential, and an unbounded read is a memory-exhaustion vector.</summary>
+    [Test]
+    public async Task The_real_runner_rejects_output_longer_than_a_token() {
+        Skip.When(OperatingSystem.IsWindows(), "POSIX shell command");
+
+        var length = BorrowedReviewTokenCommand.MaxTokenLength + 100;
+
+        await Assert.That(BorrowedReviewTokenCommand.Run(
+            $"head -c {length} /dev/zero | tr '\\0' 'a'")).IsNull();
+    }
+
+    /// <summary>A token at the cap still resolves, so the bound is a real boundary rather than a blanket
+    /// rejection of long-but-valid output.</summary>
+    [Test]
+    public async Task The_real_runner_accepts_output_at_the_cap() {
+        Skip.When(OperatingSystem.IsWindows(), "POSIX shell command");
+
+        var length = BorrowedReviewTokenCommand.MaxTokenLength;
+        var token  = BorrowedReviewTokenCommand.Run($"head -c {length} /dev/zero | tr '\\0' 'a'");
+
+        await Assert.That(token).IsNotNull();
+        await Assert.That(token!.Length).IsEqualTo(length);
+    }
+
+    /// <summary>A command that floods stderr and then fails must not exhaust memory — stderr is drained
+    /// without being accumulated. Without the bound this allocates until the daemon dies.</summary>
+    [Test]
+    public async Task The_real_runner_survives_a_command_flooding_stderr() {
+        Skip.When(OperatingSystem.IsWindows(), "POSIX shell command");
+
+        // ~32 MiB to stderr, then a nonzero exit.
+        await Assert.That(BorrowedReviewTokenCommand.Run(
+            "head -c 33554432 /dev/zero | tr '\\0' 'x' 1>&2; exit 1")).IsNull();
+    }
+
+    /// <summary>Output on stdout is still bounded when the command floods THAT stream instead.</summary>
+    [Test]
+    public async Task The_real_runner_survives_a_command_flooding_stdout() {
+        Skip.When(OperatingSystem.IsWindows(), "POSIX shell command");
+
+        await Assert.That(BorrowedReviewTokenCommand.Run(
+            "head -c 33554432 /dev/zero | tr '\\0' 'y'")).IsNull();
+    }
 }

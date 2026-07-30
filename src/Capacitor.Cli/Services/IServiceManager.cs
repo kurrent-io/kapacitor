@@ -1,3 +1,4 @@
+using System.Text;
 namespace Capacitor.Cli.Services;
 
 /// <summary>Which OS service backend a manager targets.</summary>
@@ -23,6 +24,11 @@ record ServiceSpec(
     string                              LogPath,
     IReadOnlyDictionary<string, string> Environment,
     IReadOnlyList<string>               ExtraArgs);
+
+/// <summary>How a manager writes a unit to disk. Production is
+/// <see cref="ServiceFiles.WriteOwnerOnly"/>; tests inject a spy so the wiring is assertable without
+/// registering a real OS service.</summary>
+delegate void UnitFileWriter(string path, string content, Encoding? encoding = null);
 
 interface IServiceManager {
     string Describe();

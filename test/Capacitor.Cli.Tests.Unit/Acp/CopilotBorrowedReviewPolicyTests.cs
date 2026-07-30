@@ -206,17 +206,22 @@ public class CopilotBorrowedReviewPolicyTests {
         await Assert.That(ex.Message).Contains("owned worktree");
     }
 
-    /// <summary>Resolving credential availability can RUN an operator-configured command, so it must not
-    /// be asked on a host where borrowed review is impossible and the answer unused. Asserted by call
-    /// count on each failing precondition: passing a bool instead of a thunk would evaluate it eagerly and
-    /// spend up to the command timeout at every daemon's startup, on every platform.</summary>
+    /// <summary>Credential availability is not consulted at all on a host where borrowed review is
+    /// impossible.
+    ///
+    /// <para>The check is passive today, so this costs an environment read rather than anything dangerous.
+    /// It is asserted by call count anyway, as a regression barrier: an earlier revision of this change
+    /// made availability EXECUTE an operator-configured command, and with a plain <c>bool</c> argument
+    /// that ran at every daemon's startup on every platform, including ones that can never borrow.
+    /// Keeping the thunk and pinning the call count means a future implementation cannot quietly become
+    /// expensive or side-effecting on an unsupported host.</para></summary>
     [Test]
     [Arguments("linux",   false)]
     [Arguments("windows", false)]
     [Arguments("osx-x64", false)]
     [Arguments("no-sandbox", false)]
     [Arguments("supported", true)]
-    public async Task The_credential_probe_runs_only_when_every_other_precondition_holds(
+    public async Task Credential_availability_is_consulted_only_when_every_other_precondition_holds(
             string scenario, bool shouldProbe) {
         var probes = 0;
 

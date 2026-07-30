@@ -3,7 +3,9 @@ using Capacitor.Cli.Core;
 
 namespace Capacitor.Cli.Services;
 
-sealed class WindowsScheduledTaskServiceManager : IServiceManager {
+sealed class WindowsScheduledTaskServiceManager(UnitFileWriter? writeUnit = null) : IServiceManager {
+    readonly UnitFileWriter _writeUnit = writeUnit ?? ServiceFiles.WriteOwnerOnly;
+
     public string Describe() => "Windows Scheduled Task";
 
     public IReadOnlyList<GeneratedFile> GenerateFiles(ServiceSpec spec) {
@@ -34,14 +36,21 @@ sealed class WindowsScheduledTaskServiceManager : IServiceManager {
         return new ServiceStatus(WindowsTaskUnit.StatusFromQuery(code, stdout), bin);
     }
 
-    public void Install(ServiceSpec spec, bool startNow) {
+    /// <summary>The unit-writing half of <see cref="Install"/>, split out so it is testable without
+    /// invoking schtasks.</summary>
+    internal IReadOnlyList<GeneratedFile> WriteUnitFiles(ServiceSpec spec) {
         var files = GenerateFiles(spec);
         foreach (var f in files) {
             Directory.CreateDirectory(Path.GetDirectoryName(f.Path)!);
             // schtasks /XML wants UTF-16; the .cmd wrapper is fine as UTF-8.
             var encoding = f.Path.EndsWith(".task.xml", StringComparison.Ordinal) ? Encoding.Unicode : Encoding.UTF8;
-            ServiceFiles.WriteOwnerOnly(f.Path, f.Content, encoding);
+            _writeUnit(f.Path, f.Content, encoding);
         }
+        return files;
+    }
+
+    public void Install(ServiceSpec spec, bool startNow) {
+        var files = WriteUnitFiles(spec);
         var xmlPath = files.First(f => f.Path.EndsWith(".task.xml", StringComparison.Ordinal)).Path;
         ServiceProcess.Check("schtasks", WindowsTaskUnit.CreateArgs(spec.ServiceId, xmlPath));
         File.Delete(xmlPath); // the task XML is only needed for registration

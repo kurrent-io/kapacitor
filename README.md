@@ -491,7 +491,9 @@ The unit file stores the **command**, never a token, and the daemon runs it to o
 
 Deliberately *not* supported: putting `GH_TOKEN` itself in the unit. `install` carries over only `PATH`, `KCAP_PROFILE`, `KCAP_URL`, `KCAP_CONFIG_DIR`, `KCAP_CLAUDE_PATH`, `KCAP_CODEX_PATH` and `KCAP_COPILOT_TOKEN_CMD` from your shell — credentials are excluded by design. (`install` also generates a `KCAP_DAEMON_SUPERVISED` marker of its own.) Unit files are written owner-only (`0600`).
 
-The command runs under your shell, so anything that prints a token works — `gh auth token`, a `security find-generic-password` lookup, a secret-manager fetch. It is bounded at 10s, and if it fails or prints nothing the daemon simply advertises no borrowed review: its output is never logged, so a command that prints a secret on failure cannot leak it. A command that is *configured* is also probed once at startup, so a misconfigured one shows up as "not advertised" rather than as a review dying mid-launch.
+The command runs under your shell, so anything that prints a token works — `gh auth token`, a `security find-generic-password` lookup, a secret-manager fetch. It runs **only when a borrowed review actually needs a token**, never at daemon startup: the daemon does not mint a credential nobody asked for. It is bounded at 10s and to one token-sized line, and its output is never logged, so a command that prints a secret on failure cannot leak it.
+
+A daemon with a command *configured* advertises borrowed review, so a command that is broken fails at launch with the coded `borrowed_review_auth_unavailable` — the same honest rejection an unset variable produces. Verifying it up front would mean running it at every startup, which is the trade this deliberately does not make.
 
 With any of the three requirements missing, a Copilot borrowed request is refused up front with `vendor_containment_unreadable` naming the daemon and the remedies, and `mode="context-only"` still works. Nothing silently falls back to reviewing a stale committed base.
 

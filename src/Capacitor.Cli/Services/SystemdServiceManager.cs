@@ -1,6 +1,8 @@
 namespace Capacitor.Cli.Services;
 
-sealed class SystemdServiceManager : IServiceManager {
+sealed class SystemdServiceManager(UnitFileWriter? writeUnit = null) : IServiceManager {
+    readonly UnitFileWriter _writeUnit = writeUnit ?? ServiceFiles.WriteOwnerOnly;
+
     public string Describe() => "systemd --user unit";
 
     public IReadOnlyList<GeneratedFile> GenerateFiles(ServiceSpec spec) =>
@@ -23,9 +25,15 @@ sealed class SystemdServiceManager : IServiceManager {
         return new ServiceStatus(SystemdUnit.StatusFrom(active, enabledExit), bin);
     }
 
-    public void Install(ServiceSpec spec, bool startNow) {
+    /// <summary>The unit-writing half of <see cref="Install"/>, split out so it is testable without
+    /// invoking systemctl.</summary>
+    internal void WriteUnitFiles(ServiceSpec spec) {
         Directory.CreateDirectory(SystemdUnit.UserUnitDir());
-        ServiceFiles.WriteOwnerOnly(SystemdUnit.UnitPath(spec.ServiceId), SystemdUnit.Unit(spec));
+        _writeUnit(SystemdUnit.UnitPath(spec.ServiceId), SystemdUnit.Unit(spec), null);
+    }
+
+    public void Install(ServiceSpec spec, bool startNow) {
+        WriteUnitFiles(spec);
         ServiceProcess.Check("systemctl", SystemdUnit.DaemonReloadArgs());
         ServiceProcess.Check("systemctl", SystemdUnit.EnableArgs(spec.ServiceId));
         if (startNow) ServiceProcess.Check("systemctl", SystemdUnit.RestartArgs(spec.ServiceId));
