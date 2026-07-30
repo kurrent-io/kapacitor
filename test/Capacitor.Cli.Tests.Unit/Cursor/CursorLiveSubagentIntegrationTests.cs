@@ -6,51 +6,37 @@ using Capacitor.Cli.Core;
 namespace Capacitor.Cli.Tests.Unit.Cursor;
 
 /// <summary>
-/// end-to-end coverage of CursorHookCommand's subagent-linking divert —
-/// CursorLiveSubagentLinkerTests covers the pure ResolveParent/marker/discovery pieces in
-/// isolation; these tests exercise the actual hook dispatcher wiring (subagent-start/-stop
-/// instead of the top-level lifecycle, transcript routed with agent_id, mid-lifecycle hooks
-/// suppressed) against a realistic on-disk `agent-transcripts/&lt;sid&gt;/&lt;sid&gt;.jsonl`
-/// layout.
+/// Coverage for the marker-driven Cursor subagent divert. CursorLiveSubagentLinkerTests covers
+/// the pure ResolveParent/marker/discovery pieces in isolation; these exercise the hook
+/// dispatcher wiring against a realistic on-disk
+/// <c>agent-transcripts/&lt;sid&gt;/&lt;sid&gt;.jsonl</c> layout.
+///
+/// <para>
+/// Scenarios here seed the link marker (and ack) DIRECTLY. A test may depend on that
+/// persistent state, but must never assert that a CHILD LIFECYCLE HOOK produces it: a real
+/// Cursor subagent child fires neither sessionStart nor sessionEnd, so four tests that
+/// asserted those triggers (child sessionStart → subagent-start, child sessionEnd →
+/// subagent-stop, the transcript-routing variant, and the stop-ordering guard) were removed
+/// rather than relabelled — keeping them would have preserved an obsolete contract and the
+/// false confidence that came with it. A native revival must be driven by the PARENT's
+/// subagentStart/subagentStop, so the stop-ordering invariant is deferred until that design
+/// defines how subagentStop is keyed and spooled. See
+/// docs/superpowers/specs/2026-07-30-ai1505-cursor-subagent-classification-design.md
+/// </para>
 /// </summary>
 [NotInParallel("HomeEnvVarMutation")]
 public class CursorLiveSubagentIntegrationTests {
-    [Test]
-    public async Task linked_child_sessionStart_posts_subagent_start_not_session_start() {
-        using var fx = new Fixture();
-        var (parentId, childId, childPath) = fx.SetupLinkedPair("do the survey");
-
-        await fx.HandleAsync(childId, "sessionStart", childPath);
-
-        await Assert.That(fx.RouteOrder).DoesNotContain("session-start/cursor");
-        await Assert.That(fx.RouteOrder).Contains("subagent-start");
-
-        var body = JsonNode.Parse(fx.SentToHook("subagent-start"))!;
-        await Assert.That(body["session_id"]!.GetValue<string>()).IsEqualTo(parentId);
-        await Assert.That(body["agent_id"]!.GetValue<string>()).IsEqualTo(childId);
-        await Assert.That(body["agent_type"]!.GetValue<string>()).IsEqualTo("task");
-        await Assert.That(body["strict"]!.GetValue<bool>()).IsTrue();
-    }
-
-    [Test]
-    public async Task linked_child_transcript_is_routed_under_the_parent_with_agent_id() {
-        using var fx = new Fixture();
-        var (parentId, childId, childPath) = fx.SetupLinkedPair("investigate the bug");
-
-        await fx.HandleAsync(childId, "sessionStart", childPath);
-
-        var batch = JsonNode.Parse(fx.SentToHook("transcript"))!;
-        await Assert.That(batch["session_id"]!.GetValue<string>()).IsEqualTo(parentId);
-        await Assert.That(batch["agent_id"]!.GetValue<string>()).IsEqualTo(childId);
-    }
-
     [Test]
     public async Task linked_child_mid_lifecycle_hook_is_suppressed_but_transcript_still_backfills() {
         using var fx = new Fixture();
         var (parentId, childId, childPath) = fx.SetupLinkedPair("write the report");
 
-        // First hook establishes + persists the link.
-        await fx.HandleAsync(childId, "sessionStart", childPath);
+        // Seed the link and the ack DIRECTLY. Establishing them via a child sessionStart would
+        // assert a trigger a real child never fires (see the class doc). The ack seed is
+        // required: without it the mid-lifecycle hook returns at the no-ack gate and never
+        // reaches the backfill this test is about.
+        CursorLiveSubagentLinker.SaveLink(childId, parentId, "task");
+        CursorMarkers.MarkSubagentStartAcked(childId);
         fx.Sent.Clear();
         fx.RouteOrder.Clear();
 
@@ -63,25 +49,6 @@ public class CursorLiveSubagentIntegrationTests {
         var batch = JsonNode.Parse(fx.SentToHook("transcript"))!;
         await Assert.That(batch["session_id"]!.GetValue<string>()).IsEqualTo(parentId);
         await Assert.That(batch["agent_id"]!.GetValue<string>()).IsEqualTo(childId);
-    }
-
-    [Test]
-    public async Task linked_child_sessionEnd_posts_subagent_stop_not_session_end() {
-        using var fx = new Fixture();
-        var (parentId, childId, childPath) = fx.SetupLinkedPair("clean up the repo");
-
-        await fx.HandleAsync(childId, "sessionStart", childPath);
-        fx.Sent.Clear();
-        fx.RouteOrder.Clear();
-
-        await fx.HandleAsync(childId, "sessionEnd", childPath);
-
-        await Assert.That(fx.RouteOrder).DoesNotContain("session-end/cursor");
-        await Assert.That(fx.RouteOrder).Contains("subagent-stop");
-
-        var body = JsonNode.Parse(fx.SentToHook("subagent-stop"))!;
-        await Assert.That(body["session_id"]!.GetValue<string>()).IsEqualTo(parentId);
-        await Assert.That(body["agent_id"]!.GetValue<string>()).IsEqualTo(childId);
     }
 
     [Test]
@@ -101,39 +68,6 @@ public class CursorLiveSubagentIntegrationTests {
 
         await Assert.That(fx.RouteOrder).Contains("session-start/cursor");
         await Assert.That(fx.RouteOrder).DoesNotContain("subagent-start");
-    }
-
-    [Test]
-    public async Task linked_child_subagent_stop_is_not_delivered_ahead_of_a_spooled_subagent_start() {
-        // Ordering guard: a child whose subagent-start is still spooled (a prior transient
-        // failure) must NOT get subagent-stop delivered ahead of it. With a 500 stub the
-        // HandleCore drain can't clear the backlog, so HasBacklog stays true and the divert
-        // must spool subagent-stop behind the start rather than posting it.
-        using var fx = new Fixture(postStatus: HttpStatusCode.InternalServerError);
-        var (parentId, childId, childPath) = fx.SetupLinkedPair("ordering guard");
-
-        // Establish the link marker (as the child's first hook would have) and seed the spool
-        // with an undelivered subagent-start, simulating a prior transient POST failure.
-        CursorLiveSubagentLinker.SaveLink(childId, parentId, "task");
-        fx.Spool.Append(childId, "subagent-start", $$"""{"hook_event_name":"subagent_start","session_id":"{{parentId}}","agent_id":"{{childId}}"}""");
-
-        // sessionEnd under a still-failing server: the HandleCore drain re-attempts the
-        // spooled subagent-start (500 → stays queued), so HasBacklog is true and the divert
-        // must NOT post subagent-stop ahead of it.
-        await fx.HandleAsync(childId, "sessionEnd", childPath);
-        await Assert.That(fx.RouteOrder).DoesNotContain("subagent-stop");
-
-        // Now the server recovers. Any later hook for the child drains the spool in order —
-        // subagent-start (the recovered .draining temp, oldest-first) BEFORE subagent-stop
-        // (the just-queued live file) — proving the stop never overtakes its start.
-        fx.RouteOrder.Clear();
-        fx.PostStatus = HttpStatusCode.OK;
-        await fx.HandleAsync(childId, "afterAgentResponse", childPath);
-
-        var startIdx = fx.RouteOrder.IndexOf("subagent-start");
-        var stopIdx  = fx.RouteOrder.IndexOf("subagent-stop");
-        await Assert.That(startIdx).IsGreaterThanOrEqualTo(0);
-        await Assert.That(stopIdx).IsGreaterThan(startIdx);
     }
 
     /// <summary>
