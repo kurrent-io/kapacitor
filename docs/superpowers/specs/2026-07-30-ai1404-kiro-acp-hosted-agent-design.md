@@ -135,7 +135,7 @@ One descriptor plus a factory registration, exactly the Cursor/Copilot shape:
 public static readonly AcpVendorDescriptor Kiro = new(
     Vendor:              "kiro",
     ResolveBinaryPath:   cfg => cfg.KiroPath,
-    ResolveDefaultModel: cfg => cfg.KiroModel,
+    ResolveDefaultModel: _ => null,     // no KiroModel until model override is in scope
     Argv:                ["acp"],
     UnattendedTrustArgv: [],            // AI-1410 owns this; empty keeps unattended off
     SupportsUnattended:  false,         // flipped by AI-1410
@@ -165,9 +165,12 @@ call-level probe against Copilot succeeds. Do not flip it on the strength of Kir
 
 Config surface — **corrected**: `DaemonConfig.KiroPath` **already exists** with default `"kiro"`, not
 `"kiro-cli"`. The spec previously said to add it, which would have produced duplicate plumbing or a
-silent availability change. Decide explicitly between (a) keeping `"kiro"`, (b) probing both
-executable names, or (c) migrating the default — and add acceptance for `KCAP_KIRO_PATH`. Only
-`KiroModel` is genuinely new. Availability stays `CliResolver.Exists(KiroPath)`; advertise `kiro` in
+silent availability change. **Decision: keep the existing `"kiro"` default and do not probe both names.** A dual-name probe makes
+advertised availability depend on install layout in a way that is hard to reason about or test, and
+changing the default would be a silent compatibility break for anyone relying on it. Users whose binary
+is `kiro-cli` set `KCAP_KIRO_PATH`, which takes precedence over the default — add acceptance for that
+precedence. `KiroModel` is not added either, since model override is out of scope for AI-1410; it
+arrives with the follow-up that needs it. Availability stays `CliResolver.Exists(KiroPath)`; advertise `kiro` in
 `SupportedVendors` only when it resolves.
 
 ## Verification checklist
@@ -183,12 +186,15 @@ Mirrors the Copilot child, minus what has already been measured:
       inspecting argv (see Premise 3)
 - [ ] Confirm the ACP-reported agent version is logged
 
-Explicitly **not** in this checklist: token counts (measured absent), auth/tier pre-check (no gate
-exists), `--agent-engine` (deliberately unpinned).
+Explicitly **not** in this checklist: canonical token counts (absent from ACP; credits remain via
+`KiroUsage`), an auth/tier pre-check (no pre-checkable protocol signal exists — the gate itself is
+unproven either way), `--agent-engine` (deliberately unpinned), and model override (deferred by AI-1410
+to its own follow-up, since `set_config_option` is unproven and the selector fails silently).
 
 ## Out of scope
 
 - `SupportsUnattended` stays false; AI-1410 flips it after its own loop verifies.
 - Borrowed review: AI-1410's call, and it needs a containment-token decision, not a default.
-- Kiro's own agent-config MCP servers leaking into a session — an unattended-only hazard.
+- Kiro's **global** `settings/mcp.json` servers leaking into a session — an unattended-only hazard,
+  resolved by AI-1410 with a daemon-owned isolated `KIRO_HOME` (measured to inherit nothing).
 - Kiro's `--effort` flag: no kcap surface exposes effort today; adding one is its own issue.
