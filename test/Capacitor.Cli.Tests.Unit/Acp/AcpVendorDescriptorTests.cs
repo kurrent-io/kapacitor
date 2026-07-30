@@ -66,6 +66,78 @@ public class AcpVendorDescriptorTests {
     }
 
     [Test]
+    public async Task Kiro_MatchesTodaysHardCodedConstants() {
+        var descriptor = AcpVendorDescriptors.Kiro;
+
+        await Assert.That(descriptor.Vendor).IsEqualTo("kiro");
+        await Assert.That(descriptor.Argv.SequenceEqual(["acp"])).IsTrue();
+
+        // Interactive hosting only. Kiro inherits the user's GLOBAL ~/.kiro/settings/mcp.json servers
+        // into every ACP session, so an unattended reviewer would be handed kcap-flows and could start
+        // nested review flows. Unattended stays off until its own issue lands the containment
+        // mechanism; the empty trust argv is enforced by the constructor when SupportsUnattended is
+        // false, and Disabled is the policy that pairs with it.
+        await Assert.That(descriptor.SupportsUnattended).IsFalse();
+        await Assert.That(descriptor.UnattendedTrustArgv.IsEmpty).IsTrue();
+        await Assert.That(descriptor.UnattendedInteractionPolicy)
+            .IsEqualTo(AcpUnattendedInteractionPolicy.Disabled);
+        await Assert.That(descriptor.SupportsBorrowedReviewFlow).IsFalse();
+        await Assert.That(descriptor.BorrowedReviewContainment)
+            .IsEqualTo(AcpBorrowedReviewContainment.None);
+
+        // TRUE here while Copilot is FALSE, on the same advertised ACP mcpCapabilities shape
+        // ({http, sse} — no stdio). Not a contradiction: Copilot's false is an empirical finding about
+        // Copilot, and Kiro was probed to a real tools/call with a stdio server passed in
+        // session/new.mcpServers — the nonce reached the model. Kiro honours stdio without advertising
+        // it. server_initialized alone would NOT have justified this: it proves a server started, not
+        // that its tools are callable.
+        await Assert.That(descriptor.SupportsMcpServers).IsTrue();
+        await Assert.That(descriptor.ReviewFlowMcpTransport)
+            .IsEqualTo(AcpReviewFlowMcpTransport.SessionNew);
+
+        // NoOp, not ConfigOptionModelSelector. Kiro's session/new DOES return a models object, so the
+        // selector's read half would find its shape — but the write half
+        // (session/set_config_option taking effect) is unverified, and that selector fails SILENTLY.
+        // A live selector would risk a session reporting one model while running another.
+        await Assert.That(descriptor.ModelSelector).IsEqualTo(NoOpModelSelector.Instance);
+    }
+
+    [Test]
+    public async Task Kiro_ResolveBinaryPath_ReadsConfigKiroPath() {
+        var config = new DaemonConfig { KiroPath = "/opt/kiro/kiro-cli" };
+
+        await Assert.That(AcpVendorDescriptors.Kiro.ResolveBinaryPath(config)).IsEqualTo("/opt/kiro/kiro-cli");
+    }
+
+    /// <summary>
+    /// The zero-configuration case, and the one an env-precedence test cannot cover: with nothing set,
+    /// the descriptor must resolve the name a standard install actually puts on PATH.
+    ///
+    /// <para><c>KiroPath</c> predates this descriptor and defaulted to <c>"kiro"</c> while nothing
+    /// consumed it. <c>kiro</c> is not the shipped binary — <c>kiro-cli</c> is, and it is what
+    /// <c>PluginCommand.KiroBinary</c> resolves. Because availability is
+    /// <c>CliResolver.Exists(KiroPath)</c>, the old default meant Kiro was silently never advertised
+    /// on a correct install until an operator discovered <c>KCAP_KIRO_PATH</c>. An override test
+    /// passes identically whichever name the default holds, which is precisely how the wrong default
+    /// survived; this test is the one that fails.</para>
+    /// </summary>
+    [Test]
+    public async Task Kiro_ZeroConfiguration_ResolvesTheShippedBinaryName() {
+        await Assert.That(AcpVendorDescriptors.Kiro.ResolveBinaryPath(new DaemonConfig()))
+            .IsEqualTo("kiro-cli");
+    }
+
+    /// <summary>Model override is out of scope until <c>session/set_config_option</c> is verified on
+    /// Kiro, so no daemon-wide default model is offered either — for ANY config, including one whose
+    /// other vendor model fields are populated.</summary>
+    [Test]
+    public async Task Kiro_ResolveDefaultModel_IsAlwaysNull() {
+        await Assert.That(AcpVendorDescriptors.Kiro.ResolveDefaultModel(new DaemonConfig())).IsNull();
+        await Assert.That(AcpVendorDescriptors.Kiro.ResolveDefaultModel(
+            new DaemonConfig { CursorModel = "claude-opus-4-8" })).IsNull();
+    }
+
+    [Test]
     public async Task Cursor_ResolveBinaryPath_ReadsConfigCursorPath() {
         var config = new DaemonConfig { CursorPath = "/opt/cursor/cursor-agent" };
 

@@ -218,4 +218,50 @@ internal static class AcpVendorDescriptors {
         // rather than silently permitting an unverified surface — the safe direction to fail.
         UnattendedInteractionPolicy: AcpUnattendedInteractionPolicy.AutoApprove
     );
+
+    /// <summary>AWS Kiro CLI as an ACP hosted agent (<c>kiro-cli acp</c>). Interactive hosting only:
+    /// unattended review is deliberately withheld until its own issue lands the containment mechanism
+    /// (Kiro inherits the user's GLOBAL <c>~/.kiro/settings/mcp.json</c> servers into every ACP
+    /// session, so an unattended reviewer would be handed <c>kcap-flows</c> and could start nested
+    /// flows). Interactive hosting is unaffected by that inheritance — it is the desired behavior
+    /// there.
+    ///
+    /// <para><b><see cref="SupportsMcpServers"/> is <c>true</c> here while <see cref="Copilot"/> sets
+    /// it <c>false</c>, and the reasoning is NOT contradictory.</b> Both vendors advertise the same
+    /// ACP <c>mcpCapabilities</c> shape (<c>{http, sse}</c> — no stdio), so the advertisement cannot be
+    /// what decides it. Copilot's <c>false</c> is an empirical finding about Copilot. Kiro was probed
+    /// directly: a purpose-built stdio server passed in <c>session/new.mcpServers</c> was driven all
+    /// the way to a real <c>tools/call</c>, with the tool's nonce reaching the model and the turn
+    /// ending <c>end_turn</c>. Kiro honours stdio despite not advertising it.</para>
+    ///
+    /// <para>Note what that probe deliberately established, because a weaker signal was available and
+    /// would have been wrong: <c>_kiro.dev/mcp/server_initialized</c> proves only that a server
+    /// STARTED, not that its tools are discoverable or callable — a tool can be absent from
+    /// <c>tools/list</c>, refused by trust policy, mis-namespaced, or fail at invocation. Flipping
+    /// Copilot's flag needs an equivalent call-level probe against Copilot, not this result.</para>
+    ///
+    /// <para><see cref="NoOpModelSelector"/> is deliberate rather than inherited: Kiro's
+    /// <c>session/new</c> does return a <c>models</c> object, so the read half of
+    /// <see cref="ConfigOptionModelSelector"/> would find the shape it needs — but the write half
+    /// (<c>session/set_config_option</c> actually taking effect) is unverified on Kiro, and that
+    /// selector fails SILENTLY when it does not take. Carrying a live selector would risk a session
+    /// that reports the requested model while running another. <c>ResolveDefaultModel: null</c> alone
+    /// would not be enough, because <c>ResolveRequestedModel</c> prioritises a per-launch
+    /// <c>RuntimeStartContext.Model</c> and would reach a live selector anyway; the selector itself
+    /// has to be the no-op. Model override arrives with the follow-up that verifies the write
+    /// half.</para>
+    ///
+    /// <para><c>--agent-engine v1|v2|v3</c> (default <c>v2</c>) is deliberately NOT passed: pinning it
+    /// diverges the hosted session from what the user gets interactively and buys an upgrade
+    /// treadmill. Revisit only if a measured behavioural difference forces it.</para></summary>
+    public static readonly AcpVendorDescriptor Kiro = new(
+        Vendor:              "kiro",
+        ResolveBinaryPath:   cfg => cfg.KiroPath,
+        ResolveDefaultModel: _ => null,
+        Argv:                ["acp"],
+        UnattendedTrustArgv: [],
+        SupportsUnattended:  false,
+        ModelSelector:       NoOpModelSelector.Instance,
+        SupportsMcpServers:  true
+    );
 }

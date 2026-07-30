@@ -119,8 +119,21 @@ public class DaemonConfig {
     /// descriptor consumes this yet). Overridable via KCAP_COPILOT_PATH, mirroring CursorPath.</summary>
     public string CopilotPath { get; set; } = "copilot";
 
-    /// <summary>Reserved — see CopilotPath. Overridable via KCAP_KIRO_PATH.</summary>
-    public string KiroPath { get; set; } = "kiro";
+    /// <summary>
+    /// Path or bare command for AWS Kiro CLI's ACP entry point, spawned as <c>{KiroPath} acp</c> by
+    /// <c>AcpHostedAgentRuntimeFactory</c>. Overridable via <c>KCAP_KIRO_PATH</c>, mirroring
+    /// <see cref="CursorPath"/>.
+    ///
+    /// <para><b>The default is <c>kiro-cli</c>, not <c>kiro</c>.</b> This field predates the
+    /// descriptor that now consumes it and was originally defaulted to <c>"kiro"</c> while unused.
+    /// The shipped binary is <c>kiro-cli</c> — it is what <c>PluginCommand.KiroBinary</c> resolves and
+    /// what a standard install puts on PATH; <c>kiro</c> is not present. Because availability is
+    /// <c>CliResolver.Exists(KiroPath)</c>, leaving the old default would have meant Kiro was never
+    /// advertised as a hosted-agent vendor on a correct install until the operator discovered
+    /// <c>KCAP_KIRO_PATH</c> — a silent no-op rather than a visible failure. Only one name is probed;
+    /// operators with a differently-named binary set the env var.</para>
+    /// </summary>
+    public string KiroPath { get; set; } = "kiro-cli";
 
     /// <summary>Reserved — see CopilotPath. Overridable via KCAP_OPENCODE_PATH.</summary>
     public string OpenCodePath { get; set; } = "opencode";

@@ -269,8 +269,14 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
     // Vendor-aware handshake/auth diagnostic labels. `_vendor` is the vendor KEY (e.g. "cursor"),
     // not the binary name — so Cursor keeps its exact prior strings (binary "cursor-agent" +
     // Team-tier hint) via an explicit branch, while any other vendor gets vendor-named generic text.
+    // Kiro needs the same explicit branch as Cursor and for the same reason: its vendor key ("kiro")
+    // is NOT its binary name ("kiro-cli"), so the generic fallback would tell an operator to check a
+    // command that does not exist on a correct install — the least helpful possible text on exactly the
+    // launch-failure path this diagnostic exists to serve.
     string DiagnosticBinary =>
-        _vendor == AcpVendorDescriptors.Cursor.Vendor ? "cursor-agent" : _vendor;
+        _vendor == AcpVendorDescriptors.Cursor.Vendor ? "cursor-agent"
+            : _vendor == AcpVendorDescriptors.Kiro.Vendor ? "kiro-cli"
+            : _vendor;
 
     string DiagnosticAuthHint =>
         _vendor == AcpVendorDescriptors.Cursor.Vendor

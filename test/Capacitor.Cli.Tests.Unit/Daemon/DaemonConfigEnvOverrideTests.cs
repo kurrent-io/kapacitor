@@ -45,7 +45,9 @@ public class DaemonConfigEnvOverrideTests {
         var config = new DaemonConfig();
 
         await Assert.That(config.CopilotPath).IsEqualTo("copilot");
-        await Assert.That(config.KiroPath).IsEqualTo("kiro");
+        // Still a bare command, but "kiro-cli" — the shipped binary name — now that an ACP descriptor
+        // consumes this field and availability is CliResolver.Exists(KiroPath).
+        await Assert.That(config.KiroPath).IsEqualTo("kiro-cli");
         await Assert.That(config.OpenCodePath).IsEqualTo("opencode");
         await Assert.That(config.GeminiPath).IsEqualTo("gemini");
     }
@@ -86,7 +88,7 @@ public class DaemonConfigEnvOverrideTests {
     public async Task KiroPath_EnvVarUnset_KeepsDefault() {
         var config = ApplyEnvOverrides(new DaemonConfig(), copilotPath: null, kiroPath: null, openCodePath: null, geminiPath: null);
 
-        await Assert.That(config.KiroPath).IsEqualTo("kiro");
+        await Assert.That(config.KiroPath).IsEqualTo("kiro-cli");
     }
 
     // ── KCAP_OPENCODE_PATH ────────────────────────────────────────────────────
