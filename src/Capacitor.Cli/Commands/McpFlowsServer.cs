@@ -1246,6 +1246,10 @@ static class McpFlowsServer {
             foreach (var item in participants) {
                 if (item is not JsonObject p) continue;
                 if (!string.Equals(StringField(p, "role"), "reviewer", StringComparison.Ordinal)) continue;
+                // A stopped entry is historical — a rotated-out reviewer must not raise a false
+                // alarm against the ACTIVE vendor. The server flag still covers stopped-row
+                // divergence it can see.
+                if (p["stopped"] is JsonValue stopped && stopped.TryGetValue<bool>(out var s) && s) continue;
                 var vendor = StringField(p, "vendor");
                 // An absent vendor in a partial body is not evidence of disagreement.
                 if (vendor.Length > 0 && !string.Equals(vendor, applied, StringComparison.Ordinal)) {

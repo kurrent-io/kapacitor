@@ -175,6 +175,22 @@ public class McpFlowsServerTests {
     }
 
     [Test]
+    public async Task Status_response_ignores_stopped_reviewer_vendor_differences() {
+        // A rotated-out (stopped) reviewer entry is historical: only the ACTIVE reviewer's vendor
+        // compares against the applied echo locally.
+        var body = """
+            {"flow_run_id":"f1","status":"running","definition_id":"code-review","target_title":"t",
+             "applied_reviewer_vendor":"codex",
+             "participants":[{"role":"reviewer","vendor":"claude","model":"sonnet","stopped":true},
+                             {"role":"reviewer","vendor":"codex","model":"default","stopped":false}]}
+            """;
+
+        var text = McpFlowsServer.FormatStatusResponse(body);
+
+        await Assert.That(text).DoesNotContain("reviewer vendor mismatch");
+    }
+
+    [Test]
     public async Task Status_response_ignores_non_reviewer_vendor_differences() {
         // The run-level echo describes only the "reviewer" role — a multi-participant flow's other
         // roles legitimately run different vendors and must never trip the warning.
