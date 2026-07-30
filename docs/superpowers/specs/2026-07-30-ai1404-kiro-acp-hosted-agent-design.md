@@ -165,7 +165,12 @@ call-level probe against Copilot succeeds. Do not flip it on the strength of Kir
 
 Config surface — **corrected**: `DaemonConfig.KiroPath` **already exists** with default `"kiro"`, not
 `"kiro-cli"`. The spec previously said to add it, which would have produced duplicate plumbing or a
-silent availability change. **Decision: keep the existing `"kiro"` default and do not probe both names.** A dual-name probe makes
+silent availability change. **Decision — CORRECTED: default to `"kiro-cli"`.** An earlier draft kept `"kiro"` on a compatibility
+argument that does not hold: **measured**, `kiro` is absent from PATH while `kiro-cli` is present, and
+`PluginCommand.KiroBinary` is `"kiro-cli"`. No descriptor consumed `KiroPath` before this issue, so there
+is no compatibility to preserve — and keeping `"kiro"` would have silently never advertised Kiro on a
+standard install until a user discovered `KCAP_KIRO_PATH`. Acceptance needs a **zero-configuration**
+availability test against the supported install, not only env precedence. Do not probe both names. A dual-name probe makes
 advertised availability depend on install layout in a way that is hard to reason about or test, and
 changing the default would be a silent compatibility break for anyone relying on it. Users whose binary
 is `kiro-cli` set `KCAP_KIRO_PATH`, which takes precedence over the default — add acceptance for that

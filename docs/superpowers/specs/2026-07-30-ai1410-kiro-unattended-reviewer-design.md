@@ -112,8 +112,18 @@ means the answer is not simply "no data".
 `UnattendedTrustArgv` on the Kiro descriptor. Start scoped rather than blanket:
 
 ```
---trust-tools=fs_read,grep,shell     (exact tool names to be confirmed against `kiro-cli chat --help`)
+--trust-tools=<read-only set>        (exact Kiro tool names UNMEASURED — see below)
 ```
+
+**`shell` must NOT be in this list**, and an earlier draft had it. Trusting `shell` means a write or an
+outside-home command executes WITHOUT emitting a permission frame — so `Fail` never fires and the
+"read-only reviewer" boundary is fiction. That also means the negative acceptance criterion must verify
+that a forbidden **effect** is prevented (ask the reviewer to actually write a file and to read outside
+the worktree, then assert neither happened), not merely that a frame was handled.
+
+If the remaining read-only tools cannot review a repository, the answer is a real command/filesystem
+sandbox or a command-level read allowlist — not re-adding `shell`. **The exact Kiro tool names and trust
+semantics are UNMEASURED and must be probed before this section is implementable.**
 
 A reviewer reads and reports; it does not need write. **There is no `--trust-all-tools` fallback.** An
 earlier draft offered one, which contradicted §2 and would have widened the hole it describes: if the
@@ -169,7 +179,7 @@ Flip on the AI-1404 descriptor:
 ```csharp
 UnattendedTrustArgv: [/* §1 */],
 SupportsUnattended:  true,
-UnattendedInteractionPolicy: AcpUnattendedInteractionPolicy.AutoApprove,
+UnattendedInteractionPolicy: AcpUnattendedInteractionPolicy.Fail,   // §2 — NOT AutoApprove
 ReviewFlowMcpTransport: AcpReviewFlowMcpTransport.SessionNew,   // measured-honoured
 ```
 
