@@ -125,11 +125,11 @@ After applying the role-surface safety gate, if `start_review_flow` / `submit_re
 4. **Only call `close_review_flow` after a `clean` result.** Then report completion to the user.
 5. **If reviewer output is unclear or requires user input**, pause and ask the user before proceeding.
 6. **For code review, do NOT ask the reviewer to run tests.** CI covers test execution; reviewer feedback is on correctness, design, and adherence to conventions.
-7. **State where your changes live.** The reviewer's worktree is mirrored from **this session's project directory** — the git root the flows MCP server resolved for the session — which is **not necessarily the directory you are working in now**, and no tool parameter can redirect it. So if you changed directory, are a subagent working in a different checkout, or any part of the changeset lives in another worktree, another repository, or on another machine, the reviewer will NOT see it: say so explicitly in `context`, give it an explicit commit range (never tell it `git diff origin/main...HEAD`), and inline the relevant diffs or file contents — or pass `mode: "context-only"` so the reviewer treats your context as the sole source of truth. The reviewer is instructed to flag referenced changes it cannot find in its worktree; incomplete context wastes a full round.
+7. **State where your changes live.** The reviewer's worktree is mirrored from **this session's project directory**, not from the directory you are working in, and no tool parameter can redirect it. So if you changed directory, are a subagent in another checkout, or the changeset lives in another worktree/repo/machine, the reviewer will NOT see it: say so in `context`, give it an explicit commit range (never `git diff origin/main...HEAD`), and inline the diffs — or pass `mode: "context-only"` to make your context the sole source of truth. The reviewer flags referenced changes it cannot find; incomplete context wastes a full round.
 
 ## Server errors to act on
 
-- **`400` starting `no_daemon_available:`** — no connected daemon has the repo checked out. Relay the server error's remediation verbatim, then act on the part you can: run `kcap daemon start -d` on a machine that has the repo cloned (if the account already runs a daemon elsewhere, add a distinct name: `kcap daemon start -d --name <new-name>`), or get the repo cloned on a machine that already runs one. **You cannot redirect the flow at a different daemon or checkout from here** — these tools expose no daemon or repo-path parameter, and the target repo is derived from the requester's own checkout. If the server's remediation text still suggests passing `daemon_name` / `repo_path`, that part does not apply to a flow started through these tools; do not invent arguments for it, and do not retry unchanged in the hope it takes.
+- **`400` starting `no_daemon_available:`** — no connected daemon has the repo checked out. Relay the server's remediation verbatim, then act on the part you can: run `kcap daemon start -d` on a machine with the repo cloned (add `--name <new-name>` if the account already runs a daemon elsewhere), or get the repo cloned on a machine that already runs one. **You cannot redirect the flow at another daemon or checkout** — these tools expose no daemon or repo-path parameter. If the server's text suggests passing `daemon_name` / `repo_path`, ignore that part: do not invent those arguments, and do not retry unchanged.
 - **`400` starting `daemon_outdated:`** — the daemon's kcap is too old to host flow participants. Relay the server error's remediation verbatim — it names the outdated daemon; the fix: update kcap (`npm i -g @kurrent/kcap`), then `kcap daemon restart --name <its-name>` (works for detached and service-managed daemons alike — a raw `daemon stop` deliberately refuses a service-managed one; `kcap daemon status` lists names, and `--when-idle` defers the restart if the daemon is busy).
 - **`reviewer_vendor_required`** — no explicit vendor and no server default; ask the user to name a reviewer or have an admin configure `Flows:Review:DefaultVendor`.
 - **`reviewer_vendor_unavailable`** — the selected vendor is not installed/certified unattended on an eligible daemon; do not silently fall back to another vendor.
@@ -169,10 +169,8 @@ if findings:
 ## Example (code review)
 
 ```
-# Step 1 — start (all five required args must be provided; on the same machine the reviewer sees a
-# mirror of THIS SESSION's project directory — not necessarily the directory you are working in —
-# with uncommitted changes included only when your checkout is actually borrowed. Pass
-# mode="context-only" to opt out and make your context the sole source of truth.)
+# Step 1 — start (all five required args required; the reviewer sees a mirror of THIS SESSION's
+# project directory, not of the directory you are working in — pass mode="context-only" to opt out)
 start_review_flow(
   kind="code-review",
   target_kind="branch",
