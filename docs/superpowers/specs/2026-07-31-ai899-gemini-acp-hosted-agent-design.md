@@ -86,9 +86,9 @@ public static readonly AcpVendorDescriptor Gemini = new(
     ResolveBinaryPath:   cfg => cfg.GeminiPath,
     ResolveDefaultModel: _ => null,
     Argv:                ["--experimental-acp", "--skip-trust",
-                          // §3.1a: scoped to the servers kcap injects. NOT a non-matching
-                          // sentinel — that would block ours too.
-                          "--allowed-mcp-server-names", ...InjectedMcpServerNames],
+                          // §3.1c — clamps repo-authored MCP servers. A single non-matching
+                          // name is correct WHILE SupportsMcpServers is false; see §3.1c.
+                          "--allowed-mcp-server-names", "kcap-none"],
     UnattendedTrustArgv: [],
     SupportsUnattended:  false,
     ModelSelector:       NoOpModelSelector.Instance,
@@ -228,6 +228,25 @@ The options below are retained only as the reasoning that the correction closed 
 availability.** (a) is small, fail-closed, and honest about what it costs; shipping without it would mean
 hosted Gemini silently executes branch-authored code on the machines of the operators most likely to use
 it.
+
+### 3.1c The allowlist contents depend on `SupportsMcpServers`, and rev 5 got this backwards
+
+Rev 5 corrected the allowlist to "the servers kcap injects" — which contradicts §3.4, where
+`SupportsMcpServers` is **false** and therefore kcap injects **nothing**. Both cannot be right, and the
+implementation would have exposed it immediately.
+
+Resolved:
+
+* **While `SupportsMcpServers: false`** (now): there are no injected servers, so a single **non-matching**
+  name is exactly right. It permits nothing, which blocks the repo-authored server and costs us nothing.
+  Measured working — `--allowed-mcp-server-names __kcap_none__` clamped the repo server without crashing.
+* **When §3.4's call-level probe flips the flag to true**: the allowlist must become the injected server
+  names in the same change, or hosted Gemini ships with MCP silently broken. That coupling is the reason
+  this subsection exists rather than a comment.
+* **Never the empty string** — it crashes config load before session start (§3.1b).
+
+The test in §7.7 asserts the coupling, not just the flag: allowlist contents and `SupportsMcpServers` must
+agree, so flipping one without the other fails.
 
 ### 3.2 `SupportsUnattended: false` — hosting only, for now
 

@@ -1,6 +1,7 @@
 // test/Capacitor.Cli.Tests.Unit/Acp/AcpVendorDescriptorTests.cs
 using Capacitor.Cli.Daemon;
 using Capacitor.Cli.Daemon.Acp;
+using Capacitor.Cli.Daemon.Services;
 
 namespace Capacitor.Cli.Tests.Unit.Acp;
 
@@ -203,6 +204,109 @@ public class AcpVendorDescriptorTests {
             ReviewFlowMcpTransport: AcpReviewFlowMcpTransport.SessionNew,
             UnattendedInteractionPolicy: AcpUnattendedInteractionPolicy.AutoApprove
         )).Throws<ArgumentException>();
+    }
+
+    /// <summary>The zero-configuration case, for the same reason Kiro needs one: an override test passes
+    /// identically whichever name the default holds, which is how Kiro's wrong default survived. Gemini's
+    /// default is already correct — the binary really is <c>gemini</c> — and this is the test that would
+    /// notice if it stopped being.</summary>
+    [Test]
+    public async Task Gemini_ZeroConfiguration_ResolvesTheShippedBinaryName() {
+        await Assert.That(AcpVendorDescriptors.Gemini.ResolveBinaryPath(new DaemonConfig()))
+            .IsEqualTo("gemini");
+    }
+
+    [Test]
+    public async Task Gemini_ResolveBinaryPath_ReadsConfigGeminiPath() {
+        var config = new DaemonConfig { GeminiPath = "/opt/gemini/gemini" };
+
+        await Assert.That(AcpVendorDescriptors.Gemini.ResolveBinaryPath(config)).IsEqualTo("/opt/gemini/gemini");
+    }
+
+    [Test]
+    public async Task Gemini_MatchesTodaysHardCodedConstants() {
+        var descriptor = AcpVendorDescriptors.Gemini;
+
+        await Assert.That(descriptor.Vendor).IsEqualTo("gemini");
+
+        // --skip-trust is REQUIRED, not optional: Gemini refuses a headless turn in an untrusted
+        // directory outright (exit 55, before any model call) and a daemon worktree cannot be assumed
+        // pre-trusted. It is NOT containment — see the allowlist assertion below.
+        await Assert.That(descriptor.Argv.SequenceEqual(
+            ["--experimental-acp", "--skip-trust",
+             "--allowed-mcp-server-names", AcpVendorDescriptors.GeminiNoMcpSentinel])).IsTrue();
+
+        await Assert.That(descriptor.SupportsUnattended).IsFalse();
+        await Assert.That(descriptor.UnattendedTrustArgv.IsEmpty).IsTrue();
+        await Assert.That(descriptor.UnattendedInteractionPolicy)
+            .IsEqualTo(AcpUnattendedInteractionPolicy.Disabled);
+        await Assert.That(descriptor.SupportsBorrowedReviewFlow).IsFalse();
+
+        // FALSE pending a call-level stdio probe. Gemini advertises {http, sse} and not stdio — but that
+        // advertisement is not a discriminator (Kiro honours stdio without advertising it), so flipping
+        // this needs a purpose-built stdio server driven to a real tools/call, not an inference.
+        await Assert.That(descriptor.SupportsMcpServers).IsFalse();
+
+        // Same call as Kiro: session/new returns models so the read half fits, but the write half is
+        // unverified and ConfigOptionModelSelector fails SILENTLY.
+        await Assert.That(descriptor.ModelSelector).IsEqualTo(NoOpModelSelector.Instance);
+        await Assert.That(descriptor.ModelSelector.CanSelectModel).IsFalse();
+    }
+
+    /// <summary>
+    /// The allowlist contents and <c>SupportsMcpServers</c> are COUPLED, and this is the test that stops
+    /// them drifting.
+    ///
+    /// <para>An allowlist of one non-matching name permits nothing. That is correct only while nothing is
+    /// injected. The day the stdio probe flips <c>SupportsMcpServers</c> to true, the allowlist must
+    /// become the injected server names in the same change — otherwise hosted Gemini ships with MCP
+    /// silently broken, which is exactly the failure a green descriptor test would otherwise hide.</para>
+    ///
+    /// <para>The sentinel must also be non-empty: <c>--allowed-mcp-server-names ""</c> fails Gemini's
+    /// config load before the session starts.</para>
+    /// </summary>
+    [Test]
+    public async Task Gemini_McpAllowlist_IsCoupledToSupportsMcpServers() {
+        var descriptor = AcpVendorDescriptors.Gemini;
+        var argv       = descriptor.Argv.ToArray();
+        var allowed    = argv[Array.IndexOf(argv, "--allowed-mcp-server-names") + 1];
+
+        await Assert.That(allowed).IsNotEmpty();
+
+        if (descriptor.SupportsMcpServers) {
+            // Nothing injected can be permitted by a sentinel, so this must have been updated.
+            await Assert.That(allowed).IsNotEqualTo(AcpVendorDescriptors.GeminiNoMcpSentinel);
+        } else {
+            await Assert.That(allowed).IsEqualTo(AcpVendorDescriptors.GeminiNoMcpSentinel);
+        }
+    }
+
+    /// <summary>
+    /// Gemini's launch-failure hint must read as a POSSIBILITY. Gemini reports a missing project with a
+    /// message naming a tier problem — thrown by <c>throwIneligibleOrProjectIdError</c>, the same text for
+    /// both causes — and reproducing that confidently-wrong attribution is the failure mode this guards.
+    ///
+    /// <para>Golden-ish rather than a word blacklist: the specific hedges and the daemon-not-your-shell
+    /// clause are each asserted, so rewording that removes the hedging fails rather than passing a
+    /// keyword scan.</para>
+    /// </summary>
+    [Test]
+    public async Task GeminiAuthHint_SuggestsRatherThanDiagnoses() {
+        var hint = AcpHostedAgentRuntime.GeminiAuthHint;
+
+        await Assert.That(hint).Contains("may be an authentication or project-configuration problem");
+        await Assert.That(hint).Contains("or it may be unrelated");
+
+        // The actual content: a supervised daemon inherits nothing from an interactive shell, which is
+        // how the original misdiagnosis happened.
+        await Assert.That(hint).Contains("where the DAEMON can see it");
+        await Assert.That(hint).Contains("not your shell profile");
+        await Assert.That(hint).Contains("GOOGLE_CLOUD_PROJECT");
+        await Assert.That(hint).Contains("GOOGLE_CLOUD_PROJECT_ID");
+
+        // Never a verdict.
+        await Assert.That(hint).DoesNotContain("is an authentication");
+        await Assert.That(hint).DoesNotContain("You must");
     }
 
     [Test]

@@ -264,4 +264,64 @@ internal static class AcpVendorDescriptors {
         ModelSelector:       NoOpModelSelector.Instance,
         SupportsMcpServers:  true
     );
+
+    /// <summary>
+    /// A name no MCP server will ever have, passed to Gemini's <c>--allowed-mcp-server-names</c> so the
+    /// allowlist permits nothing. See <see cref="Gemini"/> for why "nothing" is the correct contents
+    /// today, and why this must change in lockstep with <c>SupportsMcpServers</c>.
+    ///
+    /// <para>It must be non-empty: <c>--allowed-mcp-server-names ""</c> fails Gemini's config load with
+    /// <i>"mcpName is required if specified"</i> BEFORE the session starts — which also makes it a trap
+    /// when verifying this by hand, because the launch then fails for a reason unrelated to MCP and
+    /// reports nothing loaded.</para>
+    /// </summary>
+    internal const string GeminiNoMcpSentinel = "kcap-none";
+
+    /// <summary>Google Gemini CLI as an ACP hosted agent (<c>gemini --experimental-acp</c>).
+    /// Interactive hosting only; the unattended reviewer is its own issue, as with Kiro.
+    ///
+    /// <para><b><c>--skip-trust</c> is required, and is NOT a containment measure.</b> Gemini refuses a
+    /// headless turn in an untrusted directory outright — <c>exit 55</c> before any model call — and a
+    /// daemon-created worktree cannot be assumed pre-trusted, so without the flag every launch fails.
+    /// What it does NOT do is protect anything: trust INHERITS from a trusted parent directory, and a
+    /// daemon worktree lives at <c>&lt;repo&gt;/.capacitor/worktrees/agent-…</c>, INSIDE the operator's
+    /// repository. An operator who has trusted their own repo therefore gives every hosted Gemini agent
+    /// inherited trust over the checked-out branch's configuration — and passing <c>--skip-trust</c> does
+    /// not withdraw it. Measured, not assumed.</para>
+    ///
+    /// <para><b>Which is why the MCP allowlist is here.</b> Under inherited trust, a repository-authored
+    /// <c>.gemini/settings.json</c> MCP server WAS observed starting on the ACP path — repo-controlled
+    /// process execution under the daemon user, before the model acts, on a branch that may be
+    /// contributor-authored. <see cref="GeminiNoMcpSentinel"/> reduces the allowlist to nothing, which
+    /// blocks it. Repo-authored <i>hooks</i> were separately measured NOT to run on the ACP path (they do
+    /// on the <c>--prompt</c> path — the two paths differ, and neither predicts the other).</para>
+    ///
+    /// <para><b>The sentinel is only correct while <see cref="AcpVendorDescriptor.SupportsMcpServers"/> is
+    /// false.</b> It permits nothing, so with nothing injected it costs nothing. The day the stdio
+    /// call-level probe flips that flag, this list must become the injected server names in the SAME
+    /// change, or hosted Gemini ships with MCP silently broken. <c>AcpVendorDescriptorTests</c> asserts
+    /// the coupling so the two cannot drift apart.</para>
+    ///
+    /// <para><see cref="NoOpModelSelector"/> for the same reason as Kiro: <c>session/new</c> does return a
+    /// <c>models</c> object, so <see cref="ConfigOptionModelSelector"/>'s read half would fit, but its
+    /// write half is unverified on Gemini and that selector fails SILENTLY — a session that reports the
+    /// requested model while running another. <c>ResolveDefaultModel: null</c> alone is not enough,
+    /// because <c>ResolveRequestedModel</c> prioritises a per-launch model and would reach a live
+    /// selector anyway.</para>
+    ///
+    /// <para><c>--approval-mode</c> is deliberately not passed: interactive hosting should behave as the
+    /// user's own session does, and pinning <c>plan</c> would silently make hosted Gemini read-only.
+    /// <c>DiagnosticBinary</c> needs no branch — the vendor key and the binary name are both
+    /// <c>gemini</c>.</para></summary>
+    public static readonly AcpVendorDescriptor Gemini = new(
+        Vendor:              "gemini",
+        ResolveBinaryPath:   cfg => cfg.GeminiPath,
+        ResolveDefaultModel: _ => null,
+        Argv:                ["--experimental-acp", "--skip-trust",
+                              "--allowed-mcp-server-names", GeminiNoMcpSentinel],
+        UnattendedTrustArgv: [],
+        SupportsUnattended:  false,
+        ModelSelector:       NoOpModelSelector.Instance,
+        SupportsMcpServers:  false
+    );
 }

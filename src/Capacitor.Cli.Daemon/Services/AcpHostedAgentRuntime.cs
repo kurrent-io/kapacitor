@@ -291,7 +291,36 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
                 ? "run `copilot login` and verify GitHub Copilot access for your enterprise"
                 : _vendor == AcpVendorDescriptors.Kiro.Vendor
                     ? "verify Kiro CLI is signed in and your subscription/entitlement is active"
-                    : $"authenticate `{_vendor}` and verify your subscription/entitlement";
+                    : _vendor == AcpVendorDescriptors.Gemini.Vendor
+                        ? GeminiAuthHint
+                        : $"authenticate `{_vendor}` and verify your subscription/entitlement";
+
+    /// <summary>
+    /// Gemini's hint, worded as a POSSIBILITY rather than a diagnosis — and that is a requirement, not
+    /// politeness.
+    ///
+    /// <para>Gemini reports a missing project as
+    /// <c>IneligibleTierError: … no longer supported for Gemini Code Assist for individuals</c>, thrown by
+    /// a function named <c>throwIneligibleOrProjectIdError</c> — the SAME message for a missing project id
+    /// as for a genuine tier problem. That confidently-wrong attribution cost two retracted conclusions
+    /// while this vendor was being specced. Reproducing the pattern here would be worse than saying
+    /// nothing, so this text claims nothing: two hedges plus an explicit "or it may be unrelated",
+    /// because the failure this is attached to often IS unrelated.</para>
+    ///
+    /// <para>The daemon-not-your-shell clause is the actual content. A supervised daemon inherits nothing
+    /// from an interactive shell, so a project variable exported in a shell profile is invisible to it —
+    /// which is precisely how the misdiagnosis happened.</para>
+    ///
+    /// <para>Kept verbatim in the exception message rather than carried as a structured field: the message
+    /// is a wire shape an older server consumes, and the honesty requirement is carried by the wording.
+    /// Pinned by a golden test.</para>
+    /// </summary>
+    internal const string GeminiAuthHint =
+        "this may be an authentication or project-configuration problem, or it may be unrelated — if "
+      + "hosted Gemini has not worked on this machine before, check `gemini` is logged in and that "
+      + "GOOGLE_CLOUD_PROJECT (or GOOGLE_CLOUD_PROJECT_ID) is set where the DAEMON can see it (the "
+      + "service unit, not your shell profile), then re-run `kcap daemon service install` and restart "
+      + "the daemon";
 
     public bool   HasExited           => _process.HasExited;
     public int?   ExitCode            => _process.ExitCode;
