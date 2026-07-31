@@ -75,4 +75,9 @@ public class LaunchConsentGateTests {
         await Assert.That(o.Allowed).IsTrue();
         await Assert.That(o.Source).IsEqualTo("owner");
     }
+
+    [Test]
+    public async Task Denied_reason_prefix_is_the_public_wire_literal() {
+        await Assert.That(LaunchConsentGate.DeniedReasonPrefix).IsEqualTo("launch_denied_by_owner");
+    }
 }

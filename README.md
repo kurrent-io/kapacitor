@@ -681,7 +681,7 @@ Every server-driven launch — a hosted coding agent, a PR review, or a review-f
 kcap daemon consent show                                        # print default, prompt timeout, and numbered rules
 kcap daemon consent set-default deny                             # allow (default) | deny | prompt
 kcap daemon consent allow --requester user_123 --kind review     # append a rule (at least one flag required)
-kcap daemon consent deny --vendor codex --repo /path/to/repo/*   # deny by vendor + a repo glob
+kcap daemon consent deny --vendor codex --repo '/path/to/repo/*'   # deny by vendor + a repo glob
 kcap daemon consent remove 0                                     # remove the rule at the index `show` printed
 kcap daemon consent log -n 50                                    # tail consent-decisions.jsonl (works while stopped)
 ```

@@ -901,7 +901,9 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
         // AI-1623: owner consent gate. Server-driven launches only — the local 0600 socket path
         // (HandleLocalSpawnAsync) is the owner's by construction and never consults this.
         // NOTE: in prompt mode this can hold the sequenced slot up to PromptTimeoutSeconds (≤300s,
-        // default 45s ≤ the server's 60s launch-admission patience); commands queued behind it wait.
+        // default 45s ≤ the server's 60s launch-admission patience); commands queued behind it wait
+        // — and, because SignalR dispatches server→client invocations sequentially, other server-relayed
+        // messages to this daemon queue behind the prompt for the same window.
         var consentInput = new LaunchConsentInput(
             cmd.RequesterUserId, cmd.RequesterIsOwner ?? false,
             LaunchConsentEngine.KindToken(cmd.Kind), cmd.RepoPath, cmd.Vendor);
