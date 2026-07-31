@@ -33,11 +33,15 @@ public class LocalPermissionBridgeTests {
     // ---------------------------------------------------------------------------------
     // Shutdown must be idempotent AND non-throwing.
     //
-    // The bridge is registered through two DI descriptors (see the host test below), so the
-    // container disposes the same instance twice. Before the fix the second pass hit StopAsync's
-    // _cts.CancelAsync() on an already-disposed CTS; the ObjectDisposedException surfaced inside
-    // ServiceProviderEngineScope.DisposeAsync where nothing catches it, terminating the daemon
-    // (5 occurrences in daemon-tony.log over two days). Each of these fails without the fix.
+    // The bridge is registered through two DI descriptors, so the container disposes the same
+    // instance twice within one ServiceProviderEngineScope walk. Before the fix the second pass hit
+    // StopAsync's _cts.CancelAsync() on an already-disposed CTS; the ObjectDisposedException
+    // surfaced where nothing catches it, terminating the daemon (5 occurrences in daemon-tony.log
+    // over two days).
+    //
+    // Daemon_host_registration_disposes_the_bridge_twice_without_terminating is the PRODUCTION
+    // reproduction. The two tests immediately below are synthetic ordering/robustness checks that
+    // pin the guard directly. All three fail without the fix.
     // ---------------------------------------------------------------------------------
 
     [Test, NotInParallel(nameof(LocalPermissionBridgeTests))]
@@ -48,8 +52,11 @@ public class LocalPermissionBridgeTests {
         await bridge.StopAsync(CancellationToken.None);
         await bridge.DisposeAsync();
 
-        // The second disposal is the one the host's DI teardown performs after the daemon's own
-        // shutdown sequence has already disposed the service.
+        // SYNTHETIC ordering test, not a production interleaving: in production both DisposeAsync
+        // calls happen inside DI's single ServiceProviderEngineScope walk (see the host test
+        // below) — DaemonRunner never disposes this service itself. Driving the sequence directly
+        // pins the guard independently of the DI wiring, so a future registration change cannot
+        // quietly remove the coverage.
         await bridge.DisposeAsync();
     }
 
@@ -60,8 +67,10 @@ public class LocalPermissionBridgeTests {
 
         await bridge.DisposeAsync();
 
-        // A hosted-service StopAsync arriving after disposal — the reverse interleaving of the
-        // same race. This is the call that threw on the disposed CTS.
+        // SYNTHETIC robustness test. The corrected production cause involves no race, and this
+        // exact order is not what the daemon does — but StopAsync is public and reachable from the
+        // hosted-service lifecycle independently of disposal, so it must not throw on an
+        // already-disposed CTS. This is the call that threw before the fix.
         await bridge.StopAsync(CancellationToken.None);
     }
 

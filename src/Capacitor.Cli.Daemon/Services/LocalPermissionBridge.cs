@@ -146,11 +146,13 @@ internal sealed partial class LocalPermissionBridge(
     }
 
     public async Task StopAsync(CancellationToken cancellationToken) {
-        // Read the field ONCE: DisposeAsync nulls it after disposing, so re-reading could see a
-        // non-null reference here and null moments later. Cancelling an already-disposed CTS
-        // throws, and this method runs on the host's dispose path where a throw is fatal — so
-        // treat that as an already-stopped bridge rather than an error.
-        var cts = Interlocked.CompareExchange(ref _cts, null, null);
+        // Read the field ONCE. DisposeAsync exchanges it to null BEFORE disposing, so a plain read
+        // is enough: reference reads are atomic, and the only bad outcome — capturing a non-null
+        // reference that is disposed a moment later — is handled by the catch below. (An
+        // interlocked read would add nothing here.) Cancelling an already-disposed CTS throws, and
+        // this runs on the host's dispose path where a throw is fatal, so treat it as an
+        // already-stopped bridge rather than an error.
+        var cts = _cts;
         if (cts is not null) {
             try { await cts.CancelAsync(); }
             catch (ObjectDisposedException) { /* already stopped and disposed — nothing to cancel */ }
@@ -185,7 +187,10 @@ internal sealed partial class LocalPermissionBridge(
         try {
             await StopAsync(CancellationToken.None);
         } catch (Exception ex) {
-            // Never let a teardown failure escape into the host's dispose path.
+            // Deliberately broad. This is a teardown boundary: DI stops walking its remaining
+            // disposables the moment an exception escapes, so letting anything through here would
+            // strand other services' cleanup as well as killing the process. Logged rather than
+            // swallowed silently, so a real teardown failure is still diagnosable.
             LogDisposeFailed(logger, ex);
         } finally {
             ReleasePortClaim(_port);
