@@ -233,6 +233,35 @@ public class LaunchAgentCommandWireFormatTests {
         await Assert.That(json).Contains("codex");
         await Assert.That(json.ToLowerInvariant()).Contains("\"vendor\"");
     }
+
+    [Test]
+    public async Task Requester_fields_roundtrip_and_default_null_when_absent() {
+        // Old-server payload without the new fields → nulls (wire compat).
+        var legacyJson = """{"agent_id":"a1","model":"m","repo_path":"/r","vendor":"claude"}""";
+        var legacy = JsonSerializer.Deserialize(legacyJson, CapacitorJsonContext.Default.LaunchAgentCommand);
+        await Assert.That(legacy.RequesterUserId).IsNull();
+        await Assert.That(legacy.RequesterIsOwner).IsNull();
+
+        // New fields serialize snake_case and roundtrip.
+        var cmd = new LaunchAgentCommand(
+            AgentId: "a1",
+            Prompt: null,
+            Model: "m",
+            Effort: null,
+            RepoPath: "/r",
+            Tools: null,
+            AttachmentIds: null,
+            Vendor: "claude",
+            RequesterUserId: "user_x",
+            RequesterIsOwner: true
+        );
+        var json = JsonSerializer.Serialize(cmd, ServerWireOptions);
+        await Assert.That(json).Contains("\"requester_user_id\":\"user_x\"");
+        await Assert.That(json).Contains("\"requester_is_owner\":true");
+        var back = JsonSerializer.Deserialize(json, CapacitorJsonContext.Default.LaunchAgentCommand);
+        await Assert.That(back.RequesterUserId).IsEqualTo("user_x");
+        await Assert.That(back.RequesterIsOwner).IsEqualTo(true);
+    }
 }
 
 /// <summary>

@@ -1298,7 +1298,12 @@ public readonly record struct LaunchAgentCommand(
         // wire-compatible with older daemons (ignore it) and older servers (never set it). The daemon
         // launches with the exact LaunchModel VERBATIM and, post-launch, reports the concrete resolved
         // model back keyed on LaunchAttemptId (see ExplicitReviewerModelResolvedV1).
-        ExplicitReviewerModelLaunch? ExplicitReviewerModel = null
+        ExplicitReviewerModelLaunch? ExplicitReviewerModel = null,
+        // AI-1623 consent: who asked for this launch. Appended last, same wire-compat rule as the
+        // fields above — old daemons ignore them, old servers never set them (null ⇒ unknown ⇒
+        // the consent engine falls through rules to the configured default).
+        string?           RequesterUserId       = null,
+        bool?             RequesterIsOwner      = null
     );
 
 public sealed record ReviewerCertificationRequirement(
