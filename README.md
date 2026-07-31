@@ -715,7 +715,25 @@ The first five (`kcap-recap`, `kcap-errors`, `kcap-hide`, `kcap-disable`, `kcap-
 >
 > The `**.kcap.ai` wildcard covers every SaaS tenant — current and future — plus `auth.kcap.ai`, so switching profiles and adding tenants just work with no per-tenant edits. **Self-hosted** servers are added as exact-host entries, derived from every configured profile's `server_url` and refreshed on each `kcap setup`. Existing config is respected: if you already run a `network_proxy` policy, kcap's hosts are merged into your `domains` (yours preserved); if you've already opened the network (`network_access = true` with no proxy), nothing changes. Opt out with `--skip-codex-network-access` on either command (and the npm-postinstall `--if-installed` refresh never touches `config.toml`). A localhost dev server additionally needs `allow_local_binding = true`, which kcap does not set. Uninstall leaves these keys in place — they're your security posture, not kcap state.
 
-The daemon starts Codex with `--sandbox workspace-write` and `--ask-for-approval on-request`. This lets Codex edit files in the agent's worktree but escalates sensitive operations (e.g. network calls, shell commands outside the worktree) through the daemon's permission bridge to the dashboard.
+**Sandbox and approval posture.** By default the daemon starts Codex with `--sandbox workspace-write` and `--ask-for-approval on-request`. This lets Codex edit files in the agent's worktree but escalates sensitive operations (e.g. network calls, shell commands outside the worktree) through the daemon's permission bridge to the dashboard.
+
+An **interactive** hosted launch (one that runs in a daemon-created worktree) may select a different posture instead of those defaults:
+
+| Flag | Selectable values |
+|---|---|
+| `--sandbox` | `read-only`, `workspace-write` (default), `danger-full-access` |
+| `--ask-for-approval` | `untrusted`, `on-request` (default), `never` |
+
+Two cases are **not** selectable, because their values are containment guarantees rather than preferences:
+
+- A **borrowed** launch runs in your own real checkout, so it is always `read-only` — anything else would let a hosted agent modify the repo you are working in.
+- A **review-flow reviewer** runs unattended, so it is always `--ask-for-approval never` — any prompting mode would wedge the round waiting for an approval no human is there to give.
+
+PR-review launches also keep a fixed posture. A launch that supplies a posture for any of those three cases is **rejected** with a coded error (`codex_posture_not_overridable`) rather than having it silently ignored or silently applied; an unknown value, a half-specified pair, or the upstream-deprecated `on-failure` is rejected as `codex_posture_invalid`.
+
+Selecting `--ask-for-approval never` or `--sandbox danger-full-access` **disables the permission bridge for that agent** — it will never ask the dashboard before acting, and `danger-full-access` also reaches outside the worktree. The daemon logs a warning naming the agent whenever an interactive launch resolves to either.
+
+Posture selection is driven by the server (dashboard), and the daemon advertises support for it at connect. A server that offers the selector will refuse it against a daemon too old to advertise support, rather than sending a posture that would be quietly dropped — so update kcap on the daemon host if the dashboard says the selector is unavailable. This is separate from local `kcap agent start codex -- …`, where you pass Codex flags yourself and they are not restricted (see [Local agents](#local-agents-kcap-agent)).
 
 > **Upgrading from an earlier version of kcap?** Run `kcap update` (or `npm install -g @kurrent/kcap`) — the npm postinstall hook, and `kcap update` itself, refresh all user-scope kcap installations, so you always pick up the current CLI version's skills (`~/.agents/skills/kcap-*`), Codex hook commands (`~/.codex/hooks.json`), and Claude plugin registration (`~/.claude/settings.json`). Each refresh is gated on a marker file written by your previous setup — fresh systems that never opted in are left untouched. Project-scope installs (`--project`) are not auto-refreshed; re-run `kcap plugin install [--codex] --project` after upgrading if you want the latest config for a specific repo.
 >
@@ -727,7 +745,7 @@ The daemon starts Codex with `--sandbox workspace-write` and `--ask-for-approval
 >
 > **Recovery:** upgrade kcap, then end the harness session and start a fresh one — or, in harnesses that expose it, reconnect the `kcap-flows` MCP server. To confirm the new schema is live, check that your client lists the server as connected (`claude mcp list`, `codex mcp get kcap-flows`, `gemini mcp list`, `cursor-agent mcp list`, `opencode mcp list`) and that `start_review_flow` now advertises `vendor`.
 
-PR review is supported for hosted Codex agents as well as Claude — the same `kcap-review` MCP context is injected either way. The sandbox and approval-mode selectors in the launch dialog are planned as a follow-up (AI-633).
+PR review is supported for hosted Codex agents as well as Claude — the same `kcap-review` MCP context is injected either way.
 
 #### Cursor IDE hooks
 
