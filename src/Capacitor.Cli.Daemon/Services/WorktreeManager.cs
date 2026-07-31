@@ -31,14 +31,17 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
             : StringComparison.Ordinal;
 
     /// <summary>Per-repository gate around the git commands that touch <c>.git/worktrees</c>.
-    /// <para>Observed fact: concurrent launches in one repo can kill a <c>git worktree add</c> with
-    /// <c>fatal: failed to read .git/worktrees/&lt;other&gt;/commondir: Success</c>. The <c>Success</c>
-    /// (errno 0) says the read did not fail for a filesystem reason — it came back empty, which only a
-    /// concurrent writer can produce, and <c>worktree add</c> does enumerate the existing entries while
-    /// creating its own. The exact interleaving is inferred, not reproduced; the remedy does not depend
-    /// on pinning it down. <c>worktree remove</c> and <c>branch -D</c> read or mutate the same tree.
-    /// The daemon really does run these concurrently (a flow launching several reviewers against one
-    /// source repo) — the same concurrency the per-worktree fetch ref below was introduced for.</para>
+    /// <para>Observed: concurrent launches in one repo can kill a <c>git worktree add</c> with
+    /// <c>fatal: failed to read .git/worktrees/&lt;other&gt;/commondir: Success</c>. That is the whole of
+    /// the evidence — the error is real and reproduced only on CI. The explanation (a sibling's metadata
+    /// being read while another add is still writing it, since <c>worktree add</c> does enumerate the
+    /// existing entries while creating its own) is a HYPOTHESIS, not something this change proves; the
+    /// nonsensical <c>Success</c> errno is suggestive but not proof. The remedy does not depend on
+    /// pinning it down: git takes no lock here, so serialising our own concurrent access is correct
+    /// regardless of which interleaving produced the message. <c>worktree remove</c> and
+    /// <c>branch -D</c> also mutate or read the same tree. The daemon really does run these
+    /// concurrently (a flow launching several reviewers against one source repo) — the same concurrency
+    /// the per-worktree fetch ref below was introduced for.</para>
     /// <para>Static because <see cref="RemoveAsync"/> is static, so the gate is shared across
     /// instances. Growth is one semaphore per distinct repo for process lifetime, accepted rather than
     /// evicted: a daemon sees a handful of repos, and removing an entry while a waiter holds it would
@@ -75,7 +78,27 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
     /// <para>Best effort: a non-repo path (the standalone-snapshot case) or an old git without
     /// <c>--path-format</c> falls back to the normalised checkout path, which is what this gate keyed on
     /// before and still excludes the common same-path case.</para></summary>
+    /// <summary>Cache of checkout path → gate key. Resolving spawns git, and the gate is taken up to
+    /// three times per launch, so without this a create+remove pair pays for several extra processes.
+    /// A repository's common dir does not move, so the mapping is stable; the one drift case is a path
+    /// that was not a repo when first seen (cached under its fallback key) and later becomes one, which
+    /// can only SPLIT a gate, never merge two distinct repositories onto one.</summary>
+    static readonly System.Collections.Concurrent.ConcurrentDictionary<string, string> GateKeyCache =
+        new(OperatingSystem.IsWindows() || OperatingSystem.IsMacOS()
+            ? StringComparer.OrdinalIgnoreCase
+            : StringComparer.Ordinal);
+
     static async Task<string> ResolveGateKeyAsync(string repoPath) {
+        var lookup = NormalizePathKey(repoPath);
+        if (GateKeyCache.TryGetValue(lookup, out var cached)) return cached;
+
+        var resolved = await ResolveGateKeyUncachedAsync(repoPath);
+        GateKeyCache[lookup] = resolved;
+
+        return resolved;
+    }
+
+    static async Task<string> ResolveGateKeyUncachedAsync(string repoPath) {
         try {
             // --path-format=absolute needs git 2.31+; on older git this exits non-zero and we resolve
             // the (possibly relative) plain form against the checkout instead.
@@ -645,6 +668,11 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
     /// <summary>Longer timeout for network git operations (fetch).</summary>
     static readonly TimeSpan FetchTimeout = TimeSpan.FromMinutes(2);
 
+    /// <summary>How long to wait for a timed-out git process to actually die after being killed,
+    /// before giving up and unwinding anyway. See the timeout path in
+    /// <see cref="RunGitCaptureResult"/> for why the wait matters.</summary>
+    static readonly TimeSpan KillGrace = TimeSpan.FromSeconds(5);
+
     static async Task<bool> IsGitRepoWithCommits(string path) {
         try {
             var       psi  = NewGitPsi(path, ["rev-parse", "HEAD"]);
@@ -700,6 +728,15 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
             await proc.WaitForExitAsync(cts.Token);
         } catch (OperationCanceledException) {
             try { proc.Kill(true); } catch { /* best-effort */ }
+
+            // Kill is asynchronous. Wait for it to land before unwinding: a caller may hold the
+            // worktree metadata gate, whose whole point is that no other git touches this repo's
+            // metadata while we are inside it — and a killed-but-still-running git would escape it
+            // the moment the gate releases. Bounded, so an unkillable process can't wedge us here.
+            try { await proc.WaitForExitAsync(CancellationToken.None).WaitAsync(KillGrace); } catch {
+                /* exited, or refused to die within the grace — nothing further we can do */
+            }
+
             throw new InvalidOperationException(
                 $"git {string.Join(' ', args)} timed out after {timeout.TotalSeconds:F0}s");
         }
