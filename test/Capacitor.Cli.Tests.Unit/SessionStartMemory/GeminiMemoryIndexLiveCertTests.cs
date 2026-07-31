@@ -27,6 +27,12 @@ public class GeminiMemoryIndexLiveCertTests {
     const string SessionStartPath     = "/hooks/session-start/gemini";
     const string ForcedFailureMarker  = "kcap_cert_forced_session_start_failure";
 
+    /// <summary>What the poster's failed-POST branch writes to stderr — <c>[kcap] {agentTag}
+    /// {endpoint}: HTTP {code}</c>. Matched on the route-and-status tail rather than the whole line, so
+    /// the cert does not break on an agent-tag rename, but still cannot be satisfied by a failure on
+    /// some other route.</summary>
+    const string FailedPostDiagnostic = "session-start/gemini: HTTP 400";
+
     static void Gate() => MemoryIndexLiveCertHarness.SkipUnlessLiveGateReady(
         LiveGateEnvVar,
         "one real `gemini` turn per test",
@@ -116,13 +122,21 @@ public class GeminiMemoryIndexLiveCertTests {
     /// the very same base URL is proxied through untouched, which is the only arrangement that produces
     /// the shape under test — a hook that fetched a real index and then failed its POST.</para>
     ///
-    /// <para><b>The claim is about ONE invocation, so it is measured on that one invocation.</b> An
-    /// earlier draft proved the non-zero exit from a SEPARATE direct <c>kcap hook --gemini</c> run and
-    /// inferred the rest; review was right that this is a substitution, not a proof — every assertion
-    /// could hold while Gemini's own hook returned 0 through some session- or source-dependent branch.
-    /// Instead a recording shim named <c>kcap</c> is prepended to the PATH Gemini inherits, so the exit
-    /// code and stdout of the hook GEMINI ran are captured directly, and the test asserts that the very
-    /// invocation whose <c>additionalContext</c> carried the nonce is the one that exited non-zero.</para>
+    /// <para><b>The claim is about ONE invocation, so every link is measured on that one invocation.</b>
+    /// A recording shim named <c>kcap</c> is prepended to the PATH Gemini inherits, capturing each hook
+    /// invocation's exit code, stdout and stderr. The test picks the invocation whose
+    /// <c>additionalContext</c> carried the nonce — the hook Gemini actually consumed — and asserts, of
+    /// that same invocation, that it exited non-zero and that its own stderr carries the failed-POST
+    /// diagnostic for the session-start route.</para>
+    ///
+    /// <para>Three weaker versions were tried and each was holed in review; they are worth naming
+    /// because each looks sufficient. (1) Proving the non-zero exit from a SEPARATE direct
+    /// <c>kcap hook --gemini</c> run is a substitution: Gemini's own hook could have returned 0 through
+    /// a session- or source-dependent branch. (2) "Some forced 400 happened during the turn" is
+    /// turn-global: one invocation could carry the nonce while a DIFFERENT one took the 400. (3)
+    /// Correlating those two on session id narrows it but does not close it, because a session id is
+    /// reused across invocations — <c>startup</c> and <c>resume</c> share one. Only per-invocation
+    /// evidence closes it.</para>
     /// </summary>
     [Test, NotInParallel]
     public async Task Failed_session_start_post_still_delivers_the_index_to_a_real_gemini_session() {
@@ -177,16 +191,21 @@ public class GeminiMemoryIndexLiveCertTests {
             // very property under test — a sentinel that satisfies the assertion is a false-pass path.
             await Assert.That(delivering.All(i => i.ExitCode is { } code && code != 0)).IsTrue();
 
-            // ...and each of those invocations is the one whose POST the FORCED mapping rejected.
-            // A turn-global "some 400 happened" assertion is not enough: with two hook invocations,
-            // one could carry the nonce and exit non-zero for an unrelated reason while the OTHER hit
-            // the forced failure, and every assertion would still pass without the claim being true.
-            // Correlating on session id closes that — and the marker match means an upstream 400
-            // relayed by the catch-all proxy cannot stand in for this mapping firing.
-            var rejected = ForcedFailureSessionIds(proxy);
+            // ...and each of those invocations rejected its OWN POST. This is per-invocation evidence,
+            // read from that invocation's own stderr — `[kcap] {agentTag} {endpoint}: HTTP {code}` is
+            // written by the failed-POST branch of the poster itself.
+            //
+            // Two weaker versions were tried and both were holed in review. "Some forced 400 happened
+            // during the turn" is turn-global: one invocation could carry the nonce while a DIFFERENT
+            // one took the 400. Correlating on session id narrows that but does not close it, because a
+            // session id is reused across invocations — `startup` and `resume` share one, which is
+            // exactly the shape the integration test exercises.
+            await Assert.That(delivering.All(i => i.Stderr.Contains(FailedPostDiagnostic))).IsTrue();
 
-            await Assert.That(rejected).IsNotEmpty();
-            await Assert.That(delivering.All(i => SessionIdOf(i.Stdin) is { } id && rejected.Contains(id))).IsTrue();
+            // The proxy assertion is now doing one job only, and it is a job the stderr cannot do:
+            // proving the 400 came from THIS test's mapping rather than from upstream via the
+            // catch-all proxy. Both halves are needed — neither implies the other.
+            await Assert.That(ForcedSessionStartFailures(proxy)).IsGreaterThan(0);
 
             await Assert.That(exitCode).IsEqualTo(0);
             await Assert.That(answer).Contains(nonce);
@@ -217,28 +236,14 @@ public class GeminiMemoryIndexLiveCertTests {
         }
     }
 
-    /// <summary>The session ids whose session-start POST this test's own mapping rejected, identified by
-    /// its response-body marker. Matching on the marker rather than on "400 at that path" is what stops
-    /// an upstream 400, relayed by the catch-all proxy, standing in for the forced failure.</summary>
-    static HashSet<string> ForcedFailureSessionIds(WireMockServer proxy) =>
-        [.. proxy.LogEntries
-            .Where(e => e.RequestMessage.Path == SessionStartPath
-                     && e.ResponseMessage.StatusCode is 400
-                     && e.ResponseMessage.BodyData?.BodyAsString?.Contains(ForcedFailureMarker) == true)
-            .Select(e => SessionIdOf(e.RequestMessage.Body))
-            .OfType<string>()];
-
-    /// <summary>The session id in a hook payload or a posted lifecycle body, dash-stripped so the two
-    /// compare: the hook receives Gemini's dashed UUID and forwards the dashless form to the server.</summary>
-    static string? SessionIdOf(string? json) {
-        if (string.IsNullOrWhiteSpace(json)) return null;
-
-        try {
-            return JsonNode.Parse(json)?["session_id"]?.GetValue<string>()?.Replace("-", "");
-        } catch {
-            return null;
-        }
-    }
+    /// <summary>Counts only responses this test's own mapping produced, identified by its body marker.
+    /// Counting "400 at that path" instead would also count an upstream 400 relayed by the catch-all
+    /// proxy, and the point of this assertion is that the FORCED failure is what fired.</summary>
+    static int ForcedSessionStartFailures(WireMockServer proxy) =>
+        proxy.LogEntries.Count(e =>
+            e.RequestMessage.Path == SessionStartPath
+         && e.ResponseMessage.StatusCode is 400
+         && e.ResponseMessage.BodyData?.BodyAsString?.Contains(ForcedFailureMarker) == true);
 
     /// <summary>
     /// A throwaway PATH entry holding a shim named <c>kcap</c> that runs the real one and records each
@@ -280,14 +285,9 @@ public class GeminiMemoryIndexLiveCertTests {
                  # wrapping its streams.
                  if [ "$1" != "hook" ]; then exec "{real}" "$@"; fi
 
-                 in="{_log}/$$.in"
                  out="{_log}/$$.out"
                  err="{_log}/$$.err"
-                 # stdin is drained to a file and replayed, so the payload can be correlated with the
-                 # POST the proxy saw. A hook's stdin is written once and closed, so buffering it is
-                 # not a streaming hazard the way stdout would be for a long-lived process.
-                 cat > "$in"
-                 "{real}" "$@" < "$in" > "$out" 2> "$err"
+                 "{real}" "$@" > "$out" 2> "$err"
                  status=$?
                  cat "$out"
                  cat "$err" >&2
@@ -312,12 +312,12 @@ public class GeminiMemoryIndexLiveCertTests {
         /// <c>int.MinValue</c>) is <c>!= 0</c> and would have passed the exact property the cert
         /// exists to check.</para>
         /// </summary>
-        public IReadOnlyList<(int? ExitCode, string Stdin, string Stdout)> Invocations =>
+        public IReadOnlyList<(int? ExitCode, string Stdout, string Stderr)> Invocations =>
             [.. Directory.EnumerateFiles(_log, "*.exit")
                 .Select(exitFile => (
                     ExitCode: int.TryParse(File.ReadAllText(exitFile).Trim(), out var code) ? code : (int?)null,
-                    Stdin:    ReadOrEmpty(Path.ChangeExtension(exitFile, ".in")),
-                    Stdout:   ReadOrEmpty(Path.ChangeExtension(exitFile, ".out"))))];
+                    Stdout:   ReadOrEmpty(Path.ChangeExtension(exitFile, ".out")),
+                    Stderr:   ReadOrEmpty(Path.ChangeExtension(exitFile, ".err"))))];
 
         static string ReadOrEmpty(string path) {
             try { return File.ReadAllText(path); } catch { return ""; }

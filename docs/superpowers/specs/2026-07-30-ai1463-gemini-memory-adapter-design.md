@@ -434,27 +434,38 @@ real index and then failed its POST.
 a live alternative. Parsing was not assumed to be consuming: the model reproducing the nonce is what
 distinguishes them, and it is the assertion the cert makes.
 
-**Every link is measured on the same invocation; nothing is inferred from a stand-in or from a
-turn-global count.** Two review rounds were needed to get here, and both objections were right:
+**Every link is measured on the same invocation; nothing is inferred from a stand-in, a turn-global
+count, or a shared identifier.** Three review rounds were needed to get here and each objection was
+right. They are worth recording, because each rejected version looks sufficient:
 
-* A first draft proved the non-zero exit from a SEPARATE direct `kcap hook --gemini` run. That is a
-  substitution — every assertion could hold while Gemini's own hook returned 0 through some session- or
-  source-dependent branch. Fixed by prepending a recording shim named `kcap` to the PATH Gemini inherits,
-  capturing each hook invocation's stdin, stdout and exit code.
-* The second draft then asserted "some forced 400 happened during the turn", which is turn-global: with
-  two hook invocations, one could carry the nonce and exit non-zero for an unrelated reason while the
-  *other* hit the forced failure, and the cert would still be green. Fixed by correlating on session id —
-  the invocation whose `additionalContext` carried the nonce must be the invocation whose POST the forced
-  mapping rejected.
+1. Proving the non-zero exit from a SEPARATE direct `kcap hook --gemini` run is a **substitution** —
+   every assertion could hold while Gemini's own hook returned 0 through some session- or
+   source-dependent branch. Fixed by a recording shim named `kcap`, prepended to the PATH Gemini
+   inherits, that captures each hook invocation's exit code, stdout and stderr.
+2. "Some forced 400 happened during the turn" is **turn-global** — with two hook invocations, one could
+   carry the nonce while a *different* one took the 400.
+3. Correlating those two on **session id** narrows it but does not close it: a session id is reused
+   across invocations (`startup` and `resume` share one), so the same counterexample survives with equal
+   ids.
+
+The closing evidence is per-invocation: the invocation whose `additionalContext` carried the nonce must
+itself have written the failed-POST diagnostic (`… session-start/gemini: HTTP 400`) to *its own* stderr.
 
 So the assertion chain is: the recorded invocation that delivered the nonce **is** the one that exited
-non-zero, **and** is the one whose session-start POST the forced mapping (identified by its response-body
-marker, so an upstream 400 relayed by the catch-all proxy cannot stand in) rejected, **and** the turn
-completed, **and** the model reproduced the nonce.
+non-zero, **and** is the one whose own stderr reports the rejected session-start POST, **and** that 400
+came from this test's forced mapping rather than from upstream (matched on the response-body marker),
+**and** the turn completed, **and** the model reproduced the nonce.
 
 The recorded exit code is nullable by design: an unreadable or half-written record fails the assertion
 rather than satisfying it. An earlier version used an `int.MinValue` sentinel, which is non-zero and
 therefore passed the exact property under test — the shape of a false-pass, caught in review.
+
+**Cleanup is now a gate, not a log line.** A leaked nonce memory makes a later positive case pass on the
+previous run's evidence, so any cert that cannot *confirm* its nonce memory was removed — an
+unconfirmed archive, a throwing archive, or a save whose id could not be recovered — marks the run, and
+`SkipUnlessLiveGateReady` then refuses to start any further live case in that process. Recovery-by-slug
+is polled rather than asked once, and distinguishes "confirmed absent" from "could not tell", because
+only the first means the index is clean.
 
 Covering tests: `GeminiMemoryIndexLiveCertTests.Failed_session_start_post_still_delivers_the_index_to_a_real_gemini_session`
 (live, gated) and `GeminiSessionStartHandshakeOnPostFailureTests` (integration, always run) — the latter
