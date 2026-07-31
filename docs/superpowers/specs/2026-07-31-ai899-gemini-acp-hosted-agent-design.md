@@ -1,9 +1,8 @@
 # AI-899 — Gemini CLI as an ACP hosted agent
 
-**Status:** rev 4, 2026-07-31, against `gemini 0.53.0` and `origin/main` (`e2b2821`).
-**NOT implementation-ready as written** — §3.1a's trust probe has been run and found repository-controlled
-code execution that `--skip-trust` does not prevent. It needs the containment decision in §3.1a before any
-code.
+**Status:** rev 5, 2026-07-31, against `gemini 0.53.0` and `origin/main` (`e2b2821`).
+**Implementation-ready.** §3.1a's gating trust probe has been run, re-run on the correct code path, and its
+finding is contained by a flag already in the descriptor.
 **Repository:** kurrent-io/kcap-cli
 **Parent:** AI-1399 (multi-vendor ACP hosted agents)
 **Template:** the shipped Kiro child (AI-1404) and the Copilot child (AI-1403). Read those, not the
@@ -87,7 +86,9 @@ public static readonly AcpVendorDescriptor Gemini = new(
     ResolveBinaryPath:   cfg => cfg.GeminiPath,
     ResolveDefaultModel: _ => null,
     Argv:                ["--experimental-acp", "--skip-trust",
-                          "--allowed-mcp-server-names", "kcap-none"],   // see 3.1a
+                          // §3.1a: scoped to the servers kcap injects. NOT a non-matching
+                          // sentinel — that would block ours too.
+                          "--allowed-mcp-server-names", ...InjectedMcpServerNames],
     UnattendedTrustArgv: [],
     SupportsUnattended:  false,
     ModelSelector:       NoOpModelSelector.Instance,
@@ -182,8 +183,39 @@ before any user-approved action.** So:
 * **Hooks are NOT clampable by any launch flag.** `gemini hooks` is a management subcommand, not a switch;
   there is no `--no-hooks`. The repo-authored hook executed under every configuration that had trust.
 
-**Therefore hosted Gemini cannot ship on `--skip-trust` alone**, and the descriptor in §3 is not yet
-sufficient. The options, for decision rather than for the implementer to pick:
+### 3.1b CORRECTION — §3.1a measured the wrong code path, and the finding is contained
+
+Everything above was measured with `gemini --prompt` — the **print/CLI** path. **kcap hosts over ACP**
+(`gemini --experimental-acp`). Re-measured there, with inherited trust:
+
+| Path | repo-authored MCP | repo-authored hook |
+|---|---|---|
+| print/CLI (what §3.1a measured) | EXECUTED | **EXECUTED** |
+| **ACP — what kcap uses** | **EXECUTED** | **blocked** |
+| **ACP + `--allowed-mcp-server-names <injected names>`** | **blocked** | blocked |
+
+So §3.1a was wrong in both directions. **Hooks do not execute on the ACP path**, so "hooks are unclampable,
+therefore hosted Gemini cannot ship" is withdrawn. **Repo-authored MCP servers do execute on ACP under
+inherited trust** — that half is real — **and the allowlist flag already in the descriptor contains it**,
+verified: the injected server loads, the repo-authored one is blocked.
+
+**The containment decision is therefore not needed.** No worktree relocation, no launch refusal, no
+`.gemini/` stripping. The one correction the descriptor needed was the allowlist *contents*: a
+non-matching sentinel blocks our own injected servers as well, which would have shipped hosted Gemini with
+MCP silently broken.
+
+**The lesson is the one §1.1 already teaches, and I re-learned it here:** the CLI and ACP paths have
+materially different config-trust behaviour, in both vendors probed, and neither is predictable from the
+other. §7 therefore requires the clamp test to run **through ACP**, not through the CLI.
+
+Two probe-hygiene traps, recorded because each produced a confident wrong answer:
+
+* `--allowed-mcp-server-names ""` crashes config load *before* session start, so a probe using it reports
+  "nothing executed" for entirely the wrong reason.
+* On Cursor, `--approve-mcps` **persists** an approval for the server name, so a reused probe identifier
+  silently measures a stale approval on later runs. Use a virgin name per measurement.
+
+The options below are retained only as the reasoning that the correction closed off — **none is needed**:
 
 | Option | Effect | Cost |
 |---|---|---|
