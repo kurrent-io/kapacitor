@@ -120,6 +120,23 @@ static class WindowsTaskUnit {
     }
 
     /// <summary>
+    /// Guard, then escape — every string interpolated into the Task XML goes through here, mirroring the
+    /// plist writer's helper.
+    ///
+    /// <para>Composition does not imply XML validity: <c>wrapperPath</c> carries <c>KCAP_CONFIG_DIR</c>
+    /// verbatim, Windows paths are native UTF-16, and U+FFFE, U+FFFF or a malformed surrogate unit is outside
+    /// XML 1.0 while <c>SecurityElement.Escape</c> passes all of them through untouched. The consequence is
+    /// the same availability failure the plist had — the task cannot be registered — so it gets the same
+    /// treatment. Applied to the service id too, which is sanitized and therefore safe already: a structural
+    /// invariant that holds at every interpolation is worth more than one applied where it is needed, because
+    /// the next value added here inherits it.</para>
+    /// </summary>
+    static string Guarded(string what, string value) {
+        ServiceText.RequireXmlRepresentableValue(what, value);
+        return ServiceText.Xml(value);
+    }
+
+    /// <summary>
     /// Rejects a wrapper path <c>cmd /c</c> cannot be handed safely.
     ///
     /// <para>The Task action's argument text is parsed by cmd, not by CreateProcess, so it is a command line
@@ -139,23 +156,6 @@ static class WindowsTaskUnit {
     /// outright. <c>&amp;</c> itself is handled by the nested-quote form below rather than refused, so an
     /// ordinary path keeps working.</para>
     /// </summary>
-    /// <summary>
-    /// Guard, then escape — every string interpolated into the Task XML goes through here, mirroring the
-    /// plist writer's helper.
-    ///
-    /// <para>Composition does not imply XML validity: <c>wrapperPath</c> carries <c>KCAP_CONFIG_DIR</c>
-    /// verbatim, Windows paths are native UTF-16, and U+FFFE, U+FFFF or a malformed surrogate unit is outside
-    /// XML 1.0 while <c>SecurityElement.Escape</c> passes all of them through untouched. The consequence is
-    /// the same availability failure the plist had — the task cannot be registered — so it gets the same
-    /// treatment. Applied to the service id too, which is sanitized and therefore safe already: a structural
-    /// invariant that holds at every interpolation is worth more than one applied where it is needed, because
-    /// the next value added here inherits it.</para>
-    /// </summary>
-    static string Guarded(string what, string value) {
-        ServiceText.RequireXmlRepresentableValue(what, value);
-        return ServiceText.Xml(value);
-    }
-
     static void RequireSafeWrapperPath(string wrapperPath) {
         var bad = wrapperPath.Contains('%') ? "a percent sign"
                 : IsUnrepresentable(wrapperPath) ? "a quote or newline"

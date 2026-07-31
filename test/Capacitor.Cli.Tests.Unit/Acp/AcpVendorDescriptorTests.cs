@@ -325,9 +325,9 @@ public class AcpVendorDescriptorTests {
     /// <para>Golden-ish rather than a word blacklist: the specific hedges and the daemon-not-your-shell
     /// clause are each asserted, so rewording that removes the hedging fails rather than passing a
     /// keyword scan.</para>
-    /// </summary>
-    /// <summary>
-    /// A GOLDEN test: the approved wording, held independently here, must match exactly.
+    ///
+    /// <para><b>It is a GOLDEN test:</b> the approved wording, held independently here, must match
+    /// exactly.</para>
     ///
     /// <para>The first version asserted a few required phrases and two forbidden ones, which review
     /// correctly called a fig leaf — a hint could keep both hedges and then append "the failure is caused
