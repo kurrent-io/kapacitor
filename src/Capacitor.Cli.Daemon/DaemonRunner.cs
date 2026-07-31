@@ -218,7 +218,7 @@ public static partial class DaemonRunner {
         builder.Services.AddSingleton(daemonLock);
         builder.Services.AddSingleton<ServerConnection>();
 
-        // AI-1623: the owner consent gate — policy store + append-only decision log share the
+        // The owner consent gate — policy store + append-only decision log share the
         // per-daemon state root with the coverage journal above; the prompter is null until
         // Task 6 registers the broker (a Prompt-default policy then denies with "prompt_no_ui").
         builder.Services.AddSingleton(sp => new LaunchConsentStore(

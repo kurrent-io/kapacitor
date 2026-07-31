@@ -2,7 +2,7 @@ using System.Text.Json.Serialization;
 
 namespace Capacitor.Cli.Core.LocalIpc;
 
-/// JSON payloads for the consent control frames (AI-1623). snake_case on the wire; shared
+/// JSON payloads for the consent control frames. snake_case on the wire; shared
 /// verbatim by the daemon, the CLI, and the future desktop app.
 public sealed record ConsentPendingDto(
     string RequestId, string? Requester, string Kind, string RepoPath, string Vendor,

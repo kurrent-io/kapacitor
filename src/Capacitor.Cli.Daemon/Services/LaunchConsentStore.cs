@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.Extensions.Logging;
@@ -17,6 +18,14 @@ internal sealed partial class LaunchConsentStore {
 
     public LaunchConsentStore(string stateDir, ILogger logger) {
         Directory.CreateDirectory(stateDir);
+
+        // Owner-only directory: consent.json holds requester ids and repo paths, so no other
+        // local user should be able to traverse in even if a file mode slips.
+        if (!OperatingSystem.IsWindows()) {
+            try { File.SetUnixFileMode(stateDir, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute); }
+            catch { /* best-effort */ }
+        }
+
         _path = Path.Combine(stateDir, "consent.json");
         _log = logger;
         _current = Load();
@@ -37,8 +46,27 @@ internal sealed partial class LaunchConsentStore {
                     clamped.PromptTimeoutSeconds,
                     clamped.Rules.Select(r => new RuleDoc(r.Action, r.Requester, r.Kind, r.Repo, r.Vendor)).ToList());
                 var tmp = _path + ".tmp-" + Guid.NewGuid().ToString("N")[..8];
-                File.WriteAllText(tmp, JsonSerializer.Serialize(doc, LaunchConsentJsonCtx.Default.PolicyDoc));
+                var json = JsonSerializer.Serialize(doc, LaunchConsentJsonCtx.Default.PolicyDoc);
+
+                // Write via FileStream with UnixCreateMode so the temp file is owner-only from its
+                // first byte — a chmod after WriteAllText would leave a world-readable window.
+                var options = new FileStreamOptions { Mode = FileMode.Create, Access = FileAccess.Write };
+                if (!OperatingSystem.IsWindows())
+                    options.UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+
+                using (var fs = new FileStream(tmp, options)) {
+                    fs.Write(Encoding.UTF8.GetBytes(json));
+                }
+
                 File.Move(tmp, _path, overwrite: true);
+
+                // Re-assert owner-only on the published path: `overwrite: true` may have replaced
+                // a pre-existing final file, closing any platform gap in what the rename carries across.
+                if (!OperatingSystem.IsWindows()) {
+                    try { File.SetUnixFileMode(_path, UnixFileMode.UserRead | UnixFileMode.UserWrite); }
+                    catch { /* best-effort */ }
+                }
+
                 _current = clamped;
                 error = null;
                 return true;

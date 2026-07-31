@@ -63,4 +63,23 @@ public class LaunchConsentStoreTests {
             new LaunchConsentPolicy(LaunchConsentDefault.Allow, 9999, []), out _)).IsTrue();
         await Assert.That(store.Current.PromptTimeoutSeconds).IsEqualTo(300);
     }
+
+    [Test]
+    public async Task Replace_writes_an_owner_only_consent_file_in_an_owner_only_directory() {
+        // consent.json carries requester ids and repo paths, so it must not be world/group
+        // readable. Unix-only: file modes are a no-op on Windows.
+        if (OperatingSystem.IsWindows()) return;
+
+        var dir = TempDir();
+        var store = new LaunchConsentStore(dir, NullLogger.Instance);
+        var ok = store.TryReplace(new LaunchConsentPolicy(LaunchConsentDefault.Allow, 45, []), out _);
+        await Assert.That(ok).IsTrue();
+
+        const UnixFileMode ownerOnlyFile = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+        const UnixFileMode ownerOnlyDir  = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute;
+
+        var consentFile = Path.Combine(dir, "consent.json");
+        await Assert.That(File.GetUnixFileMode(consentFile)).IsEqualTo(ownerOnlyFile);
+        await Assert.That(File.GetUnixFileMode(dir)).IsEqualTo(ownerOnlyDir);
+    }
 }

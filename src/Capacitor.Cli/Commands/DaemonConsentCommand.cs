@@ -8,7 +8,7 @@ namespace Capacitor.Cli.Commands;
 
 /// <summary>
 /// <c>kcap daemon consent</c> — inspect and mutate the daemon-owned launch-consent policy
-/// (AI-1623) over the local control socket. Every verb except <c>log</c> requires a running
+/// over the local control socket. Every verb except <c>log</c> requires a running
 /// daemon (the policy lives in daemon memory, mutated only through
 /// <see cref="FrameType.ConsentRulesGet"/>/<see cref="FrameType.ConsentRulesPut"/>); <c>log</c>
 /// reads the decision-log file directly, so it also works with the daemon stopped.

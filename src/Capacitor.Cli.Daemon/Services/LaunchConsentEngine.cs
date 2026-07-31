@@ -44,17 +44,23 @@ internal static class LaunchConsentEngine {
         (r.Repo is null || RepoMatches(r.Repo, x.RepoPath));
 
     static bool RepoMatches(string pattern, string repoPath) {
-        if (pattern.EndsWith("/*", StringComparison.Ordinal)) {
-            var prefix = pattern[..^1];
+        // Compare with forward slashes so a "/*" wildcard and prefix matching work regardless of
+        // the host's native separator (Windows canonical paths use '\'). No-op on POSIX. Mirrors
+        // DaemonConfig.IsRepoAllowed.
+        var normalizedPattern  = pattern.Replace('\\', '/');
+        var normalizedRepoPath = repoPath.Replace('\\', '/');
+
+        if (normalizedPattern.EndsWith("/*", StringComparison.Ordinal)) {
+            var prefix = normalizedPattern[..^1];
             // Match both subpaths ("/allowed/proj") and the directory itself ("/allowed")
-            return repoPath.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) ||
-                   string.Equals(repoPath, pattern[..^2], StringComparison.OrdinalIgnoreCase);
+            return normalizedRepoPath.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(normalizedRepoPath, normalizedPattern[..^2], StringComparison.OrdinalIgnoreCase);
         }
         // Exact match with defensive trailing separator normalization
         // (differs from DaemonConfig which doesn't trim, but required by the test spec)
         return string.Equals(
-            Path.TrimEndingDirectorySeparator(pattern),
-            Path.TrimEndingDirectorySeparator(repoPath),
+            Path.TrimEndingDirectorySeparator(normalizedPattern),
+            Path.TrimEndingDirectorySeparator(normalizedRepoPath),
             StringComparison.OrdinalIgnoreCase);
     }
 }

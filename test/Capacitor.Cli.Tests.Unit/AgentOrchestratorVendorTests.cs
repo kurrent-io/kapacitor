@@ -64,7 +64,7 @@ public partial class AgentOrchestratorVendorTests {
             // Defaults to NullLogger; a test that asserts on the orchestrator's own diagnostics
             // (e.g. the graceful-stop timeout warning) passes a capturing logger instead.
             ILogger<AgentOrchestrator>?                         logger                 = null,
-            // AI-1623: defaults to an allow-all gate over the factory's own temp state dir so every
+            // Consent: defaults to an allow-all gate over the factory's own temp state dir so every
             // pre-existing test (none of which know about consent) keeps passing unchanged. A test
             // exercising a deny/prompt policy passes its own gate (e.g. built with a Deny-default
             // LaunchConsentStore) instead.
@@ -1594,7 +1594,7 @@ public partial class AgentOrchestratorVendorTests {
         }
     }
 
-    // ══ AI-1623: owner consent gate wired into the server launch choke point ══════════════
+    // ══ Owner consent gate wired into the server launch choke point ══════════════════════
 
     static LaunchConsentGate DenyDefaultGate(string dir) {
         var store = new LaunchConsentStore(dir, NullLogger.Instance);

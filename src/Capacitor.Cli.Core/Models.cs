@@ -1302,7 +1302,7 @@ public readonly record struct LaunchAgentCommand(
         // Interactive Codex launches only; any other launch shape is rejected by CodexPosturePolicy.
         // Appended last so the wire stays compatible with older daemons and servers.
         CodexLaunchPosture? CodexPosture = null,
-        // AI-1623 consent: who asked for this launch. Appended last, same wire-compat rule as the
+        // Consent: who asked for this launch. Appended last, same wire-compat rule as the
         // fields above — old daemons ignore them, old servers never set them (null ⇒ unknown ⇒
         // the consent engine falls through rules to the configured default).
         string?           RequesterUserId       = null,

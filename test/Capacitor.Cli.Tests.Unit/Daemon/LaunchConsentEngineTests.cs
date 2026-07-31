@@ -78,6 +78,31 @@ internal class LaunchConsentEngineTests {
     }
 
     [Test]
+    public async Task Repo_pattern_matches_across_path_separators() {
+        // A Windows-ish pattern/path pair: the pattern is authored with forward slashes (as an
+        // operator would write it cross-platform), the incoming repo path uses backslashes (as
+        // .NET reports a canonical Windows path) — both the glob and exact arms must normalize
+        // before comparing, mirroring DaemonConfig.IsRepoAllowed.
+        var glob = Policy(LaunchConsentDefault.Deny,
+            new LaunchConsentRule("allow", null, null, "C:/work/*", null));
+        await Assert.That(LaunchConsentEngine.Evaluate(glob, Input(repo: "C:\\work\\proj")).Verdict)
+            .IsEqualTo(LaunchConsentVerdict.Allow);
+
+        var exact = Policy(LaunchConsentDefault.Deny,
+            new LaunchConsentRule("allow", null, null, "C:/work/proj", null));
+        await Assert.That(LaunchConsentEngine.Evaluate(exact, Input(repo: "C:\\work\\proj")).Verdict)
+            .IsEqualTo(LaunchConsentVerdict.Allow);
+    }
+
+    [Test]
+    public async Task Repo_glob_does_not_match_a_sibling_directory_with_a_shared_prefix() {
+        var policy = Policy(LaunchConsentDefault.Deny,
+            new LaunchConsentRule("allow", null, null, "/src/*", null));
+        await Assert.That(LaunchConsentEngine.Evaluate(policy, Input(repo: "/src2/x")).Verdict)
+            .IsEqualTo(LaunchConsentVerdict.Deny);
+    }
+
+    [Test]
     [Arguments(LaunchConsentDefault.Allow, LaunchConsentVerdict.Allow)]
     [Arguments(LaunchConsentDefault.Deny, LaunchConsentVerdict.Deny)]
     [Arguments(LaunchConsentDefault.Prompt, LaunchConsentVerdict.Prompt)]

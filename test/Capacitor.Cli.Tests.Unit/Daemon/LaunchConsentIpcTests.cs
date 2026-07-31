@@ -12,7 +12,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 namespace Capacitor.Cli.Tests.Unit.Daemon;
 
 /// <summary>
-/// End-to-end coverage of the AI-1623 consent frames (ConsentSubscribe/ConsentResolve/
+/// End-to-end coverage of the consent frames (ConsentSubscribe/ConsentResolve/
 /// ConsentRulesGet/ConsentRulesPut) over a REAL Unix-domain socket — the same
 /// LocalControlServer.HandleConnectionAsync routing switch a real `kcap` client talks to.
 /// The harness mirrors AgentOrchestratorLocalAttachTests's real-socket tests (temp

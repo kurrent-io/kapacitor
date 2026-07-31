@@ -906,7 +906,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
         var isReview      = cmd.Kind == LaunchKind.Review;
         var isReviewFlow  = cmd.Kind == LaunchKind.ReviewFlow;
 
-        // AI-1623: owner consent gate. Server-driven launches only — the local 0600 socket path
+        // Owner consent gate. Server-driven launches only — the local 0600 socket path
         // (HandleLocalSpawnAsync) is the owner's by construction and never consults this.
         // NOTE: in prompt mode this can hold the sequenced slot up to PromptTimeoutSeconds (≤300s,
         // default 45s ≤ the server's 60s launch-admission patience); commands queued behind it wait

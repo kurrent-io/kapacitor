@@ -20,7 +20,7 @@ public partial class AgentOrchestratorVendorTests {
     static RestartCoordinator TestCoordinator() =>
         RestartCoordinator.ForTest("test", "test", new NoopRestartStrategy());
 
-    // AI-1623: a fresh, throwaway consent store/broker pair — these pre-existing LocalControlServer
+    // Consent: a fresh, throwaway consent store/broker pair — these pre-existing LocalControlServer
     // tests don't exercise consent at all, so the wiring only needs to satisfy the ctor.
     static LaunchConsentIpc TestConsentIpc() {
         var dir = Directory.CreateTempSubdirectory("kcap-consent-ipc-").FullName;
@@ -219,7 +219,7 @@ public partial class AgentOrchestratorVendorTests {
         }
     }
 
-    // AI-1623: the owner consent gate lives in HandleLaunchAgentCore (the SERVER-driven launch
+    // Consent: the owner consent gate lives in HandleLaunchAgentCore (the SERVER-driven launch
     // choke point) only. The local 0600 socket path (kcap agent start -> HandleLocalSpawnAsync)
     // never calls that method, so a deny-default gate must not stop it — that socket is the
     // owner's by construction.
