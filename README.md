@@ -714,6 +714,52 @@ kcap daemon consent log -n 50                                    # tail consent-
 
 `show`/`set-default`/`allow`/`deny`/`remove` mutate the policy over the daemon's local socket and require the target daemon to be running; `log` reads `consent-decisions.jsonl` straight off disk, so it works even with the daemon stopped. All six take `--name <n>` like the rest of `kcap daemon`.
 
+> **Two different gates, deliberately.** `daemon consent` authorises an individual launch and defaults to
+> *allow*; the Gemini reviewer flag below is a **capability** gate that defaults to *off* and asks a
+> different question — whether this daemon may run that vendor unattended **at all**. A per-launch deny is
+> not a substitute: the reviewer's containment rests on a vendor behaviour certified per version, so the
+> safe default has to be off rather than on-until-denied.
+
+#### Gemini as an unattended review-flow reviewer — off by default, and why
+
+A **hosted** Gemini agent needs nothing beyond the project setting above. Using Gemini as an **unattended
+review-flow reviewer** is a separate, deliberately opt-in decision, because of what an unattended review
+grants:
+
+```jsonc
+// ~/.config/kcap/config.json  (this DAEMON's config — not a server setting)
+{ "GeminiUnattendedReviewerEnabled": true }
+```
+
+**Read this before setting it.** An unattended reviewer runs in a daemon-owned worktree with this daemon's
+own `HOME`, so repository content that steers the model into using its tools gets **code execution with your
+daemon user's full authority**. Concretely, and not bounded to the review:
+
+- **credentials** — the kcap token store and config directory are readable, and a copied token stays valid
+  until it expires or is revoked; reaping the reviewer does not touch it;
+- **integrity** — writes reach your *other* worktrees, the daemon's own state, the installed `kcap`, and your
+  shell profiles, so one review can alter a later review or your own environment;
+- **persistence** — a child process or scheduled job can outlive the review;
+- **audit** — local session captures and logs are writable by the same authority, so after a compromise the
+  local record is not evidence;
+- **verdict** — steered content can simply ask the model to report `clean`. A review result is not
+  authenticated review output.
+
+This is a property of unattended review generally, not of Gemini specifically — enabling Gemini widens which
+vendors can do it rather than introducing it. The one path that does *not* grant this is a sandboxed borrowed
+review, which Gemini cannot use yet.
+
+**Enabling this flag is your consent to the above**, which is why it is daemon-local (the person requesting a
+review is not necessarily you) and defaults off.
+
+Two further things it does *not* do:
+
+- it does not bypass the **certified-version** check. The reviewer's only containment is Gemini's exact-name
+  MCP allowlist, whose behaviour was verified against specific builds — so an uncertified `gemini` version is
+  refused even with the flag on, with a coded error naming the version. An upgrade takes the reviewer offline
+  rather than silently running on unverified semantics; re-certification is how it comes back.
+- it does not make Gemini a default reviewer. It is only ever reached by an explicit `vendor: "gemini"`.
+
 #### Hosted Codex agents
 
 Hosted Codex agents require the Codex hook surface — if you said yes during `kcap setup`, you already have it. Otherwise install it manually:
