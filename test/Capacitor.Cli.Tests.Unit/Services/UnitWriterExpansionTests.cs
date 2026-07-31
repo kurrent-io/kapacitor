@@ -318,4 +318,123 @@ public class UnitWriterExpansionTests {
     public async Task ServiceExtraArgs_is_empty_when_the_flag_is_absent() {
         await Assert.That(DaemonCommands.ServiceExtraArgs(null)).IsEmpty();
     }
+
+    // ── the execution MODE must be part of the artifact, not inherited from the machine ──
+
+    /// <summary>
+    /// `!NAME!` delayed expansion happens INSIDE double quotes, and CmdValue doubles `%`, not `!` — so
+    /// quoting and percent-escaping both leave it live where a machine enables the mode by default.
+    /// </summary>
+    [Test]
+    public async Task Windows_wrapper_disables_delayed_expansion() {
+        await Assert.That(WindowsTaskUnit.Wrapper(Spec())).Contains("setlocal DisableDelayedExpansion");
+    }
+
+    /// <summary>It must come before any value is set, or the values it protects are already on the line.</summary>
+    [Test]
+    public async Task Windows_wrapper_disables_delayed_expansion_before_setting_anything() {
+        var wrapper = WindowsTaskUnit.Wrapper(Spec());
+
+        await Assert.That(wrapper.IndexOf("setlocal DisableDelayedExpansion", StringComparison.Ordinal))
+            .IsLessThan(wrapper.IndexOf("set \"", StringComparison.Ordinal));
+    }
+
+    /// <summary>A bang-shaped value is carried literally rather than escaped — the mode is what neutralises it.</summary>
+    [Test]
+    public async Task Windows_wrapper_carries_a_bang_shaped_value_under_a_disabled_mode() {
+        var spec = Spec() with {
+            Environment = new Dictionary<string, string> { ["KCAP_URL"] = "!PAYLOAD!" },
+        };
+
+        var wrapper = WindowsTaskUnit.Wrapper(spec);
+
+        await Assert.That(wrapper).Contains("setlocal DisableDelayedExpansion");
+        await Assert.That(wrapper).Contains("set \"KCAP_URL=!PAYLOAD!\"");
+    }
+
+    [Test]
+    public async Task Task_xml_fixes_the_execution_mode_and_skips_autorun() {
+        var xml = WindowsTaskUnit.TaskXml(Spec(), @"C:\Users\u\.config\kcap\daemon-service-laptop.cmd");
+
+        await Assert.That(xml).Contains("/d /s /v:off /c");
+    }
+
+    /// <summary>
+    /// The nested-quote form: `/s` plus a command starting and ending in a quote makes cmd strip exactly the
+    /// outer pair, so the inner pair survives to quote a path containing `&amp;`.
+    /// </summary>
+    [Test]
+    public async Task Task_xml_double_quotes_the_wrapper_path() {
+        var xml = WindowsTaskUnit.TaskXml(Spec(), @"C:\Users\a&b\daemon-service-laptop.cmd");
+
+        // The outer quote pair is literal text in the element (only < and & need escaping in XML content),
+        // so cmd receives a command that both starts and ends with a quote — the /s precondition.
+        await Assert.That(xml).Contains(@"/c """"C:\Users\a&amp;b\daemon-service-laptop.cmd""""");
+    }
+
+    [Test]
+    public async Task Task_xml_accepts_a_wrapper_path_with_a_space_and_an_ampersand() {
+        var xml = WindowsTaskUnit.TaskXml(Spec(), @"C:\Users\a & b\daemon-service-laptop.cmd");
+
+        await Assert.That(xml).Contains(@"a &amp; b\daemon-service-laptop.cmd");
+    }
+
+    /// <summary>
+    /// `%` has no escape on a cmd COMMAND LINE — `%%` is a batch-file construct — so this sink refuses where
+    /// the wrapper body escapes. Same character, two sinks, two correct treatments.
+    /// </summary>
+    [Test]
+    public async Task Task_xml_rejects_a_percent_shaped_wrapper_path_component() {
+        var ex = Assert.Throws<InvalidOperationException>(() =>
+            WindowsTaskUnit.TaskXml(Spec(), @"C:\Users\%USERNAME%\daemon-service-laptop.cmd"));
+
+        await Assert.That(ex!.Message).Contains("percent sign");
+    }
+
+    [Test]
+    [Arguments("C:\\Users\\a\"b\\w.cmd")]
+    [Arguments("C:\\Users\\a\nb\\w.cmd")]
+    public async Task Task_xml_rejects_a_structurally_unrepresentable_wrapper_path(string path) {
+        var ex = Assert.Throws<InvalidOperationException>(() => WindowsTaskUnit.TaskXml(Spec(), path));
+
+        await Assert.That(ex!.Message).Contains("quote or newline");
+    }
+
+    // ── systemd: the apostrophe is structural to its word lexer too ──
+
+    /// <summary>
+    /// Bare, an unpaired apostrophe opens a single-quoted string that never closes (unit unloadable); a
+    /// paired one is stripped (value silently changed). `O'Reilly` in a home directory is the ordinary case.
+    /// </summary>
+    [Test]
+    public async Task Systemd_quotes_an_execstart_value_containing_an_apostrophe() {
+        var spec = Spec() with { DaemonBinaryPath = "/home/o'reilly/kcap-daemon" };
+
+        await Assert.That(SystemdUnit.Unit(spec)).Contains("ExecStart=\"/home/o'reilly/kcap-daemon\"");
+    }
+
+    [Test]
+    public async Task BinaryFromUnit_round_trips_an_apostrophe_path() {
+        var spec = Spec() with { DaemonBinaryPath = "/home/o'reilly/kcap-daemon" };
+
+        await Assert.That(SystemdUnit.BinaryFromUnit(SystemdUnit.Unit(spec)))
+            .IsEqualTo("/home/o'reilly/kcap-daemon");
+    }
+
+    [Test]
+    public async Task Systemd_quotes_an_environment_value_containing_an_apostrophe() {
+        var spec = Spec() with {
+            Environment = new Dictionary<string, string> { ["PATH"] = "/home/o'reilly/bin" },
+        };
+
+        await Assert.That(SystemdUnit.Unit(spec)).Contains("Environment=\"PATH=/home/o'reilly/bin\"");
+    }
+
+    /// <summary>A PAIRED apostrophe is the silent-corruption case, and needs quoting just as much.</summary>
+    [Test]
+    public async Task Systemd_quotes_a_value_with_paired_apostrophes() {
+        var spec = Spec() with { ExtraArgs = ["--tag", "'quoted'"] };
+
+        await Assert.That(SystemdUnit.Unit(spec)).Contains("\"'quoted'\"");
+    }
 }

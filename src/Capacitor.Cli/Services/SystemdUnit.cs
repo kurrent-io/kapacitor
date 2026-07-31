@@ -100,8 +100,13 @@ static class SystemdUnit {
     // ── systemd value/argument quoting ──
     // systemd splits Environment= and ExecStart on unquoted whitespace, so any
     // value/path with a space must be double-quoted (with \ and " escaped).
+    // Both quote characters are structural to systemd's word lexer, not just the double quote: an unpaired
+    // apostrophe in a bare token opens a single-quoted string that never closes, which makes the unit
+    // unloadable, and a paired one is stripped, which silently changes the value. `O'Reilly` in a home
+    // directory is the ordinary case. Inside the double quotes this selects, an apostrophe is literal, so
+    // widening the predicate is the whole fix — Esc needs no new case.
     static bool NeedsQuote(string s) =>
-        s.Length == 0 || s.Any(c => char.IsWhiteSpace(c) || c is '"' or '\\');
+        s.Length == 0 || s.Any(c => char.IsWhiteSpace(c) || c is '"' or '\'' or '\\');
 
     static string Esc(string s) => s.Replace("\\", "\\\\").Replace("\"", "\\\"");
 
