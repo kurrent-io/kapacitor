@@ -75,4 +75,81 @@ public class ServiceEnvironmentTests {
         await Assert.That(env.ContainsKey("KCAP_COPILOT_TOKEN_CMD")).IsFalse();
         await Assert.That(env["PATH"]).IsEqualTo("C:\\bin");
     }
+
+    // ── Gemini's project/backend configuration ───────────────────────────────
+    // Why this is captured at all: a supervised daemon inherits nothing from an interactive shell, so a
+    // project exported in a shell profile is invisible to a hosted Gemini agent — and Gemini reports the
+    // absence with a message naming a TIER problem, which sends people to the wrong place.
+
+    static Dictionary<string, string> GoogleSource() => new() {
+        ["PATH"]                           = "/usr/bin",
+        ["GOOGLE_CLOUD_PROJECT"]           = "proj",
+        ["GOOGLE_CLOUD_PROJECT_ID"]        = "proj-alt",
+        ["GOOGLE_CLOUD_LOCATION"]          = "us-central1",
+        ["GOOGLE_GENAI_USE_VERTEXAI"]      = "true",
+        ["GOOGLE_GENAI_USE_GCA"]           = "false",
+        ["GOOGLE_APPLICATION_CREDENTIALS"] = "/home/u/adc.json",
+        ["GOOGLE_GEMINI_BASE_URL"]         = "https://gemini.example",
+        ["GOOGLE_VERTEX_BASE_URL"]         = "https://vertex.example",
+        ["GOOGLE_API_KEY"]                 = "SECRET-KEY",
+        ["GOOGLE_CREDENTIALS"]             = "SECRET-JSON",
+    };
+
+    [Test]
+    public async Task Build_captures_the_google_configuration_off_windows() {
+        var env = ServiceEnvironment.Build(profileName: null, source: GoogleSource(), isWindows: false);
+
+        foreach (var k in new[] { "GOOGLE_CLOUD_PROJECT", "GOOGLE_CLOUD_PROJECT_ID", "GOOGLE_CLOUD_LOCATION",
+                                  "GOOGLE_GENAI_USE_VERTEXAI", "GOOGLE_GENAI_USE_GCA",
+                                  "GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_GEMINI_BASE_URL",
+                                  "GOOGLE_VERTEX_BASE_URL" })
+            await Assert.That(env.ContainsKey(k)).IsTrue();
+    }
+
+    /// <summary>The direction that must never regress. A test asserting only the captures would stay green
+    /// if someone widened the allowlist to <c>GOOGLE_*</c>, which is the one change that must not pass.</summary>
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Build_never_captures_the_google_secrets(bool isWindows) {
+        var env = ServiceEnvironment.Build(profileName: null, source: GoogleSource(), isWindows: isWindows);
+
+        foreach (var k in ServiceEnvironment.NeverCapturedKeys)
+            await Assert.That(env.ContainsKey(k)).IsFalse();
+
+        // And not smuggled in under another name.
+        await Assert.That(env.Values.Any(v => v.Contains("SECRET"))).IsFalse();
+    }
+
+    /// <summary>
+    /// The platform split. A credential PATH and a base URL that may carry userinfo or a query token are
+    /// secret-capable, and Unix bounds that with a guarantee this code enforces (ServiceFiles writes 0600
+    /// and re-checks the handle). Every permission path in ServiceFiles returns early on Windows —
+    /// "ACL-governed, inherited from the user profile" — so there is no equivalent guarantee there and
+    /// those three are excluded, exactly as KCAP_COPILOT_TOKEN_CMD is.
+    /// </summary>
+    [Test]
+    public async Task Build_excludes_the_secret_capable_google_values_on_windows() {
+        var env = ServiceEnvironment.Build(profileName: null, source: GoogleSource(), isWindows: true);
+
+        await Assert.That(env.ContainsKey("GOOGLE_APPLICATION_CREDENTIALS")).IsFalse();
+        await Assert.That(env.ContainsKey("GOOGLE_GEMINI_BASE_URL")).IsFalse();
+        await Assert.That(env.ContainsKey("GOOGLE_VERTEX_BASE_URL")).IsFalse();
+
+        // ...while the non-secret configuration still reaches the unit, so hosted Gemini keeps working
+        // there for a project-scoped login.
+        await Assert.That(env["GOOGLE_CLOUD_PROJECT"]).IsEqualTo("proj");
+        await Assert.That(env["GOOGLE_GENAI_USE_VERTEXAI"]).IsEqualTo("true");
+    }
+
+    [Test]
+    public async Task Build_omits_absent_google_variables_rather_than_writing_empties() {
+        var env = ServiceEnvironment.Build(
+            profileName: null,
+            source: new Dictionary<string, string> { ["PATH"] = "/usr/bin", ["GOOGLE_CLOUD_PROJECT"] = "" },
+            isWindows: false);
+
+        await Assert.That(env.ContainsKey("GOOGLE_CLOUD_PROJECT")).IsFalse();
+        await Assert.That(env.ContainsKey("GOOGLE_CLOUD_LOCATION")).IsFalse();
+    }
 }

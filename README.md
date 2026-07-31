@@ -665,7 +665,31 @@ kcap daemon service uninstall              # stop and remove the service
 
 `install` pins the active profile via `KCAP_PROFILE` and captures your current `PATH` into the unit, so the supervised daemon resolves the same server URL, `claude`/`codex` binaries, and profile settings it would from your shell. Pass `--profile P` to pin a different profile, `--max-agents N` to bake an override, or `--no-start` to register without starting. The service restarts the daemon on crash/`SIGKILL` but **not** on a clean stop.
 
-What it carries over from your shell is a fixed allowlist — `PATH`, `KCAP_PROFILE`, `KCAP_URL`, `KCAP_CONFIG_DIR`, `KCAP_CLAUDE_PATH`, `KCAP_CODEX_PATH`, `KCAP_COPILOT_TOKEN_CMD` — and **nothing else from your environment reaches the service**, credentials included, because the unit file lands on disk. (`install` additionally writes a generated `KCAP_DAEMON_SUPERVISED` marker, so the unit holds one key that did not come from your shell.) Unit files are written owner-only (`0600`). `KCAP_COPILOT_TOKEN_CMD` is on the list precisely because it is a *command* rather than a secret — see [borrowed-context Copilot review](#borrowed-context-copilot-reviews).
+What it carries over from your shell is a fixed allowlist — `PATH`, `KCAP_PROFILE`, `KCAP_URL`, `KCAP_CONFIG_DIR`, `KCAP_CLAUDE_PATH`, `KCAP_CODEX_PATH`, `KCAP_COPILOT_TOKEN_CMD`, plus the Google/Gemini configuration below — and **nothing else from your environment reaches the service**, credentials included, because the unit file lands on disk. (`install` additionally writes a generated `KCAP_DAEMON_SUPERVISED` marker, so the unit holds one key that did not come from your shell.) Unit files are written owner-only (`0600`). `KCAP_COPILOT_TOKEN_CMD` is on the list precisely because it is a *command* rather than a secret — see [borrowed-context Copilot review](#borrowed-context-copilot-reviews).
+
+#### Hosted Gemini needs its project in the *daemon's* environment
+
+Hosted Gemini agents use whatever credential you logged `gemini` in with — there is no API key to configure. But a Gemini login that is scoped to a Google Cloud project needs that project **where the daemon can see it**, and a supervised daemon sees none of your shell: launchd passes no shell environment, and a non-interactive shell never reads your profile. So `export GOOGLE_CLOUD_PROJECT=…` in `.zshrc` is invisible to it.
+
+Get this wrong and Gemini reports it as a **tier** problem:
+
+```
+IneligibleTierError: This client is no longer supported for Gemini Code Assist for individuals.
+```
+
+That message names the wrong cause — the same text appears for a missing project id — so if you see it, check your project configuration before believing anything about your subscription.
+
+`install` therefore captures, when set in the installing shell:
+
+| Carried everywhere | Carried on macOS/Linux only | Never carried |
+|---|---|---|
+| `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_PROJECT_ID`, `GOOGLE_CLOUD_LOCATION`, `GOOGLE_GENAI_USE_VERTEXAI`, `GOOGLE_GENAI_USE_GCA` | `GOOGLE_APPLICATION_CREDENTIALS`, `GOOGLE_GEMINI_BASE_URL`, `GOOGLE_VERTEX_BASE_URL` | `GOOGLE_API_KEY`, `GOOGLE_CREDENTIALS` |
+
+The middle column is secret-*capable* — a credential path says where your credential lives, and a base URL can carry a token in userinfo or a query string. On macOS and Linux that is bounded by a guarantee kcap enforces: unit files are written `0600`, the mode is re-checked on the open handle, and `install` refuses a group- or world-writable directory. On Windows the wrapper inherits your user profile's ACL, which kcap neither sets nor verifies, so those three are excluded there — the same reason `GH_TOKEN` is never carried. If you need Vertex-with-ADC on a Windows daemon, set it in the service's own environment yourself.
+
+⚠️ **Capture happens at install time.** Exporting the project *after* `kcap daemon service install` leaves a unit without it. Set it first, or re-run `install` afterwards — and restart the daemon.
+
+> Verified against `oauth-personal` (Gemini Code Assist) with a project. The `gemini-api-key`, `vertex-ai` and `gateway` auth methods are not verified; their variables are carried so they *can* work, which is not the same as knowing they do.
 
 Because the service auto-restarts, stop a service-managed daemon with `kcap daemon service stop` (or `uninstall`) rather than `kcap daemon stop` — a raw stop would be relaunched immediately. `kcap daemon status` and `kcap daemon doctor` both report installed services.
 
