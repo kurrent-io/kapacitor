@@ -27,6 +27,56 @@ public class LocalPermissionBridgeTests {
     // anything past 5s indicates a regression worth surfacing fast.
     static HttpClient CreateClient() => new() { Timeout = TimeSpan.FromSeconds(5) };
 
+    // ---------------------------------------------------------------------------------
+    // Shutdown must be idempotent AND non-throwing.
+    //
+    // The bridge is both an IHostedService and an IAsyncDisposable, so the host stops it and the
+    // DI container then disposes it — and a SIGTERM-driven host shutdown can race the daemon's
+    // own shutdown sequence. Before the fix, a second pass hit StopAsync's _cts.CancelAsync() on
+    // an already-disposed CTS; the ObjectDisposedException surfaced inside
+    // ServiceProviderEngineScope.DisposeAsync where nothing catches it, terminating the daemon
+    // (5 occurrences in daemon-tony.log over two days). Each of these fails without the fix.
+    // ---------------------------------------------------------------------------------
+
+    [Test, NotInParallel(nameof(LocalPermissionBridgeTests))]
+    public async Task Stop_then_dispose_then_dispose_again_does_not_throw() {
+        var (bridge, _) = CreateBridge();
+        await bridge.StartAsync(CancellationToken.None);
+
+        await bridge.StopAsync(CancellationToken.None);
+        await bridge.DisposeAsync();
+
+        // The second disposal is the one the host's DI teardown performs after the daemon's own
+        // shutdown sequence has already disposed the service.
+        await bridge.DisposeAsync();
+    }
+
+    [Test, NotInParallel(nameof(LocalPermissionBridgeTests))]
+    public async Task Stop_after_dispose_does_not_throw() {
+        var (bridge, _) = CreateBridge();
+        await bridge.StartAsync(CancellationToken.None);
+
+        await bridge.DisposeAsync();
+
+        // A hosted-service StopAsync arriving after disposal — the reverse interleaving of the
+        // same race. This is the call that threw on the disposed CTS.
+        await bridge.StopAsync(CancellationToken.None);
+    }
+
+    [Test, NotInParallel(nameof(LocalPermissionBridgeTests))]
+    public async Task Concurrent_dispose_and_stop_do_not_throw() {
+        var (bridge, _) = CreateBridge();
+        await bridge.StartAsync(CancellationToken.None);
+
+        // Both teardown paths entering at once — the shape of the production race. Task.WhenAll
+        // surfaces whichever one throws.
+        var dispose = Task.Run(async () => await bridge.DisposeAsync());
+        var stop    = Task.Run(() => bridge.StopAsync(CancellationToken.None));
+
+        await Task.WhenAll(dispose, stop);
+        await bridge.DisposeAsync();
+    }
+
     [Test, NotInParallel(nameof(LocalPermissionBridgeTests))]
     public async Task StartAsync_ExposesLoopbackBaseUrlWithToken() {
         var (bridge, _) = CreateBridge();
