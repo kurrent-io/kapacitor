@@ -8,6 +8,11 @@ namespace Capacitor.Cli.Tests.Unit.SessionStartMemory;
 /// </summary>
 public class MemoryIndexLiveCertHarnessTests {
     // ── command resolution ────────────────────────────────────────────────────
+    //
+    // The Unix-semantics cases are skipped on Windows rather than adapted: the branch under test is the
+    // one guarded by `isWindows: false`, it asks the kernel `access(X_OK)`, and its probes need real
+    // execute bits — none of which Windows can provide. Adapting them there would test a different
+    // resolver. Only the isWindows: true passthrough runs everywhere, and it touches no file mode.
     // The bug these cover: `Process.Start` tries a separator-free filename against the WORKING
     // DIRECTORY before PATH, and this assembly's working directory is its own output folder — which
     // contains a `kcap` copied there by the Capacitor.Cli project reference. Every harness
@@ -18,6 +23,8 @@ public class MemoryIndexLiveCertHarnessTests {
 
     [Test]
     public async Task A_bare_command_resolves_to_the_first_PATH_entry_that_has_it() {
+        Skip.Unless(!OperatingSystem.IsWindows(), "Unix PATH semantics: needs real execute bits and access(X_OK).");
+
         using var probe = new PathProbe();
 
         var resolved = MemoryIndexLiveCertHarness.ResolveOnPath(
@@ -29,6 +36,8 @@ public class MemoryIndexLiveCertHarnessTests {
     /// <summary>An earlier PATH entry wins — resolution order is first-match, as the shell's is.</summary>
     [Test]
     public async Task Earlier_PATH_entries_win_over_later_ones() {
+        Skip.Unless(!OperatingSystem.IsWindows(), "Unix PATH semantics: needs real execute bits and access(X_OK).");
+
         using var first  = new PathProbe();
         using var second = new PathProbe(first.CommandName);
 
@@ -44,6 +53,8 @@ public class MemoryIndexLiveCertHarnessTests {
     /// with the <c>which kcap</c> line recorded beside it.</summary>
     [Test]
     public async Task A_non_executable_match_is_skipped_for_a_later_executable_one() {
+        Skip.Unless(!OperatingSystem.IsWindows(), "Unix PATH semantics: needs real execute bits and access(X_OK).");
+
         using var notExecutable = new PathProbe(executable: false);
         using var executable    = new PathProbe(notExecutable.CommandName);
 
@@ -59,6 +70,8 @@ public class MemoryIndexLiveCertHarnessTests {
     /// throws for the same reason an absent command does.</summary>
     [Test]
     public async Task A_non_executable_only_match_does_not_resolve() {
+        Skip.Unless(!OperatingSystem.IsWindows(), "Unix PATH semantics: needs real execute bits and access(X_OK).");
+
         using var probe = new PathProbe(executable: false);
 
         await Assert.That(() => MemoryIndexLiveCertHarness.ResolveOnPath(probe.CommandName, probe.BinDir, isWindows: false))
@@ -70,6 +83,8 @@ public class MemoryIndexLiveCertHarnessTests {
     [Arguments("/usr/bin/env")]
     [Arguments("./local-thing")]
     public async Task An_explicit_path_is_passed_through_untouched(string fileName) {
+        Skip.Unless(!OperatingSystem.IsWindows(), "Unix PATH semantics: needs real execute bits and access(X_OK).");
+
         using var probe = new PathProbe();
 
         await Assert.That(MemoryIndexLiveCertHarness.ResolveOnPath(fileName, probe.BinDir, isWindows: false))
@@ -82,6 +97,8 @@ public class MemoryIndexLiveCertHarnessTests {
     /// than fail, reintroducing the wrong-binary bug on the path where resolution already failed.</summary>
     [Test]
     public async Task An_unresolvable_command_throws_rather_than_falling_back_to_the_working_directory() {
+        Skip.Unless(!OperatingSystem.IsWindows(), "Unix PATH semantics: needs real execute bits and access(X_OK).");
+
         using var probe = new PathProbe();
 
         await Assert.That(() => MemoryIndexLiveCertHarness.ResolveOnPath("kcap-no-such-command", probe.BinDir, isWindows: false))
@@ -114,9 +131,14 @@ public class MemoryIndexLiveCertHarnessTests {
 
             ExecutablePath = Path.Combine(BinDir, CommandName);
             File.WriteAllText(ExecutablePath, "#!/bin/sh\nexit 0\n");
-            File.SetUnixFileMode(ExecutablePath, executable
-                ? UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute
-                : UnixFileMode.UserRead | UnixFileMode.UserWrite);
+
+            // `File.SetUnixFileMode` THROWS on Windows, and the probe is constructed by the one test
+            // that does run there (the isWindows: true passthrough), which never looks at the mode.
+            if (!OperatingSystem.IsWindows()) {
+                File.SetUnixFileMode(ExecutablePath, executable
+                    ? UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute
+                    : UnixFileMode.UserRead | UnixFileMode.UserWrite);
+            }
         }
 
         public string BinDir         { get; }
