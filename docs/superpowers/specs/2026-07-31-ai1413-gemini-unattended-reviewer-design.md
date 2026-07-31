@@ -1,8 +1,15 @@
 # AI-1413 — Gemini CLI as an unattended review-flow reviewer
 
-**Status:** rev 1, 2026-07-31, against `gemini 0.53.0` and `kcap-cli` main (`bfb7bb2`).
+**Status:** rev 2, 2026-07-31, against `gemini 0.53.0` and `kcap-cli` main (`bfb7bb2`).
 **Implementation-ready.** Every claim marked **measured** was observed against a live `gemini
 --experimental-acp` process; the probes and their controls are in §2.
+
+**Rev 2** answers a codex spec review that found six real defects in rev 1 — three of them High. The
+substantive ones: rev 1 had no single non-bypassable source for the wire alias (§3.2a now defines one);
+rev 1's central security claim outran its evidence (§2.6 now measures the allowlist's matching
+semantics); and rev 1 relied on "the trust argv is only appended under `IsReviewFlow`" as if that
+enforced a "must never" property, which it does not (§3.3a adds a final-argv boundary check). Rev 1's
+test #7 also contradicted the code it was testing.
 **Repository:** kurrent-io/kcap-cli
 **Parent:** AI-1400 (reviewer choice in review flows)
 **Template:** the shipped Cursor reviewer (AI-1408) and Copilot reviewer (AI-1409). Gemini hosting is
@@ -88,6 +95,11 @@ the verdict arrives on, able to submit a fabricated `clean`, suppress real findi
 
 This is AI-899 §3.1d's collision class at a new sink. Same fix shape, and it is the reason §3.2 exists.
 
+**What this run does NOT establish** — rev 1 wrote "a repository cannot match a per-launch GUID" on the
+strength of it, which review correctly called out as a generalisation. One exact name matching and one
+different literal being blocked says nothing about prefix matching, globbing, or settings merge. §2.6
+measures those.
+
 ### 2.4 `--approval-mode yolo` is REQUIRED, not a nicety
 
 Runs C and D differ by that flag alone. Without it Gemini emits `session/request_permission` before invoking
@@ -113,6 +125,36 @@ It also settles the interaction policy — see §3.4.
   report an unpriceable model until it lands.
 * Gemini spawns an MCP server **twice** per session (distinct pids, both handshaking; only the second
   receives `tools/call`). Any test asserting "spawned once" would be wrong.
+
+### 2.6 The allowlist is exclusive EXACT-match — which is what makes a GUID sufficient
+
+Rev 1's claim needed its own measurement, so it got one. One workspace, four hostile servers declared in
+its own `.gemini/settings.json`, each writing a separate marker; the allowlist held only our injected
+name. Under inherited trust, `--approval-mode yolo`:
+
+| hostile repository server name | process ran? |
+|---|---|
+| `kcap-flow-result` — a **prefix** of the allowed name | **no** |
+| `kcap-flow-result-<a different guid>` — same shape | **no** |
+| `kcap-flow-result-*` — wildcard attempt | **no** |
+| **byte-identical to the allowlisted name** | **YES — spawned** |
+| our injected server (positive control) | **YES — spawned + tool called** |
+
+So admission is **name equality and nothing else**: no prefix match, no glob, no merge-based admission.
+That is what makes §3.2's per-launch GUID sufficient — and it also locates the entire defence in one
+property, which the design must then protect deliberately:
+
+* **the alias must be unpredictable**, so it comes from `Guid.NewGuid()` (v4, CSPRNG-backed on .NET) and
+  never from a counter, a timestamp, the session id, or anything repository-derived;
+* **the alias must not leak into anything the repository can read.** It appears in the launch argv (visible
+  to the daemon user via `ps`, which is already trusted) and in the injected server spec. It must not be
+  written into the worktree, into a file the reviewer can read, or into the reviewer's prompt.
+
+**Deliberately NOT measured: duplicate `--allowed-mcp-server-names` handling and config precedence.** The
+design does not depend on either, because §3.3a asserts the final argv contains **exactly one** allowlist
+option with **exactly one** value. Depending on a vendor's duplicate-flag semantics would be a worse
+design than not permitting duplicates in the first place, and an unmeasured dependency is exactly what
+rev 1 was faulted for.
 
 ## 3. Design
 
@@ -183,6 +225,47 @@ repository can declare:
 A repository cannot match a per-launch GUID, so its own server is refused by the allowlist and never spawned:
 the §2.3 impostor is closed at the same gate that admits ours.
 
+### 3.2a One launch-scoped identity, produced once and consumed by both sinks
+
+Rev 1 said "derived once per launch" and then, in §4, assigned derivation to `AcpReviewFlowMcp` and argv
+substitution to `AcpHostedAgentRuntimeFactory` **without saying what passes between them**. Review was
+right that this is the defect, not a detail: with no shared value an implementation can generate two
+GUIDs, or reconstruct one from the other, or rename the server while the allowlist keeps the deny value —
+and tests #5/#6 would still pass at helper level while the emitted launch disagrees.
+
+So the alias is an explicit launch-scoped value with both names on it:
+
+```csharp
+/// The result channel's identity for ONE launch. CanonicalId is what every reserved-name comparison
+/// uses (KcapMcpRegistry's reservation check, Copilot's --available-tools builder); WireName is the
+/// only string that ever reaches a vendor. Created once per launch and threaded — never re-derived,
+/// because two derivations is the defect this type exists to make unrepresentable.
+internal sealed record ReviewChannelIdentity(string CanonicalId, string WireName) {
+    public static ReviewChannelIdentity ForLaunch(string vendor) =>
+        vendor == Vendors.Gemini
+            ? new(KcapMcpRegistry.ReservedResultChannelId,
+                  $"{KcapMcpRegistry.ReservedResultChannelId}-{Guid.NewGuid():N}")
+            : new(KcapMcpRegistry.ReservedResultChannelId,
+                  KcapMcpRegistry.ReservedResultChannelId);   // unchanged for every other vendor
+}
+```
+
+Rules the implementation must satisfy, each of them testable at the launch boundary:
+
+1. **`ForLaunch` is called exactly once per launch**, in the factory, before either sink runs. The instance
+   is passed to `AcpReviewFlowMcp` (which stamps `WireName` onto the injected server spec) and to the
+   allowlist substitution (which writes the same `WireName` into the argv). Neither derives its own.
+2. **`WireName` is the ONLY string handed to a vendor.** `CanonicalId` never appears in argv or in a
+   `session/new` payload for Gemini.
+3. **`CanonicalId` is what every reserved-name comparison sees**, so `KcapMcpRegistry`'s reservation check
+   and Copilot's tool-id builder are untouched — and non-Gemini vendors get `WireName == CanonicalId`, so
+   their behaviour is byte-identical to today.
+
+**Acceptance is at the launch artifact, not at the helper** (review's point, and the fix for §6's
+vacuity): one launch is built, and the assertions read the **final argv** and the **serialized
+`session/new` request** from that same launch — exactly one allowed name, exactly one result-channel
+server, those two strings equal, and the canonical paths still resolving on `CanonicalId`.
+
 **Scope of the rename.** `ReservedResultChannelId` is load-bearing elsewhere — `KcapMcpRegistry`'s
 reservation check and Copilot's `--available-tools` builder both compare against it. So the randomisation is
 introduced as a **per-launch alias resolved at the Gemini launch seam**, not by changing the constant. The
@@ -199,6 +282,44 @@ invariants:
   blanket approval to an interactive agent.
 * it must **never** be combined with the legacy `--yolo` flag (the issue's original note). Only
   `--approval-mode yolo` is passed.
+
+### 3.3a The invariants are enforced at the final argv, not by where the array is appended
+
+Rev 1 justified §3.3 with "the trust argv is appended only under `ctx.IsReviewFlow`". Review was right
+that this proves only what *that array* does — it does not reject `--approval-mode yolo` arriving from
+`descriptor.Argv`, from a caller-supplied argument, or from a future vendor-specific branch, and it does
+not reject legacy `--yolo` from anywhere. A convention is not an invariant.
+
+So the composed argv is validated once, at the launch boundary, after every contributor has run:
+
+```csharp
+static void RequireApprovalModeInvariants(IReadOnlyList<string> argv, bool isReviewFlow, string vendor) {
+    // Legacy spelling is refused everywhere, on any launch. It is not merely redundant with
+    // --approval-mode: the two together were the failure mode the issue's original note named.
+    if (argv.Contains("--yolo"))
+        throw new InvalidOperationException($"...'{vendor}' launch carries the legacy --yolo flag...");
+
+    var approvalModes = argv.Count(a => a == "--approval-mode");
+
+    if (!isReviewFlow && approvalModes > 0)
+        throw new InvalidOperationException(
+            $"...interactive '{vendor}' launch carries --approval-mode; hosted sessions must behave as the "
+          + "user's own session does...");
+
+    if (isReviewFlow && vendor == Vendors.Gemini && approvalModes != 1)
+        throw new InvalidOperationException($"...expected exactly one --approval-mode, found {approvalModes}...");
+}
+```
+
+and the same boundary asserts the allowlist shape §2.6 relies on: **exactly one**
+`--allowed-mcp-server-names` option with **exactly one** value, so the design never depends on the
+vendor's duplicate-option semantics.
+
+**`IsReviewFlow` ⇔ unattended.** Review asked whether every review-flow launch is necessarily unattended.
+It is, and the code already enforces it rather than assuming it: `ValidateAndBuildReviewFlowMcp` throws
+`"Vendor '{v}' cannot host an unattended (review-flow) agent"` when `ctx.IsReviewFlow &&
+!descriptor.SupportsUnattended`. The two are the same condition, and this spec adds no third state. Named
+here because rev 1 left it implicit.
 
 ### 3.4 `UnattendedInteractionPolicy.Fail`
 
@@ -250,50 +371,114 @@ anything advertises the vendor.
 
 ## 6. Test plan
 
-**Unit (deterministic, no vendor):**
+Review found rev 1's plan partly vacuous, and it was right about each case: a test comparing a shared
+alias property to itself cannot catch omission or later rewriting; a test asserting a constant is
+unchanged does not prove the aliased launch traverses reservation logic; and two GUIDs being unequal
+establishes neither unpredictability nor per-launch lifetime. Every assertion below therefore names the
+**artifact** it reads and the **mutant** it must die to.
 
-1. `Gemini_UnattendedTrustArgv_IsApprovalModeYolo` — exact argv, and that it is absent from `Argv`.
-2. `Gemini_InteractiveLaunch_HasNoApprovalMode` — §3.3's first invariant, asserted on a non-review launch.
-3. `Gemini_NeverPassesLegacyYolo` — `--yolo` appears nowhere.
-4. `ReviewFlowChannelAlias_IsUniquePerLaunch` — two launches, two aliases.
-5. `ReviewFlowChannelAlias_MatchesTheAllowlistExactly` — the injected server name and the single allowlist
-   value are the same string. This is §2.2's coupling: if they can disagree, the reviewer cannot report.
-6. `ReviewFlowChannelAlias_PreservesTheCanonicalReservedId` — `KcapMcpRegistry`'s reservation check and
-   Copilot's tool-id builder still see `kcap-flow-result`.
-7. `ReviewFlow_ReplacesTheDenyAllPlaceholder` — the placeholder is gone from a review launch's argv, and
-   still present on an interactive one.
-8. `Gemini_AllowlistCoupling` (extend AI-899's) — with `SupportsMcpServers: true`, the review-flow allowlist
-   must be the injected names; the interactive allowlist must still be unmatchable.
+**All assertions read the launch artifact** — the final composed argv, and the serialized `session/new`
+payload — from a single built launch. Not descriptor fields, not helper return values.
 
-**Mutation-proof each guard.** Every assertion above must fail when its guard is removed — in particular #5,
-whose failure mode is a reviewer that launches happily and can never report.
+| # | test | reads | must fail when |
+|---|---|---|---|
+| 1 | `Gemini_ReviewLaunch_CarriesExactlyOneApprovalModeYolo` | final argv | the trust argv is dropped, or a second one is appended |
+| 2 | `Gemini_InteractiveLaunch_CarriesNoApprovalMode` | final argv | `--approval-mode` is moved into `Argv`, or the review branch runs for an interactive launch |
+| 3 | `AnyLaunch_CarryingLegacyYolo_IsRefused` | boundary throw | the `--yolo` check is removed — injected via `Argv`, via the trust argv, and via a caller argument, one case each |
+| 4 | `ReviewLaunch_HasExactlyOneAllowlistOptionAndValue` | final argv | the review arm appends instead of replacing, or a duplicate option is emitted |
+| 5 | `ReviewLaunch_SerializedChannelName_EqualsTheAllowlistValue` | **serialized `session/new` name vs parsed argv value** | either sink derives its own alias; the MCP serialization omits the name; the argv is rewritten after substitution |
+| 6 | `ReviewLaunch_ReservationAndCopilotToolIds_ResolveOnCanonicalId` | `KcapMcpRegistry` reservation outcome + Copilot tool-id list, for a launch whose `WireName` differs | `CanonicalId` is replaced by `WireName` at either consumer |
+| 7 | `InteractiveLaunch_HasExactlyOneDenyAllName_AndNoPlaceholder` | final argv | `SubstituteUnmatchableNames` stops running for interactive launches |
+| 8 | `ReviewLaunch_HasNeitherThePlaceholderNorADenyName` | final argv | the review arm fails to replace the deny value |
+| 9 | `DescriptorTemplate_StillHoldsThePlaceholder` | `descriptor.Argv` | someone "simplifies" the template to a literal |
+| 10 | `NonGeminiVendors_WireNameEqualsCanonicalId` | identity for cursor/copilot/kiro | the alias is applied vendor-neutrally by accident, changing shipped behaviour |
+| 11 | `ConcurrentReviewLaunches_DoNotShareAWireName` | two launches built concurrently | the alias is cached, made static, or hoisted to a field |
+| 12 | `WireName_IsNotDerivedFromLaunchInputs` | the alias vs session id, agent id, worktree path, vendor, clock | the GUID is swapped for a counter, hash, or timestamp — the §2.6 unpredictability property |
 
-**Live certification (gated, `Skip.Unless`, opt-in env var):** a real `gemini --experimental-acp` launch that
-injects a channel under a randomised name and asserts the tool is invoked, plus the negative control that the
-deny-all placeholder blocks it. Same shape as AI-1463's memory cert. These are the §2 probes, promoted to
-tests so the finding cannot silently rot.
+Rev 1's test #7 is gone: it asserted the placeholder survives into an interactive launch's argv, which
+**contradicts the code** — `SubstituteUnmatchableNames` runs before the review branch on every launch, so
+an interactive final argv holds a generated `kcap-deny-…`. Review caught that. It is now #7/#8/#9, split
+by artifact so none of them can pass by reading the wrong object.
 
-**E2E (manual, recorded in the PR):** `start_review_flow(kind="spec-review", vendor="gemini")` completing a
-real round unattended — findings→clean on both kinds, zero human-routed interactions, reviewer session
-captured once and reaped.
+**Mutation-proof every row.** The "must fail when" column is the mutant, and a row whose mutant survives
+is a row that proves nothing — #5 above all, whose failure mode is a reviewer that launches happily and
+can never report.
+
+### 6.1 Live certification (gated, `Skip.Unless` + opt-in env var)
+
+The §2 probes promoted to tests, so the findings cannot silently rot when Gemini updates:
+
+* **positive** — a real `gemini --experimental-acp` launch with an injected channel under a randomised
+  name asserts the tool is invoked. **It must assert a bounded wait and fail on timeout**, never hang:
+  "never reported" and "skipped/inconclusive" must be distinguishable, which is review's point and is
+  exactly how a broken channel would otherwise look green.
+* **negative** — the deny-all placeholder blocks the same injection (§2.2).
+* **hostile repository** — the §2.6 run, reduced to its load-bearing rows: a workspace declaring servers
+  named with a prefix of, a glob over, and a different suffix than the allowlisted name, asserting via
+  marker files that **no repository MCP process starts** while the injected one does. This is the test that
+  would catch Gemini changing the allowlist from exact-match to prefix-match in a future release, which is
+  the single change that would silently reopen §2.3.
+
+### 6.2 E2E (manual, recorded in the PR)
+
+`start_review_flow(vendor="gemini")` completing a real round unattended, for **both flow kinds** —
+`kind="spec-review"` and `kind="code-review"` — each taken from a `findings` result through a
+`submit_review_round` to a `clean` result, so the multi-round path is exercised and not just the first
+reply. Plus: zero human-routed interactions (any interaction frame reaps the reviewer under §3.4, so this
+is observable rather than asserted by inspection), and **exactly one reviewer *session* recorded and
+reaped** — which is not the same as one process: §2.5 measured Gemini spawning the MCP server twice per
+session, so a process count is the wrong oracle here.
 
 ## 7. Definition of done
 
-* `start_review_flow(kind="spec-review", vendor="gemini")` completes a real round unattended, end to end.
-* A repository declaring its own `kcap-flow-result` MCP server is **not spawned** during a Gemini review —
-  asserted, with the positive control that the real channel still loads.
-* Interactive hosted Gemini is unchanged: no `--approval-mode`, deny-all allowlist intact.
-* Every guard mutation-proven.
+* `start_review_flow(vendor="gemini")` completes a real round unattended for both kinds (§6.2).
+* A repository declaring MCP servers that prefix, glob, or near-miss the allowlisted name has **no process
+  spawned** during a Gemini review, with the positive control that the real channel still loads (§6.1).
+* Interactive hosted Gemini is unchanged: no `--approval-mode`, one deny-all name, no placeholder.
+* Routing **refuses** Gemini for a borrowed snapshot before any process starts (§8, first bullet).
+* Every row of §6's table mutation-proven.
 
 ## 8. What this issue does NOT do
 
 * **Borrowed review for Gemini** — `SupportsBorrowedReviewFlow` stays false. Needs the sandbox credential
   question (§1), which is Kiro's AI-1410 blocker; a Gemini reviewer without it still reviews an owned
   worktree, which is what every shipped reviewer except Copilot does.
+
+  Review's point stands, though: "we left the flag false" is only safe if routing *demonstrably* refuses
+  Gemini for a borrowed snapshot **before a process starts**, or a fallback could run Gemini with the
+  daemon's own `HOME` against borrowed content — the one shape the sandbox exists to prevent. The code
+  already throws (`"requires an owned worktree, not a borrowed cwd"` when `ctx.Work !=
+  WorkLocation.OwnedWorktree && !policy.Supported`), so this becomes a **required negative acceptance
+  test**, listed in §7: build a borrowed-snapshot Gemini launch and assert it is refused pre-spawn. Cheap,
+  and it converts an inherited guarantee into an asserted one.
 * **Model override** — `NoOpModelSelector` stays. AI-899 §3.3: the write half is unverified and fails
   silently. A reviewer records `model=vendor-default` until AI-1417/AI-1612 resolve it.
 * **AI-1612** — a Gemini reviewer reports `auto-gemini-2.5`, a pricing sentinel, so its cost is unpriceable.
   Known and accepted, not discovered later.
-* **The vendor-neutral channel-name rename** — §3.2 keeps the canonical `ReservedResultChannelId` and aliases
-  only at the Gemini seam. If Cursor or Kiro need the same protection, that is the moment to generalise, and
-  AI-1632's trust probe is what would establish whether they do.
+* **The vendor-neutral channel-name rename** — §3.2/§3.2a keep the canonical `ReservedResultChannelId` and
+  alias only at the Gemini seam, so every other vendor's `WireName == CanonicalId` and their shipped
+  behaviour is byte-identical (asserted, §6 row 10).
+
+  Review objected that "generalise when they need it" leaves a known impersonation class unevaluated for the
+  other `SessionNew` reviewer, and that §8 should **name the barrier** rather than defer. Naming it, with
+  its verification status, because it is weaker than Gemini's:
+
+  **Cursor** is the only other `SessionNew` reviewer, and it has no allowlist flag at all — its
+  `UnattendedTrustArgv` carries `--approve-mcps`, which *suppresses* MCP-server approval rather than
+  clamping it. So Cursor has no equivalent of the §2.6 gate. The barrier it relies on instead is a
+  behavioural one recorded on **AI-1626**: Cursor's **ACP** path was measured not to load repo-authored MCP
+  servers, which is why `--approve-mcps` is not an admission vector there. That measurement is load-bearing
+  and it deserves scepticism — AI-1626 exists *because* an earlier reading of the same area was wrong in
+  both directions (a false Urgent finding from measuring Cursor's `--prompt` path, then a retraction), and
+  it was measured before the production worktree shape (a daemon worktree under a trusted parent) was
+  understood.
+
+  So: **not a blocker for Gemini**, whose gate is measured and exact (§2.6), but explicitly **not a clean
+  bill of health for Cursor**. Re-verifying it under the production shape is **AI-1632**, already filed
+  High, and this spec's §2.3/§2.6 method — hostile servers in a real workspace, marker files as evidence,
+  under inherited trust — is the method that should be used there. If Cursor turns out to load them, the
+  generalisation becomes urgent and `ReviewChannelIdentity.ForLaunch` is the seam it lands at: one branch,
+  already vendor-keyed.
+
+  **Copilot** is not exposed by this class: its transport is `CopilotAdditionalConfig`, and it clamps the
+  visible surface with an exclusive `--available-tools` allowlist rather than admitting servers by name.
