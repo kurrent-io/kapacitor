@@ -12,6 +12,7 @@ Subcommands:
   logs                    Show recent daemon log output
   doctor [--clean]        Diagnose lock-file state, optionally clean stale entries
   service <action>        Manage the OS service (launchd/systemd/Scheduled Task)
+  consent <verb>          Manage the launch-consent policy (see "Consent" below)
 
 Options for start:
   --name <name>           Daemon name (defaults to OS username)
@@ -57,6 +58,56 @@ Subcommands for service (per-user; auto-restarts on crash/SIGKILL, starts at log
   stop [--name N]         Stop the running service (stays installed; returns at
                           next login or `service start`).
   status [--name N]       Show installed / running state.
+
+Consent:
+  Every SERVER-driven launch (a coding agent, PR review, or review-flow
+  participant started from the dashboard) is checked against a daemon-owned
+  launch-consent policy before it runs. Launches from the daemon's own local
+  socket (`kcap agent start`) are always the owner's and never consult this
+  policy. The daemon owner is ALWAYS allowed, regardless of the policy below
+  — this built-in bypass cannot be turned off. For everyone else, rules are
+  checked in order and the FIRST MATCH WINS; a request that matches no rule
+  falls through to the policy's default. A denial surfaces to the server (and
+  the requester) as the coded reason `launch_denied_by_owner`.
+
+  kcap daemon consent show                       Print the current default,
+                                                   prompt timeout, and every
+                                                   rule with its index
+  kcap daemon consent set-default <allow|deny|prompt>
+                                                   Set the fallback verdict
+                                                   for a request no rule
+                                                   matches:
+                                                     allow  — let it through
+                                                              (upgrade-safe;
+                                                              every daemon
+                                                              starts here)
+                                                     deny   — reject it
+                                                     prompt — ask the daemon
+                                                              owner, and deny
+                                                              on timeout / no
+                                                              approval UI
+                                                              attached
+  kcap daemon consent allow [--requester U] [--kind agent|review|review-flow]
+                             [--repo PATH] [--vendor V]
+                                                   Append an "allow" rule
+  kcap daemon consent deny  [--requester U] [--kind agent|review|review-flow]
+                             [--repo PATH] [--vendor V]
+                                                   Append a "deny" rule
+  kcap daemon consent remove <index>              Remove the rule at the
+                                                   index printed by `show`
+  kcap daemon consent log [-n N]                  Tail N lines (default 20)
+                                                   of consent-decisions.jsonl
+                                                   — a direct file read, so
+                                                   it works with the daemon
+                                                   stopped
+
+  `show`/`set-default`/`allow`/`deny`/`remove` mutate the policy over the
+  daemon's local socket and require a running daemon. `allow`/`deny` require
+  at least one of --requester/--kind/--repo/--vendor — an omitted field is a
+  wildcard (matches anything), so a flagless "allow" would be a permanent
+  no-op, and a flagless "deny" is already expressible as `set-default deny`.
+  --repo accepts an exact path or a "/prefix/*" glob. All six verbs take
+  --name <n> like the rest of `kcap daemon`.
 
 Notes:
   Each daemon holds an exclusive flock on ~/.config/kcap/daemons/<name>.lock

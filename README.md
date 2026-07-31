@@ -673,6 +673,21 @@ Each daemon process holds an exclusive `flock` on `~/.config/kcap/daemons/<name>
 
 Two daemons with **different** `--name` values can run side-by-side. Two daemons under the **same name** on the same machine collide on the flock and the second one exits with code 2. Even if that guard is bypassed somehow, the server rejects the second daemon's `DaemonConnect` with a typed error and the second daemon exits with code 3 — no more silent slot-displacement oscillation.
 
+#### Launch consent (`kcap daemon consent`)
+
+Every server-driven launch — a hosted coding agent, a PR review, or a review-flow participant started from the dashboard — is checked against a daemon-owned consent policy (allow / deny / prompt-the-owner, with per-requester/kind/repo/vendor rules) before it runs; `kcap daemon consent` inspects and edits that policy from the CLI. A denial surfaces back to the server (and the requester) as the coded reason `launch_denied_by_owner`.
+
+```bash
+kcap daemon consent show                                        # print default, prompt timeout, and numbered rules
+kcap daemon consent set-default deny                             # allow (default) | deny | prompt
+kcap daemon consent allow --requester user_123 --kind review     # append a rule (at least one flag required)
+kcap daemon consent deny --vendor codex --repo /path/to/repo/*   # deny by vendor + a repo glob
+kcap daemon consent remove 0                                     # remove the rule at the index `show` printed
+kcap daemon consent log -n 50                                    # tail consent-decisions.jsonl (works while stopped)
+```
+
+`show`/`set-default`/`allow`/`deny`/`remove` mutate the policy over the daemon's local socket and require the target daemon to be running; `log` reads `consent-decisions.jsonl` straight off disk, so it works even with the daemon stopped. All six take `--name <n>` like the rest of `kcap daemon`.
+
 #### Hosted Codex agents
 
 Hosted Codex agents require the Codex hook surface — if you said yes during `kcap setup`, you already have it. Otherwise install it manually:

@@ -28,6 +28,7 @@ public static class DaemonCommands {
             "logs"    => await Logs(),
             "doctor"  => await DoctorAsync(remaining),
             "service" => await ServiceAsync(remaining),
+            "consent" => await DaemonConsentCommand.HandleAsync(remaining),
             _         => PrintUsage()
         };
     }
@@ -932,7 +933,7 @@ public static class DaemonCommands {
         $"kcap-daemon binary not found next to {AppContext.BaseDirectory}. Reinstall the kcap package.";
 
     static int PrintUsage() {
-        Console.Error.WriteLine("Usage: kcap daemon <start|stop|restart|status|logs|doctor|service>");
+        Console.Error.WriteLine("Usage: kcap daemon <start|stop|restart|status|logs|doctor|service|consent>");
         Console.Error.WriteLine();
         Console.Error.WriteLine("  start [-d] [--name <n>]    Start the daemon (foreground, or -d for background)");
         Console.Error.WriteLine("  stop [--name <n>] [--yes]  Stop a running daemon (prompts on multi unless --yes)");
@@ -941,6 +942,7 @@ public static class DaemonCommands {
         Console.Error.WriteLine("  logs                       Show recent daemon log output");
         Console.Error.WriteLine("  doctor [--clean]           Diagnose lock-file state, optionally clean stale entries");
         Console.Error.WriteLine("  service <action>           Manage the OS service (launchd/systemd/Scheduled Task)");
+        Console.Error.WriteLine("  consent <verb>             Manage the launch-consent policy (run `kcap daemon consent` for verbs)");
         Console.Error.WriteLine();
         Console.Error.WriteLine("Options for start:");
         Console.Error.WriteLine("  --name <name>         Daemon name (defaults to OS username)");
