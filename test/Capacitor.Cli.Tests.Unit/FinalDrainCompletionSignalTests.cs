@@ -114,4 +114,35 @@ public class WaitForFinalLineCompletionAsyncTests {
             "/tmp/nonexistent_" + Guid.NewGuid(), attempts: 2, delayMs: 10);
         await Assert.That(result).IsFalse();
     }
+
+    /// <summary>
+    /// The shutdown poll must not deny Write to the agent that is still flushing its transcript — it
+    /// runs precisely while the vendor writes its last records, and every other transcript read in
+    /// WatchCommand opens FileShare.ReadWrite for that reason.
+    /// <para>Deterministic, unlike the growing-file tests above: a writer handle is held open for the
+    /// whole call rather than racing it. With a FileShare.Read open (what File.ReadAllTextAsync does)
+    /// the read is denied, the method's catch swallows it, and it returns false after exhausting its
+    /// attempts — so this assertion flips.</para>
+    /// <para>NOTE: only discriminates on Windows. Unix has no mandatory file sharing, so both the
+    /// fixed and unfixed versions pass here; the mutation proof has to come from the Windows CI leg.</para>
+    /// </summary>
+    [Test]
+    public async Task completes_while_another_handle_holds_the_file_open_for_writing() {
+        var dir  = Directory.CreateTempSubdirectory("kcap-finaldrain-share-");
+        var path = Path.Combine(dir.FullName, "transcript.jsonl");
+
+        try {
+            await File.WriteAllTextAsync(path, "{\"a\":1}\n");
+
+            // A well-behaved writer: holds the file open for Write, sharing read+write, exactly as an
+            // agent appending to its own transcript does.
+            await using var writer = new FileStream(path, FileMode.Open, FileAccess.Write, FileShare.ReadWrite);
+
+            var result = await WatchCommand.WaitForFinalLineCompletionAsync(path, attempts: 3, delayMs: 10);
+
+            await Assert.That(result).IsTrue();
+        } finally {
+            try { dir.Delete(recursive: true); } catch { /* best effort */ }
+        }
+    }
 }

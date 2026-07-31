@@ -116,11 +116,16 @@ static partial class WatchCommand {
     /// send-and-advance the newline-less final line. Never throws — a read failure just counts as
     /// "not yet complete" for that iteration; the delay between iterations is likewise best-effort so
     /// cancellation/short-lived environments can't turn this into a hang.
+    /// <para>Reads with <see cref="FileShare.ReadWrite"/> like every other transcript read here, so the
+    /// agent still appending is never blocked. That matters most on THIS path: it polls repeatedly
+    /// while the vendor is flushing its final records, and a <see cref="FileShare.Read"/> open (what
+    /// <c>File.ReadAllTextAsync</c> uses) denies Write for the duration — mandatory on Windows, so the
+    /// vendor's own write to its own transcript fails.</para>
     /// </summary>
     internal static async Task<bool> WaitForFinalLineCompletionAsync(string path, int attempts = 4, int delayMs = 500) {
         for (var i = 0; i < attempts; i++) {
             try {
-                if (IsFinalLineComplete(await File.ReadAllTextAsync(path))) return true;
+                if (IsFinalLineComplete(await ReadAllTextSharedAsync(path))) return true;
             } catch {
                 // Transient read failure (e.g. concurrent write) — try again on the next iteration.
             }
@@ -133,6 +138,26 @@ static partial class WatchCommand {
         }
 
         return false;
+    }
+
+    /// <summary>Reads a whole transcript without denying Write to anyone else. The framework's
+    /// <c>File.ReadAllText*</c> opens <see cref="FileShare.Read"/>, which locks out the writing agent
+    /// for the duration of the read; every transcript read in this file must use
+    /// <see cref="FileShare.ReadWrite"/> instead.</summary>
+    internal static async Task<string> ReadAllTextSharedAsync(string path) {
+        await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+        using var reader = new StreamReader(stream);
+
+        return await reader.ReadToEndAsync();
+    }
+
+    /// <summary>Synchronous <see cref="ReadAllTextSharedAsync"/>, for the sync sidecar-enrichment
+    /// paths. Same reason: the vendor owns that file and must never be locked out of it.</summary>
+    internal static string ReadAllTextShared(string path) {
+        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+        using var reader = new StreamReader(stream);
+
+        return reader.ReadToEnd();
     }
 
     /// <summary>
@@ -2300,7 +2325,7 @@ static partial class WatchCommand {
             var metaPath = Path.ChangeExtension(transcriptPath, ".json");
             if (!File.Exists(metaPath)) return 0;
 
-            var anchors = KiroUsage.AnchorMap(File.ReadAllText(metaPath));
+            var anchors = KiroUsage.AnchorMap(ReadAllTextShared(metaPath)); // never lock Kiro out of its own sidecar
             var offset  = 0;
 
             foreach (var (anchor, usage) in anchors) {
@@ -2337,7 +2362,7 @@ static partial class WatchCommand {
             var siblingJson = Path.ChangeExtension(transcriptPath, ".json");
             if (!File.Exists(siblingJson)) return lines;
 
-            var anchors = KiroUsage.AnchorMap(File.ReadAllText(siblingJson));
+            var anchors = KiroUsage.AnchorMap(ReadAllTextShared(siblingJson)); // never lock Kiro out of its own sidecar
             if (anchors.Count == 0) return lines;
 
             return lines.Select(l => KiroUsage.EnrichLine(l, anchors)).ToList();
