@@ -365,15 +365,36 @@ public class CursorHookCommandTests {
 
         await Assert.That(exit).IsEqualTo(0);
 
-        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(2);
-        while (!fx.SpoolFiles.Any() && DateTime.UtcNow < deadline) {
+        // Poll for the CONTENT, not the file's existence. The spool file goes through three states here:
+        // seeded-with-sessionStart (above) → deleted once the drain delivers that line (HookSpool removes
+        // a fully-consumed file) → re-created by the fresh sessionEnd's append on the abandoned
+        // background continuation. An existence check cannot tell state 1 from state 3, so it can be
+        // satisfied by the SEEDED file and read stale content that never contains sessionEnd.
+        //
+        // The read is also shared and IOException-tolerant: the append (File.AppendAllText) and the
+        // drain's rewrite both hold the file open for Write while they run, and a File.ReadAllText* open
+        // denies Write — a sharing violation on Windows, where it is mandatory, and invisible on Unix.
+        var deadline     = DateTime.UtcNow + TimeSpan.FromSeconds(10);
+        var spoolContent = (string?)null;
+
+        while (DateTime.UtcNow < deadline) {
+            if (fx.SpoolFiles.SingleOrDefault() is { } path) {
+                try {
+                    await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+                    using var       reader = new StreamReader(stream);
+                    spoolContent = await reader.ReadToEndAsync();
+                } catch (IOException) {
+                    // Mid-write; look again next tick.
+                }
+
+                if (spoolContent?.Contains("sessionEnd", StringComparison.Ordinal) == true) break;
+            }
+
             await Task.Delay(20);
         }
 
-        var spoolPath = fx.SpoolFiles.SingleOrDefault();
-        await Assert.That(spoolPath).IsNotNull();
-        var spoolContent = await File.ReadAllTextAsync(spoolPath!);
-        await Assert.That(spoolContent).Contains("sessionEnd");
+        await Assert.That(spoolContent).IsNotNull();
+        await Assert.That(spoolContent!).Contains("sessionEnd");
     }
 
     // Task 2: single-writer, deadline-safe stdout emission for Cursor's
