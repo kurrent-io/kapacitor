@@ -202,58 +202,67 @@ internal static class MemoryIndexLiveCertHarness {
     /// </summary>
     public static async Task<string> SaveNonceMemoryAsync(string vendorLabel, string nonce) {
         var slug = SlugFor(nonce);
+        string stdout;
 
-        var stdout = await CallMemoryToolAsync("save_memory", new JsonObject {
-            ["audience"]    = "user",
-            ["slug"]        = slug,
-            ["description"] = $"kcap {vendorLabel} memory live-cert nonce: {nonce}",
-            ["content"]     = $"kcap {vendorLabel} memory live-cert nonce: {nonce}. Safe to archive after the run.",
-            ["kind"]        = "reference",
-            ["global"]      = true
-        });
+        // The CALL is wrapped, not just its result. A throw here — a timed-out child, an unreadable
+        // frame, a lost response — does not mean the server declined to create the memory, and an
+        // unwrapped throw would leave the run unmarked and the sweep unrun.
+        try {
+            stdout = await CallMemoryToolAsync("save_memory", new JsonObject {
+                ["audience"]    = "user",
+                ["slug"]        = slug,
+                ["description"] = $"kcap {vendorLabel} memory live-cert nonce: {nonce}",
+                ["content"]     = $"kcap {vendorLabel} memory live-cert nonce: {nonce}. Safe to archive after the run.",
+                ["kind"]        = "reference",
+                ["global"]      = true
+            });
+        } catch (Exception ex) {
+            var swept = await SweepAmbiguousSaveAsync(
+                vendorLabel, slug, $"the save_memory call threw before returning a frame: {ex.Message}");
+
+            throw new InvalidOperationException(
+                $"save_memory threw for slug {slug}; the server may still have created the memory. "
+              + $"{swept}", ex);
+        }
 
         // An MCP tool result nests its payload as a JSON *string* inside result.content[].text, so the
         // id needs two parses, not a regex over the outer frame: the inner document's quotes arrive
         // "-escaped, so no pattern matching a literal `"memory_id"` will ever fire.
         if (ExtractMemoryId(stdout) is { } memoryId) return memoryId;
 
-        // The save may have SUCCEEDED and only its response gone unusable, in which case a real memory
-        // now exists with no id to archive it by — and a leaked nonce lands in the real injected index,
-        // where it makes a later positive case pass on stale evidence. Naming the slug in the exception
-        // makes that diagnosable but leaves the pollution in place, so recover the id by its (unique,
-        // nonce-derived) slug and archive it here.
-        var matches = await FindMemoryIdsBySlugAsync(slug);
-
-        // EVERY exact match, not the first: server-side slug uniqueness is not something this harness
-        // can verify, and a retried create would leave a second memory carrying the same nonce. The
-        // property required is "no memory with this run's nonce remains", which one archive cannot give.
-        var archivedEverything = matches.Count > 0;
-
-        foreach (var id in matches) archivedEverything &= await ArchiveMemoryAsync(vendorLabel, id);
-
-        if (archivedEverything) {
-            throw new InvalidOperationException(
-                $"save_memory returned no memory_id for slug {slug}; {matches.Count} memor"
-              + $"{(matches.Count == 1 ? "y" : "ies")} with that slug HAD been created and "
-              + $"{(matches.Count == 1 ? "has" : "have")} been archived, confirmed, so the index is "
-              + $"clean. stdout: {stdout}");
-        }
-
-        // Everything else is dirty, INCLUDING "the search came back empty". An empty result is not
-        // proof of absence: the read model behind search is not documented as strongly consistent and
-        // no maximum lag is published, so a memory that was created can be invisible now and present
-        // a moment later. Claiming "clean" on that basis is precisely the overstatement this cert
-        // exists to avoid — and the cost of being wrong is a later positive case passing on a stale
-        // nonce. Fail closed.
-        MarkIndexPossiblyDirty(
-            $"a save for slug {slug} returned no id, and cleanup could not be confirmed "
-          + $"({matches.Count} exact match(es) found, all archived: {archivedEverything})");
-
         throw new InvalidOperationException(
-            $"save_memory returned no memory_id for slug {slug}, and cleanup could NOT be confirmed — "
-          + $"{matches.Count} exact match(es) found. A created-but-not-yet-visible memory cannot be "
-          + $"ruled out, so treat the live index as dirty: search for that slug and archive anything "
-          + $"that appears. stdout: {stdout}");
+            $"save_memory returned no memory_id for slug {slug}. "
+          + $"{await SweepAmbiguousSaveAsync(vendorLabel, slug, "save_memory returned no memory_id")} "
+          + $"stdout: {stdout}");
+    }
+
+    /// <summary>
+    /// Best-effort cleanup after a save whose outcome is UNKNOWN, plus an unconditional dirty mark.
+    ///
+    /// <para><b>The mark is unconditional on purpose, even when every observed match was archived.</b>
+    /// Archiving what a search returned proves only that the matches visible during a finite polling
+    /// window are gone. Slugs are documented as unique per pool and enforced by the service rather than
+    /// by a database constraint, so a duplicate is not excluded by construction; and with no published
+    /// maximum projection lag, a second memory that becomes visible after the last poll cannot be ruled
+    /// out either. "Everything I could see is archived" is a weaker statement than "nothing carrying
+    /// this nonce remains", and only the second would justify calling the index clean.</para>
+    ///
+    /// <para>So the sweep mitigates and the mark tells the truth: this run stops here, and the operator
+    /// is told exactly what to look for. The alternative — claiming clean on a finite observation — is
+    /// how a later run's positive case ends up passing on this run's nonce.</para>
+    /// </summary>
+    static async Task<string> SweepAmbiguousSaveAsync(string vendorLabel, string slug, string cause) {
+        var matches  = await FindMemoryIdsBySlugAsync(slug);
+        var archived = 0;
+
+        foreach (var id in matches)
+            if (await ArchiveMemoryAsync(vendorLabel, id)) archived++;
+
+        MarkIndexPossiblyDirty($"{cause}; archived {archived}/{matches.Count} observed match(es) for slug {slug}");
+
+        return $"Archived {archived} of {matches.Count} observed match(es). The run is marked dirty "
+             + $"regardless, because a duplicate or not-yet-visible memory with this slug cannot be "
+             + $"ruled out — search for `{slug}` and archive anything that appears.";
     }
 
     /// <summary>The slug a cert's nonce memory is saved under. Unique per run by construction, which is

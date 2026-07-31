@@ -467,16 +467,22 @@ not enough: `SkipUnlessLiveGateReady` refuses to start any further live case (pr
 `[After(Assembly)]` teardown fails the run (retrospective — otherwise a cleanup failure in the *last*
 case is observed by nobody and the run reports green).
 
-Three things follow from taking "confirm" literally:
+Taking "confirm" literally is what shaped the rest:
 
 * `ArchiveMemoryAsync` returns whether the archive was **confirmed**, so no caller can claim a clean
   index off a swallowed failure.
-* Recovery-by-slug archives **every** exact match, not the first. Server-side slug uniqueness is not
-  something this harness can verify, and the property required is "no memory carrying this run's nonce
-  remains" — which one archive does not give.
-* An empty search result is **not** treated as absence. The read model behind search is not documented
-  as strongly consistent and no maximum lag is published, so a created memory can be invisible now and
-  present a moment later. Anything short of "found and archived, confirmed" is dirty.
+* An ambiguous save — no id in the response, **or a throw from the call itself**, which does not mean
+  the server declined the create — runs a best-effort sweep for the slug and marks the run dirty
+  **unconditionally**, even when every observed match was archived. Archiving what a search returned
+  proves only that the matches visible during a finite polling window are gone. Slugs are unique per
+  pool but service-enforced rather than constrained by the database, so a duplicate is not excluded by
+  construction, and with no published projection lag a second memory can surface after the last poll.
+  "Everything I could see is archived" is weaker than "nothing carrying this nonce remains", and only
+  the second would justify calling the index clean.
+* An empty search result is therefore **not** absence either — it is just an observation.
+
+The sweep mitigates; the mark tells the truth. The alternative, claiming clean on a finite observation,
+is exactly how a later run's positive case ends up passing on this run's nonce.
 
 Covering tests: `GeminiMemoryIndexLiveCertTests.Failed_session_start_post_still_delivers_the_index_to_a_real_gemini_session`
 (live, gated) and `GeminiSessionStartHandshakeOnPostFailureTests` (integration, always run) — the latter
