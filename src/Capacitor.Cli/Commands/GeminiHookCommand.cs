@@ -27,8 +27,15 @@ namespace Capacitor.Cli.Commands;
 ///   SessionEnd   → kill watcher + capped inline drain (mirror of the Copilot /
 ///                  Claude pre-drain cap), then POST /hooks/session-end/gemini.
 ///   Notification → best-effort forward to the Claude-shaped /hooks/notification.
-/// Gemini treats hook stdout as a JSON decision channel; this dispatcher emits
-/// nothing (no stdout) so every action is allowed.
+/// Gemini treats hook stdout as a JSON decision channel, and selects the text to
+/// parse as <c>stdout.trim() || stderr.trim()</c> — so an EMPTY stdout makes it
+/// parse this process's STDERR (where kcap writes failed-POST and auth-lapse
+/// diagnostics) as the hook's result.
+///
+/// Because of that, a recognised SessionStart writes exactly one JSON object on
+/// every returning path: the memory envelope when there is one, else an explicit
+/// <c>{"continue":true}</c>. SessionEnd/Notification still emit nothing, which
+/// leaves them exposed to the same stderr fallback — tracked separately.
 /// </remarks>
 static class GeminiHookCommand {
     // Mirror of CopilotHookCommand.PreHookDrainCap: the drain must
@@ -83,16 +90,6 @@ static class GeminiHookCommand {
         try { writer.Write(payload); }
         catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException) { }
     }
-
-    /// <summary>Gemini's <c>source</c> mapped onto the shared lifecycle reason. <c>clear</c> falls to
-    /// <c>New</c> exactly as it does for Claude — there is no <c>Clear</c> reason in the foundation, so
-    /// the session-id lease suppresses re-injection after a context reset. That is a known gap tracked
-    /// separately, not a Gemini-specific choice.</summary>
-    internal static SessionLifecycleReason LifecycleReasonFor(string? source) => source?.ToLowerInvariant() switch {
-        "resume"  => SessionLifecycleReason.Resume,
-        "compact" => SessionLifecycleReason.Compact,
-        _         => SessionLifecycleReason.New
-    };
 
     static Task<string?> StartMemoryIndexTask(
             string     baseUrl,
@@ -260,7 +257,10 @@ static class GeminiHookCommand {
             baseUrl, sessionId,
             scopeRoot: GitRepository.FindRoot(cwd) ?? cwd,
             disabled: activeProfile?.DisableMemoryIndex is true,
-            reason: LifecycleReasonFor(source),
+            // Shared mapper, NOT a local one: it maps an unrecognised source to Unknown, which the
+            // lifecycle policy suppresses. A local mapper defaulting to New would inject on an
+            // unverified reason AND spend the once-per-session lease on it.
+            reason: SessionStartMemoryHookSupport.ReasonFor(source),
             budget: HookBudget.Remaining(processStart, "session-start"),
             memoryClientFactory, memoryStoreFactory);
 

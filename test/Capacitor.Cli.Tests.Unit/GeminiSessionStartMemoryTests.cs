@@ -1,4 +1,5 @@
 using Capacitor.Cli.Commands;
+using Capacitor.Cli.Core;
 using Capacitor.Cli.SessionStartMemory;
 
 namespace Capacitor.Cli.Tests.Unit;
@@ -68,12 +69,15 @@ public class GeminiSessionStartMemoryTests {
 
     [Test]
     public async Task a_fragment_is_written_as_the_claude_shaped_envelope() {
-        var output = Write("## Team memory\n- prefer the integration suite");
+        const string fragment = "## Team memory\n- prefer the integration suite";
+        using var doc = System.Text.Json.JsonDocument.Parse(Write(fragment));
 
-        await Assert.That(output).Contains("\"hookSpecificOutput\"");
-        await Assert.That(output).Contains("\"hookEventName\":\"SessionStart\"");
-        await Assert.That(output).Contains("\"additionalContext\"");
-        await Assert.That(output).StartsWith("{");
+        // Structural, via the project's JsonElement helpers — substring matching would pass on a
+        // malformed document that merely contained the right characters.
+        var hookSpecific = doc.RootElement.Obj("hookSpecificOutput");
+        await Assert.That(hookSpecific).IsNotNull();
+        await Assert.That(hookSpecific!.Value.Str("hookEventName")).IsEqualTo("SessionStart");
+        await Assert.That(hookSpecific!.Value.Str("additionalContext")).IsEqualTo(fragment);
     }
 
     /// <summary>Inverse of the Kiro contract: Gemini reads JSON, so the fragment MUST be escaped.
@@ -88,10 +92,8 @@ public class GeminiSessionStartMemoryTests {
         await Assert.That(output).DoesNotContain("\n## ");
         // Round-trips back to the original: proof the escaping is correct, not merely present.
         using var doc = System.Text.Json.JsonDocument.Parse(output);
-        var roundTripped = doc.RootElement
-            .GetProperty("hookSpecificOutput").GetProperty("additionalContext").GetString();
 
-        await Assert.That(roundTripped).IsEqualTo(fragment);
+        await Assert.That(doc.RootElement.Obj("hookSpecificOutput")?.Str("additionalContext")).IsEqualTo(fragment);
     }
 
     [Test]
@@ -100,18 +102,28 @@ public class GeminiSessionStartMemoryTests {
     public async Task every_payload_is_exactly_one_parseable_json_object(string? fragment) {
         var output = Write(fragment);
 
+        // Parse() throwing IS the failure; Obj/Str return null on a non-object root, so a non-object
+        // payload fails the follow-up too.
         using var doc = System.Text.Json.JsonDocument.Parse(output);
-        await Assert.That(doc.RootElement.ValueKind).IsEqualTo(System.Text.Json.JsonValueKind.Object);
+        var isObject = doc.RootElement.Obj("hookSpecificOutput") is not null
+                    || doc.RootElement.Str("continue") is not null
+                    || output == GeminiHookCommand.AllowPayload;
+
+        await Assert.That(isObject).IsTrue();
     }
 
     // ── a failing writer must not change the command's exit code ──────────────
 
-    sealed class ThrowingWriter(int failAfterChars) : StringWriter {
-        int _written;
+    /// <summary>Writes <paramref name="charsBeforeThrowing"/> characters of the payload and THEN throws,
+    /// so 0 exercises "fails before any byte" and a positive value exercises a genuine partial write.
+    /// An earlier version only ever threw before writing, leaving the advertised partial-write case
+    /// untested — caught in review.</summary>
+    sealed class ThrowingWriter(int charsBeforeThrowing) : StringWriter {
         public override void Write(string? value) {
-            if (_written >= failAfterChars) throw new IOException("stdout closed");
-            _written += value?.Length ?? 0;
-            base.Write(value);
+            if (value is { Length: > 0 } && charsBeforeThrowing > 0)
+                base.Write(value[..Math.Min(charsBeforeThrowing, value.Length)]);
+
+            throw new IOException("stdout closed");
         }
     }
 
@@ -121,13 +133,15 @@ public class GeminiSessionStartMemoryTests {
     [Test]
     [Arguments(0)]
     [Arguments(5)]
-    public async Task a_throwing_writer_does_not_propagate(int failAfterChars) {
-        var writer = new ThrowingWriter(failAfterChars);
+    public async Task a_throwing_writer_does_not_propagate(int charsBeforeThrowing) {
+        var writer = new ThrowingWriter(charsBeforeThrowing);
 
         GeminiHookCommand.WriteSessionStartOutput(writer, "## Team memory");
         GeminiHookCommand.WriteSessionStartOutput(writer, null);
 
-        await Assert.That(true).IsTrue();   // reaching here without an exception IS the assertion
+        // Reaching here without an exception is the contract. Also prove the writer really did what the
+        // case name claims, so neither case can pass by never throwing at all.
+        await Assert.That(writer.ToString().Length).IsEqualTo(charsBeforeThrowing == 0 ? 0 : charsBeforeThrowing * 2);
     }
 
     // ── the invariant at the Handle level, not just the writer ────────────────
@@ -148,8 +162,8 @@ public class GeminiSessionStartMemoryTests {
         var captured = await CaptureHandleStdout(payload);
 
         await Assert.That(captured).IsEqualTo(GeminiHookCommand.AllowPayload);
-        using var doc = System.Text.Json.JsonDocument.Parse(captured);
-        await Assert.That(doc.RootElement.ValueKind).IsEqualTo(System.Text.Json.JsonValueKind.Object);
+        using var doc = System.Text.Json.JsonDocument.Parse(captured);   // throwing IS the failure
+        await Assert.That(doc.RootElement.Obj("hookSpecificOutput")).IsNull();
     }
 
     /// <summary>The complement: input we genuinely cannot recognise as a SessionStart stays silent —
@@ -179,20 +193,30 @@ public class GeminiSessionStartMemoryTests {
 
     // ── source → lifecycle mapping ────────────────────────────────────────────
 
-    /// <summary><c>clear</c> maps to <c>New</c>, exactly as it does for Claude, so the session-id lease
-    /// suppresses re-injection after a context reset. That is a KNOWN GAP tracked separately (there is no
-    /// <c>Clear</c> reason in the foundation) — pinned here so the gap is deliberate and visible rather
-    /// than an accident someone silently "fixes" for one harness.</summary>
-    // Expected value is passed by NAME, not as the enum: SessionLifecycleReason is internal, so a public
-    // test signature cannot mention it.
+    /// <summary>
+    /// The adapter uses the SHARED <c>SessionStartMemoryHookSupport.ReasonFor</c>, not a local mapper.
+    ///
+    /// <para>An earlier revision hand-rolled one defaulting unrecognised sources to <c>New</c>. That is a
+    /// real bug, not a style point: the lifecycle policy decides eligibility from this reason, so
+    /// defaulting to <c>New</c> would inject on an unverified source AND spend the once-per-session lease
+    /// on it. The shared mapper returns <c>Unknown</c>, which the policy suppresses.</para>
+    ///
+    /// <para><c>clear</c> therefore lands on <c>Unknown</c> and is suppressed by the POLICY rather than by
+    /// the lease. Same observable outcome — no re-injection after a context reset — but suppressed
+    /// explicitly. Re-injection on clear is a known foundation-wide gap tracked separately; pinned here so
+    /// it stays deliberate and visible.</para>
+    /// </summary>
+    // Expected value is passed by NAME: SessionLifecycleReason is internal, so a public test signature
+    // cannot mention it.
     [Test]
     [Arguments("startup", "New")]
     [Arguments("resume",  "Resume")]
-    [Arguments("clear",   "New")]
     [Arguments("compact", "Compact")]
     [Arguments(null,      "New")]
     [Arguments("RESUME",  "Resume")]
-    public async Task source_maps_to_the_shared_lifecycle_reason(string? source, string expected) {
-        await Assert.That(GeminiHookCommand.LifecycleReasonFor(source).ToString()).IsEqualTo(expected);
+    [Arguments("clear",   "Unknown")]
+    [Arguments("wat",     "Unknown")]
+    public async Task source_maps_through_the_shared_lifecycle_mapper(string? source, string expected) {
+        await Assert.That(SessionStartMemoryHookSupport.ReasonFor(source).ToString()).IsEqualTo(expected);
     }
 }
