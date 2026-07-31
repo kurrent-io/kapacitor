@@ -323,8 +323,15 @@ is a product call, not a design detail.
 **Audit integrity is compromised too**, which rev 5 omitted: daemon-user writes reach the session captures,
 the local logs, and the installed reviewer itself. So after a compromise neither the verdict nor its local
 evidence is trustworthy — you cannot use the recorded transcript to establish what happened, because the
-same authority that ran the code could edit the record. Any post-incident story has to rest on
-server-side data, not on the daemon host.
+same authority that ran the code could edit the record.
+
+Rev 5 then said the story "has to rest on server-side data", which review correctly called overselling: the
+accepted compromise **includes theft of the daemon's server token**, so unless the server's records are
+append-only or tamper-evident and that token carries no update, delete or impersonation authority, remote
+evidence can be forged or erased too. Neither property is established here. The honest consequence is
+therefore stronger and less comforting: **local audit is untrustworthy, and reliable post-incident
+reconstruction may simply be unavailable** — how much survives depends on the server token's scope and on
+server-side retention/immutability, neither of which this issue examines or changes.
 
 **Who accepts it, and where.** Review's correction here is sharp and I had it wrong: the assets at risk —
 the daemon's credentials, other worktrees, host persistence, integration tokens — belong to the **daemon
@@ -337,10 +344,28 @@ So the acceptance has two parts, and only the first is a sign-off:
 1. **For this repository and its own daemons**, the repository owner accepts it explicitly on the issue and
    in the PR description. §7 keeps that as a merge gate: "CI is green" does not authorise enabling an
    unsandboxed unattended reviewer for a new vendor.
-2. **For any other operator, the consent event is enabling it**, so enabling must be informed. That means
-   Gemini unattended review is **opt-in per deployment and never a default**, `Flows:Review:DefaultVendor`
-   must not silently become `gemini`, and the operator-facing documentation for selecting a reviewer vendor
-   has to state this property where the operator will actually read it — not in this spec.
+2. **For any other operator, the consent event is enabling it — and that has to be enforced, not documented.**
+   Review's correction, and it is right: a non-Gemini default plus a docs paragraph is informed guidance, and
+   an API caller can still ask for `vendor: "gemini"` explicitly while being a different person from the
+   operator whose credentials and host are exposed. So this issue adds a **daemon-side capability gate**:
+
+   ```
+   Reviewers:Gemini:Unattended:Enabled   (daemon config, DEFAULT FALSE)
+   ```
+
+   * it lives in the **daemon's** configuration, because the daemon operator is the affected principal —
+     not in the server's flow settings, which the requester controls;
+   * **checked twice**: at availability advertisement, so a disabled daemon never offers Gemini as a reviewer
+     and the server's vendor-capable-daemon selection simply does not see it; and again **pre-spawn**, so an
+     explicit `vendor: "gemini"` request cannot bypass advertisement — a direct request at a disabled daemon
+     is refused with a coded error before any process starts;
+   * **enabling it is the consent event.** The config key's own documentation states §2.9's property, so the
+     operator reads it at the moment of deciding rather than in a spec they will never open.
+
+   Concretely that means `DaemonRunner`'s reviewer-capable filter — today
+   `.Where(f => f.IsAvailable() && f.SupportsUnattended)` — gains the gate for Gemini, and
+   `ValidateAndBuildReviewFlowMcp` refuses when it is off. Two checks rather than one because advertisement
+   and launch are different code paths, and the first is an optimisation while the second is the boundary.
 
 That second part is a real scope addition and it is listed in §4 and §7 rather than assumed: without it,
 this design would be accepting a risk on behalf of people who never saw it.
@@ -588,6 +613,73 @@ internal sealed record GeminiLaunchIdentity(
 
 `SubstituteUnmatchableNames` takes `DenyAllName` rather than generating one, so the value in the argv and the
 value the assertion expects are the same object — not two derivations that happen to agree.
+
+**Construction, because the record shape is not the guarantee** (review's point, and the deny name is the
+*pre-existing* barrier — a fixed, empty, reused, comma-bearing or derived `DenyAllName` reopens AI-899's
+original repository-MCP hole even while every argv-equality test passes):
+
+```csharp
+internal sealed record GeminiLaunchIdentity {
+    // Private ctor: production cannot construct an arbitrary identity, only ask for a fresh one. Rev 6
+    // showed the record and left construction unspecified, which is where a degraded deny name would slip in.
+    private GeminiLaunchIdentity(string canonicalId, string wireName, string denyAllName) { … }
+
+    /// The ONLY production entry point. Two INDEPENDENT v4 GUIDs — the channel alias and the deny-all name
+    /// must not be derived from each other, or learning one yields the other.
+    public static GeminiLaunchIdentity ForLaunch() => FromGuids(Guid.NewGuid(), Guid.NewGuid());
+
+    /// Test-only seam: concrete values, so no caller can smuggle context through a factory delegate.
+    internal static GeminiLaunchIdentity FromGuids(Guid channel, Guid deny) {
+        if (channel == Guid.Empty || deny == Guid.Empty || channel == deny)
+            throw new InvalidOperationException(
+                "Refusing to launch a Gemini reviewer: a generated launch name would be predictable or "
+              + "reused. The MCP allowlist is an exact-name gate (§2.7), so either name being guessable is "
+              + "a repository-impersonation hole.");
+
+        return new(KcapMcpRegistry.ReservedResultChannelId,
+                   $"{KcapMcpRegistry.ReservedResultChannelId}-{channel:N}",
+                   $"kcap-deny-{deny:N}");
+    }
+}
+```
+
+`channel == deny` is refused too: independence is a property worth asserting rather than assuming, since a
+lazy refactor sharing one GUID would make the deny name derivable from the alias the reviewer can read.
+
+### 3.3c The closed input surface needs an oracle, not just a paragraph
+
+Review's second finding, and it is fair: "two compile-time constants" is loose. `descriptor.Argv` and
+`UnattendedTrustArgv` are `ImmutableArray<string>` — so immutability is a type guarantee rather than a
+convention, and that is worth asserting — but an ordinary launch-output test proves *this example*, not the
+architectural claim that no argv channel exists and that a future fourth contributor cannot add one.
+
+So the premise gets tested as a premise, three ways:
+
+1. **No extra-argv surface** — a test asserting `RuntimeStartContext` exposes no member of an argv/arguments
+   shape, and that no daemon-config key supplies extra arguments. It fails the moment someone adds one, which
+   is the point at which every conclusion in §3.3a would need revisiting.
+2. **Descriptor argument collections are immutable and code-owned** — `ImmutableArray<string>` on both, and no
+   public mutator or setter reachable from a launch path.
+3. **Whole-vector template, not a guarded-key scan.** The strongest of the three, and review is right that it
+   is better than what rev 5 had: a Gemini launch's **complete** final argv is compared against a structural
+   template in which only the two per-launch names vary:
+
+   ```
+   interactive : ["--experimental-acp", "--skip-trust",
+                  "--allowed-mcp-server-names", <DenyAllName>]
+   review      : ["--experimental-acp", "--skip-trust",
+                  "--allowed-mcp-server-names", <WireName>,
+                  "--approval-mode", "yolo"]
+   ```
+
+   A template over the entire vector **fails on any new token whatever its spelling**, so it needs no model
+   of the vendor's option grammar — which is exactly why it succeeds where three revisions of a guarded-key
+   parser failed. It also makes the retained runtime assertion honest and complete: it compares the whole
+   vector, so "a fourth contributor was added" is precisely what it detects.
+
+The retained runtime assertion is therefore this template comparison, not a key scan — stated explicitly
+because review asked whether it performs the complete-vector check. It does, and that is the only reason to
+keep it.
 
 **`IsReviewFlow` ⇔ unattended.** Review asked whether every review-flow launch is necessarily unattended.
 It is, and the code already enforces it rather than assuming it: `ValidateAndBuildReviewFlowMcp` throws
