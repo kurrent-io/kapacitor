@@ -371,26 +371,41 @@ public class CursorHookCommandTests {
         // background continuation. An existence check cannot tell state 1 from state 3, so it can be
         // satisfied by the SEEDED file and read stale content that never contains sessionEnd.
         //
-        // The read is also shared and IOException-tolerant: the append (File.AppendAllText) and the
-        // drain's rewrite both hold the file open for Write while they run, and a File.ReadAllText* open
-        // denies Write — a sharing violation on Windows, where it is mandatory, and invisible on Unix.
-        var deadline     = DateTime.UtcNow + TimeSpan.FromSeconds(10);
-        var spoolContent = (string?)null;
+        // The read shares read+write because the old File.ReadAllTextAsync (FileShare.Read) DENIED Write,
+        // so it collided with the append/rewrite holding the file open — mandatory on Windows, invisible
+        // on Unix, and the failure CI recorded.
+        //
+        // SingleOrDefault is deliberate: the only *.jsonl in the spool dir is HookSpool's per-session live
+        // file, and this test uses one session id, so a second match would be a real bug worth throwing on.
+        // (Its temps are `.draining`/`.ordered-*` and the ended marker is `.ended-<key>` — none match.)
+        var deadline      = DateTime.UtcNow + TimeSpan.FromSeconds(10);
+        var spoolContent  = (string?)null;
+        var lastIoFailure = (IOException?)null;
 
         while (DateTime.UtcNow < deadline) {
             if (fx.SpoolFiles.SingleOrDefault() is { } path) {
                 try {
                     await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
                     using var       reader = new StreamReader(stream);
-                    spoolContent = await reader.ReadToEndAsync();
-                } catch (IOException) {
-                    // Mid-write; look again next tick.
+                    spoolContent  = await reader.ReadToEndAsync();
+                    lastIoFailure = null;
+                } catch (IOException ex) {
+                    // The enumerate→open race, NOT a sharing conflict — FileShare.ReadWrite already permits
+                    // the writers. Between states 2 and 3 the file is deleted and re-created, so a path
+                    // EnumerateFiles just returned can be gone by the time we open it. Keep the failure so a
+                    // persistent fault is reported as itself rather than as "content never appeared".
+                    lastIoFailure = ex;
                 }
 
                 if (spoolContent?.Contains("sessionEnd", StringComparison.Ordinal) == true) break;
             }
 
             await Task.Delay(20);
+        }
+
+        if (spoolContent is null && lastIoFailure is not null) {
+            throw new IOException(
+                $"spool file never became readable within {deadline:O}: {lastIoFailure.Message}", lastIoFailure);
         }
 
         await Assert.That(spoolContent).IsNotNull();
