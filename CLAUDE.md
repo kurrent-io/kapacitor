@@ -46,6 +46,18 @@ observation, not a launch-time fact) and does no automated drift detection; a de
 release is handled by a human report and a corrected record. See
 `docs/superpowers/specs/2026-07-27-ai1528-trust-by-default-borrowed-review-design.md` in kcap-server.
 
+A daemon-owned launch-consent gate (AI-1623, `LaunchConsent*` in `Capacitor.Cli.Daemon/Services`)
+sits in front of every SERVER-driven launch: `LaunchConsentStore` owns `{stateDir}/consent.json` as
+the single writer, degrading a missing/corrupt file to the upgrade-safe default (`allow`, so no
+pre-existing daemon bricks on update) rather than failing closed. Every decision — rule-matched or
+human — is appended to `consent-decisions.jsonl` (1MB rotation, 0600 from first byte) for the
+`kcap daemon consent log` verb and the eventual desktop Activity feed, and a non-owner denial
+surfaces to the server as the coded `launch_denied_by_owner` reason. The policy is queried/edited
+live over the local control socket via the append-only `FrameType` values 11–14
+(`ConsentSubscribe`/`ConsentResolve`/`ConsentRulesGet`/`ConsentRulesPut`) and 72–74
+(`ConsentPending`/`ConsentRules`/`ConsentAck`); `kcap daemon consent {show,set-default,allow,deny,remove,log}`
+is the CLI surface and never blocks a launch waiting on a terminal prompt.
+
 ## Tech stack
 
 - .NET 10, NativeAOT compiled
