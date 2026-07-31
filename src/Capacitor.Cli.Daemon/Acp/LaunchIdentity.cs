@@ -16,7 +16,7 @@ namespace Capacitor.Cli.Daemon.Acp;
 /// <para><b>Why unguessable.</b> A vendor whose MCP gate is a name allowlist matches names exactly, and the
 /// repository being worked in can declare MCP servers of its own. A predictable allowlisted name is
 /// therefore a repository-impersonation hole — a repository naming its server that gets a process spawned as
-/// the daemon user. Measured for Gemini; see the AI-1413 design spec §2.3 and §2.6/§2.7.</para>
+/// the daemon user. Measured for Gemini; see the Gemini reviewer design spec §2.3 and §2.6/§2.7.</para>
 ///
 /// <para><b>Vendor-neutral by shape, not by accident.</b> The two concepts — "the result channel's name on
 /// the wire" and "a name nothing can match" — belong to any vendor with a name-matched MCP gate. This also

@@ -332,7 +332,7 @@ internal static class AcpVendorDescriptors {
         ModelSelector:       NoOpModelSelector.Instance,
         // Measured: Gemini DOES honour session/new.mcpServers — it spawns the stdio server, lists its tools
         // and calls them. This resolves the transport to SessionNew, which is what carries the reviewer's
-        // result channel. AI-899 §3.4 deferred this as a call-level probe; the answer is yes (spec §2.1).
+        // result channel. the hosting work deferred this as a call-level probe; the answer is yes (spec §2.1).
         SupportsMcpServers:  true,
         // Fail rather than AutoApprove: with --approval-mode yolo, Gemini emits NO interaction frame at all,
         // so receiving one means the launch contract regressed (a dropped flag, a vendor change) and the

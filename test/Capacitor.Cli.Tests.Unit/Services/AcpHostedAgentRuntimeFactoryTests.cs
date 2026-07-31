@@ -2041,7 +2041,7 @@ public class AcpHostedAgentRuntimeFactoryTests {
         await fake.DisposeAsync();
     }
 
-    // ── AI-1413: the Gemini reviewer's launch identity is not a caller input ──
+    // ── the Gemini reviewer's launch identity is not a caller input ──
 
     /// <summary>
     /// StartAsync overwrites any <c>LaunchIdentity</c> supplied on the way in. Honouring one would let a

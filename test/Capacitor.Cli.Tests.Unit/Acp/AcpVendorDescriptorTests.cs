@@ -237,7 +237,7 @@ public class AcpVendorDescriptorTests {
              "--allowed-mcp-server-names", AcpVendorDescriptors.UnmatchableMcpNamePlaceholder])).IsTrue();
 
         await Assert.That(descriptor.SupportsUnattended).IsTrue();
-        // AI-1413: --approval-mode yolo, and ONLY on a review launch. Measured: without it Gemini gates its
+        // --approval-mode yolo, and ONLY on a review launch. Measured: without it Gemini gates its
         // own injected result-channel tool behind session/request_permission, which no human answers, so the
         // reviewer cannot report. It must never appear in Argv — an interactive hosted session has to behave
         // as the user's own does.
@@ -293,7 +293,7 @@ public class AcpVendorDescriptorTests {
         var allowed = argv[flagAt + 1];
         await Assert.That(allowed).IsNotEmpty();
 
-        // AI-899 wrote the SupportsMcpServers==true branch as a guess: that flipping the flag would make the
+        // the hosting work wrote the SupportsMcpServers==true branch as a guess: that flipping the flag would make the
         // DESCRIPTOR carry the injected server names. Measured, the coupling lives one layer down — the
         // template always holds the placeholder, and the review LAUNCH replaces it with that launch's
         // result-channel wire name, because the name is per-launch and so cannot be a constant.

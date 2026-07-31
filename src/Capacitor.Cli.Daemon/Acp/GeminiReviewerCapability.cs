@@ -20,7 +20,7 @@ namespace Capacitor.Cli.Daemon.Acp;
 /// versions whose matcher behaviour has been <i>certified</i>, not a minimum: an unknown version takes the
 /// reviewer offline, which is the safe direction.</para>
 ///
-/// <para>Deliberately stricter than the interactive hosting path (AI-899), which runs any installed Gemini.
+/// <para>Deliberately stricter than the interactive hosting path, which runs any installed Gemini.
 /// Broken hosting degrades to a broken agent; a broken MCP gate degrades to repository-controlled process
 /// execution.</para>
 /// </summary>

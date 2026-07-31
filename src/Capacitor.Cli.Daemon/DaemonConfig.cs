@@ -149,7 +149,7 @@ public class DaemonConfig {
     /// <para>Enabling it does NOT bypass the certified-version check: the reviewer's only containment is the
     /// vendor's exact-name MCP allowlist, whose semantics were certified against specific Gemini builds, so
     /// an uncertified version is refused even when this is true. See
-    /// <c>GeminiReviewerCapability</c> and the AI-1413 design spec §2.9.</para>
+    /// <c>GeminiReviewerCapability</c> and the Gemini reviewer design spec §2.9.</para>
     /// </summary>
     public bool GeminiUnattendedReviewerEnabled { get; set; }
 

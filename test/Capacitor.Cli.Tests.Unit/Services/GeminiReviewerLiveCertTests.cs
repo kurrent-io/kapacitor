@@ -7,7 +7,7 @@ namespace Capacitor.Cli.Tests.Unit.Services;
 
 /// <summary>
 /// GATED live certification of the three vendor behaviours the Gemini reviewer's containment rests on. These
-/// are the AI-1413 design probes promoted to tests, so a Gemini upgrade that invalidates one of them fails
+/// are the the Gemini reviewer work design probes promoted to tests, so a Gemini upgrade that invalidates one of them fails
 /// here instead of silently reopening a repository-impersonation hole.
 ///
 /// <para><b>This is what <c>GeminiReviewerCapability.CertifiedVersions</c> means.</b> Adding a version to that
@@ -17,7 +17,7 @@ namespace Capacitor.Cli.Tests.Unit.Services;
 /// <para><b>Gated</b> behind <c>KCAP_GEMINI_REVIEWER_CERT=1</c>: CI has no <c>gemini</c> binary and no Google
 /// account, and each case spends a real model turn. Requires <c>gemini</c> on PATH, logged in, and
 /// <c>GOOGLE_CLOUD_PROJECT</c> set — without the project Gemini fails with an <c>IneligibleTierError</c> that
-/// names a tier problem rather than the missing project (AI-899 §1.1), which is a confusing way to discover
+/// names a tier problem rather than the missing project (see the hosting design's retracted-premises section), which is a confusing way to discover
 /// the harness is misconfigured.</para>
 /// </summary>
 public class GeminiReviewerLiveCertTests {

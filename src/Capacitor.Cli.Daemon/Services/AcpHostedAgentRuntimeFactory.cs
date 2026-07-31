@@ -701,7 +701,7 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
           + $"[{string.Join(" ", expected)}]. A contributor to the Gemini argv was added or changed; a "
           + "review launch must carry exactly one --approval-mode yolo and exactly one allowlist entry "
           + "naming its own result channel, and an interactive launch must carry the deny-all name and no "
-          + "approval mode (AI-1413 design spec §3.3a).");
+          + "approval mode (the Gemini reviewer design spec §3.3a).");
     }
 
     /// <summary>
