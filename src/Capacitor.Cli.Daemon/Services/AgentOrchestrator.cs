@@ -916,6 +916,17 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             return new CommandOutcome(CommandOutcomeKind.LaunchRejected, agentId, RejectReason: CommandRejectedReason.Semantic);
         }
 
+        // A caller-selected Codex posture is validated here — before the repo checks and the worktree
+        // creation below, so a rejection leaves nothing to clean up. Selection is only ever valid for
+        // an interactive daemon-owned-worktree launch: a posture on a borrowed, review-flow or
+        // PR-review launch would defeat a containment invariant, so it fails the launch outright
+        // rather than being silently dropped or silently honoured.
+        if (CodexPosturePolicy.RejectionReason(cmd) is { } postureRejection) {
+            await _server.LaunchFailedAsync(cmd.AgentId, postureRejection);
+
+            return new CommandOutcome(CommandOutcomeKind.LaunchRejected, agentId, RejectReason: CommandRejectedReason.Semantic);
+        }
+
         if (isReviewFlow && cmd.ReviewerCertification is { } certification) {
             var version = string.Equals(cmd.Vendor, "claude", StringComparison.Ordinal)
                 ? DaemonRunner.ProbeCliVersionForLaunch(_config.ClaudePath)

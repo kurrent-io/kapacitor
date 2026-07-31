@@ -169,6 +169,116 @@ public partial class AgentOrchestratorVendorTests {
         await Assert.That(ptyFactory.SpawnCalls).IsEqualTo(0);
     }
 
+    // ── Caller-selected Codex posture: fail-closed pre-flight guard ──────────────────────────
+    // Every case below uses a repo path that is NOT allowed and does NOT exist, so the assertions
+    // are position-sensitive: the posture guard must run BEFORE the repo-path checks (and therefore
+    // before any worktree work). Move the guard later and the reason becomes "Repo path …" and these
+    // tests fail — which is exactly the regression they exist to catch.
+
+    static LaunchAgentCommand PostureCmd(
+            string              agentId,
+            CodexLaunchPosture? posture,
+            string              vendor   = "codex",
+            LaunchKind          kind     = LaunchKind.Default,
+            bool                borrowed = false
+        ) => new(
+            AgentId: agentId,
+            Prompt: "hi",
+            Model: "default",
+            Effort: null,
+            RepoPath: "/tmp/kcap-posture-guard-nonexistent",
+            Tools: null,
+            AttachmentIds: null,
+            Vendor: vendor,
+            Kind: kind,
+            Borrowed: borrowed,
+            CodexPosture: posture
+        );
+
+    static AgentOrchestrator BuildPostureOrchestrator(CaptureServerConnection server, SpyPtyProcessFactory ptyFactory) =>
+        BuildOrchestrator(
+            server, ptyFactory, new Dictionary<string, IHostedAgentLauncher>(),
+            extraRuntimeFactories: [
+                new SpyHostedAgentRuntimeFactory("codex")  { SupportsUnattended = true, SupportsBorrowedReviewFlow = true },
+                new SpyHostedAgentRuntimeFactory("claude") { SupportsUnattended = true }
+            ]);
+
+    [Test]
+    public async Task Posture_on_review_flow_launch_is_rejected_before_any_worktree_work() {
+        var server     = new CaptureServerConnection();
+        var ptyFactory = new SpyPtyProcessFactory();
+
+        await using var orch = BuildPostureOrchestrator(server, ptyFactory);
+
+        await orch.HandleLaunchAgentForTest(
+            PostureCmd("agent-posture-flow", new("workspace-write", "on-request"), kind: LaunchKind.ReviewFlow));
+
+        await Assert.That(server.LaunchFailedCalls.Count).IsEqualTo(1);
+        await Assert.That(server.LaunchFailedCalls[0].AgentId).IsEqualTo("agent-posture-flow");
+        await Assert.That(server.LaunchFailedCalls[0].Reason).StartsWith("codex_posture_not_overridable:");
+        await Assert.That(ptyFactory.SpawnCalls).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task Posture_on_borrowed_launch_is_rejected_before_any_worktree_work() {
+        var server     = new CaptureServerConnection();
+        var ptyFactory = new SpyPtyProcessFactory();
+
+        await using var orch = BuildPostureOrchestrator(server, ptyFactory);
+
+        await orch.HandleLaunchAgentForTest(
+            PostureCmd("agent-posture-borrowed", new("read-only", "never"), borrowed: true));
+
+        await Assert.That(server.LaunchFailedCalls.Count).IsEqualTo(1);
+        await Assert.That(server.LaunchFailedCalls[0].Reason).StartsWith("codex_posture_not_overridable:");
+        await Assert.That(ptyFactory.SpawnCalls).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task Posture_on_a_non_codex_launch_is_rejected() {
+        var server     = new CaptureServerConnection();
+        var ptyFactory = new SpyPtyProcessFactory();
+
+        await using var orch = BuildPostureOrchestrator(server, ptyFactory);
+
+        await orch.HandleLaunchAgentForTest(
+            PostureCmd("agent-posture-claude", new("read-only", "never"), vendor: "claude"));
+
+        await Assert.That(server.LaunchFailedCalls.Count).IsEqualTo(1);
+        await Assert.That(server.LaunchFailedCalls[0].Reason).StartsWith("codex_posture_wrong_vendor:");
+        await Assert.That(ptyFactory.SpawnCalls).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task Posture_with_an_invalid_token_is_rejected() {
+        var server     = new CaptureServerConnection();
+        var ptyFactory = new SpyPtyProcessFactory();
+
+        await using var orch = BuildPostureOrchestrator(server, ptyFactory);
+
+        await orch.HandleLaunchAgentForTest(
+            PostureCmd("agent-posture-bad-token", new("workspace-write", "on-failure")));
+
+        await Assert.That(server.LaunchFailedCalls.Count).IsEqualTo(1);
+        await Assert.That(server.LaunchFailedCalls[0].Reason).StartsWith("codex_posture_invalid:");
+        await Assert.That(ptyFactory.SpawnCalls).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task A_valid_interactive_posture_passes_the_guard() {
+        // This launch still fails downstream (the repo path is deliberately bogus), but it must get
+        // PAST the posture guard — proving the guard rejects only ineligible/malformed blocks.
+        var server     = new CaptureServerConnection();
+        var ptyFactory = new SpyPtyProcessFactory();
+
+        await using var orch = BuildPostureOrchestrator(server, ptyFactory);
+
+        await orch.HandleLaunchAgentForTest(
+            PostureCmd("agent-posture-ok", new("read-only", "never")));
+
+        await Assert.That(server.LaunchFailedCalls.Any(c => c.Reason.StartsWith("codex_posture_"))).IsFalse();
+    }
+
     // Qodo review on #234: a null Vendor (SignalR boundary — non-null annotation not enforced) must
     // emit LaunchFailed, NOT throw ArgumentNullException from the dictionary lookup (which SafeInvoke
     // would swallow, dropping the launch silently).
