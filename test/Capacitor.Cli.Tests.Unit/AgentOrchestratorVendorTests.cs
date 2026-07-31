@@ -63,7 +63,12 @@ public partial class AgentOrchestratorVendorTests {
             Action<DaemonConfig>?                               configure              = null,
             // Defaults to NullLogger; a test that asserts on the orchestrator's own diagnostics
             // (e.g. the graceful-stop timeout warning) passes a capturing logger instead.
-            ILogger<AgentOrchestrator>?                         logger                 = null
+            ILogger<AgentOrchestrator>?                         logger                 = null,
+            // AI-1623: defaults to an allow-all gate over the factory's own temp state dir so every
+            // pre-existing test (none of which know about consent) keeps passing unchanged. A test
+            // exercising a deny/prompt policy passes its own gate (e.g. built with a Deny-default
+            // LaunchConsentStore) instead.
+            LaunchConsentGate?                                  consentGate            = null
         ) {
         var config = new DaemonConfig {
             Name                = "test",
@@ -97,6 +102,11 @@ public partial class AgentOrchestratorVendorTests {
             .Concat(extraRuntimeFactories ?? [])
             .ToDictionary(f => f.Vendor);
 
+        consentGate ??= new LaunchConsentGate(
+            new LaunchConsentStore(config.StateDir!, NullLogger.Instance),
+            new LaunchConsentDecisionLog(config.StateDir!, NullLogger.Instance),
+            prompter: null, NullLogger<LaunchConsentGate>.Instance);
+
         return new AgentOrchestrator(
             config,
             server,
@@ -108,7 +118,8 @@ public partial class AgentOrchestratorVendorTests {
             launchers,
             runtimeFactories,
             new StubHostLifetime(),
-            logger ?? NullLogger<AgentOrchestrator>.Instance
+            logger ?? NullLogger<AgentOrchestrator>.Instance,
+            consentGate
         );
     }
 
@@ -1180,6 +1191,94 @@ public partial class AgentOrchestratorVendorTests {
             await Assert.That(server.ExplicitReviewerModelReports).IsEmpty();
 
             await orch.HandleStopAgentForTest("agent-legacy");
+        } finally {
+            cleanup();
+        }
+    }
+
+    // ══ AI-1623: owner consent gate wired into the server launch choke point ══════════════
+
+    static LaunchConsentGate DenyDefaultGate(string dir) {
+        var store = new LaunchConsentStore(dir, NullLogger.Instance);
+        store.TryReplace(new LaunchConsentPolicy(LaunchConsentDefault.Deny, 5, []), out _);
+        return new LaunchConsentGate(store, new LaunchConsentDecisionLog(dir, NullLogger.Instance),
+            prompter: null, NullLogger<LaunchConsentGate>.Instance);
+    }
+
+    [Test]
+    public async Task Server_launch_denied_under_deny_default_sends_coded_launch_failed() {
+        var dir        = Directory.CreateTempSubdirectory("kcap-consent-deny-").FullName;
+        var server     = new CaptureServerConnection();
+        var ptyFactory = new SpyPtyProcessFactory();
+        var claudeSpy  = new SpyHostedAgentLauncher("claude", cliPath: "spy-claude");
+
+        var launchers = new Dictionary<string, IHostedAgentLauncher> { ["claude"] = claudeSpy };
+
+        await using var orch = BuildOrchestrator(server, ptyFactory, launchers, consentGate: DenyDefaultGate(dir));
+
+        var cmd = new LaunchAgentCommand(
+            AgentId: "agent-consent-deny",
+            Prompt: "do work",
+            Model: "opus",
+            Effort: null,
+            RepoPath: "/tmp/does-not-matter",
+            Tools: null,
+            AttachmentIds: null,
+            Vendor: "claude"
+        );
+
+        await orch.HandleLaunchAgentForTest(cmd);
+
+        await Assert.That(server.LaunchFailedCalls.Count).IsEqualTo(1);
+        await Assert.That(server.LaunchFailedCalls[0].AgentId).IsEqualTo("agent-consent-deny");
+        await Assert.That(server.LaunchFailedCalls[0].Reason).StartsWith(LaunchConsentGate.DeniedReasonPrefix + ":");
+
+        // Denied before any worktree/PTY side effects — the vendor path never runs.
+        await Assert.That(claudeSpy.PrepareCalls).IsEqualTo(0);
+        await Assert.That(claudeSpy.BuildArgsCalls).IsEqualTo(0);
+        await Assert.That(ptyFactory.SpawnCalls).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task Owner_launch_proceeds_under_deny_default() {
+        var (repoPath, cleanup) = CreateGitRepo();
+        var dir = Directory.CreateTempSubdirectory("kcap-consent-owner-").FullName;
+
+        try {
+            var server     = new CaptureServerConnection();
+            var ptyFactory = new SpyPtyProcessFactory();
+            var claudeSpy  = new SpyHostedAgentLauncher("claude", cliPath: "spy-claude");
+
+            var launchers = new Dictionary<string, IHostedAgentLauncher> { ["claude"] = claudeSpy };
+
+            await using var orch = BuildOrchestrator(
+                server, ptyFactory, launchers, allowedRepoPath: repoPath, consentGate: DenyDefaultGate(dir));
+
+            var cmd = new LaunchAgentCommand(
+                AgentId: "agent-consent-owner",
+                Prompt: "do work",
+                Model: "opus",
+                Effort: null,
+                RepoPath: repoPath,
+                Tools: null,
+                AttachmentIds: null,
+                Vendor: "claude",
+                RequesterUserId: "user_owner",
+                RequesterIsOwner: true
+            );
+
+            await orch.HandleLaunchAgentForTest(cmd);
+
+            // No consent-coded denial — the owner bypasses the deny-default policy entirely, and
+            // the launch reaches the normal claude vendor path (same assertions as
+            // Launch_with_vendor_claude_calls_claude_launcher above — deliberately NOT asserting
+            // LaunchFailedCalls is empty: a StubPtyProcess that never produces output can trip the
+            // unrelated startup-failure heuristic in the fire-and-forget finalize path, exactly as
+            // it can for that neighboring test, which doesn't assert on it either).
+            await Assert.That(claudeSpy.BuildArgsCalls).IsEqualTo(1);
+            await Assert.That(claudeSpy.PrepareCalls).IsEqualTo(1);
+            await Assert.That(ptyFactory.SpawnCalls).IsEqualTo(1);
+            await Assert.That(ptyFactory.LastCommand).IsEqualTo("spy-claude");
         } finally {
             cleanup();
         }

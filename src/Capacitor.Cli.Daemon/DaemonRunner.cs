@@ -218,6 +218,19 @@ public static partial class DaemonRunner {
         builder.Services.AddSingleton(daemonLock);
         builder.Services.AddSingleton<ServerConnection>();
 
+        // AI-1623: the owner consent gate — policy store + append-only decision log share the
+        // per-daemon state root with the coverage journal above; the prompter is null until
+        // Task 6 registers the broker (a Prompt-default policy then denies with "prompt_no_ui").
+        builder.Services.AddSingleton(sp => new LaunchConsentStore(
+            coverageStateDir, sp.GetRequiredService<ILogger<LaunchConsentStore>>()));
+        builder.Services.AddSingleton(sp => new LaunchConsentDecisionLog(
+            coverageStateDir, sp.GetRequiredService<ILogger<LaunchConsentDecisionLog>>()));
+        builder.Services.AddSingleton(sp => new LaunchConsentGate(
+            sp.GetRequiredService<LaunchConsentStore>(),
+            sp.GetRequiredService<LaunchConsentDecisionLog>(),
+            sp.GetService<ILaunchConsentPrompter>(),   // null until Task 6 registers the broker
+            sp.GetRequiredService<ILogger<LaunchConsentGate>>()));
+
         // Local HTTP bridge that fronts the server's permission flow. Registered as a
         // singleton so AgentOrchestrator can read its bound URL at agent-spawn time, AND
         // as a hosted service so its IHostedService lifecycle starts the listener before

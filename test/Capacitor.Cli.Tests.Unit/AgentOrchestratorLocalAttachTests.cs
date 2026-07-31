@@ -209,6 +209,45 @@ public partial class AgentOrchestratorVendorTests {
         }
     }
 
+    // AI-1623: the owner consent gate lives in HandleLaunchAgentCore (the SERVER-driven launch
+    // choke point) only. The local 0600 socket path (kcap agent start -> HandleLocalSpawnAsync)
+    // never calls that method, so a deny-default gate must not stop it — that socket is the
+    // owner's by construction.
+    [Test]
+    public async Task Local_spawn_bypasses_consent_under_deny_default() {
+        var dir = Directory.CreateTempSubdirectory("kcap-consent-local-");
+        var consentDir = Directory.CreateTempSubdirectory("kcap-consent-local-state-").FullName;
+
+        try {
+            var server    = new TripwireServerConnection();
+            var pty       = new EnvCapturingPtyFactory();
+            var launchers = new Dictionary<string, IHostedAgentLauncher> { ["claude"] = new SpyHostedAgentLauncher("claude", "spy-claude") };
+
+            await using var orch = BuildOrchestrator(server, pty, launchers, consentGate: DenyDefaultGate(consentDir));
+
+            var readBuf = new MemoryStream();
+            await FrameCodec.WriteAsync(readBuf, LocalFrame.Detach(), default);
+            readBuf.Position = 0;
+            using var client = new DuplexTestStream(readBuf, new MemoryStream());
+
+            var spawn = FrameCodec.Spawn("claude", WorkLocation.BorrowedCwd, isPrivate: false, dir.FullName, ["--model", "opus"], 80, 24);
+            await orch.HandleLocalSpawnAsync(spawn, client, default);
+
+            var deadline = DateTime.UtcNow.AddSeconds(5);
+            while (orch.ActiveAgentCountForTest > 0 && DateTime.UtcNow < deadline) await Task.Delay(20);
+
+            // Spawn succeeds exactly like Registered_spawn_calls_server_and_sets_hosted_env above —
+            // same assertions, proving consent was never consulted on this path (a deny-default
+            // gate would otherwise make AgentRegisteredAsync unreachable).
+            await Assert.That(server.Calls).Contains(nameof(ServerConnection.AgentRegisteredAsync));
+            await Assert.That(pty.LastEnv!.ContainsKey("KCAP_URL")).IsTrue();
+            await Assert.That(pty.LastEnv!.ContainsKey("KCAP_AGENT_ID")).IsTrue();
+            await Assert.That(pty.LastEnv!.ContainsKey("KCAP_RENDERED_AGENT")).IsTrue();
+        } finally {
+            Directory.Delete(dir.FullName, true);
+        }
+    }
+
     [Test]
     public async Task Reconnect_resends_stored_dims_not_the_hosted_constant() {
         var server = new TripwireServerConnection();
