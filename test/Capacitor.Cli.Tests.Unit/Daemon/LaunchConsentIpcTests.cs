@@ -234,6 +234,7 @@ public class LaunchConsentIpcTests {
                 var ackFrame = await FrameCodec.ReadAsync(resolver, ct);
                 var ack = JsonSerializer.Deserialize(ackFrame!.Text, ConsentIpcJsonContext.Default.ConsentAckDto);
                 await Assert.That(ack!.Ok).IsTrue();
+                await Assert.That(ack.Error).IsNull(); // the save succeeded — no partial-failure warning to report
             }
 
             await Assert.That(h.Store.Current.Rules
@@ -258,6 +259,94 @@ public class LaunchConsentIpcTests {
             await Assert.That(resp!.Type).IsEqualTo(FrameType.ConsentAck);
             var ack = JsonSerializer.Deserialize(resp.Text, ConsentIpcJsonContext.Default.ConsentAckDto);
             await Assert.That(ack!.Ok).IsFalse();
+        });
+    }
+
+    // ══ Code-review follow-up: STJ source-gen does NOT enforce non-nullable members — a
+    // syntactically valid payload missing a required field deserializes with that field left
+    // null rather than throwing JsonException. Before the fix, both handlers reached code that
+    // dereferenced/used the null value directly (dto.Rules.Select(...), broker.TryResolve(null,
+    // ...)), throwing an UNCAUGHT exception (only JsonException was caught) that dropped the
+    // connection with no ConsentAck reply at all. These tests pin the fixed behavior: a
+    // malformed-but-parseable payload always gets a ConsentAck(false, ...) reply, never a
+    // dropped connection. ══════════════════════════════════════════════════════════════════
+
+    [Test]
+    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
+    public async Task RulesPut_missing_rules_field_acks_false_without_dropping_the_connection() {
+        if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
+
+        await RunAsync("put-norules", LaunchConsentDefault.Allow, 45, async (h, ct) => {
+            await using var s = await ConnectAsync(h.SockPath, ct);
+            // No "rules" key at all.
+            await FrameCodec.WriteAsync(s, LocalFrame.ConsentJson(FrameType.ConsentRulesPut,
+                """{"default":"allow","prompt_timeout_seconds":45}"""), ct);
+            var resp = await FrameCodec.ReadAsync(s, ct);
+            await Assert.That(resp).IsNotNull(); // the connection must NOT have been dropped
+            await Assert.That(resp!.Type).IsEqualTo(FrameType.ConsentAck);
+            var ack = JsonSerializer.Deserialize(resp.Text, ConsentIpcJsonContext.Default.ConsentAckDto);
+            await Assert.That(ack!.Ok).IsFalse();
+            await Assert.That(ack.Error).Contains("malformed");
+        });
+    }
+
+    [Test]
+    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
+    public async Task Resolve_missing_request_id_acks_false_without_dropping_the_connection() {
+        if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
+
+        await RunAsync("resolve-noid", LaunchConsentDefault.Allow, 45, async (h, ct) => {
+            await using var s = await ConnectAsync(h.SockPath, ct);
+            // No "request_id" key at all.
+            await FrameCodec.WriteAsync(s, LocalFrame.ConsentJson(FrameType.ConsentResolve,
+                """{"decision":"allow","save_rule":null}"""), ct);
+            var resp = await FrameCodec.ReadAsync(s, ct);
+            await Assert.That(resp).IsNotNull(); // the connection must NOT have been dropped
+            await Assert.That(resp!.Type).IsEqualTo(FrameType.ConsentAck);
+            var ack = JsonSerializer.Deserialize(resp.Text, ConsentIpcJsonContext.Default.ConsentAckDto);
+            await Assert.That(ack!.Ok).IsFalse();
+        });
+    }
+
+    // ══ Code-review follow-up: ack conflation fix. Ok now reflects the RESOLUTION outcome only;
+    // a rejected save_rule is a secondary, partial failure that rides along as Error even when
+    // Ok=true, rather than being indistinguishable from "no pending request with that id". ══════
+
+    [Test]
+    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
+    public async Task Resolve_with_an_invalid_save_rule_still_resolves_but_reports_the_save_error() {
+        if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
+
+        await RunAsync("saverule-bad", LaunchConsentDefault.Prompt, 30, async (h, ct) => {
+            await using var subscriber = await ConnectAsync(h.SockPath, ct);
+            await FrameCodec.WriteAsync(subscriber, new LocalFrame(FrameType.ConsentSubscribe), ct);
+            await WaitForSubscriberAsync(h.Broker, ct);
+
+            var input = new LaunchConsentInput("user_x", RequesterIsOwner: false, "agent", "/tmp/repo", "claude");
+            var decideTask = h.Gate.DecideAsync("a11", input, ct);
+
+            var pending = await FrameCodec.ReadAsync(subscriber, ct);
+            await Assert.That(pending!.Type).IsEqualTo(FrameType.ConsentPending);
+
+            await using (var resolver = await ConnectAsync(h.SockPath, ct)) {
+                // The save_rule's action is invalid — the store rejects it — but the resolution
+                // itself (the owner's "allow" decision) must still apply.
+                await FrameCodec.WriteAsync(resolver, LocalFrame.ConsentJson(FrameType.ConsentResolve,
+                    """{"request_id":"a11","decision":"allow","save_rule":{"action":"bogus","requester":null,"kind":null,"repo":null,"vendor":null}}"""), ct);
+                var ackFrame = await FrameCodec.ReadAsync(resolver, ct);
+                var ack = JsonSerializer.Deserialize(ackFrame!.Text, ConsentIpcJsonContext.Default.ConsentAckDto);
+                // Ok=true: the resolution applied. Error carries the save's partial failure —
+                // NOT the same shape as the "unknown id" (Ok=false) case asserted above.
+                await Assert.That(ack!.Ok).IsTrue();
+                await Assert.That(ack.Error).Contains("action");
+            }
+
+            // The invalid rule was never persisted.
+            await Assert.That(h.Store.Current.Rules.Count).IsEqualTo(0);
+
+            var outcome = await decideTask;
+            await Assert.That(outcome.Allowed).IsTrue();
+            await Assert.That(outcome.Source).IsEqualTo("prompt_user");
         });
     }
 }

@@ -14,6 +14,9 @@ public sealed record ConsentRuleDto(string Action, string? Requester, string? Ki
 
 public sealed record ConsentPolicyDto(string Default, int PromptTimeoutSeconds, List<ConsentRuleDto> Rules);
 
+/// Ok = did the primary operation apply; Error = failure detail, OR a partial-failure warning
+/// when Ok=true (e.g. ConsentResolve's decision was applied but its optional save_rule was
+/// rejected — the resolution itself is not conflated with that secondary failure).
 public sealed record ConsentAckDto(bool Ok, string? Error);
 
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.SnakeCaseLower)]
