@@ -268,6 +268,28 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
     /// <c>availableModels</c> happens in <see cref="AcpHostedAgentRuntime"/> via
     /// <see cref="Capacitor.Cli.Core.Acp.AcpModelResolver"/>.
     /// </summary>
+    /// <summary>
+    /// Replaces every <see cref="AcpVendorDescriptors.UnmatchableMcpNamePlaceholder"/> with a fresh,
+    /// unguessable name — once per launch, so two concurrent agents do not even share one.
+    ///
+    /// <para><b>Why random rather than a constant.</b> A vendor whose only MCP clamp is an allowlist can be
+    /// made to deny everything by allowing a name nothing has. A CONSTANT deny-all name is not that: the
+    /// repository being reviewed controls its own MCP config and can name a server exactly that constant,
+    /// which was measured to execute. So the deny-all value has to be outside repository control, which
+    /// means unpredictable.</para>
+    ///
+    /// <para>Kept generic rather than Gemini-specific: any vendor whose containment is "allow a name that
+    /// cannot exist" needs the same treatment, and a per-vendor copy of this reasoning is how one of them
+    /// ends up with a guessable literal again.</para>
+    /// </summary>
+    static List<string> SubstituteUnmatchableNames(List<string> argv) {
+        for (var i = 0; i < argv.Count; i++)
+            if (argv[i] == AcpVendorDescriptors.UnmatchableMcpNamePlaceholder)
+                argv[i] = $"kcap-deny-{Guid.NewGuid():N}";
+
+        return argv;
+    }
+
     static string? ResolveRequestedModel(AcpVendorDescriptor descriptor, DaemonConfig config, RuntimeStartContext ctx) =>
         !string.IsNullOrEmpty(ctx.Model) && !string.Equals(ctx.Model, "default", StringComparison.OrdinalIgnoreCase)
             ? ctx.Model
@@ -320,7 +342,7 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
             throw new InvalidOperationException(
                 $"Unattended review-flow launch for '{descriptor.Vendor}' requires daemon snapshot materialization before spawn.");
 
-        var argv = new List<string>(descriptor.Argv);
+        var argv = SubstituteUnmatchableNames([.. descriptor.Argv]);
 
         if (ctx.IsReviewFlow) {
             argv.AddRange(descriptor.UnattendedTrustArgv);

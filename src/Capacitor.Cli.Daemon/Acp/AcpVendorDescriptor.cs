@@ -266,16 +266,20 @@ internal static class AcpVendorDescriptors {
     );
 
     /// <summary>
-    /// A name no MCP server will ever have, passed to Gemini's <c>--allowed-mcp-server-names</c> so the
-    /// allowlist permits nothing. See <see cref="Gemini"/> for why "nothing" is the correct contents
-    /// today, and why this must change in lockstep with <c>SupportsMcpServers</c>.
+    /// A placeholder the FACTORY replaces, per launch, with an unguessable name — so an MCP allowlist can
+    /// deny everything without the deny-all value being a literal the repository can match.
     ///
-    /// <para>It must be non-empty: <c>--allowed-mcp-server-names ""</c> fails Gemini's config load with
-    /// <i>"mcpName is required if specified"</i> BEFORE the session starts — which also makes it a trap
-    /// when verifying this by hand, because the launch then fails for a reason unrelated to MCP and
-    /// reports nothing loaded.</para>
+    /// <para><b>A fixed sentinel was tried and is broken.</b> An earlier revision passed the literal
+    /// <c>kcap-none</c> and called it "a name no MCP server will ever have". A contributor controls
+    /// <c>.gemini/settings.json</c> and can simply name their server <c>kcap-none</c>; measured, that
+    /// executes, and the clamp is bypassed completely. The comment asserted a property nothing enforced —
+    /// a semantic label is not validation.</para>
+    ///
+    /// <para>The value must also be non-empty: <c>--allowed-mcp-server-names ""</c> fails Gemini's config
+    /// load BEFORE the session starts, which is also a verification trap — the launch then fails for a
+    /// reason unrelated to MCP and reports nothing loaded.</para>
     /// </summary>
-    internal const string GeminiNoMcpSentinel = "kcap-none";
+    internal const string UnmatchableMcpNamePlaceholder = "__kcap_unmatchable_mcp_name__";
 
     /// <summary>Google Gemini CLI as an ACP hosted agent (<c>gemini --experimental-acp</c>).
     /// Interactive hosting only; the unattended reviewer is its own issue, as with Kiro.
@@ -292,12 +296,12 @@ internal static class AcpVendorDescriptors {
     /// <para><b>Which is why the MCP allowlist is here.</b> Under inherited trust, a repository-authored
     /// <c>.gemini/settings.json</c> MCP server WAS observed starting on the ACP path — repo-controlled
     /// process execution under the daemon user, before the model acts, on a branch that may be
-    /// contributor-authored. <see cref="GeminiNoMcpSentinel"/> reduces the allowlist to nothing, which
-    /// blocks it. Repo-authored <i>hooks</i> were separately measured NOT to run on the ACP path (they do
+    /// contributor-authored. <see cref="UnmatchableMcpNamePlaceholder"/> — replaced per launch with an
+    /// unguessable name — reduces the allowlist to nothing the repository can match, which blocks it. Repo-authored <i>hooks</i> were separately measured NOT to run on the ACP path (they do
     /// on the <c>--prompt</c> path — the two paths differ, and neither predicts the other).</para>
     ///
-    /// <para><b>The sentinel is only correct while <see cref="AcpVendorDescriptor.SupportsMcpServers"/> is
-    /// false.</b> It permits nothing, so with nothing injected it costs nothing. The day the stdio
+    /// <para><b>Denying everything is only correct while <see cref="AcpVendorDescriptor.SupportsMcpServers"/>
+    /// is false.</b> It permits nothing, so with nothing injected it costs nothing. The day the stdio
     /// call-level probe flips that flag, this list must become the injected server names in the SAME
     /// change, or hosted Gemini ships with MCP silently broken. <c>AcpVendorDescriptorTests</c> asserts
     /// the coupling so the two cannot drift apart.</para>
@@ -318,7 +322,7 @@ internal static class AcpVendorDescriptors {
         ResolveBinaryPath:   cfg => cfg.GeminiPath,
         ResolveDefaultModel: _ => null,
         Argv:                ["--experimental-acp", "--skip-trust",
-                              "--allowed-mcp-server-names", GeminiNoMcpSentinel],
+                              "--allowed-mcp-server-names", UnmatchableMcpNamePlaceholder],
         UnattendedTrustArgv: [],
         SupportsUnattended:  false,
         ModelSelector:       NoOpModelSelector.Instance,

@@ -44,6 +44,19 @@ public class WindowsTaskUnitRepresentabilityTests {
             .Throws<InvalidOperationException>();
     }
 
+    /// <summary>The KEY is interpolated into the same `set "K=V"` line, so it is exactly as dangerous as
+    /// the value. The first version checked only the value — review caught that the stated rationale
+    /// (callers add entries after Build, so the sink must validate) applies to both sides equally.</summary>
+    [Test]
+    [Arguments("BAD\"KEY")]
+    [Arguments("BAD\r\nset FOO=bar")]
+    [Arguments("BAD=KEY")]
+    [Arguments("")]
+    public async Task Wrapper_rejects_a_hostile_environment_variable_NAME(string hostileKey) {
+        await Assert.That(() => WindowsTaskUnit.Wrapper(Spec(hostileKey, "harmless")))
+            .Throws<InvalidOperationException>();
+    }
+
     /// <summary>The error has to name the key, or an operator cannot act on it.</summary>
     [Test]
     public async Task Wrapper_names_the_offending_key() {

@@ -234,7 +234,7 @@ public class AcpVendorDescriptorTests {
         // pre-trusted. It is NOT containment — see the allowlist assertion below.
         await Assert.That(descriptor.Argv.SequenceEqual(
             ["--experimental-acp", "--skip-trust",
-             "--allowed-mcp-server-names", AcpVendorDescriptors.GeminiNoMcpSentinel])).IsTrue();
+             "--allowed-mcp-server-names", AcpVendorDescriptors.UnmatchableMcpNamePlaceholder])).IsTrue();
 
         await Assert.That(descriptor.SupportsUnattended).IsFalse();
         await Assert.That(descriptor.UnattendedTrustArgv.IsEmpty).IsTrue();
@@ -267,18 +267,54 @@ public class AcpVendorDescriptorTests {
     /// </summary>
     [Test]
     public async Task Gemini_McpAllowlist_IsCoupledToSupportsMcpServers() {
-        var descriptor = AcpVendorDescriptors.Gemini;
-        var argv       = descriptor.Argv.ToArray();
-        var allowed    = argv[Array.IndexOf(argv, "--allowed-mcp-server-names") + 1];
+        var argv = AcpVendorDescriptors.Gemini.Argv.ToArray();
 
+        // The option must be present EXACTLY once, and have a following value.
+        //
+        // An earlier version read `argv[IndexOf(flag) + 1]` and asserted only "not the old sentinel". Two
+        // ways that was vacuous, both caught in review: with the option ABSENT, IndexOf returns -1 and the
+        // expression reads argv[0] — a non-empty string that differs from the sentinel, so the alleged
+        // coupling passed with no allowlist at all; and a SECOND occurrence, whose value may win at
+        // argument parsing, was invisible to it.
+        var occurrences = argv.Count(a => a == "--allowed-mcp-server-names");
+        await Assert.That(occurrences).IsEqualTo(1);
+
+        var flagAt = Array.IndexOf(argv, "--allowed-mcp-server-names");
+        await Assert.That(flagAt).IsGreaterThanOrEqualTo(0);
+        await Assert.That(flagAt + 1).IsLessThan(argv.Length);
+
+        var allowed = argv[flagAt + 1];
         await Assert.That(allowed).IsNotEmpty();
 
-        if (descriptor.SupportsMcpServers) {
-            // Nothing injected can be permitted by a sentinel, so this must have been updated.
-            await Assert.That(allowed).IsNotEqualTo(AcpVendorDescriptors.GeminiNoMcpSentinel);
+        if (AcpVendorDescriptors.Gemini.SupportsMcpServers) {
+            // Denying everything is wrong once servers are injected: the allowlist has to name them.
+            await Assert.That(allowed).IsNotEqualTo(AcpVendorDescriptors.UnmatchableMcpNamePlaceholder);
         } else {
-            await Assert.That(allowed).IsEqualTo(AcpVendorDescriptors.GeminiNoMcpSentinel);
+            await Assert.That(allowed).IsEqualTo(AcpVendorDescriptors.UnmatchableMcpNamePlaceholder);
         }
+    }
+
+    /// <summary>
+    /// The deny-all name must not be a literal the reviewed repository can match.
+    ///
+    /// <para>This is the finding that broke the first version: it passed <c>kcap-none</c> and asserted in a
+    /// comment that no server would ever be called that. A contributor controls
+    /// <c>.gemini/settings.json</c> and can name their server <c>kcap-none</c> — measured, it executes, and
+    /// the clamp is bypassed entirely. So the descriptor carries a PLACEHOLDER and the factory substitutes
+    /// an unguessable value per launch; this test pins that the descriptor never carries a usable literal
+    /// again.</para>
+    /// </summary>
+    [Test]
+    public async Task Gemini_DenyAllMcpName_IsAPlaceholderNotAMatchableLiteral() {
+        var argv    = AcpVendorDescriptors.Gemini.Argv.ToArray();
+        var allowed = argv[Array.IndexOf(argv, "--allowed-mcp-server-names") + 1];
+
+        await Assert.That(allowed).IsEqualTo(AcpVendorDescriptors.UnmatchableMcpNamePlaceholder);
+
+        // A placeholder is substituted before launch, so it must be recognisable as one rather than
+        // looking like a plausible server name someone might ship as-is.
+        await Assert.That(allowed).StartsWith("__");
+        await Assert.That(allowed).EndsWith("__");
     }
 
     /// <summary>
@@ -290,23 +326,25 @@ public class AcpVendorDescriptorTests {
     /// clause are each asserted, so rewording that removes the hedging fails rather than passing a
     /// keyword scan.</para>
     /// </summary>
+    /// <summary>
+    /// A GOLDEN test: the approved wording, held independently here, must match exactly.
+    ///
+    /// <para>The first version asserted a few required phrases and two forbidden ones, which review
+    /// correctly called a fig leaf — a hint could keep both hedges and then append "the failure is caused
+    /// by an ineligible account" and still pass. Substring checks cannot establish "does not diagnose"
+    /// about arbitrary prose. Equality can: any rewording is a deliberate edit to a pinned expectation,
+    /// and whoever makes it has to justify the new text rather than slip past a keyword scan.</para>
+    /// </summary>
     [Test]
-    public async Task GeminiAuthHint_SuggestsRatherThanDiagnoses() {
-        var hint = AcpHostedAgentRuntime.GeminiAuthHint;
+    public async Task GeminiAuthHint_MatchesTheApprovedWordingExactly() {
+        const string approved =
+            "this may be an authentication or project-configuration problem, or it may be unrelated — if "
+          + "hosted Gemini has not worked on this machine before, check `gemini` is logged in and that "
+          + "GOOGLE_CLOUD_PROJECT (or GOOGLE_CLOUD_PROJECT_ID) is set where the DAEMON can see it (the "
+          + "service unit, not your shell profile), then re-run `kcap daemon service install` and restart "
+          + "the daemon";
 
-        await Assert.That(hint).Contains("may be an authentication or project-configuration problem");
-        await Assert.That(hint).Contains("or it may be unrelated");
-
-        // The actual content: a supervised daemon inherits nothing from an interactive shell, which is
-        // how the original misdiagnosis happened.
-        await Assert.That(hint).Contains("where the DAEMON can see it");
-        await Assert.That(hint).Contains("not your shell profile");
-        await Assert.That(hint).Contains("GOOGLE_CLOUD_PROJECT");
-        await Assert.That(hint).Contains("GOOGLE_CLOUD_PROJECT_ID");
-
-        // Never a verdict.
-        await Assert.That(hint).DoesNotContain("is an authentication");
-        await Assert.That(hint).DoesNotContain("You must");
+        await Assert.That(AcpHostedAgentRuntime.GeminiAuthHint).IsEqualTo(approved);
     }
 
     [Test]

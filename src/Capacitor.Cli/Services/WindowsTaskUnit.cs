@@ -41,6 +41,17 @@ static class WindowsTaskUnit {
     /// alternative is writing a file that might execute something.</para>
     /// </summary>
     static void RequireRepresentable(string key, string value) {
+        // The KEY is interpolated into the same `set "K=V"` line, so it is exactly as dangerous as the
+        // value — a key containing a quote closes the assignment just the same. Review caught this: the
+        // first version checked only the value, while the stated rationale (callers add entries after
+        // ServiceEnvironment.Build, so the sink must validate) applies to both sides equally. `=` is
+        // rejected too, since it splits the assignment even without a quote.
+        if (key.Length == 0 || IsUnrepresentable(key) || key.Contains('='))
+            throw new InvalidOperationException(
+                $"Cannot write the service wrapper: the environment variable NAME '{key}' contains a "
+              + "quote, newline or '=', which this platform's wrapper cannot carry safely. Such a name "
+              + "cannot have come from the capture allowlist, so a caller added it directly.");
+
         if (!IsUnrepresentable(value)) return;
 
         throw new InvalidOperationException(
