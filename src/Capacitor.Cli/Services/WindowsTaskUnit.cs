@@ -139,6 +139,23 @@ static class WindowsTaskUnit {
     /// outright. <c>&amp;</c> itself is handled by the nested-quote form below rather than refused, so an
     /// ordinary path keeps working.</para>
     /// </summary>
+    /// <summary>
+    /// Guard, then escape — every string interpolated into the Task XML goes through here, mirroring the
+    /// plist writer's helper.
+    ///
+    /// <para>Composition does not imply XML validity: <c>wrapperPath</c> carries <c>KCAP_CONFIG_DIR</c>
+    /// verbatim, Windows paths are native UTF-16, and U+FFFE, U+FFFF or a malformed surrogate unit is outside
+    /// XML 1.0 while <c>SecurityElement.Escape</c> passes all of them through untouched. The consequence is
+    /// the same availability failure the plist had — the task cannot be registered — so it gets the same
+    /// treatment. Applied to the service id too, which is sanitized and therefore safe already: a structural
+    /// invariant that holds at every interpolation is worth more than one applied where it is needed, because
+    /// the next value added here inherits it.</para>
+    /// </summary>
+    static string Guarded(string what, string value) {
+        ServiceText.RequireXmlRepresentableValue(what, value);
+        return ServiceText.Xml(value);
+    }
+
     static void RequireSafeWrapperPath(string wrapperPath) {
         var bad = wrapperPath.Contains('%') ? "a percent sign"
                 : IsUnrepresentable(wrapperPath) ? "a quote or newline"
@@ -173,7 +190,7 @@ static class WindowsTaskUnit {
         <?xml version="1.0" encoding="UTF-16"?>
         <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
           <RegistrationInfo>
-            <Description>kcap daemon ({ServiceText.Xml(spec.ServiceId)})</Description>
+            <Description>kcap daemon ({Guarded("the service id", spec.ServiceId)})</Description>
           </RegistrationInfo>
           <Triggers>
             <LogonTrigger><Enabled>true</Enabled></LogonTrigger>
@@ -189,7 +206,7 @@ static class WindowsTaskUnit {
           <Actions>
             <Exec>
               <Command>cmd.exe</Command>
-              <Arguments>/d /s /v:off /c ""{ServiceText.Xml(wrapperPath)}""</Arguments>
+              <Arguments>/d /s /v:off /c ""{Guarded("the wrapper path", wrapperPath)}""</Arguments>
             </Exec>
           </Actions>
         </Task>

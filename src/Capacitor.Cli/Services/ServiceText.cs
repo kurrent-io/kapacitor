@@ -20,8 +20,7 @@ static class ServiceText {
     public static string CmdValue(string value) => value.Replace("%", "%%");
 
     /// <summary>
-    /// Escape a systemd <c>Environment=</c>/<c>Description=</c> value: no raw newlines, and literal
-    /// percent signs doubled.
+    /// Escape a systemd <c>Environment=</c>/<c>Description=</c> value: literal percent signs doubled.
     ///
     /// <para><b>Why the doubling.</b> systemd expands <i>specifiers</i> — <c>%n</c>, <c>%h</c>, <c>%i</c> and
     /// friends — in both of those directives, so a value carrying a literal <c>%</c> does not survive: a
@@ -31,9 +30,12 @@ static class ServiceText {
     ///
     /// <para>This is the same primitive <see cref="CmdValue"/> applies for cmd.exe, for the same reason, and
     /// it was missing here while present there — the asymmetry is what review caught.</para>
+    ///
+    /// <para>It no longer normalises CR/LF to spaces: <see cref="RequireNoControlCharacters"/> refuses them
+    /// at the sink first, so the replacement was unreachable — and silently rewriting a caller's value was
+    /// the wrong behaviour anyway.</para>
     /// </summary>
-    public static string SystemdValue(string value) =>
-        value.Replace("\r", " ").Replace("\n", " ").Replace("%", "%%");
+    public static string SystemdValue(string value) => value.Replace("%", "%%");
 
     /// <summary>
     /// Rejects a VALUE that XML 1.0 cannot represent, for the plist writer.
@@ -106,5 +108,33 @@ static class ServiceText {
           + "([A-Za-z_][A-Za-z0-9_]*). A name outside that grammar can break the unit's own line "
           + "structure — in a systemd unit it can inject an ExecStartPre= directive that runs on every "
           + "restart. No name from the capture allowlist is affected, so this one was added directly.");
+    }
+
+    /// <summary>
+    /// Rejects a value carrying a C0 control character or DEL, for the systemd writer.
+    ///
+    /// <para>Quoting does not make a raw control byte valid unit syntax, and this writer has no encoder for
+    /// one: <see cref="SystemdValue"/> handles expansion, <c>Esc</c> handles the backslash and the double
+    /// quote, and neither touches U+0001, a backspace or a vertical tab — all of which a POSIX environment
+    /// value, a filename or an argv string may legally contain. systemd does document C-style and hex
+    /// escapes, but this code has no way to exercise a real systemd parser, so it refuses the input rather
+    /// than shipping an escape whose behaviour it has only read about. That is the same call already made for
+    /// the bare <c>;</c> separator, and the same reason.</para>
+    ///
+    /// <para>CR and LF are included, which supersedes the old newline-to-space normalisation in
+    /// <see cref="SystemdValue"/>: silently rewriting a value the caller supplied is worse than declining to
+    /// write it, because a service that runs with a value nobody chose is harder to diagnose than an install
+    /// that failed and said which variable was at fault.</para>
+    /// </summary>
+    public static void RequireNoControlCharacters(string name, string value) {
+        foreach (var c in value) {
+            if (!char.IsControl(c) || c > '\u007F') continue;
+
+            throw new InvalidOperationException(
+                $"Refusing to write a systemd unit: the value of '{name}' contains the control character "
+              + $"U+{(int)c:X4}. A unit directive has no encoding for one that this code can verify, and "
+              + "quoting does not make it valid syntax — systemd would refuse to load the unit. Unset or "
+              + "correct that variable, then re-run `kcap daemon service install`.");
+        }
     }
 }

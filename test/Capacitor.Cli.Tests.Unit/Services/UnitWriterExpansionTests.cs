@@ -218,16 +218,20 @@ public class UnitWriterExpansionTests {
         await Assert.That(SystemdUnit.Unit(spec)).Contains("--tag a;b");
     }
 
-    /// <summary>Quoting cannot contain a newline: the directive ends at the line break.</summary>
+    /// <summary>
+    /// Quoting cannot contain a newline: the directive ends at the line break and the remainder is parsed as
+    /// the next directive — so the payload here is a whole injected `ExecStartPre=`, which is the worst case
+    /// of the control-character class the shared guard now refuses.
+    /// </summary>
     [Test]
-    [Arguments("a\nExecStartPre=/bin/touch /tmp/pwned")]
-    [Arguments("a\rb")]
-    public async Task Systemd_rejects_a_line_break_in_an_execstart_value(string bad) {
+    [Arguments("a\nExecStartPre=/bin/touch /tmp/pwned", "U+000A")]
+    [Arguments("a\rb", "U+000D")]
+    public async Task Systemd_rejects_a_line_break_in_an_execstart_value(string bad, string codePoint) {
         var spec = Spec() with { ExtraArgs = ["--tag", bad] };
 
         var ex = Assert.Throws<InvalidOperationException>(() => SystemdUnit.Unit(spec));
 
-        await Assert.That(ex!.Message).Contains("line break");
+        await Assert.That(ex!.Message).Contains(codePoint);
     }
 
     // ── Windows: cmd metacharacters, which %-doubling alone does not neutralise ──
@@ -436,5 +440,86 @@ public class UnitWriterExpansionTests {
         var spec = Spec() with { ExtraArgs = ["--tag", "'quoted'"] };
 
         await Assert.That(SystemdUnit.Unit(spec)).Contains("\"'quoted'\"");
+    }
+
+    // ── systemd refuses every raw control character, not only the line breaks ──
+
+    /// <summary>
+    /// A POSIX environment value, a filename and an argv string may all legally carry U+0001, a backspace or
+    /// a vertical tab; quoting makes none of them valid unit syntax, and this writer has no encoder for them.
+    /// </summary>
+    [Test]
+    [Arguments("\u0001")]
+    [Arguments("\b")]
+    [Arguments("\v")]
+    [Arguments("\u007F")]
+    [Arguments("\n")]
+    [Arguments("\r")]
+    public async Task Systemd_rejects_a_control_character_in_an_environment_value(string bad) {
+        var spec = Spec() with {
+            Environment = new Dictionary<string, string> { ["PATH"] = $"/usr/bin{bad}/opt" },
+        };
+
+        var ex = Assert.Throws<InvalidOperationException>(() => SystemdUnit.Unit(spec));
+
+        await Assert.That(ex!.Message).Contains("PATH");
+    }
+
+    [Test]
+    [Arguments("\u0001")]
+    [Arguments("\b")]
+    [Arguments("\v")]
+    [Arguments("\n")]
+    public async Task Systemd_rejects_a_control_character_in_an_execstart_value(string bad) {
+        var spec = Spec() with { DaemonBinaryPath = $"/opt/kcap{bad}/kcap-daemon" };
+
+        var ex = Assert.Throws<InvalidOperationException>(() => SystemdUnit.Unit(spec));
+
+        await Assert.That(ex!.Message).Contains("ExecStart");
+    }
+
+    [Test]
+    public async Task Systemd_rejects_a_control_character_in_an_extra_arg() {
+        var spec = Spec() with { ExtraArgs = ["--tag", "a\u0001b"] };
+
+        var ex = Assert.Throws<InvalidOperationException>(() => SystemdUnit.Unit(spec));
+
+        await Assert.That(ex!.Message).Contains("U+0001");
+    }
+
+    /// <summary>The positive control: a unit whose values are all ordinary still renders.</summary>
+    [Test]
+    public async Task Systemd_renders_when_no_value_carries_a_control_character() {
+        var unit = SystemdUnit.Unit(Spec());
+
+        await Assert.That(unit).Contains("ExecStart=/opt/kcap/kcap-daemon");
+        await Assert.That(unit).Contains("Environment=PATH=/usr/bin");
+    }
+
+    // ── the Task XML gets the plist's guard-then-escape invariant ──
+
+    /// <summary>
+    /// Windows paths are native UTF-16 and the path carries KCAP_CONFIG_DIR verbatim, so an XML-illegal unit
+    /// can reach this writer; SecurityElement.Escape passes all of them through untouched, leaving a task
+    /// that cannot be registered — the same availability failure already fixed in the plist.
+    /// </summary>
+    [Test]
+    [Arguments('\uFFFE')]
+    [Arguments('\uFFFF')]
+    [Arguments('\uD83D')]
+    [Arguments('\u0001')]
+    public async Task Task_xml_rejects_an_xml_illegal_wrapper_path(char bad) {
+        var ex = Assert.Throws<InvalidOperationException>(() =>
+            WindowsTaskUnit.TaskXml(Spec(), $"C:\\Users\\a{bad}b\\daemon-service-laptop.cmd"));
+
+        await Assert.That(ex!.Message).Contains("XML 1.0");
+    }
+
+    /// <summary>A legal supplementary character in the path is NOT rejected — the guard is not a blanket refusal.</summary>
+    [Test]
+    public async Task Task_xml_accepts_a_wrapper_path_with_a_supplementary_character() {
+        var xml = WindowsTaskUnit.TaskXml(Spec(), "C:\\Users\\\U0001F600\\daemon-service-laptop.cmd");
+
+        await Assert.That(xml).Contains("\U0001F600");
     }
 }

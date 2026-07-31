@@ -24,6 +24,7 @@ static class SystemdUnit {
         sb.Append("[Service]\n");
         foreach (var (k, v) in spec.Environment) {
             ServiceText.RequireValidEnvName(k);
+            ServiceText.RequireNoControlCharacters(k, v);
             sb.Append($"Environment={EnvAssignment(k, ServiceText.SystemdValue(v))}\n");
         }
 
@@ -123,15 +124,12 @@ static class SystemdUnit {
     /// <para><see cref="FirstToken"/> reverses this, so <c>daemon doctor</c> still recovers the real path.</para>
     /// </summary>
     static string QuoteArg(string a) {
-        // A newline cannot be represented on an ExecStart line at all — quoting does not help, because the
-        // line ends at the newline and systemd reads the remainder as the next directive. Rejecting is the
-        // same call the Windows wrapper makes for the same reason, and `service install` is interactive so
-        // the failure lands in front of a person.
-        if (a.Contains('\n') || a.Contains('\r'))
-            throw new InvalidOperationException(
-                $"Refusing to write a systemd unit: an ExecStart value ('{a}') contains a line break, which "
-              + "cannot be escaped inside a unit directive — the remainder of the value would be parsed as a "
-              + "new directive. Correct it, then re-run `kcap daemon service install`.");
+        // No raw control character survives here, not only the line breaks. A newline is the worst case — the
+        // line ends there and systemd reads the remainder as the next directive — but quoting does not make
+        // U+0001, a backspace or a vertical tab valid unit syntax either, and this writer has no encoder for
+        // them. Refusing is the same call the Windows wrapper makes, and `service install` is interactive so
+        // the failure lands in front of a person who can fix it.
+        ServiceText.RequireNoControlCharacters("an ExecStart value", a);
 
         // A standalone `;` is systemd's own command SEPARATOR in an ExecStart line: emitted bare, every
         // argument after it becomes a second command systemd runs. Its documented literal form is `\;`, but

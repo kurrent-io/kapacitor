@@ -24,8 +24,13 @@ public class ServiceTextTests {
         await Assert.That(ServiceText.CmdValue("100%PATH%")).IsEqualTo("100%%PATH%%");
     }
 
+    /// <summary>
+    /// SystemdValue no longer rewrites newlines to spaces — RequireNoControlCharacters refuses them at the
+    /// sink first, so the replacement was unreachable, and silently rewriting a caller's value was the wrong
+    /// behaviour: a service running with a value nobody chose is harder to diagnose than a failed install.
+    /// </summary>
     [Test]
-    public async Task SystemdValue_collapses_newlines_to_spaces() {
-        await Assert.That(ServiceText.SystemdValue("a\nb")).IsEqualTo("a b");
+    public async Task SystemdValue_no_longer_rewrites_control_characters() {
+        await Assert.That(ServiceText.SystemdValue("a\nb")).IsEqualTo("a\nb");
     }
 }
