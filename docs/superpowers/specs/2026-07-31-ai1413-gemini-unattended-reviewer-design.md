@@ -140,8 +140,13 @@ name. Under inherited trust, `--approval-mode yolo`:
 | **byte-identical to the allowlisted name** | **YES — spawned** |
 | our injected server (positive control) | **YES — spawned + tool called** |
 
-So admission is **name equality and nothing else**: no prefix match, no glob, no merge-based admission.
-That is what makes §3.2's per-launch GUID sufficient — and it also locates the entire defence in one
+Those four samples show that a prefix, a wildcard literal, and a same-shaped different GUID are all
+refused, and that a byte-identical name is admitted. **They do not by themselves license a universal
+claim** — review said so, and rev 1 had already over-generalised once. §2.7 grounds the rule in Gemini's
+own matcher instead, which is what actually makes it a rule.
+
+Read together: admission is **name equality and nothing else**. That is what makes §3.2's per-launch GUID
+sufficient — and it also locates the entire defence in one
 property, which the design must then protect deliberately:
 
 * **the alias must be unpredictable**, so it comes from `Guid.NewGuid()` (v4, CSPRNG-backed on .NET) and
@@ -150,11 +155,85 @@ property, which the design must then protect deliberately:
   to the daemon user via `ps`, which is already trusted) and in the injected server spec. It must not be
   written into the worktree, into a file the reviewer can read, or into the reviewer's prompt.
 
-**Deliberately NOT measured: duplicate `--allowed-mcp-server-names` handling and config precedence.** The
-design does not depend on either, because §3.3a asserts the final argv contains **exactly one** allowlist
-option with **exactly one** value. Depending on a vendor's duplicate-flag semantics would be a worse
-design than not permitting duplicates in the first place, and an unmeasured dependency is exactly what
-rev 1 was faulted for.
+**Duplicate CLI options** are made irrelevant by §3.3a asserting exactly one option with exactly one
+value — a design that does not depend on the vendor's duplicate handling beats one that measures it and
+then depends on it. **Repository-config precedence is a different question and is NOT made irrelevant that
+way** (review's correction): if Gemini unioned a repository-settable admission key with the CLI value, the
+final argv could satisfy §3.3a perfectly while a repository server was still admitted. §2.7 settles it.
+
+### 2.7 Grounded in the matcher, not in samples: exact equality, and the CLI value REPLACES settings
+
+Read from the installed bundle (`gemini-cli` 0.53.0), which is stronger than any number of samples.
+
+**The matcher is `Array.prototype.includes` on the raw name:**
+
+```js
+isBlockedBySettings(name3) {
+  const allowedNames = this.cliConfig.getAllowedMcpServers();
+  if (allowedNames && allowedNames.length > 0 && !allowedNames.includes(name3)) {
+    return true;
+  }
+  const blockedNames = this.cliConfig.getBlockedMcpServers();
+  if (blockedNames && blockedNames.length > 0 && blockedNames.includes(name3)) {
+    return true;
+  }
+  return false;
+}
+```
+
+`includes` on strings is SameValueZero: **exact, case-sensitive, no glob syntax, no regex, no Unicode
+normalization, no vendor aliasing.** So the §2.6 negatives are not four lucky samples — there is no
+matching path other than equality for any of them to have taken.
+
+It also exposes a trap worth stating: **`length > 0`**. An **empty** allowlist is not "deny all", it is
+"no allowlist" — every server is admitted. That is the same hazard AI-899 §3.1c recorded as "never the
+empty string", now visible in the mechanism, and it is why §3.3a asserts exactly one *value* and not
+merely at most one.
+
+**The CLI value replaces the settings value — it does not union with it:**
+
+```js
+allowedMcpServers: mcpEnabled ? argv.allowedMcpServerNames ?? (loadedSettings ? loadedSettings.getConsolidatedAllowedMcpServers() : settings.mcp?.allowed) : void 0,
+blockedMcpServers: mcpEnabled ? argv.allowedMcpServerNames ? void 0 : ... : void 0,
+```
+
+`??` is null-coalescing. When `--allowed-mcp-server-names` is present, `settings.mcp.allowed` — including a
+repository-level one — is **never consulted**; the *excluded* list is dropped too. So a repository cannot
+widen admission through its own settings while we pass the flag, which is exactly review's finding 1, and
+the answer is negative. The dependency is now on one documented operator: that the flag is always present
+on a review launch, which §3.3a asserts.
+
+### 2.8 The alias only has to stay secret for the launch — and it does
+
+Review's sharpest finding: the alias is unguessable but not *invisible*. It is in the reviewer's own
+process argv, and a reviewer under `--approval-mode yolo` can run shell commands and write files. A
+reviewer prompt-injected by the repository it is reviewing could therefore read its own argv, learn the
+allowlisted name, write a `.gemini/settings.json` declaring a server with that exact name, and trigger the
+byte-identical collision of §2.6.
+
+Whether that works turns on a temporal property. **Measured, in one process:**
+
+| stage | result |
+|---|---|
+| 1 — control: our channel injected and called | **reported** |
+| 2a — hostile server written **mid-session** under the exact allowlisted name, then prompted again | **not loaded** |
+| 2b — hostile server present, **new `session/new` in the same process** | **not loaded** |
+
+The repository's MCP set is evaluated **once at process start** and is not re-read — not per prompt, not
+per session. So the reviewer cannot cash in the alias inside its own launch even knowing it, and review's
+condition (a) is the one this design relies on: *declarations are evaluated before any
+repository-controlled actor can act, and are never hot-reloaded.*
+
+Two boundaries stated rather than implied:
+
+* **A later launch in the same worktree** would read a `settings.json` a previous reviewer wrote — and that
+  is precisely why the alias is **per launch** and not per daemon or per worktree. A stale hostile name
+  cannot match a fresh GUID. Per-launch freshness is load-bearing, not hygiene.
+* **A same-user process can read another's argv** on this platform. That is not a boundary this design
+  claims to hold: a process already running as the daemon user can read the token store and the config
+  directory outright, so it is inside the trust boundary before argv is considered. The threat model here
+  is the *repository under review*, which reaches us only through the reviewer's own sandbox-less worktree
+  and the model's tool use — not through a peer process.
 
 ## 3. Design
 
@@ -241,13 +320,38 @@ So the alias is an explicit launch-scoped value with both names on it:
 /// only string that ever reaches a vendor. Created once per launch and threaded — never re-derived,
 /// because two derivations is the defect this type exists to make unrepresentable.
 internal sealed record ReviewChannelIdentity(string CanonicalId, string WireName) {
-    public static ReviewChannelIdentity ForLaunch(string vendor) =>
-        vendor == Vendors.Gemini
-            ? new(KcapMcpRegistry.ReservedResultChannelId,
-                  $"{KcapMcpRegistry.ReservedResultChannelId}-{Guid.NewGuid():N}")
-            : new(KcapMcpRegistry.ReservedResultChannelId,
-                  KcapMcpRegistry.ReservedResultChannelId);   // unchanged for every other vendor
+    /// <param name="newGuid">The ONLY entropy input. Deliberately a parameter and deliberately the only
+    /// one: no launch context is in scope here, so an implementation cannot derive the wire name from the
+    /// session id, agent id, worktree path or clock even by accident — the values are not reachable. That
+    /// makes review's "not derived from launch inputs" property structural rather than a black-box
+    /// sampling claim, and it gives the test a deterministic oracle (inject a fixed Guid, assert the exact
+    /// wire name).</param>
+    public static ReviewChannelIdentity ForLaunch(string vendor, Func<Guid> newGuid) {
+        if (vendor != Vendors.Gemini)
+            return new(KcapMcpRegistry.ReservedResultChannelId,      // unchanged for every other vendor
+                       KcapMcpRegistry.ReservedResultChannelId);
+
+        var g = newGuid();
+
+        // Generation failure aborts the launch. There is no fallback, predictable or otherwise: the whole
+        // security property of §2.7 is that this string is unguessable, so a degraded value would be worse
+        // than no reviewer at all.
+        if (g == Guid.Empty)
+            throw new InvalidOperationException(
+                "Refusing to launch a Gemini reviewer: the result-channel alias generator returned an "
+              + "empty GUID, so the injected channel name would be predictable. The MCP allowlist is an "
+              + "exact-name gate, so a predictable name is a repository-impersonation hole (see spec §2.7).");
+
+        return new(KcapMcpRegistry.ReservedResultChannelId,
+                   $"{KcapMcpRegistry.ReservedResultChannelId}-{g:N}");
+    }
 }
+```
+
+Production passes `Guid.NewGuid` (v4, CSPRNG-backed on .NET). Tests pass a stub, which is what makes rows
+11 and 12 of §6 falsifiable:
+
+```csharp
 ```
 
 Rules the implementation must satisfy, each of them testable at the launch boundary:
@@ -393,7 +497,15 @@ payload — from a single built launch. Not descriptor fields, not helper return
 | 9 | `DescriptorTemplate_StillHoldsThePlaceholder` | `descriptor.Argv` | someone "simplifies" the template to a literal |
 | 10 | `NonGeminiVendors_WireNameEqualsCanonicalId` | identity for cursor/copilot/kiro | the alias is applied vendor-neutrally by accident, changing shipped behaviour |
 | 11 | `ConcurrentReviewLaunches_DoNotShareAWireName` | two launches built concurrently | the alias is cached, made static, or hoisted to a field |
-| 12 | `WireName_IsNotDerivedFromLaunchInputs` | the alias vs session id, agent id, worktree path, vendor, clock | the GUID is swapped for a counter, hash, or timestamp — the §2.6 unpredictability property |
+| 12 | `WireName_IsExactlyTheInjectedGuid` | the wire name, with a **stub** `Func<Guid>` | the entropy source is replaced by a counter, a hash of launch inputs, or a clock — the stub's value would no longer appear verbatim |
+| 13 | `EmptyGuid_AbortsTheLaunch` | the boundary throw | the fallback-to-predictable arm is reintroduced |
+| 14 | `ForLaunch_TakesNoLaunchContext` | the signature (a compile-time property, asserted by the absence of any context parameter) | someone adds a context parameter, re-opening derivation |
+
+Row 12 replaces rev 2's black-box non-derivation test, which review correctly called unfalsifiable: a
+UUID-shaped hash of the session id would have passed uniqueness and shape assertions. With the entropy
+source injected, the assertion is exact equality against a value the test chose, and the mutant (any
+derived source) cannot produce it. Row 14 is the structural half — the launch context is not in scope, so
+derivation is unrepresentable rather than merely untested.
 
 Rev 1's test #7 is gone: it asserted the placeholder survives into an interactive launch's argv, which
 **contradicts the code** — `SubstituteUnmatchableNames` runs before the review branch on every launch, so
