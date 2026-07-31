@@ -54,6 +54,43 @@ public class UnitWriterEnvNameTests {
         await Assert.That(() => WindowsTaskUnit.Wrapper(Spec(key))).Throws<InvalidOperationException>();
     }
 
+    /// <summary>
+    /// A launchd VALUE can also be XML-unrepresentable, and escaping does not fix it: U+0001 has no legal
+    /// XML 1.0 form, escaped or not, while POSIX permits any byte but NUL in a value. The failure is
+    /// availability rather than injection — the plist will not load, so the service silently does not
+    /// exist. Failing at write time names the variable instead.
+    /// </summary>
+    [Test]
+    [Arguments("\u0001")]
+    [Arguments("ok\u0000bad")]
+    [Arguments("pre\u001Fpost")]
+    public async Task Launchd_rejects_a_value_xml_cannot_represent(string hostileValue) {
+        var spec = new ServiceSpec(
+            ServiceId:        "test",
+            DaemonBinaryPath: "/usr/local/bin/kcap",
+            LogPath:          "/tmp/kcap.log",
+            Environment:      new Dictionary<string, string> { ["GOOGLE_CLOUD_PROJECT"] = hostileValue },
+            ExtraArgs:        []);
+
+        await Assert.That(() => LaunchdUnit.Plist(spec)).Throws<InvalidOperationException>();
+    }
+
+    /// <summary>Tab, LF and CR ARE legal XML 1.0 and must not be rejected — the check is about the
+    /// characters XML cannot carry, not about tidiness.</summary>
+    [Test]
+    [Arguments("a\tb")]
+    [Arguments("a\nb")]
+    public async Task Launchd_accepts_the_control_characters_xml_permits(string ok) {
+        var spec = new ServiceSpec(
+            ServiceId:        "test",
+            DaemonBinaryPath: "/usr/local/bin/kcap",
+            LogPath:          "/tmp/kcap.log",
+            Environment:      new Dictionary<string, string> { ["GOOGLE_CLOUD_PROJECT"] = ok },
+            ExtraArgs:        []);
+
+        await Assert.That(LaunchdUnit.Plist(spec)).Contains("GOOGLE_CLOUD_PROJECT");
+    }
+
     /// <summary>The positive control, at every sink. Without it the suites above would pass on a writer
     /// that rejected everything — including the names kcap actually captures.</summary>
     [Test]

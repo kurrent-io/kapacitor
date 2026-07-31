@@ -23,6 +23,33 @@ static class ServiceText {
         value.Replace("\r", " ").Replace("\n", " ");
 
     /// <summary>
+    /// Rejects a VALUE that XML 1.0 cannot represent, for the plist writer.
+    ///
+    /// <para>Entity escaping does not help here, and that is the point: <c>SecurityElement.Escape</c> turns
+    /// <c>&amp;</c> and <c>&lt;</c> into entities, but U+0001 has no legal XML 1.0 representation at all —
+    /// escaped or not. XML 1.0 permits only #x9, #xA, #xD and #x20 upwards. POSIX environment values, by
+    /// contrast, may contain any byte except NUL, so a captured or directly composed value really can carry
+    /// one.</para>
+    ///
+    /// <para>The consequence is availability rather than injection: the plist becomes unparseable, so
+    /// <c>launchctl</c> refuses to load it and the service cannot install or restart. Failing at write time
+    /// names the variable; failing at load time produces a service that silently does not exist.</para>
+    /// </summary>
+    public static void RequireXmlRepresentableValue(string name, string value) {
+        // Written as a plain scan rather than FirstOrDefault: that returns '\0' for "no match", which is
+        // itself an illegal character here, so the sentinel and a real hit are indistinguishable without a
+        // second pass. Subtlety in a security-adjacent guard is not worth the brevity.
+        foreach (var c in value) {
+            if (c is '\t' or '\n' or '\r' || !char.IsControl(c)) continue;
+
+            throw new InvalidOperationException(
+                $"Refusing to write a service unit: the value of '{name}' contains the control character "
+              + $"U+{(int)c:X4}, which XML 1.0 cannot represent even escaped — the resulting plist would "
+              + "not load. Unset or correct that variable, then re-run `kcap daemon service install`.");
+        }
+    }
+
+    /// <summary>
     /// Rejects an environment-variable NAME that no unit writer can carry safely. Shared by all three
     /// sinks, because every one of them interpolates the name into a line whose structure the name can
     /// break — and each format then hands the attacker something different.

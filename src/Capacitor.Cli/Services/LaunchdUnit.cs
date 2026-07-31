@@ -43,6 +43,7 @@ static class LaunchdUnit {
             // XML 1.0 at all — so the plist would be silently unparseable rather than injected. Same
             // check, same reason: one grammar, applied at every sink.
             ServiceText.RequireValidEnvName(k);
+            ServiceText.RequireXmlRepresentableValue(k, v);
             sb.Append($"    <key>{ServiceText.Xml(k)}</key><string>{ServiceText.Xml(v)}</string>\n");
         }
         sb.Append("  </dict>\n");
