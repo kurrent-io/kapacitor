@@ -209,10 +209,7 @@ public class UnusableUrlGuardTests : IDisposable {
             sid, body, "session-start", activeProfile: null, processStart: Stopwatch.GetTimestamp())).IsFalse();
     }
 
-    /// <summary>
-    /// Cursor's guard, proved by NON-ENTRY. Asserting exit 0 alone is vacuous: its outer catch-all
-    /// returns 0 too, so that assertion passes with the guard deleted.
-    /// </summary>
+    /// <summary>Non-entry, not exit 0 — Cursor's outer catch-all also returns 0.</summary>
     [Test]
     public async Task Cursor_never_builds_a_client_for_an_unusable_url() {
         var entered = false;
@@ -232,9 +229,8 @@ public class UnusableUrlGuardTests : IDisposable {
     }
 
     /// <summary>
-    /// Claude's guard, same shape. Deleting it lets the exception be swallowed by
-    /// <c>CreateClientWithinBudgetAsync</c>, which then takes the SAME degraded branch — so every
-    /// effect assertion still passes. Only non-entry distinguishes the two.
+    /// Non-entry: deleting the guard lets <c>CreateClientWithinBudgetAsync</c> swallow the exception
+    /// and take the same degraded branch, so every effect assertion still passes.
     /// </summary>
     [Test]
     public async Task Claude_never_builds_a_client_for_an_unusable_url() {
