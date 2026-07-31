@@ -1202,12 +1202,13 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
 
             // Applied-posture echo, stamped only for an interactive Codex launch on a daemon-owned
             // worktree. A review-flow or PR-review launch reports nothing (its posture is the
-            // containment invariant, not a choice), and so does a borrowed launch — `work` is
-            // resolved from cmd.Borrowed independently of Kind, so the owned-worktree arm is what
-            // keeps a borrowed Default command from reporting a posture it never selected.
+            // containment invariant, not a choice), and neither does a borrowed one. Both borrow
+            // conditions are tested: `work` alone is not enough, because a snapshot-backed borrow
+            // maps to OwnedWorktree while still being a borrow the caller never chose a posture for.
             (string Sandbox, string Approval)? appliedPosture =
                 string.Equals(cmd.Vendor, "codex", StringComparison.OrdinalIgnoreCase)
              && cmd.Kind == LaunchKind.Default
+             && !cmd.Borrowed
              && work == WorkLocation.OwnedWorktree
                     ? CodexPosturePolicy.Resolve(work, isReviewFlow, cmd.CodexPosture)
                     : null;

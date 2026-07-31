@@ -717,7 +717,7 @@ The first five (`kcap-recap`, `kcap-errors`, `kcap-hide`, `kcap-disable`, `kcap-
 
 **Sandbox and approval posture.** By default the daemon starts Codex with `--sandbox workspace-write` and `--ask-for-approval on-request`. This lets Codex edit files in the agent's worktree but escalates sensitive operations (e.g. network calls, shell commands outside the worktree) through the daemon's permission bridge to the dashboard.
 
-An **interactive** hosted launch (one that runs in a daemon-created worktree) may select a different posture instead of those defaults:
+The daemon also **accepts** a caller-selected posture for an **interactive** hosted launch (one that runs in a daemon-created worktree). Nothing selects one yet: the dashboard selector ships with a later Capacitor **server** release, and until then every launch uses the defaults above. The selectable values are:
 
 | Flag | Selectable values |
 |---|---|
@@ -731,9 +731,14 @@ Two cases are **not** selectable, because their values are containment guarantee
 
 PR-review launches also keep a fixed posture. A launch that supplies a posture for any of those three cases is **rejected** with a coded error (`codex_posture_not_overridable`) rather than having it silently ignored or silently applied; an unknown value, a half-specified pair, or the upstream-deprecated `on-failure` is rejected as `codex_posture_invalid`.
 
-Selecting `--ask-for-approval never` or `--sandbox danger-full-access` **disables the permission bridge for that agent** — it will never ask the dashboard before acting, and `danger-full-access` also reaches outside the worktree. The daemon logs a warning naming the agent whenever an interactive launch resolves to either.
+Two selections weaken the protections you get by default, in different ways:
 
-Posture selection is driven by the server (dashboard), and the daemon advertises support for it at connect. A server that offers the selector will refuse it against a daemon too old to advertise support, rather than sending a posture that would be quietly dropped — so update kcap on the daemon host if the dashboard says the selector is unavailable. This is separate from local `kcap agent start codex -- …`, where you pass Codex flags yourself and they are not restricted (see [Local agents](#local-agents-kcap-agent)).
+- `--ask-for-approval never` **disables the permission bridge for that agent** — it never asks the dashboard before acting, so nothing pauses for your approval.
+- `--sandbox danger-full-access` **removes the filesystem sandbox** — the agent can read and write outside its worktree. (Approvals are unaffected: with `on-request` it still escalates through the bridge.)
+
+The daemon logs a warning naming the agent whenever an interactive launch resolves to either.
+
+The daemon advertises posture support to the server at connect. A server that offers the selector refuses it against a daemon too old to advertise support, rather than sending a posture that would be quietly dropped — so update kcap on the daemon host if the dashboard says the selector is unavailable. This is all separate from local `kcap agent start codex -- …`, where you pass Codex flags yourself and they are not restricted (see [Local agents](#local-agents-kcap-agent)).
 
 > **Upgrading from an earlier version of kcap?** Run `kcap update` (or `npm install -g @kurrent/kcap`) — the npm postinstall hook, and `kcap update` itself, refresh all user-scope kcap installations, so you always pick up the current CLI version's skills (`~/.agents/skills/kcap-*`), Codex hook commands (`~/.codex/hooks.json`), and Claude plugin registration (`~/.claude/settings.json`). Each refresh is gated on a marker file written by your previous setup — fresh systems that never opted in are left untouched. Project-scope installs (`--project`) are not auto-refreshed; re-run `kcap plugin install [--codex] --project` after upgrading if you want the latest config for a specific repo.
 >

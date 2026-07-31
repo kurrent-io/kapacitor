@@ -805,19 +805,50 @@ public class CodexLauncherTests {
         await Assert.That(args[aIdx + 1]).IsEqualTo(approval);
     }
 
+    /// <summary>The regression that matters most: with no posture block the argv must be EXACTLY what
+    /// this launcher produced before posture selection existed. The expected sequences below are
+    /// literal transcriptions of the pre-change output, so an added, removed, renamed or REORDERED
+    /// argument fails here — comparing two runs of the current implementation would not, since a
+    /// change of that kind moves both sides identically.</summary>
     [Test]
-    public async Task BuildArgs_without_a_posture_is_byte_identical_to_the_derived_argv() {
-        // The regression that matters most: an absent block must not perturb a single argument.
-        // NewCtx() never sets CodexPosture, so this compares "today's shape" against an explicit null.
-        var derived  = NewLauncher().BuildArgs(NewCtx() with { Work = WorkLocation.OwnedWorktree }).Args;
-        var explicitNull = NewLauncher().BuildArgs(InteractiveCtx(null)).Args;
+    public async Task BuildArgs_without_a_posture_matches_the_pre_change_argv_exactly() {
+        string[] expectedInteractive = [
+            "--cd", "/tmp/wt",
+            "--sandbox", "workspace-write",
+            "--ask-for-approval", "on-request",
+            "-m", "gpt-5.3-codex",
+            "--no-alt-screen"
+        ];
 
-        await Assert.That(explicitNull).IsEquivalentTo(derived, CollectionOrdering.Matching);
+        // Both the shape that never mentions a posture and an explicit null must produce it.
+        await Assert.That(NewLauncher().BuildArgs(NewCtx() with { Work = WorkLocation.OwnedWorktree }).Args)
+            .IsEquivalentTo(expectedInteractive, CollectionOrdering.Matching);
+        await Assert.That(NewLauncher().BuildArgs(InteractiveCtx(null)).Args)
+            .IsEquivalentTo(expectedInteractive, CollectionOrdering.Matching);
 
-        var sIdx = Array.IndexOf(derived, "--sandbox");
-        var aIdx = Array.IndexOf(derived, "--ask-for-approval");
-        await Assert.That(derived[sIdx + 1]).IsEqualTo("workspace-write");
-        await Assert.That(derived[aIdx + 1]).IsEqualTo("on-request");
+        // Prompt + effort ride after the posture pair; pinned so their ordering can't drift either.
+        string[] expectedWithPromptAndEffort = [
+            "--cd", "/tmp/wt",
+            "--sandbox", "workspace-write",
+            "--ask-for-approval", "on-request",
+            "-m", "gpt-5.3-codex",
+            "-c", "model_reasoning_effort=\"high\"",
+            "--no-alt-screen",
+            "--", "do the thing"
+        ];
+
+        await Assert.That(
+                NewLauncher().BuildArgs(
+                    NewCtx(prompt: "do the thing", effort: "high") with { Work = WorkLocation.OwnedWorktree }).Args)
+            .IsEquivalentTo(expectedWithPromptAndEffort, CollectionOrdering.Matching);
+
+        // Borrowed + review-flow derivations are pinned by their own tests above; this asserts the
+        // borrowed pair specifically still lands in the same positions with no block present.
+        var borrowed = NewLauncher().BuildArgs(NewCtx(isReviewFlow: true) with { Work = WorkLocation.BorrowedCwd }).Args;
+        await Assert.That(borrowed[2]).IsEqualTo("--sandbox");
+        await Assert.That(borrowed[3]).IsEqualTo("read-only");
+        await Assert.That(borrowed[4]).IsEqualTo("--ask-for-approval");
+        await Assert.That(borrowed[5]).IsEqualTo("never");
     }
 
     [Test]

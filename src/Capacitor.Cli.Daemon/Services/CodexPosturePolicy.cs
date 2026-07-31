@@ -33,13 +33,19 @@ internal static class CodexPosturePolicy {
             return $"codex_posture_wrong_vendor: a Codex launch posture was supplied for vendor '{cmd.Vendor}' — "
                  + "the posture block applies only to Codex launches.";
 
-        if (cmd.Kind == LaunchKind.ReviewFlow)
-            return "codex_posture_not_overridable: review-flow reviewers run unattended, so their approval "
-                 + "policy is daemon-derived and cannot be overridden.";
-
-        if (cmd.Kind == LaunchKind.Review)
-            return "codex_posture_not_overridable: PR-review launches use a fixed posture; selection applies "
-                 + "only to interactive launches.";
+        // Positive eligibility: anything that is not an interactive launch is rejected, so a value
+        // outside the known enum (LaunchKind crosses the wire as a number) cannot deserialize into
+        // something that merely fails both `is ReviewFlow` and `is Review` and then gets treated as
+        // interactive. Known kinds keep their specific diagnostic.
+        if (cmd.Kind != LaunchKind.Default)
+            return "codex_posture_not_overridable: " + cmd.Kind switch {
+                LaunchKind.ReviewFlow => "review-flow reviewers run unattended, so their approval policy is "
+                                       + "daemon-derived and cannot be overridden.",
+                LaunchKind.Review     => "PR-review launches use a fixed posture; selection applies only to "
+                                       + "interactive launches.",
+                _                     => $"launch kind '{cmd.Kind}' is not an interactive launch; posture "
+                                       + "selection applies only to interactive launches."
+            };
 
         if (cmd.Borrowed)
             return "codex_posture_not_overridable: a borrowed launch runs in the requester's real checkout and "

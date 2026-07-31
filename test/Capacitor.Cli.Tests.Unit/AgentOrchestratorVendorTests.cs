@@ -339,6 +339,86 @@ public partial class AgentOrchestratorVendorTests {
         }
     }
 
+    /// <summary>The command→runtime handoff, which no other test covers: the echo is computed from
+    /// `cmd` and the launcher tests build a LauncherContext by hand, so dropping
+    /// `CodexPosture: cmd.CodexPosture` from the RuntimeStartContext construction would leave every
+    /// other posture test green while the agent silently launched on the old defaults — with
+    /// registration still advertising the selected pair.</summary>
+    [Test]
+    public async Task Interactive_codex_launch_threads_the_posture_into_the_runtime_start_context() {
+        var (repoPath, cleanup) = CreateGitRepo();
+
+        try {
+            var (_, codexSpy) = await LaunchForEchoAsync(repoPath, "agent-thread", new("danger-full-access", "untrusted"));
+
+            await Assert.That(codexSpy.LastContext).IsNotNull();
+            await Assert.That(codexSpy.LastContext!.CodexPosture).IsNotNull();
+            await Assert.That(codexSpy.LastContext!.CodexPosture!.Sandbox).IsEqualTo("danger-full-access");
+            await Assert.That(codexSpy.LastContext!.CodexPosture!.Approval).IsEqualTo("untrusted");
+        } finally {
+            cleanup();
+        }
+    }
+
+    [Test]
+    public async Task Interactive_codex_launch_without_a_posture_threads_null() {
+        var (repoPath, cleanup) = CreateGitRepo();
+
+        try {
+            var (_, codexSpy) = await LaunchForEchoAsync(repoPath, "agent-thread-null", posture: null);
+
+            await Assert.That(codexSpy.LastContext).IsNotNull();
+            await Assert.That(codexSpy.LastContext!.CodexPosture).IsNull();
+        } finally {
+            cleanup();
+        }
+    }
+
+    /// <summary>A snapshot-backed borrow maps to WorkLocation.OwnedWorktree, so `work` alone would
+    /// wrongly qualify it as interactive and echo a posture the caller never chose. Guards the
+    /// `!cmd.Borrowed` arm of the echo predicate.</summary>
+    [Test]
+    public async Task Snapshot_borrowed_launch_echoes_no_posture() {
+        var (repoPath, cleanup) = CreateGitRepo();
+
+        try {
+            var server     = new CaptureServerConnection();
+            var ptyFactory = new SpyPtyProcessFactory();
+            var codexSpy   = new SpyHostedAgentRuntimeFactory("codex") {
+                EmitsTerminalOutput = false,
+                SupportsUnattended = true,
+                SupportsBorrowedReviewFlow = true,
+                BorrowedReviewRequiresIndependentSnapshot = true
+            };
+
+            await using var orch = BuildOrchestrator(
+                server, ptyFactory, new Dictionary<string, IHostedAgentLauncher>(),
+                extraRuntimeFactories: [codexSpy]);
+
+            await orch.HandleLaunchAgentForTest(new LaunchAgentCommand(
+                AgentId: "agent-snapshot-borrow",
+                Prompt: "hi",
+                Model: "default",
+                Effort: null,
+                RepoPath: repoPath,
+                Tools: null,
+                AttachmentIds: null,
+                Vendor: "codex",
+                Kind: LaunchKind.Default,
+                Borrowed: true,
+                BorrowCwd: repoPath));
+
+            // Either the launch never registered (fine — nothing to echo) or it registered with nulls;
+            // what must never happen is a stamped pair on a borrowed command.
+            await Assert.That(
+                server.AgentRegisteredPostures.Any(p => p.AgentId == "agent-snapshot-borrow"
+                                                     && (p.Sandbox is not null || p.Approval is not null)))
+                .IsFalse();
+        } finally {
+            cleanup();
+        }
+    }
+
     [Test]
     public async Task Interactive_codex_launch_without_a_posture_echoes_the_derived_pair() {
         var (repoPath, cleanup) = CreateGitRepo();

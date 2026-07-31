@@ -79,6 +79,18 @@ public class CodexPosturePolicyTests {
         await Assert.That(reason).StartsWith("codex_posture_wrong_vendor:");
     }
 
+    /// <summary>LaunchKind crosses the wire as a number, so a malformed or future value deserializes
+    /// as an unknown enum member. Eligibility is positive (only Default is interactive) precisely so
+    /// such a value cannot slip past "not ReviewFlow and not Review" and be honoured as interactive —
+    /// which would also skip the bridge-defeating warning, since that predicate requires Default.</summary>
+    [Test]
+    public async Task Posture_on_an_unknown_launch_kind_fails_closed() {
+        var reason = CodexPosturePolicy.RejectionReason(
+            Cmd(kind: (LaunchKind)99, posture: new("danger-full-access", "never")));
+
+        await Assert.That(reason).StartsWith("codex_posture_not_overridable:");
+    }
+
     /// A borrowed review-flow launch violates BOTH invariants; the reason names one of them
     /// rather than reporting nothing.
     [Test]
