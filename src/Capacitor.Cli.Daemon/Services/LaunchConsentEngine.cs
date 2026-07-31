@@ -46,8 +46,12 @@ internal static class LaunchConsentEngine {
     static bool RepoMatches(string pattern, string repoPath) {
         if (pattern.EndsWith("/*", StringComparison.Ordinal)) {
             var prefix = pattern[..^1];
-            return repoPath.StartsWith(prefix, StringComparison.OrdinalIgnoreCase);
+            // Match both subpaths ("/allowed/proj") and the directory itself ("/allowed")
+            return repoPath.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(repoPath, pattern[..^2], StringComparison.OrdinalIgnoreCase);
         }
+        // Exact match with defensive trailing separator normalization
+        // (differs from DaemonConfig which doesn't trim, but required by the test spec)
         return string.Equals(
             Path.TrimEndingDirectorySeparator(pattern),
             Path.TrimEndingDirectorySeparator(repoPath),

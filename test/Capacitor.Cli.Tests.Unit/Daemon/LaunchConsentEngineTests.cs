@@ -65,6 +65,9 @@ internal class LaunchConsentEngineTests {
             .IsEqualTo(LaunchConsentVerdict.Allow);
         await Assert.That(LaunchConsentEngine.Evaluate(glob, Input(repo: "/Users/me/other")).Verdict)
             .IsEqualTo(LaunchConsentVerdict.Deny);
+        // Glob pattern also matches the bare directory itself
+        await Assert.That(LaunchConsentEngine.Evaluate(glob, Input(repo: "/Users/me/dev")).Verdict)
+            .IsEqualTo(LaunchConsentVerdict.Allow);
 
         var exact = Policy(LaunchConsentDefault.Deny,
             new LaunchConsentRule("allow", null, null, "/Users/me/dev/proj", null));
