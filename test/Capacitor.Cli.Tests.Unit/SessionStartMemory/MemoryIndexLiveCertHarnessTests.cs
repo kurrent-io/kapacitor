@@ -55,14 +55,14 @@ public class MemoryIndexLiveCertHarnessTests {
         await Assert.That(resolved).IsEqualTo(executable.ExecutablePath);
     }
 
-    /// <summary>...and when the only match is non-executable there is nothing to resolve to, so the bare
-    /// name comes back and the platform raises its own error.</summary>
+    /// <summary>...and when the only match is non-executable there is nothing to resolve to, so this
+    /// throws for the same reason an absent command does.</summary>
     [Test]
     public async Task A_non_executable_only_match_does_not_resolve() {
         using var probe = new PathProbe(executable: false);
 
-        await Assert.That(MemoryIndexLiveCertHarness.ResolveOnPath(probe.CommandName, probe.BinDir, isWindows: false))
-            .IsEqualTo(probe.CommandName);
+        await Assert.That(() => MemoryIndexLiveCertHarness.ResolveOnPath(probe.CommandName, probe.BinDir, isWindows: false))
+            .Throws<FileNotFoundException>();
     }
 
     /// <summary>A name that is already a path is the caller's explicit choice; never rewritten.</summary>
@@ -76,14 +76,16 @@ public class MemoryIndexLiveCertHarnessTests {
             .IsEqualTo(fileName);
     }
 
-    /// <summary>Unresolvable: hand the bare name back so Process.Start raises its own clearer error,
-    /// rather than inventing a path that does not exist.</summary>
+    /// <summary>An unresolvable bare name must THROW, not pass through. Passing it through hands the
+    /// problem to <c>Process.Start</c>, which consults the working directory first — so on the one
+    /// command that matters it would silently run the `kcap` in this assembly's output folder rather
+    /// than fail, reintroducing the wrong-binary bug on the path where resolution already failed.</summary>
     [Test]
-    public async Task An_unresolvable_command_is_returned_unchanged() {
+    public async Task An_unresolvable_command_throws_rather_than_falling_back_to_the_working_directory() {
         using var probe = new PathProbe();
 
-        await Assert.That(MemoryIndexLiveCertHarness.ResolveOnPath("kcap-no-such-command", probe.BinDir, isWindows: false))
-            .IsEqualTo("kcap-no-such-command");
+        await Assert.That(() => MemoryIndexLiveCertHarness.ResolveOnPath("kcap-no-such-command", probe.BinDir, isWindows: false))
+            .Throws<FileNotFoundException>();
     }
 
     /// <summary>Windows is deliberately left on the platform's own resolution: doing it correctly needs

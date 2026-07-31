@@ -539,12 +539,19 @@ internal static class MemoryIndexLiveCertHarness {
     /// <para>Windows is left alone deliberately: correct resolution there needs PATHEXT handling, these
     /// certs are gated and are not run on Windows, and a half-right implementation would be worse than
     /// the documented status quo.</para>
+    ///
+    /// <para><b>An unresolved bare name throws rather than being passed through.</b> Passing it through
+    /// would hand the problem back to <c>Process.Start</c> — which consults the working directory first
+    /// and would therefore run the shadowing copy, silently, on exactly the path where resolution had
+    /// already failed.</para>
     /// </summary>
     internal static string ResolveOnPath(string fileName) =>
         ResolveOnPath(fileName, Environment.GetEnvironmentVariable("PATH"), OperatingSystem.IsWindows());
 
     /// <summary>Pure overload: PATH and platform are passed rather than probed, so the resolution order
     /// is testable without mutating this process's environment.</summary>
+    /// <exception cref="FileNotFoundException">A bare command name that is not on PATH. Throwing is the
+    /// point — see the remarks on the single-argument overload.</exception>
     internal static string ResolveOnPath(string fileName, string? pathValue, bool isWindows) {
         if (isWindows || Path.IsPathRooted(fileName) || fileName.Contains(Path.DirectorySeparatorChar))
             return fileName;
@@ -556,8 +563,19 @@ internal static class MemoryIndexLiveCertHarness {
             if (IsExecutableFile(candidate)) return candidate;
         }
 
-        // Unresolved: hand the bare name back so Process.Start produces its own, clearer error.
-        return fileName;
+        // Unresolved: THROW rather than hand the bare name back.
+        //
+        // An earlier version returned the name with the comment "so Process.Start produces its own,
+        // clearer error" — which is wrong for the one command that matters. `Process.Start` consults the
+        // WORKING DIRECTORY before PATH, and this assembly's working directory is its own output folder,
+        // which holds a `kcap` copied there by the project reference. So the fallback does not produce
+        // an error at all: it silently runs the test build, which is the exact wrong-binary failure this
+        // resolver exists to prevent, reintroduced on the unresolved path.
+        throw new FileNotFoundException(
+            $"'{fileName}' is not on PATH. Refusing to fall back to the bare name: Process.Start would "
+          + $"resolve it against the working directory, and this assembly's output folder contains a "
+          + $"`kcap` — so the fallback would silently run the wrong binary rather than fail. "
+          + $"PATH searched: {pathValue}");
     }
 
     [DllImport("libc", EntryPoint = "access", SetLastError = true)]
