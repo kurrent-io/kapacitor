@@ -460,12 +460,23 @@ The recorded exit code is nullable by design: an unreadable or half-written reco
 rather than satisfying it. An earlier version used an `int.MinValue` sentinel, which is non-zero and
 therefore passed the exact property under test — the shape of a false-pass, caught in review.
 
-**Cleanup is now a gate, not a log line.** A leaked nonce memory makes a later positive case pass on the
-previous run's evidence, so any cert that cannot *confirm* its nonce memory was removed — an
-unconfirmed archive, a throwing archive, or a save whose id could not be recovered — marks the run, and
-`SkipUnlessLiveGateReady` then refuses to start any further live case in that process. Recovery-by-slug
-is polled rather than asked once, and distinguishes "confirmed absent" from "could not tell", because
-only the first means the index is clean.
+**Cleanup is a gate, not a log line, and it fails closed.** A leaked nonce memory makes a later positive
+case pass on the previous run's evidence — the one failure a cert must never produce — so any cert that
+cannot *confirm* its nonce memory was removed marks the run. Two gates read that mark, because one is
+not enough: `SkipUnlessLiveGateReady` refuses to start any further live case (prospective), and an
+`[After(Assembly)]` teardown fails the run (retrospective — otherwise a cleanup failure in the *last*
+case is observed by nobody and the run reports green).
+
+Three things follow from taking "confirm" literally:
+
+* `ArchiveMemoryAsync` returns whether the archive was **confirmed**, so no caller can claim a clean
+  index off a swallowed failure.
+* Recovery-by-slug archives **every** exact match, not the first. Server-side slug uniqueness is not
+  something this harness can verify, and the property required is "no memory carrying this run's nonce
+  remains" — which one archive does not give.
+* An empty search result is **not** treated as absence. The read model behind search is not documented
+  as strongly consistent and no maximum lag is published, so a created memory can be invisible now and
+  present a moment later. Anything short of "found and archived, confirmed" is dirty.
 
 Covering tests: `GeminiMemoryIndexLiveCertTests.Failed_session_start_post_still_delivers_the_index_to_a_real_gemini_session`
 (live, gated) and `GeminiSessionStartHandshakeOnPostFailureTests` (integration, always run) — the latter

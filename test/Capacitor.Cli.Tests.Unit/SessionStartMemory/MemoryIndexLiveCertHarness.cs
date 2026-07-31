@@ -222,32 +222,38 @@ internal static class MemoryIndexLiveCertHarness {
         // where it makes a later positive case pass on stale evidence. Naming the slug in the exception
         // makes that diagnosable but leaves the pollution in place, so recover the id by its (unique,
         // nonce-derived) slug and archive it here.
-        var (recovered, lookupFailed) = await FindMemoryIdBySlugAsync(slug);
+        var matches = await FindMemoryIdsBySlugAsync(slug);
 
-        if (recovered is not null) {
-            await ArchiveMemoryAsync(vendorLabel, recovered);
+        // EVERY exact match, not the first: server-side slug uniqueness is not something this harness
+        // can verify, and a retried create would leave a second memory carrying the same nonce. The
+        // property required is "no memory with this run's nonce remains", which one archive cannot give.
+        var archivedEverything = matches.Count > 0;
 
+        foreach (var id in matches) archivedEverything &= await ArchiveMemoryAsync(vendorLabel, id);
+
+        if (archivedEverything) {
             throw new InvalidOperationException(
-                $"save_memory returned no memory_id for slug {slug}; the memory HAD been created "
-              + $"({recovered}) and has been archived, so the index is clean. stdout: {stdout}");
+                $"save_memory returned no memory_id for slug {slug}; {matches.Count} memor"
+              + $"{(matches.Count == 1 ? "y" : "ies")} with that slug HAD been created and "
+              + $"{(matches.Count == 1 ? "has" : "have")} been archived, confirmed, so the index is "
+              + $"clean. stdout: {stdout}");
         }
 
-        // "The search failed" and "the search confirmed nothing is there" are different facts and must
-        // not collapse into one message: only the second means the index is definitely clean.
-        if (lookupFailed) {
-            MarkIndexPossiblyDirty(
-                $"a save for slug {slug} returned no id and the recovery lookup itself failed, so it is "
-              + "unknown whether a nonce memory exists");
-
-            throw new InvalidOperationException(
-                $"save_memory returned no memory_id for slug {slug}, AND the recovery lookup failed — it "
-              + $"is unknown whether a memory was created. Check for that slug and archive it if present. "
-              + $"stdout: {stdout}");
-        }
+        // Everything else is dirty, INCLUDING "the search came back empty". An empty result is not
+        // proof of absence: the read model behind search is not documented as strongly consistent and
+        // no maximum lag is published, so a memory that was created can be invisible now and present
+        // a moment later. Claiming "clean" on that basis is precisely the overstatement this cert
+        // exists to avoid — and the cost of being wrong is a later positive case passing on a stale
+        // nonce. Fail closed.
+        MarkIndexPossiblyDirty(
+            $"a save for slug {slug} returned no id, and cleanup could not be confirmed "
+          + $"({matches.Count} exact match(es) found, all archived: {archivedEverything})");
 
         throw new InvalidOperationException(
-            $"save_memory returned no memory_id for slug {slug}, and repeated lookups confirmed no memory "
-          + $"with that slug exists — nothing was created, so the index is clean. stdout: {stdout}");
+            $"save_memory returned no memory_id for slug {slug}, and cleanup could NOT be confirmed — "
+          + $"{matches.Count} exact match(es) found. A created-but-not-yet-visible memory cannot be "
+          + $"ruled out, so treat the live index as dirty: search for that slug and archive anything "
+          + $"that appears. stdout: {stdout}");
     }
 
     /// <summary>The slug a cert's nonce memory is saved under. Unique per run by construction, which is
@@ -255,18 +261,21 @@ internal static class MemoryIndexLiveCertHarness {
     internal static string SlugFor(string nonce) => $"live-cert-{nonce}";
 
     /// <summary>
-    /// Looks a memory up by EXACT slug, for the one path that has no id: a save whose response could not
-    /// be parsed.
+    /// Every memory id with this EXACT slug, for the one path that has no id: a save whose response
+    /// could not be parsed.
     ///
-    /// <para>Polled rather than asked once. A memory that WAS created may not be searchable the instant
-    /// after — the read model behind search is not documented as strongly consistent — and a single
-    /// lookup would then report "nothing there" about a memory that appears a second later and pollutes
-    /// every subsequent cert. A transient search failure has the same shape. So: bounded retries, and a
-    /// return that distinguishes <b>confirmed absent</b> from <b>could not tell</b>, because only the
-    /// first means the index is clean.</para>
+    /// <para>Polled rather than asked once, because a memory that WAS created may not be searchable the
+    /// instant after and a transient failure looks the same as absence. Accumulated across attempts
+    /// rather than returned on the first hit, so a duplicate that only becomes visible on a later poll
+    /// is still collected.</para>
+    ///
+    /// <para>It deliberately does NOT report "confirmed absent". No maximum projection lag is
+    /// published, so an empty result cannot establish absence at all, and offering that answer would
+    /// only tempt the caller into the claim. The caller treats anything short of "found and archived"
+    /// as dirty.</para>
     /// </summary>
-    static async Task<(string? MemoryId, bool LookupFailed)> FindMemoryIdBySlugAsync(string slug) {
-        var anyLookupSucceeded = false;
+    static async Task<IReadOnlyList<string>> FindMemoryIdsBySlugAsync(string slug) {
+        var found = new HashSet<string>(StringComparer.Ordinal);
 
         for (var attempt = 0; attempt < 3; attempt++) {
             if (attempt > 0) await Task.Delay(TimeSpan.FromSeconds(2));
@@ -275,20 +284,18 @@ internal static class MemoryIndexLiveCertHarness {
                 var frame = await CallMemoryToolAsync("search_memories", new JsonObject { ["query"] = slug });
                 var text  = JsonNode.Parse(frame)?["result"]?["content"]?[0]?["text"]?.GetValue<string>();
 
-                if (text is null || JsonNode.Parse(text) is not JsonArray hits) continue;   // unusable: not an answer
-
-                anyLookupSucceeded = true;
+                if (text is null || JsonNode.Parse(text) is not JsonArray hits) continue;
 
                 foreach (var hit in hits)
                     if (hit?["slug"]?.GetValue<string>() == slug && hit["memory_id"]?.GetValue<string>() is { } id)
-                        return (id, false);
+                        found.Add(id);
             } catch {
-                // Transient or terminal — indistinguishable from here, so keep trying and let the
-                // caller treat "never got a usable answer" as unknown rather than as absent.
+                // Transient or terminal — indistinguishable from here. Keep polling; the caller fails
+                // closed on anything it could not positively clean up.
             }
         }
 
-        return (null, !anyLookupSucceeded);
+        return [.. found];
     }
 
     /// <summary>
@@ -301,6 +308,11 @@ internal static class MemoryIndexLiveCertHarness {
     static string? _indexCleanlinessUnconfirmed;
 
     internal static void MarkIndexPossiblyDirty(string reason) => _indexCleanlinessUnconfirmed ??= reason;
+
+    /// <summary>The reason the index may be dirty, or null. Read by the assembly teardown, which is what
+    /// makes a cleanup failure in the LAST case fail the run rather than merely warn — the prospective
+    /// gate in <see cref="SkipUnlessLiveGateReady"/> can only stop a case that comes after it.</summary>
+    internal static string? IndexCleanlinessUnconfirmed => _indexCleanlinessUnconfirmed;
 
     /// <summary>Digs the saved memory's id out of an MCP <c>tools/call</c> frame. Null if absent.</summary>
     internal static string? ExtractMemoryId(string frame) {
@@ -333,20 +345,28 @@ internal static class MemoryIndexLiveCertHarness {
     /// line the operator may not read is not a sufficient response to the failure mode this exists to
     /// prevent.</para>
     /// </summary>
-    public static async Task ArchiveMemoryAsync(string vendorLabel, string memoryId) {
+    /// <returns><see langword="true"/> only when the archive was CONFIRMED. Callers that go on to claim
+    /// the index is clean must check it; the ones that call this from a <c>finally</c> may ignore it,
+    /// because the run-level mark plus the assembly teardown already turn a swallowed failure into a
+    /// failed run.</returns>
+    public static async Task<bool> ArchiveMemoryAsync(string vendorLabel, string memoryId) {
         try {
             var frame = await CallMemoryToolAsync("archive_memory", new JsonObject { ["id"] = memoryId });
 
-            if (!ArchiveSucceeded(frame)) {
-                MarkIndexPossiblyDirty($"archive_memory did not confirm success for {memoryId}");
-                await Console.Error.WriteLineAsync(
-                    $"[{vendorLabel}-memory-live] LEAKED live-cert memory {memoryId} — archive_memory did not "
-                  + $"confirm success. Archive it manually or later certs may read a stale nonce. Frame: {frame}");
-            }
+            if (ArchiveSucceeded(frame)) return true;
+
+            MarkIndexPossiblyDirty($"archive_memory did not confirm success for {memoryId}");
+            await Console.Error.WriteLineAsync(
+                $"[{vendorLabel}-memory-live] LEAKED live-cert memory {memoryId} — archive_memory did not "
+              + $"confirm success. Archive it manually or later certs may read a stale nonce. Frame: {frame}");
+
+            return false;
         } catch (Exception ex) {
             MarkIndexPossiblyDirty($"archive_memory threw for {memoryId}: {ex.Message}");
             await Console.Error.WriteLineAsync(
                 $"[{vendorLabel}-memory-live] LEAKED live-cert memory {memoryId} — archive threw: {ex.Message}");
+
+            return false;
         }
     }
 
