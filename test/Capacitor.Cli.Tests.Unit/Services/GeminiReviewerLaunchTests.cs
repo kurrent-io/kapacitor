@@ -80,14 +80,22 @@ public class GeminiReviewerLaunchTests {
     /// </summary>
     [Test]
     public async Task ReviewLaunch_AllowlistNamesExactlyTheInjectedResultChannel() {
-        var argv     = Build(isReviewFlow: true);
-        var injected = AcpReviewFlowMcp.Build(Ctx(isReviewFlow: true), []);
+        // ONE context, so this proves the two consumers agree on the SAME identity instance rather than two
+        // fixtures that happen to hold equal GUIDs. Review caught the earlier version building each from its
+        // own Ctx() call: it stayed green even if production handed a different identity to each consumer,
+        // which is exactly the silent failure the type exists to prevent.
+        var ctx = Ctx(isReviewFlow: true);
 
-        var flagAt  = Array.IndexOf(argv, "--allowed-mcp-server-names");
-        var allowed = argv[flagAt + 1];
+        var argv = AcpHostedAgentRuntimeFactory.BuildProcessStartInfo(
+                AcpVendorDescriptors.Gemini, EnabledConfig, ctx,
+                resolveGeminiVersion: _ => CertifiedVersion)
+            .ArgumentList;
+        var injected = AcpReviewFlowMcp.Build(ctx, []);
+
+        var allowed = argv[argv.IndexOf("--allowed-mcp-server-names") + 1];
 
         await Assert.That(injected.Select(s => s.Name)).Contains(allowed);
-        await Assert.That(allowed).IsEqualTo(Identity.ResultChannelWireName);
+        await Assert.That(allowed).IsEqualTo(ctx.LaunchIdentity!.ResultChannelWireName);
     }
 
     /// <summary>The allowlist must hold exactly one name: the option is array-typed and comma-coerced by the
@@ -257,15 +265,37 @@ public class GeminiReviewerLaunchTests {
         await Assert.That(ex!.Message).Contains("gemini_launch_argv_not_canonical");
     }
 
-    /// <summary>The canonical vectors must NOT throw — a guard that rejects everything is not a guard.</summary>
+    /// <summary>
+    /// The canonical vectors must NOT throw — a guard that rejects everything is not a guard.
+    ///
+    /// <para>The vectors are written out INDEPENDENTLY rather than fetched from
+    /// <c>ExpectedGeminiArgv</c>. Review caught the earlier version feeding that helper straight back into an
+    /// assertion that derives its expectation from the same helper — tautological, and it would have passed
+    /// with the helper returning anything at all.</para>
+    /// </summary>
     [Test]
-    [Arguments(true)]
-    [Arguments(false)]
-    public async Task TheCanonicalVector_PassesTheAssertion(bool isReviewFlow) {
-        AcpHostedAgentRuntimeFactory.AssertGeminiArgvIsCanonical(
-            AcpHostedAgentRuntimeFactory.ExpectedGeminiArgv(isReviewFlow, Identity), isReviewFlow, Identity);
+    public async Task TheCanonicalReviewVector_PassesTheAssertion() {
+        string[] argv = [
+            "--experimental-acp", "--skip-trust",
+            "--allowed-mcp-server-names", Identity.ResultChannelWireName,
+            "--approval-mode", "yolo"
+        ];
 
-        await Assert.That(true).IsTrue();
+        AcpHostedAgentRuntimeFactory.AssertGeminiArgvIsCanonical(argv, isReviewFlow: true, Identity);
+
+        await Assert.That(argv).HasCount().EqualTo(6);
+    }
+
+    [Test]
+    public async Task TheCanonicalInteractiveVector_PassesTheAssertion() {
+        string[] argv = [
+            "--experimental-acp", "--skip-trust",
+            "--allowed-mcp-server-names", Identity.UnmatchableMcpName
+        ];
+
+        AcpHostedAgentRuntimeFactory.AssertGeminiArgvIsCanonical(argv, isReviewFlow: false, Identity);
+
+        await Assert.That(argv).HasCount().EqualTo(4);
     }
 
     /// <summary>A wrong approval VALUE is rejected, not just a missing option — `default` would silently

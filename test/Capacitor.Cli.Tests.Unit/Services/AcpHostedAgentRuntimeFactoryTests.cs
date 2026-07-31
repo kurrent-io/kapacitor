@@ -2089,11 +2089,37 @@ public class AcpHostedAgentRuntimeFactoryTests {
     /// </summary>
     [Test]
     public async Task Gemini_ADisabledDaemon_DoesNotAdvertiseUnattendedSupport() {
+        // The version resolver is PINNED to a certified value so the only thing that can make this false is
+        // the operator flag. Review caught the earlier version leaving it unpinned: on a host with no gemini
+        // the version is unknown, so the test passed for that reason and would have kept passing if
+        // advertisement stopped honouring the flag entirely.
+        var certified = GeminiReviewerCapability.CertifiedVersions.First();
+
         IHostedAgentRuntimeFactory disabled = new AcpHostedAgentRuntimeFactory(
             AcpVendorDescriptors.Gemini, new DaemonConfig(), NullLoggerFactory.Instance,
-            new CaptureServerConnection());
+            new CaptureServerConnection(), resolveVendorVersion: _ => certified);
 
         await Assert.That(disabled.SupportsUnattended).IsFalse();
+
+        IHostedAgentRuntimeFactory enabled = new AcpHostedAgentRuntimeFactory(
+            AcpVendorDescriptors.Gemini, new DaemonConfig { GeminiUnattendedReviewerEnabled = true },
+            NullLoggerFactory.Instance, new CaptureServerConnection(),
+            resolveVendorVersion: _ => certified);
+
+        await Assert.That(enabled.SupportsUnattended).IsTrue()
+            .Because("the positive control: without it, an advertisement that always said false would pass");
+    }
+
+    /// <summary>An enabled daemon on an UNCERTIFIED build still does not advertise — the two halves of the
+    /// gate are independent, and this is the half a version bump would break.</summary>
+    [Test]
+    public async Task Gemini_AnEnabledDaemonOnAnUncertifiedVersion_DoesNotAdvertise() {
+        IHostedAgentRuntimeFactory factory = new AcpHostedAgentRuntimeFactory(
+            AcpVendorDescriptors.Gemini, new DaemonConfig { GeminiUnattendedReviewerEnabled = true },
+            NullLoggerFactory.Instance, new CaptureServerConnection(),
+            resolveVendorVersion: _ => "99.99.99");
+
+        await Assert.That(factory.SupportsUnattended).IsFalse();
     }
 
     /// <summary>Other vendors' advertisement is unaffected — the gate is Gemini-scoped.</summary>
@@ -2104,5 +2130,61 @@ public class AcpHostedAgentRuntimeFactoryTests {
             new CaptureServerConnection());
 
         await Assert.That(cursor.SupportsUnattended).IsTrue();
+    }
+
+    /// <summary>
+    /// The capability gate must be reached BEFORE any connection source runs — including a supplied one.
+    ///
+    /// <para>Review found the gate lived only in <c>BuildProcessStartInfo</c>, which only the DEFAULT source
+    /// calls, so a supplied source was invoked for a disabled daemon and could spawn directly. A test seam is
+    /// still a bypass of the claimed invariant, so this asserts the source is never even called.</para>
+    /// </summary>
+    [Test]
+    public async Task Gemini_ADisabledDaemon_NeverReachesASuppliedConnectionSource() {
+        var reached = 0;
+        var fake    = new FakeAcpAgent();
+        var factory = new AcpHostedAgentRuntimeFactory(
+            descriptor: AcpVendorDescriptors.Gemini,
+            config: new DaemonConfig(),                       // NOT enabled
+            loggerFactory: NullLoggerFactory.Instance,
+            connection: new CaptureServerConnection(),
+            connectionSource: _ => {
+                Interlocked.Increment(ref reached);
+                return (fake.ClientWriteStream, fake.ClientReadStream, new FakeAcpProcess());
+            },
+            resolveVendorVersion: _ => GeminiReviewerCapability.CertifiedVersions.First());
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+
+        await Assert.That(async () => await factory.StartAsync(
+                ReviewContext() with { Vendor = "gemini" }, cts.Token))
+            .Throws<InvalidOperationException>();
+
+        await Assert.That(Volatile.Read(ref reached)).IsEqualTo(0)
+            .Because("the gate is the boundary, so nothing may spawn — not even a supplied source");
+    }
+
+    /// <summary>The positive control: an ENABLED daemon on a certified build does reach the source, so the
+    /// test above cannot pass because StartAsync fails for some unrelated reason.</summary>
+    [Test]
+    public async Task Gemini_AnEnabledDaemon_DoesReachTheConnectionSource() {
+        var reached = 0;
+        var fake    = new FakeAcpAgent();
+        var factory = new AcpHostedAgentRuntimeFactory(
+            descriptor: AcpVendorDescriptors.Gemini,
+            config: new DaemonConfig { GeminiUnattendedReviewerEnabled = true },
+            loggerFactory: NullLoggerFactory.Instance,
+            connection: new CaptureServerConnection(),
+            connectionSource: _ => {
+                Interlocked.Increment(ref reached);
+                return (fake.ClientWriteStream, fake.ClientReadStream, new FakeAcpProcess());
+            },
+            resolveVendorVersion: _ => GeminiReviewerCapability.CertifiedVersions.First());
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        try { await factory.StartAsync(ReviewContext() with { Vendor = "gemini" }, cts.Token); }
+        catch { /* the handshake is not the subject — a bare fake never answers initialize */ }
+
+        await Assert.That(Volatile.Read(ref reached)).IsEqualTo(1);
     }
 }

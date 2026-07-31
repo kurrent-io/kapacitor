@@ -35,8 +35,15 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
         DaemonConfig                                                                   config,
         ILoggerFactory                                                                 loggerFactory,
         ServerConnection                                                               connection,
-        Func<RuntimeStartContext, (Stream Input, Stream Output, IAcpProcess Process)>? connectionSource = null
+        Func<RuntimeStartContext, (Stream Input, Stream Output, IAcpProcess Process)>? connectionSource = null,
+        // Test seam ONLY, for the certified-version decision. Production passes null, which interrogates the
+        // real binary. Tests pin a value so the OPERATOR-FLAG half of the gate is assertable on a host with
+        // no gemini installed — otherwise a disabled-daemon test passes for the wrong reason (unknown
+        // version) and would keep passing if advertisement stopped honouring the flag.
+        Func<string, string?>? resolveVendorVersion = null
     ) : IHostedAgentRuntimeFactory {
+    readonly Func<string, string?>? _resolveVendorVersion = resolveVendorVersion;
+
     readonly Func<RuntimeStartContext, (Stream Input, Stream Output, IAcpProcess Process)> _connectionSource =
         connectionSource ?? (ctx => StartRealProcess(descriptor, config, ctx, loggerFactory));
 
@@ -63,12 +70,20 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
     /// <see cref="BuildProcessStartInfo"/>, immediately before the spawn, because an explicit
     /// <c>vendor: "gemini"</c> request can reach a launch without consulting advertisement.</para>
     /// </summary>
-    public bool SupportsUnattended =>
-        descriptor.SupportsUnattended
-     && (!AliasesResultChannel(descriptor)
-         || GeminiReviewerCapability.IsEnabled(
-                config.GeminiUnattendedReviewerEnabled,
-                ResolveGeminiVersion(descriptor.ResolveBinaryPath(config))));
+    public bool SupportsUnattended {
+        get {
+            if (!descriptor.SupportsUnattended)      return false;
+            if (!AliasesResultChannel(descriptor))   return true;
+
+            // Operator flag FIRST, and short-circuit. Review's point: evaluating the version probe as an
+            // argument meant an installed-but-wedged vendor binary could hang daemon STARTUP even though the
+            // reviewer was switched off — a hang on a code path the operator opted out of.
+            if (!config.GeminiUnattendedReviewerEnabled) return false;
+
+            return GeminiReviewerCapability.IsEnabled(
+                true, (_resolveVendorVersion ?? ResolveGeminiVersion)(descriptor.ResolveBinaryPath(config)));
+        }
+    }
     public bool   SupportsBorrowedReviewFlow => _policy.Supported;
     public bool   BorrowedReviewRequiresIndependentSnapshot =>
         _policy.Containment == AcpBorrowedReviewContainment.IndependentSnapshot;
@@ -104,6 +119,15 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
         // Deliberately overwrites: LaunchIdentity is not a caller input. Honouring one supplied on the way
         // in would let a requester choose the names whose unguessability is the entire MCP containment.
         ctx = ctx with { LaunchIdentity = LaunchIdentity.ForLaunch(AliasesResultChannel(descriptor)) };
+
+        // The operator capability gate, BEFORE _connectionSource runs.
+        //
+        // Review caught this: the gate lived only in BuildProcessStartInfo, which only the DEFAULT connection
+        // source calls. A supplied source — a test seam today, but the seam is the invariant's boundary either
+        // way — was invoked for a disabled daemon or an uncertified vendor version and could spawn directly.
+        // "Unbypassable" has to mean before any source, not before the default one. The builder keeps its own
+        // check as defence in depth, since a direct builder call is its own path.
+        RequireGeminiReviewerCapability(descriptor, config, ctx.IsReviewFlow, _resolveVendorVersion);
 
         // Fail closed BEFORE _connectionSource spawns a child (a later gate would leak one). Null for
         // a non-review launch; the built MCP list for a valid review flow.
@@ -383,17 +407,9 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
         // different identities and the allowlist would not admit its own result channel.
         var identity = ctx.LaunchIdentity ?? LaunchIdentity.ForLaunch(AliasesResultChannel(descriptor));
 
-        // The daemon OPERATOR's consent, and the boundary rather than the advertisement. This sits in the
-        // pure builder because the builder is what StartRealProcess calls immediately before Process.Start,
-        // so an explicit vendor request cannot reach a spawn by routing around advertisement. Keyed on the
-        // RESOLVED descriptor's vendor, never on requester text, so an alias or case variant cannot slip by.
-        if (ctx.IsReviewFlow && AliasesResultChannel(descriptor)) {
-            var version = (resolveGeminiVersion ?? ResolveGeminiVersion)(descriptor.ResolveBinaryPath(config));
-
-            if (!GeminiReviewerCapability.IsEnabled(config.GeminiUnattendedReviewerEnabled, version))
-                throw new InvalidOperationException(
-                    GeminiReviewerCapability.DenialReason(config.GeminiUnattendedReviewerEnabled, version));
-        }
+        // Defence in depth: StartAsync gates before any connection source runs, but a direct builder call
+        // (a test, a future caller, a refactor that inlines the spawn) is its own path to an argv.
+        RequireGeminiReviewerCapability(descriptor, config, ctx.IsReviewFlow, resolveGeminiVersion);
 
         var argv = SubstituteUnmatchableNames([.. descriptor.Argv], identity);
 
@@ -578,6 +594,31 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
     }
 
     /// <summary>
+    /// The daemon OPERATOR's consent for an unattended Gemini reviewer, keyed on the RESOLVED descriptor's
+    /// vendor rather than any requester-supplied text so an alias or case variant cannot slip past.
+    ///
+    /// <para>Called from BOTH <see cref="StartAsync"/> (before any connection source runs — that is the
+    /// boundary) and <see cref="BuildProcessStartInfo"/> (defence in depth for a direct builder call).
+    /// No-op for every other vendor and for every interactive launch.</para>
+    /// </summary>
+    static void RequireGeminiReviewerCapability(
+            AcpVendorDescriptor descriptor, DaemonConfig config, bool isReviewFlow,
+            Func<string, string?>? resolveVersion) {
+        if (!isReviewFlow || !AliasesResultChannel(descriptor)) return;
+
+        // Operator consent is checked FIRST so a disabled daemon never interrogates the vendor binary at all.
+        // Review's point: probing an installed-but-wedged vendor while the feature is switched off is a way
+        // to hang on a code path the operator opted out of.
+        if (!config.GeminiUnattendedReviewerEnabled)
+            throw new InvalidOperationException(GeminiReviewerCapability.DenialReason(false, null));
+
+        var version = (resolveVersion ?? ResolveGeminiVersion)(descriptor.ResolveBinaryPath(config));
+
+        if (!GeminiReviewerCapability.IsEnabled(true, version))
+            throw new InvalidOperationException(GeminiReviewerCapability.DenialReason(true, version));
+    }
+
+    /// <summary>
     /// Gemini's certified-version input: the installed binary's own reported version, or null when it
     /// cannot be determined (which the capability treats as unknown, and therefore denies).
     /// </summary>
@@ -592,11 +633,26 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
             });
             if (proc is null) return null;
 
-            var stdout = proc.StandardOutput.ReadToEnd();
-            // Bounded: a hung vendor must not wedge a launch. A timeout is "unknown", which denies.
-            if (!proc.WaitForExit(TimeSpan.FromSeconds(10))) { try { proc.Kill(true); } catch { } return null; }
+            // Both streams are drained CONCURRENTLY with the wait, and the wait is what bounds this.
+            //
+            // Review caught a deadlock: the previous shape called ReadToEnd() before WaitForExit(10s), so a
+            // vendor that never closed stdout blocked before the timeout could apply — and stderr was
+            // redirected but never drained, so filling its buffer wedged the child too. A bounded wait is
+            // only bounded if nothing ahead of it can block indefinitely.
+            var stdout = proc.StandardOutput.ReadToEndAsync();
+            var stderr = proc.StandardError.ReadToEndAsync();
 
-            return proc.ExitCode == 0 ? stdout.Trim() : null;
+            if (!proc.WaitForExit(TimeSpan.FromSeconds(10))) {
+                try { proc.Kill(entireProcessTree: true); } catch { /* already gone */ }
+
+                return null;   // a timeout is an UNKNOWN version, which the capability denies
+            }
+
+            // The child has exited, so both reads are complete or completing; bounded again so a detached
+            // grandchild holding a pipe cannot keep us here.
+            if (!Task.WhenAll(stdout, stderr).Wait(TimeSpan.FromSeconds(5))) return null;
+
+            return proc.ExitCode == 0 && stdout.Result.Trim() is { Length: > 0 } v ? v : null;
         } catch {
             // Any failure to interrogate the binary is "unknown version", which the capability denies. A
             // throw here would surface as a launch error rather than a coded capability refusal.

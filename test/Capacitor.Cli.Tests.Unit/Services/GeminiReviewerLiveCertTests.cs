@@ -50,6 +50,8 @@ public class GeminiReviewerLiveCertTests {
         var outcome = await RunProbeAsync(project, allowlist: id.ResultChannelWireName,
                                           injectAs: id.ResultChannelWireName, hostileRepoNames: []);
 
+        await Assert.That(outcome.SessionEstablished).IsTrue()
+            .Because($"no session, no evidence either way: {outcome.Detail}");
         await Assert.That(outcome.InjectedSpawned).IsTrue()
             .Because("Gemini must honour session/new.mcpServers — the reviewer has no other result channel");
         await Assert.That(outcome.InjectedToolCalled).IsTrue()
@@ -67,6 +69,14 @@ public class GeminiReviewerLiveCertTests {
 
         var outcome = await RunProbeAsync(project, allowlist: id.UnmatchableMcpName,
                                           injectAs: id.ResultChannelWireName, hostileRepoNames: []);
+
+        // The run must have been HEALTHY before an absent marker means anything. Review caught this being
+        // vacuous: a startup failure, a rejected session/new or an invalid prompt all produce "no marker",
+        // which would read as "the deny-all name blocked the channel".
+        await Assert.That(outcome.SessionEstablished).IsTrue()
+            .Because($"the negative control needs a working session to be evidence of anything: {outcome.Detail}");
+        await Assert.That(outcome.TurnCompleted).IsTrue()
+            .Because($"and a completed turn, or 'no marker' just means the turn never ran: {outcome.Detail}");
 
         await Assert.That(outcome.InjectedSpawned).IsFalse()
             .Because("the allowlist gates EVERY mcp server including ours — that coupling is why the review "
@@ -102,7 +112,11 @@ public class GeminiReviewerLiveCertTests {
     // ── harness ──
 
     readonly record struct ProbeOutcome(
-        bool InjectedSpawned, bool InjectedToolCalled, IReadOnlyList<string> HostileSpawned);
+        bool InjectedSpawned, bool InjectedToolCalled, IReadOnlyList<string> HostileSpawned,
+        // Carried so the NEGATIVE cert can require that the session and turn actually SUCCEEDED before an
+        // absent marker counts as "the gate blocked it". Without these, a startup failure or a rejected
+        // session/new produces the same observation as a working gate.
+        bool SessionEstablished, bool TurnCompleted, string? Detail);
 
     /// <summary>
     /// Drives a real <c>gemini --experimental-acp</c> child. Evidence is a marker file each MCP server writes,
@@ -139,16 +153,19 @@ public class GeminiReviewerLiveCertTests {
                     }));
 
             var injectedMarker = MarkerFor("injected");
-            var exit = await DriveGeminiAsync(ws, project, allowlist, injectAs, server, injectedMarker);
+            var drive = await DriveGeminiAsync(ws, project, allowlist, injectAs, server, injectedMarker);
 
             var injectedBody = File.Exists(injectedMarker) ? await File.ReadAllTextAsync(injectedMarker) : "";
             var hostileRan   = markers.Where(kv => kv.Key.StartsWith("hostile-") && File.Exists(kv.Value))
                                       .Select(kv => kv.Key).ToList();
 
-            Console.WriteLine($"[gemini-cert] exit={exit} injected_spawned={injectedBody.Length > 0} "
-                            + $"tool_called={injectedBody.Contains("TOOL_CALLED")} hostile_ran=[{string.Join(",", hostileRan)}]");
+            Console.WriteLine($"[gemini-cert] session={drive.SessionEstablished} turn={drive.TurnCompleted} "
+                            + $"injected_spawned={injectedBody.Length > 0} "
+                            + $"tool_called={injectedBody.Contains("TOOL_CALLED")} "
+                            + $"hostile_ran=[{string.Join(",", hostileRan)}] detail={drive.Detail}");
 
-            return new(injectedBody.Length > 0, injectedBody.Contains("TOOL_CALLED"), hostileRan);
+            return new(injectedBody.Length > 0, injectedBody.Contains("TOOL_CALLED"), hostileRan,
+                       drive.SessionEstablished, drive.TurnCompleted, drive.Detail);
         } finally {
             try { Directory.Delete(root, recursive: true); } catch { /* temp dir */ }
         }
@@ -195,8 +212,20 @@ public class GeminiReviewerLiveCertTests {
         return path;
     }
 
-    /// <summary>initialize → session/new (with the injected server) → session/prompt, over stdio.</summary>
-    static async Task<int> DriveGeminiAsync(
+    readonly record struct DriveResult(bool SessionEstablished, bool TurnCompleted, string? Detail);
+
+    /// <summary>
+    /// initialize → session/new → session/prompt over stdio, AWAITING each response and prompting with the
+    /// session id `session/new` returned.
+    ///
+    /// <para>Review caught the earlier version discarding responses and sending <c>sessionId: null</c>: the
+    /// positive certs could not reliably establish invocation against a protocol-conforming implementation,
+    /// and the NEGATIVE cert was vacuous — startup failure, a rejected <c>session/new</c>, or an invalid
+    /// prompt all produced "no marker appeared", which it read as "the deny-all name blocked the channel".
+    /// So the negative case now has to show the session and turn actually succeeded before an absent marker
+    /// counts as evidence.</para>
+    /// </summary>
+    static async Task<DriveResult> DriveGeminiAsync(
             string ws, string project, string allowlist, string injectAs, string server, string marker) {
         var psi = new ProcessStartInfo("gemini", [
             "--experimental-acp", "--skip-trust",
@@ -213,47 +242,79 @@ public class GeminiReviewerLiveCertTests {
             ?? throw new InvalidOperationException("gemini did not start — is it on PATH?");
         using var cts = new CancellationTokenSource(TurnTimeout);
 
-        var id = 0;
-        async Task SendAsync(string method, object prms) =>
-            await proc.StandardInput.WriteLineAsync(JsonSerializer.Serialize(
-                new { jsonrpc = "2.0", id = ++id, method, @params = prms }));
+        var pending = new Dictionary<int, TaskCompletionSource<JsonElement>>();
+        var nextId  = 0;
+        var gate    = new object();
 
-        // Answer every server→client request so a turn is never blocked on us.
-        var pump = Task.Run(async () => {
-            while (!cts.IsCancellationRequested && await proc.StandardOutput.ReadLineAsync(cts.Token) is { } line) {
-                if (line.Contains("\"method\"") && line.Contains("\"id\""))
-                    try {
-                        var reqId = JsonDocument.Parse(line).RootElement.GetProperty("id").GetRawText();
-                        await proc.StandardInput.WriteLineAsync(
-                            $"{{\"jsonrpc\":\"2.0\",\"id\":{reqId},\"result\":{{\"outcome\":\"cancelled\"}}}}");
-                    } catch { /* not a request we must answer */ }
+        async Task<JsonElement> CallAsync(string method, object prms) {
+            TaskCompletionSource<JsonElement> tcs;
+            int id;
+            lock (gate) {
+                id  = ++nextId;
+                tcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
+                pending[id] = tcs;
             }
+            await proc.StandardInput.WriteLineAsync(JsonSerializer.Serialize(
+                new { jsonrpc = "2.0", id, method, @params = prms }));
+
+            return await tcs.Task.WaitAsync(cts.Token);
+        }
+
+        // Reader: completes our pending calls, and answers any server→client request so a turn is never
+        // blocked on us.
+        _ = Task.Run(async () => {
+            try {
+                while (await proc.StandardOutput.ReadLineAsync(cts.Token) is { } line) {
+                    if (line.Length == 0) continue;
+                    JsonElement root;
+                    try { root = JsonDocument.Parse(line).RootElement; } catch { continue; }
+
+                    var hasId     = root.TryGetProperty("id", out var idEl);
+                    var hasResult = root.TryGetProperty("result", out _) || root.TryGetProperty("error", out _);
+
+                    if (hasId && hasResult && idEl.TryGetInt32(out var rid)) {
+                        TaskCompletionSource<JsonElement>? tcs;
+                        lock (gate) { pending.Remove(rid, out tcs); }
+                        tcs?.TrySetResult(root.Clone());
+                    } else if (hasId) {
+                        await proc.StandardInput.WriteLineAsync(
+                            $"{{\"jsonrpc\":\"2.0\",\"id\":{idEl.GetRawText()},"
+                          + "\"result\":{\"outcome\":\"cancelled\"}}");
+                    }
+                }
+            } catch { /* cancelled or child gone */ }
         }, cts.Token);
 
-        await SendAsync("initialize", new { protocolVersion = 1, clientCapabilities = new { } });
-        await Task.Delay(TimeSpan.FromSeconds(3), cts.Token);
+        try {
+            await CallAsync("initialize", new { protocolVersion = 1, clientCapabilities = new { } });
 
-        await SendAsync("session/new", new {
-            cwd = ws,
-            mcpServers = new object[] { new {
-                name = injectAs, command = "python3", args = new[] { server },
-                env = new object[] { new { name = "KCAP_CERT_MARKER", value = marker } } } }
-        });
-        await Task.Delay(TimeSpan.FromSeconds(6), cts.Token);
+            var session = await CallAsync("session/new", new {
+                cwd = ws,
+                mcpServers = new object[] { new {
+                    name = injectAs, command = "python3", args = new[] { server },
+                    env = new object[] { new { name = "KCAP_CERT_MARKER", value = marker } } } }
+            });
 
-        // sessionId is not parsed back: the marker file is the oracle, and a prompt to a stale session simply
-        // yields no tool call — which is a FAILING result here, never a passing one.
-        await SendAsync("session/prompt", new {
-            sessionId = (string?)null,
-            prompt = new object[] { new { type = "text", text =
-                "Call submit_review_result once with verdict='certified'. No text, no questions." } }
-        });
+            if (!session.TryGetProperty("result", out var sr)
+             || !sr.TryGetProperty("sessionId", out var sid)
+             || sid.GetString() is not { Length: > 0 } sessionId)
+                return new(false, false, $"session/new returned no sessionId: {session.GetRawText()[..Math.Min(300, session.GetRawText().Length)]}");
 
-        try { await proc.WaitForExitAsync(cts.Token); }
-        catch (OperationCanceledException) { try { proc.Kill(true); } catch { } }
+            var turn = await CallAsync("session/prompt", new {
+                sessionId = sessionId,
+                prompt = new object[] { new { type = "text", text =
+                    "Call submit_review_result once with verdict='certified'. No text, no questions." } }
+            });
 
-        await Task.WhenAny(pump, Task.Delay(TimeSpan.FromSeconds(1)));
+            var completed = turn.TryGetProperty("result", out var tr)
+                         && tr.TryGetProperty("stopReason", out var stop)
+                         && stop.GetString() is not null;
 
-        return proc.HasExited ? proc.ExitCode : -1;
+            return new(true, completed, completed ? null : turn.GetRawText());
+        } catch (OperationCanceledException) {
+            return new(false, false, $"timed out after {TurnTimeout.TotalSeconds:N0}s");
+        } finally {
+            try { if (!proc.HasExited) proc.Kill(entireProcessTree: true); } catch { }
+        }
     }
 }
