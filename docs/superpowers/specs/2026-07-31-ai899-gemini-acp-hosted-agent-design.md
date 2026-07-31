@@ -67,8 +67,9 @@ is a property of the sandbox, not of hosting, and it belongs to AI-1413.
 | `availableModes` | `default`, `autoEdit`, `yolo`, `plan` (native read-only) |
 
 Contrast with Kiro, where it matters: `embeddedContext` is **true** (Kiro `false`), so AI-1407's prompt
-folding needs no plain-text workaround here; `authMethods` is non-empty (Kiro `[]`), which is what gives
-AI-1413 a credential story at all.
+folding needs no plain-text workaround here; and `authMethods` is non-empty (Kiro `[]`), which is a
+*starting point* for AI-1413's credential question rather than an answer to it — none of the four is shown
+to work with a redirected `HOME`, to be suppliable non-interactively, or to fit the sandbox.
 
 `DaemonConfig.GeminiPath = "gemini"` is **already correct** — the binary really is `gemini`. No repeat of
 the Kiro `kiro`→`kiro-cli` trap, where a wrong default meant the vendor was never advertised on a correct
@@ -115,20 +116,34 @@ created the worktree itself. **That was an inference, not a measurement, and it 
 implementation must, before the descriptor ships:
 
 1. **Probe which workspace-controlled facilities load under `--skip-trust`** — at minimum repo-local
-   Gemini settings, MCP definitions, and any hook/extension mechanism.
-2. **Then either clamp them, or state the accepted risk explicitly in the README**, with the reasoning
-   visible to an operator deciding whether to enable hosted Gemini on untrusted branches.
+   Gemini settings, MCP server definitions, and any hook or extension mechanism. Record what loaded.
+2. **Then apply this rule**, so the disposition is decided here and not by whoever implements it:
 
-This is a gating item, not a follow-up: the flag is required for the feature to work at all, so the
-question cannot be deferred past the thing that needs it. It is also a question every ACP vendor with a
+   > **Any repository-controlled facility that can cause process execution, before an explicit
+   > user-approved action, MUST be clamped.** A facility that only changes non-executable settings MAY be
+   > documented instead.
+
+   "Clamped" means suppressed at launch by argument or configuration — the same shape as Copilot's
+   `--disable-builtin-mcps` and Cursor's `--approve-mcps` handling. If a facility can execute and cannot
+   be clamped, hosted Gemini does not ship until it can: documentation is not containment, and a
+   repo-authored MCP server or hook auto-starting under the daemon user is remote code execution with
+   extra steps.
+3. **The probe evidence and the chosen disposition are reviewed before the descriptor is enabled**, as
+   part of this PR rather than a follow-up.
+
+This is gating, not follow-up: the flag is required for the feature to work at all, so the question cannot
+be deferred past the thing that needs it. **If the probe is not run, this spec is not implementation-ready**
+— the result can change both the argv and the threat model. It is also a question every ACP vendor with a
 trust model will face, so the answer is worth writing down once.
 
 ### 3.2 `SupportsUnattended: false` — hosting only, for now
 
 Unattended review is AI-1413. Withholding it here follows the Kiro precedent, and for the same structural
 reason: the containment story has to be settled on its own issue rather than inherited by default.
-`UnattendedTrustArgv` is therefore empty; when AI-1413 lands it will need `--approval-mode yolo` (or
-`plan`, see §3.5) plus whatever MCP clamp the review flow requires.
+`UnattendedTrustArgv` is therefore empty; AI-1413 will have to decide an approval posture and an MCP
+clamp. This spec deliberately does not name the flags: ACP's measured `availableModes` says what the
+*protocol* offers, not what the CLI's `--approval-mode` accepts or contains, and guessing would hand
+AI-1413 a prescription dressed as a finding.
 
 ### 3.3 `NoOpModelSelector` — the write half is unverified and fails silently
 
@@ -188,15 +203,26 @@ is: the reported id is a placeholder-shaped id that **either** hits the sentinel
 **or** misses every pricing entry and does not price — and in both cases a hosted Gemini session shows no
 cost, but by different mechanisms with different fixes.
 
-§7.5a therefore **pins the actual outcome with a test** rather than asserting the mechanism: given
-Gemini's measured `session/new` response, assert the reported model id and assert the resulting state is
-an explicit *cost unavailable*. And it asserts the surface does **not** render that as `0` or "free" —
-a silent zero is worse than a blank, because it reads as a measurement.
+**And "either way it does not price" is still a claim beyond the evidence** — the second draft's
+disjunction was not exhaustive. If `auto-gemini-2.5` misses the sentinel it does not follow that it misses
+every pricing entry; it could match one directly or after normalisation, in which case a hosted Gemini
+session would price, possibly at the wrong model's rate. Three outcomes, not two.
 
-This is accepted rather than fixed here, and the acceptance is real: with §3.3 withholding model
-selection, there is no path to a priced hosted Gemini session inside this issue. It interacts with
-AI-1612 (reported-vs-running model). What this spec owes is that the behaviour is known, tested, and
-visibly absent rather than discovered later as a cost-report gap.
+**So the pricing result is UNKNOWN until measured, and §7.5a is a gating characterisation test rather than
+a confirmation of a preferred answer.** It asserts the reported model id, then records what pricing
+actually does with it. The acceptance criterion follows the observation:
+
+| Observed | Then |
+|---|---|
+| explicit *cost unavailable* | accept; README says a hosted Gemini session shows no cost |
+| a price at a **concrete** model's rate | **escalate** — reporting a cost for a model the session may not be running is worse than reporting none, and belongs to AI-1612 before this ships |
+| rendered as `0` or "free" | **defect**, fix here — a silent zero reads as a measurement rather than an absence |
+
+Whichever it is, the README states the measured behaviour. What this spec must not do is write down the
+answer it expects and then test for it; that is how §1.1 happened.
+
+The interaction with §3.3 is real either way: with model selection withheld, there is no path to a
+deliberately-priced hosted Gemini session inside this issue.
 
 ## 4. The daemon environment — the operational requirement
 
@@ -251,38 +277,50 @@ unit is a file on disk. That split is the principle already encoded by `KCAP_COP
 explicit direction: assume the Vertex path is needed rather than force a second round-trip when it turns
 out to be. They are inert when unset — `Build` only copies keys present in the source.
 
-### 4.2 Serialisation safety — validate the value, do not trust its name
+### 4.2 Serialisation safety — enforce at the sink, because the source is not a boundary
 
-An earlier draft argued these eight are safe on Windows because *of what the values are*: project ids and
-regions are `[a-z0-9-]`, the flags are booleans, the base URLs are URLs, a Windows path cannot contain a
-quote. **That argument is withdrawn.** `Build` copies whatever string the environment holds; nothing
-validates that a variable named `GOOGLE_CLOUD_PROJECT` contains a project id. A semantic label is not
-validation, and the one serialiser that cannot take arbitrary input is the one that matters:
+Two drafts got this wrong in two different ways, and reading the code made the answer smaller than either.
 
-`WindowsTaskUnit` emits a `.cmd` wrapper of `set "K=V"` escaped by `ServiceText.CmdValue`, which escapes
-**only** `%`. An embedded `"` terminates the quoted assignment, after which `&`, `|`, `<`, `>` and `^`
-are live batch metacharacters in a file the service executes — i.e. **arbitrary command execution in the
-daemon's own startup wrapper**. That is why `KCAP_COPILOT_TOKEN_CMD` is Windows-excluded, and the reason
-generalises rather than being specific to that variable.
+**Draft 1 argued the values are safe because of what they usually contain** — project ids and regions are
+`[a-z0-9-]`, the flags are booleans, a Windows path cannot contain a quote. Withdrawn: `Build` copies
+whatever string the environment holds, and nothing validates that a variable *named*
+`GOOGLE_CLOUD_PROJECT` contains a project id. A semantic label is not validation.
 
-**Decision: enforce it in code, at capture.** `ServiceEnvironment.Build` gains a per-platform
-representability check and **drops** (never silently mangles) a value the target serialiser cannot carry,
-recording the drop so `kcap status` can surface it. Preferring a drop to a throw keeps a hostile or
-merely odd value from bricking `service install` outright, and preferring either to a raw write keeps a
-malformed value from becoming an execution vector.
+**Draft 2 moved the check into `ServiceEnvironment.Build`** and had it drop unrepresentable values.
+Withdrawn too, and this one is disproved rather than merely doubted: `DaemonCommands` builds the service
+environment as `new Dictionary<string,string>(ServiceEnvironment.Capture(profileName)) { ["KCAP_DAEMON_SUPERVISED"] = id }`
+— it **adds an entry after `Capture` returns**. So a value already reaches the writers today without
+passing through `Build`. A check there is not a boundary; it is a courtesy at one of several doors.
 
-The three targets, stated as what they can carry rather than as "safe":
+**What the writers actually do** (read, not inferred — the earlier table was wrong about systemd):
 
-| Writer | Escaping | Can carry |
+| Writer | Handling | Consequence of a hostile value |
 |---|---|---|
-| launchd (`LaunchdUnit` → `ServiceText.Xml`) | XML entity escaping | any value XML 1.0 permits — **not** raw control characters |
-| systemd (`ServiceText.SystemdValue`) | CR/LF → space | anything else; note this **rewrites** rather than rejects |
-| Windows (`WindowsTaskUnit` → `ServiceText.CmdValue`) | `%` → `%%` only | values containing no `"` and no CR/LF |
+| launchd (`LaunchdUnit` → `ServiceText.Xml`) | XML entity escaping | contained; raw control characters are not XML 1.0-legal |
+| systemd (`SystemdUnit.EnvAssignment`) | quotes the whole `KEY=VALUE` when needed, escapes `\` and `"`; `ServiceText.SystemdValue` rewrites CR/LF → space | contained, **but the CR/LF rewrite silently corrupts** a path or URL |
+| Windows (`WindowsTaskUnit` → `ServiceText.CmdValue`) | `%` → `%%`, nothing else | **arbitrary command execution.** An embedded `"` closes the `set "K=V"` assignment, after which `&`, `|`, `<`, `>`, `^` are live batch metacharacters in a file the service runs |
 
-**This is a pre-existing hole that these eight variables widen, not one they create** — `PATH` and
-`KCAP_URL` go through the same writers today. Fixing `CmdValue` properly is the better long-term answer
-and is out of scope here; the check keeps this issue from making the exposure worse, and §7 requires
-adversarial tests against the **actual writers**, not only against `Build`.
+**Decision: the Windows writer validates its own input and refuses to emit a value it cannot represent
+— for every key, not just these eight.** `service install` then fails with the offending key named,
+rather than writing a file that could execute something. Three reasons this is the right shape:
+
+* It is a **boundary**: no caller can bypass it, including the `KCAP_DAEMON_SUPERVISED` path that already
+  bypasses `Build`.
+* It **closes the pre-existing hole** rather than merely not widening it. `PATH` and `KCAP_URL` go through
+  the same writer today with the same exposure, so scoping the fix to Gemini's variables would leave a
+  known execution vector live while congratulating itself.
+* It makes the drop-recording contract unnecessary. `service install` is interactive: failing there with
+  a named key is strictly better feedback than a silent drop plus a durable `(key, reason)` record that
+  a later `kcap status` has to surface. Draft 2 needed that machinery; this does not.
+
+Failing the install is acceptable because the trigger is a value that cannot be represented at all —
+never a legitimate project id, region, boolean or path. And `CmdValue` gaining a correct implementation
+later is a strict improvement that this check does not block.
+
+**The CR/LF rewrite is named, not fixed here.** systemd silently turning a newline into a space corrupts
+a value rather than executing anything, and `SystemdValue` is shared with `Description=`. So the
+representability check rejects CR/LF in an *environment value* on every platform (no legitimate value
+contains one), and the `Description` behaviour is left alone.
 
 **Secondly, one of these is not merely a config string.** `GOOGLE_GEMINI_BASE_URL` and
 `GOOGLE_VERTEX_BASE_URL` are URLs, and a URL can carry userinfo or a query-string token. "It is a URL"
@@ -290,24 +328,41 @@ therefore does not make it non-secret. See §4.2a.
 
 ### 4.2a Disclosure: what the unit file actually exposes
 
-The earlier draft called the unit "world-readable-ish" and left the threat model unstated. **Measured
-instead:** `ServiceFiles` writes units with `UnixFileMode.UserRead | UnixFileMode.UserWrite` — **0600,
-owner-only** — re-applying the mode explicitly because umask does not apply to a chmod, and it *refuses*
-to write into a directory that is group- or other-writable.
+The first draft called the unit "world-readable-ish" and left the threat model unstated. The second
+measured 0600 and generalised it to all platforms. **Both were wrong; here is what the code does.**
 
-That materially bounds the question. The reader of the unit is the same local user who owns the
-credential file it points at, so:
+`ServiceFiles` writes with `UnixCreateMode = UserRead | UserWrite` — **0600** — then re-checks the mode on
+the open handle (because `UnixCreateMode` is still filtered through the umask, so the request is not the
+result), and refuses to write into a group- or other-writable directory.
 
-* **`GOOGLE_APPLICATION_CREDENTIALS`** — persisting the path discloses the credential's location to a
-  principal that can already read the credential itself. Accepted, and now on the stated grounds of
-  measured permissions rather than an analogy to `PATH`.
-* **The two base URLs** — accepted with the same reasoning, but flagged in the README: if a deployment
-  puts a token in the URL, that token lands in a 0600 file on disk. An operator who considers that
-  unacceptable should unset the variable before `service install`.
-* **`GOOGLE_API_KEY` / `GOOGLE_CREDENTIALS`** remain excluded regardless. The 0600 mode is a bound on the
-  blast radius, not a licence to persist secrets that have a non-persistent alternative — the same
-  principle as `KCAP_COPILOT_TOKEN_CMD`, where a *command that prints* a token is persisted and the token
-  is not.
+**All of that is Unix-only.** Every permission path in `ServiceFiles` begins
+`if (OperatingSystem.IsWindows()) return;`, with the comment *"ACL-governed, inherited from the user
+profile"*. So on Windows the `.cmd` wrapper carries whatever the profile directory's inherited ACL grants
+— typically the user, SYSTEM and Administrators, and **not** verified here. The 0600 measurement answers
+nothing about Windows, and a spec that leans on it for all three platforms is asserting past its evidence
+for the second time in this section.
+
+**The principle, stated once so future additions do not get classified by variable name:** persist a value
+into a service unit only when (a) there is no non-persistent alternative, **and** (b) the platform gives
+an owner-only guarantee this code actually enforces.
+
+Applying it:
+
+| Value | Unix | Windows |
+|---|---|---|
+| `GOOGLE_CLOUD_PROJECT` / `_PROJECT_ID`, `GOOGLE_CLOUD_LOCATION`, `GOOGLE_GENAI_USE_VERTEXAI`, `GOOGLE_GENAI_USE_GCA` | capture — not secret-capable | capture |
+| `GOOGLE_APPLICATION_CREDENTIALS` (a path), `GOOGLE_GEMINI_BASE_URL`, `GOOGLE_VERTEX_BASE_URL` (may carry userinfo or a query token) | capture — the reader of a 0600 unit is the user who owns the credential anyway | **exclude**, on (b) |
+| `GOOGLE_API_KEY`, `GOOGLE_CREDENTIALS` | **exclude** | **exclude** |
+
+The Windows exclusion follows the `KCAP_COPILOT_TOKEN_CMD` precedent exactly: a platform whose guarantee
+is unverified does not get the secret-capable values. Hosted Gemini stays functional there for the common
+case (a project-scoped login), and the README says which values Windows will not carry and why — so an
+operator who needs Vertex-with-ADC on Windows knows to set them another way rather than wondering why the
+unit is incomplete.
+
+Establishing and enforcing a Windows ACL is a better answer and is deliberately not attempted here: it is
+service-installer work touching all vendors, and guessing at it would be the third overreach in one
+section.
 
 ### 4.3 Install-time capture is a footgun, and must be surfaced
 
@@ -319,8 +374,14 @@ misattributed message.
 `StatusCommand` already reports per-vendor hook state and therefore already knows whether Gemini is
 present. It gains one warning line, on this condition only:
 
-> Gemini is installed **and** the daemon service is installed **and** its unit carries no
-> `GOOGLE_CLOUD_PROJECT`
+> Gemini is installed **and** the daemon service is installed **and** its unit carries **neither**
+> `GOOGLE_CLOUD_PROJECT` **nor** `GOOGLE_CLOUD_PROJECT_ID`
+
+**"Project configuration present" is the OR of those two, and that is the vendor's own definition**, not
+an inference from reference counts. Gemini's error text reads: *"The GOOGLE_CLOUD_PROJECT (or
+GOOGLE_CLOUD_PROJECT_ID) environment variable must be set…"*. §4.1 lists the alternate as honoured, so a
+predicate keyed on the first alone would diagnose a correctly configured unit as broken — a false positive
+the spec described and then walked into. §7.5 covers the alternate-only case explicitly.
 
 > ⚠ Gemini detected, but the daemon environment has no `GOOGLE_CLOUD_PROJECT`. If your Gemini login
 > needs a project (the Code Assist / `oauth-personal` path does), hosted Gemini agents will fail — and
@@ -364,9 +425,31 @@ So the hedging is moved out of the prose and into the shape:
 * The runtime attaches a **structured** hint — a `possible_auth_or_project_configuration` kind plus the
   vendor's verbatim error as a separate field — rather than a pre-composed sentence.
 * The conditional rendering of that kind is **one fixed string**, owned in one place and **golden-tested**.
-  Changing it is then a deliberate edit to a pinned expectation, not an accident.
 * The verbatim error is never interpolated into the hint sentence, so no amount of copy editing can make
   the hint appear to be *about* a cause it merely accompanies.
+
+**The approved rendering is part of this design, not the implementer's choice.** A golden test freezes
+whatever sentence gets written first; it does not make that sentence conditional. So the sentence is here,
+and the golden test pins *this*:
+
+> This **may** be an authentication or project-configuration problem, or it **may** be unrelated. If
+> hosted Gemini has not worked on this machine before: check `gemini` is logged in, and that
+> `GOOGLE_CLOUD_PROJECT` (or `GOOGLE_CLOUD_PROJECT_ID`) is set **where the daemon can see it** — the
+> service unit, not your shell profile — then re-run `kcap daemon service install` and restart the daemon.
+
+Every clause is deliberate. Two `may`s and an explicit "or it may be unrelated", because the failure often
+is. "If hosted Gemini has not worked on this machine before" scopes the advice to the case where it
+applies, instead of telling an operator whose setup was fine yesterday to go and reinstall a service.
+And it never restates the vendor's error, which sits in its own field.
+
+**Scope of the change, since this is bigger than the existing string seam.** `DiagnosticAuthHint` today
+returns a `string` interpolated into an `InvalidOperationException` message that
+`LaunchFailedAsync` forwards to the server. Introducing a structured kind therefore touches a wire shape
+consumed by an older server, so the implementation keeps the existing message field verbatim-compatible
+and carries the kind **additively** — an older consumer sees exactly today's text and ignores the new
+field. If that turns out not to be achievable additively, the fallback is to keep the string seam and
+golden-test the string alone; the honesty requirement is carried by the wording above either way, and it
+is not worth a protocol break.
 
 **Trigger policy, stated rather than implied.** §5 says "when the failure could plausibly be auth or
 project configuration"; the seam in fact fires on **every** non-version handshake exception. Those are
@@ -421,26 +504,35 @@ Per the project's per-vendor convention, and mirroring what AI-1404 shipped.
    * every variable in §4.1's capture table is carried through when present in the source;
    * `GOOGLE_API_KEY` and `GOOGLE_CREDENTIALS` are **not**, on any platform;
    * absent variables produce no empty entries;
-   * §4.2's representability check drops an unrepresentable value on the platform that cannot carry it,
-     and keeps it on the platforms that can.
+   * the §4.2a platform split holds: the secret-capable values (`GOOGLE_APPLICATION_CREDENTIALS` and
+     the two base URLs) are captured off-Windows and **excluded on Windows**.
 
    Both directions matter. A test that only asserts the captures would stay green if someone widened the
    allowlist to `GOOGLE_*`, which is the one change that must never pass.
-4a. **Serialiser adversarial tests — against the actual writers**, not only `Build`. `LaunchdUnit`,
-   `SystemdUnit` and `WindowsTaskUnit` each fed values containing `"`, `%`, `&`, `|`, `<`, `>`, `^`,
-   CR/LF, and a non-ASCII character; assert the emitted unit is well-formed and that no value can escape
-   its assignment into an executable position. §4.2's whole argument is about these writers, and testing
-   `Build` alone would leave it unexercised.
+4a. **Writer validation — tested at the writer, directly.** `LaunchdUnit`, `SystemdUnit` and
+   `WindowsTaskUnit` each fed values containing `"`, `%`, `&`, `|`, `<`, `>`, `^`, CR/LF and a non-ASCII
+   character, **called directly rather than through `Build`** — routing through `Build` would make it an
+   end-to-end pipeline test and would pass even if the writer were defenceless. Assert: launchd and systemd
+   contain the value; the Windows writer **rejects** what it cannot represent, so `service install` fails
+   with the key named; and no value reaches an executable position in the emitted `.cmd`. Include a value
+   arriving by the `KCAP_DAEMON_SUPERVISED` route, which bypasses `Build` in production today — that is
+   the case that proves the boundary is at the sink.
 5. **Status warning** — the §4.3 condition is a pure predicate over (gemini installed, service installed,
    unit environment) and is tested as one, plus a boundary test that `StatusCommand` reads the **installed
    unit** rather than the current process environment (set the variable in the process and *not* in the
-   unit: the warning must still appear). Negative cases: no service installed → no warning; variable
-   present in the unit → no warning; present-but-empty and malformed → treated as absent, not as set.
-5a. **Pricing** — given Gemini's measured `session/new` response, assert the reported model id and that
-   the resulting cost state is an explicit *unavailable*, and that no surface renders it as `0`/free
-   (§3.6). This pins the accepted behaviour rather than the mechanism.
+   unit: the warning must still appear). Negative cases: no service installed → no warning; either
+   `GOOGLE_CLOUD_PROJECT` **or** `GOOGLE_CLOUD_PROJECT_ID` present → no warning (the alternate-only case
+   is the false positive draft 2 would have shipped); present-but-empty and malformed → treated as absent,
+   not as set.
+5a. **Pricing — a characterisation test, gating.** Given Gemini's measured `session/new` response, assert
+   the reported model id and **record** what pricing does with it, then apply §3.6's outcome table: an
+   explicit *unavailable* is accepted, a price at a concrete model's rate escalates to AI-1612 before this
+   ships, and a rendered `0`/"free" is a defect fixed here. The test must not be written to expect one of
+   the three.
 6. **Diagnostic** — the structured hint (§5.0) carries the `possible_auth_or_project_configuration` kind;
-   the rendered copy matches a **golden string**; the vendor's error survives **verbatim** — including
+   the rendered copy matches the **golden string quoted in §5.0** (not whatever the implementer writes),
+   including both `may`s and the "or it may be unrelated" clause; an older-consumer shape still receives
+   today's message text verbatim; the vendor's error survives **verbatim** — including
    distinctive punctuation and newlines — and stays in its own field rather than being interpolated into
    the hint; and the hint is reached from a `session/new` failure, not only an `initialize` failure. Also
    drive an obviously *unrelated* `session/new` failure and assert the hint still reads as a possibility
