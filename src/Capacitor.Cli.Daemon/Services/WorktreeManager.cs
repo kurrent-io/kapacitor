@@ -37,16 +37,24 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
     /// being read while another add is still writing it, since <c>worktree add</c> does enumerate the
     /// existing entries while creating its own) is a HYPOTHESIS, not something this change proves; the
     /// nonsensical <c>Success</c> errno is suggestive but not proof. The remedy does not depend on
-    /// pinning it down: git takes no lock here, so serialising our own concurrent access is correct
-    /// regardless of which interleaving produced the message. <c>worktree remove</c> and
-    /// <c>branch -D</c> also mutate or read the same tree. The daemon really does run these
-    /// concurrently (a flow launching several reviewers against one source repo) — the same concurrency
-    /// the per-worktree fetch ref below was introduced for.</para>
+    /// pinning it down: whatever synchronisation git does here plainly did not prevent this, so
+    /// serialising our own concurrent access is correct regardless of which interleaving produced the
+    /// message. <c>worktree remove</c> and <c>branch -D</c> also mutate or read the same tree. The
+    /// daemon really does run these concurrently (a flow launching several reviewers against one source
+    /// repo) — the same concurrency the per-worktree fetch ref below was introduced for.</para>
     /// <para>Static because <see cref="RemoveAsync"/> is static, so the gate is shared across
     /// instances. Growth is one semaphore per distinct repo for process lifetime, accepted rather than
     /// evicted: a daemon sees a handful of repos, and removing an entry while a waiter holds it would
-    /// split the gate. In-process only — two daemon processes on one repo would still race, which
-    /// needs a cross-process file lock if it ever bites.</para></summary>
+    /// split the gate.</para>
+    /// <para><b>Known limits.</b> (1) In-process only — two daemon processes on one repo would still
+    /// race; that needs a cross-process file lock. (2) Identity is a canonicalised path, so aliases the
+    /// path layer cannot see through — bind mounts, Windows SUBST/mapped drives, 8.3 short names — still
+    /// split the gate (safe direction: a missed exclusion, never a wrong merge), and the
+    /// case-insensitive comparison can merge <c>Foo</c>/<c>foo</c> on a case-sensitive volume (harmless
+    /// over-serialisation). Filesystem identity rather than a path would close both, and .NET exposes
+    /// none portably. (3) <c>worktree add</c> runs the repo's <c>post-checkout</c> hook while the gate is
+    /// held, so a hook that synchronously asks this daemon for another worktree operation on the SAME
+    /// repo would deadlock. No shipped hook does that; the gated calls must stay non-reentrant.</para></summary>
     static readonly System.Collections.Concurrent.ConcurrentDictionary<string, SemaphoreSlim> WorktreeMetadataGates =
         new(OperatingSystem.IsWindows() || OperatingSystem.IsMacOS()
             ? StringComparer.OrdinalIgnoreCase
@@ -88,16 +96,22 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
     /// operation, alongside the <c>worktree</c> command it guards.</remarks>
     static async Task<string> ResolveGateKeyAsync(string repoPath) {
         try {
+            // NOT sourceReadOnly: that sets GIT_CONFIG_NOSYSTEM=1, so a repository trusted only through
+            // a SYSTEM-scoped safe.directory would fail this probe while the mutation it guards
+            // succeeds — silently demoting us to a checkout-path key and re-splitting the very gate this
+            // resolution exists to unify. rev-parse is a read, so it needs neither the maintenance
+            // suppression nor the lock avoidance that flag also carries.
+            //
             // --path-format=absolute needs git 2.31+; on older git this exits non-zero and we resolve
             // the (possibly relative) plain form against the checkout instead.
             var absolute = await RunGitCaptureResult(
-                repoPath, GitTimeout, sourceReadOnly: true, "rev-parse", "--path-format=absolute", "--git-common-dir");
+                repoPath, GitTimeout, sourceReadOnly: false, "rev-parse", "--path-format=absolute", "--git-common-dir");
 
             if (absolute.ExitCode == 0 && absolute.Stdout.Trim() is { Length: > 0 } fromAbsolute)
                 return NormalizePathKey(fromAbsolute);
 
             var plain = await RunGitCaptureResult(
-                repoPath, GitTimeout, sourceReadOnly: true, "rev-parse", "--git-common-dir");
+                repoPath, GitTimeout, sourceReadOnly: false, "rev-parse", "--git-common-dir");
 
             if (plain.ExitCode == 0 && plain.Stdout.Trim() is { Length: > 0 } fromPlain)
                 return NormalizePathKey(Path.IsPathRooted(fromPlain) ? fromPlain : Path.Combine(repoPath, fromPlain));
