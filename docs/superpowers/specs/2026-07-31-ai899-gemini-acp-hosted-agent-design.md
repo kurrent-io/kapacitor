@@ -1,8 +1,10 @@
 # AI-899 — Gemini CLI as an ACP hosted agent
 
-**Status:** rev 5, 2026-07-31, against `gemini 0.53.0` and `origin/main` (`e2b2821`).
-**Implementation-ready.** §3.1a's gating trust probe has been run, re-run on the correct code path, and its
-finding is contained by a flag already in the descriptor.
+**Status:** rev 6, 2026-07-31, against `gemini 0.53.0` and `origin/main` (`e2b2821`).
+**Implemented.** §3.1a's gating trust probe has been run, re-run on the correct code path, and its finding is
+contained. Rev 6 records what eight rounds of code review changed after rev 5 shipped: §3.1d (a fixed
+deny-all MCP name is attacker-matchable) and §4.2b (the serialisation section's scope was too small, in two
+distinct ways). Both were real defects in rev 5's design, not just its prose.
 **Repository:** kurrent-io/kcap-cli
 **Parent:** AI-1399 (multi-vendor ACP hosted agents)
 **Template:** the shipped Kiro child (AI-1404) and the Copilot child (AI-1403). Read those, not the
@@ -86,9 +88,10 @@ public static readonly AcpVendorDescriptor Gemini = new(
     ResolveBinaryPath:   cfg => cfg.GeminiPath,
     ResolveDefaultModel: _ => null,
     Argv:                ["--experimental-acp", "--skip-trust",
-                          // §3.1c — clamps repo-authored MCP servers. A single non-matching
-                          // name is correct WHILE SupportsMcpServers is false; see §3.1c.
-                          "--allowed-mcp-server-names", "kcap-none"],
+                          // §3.1c/§3.1d — clamps repo-authored MCP servers. The PLACEHOLDER is
+                          // substituted per launch with an unguessable name; a fixed one was
+                          // measured attacker-matchable.
+                          "--allowed-mcp-server-names", UnmatchableMcpNamePlaceholder],
     UnattendedTrustArgv: [],
     SupportsUnattended:  false,
     ModelSelector:       NoOpModelSelector.Instance,
@@ -240,6 +243,7 @@ Resolved:
 * **While `SupportsMcpServers: false`** (now): there are no injected servers, so a single **non-matching**
   name is exactly right. It permits nothing, which blocks the repo-authored server and costs us nothing.
   Measured working — `--allowed-mcp-server-names __kcap_none__` clamped the repo server without crashing.
+  **But the name must be unguessable, not merely unusual — see §3.1d.**
 * **When §3.4's call-level probe flips the flag to true**: the allowlist must become the injected server
   names in the same change, or hosted Gemini ships with MCP silently broken. That coupling is the reason
   this subsection exists rather than a comment.
@@ -247,6 +251,43 @@ Resolved:
 
 The test in §7.7 asserts the coupling, not just the flag: allowlist contents and `SupportsMcpServers` must
 agree, so flipping one without the other fails.
+
+### 3.1d A FIXED deny-all name is attacker-matchable — the name must be generated per launch
+
+Rev 5 shipped the literal `kcap-none` with a comment calling it "a name no MCP server will ever have."
+Nothing enforced that, and the comment was the only thing standing between the clamp and a bypass.
+
+**Measured:** a repository whose MCP configuration names its server `kcap-none` **executes**. The allowlist
+is a name match, so an attacker who can read this source — it is a public repository — can satisfy it by
+choosing the same name. A repo-authored server running under the daemon user is remote code execution, which
+is exactly what §3.1's clamping rule exists to prevent.
+
+The uncomfortable part: this collision class was predicted in writing on a *different* issue during this same
+work, and then shipped here anyway. A guard whose safety rests on an adversary not choosing a particular
+string is not a guard, and "no one would name it that" is the same shape of reasoning as §4.2's withdrawn
+"the values are safe because of what they usually contain."
+
+**Fix.** The descriptor carries a *placeholder*, and `AcpHostedAgentRuntimeFactory` substitutes an
+unguessable name at each launch:
+
+```csharp
+internal const string UnmatchableMcpNamePlaceholder = "__kcap_unmatchable_mcp_name__";
+
+static List<string> SubstituteUnmatchableNames(List<string> argv) {
+    for (var i = 0; i < argv.Count; i++)
+        if (argv[i] == UnmatchableMcpNamePlaceholder)
+            argv[i] = $"kcap-deny-{Guid.NewGuid():N}";
+
+    return argv;
+}
+```
+
+Per launch, not per process: two agents launched from the same daemon get different names, so nothing
+observable in one run helps the next.
+
+**Verified against the worst case:** a repository naming its server *the placeholder itself* is blocked
+(the placeholder never reaches the command line), and an ACP-injected server still loads — so the clamp is
+proven in both directions rather than only the negative one.
 
 ### 3.2 `SupportsUnattended: false` — hosting only, for now
 
@@ -475,6 +516,69 @@ unit is incomplete.
 Establishing and enforcing a Windows ACL is a better answer and is deliberately not attempted here: it is
 service-installer work touching all vendors, and guessing at it would be the third overreach in one
 section.
+
+### 4.2b What review found after this section shipped — the table above was still too small
+
+§4.2's decision was right in shape and wrong in scope, and five review rounds took it apart. Recording the
+outcome here because the *pattern* is the reusable part, not the individual escapes.
+
+**The scope error.** §4.2 reasoned about environment *values*, one writer at a time. But each writer
+interpolates several values into the same line or file, and in every one of them some were treated and their
+neighbours were not:
+
+| sink | guarded when §4.2 shipped | unguarded neighbour on the same line/file |
+|---|---|---|
+| Windows `.cmd` exec line | the binary path | the log path, every `ExtraArgs` token |
+| Windows `set "K=V"` line | the value | the **key** (a quote in a key closes the assignment identically) |
+| systemd `Environment=` | the value | the key (a key can inject an `ExecStartPre=` that runs on every restart) |
+| systemd `ExecStart=` | nothing | the binary path, the log path, every argument |
+| launchd plist | environment values | the label, `ProgramArguments`, `StandardOut/ErrorPath` |
+| Task Scheduler XML | nothing | the wrapper path, the service id |
+
+Every one of those was found by asking the same question the table above should have asked: *not* "is this
+value safe?" but "does every value interpolated into this artifact pass the same guard?" Each sink now has
+one guard-then-escape (or guard-then-quote) helper that all of its interpolations go through, so the
+invariant holds for the next value added rather than for the ones that happened to be audited.
+
+**The second error: escaping what a format expands, without checking what else it expands.** `CmdValue`
+doubles `%` — correct, and it made me stop looking. Each format turned out to run *more* than one expansion
+pass, and quoting alone was not a boundary in either:
+
+* **cmd** — `& | < > ( ) ^` are metacharacters *outside* quotes, so quote-when-it-has-a-space left
+  `8&calc.exe` bare in a file the OS executes at every logon. Now every exec-line value is quoted
+  unconditionally. `!NAME!` delayed expansion works *inside* quotes and can be enabled machine-wide by
+  registry, so the execution **mode** is now part of the artifact (`setlocal DisableDelayedExpansion` plus
+  `/v:off` on the action) rather than an assumption about the host. And `cmd /c "<path>"` relied on cmd's
+  conditional quote-stripping, which a path containing `&` defeats — now the nested-quote `/d /s /v:off /c
+  ""<path>""` form.
+* **systemd** — expands `%` specifiers *and* `$NAME`/`${NAME}` variables in `ExecStart=`, so a path under
+  `/home/50%off` or one containing `${HOME}` was rewritten in the *executable* position. Both are doubled
+  now and reversed by `BinaryFromUnit`. `$` is deliberately **not** doubled in `Environment=`, where systemd
+  expands specifiers but not variables — same character, adjacent sinks, different correct treatment. The
+  apostrophe is as structural to systemd's word lexer as the double quote and was missing from `NeedsQuote`.
+
+**The same-character-two-sinks rule.** `%` is the clearest case: the wrapper *body* is a batch file, so
+`%%` is correct there; the Task XML `Arguments` is a *command line*, where `%%` does not exist as an escape,
+so a `%` in the wrapper path is **refused**. A per-character policy would have got one of the two wrong.
+
+**Escape only where the escape is verifiable; otherwise refuse.** Nothing in CI or on the development
+machines can exercise a real systemd or a real cmd parser. So where the documented escape is unambiguous
+(`%%`, `$$`, `/s` nested quotes, `/v:off`) it is implemented and the tests assert the rendered text plus the
+round-trip; where it is not (systemd's `\;` for a literal semicolon), the input is **refused** instead — a
+refusal cannot be subtly wrong, and no legitimate daemon argument is a lone semicolon. The same reasoning
+refuses all C0/DEL control characters at both systemd sinks rather than emitting C-style escapes.
+
+**A silent rewrite is worse than a refusal.** §4.2 left `SystemdValue`'s CR/LF→space normalisation in place
+as "corrupts rather than executes". That is now refused too: a service running with a value nobody chose is
+harder to diagnose than an install that failed and named the variable.
+
+**The XML predicate was not the XML predicate.** `char.IsControl` differs from XML 1.0 in both directions —
+it accepts U+FFFE/U+FFFF and lone surrogates (which no encoder can represent) and rejects U+007F–U+009F
+(which XML 1.0 permits). `XmlConvert.IsXmlChar` plus surrogate-pair awareness replaced it, so an emoji in a
+path is accepted and a malformed surrogate is not.
+
+Every guard above is mutation-tested: 27 mutants, each restored from git and verified by *content* rather
+than by `git diff` — a diff can hide a bad restore through alignment, which happened once during this work.
 
 ### 4.3 Install-time capture is a footgun, and must be surfaced
 
