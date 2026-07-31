@@ -30,46 +30,83 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
             ? StringComparison.OrdinalIgnoreCase
             : StringComparison.Ordinal;
 
-    /// <summary>Per-repository gate around the git commands that mutate <c>.git/worktrees</c>.
-    /// <para><c>git worktree add</c> enumerates the existing entries while creating its own, so two
-    /// concurrent adds on one repo can have the later one read a sibling whose metadata directory
-    /// exists but whose <c>commondir</c> has not been written yet — git aborts with
-    /// <c>fatal: failed to read .git/worktrees/&lt;other&gt;/commondir</c>. <c>worktree remove</c>
-    /// mutates the same tree. The daemon really does run these concurrently (a flow launching
-    /// several reviewers against one source repo), which is the same concurrency the per-worktree
-    /// fetch ref below was introduced for.</para>
-    /// <para>Static because <see cref="RemoveAsync"/> is static, so the gate must be shared across
-    /// instances. Keyed by full path under the platform's path-case rules. In-process only: two
-    /// separate daemon processes on one repo would still race, which needs a cross-process file
-    /// lock if it ever bites.</para></summary>
+    /// <summary>Per-repository gate around the git commands that touch <c>.git/worktrees</c>.
+    /// <para>Observed fact: concurrent launches in one repo can kill a <c>git worktree add</c> with
+    /// <c>fatal: failed to read .git/worktrees/&lt;other&gt;/commondir: Success</c>. The <c>Success</c>
+    /// (errno 0) says the read did not fail for a filesystem reason — it came back empty, which only a
+    /// concurrent writer can produce, and <c>worktree add</c> does enumerate the existing entries while
+    /// creating its own. The exact interleaving is inferred, not reproduced; the remedy does not depend
+    /// on pinning it down. <c>worktree remove</c> and <c>branch -D</c> read or mutate the same tree.
+    /// The daemon really does run these concurrently (a flow launching several reviewers against one
+    /// source repo) — the same concurrency the per-worktree fetch ref below was introduced for.</para>
+    /// <para>Static because <see cref="RemoveAsync"/> is static, so the gate is shared across
+    /// instances. Growth is one semaphore per distinct repo for process lifetime, accepted rather than
+    /// evicted: a daemon sees a handful of repos, and removing an entry while a waiter holds it would
+    /// split the gate. In-process only — two daemon processes on one repo would still race, which
+    /// needs a cross-process file lock if it ever bites.</para></summary>
     static readonly System.Collections.Concurrent.ConcurrentDictionary<string, SemaphoreSlim> WorktreeMetadataGates =
         new(OperatingSystem.IsWindows() || OperatingSystem.IsMacOS()
             ? StringComparer.OrdinalIgnoreCase
             : StringComparer.Ordinal);
 
-    /// <summary>Runs <paramref name="mutate"/> holding <paramref name="repoPath"/>'s metadata gate.
-    /// Only the metadata-mutating git call belongs inside — a network fetch must stay outside, or
-    /// concurrent launches serialise behind each other's downloads for no benefit.
-    /// <para>Internal rather than private so the serialisation itself is testable: the concurrent
-    /// <c>worktree add</c> race it prevents is too narrow to reproduce on demand, so the guard is
-    /// pinned directly instead of through a flaky end-to-end repro.</para></summary>
+    /// <summary>Runs <paramref name="mutate"/> holding the metadata gate for the repository
+    /// <paramref name="repoPath"/> belongs to. Only the metadata-touching git calls belong inside — a
+    /// network fetch must stay outside, or concurrent launches serialise behind each other's downloads
+    /// for no benefit.
+    /// <para>Internal rather than private so the serialisation itself is testable: the race it prevents
+    /// is too narrow to reproduce on demand, so the guard is pinned directly instead of through a flaky
+    /// end-to-end repro.</para></summary>
     internal static async Task WithWorktreeMetadataGate(string repoPath, Func<Task> mutate) {
-        var key = repoPath;
-
-        try {
-            key = Path.GetFullPath(repoPath).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-        } catch {
-            // Unnormalizable path (too long / invalid chars): fall back to the raw string. Worst
-            // case two spellings of one repo get separate gates — still better than none.
-        }
-
-        var gate = WorktreeMetadataGates.GetOrAdd(key, static _ => new SemaphoreSlim(1, 1));
+        var gate = WorktreeMetadataGates.GetOrAdd(await ResolveGateKeyAsync(repoPath), static _ => new SemaphoreSlim(1, 1));
         await gate.WaitAsync();
 
         try {
             await mutate();
         } finally {
             gate.Release();
+        }
+    }
+
+    /// <summary>Identity of the metadata being protected: the SHARED git directory, not the checkout
+    /// path. A main checkout and each of its linked worktrees have different paths but one common
+    /// <c>.git/worktrees</c>, so keying on the path would let a launch from a linked worktree run
+    /// unguarded against a launch from the main checkout. <c>rev-parse --git-common-dir</c> is the value
+    /// every alias of one repository agrees on.
+    /// <para>Best effort: a non-repo path (the standalone-snapshot case) or an old git without
+    /// <c>--path-format</c> falls back to the normalised checkout path, which is what this gate keyed on
+    /// before and still excludes the common same-path case.</para></summary>
+    static async Task<string> ResolveGateKeyAsync(string repoPath) {
+        try {
+            // --path-format=absolute needs git 2.31+; on older git this exits non-zero and we resolve
+            // the (possibly relative) plain form against the checkout instead.
+            var absolute = await RunGitCaptureResult(
+                repoPath, GitTimeout, sourceReadOnly: true, "rev-parse", "--path-format=absolute", "--git-common-dir");
+
+            if (absolute.ExitCode == 0 && absolute.Stdout.Trim() is { Length: > 0 } fromAbsolute)
+                return NormalizePathKey(fromAbsolute);
+
+            var plain = await RunGitCaptureResult(
+                repoPath, GitTimeout, sourceReadOnly: true, "rev-parse", "--git-common-dir");
+
+            if (plain.ExitCode == 0 && plain.Stdout.Trim() is { Length: > 0 } fromPlain)
+                return NormalizePathKey(Path.IsPathRooted(fromPlain) ? fromPlain : Path.Combine(repoPath, fromPlain));
+        } catch {
+            // git missing / timed out / not a repo — fall through to the path-based key.
+        }
+
+        return NormalizePathKey(repoPath);
+    }
+
+    /// <summary>Collapses <c>.</c>/<c>..</c> segments, makes the path absolute and drops a trailing
+    /// separator so equivalent spellings share one gate. Symlink aliases of the same directory are NOT
+    /// resolved (there is no cheap portable realpath for intermediate components), so two paths that
+    /// differ only by a symlinked ancestor would still take separate gates — strictly better than the
+    /// unguarded original, and not a shape the daemon produces.</summary>
+    static string NormalizePathKey(string path) {
+        try {
+            return Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        } catch {
+            return path; // too long / invalid chars: worst case a split gate, never a wrong one
         }
     }
 
@@ -91,9 +128,15 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
                 // race on each other's fetches. The unique ref carries the
                 // worktree name so it's traceable and easy to clean up.
                 var fetchedRef = $"refs/kcap/review/{name}";
-                // Fetch OUTSIDE the metadata gate: it's already collision-free (per-worktree ref)
-                // and it's the slow, network-bound half.
-                await RunGit(repoPath, FetchTimeout, "fetch", "origin", $"{baseRef}:{fetchedRef}");
+                // Fetch OUTSIDE the metadata gate: it's already collision-free (per-worktree ref) and
+                // it's the slow, network-bound half. But a plain fetch ends by running automatic
+                // maintenance, whose task list includes worktree-prune — which WOULD touch
+                // .git/worktrees, unguarded, while another launch is mid-add. Disable it for this call
+                // (both spellings, so the old gc.auto era is covered too). `-c` rather than
+                // --no-auto-maintenance: that flag needs a newer git, `-c` works everywhere.
+                await RunGit(repoPath, FetchTimeout,
+                    "-c", "maintenance.auto=false", "-c", "gc.auto=0",
+                    "fetch", "origin", $"{baseRef}:{fetchedRef}");
                 await WithWorktreeMetadataGate(repoPath, () =>
                     RunGit(repoPath, GitTimeout, "worktree", "add", "-B", branch, worktreePath, fetchedRef));
 
@@ -141,14 +184,18 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
             return;
         }
 
-        // Same metadata tree as `worktree add` — a removal concurrent with an add can hand the add a
-        // half-torn-down sibling entry.
-        await WithWorktreeMetadataGate(worktree.SourceRepo, () =>
-            RunGit(worktree.SourceRepo, GitTimeout, "worktree", "remove", worktree.Path, "--force"));
+        // Both of these touch the same metadata tree as `worktree add`: the removal mutates it (and a
+        // removal concurrent with an add can hand the add a half-torn-down sibling entry), and
+        // `branch -D` READS it — git refuses to delete a branch checked out in any worktree, so it
+        // enumerates them. That read is best-effort here, so a concurrent add would make it fail
+        // silently and leak the branch. One gate acquisition covers both.
+        await WithWorktreeMetadataGate(worktree.SourceRepo, async () => {
+            await RunGit(worktree.SourceRepo, GitTimeout, "worktree", "remove", worktree.Path, "--force");
 
-        if (deleteBranch && !string.IsNullOrEmpty(worktree.Branch)) {
-            await RunGitBestEffort(worktree.SourceRepo, "branch", "-D", worktree.Branch);
-        }
+            if (deleteBranch && !string.IsNullOrEmpty(worktree.Branch)) {
+                await RunGitBestEffort(worktree.SourceRepo, "branch", "-D", worktree.Branch);
+            }
+        });
 
         if (!string.IsNullOrEmpty(worktree.FetchedRef)) {
             await RunGitBestEffort(worktree.SourceRepo, "update-ref", "-d", worktree.FetchedRef);
