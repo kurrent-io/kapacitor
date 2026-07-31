@@ -128,7 +128,7 @@ static class PiHookCommand {
             baseUrl, "session-start/pi", enriched, "pi-hook",
             spool, sessionId, route: "session-start/pi");
 
-        if (!AgentHookPoster.ShouldSpawnAfter(outcome)) return outcome == HookPostOutcome.Failed ? 1 : 0;
+        if (!AgentHookPoster.ShouldSpawnAfter(outcome, baseUrl)) return outcome == HookPostOutcome.Failed ? 1 : 0;
 
         await WatcherManager.EnsureWatcherRunning(
             baseUrl, sessionId, file,

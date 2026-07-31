@@ -134,8 +134,7 @@ static class CodexHookCommand {
     /// Guards the process-exiting URL validation inside the authenticated-client helper (see the
     /// call-site comment): a blank or unacceptable URL must skip injection, never exit the hook.
     /// </summary>
-    internal static bool CanAttemptMemoryInjection(string? baseUrl)
-        => !string.IsNullOrWhiteSpace(baseUrl) && HttpClientExtensions.IsAcceptableUrl(baseUrl);
+    internal static bool CanAttemptMemoryInjection(string? baseUrl) => HookHttp.IsPostable(baseUrl);
 
     internal static Func<string?, CancellationToken, Task<HttpClient>> DefaultMemoryClientFactory(string baseUrl)
         => async (rejectedAccessToken, ct) => (await HttpClientExtensions.CreateClientWithAuthStatusAsync(
@@ -451,7 +450,7 @@ static class CodexHookCommand {
 
         _ = AgentHookPoster.DrainSpoolsAsync(baseUrl, spool, transcriptSpool, sessionId);
 
-        if (!AgentHookPoster.ShouldSpawnAfter(outcome)) return Task.CompletedTask;
+        if (!AgentHookPoster.ShouldSpawnAfter(outcome, baseUrl)) return Task.CompletedTask;
 
         var transcript = TryGetString(enrichedNode, "transcript_path");
         var cwd        = TryGetString(enrichedNode, "cwd");

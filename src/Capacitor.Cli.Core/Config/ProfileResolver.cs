@@ -1,6 +1,14 @@
 namespace Capacitor.Cli.Core.Config;
 
-public record ResolvedProfile(string? ServerUrl, string? ProfileName, Profile? Profile, string? Warning);
+/// <param name="Source">
+/// Which configuration input supplied <paramref name="ServerUrl"/>. Needed because remediation
+/// differs: `kcap config set server_url` does NOT repair a malformed KCAP_URL or --server-url, both
+/// of which outrank the profile. Defaults to Profile — every branch below except the CLI flag and the
+/// env var resolves through a profile, whichever way that profile was selected.
+/// </param>
+public record ResolvedProfile(
+    string? ServerUrl, string? ProfileName, Profile? Profile, string? Warning,
+    UrlSource Source = UrlSource.Profile);
 
 public class ProfileResolver(
         ProfileConfig config,
@@ -14,11 +22,11 @@ public class ProfileResolver(
     public ResolvedProfile Resolve() {
         // 1. CLI --server-url flag
         if (!string.IsNullOrEmpty(cliServerUrl))
-            return new(AppConfig.NormalizeUrl(cliServerUrl), null, null, null);
+            return new(AppConfig.NormalizeUrl(cliServerUrl), null, null, null, UrlSource.CommandLine);
 
         // 2. KCAP_URL env var
         if (!string.IsNullOrEmpty(envUrl))
-            return new(AppConfig.NormalizeUrl(envUrl), null, null, null);
+            return new(AppConfig.NormalizeUrl(envUrl), null, null, null, UrlSource.Environment);
 
         // 3. KCAP_PROFILE env var
         if (!string.IsNullOrEmpty(envProfile))

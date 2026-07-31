@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using Capacitor.Cli.Commands;
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Config;
 
 namespace Capacitor.Cli;
 
@@ -46,6 +47,23 @@ static class WatcherManager {
     /// anything. Always null in production.
     /// </summary>
     internal static Func<string, Task>? SpawnOverrideForTesting;
+
+    /// <summary>
+    /// Test seam for the ACTUAL <c>Process.Start</c> call inside <see cref="SpawnWatcher"/> and
+    /// <see cref="SpawnCopilotFinalizeDrain"/>. Distinct from <see cref="SpawnOverrideForTesting"/>,
+    /// which only <c>SpawnForKeyAsync</c> consults and so cannot observe those methods at all.
+    ///
+    /// <para>Needed because both call static <c>Process.Start</c> inside a catch-all, and the finalize
+    /// drain writes no marker — so "no child was left behind" is unfalsifiable: delete the URL guard
+    /// and the start merely throws or returns null in a test environment, leaving every observable
+    /// effect identical. Asserting zero invocations here is the only proof the guard ran.</para>
+    ///
+    /// <para>Always null in production.</para>
+    /// </summary>
+    internal static Func<ProcessStartInfo, Process?>? ProcessStarterForTesting;
+
+    static Process? StartProcess(ProcessStartInfo psi) =>
+        ProcessStarterForTesting is { } fake ? fake(psi) : Process.Start(psi);
 
     internal static string BuildSpawnArgs(
             string  key,
@@ -92,6 +110,15 @@ static class WatcherManager {
             bool    skipTitle         = false,
             string  vendor            = "claude"
         ) {
+        // Defence in depth: ShouldSpawnAfter already refuses for an unusable URL, but a caller that
+        // bypassed it would otherwise write a PID file asserting capture that cannot happen — a
+        // watcher streams to SignalR and can never connect here.
+        if (!HookHttp.IsPostable(baseUrl)) {
+            await Console.Error.WriteLineAsync(
+                UnusableUrlDiagnostic.Build(AppConfig.ResolvedUrlSource, baseUrl, $"watcher not started for {key}"));
+            return;
+        }
+
         try {
             var watcherDir = GetWatcherDir();
             Directory.CreateDirectory(watcherDir);
@@ -122,7 +149,7 @@ static class WatcherManager {
             // hanging synchronous subagent hooks and orphaning the watcher.
             ProcessHelpers.PreventInheritedStdHandles();
 
-            var process = Process.Start(psi);
+            var process = StartProcess(psi);
 
             if (process is null) {
                 await Console.Error.WriteLineAsync($"Failed to spawn watcher for {key}");
@@ -415,7 +442,7 @@ static class WatcherManager {
             // same pipe-leak hazard as the watcher spawn above.
             ProcessHelpers.PreventInheritedStdHandles();
 
-            var process = Process.Start(psi);
+            var process = StartProcess(psi);
 
             if (process is null) {
                 Console.Error.WriteLine($"Failed to spawn what's-done generator for {sessionId}");
@@ -446,6 +473,14 @@ static class WatcherManager {
     /// <see cref="SpawnWhatsDoneGenerator"/>.
     /// </summary>
     public static void SpawnCopilotFinalizeDrain(string baseUrl, string sessionId, string transcriptPath) {
+        // A detached child that would poll for up to 45s and then exit 2 on an unusable URL, leaving
+        // no marker any assertion could observe. Refuse to launch it at all.
+        if (!HookHttp.IsPostable(baseUrl)) {
+            Console.Error.WriteLine(
+                UnusableUrlDiagnostic.Build(AppConfig.ResolvedUrlSource, baseUrl, $"copilot finalize drain not started for {sessionId}"));
+            return;
+        }
+
         try {
             var kcapPath = Environment.ProcessPath ?? "kcap";
 
@@ -465,7 +500,7 @@ static class WatcherManager {
             // Windows — same pipe-leak hazard as the spawns above.
             ProcessHelpers.PreventInheritedStdHandles();
 
-            var process = Process.Start(psi);
+            var process = StartProcess(psi);
 
             if (process is null) {
                 Console.Error.WriteLine($"Failed to spawn copilot finalize drain for {sessionId}");
@@ -492,6 +527,14 @@ static class WatcherManager {
             string? agentId,
             string  vendor = "claude"
         ) {
+        // Runs on session-end BEFORE the lifecycle POST, and builds its client with no baseUrl — which
+        // re-resolves the same unusable value. The caller's preceding KillWatcher is unaffected.
+        if (!HookHttp.IsPostable(baseUrl)) {
+            await Console.Error.WriteLineAsync(
+                UnusableUrlDiagnostic.Build(AppConfig.ResolvedUrlSource, baseUrl, $"inline drain skipped for {sessionId}"));
+            return;
+        }
+
         try {
             using var httpClient = await HttpClientExtensions.CreateAuthenticatedClientAsync();
 

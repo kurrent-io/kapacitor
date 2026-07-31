@@ -275,12 +275,14 @@ static class KiroHookCommand {
         try {
             outcome = await postTask.WaitAsync(HookBudget.Remaining(processStart, "session-start"));
         } catch (TimeoutException) {
-            spool.Append(sessionId, "session-start/kiro", enriched);
-            // Spooled, not Failed: a drain pass will replay it, so capture must still start.
-            outcome = HookPostOutcome.Spooled;
+            // Spooled, not Failed: a drain pass will replay it, so capture must still start — but only
+            // claim that when the write actually landed.
+            outcome = spool.Append(sessionId, "session-start/kiro", enriched)
+                ? HookPostOutcome.Spooled
+                : HookPostOutcome.Skipped;
         }
 
-        if (!AgentHookPoster.ShouldSpawnAfter(outcome)) return 0;
+        if (!AgentHookPoster.ShouldSpawnAfter(outcome, baseUrl)) return 0;
 
         // The watcher tails Kiro's own append-only session log
         // ~/.kiro/sessions/cli/{id}.jsonl (the file is named with the dashed id).

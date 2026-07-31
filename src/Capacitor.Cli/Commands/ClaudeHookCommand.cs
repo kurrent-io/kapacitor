@@ -62,9 +62,20 @@ public static class ClaudeHookCommand {
         } catch { }
 
         var clientCap = HookBudget.Remaining(processStart, command ?? "stop");
-        var created   = await CreateClientWithinBudgetAsync(clientFactory, clientCap);
+
+        // Skip client construction entirely for an unusable URL: the factory funnels into
+        // EnsureAbsolute, and this runs before ANY dispatch, so every Claude event would die here.
+        // Falling into the same degraded arm a client-creation timeout already uses keeps capture
+        // and the spool intact without inventing a second disposition.
+        var created = HookHttp.IsPostable(baseUrl)
+            ? await CreateClientWithinBudgetAsync(clientFactory, clientCap)
+            : null;
 
         if (created is null) {
+            // The degraded arm bypasses HandleCore, so its disabled/exclusion gates must run here.
+            var activeProfile = await AppConfig.GetActiveProfileAsync();
+            if (await ShouldSuppressCaptureAsync(sessionId, body, command, activeProfile, processStart)) return 0;
+
             // Auth/client creation exceeded the hook budget (hung /auth/config or refresh during an
             // outage). The watcher and the spool need no client — start capture and persist the
             // lifecycle event so neither the transcript nor the session record is lost.
@@ -77,14 +88,24 @@ public static class ClaudeHookCommand {
                         agentId: null, cwd: cwd, skipTitle: isResumeOrCompact);
                 } catch { }
             }
+            // Report what the append ACTUALLY did, and only for events that are spoolable at all —
+            // announcing "spooled" ahead of the attempt would claim a replay that may never happen.
+            var unusableUrl = !HookHttp.IsPostable(baseUrl);
+            var reason      = unusableUrl ? "unusable server URL" : "auth/client creation exceeded hook budget";
+
             if (command is "session-start" or "session-end" && sessionId is not null) {
-                spool.Append(sessionId, command, NormalizeForSpool(body, command));
-                await Console.Error.WriteLineAsync($"[kcap] {command} spooled (auth/client creation exceeded hook budget); will retry on the next kcap hook ({sessionId})");
+                await ReportSpoolAsync(spool.Append(sessionId, command, NormalizeForSpool(body, command)),
+                                       command, sessionId, reason, unusableUrl, baseUrl);
             }
             else if (command == "subagent-stop" && sessionId is not null && agentId is not null) {
-                spool.Append(sessionId, "subagent-stop", NormalizeForSpool(body, command));
-                await Console.Error.WriteLineAsync($"[kcap] subagent-stop spooled (auth/client creation exceeded hook budget); will retry on the next kcap hook ({sessionId}/{agentId})");
+                await ReportSpoolAsync(spool.Append(sessionId, "subagent-stop", NormalizeForSpool(body, command)),
+                                       "subagent-stop", $"{sessionId}/{agentId}", reason, unusableUrl, baseUrl);
             }
+            else if (unusableUrl) {
+                await Console.Error.WriteLineAsync(
+                    UnusableUrlDiagnostic.Build(AppConfig.ResolvedUrlSource, baseUrl, $"{command ?? "hook"} dropped (not a spoolable event)"));
+            }
+
             return 0;
         }
 
@@ -160,6 +181,52 @@ public static class ClaudeHookCommand {
     // (caller should skip capture). The fallback repo detection is budgeted so a slow git/gh
     // probe can't blow the hook deadline; if it can't resolve in time we fail open to capturing
     // (the per-cwd cache makes subsequent sessions in an excluded repo resolve and exclude promptly).
+    /// <summary>
+    /// The disabled-session and repo/path exclusion gates, callable from the degraded path.
+    ///
+    /// <para>Both live inside <c>HandleCore</c>, which is reached only when a client was created. The
+    /// degraded branch spawns a watcher and spools without them — so routing an unusable URL there
+    /// unguarded would deterministically capture sessions the user ran `kcap disable` on, or repos
+    /// they excluded. That is a privacy regression a fix must not introduce.</para>
+    ///
+    /// <para>Takes the ALREADY-CANONICAL (dashless) session id: DisabledSessions looks a marker up by
+    /// filename with no normalization, while the raw payload id is still dashed. Takes processStart
+    /// because the exclusion check needs it for its remaining hook budget. Preserves the session-end
+    /// marker cleanup, which a plain boolean would have dropped.</para>
+    /// </summary>
+
+    /// <summary>
+    /// One honest line for a degraded-path spool attempt. An unusable URL routes through the shared
+    /// source-aware diagnostic (which names what to fix and never echoes the URL); a budget overrun
+    /// keeps its existing wording.
+    /// </summary>
+    static async Task ReportSpoolAsync(
+            bool spooled, string route, string key, string reason, bool unusableUrl, string? baseUrl) {
+        var disposition = spooled
+            ? $"{route} spooled, not sent ({key}); will retry on the next kcap hook"
+            : $"{route} dropped — the spool write failed ({key})";
+
+        if (unusableUrl) {
+            await Console.Error.WriteLineAsync(
+                UnusableUrlDiagnostic.Build(AppConfig.ResolvedUrlSource, baseUrl, disposition));
+
+            return;
+        }
+
+        await Console.Error.WriteLineAsync($"[kcap] {disposition} ({reason})");
+    }
+
+    internal static async Task<bool> ShouldSuppressCaptureAsync(
+            string? canonicalSessionId, string body, string? command, Profile? activeProfile, long processStart) {
+        if (canonicalSessionId is not null && DisabledSessions.IsDisabled(canonicalSessionId)) {
+            if (command == "session-end") DisabledSessions.RemoveMarker(canonicalSessionId);
+            return true;
+        }
+
+        return command is not null
+            && await IsSessionExcludedAsync(activeProfile, body, processStart, command);
+    }
+
     internal static async Task<bool> IsSessionExcludedAsync(Profile? profile, string body, long processStart, string command) {
         if (profile?.ExcludedRepos is { Length: > 0 } repos
          && await RepoExclusion.IsExcludedAsync(body, repos, HookBudget.Remaining(processStart, command))) {

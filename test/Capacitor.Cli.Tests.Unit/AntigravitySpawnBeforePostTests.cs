@@ -12,7 +12,14 @@ namespace Capacitor.Cli.Tests.Unit;
 public class AntigravitySpawnBeforePostTests {
     [Test]
     public async Task spooled_outcome_still_spawns_watcher() {
-        await Assert.That(AntigravityHookCommand.SpawnGateForTest(HookPostOutcome.Spooled)).IsTrue();
-        await Assert.That(AntigravityHookCommand.SpawnGateForTest(HookPostOutcome.Failed)).IsFalse();
+        await Assert.That(AntigravityHookCommand.SpawnGateForTest(HookPostOutcome.Spooled, "http://localhost:5108")).IsTrue();
+        await Assert.That(AntigravityHookCommand.SpawnGateForTest(HookPostOutcome.Failed, "http://localhost:5108")).IsFalse();
+    }
+
+    [Test]
+    public async Task Spawn_gate_refuses_an_unusable_url() {
+        // Pins that production passes a real URL through this gate: with a default value here the
+        // conjunct silently never fired for this vendor.
+        await Assert.That(AntigravityHookCommand.SpawnGateForTest(HookPostOutcome.Spooled, "ftp://host")).IsFalse();
     }
 }

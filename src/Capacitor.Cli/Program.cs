@@ -58,6 +58,16 @@ if (Environment.GetEnvironmentVariable("KCAP_SKIP") is "1"
 
 var hookProcessStart = System.Diagnostics.Stopwatch.GetTimestamp();
 var isHook = command == "hook";
+
+// Agent-spawned commands owe an output contract, or must leave no orphaned child, so an unusable
+// server URL must not kill them mid-contract — EnsureAbsolute throws for them instead of exiting.
+// Interactive commands keep exiting 2 with the actionable hint, which is the right UX with a user
+// present. This covers the agent-spawned population only; it is not a claim that every reachable
+// URL consumer has been enumerated, and the explicit guards own what actually happens.
+ProcessUrlPolicy.Current = CrashReporter.IsFailOpenCommand(command)
+    ? UrlFailurePolicy.Throw
+    : UrlFailurePolicy.FailFast;
+
 var baseUrl = await AppConfig.ResolveServerUrl(args, gitTimeoutMs: isHook ? 1000 : 5000);
 
 // Fire-and-forget update check (prints hint to stderr after command finishes).
@@ -681,7 +691,10 @@ switch (command) {
         // own drain in the BACKGROUND, after satisfying its synchronous stdout contract.
         // Cross-process-throttled (~30s) and auth-gated inside DrainSpoolsAsync, so this adds no
         // per-invocation network cost beyond a disk stat on the vast majority of firings.
-        if (!args.Contains("--codex") && baseUrl is not null && HttpClientExtensions.IsAcceptableUrl(baseUrl)) {
+        // No acceptability conjunct here: DrainSpoolsAsync owns that decision, and it reaps both
+        // spools BEFORE returning. Gating the call would mean a config broken for weeks never reaps
+        // anything, and the per-session cap does not bound the number of stale files.
+        if (!args.Contains("--codex") && baseUrl is not null) {
             await AgentHookPoster.DrainSpoolsAsync(
                 baseUrl,
                 new HookSpool(PathHelpers.ConfigPath("spool")),

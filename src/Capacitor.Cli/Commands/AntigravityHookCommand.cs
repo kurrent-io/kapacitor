@@ -139,7 +139,7 @@ static class AntigravityHookCommand {
 
         // Fail-open: a non-zero exit would surface as a failed hook; skip the watcher
         // this firing and let the next PreInvocation retry.
-        if (!SpawnGateForTest(outcome)) return 0;
+        if (!SpawnGateForTest(outcome, baseUrl)) return 0;
 
         // Watcher key = the dashless session id (kcap watch strips dashes too, so the pid
         // file + the spawned watcher's stream all agree). The dashed conversation id lives on
@@ -155,7 +155,8 @@ static class AntigravityHookCommand {
 
     /// <summary>Test seam mirroring <see cref="AgentHookPoster.ShouldSpawnAfter"/> — capture must
     /// start on <c>Posted</c> OR <c>Spooled</c>, never gated behind lifecycle-POST delivery.</summary>
-    internal static bool SpawnGateForTest(HookPostOutcome o) => AgentHookPoster.ShouldSpawnAfter(o);
+    internal static bool SpawnGateForTest(HookPostOutcome o, string? baseUrl)
+        => AgentHookPoster.ShouldSpawnAfter(o, baseUrl);
 
     /// <summary>The event name — the first positional token after <c>--antigravity</c>.</summary>
     internal static string? EventArg(string[] args) {

@@ -246,8 +246,18 @@ public static class AppConfig {
     /// </summary>
     public static void SetResolvedState(string serverUrl, string profileName, Profile profile) {
         ResolvedServerUrl = serverUrl;
-        ResolvedProfile   = new ResolvedProfile(serverUrl, profileName, profile, null);
+        // Profile, not a parameter: the only caller is `kcap setup`, immediately after persisting the
+        // profile whose server_url this is. The profile owns the value, so that is what remediation
+        // must name.
+        ResolvedProfile   = new ResolvedProfile(serverUrl, profileName, profile, null, UrlSource.Profile);
     }
+
+    /// <summary>
+    /// Where the resolved server URL came from, for the diagnostic a guard writes when it declines to
+    /// use it. Falls back to <see cref="UrlSource.Profile"/> before resolution has run, which is the
+    /// safe default: its remediation points at config rather than at an override the user never set.
+    /// </summary>
+    public static UrlSource ResolvedUrlSource => ResolvedProfile?.Source ?? UrlSource.Profile;
 
     /// <summary>
     /// Test seam: clears the process-global resolved state. Token lookup consults

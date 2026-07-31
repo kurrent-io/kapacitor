@@ -81,15 +81,15 @@ public class LiveWatchHardeningAcceptanceTests {
                     agentTag: route, spool, sessionId, route);
 
                 await Assert.That(outcome).IsEqualTo(HookPostOutcome.Spooled);
-                await Assert.That(AgentHookPoster.ShouldSpawnAfter(outcome)).IsTrue();
+                await Assert.That(AgentHookPoster.ShouldSpawnAfter(outcome, "http://localhost:1")).IsTrue();
                 await Assert.That(spool.HasBacklog(sessionId)).IsTrue(); // capture-on-lapse via the spool
             } finally { try { Directory.Delete(dir, true); } catch { } }
         }
 
         // Task 6's actual regressions: each vendor's own bespoke gate must agree with the shared
         // predicate, not just re-derive it independently.
-        await Assert.That(AntigravityHookCommand.SpawnGateForTest(HookPostOutcome.Spooled)).IsTrue();
-        await Assert.That(GeminiHookCommand.SpawnGateForTest(HookPostOutcome.Spooled)).IsTrue();
+        await Assert.That(AntigravityHookCommand.SpawnGateForTest(HookPostOutcome.Spooled, "http://localhost:1")).IsTrue();
+        await Assert.That(GeminiHookCommand.SpawnGateForTest(HookPostOutcome.Spooled, "http://localhost:1")).IsTrue();
     }
 
     // ── 2. Codex stdout-first, proven against a real large/unreachable spool backlog ─────────

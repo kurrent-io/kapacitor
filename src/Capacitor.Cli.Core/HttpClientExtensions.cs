@@ -234,6 +234,12 @@ public static class HttpClientExtensions {
     /// </summary>
     static void EnsureAbsolute(string url) {
         if (IsAcceptableUrl(url)) return;
+
+        // Agent-spawned commands set Throw at entry: they owe an output contract (or must leave no
+        // orphaned child), and Environment.Exit here is uncatchable — it bypasses every vendor's
+        // fail-open catch, so the harness sees no output and rejects the session. See ProcessUrlPolicy.
+        if (ProcessUrlPolicy.Current is UrlFailurePolicy.Throw) throw new UnusableServerUrlException(SchemeMissingHint);
+
         Console.Error.WriteLine(SchemeMissingHint);
         Environment.Exit(2);
     }
