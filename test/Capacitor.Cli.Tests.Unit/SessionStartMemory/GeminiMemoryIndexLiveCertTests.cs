@@ -163,20 +163,30 @@ public class GeminiMemoryIndexLiveCertTests {
             var (exitCode, answer) = await RunGeminiAsync(
                 worktree.FullName, MemoryIndexLiveCertHarness.PositivePrompt, viaProxy);
 
-            // The turn's own hook really did hit the FORCED failure — matched on the response body
-            // marker, not merely on "a 400 at that path", so an upstream 400 arriving through the
-            // catch-all proxy could not be mistaken for this mapping firing.
-            await Assert.That(ForcedSessionStartFailures(proxy)).IsGreaterThan(0);
-
-            // The invocation that delivered the index, identified by the nonce in the context Gemini
-            // itself was handed. There is no substitution here: this IS the hook Gemini ran.
+            // The invocations that delivered the index, identified by the nonce in the context Gemini
+            // itself was handed. There is no substitution here: these ARE hooks Gemini ran.
             var delivering = hooks.Invocations
-                .Select(i => (i.ExitCode, Context: AdditionalContextOf(i.Stdout)))
-                .Where(i => i.Context?.Contains(nonce) == true)
+                .Where(i => AdditionalContextOf(i.Stdout)?.Contains(nonce) == true)
                 .ToList();
 
             await Assert.That(delivering).IsNotEmpty();
-            await Assert.That(delivering.All(i => i.ExitCode != 0)).IsTrue();
+
+            // Non-zero exit, per delivering invocation. `ExitCode` is nullable ON PURPOSE: an
+            // unreadable or half-written exit record must FAIL this, not satisfy it. An earlier
+            // version mapped a parse failure to int.MinValue, which is != 0 and therefore passed the
+            // very property under test — a sentinel that satisfies the assertion is a false-pass path.
+            await Assert.That(delivering.All(i => i.ExitCode is { } code && code != 0)).IsTrue();
+
+            // ...and each of those invocations is the one whose POST the FORCED mapping rejected.
+            // A turn-global "some 400 happened" assertion is not enough: with two hook invocations,
+            // one could carry the nonce and exit non-zero for an unrelated reason while the OTHER hit
+            // the forced failure, and every assertion would still pass without the claim being true.
+            // Correlating on session id closes that — and the marker match means an upstream 400
+            // relayed by the catch-all proxy cannot stand in for this mapping firing.
+            var rejected = ForcedFailureSessionIds(proxy);
+
+            await Assert.That(rejected).IsNotEmpty();
+            await Assert.That(delivering.All(i => SessionIdOf(i.Stdin) is { } id && rejected.Contains(id))).IsTrue();
 
             await Assert.That(exitCode).IsEqualTo(0);
             await Assert.That(answer).Contains(nonce);
@@ -207,14 +217,28 @@ public class GeminiMemoryIndexLiveCertTests {
         }
     }
 
-    /// <summary>Counts only responses this test's own mapping produced, identified by its body marker.
-    /// Counting "400 at that path" instead would also count an upstream 400 relayed by the catch-all
-    /// proxy, and the point of the assertion is that the FORCED failure fired.</summary>
-    static int ForcedSessionStartFailures(WireMockServer proxy) =>
-        proxy.LogEntries.Count(e =>
-            e.RequestMessage.Path == SessionStartPath
-         && e.ResponseMessage.StatusCode is 400
-         && e.ResponseMessage.BodyData?.BodyAsString?.Contains(ForcedFailureMarker) == true);
+    /// <summary>The session ids whose session-start POST this test's own mapping rejected, identified by
+    /// its response-body marker. Matching on the marker rather than on "400 at that path" is what stops
+    /// an upstream 400, relayed by the catch-all proxy, standing in for the forced failure.</summary>
+    static HashSet<string> ForcedFailureSessionIds(WireMockServer proxy) =>
+        [.. proxy.LogEntries
+            .Where(e => e.RequestMessage.Path == SessionStartPath
+                     && e.ResponseMessage.StatusCode is 400
+                     && e.ResponseMessage.BodyData?.BodyAsString?.Contains(ForcedFailureMarker) == true)
+            .Select(e => SessionIdOf(e.RequestMessage.Body))
+            .OfType<string>()];
+
+    /// <summary>The session id in a hook payload or a posted lifecycle body, dash-stripped so the two
+    /// compare: the hook receives Gemini's dashed UUID and forwards the dashless form to the server.</summary>
+    static string? SessionIdOf(string? json) {
+        if (string.IsNullOrWhiteSpace(json)) return null;
+
+        try {
+            return JsonNode.Parse(json)?["session_id"]?.GetValue<string>()?.Replace("-", "");
+        } catch {
+            return null;
+        }
+    }
 
     /// <summary>
     /// A throwaway PATH entry holding a shim named <c>kcap</c> that runs the real one and records each
@@ -256,9 +280,14 @@ public class GeminiMemoryIndexLiveCertTests {
                  # wrapping its streams.
                  if [ "$1" != "hook" ]; then exec "{real}" "$@"; fi
 
+                 in="{_log}/$$.in"
                  out="{_log}/$$.out"
                  err="{_log}/$$.err"
-                 "{real}" "$@" > "$out" 2> "$err"
+                 # stdin is drained to a file and replayed, so the payload can be correlated with the
+                 # POST the proxy saw. A hook's stdin is written once and closed, so buffering it is
+                 # not a streaming hazard the way stdout would be for a long-lived process.
+                 cat > "$in"
+                 "{real}" "$@" < "$in" > "$out" 2> "$err"
                  status=$?
                  cat "$out"
                  cat "$err" >&2
@@ -274,12 +303,20 @@ public class GeminiMemoryIndexLiveCertTests {
         public string PrependedTo(string? path) =>
             string.IsNullOrEmpty(path) ? BinDir : $"{BinDir}{Path.PathSeparator}{path}";
 
-        /// <summary>One entry per completed shim invocation. An invocation still in flight has no
-        /// <c>.exit</c> file yet and is skipped, so a partially written pair is never reported.</summary>
-        public IReadOnlyList<(int ExitCode, string Stdout)> Invocations =>
+        /// <summary>
+        /// One entry per completed shim invocation. An invocation still in flight has no <c>.exit</c>
+        /// file yet and is skipped, so a partially written set is never reported.
+        ///
+        /// <para><c>ExitCode</c> is nullable rather than defaulted: an unreadable or half-written record
+        /// must fail an assertion, never satisfy one. A sentinel here (the first version used
+        /// <c>int.MinValue</c>) is <c>!= 0</c> and would have passed the exact property the cert
+        /// exists to check.</para>
+        /// </summary>
+        public IReadOnlyList<(int? ExitCode, string Stdin, string Stdout)> Invocations =>
             [.. Directory.EnumerateFiles(_log, "*.exit")
                 .Select(exitFile => (
-                    ExitCode: int.TryParse(File.ReadAllText(exitFile).Trim(), out var code) ? code : int.MinValue,
+                    ExitCode: int.TryParse(File.ReadAllText(exitFile).Trim(), out var code) ? code : (int?)null,
+                    Stdin:    ReadOrEmpty(Path.ChangeExtension(exitFile, ".in")),
                     Stdout:   ReadOrEmpty(Path.ChangeExtension(exitFile, ".out"))))];
 
         static string ReadOrEmpty(string path) {

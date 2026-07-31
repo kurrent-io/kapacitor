@@ -434,14 +434,27 @@ real index and then failed its POST.
 a live alternative. Parsing was not assumed to be consuming: the model reproducing the nonce is what
 distinguishes them, and it is the assertion the cert makes.
 
-**The exit code is measured on the invocation that delivered the context, not inferred from a stand-in.**
-A first draft proved the non-zero exit from a SEPARATE direct `kcap hook --gemini` run against the same
-proxy; review was right that this is a substitution — every assertion could hold while Gemini's own hook
-returned 0 through some session- or source-dependent branch, and the conclusion would still be false.
-The cert now prepends a recording shim named `kcap` to the PATH Gemini inherits, captures each hook
-invocation's exit code and stdout, and asserts that the invocation whose `additionalContext` carried the
-nonce is the one that exited non-zero. Same process, both facts. It also asserts the FORCED mapping fired,
-by response-body marker, so an upstream 400 relayed by the catch-all proxy cannot be mistaken for it.
+**Every link is measured on the same invocation; nothing is inferred from a stand-in or from a
+turn-global count.** Two review rounds were needed to get here, and both objections were right:
+
+* A first draft proved the non-zero exit from a SEPARATE direct `kcap hook --gemini` run. That is a
+  substitution — every assertion could hold while Gemini's own hook returned 0 through some session- or
+  source-dependent branch. Fixed by prepending a recording shim named `kcap` to the PATH Gemini inherits,
+  capturing each hook invocation's stdin, stdout and exit code.
+* The second draft then asserted "some forced 400 happened during the turn", which is turn-global: with
+  two hook invocations, one could carry the nonce and exit non-zero for an unrelated reason while the
+  *other* hit the forced failure, and the cert would still be green. Fixed by correlating on session id —
+  the invocation whose `additionalContext` carried the nonce must be the invocation whose POST the forced
+  mapping rejected.
+
+So the assertion chain is: the recorded invocation that delivered the nonce **is** the one that exited
+non-zero, **and** is the one whose session-start POST the forced mapping (identified by its response-body
+marker, so an upstream 400 relayed by the catch-all proxy cannot stand in) rejected, **and** the turn
+completed, **and** the model reproduced the nonce.
+
+The recorded exit code is nullable by design: an unreadable or half-written record fails the assertion
+rather than satisfying it. An earlier version used an `int.MinValue` sentinel, which is non-zero and
+therefore passed the exact property under test — the shape of a false-pass, caught in review.
 
 Covering tests: `GeminiMemoryIndexLiveCertTests.Failed_session_start_post_still_delivers_the_index_to_a_real_gemini_session`
 (live, gated) and `GeminiSessionStartHandshakeOnPostFailureTests` (integration, always run) — the latter

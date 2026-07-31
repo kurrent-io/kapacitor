@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Net.Http.Json;
+using System.Runtime.InteropServices;
 using System.Text.Json.Nodes;
 using Capacitor.Cli.Commands;
 using Capacitor.Cli.Core;
@@ -189,9 +190,11 @@ internal static class MemoryIndexLiveCertHarness {
     /// is what makes the cert answerable from injected context alone.
     /// </summary>
     public static async Task<string> SaveNonceMemoryAsync(string vendorLabel, string nonce) {
+        var slug = SlugFor(nonce);
+
         var stdout = await CallMemoryToolAsync("save_memory", new JsonObject {
             ["audience"]    = "user",
-            ["slug"]        = $"live-cert-{nonce}",
+            ["slug"]        = slug,
             ["description"] = $"kcap {vendorLabel} memory live-cert nonce: {nonce}",
             ["content"]     = $"kcap {vendorLabel} memory live-cert nonce: {nonce}. Safe to archive after the run.",
             ["kind"]        = "reference",
@@ -201,15 +204,51 @@ internal static class MemoryIndexLiveCertHarness {
         // An MCP tool result nests its payload as a JSON *string* inside result.content[].text, so the
         // id needs two parses, not a regex over the outer frame: the inner document's quotes arrive
         // "-escaped, so no pattern matching a literal `"memory_id"` will ever fire.
-        //
-        // Failing loudly (rather than returning null and archiving nothing) is what stops a cert
-        // leaking its nonce memory into every later run's injected index. The slug is named in the
-        // message because this is the one failure the caller CANNOT clean up: archiving needs the id,
-        // and if the memory was created before the response went unparseable, a human has to remove it.
-        return ExtractMemoryId(stdout)
-            ?? throw new InvalidOperationException(
-                $"save_memory returned no memory_id for slug live-cert-{nonce} — if the memory WAS "
-              + $"created, archive it by hand or it will pollute every later cert's index. stdout: {stdout}");
+        if (ExtractMemoryId(stdout) is { } memoryId) return memoryId;
+
+        // The save may have SUCCEEDED and only its response gone unusable, in which case a real memory
+        // now exists with no id to archive it by — and a leaked nonce lands in the real injected index,
+        // where it makes a later positive case pass on stale evidence. Naming the slug in the exception
+        // makes that diagnosable but leaves the pollution in place, so recover the id by its (unique,
+        // nonce-derived) slug and archive it here.
+        var recovered = await TryFindMemoryIdBySlugAsync(slug);
+
+        if (recovered is not null) {
+            await ArchiveMemoryAsync(vendorLabel, recovered);
+
+            throw new InvalidOperationException(
+                $"save_memory returned no memory_id for slug {slug}; the memory HAD been created "
+              + $"({recovered}) and has been archived, so the index is clean. stdout: {stdout}");
+        }
+
+        throw new InvalidOperationException(
+            $"save_memory returned no memory_id for slug {slug}, and no memory with that slug could be "
+          + $"found — most likely nothing was created. If one appears later, archive it by hand or it "
+          + $"will pollute every later cert's index. stdout: {stdout}");
+    }
+
+    /// <summary>The slug a cert's nonce memory is saved under. Unique per run by construction, which is
+    /// what makes recovery-by-slug unambiguous.</summary>
+    internal static string SlugFor(string nonce) => $"live-cert-{nonce}";
+
+    /// <summary>Looks a memory up by EXACT slug, for the one path that has no id: a save whose response
+    /// could not be parsed. Returns null when nothing matches — including when the search itself
+    /// fails, because a failed lookup and an absent memory call for the same (loud) handling.</summary>
+    static async Task<string?> TryFindMemoryIdBySlugAsync(string slug) {
+        try {
+            var frame = await CallMemoryToolAsync("search_memories", new JsonObject { ["query"] = slug });
+            var text  = JsonNode.Parse(frame)?["result"]?["content"]?[0]?["text"]?.GetValue<string>();
+
+            if (text is null || JsonNode.Parse(text) is not JsonArray hits) return null;
+
+            foreach (var hit in hits)
+                if (hit?["slug"]?.GetValue<string>() == slug)
+                    return hit["memory_id"]?.GetValue<string>();
+
+            return null;
+        } catch {
+            return null;
+        }
     }
 
     /// <summary>Digs the saved memory's id out of an MCP <c>tools/call</c> frame. Null if absent.</summary>
@@ -436,6 +475,11 @@ internal static class MemoryIndexLiveCertHarness {
         return fileName;
     }
 
+    [DllImport("libc", EntryPoint = "access", SetLastError = true)]
+    static extern int LibcAccess(string pathname, int mode);
+
+    const int X_OK = 1;
+
     /// <summary>
     /// Existence is NOT the test a shell applies. <c>which</c> and <c>execvp</c> skip a PATH entry whose
     /// match is not executable and keep looking, so resolving on <c>File.Exists</c> alone would stop at a
@@ -443,22 +487,34 @@ internal static class MemoryIndexLiveCertHarness {
     /// disagree with the <c>which kcap</c> line recorded beside it, which is the exact disagreement the
     /// resolver exists to remove.
     ///
-    /// <para>Any of the three execute bits counts, rather than the one that applies to this process's
-    /// uid/gid: .NET exposes no <c>access(X_OK)</c>, and over-accepting here can only ever fall back to
-    /// the platform's own error, whereas under-accepting would silently skip the right binary.</para>
+    /// <para><b>The question is EFFECTIVE executability, so ask the kernel.</b> An earlier version tested
+    /// "any of the three execute bits is set", justified by "over-accepting can only fall back to the
+    /// platform's own error" — which is wrong, and review caught it: this resolver returns an ABSOLUTE
+    /// path, so there is no fallback to a later PATH entry. A file that is owner-executable but owned by
+    /// someone else, or sits on a <c>noexec</c> mount, would be selected here and would simply fail to
+    /// launch, while a shell would have kept walking. <c>access(path, X_OK)</c> answers for the current
+    /// identity, which is the same question <c>execvp</c> asks.</para>
+    ///
+    /// <para><c>File.Exists</c> stays as the first gate, and not merely as an optimisation:
+    /// <c>access(X_OK)</c> succeeds on a DIRECTORY, so dropping it would let a directory named
+    /// <c>kcap</c> shadow the binary.</para>
     /// </summary>
     static bool IsExecutableFile(string path) {
         if (!File.Exists(path)) return false;
 
         try {
-            const UnixFileMode anyExecute =
-                UnixFileMode.UserExecute | UnixFileMode.GroupExecute | UnixFileMode.OtherExecute;
+            return LibcAccess(path, X_OK) == 0;
+        } catch (Exception ex) when (ex is DllNotFoundException or EntryPointNotFoundException or MarshalDirectiveException) {
+            // No libc to ask (a platform these gated certs are not run on). Fall back to the mode bits:
+            // weaker, but strictly better than resolving on existence alone.
+            try {
+                const UnixFileMode anyExecute =
+                    UnixFileMode.UserExecute | UnixFileMode.GroupExecute | UnixFileMode.OtherExecute;
 
-            return (File.GetUnixFileMode(path) & anyExecute) != 0;
-        } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or PlatformNotSupportedException) {
-            // Unreadable mode: treat as a miss and keep walking PATH rather than returning a path we
-            // cannot vouch for.
-            return false;
+                return (File.GetUnixFileMode(path) & anyExecute) != 0;
+            } catch (Exception inner) when (inner is IOException or UnauthorizedAccessException or PlatformNotSupportedException) {
+                return false;
+            }
         }
     }
 
