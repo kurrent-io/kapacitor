@@ -53,22 +53,33 @@ static class GeminiHookCommand {
     /// on Gemini's side — a JSON parse failure degrades to plain text and never synthesises a blocking
     /// decision, which requires an explicit <c>decision: "block"|"deny"</c>.</para>
     /// </summary>
-    internal static void WriteSessionStartOutput(TextWriter writer, string? fragment) {
-        string payload;
+    /// <summary>Gemini's explicit allow-with-no-context result. A literal rather than a serializer call
+    /// ON PURPOSE: this is the payload every failure path degrades to, so producing it must itself be
+    /// incapable of failing. Serializing it would add a throw path to the one value that exists to
+    /// guarantee we never emit zero bytes.
+    ///
+    /// <para>Carries no <c>hookSpecificOutput</c> key, so Gemini's <c>getAdditionalContext()</c>
+    /// short-circuits on its own <c>"additionalContext" in …</c> guard and contributes nothing; and no
+    /// <c>decision</c>/<c>stopReason</c>, so it cannot block.</para></summary>
+    internal const string AllowPayload = """{"continue":true}""";
 
-        try {
-            payload = fragment is null
-                ? System.Text.Json.JsonSerializer.Serialize(
-                    new GeminiAllowEnvelope(), SessionStartMemoryJsonContext.Default.GeminiAllowEnvelope)
-                : SessionStartMemoryOutputAdapters.Render(SessionStartHarness.Gemini, fragment);
-        } catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException) {
-            return;
+    internal static void WriteSessionStartOutput(TextWriter writer, string? fragment) {
+        // Start from the payload that cannot fail, and only upgrade to the memory envelope when
+        // rendering genuinely succeeds. Structured this way so that a render throw OR an empty render
+        // degrades to the allow object rather than to silence — silence is what re-exposes stderr.
+        var payload = AllowPayload;
+
+        if (fragment is not null) {
+            try {
+                var rendered = SessionStartMemoryOutputAdapters.Render(SessionStartHarness.Gemini, fragment);
+                if (!string.IsNullOrEmpty(rendered)) payload = rendered;
+            } catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException) {
+                // keep AllowPayload
+            }
         }
 
-        // Render returns "" for a null fragment; we never pass null here, but stay defensive rather than
-        // emitting an empty stdout that would silently re-expose stderr.
-        if (string.IsNullOrEmpty(payload)) return;
-
+        // Separate try: a write throwing mid-payload must not alter the command's exit code. A truncated
+        // payload is safe on Gemini's side — a parse failure degrades to plain text, never a block.
         try { writer.Write(payload); }
         catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException) { }
     }
@@ -141,8 +152,16 @@ static class GeminiHookCommand {
 
         // Gemini session ids are dashed UUIDs; keep the dashless form for the
         // server (AgentSession-{dashless} convention shared by every vendor).
+        // Recognised from HERE, not after session-id validation. Gemini fired a SessionStart and WILL
+        // read our stdout whatever we make of the rest of the payload, so a bad session id must still
+        // emit — otherwise this path re-exposes the stdout||stderr fallback.
+        var isSessionStart = eventName == "SessionStart";
+
         var dashedSessionId = TryGetString(node, "session_id");
-        if (string.IsNullOrEmpty(dashedSessionId) || !Guid.TryParse(dashedSessionId, out _)) return 0;
+        if (string.IsNullOrEmpty(dashedSessionId) || !Guid.TryParse(dashedSessionId, out _)) {
+            if (isSessionStart) WriteSessionStartOutput(Console.Out, fragment: null);
+            return 0;
+        }
 
         var sessionId = dashedSessionId.Replace("-", "");
 
@@ -151,10 +170,8 @@ static class GeminiHookCommand {
         // Invariant: a RECOGNISED SessionStart writes exactly one JSON object on every returning path,
         // including the suppression fast paths below — an exception-riddled invariant is not an
         // invariant, and these paths are not stderr-free (Program.cs drains the spool before dispatch).
-        // Unrecognised input above (bad JSON, no event name, non-GUID session id) stays silent: Gemini
-        // has no hook result to attribute to it.
-        var isSessionStart = eventName == "SessionStart";
-
+        // Only genuinely unrecognisable input stays silent: unparseable stdin and a missing/blank
+        // hook_event_name, where we cannot know a SessionStart occurred at all.
         if (DisabledSessions.IsDisabled(sessionId)) {
             if (eventName == "SessionEnd") DisabledSessions.RemoveMarker(sessionId);
             if (isSessionStart) WriteSessionStartOutput(Console.Out, fragment: null);

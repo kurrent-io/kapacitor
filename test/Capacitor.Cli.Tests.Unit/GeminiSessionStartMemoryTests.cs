@@ -130,6 +130,53 @@ public class GeminiSessionStartMemoryTests {
         await Assert.That(true).IsTrue();   // reaching here without an exception IS the assertion
     }
 
+    // ── the invariant at the Handle level, not just the writer ────────────────
+
+    /// <summary>
+    /// A `SessionStart` whose `session_id` is missing or not a GUID still emits.
+    ///
+    /// <para>Found by code review. The event is recognisable from `hook_event_name` alone, and Gemini
+    /// reads our stdout regardless of what we make of the rest of the payload — so returning silently
+    /// here re-exposed the `stdout || stderr` fallback. The writer-level tests could not catch it: they
+    /// call <c>WriteSessionStartOutput</c> directly and never exercise <c>Handle</c>'s early returns.</para>
+    /// </summary>
+    [Test, NotInParallel]
+    [Arguments("""{"hook_event_name":"SessionStart"}""")]
+    [Arguments("""{"hook_event_name":"SessionStart","session_id":""}""")]
+    [Arguments("""{"hook_event_name":"SessionStart","session_id":"not-a-guid"}""")]
+    public async Task session_start_with_an_unusable_session_id_still_emits_exactly_one_json_object(string payload) {
+        var captured = await CaptureHandleStdout(payload);
+
+        await Assert.That(captured).IsEqualTo(GeminiHookCommand.AllowPayload);
+        using var doc = System.Text.Json.JsonDocument.Parse(captured);
+        await Assert.That(doc.RootElement.ValueKind).IsEqualTo(System.Text.Json.JsonValueKind.Object);
+    }
+
+    /// <summary>The complement: input we genuinely cannot recognise as a SessionStart stays silent —
+    /// Gemini fired something else (or nothing parseable) and we have no result to attribute.</summary>
+    [Test, NotInParallel]
+    [Arguments("not json at all")]
+    [Arguments("""{"session_id":"3f2504e0-4f89-11d3-9a0c-0305e82c3301"}""")]
+    [Arguments("""{"hook_event_name":"","session_id":"3f2504e0-4f89-11d3-9a0c-0305e82c3301"}""")]
+    public async Task unrecognisable_input_stays_silent(string payload) {
+        await Assert.That(await CaptureHandleStdout(payload)).IsEqualTo("");
+    }
+
+    static async Task<string> CaptureHandleStdout(string payload) {
+        var original = Console.Out;
+        var sw = new StringWriter();
+
+        try {
+            Console.SetOut(sw);
+            // baseUrl is unreachable on purpose: these paths must return before any network work.
+            await GeminiHookCommand.Handle("http://127.0.0.1:1", new StringReader(payload));
+        } finally {
+            Console.SetOut(original);
+        }
+
+        return sw.ToString();
+    }
+
     // ── source → lifecycle mapping ────────────────────────────────────────────
 
     /// <summary><c>clear</c> maps to <c>New</c>, exactly as it does for Claude, so the session-id lease
