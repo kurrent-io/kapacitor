@@ -24,6 +24,9 @@ public class GeminiMemoryIndexLiveCertTests {
     const string LiveGateEnvVar = "KCAP_GEMINI_MEMORY_LIVE";
     const string VendorLabel    = "gemini";
 
+    const string SessionStartPath     = "/hooks/session-start/gemini";
+    const string ForcedFailureMarker  = "kcap_cert_forced_session_start_failure";
+
     static void Gate() => MemoryIndexLiveCertHarness.SkipUnlessLiveGateReady(
         LiveGateEnvVar,
         "one real `gemini` turn per test",
@@ -40,7 +43,7 @@ public class GeminiMemoryIndexLiveCertTests {
 
         var nonce    = MemoryIndexLiveCertHarness.NewNonce();
         var worktree = MemoryIndexLiveCertHarness.NewCertWorktree(VendorLabel);
-        var memoryId = await MemoryIndexLiveCertHarness.SaveNonceMemoryAsync(VendorLabel, nonce);
+        var memoryId = await SaveNonceOrCleanUpAsync(nonce, worktree);
 
         try {
             // Records the exact binary version. A cert passing against an unknown build is how the
@@ -72,7 +75,7 @@ public class GeminiMemoryIndexLiveCertTests {
 
         var nonce    = MemoryIndexLiveCertHarness.NewNonce();
         var worktree = MemoryIndexLiveCertHarness.NewCertWorktree(VendorLabel);
-        var memoryId = await MemoryIndexLiveCertHarness.SaveNonceMemoryAsync(VendorLabel, nonce);
+        var memoryId = await SaveNonceOrCleanUpAsync(nonce, worktree);
 
         try {
             await MemoryIndexLiveCertHarness.SetDisableMemoryIndexAsync(true);
@@ -113,12 +116,13 @@ public class GeminiMemoryIndexLiveCertTests {
     /// the very same base URL is proxied through untouched, which is the only arrangement that produces
     /// the shape under test — a hook that fetched a real index and then failed its POST.</para>
     ///
-    /// <para><b>Two links, asserted separately, because the live turn alone cannot prove either.</b>
-    /// Gemini's exit code says nothing about its hook's exit code, so (1) the proxy is asserted to have
-    /// actually failed a session-start POST during the run, and (2) the same binary is driven directly
-    /// against the same proxy to prove that a failed POST does exit non-zero AND still writes parseable
-    /// <c>additionalContext</c>. Without (2) a green run here would be equally consistent with the POST
-    /// having quietly succeeded.</para>
+    /// <para><b>The claim is about ONE invocation, so it is measured on that one invocation.</b> An
+    /// earlier draft proved the non-zero exit from a SEPARATE direct <c>kcap hook --gemini</c> run and
+    /// inferred the rest; review was right that this is a substitution, not a proof — every assertion
+    /// could hold while Gemini's own hook returned 0 through some session- or source-dependent branch.
+    /// Instead a recording shim named <c>kcap</c> is prepended to the PATH Gemini inherits, so the exit
+    /// code and stdout of the hook GEMINI ran are captured directly, and the test asserts that the very
+    /// invocation whose <c>additionalContext</c> carried the nonce is the one that exited non-zero.</para>
     /// </summary>
     [Test, NotInParallel]
     public async Task Failed_session_start_post_still_delivers_the_index_to_a_real_gemini_session() {
@@ -129,45 +133,50 @@ public class GeminiMemoryIndexLiveCertTests {
 
         var upstream = await MemoryIndexLiveCertHarness.InitializeAndResolveServerUrlAsync();
 
-        // The proxy is stood up BEFORE the nonce memory is saved, deliberately: everything that can throw
-        // during setup must throw while there is still nothing to clean up. A leaked nonce memory
-        // corrupts every later cert's injected index, so the window between the save and the archiving
-        // `finally` is kept as narrow as it can be.
+        // Proxy and shim are stood up BEFORE the nonce memory is saved, deliberately: everything that
+        // can throw during setup should throw while there is still nothing to clean up. A leaked nonce
+        // memory corrupts every later cert's injected index.
         using var proxy = WireMockServer.Start();
+        using var hooks = new HookRecorder();
 
         // Ordering matters: the specific mapping is registered first and at a higher priority, so the
         // catch-all proxy cannot swallow the one route this test exists to fail.
-        proxy.Given(Request.Create().WithPath("/hooks/session-start/gemini").UsingPost())
+        proxy.Given(Request.Create().WithPath(SessionStartPath).UsingPost())
              .AtPriority(1)
-             .RespondWith(Response.Create().WithStatusCode(400)
-                                           .WithBody("""{"error":"ai1463_cert_forced_session_start_failure"}"""));
+             .RespondWith(Response.Create().WithStatusCode(400).WithBody($$"""{"error":"{{ForcedFailureMarker}}"}"""));
         proxy.Given(Request.Create().WithPath("/*").UsingAnyMethod())
              .AtPriority(100)
              .RespondWith(Response.Create().WithProxy(upstream));
 
-        var viaProxy = new Dictionary<string, string> { ["KCAP_URL"] = proxy.Url! };
+        var viaProxy = new Dictionary<string, string> {
+            ["KCAP_URL"] = proxy.Url!,
+            ["PATH"]     = hooks.PrependedTo(Environment.GetEnvironmentVariable("PATH"))
+        };
 
         var nonce    = MemoryIndexLiveCertHarness.NewNonce();
         var worktree = MemoryIndexLiveCertHarness.NewCertWorktree(VendorLabel);
-        var memoryId = await MemoryIndexLiveCertHarness.SaveNonceMemoryAsync(VendorLabel, nonce);
+        var memoryId = await SaveNonceOrCleanUpAsync(nonce, worktree);
 
         try {
             await MemoryIndexLiveCertHarness.RecordCertEnvironmentAsync(VendorLabel, "gemini", ["--version"]);
 
-            // (2) The hook link, proven directly: same binary, same proxy, a real failed POST.
-            var (hookExit, hookStdout) = await RunSessionStartHookAsync(worktree.FullName, viaProxy);
-
-            await Assert.That(hookExit).IsNotEqualTo(0);
-            await Assert.That(AdditionalContextOf(hookStdout)).IsNotNull();
-
-            var failedPostsBefore = FailedSessionStartPosts(proxy);
-
             var (exitCode, answer) = await RunGeminiAsync(
                 worktree.FullName, MemoryIndexLiveCertHarness.PositivePrompt, viaProxy);
 
-            // (1) The turn's own hook really did hit the failing route — otherwise this degenerates
-            // into the plain positive case with extra machinery.
-            await Assert.That(FailedSessionStartPosts(proxy)).IsGreaterThan(failedPostsBefore);
+            // The turn's own hook really did hit the FORCED failure — matched on the response body
+            // marker, not merely on "a 400 at that path", so an upstream 400 arriving through the
+            // catch-all proxy could not be mistaken for this mapping firing.
+            await Assert.That(ForcedSessionStartFailures(proxy)).IsGreaterThan(0);
+
+            // The invocation that delivered the index, identified by the nonce in the context Gemini
+            // itself was handed. There is no substitution here: this IS the hook Gemini ran.
+            var delivering = hooks.Invocations
+                .Select(i => (i.ExitCode, Context: AdditionalContextOf(i.Stdout)))
+                .Where(i => i.Context?.Contains(nonce) == true)
+                .ToList();
+
+            await Assert.That(delivering).IsNotEmpty();
+            await Assert.That(delivering.All(i => i.ExitCode != 0)).IsTrue();
 
             await Assert.That(exitCode).IsEqualTo(0);
             await Assert.That(answer).Contains(nonce);
@@ -177,31 +186,15 @@ public class GeminiMemoryIndexLiveCertTests {
         }
     }
 
-    /// <summary>Drives `kcap hook --gemini` with a minimal SessionStart payload, returning its exit code
-    /// and stdout. The session id is a fresh GUID so the run cannot collide with a real session — and,
-    /// because the POST is failed by the proxy, nothing is created on the server either.
-    ///
-    /// <para>It must be a BARE, parseable GUID. The dispatcher validates <c>session_id</c> with
-    /// <c>Guid.TryParse</c> and a failure takes the same emit-and-return-0 path as a suppressed session,
-    /// so a decorated id (<c>cert-{guid}</c>) silently produces a passing-looking exit 0 with the allow
-    /// object and NO HTTP traffic at all — which is exactly what this test would otherwise be measuring
-    /// instead of the failed POST.</para></summary>
-    static async Task<(int ExitCode, string Stdout)> RunSessionStartHookAsync(
-            string cwd, IReadOnlyDictionary<string, string> environment) {
-        var payload = new JsonObject {
-            ["hook_event_name"] = "SessionStart",
-            ["session_id"]      = Guid.NewGuid().ToString(),
-            ["cwd"]             = cwd,
-            ["source"]          = "startup"
-        }.ToJsonString();
-
-        var (exitCode, stdout, stderr) = await MemoryIndexLiveCertHarness.RunProcessAsync(
-            "kcap", ["hook", "--gemini"], cwd, stdin: payload, environment: environment);
-
-        await Console.Out.WriteLineAsync(
-            $"[{VendorLabel}-memory-live] hook exit={exitCode} stdout={stdout} stderr={stderr}");
-
-        return (exitCode, stdout);
+    /// <summary>Saves the nonce memory, deleting the worktree if the save throws — the memory is the
+    /// expensive thing to leak, but a save failure must not also strand a temp directory.</summary>
+    static async Task<string> SaveNonceOrCleanUpAsync(string nonce, DirectoryInfo worktree) {
+        try {
+            return await MemoryIndexLiveCertHarness.SaveNonceMemoryAsync(VendorLabel, nonce);
+        } catch {
+            TryDelete(worktree);
+            throw;
+        }
     }
 
     /// <summary>The injected text, or null when the payload carries none — this is what Gemini's runner
@@ -214,9 +207,89 @@ public class GeminiMemoryIndexLiveCertTests {
         }
     }
 
-    static int FailedSessionStartPosts(WireMockServer proxy) =>
+    /// <summary>Counts only responses this test's own mapping produced, identified by its body marker.
+    /// Counting "400 at that path" instead would also count an upstream 400 relayed by the catch-all
+    /// proxy, and the point of the assertion is that the FORCED failure fired.</summary>
+    static int ForcedSessionStartFailures(WireMockServer proxy) =>
         proxy.LogEntries.Count(e =>
-            e.RequestMessage.Path == "/hooks/session-start/gemini" && e.ResponseMessage.StatusCode is 400);
+            e.RequestMessage.Path == SessionStartPath
+         && e.ResponseMessage.StatusCode is 400
+         && e.ResponseMessage.BodyData?.BodyAsString?.Contains(ForcedFailureMarker) == true);
+
+    /// <summary>
+    /// A throwaway PATH entry holding a shim named <c>kcap</c> that runs the real one and records each
+    /// invocation's exit code and stdout.
+    ///
+    /// <para><b>Only <c>kcap hook</c> is recorded; everything else is <c>exec</c>'d straight through.</b>
+    /// That is not tidiness — recording buffers the child's stdout to a file and replays it on exit,
+    /// and the same PATH entry is used by the four long-lived <c>kcap mcp</c> stdio servers Gemini
+    /// launches from <c>~/.gemini/settings.json</c>. Buffering a stdio JSON-RPC server traps its
+    /// handshake response until it exits, which it never does, so the turn stalls until the harness
+    /// timeout. Measured: a recorder without this guard hung every run at exactly 120s, with four
+    /// wrapped <c>kcap mcp …</c> processes alive and zero HTTP traffic.</para>
+    ///
+    /// <para>Buffering IS safe for the hook, and only because Gemini's runner collects stdout and parses
+    /// on <c>close</c> rather than reading incrementally. Do not lift this shim to a harness that
+    /// streams.</para>
+    ///
+    /// <para>The real binary is resolved from the UNMODIFIED PATH at construction time, so the shim
+    /// cannot re-enter itself.</para>
+    /// </summary>
+    sealed class HookRecorder : IDisposable {
+        readonly string _root;
+        readonly string _log;
+
+        public HookRecorder() {
+            _root = Directory.CreateTempSubdirectory($"kcap-{VendorLabel}-hook-recorder-").FullName;
+            _log  = Directory.CreateDirectory(Path.Combine(_root, "log")).FullName;
+
+            BinDir = Directory.CreateDirectory(Path.Combine(_root, "bin")).FullName;
+
+            var real  = MemoryIndexLiveCertHarness.ResolveOnPath("kcap");
+            var shim  = Path.Combine(BinDir, "kcap");
+
+            File.WriteAllText(shim,
+                $"""
+                 #!/bin/sh
+                 # Anything that is not a hook — notably the long-lived `kcap mcp <server>` stdio
+                 # servers — must be completely transparent, so hand the process over rather than
+                 # wrapping its streams.
+                 if [ "$1" != "hook" ]; then exec "{real}" "$@"; fi
+
+                 out="{_log}/$$.out"
+                 err="{_log}/$$.err"
+                 "{real}" "$@" > "$out" 2> "$err"
+                 status=$?
+                 cat "$out"
+                 cat "$err" >&2
+                 printf '%s' "$status" > "{_log}/$$.exit"
+                 exit "$status"
+                 """);
+            File.SetUnixFileMode(shim,
+                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        }
+
+        public string BinDir { get; }
+
+        public string PrependedTo(string? path) =>
+            string.IsNullOrEmpty(path) ? BinDir : $"{BinDir}{Path.PathSeparator}{path}";
+
+        /// <summary>One entry per completed shim invocation. An invocation still in flight has no
+        /// <c>.exit</c> file yet and is skipped, so a partially written pair is never reported.</summary>
+        public IReadOnlyList<(int ExitCode, string Stdout)> Invocations =>
+            [.. Directory.EnumerateFiles(_log, "*.exit")
+                .Select(exitFile => (
+                    ExitCode: int.TryParse(File.ReadAllText(exitFile).Trim(), out var code) ? code : int.MinValue,
+                    Stdout:   ReadOrEmpty(Path.ChangeExtension(exitFile, ".out"))))];
+
+        static string ReadOrEmpty(string path) {
+            try { return File.ReadAllText(path); } catch { return ""; }
+        }
+
+        public void Dispose() {
+            try { Directory.Delete(_root, recursive: true); } catch { /* best-effort */ }
+        }
+    }
 
     /// <summary>Runs one non-interactive Gemini turn. <c>--approval-mode plan</c> keeps it read-only so
     /// an unexpected tool request cannot stall the cert.

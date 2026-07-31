@@ -422,10 +422,10 @@ real index and then failed its POST.
 
 | Link | Observed |
 |---|---|
-| lifecycle POST | `400` at the proxy; hook stderr `[kcap] gemini-hook session-start/gemini: HTTP 400` |
+| lifecycle POST | `400` from the forced mapping (matched on its body marker, not merely "a 400 at that path"); hook stderr `[kcap] gemini-hook session-start/gemini: HTTP 400` |
 | index fetch | `GET /api/memories/index?machine=… → 200`, same base URL, same invocation |
-| hook exit code | **1** |
-| hook stdout | 558 bytes — `{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"…## Team memory…"}}` |
+| hook exit code | **non-zero**, read from the hook **Gemini itself ran** |
+| hook stdout | `{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"…## Team memory…"}}`, carrying the nonce |
 | gemini turn | exit **0** — the turn completed |
 | model receipt | the nonce was reproduced in the answer |
 
@@ -434,12 +434,14 @@ real index and then failed its POST.
 a live alternative. Parsing was not assumed to be consuming: the model reproducing the nonce is what
 distinguishes them, and it is the assertion the cert makes.
 
-Two links the live turn cannot prove on its own, so both are asserted separately:
-
-* Gemini's exit code says nothing about its hook's exit code. The cert therefore drives the same binary
-  against the same proxy directly and asserts a non-zero exit **with** parseable `additionalContext`; and
-* it asserts the proxy actually failed a session-start POST during the turn — otherwise a green run is
-  equally consistent with the POST having quietly succeeded.
+**The exit code is measured on the invocation that delivered the context, not inferred from a stand-in.**
+A first draft proved the non-zero exit from a SEPARATE direct `kcap hook --gemini` run against the same
+proxy; review was right that this is a substitution — every assertion could hold while Gemini's own hook
+returned 0 through some session- or source-dependent branch, and the conclusion would still be false.
+The cert now prepends a recording shim named `kcap` to the PATH Gemini inherits, captures each hook
+invocation's exit code and stdout, and asserts that the invocation whose `additionalContext` carried the
+nonce is the one that exited non-zero. Same process, both facts. It also asserts the FORCED mapping fired,
+by response-body marker, so an upstream 400 relayed by the catch-all proxy cannot be mistaken for it.
 
 Covering tests: `GeminiMemoryIndexLiveCertTests.Failed_session_start_post_still_delivers_the_index_to_a_real_gemini_session`
 (live, gated) and `GeminiSessionStartHandshakeOnPostFailureTests` (integration, always run) — the latter
@@ -530,9 +532,10 @@ installed version running the hook.
 passed with the guard removed; the standard here is that deleting the guard fails exactly the intended
 test.
 
-### 5.3 Two harness defects the first live run exposed — both fixed here
+### 5.3 Three harness defects running the cert exposed — all fixed here
 
-Neither is a product defect; both made the cert lie, which is worse than a cert that fails.
+None is a product defect; the first two made the cert lie, which is worse than a cert that fails, and the
+third made it hang.
 
 1. **The trusted-folder gate silently voided the run.** Every cert runs in a freshly created throwaway
    worktree, which is by definition untrusted, and 0.53.0 refuses a headless turn there outright —
@@ -553,6 +556,15 @@ Neither is a product defect; both made the cert lie, which is worse than a cert 
    otherwise have saved the nonce memory with a different binary from the one serving the hook. The
    resolution order is a pure function (PATH and platform passed, not probed) with hermetic,
    mutation-proven coverage in `MemoryIndexLiveCertHarnessTests`.
+
+3. **A PATH shim must not wrap the MCP servers.** The recording shim added for §3.3a is a `kcap` on
+   PATH — and the same PATH entry is used by the four long-lived `kcap mcp <server>` stdio servers
+   Gemini launches from `~/.gemini/settings.json`. Buffering a stdio JSON-RPC server's stdout traps its
+   handshake response until it exits, which it never does. Measured: every run hung at exactly the 120s
+   harness timeout, with four wrapped `kcap mcp …` processes alive and **zero** HTTP traffic. The shim
+   now `exec`s anything that is not `kcap hook`, making it completely transparent for everything else.
+   Buffering remains safe for the hook itself, and only because Gemini's runner parses on `close` rather
+   than reading incrementally.
 
 **Also worth pinning for the next adapter:** `session_id` is validated with `Guid.TryParse`, and a
 failure takes the same emit-and-return-0 path as a suppressed session. A decorated id (`cert-{guid}`)

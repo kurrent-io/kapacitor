@@ -203,9 +203,13 @@ internal static class MemoryIndexLiveCertHarness {
         // "-escaped, so no pattern matching a literal `"memory_id"` will ever fire.
         //
         // Failing loudly (rather than returning null and archiving nothing) is what stops a cert
-        // leaking its nonce memory into every later run's injected index.
+        // leaking its nonce memory into every later run's injected index. The slug is named in the
+        // message because this is the one failure the caller CANNOT clean up: archiving needs the id,
+        // and if the memory was created before the response went unparseable, a human has to remove it.
         return ExtractMemoryId(stdout)
-            ?? throw new InvalidOperationException($"save_memory returned no memory_id. stdout: {stdout}");
+            ?? throw new InvalidOperationException(
+                $"save_memory returned no memory_id for slug live-cert-{nonce} — if the memory WAS "
+              + $"created, archive it by hand or it will pollute every later cert's index. stdout: {stdout}");
     }
 
     /// <summary>Digs the saved memory's id out of an MCP <c>tools/call</c> frame. Null if absent.</summary>
@@ -412,7 +416,7 @@ internal static class MemoryIndexLiveCertHarness {
     /// certs are gated and are not run on Windows, and a half-right implementation would be worse than
     /// the documented status quo.</para>
     /// </summary>
-    static string ResolveOnPath(string fileName) =>
+    internal static string ResolveOnPath(string fileName) =>
         ResolveOnPath(fileName, Environment.GetEnvironmentVariable("PATH"), OperatingSystem.IsWindows());
 
     /// <summary>Pure overload: PATH and platform are passed rather than probed, so the resolution order
@@ -425,11 +429,37 @@ internal static class MemoryIndexLiveCertHarness {
             if (dir.Length == 0) continue;
 
             var candidate = Path.Combine(dir, fileName);
-            if (File.Exists(candidate)) return candidate;
+            if (IsExecutableFile(candidate)) return candidate;
         }
 
         // Unresolved: hand the bare name back so Process.Start produces its own, clearer error.
         return fileName;
+    }
+
+    /// <summary>
+    /// Existence is NOT the test a shell applies. <c>which</c> and <c>execvp</c> skip a PATH entry whose
+    /// match is not executable and keep looking, so resolving on <c>File.Exists</c> alone would stop at a
+    /// non-executable same-named file and either fail the launch or — worse for this harness —
+    /// disagree with the <c>which kcap</c> line recorded beside it, which is the exact disagreement the
+    /// resolver exists to remove.
+    ///
+    /// <para>Any of the three execute bits counts, rather than the one that applies to this process's
+    /// uid/gid: .NET exposes no <c>access(X_OK)</c>, and over-accepting here can only ever fall back to
+    /// the platform's own error, whereas under-accepting would silently skip the right binary.</para>
+    /// </summary>
+    static bool IsExecutableFile(string path) {
+        if (!File.Exists(path)) return false;
+
+        try {
+            const UnixFileMode anyExecute =
+                UnixFileMode.UserExecute | UnixFileMode.GroupExecute | UnixFileMode.OtherExecute;
+
+            return (File.GetUnixFileMode(path) & anyExecute) != 0;
+        } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or PlatformNotSupportedException) {
+            // Unreadable mode: treat as a miss and keep walking PATH rather than returning a path we
+            // cannot vouch for.
+            return false;
+        }
     }
 
     /// <summary>Test-only seam: notified with the PID of every spawned process, so the cleanup test

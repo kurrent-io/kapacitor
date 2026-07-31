@@ -38,6 +38,33 @@ public class MemoryIndexLiveCertHarnessTests {
         await Assert.That(resolved).IsEqualTo(first.ExecutablePath);
     }
 
+    /// <summary>Existence is not the test a shell applies: a non-executable match is skipped and the
+    /// walk continues, exactly as <c>which</c> and <c>execvp</c> do. Resolving on existence alone would
+    /// stop here and hand back a file that cannot be launched — or, worse for this harness, disagree
+    /// with the <c>which kcap</c> line recorded beside it.</summary>
+    [Test]
+    public async Task A_non_executable_match_is_skipped_for_a_later_executable_one() {
+        using var notExecutable = new PathProbe(executable: false);
+        using var executable    = new PathProbe(notExecutable.CommandName);
+
+        var resolved = MemoryIndexLiveCertHarness.ResolveOnPath(
+            notExecutable.CommandName,
+            $"{notExecutable.BinDir}{Path.PathSeparator}{executable.BinDir}",
+            isWindows: false);
+
+        await Assert.That(resolved).IsEqualTo(executable.ExecutablePath);
+    }
+
+    /// <summary>...and when the only match is non-executable there is nothing to resolve to, so the bare
+    /// name comes back and the platform raises its own error.</summary>
+    [Test]
+    public async Task A_non_executable_only_match_does_not_resolve() {
+        using var probe = new PathProbe(executable: false);
+
+        await Assert.That(MemoryIndexLiveCertHarness.ResolveOnPath(probe.CommandName, probe.BinDir, isWindows: false))
+            .IsEqualTo(probe.CommandName);
+    }
+
     /// <summary>A name that is already a path is the caller's explicit choice; never rewritten.</summary>
     [Test]
     [Arguments("/usr/bin/env")]
@@ -70,12 +97,14 @@ public class MemoryIndexLiveCertHarnessTests {
             .IsEqualTo(probe.CommandName);
     }
 
-    /// <summary>A throwaway PATH entry holding one uniquely named executable, plus an empty sibling
-    /// directory to prove a miss is skipped rather than treated as a match.</summary>
+    /// <summary>A throwaway PATH entry holding one uniquely named file, plus an empty sibling directory
+    /// to prove a miss is skipped rather than treated as a match. <paramref name="executable"/> controls
+    /// the execute bit, because "exists" and "is executable" are different questions and the resolver
+    /// must answer the second one.</summary>
     sealed class PathProbe : IDisposable {
         readonly string _root;
 
-        public PathProbe(string? commandName = null) {
+        public PathProbe(string? commandName = null, bool executable = true) {
             _root       = Directory.CreateTempSubdirectory("kcap-path-probe-").FullName;
             BinDir      = Directory.CreateDirectory(Path.Combine(_root, "bin")).FullName;
             EmptyDir    = Directory.CreateDirectory(Path.Combine(_root, "empty")).FullName;
@@ -83,6 +112,9 @@ public class MemoryIndexLiveCertHarnessTests {
 
             ExecutablePath = Path.Combine(BinDir, CommandName);
             File.WriteAllText(ExecutablePath, "#!/bin/sh\nexit 0\n");
+            File.SetUnixFileMode(ExecutablePath, executable
+                ? UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute
+                : UnixFileMode.UserRead | UnixFileMode.UserWrite);
         }
 
         public string BinDir         { get; }

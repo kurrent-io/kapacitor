@@ -24,25 +24,32 @@ namespace Capacitor.Cli.Tests.Integration;
 /// test can prove the bytes were written but not that Gemini used them.</para>
 /// </summary>
 public class GeminiSessionStartHandshakeOnPostFailureTests : IDisposable {
+    // Declaration order is load-bearing. Field initializers run top-down, so the config snapshot is
+    // taken BEFORE the server is started: if reading the config throws, the constructor never completes,
+    // `Dispose` is never called, and anything started above it would leak.
+    readonly string  _configPath     = PathHelpers.ConfigPath("config.json");
+    readonly string? _previousConfig = File.Exists(PathHelpers.ConfigPath("config.json"))
+        ? File.ReadAllText(PathHelpers.ConfigPath("config.json"))
+        : null;
+
     readonly WireMockServer _server     = WireMockServer.Start();
-    readonly string         _configPath = PathHelpers.ConfigPath("config.json");
-    readonly string?        _previousConfig;
     readonly string         _memoryRoot =
         Path.Combine(Path.GetTempPath(), $"kcap-gemini-failed-post-{Guid.NewGuid():N}");
 
-    public GeminiSessionStartHandshakeOnPostFailureTests() {
-        _previousConfig = File.Exists(_configPath) ? File.ReadAllText(_configPath) : null;
-    }
-
+    /// <summary>Restores the developer's REAL config first and unconditionally. It is the only cleanup
+    /// here that touches machine state outside this test, so no other step — notably a throwing
+    /// <c>_server.Stop()</c> — may be able to skip it and leave the active profile pointed at a dead
+    /// WireMock URL.</summary>
     public void Dispose() {
-        _server.Stop();
-
-        try { Directory.Delete(_memoryRoot, recursive: true); } catch { /* best-effort */ }
-
-        if (_previousConfig is null) {
-            if (File.Exists(_configPath)) File.Delete(_configPath);
-        } else {
-            File.WriteAllText(_configPath, _previousConfig);
+        try {
+            if (_previousConfig is null) {
+                if (File.Exists(_configPath)) File.Delete(_configPath);
+            } else {
+                File.WriteAllText(_configPath, _previousConfig);
+            }
+        } finally {
+            try { _server.Stop(); }                                  catch { /* best-effort */ }
+            try { Directory.Delete(_memoryRoot, recursive: true); }  catch { /* best-effort */ }
         }
     }
 
