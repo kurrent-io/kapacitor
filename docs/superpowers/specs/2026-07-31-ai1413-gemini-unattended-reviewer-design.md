@@ -362,10 +362,49 @@ So the acceptance has two parts, and only the first is a sign-off:
    * **enabling it is the consent event.** The config key's own documentation states §2.9's property, so the
      operator reads it at the moment of deciding rather than in a spec they will never open.
 
-   Concretely that means `DaemonRunner`'s reviewer-capable filter — today
-   `.Where(f => f.IsAvailable() && f.SupportsUnattended)` — gains the gate for Gemini, and
-   `ValidateAndBuildReviewFlowMcp` refuses when it is off. Two checks rather than one because advertisement
-   and launch are different code paths, and the first is an optimisation while the second is the boundary.
+   **Fail-closed, and revocable** (review's finding 4): the flag reads false when the key is absent,
+   malformed, or unreadable — anything but an explicit affirmative is off. It is read from the
+   **daemon-local** configuration only; no server- or requester-supplied value can override it, because the
+   requester is precisely the party the gate protects the operator from. And the **pre-spawn read uses
+   current authoritative state, not a value captured at factory construction**, so disabling it stops new
+   launches even while the server still holds a cached capability advertisement — a stale advertisement must
+   not be able to spend consent that has been withdrawn. Tests: absent, false, malformed, true, plus a
+   stale-advertisement direct request against a now-disabled daemon.
+
+   **Placement, because "checked pre-spawn" is not a location** (review's finding 2, and they are right that
+   rev 7 named a helper rather than establishing the property). `ValidateAndBuildReviewFlowMcp` is the wrong
+   home: its name says result-channel, and a transport change or a path supplying prebuilt MCP state would
+   route around it. The authoritative check goes in the **single factory operation immediately before the
+   process is created** — the same place `CreateProcessStartInfo`'s output is handed to the spawn — and is
+   keyed on the **resolved descriptor's** vendor identity, never on requester-supplied text, so a vendor
+   alias or case variant cannot slip past it. The advertisement check stays, explicitly as an optimisation
+   rather than a boundary. Tests call the lowest exposed spawn seam directly with the gate false and assert
+   the process-start seam is never reached, across every accepted Gemini selector spelling, while interactive
+   Gemini and other vendors are unaffected.
+
+### 3.2b The certified matcher belongs to a Gemini VERSION, so the gate carries a version too
+
+Review's sharpest finding this round, and it is the AI-1592 lesson in a new place: §2.7's exact-match and
+no-union conclusions were read from the **0.53.0** bundle, and nothing in rev 7 tied them to the binary the
+daemon actually launches. `GeminiPath` resolves whatever is installed. So a `npm -g update` could change the
+matcher to prefix-matching, or make settings union with the CLI value, or change empty-list semantics —
+while the capability flag, set months earlier, keeps advertising the reviewer and keeps carrying an
+operator's consent to a mechanism that no longer holds.
+
+So the capability decision includes the resolved binary's version:
+
+* a **supported version range** is declared alongside the descriptor, and it means *"the §2.7 matcher
+  behaviour has been certified for these versions"* — not "these versions are new enough";
+* the version is resolved from the binary the launch will actually use, and checked **at availability and
+  again pre-spawn**, on the same fail-closed footing as the flag;
+* an **unknown or out-of-range version makes Gemini unavailable as a reviewer** until it is explicitly
+  certified — it does not warn and proceed. An upgrade that invalidates the security mechanism should take
+  the feature offline, which is the safe direction, and the operator's remedy is to re-run §6.1's gated
+  certification against the new binary and widen the range.
+
+This is deliberately stricter than the AI-899 hosting path, which happily runs any installed Gemini: hosting
+degrades to a broken agent, whereas an unattended reviewer with a broken MCP gate degrades to
+repository-controlled process execution. Different consequence, different posture.
 
 That second part is a real scope addition and it is listed in §4 and §7 rather than assumed: without it,
 this design would be accepting a risk on behalf of people who never saw it.
@@ -680,6 +719,23 @@ So the premise gets tested as a premise, three ways:
 The retained runtime assertion is therefore this template comparison, not a key scan — stated explicitly
 because review asked whether it performs the complete-vector check. It does, and that is the only reason to
 keep it.
+
+**Three conditions make it actually work, and review was right that rev 7 stated none of them:**
+
+1. **The expected template is a literal, independent structural sequence** — written out as shown above, with
+   only the two launch-identity values substituted. It must **not** be derived from `descriptor.Argv`, because
+   then a newly added token appears on both sides and the comparison passes while the launch has changed.
+   That is the same defect class as an oracle derived from the thing under test.
+2. **It runs after every contributor and every substitution** — last, not mid-composition, or it certifies a
+   vector that is not the final one.
+3. **The checked vector is the one the process receives.** The assertion freezes the list to an immutable
+   value at the moment it checks it, and *that* value is what populates `ProcessStartInfo.ArgumentList` —
+   with no later append, rewrite or transform. Otherwise the assertion is true of something the OS never
+   sees, which is the more dangerous failure because it looks like coverage.
+
+Mutants, one per condition: add a token to each of the three contributors; add a token *after* the assertion
+runs; and change the descriptor constant. All must go red, and the fourth is the one that only fails if
+condition 3 holds.
 
 **`IsReviewFlow` ⇔ unattended.** Review asked whether every review-flow launch is necessarily unattended.
 It is, and the code already enforces it rather than assuming it: `ValidateAndBuildReviewFlowMcp` throws
