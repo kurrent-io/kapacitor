@@ -38,4 +38,26 @@ public class LaunchConsentDecisionLogTests {
         log.Record(Rec());
         await Assert.That(true).IsTrue();
     }
+
+    [Test]
+    public async Task Record_creates_an_owner_only_file_in_an_owner_only_directory() {
+        // The log carries repo paths and requester ids, so it must not be world/group readable.
+        // Unix-only: file modes are a no-op on Windows.
+        if (OperatingSystem.IsWindows()) return;
+
+        var dir = Directory.CreateTempSubdirectory("kcap-cdl-").FullName;
+        try {
+            var log = new LaunchConsentDecisionLog(dir, NullLogger.Instance);
+            log.Record(Rec("agent-perms"));
+
+            const UnixFileMode ownerOnlyFile = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+            const UnixFileMode ownerOnlyDir  = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute;
+
+            var logFile = Path.Combine(dir, "consent-decisions.jsonl");
+            await Assert.That(File.GetUnixFileMode(logFile)).IsEqualTo(ownerOnlyFile);
+            await Assert.That(File.GetUnixFileMode(dir)).IsEqualTo(ownerOnlyDir);
+        } finally {
+            Directory.Delete(dir, true);
+        }
+    }
 }
