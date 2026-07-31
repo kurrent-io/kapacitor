@@ -23,4 +23,8 @@ public sealed record LocalFrame(FrameType Type) {
     public static LocalFrame Stop(string agentId)       => new(FrameType.Stop)       { Text = agentId };
     public static LocalFrame StopAck(string payload)    => new(FrameType.StopAck)    { Text = payload };
     public static LocalFrame StopV2(bool force, string agentId) => FrameCodec.StopV2(force, agentId);
+
+    /// AI-1623: constructs any of the consent control frames, whose payload is always UTF-8 JSON
+    /// (snake_case via ConsentIpcJsonContext) carried in Text — see ConsentIpc.cs.
+    public static LocalFrame ConsentJson(FrameType type, string json) => new(type) { Text = json };
 }

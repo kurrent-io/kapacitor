@@ -49,7 +49,11 @@ public static class FrameCodec {
         FrameType.Exited                    => BeInt(f.ExitCode),
         FrameType.Error or FrameType.Attach or FrameType.AgentList
             or FrameType.Restart or FrameType.RestartAck
-            or FrameType.Stop or FrameType.StopAck => Encoding.UTF8.GetBytes(f.Text),
+            or FrameType.Stop or FrameType.StopAck
+            or FrameType.ConsentSubscribe or FrameType.ConsentResolve
+            or FrameType.ConsentRulesGet or FrameType.ConsentRulesPut
+            or FrameType.ConsentPending or FrameType.ConsentRules
+            or FrameType.ConsentAck => Encoding.UTF8.GetBytes(f.Text),
         FrameType.Attached or FrameType.Spawn
             or FrameType.StopV2 or FrameType.AttachedReadOnly => f.Bytes, // pre-encoded by the helpers below
         _ => throw new InvalidDataException($"unencodable frame {f.Type}"),
@@ -62,7 +66,11 @@ public static class FrameCodec {
         FrameType.Exited  => new(t) { ExitCode = BinaryPrimitives.ReadInt32BigEndian(p) },
         FrameType.Error or FrameType.Attach or FrameType.AgentList
             or FrameType.Restart or FrameType.RestartAck
-            or FrameType.Stop or FrameType.StopAck => new(t) { Text = Encoding.UTF8.GetString(p) },
+            or FrameType.Stop or FrameType.StopAck
+            or FrameType.ConsentSubscribe or FrameType.ConsentResolve
+            or FrameType.ConsentRulesGet or FrameType.ConsentRulesPut
+            or FrameType.ConsentPending or FrameType.ConsentRules
+            or FrameType.ConsentAck => new(t) { Text = Encoding.UTF8.GetString(p) },
         FrameType.Attached or FrameType.Spawn
             or FrameType.StopV2 or FrameType.AttachedReadOnly => new(t) { Bytes = p },
         _ => throw new InvalidDataException($"undecodable frame {t}"),

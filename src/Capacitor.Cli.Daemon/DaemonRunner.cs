@@ -232,6 +232,9 @@ public static partial class DaemonRunner {
             sp.GetRequiredService<ILogger<LaunchConsentGate>>()));
         builder.Services.AddSingleton<LaunchConsentBroker>();
         builder.Services.AddSingleton<ILaunchConsentPrompter>(sp => sp.GetRequiredService<LaunchConsentBroker>());
+        // Task 7: local-socket consent frames — the same broker instance the gate above prompts
+        // through, so a subscriber connected via ConsentSubscribe sees the gate's own pending requests.
+        builder.Services.AddSingleton<LaunchConsentIpc>();
 
         // Local HTTP bridge that fronts the server's permission flow. Registered as a
         // singleton so AgentOrchestrator can read its bound URL at agent-spawn time, AND
