@@ -208,4 +208,50 @@ public class UnusableUrlGuardTests : IDisposable {
         await Assert.That(await ClaudeHookCommand.ShouldSuppressCaptureAsync(
             sid, body, "session-start", activeProfile: null, processStart: Stopwatch.GetTimestamp())).IsFalse();
     }
+
+    /// <summary>
+    /// Cursor's guard, proved by NON-ENTRY. Asserting exit 0 alone is vacuous: its outer catch-all
+    /// returns 0 too, so that assertion passes with the guard deleted.
+    /// </summary>
+    [Test]
+    public async Task Cursor_never_builds_a_client_for_an_unusable_url() {
+        var entered = false;
+
+        var exit = await CursorHookCommand.HandleInternal(
+            BadUrl,
+            new StringReader("""{"hook_event_name":"sessionStart","session_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"""),
+            budget: TimeSpan.FromSeconds(5),
+            clientFactory: _ => {
+                entered = true;
+                throw new InvalidOperationException("the cursor guard did not run");
+            },
+            spoolFactory: () => new HookSpool(_dir));
+
+        await Assert.That(entered).IsFalse();
+        await Assert.That(exit).IsEqualTo(0);
+    }
+
+    /// <summary>
+    /// Claude's guard, same shape. Deleting it lets the exception be swallowed by
+    /// <c>CreateClientWithinBudgetAsync</c>, which then takes the SAME degraded branch — so every
+    /// effect assertion still passes. Only non-entry distinguishes the two.
+    /// </summary>
+    [Test]
+    public async Task Claude_never_builds_a_client_for_an_unusable_url() {
+        var entered = false;
+
+        var exit = await ClaudeHookCommand.HandleWithDeps(
+            new HookSpool(_dir),
+            processStart: Stopwatch.GetTimestamp(),
+            baseUrl: BadUrl,
+            stdin: new StringReader($$"""{"hook_event_name":"SessionStart","session_id":"{{Sid}}"}"""),
+            updateCheckTask: null,
+            clientFactory: () => {
+                entered = true;
+                throw new InvalidOperationException("the claude guard did not run");
+            });
+
+        await Assert.That(entered).IsFalse();
+        await Assert.That(exit).IsEqualTo(0);
+    }
 }

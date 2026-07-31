@@ -209,4 +209,64 @@ public class UnusableUrlHookMatrixTests : IDisposable {
 
         return Path.Combine(repoRoot, "src", "Capacitor.Cli", "bin", config, "net10.0", binaryName);
     }
+
+    /// <summary>
+    /// <c>kcap mcp judge</c> was the only one of the eight MCP servers building its authenticated
+    /// client BEFORE opening stdin/stdout, so an unusable URL killed it ahead of the JSON-RPC
+    /// handshake and the judge run failed opaquely.
+    ///
+    /// <para>A child process is the only honest venue: the failure mode being fixed is the process
+    /// dying, which an in-process test cannot observe. The assertions are that the handshake
+    /// completes, that a tool call comes back as a JSON-RPC tool ERROR rather than a crash, and that
+    /// the server is still answering afterwards — a server must keep serving and report the fault in
+    /// its own protocol.</para>
+    /// </summary>
+    [Test]
+    [MethodDataSource(nameof(UnusableUrls))]
+    public async Task Mcp_judge_completes_the_handshake_and_returns_a_tool_error(string url) {
+        var binary = GetCliBinaryPath();
+        Directory.CreateDirectory(_cfgDir);
+
+        var psi = new ProcessStartInfo(binary) {
+            RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true,
+            UseShellExecute = false, CreateNoWindow = true, WorkingDirectory = _cfgDir,
+            Environment = {
+                ["KCAP_URL"] = url, ["KCAP_CONFIG_DIR"] = _cfgDir,
+                ["KCAP_NO_UPDATE_CHECK"] = "1", ["KCAP_SESSION_ID"] = "",
+            },
+        };
+        foreach (var a in new[] { "mcp", "judge", "--session", "0123456789abcdef0123456789abcdef" }) psi.ArgumentList.Add(a);
+
+        using var proc = Process.Start(psi) ?? throw new InvalidOperationException("failed to start kcap");
+        _spawned.Add(proc);
+
+        await proc.StandardInput.WriteLineAsync("""{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}""");
+        var initialize = await ReadLineWithTimeoutAsync(proc);
+        await Assert.That(initialize).IsNotNull();
+        await Assert.That(initialize!).Contains("\"id\":1");
+
+        await proc.StandardInput.WriteLineAsync(
+            """{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"get_session_recap","arguments":{"session_id":"0123456789abcdef0123456789abcdef"}}}""");
+        var toolCall = await ReadLineWithTimeoutAsync(proc);
+
+        // The fault is reported IN the protocol, not by dying.
+        await Assert.That(toolCall).IsNotNull();
+        await Assert.That(toolCall!).Contains("server_url is missing a scheme");
+
+        // And it is still serving afterwards.
+        await proc.StandardInput.WriteLineAsync("""{"jsonrpc":"2.0","id":3,"method":"tools/list","params":{}}""");
+        var afterwards = await ReadLineWithTimeoutAsync(proc);
+        await Assert.That(afterwards).IsNotNull();
+        await Assert.That(afterwards!).Contains("\"id\":3");
+
+        proc.StandardInput.Close();
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        await proc.WaitForExitAsync(cts.Token);
+        await Assert.That(proc.ExitCode).IsNotEqualTo(2);
+    }
+
+    static async Task<string?> ReadLineWithTimeoutAsync(Process proc) {
+        var read = proc.StandardOutput.ReadLineAsync();
+        return await Task.WhenAny(read, Task.Delay(TimeSpan.FromSeconds(15))) == read ? await read : null;
+    }
 }
