@@ -1,3 +1,4 @@
+using Capacitor.Cli.Daemon.Services;
 using Capacitor.Cli.Daemon.Acp;
 
 namespace Capacitor.Cli.Tests.Unit.Acp;
@@ -69,5 +70,45 @@ public class GeminiReviewerCapabilityTests {
     public async Task TheCertifiedSetHoldsOnlyTheVersionThisWorkCertified() {
         await Assert.That(GeminiReviewerCapability.CertifiedVersions.Order(StringComparer.Ordinal))
             .IsEquivalentTo(new[] { Certified });
+    }
+
+    // ── version extraction, which the certified check depends on ──
+    //
+    // Review's point: requiring the whole trimmed output to BE a version is brittle. Measured, gemini 0.53.0
+    // prints it to stdout and stderr, but a build that added a banner or an "update available" notice would
+    // make the gate fail closed and silently disable the reviewer.
+
+    [Test]
+    [Arguments("0.53.0", "0.53.0")]
+    [Arguments("0.53.0\n", "0.53.0")]
+    [Arguments("  0.53.0  ", "0.53.0")]
+    [Arguments("v0.53.0", "0.53.0")]
+    [Arguments("gemini 0.53.0", "0.53.0")]
+    [Arguments("Update available!\n0.53.0\n", "0.53.0")]
+    [Arguments("0.53.0 (build abc)", "0.53.0")]
+    public async Task AVersionTokenIsExtractedFromNoisyOutput(string output, string expected) {
+        await Assert.That(AcpHostedAgentRuntimeFactory.ExtractVersionToken(output)).IsEqualTo(expected);
+    }
+
+    /// <summary>Anything not recognisably a version must read as UNKNOWN — which denies — rather than as a
+    /// near-miss string that could be compared against the certified set.</summary>
+    [Test]
+    [Arguments(null)]
+    [Arguments("")]
+    [Arguments("   ")]
+    [Arguments("no version here")]
+    [Arguments("abc")]
+    [Arguments("53")]
+    public async Task NonVersionOutputExtractsToNull(string? output) {
+        await Assert.That(AcpHostedAgentRuntimeFactory.ExtractVersionToken(output)).IsNull();
+    }
+
+    /// <summary>End to end: noisy output still gates correctly, which is the property that matters.</summary>
+    [Test]
+    public async Task ABannerBeforeTheVersion_StillPermitsACertifiedBuild() {
+        var extracted = AcpHostedAgentRuntimeFactory.ExtractVersionToken(
+            $"Update available: run npm i -g @google/gemini-cli\n{Certified}\n");
+
+        await Assert.That(GeminiReviewerCapability.IsEnabled(true, extracted)).IsTrue();
     }
 }

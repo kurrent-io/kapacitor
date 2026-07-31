@@ -652,12 +652,38 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
             // grandchild holding a pipe cannot keep us here.
             if (!Task.WhenAll(stdout, stderr).Wait(TimeSpan.FromSeconds(5))) return null;
 
-            return proc.ExitCode == 0 && stdout.Result.Trim() is { Length: > 0 } v ? v : null;
+            // Extract a version TOKEN from either stream rather than requiring the whole trimmed output to be
+            // one. Measured: gemini 0.53.0 prints the version to stdout AND stderr — but requiring exact
+            // equality is brittle either way, since the vendor already emits banner lines (skill-conflict
+            // warnings) on other paths, and a build that added an "update available" notice would make the
+            // gate fail closed and silently disable the reviewer. Review's point, and it applies even though
+            // today's format happens to work.
+            return proc.ExitCode == 0
+                ? ExtractVersionToken(stdout.Result) ?? ExtractVersionToken(stderr.Result)
+                : null;
         } catch {
             // Any failure to interrogate the binary is "unknown version", which the capability denies. A
             // throw here would surface as a launch error rather than a coded capability refusal.
             return null;
         }
+    }
+
+    /// <summary>
+    /// The first dotted-numeric token in <paramref name="output"/>, or null. Deliberately narrow: a
+    /// certified-version check compares against an exact set, so anything that is not recognisably a version
+    /// must read as UNKNOWN (and therefore denied) rather than as some near-miss string.
+    /// </summary>
+    internal static string? ExtractVersionToken(string? output) {
+        if (string.IsNullOrWhiteSpace(output)) return null;
+
+        foreach (var raw in output.Split([' ', '\t', '\r', '\n'], StringSplitOptions.RemoveEmptyEntries)) {
+            var tok = raw.Trim().TrimStart('v', 'V');
+
+            if (tok.Length > 0 && tok.All(c => char.IsAsciiDigit(c) || c == '.') && tok.Contains('.'))
+                return tok;
+        }
+
+        return null;
     }
 
     /// <summary>

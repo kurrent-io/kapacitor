@@ -242,6 +242,14 @@ public class GeminiReviewerLiveCertTests {
             ?? throw new InvalidOperationException("gemini did not start — is it on PATH?");
         using var cts = new CancellationTokenSource(TurnTimeout);
 
+        // Drain stderr. Review found the same defect in the production version probe and I fixed it there but
+        // not here: gemini writes real volume to stderr (skill-conflict warnings on every launch), so a
+        // redirected-but-unread stream fills its buffer and wedges the child mid-handshake — which would
+        // present as a mysterious cert timeout.
+        var stderrDrain = Task.Run(async () => {
+            try { return await proc.StandardError.ReadToEndAsync(cts.Token); } catch { return ""; }
+        }, cts.Token);
+
         var pending = new Dictionary<int, TaskCompletionSource<JsonElement>>();
         var nextId  = 0;
         var gate    = new object();
@@ -312,7 +320,12 @@ public class GeminiReviewerLiveCertTests {
 
             return new(true, completed, completed ? null : turn.GetRawText());
         } catch (OperationCanceledException) {
-            return new(false, false, $"timed out after {TurnTimeout.TotalSeconds:N0}s");
+            // Surface stderr on a timeout: it is where gemini reports an auth/project misconfiguration, which
+            // is by far the likeliest reason a gated cert times out on a fresh machine.
+            var err = stderrDrain.IsCompletedSuccessfully ? stderrDrain.Result : "(stderr not drained)";
+            return new(false, false,
+                       $"timed out after {TurnTimeout.TotalSeconds:N0}s; stderr tail: "
+                     + err[Math.Max(0, err.Length - 400)..]);
         } finally {
             try { if (!proc.HasExited) proc.Kill(entireProcessTree: true); } catch { }
         }
