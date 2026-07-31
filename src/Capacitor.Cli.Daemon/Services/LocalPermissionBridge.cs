@@ -40,12 +40,19 @@ internal sealed partial class LocalPermissionBridge(
     int                      _port;
     int                      _listenerClosed;
 
-    // Guards DisposeAsync so its body runs exactly once. This type is both an IHostedService and
-    // an IAsyncDisposable, so the host stops it and the DI container then disposes it — and a
-    // SIGTERM-driven host shutdown can race the daemon's own shutdown sequence. Without this,
-    // a second pass reached StopAsync's _cts.CancelAsync() on an already-disposed CTS and the
-    // ObjectDisposedException surfaced inside ServiceProviderEngineScope.DisposeAsync, where
-    // nothing catches it — terminating the daemon rather than shutting it down.
+    // Guards DisposeAsync so its body runs exactly once.
+    //
+    // DaemonRunner registers this type through TWO singleton descriptors —
+    // AddSingleton<LocalPermissionBridge>() so the orchestrator can read the bound URL, and an
+    // AddHostedService factory resolving that same instance so the listener starts before any
+    // agent spawns. Microsoft DI tracks disposables per DESCRIPTOR and does not de-duplicate by
+    // reference, so ServiceProviderEngineScope.DisposeAsync walks this one instance twice,
+    // sequentially. No thread race is required.
+    //
+    // Without this guard the second pass reached StopAsync's _cts.CancelAsync() on an
+    // already-disposed CTS, and the ObjectDisposedException surfaced inside
+    // ServiceProviderEngineScope.DisposeAsync where nothing catches it — terminating the daemon
+    // rather than shutting it down.
     int _disposed;
 
     // Live per-reviewer tokens → each token's bound (read-only) kcap allowlist servers. A request on

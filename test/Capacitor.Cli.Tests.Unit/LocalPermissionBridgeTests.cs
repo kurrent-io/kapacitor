@@ -4,7 +4,10 @@ using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Daemon;
 using Capacitor.Cli.Daemon.Services;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -30,10 +33,9 @@ public class LocalPermissionBridgeTests {
     // ---------------------------------------------------------------------------------
     // Shutdown must be idempotent AND non-throwing.
     //
-    // The bridge is both an IHostedService and an IAsyncDisposable, so the host stops it and the
-    // DI container then disposes it — and a SIGTERM-driven host shutdown can race the daemon's
-    // own shutdown sequence. Before the fix, a second pass hit StopAsync's _cts.CancelAsync() on
-    // an already-disposed CTS; the ObjectDisposedException surfaced inside
+    // The bridge is registered through two DI descriptors (see the host test below), so the
+    // container disposes the same instance twice. Before the fix the second pass hit StopAsync's
+    // _cts.CancelAsync() on an already-disposed CTS; the ObjectDisposedException surfaced inside
     // ServiceProviderEngineScope.DisposeAsync where nothing catches it, terminating the daemon
     // (5 occurrences in daemon-tony.log over two days). Each of these fails without the fix.
     // ---------------------------------------------------------------------------------
@@ -63,18 +65,32 @@ public class LocalPermissionBridgeTests {
         await bridge.StopAsync(CancellationToken.None);
     }
 
+    /// <summary>
+    /// The production reproduction, and the deterministic one. DaemonRunner registers this type
+    /// through TWO singleton descriptors — <c>AddSingleton&lt;LocalPermissionBridge&gt;()</c> so the
+    /// orchestrator can read its bound URL, and an <c>AddHostedService</c> factory resolving that
+    /// same instance so the listener starts before any agent spawns. Microsoft DI tracks
+    /// disposables per DESCRIPTOR without de-duplicating by reference, so
+    /// <c>ServiceProviderEngineScope.DisposeAsync</c> walks this one instance twice, sequentially.
+    /// No thread race is involved — the earlier assumption that a SIGTERM-driven shutdown was
+    /// required to reach the second pass was wrong.
+    /// </summary>
     [Test, NotInParallel(nameof(LocalPermissionBridgeTests))]
-    public async Task Concurrent_dispose_and_stop_do_not_throw() {
-        var (bridge, _) = CreateBridge();
-        await bridge.StartAsync(CancellationToken.None);
+    public async Task Daemon_host_registration_disposes_the_bridge_twice_without_terminating() {
+        var builder = Host.CreateApplicationBuilder();
+        builder.Services.AddSingleton<ServerConnection>(_ => new FakeServerConnection(null));
 
-        // Both teardown paths entering at once — the shape of the production race. Task.WhenAll
-        // surfaces whichever one throws.
-        var dispose = Task.Run(async () => await bridge.DisposeAsync());
-        var stop    = Task.Run(() => bridge.StopAsync(CancellationToken.None));
+        // The exact two-descriptor registration from DaemonRunner.RunAsync.
+        builder.Services.AddSingleton<LocalPermissionBridge>();
+        builder.Services.AddHostedService(sp => sp.GetRequiredService<LocalPermissionBridge>());
 
-        await Task.WhenAll(dispose, stop);
-        await bridge.DisposeAsync();
+        var host = builder.Build();
+        await host.StartAsync();
+
+        // The production shutdown sequence: stop the hosted services, then dispose the host —
+        // which disposes the ServiceProvider and, with it, this instance once per descriptor.
+        await host.StopAsync();
+        await DaemonRunner.DisposeHostAsync(host);
     }
 
     [Test, NotInParallel(nameof(LocalPermissionBridgeTests))]
