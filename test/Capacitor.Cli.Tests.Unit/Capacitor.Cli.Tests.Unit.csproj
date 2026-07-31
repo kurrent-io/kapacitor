@@ -19,12 +19,4 @@
         <PackageReference Include="WireMock.Net" />
         <PackageReference Include="NSubstitute" />
     </ItemGroup>
-    <ItemGroup>
-        <!-- Embedded (not read off disk) so TranscriptReadSharingInvariantTests never has to locate a
-             source file at run time: [CallerFilePath] would be rewritten by deterministic-build path
-             mapping, and a test assembly can be run without its checkout. The resource is compiled from
-             the same tree as the assembly, so it is always the current source. -->
-        <EmbeddedResource Include="..\..\src\Capacitor.Cli\Commands\WatchCommand.cs"
-                          LogicalName="guarded.WatchCommand.cs" />
-    </ItemGroup>
 </Project>
