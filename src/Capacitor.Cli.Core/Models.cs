@@ -1298,8 +1298,21 @@ public readonly record struct LaunchAgentCommand(
         // wire-compatible with older daemons (ignore it) and older servers (never set it). The daemon
         // launches with the exact LaunchModel VERBATIM and, post-launch, reports the concrete resolved
         // model back keyed on LaunchAttemptId (see ExplicitReviewerModelResolvedV1).
-        ExplicitReviewerModelLaunch? ExplicitReviewerModel = null
+        ExplicitReviewerModelLaunch? ExplicitReviewerModel = null,
+        // Caller-selected Codex sandbox/approval posture for an INTERACTIVE daemon-owned-worktree
+        // launch; null preserves the derived behaviour byte-for-byte. Supplied for any other launch
+        // shape (review-flow, PR review, borrowed cwd, non-codex vendor) the daemon fails closed
+        // with a coded LaunchFailed — never silently ignored, never honoured. Appended last as an
+        // optional field so the SignalR positional/name binding stays wire-compatible with older
+        // daemons (ignore it) and older servers (never set it).
+        CodexLaunchPosture? CodexPosture = null
     );
+
+/// <summary>Caller-selected Codex launch posture. Valid ONLY for interactive, daemon-owned-worktree
+/// launches (<see cref="LaunchKind.Default"/> and not borrowed); the daemon fails closed on any other
+/// launch shape. Both fields are required — a partial block is malformed. Values are the Codex CLI's
+/// own lowercase tokens, compared ordinally (see the daemon's CodexPosturePolicy).</summary>
+public sealed record CodexLaunchPosture(string Sandbox, string Approval);
 
 public sealed record ReviewerCertificationRequirement(
     string Vendor,
@@ -1747,7 +1760,12 @@ public sealed record UnattendedVendorCapability(
     bool SupportsReviewerModelResolution = false,
     // This vendor's reviewer-model policy version (distinct from LauncherPolicyVersion); the server
     // echoes it to detect a mid-flight policy change. Null when no resolver is advertised.
-    string? ReviewerModelPolicyVersion = null
+    string? ReviewerModelPolicyVersion = null,
+    // Whether this daemon accepts a caller-selected launch posture for this vendor
+    // (CodexLaunchPosture on LaunchAgentCommand). Defaults false — a legacy or mid-rollout daemon is
+    // never widened to "supported" by any fallback, so the server refuses posture selection rather
+    // than sending a block that would be silently ignored.
+    bool SupportsLaunchPosture = false
 );
 
 public readonly record struct AgentRegistered(
@@ -1755,7 +1773,15 @@ public readonly record struct AgentRegistered(
         string? Prompt,
         string? Model,
         string? Effort,
-        string? RepoPath
+        string? RepoPath,
+        // Applied Codex posture echo: the pair actually passed to --sandbox / --ask-for-approval,
+        // non-null ONLY for a hosted interactive Codex launch (Kind == Default, owned worktree),
+        // whether that pair was caller-selected or derived. Review-flow / PR-review / local-attach
+        // agents and non-codex vendors always report null, so a consumer can render it without any
+        // launch-kind discriminator. Trailing name-bound fields on a single JSON DTO — an older
+        // server ignores them, an older daemon never sets them.
+        string? SandboxPolicy  = null,
+        string? ApprovalPolicy = null
     );
 
 public readonly record struct AgentStatusChanged(
