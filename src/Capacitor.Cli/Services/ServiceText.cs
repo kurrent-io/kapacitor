@@ -1,4 +1,5 @@
 using System.Security;
+using System.Xml;
 using Capacitor.Cli.Core;
 
 namespace Capacitor.Cli.Services;
@@ -18,9 +19,21 @@ static class ServiceText {
     /// <summary>Escape a value for a batch <c>set "KEY=value"</c> line: percent-signs doubled.</summary>
     public static string CmdValue(string value) => value.Replace("%", "%%");
 
-    /// <summary>Escape a systemd <c>Environment=</c>/<c>Description=</c> value: no raw newlines.</summary>
+    /// <summary>
+    /// Escape a systemd <c>Environment=</c>/<c>Description=</c> value: no raw newlines, and literal
+    /// percent signs doubled.
+    ///
+    /// <para><b>Why the doubling.</b> systemd expands <i>specifiers</i> — <c>%n</c>, <c>%h</c>, <c>%i</c> and
+    /// friends — in both of those directives, so a value carrying a literal <c>%</c> does not survive: a
+    /// <c>PATH</c> containing <c>%n</c> silently becomes the unit name, and a percent sequence systemd does
+    /// not recognise makes it refuse to load the unit at all. <c>%%</c> is systemd's own escape for one
+    /// literal percent, so this is a faithful round-trip rather than a mangling.</para>
+    ///
+    /// <para>This is the same primitive <see cref="CmdValue"/> applies for cmd.exe, for the same reason, and
+    /// it was missing here while present there — the asymmetry is what review caught.</para>
+    /// </summary>
     public static string SystemdValue(string value) =>
-        value.Replace("\r", " ").Replace("\n", " ");
+        value.Replace("\r", " ").Replace("\n", " ").Replace("%", "%%");
 
     /// <summary>
     /// Rejects a VALUE that XML 1.0 cannot represent, for the plist writer.
@@ -36,16 +49,29 @@ static class ServiceText {
     /// names the variable; failing at load time produces a service that silently does not exist.</para>
     /// </summary>
     public static void RequireXmlRepresentableValue(string name, string value) {
-        // Written as a plain scan rather than FirstOrDefault: that returns '\0' for "no match", which is
-        // itself an illegal character here, so the sentinel and a real hit are indistinguishable without a
-        // second pass. Subtlety in a security-adjacent guard is not worth the brevity.
-        foreach (var c in value) {
-            if (c is '\t' or '\n' or '\r' || !char.IsControl(c)) continue;
+        // The predicate is XmlConvert's, not char.IsControl — the two are NOT equivalent, and review caught
+        // both directions of the gap. char.IsControl accepts U+FFFE, U+FFFF and lone surrogates, none of
+        // which XML can carry (a lone surrogate is not even a scalar value, so the encoder either throws or
+        // substitutes), and it rejects U+007F–U+009F, which XML 1.0 permits. Deferring to the platform
+        // predicate makes the code match the doc comment above instead of approximating it.
+        //
+        // Scanned by index rather than foreach so a valid surrogate PAIR can be recognised as the one
+        // supplementary character it encodes; checking `char` in isolation would reject every emoji.
+        for (var i = 0; i < value.Length; i++) {
+            var c = value[i];
+
+            if (char.IsHighSurrogate(c) && i + 1 < value.Length
+             && XmlConvert.IsXmlSurrogatePair(value[i + 1], c)) {
+                i++; // consumed the low half too
+                continue;
+            }
+
+            if (XmlConvert.IsXmlChar(c)) continue;
 
             throw new InvalidOperationException(
-                $"Refusing to write a service unit: the value of '{name}' contains the control character "
-              + $"U+{(int)c:X4}, which XML 1.0 cannot represent even escaped — the resulting plist would "
-              + "not load. Unset or correct that variable, then re-run `kcap daemon service install`.");
+                $"Refusing to write a service unit: the value of '{name}' contains U+{(int)c:X4}, which "
+              + "XML 1.0 cannot represent even escaped — the resulting plist would not load. Unset or "
+              + "correct that variable, then re-run `kcap daemon service install`.");
         }
     }
 

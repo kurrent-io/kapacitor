@@ -65,9 +65,14 @@ static class WindowsTaskUnit {
             RequireRepresentable(k, v);
             sb.Append($"set \"{ServiceText.CmdValue(k)}={ServiceText.CmdValue(v)}\"\r\n");
         }
+        // Every value on the exec line gets CmdValue, not just the binary path. cmd expands %VAR% in a batch
+        // file before parsing the line, `%` is a legal Windows filename character, and only the binary path
+        // was escaped here — so a log path under a directory containing `%` was silently rewritten to
+        // whatever the daemon's own environment happened to hold. Review found the asymmetry: escaping one
+        // of three values interpolated into the same line is not escaping the line.
         var args = string.Join(' ',
-            new[] { "--name", spec.ServiceId, "--log-file", Quote(spec.LogPath) }
-                .Concat(spec.ExtraArgs.Select(QuoteIfNeeded)));
+            new[] { "--name", spec.ServiceId, "--log-file", Quote(ServiceText.CmdValue(spec.LogPath)) }
+                .Concat(spec.ExtraArgs.Select(a => QuoteIfNeeded(ServiceText.CmdValue(a)))));
         sb.Append($"{Quote(ServiceText.CmdValue(spec.DaemonBinaryPath))} {args}\r\n");
         return sb.ToString();
     }

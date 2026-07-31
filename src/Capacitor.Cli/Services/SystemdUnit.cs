@@ -72,12 +72,18 @@ static class SystemdUnit {
         return line is null ? null : FirstToken(line["ExecStart=".Length..]);
     }
 
-    /// <summary>First whitespace-delimited token, honoring a leading double-quoted segment (reverses <see cref="Esc"/>).</summary>
+    /// <summary>
+    /// First whitespace-delimited token, honoring a leading double-quoted segment — reverses both
+    /// <see cref="Esc"/> and the percent-doubling <see cref="QuoteArg"/> applies.
+    ///
+    /// <para>Undoubling is unambiguous: every literal percent was written as <c>%%</c>, so an odd run cannot
+    /// occur in output this code produced.</para>
+    /// </summary>
     static string? FirstToken(string s) {
         if (s.Length == 0) return null;
         if (s[0] != '"') {
             var sp = s.IndexOf(' ');
-            return sp < 0 ? s : s[..sp];
+            return Unpercent(sp < 0 ? s : s[..sp]);
         }
 
         var sb = new StringBuilder();
@@ -86,8 +92,10 @@ static class SystemdUnit {
             if (s[i] == '"') break;
             sb.Append(s[i]);
         }
-        return sb.ToString();
+        return Unpercent(sb.ToString());
     }
+
+    static string Unpercent(string s) => s.Replace("%%", "%");
 
     // ── systemd value/argument quoting ──
     // systemd splits Environment= and ExecStart on unquoted whitespace, so any
@@ -97,8 +105,22 @@ static class SystemdUnit {
 
     static string Esc(string s) => s.Replace("\\", "\\\\").Replace("\"", "\\\"");
 
-    /// <summary>An ExecStart argument, double-quoted only when it contains whitespace/quotes.</summary>
-    static string QuoteArg(string a) => NeedsQuote(a) ? $"\"{Esc(a)}\"" : a;
+    /// <summary>
+    /// An ExecStart argument, double-quoted only when it contains whitespace/quotes, with literal percent
+    /// signs doubled.
+    ///
+    /// <para>specifier expansion applies to <c>ExecStart=</c> just as it does to the
+    /// <c>Environment=</c> values <see cref="ServiceText.SystemdValue"/> handles, and neither the binary path
+    /// nor the log path is sanitized (<c>ServiceId</c> is, so it cannot carry a percent). <c>%</c> is a legal
+    /// filename character on Linux, so a home directory like <c>/home/50%off</c> would otherwise render an
+    /// ExecStart systemd either rewrites or refuses to load — a daemon that cannot start.</para>
+    ///
+    /// <para><see cref="FirstToken"/> reverses this, so <c>daemon doctor</c> still recovers the real path.</para>
+    /// </summary>
+    static string QuoteArg(string a) {
+        var pct = a.Replace("%", "%%");
+        return NeedsQuote(pct) ? $"\"{Esc(pct)}\"" : pct;
+    }
 
     /// <summary>An <c>Environment=</c> assignment; the whole <c>KEY=VALUE</c> is quoted when VALUE needs it.</summary>
     static string EnvAssignment(string key, string value) =>
