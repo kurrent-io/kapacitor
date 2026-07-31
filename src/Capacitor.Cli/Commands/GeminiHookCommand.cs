@@ -4,6 +4,7 @@ using System.Text.Json.Nodes;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.Core.Gemini;
+using Capacitor.Cli.SessionStartMemory;
 
 namespace Capacitor.Cli.Commands;
 
@@ -38,7 +39,91 @@ static class GeminiHookCommand {
     // Gemini's turn loop.
     static readonly TimeSpan NotificationPostBudget = TimeSpan.FromSeconds(2);
 
-    public static async Task<int> Handle(string baseUrl, TextReader stdin) {
+    /// <summary>
+    /// Renders the SessionStart hook result. With a fragment this is the memory envelope; without one it
+    /// is the explicit allow object — NOT zero bytes.
+    ///
+    /// <para>Emitting on the empty path is deliberate and diverges from the other memory adapters. Gemini
+    /// parses <c>stdout.trim() || stderr.trim()</c>, so silent stdout makes it read kcap's STDERR
+    /// diagnostics as the hook's output; a payload wins the <c>||</c> and shadows them. See
+    /// <see cref="GeminiAllowEnvelope"/>. Do not "harmonise" this back to the other adapters' shape.</para>
+    ///
+    /// <para>Two separate try blocks on purpose: rendering completes before any byte is written, and a
+    /// write that throws mid-payload must not alter the command's exit code. A truncated payload is safe
+    /// on Gemini's side — a JSON parse failure degrades to plain text and never synthesises a blocking
+    /// decision, which requires an explicit <c>decision: "block"|"deny"</c>.</para>
+    /// </summary>
+    internal static void WriteSessionStartOutput(TextWriter writer, string? fragment) {
+        string payload;
+
+        try {
+            payload = fragment is null
+                ? System.Text.Json.JsonSerializer.Serialize(
+                    new GeminiAllowEnvelope(), SessionStartMemoryJsonContext.Default.GeminiAllowEnvelope)
+                : SessionStartMemoryOutputAdapters.Render(SessionStartHarness.Gemini, fragment);
+        } catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException) {
+            return;
+        }
+
+        // Render returns "" for a null fragment; we never pass null here, but stay defensive rather than
+        // emitting an empty stdout that would silently re-expose stderr.
+        if (string.IsNullOrEmpty(payload)) return;
+
+        try { writer.Write(payload); }
+        catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException) { }
+    }
+
+    /// <summary>Gemini's <c>source</c> mapped onto the shared lifecycle reason. <c>clear</c> falls to
+    /// <c>New</c> exactly as it does for Claude — there is no <c>Clear</c> reason in the foundation, so
+    /// the session-id lease suppresses re-injection after a context reset. That is a known gap tracked
+    /// separately, not a Gemini-specific choice.</summary>
+    internal static SessionLifecycleReason LifecycleReasonFor(string? source) => source?.ToLowerInvariant() switch {
+        "resume"  => SessionLifecycleReason.Resume,
+        "compact" => SessionLifecycleReason.Compact,
+        _         => SessionLifecycleReason.New
+    };
+
+    static Task<string?> StartMemoryIndexTask(
+            string     baseUrl,
+            string     sessionId,
+            string?    scopeRoot,
+            bool       disabled,
+            SessionLifecycleReason reason,
+            TimeSpan   budget,
+            Func<string?, CancellationToken, Task<HttpClient>>? memoryClientFactory,
+            Func<SessionStartMemoryLeaseStore>?                 memoryStoreFactory) {
+        if (disabled || string.IsNullOrWhiteSpace(sessionId) || string.IsNullOrWhiteSpace(scopeRoot)
+         || budget <= TimeSpan.Zero
+         || !SessionStartMemoryHookSupport.CanAttempt(baseUrl))
+            return Task.FromResult<string?>(null);
+
+        try {
+            var store = memoryStoreFactory?.Invoke() ?? new SessionStartMemoryLeaseStore();
+            var provider = new SessionStartMemoryContextProvider(
+                new SessionStartMemoryScopeResolver(),
+                memoryClientFactory ?? SessionStartMemoryHookSupport.ClientFactory(baseUrl),
+                disposeClients: memoryClientFactory is null);
+
+            return new SessionStartMemoryOrchestrator(store, provider).GetFragmentAsync(
+                // CallbackMayRepeat: false — Gemini's SessionStart is a session-level event, not a
+                // per-turn callback like Kiro's agentSpawn. A `resume` re-fire on the same session id is
+                // made idempotent by the lease, not by this flag.
+                new SessionMemoryLifecycle(SessionStartHarness.Gemini, sessionId, LifecycleInstanceId: null,
+                    IsTopLevel: true, ClassificationAuthoritative: true, reason, CallbackMayRepeat: false),
+                new SessionStartMemoryContextRequest(baseUrl, scopeRoot, disabled, budget, CancellationToken.None));
+        } catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException) {
+            return Task.FromResult<string?>(null);
+        }
+    }
+
+    /// <param name="processStart">Monotonic hook-start stamp anchoring every budget computation;
+    /// defaults to now. Tests pass an older stamp to drive the budget-exhausted branch without sleeping.</param>
+    public static async Task<int> Handle(string baseUrl, TextReader stdin,
+            long processStart = 0,
+            Func<string?, CancellationToken, Task<HttpClient>>? memoryClientFactory = null,
+            Func<SessionStartMemoryLeaseStore>?                 memoryStoreFactory  = null) {
+        var ps = processStart == 0 ? System.Diagnostics.Stopwatch.GetTimestamp() : processStart;
+
         var body = await stdin.ReadToEndAsync();
 
         JsonNode? node;
@@ -63,8 +148,16 @@ static class GeminiHookCommand {
 
         // Mirror the Claude/Codex/Copilot disabled-session fast path: `kcap
         // disable` must stop every POST and watcher restart for the session.
+        // Invariant: a RECOGNISED SessionStart writes exactly one JSON object on every returning path,
+        // including the suppression fast paths below — an exception-riddled invariant is not an
+        // invariant, and these paths are not stderr-free (Program.cs drains the spool before dispatch).
+        // Unrecognised input above (bad JSON, no event name, non-GUID session id) stays silent: Gemini
+        // has no hook result to attribute to it.
+        var isSessionStart = eventName == "SessionStart";
+
         if (DisabledSessions.IsDisabled(sessionId)) {
             if (eventName == "SessionEnd") DisabledSessions.RemoveMarker(sessionId);
+            if (isSessionStart) WriteSessionStartOutput(Console.Out, fragment: null);
             return 0;
         }
 
@@ -77,11 +170,13 @@ static class GeminiHookCommand {
 
         if (activeProfile?.ExcludedPaths is { Length: > 0 } excludedPaths
          && PathExclusion.IsExcluded(cwd, excludedPaths)) {
+            if (isSessionStart) WriteSessionStartOutput(Console.Out, fragment: null);
             return 0;
         }
 
         return eventName switch {
-            "SessionStart" => await HandleSessionStart(baseUrl, node, sessionId, cwd, activeProfile, spool),
+            "SessionStart" => await HandleSessionStart(baseUrl, node, sessionId, cwd, activeProfile, spool,
+                                                       ps, memoryClientFactory, memoryStoreFactory),
             "SessionEnd"   => await HandleSessionEnd(baseUrl, node, sessionId, cwd),
             "Notification" => await HandleNotification(baseUrl, node, sessionId, cwd),
             _              => 0   // unknown / unsubscribed — fail-open like the other dispatchers
@@ -94,7 +189,10 @@ static class GeminiHookCommand {
             string    sessionId,
             string?   cwd,
             Profile?  activeProfile,
-            HookSpool spool
+            HookSpool spool,
+            long      processStart,
+            Func<string?, CancellationToken, Task<HttpClient>>? memoryClientFactory = null,
+            Func<SessionStartMemoryLeaseStore>?                 memoryStoreFactory  = null
         ) {
         var source = TryGetString(node, "source") is { Length: > 0 } s ? s : "startup";
 
@@ -134,8 +232,20 @@ static class GeminiHookCommand {
         if (activeProfile?.ExcludedRepos is { Length: > 0 } excludedRepos
          && await RepoExclusion.IsExcludedAsync(enriched, excludedRepos)) {
             DisabledSessions.Mark(sessionId);
+            WriteSessionStartOutput(Console.Out, fragment: null);
             return 0;
         }
+
+        // Started in PARALLEL with the POST below, not before it — the lifecycle POST is the
+        // latency-critical path. Remaining() already subtracts its own safety margin; do not subtract
+        // again here (double-subtraction was a real defect in the Copilot adapter).
+        var memoryTask = StartMemoryIndexTask(
+            baseUrl, sessionId,
+            scopeRoot: GitRepository.FindRoot(cwd) ?? cwd,
+            disabled: activeProfile?.DisableMemoryIndex is true,
+            reason: LifecycleReasonFor(source),
+            budget: HookBudget.Remaining(processStart, "session-start"),
+            memoryClientFactory, memoryStoreFactory);
 
         // Spawn-before-post: capture must start on Posted OR Spooled (auth lapse /
         // outage) — a doomed/delayed lifecycle POST must never withhold the watcher. On a real
@@ -145,6 +255,14 @@ static class GeminiHookCommand {
         var outcome = await AgentHookPoster.PostOrSpoolAsync(
             baseUrl, "session-start/gemini", enriched, "gemini-hook",
             spool, sessionId, route: "session-start/gemini");
+
+        // Write the hook result BEFORE any return, including the failed-POST return below. The Codex
+        // adapter shipped a defect where an early `return 1` skipped the stdout handshake entirely; do
+        // not reintroduce it. The memory index is independent of lifecycle capture — a server rejecting
+        // the POST has not invalidated an index already fetched — and Gemini parses hook stdout
+        // unconditionally, with the exit code only setting its own `success` flag.
+        WriteSessionStartOutput(Console.Out,
+            await SessionStartMemoryHookSupport.AwaitBounded(memoryTask, processStart, "session-start"));
 
         if (!AgentHookPoster.ShouldSpawnAfter(outcome)) return outcome == HookPostOutcome.Failed ? 1 : 0;
 

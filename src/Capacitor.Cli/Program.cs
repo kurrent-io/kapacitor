@@ -701,7 +701,7 @@ switch (command) {
             return await CopilotHookCommand.Handle(baseUrl!, Console.In, args, hookProcessStart);
         }
         if (args.Contains("--gemini")) {
-            return await GeminiHookCommand.Handle(baseUrl!, Console.In);
+            return await GeminiHookCommand.Handle(baseUrl!, Console.In, hookProcessStart);
         }
         if (args.Contains("--kiro")) {
             return await KiroHookCommand.Handle(baseUrl!, Console.In, args, hookProcessStart);
