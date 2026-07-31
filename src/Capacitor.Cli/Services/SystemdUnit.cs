@@ -74,16 +74,16 @@ static class SystemdUnit {
 
     /// <summary>
     /// First whitespace-delimited token, honoring a leading double-quoted segment — reverses both
-    /// <see cref="Esc"/> and the percent-doubling <see cref="QuoteArg"/> applies.
+    /// <see cref="Esc"/> and the expansion-escaping <see cref="EscapeExpansions"/> applies.
     ///
-    /// <para>Undoubling is unambiguous: every literal percent was written as <c>%%</c>, so an odd run cannot
-    /// occur in output this code produced.</para>
+    /// <para>Undoubling is unambiguous: every literal <c>%</c> and <c>$</c> was written doubled, so an odd
+    /// run cannot occur in output this code produced.</para>
     /// </summary>
     static string? FirstToken(string s) {
         if (s.Length == 0) return null;
         if (s[0] != '"') {
             var sp = s.IndexOf(' ');
-            return Unpercent(sp < 0 ? s : s[..sp]);
+            return UnescapeExpansions(sp < 0 ? s : s[..sp]);
         }
 
         var sb = new StringBuilder();
@@ -92,10 +92,10 @@ static class SystemdUnit {
             if (s[i] == '"') break;
             sb.Append(s[i]);
         }
-        return Unpercent(sb.ToString());
+        return UnescapeExpansions(sb.ToString());
     }
 
-    static string Unpercent(string s) => s.Replace("%%", "%");
+    static string UnescapeExpansions(string s) => s.Replace("%%", "%").Replace("$$", "$");
 
     // ── systemd value/argument quoting ──
     // systemd splits Environment= and ExecStart on unquoted whitespace, so any
@@ -118,9 +118,46 @@ static class SystemdUnit {
     /// <para><see cref="FirstToken"/> reverses this, so <c>daemon doctor</c> still recovers the real path.</para>
     /// </summary>
     static string QuoteArg(string a) {
-        var pct = a.Replace("%", "%%");
-        return NeedsQuote(pct) ? $"\"{Esc(pct)}\"" : pct;
+        // A newline cannot be represented on an ExecStart line at all — quoting does not help, because the
+        // line ends at the newline and systemd reads the remainder as the next directive. Rejecting is the
+        // same call the Windows wrapper makes for the same reason, and `service install` is interactive so
+        // the failure lands in front of a person.
+        if (a.Contains('\n') || a.Contains('\r'))
+            throw new InvalidOperationException(
+                $"Refusing to write a systemd unit: an ExecStart value ('{a}') contains a line break, which "
+              + "cannot be escaped inside a unit directive — the remainder of the value would be parsed as a "
+              + "new directive. Correct it, then re-run `kcap daemon service install`.");
+
+        // A standalone `;` is systemd's own command SEPARATOR in an ExecStart line: emitted bare, every
+        // argument after it becomes a second command systemd runs. Its documented literal form is `\;`, but
+        // rather than rely on this code's reading of that escape (unverifiable on the machines this is built
+        // on) the token is refused outright. No legitimate daemon argument is a lone semicolon, so the
+        // over-rejection is empty in practice — and unlike an escape, a refusal cannot be subtly wrong.
+        if (a == ";")
+            throw new InvalidOperationException(
+                "Refusing to write a systemd unit: an ExecStart argument is a bare ';', which systemd treats "
+              + "as a command separator — the arguments after it would run as a second command. Remove it, "
+              + "then re-run `kcap daemon service install`.");
+
+        var esc = EscapeExpansions(a);
+        return NeedsQuote(esc) ? $"\"{Esc(esc)}\"" : esc;
     }
+
+    /// <summary>
+    /// Neutralise both expansions systemd performs on an <c>ExecStart=</c> command line: <c>%</c> specifiers
+    /// and <c>$NAME</c>/<c>${NAME}</c> environment substitution. <c>%%</c> and <c>$$</c> are systemd's own
+    /// escapes for one literal character, so this is a faithful round-trip.
+    ///
+    /// <para>Both are reachable: neither the binary path nor the log path is sanitized (<c>ServiceId</c> is),
+    /// and <c>%</c> and <c>$</c> are legal Linux filename characters. Undoubled, a path containing
+    /// <c>${HOME}</c> is replaced with the daemon's own environment and <c>%n</c> with the unit name — in the
+    /// executable path, which makes the unit unloadable rather than merely wrong.</para>
+    ///
+    /// <para>Not applied to <c>Environment=</c> values: systemd expands specifiers there but NOT variables,
+    /// so doubling <c>$</c> in a value would corrupt it. The two sinks differ, so they get different
+    /// escapes — <see cref="ServiceText.SystemdValue"/> handles that one.</para>
+    /// </summary>
+    static string EscapeExpansions(string s) => s.Replace("%", "%%").Replace("$", "$$");
 
     /// <summary>An <c>Environment=</c> assignment; the whole <c>KEY=VALUE</c> is quoted when VALUE needs it.</summary>
     static string EnvAssignment(string key, string value) =>

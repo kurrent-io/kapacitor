@@ -19,7 +19,9 @@ public class WindowsTaskUnitTests {
         var cmd = WindowsTaskUnit.Wrapper(Spec());
         await Assert.That(cmd).Contains("set \"PATH=C:\\bin\"");
         await Assert.That(cmd).Contains("set \"KCAP_PROFILE=work\"");
-        await Assert.That(cmd).Contains("\"C:\\kcap\\kcap-daemon.exe\" --name laptop --log-file \"C:\\Users\\u\\.config\\kcap\\daemon-laptop.log\" --max-agents 8");
+        // Every value on the exec line is quoted now, not only the paths: cmd treats & | < > ( ) ^ as live
+        // metacharacters outside quotes, so an unquoted argument was a command-injection surface.
+        await Assert.That(cmd).Contains("\"C:\\kcap\\kcap-daemon.exe\" --name \"laptop\" --log-file \"C:\\Users\\u\\.config\\kcap\\daemon-laptop.log\" \"--max-agents\" \"8\"");
     }
 
     [Test]

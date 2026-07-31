@@ -846,6 +846,24 @@ public static class DaemonCommands {
         }
     }
 
+    /// <summary>
+    /// The <c>ExtraArgs</c> baked into a service unit, from the raw <c>--max-agents</c> flag value.
+    ///
+    /// <para>Validated here rather than only escaped at the unit writers. This is the ONLY caller-supplied
+    /// entry in <c>ExtraArgs</c>, it arrives unparsed off the command line, and it is persisted into a file
+    /// the OS executes at every logon — so a value that is not the integer the flag documents has no
+    /// legitimate reading, and accepting one turns a typo into a durable startup artifact. Review raised the
+    /// sink; this is the matching narrowing at the source, so the two are independent.</para>
+    /// </summary>
+    internal static List<string> ServiceExtraArgs(string? maxAgentsFlag) {
+        if (maxAgentsFlag is null) return [];
+
+        if (!int.TryParse(maxAgentsFlag, out var maxAgents) || maxAgents < 1)
+            throw new ArgumentException($"--max-agents must be a positive integer (got '{maxAgentsFlag}').");
+
+        return ["--max-agents", maxAgents.ToString()];
+    }
+
     static async Task<int> ServiceInstall(IServiceManager manager, string[] args, string id, bool startNow) {
         var daemonPath = ResolveDaemonBinary();
         if (daemonPath is null) { await Console.Error.WriteLineAsync(DaemonNotFoundMessage()); return 1; }
@@ -855,8 +873,14 @@ public static class DaemonCommands {
             ["KCAP_DAEMON_SUPERVISED"] = id,   // name-specific; daemon honors it only when == its sanitized --name
         };
 
-        var extra = new List<string>();
-        if (ExtractFlagValue(args, "--max-agents") is { } mx) { extra.Add("--max-agents"); extra.Add(mx); }
+        List<string> extra;
+        try {
+            extra = ServiceExtraArgs(ExtractFlagValue(args, "--max-agents"));
+        } catch (ArgumentException ex) {
+            await Console.Error.WriteLineAsync(ex.Message);
+
+            return 1;
+        }
 
         var logPath = PathHelpers.ConfigPath($"daemon-{id}.log");
         var spec    = new ServiceSpec(id, daemonPath, logPath, env, extra);

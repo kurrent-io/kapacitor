@@ -65,20 +65,51 @@ static class WindowsTaskUnit {
             RequireRepresentable(k, v);
             sb.Append($"set \"{ServiceText.CmdValue(k)}={ServiceText.CmdValue(v)}\"\r\n");
         }
-        // Every value on the exec line gets CmdValue, not just the binary path. cmd expands %VAR% in a batch
-        // file before parsing the line, `%` is a legal Windows filename character, and only the binary path
-        // was escaped here — so a log path under a directory containing `%` was silently rewritten to
-        // whatever the daemon's own environment happened to hold. Review found the asymmetry: escaping one
-        // of three values interpolated into the same line is not escaping the line.
-        var args = string.Join(' ',
-            new[] { "--name", spec.ServiceId, "--log-file", Quote(ServiceText.CmdValue(spec.LogPath)) }
-                .Concat(spec.ExtraArgs.Select(a => QuoteIfNeeded(ServiceText.CmdValue(a)))));
-        sb.Append($"{Quote(ServiceText.CmdValue(spec.DaemonBinaryPath))} {args}\r\n");
+        // Every value on the exec line is guarded and quoted, not just the binary path.
+        //
+        // `%`-doubling alone is not enough and quoting-when-it-contains-a-space is not enough: cmd treats
+        // `& | < > ( ) ^` as live metacharacters OUTSIDE double quotes, so an argument like `foo&calc.exe`
+        // contains neither a space nor a percent, renders bare, and cmd runs the tail as a second command —
+        // in a file the OS executes at every logon. Inside double quotes cmd stops treating them as
+        // metacharacters, so quoting unconditionally is what closes the class; `%` still expands inside
+        // quotes, which is what CmdValue is for; and `"` / CR / LF cannot be represented at all, so they are
+        // rejected rather than escaped.
+        //
+        // Unlike the binary and log paths, ExtraArgs are NOT constrained by Windows filename rules — review
+        // made exactly that distinction, and it is why the "a path cannot contain a quote" reasoning that
+        // covers the other two does not extend to them.
+        var args = new[] { "--name", ExecValue("the service id", spec.ServiceId),
+                           "--log-file", ExecValue("the log path", spec.LogPath) }
+            .Concat(spec.ExtraArgs.Select(a => ExecValue("a daemon argument", a)));
+        sb.Append($"{ExecValue("the daemon binary path", spec.DaemonBinaryPath)} {string.Join(' ', args)}\r\n");
         return sb.ToString();
     }
 
-    static string Quote(string s) => $"\"{s}\"";
-    static string QuoteIfNeeded(string s) => s.Contains(' ') ? Quote(s) : s;
+    /// <summary>Guard, escape, then quote one value interpolated into the wrapper's exec line.</summary>
+    static string ExecValue(string what, string value) {
+        if (IsUnrepresentable(value))
+            throw new InvalidOperationException(
+                $"Cannot write the service wrapper: {what} ('{value}') contains a quote or newline. Neither "
+              + "can be carried safely on a batch exec line — a quote ends the quoted argument and a newline "
+              + "ends the command — so the wrapper would execute something other than the daemon. Correct it, "
+              + "then re-run `kcap daemon service install`.");
+
+        return Quote(ServiceText.CmdValue(value));
+    }
+
+    /// <summary>
+    /// Double-quote a value, doubling a trailing backslash run first.
+    ///
+    /// <para>The Windows command-line parser the daemon's own runtime uses treats <c>\"</c> as an escaped
+    /// quote, so <c>"C:\dir\"</c> would swallow the closing quote and merge this argument with the next.
+    /// Doubling the run — <c>"C:\dir\\"</c> — is the documented encoding for a literal trailing backslash.
+    /// Reachable through an ExtraArgs value; the two paths here never end in a separator.</para>
+    /// </summary>
+    static string Quote(string s) {
+        var trailing = s.Length - s.TrimEnd('\\').Length;
+
+        return $"\"{s}{new string('\\', trailing)}\"";
+    }
 
     public static string TaskXml(ServiceSpec spec, string wrapperPath) =>
         $"""
