@@ -36,8 +36,7 @@ public class LocalPermissionBridgeTests {
     // The bridge is registered through two DI descriptors, so the container disposes the same
     // instance twice within one ServiceProviderEngineScope walk. Before the fix the second pass hit
     // StopAsync's _cts.CancelAsync() on an already-disposed CTS; the ObjectDisposedException
-    // surfaced where nothing catches it, terminating the daemon (5 occurrences in daemon-tony.log
-    // over two days).
+    // surfaced where nothing catches it, terminating the daemon.
     //
     // Daemon_host_registration_disposes_the_bridge_twice_without_terminating is the PRODUCTION
     // reproduction. The two tests immediately below are synthetic ordering/robustness checks that
