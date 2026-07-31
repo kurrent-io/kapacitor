@@ -635,7 +635,7 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
     /// token whatever its spelling — so it needs no model of the vendor's option grammar, where camel-case
     /// expansion and boolean negation both make an enumerated key list unprovable.</para>
     /// </summary>
-    static void AssertGeminiArgvIsCanonical(IReadOnlyList<string> argv, bool isReviewFlow, LaunchIdentity identity) {
+    internal static void AssertGeminiArgvIsCanonical(IReadOnlyList<string> argv, bool isReviewFlow, LaunchIdentity identity) {
         var expected = ExpectedGeminiArgv(isReviewFlow, identity);
 
         if (argv.SequenceEqual(expected)) return;

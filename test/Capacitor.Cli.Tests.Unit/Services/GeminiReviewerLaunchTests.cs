@@ -208,4 +208,94 @@ public class GeminiReviewerLaunchTests {
         var injected = AcpReviewFlowMcp.Build(ctx, []);
         await Assert.That(injected.Select(s => s.Name)).Contains(KcapMcpRegistry.ReservedResultChannelId);
     }
+
+    // ── the whole-vector assertion itself ──
+    //
+    // Mutation testing found the assertion's CALL SITE could be deleted with nothing going red: it is
+    // unfalsifiable through the real path today, because nothing untrusted reaches the argv (the launch
+    // context carries no arguments field and the only contributors are two descriptor constants). That is
+    // the premise the design rests on — but an uncovered guard proves nothing, and the guard's whole purpose
+    // is to catch a FUTURE contributor. So the future is simulated: a synthetic Gemini-vendor descriptor
+    // carrying an extra argv token is exactly what a fourth contributor would produce.
+
+    static AcpVendorDescriptor GeminiWithExtraArgv(params string[] extra) => new(
+        Vendor:              AcpVendorDescriptors.Gemini.Vendor,
+        ResolveBinaryPath:   _ => "gemini",
+        ResolveDefaultModel: _ => null,
+        Argv:                [.. AcpVendorDescriptors.Gemini.Argv, .. extra],
+        UnattendedTrustArgv: AcpVendorDescriptors.Gemini.UnattendedTrustArgv,
+        SupportsUnattended:  true,
+        ModelSelector:       AcpVendorDescriptors.Gemini.ModelSelector,
+        SupportsMcpServers:  true,
+        UnattendedInteractionPolicy: AcpUnattendedInteractionPolicy.Fail);
+
+    /// <summary>
+    /// A contributor added to the Gemini argv must fail the launch, not sail through. This is the mutant the
+    /// assertion exists for, and the reason the assertion is kept even though it cannot fire today.
+    /// </summary>
+    [Test]
+    [Arguments(true)]
+    [Arguments(false)]
+    public async Task AnExtraArgvToken_FailsTheLaunch(bool isReviewFlow) {
+        var ex = Assert.Throws<InvalidOperationException>(() =>
+            AcpHostedAgentRuntimeFactory.BuildProcessStartInfo(
+                GeminiWithExtraArgv("--yolo"), EnabledConfig, Ctx(isReviewFlow),
+                resolveGeminiVersion: _ => CertifiedVersion));
+
+        await Assert.That(ex!.Message).Contains("gemini_launch_argv_not_canonical");
+    }
+
+    /// <summary>Even an innocuous-looking addition fails: the guard is a whole-vector template, so it does
+    /// not need to recognise the token as dangerous — which is why it needs no model of the option grammar.</summary>
+    [Test]
+    public async Task AnInnocuousExtraToken_AlsoFailsTheLaunch() {
+        var ex = Assert.Throws<InvalidOperationException>(() =>
+            AcpHostedAgentRuntimeFactory.BuildProcessStartInfo(
+                GeminiWithExtraArgv("--telemetry-off"), EnabledConfig, Ctx(isReviewFlow: true),
+                resolveGeminiVersion: _ => CertifiedVersion));
+
+        await Assert.That(ex!.Message).Contains("gemini_launch_argv_not_canonical");
+    }
+
+    /// <summary>The canonical vectors must NOT throw — a guard that rejects everything is not a guard.</summary>
+    [Test]
+    [Arguments(true)]
+    [Arguments(false)]
+    public async Task TheCanonicalVector_PassesTheAssertion(bool isReviewFlow) {
+        AcpHostedAgentRuntimeFactory.AssertGeminiArgvIsCanonical(
+            AcpHostedAgentRuntimeFactory.ExpectedGeminiArgv(isReviewFlow, Identity), isReviewFlow, Identity);
+
+        await Assert.That(true).IsTrue();
+    }
+
+    /// <summary>A wrong approval VALUE is rejected, not just a missing option — `default` would silently
+    /// restore prompting while satisfying any count-based check.</summary>
+    [Test]
+    public async Task AWrongApprovalModeValue_FailsTheAssertion() {
+        string[] argv = [
+            "--experimental-acp", "--skip-trust",
+            "--allowed-mcp-server-names", Identity.ResultChannelWireName,
+            "--approval-mode", "default"
+        ];
+
+        var ex = Assert.Throws<InvalidOperationException>(
+            () => AcpHostedAgentRuntimeFactory.AssertGeminiArgvIsCanonical(argv, true, Identity));
+
+        await Assert.That(ex!.Message).Contains("not_canonical");
+    }
+
+    /// <summary>And a swapped allowlist value — the impersonation shape — is rejected.</summary>
+    [Test]
+    public async Task AnAllowlistNamingSomethingElse_FailsTheAssertion() {
+        string[] argv = [
+            "--experimental-acp", "--skip-trust",
+            "--allowed-mcp-server-names", "kcap-flow-result",
+            "--approval-mode", "yolo"
+        ];
+
+        var ex = Assert.Throws<InvalidOperationException>(
+            () => AcpHostedAgentRuntimeFactory.AssertGeminiArgvIsCanonical(argv, true, Identity));
+
+        await Assert.That(ex!.Message).Contains("not_canonical");
+    }
 }

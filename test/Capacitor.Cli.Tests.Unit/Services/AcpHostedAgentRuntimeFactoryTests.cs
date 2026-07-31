@@ -2040,4 +2040,69 @@ public class AcpHostedAgentRuntimeFactoryTests {
         await started.Runtime.DisposeAsync();
         await fake.DisposeAsync();
     }
+
+    // ── AI-1413: the Gemini reviewer's launch identity is not a caller input ──
+
+    /// <summary>
+    /// StartAsync overwrites any <c>LaunchIdentity</c> supplied on the way in. Honouring one would let a
+    /// requester choose the names whose unguessability is the entire MCP containment for an aliasing vendor,
+    /// so this asserts the launch does not use a caller-chosen value rather than trusting that no caller sets
+    /// one.
+    /// </summary>
+    [Test]
+    public async Task Gemini_ACallerSuppliedLaunchIdentity_DoesNotReachTheSpawnSeam() {
+        var attacker = LaunchIdentity.FromGuids(
+            Guid.Parse("cccccccc-cccc-cccc-cccc-cccccccccccc"),
+            Guid.Parse("dddddddd-dddd-dddd-dddd-dddddddddddd"),
+            aliasResultChannel: true);
+
+        var seen = (LaunchIdentity?)null;
+        var fake = new FakeAcpAgent();
+        var factory = new AcpHostedAgentRuntimeFactory(
+            descriptor: AcpVendorDescriptors.Gemini,
+            config: new DaemonConfig { GeminiUnattendedReviewerEnabled = true },
+            loggerFactory: NullLoggerFactory.Instance,
+            connection: new CaptureServerConnection(),
+            connectionSource: ctx => {
+                seen = ctx.LaunchIdentity;
+                return (fake.ClientWriteStream, fake.ClientReadStream, new FakeAcpProcess());
+            });
+
+        var ctx = ReviewContext() with { Vendor = "gemini", LaunchIdentity = attacker };
+
+        // A bare FakeAcpAgent never answers `initialize`, so StartAsync would wait for a handshake that
+        // never arrives. The subject is what the SPAWN SEAM was handed, which is recorded before any frame is
+        // exchanged — so a short-lived token is enough and keeps the test from hanging the suite.
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+        try { await factory.StartAsync(ctx, cts.Token); }
+        catch { /* the handshake is not the subject; the seam recorded what it was handed either way */ }
+
+        await Assert.That(seen).IsNotNull();
+        await Assert.That(seen!.ResultChannelWireName).IsNotEqualTo(attacker.ResultChannelWireName);
+        await Assert.That(seen.UnmatchableMcpName).IsNotEqualTo(attacker.UnmatchableMcpName);
+    }
+
+    /// <summary>
+    /// Advertisement respects the operator's capability gate, so a daemon that never opted in is not selected
+    /// as a Gemini reviewer host at all. The optimisation arm — the boundary is the pre-spawn check in
+    /// BuildProcessStartInfo — but advertising a capability the daemon will then refuse is its own defect.
+    /// </summary>
+    [Test]
+    public async Task Gemini_ADisabledDaemon_DoesNotAdvertiseUnattendedSupport() {
+        IHostedAgentRuntimeFactory disabled = new AcpHostedAgentRuntimeFactory(
+            AcpVendorDescriptors.Gemini, new DaemonConfig(), NullLoggerFactory.Instance,
+            new CaptureServerConnection());
+
+        await Assert.That(disabled.SupportsUnattended).IsFalse();
+    }
+
+    /// <summary>Other vendors' advertisement is unaffected — the gate is Gemini-scoped.</summary>
+    [Test]
+    public async Task OtherVendorsAdvertisement_IsUnaffectedByTheGeminiGate() {
+        IHostedAgentRuntimeFactory cursor = new AcpHostedAgentRuntimeFactory(
+            AcpVendorDescriptors.Cursor, new DaemonConfig(), NullLoggerFactory.Instance,
+            new CaptureServerConnection());
+
+        await Assert.That(cursor.SupportsUnattended).IsTrue();
+    }
 }
