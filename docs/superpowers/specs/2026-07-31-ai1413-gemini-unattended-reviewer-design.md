@@ -320,11 +320,30 @@ If that accepted property is not acceptable, the correct response is not a bette
 Gemini's reviewer until it can be sandboxed, and to revisit the shipped reviewers on the same grounds. That
 is a product call, not a design detail.
 
-**Who accepts it, and where it is recorded.** Review asked, and the honest answer is that this spec cannot
-self-authorise it. The acceptance belongs to the repository owner (Tony, for kcap), recorded as an explicit
-sign-off comment on this issue and restated in the PR description — not in a spec section, which is not
-where anyone looks for a risk register. §7 lists it as a gate for that reason: the PR is not mergeable on
-"CI is green" alone while an unsandboxed unattended reviewer is being enabled for a new vendor.
+**Audit integrity is compromised too**, which rev 5 omitted: daemon-user writes reach the session captures,
+the local logs, and the installed reviewer itself. So after a compromise neither the verdict nor its local
+evidence is trustworthy — you cannot use the recorded transcript to establish what happened, because the
+same authority that ran the code could edit the record. Any post-incident story has to rest on
+server-side data, not on the daemon host.
+
+**Who accepts it, and where.** Review's correction here is sharp and I had it wrong: the assets at risk —
+the daemon's credentials, other worktrees, host persistence, integration tokens — belong to the **daemon
+operator**, who is not necessarily the repository owner or the PR approver. A sign-off from me accepts the
+risk only for deployments and credentials I control; it does not inform or authorise a downstream operator
+who later selects Gemini as a reviewer, or inherits it as a default.
+
+So the acceptance has two parts, and only the first is a sign-off:
+
+1. **For this repository and its own daemons**, the repository owner accepts it explicitly on the issue and
+   in the PR description. §7 keeps that as a merge gate: "CI is green" does not authorise enabling an
+   unsandboxed unattended reviewer for a new vendor.
+2. **For any other operator, the consent event is enabling it**, so enabling must be informed. That means
+   Gemini unattended review is **opt-in per deployment and never a default**, `Flows:Review:DefaultVendor`
+   must not silently become `gemini`, and the operator-facing documentation for selecting a reviewer vendor
+   has to state this property where the operator will actually read it — not in this spec.
+
+That second part is a real scope addition and it is listed in §4 and §7 rather than assumed: without it,
+this design would be accepting a risk on behalf of people who never saw it.
 
 Worth being precise about what changes and what does not: this property is already live for Cursor, Claude
 and Codex reviewers, so enabling Gemini widens the vendor surface without changing the class of exposure.
@@ -496,100 +515,79 @@ not reject legacy `--yolo` from anywhere. A convention is not an invariant.
 
 So the composed argv is validated once, at the launch boundary, after every contributor has run:
 
-Rev 3 counted option tokens and never read values; rev 4 replaced that with a hand-written value parser.
-Review dismantled both, and the second more usefully than the first: **a parallel parser is the wrong
-boundary unless its grammar is proven identical to the vendor's**, and mine was not. Read from the bundle,
-the parser runs with
+**Three revisions of this section hardened a guard against an input that does not exist.** Rev 3 counted
+tokens, rev 4 parsed values, rev 5 refused non-canonical spellings — and each time review correctly pointed
+out the guard could not be complete while "arbitrary raw caller argv" was accepted. The thing none of us
+checked, including me, is whether that surface exists. **It does not.** Read from the code:
 
-```
-"boolean-negation": true
-"camel-case-expansion": true
-```
-
-so `--approvalMode yolo` binds just as `--approval-mode yolo` does, `--no-…` forms exist, and my
-exact-token `--yolo` check would miss `--yolo=true`. Reproducing that grammar is a losing game, and rev 4's
-C# comma split had the same defect against `coerceCommaSeparated` — a coercer I did not read.
-
-**So the design stops emulating and starts refusing.** kcap owns the launch, so it emits one canonical form
-and rejects everything else that could bind to the same key:
+`RuntimeStartContext` — the only launch input — has **no argv field at all**. Its members are typed:
+`AgentId`, `Vendor`, `SourceRepoPath`, `Worktree`, `Prompt`, `Model`, `Effort`, `Tools`, `IsReview`,
+`IsReviewFlow`, `ServerUrl`, `DaemonBridgeUrl`, `CapacitorPath`, `McpAllowlist`, `Work`. And the complete set
+of contributors to the argv list is three lines:
 
 ```csharp
-/// Option keys whose binding is security-sensitive, in every spelling this vendor's parser can bind them
-/// from. The dashed form is declared; the camelCase form binds because the parser runs with
-/// camel-case-expansion: true, and negation forms exist because boolean-negation: true (both read from
-/// the bundle). We do not attempt to parse values in these spellings — we refuse any token that could
-/// reach them and is not one we emitted, which needs no knowledge of how the vendor binds it.
-static readonly string[] GuardedOptionKeys = [
-    "approval-mode", "approvalMode",
-    "allowed-mcp-server-names", "allowedMcpServerNames",
-    "yolo",
-];
-
-/// Every token that could bind a guarded key: bare, `=`-joined, and negated, case-insensitively.
-static bool IsGuardedToken(string tok) =>
-    GuardedOptionKeys.Any(k =>
-        tok.Equals($"--{k}",    StringComparison.OrdinalIgnoreCase) ||
-        tok.Equals($"--no-{k}", StringComparison.OrdinalIgnoreCase) ||
-        tok.StartsWith($"--{k}=",    StringComparison.OrdinalIgnoreCase) ||
-        tok.StartsWith($"--no-{k}=", StringComparison.OrdinalIgnoreCase));
-
-/// The launch boundary. The rule is EXACT EMISSION, not parsing: the guarded tokens present must be
-/// exactly the canonical adjacent pairs this code emitted, in the separated `--key value` form, and
-/// nothing else. Any extra occurrence, any `=` form, any camelCase spelling, any negation, and any
-/// legacy --yolo is refused — whatever the vendor's parser would have made of it.
-static void RequireCanonicalGuardedOptions(
-        IReadOnlyList<string> argv, bool isReviewFlow, string vendor, ReviewChannelIdentity channel) {
-    var expected = new List<(string Key, string Value)>();
-
-    if (vendor == Vendors.Gemini) {
-        // Interactive gets the deny-all name; review gets the channel alias. BOTH are validated —
-        // review's finding: rev 4 guarded only the review arm, so a caller-supplied interactive argument
-        // could append a second --allowed-mcp-server-names (yargs arrays accumulate) and widen the
-        // deny-all launch, regressing the very property this spec claims is unchanged.
-        expected.Add(("allowed-mcp-server-names",
-                      isReviewFlow ? channel.WireName : DenyAllNameEmittedForThisLaunch));
-        if (isReviewFlow) expected.Add(("approval-mode", "yolo"));
-    }
-
-    var found = new List<(string Key, string Value)>();
-    for (var i = 0; i < argv.Count; i++) {
-        if (!IsGuardedToken(argv[i])) continue;
-
-        // Only the separated form is ever emitted, so anything else is by definition not ours.
-        var key = argv[i].StartsWith("--", StringComparison.Ordinal) ? argv[i][2..] : argv[i];
-        if (argv[i].Contains('=') || key.StartsWith("no-", StringComparison.OrdinalIgnoreCase)
-            || i + 1 >= argv.Count)
-            throw new InvalidOperationException(
-                $"...'{vendor}' launch carries '{argv[i]}', which this code never emits. Guarded options "
-              + "must appear only in the canonical `--key value` form...");
-
-        found.Add((key, argv[i + 1]));
-        i++;
-    }
-
-    if (!found.SequenceEqual(expected))
-        throw new InvalidOperationException(
-            $"...'{vendor}' launch's guarded options are [{Render(found)}]; expected exactly "
-          + $"[{Render(expected)}]. A guarded option that this code did not emit — an extra allowlist "
-          + "entry, an alternate spelling, or a legacy --yolo — is refused rather than interpreted...");
-}
+var argv = SubstituteUnmatchableNames([.. descriptor.Argv]);   // compile-time constant
+if (ctx.IsReviewFlow) {
+    argv.AddRange(descriptor.UnattendedTrustArgv);             // compile-time constant
+    if (descriptor.ReviewFlowMcpTransport == AcpReviewFlowMcpTransport.CopilotAdditionalConfig) { … }
+}                                                              // Copilot only — never Gemini
 ```
 
-Two properties this buys that a parser could not:
+There is no config-supplied extra-args setting either. So for a Gemini launch the argv is **two compile-time
+constants plus two GUIDs this code generates**. Nothing untrusted reaches it.
 
-* **it needs no model of the vendor's grammar.** Any token that *could* bind a guarded key and was not
-  emitted canonically is refused, so camelCase, `=`, negation and future aliases are all covered by
-  construction rather than enumerated. Review's recommendation, and it is strictly safer than my parser.
-* **coercion semantics stop mattering.** `WireName` is asserted comma-free at construction (a GUID hex is,
-  but it is asserted rather than assumed), and since exactly one value is emitted and no other token
-  survives, `coerceCommaSeparated`'s exact behaviour is irrelevant — which is the right answer to a coercer
-  I have not read.
+That changes what this section should be, and simplifies it:
 
-**Both launch kinds are validated.** Rev 4 guarded only `isReviewFlow && Gemini`, which review correctly
-called a regression risk for the interactive deny-all property: yargs arrays accumulate, so one extra
-caller-supplied `--allowed-mcp-server-names repo-server` on an interactive launch would have admitted a
-repository server while the spec claimed interactive hosting was unchanged. The interactive arm now asserts
-exactly one guarded allowlist option carrying exactly the deny-all name generated for that launch.
+* **No runtime input filter is warranted.** A validator whose job is to reject hostile tokens has nothing to
+  reject; it would be dead code asserting a property the type system already gives. Rev 5's
+  `IsGuardedToken` grammar list — which review rightly said could never be provably complete — is deleted
+  rather than extended, because the question it answered was the wrong one.
+* **The invariants become test-time assertions over the built argv**, which is where they belong: they are
+  properties of two constants and one branch, so a unit test that builds a launch and reads the result
+  proves them completely. §6's table already reads the launch artifact, so no test changes shape — only
+  their justification does.
+* **One runtime assertion is kept, for a different and stated reason.** Not to filter input, but so that a
+  *future* contributor to this argv cannot silently break the invariant:
+
+```csharp
+/// NOT an input filter — nothing untrusted reaches this argv (see above). This asserts an invariant about
+/// code, so that adding a fourth contributor to the list cannot silently produce a Gemini launch that
+/// prompts for approval or widens the MCP gate. It should be unfalsifiable today; if it ever throws, a
+/// contributor was added without reading this section.
+static void AssertGuardedOptionsAreCanonical(
+        IReadOnlyList<string> argv, bool isReviewFlow, string vendor, GeminiLaunchIdentity id) { … }
+```
+
+That is the AI-899 lesson restated: an invariant that holds at every interpolation is worth more than one
+applied where it is currently needed, because the next value added inherits it. The difference from rev 5 is
+honesty about which threat it addresses — a future edit, not an attacker.
+
+**Consequently, several of review's findings on this section are answered by the input surface rather than by
+the guard**, and I would rather say so than quietly keep a guard that implies otherwise: a caller cannot
+append a second `--allowed-mcp-server-names`, cannot supply `--approvalMode`, cannot use dot-notation or an
+alias, and cannot supply a byte-identical canonical pair to defeat provenance — because a caller cannot
+supply argv tokens at all.
+
+### 3.3b One launch identity carries every generated name
+
+Review found `DenyAllNameEmittedForThisLaunch` used in rev 5's validator but never defined — a real gap, and
+the same single-source discipline §3.2a applies to the channel alias applies here. Both generated names live
+on one launch-scoped instance:
+
+```csharp
+/// Every per-launch generated name for one Gemini launch, created ONCE before any argv is composed and
+/// threaded to every consumer. Two separate generators is the defect this type exists to prevent — the
+/// deny-all name had exactly that shape in rev 5, where the validator referenced a value the factory
+/// generated inline during substitution and never handed over.
+internal sealed record GeminiLaunchIdentity(
+    string CanonicalId,    // kcap-flow-result — what reserved-name comparisons see
+    string WireName,       // kcap-flow-result-<guid> — the review channel, the only name a vendor sees
+    string DenyAllName     // kcap-deny-<guid> — the interactive allowlist value
+);
+```
+
+`SubstituteUnmatchableNames` takes `DenyAllName` rather than generating one, so the value in the argv and the
+value the assertion expects are the same object — not two derivations that happen to agree.
 
 **`IsReviewFlow` ⇔ unattended.** Review asked whether every review-flow launch is necessarily unattended.
 It is, and the code already enforces it rather than assuming it: `ValidateAndBuildReviewFlowMcp` throws
@@ -626,7 +624,12 @@ a randomised server name. Verified by test rather than assumed — §6.
 | `test/…/Services/AcpReviewFlowMcpTests.cs` | alias uniqueness, canonical-id preservation, allowlist agreement |
 | `docs/HOSTED_AGENTS.md` (or nearest) | Gemini reviewer row |
 
-No projection or server change: reviewer vendor routing is already vendor-neutral (AI-1488).
+| operator-facing docs for reviewer vendor selection | state §2.9's accepted property where an operator choosing a vendor will read it |
+
+No projection change, and no server change to *routing* — reviewer vendor selection is already vendor-neutral
+(AI-1488). The one server-side requirement is negative and must be checked rather than assumed: enabling
+Gemini must not make it a default. `Flows:Review:DefaultVendor` stays unset/unchanged, so Gemini is only ever
+reached by an explicit `vendor: "gemini"`.
 
 ## 5. Ordering — the descriptor flip is atomic, so verification comes before it
 
@@ -721,6 +724,10 @@ session, so a process count is the wrong oracle here.
 * Interactive hosted Gemini is unchanged: no `--approval-mode`, one deny-all name, no placeholder.
 * Routing **refuses** Gemini for a borrowed snapshot before any process starts (§8, first bullet).
 * Every row of §6's table mutation-proven.
+* **Gemini is opt-in and never a default** — `Flows:Review:DefaultVendor` unchanged, verified, so no operator
+  inherits an unsandboxed Gemini reviewer without selecting it (§2.9).
+* **The operator-facing reviewer-selection documentation states §2.9's property**, since for any operator but
+  this repository's owner, enabling *is* the consent event.
 * **§2.9's accepted security property is signed off knowingly** — that an unattended review in an owned
   worktree grants prompt-injected repository content execution as, and the credentials of, the daemon user.
   This is a property of every shipped unattended reviewer, not of Gemini, and the alternative is to withhold
