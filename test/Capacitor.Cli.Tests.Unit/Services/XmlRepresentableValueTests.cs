@@ -121,4 +121,46 @@ public class XmlRepresentableValueTests {
     [Test]
     public async Task Still_rejects_a_control_following_a_supplementary_pair() =>
         await Rejects("\U0001F600\u0001", "consuming the pair must not skip the character after it");
+
+    // ── the guard must cover EVERY value the plist writer interpolates, not only the environment ──
+
+    static ServiceSpec PlistSpec() => new(
+        "laptop", "/opt/kcap/kcap-daemon", "/Users/u/.config/kcap/daemon-laptop.log",
+        new Dictionary<string, string> { ["PATH"] = "/usr/bin" }, ["--max-agents", "8"]);
+
+    static async Task PlistRejects(ServiceSpec spec, string because) {
+        var ex = Assert.Throws<InvalidOperationException>(() => LaunchdUnit.Plist(spec));
+
+        await Assert.That(ex!.Message).Contains("U+0001").Because(because);
+    }
+
+    [Test]
+    public async Task Plist_rejects_a_control_character_in_the_binary_path() =>
+        await PlistRejects(PlistSpec() with { DaemonBinaryPath = "/opt/kcap/da\u0001emon" },
+            "ProgramArguments carries the binary path and SecurityElement.Escape passes controls through");
+
+    [Test]
+    public async Task Plist_rejects_a_control_character_in_the_log_path() =>
+        await PlistRejects(PlistSpec() with { LogPath = "/Users/u/lo\u0001gs/d.log" },
+            "the log path reaches both ProgramArguments and StandardOutPath");
+
+    [Test]
+    public async Task Plist_rejects_a_control_character_in_an_extra_arg() =>
+        await PlistRejects(PlistSpec() with { ExtraArgs = ["--tag", "a\u0001b"] },
+            "extra args are interpolated the same way");
+
+    [Test]
+    public async Task Plist_still_rejects_a_control_character_in_an_environment_value() =>
+        await PlistRejects(
+            PlistSpec() with { Environment = new Dictionary<string, string> { ["PATH"] = "/u\u0001b" } },
+            "the arm that was already guarded must stay guarded");
+
+    /// <summary>A plist whose values are all legal must still render — the guard is not a blanket refusal.</summary>
+    [Test]
+    public async Task Plist_renders_when_every_value_is_representable() {
+        var plist = LaunchdUnit.Plist(PlistSpec() with { LogPath = "/Users/u/logs/\U0001F600.log" });
+
+        await Assert.That(plist).Contains("<key>ProgramArguments</key>");
+        await Assert.That(plist).Contains("\U0001F600.log");
+    }
 }

@@ -30,11 +30,11 @@ static class LaunchdUnit {
             <dict>
 
             """);
-        sb.Append($"  <key>Label</key><string>{ServiceText.Xml(Label(spec.ServiceId))}</string>\n");
+        sb.Append($"  <key>Label</key><string>{Guarded("the service label", Label(spec.ServiceId))}</string>\n");
 
         sb.Append("  <key>ProgramArguments</key><array>\n");
         foreach (var arg in ProgramArguments(spec))
-            sb.Append($"    <string>{ServiceText.Xml(arg)}</string>\n");
+            sb.Append($"    <string>{Guarded("the daemon command line", arg)}</string>\n");
         sb.Append("  </array>\n");
 
         sb.Append("  <key>EnvironmentVariables</key><dict>\n");
@@ -51,10 +51,29 @@ static class LaunchdUnit {
         sb.Append("  <key>RunAtLoad</key><true/>\n");
         sb.Append("  <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>\n");
         sb.Append("  <key>ProcessType</key><string>Adaptive</string>\n");
-        sb.Append($"  <key>StandardOutPath</key><string>{ServiceText.Xml(OutLogPath(spec))}</string>\n");
-        sb.Append($"  <key>StandardErrorPath</key><string>{ServiceText.Xml(OutLogPath(spec))}</string>\n");
+        var outLog = Guarded("the daemon log path", OutLogPath(spec));
+        sb.Append($"  <key>StandardOutPath</key><string>{outLog}</string>\n");
+        sb.Append($"  <key>StandardErrorPath</key><string>{outLog}</string>\n");
         sb.Append("</dict>\n</plist>\n");
         return sb.ToString();
+    }
+
+    /// <summary>
+    /// Guard, then escape — every string this writer interpolates goes through here.
+    ///
+    /// <para><b>Why not just escape.</b> <c>SecurityElement.Escape</c> handles the five markup characters and
+    /// nothing else; it passes a C0 control, U+FFFE or a lone surrogate straight through, and none of those
+    /// has any legal XML 1.0 representation. The result is a plist <c>launchctl</c> silently will not load.</para>
+    ///
+    /// <para><b>Why it covers the paths and not only the environment.</b> The environment loop was guarded and
+    /// these four sites were not, yet <c>ProgramArguments</c> carries the binary path, the log path and the
+    /// extra args, and macOS filenames may contain any byte but <c>/</c> and NUL. Guarding the environment
+    /// only is the same asymmetry review already found twice at the other two sinks: applying a check to some
+    /// of the values interpolated into a file is not checking the file.</para>
+    /// </summary>
+    static string Guarded(string what, string value) {
+        ServiceText.RequireXmlRepresentableValue(what, value);
+        return ServiceText.Xml(value);
     }
 
     /// <summary>argv the agent runs: binary, pinned --name + --log-file, then extra args.</summary>
