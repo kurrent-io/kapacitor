@@ -30,6 +30,49 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
             ? StringComparison.OrdinalIgnoreCase
             : StringComparison.Ordinal;
 
+    /// <summary>Per-repository gate around the git commands that mutate <c>.git/worktrees</c>.
+    /// <para><c>git worktree add</c> enumerates the existing entries while creating its own, so two
+    /// concurrent adds on one repo can have the later one read a sibling whose metadata directory
+    /// exists but whose <c>commondir</c> has not been written yet — git aborts with
+    /// <c>fatal: failed to read .git/worktrees/&lt;other&gt;/commondir</c>. <c>worktree remove</c>
+    /// mutates the same tree. The daemon really does run these concurrently (a flow launching
+    /// several reviewers against one source repo), which is the same concurrency the per-worktree
+    /// fetch ref below was introduced for.</para>
+    /// <para>Static because <see cref="RemoveAsync"/> is static, so the gate must be shared across
+    /// instances. Keyed by full path under the platform's path-case rules. In-process only: two
+    /// separate daemon processes on one repo would still race, which needs a cross-process file
+    /// lock if it ever bites.</para></summary>
+    static readonly System.Collections.Concurrent.ConcurrentDictionary<string, SemaphoreSlim> WorktreeMetadataGates =
+        new(OperatingSystem.IsWindows() || OperatingSystem.IsMacOS()
+            ? StringComparer.OrdinalIgnoreCase
+            : StringComparer.Ordinal);
+
+    /// <summary>Runs <paramref name="mutate"/> holding <paramref name="repoPath"/>'s metadata gate.
+    /// Only the metadata-mutating git call belongs inside — a network fetch must stay outside, or
+    /// concurrent launches serialise behind each other's downloads for no benefit.
+    /// <para>Internal rather than private so the serialisation itself is testable: the concurrent
+    /// <c>worktree add</c> race it prevents is too narrow to reproduce on demand, so the guard is
+    /// pinned directly instead of through a flaky end-to-end repro.</para></summary>
+    internal static async Task WithWorktreeMetadataGate(string repoPath, Func<Task> mutate) {
+        var key = repoPath;
+
+        try {
+            key = Path.GetFullPath(repoPath).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        } catch {
+            // Unnormalizable path (too long / invalid chars): fall back to the raw string. Worst
+            // case two spellings of one repo get separate gates — still better than none.
+        }
+
+        var gate = WorktreeMetadataGates.GetOrAdd(key, static _ => new SemaphoreSlim(1, 1));
+        await gate.WaitAsync();
+
+        try {
+            await mutate();
+        } finally {
+            gate.Release();
+        }
+    }
+
     public async Task<WorktreeInfo> CreateAsync(string repoPath, string? name = null, string? baseRef = null) {
         name ??= $"agent-{Guid.NewGuid():N}"[..20];
 
@@ -48,13 +91,17 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
                 // race on each other's fetches. The unique ref carries the
                 // worktree name so it's traceable and easy to clean up.
                 var fetchedRef = $"refs/kcap/review/{name}";
+                // Fetch OUTSIDE the metadata gate: it's already collision-free (per-worktree ref)
+                // and it's the slow, network-bound half.
                 await RunGit(repoPath, FetchTimeout, "fetch", "origin", $"{baseRef}:{fetchedRef}");
-                await RunGit(repoPath, GitTimeout, "worktree", "add", "-B", branch, worktreePath, fetchedRef);
+                await WithWorktreeMetadataGate(repoPath, () =>
+                    RunGit(repoPath, GitTimeout, "worktree", "add", "-B", branch, worktreePath, fetchedRef));
 
                 return new WorktreeInfo(worktreePath, branch, repoPath, FetchedRef: fetchedRef);
             }
 
-            await RunGit(repoPath, GitTimeout, "worktree", "add", worktreePath, "-b", branch);
+            await WithWorktreeMetadataGate(repoPath, () =>
+                RunGit(repoPath, GitTimeout, "worktree", "add", worktreePath, "-b", branch));
 
             return new WorktreeInfo(worktreePath, branch, repoPath);
         }
@@ -94,7 +141,10 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
             return;
         }
 
-        await RunGit(worktree.SourceRepo, GitTimeout, "worktree", "remove", worktree.Path, "--force");
+        // Same metadata tree as `worktree add` — a removal concurrent with an add can hand the add a
+        // half-torn-down sibling entry.
+        await WithWorktreeMetadataGate(worktree.SourceRepo, () =>
+            RunGit(worktree.SourceRepo, GitTimeout, "worktree", "remove", worktree.Path, "--force"));
 
         if (deleteBranch && !string.IsNullOrEmpty(worktree.Branch)) {
             await RunGitBestEffort(worktree.SourceRepo, "branch", "-D", worktree.Branch);
