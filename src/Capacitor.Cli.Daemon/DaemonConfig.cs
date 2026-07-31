@@ -135,6 +135,24 @@ public class DaemonConfig {
     /// </summary>
     public string KiroPath { get; set; } = "kiro-cli";
 
+    /// <summary>
+    /// Whether THIS daemon may run Gemini as an unattended review-flow reviewer. **Default false, and
+    /// enabling it is the operator's consent event.**
+    ///
+    /// <para>An unattended reviewer runs in a daemon-owned worktree with this daemon's own HOME, so
+    /// repository content that steers the model into tool use gets code execution with this user's full
+    /// authority — including the credentials in the token store, writes that reach other worktrees and the
+    /// installed CLI, and processes that outlive the review. That risk lands on whoever runs this daemon,
+    /// who is not necessarily the person requesting the review, which is why the decision lives here in
+    /// daemon-local configuration and not in the server's flow settings.</para>
+    ///
+    /// <para>Enabling it does NOT bypass the certified-version check: the reviewer's only containment is the
+    /// vendor's exact-name MCP allowlist, whose semantics were certified against specific Gemini builds, so
+    /// an uncertified version is refused even when this is true. See
+    /// <c>GeminiReviewerCapability</c> and the AI-1413 design spec §2.9.</para>
+    /// </summary>
+    public bool GeminiUnattendedReviewerEnabled { get; set; }
+
     /// <summary>Reserved — see CopilotPath. Overridable via KCAP_OPENCODE_PATH.</summary>
     public string OpenCodePath { get; set; } = "opencode";
 

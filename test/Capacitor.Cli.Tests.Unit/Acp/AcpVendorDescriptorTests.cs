@@ -236,16 +236,23 @@ public class AcpVendorDescriptorTests {
             ["--experimental-acp", "--skip-trust",
              "--allowed-mcp-server-names", AcpVendorDescriptors.UnmatchableMcpNamePlaceholder])).IsTrue();
 
-        await Assert.That(descriptor.SupportsUnattended).IsFalse();
-        await Assert.That(descriptor.UnattendedTrustArgv.IsEmpty).IsTrue();
+        await Assert.That(descriptor.SupportsUnattended).IsTrue();
+        // AI-1413: --approval-mode yolo, and ONLY on a review launch. Measured: without it Gemini gates its
+        // own injected result-channel tool behind session/request_permission, which no human answers, so the
+        // reviewer cannot report. It must never appear in Argv — an interactive hosted session has to behave
+        // as the user's own does.
+        await Assert.That(descriptor.UnattendedTrustArgv.SequenceEqual(["--approval-mode", "yolo"])).IsTrue();
+        await Assert.That(descriptor.Argv.Contains("--approval-mode")).IsFalse();
+        await Assert.That(descriptor.Argv.Contains("--yolo")).IsFalse();
+        await Assert.That(descriptor.UnattendedTrustArgv.Contains("--yolo")).IsFalse();
         await Assert.That(descriptor.UnattendedInteractionPolicy)
-            .IsEqualTo(AcpUnattendedInteractionPolicy.Disabled);
+            .IsEqualTo(AcpUnattendedInteractionPolicy.Fail);
         await Assert.That(descriptor.SupportsBorrowedReviewFlow).IsFalse();
 
         // FALSE pending a call-level stdio probe. Gemini advertises {http, sse} and not stdio — but that
         // advertisement is not a discriminator (Kiro honours stdio without advertising it), so flipping
         // this needs a purpose-built stdio server driven to a real tools/call, not an inference.
-        await Assert.That(descriptor.SupportsMcpServers).IsFalse();
+        await Assert.That(descriptor.SupportsMcpServers).IsTrue();
 
         // Same call as Kiro: session/new returns models so the read half fits, but the write half is
         // unverified and ConfigOptionModelSelector fails SILENTLY.
@@ -286,12 +293,15 @@ public class AcpVendorDescriptorTests {
         var allowed = argv[flagAt + 1];
         await Assert.That(allowed).IsNotEmpty();
 
-        if (AcpVendorDescriptors.Gemini.SupportsMcpServers) {
-            // Denying everything is wrong once servers are injected: the allowlist has to name them.
-            await Assert.That(allowed).IsNotEqualTo(AcpVendorDescriptors.UnmatchableMcpNamePlaceholder);
-        } else {
-            await Assert.That(allowed).IsEqualTo(AcpVendorDescriptors.UnmatchableMcpNamePlaceholder);
-        }
+        // AI-899 wrote the SupportsMcpServers==true branch as a guess: that flipping the flag would make the
+        // DESCRIPTOR carry the injected server names. Measured, the coupling lives one layer down — the
+        // template always holds the placeholder, and the review LAUNCH replaces it with that launch's
+        // result-channel wire name, because the name is per-launch and so cannot be a constant.
+        //
+        // The coupling it was reaching for is asserted where it actually happens: see
+        // AcpHostedAgentRuntimeFactoryTests' canonical-argv tests, which compare the whole emitted vector
+        // for both launch kinds.
+        await Assert.That(allowed).IsEqualTo(AcpVendorDescriptors.UnmatchableMcpNamePlaceholder);
     }
 
     /// <summary>

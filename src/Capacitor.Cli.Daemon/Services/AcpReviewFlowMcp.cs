@@ -17,8 +17,15 @@ internal static class AcpReviewFlowMcp {
     internal static IReadOnlyList<AcpMcpServerSpec> Build(RuntimeStartContext ctx, IReadOnlyList<string> allowlistServerIds) {
         // The result channel: both env vars are mandatory (the flow-result MCP server exits when
         // KCAP_FLOW_AGENT_ID is absent). KCAP_FLOW_AGENT_ID is exclusive to it.
+        // The channel is injected under the launch's WIRE name, which for an aliasing vendor is the
+        // canonical id plus a per-launch GUID. It must be the same instance the argv's MCP allowlist is
+        // built from: a second derivation here would produce a launch whose allowlist does not admit its
+        // own result channel, and that failure is silent — the agent starts and can never report.
+        var channelName = ctx.LaunchIdentity?.ResultChannelWireName
+                       ?? KcapMcpRegistry.ReservedResultChannelId;
+
         var servers = new List<AcpMcpServerSpec> {
-            new(KcapMcpRegistry.ReservedResultChannelId, ctx.CapacitorPath, ["mcp", "flow-result"],
+            new(channelName, ctx.CapacitorPath, ["mcp", "flow-result"],
                 [new("KCAP_URL", ctx.ServerUrl!), new("KCAP_FLOW_AGENT_ID", ctx.AgentId)])
         };
 

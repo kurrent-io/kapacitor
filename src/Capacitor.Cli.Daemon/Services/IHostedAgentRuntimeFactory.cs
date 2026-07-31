@@ -1,5 +1,6 @@
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Acp;
+using Capacitor.Cli.Daemon.Acp;
 using Capacitor.Cli.Core.Commands;
 using Capacitor.Cli.Core.LocalIpc;
 
@@ -149,5 +150,16 @@ internal sealed record RuntimeStartContext(
         // Caller-selected Codex sandbox/approval posture, carried verbatim from
         // LaunchAgentCommand.CodexPosture through to LauncherContext.CodexPosture. Non-null only for
         // an interactive daemon-owned-worktree Codex launch that passed the orchestrator's guard.
-        CodexLaunchPosture? CodexPosture = null
+        CodexLaunchPosture? CodexPosture = null,
+        // The per-launch generated names for THIS launch (result-channel wire name, unmatchable MCP name).
+        //
+        // NOT a caller input, despite living on the context: the factory overwrites it at the top of
+        // StartAsync, so a value supplied on the way in never reaches a launch (asserted by test). It sits
+        // here so one instance reaches both the session/new MCP list and the argv builder through the
+        // existing connectionSource seam — which is the whole point, since two independent derivations of
+        // these names is the defect LaunchIdentity exists to make unrepresentable.
+        //
+        // Null on any path that has not been through the factory, and on the PTY launchers, which have no
+        // MCP-name gate to defend.
+        LaunchIdentity?     LaunchIdentity = null
     );

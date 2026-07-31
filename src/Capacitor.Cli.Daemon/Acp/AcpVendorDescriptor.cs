@@ -323,9 +323,20 @@ internal static class AcpVendorDescriptors {
         ResolveDefaultModel: _ => null,
         Argv:                ["--experimental-acp", "--skip-trust",
                               "--allowed-mcp-server-names", UnmatchableMcpNamePlaceholder],
-        UnattendedTrustArgv: [],
-        SupportsUnattended:  false,
+        // --approval-mode yolo is REQUIRED for a reviewer, not a convenience: without it Gemini emits
+        // session/request_permission before invoking its OWN injected result-channel tool, and no human is
+        // there to answer, so the reviewer cannot report at all. Measured both ways (spec §2.4). Review
+        // launches only — an interactive hosted session must behave as the user's own does (§3.3).
+        UnattendedTrustArgv: ["--approval-mode", "yolo"],
+        SupportsUnattended:  true,
         ModelSelector:       NoOpModelSelector.Instance,
-        SupportsMcpServers:  false
+        // Measured: Gemini DOES honour session/new.mcpServers — it spawns the stdio server, lists its tools
+        // and calls them. This resolves the transport to SessionNew, which is what carries the reviewer's
+        // result channel. AI-899 §3.4 deferred this as a call-level probe; the answer is yes (spec §2.1).
+        SupportsMcpServers:  true,
+        // Fail rather than AutoApprove: with --approval-mode yolo, Gemini emits NO interaction frame at all,
+        // so receiving one means the launch contract regressed (a dropped flag, a vendor change) and the
+        // honest response is to reap the reviewer rather than auto-approve whatever it asked for (§3.4).
+        UnattendedInteractionPolicy: AcpUnattendedInteractionPolicy.Fail
     );
 }
