@@ -46,11 +46,7 @@ static class WindowsTaskUnit {
         // first version checked only the value, while the stated rationale (callers add entries after
         // ServiceEnvironment.Build, so the sink must validate) applies to both sides equally. `=` is
         // rejected too, since it splits the assignment even without a quote.
-        if (key.Length == 0 || IsUnrepresentable(key) || key.Contains('='))
-            throw new InvalidOperationException(
-                $"Cannot write the service wrapper: the environment variable NAME '{key}' contains a "
-              + "quote, newline or '=', which this platform's wrapper cannot carry safely. Such a name "
-              + "cannot have come from the capture allowlist, so a caller added it directly.");
+        ServiceText.RequireValidEnvName(key);
 
         if (!IsUnrepresentable(value)) return;
 

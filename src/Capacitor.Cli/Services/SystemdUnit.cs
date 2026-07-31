@@ -22,8 +22,10 @@ static class SystemdUnit {
         sb.Append("Wants=network-online.target\n\n");
 
         sb.Append("[Service]\n");
-        foreach (var (k, v) in spec.Environment)
+        foreach (var (k, v) in spec.Environment) {
+            ServiceText.RequireValidEnvName(k);
             sb.Append($"Environment={EnvAssignment(k, ServiceText.SystemdValue(v))}\n");
+        }
 
         var parts = new[] { spec.DaemonBinaryPath, "--name", spec.ServiceId, "--log-file", spec.LogPath }
             .Concat(spec.ExtraArgs)

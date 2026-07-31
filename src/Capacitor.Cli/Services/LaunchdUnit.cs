@@ -38,8 +38,13 @@ static class LaunchdUnit {
         sb.Append("  </array>\n");
 
         sb.Append("  <key>EnvironmentVariables</key><dict>\n");
-        foreach (var (k, v) in spec.Environment)
+        foreach (var (k, v) in spec.Environment) {
+            // XML escaping already contains the name structurally, but a control character is not legal
+            // XML 1.0 at all — so the plist would be silently unparseable rather than injected. Same
+            // check, same reason: one grammar, applied at every sink.
+            ServiceText.RequireValidEnvName(k);
             sb.Append($"    <key>{ServiceText.Xml(k)}</key><string>{ServiceText.Xml(v)}</string>\n");
+        }
         sb.Append("  </dict>\n");
 
         sb.Append("  <key>RunAtLoad</key><true/>\n");
