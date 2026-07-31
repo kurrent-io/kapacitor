@@ -94,76 +94,43 @@ fixed at four sites.
 `fork`→`Fork`, `compact`→`Compact`), and `SessionStartMemoryLifecyclePolicy` suppresses injection when
 `Reason == Compact` or `!IsTopLevel`.
 
-Gemini emits only `startup` / `resume` / `clear`, so:
-
-| Gemini `source` | `SessionLifecycleReason` | Inject? |
-|---|---|---|
-| `startup` | `Startup` | yes |
-| `resume` | `Resume` | yes — but the lease dedupes (§2.3) |
-| `clear` | `Clear` if it exists, else `Startup` | yes |
+Gemini emits only `startup` / `resume` / `clear`.
 
 `CallbackMayRepeat: false`. Gemini's `SessionStart` is a session-level event, not a per-turn callback —
 unlike Kiro's `agentSpawn`, which fires per prompt and needed `RepeatedTurnCallback`.
 
-**RESOLVED by review — `clear` MUST re-inject; `resume` must not.** My original proposal (let the lease
-suppress both, matching Claude) was wrong, and the reason is decisive: `clear` *removes the model context
-that held the injection*. Suppressing it means "once per session" stops achieving the stated goal — the
-index is simply unavailable for the rest of that session, silently. That is a feature gap dressed up as
-idempotence.
+**The review was right that suppressing `clear` is a silent feature loss — and following that finding to
+its conclusion moved it OUT of this issue. Split to AI-1617.**
 
-The two cases are genuinely different:
+The finding stands: `clear` destroys the model context that held the injection, so a session-id-keyed
+lease means the index is silently unavailable for the rest of that session. That is a real bug.
 
-| Source | Model context | Correct behaviour |
+But it is **not a Gemini bug**, and the fix does not belong in adapter #6. Verified:
+
+* `ClaudeHookCommand` maps `resume`/`reopen`/`fork`/`compact` and lets everything else — **including
+  `clear`** — fall to `_ => SessionLifecycleReason.New`.
+* There is **no `Clear` reason in `SessionStartMemoryContracts` at all.**
+
+So Claude has the identical silent loss today, and the mechanism required to fix it (a durable atomic
+context generation in the *shared* lease store, a stable delivery id to dedupe duplicate `clear`
+callbacks, and a persisted-key migration so five already-merged adapters don't start re-injecting on
+upgrade) is a **foundation feature affecting every harness**. Building it here would invent a foundation
+mechanism under delivery pressure, put five shipped adapters at migration risk, and fix one harness while
+five keep the bug.
+
+**Decision for AI-1463: `clear` behaves exactly as it does for the other five adapters — the lease
+suppresses it.** This is a *documented known gap*, not a claim that it is correct. AI-1617 owns fixing it
+everywhere at once.
+
+| Gemini `source` | `SessionLifecycleReason` | Injects? |
 |---|---|---|
-| `resume` | earlier injection still in context (same transcript continues) | **suppress** — re-injecting duplicates |
-| `clear` | earlier injection destroyed | **re-inject** — otherwise the feature is gone |
+| `startup` | `New` | yes |
+| `resume` | `Resume` | no — lease held |
+| `clear` | `New` (no `Clear` reason exists) | no — lease held · **known gap, AI-1617** |
 
-**Lease rule: the lease key gains a context generation.** A session-id-only key cannot express this. Key
-the lease on `(sessionId, generation)` where the generation increments on each `clear`, so:
-
-* `startup` → generation 0, injects.
-* `resume` → generation unchanged, lease held, suppressed.
-* `clear` → generation +1, fresh lease, injects.
-* second `clear` → generation +2, injects again.
-
-The generation must be **durable** alongside the lease (a hook process is short-lived and cannot hold it
-in memory) and must not be inferable from the transcript, since `clear` does not start a new one. The
-simplest durable form is a per-session counter in the lease store incremented on a `clear`-sourced
-`SessionStart`.
-
-**Acceptance coverage is required for the sequences, not just the states:** `startup → resume` (exactly
-one output), `startup → clear` (a second output), `clear → clear` (a third). A test that only checks
-"clear injects" would pass with a broken generation counter that always injects.
-
-#### 2.2a The generation needs an atomic contract, not a table (round-2 finding 2)
-
-The table above describes intent, not a mechanism — and as the review noted, an unsynchronised counter
-races. Required contract:
-
-**Operations**, keyed by `(harness, normalizedSessionId)` so the namespace cannot collide with another
-vendor's session id:
-
-* `ReadOrInitGeneration` — on `startup` / `resume`. Idempotent, no mutation.
-* `IncrementAndReserve` — on `clear`. **One atomic operation** that advances the generation *and* acquires
-  the lease for the new generation. Splitting these is the race the review identified: a `resume` landing
-  between an increment and a separate lease acquisition would acquire the *new* generation and inject,
-  while the `clear` that caused the increment then finds the lease held and stays silent — the exact
-  inversion of intended behaviour.
-
-**Fault behaviour, each of which needs a test:**
-
-| Situation | Required behaviour |
-|---|---|
-| process dies after increment, before output/lease completion | generation stays advanced; lease is **not** completed, so the next `SessionStart` for that generation may inject. Losing one injection is acceptable; a permanently-stuck generation is not. |
-| memory provider fails on `clear` | generation stays advanced, lease released (not completed) — same as any provider failure |
-| duplicate `clear` delivery (same event twice) | must **not** advance twice. Requires an idempotency key on the delivery, not just the counter — otherwise both injections fire |
-| `SessionEnd` / lease expiry | generation state is cleaned up with the session's lease records; it must not accumulate per-session rows indefinitely |
-
-**Tests must include concurrency and fault transitions, not only the three sequential happy paths** — a
-sequential-only suite passes against a non-atomic implementation.
-
-**This changes the file scope.** See §4, corrected: this is no longer a two-file change, and it *does*
-touch the foundation.
+Mapping `clear` to `New` matches Claude's existing behaviour exactly, so this adapter introduces no new
+divergence. The acceptance requirement that survives here is narrow: `startup → resume` emits **exactly
+once**. The `clear` sequences move to AI-1617.
 
 ### 2.3 Re-injection on `resume` is suppressed by the lease, deliberately
 
@@ -283,13 +250,55 @@ wins the `stdout || stderr` selection and the diagnostics are never parsed as ho
 * This is a **deliberate divergence** from the other five adapters, which emit nothing on the empty path.
   It is justified by a Gemini-specific runner behaviour, and the reason must be stated at the call site so
   nobody "harmonises" it back later.
-* Scope: `SessionStart` only. `SessionEnd` / `Notification` keep today's behaviour and remain the §6
-  follow-up — they are not paths this issue redesigns.
+* Scope: `SessionStart` only. `SessionEnd` / `Notification` keep today's behaviour and are split to
+  **AI-1618** — they are not paths this issue redesigns.
 * **Residual, documented:** if the stdout write itself fails wholly or partially (§3.2), stderr can still
   be exposed. Application code cannot prevent that; it is bounded by §3.1 fact (3).
 
-**Acceptance:** failed POST + null fragment, failed POST + opt-out, and failed POST + provider failure —
-each asserting kcap diagnostics are **not** consumed as hook context.
+#### The exact wire contract (round-3 finding 3)
+
+The review is right that `{}`, `{"continue":true}`, a null `hookSpecificOutput` and an event-only envelope
+are **not** semantically interchangeable on a decision channel, and that `Render` returning `""` means
+this needs a new serialization path. Specified:
+
+```jsonc
+// no-fragment / opt-out / budget-exhausted / lease-held / provider-failure
+{"continue":true}
+```
+
+Chosen deliberately over the alternatives:
+
+* **`{"continue":true}`** — an explicit allow. `continue` is read directly by the output object's
+  constructor, and carrying **no** `hookSpecificOutput` key at all means `getAdditionalContext()` short-
+  circuits on its `"additionalContext" in this.hookSpecificOutput` guard and contributes nothing. No
+  `systemMessage`, so nothing is surfaced to the user either.
+* **`{}`** — rejected: parses, but asserts nothing. It relies on every default staying benign, which is
+  exactly the assumption §3.1 had to go and verify. An explicit allow does not.
+* **`{"hookSpecificOutput":{"hookEventName":"SessionStart"}}`** — rejected: an `additionalContext`-less
+  `hookSpecificOutput` is a shape whose handling we would have to verify separately, for no benefit.
+
+Requires a new AOT-serializable record (e.g. `GeminiAllowEnvelope([JsonPropertyName("continue")] bool
+Continue = true)`) registered in `SessionStartMemoryJsonContext`. **Verify on 0.53.0** that it continues
+the turn, contributes no context and no system message, and shadows stderr.
+
+#### Path scope — the invariant covers EVERY recognised SessionStart
+
+The review asked whether the disabled-session and excluded-path fast paths (which `return 0` before
+`HandleSessionStart`) are exceptions. **They must not be.** An exception-riddled invariant is not an
+invariant, and those paths are not stderr-free in practice — `Program.cs` runs a central spool drain
+before dispatch, and any of it can write stderr.
+
+**Invariant: a recognised Gemini `SessionStart` writes exactly one JSON object to stdout on every
+returning path** — the memory envelope when there is a fragment, `{"continue":true}` otherwise. That
+includes the disabled-session and excluded-path early returns.
+
+Deliberately excluded, because these are not recognised `SessionStart` events at all and Gemini has no
+hook result to attribute: unparseable stdin, missing/blank `hook_event_name`, a non-GUID `session_id`, and
+any non-`SessionStart` event. Those keep today's silent `return 0`.
+
+**Acceptance:** failed POST × {null fragment, opt-out, provider failure}, plus disabled-session and
+excluded-path — each asserting exactly one JSON object on stdout and that kcap diagnostics are **not**
+consumed as hook context.
 
 ### 3.2 Write mechanics — "zero bytes on any failure" was too strong
 
@@ -403,22 +412,19 @@ was not definitively located. Treat as a prior, not proof.
 
 ## 4. Files
 
-**CORRECTED (round-2 finding 2).** The original claim — two files, no foundation changes, and "a foundation
-change signals the envelope was incomplete" — was wrong, and self-contradictory once §2.2a's generation
-rule was adopted. The generation is a *lease-store* concept, not an envelope one, so touching the
-foundation here says nothing about the envelope.
+**Scope reverted after the AI-1617 split.** Round 2 correctly pointed out that my original two-file claim
+was self-contradictory *once the generation rule was in scope*. With that rule moved to AI-1617, the small
+scope is honest again — and no lease-key change means **no migration risk to the five merged adapters**,
+which is the main reason the split is worth it.
 
 * `src/Capacitor.Cli/Commands/GeminiHookCommand.cs` — orchestrator call, stdout write, budget, `source` →
-  lifecycle mapping.
+  lifecycle mapping, and the §3.2-pre always-emit invariant across every recognised `SessionStart` path.
 * `src/Capacitor.Cli/Program.cs` — thread `hookProcessStart` into the `--gemini` dispatch.
-* **`src/Capacitor.Cli/SessionStartMemory/SessionStartMemoryLeaseStore.cs`** — the atomic
-  `ReadOrInitGeneration` / `IncrementAndReserve` operations and generation-aware lease keys (§2.2a).
-* **`src/Capacitor.Cli/SessionStartMemory/SessionStartMemoryOrchestrator.cs`** — accept and thread the
-  generation; expose the release seam that option (b) in §3.3 would wire.
-* Possibly `SessionStartMemoryContracts.cs` — if the generation belongs on the request/lifecycle record.
-* Foundation **tests** change accordingly; the five merged adapters must be verified unaffected, since a
-  generation-aware key touches a shared store. **A default generation of 0 for every existing harness must
-  keep their behaviour byte-identical** — that is a required regression assertion, not an assumption.
+* `src/Capacitor.Cli/SessionStartMemory/SessionStartMemoryJsonContext.cs` — register the new
+  `{"continue":true}` allow record (§3.2-pre). This is an *additive* AOT registration, not a change to any
+  existing type, so it cannot alter another harness's output.
+* **No lease-store or orchestrator change.** If one becomes necessary, stop: it means AI-1617 scope has
+  leaked back in.
 
 ## 5. Test plan
 
@@ -426,7 +432,7 @@ Layers, per the project's per-vendor convention:
 
 1. **Foundation** — `Gemini_*` cases in `SessionStartMemoryFoundationTests`: envelope rendering
    (fragment → exact JSON), null fragment → empty string, lease dedupe across two `SessionStart`
-   invocations on one session id (the `resume` case).
+   invocations on one session id (the `resume` case). `clear` sequences move to AI-1617.
 2. **Hook command** — `GeminiSessionStartMemoryTests`: opt-out honoured (including under `KCAP_URL`, the
    §2.4 trap); budget exhaustion writes nothing; a throwing provider writes nothing and still returns the
    pre-existing exit code; stdout is written on the failed-POST path (§3.3).
@@ -493,13 +499,29 @@ The live cert is the only thing that verifies §3.1 — that a `hookSpecificOutp
 disturb Gemini's decision channel. A green unit suite proves the bytes we emit, not that Gemini accepts
 them. If the cert cannot be run, this issue should not be called done.
 
-## 6. Follow-ups this work surfaces but does not fix
+## 6. Split out of this issue — both filed, both Todo
 
-* **`stdout.trim() || stderr.trim()` (§3.1a).** Gemini parses a hook's **stderr** as its output whenever
-  stdout is empty. kcap writes diagnostics to stderr, so this already happens today on every failed-POST
-  session across the Gemini hook. It is currently benign — a parse failure degrades to plain text — but it
-  is one carelessly-worded stderr message away from being a real bug, and it means kcap's stderr is
-  semantically part of Gemini's hook contract. Worth its own issue rather than a comment.
+* **AI-1617 — context-generation lease key, all harnesses.** The `clear` re-injection gap (§2.2). Split
+  because it is foundation-wide (Claude has the identical loss and there is no `Clear` reason in the
+  contracts), and because the required persisted-key change carries a **re-injection migration risk to all
+  five merged adapters** that must not ride along with an adapter PR.
+* **AI-1618 — Gemini stderr shadowing for `SessionEnd` / `Notification`** (§3.1a). The `SessionStart` half
+  is fixed here (§3.2-pre) because it is on the paths this issue redesigns and carries the opt-out leak;
+  the remaining events are theirs.
+
+## 6a. Definition of done (round-3 finding 4)
+
+The conditional §3.3 design is only acceptable if the PR *finalises* it. Required before merge:
+
+1. **Run the live non-zero-exit case and write the result — with the observed `gemini --version` — back
+   into this spec.**
+2. **Delete the branch that was not selected.** The PR must not merge with both (a) and (b) still
+   normative.
+3. **Add the branch-specific lease assertion**, not a generic one:
+   * if **(a)**: the failed-POST invocation *completes* the lease, and a subsequent `resume` emits nothing.
+   * if **(b)**: it *releases* the lease, and a subsequent `resume` retries.
+4. **If the turn aborts, stop and escalate** — that is a defect in its own right, not a probe result to
+   design around, and it must not be recorded as a passing cert.
 
 ## 7. Out of scope
 
