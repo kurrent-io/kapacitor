@@ -365,19 +365,11 @@ public class CursorHookCommandTests {
 
         await Assert.That(exit).IsEqualTo(0);
 
-        // Poll for the CONTENT, not the file's existence. The spool file goes through three states here:
-        // seeded-with-sessionStart (above) → deleted once the drain delivers that line (HookSpool removes
-        // a fully-consumed file) → re-created by the fresh sessionEnd's append on the abandoned
-        // background continuation. An existence check cannot tell state 1 from state 3, so it can be
-        // satisfied by the SEEDED file and read stale content that never contains sessionEnd.
-        //
-        // The read shares read+write because the old File.ReadAllTextAsync (FileShare.Read) DENIED Write,
-        // so it collided with the append/rewrite holding the file open — mandatory on Windows, invisible
-        // on Unix, and the failure CI recorded.
-        //
-        // SingleOrDefault is deliberate: the only *.jsonl in the spool dir is HookSpool's per-session live
-        // file, and this test uses one session id, so a second match would be a real bug worth throwing on.
-        // (Its temps are `.draining`/`.ordered-*` and the ended marker is `.ended-<key>` — none match.)
+        // Poll for CONTENT, not existence: the spool file is seeded → deleted once drained → re-created by
+        // the fresh sessionEnd, and an existence check cannot tell the seeded file from the re-created one.
+        // The handle must block nothing the drain does — HookSpool both appends to and File.Move/Delete's
+        // this exact path, and every restriction is mandatory on Windows but invisible on Unix.
+        // SingleOrDefault: a second *.jsonl for one session id would be a real bug worth throwing on.
         const int budgetSeconds = 10;
 
         var deadline      = DateTime.UtcNow + TimeSpan.FromSeconds(budgetSeconds);
@@ -388,15 +380,16 @@ public class CursorHookCommandTests {
         while (!observedEnd && DateTime.UtcNow < deadline) {
             if (fx.SpoolFiles.SingleOrDefault() is { } path) {
                 try {
-                    await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
-                    using var       reader = new StreamReader(stream);
+                    await using var stream = new FileStream(
+                        path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+                    using var reader = new StreamReader(stream);
                     spoolContent  = await reader.ReadToEndAsync();
                     lastIoFailure = null; // a clean read means any earlier failure was the transient race
                     observedEnd   = spoolContent.Contains("sessionEnd", StringComparison.Ordinal);
                 } catch (IOException ex) {
-                    // The enumerate→open race, NOT a sharing conflict — FileShare.ReadWrite already permits
-                    // the writers. Between states 2 and 3 the file is deleted and re-created, so a path
-                    // EnumerateFiles just returned can be gone by the time we open it.
+                    // The enumerate→open race, not a sharing conflict: the share flags above permit
+                    // everything the drain does, but a path EnumerateFiles just returned can be deleted
+                    // before we open it.
                     lastIoFailure = ex;
                 }
             }
