@@ -39,7 +39,7 @@ The `kcap` daemon runs coding agents on a user's machine with no local presence:
 
 **Does not own:** session browsing, server-admin settings (deep-link to web admin), tenant provisioning.
 
-**Code placement:** kcap-cli repo, new `src/Capacitor.App` project sharing `Capacitor.Cli.Core`. Server-side changes near-zero: one coded launch-denial reason surfacing through the existing launch-failure lane.
+**Code placement:** kcap-cli repo, new `src/Capacitor.App` project sharing `Capacitor.Cli.Core`. Server-side changes are small and additive: the coded launch-denial reason surfaces through the existing launch-failure lane, and — discovered during slice-1 planning — the server must stamp two trailing optional fields (`requester_user_id`, `requester_is_owner`) onto the `LaunchAgent` command, because today's launch payload carries no requester identity at all and the daemon stores no owner user id. Old servers send nothing; the daemon treats null as unknown and falls through to the (upgrade-safe `allow`) default.
 
 ## 4. Process architecture & local control channel
 
