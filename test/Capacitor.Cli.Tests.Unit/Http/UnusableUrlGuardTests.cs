@@ -120,7 +120,11 @@ public class UnusableUrlGuardTests : IDisposable {
         await Assert.That(starts).IsEqualTo(0);
     }
 
-    [Test]
+    // Globally sequential: this test swaps the process-global Console.Error to capture the
+    // diagnostic, so it must not overlap another Console-redirecting test — concurrent capturers
+    // save each other's writers as their "original" and restore them mid-flight, sending this
+    // assertion's output to the other test's buffer.
+    [Test, NotInParallel]
     public async Task InlineDrain_emits_its_own_guard_diagnostic() {
         // A stopwatch assertion here was vacuous: the unguarded path can also return quickly. The
         // proof is the diagnostic, which only this guard emits — distinct from the POST guard's and

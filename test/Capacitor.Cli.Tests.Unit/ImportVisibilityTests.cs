@@ -928,14 +928,19 @@ public class ImportVisibilityTests : IDisposable {
     // Section D — autoSkipExclusions never blocks on stdin.
     // =====================================================================
 
-    const string ResolvedStateMutation = "ResolvedStateMutation"; // same group as AppConfigResolvedStateTests
-
-    [Test]
-    [NotInParallel(ResolvedStateMutation)]
+    // Globally sequential (NO group key), like every other Console-redirecting test in this suite.
+    // This test captures stderr by swapping the process-global Console.Error. A group key is not
+    // enough: another capturing test in a DIFFERENT group runs concurrently, saves our writer as its
+    // "original", and restores it when it finishes — after which our own "Auto-skipping" line is
+    // written to that test's writer instead of ours, and our buffer holds only whatever some other
+    // test wrote to stderr in the meantime (an unrelated login-flow error was the observed symptom).
+    // Bare NotInParallel also subsumes the AppConfigResolvedStateTests serialization the
+    // SetResolvedState call below needs, since nothing runs alongside a bare-NotInParallel test.
+    [Test, NotInParallel]
     public async Task HandleImport_autoSkipExclusions_completes_without_prompting_and_logs_auto_skip() {
         // Excluded PATH (not repo) so no real git repo needs to be spun up — PathExclusion.IsExcluded
         // is a plain prefix check. The profile injection uses AppConfig.SetResolvedState (the same
-        // seam Change 2 → Refresh added), so this must serialize against AppConfigResolvedStateTests.
+        // seam Change 2 → Refresh added), which the bare NotInParallel above covers.
         var excludedDir = Path.Combine(_tempDir, "excluded-proj");
         Directory.CreateDirectory(excludedDir);
 

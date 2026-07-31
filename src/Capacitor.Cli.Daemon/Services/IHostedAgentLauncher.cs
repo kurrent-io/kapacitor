@@ -116,6 +116,12 @@ internal sealed record LauncherContext(
     /// MCP config, stripping any flow-starting server regardless of listing. Null/local-spawn
     /// launches (e.g. <c>kcap agent start</c>) never set this.</summary>
     public string[]? McpAllowlist { get; init; }
+
+    /// <summary>Caller-selected Codex sandbox/approval posture. Non-null only for an interactive
+    /// daemon-owned-worktree launch whose block already passed the orchestrator's
+    /// <c>CodexPosturePolicy</c> guard; null for every other launch, which keeps the derived
+    /// containment values.</summary>
+    public CodexLaunchPosture? CodexPosture { get; init; }
 }
 
 internal readonly record struct LaunchArgs(string[] Args, string? McpConfigPath);

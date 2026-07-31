@@ -45,6 +45,14 @@ internal record AgentInstance(
     public string?              FlowRunId         { get; init; }
     public string?              FlowRole          { get; init; }
 
+    /// <summary>The applied Codex sandbox/approval pair — the values actually passed to the vendor
+    /// CLI, whether caller-selected or derived. Set only for an interactive Codex launch on a
+    /// daemon-owned worktree; null everywhere else. Stored HERE (not recomputed at each send) so the
+    /// initial registration and every reconnect re-registration report the same pair, which is what
+    /// lets the value survive a server restart.</summary>
+    public string?              SandboxPolicy     { get; init; }
+    public string?              ApprovalPolicy    { get; init; }
+
     /// <summary>Phase B (D1): single-flight teardown latch — a plain field (not a property) so
     /// <see cref="System.Threading.Interlocked.CompareExchange(ref int,int,int)"/> can gate it. Exactly
     /// one teardown runs even if the launch-catch and the read-loop's finally race.</summary>
@@ -968,6 +976,17 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             return new CommandOutcome(CommandOutcomeKind.LaunchRejected, agentId, RejectReason: CommandRejectedReason.Semantic);
         }
 
+        // A caller-selected Codex posture is validated here — before the repo checks and the worktree
+        // creation below, so a rejection leaves nothing to clean up. Selection is only ever valid for
+        // an interactive daemon-owned-worktree launch: a posture on a borrowed, review-flow or
+        // PR-review launch would defeat a containment invariant, so it fails the launch outright
+        // rather than being silently dropped or silently honoured.
+        if (CodexPosturePolicy.RejectionReason(cmd) is { } postureRejection) {
+            await _server.LaunchFailedAsync(cmd.AgentId, postureRejection);
+
+            return new CommandOutcome(CommandOutcomeKind.LaunchRejected, agentId, RejectReason: CommandRejectedReason.Semantic);
+        }
+
         if (isReviewFlow && cmd.ReviewerCertification is { } certification) {
             var version = string.Equals(cmd.Vendor, "claude", StringComparison.Ordinal)
                 ? DaemonRunner.ProbeCliVersionForLaunch(_config.ClaudePath)
@@ -1189,7 +1208,8 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
                 Work: work,
                 DaemonId: _daemonId,       // Phase B (D4 §6.4(3)): child env markers for the OrphanReaper scan
                 DaemonEpoch: _daemonEpoch,
-                IsBorrowedSnapshot: snapshotBorrow
+                IsBorrowedSnapshot: snapshotBorrow,
+                CodexPosture: cmd.CodexPosture
             );
 
             HostedRuntimeStart start;
@@ -1232,11 +1252,35 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
 
             var cts = new CancellationTokenSource();
 
+            // Applied-posture echo, stamped only for an interactive Codex launch on a daemon-owned
+            // worktree. A review-flow or PR-review launch reports nothing (its posture is the
+            // containment invariant, not a choice), and neither does a borrowed one. Both borrow
+            // conditions are tested: `work` alone is not enough, because a snapshot-backed borrow
+            // maps to OwnedWorktree while still being a borrow the caller never chose a posture for.
+            (string Sandbox, string Approval)? appliedPosture =
+                string.Equals(cmd.Vendor, "codex", StringComparison.OrdinalIgnoreCase)
+             && cmd.Kind == LaunchKind.Default
+             && !cmd.Borrowed
+             && work == WorkLocation.OwnedWorktree
+                    ? CodexPosturePolicy.Resolve(work, isReviewFlow, cmd.CodexPosture)
+                    : null;
+
+            // The permission bridge can never prompt under `never`, and danger-full-access reaches
+            // outside the worktree entirely. The dashboard warns the user before launch; this is the
+            // operator-side record of what actually ran.
+            if (appliedPosture is { } applied
+             && (string.Equals(applied.Approval, "never", StringComparison.Ordinal)
+              || string.Equals(applied.Sandbox, "danger-full-access", StringComparison.Ordinal))) {
+                LogBridgeDefeatingPosture(agentId, applied.Sandbox, applied.Approval);
+            }
+
             var agent = new AgentInstance(agentId, prompt, effectiveModel, effort, repoPath, cmd.Vendor, runtime, worktree, cts) {
                 McpConfigPath       = mcpConfigPath,
                 CurrentCols         = HostedPtyCols,
                 CurrentRows         = HostedPtyRows,
                 Work                = work,
+                SandboxPolicy       = appliedPosture?.Sandbox,
+                ApprovalPolicy      = appliedPosture?.Approval,
                 ReviewerBridgeToken = reviewerToken,
                 BorrowedSnapshotSource = borrowedSnapshotSource,
                 Kind                = cmd.Kind,       // Phase B (D2): flow identity + kind for LiveAgents/status report
@@ -2235,7 +2279,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     async Task RegisterAgentAsync(AgentInstance agent) {
         if (agent.IsPrivate) return;
 
-        await _server.AgentRegisteredAsync(agent.Id, agent.Prompt, agent.Model, agent.Effort, agent.RepoPath);
+        await _server.AgentRegisteredAsync(agent.Id, agent.Prompt, agent.Model, agent.Effort, agent.RepoPath, agent.SandboxPolicy, agent.ApprovalPolicy);
 
         // Report the PTY size so read-only viewers lock their xterm to it. Best-effort.
         try {
@@ -2473,7 +2517,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
         foreach (var agent in _agents.Values.Where(a => (a.Status is "Starting" or "Running") && !a.IsPrivate)) {
             for (var attempt = 1; ; attempt++) {
                 try {
-                    await _server.AgentRegisteredAsync(agent.Id, agent.Prompt, agent.Model, agent.Effort, agent.RepoPath);
+                    await _server.AgentRegisteredAsync(agent.Id, agent.Prompt, agent.Model, agent.Effort, agent.RepoPath, agent.SandboxPolicy, agent.ApprovalPolicy);
                     await _server.AgentStatusChangedAsync(agent.Id, agent.Status, agent.SessionId);
 
                     // Re-send the fixed PTY dims. The server stores them in memory, so a
@@ -2860,6 +2904,12 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
 
     [LoggerMessage(Level = LogLevel.Information, Message = "Agent {AgentId} spawned (PID={Pid}, worktree={Worktree}, vendor={Vendor})")]
     partial void LogAgentSpawned(string agentId, int pid, string worktree, string vendor);
+
+    [LoggerMessage(
+        Level   = LogLevel.Warning,
+        Message = "Interactive Codex agent {AgentId} launched with sandbox={Sandbox} approval={Approval}: "
+                + "kcap approval prompts will never appear for this agent and/or it can reach outside its worktree")]
+    partial void LogBridgeDefeatingPosture(string agentId, string sandbox, string approval);
 
     [LoggerMessage(Level = LogLevel.Information, Message = "Agent {AgentId} exited with code {ExitCode}")]
     partial void LogAgentExited(string agentId, int? exitCode);

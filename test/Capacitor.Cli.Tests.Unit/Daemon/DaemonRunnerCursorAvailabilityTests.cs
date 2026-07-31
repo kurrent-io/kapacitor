@@ -146,6 +146,23 @@ public class DaemonRunnerCursorAvailabilityTests {
         await Assert.That(claude.BorrowedReviewSupported).IsFalse();
     }
 
+    /// <summary>Launch-posture support is advertised per vendor: Codex accepts a caller-selected
+    /// sandbox/approval block, every other vendor does not. The server refuses posture selection
+    /// unless this is explicitly true, so a wrong default here would either silently drop a
+    /// selection or offer one no launcher honours.</summary>
+    [Test]
+    public async Task ComputeUnattendedVendorCapabilities_AdvertisesLaunchPostureForCodexOnly() {
+        IHostedAgentRuntimeFactory[] factories = [
+            new FakeRuntimeFactory("claude", isAvailable: true, supportsUnattended: true),
+            new FakeRuntimeFactory("codex", isAvailable: true, supportsUnattended: true),
+        ];
+
+        var capabilities = DaemonRunner.ComputeUnattendedVendorCapabilities(factories, new DaemonConfig());
+
+        await Assert.That(capabilities.Single(c => c.Vendor == "codex").SupportsLaunchPosture).IsTrue();
+        await Assert.That(capabilities.Single(c => c.Vendor == "claude").SupportsLaunchPosture).IsFalse();
+    }
+
     // === Trust-by-default borrowed-review advertisement ===
     // (docs/superpowers/specs/2026-07-27-ai1528-trust-by-default-borrowed-review-design.md)
     //

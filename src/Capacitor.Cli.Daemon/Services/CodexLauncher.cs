@@ -16,10 +16,11 @@ internal sealed partial class CodexLauncher(
     public bool   SupportsUnattended => true;
     public bool   SupportsBorrowedReviewFlow => true;
 
-    // Review-flow launches pass --ask-for-approval never (see BuildArgs); every other launch keeps
-    // on-request. So approval prompts are off exactly for review-flow launches (any worktree, since
-    // codex uses `never` regardless of owned/borrowed).
-    public bool DisablesApprovalPrompts(LauncherContext ctx) => ctx.IsReviewFlow;
+    // Approval prompts are off for review-flow launches (always `never`, any worktree) and for an
+    // interactive launch whose caller-selected posture chose `never`. In both cases no dialog an
+    // Enter could accept can appear, which is what gates the PTY submit strategy.
+    public bool DisablesApprovalPrompts(LauncherContext ctx) =>
+        ctx.IsReviewFlow || string.Equals(ctx.CodexPosture?.Approval, "never", StringComparison.Ordinal);
     public string BorrowedReviewContainment => "native-tool-clamp";
 
     /// <summary>Codex owns its own reviewer-model policy (known OpenAI/Codex slug families →
@@ -103,24 +104,33 @@ internal sealed partial class CodexLauncher(
     }
 
     public LaunchArgs BuildArgs(LauncherContext ctx) {
+        // Re-assert the orchestrator's guard for every non-interactive shape, BEFORE the PR-review
+        // branch returns — a posture here means that guard was bypassed, and each of these launches
+        // owes its posture to a containment rule: a borrowed cwd is the user's real checkout, a
+        // review-flow reviewer has no human to answer a prompt, and PR review is fixed by contract.
+        if (ctx.CodexPosture is not null
+         && (ctx.IsReview || ctx.IsReviewFlow || ctx.Work == WorkLocation.BorrowedCwd)) {
+            throw new InvalidOperationException(
+                "codex_posture_not_overridable: a launch posture reached a borrowed, review-flow or PR-review launch");
+        }
+
         if (ctx is { IsReview: true, ReviewLaunch: { } launch }) {
             return BuildReviewArgs(ctx, launch);
         }
+
+        // Selected pair for an interactive owned-worktree launch; otherwise the derived containment
+        // values — borrowed cwd is read-only (read-only is proven in the headless runner, including
+        // with MCP injection, so the flow-result tool still works), and a review-flow reviewer never
+        // pauses for approval while an interactive agent keeps the user in the loop.
+        var (sandbox, approval) = CodexPosturePolicy.Resolve(ctx.Work, ctx.IsReviewFlow, ctx.CodexPosture);
 
         var args = new List<string> {
             "--cd",
             ctx.Worktree.Path,
             "--sandbox",
-            // A borrowed reviewer runs in the user's REAL checkout (not a daemon-owned,
-            // throwaway worktree) — workspace-write would let it mutate that real repo.
-            // read-only is already proven in the headless runner (CodexCliRunner), including
-            // with MCP injection, so the flow-result MCP tool still works.
-            ctx.Work == WorkLocation.BorrowedCwd ? "read-only" : "workspace-write",
-            // Review-flow reviewers (LaunchKind.ReviewFlow) run unattended → never pause for
-            // approval (writes stay confined by the workspace-write sandbox). Interactive rendered
-            // agents keep the default on-request approval so the user stays in the loop.
+            sandbox,
             "--ask-for-approval",
-            ctx.IsReviewFlow ? "never" : "on-request"
+            approval
         };
 
         // Review-flow reviewers get exactly ONE MCP server: kcap-flow-result (+ any
@@ -322,6 +332,10 @@ internal sealed partial class CodexLauncher(
     /// ephemeral `-c` overrides (no ~/.codex/config.toml mutation, nothing to clean
     /// up), and pass the rendered review prompt as Codex's initial prompt (Codex has
     /// no --system-prompt equivalent).
+    ///
+    /// Sandbox/approval stay FIXED here by design: the PR-review path sits outside the
+    /// caller-posture seam, and a posture supplied with this launch kind is rejected upstream by
+    /// CodexPosturePolicy rather than reaching this method.
     static LaunchArgs BuildReviewArgs(LauncherContext ctx, ReviewLaunchBuilder.ReviewLaunch launch) {
         const string serverName = "kcap-review";
         var          mcp        = launch.Mcp;

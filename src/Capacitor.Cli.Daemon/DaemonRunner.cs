@@ -654,7 +654,10 @@ public static partial class DaemonRunner {
                 borrowedSupported,
                 borrowedSupported ? factory.BorrowedReviewContainment : null,
                 SupportsReviewerModelResolution: modelResolver is not null,
-                ReviewerModelPolicyVersion: modelResolver?.PolicyVersion));
+                ReviewerModelPolicyVersion: modelResolver?.PolicyVersion,
+                // Caller-selected launch posture, advertised per vendor rather than per platform —
+                // the seam is platform-neutral, and only the Codex launcher honours a posture block.
+                SupportsLaunchPosture: string.Equals(vendor, "codex", StringComparison.Ordinal)));
         }
         return capabilities;
     }

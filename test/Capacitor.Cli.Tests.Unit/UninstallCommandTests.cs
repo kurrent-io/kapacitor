@@ -376,8 +376,12 @@ public class UninstallCommandTests {
         }
     }
 
-    [Test]
-    [NotInParallel(["ConsoleStreams", "HomeEnvVarMutation", "ConfigDirEnvVar", "CwdMutation"])]
+    // Globally sequential rather than keyed. The old "ConsoleStreams" key had no other member, so it
+    // serialized this Console.Error capture against nothing: another capturing test could still run
+    // concurrently, adopt this test's writer as its "original", and restore it mid-flight. Bare
+    // NotInParallel subsumes the HomeEnvVarMutation / ConfigDirEnvVar / CwdMutation groups this test
+    // also needs, since nothing runs alongside a bare-NotInParallel test.
+    [Test, NotInParallel]
     public async Task Project_flag_errors_when_not_inside_git_tree() {
         await using var fixture = await Fixture.CreateAsync();
 

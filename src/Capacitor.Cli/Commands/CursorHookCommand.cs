@@ -277,21 +277,35 @@ public static class CursorHookCommand {
 
             if (sessionId is not null && DisabledSessions.IsDisabled(sessionId)) return EmptyOrNull();
 
-            // bring CursorSubagentCorrelator into the live hook/backfill
-            // path. Cursor is NOT watcher-backed, so the correlation must run right here in
-            // the per-hook CLI dispatcher rather than in a background watcher. The decision
-            // (linked to a parent, or not) is made once — at the child's own sessionStart —
-            // and persisted to a small on-disk marker (this process exits after every hook
-            // call, so nothing survives in memory across invocations); every later hook call
-            // for the same session_id (mid-lifecycle events, sessionEnd) consults the marker
-            // instead of re-running the correlator, so the top-level-vs-subagent choice can't
-            // flip mid-session once acted on.
+            // Subagent classification. Built to bring CursorSubagentCorrelator into the live
+            // hook path (Cursor is NOT watcher-backed, so it would have to run right here in the
+            // per-hook dispatcher), persisting the decision to an on-disk marker because this
+            // process exits after every hook call.
+            //
+            // In practice the two halves have very different lifetimes:
+            //  - TryLoadLink below is LIVE. It runs on every event, and a marker persisted by
+            //    another surface or an older build still activates the divert.
+            //  - The transcript-derived arm that WRITES a marker has NO PRODUCER: it needs both
+            //    a sessionStart and a non-empty transcript_path, and a Cursor sessionStart never
+            //    carries one. Nor would a subagent child reach it — a child never fires
+            //    sessionStart at all.
+            // So the "decision made once at the child's own sessionStart" this was designed
+            // around never happens. Subagent nesting is delivered by `kcap import --cursor` plus
+            // the server-side adoption sweep, over complete transcripts. See
+            // docs/superpowers/specs/2026-07-30-ai1505-cursor-subagent-classification-design.md
             string? subagentParentId  = null;
             string? subagentAgentType = null;
             if (sessionId is not null) {
                 var marker = CursorLiveSubagentLinker.TryLoadLink(sessionId);
                 if (marker is { } m) {
                     (subagentParentId, subagentAgentType) = (m.ParentSessionId, m.SubagentType);
+                // NO PRODUCER on the measured cursor-agent contract: a sessionStart payload
+                // always carries a null transcript_path, so this arm never opens. (The
+                // TryLoadLink gate above is NOT inert — it runs on every event and still
+                // consumes a marker persisted by another surface or an older build.)
+                // Kept as the landing site for a native subagentStart revival; see
+                // docs/superpowers/specs/2026-07-30-ai1505-cursor-subagent-classification-design.md
+                // for why the trigger must move to the parent's hooks.
                 } else if (eventName == "sessionStart" && !string.IsNullOrEmpty(transcriptPath)) {
                     try {
                         var candidates = CursorLiveSubagentLinker.DiscoverSiblingTranscripts(transcriptPath);
@@ -302,10 +316,11 @@ public static class CursorHookCommand {
                             CursorLiveSubagentLinker.SaveLink(sessionId, subagentParentId, subagentAgentType);
                         }
                     } catch {
-                        // Fail-open: a locked/unreadable sibling transcript must never abort
-                        // the hook. See CursorLiveSubagentLinker.ResolveParent's doc for the
-                        // eventual-consistency gap this also covers (parent's Task tool_use
-                        // not yet flushed to disk at the child's first hook).
+                        // Fail-open: a locked/unreadable sibling transcript must never abort the
+                        // hook. (This arm has no producer anyway — see above. It was also written
+                        // to absorb what was believed to be an eventual-consistency gap; per
+                        // ResolveParent's doc that framing was wrong, and the parent's Task
+                        // tool_use is in fact never available while the child is still running.)
                     }
                 }
             }
@@ -544,29 +559,22 @@ public static class CursorHookCommand {
                 disposeClients: memoryClientFactory is not null);
 
             return await new SessionStartMemoryOrchestrator(store, provider).GetFragmentAsync(
-                // ClassificationAuthoritative is hardcoded true (not merely `!isSubagentChild`):
-                // this method is only ever reached from the top-level, non-child success path —
-                // a linked child returns {} before any orchestrator work, per §4/§5.
+                // ClassificationAuthoritative is hardcoded true, and this is VALID UNDER THE
+                // MEASURED EVENT CONTRACT rather than proven from this file alone:
                 //
-                // Subagent-classification note (investigated, no behavior change): `!isSubagentChild`
-                // is NOT the same fact as "definitively no parent" — CursorLiveSubagentLinker.
-                // ResolveParent's own doc records that it can return null for a session that IS
-                // actually a subagent, merely because the parent's Task/Agent tool_use hasn't
-                // flushed to the parent's transcript yet at the child's first (and only)
-                // sessionStart hook. The linker has no signal to distinguish that "uncertain"
-                // case from a genuinely standalone top-level session: DiscoverSiblingTranscripts
-                // returns every session EVER recorded under the workspace's agent-transcripts/
-                // dir (no recency/mtime filter), so "candidates exist" is true for nearly every
-                // session after the very first one in a workspace and cannot be used as an
-                // uncertainty signal without suppressing memory injection for the common case.
-                // Threading `authoritative = !isSubagentChild` through so a suspected-uncertain
-                // classification maps to RetryLaterNoCommit would also be a functional dead end
-                // for Cursor specifically: unlike Claude (which can re-decide on a later resume
-                // sessionStart), Cursor's sessionStart fires exactly once per conversation with
-                // no persisted "retry" trigger, so RetryLaterNoCommit here means "this session
-                // never gets memory," not "deferred." Given no cheap signal exists and any
-                // conservative fix regresses the majority (genuine top-level) case, this was
-                // escalated rather than changed — see the fix-report for the full writeup.
+                //  - What the source constructs: this method has exactly one call site, behind
+                //    `if (eventName != "sessionStart") return null`. That is an internal
+                //    invariant a unit test can pin.
+                //  - What makes the flag WARRANTED: on cursor-agent 2026.07.23-e383d2b a
+                //    subagent child never fires sessionStart at all (measured over four probe
+                //    runs and two subagent kinds), so this method is never reached for a child.
+                //    That is an external vendor behaviour a Cursor update could change.
+                //
+                // Deliberately NOT described as "correct by construction" — the dependency on
+                // the vendor contract must stay visible so a future reader knows what to
+                // re-check. Evidence, the re-probe procedure, and the untested Cursor IDE gap
+                // are in
+                // docs/superpowers/specs/2026-07-30-ai1505-cursor-subagent-classification-design.md
                 new SessionMemoryLifecycle(SessionStartHarness.Cursor, sessionId, LifecycleInstanceId: null,
                     IsTopLevel: true, ClassificationAuthoritative: true, SessionLifecycleReason.New,
                     CallbackMayRepeat: false),
@@ -579,17 +587,37 @@ public static class CursorHookCommand {
     /// <summary>
     /// the divert path for a Cursor hook belonging to a subagent child
     /// already linked to a parent (<see cref="CursorLiveSubagentLinker"/>). Mirrors
-    /// <c>CursorImportSource.SendSubagentLifecycleAsync</c> — only three things ever happen
+    /// <c>CursorImportSource.SendSubagentLifecycleAsync</c> — as designed, three things happen
     /// for a linked child, regardless of which Cursor hook fired: <c>subagent-start</c>
     /// (once, from its own <c>sessionStart</c>), transcript backfill routed under the parent
     /// with <c>agent_id=child</c> (on every hook — Cursor gives us no line-granular signal,
     /// so the watermark is just re-checked each time), and <c>subagent-stop</c> (once, from
-    /// its own <c>sessionEnd</c>). Every other Cursor hook for a linked child
+    /// its own <c>sessionEnd</c>).
+    ///
+    /// <para>
+    /// TWO OF THOSE THREE CANNOT HAPPEN. A Cursor subagent child fires neither
+    /// <c>sessionStart</c> nor <c>sessionEnd</c>, so the start and stop arms below are
+    /// unreachable from a real child; only the backfill arm can run, and only when a marker
+    /// already exists. The design above is therefore a description of intent, not of observed
+    /// behaviour — read it that way.
+    /// </para>
+    ///
+    /// Every other Cursor hook for a linked child
     /// (<c>beforeSubmitPrompt</c>/<c>afterAgentThought</c>/telemetry) carries no signal the
     /// import path can ever replay either (Cursor's on-disk transcript has no side channel
     /// for them), so — for live/import parity — they are simply not forwarded, rather than
     /// being appended to a phantom <c>AgentSession-{child}</c> stream that never got a
     /// <c>SessionStarted</c>.
+    ///
+    /// <para>
+    /// UNREACHABLE in a fresh installation on the measured cursor-agent contract: entry requires
+    /// <c>isSubagentChild</c>, which requires a marker that has no producer there. It remains
+    /// reachable from a marker persisted by another surface or an older build. Note also that
+    /// the sessionStart/sessionEnd arms below can never fire from a real child, which never
+    /// emits either event — a native revival must be driven by the PARENT's subagentStart /
+    /// subagentStop instead. See
+    /// docs/superpowers/specs/2026-07-30-ai1505-cursor-subagent-classification-design.md
+    /// </para>
     /// </summary>
     internal static async Task<int> HandleSubagentChildEventAsync(
             HttpClient        client,
@@ -636,7 +664,13 @@ public static class CursorHookCommand {
         // poster callback) — the entry vanishes from the spool, so HasBacklog goes false even
         // though no AgentSubsession stream was ever opened server-side. Gate on the durable
         // positive-ack marker instead of "no backlog" so a dropped start permanently blocks this
-        // child (an accepted, diagnosable loss — the same posture as D0's quarantine).
+        // child.
+        //
+        // This is fail-closed and SILENT: the return below emits no log, metric or surfaced
+        // marker, so the loss is NOT diagnosable from the running system. Accepted to preserve
+        // start-before-content ordering; the child's live capture is recovered only by
+        // `kcap import --cursor` plus the server-side adoption sweep. The full state table is in
+        // docs/superpowers/specs/2026-07-30-ai1505-cursor-subagent-classification-design.md (D2a).
         if (!isStart && !CursorMarkers.HasSubagentStartAck(childSessionId)) {
             return 0;
         }
@@ -649,11 +683,13 @@ public static class CursorHookCommand {
                 // self-heal. HasSubagentStartAck (above) only proves
                 // subagent-start was acknowledged (2xx) AT SOME POINT — the child watcher process
                 // itself may since have exited (the newly-enabled idle ceiling), crashed, or never
-                // actually spawned at all (e.g. its acked sessionStart hook carried no transcript
-                // path, and THIS later hook is the first one that does). Before this fix, only the
-                // child's own sessionStart ever called MaybeSpawnChildWatcherAsync — every later
-                // nonterminal hook did nothing but backfill, so a dead/never-started child watcher
-                // was never restarted. EnsureWatcherRunning is idempotent (PID+heartbeat check), so
+                // actually spawned at all (e.g. the acking invocation carried no transcript path,
+                // and THIS later hook is the first one that does). Before this fix the spawn was
+                // attempted only on the start arm — which, per the measured contract, a real child
+                // never reaches — so every later nonterminal hook did nothing but backfill and a
+                // dead/never-started child watcher was never restarted. This nonterminal path is
+                // the one a real child DOES reach, which is what makes the self-heal load-bearing
+                // rather than a nicety. EnsureWatcherRunning is idempotent (PID+heartbeat check), so
                 // calling it here on every nonterminal hook is a cheap no-op once the watcher is
                 // alive and a real recovery when it's not; the terminal (sessionEnd) branch below
                 // still never spawns.
@@ -668,8 +704,11 @@ public static class CursorHookCommand {
 
         // sessionEnd: drain the transcript before the terminal hook — same ordering rationale
         // as the top-level path, and mirrors SendSubagentLifecycleAsync (its transcript batch
-        // always precedes subagent-stop too). Task 10 (D2): this is the child's own
-        // pre-end drain, so consume a complete-but-unterminated final line rather than holding it.
+        // always precedes subagent-stop too). Task 10 (D2): a pre-end drain consumes a
+        // complete-but-unterminated final line rather than holding it.
+        //
+        // UNREACHABLE from a real child, which never fires sessionEnd — this arm survives only
+        // for a marker-driven invocation that supplies the event some other way.
         if (isStop && !string.IsNullOrEmpty(transcriptPath) && !budgetExpired()) {
             await CursorTranscriptBackfill.RunAsync(
                 client, baseUrl, parentSessionId, transcriptPath,

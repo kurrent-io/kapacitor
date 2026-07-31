@@ -16,7 +16,14 @@ namespace Capacitor.Cli.Tests.Unit;
 /// A fake refresh delegate is injected so no network or real provider endpoint is touched. Shares
 /// the KCAP_CONFIG_DIR token store, so it cleans up and runs non-parallel like TokenStoreProfileTests.
 /// </summary>
-[NotInParallel(nameof(TokenStoreProfileTests))]
+// Globally sequential (NO group key). The Before(Test) hook below deletes config.json and the
+// tokens directory inside the ASSEMBLY-WIDE shared KCAP_CONFIG_DIR (see RepoPathStoreGlobalSetup),
+// so it must not overlap ANY test that touches those files — a keyed group only serialized this
+// class against TokenStoreProfileTests, leaving every other config.json reader/writer free to hold
+// a handle open. On Windows that sharing violation throws out of the hook (BeforeTestException),
+// failing these tests before they run; on Unix the unlink silently succeeds, which is why it was
+// Windows-only. Bare NotInParallel subsumes the TokenStoreProfileTests serialization.
+[NotInParallel]
 public class CrossProcessRefreshTests {
     static readonly TimeSpan Window = TimeSpan.FromMinutes(5);
 
@@ -25,13 +32,53 @@ public class CrossProcessRefreshTests {
 
     [Before(Test)]
     public void Cleanup() {
-        if (File.Exists(LegacyPath)) File.Delete(LegacyPath);
-        if (Directory.Exists(TokensDir)) Directory.Delete(TokensDir, recursive: true);
+        // Bare NotInParallel above keeps other TESTS from holding these files, but a handle can
+        // still be held from outside the test host (a watcher/daemon child spawned by an earlier
+        // test and not yet reaped). On Windows that is a hard sharing violation which, thrown from
+        // a Before hook, fails the test before it runs — so retry through the brief window the
+        // holder needs to close.
+        ClearWithRetry("the legacy tokens file", () => File.Delete(LegacyPath), () => File.Exists(LegacyPath));
+        ClearWithRetry("the tokens directory", () => Directory.Delete(TokensDir, recursive: true), () => Directory.Exists(TokensDir));
         var cfg = Capacitor.Cli.Core.Config.AppConfig.GetConfigPath();
-        if (File.Exists(cfg)) File.Delete(cfg);
+        ClearWithRetry("config.json", () => File.Delete(cfg), () => File.Exists(cfg));
         // Token lookup now consults AppConfig.ResolvedProfile, so a value left behind by another
         // test would redirect these reads to a different profile.
         Capacitor.Cli.Core.Config.AppConfig.ResetResolvedStateForTesting();
+    }
+
+    const int    ClearAttempts = 40;
+    const int    ClearDelayMs  = 25;
+
+    /// <summary>Delete with a bounded retry over a transient sharing violation. Deliberately does
+    /// NOT swallow a persistent one: these tests assert on token state, so running against
+    /// leftovers could pass for the wrong reason (a stale tokens directory already satisfies the
+    /// "a peer already refreshed it" assertions). A target still present after the budget is not
+    /// the transient holder this retry exists for, so surface it with a named cause.</summary>
+    static void ClearWithRetry(string what, Action delete, Func<bool> exists) {
+        Exception? last = null;
+
+        for (var attempt = 1; attempt <= ClearAttempts; attempt++) {
+            if (!exists()) return;
+
+            try {
+                delete();
+                return;
+            } catch (IOException ex) {
+                last = ex; // sharing violation — the holder should release shortly
+            } catch (UnauthorizedAccessException ex) {
+                last = ex; // how Windows reports a delete blocked by an open handle
+            }
+
+            if (attempt < ClearAttempts) Thread.Sleep(ClearDelayMs);
+        }
+
+        // Re-check: the holder may have released after our last failed attempt.
+        if (exists()) {
+            throw new InvalidOperationException(
+                $"Could not clear {what} in the shared KCAP_CONFIG_DIR within "                +
+                $"{ClearAttempts * ClearDelayMs}ms — something still holds it, so this test "    +
+                "would run against another test's state.", last);
+        }
     }
 
     static StoredTokens Token(string accessToken, DateTimeOffset expiresAt) => new() {
@@ -46,7 +93,6 @@ public class CrossProcessRefreshTests {
     static bool WithinWindow(StoredTokens t) => DateTimeOffset.UtcNow >= t.ExpiresAt - Window;
 
     [Test]
-    [NotInParallel(nameof(TokenStoreProfileTests))]
     public async Task Persists_refreshed_token_under_the_locked_profile() {
         // Lock a NON-default profile ("alpha"); the active profile resolves to "default". The
         // refreshed token must land in alpha.json — a persist path that re-resolved the active
@@ -65,7 +111,6 @@ public class CrossProcessRefreshTests {
     }
 
     [Test]
-    [NotInParallel(nameof(TokenStoreProfileTests))]
     public async Task Refreshes_and_persists_when_no_peer_changed_the_token() {
         // On-disk token equals `current` (no peer refresh) and is inside the proactive window →
         // refresh, and the result is persisted under the lock.
@@ -86,7 +131,6 @@ public class CrossProcessRefreshTests {
     }
 
     [Test]
-    [NotInParallel(nameof(TokenStoreProfileTests))]
     public async Task Does_not_re_refresh_a_token_a_peer_already_refreshed() {
         // We read `current` before the lock; under the lock the on-disk token has CHANGED to a
         // peer-refreshed one that is still valid but ALSO still inside the window (short lifetime).
@@ -107,7 +151,6 @@ public class CrossProcessRefreshTests {
     }
 
     [Test]
-    [NotInParallel(nameof(TokenStoreProfileTests))]
     public async Task Reactive_default_predicate_still_refreshes_expired_token() {
         // Guard: the default (reactive) predicate is unchanged — an expired token still refreshes
         // and persists, even though the on-disk token changed (peer wrote an expired token).

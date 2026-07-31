@@ -7,6 +7,150 @@ namespace Capacitor.Cli.Tests.Unit.SessionStartMemory;
 /// a manual certification run, i.e. after spending a real model turn.
 /// </summary>
 public class MemoryIndexLiveCertHarnessTests {
+    // ── command resolution ────────────────────────────────────────────────────
+    //
+    // The Unix-semantics cases are skipped on Windows rather than adapted: the branch under test is the
+    // one guarded by `isWindows: false`, it asks the kernel `access(X_OK)`, and its probes need real
+    // execute bits — none of which Windows can provide. Adapting them there would test a different
+    // resolver. Only the isWindows: true passthrough runs everywhere, and it touches no file mode.
+    // The bug these cover: `Process.Start` tries a separator-free filename against the WORKING
+    // DIRECTORY before PATH, and this assembly's working directory is its own output folder — which
+    // contains a `kcap` copied there by the Capacitor.Cli project reference. Every harness
+    // `RunProcessAsync("kcap", …)` therefore ran the test build, while the cert's own `which kcap` line
+    // reported the PATH build the hook would actually run. The version a cert records is the whole
+    // point of recording it, so the two silently describing different binaries is the failure mode
+    // that recording exists to prevent.
+
+    [Test]
+    public async Task A_bare_command_resolves_to_the_first_PATH_entry_that_has_it() {
+        Skip.Unless(!OperatingSystem.IsWindows(), "Unix PATH semantics: needs real execute bits and access(X_OK).");
+
+        using var probe = new PathProbe();
+
+        var resolved = MemoryIndexLiveCertHarness.ResolveOnPath(
+            probe.CommandName, $"{probe.EmptyDir}{Path.PathSeparator}{probe.BinDir}", isWindows: false);
+
+        await Assert.That(resolved).IsEqualTo(probe.ExecutablePath);
+    }
+
+    /// <summary>An earlier PATH entry wins — resolution order is first-match, as the shell's is.</summary>
+    [Test]
+    public async Task Earlier_PATH_entries_win_over_later_ones() {
+        Skip.Unless(!OperatingSystem.IsWindows(), "Unix PATH semantics: needs real execute bits and access(X_OK).");
+
+        using var first  = new PathProbe();
+        using var second = new PathProbe(first.CommandName);
+
+        var resolved = MemoryIndexLiveCertHarness.ResolveOnPath(
+            first.CommandName, $"{first.BinDir}{Path.PathSeparator}{second.BinDir}", isWindows: false);
+
+        await Assert.That(resolved).IsEqualTo(first.ExecutablePath);
+    }
+
+    /// <summary>Existence is not the test a shell applies: a non-executable match is skipped and the
+    /// walk continues, exactly as <c>which</c> and <c>execvp</c> do. Resolving on existence alone would
+    /// stop here and hand back a file that cannot be launched — or, worse for this harness, disagree
+    /// with the <c>which kcap</c> line recorded beside it.</summary>
+    [Test]
+    public async Task A_non_executable_match_is_skipped_for_a_later_executable_one() {
+        Skip.Unless(!OperatingSystem.IsWindows(), "Unix PATH semantics: needs real execute bits and access(X_OK).");
+
+        using var notExecutable = new PathProbe(executable: false);
+        using var executable    = new PathProbe(notExecutable.CommandName);
+
+        var resolved = MemoryIndexLiveCertHarness.ResolveOnPath(
+            notExecutable.CommandName,
+            $"{notExecutable.BinDir}{Path.PathSeparator}{executable.BinDir}",
+            isWindows: false);
+
+        await Assert.That(resolved).IsEqualTo(executable.ExecutablePath);
+    }
+
+    /// <summary>...and when the only match is non-executable there is nothing to resolve to, so this
+    /// throws for the same reason an absent command does.</summary>
+    [Test]
+    public async Task A_non_executable_only_match_does_not_resolve() {
+        Skip.Unless(!OperatingSystem.IsWindows(), "Unix PATH semantics: needs real execute bits and access(X_OK).");
+
+        using var probe = new PathProbe(executable: false);
+
+        await Assert.That(() => MemoryIndexLiveCertHarness.ResolveOnPath(probe.CommandName, probe.BinDir, isWindows: false))
+            .Throws<FileNotFoundException>();
+    }
+
+    /// <summary>A name that is already a path is the caller's explicit choice; never rewritten.</summary>
+    [Test]
+    [Arguments("/usr/bin/env")]
+    [Arguments("./local-thing")]
+    public async Task An_explicit_path_is_passed_through_untouched(string fileName) {
+        Skip.Unless(!OperatingSystem.IsWindows(), "Unix PATH semantics: needs real execute bits and access(X_OK).");
+
+        using var probe = new PathProbe();
+
+        await Assert.That(MemoryIndexLiveCertHarness.ResolveOnPath(fileName, probe.BinDir, isWindows: false))
+            .IsEqualTo(fileName);
+    }
+
+    /// <summary>An unresolvable bare name must THROW, not pass through. Passing it through hands the
+    /// problem to <c>Process.Start</c>, which consults the working directory first — so on the one
+    /// command that matters it would silently run the `kcap` in this assembly's output folder rather
+    /// than fail, reintroducing the wrong-binary bug on the path where resolution already failed.</summary>
+    [Test]
+    public async Task An_unresolvable_command_throws_rather_than_falling_back_to_the_working_directory() {
+        Skip.Unless(!OperatingSystem.IsWindows(), "Unix PATH semantics: needs real execute bits and access(X_OK).");
+
+        using var probe = new PathProbe();
+
+        await Assert.That(() => MemoryIndexLiveCertHarness.ResolveOnPath("kcap-no-such-command", probe.BinDir, isWindows: false))
+            .Throws<FileNotFoundException>();
+    }
+
+    /// <summary>Windows is deliberately left on the platform's own resolution: doing it correctly needs
+    /// PATHEXT handling, and a half-right implementation would be worse than the documented status quo.
+    /// These certs are gated and are not run there.</summary>
+    [Test]
+    public async Task Windows_resolution_is_deliberately_left_to_the_platform() {
+        using var probe = new PathProbe();
+
+        await Assert.That(MemoryIndexLiveCertHarness.ResolveOnPath(probe.CommandName, probe.BinDir, isWindows: true))
+            .IsEqualTo(probe.CommandName);
+    }
+
+    /// <summary>A throwaway PATH entry holding one uniquely named file, plus an empty sibling directory
+    /// to prove a miss is skipped rather than treated as a match. <paramref name="executable"/> controls
+    /// the execute bit, because "exists" and "is executable" are different questions and the resolver
+    /// must answer the second one.</summary>
+    sealed class PathProbe : IDisposable {
+        readonly string _root;
+
+        public PathProbe(string? commandName = null, bool executable = true) {
+            _root       = Directory.CreateTempSubdirectory("kcap-path-probe-").FullName;
+            BinDir      = Directory.CreateDirectory(Path.Combine(_root, "bin")).FullName;
+            EmptyDir    = Directory.CreateDirectory(Path.Combine(_root, "empty")).FullName;
+            CommandName = commandName ?? $"kcap-probe-{Guid.NewGuid():N}";
+
+            ExecutablePath = Path.Combine(BinDir, CommandName);
+            File.WriteAllText(ExecutablePath, "#!/bin/sh\nexit 0\n");
+
+            // `File.SetUnixFileMode` THROWS on Windows, and the probe is constructed by the one test
+            // that does run there (the isWindows: true passthrough), which never looks at the mode.
+            if (!OperatingSystem.IsWindows()) {
+                File.SetUnixFileMode(ExecutablePath, executable
+                    ? UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute
+                    : UnixFileMode.UserRead | UnixFileMode.UserWrite);
+            }
+        }
+
+        public string BinDir         { get; }
+        public string EmptyDir       { get; }
+        public string CommandName    { get; }
+        public string ExecutablePath { get; }
+
+        public void Dispose() {
+            try { Directory.Delete(_root, recursive: true); } catch { /* best-effort */ }
+        }
+    }
+
     [Test]
     public async Task Plain_text_output_is_returned_as_is() {
         await Assert.That(MemoryIndexLiveCertHarness.ExtractAssistantAnswer("  kcap-live-nonce-abc123  \n"))

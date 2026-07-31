@@ -779,4 +779,128 @@ public class CodexLauncherTests {
         await Assert.That(args[sIdx + 1]).IsEqualTo("workspace-write");
         await Assert.That(args).DoesNotContain("read-only");
     }
+
+    // === Caller-selected posture (interactive, daemon-owned worktree) ===
+
+    static LauncherContext InteractiveCtx(CodexLaunchPosture? posture) =>
+        NewCtx() with { Work = WorkLocation.OwnedWorktree, CodexPosture = posture };
+
+    [Test]
+    [Arguments("read-only", "untrusted")]
+    [Arguments("read-only", "on-request")]
+    [Arguments("read-only", "never")]
+    [Arguments("workspace-write", "untrusted")]
+    [Arguments("workspace-write", "on-request")]
+    [Arguments("workspace-write", "never")]
+    [Arguments("danger-full-access", "untrusted")]
+    [Arguments("danger-full-access", "on-request")]
+    [Arguments("danger-full-access", "never")]
+    public async Task BuildArgs_selected_posture_lands_verbatim_in_argv(string sandbox, string approval) {
+        var args = NewLauncher().BuildArgs(InteractiveCtx(new(sandbox, approval))).Args;
+
+        var sIdx = Array.IndexOf(args, "--sandbox");
+        var aIdx = Array.IndexOf(args, "--ask-for-approval");
+
+        await Assert.That(args[sIdx + 1]).IsEqualTo(sandbox);
+        await Assert.That(args[aIdx + 1]).IsEqualTo(approval);
+    }
+
+    /// <summary>The regression that matters most: with no posture block the argv must be EXACTLY what
+    /// this launcher produced before posture selection existed. The expected sequences below are
+    /// literal transcriptions of the pre-change output, so an added, removed, renamed or REORDERED
+    /// argument fails here — comparing two runs of the current implementation would not, since a
+    /// change of that kind moves both sides identically.</summary>
+    [Test]
+    public async Task BuildArgs_without_a_posture_matches_the_pre_change_argv_exactly() {
+        string[] expectedInteractive = [
+            "--cd", "/tmp/wt",
+            "--sandbox", "workspace-write",
+            "--ask-for-approval", "on-request",
+            "-m", "gpt-5.3-codex",
+            "--no-alt-screen"
+        ];
+
+        // Both the shape that never mentions a posture and an explicit null must produce it.
+        await Assert.That(NewLauncher().BuildArgs(NewCtx() with { Work = WorkLocation.OwnedWorktree }).Args)
+            .IsEquivalentTo(expectedInteractive, CollectionOrdering.Matching);
+        await Assert.That(NewLauncher().BuildArgs(InteractiveCtx(null)).Args)
+            .IsEquivalentTo(expectedInteractive, CollectionOrdering.Matching);
+
+        // Prompt + effort ride after the posture pair; pinned so their ordering can't drift either.
+        string[] expectedWithPromptAndEffort = [
+            "--cd", "/tmp/wt",
+            "--sandbox", "workspace-write",
+            "--ask-for-approval", "on-request",
+            "-m", "gpt-5.3-codex",
+            "-c", "model_reasoning_effort=\"high\"",
+            "--no-alt-screen",
+            "--", "do the thing"
+        ];
+
+        await Assert.That(
+                NewLauncher().BuildArgs(
+                    NewCtx(prompt: "do the thing", effort: "high") with { Work = WorkLocation.OwnedWorktree }).Args)
+            .IsEquivalentTo(expectedWithPromptAndEffort, CollectionOrdering.Matching);
+
+        // Borrowed + review-flow derivations are pinned by their own tests above; this asserts the
+        // borrowed pair specifically still lands in the same positions with no block present.
+        var borrowed = NewLauncher().BuildArgs(NewCtx(isReviewFlow: true) with { Work = WorkLocation.BorrowedCwd }).Args;
+        await Assert.That(borrowed[2]).IsEqualTo("--sandbox");
+        await Assert.That(borrowed[3]).IsEqualTo("read-only");
+        await Assert.That(borrowed[4]).IsEqualTo("--ask-for-approval");
+        await Assert.That(borrowed[5]).IsEqualTo("never");
+    }
+
+    [Test]
+    public async Task BuildArgs_throws_when_a_posture_reaches_a_review_flow_context() {
+        // Belt-and-braces: the orchestrator guard rejects this upstream, so reaching the launcher
+        // means the guard was bypassed — fail loudly rather than silently honouring the override.
+        var ctx = NewCtx(isReviewFlow: true) with {
+            Work = WorkLocation.OwnedWorktree, CodexPosture = new("workspace-write", "on-request")
+        };
+
+        await Assert.That(() => NewLauncher().BuildArgs(ctx)).Throws<InvalidOperationException>();
+    }
+
+    [Test]
+    public async Task BuildArgs_throws_when_a_posture_reaches_a_borrowed_context() {
+        var ctx = NewCtx() with {
+            Work = WorkLocation.BorrowedCwd, CodexPosture = new("workspace-write", "never")
+        };
+
+        await Assert.That(() => NewLauncher().BuildArgs(ctx)).Throws<InvalidOperationException>();
+    }
+
+    /// <summary>The PR-review branch returns early, so the guard has to sit ABOVE it — otherwise a
+    /// posture reaching a PR-review launch is silently dropped instead of failing closed, which is
+    /// the one outcome the posture contract rules out for every non-interactive shape.</summary>
+    [Test]
+    public async Task BuildArgs_throws_when_a_posture_reaches_a_pr_review_context() {
+        var ctx = NewCtx() with {
+            IsReview     = true,
+            Review       = new ReviewLaunchInfo("acme", "widgets", 42),
+            ReviewLaunch = new ReviewLaunchBuilder.ReviewLaunch(
+                McpConfigPath: null,
+                SystemPrompt: "review it",
+                Mcp: new ReviewLaunchBuilder.ReviewMcpServer(
+                    "/opt/kcap/kcap", ["mcp", "review"], new Dictionary<string, string>())),
+            CodexPosture = new("workspace-write", "never")
+        };
+
+        await Assert.That(() => NewLauncher().BuildArgs(ctx)).Throws<InvalidOperationException>();
+    }
+
+    [Test]
+    public async Task DisablesApprovalPrompts_tracks_the_effective_approval_policy() {
+        var launcher = NewLauncher();
+
+        // Selected `never` turns prompts off for an interactive agent...
+        await Assert.That(launcher.DisablesApprovalPrompts(InteractiveCtx(new("workspace-write", "never")))).IsTrue();
+        // ...while any prompting policy leaves the submit strategy alone.
+        await Assert.That(launcher.DisablesApprovalPrompts(InteractiveCtx(new("workspace-write", "on-request")))).IsFalse();
+        await Assert.That(launcher.DisablesApprovalPrompts(InteractiveCtx(new("read-only", "untrusted")))).IsFalse();
+        // Unchanged for every posture-less launch.
+        await Assert.That(launcher.DisablesApprovalPrompts(InteractiveCtx(null))).IsFalse();
+        await Assert.That(launcher.DisablesApprovalPrompts(NewCtx(isReviewFlow: true))).IsTrue();
+    }
 }

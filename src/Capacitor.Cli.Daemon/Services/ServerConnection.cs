@@ -732,8 +732,13 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
     }
 
     // Outgoing messages to server
-    public virtual Task AgentRegisteredAsync(string agentId, string? prompt, string? model, string? effort, string? repoPath)
-        => _hub.InvokeAsync("AgentRegistered", new AgentRegistered(agentId, prompt, model, effort, repoPath), cancellationToken: _ct);
+    public virtual Task AgentRegisteredAsync(
+            string agentId, string? prompt, string? model, string? effort, string? repoPath,
+            string? sandboxPolicy = null, string? approvalPolicy = null)
+        => _hub.InvokeAsync(
+            "AgentRegistered",
+            new AgentRegistered(agentId, prompt, model, effort, repoPath, sandboxPolicy, approvalPolicy),
+            cancellationToken: _ct);
 
     /// <summary>
     /// Reports the hosted agent's fixed PTY dimensions to the server, which stores
