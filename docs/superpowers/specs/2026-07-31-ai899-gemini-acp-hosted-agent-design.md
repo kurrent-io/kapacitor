@@ -1,6 +1,9 @@
 # AI-899 — Gemini CLI as an ACP hosted agent
 
-**Status:** specced 2026-07-31 against `gemini 0.53.0` and `origin/main` (`e2b2821`).
+**Status:** rev 4, 2026-07-31, against `gemini 0.53.0` and `origin/main` (`e2b2821`).
+**NOT implementation-ready as written** — §3.1a's trust probe has been run and found repository-controlled
+code execution that `--skip-trust` does not prevent. It needs the containment decision in §3.1a before any
+code.
 **Repository:** kurrent-io/kcap-cli
 **Parent:** AI-1399 (multi-vendor ACP hosted agents)
 **Template:** the shipped Kiro child (AI-1404) and the Copilot child (AI-1403). Read those, not the
@@ -83,7 +86,8 @@ public static readonly AcpVendorDescriptor Gemini = new(
     Vendor:              "gemini",
     ResolveBinaryPath:   cfg => cfg.GeminiPath,
     ResolveDefaultModel: _ => null,
-    Argv:                ["--experimental-acp", "--skip-trust"],
+    Argv:                ["--experimental-acp", "--skip-trust",
+                          "--allowed-mcp-server-names", "kcap-none"],   // see 3.1a
     UnattendedTrustArgv: [],
     SupportsUnattended:  false,
     ModelSelector:       NoOpModelSelector.Instance,
@@ -132,9 +136,66 @@ implementation must, before the descriptor ships:
    part of this PR rather than a follow-up.
 
 This is gating, not follow-up: the flag is required for the feature to work at all, so the question cannot
-be deferred past the thing that needs it. **If the probe is not run, this spec is not implementation-ready**
-— the result can change both the argv and the threat model. It is also a question every ACP vendor with a
-trust model will face, so the answer is worth writing down once.
+be deferred past the thing that needs it. It is also a question every ACP vendor with a trust model will
+face, so the answer is worth writing down once.
+
+### 3.1a THE PROBE HAS BEEN RUN — and it inverts the framing
+
+**Method.** A throwaway git repo with a workspace `.gemini/settings.json` declaring (a) an MCP server and
+(b) a `SessionStart` hook, each of whose command touches a distinctive marker file. A marker is therefore
+proof of *repository-controlled process execution*. Run against `gemini 0.53.0` with the operator's real
+credential, varying only trust and clamp flags. Every row is measured, not inferred:
+
+| Trust state | `--skip-trust` | repo MCP server | repo hook |
+|---|---|---|---|
+| untrusted | yes | — | — |
+| the worktree itself `TRUST_FOLDER` | no | **EXECUTED** | **EXECUTED** |
+| a **parent** `TRUST_PARENT`, no entry for the worktree | **yes** | **EXECUTED** | **EXECUTED** |
+| parent `TRUST_PARENT` + `--allowed-mcp-server-names <non-matching sentinel>` | yes | — | **EXECUTED** |
+
+The second row is the positive control, and it is what makes the first row meaningful: without it, "no
+markers" would equally well have meant the probe was mis-shaped.
+
+**Three findings, and the third is the one that matters:**
+
+1. **`--skip-trust` does not grant workspace-configuration trust.** It permits the turn; it does not
+   activate repo-authored settings, hooks or MCP servers. So the flag is *not* the risk — the earlier
+   draft's worry was aimed at the wrong thing.
+2. **Trust INHERITS from a trusted parent, and `--skip-trust` cannot undo it.** With a parent marked
+   `TRUST_PARENT` and no entry for the worktree at all, both facilities executed *while the flag was
+   passed*. Passing `--skip-trust` is not a containment measure and must never be described as one.
+3. **This is live for kcap, not theoretical.** `WorktreePathResolver` and `WorktreeManager` place daemon
+   worktrees at `<repo>/.capacitor/worktrees/agent-…` — **inside the operator's repository**. An operator
+   who has trusted their own repo (the normal thing to do when using Gemini in it; the machine this was
+   measured on has a real `TRUST_PARENT` entry) will therefore have every hosted Gemini agent inherit that
+   trust and auto-execute whatever `.gemini/settings.json` the checked-out branch carries — under the
+   daemon user, with no prompt, before the model does anything. The branch in that worktree may be
+   PR-authored.
+
+**Against §3.1's rule, that is a MUST-clamp: a repository-controlled facility causing process execution
+before any user-approved action.** So:
+
+* **MCP servers are clampable.** `--allowed-mcp-server-names <sentinel>` suppressed the repo-authored
+  server with trust inherited. It goes in `Argv`. Note `--allowed-mcp-server-names ""` is **not** usable —
+  it crashes config load with *"mcpName is required if specified"*, before session start, which also makes
+  it a trap for anyone verifying this: the run fails and reports no markers for the wrong reason.
+* **Hooks are NOT clampable by any launch flag.** `gemini hooks` is a management subcommand, not a switch;
+  there is no `--no-hooks`. The repo-authored hook executed under every configuration that had trust.
+
+**Therefore hosted Gemini cannot ship on `--skip-trust` alone**, and the descriptor in §3 is not yet
+sufficient. The options, for decision rather than for the implementer to pick:
+
+| Option | Effect | Cost |
+|---|---|---|
+| **(a) Refuse to launch when the worktree resolves as trusted** — read `~/.gemini/trustedFolders.json`, fail with a coded error | fail-closed, no upstream change, kcap-side only | hosted Gemini unavailable in exactly the repos an operator most likely trusts |
+| **(b) Neutralise the worktree's `.gemini/` before launch** | removes the facility rather than the trust | mutates a checkout agents commit from; needs care with tracked files |
+| **(c) Create daemon worktrees outside any trustable path** | removes inheritance at the root | `WorktreeManager` scans per-repo `.capacitor/worktrees/`; affects every vendor |
+| **(d) Upstream request for a hook clamp** | correct long-term | not available now |
+
+**Recommendation: (a) plus the MCP clamp for this issue, with (b) or (c) as the follow-up that restores
+availability.** (a) is small, fail-closed, and honest about what it costs; shipping without it would mean
+hosted Gemini silently executes branch-authored code on the machines of the operators most likely to use
+it.
 
 ### 3.2 `SupportsUnattended: false` — hosting only, for now
 
