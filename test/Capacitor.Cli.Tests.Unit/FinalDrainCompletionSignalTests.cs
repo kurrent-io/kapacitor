@@ -115,17 +115,9 @@ public class WaitForFinalLineCompletionAsyncTests {
         await Assert.That(result).IsFalse();
     }
 
-    /// <summary>
-    /// The shutdown poll must not deny Write to the agent that is still flushing its transcript — it
-    /// runs precisely while the vendor writes its last records, and every other transcript read in
-    /// WatchCommand opens FileShare.ReadWrite for that reason.
-    /// <para>Deterministic, unlike the growing-file tests above: a writer handle is held open for the
-    /// whole call rather than racing it. With a FileShare.Read open (what File.ReadAllTextAsync does)
-    /// the read is denied, the method's catch swallows it, and it returns false after exhausting its
-    /// attempts — so this assertion flips.</para>
-    /// <para>NOTE: only discriminates on Windows. Unix has no mandatory file sharing, so both the
-    /// fixed and unfixed versions pass here; the mutation proof has to come from the Windows CI leg.</para>
-    /// </summary>
+    /// <summary>The poll must not lock the still-writing agent out of its transcript.
+    /// <para>Only DISCRIMINATES on Windows — Unix has no mandatory sharing, so this also passes with the
+    /// fix reverted (verified). Keep that in mind before trusting a local green.</para></summary>
     [Test]
     public async Task completes_while_another_handle_holds_the_file_open_for_writing() {
         var dir  = Directory.CreateTempSubdirectory("kcap-finaldrain-share-");
