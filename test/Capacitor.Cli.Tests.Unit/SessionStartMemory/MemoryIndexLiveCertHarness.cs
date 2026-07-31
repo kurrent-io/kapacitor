@@ -126,7 +126,11 @@ internal static class MemoryIndexLiveCertHarness {
         // EOF, so closing the stream up front raced the tools/call and only the initialize response
         // ever came back. Stdin stays open until the id-2 response is read, then the child is killed —
         // there is no point asking it to shut down cleanly when we already have the answer.
-        var psi = new ProcessStartInfo("kcap") {
+        // Resolved against PATH for the same reason RunProcessAsync does it — this call site builds its
+        // own ProcessStartInfo and would otherwise pick up the `kcap` sitting in this assembly's output
+        // directory. The nonce memory would then be saved by one binary and the index served to a hook
+        // running another.
+        var psi = new ProcessStartInfo(ResolveOnPath("kcap")) {
             UseShellExecute        = false,
             RedirectStandardInput  = true,
             RedirectStandardOutput = true,
@@ -390,6 +394,44 @@ internal static class MemoryIndexLiveCertHarness {
         }
     }
 
+    /// <summary>
+    /// Resolves a bare command name against PATH, explicitly, before handing it to
+    /// <see cref="ProcessStartInfo"/>.
+    ///
+    /// <para><b>This is not belt-and-braces — without it the harness runs the wrong binary.</b>
+    /// <c>Process.Start</c> tries a separator-free filename against the WORKING DIRECTORY before it
+    /// consults PATH, and this assembly's working directory is its own output folder, which contains a
+    /// <c>kcap</c> copied there by the <c>Capacitor.Cli</c> project reference. So every
+    /// <c>RunProcessAsync("kcap", …)</c> silently ran the test build while
+    /// <see cref="RecordCertEnvironmentAsync"/>'s sibling <c>which kcap</c> reported the PATH one — the
+    /// two lines disagreed, and the version line that exists precisely to pin the binary under test was
+    /// describing a different binary from the one the hook would run. Observed: a cert recorded
+    /// <c>+e2b2821</c> (the test build) while the hook ran <c>+998ec34</c> (the PATH build).</para>
+    ///
+    /// <para>Windows is left alone deliberately: correct resolution there needs PATHEXT handling, these
+    /// certs are gated and are not run on Windows, and a half-right implementation would be worse than
+    /// the documented status quo.</para>
+    /// </summary>
+    static string ResolveOnPath(string fileName) =>
+        ResolveOnPath(fileName, Environment.GetEnvironmentVariable("PATH"), OperatingSystem.IsWindows());
+
+    /// <summary>Pure overload: PATH and platform are passed rather than probed, so the resolution order
+    /// is testable without mutating this process's environment.</summary>
+    internal static string ResolveOnPath(string fileName, string? pathValue, bool isWindows) {
+        if (isWindows || Path.IsPathRooted(fileName) || fileName.Contains(Path.DirectorySeparatorChar))
+            return fileName;
+
+        foreach (var dir in (pathValue ?? "").Split(Path.PathSeparator)) {
+            if (dir.Length == 0) continue;
+
+            var candidate = Path.Combine(dir, fileName);
+            if (File.Exists(candidate)) return candidate;
+        }
+
+        // Unresolved: hand the bare name back so Process.Start produces its own, clearer error.
+        return fileName;
+    }
+
     /// <summary>Test-only seam: notified with the PID of every spawned process, so the cleanup test
     /// can confirm a timed-out child is actually gone. Never set by production code.</summary>
     internal static Action<int>? OnProcessStarted;
@@ -399,10 +441,16 @@ internal static class MemoryIndexLiveCertHarness {
     /// expiry so a hung harness CLI is never orphaned. <paramref name="stdin"/> is written and the
     /// stream closed when supplied — Codex reads its prompt that way.
     /// </summary>
+    /// <param name="environment">Extra variables layered over the inherited environment, applied AFTER
+    /// the <c>KCAP_CONFIG_DIR</c> scrub. The one caller is the non-zero-exit cert, which redirects a
+    /// harness CLI's <c>KCAP_URL</c> at a proxy that fails exactly the lifecycle POST — the variable has
+    /// to reach a grandchild (agent → its hook), which is why it is set on the environment rather than
+    /// passed as an argument.</param>
     public static async Task<(int ExitCode, string Stdout, string Stderr)> RunProcessAsync(
             string fileName, IReadOnlyList<string> args, string? workingDirectory,
-            TimeSpan? timeout = null, string? stdin = null) {
-        var psi = new ProcessStartInfo(fileName) {
+            TimeSpan? timeout = null, string? stdin = null,
+            IReadOnlyDictionary<string, string>? environment = null) {
+        var psi = new ProcessStartInfo(ResolveOnPath(fileName)) {
             UseShellExecute        = false,
             RedirectStandardOutput = true,
             RedirectStandardError  = true,
@@ -414,6 +462,10 @@ internal static class MemoryIndexLiveCertHarness {
         // Same reason as CallMemoryToolAsync: a `kcap config` child — and every harness CLI, which
         // invokes `kcap hook` itself — must see the REAL config, not this assembly's throwaway one.
         psi.Environment.Remove("KCAP_CONFIG_DIR");
+
+        // AFTER the scrub, so an explicit override is never silently dropped by it.
+        if (environment is not null)
+            foreach (var (key, value) in environment) psi.Environment[key] = value;
 
         using var process = Process.Start(psi)
             ?? throw new InvalidOperationException($"Failed to start '{fileName}'.");

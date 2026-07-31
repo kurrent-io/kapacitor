@@ -7,6 +7,94 @@ namespace Capacitor.Cli.Tests.Unit.SessionStartMemory;
 /// a manual certification run, i.e. after spending a real model turn.
 /// </summary>
 public class MemoryIndexLiveCertHarnessTests {
+    // ── command resolution ────────────────────────────────────────────────────
+    // The bug these cover: `Process.Start` tries a separator-free filename against the WORKING
+    // DIRECTORY before PATH, and this assembly's working directory is its own output folder — which
+    // contains a `kcap` copied there by the Capacitor.Cli project reference. Every harness
+    // `RunProcessAsync("kcap", …)` therefore ran the test build, while the cert's own `which kcap` line
+    // reported the PATH build the hook would actually run. The version a cert records is the whole
+    // point of recording it, so the two silently describing different binaries is the failure mode
+    // that recording exists to prevent.
+
+    [Test]
+    public async Task A_bare_command_resolves_to_the_first_PATH_entry_that_has_it() {
+        using var probe = new PathProbe();
+
+        var resolved = MemoryIndexLiveCertHarness.ResolveOnPath(
+            probe.CommandName, $"{probe.EmptyDir}{Path.PathSeparator}{probe.BinDir}", isWindows: false);
+
+        await Assert.That(resolved).IsEqualTo(probe.ExecutablePath);
+    }
+
+    /// <summary>An earlier PATH entry wins — resolution order is first-match, as the shell's is.</summary>
+    [Test]
+    public async Task Earlier_PATH_entries_win_over_later_ones() {
+        using var first  = new PathProbe();
+        using var second = new PathProbe(first.CommandName);
+
+        var resolved = MemoryIndexLiveCertHarness.ResolveOnPath(
+            first.CommandName, $"{first.BinDir}{Path.PathSeparator}{second.BinDir}", isWindows: false);
+
+        await Assert.That(resolved).IsEqualTo(first.ExecutablePath);
+    }
+
+    /// <summary>A name that is already a path is the caller's explicit choice; never rewritten.</summary>
+    [Test]
+    [Arguments("/usr/bin/env")]
+    [Arguments("./local-thing")]
+    public async Task An_explicit_path_is_passed_through_untouched(string fileName) {
+        using var probe = new PathProbe();
+
+        await Assert.That(MemoryIndexLiveCertHarness.ResolveOnPath(fileName, probe.BinDir, isWindows: false))
+            .IsEqualTo(fileName);
+    }
+
+    /// <summary>Unresolvable: hand the bare name back so Process.Start raises its own clearer error,
+    /// rather than inventing a path that does not exist.</summary>
+    [Test]
+    public async Task An_unresolvable_command_is_returned_unchanged() {
+        using var probe = new PathProbe();
+
+        await Assert.That(MemoryIndexLiveCertHarness.ResolveOnPath("kcap-no-such-command", probe.BinDir, isWindows: false))
+            .IsEqualTo("kcap-no-such-command");
+    }
+
+    /// <summary>Windows is deliberately left on the platform's own resolution: doing it correctly needs
+    /// PATHEXT handling, and a half-right implementation would be worse than the documented status quo.
+    /// These certs are gated and are not run there.</summary>
+    [Test]
+    public async Task Windows_resolution_is_deliberately_left_to_the_platform() {
+        using var probe = new PathProbe();
+
+        await Assert.That(MemoryIndexLiveCertHarness.ResolveOnPath(probe.CommandName, probe.BinDir, isWindows: true))
+            .IsEqualTo(probe.CommandName);
+    }
+
+    /// <summary>A throwaway PATH entry holding one uniquely named executable, plus an empty sibling
+    /// directory to prove a miss is skipped rather than treated as a match.</summary>
+    sealed class PathProbe : IDisposable {
+        readonly string _root;
+
+        public PathProbe(string? commandName = null) {
+            _root       = Directory.CreateTempSubdirectory("kcap-path-probe-").FullName;
+            BinDir      = Directory.CreateDirectory(Path.Combine(_root, "bin")).FullName;
+            EmptyDir    = Directory.CreateDirectory(Path.Combine(_root, "empty")).FullName;
+            CommandName = commandName ?? $"kcap-probe-{Guid.NewGuid():N}";
+
+            ExecutablePath = Path.Combine(BinDir, CommandName);
+            File.WriteAllText(ExecutablePath, "#!/bin/sh\nexit 0\n");
+        }
+
+        public string BinDir         { get; }
+        public string EmptyDir       { get; }
+        public string CommandName    { get; }
+        public string ExecutablePath { get; }
+
+        public void Dispose() {
+            try { Directory.Delete(_root, recursive: true); } catch { /* best-effort */ }
+        }
+    }
+
     [Test]
     public async Task Plain_text_output_is_returned_as_is() {
         await Assert.That(MemoryIndexLiveCertHarness.ExtractAssistantAnswer("  kcap-live-nonce-abc123  \n"))

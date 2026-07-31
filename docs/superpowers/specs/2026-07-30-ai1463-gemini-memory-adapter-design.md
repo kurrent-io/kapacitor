@@ -410,6 +410,43 @@ the bundle read it after only `shouldStopExecution()` / `isBlockingDecision()` c
 `success` gate — but those are the BeforeAgent / AfterTool paths, and the `SessionStart`-specific consumer
 was not definitively located. Treat as a prior, not proof.
 
+### 3.3a SETTLED BY LIVE MEASUREMENT — 2026-07-31 — row 1: option (a), no commit gate
+
+Run against **`gemini 0.53.0`**, `kcap 0.11.10-alpha.0.10+998ec34` (the tree merged as `e2b2821`),
+macOS 26.5.2 / osx-arm64.
+
+The failure is real rather than simulated: a WireMock instance proxied the whole API to the configured
+server and failed **only** `POST /hooks/session-start/gemini`. The index fetch on the same base URL was
+proxied through untouched — the one arrangement that produces the shape under test, a hook that fetched a
+real index and then failed its POST.
+
+| Link | Observed |
+|---|---|
+| lifecycle POST | `400` at the proxy; hook stderr `[kcap] gemini-hook session-start/gemini: HTTP 400` |
+| index fetch | `GET /api/memories/index?machine=… → 200`, same base URL, same invocation |
+| hook exit code | **1** |
+| hook stdout | 558 bytes — `{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"…## Team memory…"}}` |
+| gemini turn | exit **0** — the turn completed |
+| model receipt | the nonce was reproduced in the answer |
+
+**Row 1 fires: the turn continues AND the context is consumed.** Option **(a)** is the design, and option
+(b) is withdrawn — it is retained above only as the reasoning that made the measurement necessary, not as
+a live alternative. Parsing was not assumed to be consuming: the model reproducing the nonce is what
+distinguishes them, and it is the assertion the cert makes.
+
+Two links the live turn cannot prove on its own, so both are asserted separately:
+
+* Gemini's exit code says nothing about its hook's exit code. The cert therefore drives the same binary
+  against the same proxy directly and asserts a non-zero exit **with** parseable `additionalContext`; and
+* it asserts the proxy actually failed a session-start POST during the turn — otherwise a green run is
+  equally consistent with the POST having quietly succeeded.
+
+Covering tests: `GeminiMemoryIndexLiveCertTests.Failed_session_start_post_still_delivers_the_index_to_a_real_gemini_session`
+(live, gated) and `GeminiSessionStartHandshakeOnPostFailureTests` (integration, always run) — the latter
+also carries the branch-specific lease assertion §6a.3 requires for (a): the failed-POST invocation
+COMPLETES the lease, and a subsequent `resume` emits the bare allow object and no context. That assertion
+is mutation-proven — resuming a different session id instead re-emits the index and fails the test.
+
 ## 4. Files
 
 **Scope reverted after the AI-1617 split.** Round 2 correctly pointed out that my original two-file claim
@@ -493,6 +530,36 @@ installed version running the hook.
 passed with the guard removed; the standard here is that deleting the guard fails exactly the intended
 test.
 
+### 5.3 Two harness defects the first live run exposed — both fixed here
+
+Neither is a product defect; both made the cert lie, which is worse than a cert that fails.
+
+1. **The trusted-folder gate silently voided the run.** Every cert runs in a freshly created throwaway
+   worktree, which is by definition untrusted, and 0.53.0 refuses a headless turn there outright —
+   `exit 55`, before any model call. The positive case failed honestly on it. The negative control
+   **passed vacuously**: it asserted only that the nonce was absent, and a turn that never ran trivially
+   contains no nonce. Fixed by passing `--skip-trust` and by asserting turn completion in the negative
+   control too. Note the shape of the failure — the guard test that cannot fail is the one that looks
+   green.
+
+2. **The recorded `kcap` version described the wrong binary.** `Process.Start` resolves a
+   separator-free filename against the WORKING DIRECTORY before PATH, and the test assembly's working
+   directory is its own output folder, which contains a `kcap` copied there by the project reference. So
+   `RecordCertEnvironmentAsync` — the method that exists to stop exactly the AI-1592 stale-binary
+   misdiagnosis — recorded the test build (`+e2b2821`) while its own sibling `which kcap` line reported
+   the PATH build (`+998ec34`) that the hook would actually run. The two lines disagreed in the same
+   output and nothing noticed. Fixed by resolving bare command names against PATH explicitly, in
+   `RunProcessAsync` **and** in `CallMemoryToolAsync`, which builds its own `ProcessStartInfo` and would
+   otherwise have saved the nonce memory with a different binary from the one serving the hook. The
+   resolution order is a pure function (PATH and platform passed, not probed) with hermetic,
+   mutation-proven coverage in `MemoryIndexLiveCertHarnessTests`.
+
+**Also worth pinning for the next adapter:** `session_id` is validated with `Guid.TryParse`, and a
+failure takes the same emit-and-return-0 path as a suppressed session. A decorated id (`cert-{guid}`)
+therefore produces a plausible exit 0 with the allow object and **no HTTP traffic at all** — a probe
+written that way measures nothing and looks like a product finding. Both new tests use bare GUIDs and say
+why.
+
 ### 5.1 The cert is load-bearing for §3
 
 The live cert is the only thing that verifies §3.1 — that a `hookSpecificOutput`-only payload does not
@@ -522,6 +589,17 @@ The conditional §3.3 design is only acceptable if the PR *finalises* it. Requir
    * if **(b)**: it *releases* the lease, and a subsequent `resume` retries.
 4. **If the turn aborts, stop and escalate** — that is a defect in its own right, not a probe result to
    design around, and it must not be recorded as a passing cert.
+
+### 6a-status — closed 2026-07-31, after the merge of #414
+
+The adapter PR merged (`e2b2821`) with all four still open; they are closed by the follow-up that adds
+§3.3a and §5.3 above. Recording that honestly matters more than the tidier story: the merge gate the spec
+set for itself did not hold, and the measurement it was gating on could have changed the design.
+
+1. **Done** — §3.3a: row 1, against `gemini 0.53.0`.
+2. **Done** — (b) is withdrawn in §3.3a; only (a) is normative.
+3. **Done** — in `GeminiSessionStartHandshakeOnPostFailureTests`, mutation-proven.
+4. **Not triggered** — the turn completed (exit 0) in every live run, including the failed-POST one.
 
 ## 7. Out of scope
 
