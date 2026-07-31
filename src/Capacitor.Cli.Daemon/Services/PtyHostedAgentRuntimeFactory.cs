@@ -64,7 +64,8 @@ internal sealed partial class PtyHostedAgentRuntimeFactory(
                 : null
         ) {
             McpAllowlist = ctx.McpAllowlist,
-            Work         = ctx.Work
+            Work         = ctx.Work,
+            CodexPosture = ctx.CodexPosture
         };
 
         try {

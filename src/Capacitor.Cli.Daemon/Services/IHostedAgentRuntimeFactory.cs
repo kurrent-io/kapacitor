@@ -129,5 +129,9 @@ internal sealed record RuntimeStartContext(
         IReadOnlyList<AcpMcpServerSpec>? McpServers = null,
         // True only when a borrowed request has been materialized into a fully independent,
         // daemon-owned repository snapshot. Factories use this to revalidate exact artifacts.
-        bool               IsBorrowedSnapshot = false
+        bool               IsBorrowedSnapshot = false,
+        // Caller-selected Codex sandbox/approval posture, carried verbatim from
+        // LaunchAgentCommand.CodexPosture through to LauncherContext.CodexPosture. Non-null only for
+        // an interactive daemon-owned-worktree Codex launch that passed the orchestrator's guard.
+        CodexLaunchPosture? CodexPosture = null
     );

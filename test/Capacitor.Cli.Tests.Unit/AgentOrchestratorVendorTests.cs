@@ -279,6 +279,208 @@ public partial class AgentOrchestratorVendorTests {
         await Assert.That(server.LaunchFailedCalls.Any(c => c.Reason.StartsWith("codex_posture_"))).IsFalse();
     }
 
+    // ── Applied-posture echo on registration ────────────────────────────────────────────────
+    // The echo is stamped on the AgentInstance so the initial registration AND every reconnect
+    // re-registration report the same pair. It exists only for an interactive Codex launch on a
+    // daemon-owned worktree; every other launch shape reports nulls, which is what lets a consumer
+    // render it without any launch-kind discriminator.
+
+    async Task<(CaptureServerConnection Server, SpyHostedAgentRuntimeFactory Codex)> LaunchForEchoAsync(
+            string repoPath,
+            string agentId,
+            CodexLaunchPosture? posture,
+            LaunchKind kind = LaunchKind.Default,
+            bool borrowed = false,
+            string vendor = "codex",
+            ILogger<AgentOrchestrator>? logger = null) {
+        var server     = new CaptureServerConnection();
+        var ptyFactory = new SpyPtyProcessFactory();
+        var codexSpy   = new SpyHostedAgentRuntimeFactory("codex") {
+            EmitsTerminalOutput = false, SupportsUnattended = true, SupportsBorrowedReviewFlow = true
+        };
+        var claudeSpy = new SpyHostedAgentRuntimeFactory("claude") {
+            EmitsTerminalOutput = false, SupportsUnattended = true
+        };
+
+        // No explicit allowlist: an empty AllowedRepoPaths allows every local git repo, which is what
+        // the borrow tests rely on too — a textual allowlist entry would not match the canonicalized
+        // (symlink-resolved) cwd the borrow authorizer compares against.
+        await using var orch = BuildOrchestrator(
+            server, ptyFactory, new Dictionary<string, IHostedAgentLauncher>(),
+            extraRuntimeFactories: [codexSpy, claudeSpy], logger: logger);
+
+        await orch.HandleLaunchAgentForTest(new LaunchAgentCommand(
+            AgentId: agentId,
+            Prompt: "do a thing",
+            Model: "default",
+            Effort: null,
+            RepoPath: repoPath,
+            Tools: null,
+            AttachmentIds: null,
+            Vendor: vendor,
+            Kind: kind,
+            Borrowed: borrowed,
+            BorrowCwd: borrowed ? repoPath : null,
+            CodexPosture: posture));
+
+        return (server, codexSpy);
+    }
+
+    [Test]
+    public async Task Interactive_codex_launch_echoes_the_selected_posture_on_registration() {
+        var (repoPath, cleanup) = CreateGitRepo();
+
+        try {
+            var (server, _) = await LaunchForEchoAsync(repoPath, "agent-echo-selected", new("read-only", "never"));
+
+            await Assert.That(server.AgentRegisteredPostures).Contains(("agent-echo-selected", "read-only", "never"));
+        } finally {
+            cleanup();
+        }
+    }
+
+    [Test]
+    public async Task Interactive_codex_launch_without_a_posture_echoes_the_derived_pair() {
+        var (repoPath, cleanup) = CreateGitRepo();
+
+        try {
+            var (server, _) = await LaunchForEchoAsync(repoPath, "agent-echo-derived", posture: null);
+
+            await Assert.That(server.AgentRegisteredPostures)
+                .Contains(("agent-echo-derived", "workspace-write", "on-request"));
+        } finally {
+            cleanup();
+        }
+    }
+
+    [Test]
+    public async Task Review_flow_launch_echoes_no_posture() {
+        // A reviewer's `never` is the containment invariant, not a selection — reporting it would
+        // make every reviewer look like a user-chosen bridge-defeating launch.
+        var (repoPath, cleanup) = CreateGitRepo();
+
+        try {
+            var (server, _) = await LaunchForEchoAsync(
+                repoPath, "agent-echo-flow", posture: null, kind: LaunchKind.ReviewFlow);
+
+            await Assert.That(server.AgentRegisteredPostures).Contains(("agent-echo-flow", null, null));
+        } finally {
+            cleanup();
+        }
+    }
+
+    [Test]
+    public async Task Borrowed_default_launch_echoes_no_posture() {
+        // `work` is resolved from cmd.Borrowed independently of Kind, so a posture-LESS borrowed
+        // Default command is accepted — and must still echo nothing rather than a derived pair.
+        var (repoPath, cleanup) = CreateGitRepo();
+
+        try {
+            var (server, _) = await LaunchForEchoAsync(
+                repoPath, "agent-echo-borrowed", posture: null, borrowed: true);
+
+            await Assert.That(server.AgentRegisteredPostures).Contains(("agent-echo-borrowed", null, null));
+        } finally {
+            cleanup();
+        }
+    }
+
+    [Test]
+    public async Task Non_codex_launch_echoes_no_posture() {
+        var (repoPath, cleanup) = CreateGitRepo();
+
+        try {
+            var (server, _) = await LaunchForEchoAsync(
+                repoPath, "agent-echo-claude", posture: null, vendor: "claude");
+
+            await Assert.That(server.AgentRegisteredPostures).Contains(("agent-echo-claude", null, null));
+        } finally {
+            cleanup();
+        }
+    }
+
+    [Test]
+    public async Task Reregistration_resends_the_same_applied_posture() {
+        // A server restart wipes the in-memory echo; the reconnect path rebuilds it from the
+        // AgentInstance, so the pair must survive rather than silently becoming null.
+        var server     = new CaptureServerConnection();
+        var ptyFactory = new SpyPtyProcessFactory();
+
+        await using var orch = BuildOrchestrator(server, ptyFactory, new Dictionary<string, IHostedAgentLauncher>());
+
+        orch.RegisterAgentForTest(new AgentInstance(
+            "agent-rereg-posture", null, "", null, "/tmp", "codex",
+            new PtyHostedAgentRuntime("codex", new StubPtyProcess()),
+            new WorktreeInfo("/tmp", "", "/tmp", IsStandalone: true), new CancellationTokenSource()
+        ) {
+            SandboxPolicy = "danger-full-access", ApprovalPolicy = "never"
+        });
+
+        await server.ReRegisterAgentsHook!();
+
+        await Assert.That(server.AgentRegisteredPostures)
+            .Contains(("agent-rereg-posture", "danger-full-access", "never"));
+    }
+
+    [Test]
+    [Arguments("workspace-write", "never")]
+    [Arguments("danger-full-access", "on-request")]
+    public async Task Bridge_defeating_posture_logs_a_warning(string sandbox, string approval) {
+        var (repoPath, cleanup) = CreateGitRepo();
+
+        try {
+            var logger = new CapturingLogger<AgentOrchestrator>();
+
+            await LaunchForEchoAsync(repoPath, "agent-warn", new(sandbox, approval), logger: logger);
+
+            // Matched on the posture warning's own wording — an unrelated warning that merely names
+            // the agent (e.g. the terminal-dimensions send failure this harness always provokes)
+            // must not be able to satisfy this.
+            var postureWarnings = logger.Entries
+                .Where(e => e.Level == LogLevel.Warning
+                         && e.Message.Contains("agent-warn")
+                         && e.Message.Contains($"sandbox={sandbox}")
+                         && e.Message.Contains($"approval={approval}"))
+                .ToList();
+            await Assert.That(postureWarnings).IsNotEmpty();
+        } finally {
+            cleanup();
+        }
+    }
+
+    [Test]
+    public async Task A_prompting_posture_logs_no_bridge_warning() {
+        var (repoPath, cleanup) = CreateGitRepo();
+
+        try {
+            var logger = new CapturingLogger<AgentOrchestrator>();
+
+            await LaunchForEchoAsync(repoPath, "agent-no-warn", new("read-only", "untrusted"), logger: logger);
+
+            // Scoped to the posture warning's wording: this harness emits unrelated warnings (no real
+            // server to accept terminal dimensions), so a bare "any warning" assertion would be false.
+            var postureWarnings = logger.Entries
+                .Where(e => e.Level == LogLevel.Warning && e.Message.Contains("sandbox=read-only"))
+                .ToList();
+            await Assert.That(postureWarnings).IsEmpty();
+        } finally {
+            cleanup();
+        }
+    }
+
+    sealed class CapturingLogger<T> : ILogger<T> {
+        public List<(LogLevel Level, string Message)> Entries { get; } = [];
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+                LogLevel level, EventId eventId, TState state, Exception? ex,
+                Func<TState, Exception?, string> formatter) {
+            lock (Entries) Entries.Add((level, formatter(state, ex)));
+        }
+    }
+
     // Qodo review on #234: a null Vendor (SignalR boundary — non-null annotation not enforced) must
     // emit LaunchFailed, NOT throw ArgumentNullException from the dictionary lookup (which SafeInvoke
     // would swallow, dropping the launch silently).
@@ -1502,10 +1704,17 @@ public partial class AgentOrchestratorVendorTests {
         /// LaunchModel, not the dispatched cmd.Model).</summary>
         public List<(string AgentId, string? Model)> AgentRegisteredCalls { get; } = [];
 
-        public override Task AgentRegisteredAsync(string agentId, string? prompt, string? model, string? effort, string? repoPath) {
+        /// <summary>The applied Codex posture echoed on each registration, in call order — proves the
+        /// initial registration and every reconnect re-registration report the same pair.</summary>
+        public List<(string AgentId, string? Sandbox, string? Approval)> AgentRegisteredPostures { get; } = [];
+
+        public override Task AgentRegisteredAsync(
+                string agentId, string? prompt, string? model, string? effort, string? repoPath,
+                string? sandboxPolicy = null, string? approvalPolicy = null) {
             AgentRegisteredCallCount++;
             lock (AcpCallOrder) AcpCallOrder.Add($"register:{agentId}");
             lock (AgentRegisteredCalls) AgentRegisteredCalls.Add((agentId, model));
+            lock (AgentRegisteredPostures) AgentRegisteredPostures.Add((agentId, sandboxPolicy, approvalPolicy));
 
             return AgentRegisteredCallCount <= AgentRegisteredFailTimes
                 ? Task.FromException(new InvalidOperationException("transient re-register failure"))
