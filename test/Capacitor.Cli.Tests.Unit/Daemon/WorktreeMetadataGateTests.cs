@@ -11,9 +11,13 @@ namespace Capacitor.Cli.Tests.Unit.Daemon;
 /// (it survived 12 consecutive runs of the concurrent end-to-end test). That is exactly why the
 /// guarantee is asserted directly here rather than through a flaky repro.</para>
 /// <para>The exclusion tests assert ORDERING — the second holder entered only after the first released
-/// — rather than merely "had not entered yet after N ms". An elapsed-time assertion can pass for the
-/// wrong reason if the second call is still resolving its gate key (which spawns git); the ordering
-/// holds however slow that is. Timeouts remain only as hang guards.</para>
+/// — rather than an elapsed-time bound on the operation itself. That is strictly stronger, but be clear
+/// about the residual assumption: the second acquisition must reach the semaphore within the settle
+/// window below, or the expected order would also appear WITHOUT exclusion. There is no seam to observe
+/// "reached the gate", so the window is sized generously against work that takes microseconds. The real
+/// evidence that these assertions bite is mutation testing: deleting the gate fails all three of them
+/// (an earlier version of this file used IsEquivalentTo, which ignores ordering, and passed with the
+/// gate deleted — hence the positional assertions).</para>
 /// </summary>
 public class WorktreeMetadataGateTests {
     static string TempRepo() =>
@@ -89,6 +93,26 @@ public class WorktreeMetadataGateTests {
             await AssertSecondWaitsForFirst(repo, Path.Combine(repo, ".") + Path.DirectorySeparatorChar);
         } finally {
             try { Directory.Delete(repo, recursive: true); } catch { /* best effort */ }
+        }
+    }
+
+    [Test]
+    public async Task A_symlinked_spelling_of_one_repo_shares_its_gate() {
+        // Callers do supply aliased spellings — a launch cwd arrives over local IPC as whatever the
+        // client sent, and on macOS /tmp is itself a symlink to /private/tmp. A lexical-only key would
+        // hand these two spellings different gates and leave one repository unguarded.
+        if (OperatingSystem.IsWindows()) return; // creating a symlink needs elevation on Windows
+
+        var root   = TempRepo();
+        var real   = Path.Combine(root, "real");
+        var alias  = Path.Combine(root, "alias");
+        Directory.CreateDirectory(real);
+
+        try {
+            Directory.CreateSymbolicLink(alias, real);
+            await AssertSecondWaitsForFirst(real, alias);
+        } finally {
+            try { Directory.Delete(root, recursive: true); } catch { /* best effort */ }
         }
     }
 

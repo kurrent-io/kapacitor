@@ -76,29 +76,17 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
     /// unguarded against a launch from the main checkout. <c>rev-parse --git-common-dir</c> is the value
     /// every alias of one repository agrees on.
     /// <para>Best effort: a non-repo path (the standalone-snapshot case) or an old git without
-    /// <c>--path-format</c> falls back to the normalised checkout path, which is what this gate keyed on
-    /// before and still excludes the common same-path case.</para></summary>
-    /// <summary>Cache of checkout path → gate key. Resolving spawns git, and the gate is taken up to
-    /// three times per launch, so without this a create+remove pair pays for several extra processes.
-    /// A repository's common dir does not move, so the mapping is stable; the one drift case is a path
-    /// that was not a repo when first seen (cached under its fallback key) and later becomes one, which
-    /// can only SPLIT a gate, never merge two distinct repositories onto one.</summary>
-    static readonly System.Collections.Concurrent.ConcurrentDictionary<string, string> GateKeyCache =
-        new(OperatingSystem.IsWindows() || OperatingSystem.IsMacOS()
-            ? StringComparer.OrdinalIgnoreCase
-            : StringComparer.Ordinal);
-
+    /// <c>--path-format</c> falls back to the checkout path. Every result goes through
+    /// <see cref="NormalizePathKey"/>, which resolves aliased spellings — necessary on the old-git
+    /// branch in particular, where a main checkout answers with a RELATIVE <c>.git</c> that has to be
+    /// combined with whatever spelling the caller passed.</para></summary>
+    /// <remarks>Deliberately NOT cached by checkout path. A cache would have to assume a path's
+    /// repository identity never changes, and it can: a linked-worktree directory gets reused for
+    /// another repo, a symlink is retargeted, <c>git worktree repair</c> moves a common dir. A stale
+    /// entry would then hand two callers on one repository different gates — the failure this whole
+    /// change exists to prevent. The cost of not caching is one extra local <c>rev-parse</c> per gated
+    /// operation, alongside the <c>worktree</c> command it guards.</remarks>
     static async Task<string> ResolveGateKeyAsync(string repoPath) {
-        var lookup = NormalizePathKey(repoPath);
-        if (GateKeyCache.TryGetValue(lookup, out var cached)) return cached;
-
-        var resolved = await ResolveGateKeyUncachedAsync(repoPath);
-        GateKeyCache[lookup] = resolved;
-
-        return resolved;
-    }
-
-    static async Task<string> ResolveGateKeyUncachedAsync(string repoPath) {
         try {
             // --path-format=absolute needs git 2.31+; on older git this exits non-zero and we resolve
             // the (possibly relative) plain form against the checkout instead.
@@ -120,17 +108,61 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
         return NormalizePathKey(repoPath);
     }
 
-    /// <summary>Collapses <c>.</c>/<c>..</c> segments, makes the path absolute and drops a trailing
-    /// separator so equivalent spellings share one gate. Symlink aliases of the same directory are NOT
-    /// resolved (there is no cheap portable realpath for intermediate components), so two paths that
-    /// differ only by a symlinked ancestor would still take separate gates — strictly better than the
-    /// unguarded original, and not a shape the daemon produces.</summary>
+    /// <summary>Makes a gate key out of a directory: absolute, <c>.</c>/<c>..</c> collapsed, trailing
+    /// separator dropped, AND each component resolved through symlinks/junctions. The physical
+    /// resolution matters because callers do supply aliased spellings — a launch cwd arrives over local
+    /// IPC as whatever the client sent, and on macOS <c>/tmp/...</c> and <c>/private/tmp/...</c> are one
+    /// directory — and two spellings that produced two keys would split the gate for one repository.
+    /// .NET has no realpath, so this walks the components; anything unresolvable (a path that does not
+    /// exist yet, a permission error) is left as spelled, which can only split a gate, never merge two
+    /// distinct repositories onto one.</summary>
     static string NormalizePathKey(string path) {
         try {
-            return Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            var current = Path.GetFullPath(path);
+
+            // Re-walk after every substitution: a link's recorded target can itself sit under a
+            // symlinked ancestor (on macOS a link to /var/x resolves to /var/x, whose own /var is a
+            // link to /private/var), so one pass would leave two spellings of one directory distinct.
+            // Bounded so a link cycle terminates instead of spinning.
+            for (var hop = 0; hop < 64; hop++) {
+                var next = ResolveFirstLinkComponent(current);
+                if (next is null) break;
+                current = next;
+            }
+
+            return current.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
         } catch {
             return path; // too long / invalid chars: worst case a split gate, never a wrong one
         }
+    }
+
+    /// <summary>Finds the first component of <paramref name="full"/> that is a symlink/junction and
+    /// returns the path with that component replaced by its target; null when no component is a link
+    /// (the path is already physical). Components that cannot be inspected — not yet created, no
+    /// permission — are treated as not-a-link, so an unresolvable path keeps its spelling.</summary>
+    static string? ResolveFirstLinkComponent(string full) {
+        var root  = Path.GetPathRoot(full) ?? string.Empty;
+        var parts = full[root.Length..].Split(
+            [Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar], StringSplitOptions.RemoveEmptyEntries);
+
+        var prefix = root;
+
+        for (var i = 0; i < parts.Length; i++) {
+            prefix = Path.Combine(prefix, parts[i]);
+
+            FileSystemInfo? target = null;
+            try { target = new DirectoryInfo(prefix).ResolveLinkTarget(returnFinalTarget: true); } catch { }
+
+            if (target is null) continue;
+
+            // Re-attach the untouched tail to the target and let the caller walk the result again.
+            var rebuilt = target.FullName;
+            for (var j = i + 1; j < parts.Length; j++) rebuilt = Path.Combine(rebuilt, parts[j]);
+
+            return Path.GetFullPath(rebuilt);
+        }
+
+        return null;
     }
 
     public async Task<WorktreeInfo> CreateAsync(string repoPath, string? name = null, string? baseRef = null) {
@@ -207,11 +239,11 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
             return;
         }
 
-        // Both of these touch the same metadata tree as `worktree add`: the removal mutates it (and a
-        // removal concurrent with an add can hand the add a half-torn-down sibling entry), and
+        // Both of these touch the same metadata tree as `worktree add`: the removal mutates it, and
         // `branch -D` READS it — git refuses to delete a branch checked out in any worktree, so it
-        // enumerates them. That read is best-effort here, so a concurrent add would make it fail
-        // silently and leak the branch. One gate acquisition covers both.
+        // enumerates them. That read is best-effort here, so a concurrent add could make it fail
+        // silently and leak the branch. One gate acquisition covers both. (As with the add, the exact
+        // interleaving that breaks is hypothesis; git takes no lock, so we serialise our own access.)
         await WithWorktreeMetadataGate(worktree.SourceRepo, async () => {
             await RunGit(worktree.SourceRepo, GitTimeout, "worktree", "remove", worktree.Path, "--force");
 
