@@ -144,7 +144,12 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
                 current = next;
             }
 
-            return current.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            // Trim a trailing separator so "/repo" and "/repo/" agree — but never down to "", which a
+            // POSIX root ("/") or a bare drive root would otherwise become. An empty key is the one
+            // dangerous direction: it MERGES every degenerate input onto one gate instead of splitting.
+            var trimmed = current.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+
+            return trimmed.Length > 0 ? trimmed : current;
         } catch {
             return path; // too long / invalid chars: worst case a split gate, never a wrong one
         }
