@@ -110,6 +110,68 @@ public class PtyHostedAgentRuntimeFactoryTests {
         }
     }
 
+    /// <summary>The factory half of the posture handoff. The orchestrator-level test proves
+    /// <c>LaunchAgentCommand → RuntimeStartContext</c>, but it substitutes a spy for this factory, so
+    /// dropping <c>CodexPosture = ctx.CodexPosture</c> here would leave that test green while the real
+    /// launcher silently received null — launching on the default posture even though registration
+    /// advertised the selected pair. <see cref="RecordingLauncher.LastPrepareCtx"/> is the same
+    /// LauncherContext instance BuildArgs consumes, so asserting on it pins what the launcher sees.</summary>
+    [Test]
+    public async Task Codex_launch_threads_the_posture_into_the_launcher_context() {
+        var launcher   = new RecordingLauncher("codex", cliPath: "/opt/vendor/codex");
+        var ptyFactory = new NullPtyProcessFactory();
+        var factory    = new PtyHostedAgentRuntimeFactory(launcher, ptyFactory, NullLogger<PtyHostedAgentRuntimeFactory>.Instance);
+
+        var ctx = BuildInteractiveContext("codex") with { CodexPosture = new("danger-full-access", "untrusted") };
+
+        var start = await factory.StartAsync(ctx, CancellationToken.None);
+
+        try {
+            await Assert.That(launcher.LastPrepareCtx).IsNotNull();
+            await Assert.That(launcher.LastPrepareCtx!.CodexPosture).IsNotNull();
+            await Assert.That(launcher.LastPrepareCtx!.CodexPosture!.Sandbox).IsEqualTo("danger-full-access");
+            await Assert.That(launcher.LastPrepareCtx!.CodexPosture!.Approval).IsEqualTo("untrusted");
+        } finally {
+            await start.Runtime.DisposeAsync();
+        }
+    }
+
+    [Test]
+    public async Task Codex_launch_without_a_posture_threads_null_into_the_launcher_context() {
+        var launcher   = new RecordingLauncher("codex", cliPath: "/opt/vendor/codex");
+        var ptyFactory = new NullPtyProcessFactory();
+        var factory    = new PtyHostedAgentRuntimeFactory(launcher, ptyFactory, NullLogger<PtyHostedAgentRuntimeFactory>.Instance);
+
+        var start = await factory.StartAsync(BuildInteractiveContext("codex"), CancellationToken.None);
+
+        try {
+            await Assert.That(launcher.LastPrepareCtx).IsNotNull();
+            await Assert.That(launcher.LastPrepareCtx!.CodexPosture).IsNull();
+        } finally {
+            await start.Runtime.DisposeAsync();
+        }
+    }
+
+    static RuntimeStartContext BuildInteractiveContext(string vendor) =>
+        new(
+            AgentId: "agent-interactive-1",
+            Vendor: vendor,
+            SourceRepoPath: "/repo",
+            Worktree: new WorktreeInfo("/repo/.worktrees/agent-interactive-1", "wt-branch", "/repo"),
+            Prompt: null,
+            Model: "gpt-5.3-codex",
+            Effort: null,
+            Tools: null,
+            IsReview: false,
+            IsReviewFlow: false,
+            Review: null,
+            Cols: 120,
+            Rows: 40,
+            ServerUrl: "https://srv",
+            DaemonBridgeUrl: null,
+            CapacitorPath: "/opt/kcap/kcap"
+        );
+
     sealed class NullPtyProcessFactory : IPtyProcessFactory {
         public IPtyProcess Spawn(
                 string                      command,

@@ -408,12 +408,18 @@ public partial class AgentOrchestratorVendorTests {
                 Borrowed: true,
                 BorrowCwd: repoPath));
 
-            // Either the launch never registered (fine — nothing to echo) or it registered with nulls;
-            // what must never happen is a stamped pair on a borrowed command.
-            await Assert.That(
-                server.AgentRegisteredPostures.Any(p => p.AgentId == "agent-snapshot-borrow"
-                                                     && (p.Sandbox is not null || p.Approval is not null)))
-                .IsFalse();
+            // The launch must actually REACH registration — otherwise an unrelated early failure
+            // would satisfy a "no non-null echo exists" assertion without ever exercising the
+            // predicate under test. Require exactly one registration, and require it to be null/null.
+            var registrations = server.AgentRegisteredPostures
+                .Where(p => p.AgentId == "agent-snapshot-borrow")
+                .ToList();
+
+            await Assert.That(registrations).Count().IsEqualTo(1);
+            await Assert.That(registrations[0].Sandbox).IsNull();
+            await Assert.That(registrations[0].Approval).IsNull();
+            // The runtime really started, so the snapshot-borrow path ran end to end.
+            await Assert.That(codexSpy.StartCalls).IsEqualTo(1);
         } finally {
             cleanup();
         }
