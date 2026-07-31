@@ -632,7 +632,31 @@ append a second `--allowed-mcp-server-names`, cannot supply `--approvalMode`, ca
 alias, and cannot supply a byte-identical canonical pair to defeat provenance — because a caller cannot
 supply argv tokens at all.
 
-### 3.3b One launch identity carries every generated name
+### 3.3b One VENDOR-NEUTRAL launch identity carries every generated name
+
+**Decision (Tony, option C):** the identity is vendor-neutral — `LaunchIdentity`, not
+`GeminiLaunchIdentity` — and it reaches the argv builder as a field the factory derives onto the context
+rather than by widening the `connectionSource` delegate.
+
+Three reasons that turned out better than the Gemini-specific alternative:
+
+* it **absorbs the per-launch deny-all name AI-899 already generated inline** inside
+  `SubstituteUnmatchableNames`. That generator had exactly the two-derivations shape this type exists to
+  prevent — the value never left the substitution, so nothing else could assert on it. So this is a
+  simplification of existing code, not only a new mechanism;
+* **no delegate churn.** The factory does `ctx = ctx with { LaunchIdentity = LaunchIdentity.ForLaunch(…) }`
+  once at the top of `StartAsync`, so the same instance reaches the MCP list and the argv builder through the
+  existing `Func<RuntimeStartContext, …>` seam. The ~68 existing factory tests that inject a
+  `connectionSource` are untouched;
+* **a caller cannot choose it.** The factory always overwrites, so a value supplied on the way in never
+  reaches a launch — asserted, because silently ignoring it would be worse than refusing it.
+
+Aliasing is opt-in per vendor (`aliasResultChannel`), so Cursor, Copilot and Kiro keep
+`ResultChannelWireName == ResultChannelCanonicalId` and their wire behaviour is byte-identical. That is a
+regression guard, not a nicety: applying aliasing vendor-neutrally would change three shipped reviewers as a
+side effect of a Gemini change.
+
+#### The original per-launch-name section, retained
 
 Review found `DenyAllNameEmittedForThisLaunch` used in rev 5's validator but never defined — a real gap, and
 the same single-source discipline §3.2a applies to the channel alias applies here. Both generated names live
