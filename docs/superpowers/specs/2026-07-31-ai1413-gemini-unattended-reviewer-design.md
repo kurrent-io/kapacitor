@@ -149,11 +149,22 @@ Read together: admission is **name equality and nothing else**. That is what mak
 sufficient — and it also locates the entire defence in one
 property, which the design must then protect deliberately:
 
-* **the alias must be unpredictable**, so it comes from `Guid.NewGuid()` (v4, CSPRNG-backed on .NET) and
-  never from a counter, a timestamp, the session id, or anything repository-derived;
-* **the alias must not leak into anything the repository can read.** It appears in the launch argv (visible
-  to the daemon user via `ps`, which is already trusted) and in the injected server spec. It must not be
-  written into the worktree, into a file the reviewer can read, or into the reviewer's prompt.
+Review caught rev 2 stating this requirement in a way §2.8 contradicts — "must not leak into anything the
+repository can read", when the reviewer demonstrably CAN read it from its own argv, and the model must
+receive enough tool metadata to route the namespaced tool at all. Whole-launch secrecy was never the
+property. The normative property is temporal:
+
+* **unpredictable until repository MCP admission is frozen.** The repository's declarations are read at
+  process start (§2.8); the alias must be unguessable *at that instant*, which is what makes a v4 GUID
+  sufficient and a counter, timestamp, session id or any repository-derived value insufficient;
+* **not reused by a later launch.** A reviewer can write a `settings.json` naming its own alias, and a
+  *subsequent* launch in that worktree will read it. Freshness per launch is what makes that stale name
+  harmless — so per-launch, never per-daemon or per-worktree, is load-bearing;
+* **kcap itself must not persist the alias into the worktree** (or anywhere a later launch's repository
+  read would find it), for the same reason.
+
+What is explicitly NOT required: that the alias stay hidden from the reviewer process. It cannot, and
+§2.9 explains why that does not matter — a reviewer able to act on it already has strictly more.
 
 **Duplicate CLI options** are made irrelevant by §3.3a asserting exactly one option with exactly one
 value — a design that does not depend on the vendor's duplicate handling beats one that measures it and
@@ -181,9 +192,29 @@ isBlockedBySettings(name3) {
 }
 ```
 
-`includes` on strings is SameValueZero: **exact, case-sensitive, no glob syntax, no regex, no Unicode
-normalization, no vendor aliasing.** So the §2.6 negatives are not four lucky samples — there is no
-matching path other than equality for any of them to have taken.
+`includes` is SameValueZero, so for the values delivered to `isBlockedBySettings` the comparison is
+**exact and case-sensitive, with no glob syntax and no regex**. That is the claim the snippet supports, and
+review was right that rev 2 said more: "no Unicode normalization, no vendor aliasing" would need the
+producers of *both* operands traced, which this read does not do. Narrowed accordingly — the property
+relied on is exact equality of the values as delivered, and §2.6's prefix/glob negatives are the live
+evidence that nothing upstream re-writes them into patterns on the CLI path.
+
+Two further facts from the option definitions, both of which change the validator (§3.3a):
+
+```js
+.option("allowed-mcp-server-names", { type: "array", string: true, nargs: 1, coerce: coerceCommaSeparated })
+.option("approval-mode",            { type: "string", nargs: 1,
+                                      choices: ["default", "auto_edit", "yolo", "plan"] })
+```
+
+* **the allowlist is comma-coerced.** One option token whose value contains a comma yields **several**
+  allowed names. So "exactly one value" has to be asserted on the **coerced list**, not on the raw token —
+  a GUID hex contains no comma, so we are safe by construction, but only if the assertion is written at the
+  right level. It is also `type: "array"`, so repeated options accumulate, which is why "exactly one
+  option" is a separate assertion from "exactly one name".
+* **`approval-mode` is `choices`-constrained**, so an unrecognised value fails at Gemini's own parser. A
+  *recognised but wrong* value does not — `--approval-mode default` is perfectly valid and silently
+  restores prompting, which is precisely review's finding 2.
 
 It also exposes a trap worth stating: **`length > 0`**. An **empty** allowlist is not "deny all", it is
 "no allowlist" — every server is admitted. That is the same hazard AI-899 §3.1c recorded as "never the
@@ -219,21 +250,53 @@ Whether that works turns on a temporal property. **Measured, in one process:**
 | 2a — hostile server written **mid-session** under the exact allowlisted name, then prompted again | **not loaded** |
 | 2b — hostile server present, **new `session/new` in the same process** | **not loaded** |
 
-The repository's MCP set is evaluated **once at process start** and is not re-read — not per prompt, not
-per session. So the reviewer cannot cash in the alias inside its own launch even knowing it, and review's
-condition (a) is the one this design relies on: *declarations are evaluated before any
-repository-controlled actor can act, and are never hot-reloaded.*
+**What that shows, stated no wider:** the repository's declarations are not re-read across the two
+transitions tested — a subsequent prompt in the same session, and a fresh `session/new` in the same
+process. Rev 3 wrote "evaluated once at process start … never hot-reloaded", and review was right that this
+is a third instance of the same over-generalisation: the probe does not locate when the snapshot is taken,
+and it does not exclude a delayed watcher, a debounce, a workspace-switch path, or another lifecycle
+trigger. The bundle has **seven `scheduleMcpContextRefresh` call sites and a 300 ms coalescing delay**, so
+I am not in a position to claim exhaustiveness and will not.
 
-Two boundaries stated rather than implied:
+**So the design does not rest on it.** §2.9 is why: an actor able to *use* a reload — a reviewer running
+repository-influenced instructions with tool access — already has strictly more than the reload would give
+it. No-reload is therefore recorded here as **defence in depth against the case it does cover**, and the
+security argument lives in §2.9 instead.
 
-* **A later launch in the same worktree** would read a `settings.json` a previous reviewer wrote — and that
-  is precisely why the alias is **per launch** and not per daemon or per worktree. A stale hostile name
-  cannot match a fresh GUID. Per-launch freshness is load-bearing, not hygiene.
-* **A same-user process can read another's argv** on this platform. That is not a boundary this design
-  claims to hold: a process already running as the daemon user can read the token store and the config
-  directory outright, so it is inside the trust boundary before argv is considered. The threat model here
-  is the *repository under review*, which reaches us only through the reviewer's own sandbox-less worktree
-  and the model's tool use — not through a peer process.
+What the alias actually defends, precisely: a repository that can **declare** but not **execute** — its
+`settings.json` is read before the model acts, so an exact-name collision is its only lever, and a fresh
+GUID removes it. That is the case §2.3 measured, and it is a real one.
+
+### 2.9 The security property of unattended review, stated rather than implied
+
+Review's sharpest point, and rev 3 got the boundary wrong. §2.8 argued peer same-user processes are outside
+the threat model because they can already read the token store — while simultaneously accepting that the
+repository reaches the model's tool use. Under blanket `--approval-mode yolo` those are the same actor:
+prompt-injected repository content can run shell commands, and therefore **create a daemon-user process,
+read the token and config stores, inspect a concurrent reviewer's argv, persist, and exfiltrate.** A
+repository-induced process is not cleanly outside the boundary; it is reachable through the in-scope path.
+
+So this is recorded as an **accepted security property** rather than defended:
+
+> Starting an unattended review in a daemon-owned worktree grants prompt-injected repository content the
+> ability to execute as, and access the credentials of, the daemon user, for the duration of the review.
+
+Three things follow, and none of them is new to this issue:
+
+* **It is a property of unattended review as already shipped**, not something Gemini introduces. Cursor's
+  reviewer passes `--force` (command approval suppressed) and Claude's and Codex's reviewers run with
+  equivalent posture. Anything this spec claimed about Gemini being narrower would be false.
+* **Sandboxing is the only thing that changes it**, which is exactly why Copilot's borrowed review exists —
+  `BorrowedReviewSandbox` plus a brokered credential (AI-1584, AI-1589) is the one path that does not grant
+  this, and it is the path §1 explains Gemini cannot take yet.
+* **The alias defence is therefore not weakened by it, because it was never aimed at it.** §2.3's attacker
+  declares a server and cannot execute; §2.9's attacker executes and does not need to declare one. Different
+  actors, and conflating them is what made rev 3's boundary statement dishonest.
+
+If that accepted property is not acceptable, the correct response is not a better alias — it is to withhold
+Gemini's reviewer until it can be sandboxed, and to revisit the shipped reviewers on the same grounds. That
+is a product call, not a design detail, so it is surfaced here rather than buried: **§7 records it as an
+explicit acceptance, and it should be signed off knowingly.**
 
 ## 3. Design
 
@@ -320,27 +383,28 @@ So the alias is an explicit launch-scoped value with both names on it:
 /// only string that ever reaches a vendor. Created once per launch and threaded — never re-derived,
 /// because two derivations is the defect this type exists to make unrepresentable.
 internal sealed record ReviewChannelIdentity(string CanonicalId, string WireName) {
-    /// <param name="newGuid">The ONLY entropy input. Deliberately a parameter and deliberately the only
-    /// one: no launch context is in scope here, so an implementation cannot derive the wire name from the
-    /// session id, agent id, worktree path or clock even by accident — the values are not reachable. That
-    /// makes review's "not derived from launch inputs" property structural rather than a black-box
-    /// sampling claim, and it gives the test a deterministic oracle (inject a fixed Guid, assert the exact
-    /// wire name).</param>
-    public static ReviewChannelIdentity ForLaunch(string vendor, Func<Guid> newGuid) {
+    /// PRODUCTION entry point. Takes the vendor and NOTHING else — no launch context, and no delegate
+    /// either. Rev 3 passed a Func&lt;Guid&gt;, which review correctly demolished: a delegate closes over its
+    /// caller's scope, so `ForLaunch(vendor, () =&gt; Hash(ctx.SessionId))` was legal and the tests would
+    /// still have passed with their own stub. The signature had moved the derivation boundary outward, not
+    /// closed it. There is exactly one production overload and it reaches its own entropy.
+    public static ReviewChannelIdentity ForLaunch(string vendor) => FromGuid(vendor, Guid.NewGuid());
+
+    /// TEST-ONLY seam. Takes a concrete Guid, not a factory — a value cannot close over anything, so no
+    /// caller can smuggle launch context through it. This is what gives §6 row 12 a deterministic oracle
+    /// while leaving derivation unrepresentable on the production path.
+    internal static ReviewChannelIdentity FromGuid(string vendor, Guid g) {
         if (vendor != Vendors.Gemini)
-            return new(KcapMcpRegistry.ReservedResultChannelId,      // unchanged for every other vendor
+            return new(KcapMcpRegistry.ReservedResultChannelId,   // unchanged for every other vendor
                        KcapMcpRegistry.ReservedResultChannelId);
 
-        var g = newGuid();
-
-        // Generation failure aborts the launch. There is no fallback, predictable or otherwise: the whole
-        // security property of §2.7 is that this string is unguessable, so a degraded value would be worse
-        // than no reviewer at all.
+        // No fallback, predictable or otherwise: the security property of §2.6 is that this string is
+        // unguessable at admission time, so a degraded value is worse than no reviewer.
         if (g == Guid.Empty)
             throw new InvalidOperationException(
-                "Refusing to launch a Gemini reviewer: the result-channel alias generator returned an "
-              + "empty GUID, so the injected channel name would be predictable. The MCP allowlist is an "
-              + "exact-name gate, so a predictable name is a repository-impersonation hole (see spec §2.7).");
+                "Refusing to launch a Gemini reviewer: the result-channel alias would be predictable. The "
+              + "MCP allowlist is an exact-name gate (spec §2.7), so a predictable name is a "
+              + "repository-impersonation hole.");
 
         return new(KcapMcpRegistry.ReservedResultChannelId,
                    $"{KcapMcpRegistry.ReservedResultChannelId}-{g:N}");
@@ -348,8 +412,12 @@ internal sealed record ReviewChannelIdentity(string CanonicalId, string WireName
 }
 ```
 
-Production passes `Guid.NewGuid` (v4, CSPRNG-backed on .NET). Tests pass a stub, which is what makes rows
-11 and 12 of §6 falsifiable:
+The factory calls `ForLaunch(vendor)`. **The mutant lives at that call site**, not only inside the type —
+review's point: a test that only exercises `ForLaunch` cannot catch a caller that reaches for the internal
+overload with a derived value. So §6 row 12 asserts the production call site uses the context-free overload,
+and row 15 is the mutant that swaps it for `FromGuid(vendor, DeriveFrom(ctx))` and must go red.
+
+:
 
 ```csharp
 ```
@@ -396,28 +464,68 @@ not reject legacy `--yolo` from anywhere. A convention is not an invariant.
 
 So the composed argv is validated once, at the launch boundary, after every contributor has run:
 
+Rev 3's version **counted option tokens and never looked at the value**, which review dismantled: a single
+`--approval-mode default` satisfies `count == 1` while silently restoring prompting, and `--approval-mode=yolo`
+slips past a token-equality check entirely. `choices` (§2.7) rejects an *unrecognised* value at Gemini's own
+parser but a recognised-and-wrong one is perfectly valid. So the validator parses **values**, in both
+spellings yargs accepts:
+
 ```csharp
-static void RequireApprovalModeInvariants(IReadOnlyList<string> argv, bool isReviewFlow, string vendor) {
-    // Legacy spelling is refused everywhere, on any launch. It is not merely redundant with
-    // --approval-mode: the two together were the failure mode the issue's original note named.
+/// Reads option VALUES, not tokens. yargs accepts both `--opt value` (nargs: 1) and `--opt=value`, so a
+/// token-level check is not a check. Returns every value bound to `name`, in order.
+static List<string> OptionValues(IReadOnlyList<string> argv, string name) {
+    var values = new List<string>();
+    for (var i = 0; i < argv.Count; i++) {
+        if (argv[i] == $"--{name}") {
+            if (i + 1 < argv.Count) values.Add(argv[i + 1]);
+            else values.Add("");                       // a dangling option is a malformed launch, not "absent"
+        } else if (argv[i].StartsWith($"--{name}=", StringComparison.Ordinal)) {
+            values.Add(argv[i][($"--{name}=".Length)..]);
+        }
+    }
+    return values;
+}
+
+static void RequireLaunchArgvInvariants(
+        IReadOnlyList<string> argv, bool isReviewFlow, string vendor, ReviewChannelIdentity channel) {
+    // Legacy spelling refused everywhere, from any source. Not merely redundant with --approval-mode:
+    // the two together were the failure mode the issue's original note named.
     if (argv.Contains("--yolo"))
         throw new InvalidOperationException($"...'{vendor}' launch carries the legacy --yolo flag...");
 
-    var approvalModes = argv.Count(a => a == "--approval-mode");
+    var approval = OptionValues(argv, "approval-mode");
 
-    if (!isReviewFlow && approvalModes > 0)
-        throw new InvalidOperationException(
-            $"...interactive '{vendor}' launch carries --approval-mode; hosted sessions must behave as the "
-          + "user's own session does...");
+    if (!isReviewFlow) {
+        if (approval.Count > 0)
+            throw new InvalidOperationException(
+                $"...interactive '{vendor}' launch carries --approval-mode ('{approval[0]}'); a hosted "
+              + "session must behave as the user's own session does...");
+    } else if (vendor == Vendors.Gemini) {
+        // The VALUE is the invariant. `default` would pass a count check and silently restore prompting,
+        // which stalls the round on a permission frame no human answers (§2.4).
+        if (approval is not ["yolo"])
+            throw new InvalidOperationException(
+                $"...Gemini review launch must carry exactly one --approval-mode with value 'yolo'; "
+              + $"found [{string.Join(", ", approval)}]...");
 
-    if (isReviewFlow && vendor == Vendors.Gemini && approvalModes != 1)
-        throw new InvalidOperationException($"...expected exactly one --approval-mode, found {approvalModes}...");
+        // The allowlist is comma-COERCED and array-typed (§2.7), so the assertion is on the coerced set:
+        // one option, one resulting name, equal to this launch's wire name. An EMPTY value would disable
+        // the gate entirely rather than deny all.
+        var allowed = OptionValues(argv, "allowed-mcp-server-names")
+            .SelectMany(v => v.Split(',', StringSplitOptions.TrimEntries))
+            .ToList();
+
+        if (allowed is not [var only] || only != channel.WireName)
+            throw new InvalidOperationException(
+                $"...Gemini review launch must allow exactly the injected channel '{channel.WireName}'; "
+              + $"found [{string.Join(", ", allowed)}]...");
+    }
 }
 ```
 
-and the same boundary asserts the allowlist shape §2.6 relies on: **exactly one**
-`--allowed-mcp-server-names` option with **exactly one** value, so the design never depends on the
-vendor's duplicate-option semantics.
+Splitting on `,` mirrors `coerceCommaSeparated`, so a value that *looks* single but coerces to several is
+caught rather than counted as one. `channel` is passed in, which is what makes this the same
+`ReviewChannelIdentity` instance §3.2a threads — the validator cannot re-derive and agree with itself.
 
 **`IsReviewFlow` ⇔ unattended.** Review asked whether every review-flow launch is necessarily unattended.
 It is, and the code already enforces it rather than assuming it: `ValidateAndBuildReviewFlowMcp` throws
@@ -549,6 +657,10 @@ session, so a process count is the wrong oracle here.
 * Interactive hosted Gemini is unchanged: no `--approval-mode`, one deny-all name, no placeholder.
 * Routing **refuses** Gemini for a borrowed snapshot before any process starts (§8, first bullet).
 * Every row of §6's table mutation-proven.
+* **§2.9's accepted security property is signed off knowingly** — that an unattended review in an owned
+  worktree grants prompt-injected repository content execution as, and the credentials of, the daemon user.
+  This is a property of every shipped unattended reviewer, not of Gemini, and the alternative is to withhold
+  the reviewer until it can be sandboxed. It is a product decision and belongs on the PR, not in a footnote.
 
 ## 8. What this issue does NOT do
 
