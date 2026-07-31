@@ -26,6 +26,7 @@ public class LaunchConsentBrokerTests {
         await Assert.That(broker.TryResolve("a1", allow: true)).IsTrue();
         await Assert.That(await pending).IsEqualTo(true);
         await Assert.That(broker.TryResolve("a1", allow: true)).IsFalse(); // already resolved
+        await Assert.That(reader.TryRead(out _)).IsFalse(); // no duplicate item queued
     }
 
     [Test]

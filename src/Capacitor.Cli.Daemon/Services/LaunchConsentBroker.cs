@@ -7,11 +7,16 @@ namespace Capacitor.Cli.Daemon.Services;
 /// subscribers (the desktop app / kcap daemon consent). First resolution wins; a request
 /// vanishes on resolve or timeout. Never persisted — a daemon restart clears pending prompts
 /// (the server retries or fails the launch with the coded timeout denial).
+///
+/// Delivery to each subscriber is exactly-once per request (replay xor broadcast, never both),
+/// enforced by the _deliveryGate lock. There is NO withdrawal push — subscribers learn of
+/// expiration only when TryResolve returns false (Task 7's consumer relies on this).
 internal sealed class LaunchConsentBroker : ILaunchConsentPrompter {
     sealed record Pending(LaunchConsentPromptRequest Request, TaskCompletionSource<bool> Tcs);
 
     readonly ConcurrentDictionary<string, Pending> _pending = new();
     readonly ConcurrentDictionary<Guid, Channel<LaunchConsentPromptRequest>> _subscribers = new();
+    readonly object _deliveryGate = new();
 
     public bool HasSubscriber => !_subscribers.IsEmpty;
 
@@ -19,8 +24,10 @@ internal sealed class LaunchConsentBroker : ILaunchConsentPrompter {
         var id = Guid.NewGuid();
         var ch = Channel.CreateUnbounded<LaunchConsentPromptRequest>(
             new UnboundedChannelOptions { SingleReader = true });
-        foreach (var p in _pending.Values) ch.Writer.TryWrite(p.Request);
-        _subscribers[id] = ch;
+        lock (_deliveryGate) {
+            foreach (var p in _pending.Values) ch.Writer.TryWrite(p.Request);
+            _subscribers[id] = ch;
+        }
         return (id, ch.Reader);
     }
 
@@ -30,9 +37,11 @@ internal sealed class LaunchConsentBroker : ILaunchConsentPrompter {
 
     public async Task<bool?> PromptAsync(LaunchConsentPromptRequest req, TimeSpan timeout, CancellationToken ct) {
         var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-        if (!_pending.TryAdd(req.RequestId, new Pending(req, tcs))) return null;
-        try {
+        lock (_deliveryGate) {
+            if (!_pending.TryAdd(req.RequestId, new Pending(req, tcs))) return null;
             foreach (var ch in _subscribers.Values) ch.Writer.TryWrite(req);
+        }
+        try {
             using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             cts.CancelAfter(timeout);
             try { return await tcs.Task.WaitAsync(cts.Token); }
