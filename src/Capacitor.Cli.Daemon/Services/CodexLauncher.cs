@@ -104,16 +104,18 @@ internal sealed partial class CodexLauncher(
     }
 
     public LaunchArgs BuildArgs(LauncherContext ctx) {
-        if (ctx is { IsReview: true, ReviewLaunch: { } launch }) {
-            return BuildReviewArgs(ctx, launch);
+        // Re-assert the orchestrator's guard for every non-interactive shape, BEFORE the PR-review
+        // branch returns — a posture here means that guard was bypassed, and each of these launches
+        // owes its posture to a containment rule: a borrowed cwd is the user's real checkout, a
+        // review-flow reviewer has no human to answer a prompt, and PR review is fixed by contract.
+        if (ctx.CodexPosture is not null
+         && (ctx.IsReview || ctx.IsReviewFlow || ctx.Work == WorkLocation.BorrowedCwd)) {
+            throw new InvalidOperationException(
+                "codex_posture_not_overridable: a launch posture reached a borrowed, review-flow or PR-review launch");
         }
 
-        // Re-assert the orchestrator's pre-flight guard. A posture here means that guard was
-        // bypassed, and honouring it would break a containment invariant — a borrowed reviewer runs
-        // in the user's REAL checkout, and a review-flow reviewer has no human to answer a prompt.
-        if (ctx.CodexPosture is not null && (ctx.Work == WorkLocation.BorrowedCwd || ctx.IsReviewFlow)) {
-            throw new InvalidOperationException(
-                "codex_posture_not_overridable: a launch posture reached a borrowed or review-flow launch");
+        if (ctx is { IsReview: true, ReviewLaunch: { } launch }) {
+            return BuildReviewArgs(ctx, launch);
         }
 
         // Selected pair for an interactive owned-worktree launch; otherwise the derived containment

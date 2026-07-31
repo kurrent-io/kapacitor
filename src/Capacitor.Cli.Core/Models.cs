@@ -1299,12 +1299,8 @@ public readonly record struct LaunchAgentCommand(
         // launches with the exact LaunchModel VERBATIM and, post-launch, reports the concrete resolved
         // model back keyed on LaunchAttemptId (see ExplicitReviewerModelResolvedV1).
         ExplicitReviewerModelLaunch? ExplicitReviewerModel = null,
-        // Caller-selected Codex sandbox/approval posture for an INTERACTIVE daemon-owned-worktree
-        // launch; null preserves the derived behaviour byte-for-byte. Supplied for any other launch
-        // shape (review-flow, PR review, borrowed cwd, non-codex vendor) the daemon fails closed
-        // with a coded LaunchFailed — never silently ignored, never honoured. Appended last as an
-        // optional field so the SignalR positional/name binding stays wire-compatible with older
-        // daemons (ignore it) and older servers (never set it).
+        // Interactive Codex launches only; any other launch shape is rejected by CodexPosturePolicy.
+        // Appended last so the wire stays compatible with older daemons and servers.
         CodexLaunchPosture? CodexPosture = null
     );
 

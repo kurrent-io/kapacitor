@@ -871,6 +871,25 @@ public class CodexLauncherTests {
         await Assert.That(() => NewLauncher().BuildArgs(ctx)).Throws<InvalidOperationException>();
     }
 
+    /// <summary>The PR-review branch returns early, so the guard has to sit ABOVE it — otherwise a
+    /// posture reaching a PR-review launch is silently dropped instead of failing closed, which is
+    /// the one outcome the posture contract rules out for every non-interactive shape.</summary>
+    [Test]
+    public async Task BuildArgs_throws_when_a_posture_reaches_a_pr_review_context() {
+        var ctx = NewCtx() with {
+            IsReview     = true,
+            Review       = new ReviewLaunchInfo("acme", "widgets", 42),
+            ReviewLaunch = new ReviewLaunchBuilder.ReviewLaunch(
+                McpConfigPath: null,
+                SystemPrompt: "review it",
+                Mcp: new ReviewLaunchBuilder.ReviewMcpServer(
+                    "/opt/kcap/kcap", ["mcp", "review"], new Dictionary<string, string>())),
+            CodexPosture = new("workspace-write", "never")
+        };
+
+        await Assert.That(() => NewLauncher().BuildArgs(ctx)).Throws<InvalidOperationException>();
+    }
+
     [Test]
     public async Task DisablesApprovalPrompts_tracks_the_effective_approval_policy() {
         var launcher = NewLauncher();
