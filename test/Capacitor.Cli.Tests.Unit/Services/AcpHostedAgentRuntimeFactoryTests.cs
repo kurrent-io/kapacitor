@@ -2066,7 +2066,12 @@ public class AcpHostedAgentRuntimeFactoryTests {
             connectionSource: ctx => {
                 seen = ctx.LaunchIdentity;
                 return (fake.ClientWriteStream, fake.ClientReadStream, new FakeAcpProcess());
-            });
+            },
+            // PINNED. Since the capability gate moved ahead of the connection source, StartAsync resolves a
+            // version before this seam is reached — so without pinning, this test depends on whether a
+            // certified gemini happens to be installed: green on a dev machine, red on CI where the gate
+            // refuses as version-unresolved and `seen` stays null. Review caught exactly that.
+            resolveVendorVersion: _ => GeminiReviewerCapability.CertifiedVersions.First());
 
         var ctx = ReviewContext() with { Vendor = "gemini", LaunchIdentity = attacker };
 
@@ -2186,5 +2191,62 @@ public class AcpHostedAgentRuntimeFactoryTests {
         catch { /* the handshake is not the subject — a bare fake never answers initialize */ }
 
         await Assert.That(Volatile.Read(ref reached)).IsEqualTo(1);
+    }
+
+    /// <summary>
+    /// THE identity-threading invariant, asserted end to end across the two ACTUAL sinks of one real
+    /// <see cref="AcpHostedAgentRuntimeFactory.StartAsync"/> run: the serialized <c>session/new.mcpServers</c>
+    /// payload the vendor received, and the context the spawn seam was handed.
+    ///
+    /// <para>Review's point, and it was right twice: the earlier versions compared two fixture contexts, or a
+    /// fixture context against a helper, so a regression that regenerated the identity BETWEEN building the
+    /// MCP list and invoking the connection source would leave every other test green. That regression is the
+    /// exact silent failure the type exists to prevent — a reviewer whose allowlist does not admit its own
+    /// result channel starts normally and can never report.</para>
+    /// </summary>
+    [Test]
+    public async Task Gemini_TheSessionNewChannelName_MatchesTheIdentityHandedToTheSpawnSeam() {
+        var fake = new FakeAcpAgent();
+        RuntimeStartContext? atSeam = null;
+
+        var factory = new AcpHostedAgentRuntimeFactory(
+            descriptor: AcpVendorDescriptors.Gemini,
+            config: new DaemonConfig { GeminiUnattendedReviewerEnabled = true },
+            loggerFactory: NullLoggerFactory.Instance,
+            connection: new CaptureServerConnection(),
+            connectionSource: ctx => {
+                atSeam = ctx;
+                return (fake.ClientWriteStream, fake.ClientReadStream, new FakeAcpProcess());
+            },
+            resolveVendorVersion: _ => GeminiReviewerCapability.CertifiedVersions.First());
+
+        // fake.RunAsync is what serves the handshake — without it StartAsync waits on `initialize` and the
+        // token cancels before session/new is ever sent.
+        using var cts = new CancellationTokenSource();
+        var fakeRun = fake.RunAsync(cts.Token);
+
+        var started = await factory.StartAsync(ReviewContext() with { Vendor = "gemini" }, cts.Token)
+                                   .WaitAsync(HangGuard, cts.Token);
+
+        var mcpJson = await WaitForSessionNewMcpServersJsonAsync(fake);
+
+        await Assert.That(atSeam).IsNotNull();
+        var wire = atSeam!.LaunchIdentity!.ResultChannelWireName;
+
+        // The wire name the spawn seam was handed must be the name that actually crossed the wire — read from
+        // the serialized payload, not re-derived.
+        await Assert.That(mcpJson).Contains($"\"{wire}\"")
+            .Because("the injected channel must carry the SAME identity the spawn seam got; two derivations "
+                   + "produce a reviewer whose allowlist does not admit its own channel, and it fails silently");
+
+        // And it must be an alias, not the canonical id — otherwise this would pass trivially for a
+        // non-aliasing vendor and prove nothing about Gemini.
+        await Assert.That(wire).IsNotEqualTo(KcapMcpRegistry.ReservedResultChannelId);
+        await Assert.That(mcpJson).DoesNotContain($"\"{KcapMcpRegistry.ReservedResultChannelId}\"");
+
+        cts.Cancel();
+        try { await fakeRun.WaitAsync(HangGuard); } catch (OperationCanceledException) { }
+        await started.Runtime.DisposeAsync();
+        await fake.DisposeAsync();
     }
 }
