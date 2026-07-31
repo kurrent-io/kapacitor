@@ -46,20 +46,6 @@ static class GeminiHookCommand {
     // Gemini's turn loop.
     static readonly TimeSpan NotificationPostBudget = TimeSpan.FromSeconds(2);
 
-    /// <summary>
-    /// Renders the SessionStart hook result. With a fragment this is the memory envelope; without one it
-    /// is the explicit allow object — NOT zero bytes.
-    ///
-    /// <para>Emitting on the empty path is deliberate and diverges from the other memory adapters. Gemini
-    /// parses <c>stdout.trim() || stderr.trim()</c>, so silent stdout makes it read kcap's STDERR
-    /// diagnostics as the hook's output; a payload wins the <c>||</c> and shadows them. See
-    /// <see cref="GeminiAllowEnvelope"/>. Do not "harmonise" this back to the other adapters' shape.</para>
-    ///
-    /// <para>Two separate try blocks on purpose: rendering completes before any byte is written, and a
-    /// write that throws mid-payload must not alter the command's exit code. A truncated payload is safe
-    /// on Gemini's side — a JSON parse failure degrades to plain text and never synthesises a blocking
-    /// decision, which requires an explicit <c>decision: "block"|"deny"</c>.</para>
-    /// </summary>
     /// <summary>Gemini's explicit allow-with-no-context result. A literal rather than a serializer call
     /// ON PURPOSE: this is the payload every failure path degrades to, so producing it must itself be
     /// incapable of failing. Serializing it would add a throw path to the one value that exists to
@@ -70,6 +56,20 @@ static class GeminiHookCommand {
     /// <c>decision</c>/<c>stopReason</c>, so it cannot block.</para></summary>
     internal const string AllowPayload = """{"continue":true}""";
 
+    /// <summary>
+    /// Renders the SessionStart hook result. With a fragment this is the memory envelope; without one it
+    /// is <see cref="AllowPayload"/> — NOT zero bytes.
+    ///
+    /// <para>Emitting on the empty path is deliberate and diverges from the other memory adapters. Gemini
+    /// parses <c>stdout.trim() || stderr.trim()</c>, so silent stdout makes it read kcap's STDERR
+    /// diagnostics as the hook's output; a payload wins the <c>||</c> and shadows them. Do not
+    /// "harmonise" this back to the other adapters' shape.</para>
+    ///
+    /// <para>Two separate try blocks on purpose: rendering completes before any byte is written, and a
+    /// write that throws mid-payload must not alter the command's exit code. A truncated payload is safe
+    /// on Gemini's side — a JSON parse failure degrades to plain text and never synthesises a blocking
+    /// decision, which requires an explicit <c>decision: "block"|"deny"</c>.</para>
+    /// </summary>
     internal static void WriteSessionStartOutput(TextWriter writer, string? fragment) {
         // Start from the payload that cannot fail, and only upgrade to the memory envelope when
         // rendering genuinely succeeds. Structured this way so that a render throw OR an empty render
@@ -91,12 +91,30 @@ static class GeminiHookCommand {
         catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException) { }
     }
 
+    /// <summary>The exact <see cref="SessionMemoryLifecycle"/> this adapter hands the orchestrator.
+    ///
+    /// <para>Extracted so it is testable as a unit: asserting the shared mapper in isolation would stay
+    /// green if this call site reintroduced a local mapper — which is precisely the regression that
+    /// occurred here. Tests feed this into <c>SessionStartMemoryLifecyclePolicy.Decide</c> to assert the
+    /// resulting eligibility, which is the behaviour that actually matters.</para>
+    ///
+    /// <para><c>CallbackMayRepeat: false</c> — Gemini's SessionStart is a session-level event, not a
+    /// per-turn callback like Kiro's agentSpawn. A `resume` re-fire on the same session id is made
+    /// idempotent by the lease, not by this flag.</para></summary>
+    internal static SessionMemoryLifecycle LifecycleFor(string sessionId, string? source) =>
+        new(SessionStartHarness.Gemini, sessionId, LifecycleInstanceId: null,
+            IsTopLevel: true, ClassificationAuthoritative: true,
+            // Shared mapper, NOT a local one: it maps an unrecognised source to Unknown, which the
+            // policy suppresses BEFORE any lease is acquired. A local mapper defaulting to New would
+            // inject on an unverified reason AND spend the once-per-session lease on it.
+            SessionStartMemoryHookSupport.ReasonFor(source), CallbackMayRepeat: false);
+
     static Task<string?> StartMemoryIndexTask(
             string     baseUrl,
             string     sessionId,
             string?    scopeRoot,
             bool       disabled,
-            SessionLifecycleReason reason,
+            string?    source,
             TimeSpan   budget,
             Func<string?, CancellationToken, Task<HttpClient>>? memoryClientFactory,
             Func<SessionStartMemoryLeaseStore>?                 memoryStoreFactory) {
@@ -113,12 +131,8 @@ static class GeminiHookCommand {
                 disposeClients: memoryClientFactory is null);
 
             return new SessionStartMemoryOrchestrator(store, provider).GetFragmentAsync(
-                // CallbackMayRepeat: false — Gemini's SessionStart is a session-level event, not a
-                // per-turn callback like Kiro's agentSpawn. A `resume` re-fire on the same session id is
-                // made idempotent by the lease, not by this flag.
-                new SessionMemoryLifecycle(SessionStartHarness.Gemini, sessionId, LifecycleInstanceId: null,
-                    IsTopLevel: true, ClassificationAuthoritative: true, reason, CallbackMayRepeat: false),
-                new SessionStartMemoryContextRequest(baseUrl, scopeRoot, disabled, budget, CancellationToken.None));
+                            LifecycleFor(sessionId, source),
+    new SessionStartMemoryContextRequest(baseUrl, scopeRoot, disabled, budget, CancellationToken.None));
         } catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException) {
             return Task.FromResult<string?>(null);
         }
@@ -257,10 +271,7 @@ static class GeminiHookCommand {
             baseUrl, sessionId,
             scopeRoot: GitRepository.FindRoot(cwd) ?? cwd,
             disabled: activeProfile?.DisableMemoryIndex is true,
-            // Shared mapper, NOT a local one: it maps an unrecognised source to Unknown, which the
-            // lifecycle policy suppresses. A local mapper defaulting to New would inject on an
-            // unverified reason AND spend the once-per-session lease on it.
-            reason: SessionStartMemoryHookSupport.ReasonFor(source),
+            source: source,
             budget: HookBudget.Remaining(processStart, "session-start"),
             memoryClientFactory, memoryStoreFactory);
 

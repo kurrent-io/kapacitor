@@ -219,4 +219,44 @@ public class GeminiSessionStartMemoryTests {
     public async Task source_maps_through_the_shared_lifecycle_mapper(string? source, string expected) {
         await Assert.That(SessionStartMemoryHookSupport.ReasonFor(source).ToString()).IsEqualTo(expected);
     }
+
+    /// <summary>
+    /// The adapter-level guard: asserts the ELIGIBILITY the adapter's own lifecycle produces, not just
+    /// the mapper in isolation.
+    ///
+    /// <para>Found by code review. The mapper test above calls <c>ReasonFor</c> directly, so it would
+    /// stay green if this call site reintroduced a local mapper — the exact regression that occurred
+    /// here. <c>LifecycleFor</c> is what <c>StartMemoryIndexTask</c> actually passes to the orchestrator,
+    /// so running it through the real policy closes that hole.</para>
+    ///
+    /// <para>Why the decision, not an I/O observation: <c>GetFragmentAsync</c> calls <c>Decide</c>
+    /// FIRST — before <c>TryBeginAsync</c> and before the provider fetch — so a
+    /// <c>RetryLaterNoCommit</c> means no lease is acquired and none is spent. Asserting the decision
+    /// proves "suppressed without burning the session's one injection" deterministically, with no
+    /// filesystem or HTTP.</para>
+    /// </summary>
+    [Test]
+    [Arguments("startup", "EligibleOneShot")]      // the positive control: this MUST be eligible, or
+    [Arguments("resume",  "EligibleOneShot")]      // "suppressed" below would prove nothing
+    [Arguments("compact", "IneligibleNoCommit")]
+    [Arguments("clear",   "RetryLaterNoCommit")]   // unknown reason ⇒ suppressed, lease NOT spent
+    [Arguments("wat",     "RetryLaterNoCommit")]
+    public async Task the_adapters_lifecycle_produces_the_expected_policy_decision(string source, string expected) {
+        var lifecycle = GeminiHookCommand.LifecycleFor("3f2504e04f8911d39a0c0305e82c3301", source);
+
+        await Assert.That(SessionStartMemoryLifecyclePolicy.Decide(lifecycle).ToString()).IsEqualTo(expected);
+    }
+
+    /// <summary>The rest of the lifecycle record the adapter builds, pinned so a future edit cannot
+    /// silently turn Gemini into a repeating per-turn callback (Kiro's shape) or a subagent.</summary>
+    [Test]
+    public async Task the_adapters_lifecycle_is_top_level_authoritative_and_non_repeating() {
+        var lifecycle = GeminiHookCommand.LifecycleFor("3f2504e04f8911d39a0c0305e82c3301", "startup");
+
+        await Assert.That(lifecycle.Harness.ToString()).IsEqualTo("Gemini");
+        await Assert.That(lifecycle.IsTopLevel).IsTrue();
+        await Assert.That(lifecycle.ClassificationAuthoritative).IsTrue();
+        await Assert.That(lifecycle.CallbackMayRepeat).IsFalse();
+        await Assert.That(lifecycle.LifecycleInstanceId).IsNull();
+    }
 }
