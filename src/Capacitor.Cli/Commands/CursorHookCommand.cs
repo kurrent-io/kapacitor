@@ -307,10 +307,11 @@ public static class CursorHookCommand {
                             CursorLiveSubagentLinker.SaveLink(sessionId, subagentParentId, subagentAgentType);
                         }
                     } catch {
-                        // Fail-open: a locked/unreadable sibling transcript must never abort
-                        // the hook. See CursorLiveSubagentLinker.ResolveParent's doc for the
-                        // eventual-consistency gap this also covers (parent's Task tool_use
-                        // not yet flushed to disk at the child's first hook).
+                        // Fail-open: a locked/unreadable sibling transcript must never abort the
+                        // hook. (This arm has no producer anyway — see above. It was also written
+                        // to absorb what was believed to be an eventual-consistency gap; per
+                        // ResolveParent's doc that framing was wrong, and the parent's Task
+                        // tool_use is in fact never available while the child is still running.)
                     }
                 }
             }
@@ -673,11 +674,13 @@ public static class CursorHookCommand {
                 // self-heal. HasSubagentStartAck (above) only proves
                 // subagent-start was acknowledged (2xx) AT SOME POINT — the child watcher process
                 // itself may since have exited (the newly-enabled idle ceiling), crashed, or never
-                // actually spawned at all (e.g. its acked sessionStart hook carried no transcript
-                // path, and THIS later hook is the first one that does). Before this fix, only the
-                // child's own sessionStart ever called MaybeSpawnChildWatcherAsync — every later
-                // nonterminal hook did nothing but backfill, so a dead/never-started child watcher
-                // was never restarted. EnsureWatcherRunning is idempotent (PID+heartbeat check), so
+                // actually spawned at all (e.g. the acking invocation carried no transcript path,
+                // and THIS later hook is the first one that does). Before this fix the spawn was
+                // attempted only on the start arm — which, per the measured contract, a real child
+                // never reaches — so every later nonterminal hook did nothing but backfill and a
+                // dead/never-started child watcher was never restarted. This nonterminal path is
+                // the one a real child DOES reach, which is what makes the self-heal load-bearing
+                // rather than a nicety. EnsureWatcherRunning is idempotent (PID+heartbeat check), so
                 // calling it here on every nonterminal hook is a cheap no-op once the watcher is
                 // alive and a real recovery when it's not; the terminal (sessionEnd) branch below
                 // still never spawns.
@@ -692,8 +695,11 @@ public static class CursorHookCommand {
 
         // sessionEnd: drain the transcript before the terminal hook — same ordering rationale
         // as the top-level path, and mirrors SendSubagentLifecycleAsync (its transcript batch
-        // always precedes subagent-stop too). Task 10 (D2): this is the child's own
-        // pre-end drain, so consume a complete-but-unterminated final line rather than holding it.
+        // always precedes subagent-stop too). Task 10 (D2): a pre-end drain consumes a
+        // complete-but-unterminated final line rather than holding it.
+        //
+        // UNREACHABLE from a real child, which never fires sessionEnd — this arm survives only
+        // for a marker-driven invocation that supplies the event some other way.
         if (isStop && !string.IsNullOrEmpty(transcriptPath) && !budgetExpired()) {
             await CursorTranscriptBackfill.RunAsync(
                 client, baseUrl, parentSessionId, transcriptPath,
