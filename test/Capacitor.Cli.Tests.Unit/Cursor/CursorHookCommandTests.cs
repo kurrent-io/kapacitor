@@ -378,34 +378,39 @@ public class CursorHookCommandTests {
         // SingleOrDefault is deliberate: the only *.jsonl in the spool dir is HookSpool's per-session live
         // file, and this test uses one session id, so a second match would be a real bug worth throwing on.
         // (Its temps are `.draining`/`.ordered-*` and the ended marker is `.ended-<key>` — none match.)
-        var deadline      = DateTime.UtcNow + TimeSpan.FromSeconds(10);
+        const int budgetSeconds = 10;
+
+        var deadline      = DateTime.UtcNow + TimeSpan.FromSeconds(budgetSeconds);
         var spoolContent  = (string?)null;
+        var observedEnd   = false;
         var lastIoFailure = (IOException?)null;
 
-        while (DateTime.UtcNow < deadline) {
+        while (!observedEnd && DateTime.UtcNow < deadline) {
             if (fx.SpoolFiles.SingleOrDefault() is { } path) {
                 try {
                     await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
                     using var       reader = new StreamReader(stream);
                     spoolContent  = await reader.ReadToEndAsync();
-                    lastIoFailure = null;
+                    lastIoFailure = null; // a clean read means any earlier failure was the transient race
+                    observedEnd   = spoolContent.Contains("sessionEnd", StringComparison.Ordinal);
                 } catch (IOException ex) {
                     // The enumerate→open race, NOT a sharing conflict — FileShare.ReadWrite already permits
                     // the writers. Between states 2 and 3 the file is deleted and re-created, so a path
-                    // EnumerateFiles just returned can be gone by the time we open it. Keep the failure so a
-                    // persistent fault is reported as itself rather than as "content never appeared".
+                    // EnumerateFiles just returned can be gone by the time we open it.
                     lastIoFailure = ex;
                 }
-
-                if (spoolContent?.Contains("sessionEnd", StringComparison.Ordinal) == true) break;
             }
 
-            await Task.Delay(20);
+            if (!observedEnd) await Task.Delay(20);
         }
 
-        if (spoolContent is null && lastIoFailure is not null) {
+        // Gated on whether the TARGET was observed, not on content being null: a clean read of the stale
+        // seeded line leaves content non-null, so a null check would skip this and let a persistent
+        // filesystem fault masquerade as "the append never happened".
+        if (!observedEnd && lastIoFailure is not null) {
             throw new IOException(
-                $"spool file never became readable within {deadline:O}: {lastIoFailure.Message}", lastIoFailure);
+                $"spool never yielded sessionEnd within {budgetSeconds}s; last IO failure: {lastIoFailure.Message}",
+                lastIoFailure);
         }
 
         await Assert.That(spoolContent).IsNotNull();
