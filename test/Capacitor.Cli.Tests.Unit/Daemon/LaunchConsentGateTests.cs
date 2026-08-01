@@ -20,7 +20,9 @@ public class LaunchConsentGateTests {
     sealed class FakePrompter(bool? answer, bool hasSubscriber = true) : ILaunchConsentPrompter {
         public LaunchConsentPromptRequest? Seen;
         public bool HasSubscriber => hasSubscriber;
-        public Task<bool?> PromptAsync(LaunchConsentPromptRequest req, TimeSpan timeout, CancellationToken ct) {
+        public Task<bool> WaitForSubscriberAsync(TimeSpan wait, TimeProvider time, CancellationToken ct) =>
+            Task.FromResult(hasSubscriber);
+        public Task<bool?> PromptAsync(LaunchConsentPromptRequest req, TimeSpan timeout, TimeProvider time, CancellationToken ct) {
             Seen = req;
             return Task.FromResult(answer);
         }

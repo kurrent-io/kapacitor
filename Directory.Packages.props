@@ -8,6 +8,7 @@
         <PackageVersion Include="Microsoft.AspNetCore.SignalR.Client" Version="10.0.8" />
         <PackageVersion Include="Microsoft.Extensions.Hosting" Version="10.0.8" />
         <PackageVersion Include="Microsoft.Extensions.Http" Version="10.0.8" />
+        <PackageVersion Include="Microsoft.Extensions.TimeProvider.Testing" Version="10.7.0" />
         <PackageVersion Include="Microsoft.Data.Sqlite" Version="10.0.8" />
         <PackageVersion Include="MinVer" Version="7.0.0" />
         <PackageVersion Include="SQLitePCLRaw.bundle_e_sqlite3" Version="3.0.3" />

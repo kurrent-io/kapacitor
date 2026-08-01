@@ -32,6 +32,15 @@ internal sealed class LaunchConsentBroker : ILaunchConsentPrompter {
     readonly ConcurrentDictionary<Guid, Channel<LaunchConsentPromptRequest>> _subscribers = new();
     readonly object _deliveryGate = new();
 
+    // "The next 0→1 subscriber transition." One instance is shared by every concurrent waiter in
+    // the current zero-subscriber generation. Created at construction and re-armed (a fresh
+    // incomplete instance) on each 1→0 transition in Unsubscribe; COMPLETED — never replaced — by
+    // the 0→1 transition in Subscribe. A waiter's own timeout or cancellation must never complete
+    // or replace it, so an earlier generation's completed source can never satisfy a later
+    // zero-subscriber wait. All transitions happen under _deliveryGate.
+    TaskCompletionSource _subscriberArrival = NewArrival();
+    static TaskCompletionSource NewArrival() => new(TaskCreationOptions.RunContinuationsAsynchronously);
+
     public bool HasSubscriber => !_subscribers.IsEmpty;
 
     public (Guid id, ChannelReader<LaunchConsentPromptRequest> reader) Subscribe() {
@@ -41,15 +50,36 @@ internal sealed class LaunchConsentBroker : ILaunchConsentPrompter {
         lock (_deliveryGate) {
             foreach (var p in _pending.Values) ch.Writer.TryWrite(p.Request);
             _subscribers[id] = ch;
+            if (_subscribers.Count == 1) _subscriberArrival.TrySetResult();
         }
         return (id, ch.Reader);
     }
 
     public void Unsubscribe(Guid id) {
-        if (_subscribers.TryRemove(id, out var ch)) ch.Writer.TryComplete();
+        Channel<LaunchConsentPromptRequest>? ch;
+        lock (_deliveryGate) {
+            _subscribers.TryRemove(id, out ch);
+            if (_subscribers.IsEmpty) _subscriberArrival = NewArrival();
+        }
+        ch?.Writer.TryComplete();
     }
 
-    public async Task<bool?> PromptAsync(LaunchConsentPromptRequest req, TimeSpan timeout, CancellationToken ct) {
+    public async Task<bool> WaitForSubscriberAsync(TimeSpan wait, TimeProvider time, CancellationToken ct) {
+        TaskCompletionSource arrival;
+        lock (_deliveryGate) {
+            if (!_subscribers.IsEmpty) return true;
+            arrival = _subscriberArrival;
+        }
+        try {
+            await arrival.Task.WaitAsync(wait, time, ct);
+            return true;
+        } catch (TimeoutException) {
+            // Arrival wins ties: a subscriber that landed inside the race window counts.
+            lock (_deliveryGate) return !_subscribers.IsEmpty;
+        }
+    }
+
+    public async Task<bool?> PromptAsync(LaunchConsentPromptRequest req, TimeSpan timeout, TimeProvider time, CancellationToken ct) {
         var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         var pending = new Pending(req, tcs);
         lock (_deliveryGate) {

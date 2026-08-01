@@ -9,7 +9,8 @@ internal sealed record LaunchConsentPromptRequest(
 /// Implemented by LaunchConsentBroker (Task 6). Null answer = timeout / subscriber vanished.
 internal interface ILaunchConsentPrompter {
     bool HasSubscriber { get; }
-    Task<bool?> PromptAsync(LaunchConsentPromptRequest req, TimeSpan timeout, CancellationToken ct);
+    Task<bool> WaitForSubscriberAsync(TimeSpan wait, TimeProvider time, CancellationToken ct);
+    Task<bool?> PromptAsync(LaunchConsentPromptRequest req, TimeSpan timeout, TimeProvider time, CancellationToken ct);
 }
 
 internal sealed class LaunchConsentGate(
@@ -36,7 +37,7 @@ internal sealed class LaunchConsentGate(
         var req = new LaunchConsentPromptRequest(agentId, input.RequesterUserId, input.Kind,
             input.RepoPath, input.Vendor, DateTimeOffset.UtcNow.ToString("O"), policy.PromptTimeoutSeconds);
         logger.LogInformation("Launch {AgentId} awaiting owner consent (timeout {Timeout}s)", agentId, req.TimeoutSeconds);
-        var answer = await prompter.PromptAsync(req, TimeSpan.FromSeconds(policy.PromptTimeoutSeconds), ct);
+        var answer = await prompter.PromptAsync(req, TimeSpan.FromSeconds(policy.PromptTimeoutSeconds), TimeProvider.System, ct);
         return answer switch {
             true  => Done(agentId, input, allowed: true,  source: "prompt_user", detail: "approved by daemon owner"),
             false => Done(agentId, input, allowed: false, source: "prompt_user", detail: "declined by daemon owner"),
