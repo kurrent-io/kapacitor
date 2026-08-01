@@ -80,6 +80,11 @@ public partial class AgentOrchestratorVendorTests {
             RepoPath: "/tmp/does-not-matter", Tools: null, AttachmentIds: null, Vendor: "claude",
             Epoch: orch.DaemonEpochForTest, Seq: 1, CommandId: "cmd-1"));
 
+        // §3.3: HandleLaunchAgentForTest now returns once the item is SUBMITTED (accepted), not once
+        // it's executed — the terminal rejection settles asynchronously on the processor's lane, so
+        // this must poll rather than assert immediately.
+        await SpinUntilAsync(() => server.Rejects.Count > 0, TimeSpan.FromSeconds(30));
+
         await Assert.That(server.Rejects.Count).IsEqualTo(1);
         await Assert.That(server.Rejects[0].Reason).IsEqualTo(CommandRejectedReason.DaemonCapacity);
         await Assert.That(server.Rejects[0].Seq).IsEqualTo(1L);
@@ -169,7 +174,14 @@ public partial class AgentOrchestratorVendorTests {
 
     /// <summary>Captures the one-way sequenced CommandAck/CommandRejected sends (synchronously, so an
     /// awaited SubmitAsync has already recorded them) and no-ops everything else the capacity-reject path
-    /// touches. IsReady is forced true so the base sends aren't short-circuited before our override.</summary>
+    /// touches. IsReady is forced true so the base sends aren't short-circuited before our override.
+    ///
+    /// <para>§3.3: also overrides <see cref="AgentRegisteredAsync"/> so a genuinely SUCCESSFUL
+    /// sequenced launch (one that reaches <c>RegisterAgentAsync</c>'s awaited, un-guarded
+    /// <c>_server.AgentRegisteredAsync(...)</c> call) doesn't fault on the base implementation's
+    /// <c>_hub.InvokeAsync</c> against a never-started HubConnection — no pre-Task-5 test ever drove a
+    /// full success through THIS server double, since every existing capacity/malformed-tuple test is
+    /// rejected before reaching registration.</para></summary>
     sealed class SeqCaptureServerConnection() : ServerConnection(
         new() { Name = "test", ServerUrl = "http://127.0.0.1:1" },
         NullLoggerFactory.Instance,
@@ -183,5 +195,9 @@ public partial class AgentOrchestratorVendorTests {
         public override Task LaunchFailedAsync(string agentId, string reason) { lock (LaunchFaileds) LaunchFaileds.Add((agentId, reason)); return Task.CompletedTask; }
         public override Task CommandRejectedAsync(CommandRejected rej) { lock (Rejects) Rejects.Add(rej); return Task.CompletedTask; }
         public override Task CommandAckAsync(CommandAck ack)           { lock (Acks)    Acks.Add(ack);    return Task.CompletedTask; }
+
+        public override Task AgentRegisteredAsync(
+                string agentId, string? prompt, string? model, string? effort, string? repoPath,
+                string? sandboxPolicy = null, string? approvalPolicy = null) => Task.CompletedTask;
     }
 }

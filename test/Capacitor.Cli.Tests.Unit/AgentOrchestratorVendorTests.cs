@@ -68,7 +68,11 @@ public partial class AgentOrchestratorVendorTests {
             // pre-existing test (none of which know about consent) keeps passing unchanged. A test
             // exercising a deny/prompt policy passes its own gate (e.g. built with a Deny-default
             // LaunchConsentStore) instead.
-            LaunchConsentGate?                                  consentGate            = null
+            LaunchConsentGate?                                  consentGate            = null,
+            // §3.3: defaults to the fixed never-cancels StubHostLifetime every pre-existing test relies
+            // on. A test that needs to simulate shutdown firing mid-launch (e.g. a gate OCE parked on a
+            // consent prompt) passes its own lifetime with a controllable ApplicationStopping token.
+            IHostApplicationLifetime?                           lifetime               = null
         ) {
         var config = new DaemonConfig {
             Name                = "test",
@@ -117,7 +121,7 @@ public partial class AgentOrchestratorVendorTests {
             permissionBridge,
             launchers,
             runtimeFactories,
-            new StubHostLifetime(),
+            lifetime ?? new StubHostLifetime(),
             logger ?? NullLogger<AgentOrchestrator>.Instance,
             consentGate
         );

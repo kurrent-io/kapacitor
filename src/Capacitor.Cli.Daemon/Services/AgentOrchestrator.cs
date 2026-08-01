@@ -242,6 +242,19 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     // the legacy unsequenced lane (old-server compat) and never advance the watermark.
     readonly SequencedCommandProcessor? _processor;
 
+    // §3.3 (unpark the receive loop): daemon-lifetime cross-format latch. Trips on RECEIPT of any
+    // sequenced-shaped launch/stop (any of Epoch/Seq/CommandId — the exact anySeq discriminator that
+    // routes in HandleLaunchAgent/HandleStopAgentV2), BEFORE routing/submission, independent of that
+    // command's eventual fate — even one that is itself rejected (partial tuple, gap, duplicate
+    // collision) still proves this daemon has seen sequenced traffic, and such a server never
+    // legitimately sends legacy commands. Published with Volatile (thread-safe monotonic write); set
+    // once, never cleared: a server that speaks the sequenced protocol never legitimately downgrades
+    // mid-daemon-life (the daemon reconnects to the SAME configured server), and detached sequenced
+    // execution can outlive its hub connection, so a connection-scoped reset would be unsound. A
+    // genuine downgrade fails loudly (coded rejections); only a daemon restart clears it (a fresh
+    // instance starts unlatched).
+    int _sequencedSeen;
+
     // Phase B (D4 §6.4(2a)/(3)): single-flight latches so a slow sweep (each survivor consumes a
     // ~5s TERM grace sequentially) can't overlap itself when the next heartbeat tick fires — otherwise
     // sweeps accumulate, double-signal, and re-scan /proc concurrently. A tick whose prior sweep is still
@@ -389,7 +402,11 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
 
         // Wire up server commands
         _server.OnLaunchAgent            += HandleLaunchAgent;
-        _server.OnStopAgent              += HandleStopAgent;
+        // §3.3 mixed-format latch: this IS the un-sequenced legacy stop command, so it must run
+        // gated (fromLegacyCommand: true) — a bare method-group assignment would silently bind the
+        // default (false) instead, since C# fills an omitted trailing optional parameter from its
+        // default on a method-group-to-delegate conversion.
+        _server.OnStopAgent              += agentId => HandleStopAgent(agentId, fromLegacyCommand: true);
         _server.OnSendInput              += HandleSendInput;
         _server.OnSendSpecialKey         += HandleSendSpecialKey;
         _server.OnResizeTerminal         += HandleResizeTerminal;
@@ -696,6 +713,9 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     internal string DaemonEpochForTest                             => _daemonEpoch;
     internal bool   RecordlessSurvivorsImpossibleForTest           => _recordlessSurvivorsImpossible;
 
+    /// <summary>§3.3 test-only: whether the daemon-lifetime mixed-format latch has tripped.</summary>
+    internal bool   SequencedSeenForTest                           => Volatile.Read(ref _sequencedSeen) == 1;
+
     /// <summary>Phase B2-b (sequenced-settlement design §4.2.4): the resolved-candidates ledger's
     /// un-acked snapshot, so a test can assert the confirmed-gone hooks (quarantine drain / StopAgent
     /// fallback / record pass) emitted positive per-id death evidence. Never used in production.</summary>
@@ -856,14 +876,49 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
 
     /// <summary>Phase B2-b (sequenced-settlement design §4.2.2/§5.5): route a launch. A fully-Seq'd command
     /// (Epoch + Seq + CommandId ALL present) goes through the processor's serial lane — accepted exactly-in-order,
-    /// executed once, and turned into a terminal CommandAck/CommandRejected from the <see cref="CommandOutcome"/>
-    /// the core returns. An un-Seq'd command (NONE of the three — old server) runs the legacy unsequenced lane
-    /// directly and never advances the watermark. Anything in between (a PARTIAL tuple, or the processor somehow
+    /// SUBMITTED (not executed) synchronously on this call, and eventually turned into a terminal
+    /// CommandAck/CommandRejected from the <see cref="CommandOutcome"/> the core returns. An un-Seq'd command
+    /// (NONE of the three — old server) runs the legacy unsequenced lane directly — inline-awaited, unchanged —
+    /// and never advances the watermark. Anything in between (a PARTIAL tuple, or the processor somehow
     /// missing) is a malformed sequenced command and FAILS CLOSED with a LaunchFailed — never the legacy lane,
-    /// whose retry could be re-accepted on the sequenced lane and double-create the generation.</summary>
+    /// whose retry could be re-accepted on the sequenced lane and double-create the generation.
+    ///
+    /// <para>§3.3 (unpark the receive loop): the sequenced branch no longer awaits the launch's execution —
+    /// only its ACCEPTANCE (<see cref="SequencedCommandProcessor.SubmitAsync"/> decides accept/reject
+    /// synchronously, under lock, before returning), so a launch parked on an owner-consent prompt no longer
+    /// blocks this connection's SignalR pump from dispatching the next command. The detached execution task is
+    /// handed to <see cref="ObserveDetachedExecution"/>, whose only job is fault logging — terminal settlement
+    /// stays the processor's own duty (<see cref="SequencedCommandProcessor.RunLaneAsync"/>), unaffected by
+    /// whether anyone awaits that task. §3.3 also pins a one-directional, daemon-lifetime cross-format latch
+    /// (<see cref="_sequencedSeen"/>): once ANY sequenced-shaped launch/stop has been RECEIVED, a subsequent
+    /// un-Seq'd launch is refused with a coded <c>mixed_command_formats</c> LaunchFailed and never reaches
+    /// <see cref="HandleLaunchAgentCore"/> — detached sequenced execution can outlive its hub connection, so
+    /// mixing formats after that point would race two ordering domains at once.</para></summary>
     async Task HandleLaunchAgent(LaunchAgentCommand cmd) {
         var anySeq = cmd.Epoch is not null || cmd.Seq is not null || cmd.CommandId is not null;
-        if (!anySeq) { await HandleLaunchAgentCore(cmd); return; } // old server — legacy unsequenced lane
+        // Protocol evidence, not command fate: write BEFORE routing/submission, even though this
+        // particular command might still be rejected below (partial tuple).
+        if (anySeq) Volatile.Write(ref _sequencedSeen, 1);
+
+        if (!anySeq) {
+            if (Volatile.Read(ref _sequencedSeen) == 1) {
+                await _server.LaunchFailedAsync(cmd.AgentId,
+                    "mixed_command_formats: this daemon has seen sequenced commands; un-sequenced launch refused");
+                return;
+            }
+
+            // Legacy (un-sequenced) lane: old server — deliberately UNCHANGED. The inline await IS the
+            // backpressure — no queue exists, so a consent prompt inside this launch parks THIS
+            // connection's pump exactly as shipped (spec §3.3). One accepted, narrow cost: a
+            // shutdown/teardown cancellation racing this await now propagates an uncaught
+            // OperationCanceledException out of HandleLaunchAgentCore (Task 4's gate deadline-discipline
+            // change), which ServerConnection.SafeInvoke logs and swallows — so, unlike pre-Task-4 code,
+            // no LaunchFailed reaches the server for a launch torn down mid-prompt by shutdown. This is
+            // shutdown-only and the server's own reconciliation lanes are the backstop — do NOT re-add a
+            // LaunchFailed here for this case.
+            await HandleLaunchAgentCore(cmd);
+            return;
+        }
 
         // Phase B2-b (sequenced-settlement design §5.5): a capable server sends ALL of
         // Epoch/Seq/CommandId. Anything less (a partial tuple, or the processor somehow missing) is a
@@ -871,13 +926,32 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
         // retry could be re-accepted on the sequenced lane and double-create the generation
         // (at-most-once-per-generation).
         if (_processor is { } proc && cmd.Epoch is { } epoch && cmd.Seq is { } seq && cmd.CommandId is { } cmdId) {
-            await proc.SubmitAsync(
+            // §3.3: submit ON the pump — no await before this call, so acceptance ordering depends only
+            // on pump serialization — but do NOT await the returned execution-completion task. Terminal
+            // CommandAck/CommandRejected emission is the lane's own duty; this continuation exists only
+            // to observe/log a fault so it can never become an unobserved task exception.
+            var execution = proc.SubmitAsync(
                 new SequencedItem(SequencedKind.Launch, epoch, seq, cmdId, cmd.AgentId),
                 () => HandleLaunchAgentCore(cmd));
+            _ = ObserveDetachedExecution(execution, cmd.AgentId);
             return;
         }
 
         await _server.LaunchFailedAsync(cmd.AgentId, "Malformed sequenced launch: partial Epoch/Seq/CommandId");
+    }
+
+    /// <summary>§3.3: the only job of this continuation is to observe/log a fault on the detached
+    /// sequenced-launch execution task so it never becomes an unobserved task exception. It must NEVER
+    /// convert the fault into any answer of its own — that is <see cref="SequencedCommandProcessor.RunLaneAsync"/>'s
+    /// job, via its own per-item catch, which already classifies an execution fault (including an
+    /// <see cref="OperationCanceledException"/> from a torn-down consent prompt — the sequenced lane's
+    /// "lane failure" settlement) as <see cref="CommandOutcomeKind.InternalError"/> plus a terminal
+    /// <see cref="CommandRejected"/>. In normal operation this task completes successfully — RunLaneAsync's
+    /// own finally always resolves it — so reaching the catch below is itself a defensive, not expected,
+    /// path.</summary>
+    async Task ObserveDetachedExecution(Task execution, string agentId) {
+        try { await execution; }
+        catch (Exception ex) { LogDetachedLaunchFault(ex, agentId); }
     }
 
     /// <summary>Phase B2-b (sequenced-settlement design §4.2.2): the shipped launch body, now returning the
@@ -1827,8 +1901,19 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     /// <summary>Phase B2-b (sequenced-settlement design §4.2.2): the sequenced stop. Routes through the
     /// processor's serial lane (accepted exactly-in-order, executed once, terminal StopExecuted outcome →
     /// CommandAck). Falls back to the legacy <see cref="HandleStopAgent"/> path if the processor is absent
-    /// (never happens in production — always constructed in the ctor).</summary>
+    /// (never happens in production — always constructed in the ctor).
+    ///
+    /// <para>§3.3 mixed-format latch: <see cref="StopAgentV2"/>'s Epoch/Seq/CommandId are non-nullable —
+    /// every instance IS sequenced-shaped by construction, so mere RECEIPT of this call is protocol
+    /// evidence and the latch write below is unconditional, before the processor-presence routing
+    /// decision (mirrors <see cref="HandleLaunchAgent"/>'s anySeq write). The processor-absent fallback
+    /// arm is gated by that SAME write: since it just proved this daemon has seen sequenced traffic,
+    /// falling back to un-acked direct execution there is exactly the un-sequenced-style execution the
+    /// latch exists to block, so it passes <c>fromLegacyCommand: true</c> and is discarded rather than
+    /// executed — harmless since this arm is unreachable in production anyway.</para></summary>
     async Task HandleStopAgentV2(StopAgentV2 cmd) {
+        Volatile.Write(ref _sequencedSeen, 1); // protocol evidence — before any routing decision
+
         if (_processor is { } proc) {
             await proc.SubmitAsync(
                 new SequencedItem(SequencedKind.Stop, cmd.Epoch, cmd.Seq, cmd.CommandId, cmd.AgentId),
@@ -1839,10 +1924,30 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             return;
         }
 
-        await HandleStopAgent(cmd.AgentId); // legacy unsequenced fallback
+        await HandleStopAgent(cmd.AgentId, fromLegacyCommand: true); // legacy unsequenced fallback — see remarks
     }
 
-    internal async Task HandleStopAgent(string agentId) {
+    /// <summary>The shared stop executor: graceful <c>/exit</c> then terminate (via
+    /// <see cref="StopAgentCoreAsync"/>), or a PID-record fallback for an id this incarnation never
+    /// registered. Reached from three kinds of caller: the legacy <c>StopAgent</c> hub wiring, the
+    /// (unreachable-in-production) processor-absent fallback in <see cref="HandleStopAgentV2"/> above,
+    /// and purely-internal daemon-side reaping (heartbeat reviewer-TTL/idle reaping, stuck-Starting
+    /// reaping) that never touches the wire at all.
+    ///
+    /// <para>§3.3 mixed-format latch: <paramref name="fromLegacyCommand"/> is true ONLY for the first
+    /// two — an actual un-sequenced STOP COMMAND. When true and the daemon-lifetime latch
+    /// (<see cref="_sequencedSeen"/>) has tripped, the stop is a degraded-mode DISCARD — logged at
+    /// Error, never executed — because no reply surface exists on the legacy hub method to signal a
+    /// rejection (§1.8); the server's periodic reconciliation lanes are the eventual corrective path.
+    /// Internal reaping callers are NOT server commands and always pass the default <c>false</c>, so
+    /// they run regardless of the latch — heartbeat-driven reaping must keep working on an
+    /// already-sequenced-speaking daemon, which is the common case in practice.</para></summary>
+    internal async Task HandleStopAgent(string agentId, bool fromLegacyCommand = false) {
+        if (fromLegacyCommand && Volatile.Read(ref _sequencedSeen) == 1) {
+            LogMixedFormatStopDiscarded(agentId);
+            return;
+        }
+
         if (!_agents.TryGetValue(agentId, out var agent)) {
             // Phase B (D4 §6.4(3)): no in-memory agent — this may be a survivor of a PRIOR
             // daemon incarnation the server is still trying to stop (S2). Fall back to the PID record:
@@ -2921,6 +3026,12 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     [LoggerMessage(Level = LogLevel.Information, Message = "Stopping agent {AgentId}")]
     partial void LogStopping(string agentId);
 
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Detached sequenced-launch execution for agent {AgentId} faulted — the processor's own lane already settled this as a terminal answer; this is fault-observation logging only, not a missed settlement")]
+    partial void LogDetachedLaunchFault(Exception ex, string agentId);
+
+    [LoggerMessage(Level = LogLevel.Error, Message = "Mixed command formats: discarding an un-sequenced stop for agent {AgentId} — this daemon has seen sequenced traffic, so the stop is NOT executed (no reply surface exists to reject it; the server's reconciliation lanes are the backstop)")]
+    partial void LogMixedFormatStopDiscarded(string agentId);
+
     [LoggerMessage(Level = LogLevel.Warning, Message = "Could not build the explicit reviewer-model resolved report for agent {AgentId} (vendor {Vendor}, launch model {LaunchModel}) — no resolver or model no longer resolves; skipping the report (the server will fail the attempt closed)")]
     partial void LogExplicitReviewerModelUnreportable(string agentId, string vendor, string launchModel);
 
@@ -3074,6 +3185,11 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
 
     /// <summary>Test-only entry point to the private stop handler (mirrors <see cref="HandleLaunchAgentForTest"/>).</summary>
     internal Task HandleStopAgentForTest(string agentId) => HandleStopAgent(agentId);
+
+    /// <summary>§3.3 test-only entry point mirroring the legacy <c>StopAgent</c> hub wiring — i.e. the
+    /// GATED un-sequenced stop command, unlike <see cref="HandleStopAgentForTest"/> above (which drives
+    /// the shared executor directly, ungated, the same way internal reaping calls it).</summary>
+    internal Task HandleLegacyStopAgentForTest(string agentId) => HandleStopAgent(agentId, fromLegacyCommand: true);
 
     /// <summary>Phase B2-b (sequenced-settlement design §4.2.6): test-only entry point to the sequenced
     /// stop handler so a heal-barrier test can drive a Seq'd <see cref="StopAgentV2"/> through the
