@@ -817,17 +817,24 @@ public class CodexLauncherTests {
         await Assert.That(args[aIdx + 1]).IsEqualTo(approval);
     }
 
-    /// <summary>The regression that matters most: with no posture block the argv must be EXACTLY what
-    /// this launcher produced before posture selection existed. The expected sequences below are
-    /// literal transcriptions of the pre-change output, so an added, removed, renamed or REORDERED
-    /// argument fails here — comparing two runs of the current implementation would not, since a
-    /// change of that kind moves both sides identically.</summary>
+    /// <summary>The regression that matters most: with no posture block the argv must be EXACTLY the
+    /// sequence pinned below. These are literal transcriptions of the launcher's output, not a second
+    /// run of it, so an added, removed, renamed or REORDERED argument fails here — comparing two runs
+    /// of the current implementation would not, since a change of that kind moves both sides
+    /// identically.
+    ///
+    /// <para>Failing here is the pin doing its job, not a bug in the pin: it means someone changed the
+    /// argv. Re-pin only after confirming the change is intended and correctly ORDERED — the vectors
+    /// are the record of what a hosted Codex process is actually launched with. Re-pinned once for
+    /// <c>--dangerously-bypass-hook-trust</c>, added deliberately so an unattended launch is not parked
+    /// on codex 0.146's "Hooks need review" prompt.</para></summary>
     [Test]
     public async Task BuildArgs_without_a_posture_matches_the_pre_change_argv_exactly() {
         string[] expectedInteractive = [
             "--cd", "/tmp/wt",
             "--sandbox", "workspace-write",
             "--ask-for-approval", "on-request",
+            "--dangerously-bypass-hook-trust",
             "-m", "gpt-5.3-codex",
             "--no-alt-screen"
         ];
@@ -843,6 +850,7 @@ public class CodexLauncherTests {
             "--cd", "/tmp/wt",
             "--sandbox", "workspace-write",
             "--ask-for-approval", "on-request",
+            "--dangerously-bypass-hook-trust",
             "-m", "gpt-5.3-codex",
             "-c", "model_reasoning_effort=\"high\"",
             "--no-alt-screen",
