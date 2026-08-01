@@ -7,12 +7,16 @@ namespace Capacitor.Cli.Daemon.Services;
 /// subscribers (the desktop app / kcap daemon consent). Resolution is CLAIM-based: TryResolve
 /// only succeeds if it wins the race to remove the pending entry, so a successful TryResolve
 /// (surfaced to the IPC caller as Ok=true) is a hard guarantee the decision actually applied to
-/// the launch. PromptAsync's own timeout/cancellation path performs the same claiming removal
-/// before giving up — if it loses that race to a concurrent TryResolve, it awaits and returns
-/// the resolver's verdict instead of a stale timeout denial. A request vanishes on resolve or
-/// timeout, whichever claims it first; expiry surfaces as TryResolve returning false. Never
-/// persisted — a daemon restart clears pending prompts (the server retries or fails the launch
-/// with the coded timeout denial).
+/// the launch. PromptAsync's own TIMEOUT path performs the same claiming removal before giving
+/// up — if it loses that race to a concurrent TryResolve, it awaits and returns the resolver's
+/// verdict instead of a stale timeout denial. EXTERNAL CANCELLATION (the caller's own `ct` firing
+/// — daemon shutdown / launch teardown, distinguished from a timeout by `ct.IsCancellationRequested`)
+/// performs the identical claim-or-defer removal but then RETHROWS OperationCanceledException
+/// instead of ever producing a verdict — the gate must abort without fabricating a decision, so
+/// no decision (and no decision-log record) is ever produced for a launch torn down before
+/// deciding. A request vanishes on resolve, timeout, or external cancellation, whichever claims
+/// it first; expiry surfaces as TryResolve returning false. Never persisted — a daemon restart
+/// clears pending prompts (the server retries or fails the launch with the coded timeout denial).
 ///
 /// All cleanup removals (the OCE-catch claim attempt and the outer finally) are INSTANCE-scoped
 /// via the ConcurrentDictionary KeyValuePair-conditional overload, keyed on the exact `Pending`
@@ -98,24 +102,32 @@ internal sealed class LaunchConsentBroker : ILaunchConsentPrompter {
             foreach (var ch in _subscribers.Values) ch.Writer.TryWrite(req);
         }
         try {
-            using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            // `time` is not honored here yet — the deadline-discipline task replaces CancelAfter
-            // with the TimeProvider-aware wait; until then PromptAsync times out on the system
-            // clock regardless of what TimeProvider the caller passed.
-            cts.CancelAfter(timeout);
             try {
-                return await tcs.Task.WaitAsync(cts.Token);
-            } catch (OperationCanceledException) {
-                // The wait timed out (or ct fired), but TryResolve claims the entry by REMOVING
-                // it — so race it the same way here, and do it INSTANCE-scoped (key + value) so
-                // this can only ever remove OUR OWN entry, never a same-id successor prompt that
-                // TryAdded after we were already claimed (see the class doc's ABA note). If OUR
-                // removal wins, no resolver got there first: the timeout is real, deny. If it
-                // FAILS, a resolver already claimed our instance and is completing (or has
-                // completed) tcs — honor that decision instead of denying a request a human/rule
-                // just answered inside the race window. A same-id entry can only exist at this
-                // point if OUR instance was already removed by a resolver, so awaiting tcs here
-                // still completes with that resolver's verdict, never a successor's.
+                // TimeProvider-aware: the same injected clock drives this wait as
+                // WaitForSubscriberAsync's, so a controlled provider deterministically drives
+                // every timeout on this path in tests (spec §3.2).
+                return await tcs.Task.WaitAsync(timeout, time, ct);
+            } catch (Exception ex) when (ex is TimeoutException or OperationCanceledException) {
+                if (ex is OperationCanceledException && ct.IsCancellationRequested) {
+                    // External teardown (the caller's own token — daemon shutdown / launch
+                    // cancellation), NOT a timeout: claim-or-defer exactly like the timeout path
+                    // below, then RETHROW — the gate must abort without fabricating a decision,
+                    // so no verdict (and no decision-log record) is ever produced for a launch
+                    // torn down before deciding.
+                    if (!_pending.TryRemove(new KeyValuePair<string, Pending>(req.RequestId, pending)))
+                        { try { await tcs.Task; } catch { } }
+                    throw;
+                }
+                // The wait timed out, but TryResolve claims the entry by REMOVING it — so race it
+                // the same way here, and do it INSTANCE-scoped (key + value) so this can only ever
+                // remove OUR OWN entry, never a same-id successor prompt that TryAdded after we
+                // were already claimed (see the class doc's ABA note). If OUR removal wins, no
+                // resolver got there first: the timeout is real, deny. If it FAILS, a resolver
+                // already claimed our instance and is completing (or has completed) tcs — honor
+                // that decision instead of denying a request a human/rule just answered inside the
+                // race window. A same-id entry can only exist at this point if OUR instance was
+                // already removed by a resolver, so awaiting tcs here still completes with that
+                // resolver's verdict, never a successor's.
                 if (_pending.TryRemove(new KeyValuePair<string, Pending>(req.RequestId, pending)))
                     return tcs.Task.IsCompletedSuccessfully ? tcs.Task.Result : null;
                 return await tcs.Task;

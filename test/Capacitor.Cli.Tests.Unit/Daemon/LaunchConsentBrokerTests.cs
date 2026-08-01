@@ -198,4 +198,48 @@ public class LaunchConsentBrokerTests {
 
         await Assert.That(async () => await waiter).Throws<OperationCanceledException>();
     }
+
+    // ══ PromptAsync deadline discipline (spec §3.2) — TimeProvider-driven timeout mechanics
+    // replacing the CancellationTokenSource.CancelAfter linked-CTS, plus the Cancellation
+    // paragraph's external-ct-must-propagate contract. ═══════════════════════════════════════
+
+    [Test]
+    public async Task PromptAsync_timeout_is_driven_by_the_injected_TimeProvider_not_the_system_clock() {
+        // A 5-SECOND timeout that resolves inside a fast unit test (no real waiting) proves the
+        // fake clock — not the system clock — drives PromptAsync's own timeout.
+        var broker = new LaunchConsentBroker();
+        broker.Subscribe();
+        var time = new FakeTimeProvider();
+
+        var promptTask = broker.PromptAsync(Req("a-fake-timeout"), TimeSpan.FromSeconds(5), time, CancellationToken.None);
+        time.Advance(TimeSpan.FromSeconds(5));
+
+        await Assert.That(await promptTask).IsNull();
+    }
+
+    [Test]
+    public async Task PromptAsync_with_zero_timeout_settles_immediately_to_null() {
+        // Spec §3.2: zero remaining is not a special case — PromptAsync runs with a zero budget
+        // and settles as the standard timeout denial, no separate code path.
+        var broker = new LaunchConsentBroker();
+        broker.Subscribe();
+        var result = await broker.PromptAsync(Req("a-zero-timeout"), TimeSpan.Zero, TimeProvider.System, CancellationToken.None);
+        await Assert.That(result).IsNull();
+    }
+
+    [Test]
+    public async Task PromptAsync_external_cancellation_propagates_and_claims_the_entry() {
+        // The caller's own token firing (daemon shutdown / launch teardown) must propagate as
+        // OperationCanceledException, never resolve to a null timeout denial — and it claims the
+        // entry the same way a timeout would, so a resolver racing in afterward is told it lost.
+        var broker = new LaunchConsentBroker();
+        broker.Subscribe();
+        using var cts = new CancellationTokenSource();
+
+        var promptTask = broker.PromptAsync(Req("a-external-cancel"), TimeSpan.FromSeconds(30), TimeProvider.System, cts.Token);
+        await cts.CancelAsync();
+
+        await Assert.That(async () => await promptTask).Throws<OperationCanceledException>();
+        await Assert.That(broker.TryResolve("a-external-cancel", allow: true)).IsFalse();
+    }
 }

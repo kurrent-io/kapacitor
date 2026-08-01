@@ -49,7 +49,7 @@ public class LocalControlHelloTests {
         var store       = new LaunchConsentStore(stateDir, NullLogger.Instance);
         var broker      = new LaunchConsentBroker();
         var decisionLog = new LaunchConsentDecisionLog(stateDir, NullLogger.Instance);
-        var gate        = new LaunchConsentGate(store, decisionLog, broker, NullLogger<LaunchConsentGate>.Instance);
+        var gate        = new LaunchConsentGate(store, decisionLog, broker, TimeProvider.System, NullLogger<LaunchConsentGate>.Instance);
         var consentIpc  = new LaunchConsentIpc(broker, store, NullLogger<LaunchConsentIpc>.Instance);
 
         var config = new DaemonConfig {

@@ -55,7 +55,7 @@ public class LaunchConsentIpcTests {
         store.TryReplace(new LaunchConsentPolicy(def, promptTimeoutSeconds, []), out _);
         var broker = new LaunchConsentBroker();
         var decisionLog = new LaunchConsentDecisionLog(stateDir, NullLogger.Instance);
-        var gate = new LaunchConsentGate(store, decisionLog, broker, NullLogger<LaunchConsentGate>.Instance);
+        var gate = new LaunchConsentGate(store, decisionLog, broker, TimeProvider.System, NullLogger<LaunchConsentGate>.Instance);
         var consentIpc = new LaunchConsentIpc(broker, store, NullLogger<LaunchConsentIpc>.Instance);
 
         var config = new DaemonConfig {

@@ -105,7 +105,7 @@ public partial class AgentOrchestratorVendorTests {
         consentGate ??= new LaunchConsentGate(
             new LaunchConsentStore(config.StateDir!, NullLogger.Instance),
             new LaunchConsentDecisionLog(config.StateDir!, NullLogger.Instance),
-            prompter: null, NullLogger<LaunchConsentGate>.Instance);
+            prompter: null, TimeProvider.System, NullLogger<LaunchConsentGate>.Instance);
 
         return new AgentOrchestrator(
             config,
@@ -1600,7 +1600,7 @@ public partial class AgentOrchestratorVendorTests {
         var store = new LaunchConsentStore(dir, NullLogger.Instance);
         store.TryReplace(new LaunchConsentPolicy(LaunchConsentDefault.Deny, 5, []), out _);
         return new LaunchConsentGate(store, new LaunchConsentDecisionLog(dir, NullLogger.Instance),
-            prompter: null, NullLogger<LaunchConsentGate>.Instance);
+            prompter: null, TimeProvider.System, NullLogger<LaunchConsentGate>.Instance);
     }
 
     [Test]
