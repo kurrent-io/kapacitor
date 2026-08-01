@@ -149,6 +149,22 @@ public class LaunchConsentBrokerTests {
     }
 
     [Test]
+    public async Task Unsubscribe_of_an_unknown_id_while_empty_is_a_0_to_0_noop_and_does_not_orphan_a_pending_waiter() {
+        // A no-op Unsubscribe (unknown/duplicate id on an already-empty subscriber map) must NOT
+        // re-arm the arrival source — that would be a fresh instance the waiter below never
+        // learns about, forcing it to burn its whole wait budget instead of completing true the
+        // moment Subscribe() lands.
+        var broker = new LaunchConsentBroker();
+        var time = new FakeTimeProvider();
+
+        var waiter = broker.WaitForSubscriberAsync(TimeSpan.FromSeconds(30), time, CancellationToken.None);
+        broker.Unsubscribe(Guid.NewGuid()); // unknown id; _subscribers was already empty
+
+        broker.Subscribe();
+        await Assert.That(await waiter).IsTrue();
+    }
+
+    [Test]
     public async Task WaitForSubscriber_expiry_and_subscribe_race_arrival_wins() {
         var broker = new LaunchConsentBroker();
         var time = new FakeTimeProvider();

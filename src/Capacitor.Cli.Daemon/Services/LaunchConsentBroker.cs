@@ -38,6 +38,13 @@ internal sealed class LaunchConsentBroker : ILaunchConsentPrompter {
     // the 0→1 transition in Subscribe. A waiter's own timeout or cancellation must never complete
     // or replace it, so an earlier generation's completed source can never satisfy a later
     // zero-subscriber wait. All transitions happen under _deliveryGate.
+    //
+    // RunContinuationsAsynchronously is mandatory, not a nicety: TrySetResult() is called from
+    // Subscribe() while _deliveryGate is held. Without it, a waiter's continuation (which for
+    // WaitForSubscriberAsync's caller is the gate's prompt path) would run INLINE on the
+    // Subscribe() call stack, still inside the lock — anything that continuation does (including,
+    // transitively, another attempt to take _deliveryGate) would then deadlock against the very
+    // lock Subscribe() is holding.
     TaskCompletionSource _subscriberArrival = NewArrival();
     static TaskCompletionSource NewArrival() => new(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -58,8 +65,12 @@ internal sealed class LaunchConsentBroker : ILaunchConsentPrompter {
     public void Unsubscribe(Guid id) {
         Channel<LaunchConsentPromptRequest>? ch;
         lock (_deliveryGate) {
-            _subscribers.TryRemove(id, out ch);
-            if (_subscribers.IsEmpty) _subscriberArrival = NewArrival();
+            // Re-arm only on an ACTUAL 1→0 transition. An unknown/duplicate id on an already-empty
+            // map is a no-op remove, not a transition — re-arming anyway would orphan every waiter
+            // already holding the current generation's source: they'd never see the fresh instance
+            // Subscribe() later completes, and would have to burn their full wait budget before the
+            // timeout recheck rescues them.
+            if (_subscribers.TryRemove(id, out ch) && _subscribers.IsEmpty) _subscriberArrival = NewArrival();
         }
         ch?.Writer.TryComplete();
     }
@@ -88,6 +99,9 @@ internal sealed class LaunchConsentBroker : ILaunchConsentPrompter {
         }
         try {
             using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            // `time` is not honored here yet — the deadline-discipline task replaces CancelAfter
+            // with the TimeProvider-aware wait; until then PromptAsync times out on the system
+            // clock regardless of what TimeProvider the caller passed.
             cts.CancelAfter(timeout);
             try {
                 return await tcs.Task.WaitAsync(cts.Token);
