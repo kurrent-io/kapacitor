@@ -50,6 +50,29 @@ public class LaunchConsentBrokerTests {
     }
 
     [Test]
+    public async Task Successor_prompt_reusing_the_same_request_id_resolves_independently_of_a_predecessor() {
+        // NOTE (honest limitation): this is a same-id REUSE test, not a live reproduction of the
+        // ABA race the instance-scoped cleanup guards against (a successor's TryAdd landing in the
+        // narrow window between a predecessor's claim and that predecessor's own cleanup running).
+        // That exact interleaving isn't deterministically reproducible in-process. What this DOES
+        // pin: a same-id successor added after a predecessor's full lifecycle (claimed, resolved,
+        // its own cleanup already run) is resolvable on its own terms — the structural guarantee
+        // (instance-scoped, never key-scoped, removal) is what actually closes the race; this test
+        // is a smoke check that reuse doesn't regress, not a race reproduction.
+        var broker = new LaunchConsentBroker();
+        broker.Subscribe();
+
+        var promptA = broker.PromptAsync(Req("dup-id"), TimeSpan.FromSeconds(30), CancellationToken.None);
+        await Assert.That(broker.TryResolve("dup-id", allow: true)).IsTrue();
+        await Assert.That(await promptA).IsEqualTo(true);
+
+        var promptB = broker.PromptAsync(Req("dup-id"), TimeSpan.FromSeconds(30), CancellationToken.None);
+        await Assert.That(broker.PendingSnapshot().Any(r => r.RequestId == "dup-id")).IsTrue();
+        await Assert.That(broker.TryResolve("dup-id", allow: true)).IsTrue();
+        await Assert.That(await promptB).IsEqualTo(true);
+    }
+
+    [Test]
     public async Task Late_subscriber_receives_pending_snapshot_replay() {
         var broker = new LaunchConsentBroker();
         broker.Subscribe(); // HasSubscriber must be true for the gate to even prompt

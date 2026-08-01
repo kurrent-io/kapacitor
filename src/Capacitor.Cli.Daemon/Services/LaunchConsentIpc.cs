@@ -89,7 +89,10 @@ internal sealed class LaunchConsentIpc(
             // "action") deserializes with that member left null despite the non-nullable C#
             // declaration — .Select(...) on a null Rules list would throw ArgumentNullException,
             // uncaught, dropping the connection with no ConsentAck. Guard the shape explicitly.
-            if (dto is null || dto.Default is null || dto.Rules is null || dto.Rules.Any(r => r.Action is null)) {
+            // A rules ARRAY ELEMENT can also be null (e.g. "rules":[null]) — still valid JSON,
+            // still deserializes without throwing — so check for a null element before touching
+            // r.Action on it, or this throws an uncaught NullReferenceException instead.
+            if (dto is null || dto.Default is null || dto.Rules is null || dto.Rules.Any(r => r is null || r.Action is null)) {
                 ack = new ConsentAckDto(false, "malformed policy payload");
             } else {
                 var def = dto.Default switch {

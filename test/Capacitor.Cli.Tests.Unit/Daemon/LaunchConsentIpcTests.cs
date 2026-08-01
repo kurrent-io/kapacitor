@@ -292,6 +292,29 @@ public class LaunchConsentIpcTests {
 
     [Test]
     [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
+    public async Task RulesPut_null_rules_element_acks_false_without_dropping_the_connection() {
+        if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
+
+        // "rules":[null] is valid JSON — STJ source-gen deserializes it into a List<ConsentRuleDto>
+        // containing a null element despite the non-nullable C# declaration. Any(r => r.Action is
+        // null) would throw an uncaught NullReferenceException on that element (only JsonException
+        // is caught), dropping the connection with no ConsentAck at all. Pins the fixed guard
+        // (r is null || r.Action is null).
+        await RunAsync("put-nullrule", LaunchConsentDefault.Allow, 45, async (h, ct) => {
+            await using var s = await ConnectAsync(h.SockPath, ct);
+            await FrameCodec.WriteAsync(s, LocalFrame.ConsentJson(FrameType.ConsentRulesPut,
+                """{"default":"allow","prompt_timeout_seconds":45,"rules":[null]}"""), ct);
+            var resp = await FrameCodec.ReadAsync(s, ct);
+            await Assert.That(resp).IsNotNull(); // the connection must NOT have been dropped
+            await Assert.That(resp!.Type).IsEqualTo(FrameType.ConsentAck);
+            var ack = JsonSerializer.Deserialize(resp.Text, ConsentIpcJsonContext.Default.ConsentAckDto);
+            await Assert.That(ack!.Ok).IsFalse();
+            await Assert.That(ack.Error).Contains("malformed");
+        });
+    }
+
+    [Test]
+    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task Resolve_missing_request_id_acks_false_without_dropping_the_connection() {
         if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
 

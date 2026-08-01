@@ -14,6 +14,14 @@ namespace Capacitor.Cli.Daemon.Services;
 /// persisted — a daemon restart clears pending prompts (the server retries or fails the launch
 /// with the coded timeout denial).
 ///
+/// All cleanup removals (the OCE-catch claim attempt and the outer finally) are INSTANCE-scoped
+/// via the ConcurrentDictionary KeyValuePair-conditional overload, keyed on the exact `Pending`
+/// object PromptAsync added — never a plain key-based remove. This closes an ABA race: if a new
+/// prompt B reuses the same RequestId (agent-id retry, legacy/sequenced lane overlap) and TryAdds
+/// its own entry before request A's cleanup runs, A's cleanup can only ever remove A's own
+/// instance — it is structurally incapable of evicting B's. A successor prompt with the same id
+/// is therefore never evicted by a predecessor's cleanup.
+///
 /// Delivery to each subscriber is exactly-once per request (replay xor broadcast, never both),
 /// enforced by the _deliveryGate lock. There is NO withdrawal push — subscribers learn of
 /// expiration only when TryResolve returns false (Task 7's consumer relies on this).
@@ -43,8 +51,9 @@ internal sealed class LaunchConsentBroker : ILaunchConsentPrompter {
 
     public async Task<bool?> PromptAsync(LaunchConsentPromptRequest req, TimeSpan timeout, CancellationToken ct) {
         var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var pending = new Pending(req, tcs);
         lock (_deliveryGate) {
-            if (!_pending.TryAdd(req.RequestId, new Pending(req, tcs))) return null;
+            if (!_pending.TryAdd(req.RequestId, pending)) return null;
             foreach (var ch in _subscribers.Values) ch.Writer.TryWrite(req);
         }
         try {
@@ -54,16 +63,23 @@ internal sealed class LaunchConsentBroker : ILaunchConsentPrompter {
                 return await tcs.Task.WaitAsync(cts.Token);
             } catch (OperationCanceledException) {
                 // The wait timed out (or ct fired), but TryResolve claims the entry by REMOVING
-                // it — so race it the same way here. If OUR removal wins, no resolver got there
-                // first: the timeout is real, deny. If it FAILS, a resolver already claimed the
-                // entry and is completing (or has completed) tcs — honor that decision instead of
-                // denying a request a human/rule just answered inside the race window.
-                if (_pending.TryRemove(req.RequestId, out _))
+                // it — so race it the same way here, and do it INSTANCE-scoped (key + value) so
+                // this can only ever remove OUR OWN entry, never a same-id successor prompt that
+                // TryAdded after we were already claimed (see the class doc's ABA note). If OUR
+                // removal wins, no resolver got there first: the timeout is real, deny. If it
+                // FAILS, a resolver already claimed our instance and is completing (or has
+                // completed) tcs — honor that decision instead of denying a request a human/rule
+                // just answered inside the race window. A same-id entry can only exist at this
+                // point if OUR instance was already removed by a resolver, so awaiting tcs here
+                // still completes with that resolver's verdict, never a successor's.
+                if (_pending.TryRemove(new KeyValuePair<string, Pending>(req.RequestId, pending)))
                     return tcs.Task.IsCompletedSuccessfully ? tcs.Task.Result : null;
                 return await tcs.Task;
             }
         } finally {
-            _pending.TryRemove(req.RequestId, out _);
+            // Instance-scoped for the same reason as above: an unconditional key-based remove
+            // here would evict a same-id successor's entry out from under it (ABA).
+            _pending.TryRemove(new KeyValuePair<string, Pending>(req.RequestId, pending));
         }
     }
 
