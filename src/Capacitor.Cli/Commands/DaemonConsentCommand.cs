@@ -201,13 +201,29 @@ public static class DaemonConsentCommand {
         var path       = Path.Combine(DaemonLockPaths.Directory, DaemonLockPaths.Sanitize(name), "consent-decisions.jsonl");
         var backupPath = path + ".1";
 
-        if (!File.Exists(path) && !File.Exists(backupPath)) {
+        List<string> tail;
+        try {
+            tail = ReadTail(path, backupPath, n);
+        } catch (IOException ex) {
+            // TryReadLines already absorbs one transient IOException with a retry; a second one
+            // (e.g. a Windows sharing violation that doesn't clear) surfaces here as a controlled
+            // exit rather than an unhandled crash of a human-facing command.
+            await Console.Error.WriteLineAsync($"kcap: cannot read consent log: {ex.Message}");
+
+            return 1;
+        }
+
+        // File.Exists here is a courtesy check for the friendly message only — ReadTail/
+        // TryReadLines never rely on it, so a concurrent rotation can't turn this into the same
+        // TOCTOU crash. An empty tail while a file DOES exist (fresh, no decisions yet) prints
+        // nothing rather than a misleading "not found".
+        if (tail.Count == 0 && !File.Exists(path) && !File.Exists(backupPath)) {
             await Console.Error.WriteLineAsync($"No consent decision log found at {path}.");
 
             return 1;
         }
 
-        foreach (var line in ReadTail(path, backupPath, n)) {
+        foreach (var line in tail) {
             await Console.Out.WriteLineAsync(line);
         }
 
@@ -227,20 +243,53 @@ public static class DaemonConsentCommand {
     /// doesn't have enough lines on its own.
     /// </summary>
     static List<string> ReadTail(string path, string backupPath, int n) {
-        var live = File.Exists(path)
-            ? File.ReadAllLines(path).Where(l => l.Length > 0).ToList()
-            : [];
+        var live = TryReadLines(path);
 
         if (live.Count >= n) return live[^n..];
 
         var needed = n - live.Count;
-        var backup = File.Exists(backupPath)
-            ? File.ReadAllLines(backupPath).Where(l => l.Length > 0).ToList()
-            : [];
+        var backup = TryReadLines(backupPath);
         var fromBackup = backup.Count > needed ? backup[^needed..] : backup;
 
         return [.. fromBackup, .. live];
     }
+
+    /// <summary>
+    /// Reads the non-empty lines of <paramref name="path"/>, tolerating the check-then-open race
+    /// the daemon's own rotation creates: <c>File.Exists</c> then <c>File.ReadAllLines</c> has a
+    /// real window (the daemon's rotating <c>File.Move</c> to <c>.1</c>) in which the live path
+    /// stops existing between the two calls, which a naive Exists-guard turns into an unhandled
+    /// <see cref="FileNotFoundException"/>. Reading unconditionally and treating a not-found as
+    /// "nothing here" instead converts that fault into exactly the accepted stale-snapshot
+    /// semantics this tail already has (the caller's backup-file fallback picks up the rotated
+    /// content). A transient <see cref="IOException"/> (e.g. a Windows sharing violation while
+    /// the daemon holds the file open) gets one retry after a short delay before propagating —
+    /// the caller decides how to report a persistent failure.
+    /// </summary>
+    internal static List<string> TryReadLines(string path) {
+        try {
+            return ReadNonEmptyLines(path);
+        } catch (FileNotFoundException) {
+            return [];
+        } catch (DirectoryNotFoundException) {
+            return [];
+        } catch (IOException) {
+            Thread.Sleep(50);
+
+            try {
+                return ReadNonEmptyLines(path);
+            } catch (FileNotFoundException) {
+                return [];
+            } catch (DirectoryNotFoundException) {
+                return [];
+            }
+            // A second IOException is deliberately NOT caught here — it propagates to the
+            // caller, which reports a controlled failure instead of retrying forever.
+        }
+    }
+
+    static List<string> ReadNonEmptyLines(string path) =>
+        [.. File.ReadAllLines(path).Where(l => l.Length > 0)];
 
     // ── socket plumbing ─────────────────────────────────────────────────────
 
