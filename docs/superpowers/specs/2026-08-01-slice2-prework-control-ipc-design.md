@@ -108,9 +108,11 @@ strings are ignored by clients** (forward compat). PR 1 ships `["consent/1"]`; P
 `LocalControlServer` routing table so a capability cannot be advertised without its handler
 existing, and each build advertises exactly what it serves.
 
-`LocalControlServer` answers `Hello` and closes, same one-shot shape as `List`. An unknown
-frame type still gets the existing `Error` reply — that IS the down-level daemon signal for an
-app talking to a pre-hello binary (tested, §6).
+`LocalControlServer` answers `Hello` and closes, same one-shot shape as `List`. **Down-level
+discovery:** a pre-hello daemon's `FrameCodec.Decode` cannot decode byte 15 at all — it throws
+and the daemon drops the connection without a reply, so the app's down-level signal is
+hello-then-EOF (no `HelloReply`), NOT an `Error` frame. (The `Error` reply exists only for
+frames the codec decodes but the server doesn't route — pinned as a routing regression, §6.)
 
 ### 3.2 Subscriber grace (closes the `prompt_no_ui` race)
 
@@ -414,8 +416,8 @@ PR 1:
 - FrameCodec round-trips for `Hello`/`HelloReply` (incl. empty hello payload).
 - Hello over a real socket returns the daemon's actual version + capabilities; a non-hello
   first frame still routes as before (regression); the capability list matches the handlers the
-  binary actually serves; an unknown-to-the-daemon frame type yields the `Error` reply (the
-  down-level discovery path a new app relies on).
+  binary actually serves; a decodable-but-unrouted first frame yields the `Error` reply
+  (routing regression; the actual down-level discovery signal is hello-then-EOF, §3.1).
 - Grace matrix: subscriber already present / arrives inside grace / arrives at-or-after expiry
   / never arrives × defaults `allow`/`deny`/`prompt` (allow/deny never wait); the deadline
   discipline holds under a controlled `TimeProvider` (total ≤ timeout; zero-remaining settles
