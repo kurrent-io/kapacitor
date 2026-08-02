@@ -521,7 +521,10 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
                 throw new InvalidOperationException("borrowed_snapshot_submodules_unsupported");
 
             var manifest = await ReadSourceManifestAsync(source, exclusions, ct);
-            await ApplyReservedIndexPolicyAsync(destination);
+            // The EFFECTIVE paths, prefixes included. Passing the root list left a tracked
+            // `apps/.kiro/settings/mcp.json` ordinary in the index while the checkout no longer had it, so
+            // git reported a deletion kcap had performed — noise a reviewer could legitimately flag.
+            await ApplyReservedIndexPolicyAsync(destination, McpExclusionsIn(exclusions));
             await CopyManifestAsync(source, destination, manifest, ct);
             RemoveFilesOutsideManifest(destination, manifest.Keys, ct);
             VerifyIndependentGit(destination, source);
@@ -766,7 +769,11 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
     /// vendor may search upward from its cwd and each level is equally branch-authored.</para>
     /// </summary>
     static string[] SnapshotExclusionsFor(string relativeCwd) {
-        var normalized = relativeCwd.Replace('\\', '/').Trim('/');
+        // Form C, matching NormalizeRelativePath — manifest paths are normalized there, and on a
+        // normalization-INSENSITIVE volume (APFS) an NFD spelling of an NFC directory resolves to the same
+        // cwd while generating an exclusion string that matches nothing. The nested config would then enter
+        // the snapshot and be read from the equivalent execution directory.
+        var normalized = relativeCwd.Replace('\\', '/').Trim('/').Normalize(NormalizationForm.FormC);
 
         if (normalized is "" or ".") return SnapshotExcludedPaths;
 
@@ -783,8 +790,15 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
                            .Distinct(StringComparer.OrdinalIgnoreCase)];
     }
 
-    static async Task ApplyReservedIndexPolicyAsync(string destination) {
-        foreach (var path in WorkspaceMcpConfigPaths)
+    /// <summary>The MCP-config entries of an effective exclusion set — the prefixed nested spellings
+    /// included, and the caller's unrelated exclusions left out.</summary>
+    static IEnumerable<string> McpExclusionsIn(string[] exclusions) =>
+        exclusions.Where(path => WorkspaceMcpConfigPaths.Any(
+            mcp => path.Equals(mcp, StringComparison.OrdinalIgnoreCase) ||
+                   path.EndsWith("/" + mcp, StringComparison.OrdinalIgnoreCase)));
+
+    static async Task ApplyReservedIndexPolicyAsync(string destination, IEnumerable<string> mcpPaths) {
+        foreach (var path in mcpPaths)
             try { await RunGit(destination, GitTimeout, "update-index", "--skip-worktree", "--", path); }
             catch { /* absent from index */ }
         Directory.CreateDirectory(Path.Combine(destination, ".git", "info"));

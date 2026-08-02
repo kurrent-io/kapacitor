@@ -411,6 +411,27 @@ public class WorkspaceMcpNeutralizationTests {
             await Assert.That(actual).Contains(path);
     }
 
+    /// <summary>
+    /// On a normalization-INSENSITIVE volume an NFD spelling resolves to the same directory as its NFC
+    /// twin, but produced an exclusion string matching nothing in the Form-C manifest — so the nested
+    /// config entered the snapshot and was readable from the equivalent execution directory. The generated
+    /// exclusions must be identical whichever spelling the caller passes.
+    /// </summary>
+    [Test]
+    public async Task Snapshot_exclusions_are_identical_for_NFC_and_NFD_spellings_of_one_directory() {
+        const string nfc = "caf\u00e9";        // é as one code point
+        const string nfd = "cafe\u0301";       // e + combining acute
+
+        await Assert.That(nfc).IsNotEqualTo(nfd);   // genuinely different strings...
+
+        var fromNfc = InvokeExclusionsFor(nfc);
+        var fromNfd = InvokeExclusionsFor(nfd);
+
+        await Assert.That(fromNfd.Length).IsEqualTo(fromNfc.Length);
+        foreach (var path in fromNfc)
+            await Assert.That(fromNfd).Contains(path);   // ...producing one exclusion set
+    }
+
     static string[] InvokeExclusionsFor(string relativeCwd) =>
         (string[])typeof(WorktreeManager)
             .GetMethod("SnapshotExclusionsFor", BindingFlags.NonPublic | BindingFlags.Static)!
