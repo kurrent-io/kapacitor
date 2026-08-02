@@ -58,6 +58,40 @@ live over the local control socket via the append-only `FrameType` values 11–1
 (`ConsentPending`/`ConsentRules`/`ConsentAck`); `kcap daemon consent {show,set-default,allow,deny,remove,log}`
 is the CLI surface and never blocks a launch waiting on a terminal prompt.
 
+**AI-1648** hardens the local control IPC ahead of the desktop supervisor app (spec:
+`docs/superpowers/specs/2026-08-01-slice2-prework-control-ipc-design.md`). A versioned **hello**
+frame pair (`HelloIpc.cs`) lets a client discover daemon capabilities before assuming any protocol
+shape: `Hello = 15` (client→daemon, optional `ClientHelloDto` — diagnostics only, never trusted)
+draws `HelloReply = 75` (`HelloReplyDto`: protocol/daemon version + a `capabilities` list) from
+`LocalControlServer`, answered and closed like `List`. `LocalControlCapabilities.Current` sits next
+to the routing switch so an entry can never be advertised without a live handler — this PR ships
+`["consent/1"]` only, `"status/1"` is reserved for AI-1649's `StatusSubscribe` handler. A pre-hello
+daemon can't decode frame 15 at all, so down-level discovery is hello-then-EOF, not an `Error` reply.
+The `prompt_no_ui` instant-deny race is closed by a bounded **subscriber grace** in
+`LaunchConsentGate`/`LaunchConsentBroker`: `min(5s, PromptTimeoutSeconds)` burned from one monotonic
+absolute deadline (injectable `TimeProvider`) fixed at prompt-path entry — every later wait
+recomputes `deadline − now` immediately before use rather than accumulating elapsed time, zero
+remaining settles as the existing `prompt_timeout` denial (no special case), and a generational
+subscriber-arrival waiter in the broker (one shared `TaskCompletionSource` per zero-subscriber
+period) lets concurrent waiters converge with arrival winning ties. Cancellation (the launch's own
+shutdown token) aborts the wait and the launch together — no consent decision is ever fabricated.
+
+The receive pump no longer awaits launch/stop EXECUTION for either command format: arrival order is
+preserved by routing sequenced AND un-sequenced server-origin launch/stop traffic through the ONE
+existing serial lane (`RunLaneAsync`). Un-sequenced commands commit via a typed, no-ack entry point
+— `SequencedCommandProcessor.SubmitUnsequenced(UnsequencedItem)` — whose admissibility check,
+active-launch-instance tracking, and lane commit all happen inside one critical section before the
+call returns. Active launch instances are reference-counted per agent id, so a launch dequeued and
+parked at the consent gate stays an admissible stop target; admissible targets are `_agents` ∪
+durable PID records ∪ active instances — the PID-record arm is load-bearing (it's how the server's
+registry-independent physical stop reclaims a prior incarnation's survivor), not belt-and-braces. A
+per-boot publication barrier makes "no dual domain, ever" structural: one lock guards both handler
+admission and the processor's single null→live transition. Stop coalescing is launch-aware and
+identity-guarded (a launch commit clears all of its id's pending-stop keys; a same-payload retry
+after a faulted stop always commits fresh), and the queued-stop count backs an edge-triggered,
+hysteresis-gated alarm exposed via `QueuedStopDepth`/`QueuedStopHighWater` accessors — additive, with
+no production consumer yet (AI-1649's supervision IPC is the natural one).
+
 ## Tech stack
 
 - .NET 10, NativeAOT compiled
