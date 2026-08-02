@@ -2,6 +2,15 @@ using System.Collections.Immutable;
 
 namespace Capacitor.Cli.Daemon.Services;
 
+/// <summary>Thrown when branch-authored vendor config is present in a worktree and could not be removed.
+/// Fail-closed on purpose: the alternative is handing the tree to a vendor that executes it.</summary>
+public sealed class WorkspaceMcpNeutralizationException(string path, Exception inner)
+    : Exception($"Refusing to use this worktree: branch-authored vendor MCP config at '{path}' could not "
+              + "be removed. Some vendors execute the command it declares at session setup, so launching "
+              + "with it still present would run branch-controlled code as the daemon user.", inner) {
+    public string Path { get; } = path;
+}
+
 public partial class WorktreeManager {
     /// <summary>
     /// Workspace-scoped vendor MCP configuration, relative to a worktree root. Declaring a server in one
@@ -11,15 +20,13 @@ public partial class WorktreeManager {
     /// <para><b>Measured, not assumed.</b> Kiro spawns the server declared in
     /// <c>.kiro/settings/mcp.json</c> at session setup — no prompt, no model involvement, no tool call.
     /// Gemini spawns its <c>.gemini/settings.json</c> server too, and is saved only by
-    /// <c>--allowed-mcp-server-names</c>, which turns out to gate the spawn itself. Cursor and Copilot were
-    /// measured NOT to read their workspace files on the ACP path, each against an in-run positive control.
-    /// The full result table is on the tracking issue.</para>
+    /// <c>--allowed-mcp-server-names</c>, which gates the spawn itself. Cursor and Copilot were measured
+    /// NOT to read their workspace files on the ACP path, each against an in-run positive control.</para>
     ///
-    /// <para><b>Why the list is wider than the vendors that are known to read them.</b> The two vendors
-    /// currently protected are protected by their own argv, which is a property of each launcher rather
-    /// than of the worktree. Kiro arrived with no gate at all and nobody noticed, so the list covers every
-    /// hosted vendor's file plus the editor-generic ones — the point is that the next vendor is safe
-    /// before anyone thinks about it.</para>
+    /// <para><b>Why the list is wider than the vendors known to read them.</b> The protected vendors are
+    /// protected by their own argv, a property of each launcher rather than of the worktree. Kiro arrived
+    /// with no gate at all and nobody noticed, so the list covers every hosted vendor's file plus the
+    /// editor-generic ones — the point is that the next vendor is safe before anyone thinks about it.</para>
     /// </summary>
     internal static readonly ImmutableArray<string> WorkspaceMcpConfigPaths = [
         ".mcp.json",                    // Claude Code / generic
@@ -43,80 +50,83 @@ public partial class WorktreeManager {
     /// exposure is created here and is fixed here, once, rather than in each vendor's argv where a new
     /// vendor starts unprotected.</para>
     ///
-    /// <para><b>Symlinks are the sharp edge, because the content is hostile.</b> Deleting
-    /// <c>.gemini/settings.json</c> naively, when a branch has made <c>.gemini</c> a symlink to the user's
-    /// real <c>~/.gemini</c>, would destroy the operator's own configuration — turning a containment
-    /// measure into the attack. So every ancestor is resolved to a physical path first and the file is
-    /// removed ONLY when it still lands inside the worktree. That also closes the inverse trick, a branch
-    /// symlinking <c>.cursor</c> to another directory it controls inside the same tree: the resolved path
-    /// is inside, so it is still removed. A path resolving outside is left alone — whatever it points at
-    /// belongs to the operator, not to the branch.</para>
+    /// <para><b>Never follow a link; remove the ROUTING ENTRY instead.</b> An earlier revision resolved each
+    /// path physically and skipped anything landing outside the worktree. Review found that fails open: a
+    /// branch committing <c>.kiro</c> as a symlink pointing outside keeps its symlink — we decline to touch
+    /// it — and the vendor follows it anyway. Resolving at all was the mistake. This walks components
+    /// WITHOUT following, and unlinks the first component that is a link. Removing a link never touches its
+    /// target, so the operator's own <c>~/.gemini</c> is safe by construction rather than by a containment
+    /// check, and the branch's routing into it is gone. The containment comparison this replaces also
+    /// inferred case sensitivity from the OS, which is wrong on a case-sensitive APFS volume — deleting the
+    /// question removes that too.</para>
     ///
-    /// <para>Removal rather than emptying: an empty <c>mcpServers</c> would still leave a file whose other
-    /// keys the vendor honours, and <c>.gemini/settings.json</c> and <c>.codex/config.toml</c> carry much
-    /// more than MCP entries — all of it equally branch-controlled.</para>
+    /// <para><b>Fail closed.</b> A path that is present but cannot be removed throws. Continuing would hand
+    /// the vendor a tree it executes; a launch that fails loudly is strictly better than one that runs
+    /// branch-controlled code. Absence from the returned list is NOT a report of failure, which is why this
+    /// throws rather than relying on the caller to notice.</para>
+    ///
+    /// <para><b>Residual, accepted:</b> between the link check and the delete, a concurrent process could
+    /// swap a component. Closing it needs <c>unlinkat</c>-style handle semantics that .NET does not expose.
+    /// The window is narrow here specifically: this runs at creation, before any agent exists in this
+    /// worktree, so an attacker needs an already-compromised process on the host — which has this authority
+    /// regardless.</para>
     /// </summary>
+    /// <exception cref="WorkspaceMcpNeutralizationException">A listed path exists and could not be removed.</exception>
     internal static IReadOnlyList<string> NeutralizeWorkspaceMcpConfig(string worktreePath) {
         var removed = new List<string>();
-        var root    = RealPath(worktreePath);
-
-        if (root is null) return removed;
 
         foreach (var relative in WorkspaceMcpConfigPaths) {
-            var target = PhysicalTargetInside(root, relative);
-            if (target is null) continue;
+            var victim = FirstRemovableComponent(worktreePath, relative);
+            if (victim is null) continue;
 
             try {
-                if (!File.Exists(target)) continue;
-
-                // File.Delete on a symlink removes the LINK, never its target, so a final component that
-                // is a link is safe by construction here — the ancestor walk above is what matters.
-                File.Delete(target);
+                Unlink(victim);
                 removed.Add(relative);
-            } catch (Exception) {
-                // A file we cannot remove is reported by absence from `removed`; failing the whole worktree
-                // creation over one unreadable path would take out hosting for the repo entirely.
+            } catch (Exception ex) {
+                throw new WorkspaceMcpNeutralizationException(victim, ex);
             }
         }
 
         return removed;
     }
 
-    /// <summary>The physical path of <paramref name="relative"/> under <paramref name="physicalRoot"/>, or
-    /// null when any ancestor resolves outside the worktree.</summary>
-    static string? PhysicalTargetInside(string physicalRoot, string relative) {
-        var combined = Path.Combine(physicalRoot,
-            relative.Replace('/', Path.DirectorySeparatorChar));
-        var parent   = Path.GetDirectoryName(combined);
+    /// <summary>Walks <paramref name="relative"/> one component at a time WITHOUT following links, and
+    /// returns the first component that is itself a link (remove the branch's routing entry), or the leaf
+    /// when the whole path is ordinary. Null when nothing along the path exists.</summary>
+    static string? FirstRemovableComponent(string worktreePath, string relative) {
+        var current = worktreePath;
+        var parts   = relative.Split('/', StringSplitOptions.RemoveEmptyEntries);
 
-        if (parent is null) return null;
+        for (var i = 0; i < parts.Length; i++) {
+            current = Path.Combine(current, parts[i]);
 
-        var physicalParent = RealPath(parent);
-
-        return physicalParent is not null && IsInside(physicalRoot, physicalParent)
-            ? Path.Combine(physicalParent, Path.GetFileName(combined))
-            : null;
-    }
-
-    /// <summary>Fully resolves every symlinked component. <see cref="ResolveFirstLinkComponent"/> replaces
-    /// one component per call, so this iterates it; the bound stops a symlink cycle from hanging the
-    /// daemon rather than expressing a real depth limit.</summary>
-    static string? RealPath(string path) {
-        var current = Path.GetFullPath(path);
-
-        for (var hops = 0; hops < 40; hops++) {
-            var next = ResolveFirstLinkComponent(current);
-            if (next is null) return current;
-            current = Path.GetFullPath(next);
+            if (IsLink(current)) return current;          // routing entry — unlink it, never its target
+            if (!Path.Exists(current)) return null;       // nothing here, and nothing below it either
         }
 
-        return null;   // cycle or pathological nesting: treat as unresolvable, therefore untouchable
+        return current;                                    // ordinary file, all ancestors ordinary
     }
 
-    static bool IsInside(string root, string candidate) {
-        var normalizedRoot = root.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+    /// <summary>Whether the path itself is a symlink/junction. Deliberately does NOT follow: it reads the
+    /// link attribute of this component alone.</summary>
+    static bool IsLink(string path) {
+        try {
+            // LinkTarget is null for a non-link and does not resolve the target, so a dangling link still
+            // reports as a link — which is the case that matters, since the vendor would follow it too.
+            return new FileInfo(path).LinkTarget is not null
+                || new DirectoryInfo(path).LinkTarget is not null;
+        } catch {
+            return false;                                  // unreadable: treated as ordinary, then Unlink reports
+        }
+    }
 
-        return candidate.Equals(normalizedRoot, FileSystemPathComparison)
-            || candidate.StartsWith(normalizedRoot + Path.DirectorySeparatorChar, FileSystemPathComparison);
+    /// <summary>Removes a file, or a link of either kind, without recursing into a link's target.</summary>
+    static void Unlink(string path) {
+        if (Directory.Exists(path) && new DirectoryInfo(path).LinkTarget is not null) {
+            Directory.Delete(path);                        // removes the LINK; the target is untouched
+            return;
+        }
+
+        File.Delete(path);                                 // also the right call for a file symlink
     }
 }

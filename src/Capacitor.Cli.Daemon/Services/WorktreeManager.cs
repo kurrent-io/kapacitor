@@ -212,14 +212,14 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
                     "-c", "maintenance.auto=false", "-c", "gc.auto=0",
                     "fetch", "origin", $"{baseRef}:{fetchedRef}");
                 await WithWorktreeMetadataGate(repoPath, () =>
-                    RunGit(repoPath, GitTimeout, "worktree", "add", "-B", branch, worktreePath, fetchedRef));
+                    RunGit(repoPath, GitTimeout, [..NoBranchHooks(), "worktree", "add", "-B", branch, worktreePath, fetchedRef]));
                 StripWorkspaceMcpConfig(worktreePath);
 
                 return new WorktreeInfo(worktreePath, branch, repoPath, FetchedRef: fetchedRef);
             }
 
             await WithWorktreeMetadataGate(repoPath, () =>
-                RunGit(repoPath, GitTimeout, "worktree", "add", worktreePath, "-b", branch));
+                RunGit(repoPath, GitTimeout, [..NoBranchHooks(), "worktree", "add", worktreePath, "-b", branch]));
             StripWorkspaceMcpConfig(worktreePath);
 
             return new WorktreeInfo(worktreePath, branch, repoPath);
@@ -231,11 +231,28 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
         // BEFORE the initial commit, so the snapshot's own history never carries the hostile config
         // either — a later `git checkout` inside the tree would otherwise restore it.
         StripWorkspaceMcpConfig(worktreePath);
-        await RunGit(worktreePath, GitTimeout, "init");
-        await RunGit(worktreePath, GitTimeout, "add", "-A");
-        await RunGit(worktreePath, GitTimeout, "commit", "-m", "Initial snapshot");
+        await RunGit(worktreePath, GitTimeout, [..NoBranchHooks(), "init"]);
+        await RunGit(worktreePath, GitTimeout, [..NoBranchHooks(), "add", "-A"]);
+        await RunGit(worktreePath, GitTimeout, [..NoBranchHooks(), "commit", "-m", "Initial snapshot"]);
 
         return new WorktreeInfo(worktreePath, "", repoPath, IsStandalone: true);
+    }
+
+    /// <summary>
+    /// Git config that must be forced on any git command that checks out or commits branch content.
+    ///
+    /// <para>A relative <c>core.hooksPath</c> — <c>.githooks</c> is a widespread convention, and a
+    /// documented setup step in many repos — makes the hook scripts themselves branch content. Git then runs
+    /// the branch's <c>post-checkout</c> during <c>worktree add</c>, i.e. BEFORE anything in this class has
+    /// had a chance to neutralize the tree. Review caught it: the MCP strip is pointless if creating the
+    /// tree already executed the branch's code. Pointing <c>core.hooksPath</c> at a daemon-owned empty
+    /// directory disables the whole mechanism for these commands without touching the operator's config.</para>
+    /// </summary>
+    static string[] NoBranchHooks() {
+        var empty = Path.Combine(Path.GetTempPath(), "kcap-no-hooks");
+        Directory.CreateDirectory(empty);
+
+        return ["-c", $"core.hooksPath={empty}"];
     }
 
     /// <summary>Removes branch-authored vendor MCP configuration and logs what went, so an operator whose
@@ -863,7 +880,13 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
         }
 
         foreach (var dir in Directory.GetDirectories(source)) {
-            if (Path.GetFileName(dir) == ".git") {
+            // `.capacitor` holds the worktrees themselves, and the standalone path's DESTINATION is
+            // `<source>/.capacitor/worktrees/<name>` — so without this the copy descends into the directory
+            // it is writing, recursing until the path length blows up. Standalone snapshot creation could
+            // therefore never have completed for a non-git source; it surfaced when a test finally covered
+            // that branch. `.capacitor` is already excluded from the borrowed-snapshot copy for the same
+            // reason it should be excluded here: it is kcap's state, not the user's content.
+            if (Path.GetFileName(dir) is ".git" or ".capacitor") {
                 continue;
             }
 
