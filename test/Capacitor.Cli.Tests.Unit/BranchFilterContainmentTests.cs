@@ -90,6 +90,41 @@ public class BranchFilterContainmentTests {
         await Assert.That(emitted.Except(expected).Any()).IsFalse();
     }
 
+    /// <summary>
+    /// The enumeration regex matches lowercase <c>filter</c>/<c>clean</c>/<c>smudge</c>/<c>process</c>, but
+    /// git config SECTION and VARIABLE names are case-insensitive — so is an operator config spelled
+    /// <c>[Filter "evil"] Smudge</c> invisible to it, leaving a driver a branch could still select?
+    ///
+    /// <para>No: git canonicalizes section and variable names to lowercase when it reports keys, so
+    /// <c>--get-regexp</c> yields <c>filter.evil.smudge</c> whatever the file says, and the lowercase
+    /// override neutralizes it. Only the SUBSECTION keeps its case, which the pattern's <c>.*</c> covers.</para>
+    ///
+    /// <para>Measured end-to-end before writing this: with <c>[Filter "evil"] Smudge</c> and an absolute
+    /// command, <c>worktree add</c> really does execute the driver, and adding the lowercase overrides
+    /// stops it. This test pins the canonicalization the containment leans on — if a future git reported
+    /// keys verbatim, the guard would silently miss a live driver, and this fails instead.</para>
+    /// </summary>
+    [Test]
+    [Arguments("Filter", "evil", "Smudge", "filter.evil.smudge")]
+    [Arguments("FILTER", "shouty", "PROCESS", "filter.shouty.process")]
+    [Arguments("filter", "Mixed", "clean", "filter.Mixed.clean")]   // subsection case IS preserved
+    public async Task A_mixed_case_config_spelling_is_still_enumerated_and_overridden(
+            string section, string subsection, string variable, string canonical) {
+        var repo = NewRepo();
+        File.AppendAllText(Path.Combine(repo, ".git", "config"),
+            $"[{section} \"{subsection}\"]\n\t{variable} = ./tools/f\n");
+
+        // Precondition: git really does resolve the value under the canonical spelling.
+        await Assert.That(EffectiveDriverNames(repo)).Contains(subsection);
+
+        var joined = string.Join(' ', await WorktreeManager.BranchFilterOverridesAsync(repo));
+
+        await Assert.That(joined).Contains($"{canonical[..canonical.LastIndexOf('.')]}.clean=");
+        await Assert.That(joined).Contains($"{canonical[..canonical.LastIndexOf('.')]}.smudge=");
+        await Assert.That(joined).Contains($"{canonical[..canonical.LastIndexOf('.')]}.process=");
+        await Assert.That(joined).Contains($"{canonical[..canonical.LastIndexOf('.')]}.required=false");
+    }
+
     /// <summary>Driver names git reports for the repo's EFFECTIVE config, global scope included.</summary>
     static HashSet<string> EffectiveDriverNames(string repo) {
         var psi = new ProcessStartInfo("git") {

@@ -397,17 +397,18 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
             .ToArray();
 
         if (drivers.Length > 0)
-            // Deliberately says WHAT was disabled and why, not what the file contents will look like. The
-            // outcome differs by path: an owned worktree or standalone snapshot really does leave
-            // LFS-tracked files as pointer text, but a borrowed snapshot overwrites checkout files from the
-            // source manifest and REJECTS source-side pointers outright — so it either holds real smudged
-            // bytes or fails to build. A single message claiming pointer text was true for two paths and
-            // false for the third, which is worse than saying less: this logging is the whole reason the
-            // no-exemption trade is defensible, so it has to be accurate.
+            // States WHAT was disabled and why, and stops there. Three callers materialise content three
+            // different ways — an owned worktree checks out through git, a standalone snapshot copies
+            // source bytes and re-commits with the clean filter off, a borrowed snapshot overwrites the
+            // checkout from the source manifest and refuses source-side pointers — so ANY sentence about
+            // what the resulting bytes look like is false for at least one of them. Two rounds of review
+            // were spent narrowing such a sentence before concluding it should not be here at all: this
+            // logging is the whole reason the no-exemption trade is defensible, so it has to be accurate,
+            // and per-path behaviour is documented in the README where there is room to be exact.
             logger.LogInformation(
                 "Disabled git filter drivers for agent worktree creation from {Repo}: {Drivers}. A branch's "
               + ".gitattributes selects which driver runs, so a driver with a relative command would execute "
-              + "branch-supplied code. Content those drivers would have transformed is left untransformed.",
+              + "branch-supplied code.",
                 repoPath, string.Join(", ", drivers));
     }
 
