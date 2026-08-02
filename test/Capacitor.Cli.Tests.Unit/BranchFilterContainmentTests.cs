@@ -14,8 +14,9 @@ namespace Capacitor.Cli.Tests.Unit;
 /// <para>EVERY defined driver is disabled, with no exemption. Four designs tried to keep git-lfs working —
 /// classify the command, allowlist the name, authenticate the binding, rebind to a resolved path — and
 /// review defeated each at the exemption itself. Nothing is parsed, resolved or authenticated now, so there
-/// is nothing to subvert. The cost is that LFS-tracked files appear as pointer text in agent worktrees; it
-/// is documented and logged rather than silent.</para>
+/// is nothing to subvert. The cost is documented and logged rather than silent: an OWNED worktree checks
+/// out through git and so holds LFS pointer text (standalone and borrowed snapshots carry the source's own
+/// bytes), and the overrides cover kcap's creation commands only — not git the agent later runs there.</para>
 /// </summary>
 public class BranchFilterContainmentTests {
     // ── every defined driver is disabled ──

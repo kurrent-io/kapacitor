@@ -37,9 +37,13 @@ public partial class WorktreeManager {
     ///
     /// <para>Four mechanisms, four holes, all guarding one exception. Disabling every driver has no such
     /// surface: nothing is parsed, nothing is resolved, nothing is authenticated, and there is no name to
-    /// impersonate. The cost is real and is documented rather than hidden — LFS-tracked files check out as
-    /// pointer text inside agent worktrees, and a custom filter does not run there. Removals are logged so
-    /// an operator sees it happen instead of wondering why a file looks wrong.</para>
+    /// impersonate. The cost is real and is documented rather than hidden. Be precise about the boundary:
+    /// these overrides are PER-COMMAND, covering the git commands kcap uses to create and populate a
+    /// worktree — the window in which branch content is first materialised, before an agent is running.
+    /// Git the agent runs there afterwards uses the repository's own configuration. What that means for
+    /// file contents also differs by path: an owned worktree checks out through git and so holds LFS
+    /// pointer text, while standalone and borrowed snapshots carry the source's own bytes (see the README).
+    /// Removals are logged so an operator sees it happen instead of wondering why a file looks wrong.</para>
     /// </summary>
     /// <exception cref="BranchFilterInventoryException">Enumeration failed, or a driver name cannot be
     /// safely expressed as an override.</exception>
