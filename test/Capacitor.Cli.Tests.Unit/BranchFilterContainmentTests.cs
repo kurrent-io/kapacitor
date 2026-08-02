@@ -96,6 +96,51 @@ public class BranchFilterContainmentTests {
             .Contains("filter.sneaky.smudge=");
     }
 
+    /// <summary>
+    /// The name `lfs` is a CONVENTION, not an identity. Nothing stops a config binding it to a relative
+    /// command, and a branch selecting `filter=lfs` would then ride the allowlist straight to its own file.
+    /// Trusting the name alone is the same mistake as trusting a command string, reached from the other
+    /// side — so the binding is authenticated and a mis-bound `lfs` is disabled like any other driver.
+    /// </summary>
+    [Test]
+    [Arguments("./tools/f")]
+    [Arguments("sh tools/f")]
+    [Arguments("/usr/local/bin/definitely-not-lfs")]
+    public async Task An_allowlisted_name_bound_to_the_wrong_binary_is_still_disabled(string command) {
+        var repo = NewRepo();
+        Git(repo, "config", "filter.lfs.smudge", command);
+
+        await Assert.That(string.Join(' ', await WorktreeManager.BranchFilterOverridesAsync(repo)))
+            .Contains("filter.lfs.smudge=");
+    }
+
+    /// <summary>...and a genuine binding is still honoured, including an absolute path to the binary.</summary>
+    [Test]
+    [Arguments("git-lfs filter-process")]
+    [Arguments("/opt/homebrew/bin/git-lfs filter-process")]
+    public async Task An_allowlisted_name_bound_to_the_real_binary_is_honoured(string command) {
+        var repo = NewRepo();
+        Git(repo, "config", "filter.lfs.process", command);
+
+        await Assert.That(await WorktreeManager.BranchFilterOverridesAsync(repo)).IsEmpty();
+    }
+
+    /// <summary>
+    /// `-c key=value` splits at the FIRST '='. A driver legally named `evil=x` would be written as key
+    /// `filter.evil`, leaving `filter.evil=x.smudge` live while the override looked applied. Refused rather
+    /// than mis-encoded: a guard that silently does nothing is worse than a launch that fails.
+    /// </summary>
+    [Test]
+    public async Task A_driver_name_that_cannot_be_safely_overridden_is_refused() {
+        var repo = NewRepo();
+        Git(repo, "config", "filter.evil=x.smudge", "./tools/f");
+
+        var ex = await Assert.ThrowsAsync<BranchFilterInventoryException>(
+            async () => await WorktreeManager.BranchFilterOverridesAsync(repo));
+
+        await Assert.That(ex!.Message).Contains("evil=x");
+    }
+
     // ── end to end ──
 
     /// <summary>

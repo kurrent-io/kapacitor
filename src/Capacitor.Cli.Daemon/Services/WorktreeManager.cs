@@ -248,8 +248,21 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
             return linked;
         }
 
-        // Standalone: copy files + git init
+        // Standalone: copy files + git init.
+        // Wrapped because every step after the directory exists can throw — the MCP strip and the filter
+        // inventory are both fail-closed — and this branch returns no WorktreeInfo on the way out, so
+        // nothing downstream could clean up the partial tree. The linked paths gained rollback earlier for
+        // exactly this; review caught that the standalone one never did.
         Directory.CreateDirectory(worktreePath);
+        try {
+            return await BuildStandaloneSnapshotAsync(repoPath, worktreePath);
+        } catch {
+            try { DeleteTreeNoFollow(worktreePath); } catch { /* keep the original failure */ }
+            throw;
+        }
+    }
+
+    async Task<WorktreeInfo> BuildStandaloneSnapshotAsync(string repoPath, string worktreePath) {
         CopyDirectory(repoPath, worktreePath);
         // BEFORE the initial commit, so the snapshot's own history never carries the hostile config
         // either — a later `git checkout` inside the tree would otherwise restore it.
