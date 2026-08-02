@@ -61,9 +61,53 @@ public class BranchFilterContainmentTests {
         await Assert.That(joined).Contains("filter.lfs.required=false");
     }
 
+    /// <summary>
+    /// The override set must cover EXACTLY the drivers git reports for the repository — no more, no fewer.
+    ///
+    /// <para>Computed from git rather than hard-coded, because enumeration sees EFFECTIVE config: a host
+    /// with git-lfs installed has a global <c>filter.lfs.*</c>, so "a repo with no filters of its own" is
+    /// not a repo with no filters. An earlier version asserted an empty result and passed only on machines
+    /// without git-lfs — green locally, red on CI, which is the test encoding its author's laptop.</para>
+    /// </summary>
     [Test]
-    public async Task A_repo_with_no_filters_yields_no_overrides() =>
-        await Assert.That(await WorktreeManager.BranchFilterOverridesAsync(NewRepo())).IsEmpty();
+    public async Task The_override_set_covers_exactly_the_drivers_git_reports() {
+        var repo = NewRepo();
+        Git(repo, "config", "filter.custom.smudge", "./tools/f");
+
+        var expected = EffectiveDriverNames(repo);
+        var joined = string.Join(' ', await WorktreeManager.BranchFilterOverridesAsync(repo));
+
+        await Assert.That(expected).Contains("custom");          // the fixture's own driver is in scope
+        foreach (var driver in expected)
+            await Assert.That(joined).Contains($"filter.{driver}.smudge=");
+
+        // ...and nothing outside that set is emitted.
+        var emitted = joined.Split(' ')
+            .Where(static t => t.StartsWith("filter.", StringComparison.Ordinal) && t.EndsWith(".clean=", StringComparison.Ordinal))
+            .Select(static t => t["filter.".Length..^".clean=".Length])
+            .ToHashSet(StringComparer.Ordinal);
+
+        await Assert.That(emitted.Except(expected).Any()).IsFalse();
+    }
+
+    /// <summary>Driver names git reports for the repo's EFFECTIVE config, global scope included.</summary>
+    static HashSet<string> EffectiveDriverNames(string repo) {
+        var psi = new ProcessStartInfo("git") {
+            WorkingDirectory = repo, RedirectStandardOutput = true, RedirectStandardError = true
+        };
+        foreach (var a in new[] { "config", "--name-only", "--get-regexp", "^filter\\..*\\.(clean|smudge|process)$" })
+            psi.ArgumentList.Add(a);
+
+        using var p = Process.Start(psi)!;
+        var stdout = p.StandardOutput.ReadToEnd();
+        p.WaitForExit();
+
+        return stdout.Split('\n', StringSplitOptions.RemoveEmptyEntries)
+            .Select(static k => k.Trim().Split('.'))
+            .Where(static parts => parts.Length >= 3)
+            .Select(static parts => string.Join('.', parts[1..^1]))
+            .ToHashSet(StringComparer.Ordinal);
+    }
 
     /// <summary>`filter.my.tool.smudge` is driver `my.tool`; naive splitting would emit overrides for a
     /// driver that does not exist and leave the real one live.</summary>
