@@ -212,11 +212,11 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
 
         Directory.CreateDirectory(worktreeRoot);
 
-        // Resolved once: `git config` on the SOURCE repo, whose definitions are the only ones a branch's
-        // .gitattributes can select.
-        var filterOverrides = await BranchFilterOverridesAsync(repoPath);
-        LogDisabledFilters(filterOverrides, repoPath);
-
+        // No filter inventory here on purpose. `worktree add --no-checkout` materialises nothing, so no
+        // filter can run during it, and the guarded reset re-inventories inside the TARGET — which is the
+        // context that actually decides which drivers load. A source-context inventory would add no
+        // containment and could reject a safe launch, since a source-only conditional include can define a
+        // driver the target never sees.
         if (await IsGitRepoWithCommits(repoPath)) {
             if (!string.IsNullOrEmpty(baseRef)) {
                 // Fetch into a per-worktree ref instead of the shared FETCH_HEAD
@@ -234,7 +234,7 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
                     "-c", "maintenance.auto=false", "-c", "gc.auto=0",
                     "fetch", "origin", $"{baseRef}:{fetchedRef}");
                 await WithWorktreeMetadataGate(repoPath, () =>
-                    RunGit(repoPath, GitTimeout, [..NoBranchHooks(), ..filterOverrides,
+                    RunGit(repoPath, GitTimeout, [..NoBranchHooks(),
                         "worktree", "add", "--no-checkout", "-B", branch, worktreePath, fetchedRef]));
                 var fetched = new WorktreeInfo(worktreePath, branch, repoPath, FetchedRef: fetchedRef);
                 await StripOrRollBackAsync(fetched);
@@ -243,7 +243,7 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
             }
 
             await WithWorktreeMetadataGate(repoPath, () =>
-                RunGit(repoPath, GitTimeout, [..NoBranchHooks(), ..filterOverrides,
+                RunGit(repoPath, GitTimeout, [..NoBranchHooks(),
                     "worktree", "add", "--no-checkout", worktreePath, "-b", branch]));
             var linked = new WorktreeInfo(worktreePath, branch, repoPath);
             await StripOrRollBackAsync(linked);
