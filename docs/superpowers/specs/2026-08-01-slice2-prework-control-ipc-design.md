@@ -232,32 +232,30 @@ server-origin launch/stop execution through the one existing serial lane:
   by any handler (launch OR stop): it gets a fault-observing, logging-only continuation.
   Terminal CommandAck/CommandRejected emission is the lane's duty (§1.7) and does not move.
 - **Un-seq'd commands with a live `_processor`**: the handler commits the execution onto the
-  SAME lane via a new non-watermark entry point — `SubmitUnsequenced(string label, Func<Task>
-  execute)`, a plain lane item: no seq, no cache, no acks. **The enqueue contract is
-  synchronous and test-pinned**, exactly like sequenced acceptance: the lane item is committed
-  under the processor's `_lock` before the method returns, with no await or scheduled
-  continuation before the commit — pump serialization is therefore the arrival-order guarantee
-  for BOTH formats, in both directions (seq-then-unseq AND unseq-then-seq). A commit refused
-  because the lane is shutting down is defined: launch → best-effort `LaunchFailedAsync`;
-  stop → log (the daemon is exiting; §1.15 covers the rest). Item faults are contained INSIDE
-  the lane wrapper — an un-seq'd item's exception (including OCE) can never terminate
-  `RunLaneAsync`, pinned by test; the handler-side continuation only logs.
-- **Per-agent stop coalescing bounds the stop queue by COUNT, not rate**: enqueueing an
-  un-seq'd stop for an agent that already has one queued-but-not-started collapses into the
-  existing entry (a pending-stop set keyed by agent id, cleared when the item starts
-  executing). Stops are idempotent no-ops on unknown/already-stopped agents, so coalescing is
-  semantics-preserving and keeps the EARLIEST queue position. Queue depth is therefore ≤
-  outstanding launches (≤ capacity, §1.10) + DISTINCT stop targets — and duplicate producers
-  (reconcile retry cadence, repeated user stop clicks) can never grow it. Sequenced stops
-  already coalesce via the duplicate-answer machinery and the 256-item cache bound (§1.7).
-- **Un-seq'd commands with `_processor` null** (pre-settlement server): the shipped inline
-  await stays byte-for-byte. No sequenced traffic can exist (§1.7), so the single domain is
-  trivially preserved, and the shipped backpressure story is unchanged for exactly the
-  population it already served.
-- **Internal stop paths bypass the lane deliberately** (heartbeat reaping, local-socket
-  stops): they already run off-pump today and are concurrency-safe via the per-agent
-  single-flight teardown latch (§1.11). Routing them through the lane would let a parked
-  consent prompt delay reviewer reaping — the exact inversion of what the reaper exists for.
+  SAME lane via a new non-watermark entry point — `bool SubmitUnsequenced(string label,
+  Func<Task> execute)`, a plain lane item: no seq, no cache, no acks. **The enqueue contract
+  is synchronous and test-pinned**, exactly like sequenced acceptance: commit-or-refuse is
+  decided at ONE point under the processor's `_lock` before the method returns (no await or
+  scheduled continuation before the commit), so pump serialization is the arrival-order
+  guarantee for BOTH formats in both directions, and a shutdown race can never both commit
+  the item and report refusal. Return `true` = committed — the lane owns execution and fault
+  containment (an item's exception, including OCE, can never terminate `RunLaneAsync`; the
+  lane wrapper logs it; there is no handler-side continuation). Return `false` = refused
+  (lane shut down) — the CALLER owns the consequence: launch → best-effort `LaunchFailedAsync`
+  (its own send failure logged-and-swallowed; the daemon is exiting); stop → log. §1.15
+  covers the rest.
+- **Un-seq'd stop admission + coalescing (count-bounded by construction).** At the handler,
+  an un-seq'd stop is enqueued ONLY if its target id exists in `_agents` or matches a launch
+  currently queued on the lane; any other id is dropped at admission with a log — a stop for
+  an unknown agent is a no-op when it executes (§1.8, id-only payload), so dropping it early
+  is observably identical and removes the unbounded-target-universe problem outright.
+  Admitted stops coalesce per (target id, payload) — the legacy `StopAgent` payload IS the id
+  (§1.8), so duplicates always coalesce; an un-seq'd `StopAgentV2` coalesces only with an
+  identical force flag. **Coalescing is launch-aware**: committing a launch for id X (either
+  format) clears X's pending-stop key, so stop(X) → launch(X) → stop(X) enqueues the second
+  stop AFTER the launch instead of collapsing it into the first — ordering semantics are
+  preserved even if an id ever recurs. Queue depth is hard-bounded: launches ≤ capacity
+  (§1.10) + admitted stops ≤ |`_agents`| + queued launches — a numeric bound, not a rate.
 - The malformed-partial-tuple arm is synchronous already; unchanged.
 
 **Handler classification (what unparking means for every other handler).** Agent-ADDRESSED
@@ -269,13 +267,15 @@ simply absent, and the server's consumers never infer absence from omission (§1
 and reviewer-model resolution: agent-independent. Nothing else consults launch state. Each
 class is pinned by a test (§6).
 
-**`_processor` publication rule.** Handlers snapshot `_processor` exactly once at entry (the
-shipped `_processor is {{ }} proc` shape); publication is single-assignment per epoch. If the
-epoch handshake lands while one legacy inline item is still executing, that single in-flight
-item may overlap the first sequenced work — the same transition-window residual class as a
-reconnect, bounded to one item (pump serialization admits only one inline item at a time),
-healed by §1.15. The implementer must verify the publication site cannot interleave a
-snapshot-null read with a same-command dispatch in any other way.
+**`_processor` publication barrier (no dual domain, ever).** The daemon epoch is a per-boot
+GUID pinned before services are built, so `_processor` is single-assignment for the process
+lifetime — there is no epoch replacement/reset case, only one null→live transition. Handlers
+snapshot `_processor` once at entry. To make the transition itself safe without assuming
+where publication runs: the orchestrator records the in-flight inline legacy item as a Task
+(set on the pump before awaiting it — pump serialization admits at most one), and the lane's
+read loop AWAITS that task (if any) before executing its first item. The one inline item
+therefore drains before any lane execution starts — the single-domain invariant holds across
+the transition by construction, not by residual.
 
 **Queue bounds (grounded, not asserted):** lane items are launches and stops only. Outstanding
 launches per daemon are hard-bounded by the server's atomic capacity reservation before every
@@ -297,8 +297,13 @@ down while parked" IS daemon shutdown. The OCE propagates out of the gate (no fa
 decision, §3.2); on the sequenced lane it settles as the existing lane-failure shape
 (terminal CommandRejected(InternalError), exactly one terminal answer); on the un-seq'd lane
 the item wrapper contains it (no LaunchFailed — the daemon is exiting; §1.15 covers the
-rest), the lane itself survives any item fault, and a queued stop behind a faulted item still
-executes — all pinned by tests, acknowledged in a code comment at the enqueue site.
+rest). **Lane shutdown order (pinned):** shutdown cancels the in-flight item (contained),
+completes the channel writer (subsequent `SubmitUnsequenced` refuses), and the lane exits
+WITHOUT draining queued items — deliberate, because daemon-wide teardown supersedes per-agent
+stops and reaps every child anyway. The fault-isolation guarantee ("a queued stop behind a
+faulted item still executes") applies to NON-shutdown item faults; on shutdown the queued
+items are discarded by design. Both pinned by tests, acknowledged in a code comment at the
+enqueue site.
 
 ### 3.4 Out of scope
 
@@ -487,10 +492,15 @@ PR 1:
   entry, so internal paths cannot target it (existence pin); with `_processor` null, an
   un-seq'd launch executes inline and `HandleLaunchAgent` returns only after the core
   completes (pre-settlement regression pin).
-- Stop coalescing + fault isolation: N duplicate un-seq'd stops for one agent while the lane
-  is parked collapse to one queued entry (queue-depth assertion) and the stop still executes
-  after the launch settles; a faulting un-seq'd item does not kill the lane — a stop queued
-  behind it still executes.
+- Stop admission, coalescing + fault isolation: N duplicate un-seq'd stops for one agent
+  while the lane is parked collapse to one queued entry (queue-depth assertion) and the stop
+  still executes after the launch settles; stop(X)→launch(X)→stop(X) executes the second stop
+  AFTER the launch (launch-aware coalescing pin, mixed formats); M distinct UNKNOWN target
+  ids are dropped at admission (queue depth unchanged); a faulting (non-shutdown) un-seq'd
+  item does not kill the lane — a stop queued behind it still executes; cancelling the REAL
+  shutdown token with a stop queued exits the lane cleanly without executing it (shutdown
+  order pin, no hang); a lane start races the null→live transition — the first lane item
+  never begins before an in-flight inline legacy item drains (start-gate pin).
 - Handler classification: with a launch parked on consent, an input/resize for an UNKNOWN
   agent id is dropped-and-logged (no throw, no pump stall) and a status-report request is
   served from the registry snapshot omitting the in-flight launch.
