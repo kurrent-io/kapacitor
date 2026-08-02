@@ -1153,6 +1153,9 @@ kcap agent start claude -d                    # start without attaching; prints 
     pointer text inside agent worktrees, and a custom filter driver does not run there.** Disabled drivers
     are logged at startup of each worktree so the effect is visible rather than mysterious.
 
+- **Detach** without stopping the agent with the prefix key **`Ctrl-Q` then `d`**. The agent keeps running in the daemon.
+- **Permissions:** for a registered agent, permission prompts appear in the web UI (the same dialog as hosted agents); with `--private`, prompts are answered natively in your terminal.
+
 ```bash
 kcap agent                 # no subcommand — same as `kcap agent ls`
 kcap agent ls              # list daemon-hosted agents (id, status, kind, repo)

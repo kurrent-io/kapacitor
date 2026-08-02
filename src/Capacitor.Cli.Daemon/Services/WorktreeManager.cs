@@ -234,7 +234,8 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
                     "-c", "maintenance.auto=false", "-c", "gc.auto=0",
                     "fetch", "origin", $"{baseRef}:{fetchedRef}");
                 await WithWorktreeMetadataGate(repoPath, () =>
-                    RunGit(repoPath, GitTimeout, [..NoBranchHooks(), ..filterOverrides, "worktree", "add", "-B", branch, worktreePath, fetchedRef]));
+                    RunGit(repoPath, GitTimeout, [..NoBranchHooks(), ..filterOverrides,
+                        "worktree", "add", "--no-checkout", "-B", branch, worktreePath, fetchedRef]));
                 var fetched = new WorktreeInfo(worktreePath, branch, repoPath, FetchedRef: fetchedRef);
                 await StripOrRollBackAsync(fetched);
 
@@ -242,7 +243,8 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
             }
 
             await WithWorktreeMetadataGate(repoPath, () =>
-                RunGit(repoPath, GitTimeout, [..NoBranchHooks(), ..filterOverrides, "worktree", "add", worktreePath, "-b", branch]));
+                RunGit(repoPath, GitTimeout, [..NoBranchHooks(), ..filterOverrides,
+                    "worktree", "add", "--no-checkout", worktreePath, "-b", branch]));
             var linked = new WorktreeInfo(worktreePath, branch, repoPath);
             await StripOrRollBackAsync(linked);
 
@@ -295,13 +297,12 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
     /// tree already executed the branch's code. Pointing <c>core.hooksPath</c> at a daemon-owned empty
     /// directory disables the whole mechanism for these commands without touching the operator's config.</para>
     ///
-    /// <para><b>This covers the hook-DIRECTORY mechanism only. Do not read it as "no branch-controlled code
-    /// runs during checkout."</b> Two sibling vectors are known and deliberately NOT closed here, tracked on
-    /// their own issue (see the branch-controlled-execution follow-up): git's config-based hooks (<c>hook.&lt;name&gt;.event</c> / <c>.command</c>), which run
-    /// independently of <c>core.hooksPath</c>; and clean/smudge filters, which a branch selects through its
-    /// own <c>.gitattributes</c> and which this flag does not affect at all. Both need a rule for "does this
-    /// command resolve to branch content" — blunt disabling would break legitimate drivers such as
-    /// <c>filter.lfs</c>, so it is real work rather than another <c>-c</c> flag.</para>
+    /// <para><b>This covers the hook-DIRECTORY mechanism only.</b> Clean/smudge filters are a separate
+    /// vector — a branch selects them through its own <c>.gitattributes</c>, and this flag does not affect
+    /// them at all — handled by <see cref="BranchFilterOverridesAsync"/>, which disables every defined
+    /// driver rather than trying to judge commands. Git's config-based hooks
+    /// (<c>hook.&lt;name&gt;.event</c> / <c>.command</c>) are not covered and need not be: measured on git
+    /// 2.49, that config is undocumented and does not run.</para>
     /// </summary>
     /// <summary>
     /// A <c>core.hooksPath</c> that cannot contain a hook, because it cannot be a directory.
@@ -337,11 +338,34 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
     /// </summary>
     async Task StripOrRollBackAsync(WorktreeInfo created) {
         try {
+            // The add above used --no-checkout, so the tree is still empty here. Populating it inside the
+            // rollback means a filter-inventory failure cleans up like any other fail-closed step.
+            await CheckoutInTargetContextAsync(created.Path);
             StripWorkspaceMcpConfig(created.Path);
         } catch {
             try { await RemoveAsync(created); } catch { /* keep the original failure */ }
             throw;
         }
+    }
+
+    /// <summary>
+    /// Populates a worktree created with <c>--no-checkout</c>, using an override set enumerated IN that
+    /// worktree.
+    ///
+    /// <para>Inventorying the SOURCE while checking out in the TARGET is a context mismatch: git runs the
+    /// checkout in the new worktree, where <c>includeIf "onbranch:capacitor/**"</c> or a gitdir-matching
+    /// conditional include can expose a driver the source never reported. Splitting the add from the
+    /// checkout is what lets the inventory be taken where the filters actually resolve, and
+    /// <c>--no-checkout</c> means nothing is materialised before that guarded step.</para>
+    /// </summary>
+    async Task CheckoutInTargetContextAsync(string worktreePath) {
+        var overrides = await BranchFilterOverridesAsync(worktreePath);
+        LogDisabledFilters(overrides, worktreePath);
+
+        // `reset --hard HEAD`, not `checkout -- .`: --no-checkout leaves the INDEX unpopulated too, so a
+        // pathspec matches nothing. This is the step that materialises the tree, and therefore the step
+        // the overrides have to guard.
+        await RunGit(worktreePath, GitTimeout, [..NoBranchHooks(), ..overrides, "reset", "--hard", "HEAD"]);
     }
 
     /// <summary>Logs which filter drivers were disabled, so an operator whose LFS-tracked file checks out
