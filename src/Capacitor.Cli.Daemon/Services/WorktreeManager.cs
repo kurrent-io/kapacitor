@@ -410,7 +410,7 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
         var staging = final + ".preparing-" + Guid.NewGuid().ToString("N")[..8];
         var promoted = false;
         try {
-            await BuildIndependentSnapshotAsync(source, staging, SnapshotExclusionsFor(relativeCwd), ct);
+            await BuildIndependentSnapshotAsync(source, staging, SnapshotExcludedPaths, ct);
             Directory.Move(staging, final);
             promoted = true;
             var executionPath = relativeCwd == "."
@@ -418,6 +418,8 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
                 : ContainedPath(final, relativeCwd);
             if (!Directory.Exists(executionPath))
                 throw new InvalidOperationException("borrowed_snapshot_cwd_missing");
+            // Root-level entries never entered the copy; this catches the nested ones, on the real tree.
+            NeutralizeSnapshotTree(final, executionPath);
             return new WorktreeInfo(final == executionPath ? final : executionPath, "", source,
                 IsStandalone: true, SnapshotRoot: final);
         } catch {
@@ -466,10 +468,11 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
             // Derived, because this path carries absolute paths rather than the relative cwd the creation
             // path has. Same requirement: the vendor runs in `execution`, so the exclusions must cover the
             // config paths relative to THAT, not only to the snapshot root.
-            var exclusions = SnapshotExclusionsFor(Path.GetRelativePath(target, execution))
+            var exclusions = SnapshotExcludedPaths
                 .Concat(excludePaths).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
             await BuildIndependentSnapshotAsync(source, staging, exclusions, ct);
             ReplaceTreeContentsNoFollow(target, staging, execution);
+            NeutralizeSnapshotTree(target, execution);
         } finally {
             DeleteTreeNoFollow(staging);
         }
@@ -524,7 +527,7 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
             // The EFFECTIVE paths, prefixes included. Passing the root list left a tracked
             // `apps/.kiro/settings/mcp.json` ordinary in the index while the checkout no longer had it, so
             // git reported a deletion kcap had performed — noise a reviewer could legitimately flag.
-            await ApplyReservedIndexPolicyAsync(destination, McpExclusionsIn(exclusions));
+            await ApplyReservedIndexPolicyAsync(destination, WorkspaceMcpConfigPaths);
             await CopyManifestAsync(source, destination, manifest, ct);
             RemoveFilesOutsideManifest(destination, manifest.Keys, ct);
             VerifyIndependentGit(destination, source);
@@ -759,43 +762,43 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
     /// of producing a review finding about a deletion kcap performed. Driven from the same list, so the two
     /// cannot drift apart again.</para></summary>
     /// <summary>
-    /// The snapshot exclusions, extended to cover the EXECUTION directory when a borrowed launch runs from
-    /// a subdirectory of the repository.
+    /// Removes branch-authored MCP config from the snapshot ROOT and from every real directory between it
+    /// and the execution directory, returning the snapshot-relative paths removed.
     ///
-    /// <para>The exclusion list is repository-root-relative, but the vendor's working directory is
-    /// <c>snapshot/&lt;relativeCwd&gt;</c>. For a launch from <c>repo/src</c>, the vendor reads
-    /// <c>src/.kiro/settings/mcp.json</c> — which does not match <c>.kiro/settings/mcp.json</c> and so
-    /// survived the snapshot entirely. Every ANCESTOR segment is covered too, not just the leaf, because a
-    /// vendor may search upward from its cwd and each level is equally branch-authored.</para>
+    /// <para><b>Real directories, not generated path strings.</b> An earlier revision built exclusion
+    /// strings by prefixing the relative cwd onto each config path and matching them against the manifest.
+    /// Review took that apart across three rounds — separator spelling, then Unicode normalization, then
+    /// Windows 8.3 short names, where a borrowed cwd of <c>LONGDI~1</c> maps to tracked
+    /// <c>LongDirectory</c> and the generated string matches nothing while the vendor still resolves the
+    /// file. Every fix was another way to spell a path, which is the tell that comparing spellings was the
+    /// wrong mechanism. Walking the actual directories asks the filesystem instead, so aliasing, case
+    /// folding and normalization are its problem rather than ours — and it reuses the no-follow removal
+    /// that is already hardened against hostile links.</para>
     /// </summary>
-    static string[] SnapshotExclusionsFor(string relativeCwd) {
-        // Form C, matching NormalizeRelativePath — manifest paths are normalized there, and on a
-        // normalization-INSENSITIVE volume (APFS) an NFD spelling of an NFC directory resolves to the same
-        // cwd while generating an exclusion string that matches nothing. The nested config would then enter
-        // the snapshot and be read from the equivalent execution directory.
-        var normalized = relativeCwd.Replace('\\', '/').Trim('/').Normalize(NormalizationForm.FormC);
+    static List<string> NeutralizeSnapshotTree(string snapshotRoot, string executionPath) {
+        var removed = new List<string>();
+        var current = Path.GetFullPath(snapshotRoot);
+        var target  = Path.GetFullPath(executionPath);
 
-        if (normalized is "" or ".") return SnapshotExcludedPaths;
+        foreach (var relative in NeutralizeWorkspaceMcpConfig(current))
+            removed.Add(relative);
 
-        var prefixes = new List<string> { "" };
-        var walked   = "";
+        // Descend the real ancestor chain toward the execution directory. A vendor launched in a
+        // subdirectory reads config from there, and may search upward, so every level counts.
+        foreach (var segment in Path.GetRelativePath(current, target)
+                     .Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)) {
+            if (segment is "" or ".") continue;
 
-        foreach (var segment in normalized.Split('/', StringSplitOptions.RemoveEmptyEntries)) {
-            walked = walked.Length == 0 ? segment : $"{walked}/{segment}";
-            prefixes.Add(walked + "/");
+            current = Path.Combine(current, segment);
+            if (!Directory.Exists(current)) break;
+
+            var prefix = Path.GetRelativePath(snapshotRoot, current).Replace('\\', '/');
+            foreach (var relative in NeutralizeWorkspaceMcpConfig(current))
+                removed.Add($"{prefix}/{relative}");
         }
 
-        return [.. SnapshotExcludedPaths,
-                .. prefixes.SelectMany(prefix => WorkspaceMcpConfigPaths.Select(path => prefix + path))
-                           .Distinct(StringComparer.OrdinalIgnoreCase)];
+        return removed;
     }
-
-    /// <summary>The MCP-config entries of an effective exclusion set — the prefixed nested spellings
-    /// included, and the caller's unrelated exclusions left out.</summary>
-    static IEnumerable<string> McpExclusionsIn(string[] exclusions) =>
-        exclusions.Where(path => WorkspaceMcpConfigPaths.Any(
-            mcp => path.Equals(mcp, StringComparison.OrdinalIgnoreCase) ||
-                   path.EndsWith("/" + mcp, StringComparison.OrdinalIgnoreCase)));
 
     static async Task ApplyReservedIndexPolicyAsync(string destination, IEnumerable<string> mcpPaths) {
         foreach (var path in mcpPaths)

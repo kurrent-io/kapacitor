@@ -373,69 +373,47 @@ public class WorkspaceMcpNeutralizationTests {
         await Assert.That(excluded).Contains(".attached");
     }
 
-    /// <summary>
-    /// A borrowed launch from a SUBDIRECTORY runs the vendor in <c>snapshot/&lt;relativeCwd&gt;</c>, but the
-    /// exclusion list is repository-root-relative — so <c>src/.kiro/settings/mcp.json</c> did not match
-    /// <c>.kiro/settings/mcp.json</c> and survived into the snapshot, at exactly the path the vendor reads.
-    /// Ancestors are covered too, since a vendor may search upward and every level is branch-authored.
-    /// </summary>
-    [Test]
-    [Arguments("src")]
-    [Arguments("apps/web")]
-    public async Task Snapshot_exclusions_cover_the_execution_directory(string relativeCwd) {
-        var exclusions = InvokeExclusionsFor(relativeCwd);
 
-        foreach (var path in WorktreeManager.WorkspaceMcpConfigPaths) {
-            await Assert.That(exclusions).Contains(path);                      // repo root
-            await Assert.That(exclusions).Contains($"{relativeCwd}/{path}");   // the vendor's actual cwd
-        }
 
-        // An intermediate level is covered, not just the leaf.
-        if (relativeCwd.Contains('/'))
-            foreach (var path in WorktreeManager.WorkspaceMcpConfigPaths)
-                await Assert.That(exclusions).Contains($"apps/{path}");
-    }
 
-    /// <summary>A root-level launch must produce exactly the unprefixed list — no duplicates, no
-    /// "./"-prefixed variants that would match nothing.</summary>
-    [Test]
-    [Arguments(".")]
-    [Arguments("")]
-    public async Task Snapshot_exclusions_for_a_root_launch_are_unchanged(string relativeCwd) {
-        // Set equality both ways, and no growth — a "./"-prefixed duplicate would match nothing and
-        // silently widen the list.
-        var actual = InvokeExclusionsFor(relativeCwd);
-
-        await Assert.That(actual.Length).IsEqualTo(WorktreeManager.SnapshotExcludedPaths.Length);
-        foreach (var path in WorktreeManager.SnapshotExcludedPaths)
-            await Assert.That(actual).Contains(path);
-    }
 
     /// <summary>
-    /// On a normalization-INSENSITIVE volume an NFD spelling resolves to the same directory as its NFC
-    /// twin, but produced an exclusion string matching nothing in the Form-C manifest — so the nested
-    /// config entered the snapshot and was readable from the equivalent execution directory. The generated
-    /// exclusions must be identical whichever spelling the caller passes.
+    /// The nested-execution-directory case, asserted on a REAL tree rather than on generated path strings.
+    /// A borrowed launch from a subdirectory runs the vendor there, so config at that level and at every
+    /// level above it must be gone.
+    ///
+    /// <para>This replaces three string-comparison tests. Their mechanism was defeated in turn by separator
+    /// spelling, Unicode normalization and Windows 8.3 aliasing — each a different way to spell the same
+    /// path. Walking real directories makes spelling the filesystem's problem, and the test gets stronger
+    /// for it: it asserts the files are gone, not that two strings match.</para>
     /// </summary>
     [Test]
-    public async Task Snapshot_exclusions_are_identical_for_NFC_and_NFD_spellings_of_one_directory() {
-        const string nfc = "caf\u00e9";        // é as one code point
-        const string nfd = "cafe\u0301";       // e + combining acute
+    public async Task Neutralizing_a_snapshot_tree_clears_every_level_down_to_the_execution_directory() {
+        var root = NewDir("snapshot");
+        WriteAt(root, ".kiro/settings/mcp.json", """{"mcpServers":{"root":{}}}""");
+        WriteAt(root, "apps/.cursor/mcp.json", """{"mcpServers":{"mid":{}}}""");
+        WriteAt(root, "apps/web/.kiro/settings/mcp.json", """{"mcpServers":{"leaf":{}}}""");
+        WriteAt(root, "apps/web/src/Program.cs", "class P {}");
+        // A sibling the vendor never runs in must be left alone — this is containment, not a purge.
+        WriteAt(root, "other/.cursor/mcp.json", """{"mcpServers":{"sibling":{}}}""");
 
-        await Assert.That(nfc).IsNotEqualTo(nfd);   // genuinely different strings...
+        var execution = Path.Combine(root, "apps", "web");
+        var removed = (List<string>)typeof(WorktreeManager)
+            .GetMethod("NeutralizeSnapshotTree", BindingFlags.NonPublic | BindingFlags.Static)!
+            .Invoke(null, [root, execution])!;
 
-        var fromNfc = InvokeExclusionsFor(nfc);
-        var fromNfd = InvokeExclusionsFor(nfd);
+        await Assert.That(File.Exists(Path.Combine(root, ".kiro", "settings", "mcp.json"))).IsFalse();
+        await Assert.That(File.Exists(Path.Combine(root, "apps", ".cursor", "mcp.json"))).IsFalse();
+        await Assert.That(File.Exists(Path.Combine(execution, ".kiro", "settings", "mcp.json"))).IsFalse();
 
-        await Assert.That(fromNfd.Length).IsEqualTo(fromNfc.Length);
-        foreach (var path in fromNfc)
-            await Assert.That(fromNfd).Contains(path);   // ...producing one exclusion set
+        await Assert.That(File.Exists(Path.Combine(root, "other", ".cursor", "mcp.json"))).IsTrue();
+        await Assert.That(File.Exists(Path.Combine(execution, "src", "Program.cs"))).IsTrue();
+
+        // The returned paths are snapshot-relative, which is what the index policy needs.
+        await Assert.That(removed).Contains(".kiro/settings/mcp.json");
+        await Assert.That(removed).Contains("apps/.cursor/mcp.json");
+        await Assert.That(removed).Contains("apps/web/.kiro/settings/mcp.json");
     }
-
-    static string[] InvokeExclusionsFor(string relativeCwd) =>
-        (string[])typeof(WorktreeManager)
-            .GetMethod("SnapshotExclusionsFor", BindingFlags.NonPublic | BindingFlags.Static)!
-            .Invoke(null, [relativeCwd])!;
 
     /// <summary>Windows needs Developer Mode or elevation to create a symlink, so these assert POSIX
     /// behaviour where the daemon's worktrees actually live. Skipped rather than adapted: a Windows variant
