@@ -185,6 +185,52 @@ public class QuarantinedMcpConfigTests {
         finally { File.Delete(probe); }
     }
 
+    /// <summary>
+    /// The collision refusal must not be escapable by DELETING the colliding file. If HEAD tracks both
+    /// `.mcp.json` and `.mcp.json.kcap-quarantined` and the working tree deletes the latter, reserving
+    /// destinations only for files still on disk frees the slot — the quarantine copy lands on a path the
+    /// working tree deleted, so the snapshot shows the reviewer a MODIFIED file where there is a deletion.
+    ///
+    /// <para>Both spellings are branch-authored here, so refusing is the same answer as when both exist.</para>
+    /// </summary>
+    [Test]
+    public async Task A_deleted_colliding_path_still_refuses() {
+        var source = NewRepo();
+        WriteAt(source, ".mcp.json", """{"mcpServers":{}}""");
+        WriteAt(source, ".mcp.json" + WorktreeManager.QuarantineSuffix, "decoy");
+        Git(source, "add", "-A");
+        Git(source, "commit", "-q", "-m", "both names tracked");
+
+        // Tracked in HEAD, gone from the working tree — the escape the reservation order has to close.
+        File.Delete(Path.Combine(source, ".mcp.json" + WorktreeManager.QuarantineSuffix));
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+            await Manager(out _).CreateBorrowedSnapshotAsync(
+                source, "d-" + Guid.NewGuid().ToString("N")[..8], CancellationToken.None));
+
+        await Assert.That(ex!.Message).Contains("borrowed_snapshot_path_collision");
+    }
+
+    /// <summary>Positive control for the test above: the SAME repo shape minus the colliding name builds
+    /// fine and quarantines. Without this, a refusal caused by something unrelated would read as success.</summary>
+    [Test]
+    public async Task A_deleted_non_colliding_path_does_not_refuse() {
+        var source = NewRepo();
+        WriteAt(source, ".mcp.json", """{"mcpServers":{}}""");
+        WriteAt(source, "notes.txt", "deleted later");
+        Git(source, "add", "-A");
+        Git(source, "commit", "-q", "-m", "one config, one ordinary file");
+        File.Delete(Path.Combine(source, "notes.txt"));
+
+        var info = await Manager(out _).CreateBorrowedSnapshotAsync(
+            source, "n-" + Guid.NewGuid().ToString("N")[..8], CancellationToken.None);
+        var root = info.SnapshotRoot ?? info.Path;
+
+        await Assert.That(File.Exists(Path.Combine(root, ".mcp.json" + WorktreeManager.QuarantineSuffix)))
+            .IsTrue();
+        await Assert.That(File.Exists(Path.Combine(root, "notes.txt"))).IsFalse();
+    }
+
     // ── fixture ──
 
     /// <summary>A manager rooted in a TEMP directory. The default DaemonConfig points at

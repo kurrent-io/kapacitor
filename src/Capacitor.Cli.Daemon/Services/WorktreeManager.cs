@@ -588,6 +588,20 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
 
                 quarantine = true;
             }
+            // Reserve the destination BEFORE the deletion skip. A path tracked in HEAD but deleted in the
+            // working tree still owns its name: if HEAD tracks `.mcp.json.kcap-quarantined` and the working
+            // tree deletes it, skipping it first frees the slot for `.mcp.json`'s quarantine copy to take —
+            // and the snapshot then shows the reviewer a MODIFIED file where the working tree has a
+            // deletion. Reserving first turns that into the refusal it already is when both are present.
+            var destination = quarantine ? rel + QuarantineSuffix : rel;
+
+            // Destinations are checked independently of source keys. A repo containing BOTH `.mcp.json`
+            // and `.mcp.json.kcap-quarantined` maps two distinct sources onto one destination — one
+            // overwrites the other, and identical contents would even pass verification while silently
+            // materialising a single file. A hostile branch can add the colliding name deliberately.
+            if (!destinations.Add(destination))
+                throw new InvalidOperationException($"borrowed_snapshot_path_collision: {destination}");
+
             var path = ContainedPath(source, rel);
             if (!File.Exists(path)) continue; // tracked deletion
             var info = new FileInfo(path);
@@ -608,14 +622,6 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
             var hash = await SHA256.HashDataAsync(input, ct);
             if (input.Length != streamLength) throw new SourceChangedException();
             UnixFileMode? mode = OperatingSystem.IsWindows() ? null : File.GetUnixFileMode(path);
-            var destination = quarantine ? rel + QuarantineSuffix : rel;
-
-            // Destinations are checked independently of source keys. A repo containing BOTH `.mcp.json`
-            // and `.mcp.json.kcap-quarantined` maps two distinct sources onto one destination — one
-            // overwrites the other, and identical contents would even pass verification while silently
-            // materialising a single file. A hostile branch can add the colliding name deliberately.
-            if (!destinations.Add(destination))
-                throw new InvalidOperationException($"borrowed_snapshot_path_collision: {destination}");
 
             if (!result.TryAdd(rel, new SnapshotFile(streamLength, hash, mode,
                     quarantine ? destination : null)))
