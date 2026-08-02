@@ -43,27 +43,45 @@ Facts this design builds on, verified against `main` after the slice-1 merge:
    settlement never depended on the pump awaiting the returned task. `SequencedKind { Launch,
    Stop }` — stops share the lane with launches, so the lane already serializes a stop behind a
    multi-second launch execution today. Consent extends that existing serialization; it does not
-   create it. The lane's memory is bounded by design: `_cache.Count >= _cacheBound` (256)
-   rejects further submissions with the coded `Backpressure` answer, identity preserved.
-   Server-side, launches are admitted **one at a time per daemon** — the kcap-server settlement
-   admission (AI-1526) holds the daemon's single sequenced slot for the duration of a launch —
-   so at most ONE prompt-capable launch can precede any queued sequenced stop.
+   create it. The lane's sequenced identity cache is bounded by design: `_cache.Count >=
+   _cacheBound` (256) rejects further sequenced submissions with the coded `Backpressure`
+   answer, identity preserved. Server-side, SEQUENCED (review-flow) launches are admitted one
+   at a time per daemon — the kcap-server settlement admission (AI-1526) holds the daemon's
+   single sequenced slot for the duration of such a launch. The `_processor` exists only once
+   the server drives the sequenced protocol (epoch handshake); against a pre-settlement server
+   it is null and no sequenced traffic can exist.
 8. Legacy (un-seq'd) `StopAgent` is fire-and-forget on the wire — **no reply or failure surface
    exists** for it; the server learns outcomes from agent state, status reports, and its
    reconciliation lanes.
-9. The local socket already has `StopV2` (force flag, protected-kind semantics). The app needs
+9. **The shipped server mixes command formats BY DESIGN, permanently** (verified against
+   kcap-server main): the sequenced tuple rides ONLY the review-flow settlement lane
+   (AI-1391/AI-1526 — `StageSequencedReviewFlowLaunch`, participant stops via the settlement
+   transport). Ordinary launches (`CapacitorHub` hub launch, `AgentStoreDataService` hosted
+   and PR-review launches) and EVERY stop (user Stop, admin stop, the AI-1313 S2
+   registry-independent physical stop / retry-until-gone reaper) are un-sequenced. Any design
+   that treats un-seq'd traffic after sequenced traffic as illegitimate is wrong on day one.
+10. Server-side, EVERY launch dispatch is capacity-gated by the atomic `DaemonRegistry.TryReserve`
+    (AI-1313 S5) before the command is sent, so the number of outstanding (dispatched,
+    not-yet-settled) launches per daemon is hard-bounded by the daemon's advertised capacity
+    (`MaxConcurrentAgents`, default 5).
+11. Stop EXECUTION is already concurrency-safe off the pump today: internal heartbeat reaping
+    (reviewer TTL/idle, stuck-Starting) and local-socket stops call the stop core directly from
+    their own tasks, guarded by the per-agent single-flight teardown latch (`CleanupStarted`).
+    Pump serialization was never the stop-safety mechanism — it only ordered SERVER commands
+    relative to each other.
+12. The local socket already has `StopV2` (force flag, protected-kind semantics). The app needs
    no new stop machinery.
-10. `AgentInstance` does not store the requester — slice 1 passes `cmd.RequesterUserId` through
+13. `AgentInstance` does not store the requester — slice 1 passes `cmd.RequesterUserId` through
    to the consent gate only. The supervision payload's `requester` column needs a new field.
-11. `_agents` is a `ConcurrentDictionary<string, AgentInstance>` (enumeration is exception-free
+14. `_agents` is a `ConcurrentDictionary<string, AgentInstance>` (enumeration is exception-free
     and weakly consistent); `ActiveCount` counts entries whose `Status` is in the daemon's
     active set. `LaunchConsentStore` clamps `PromptTimeoutSeconds` to **[5, 300]**.
-12. Server-side (kcap-server, already shipped and tested there): an agent the server no longer
+15. Server-side (kcap-server, already shipped and tested there): an agent the server no longer
     tracks is reclaimed by existing machinery — the daemon status report cross-check with
     physical retry-until-gone stop (AI-1391 S3b/S3c), the stale-reviewer sweep for terminal flow
     runs (AI-1313 S3a), and `OrphanedHostedAgentReaper` for hosted agents whose session ended
     (AI-1185). This spec cites these as the reconciliation backstop; it does not modify them.
-13. Slice 1's `ILaunchConsentPrompter.PromptAsync` takes a **`TimeSpan`** budget — sub-second
+16. Slice 1's `ILaunchConsentPrompter.PromptAsync` takes a **`TimeSpan`** budget — sub-second
     remaining budgets survive end-to-end; the store's [5, 300] clamp applies to the persisted
     policy value only, never to a computed remaining budget. `LaunchConsentPromptRequest`
     carries `RequestedAt`/`TimeoutSeconds` as the client's countdown metadata.
@@ -75,9 +93,9 @@ Facts this design builds on, verified against `main` after the slice-1 merge:
 | 1 | Hello is an **optional** one-shot frame. Existing clients that open with `Spawn`/`List`/`ConsentSubscribe`/… are untouched; nothing ever requires hello-first. |
 | 2 | Feature discovery is **capability strings**, not protocol-version comparisons. `protocol_version` exists for a future framing break only; it starts at 1 and nothing gates on it yet. |
 | 3 | The no-UI instant deny gains a bounded **subscriber grace** — `min(5 s, prompt timeout)` — burned from a single **monotonic absolute deadline** established at prompt-path entry, not added to it. The coded deny reason stays `prompt_no_ui` (stable contract); the decision log records that grace elapsed. |
-| 4 | Receive-loop unparking applies to the **sequenced lane only**: the pump stops awaiting sequenced execution (acceptance stays synchronous on the pump). The legacy lane **deliberately keeps the shipped inline-await** — the await IS the existing backpressure, and replacing it with a queueing domain would demand its own memory bounds, cumulative-delay story, and cross-epoch ordering semantics, all for a shrinking pre-settlement server population. A one-directional **daemon-lifetime** format latch rejects un-seq'd launch/stop after any sequenced traffic — triggered on RECEIPT of a sequenced-shaped command (the shipped `anySeq` discriminator), before submission, independent of that command's fate (§3.3). |
+| 4 | **One execution domain, latch abolished.** The receive pump never awaits launch/stop EXECUTION; all SERVER-ORIGIN launch/stop execution — sequenced and un-seq'd alike — runs in arrival order on the ONE existing single-reader lane (`RunLaneAsync`), so today's pump serialization is relocated, not changed, and cross-format ordering holds by construction. Sequenced acceptance/ack machinery is untouched. No command is ever refused for its format — the shipped server mixes formats by design (§1.9). Against a pre-settlement server (`_processor` null) the legacy inline-await stays (no sequenced traffic exists, single domain is trivial). Queue bounds are upstream and real: launches ≤ daemon capacity via server-side `TryReserve` (§1.10); stops bounded by live agents × reconcile cadence. |
 | 5 | Supervision pushes are **full snapshots** driven by a **monotonic change generation** with per-subscriber cursors (§4.2) — never per-event deltas, never a consumable one-shot signal — so N subscribers each converge and a missed pulse cannot desync anyone. |
-| 6 | The server→daemon "patience hint" (clamping prompt timeout to the server's launch-admission window) stays **out of scope** (cross-repo). The late-launch residual is bounded and reconciled: the prompt timeout is capped at 300 s by the existing store clamp, and an agent launched after the server abandoned its launch is reclaimed by the server's shipped reconciliation lanes (§1.12). |
+| 6 | The server→daemon "patience hint" (clamping prompt timeout to the server's launch-admission window) stays **out of scope** (cross-repo). The late-launch residual is bounded and reconciled: the prompt timeout is capped at 300 s by the existing store clamp, and an agent launched after the server abandoned its launch is reclaimed by the server's shipped reconciliation lanes (§1.15). |
 | 7 | **PR order is pinned: PR 1 before PR 2.** PR 2's `status/1` capability is advertised through the hello machinery PR 1 introduces; the capability list is built from what the binary actually serves, so each build advertises exactly its own surface. |
 
 ## 3. PR 1 (AI-1648): hello + consent hardening
@@ -132,7 +150,7 @@ wall-clock arithmetic, a stored duration, or an accumulated "elapsed" variable:
   `min(grace, max(0, deadline − now))` — setup/scheduling time between deadline creation and
   the wait can never push the wait past the deadline;
 - immediately before `PromptAsync`, remaining = `max(0, deadline − now)`, passed as a
-  `TimeSpan` (sub-second budgets survive, §1.13; no integral-seconds conversion, no re-clamp
+  `TimeSpan` (sub-second budgets survive, §1.16; no integral-seconds conversion, no re-clamp
   to the store's policy minimum — the [5, 300] clamp applies only to the persisted policy
   value);
 - **zero remaining is not a special case** — `PromptAsync` runs with a zero budget and settles
@@ -189,82 +207,57 @@ the grace before each unmatched denial (acceptable — the operator opted into p
 subscriber arriving inside the grace now receives the request via the existing atomic replay
 instead of the launch having already died.
 
-### 3.3 Unpark the receive loop (sequenced lane only)
+### 3.3 Unpark the receive loop (one execution domain)
 
-- **Sequenced lane**: `SubmitAsync` is still called synchronously on the pump. The acceptance
-  contract is pinned at the API boundary: **`SubmitAsync` must complete acceptance/rejection
-  (including the accepted/rejected/duplicate answer sends) before returning, with no await
-  before `SubmitLocked`** — true of the shipped code (§1.7) and now an explicit, test-pinned
-  invariant, because pump serialization is the only thing guaranteeing in-order submission once
-  the return value is no longer awaited. The returned execution-completion task gets a
-  fault-observing continuation whose ONLY job is logging: terminal CommandAck/CommandRejected
-  emission is the lane's duty (§1.7) and is unaffected by whether anyone awaits that task —
-  exactly-once settlement (accepted answer first, exactly one terminal answer per accepted
-  item: success, consent denial, or lane failure) does not move.
-- **Legacy lane** (un-seq'd commands, old servers): **deliberately unchanged** — the pump keeps
-  awaiting legacy launch/stop execution inline, exactly as shipped. The inline await IS the
-  backpressure: no queue exists, so there is no memory bound to invent, no cumulative-delay
-  story, and no cross-epoch drain semantics. The cost — a consent prompt inside a legacy launch
-  parks that connection's pump, as it does today — is confined to pre-settlement servers, a
-  shrinking population that predates the settlement liveness guarantees anyway. The desktop
-  app CAN encounter this mode (a current daemon attached to a pre-settlement server — hello
-  advertises daemon capabilities, not the server's): the app remains fully functional, because
-  consent delivery/resolution and status ride the local control socket, which is independent
-  of the server pump; what stays degraded on such servers is concurrent server-command
-  processing during a prompt — exactly as shipped.
-- **Cross-format latch (one direction, daemon-lifetime).** Detaching sequenced execution
-  opens one new interleaving: after a sequenced launch is submitted (pump freed), a later
-  un-seq'd launch or stop would execute inline while the sequenced item is still running — two
-  ordering domains at once. Because detached sequenced work can also outlive its hub
-  connection (nothing here assumes handler serialization spans a reconnect), the latch is
-  deliberately NOT connection-scoped and its trigger is pinned as **protocol evidence, not
-  command fate**: the latch trips on RECEIPT of any launch/stop command carrying ANY of
-  `Epoch`/`Seq`/`CommandId` — the exact discriminator the shipped router already uses — set
-  BEFORE routing or submission, published with a thread-safe monotonic write (`Volatile`; set
-  once, never cleared). It therefore needs no acceptance outcome from `SubmitAsync` at all,
-  and a first sequenced command that is subsequently rejected (partial tuple, gap, duplicate
-  collision, backpressure) STILL latches — correctly, because even a rejected sequenced
-  command proves the server speaks the sequenced protocol, and such a server never
-  legitimately sends legacy commands. Ordering: the latch write strictly precedes lane
-  eligibility (submission follows the write), so an un-seq'd handler that reads `false` read
-  it before the first sequenced command was even routed. The one residual window is the
-  format-TRANSITION overlap across a reconnect (e.g. a legacy launch still executing from a
-  pre-upgrade server while the upgraded server's first sequenced command arrives): that
-  overlap exists identically in the shipped code (an in-flight handler survives its
-  connection; the new receive loop dispatches regardless) — this spec neither widens nor
-  claims to close it, and the server reconciliation lanes (§1.12) remain its backstop. The
-  latch is sound daemon-wide because a server that speaks sequenced never legitimately
-  downgrades mid-daemon-life (the daemon reconnects to the same configured server); a genuine
-  downgrade fails loudly (coded rejections) and is cleared by a daemon restart. Rejection
-  surfaces: an un-seq'd launch via the existing `LaunchFailedAsync` lane (coded
-  `mixed_command_formats`); an un-seq'd stop is **deliberately discarded** — logged at Error,
-  not executed — because no reply surface exists for a legacy stop (§1.8). The REVERSE
-  direction (sequenced after un-seq'd) needs no latch: legacy work is awaited inline, so under
-  pump serialization it has completed before the pump reads the next command (the
-  transition-across-reconnect case is the shipped residual above).
+The pump stops awaiting launch/stop execution; execution order is preserved by routing ALL
+server-origin launch/stop execution through the one existing serial lane:
+
+- **Sequenced commands**: unchanged acceptance — `SubmitAsync` is called synchronously on the
+  pump (acceptance ordering depends on pump serialization; the no-await-before-`SubmitLocked`
+  contract stays test-pinned), but the returned execution-completion task is no longer awaited
+  by any handler (launch OR stop): it gets a fault-observing, logging-only continuation.
+  Terminal CommandAck/CommandRejected emission is the lane's duty (§1.7) and does not move.
+- **Un-seq'd commands with a live `_processor`**: the handler enqueues the execution onto the
+  SAME lane via a new non-watermark entry point (`SubmitUnsequencedAsync(Func<Task>)` — a
+  plain lane item: no seq, no cache, no acks) and returns; faults are contained and logged.
+  Arrival order across BOTH formats is thereby the lane's execution order — a stop can never
+  overtake the launch it targets, launches serialize exactly as the shipped pump serialized
+  them, and no cross-format interleaving exists by construction.
+- **Un-seq'd commands with `_processor` null** (pre-settlement server): the shipped inline
+  await stays byte-for-byte. No sequenced traffic can exist (§1.7), so the single domain is
+  trivially preserved, and the shipped backpressure story is unchanged for exactly the
+  population it already served.
+- **Internal stop paths bypass the lane deliberately** (heartbeat reaping, local-socket
+  stops): they already run off-pump today and are concurrency-safe via the per-agent
+  single-flight teardown latch (§1.11). Routing them through the lane would let a parked
+  consent prompt delay reviewer reaping — the exact inversion of what the reaper exists for.
 - The malformed-partial-tuple arm is synchronous already; unchanged.
 
-Net effect: on sequenced (current) servers, every non-launch handler (StopAgentV2 acceptance,
-evals, status-report requests, reviewer-model resolution) dispatches while a launch is
-executing or parked on a consent prompt. On legacy servers the pump keeps shipped semantics.
+**Queue bounds (grounded, not asserted):** lane items are launches and stops only. Outstanding
+launches per daemon are hard-bounded by the server's atomic capacity reservation before every
+dispatch (§1.10, `MaxConcurrentAgents`); stops are bounded by live agents times the
+reconcilers' retry cadence. The sequenced identity cache keeps its own 256-item
+`Backpressure` bound (§1.7). No new unbounded structure is introduced.
 
-**Documented residual (deliberately retained):** a sequenced stop's *execution* still queues
-behind the in-flight launch on the serial lane — but the cumulative bound is ONE prompt-capable
-launch, because the server's settlement admission holds the daemon's single sequenced slot per
-launch (§1.7); lane memory is bounded by the processor's existing `Backpressure` rejection
-(§1.7). Legacy pump parking is bounded per prompted launch by the 300 s timeout ceiling
-(§1.11) and reachable only on pre-settlement servers with a prompt default/rule. Stops are
-never lost or reordered **within their own format lane**; the mixed-format case is an explicit
-**degraded mode** — the un-seq'd stop is discarded (logged, not executed), its fire-and-forget
-sender gets no signal (§1.8), and the server's reconciliation lanes (§1.12) are the eventual
-corrective path for any live agent the server wants gone. This spec's acceptance criteria
-cover the daemon-side rejection observables (non-execution + log); server-side eventual
-stopping is that machinery's own shipped, separately tested behavior, out of this repo's test
-reach.
+Net effect: every non-launch/stop handler (evals, status-report requests, reviewer-model
+resolution, input/resize) dispatches while a launch executes or parks on a consent prompt —
+and so do launch/stop ACCEPTANCE and enqueue. What still serializes is launch/stop EXECUTION,
+exactly as the shipped pump serialized it: a consent prompt inside one launch delays
+subsequent launch/stop executions up to the prompt budget, which is today's behavior
+relocated off the pump, bounded by the 300 s ceiling (§1.14) and by the capacity-gated queue
+depth above.
+
+**Cancellation settlement (pinned by tests):** a launch torn down by its own token while
+parked on consent propagates OCE out of the gate (no fabricated decision, §3.2); on the
+sequenced lane that settles as the existing lane-failure shape (terminal
+CommandRejected(InternalError), exactly one terminal answer); on the legacy lane at daemon
+shutdown the containment wrapper swallows it and no LaunchFailed is sent — shutdown-only,
+covered by the server reconciliation lanes (§1.15), acknowledged in a code comment at the
+enqueue site.
 
 ### 3.4 Out of scope
 
-- Server→daemon patience hint (decision 6). Late-launch reconciliation is §1.12's shipped
+- Server→daemon patience hint (decision 6). Late-launch reconciliation is §1.15's shipped
   server machinery; this spec adds nothing to it and takes nothing from it.
 - Any change to consent semantics, rule matching, storage, or the decision log format.
 
@@ -328,7 +321,7 @@ Wire semantics, pinned:
   array can never disagree within one payload.
 
 **Snapshot mechanics.** A snapshot is: one enumeration pass over `_agents` (weakly consistent,
-exception-free per §1.11) materializing the agent DTOs, then the daemon block (name, version,
+exception-free per §1.14) materializing the agent DTOs, then the daemon block (name, version,
 server URL, `HubState`, `max_agents`) read once, then `active_agents` derived from the
 materialized array. Cross-field coherence beyond a single payload is explicitly NOT promised —
 a snapshot racing a mutation is stale, not torn, and the generation mechanism below guarantees
@@ -432,25 +425,19 @@ PR 1:
   others or the shared source; subscribe→unsubscribe→wait blocks again (fresh generation — a
   stale completed source never satisfies a later wait); the expiry/subscribe race resolves in
   favor of arrival.
-- Pump + lane contract: with a SEQUENCED launch parked on a consent prompt, StopAgentV2 and
-  status-report handlers dispatch promptly, and a sequenced stop's ACCEPTANCE is answered
-  promptly;
-  back-to-back sequence numbers submitted in wire order are accepted in order (submit-on-pump
-  regression); accepted answer precedes the terminal answer; exactly one terminal answer per
-  accepted item across success / consent-denial / lane-failure outcomes; a legacy launch still
-  parks the pump (shipped-behavior regression pin — the legacy lane is deliberately unchanged).
-- Cross-format latch: an un-seq'd launch after any sequenced traffic is rejected with the
-  coded `mixed_command_formats` `LaunchFailed`; an un-seq'd stop after sequenced traffic is
-  not executed and logged at Error (no legacy-stop reply surface exists, §1.8); **a REJECTED
-  first sequenced command (gap seq / partial tuple / backpressure) still latches** — legacy
-  traffic after it is rejected identically (protocol evidence, not command fate); the latch
-  write precedes submission and is immediately visible cross-thread (volatile publication —
-  a concurrent reader observing `false` implies the sequenced command had not yet been
-  routed); the latch survives a reconnect — regression: a detached, still-prompting sequenced
-  launch, then a simulated reconnect, then an un-seq'd stop AND an un-seq'd launch — both
-  rejected, neither executes concurrently with or ahead of the sequenced item; a sequenced
-  command after un-seq'd traffic needs no latch (legacy work completed inline before the pump
-  read it) and proceeds normally; a fresh daemon process starts unlatched.
+- Pump + lane contract: with a SEQUENCED launch parked on a consent prompt, evals/status
+  handlers dispatch promptly AND a subsequent sequenced stop's ACCEPTANCE is answered promptly
+  while its EXECUTION queues behind the launch; back-to-back sequence numbers submitted in
+  wire order are accepted in order (submit-on-pump regression); exactly one terminal answer
+  per accepted item across success / consent-denial / lane-failure (launch-token cancellation
+  while parked) outcomes; no handler awaits execution (liveness guards on every await-capable
+  call site — a re-added await fails fast, never hangs the suite).
+- One-domain ordering: an un-seq'd stop enqueued after an un-seq'd launch executes after it;
+  an un-seq'd stop enqueued after a SEQUENCED launch for the same agent executes after that
+  launch settles (cross-format order pin); two launches never execute concurrently on the
+  lane; internal heartbeat reaping still stops a live agent WHILE the lane is parked on a
+  consent prompt (bypass pin); with `_processor` null, an un-seq'd launch executes inline and
+  `HandleLaunchAgent` returns only after the core completes (pre-settlement regression pin).
 
 PR 2:
 
@@ -476,18 +463,12 @@ PR 2:
 
 ## 7. Risks & residuals
 
-- **Sequenced stop execution delayed behind a prompted launch** (§3.3) — accepted, documented;
-  cumulative bound is one prompt-capable launch (server single-slot admission, §1.7) × the
-  300 s prompt-timeout ceiling; stops are delayed, never lost or reordered within their lane.
-  **Legacy pump parking** persists by decision 4 — shipped behavior, pre-settlement servers
-  only, and the app stays functional there (consent rides the local socket, not the pump).
-- **Mixed-format degraded mode** (§3.3) — an un-seq'd stop after sequenced traffic is
-  discarded (logged, not executed); eventual physical stopping of a live agent falls to the
-  server's shipped reconciliation lanes (§1.12). A genuine server downgrade trips the
-  daemon-lifetime latch until restart — loud by design.
-- **Late launch after server abandonment** (decision 6) — bounded by the same ceiling and
-  reclaimed by the server's shipped reconciliation lanes (§1.12); revisit only if a patience
-  hint ever ships.
+- **Launch/stop execution serialized behind a prompted launch** (§3.3) — accepted: it is the
+  shipped pump serialization relocated off the pump, bounded by the 300 s prompt ceiling
+  (§1.14) and the server's capacity-gated dispatch depth (§1.10); stops are delayed, never
+  lost, reordered, or refused. Non-launch/stop traffic and internal reaping are immune.
+- **Legacy inline-await persists only against pre-settlement servers** (`_processor` null) —
+  shipped behavior for exactly the population that already had it.
 - **Debounce tuning** — 250 ms is a starting value; it is a constant in one place and not a
   contract.
 - Frame values 15/16/75/76 are claimed here; any concurrent kcap-cli work adding frames must
