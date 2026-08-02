@@ -72,7 +72,10 @@ public partial class AgentOrchestratorVendorTests {
             // §3.3: defaults to the fixed never-cancels StubHostLifetime every pre-existing test relies
             // on. A test that needs to simulate shutdown firing mid-launch (e.g. a gate OCE parked on a
             // consent prompt) passes its own lifetime with a controllable ApplicationStopping token.
-            IHostApplicationLifetime?                           lifetime               = null
+            IHostApplicationLifetime?                           lifetime               = null,
+            // §3.3: leaves the sequenced processor unpublished, so a test can drive the pre-settlement
+            // inline arm and the publication barrier. Production never has that window.
+            bool                                                deferProcessorPublication = false
         ) {
         var config = new DaemonConfig {
             Name                = "test",
@@ -123,7 +126,8 @@ public partial class AgentOrchestratorVendorTests {
             runtimeFactories,
             lifetime ?? new StubHostLifetime(),
             logger ?? NullLogger<AgentOrchestrator>.Instance,
-            consentGate
+            consentGate,
+            deferProcessorPublication
         );
     }
 

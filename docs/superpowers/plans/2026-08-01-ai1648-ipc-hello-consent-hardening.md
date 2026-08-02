@@ -13,7 +13,7 @@
 - `FrameType` values are append-only single bytes: `Hello = 15` (client→daemon), `HelloReply = 75` (daemon→client). The value-9 hole stays. PR 2's 16/76 are NOT claimed here.
 - All new JSON payloads: snake_case source-gen context in Core, nulls always written, unmapped members skipped (STJ default — never opt into Disallow). No reflection serialization anywhere.
 - `protocol_version` starts at 1; capabilities list for this PR is exactly `["consent/1"]`, assembled next to the `LocalControlServer` routing so a capability cannot be advertised without its handler.
-- Coded strings (stable contracts, do not rename): `prompt_no_ui`, `prompt_timeout`, `prompt_user`, `launch_denied_by_owner`, new `mixed_command_formats`.
+- Coded strings (stable contracts, do not rename): `prompt_no_ui`, `prompt_timeout`, `prompt_user`, `launch_denied_by_owner`. (An earlier draft added `mixed_command_formats`; that whole idea was retracted — see Task 5.)
 - Consent deadline discipline: ONE monotonic deadline per prompt path via injected `TimeProvider`; grace = `min(5 s, PromptTimeoutSeconds)` burned from the deadline; every wait duration computed immediately before waiting; zero remaining budget is legal and settles as `prompt_timeout`.
 - The format latch trips on RECEIPT of a launch/stop carrying ANY of `Epoch`/`Seq`/`CommandId` (the shipped `anySeq` discriminator), BEFORE routing/submission, via `Volatile` write; set once per process, never cleared.
 - The legacy lane's inline-await behavior is deliberately UNCHANGED (spec decision 4). Do not introduce any queue/worker for legacy commands.
@@ -222,74 +222,22 @@ Spec: §3.2 "Deadline discipline" + "Cancellation" — the plan below is that se
 - [ ] **Step 4: Run gate + broker + IPC test classes to green** (`--treenode-filter "/*/*/LaunchConsentGateTests/*"` etc., one class per invocation).
 - [ ] **Step 5: Commit** — `feat: consent grace window with monotonic deadline discipline`
 
-### Task 5: Sequenced-lane unparking + daemon-lifetime format latch
+### Task 5: One execution domain for server launch and stop commands (SUPERSEDED PLAN TEXT)
 
-**Files:**
-- Modify: `src/Capacitor.Cli.Daemon/Services/AgentOrchestrator.cs` (`HandleLaunchAgent` ~line 864, `HandleStopAgent`, `HandleStopAgentV2` ~line 1829)
-- Test: extend the orchestrator-level consent/launch tests + `SequencedCommandProcessor` wire tests
+**The plan text that used to live here is superseded and has been deleted.** It described a
+daemon-lifetime `mixed_command_formats` latch that refused un-sequenced commands once any sequenced
+command had been seen. That rests on a false premise: the shipped kcap-server mixes formats
+PERMANENTLY BY DESIGN — the sequenced tuple rides only the review-flow settlement lane, while ordinary
+launches and EVERY stop are un-sequenced (spec §1.9). A latch would have bricked every dashboard launch
+and silently discarded every stop after the first review flow.
 
-**Interfaces:**
-- Consumes: existing `anySeq` discriminator in `HandleLaunchAgent`; `_server.LaunchFailedAsync`.
-- Produces: `mixed_command_formats` coded LaunchFailed reason; latch field.
+**Authoritative requirement: spec §3.3 in full, plus the §6 bullets "Pump + lane contract",
+"One-domain ordering", "Stop admission, coalescing + fault isolation" and "Handler classification".**
+Nothing may ever be refused for its FORMAT. Un-sequenced launches and stops are committed onto the SAME
+serial lane as sequenced ones via `SequencedCommandProcessor.SubmitUnsequenced`.
 
-Spec: §3.3 in full — read it before coding; every claim there is a test below.
-
-- [ ] **Step 1: Failing tests:**
-  - pump liveness: a sequenced launch whose consent gate is parked on a never-answered prompt (FakeTimeProvider holds time still) does not block a concurrent `HandleStopAgentV2` for another agent, nor a status-report request;
-  - acceptance ordering: two back-to-back sequenced launches submitted in wire order are accepted in order (no non-next rejection);
-  - accepted-before-terminal + exactly one terminal answer for: success, consent-denial (gate deny → `CommandRejected` semantic + `LaunchFailed`), lane failure (gate OCE via canceled launch token);
-  - latch: sequenced launch received (even one REJECTED for a gap seq / partial tuple) → a subsequent un-seq'd launch gets `LaunchFailed` containing `mixed_command_formats` and never reaches `HandleLaunchAgentCore`; an un-seq'd stop is not executed and logs at Error;
-  - latch survives reconnect: simulate by keeping the orchestrator alive across a `ServerConnection` re-registration cycle (or call the handlers directly as the hub would) — a detached still-prompting sequenced launch, then un-seq'd stop AND launch → both rejected;
-  - a fresh orchestrator instance starts unlatched;
-  - legacy pin: an un-seq'd launch (unlatched daemon) still executes inline — `HandleLaunchAgent` returns only after `HandleLaunchAgentCore` completes (shipped-behavior regression).
-- [ ] **Step 2: Run to red.**
-- [ ] **Step 3: Implement** in `AgentOrchestrator`:
-
-```csharp
-    // Daemon-lifetime cross-format latch: trips on RECEIPT of any sequenced-shaped launch/stop
-    // (any of Epoch/Seq/CommandId — the same discriminator that routes), BEFORE submission,
-    // independent of that command's fate. Set once, never cleared: a server that speaks the
-    // sequenced protocol never legitimately downgrades mid-daemon-life, and detached sequenced
-    // execution can outlive its hub connection, so no connection-scoped reset is sound.
-    int _sequencedSeen;
-```
-
-  `HandleLaunchAgent` becomes:
-
-```csharp
-    async Task HandleLaunchAgent(LaunchAgentCommand cmd) {
-        var anySeq = cmd.Epoch is not null || cmd.Seq is not null || cmd.CommandId is not null;
-        if (anySeq) Volatile.Write(ref _sequencedSeen, 1); // before routing — protocol evidence, not command fate
-        if (!anySeq) {
-            if (Volatile.Read(ref _sequencedSeen) == 1) {
-                await _server.LaunchFailedAsync(cmd.AgentId,
-                    "mixed_command_formats: this daemon has seen sequenced commands; un-sequenced launch refused");
-                return;
-            }
-            await HandleLaunchAgentCore(cmd); // legacy lane: inline await IS the backpressure — deliberately unchanged
-            return;
-        }
-        if (_processor is { } proc && cmd.Epoch is { } epoch && cmd.Seq is { } seq && cmd.CommandId is { } cmdId) {
-            // Submit ON the pump (acceptance ordering depends on pump serialization) but do NOT
-            // await execution: terminal acks are the lane's duty; this continuation only logs.
-            var execution = proc.SubmitAsync(
-                new SequencedItem(SequencedKind.Launch, epoch, seq, cmdId, cmd.AgentId),
-                () => HandleLaunchAgentCore(cmd));
-            _ = ObserveDetachedExecution(execution, cmd.AgentId);
-            return;
-        }
-        await _server.LaunchFailedAsync(cmd.AgentId, "Malformed sequenced launch: partial Epoch/Seq/CommandId");
-    }
-
-    async Task ObserveDetachedExecution(Task execution, string agentId) {
-        try { await execution; }
-        catch (Exception ex) { LogDetachedLaunchFault(ex, agentId); }
-    }
-```
-
-  (Keep the shipped doc comment on `HandleLaunchAgent`, amended for the latch + detach; add the `LoggerMessage` for `LogDetachedLaunchFault`.) In `HandleStopAgentV2`: same `anySeq` receipt-write before routing; in its legacy-fallback arm and in `HandleStopAgent`, check the latch — latched → log Error (`LogMixedFormatStopDiscarded`) and return without executing (no reply surface exists for a legacy stop). Preserve the shipped malformed-partial-tuple arm byte-for-byte.
-- [ ] **Step 4: Run the touched test classes to green;** re-run `SequencedSettlement`-area classes as regression.
-- [ ] **Step 5: Commit** — `feat: unpark receive loop for sequenced launches behind a daemon-lifetime format latch`
+Implemented state and its deviations are recorded in
+`.superpowers/sdd/2026-08-01-ai1648-ipc-hello-consent-hardening/task-5-rework-report.md`.
 
 ### Task 6: Full verification + docs
 

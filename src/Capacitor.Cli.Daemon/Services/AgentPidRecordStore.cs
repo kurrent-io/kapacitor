@@ -42,6 +42,20 @@ internal sealed class AgentPidRecordStore(string stateDir, ILogger logger) {
         }
     }
 
+    /// <summary>Whether a durable record exists for this agent id — one existence check, no read and no
+    /// parse. This is the second half of the un-sequenced stop-admission probe (spec §3.3), which the
+    /// sequenced processor evaluates inside its own critical section, so it must stay this cheap: never
+    /// widen it to <see cref="ReadAll"/>. A record-backed id is a REAL stop target — the stop path reaps a
+    /// prior incarnation's survivor by exact identity — not a no-op, so admission has to see it.</summary>
+    public bool Exists(string agentId) {
+        try {
+            return File.Exists(PathFor(agentId));
+        } catch (Exception ex) {
+            logger.LogDebug(ex, "AgentPidRecordStore: existence check failed for {AgentId}", agentId);
+            return false;
+        }
+    }
+
     /// <summary>All parseable leftover records. An unparseable or agent-id-less file is renamed
     /// <c>.corrupt</c> (retained for the operator, never acted on) and excluded.</summary>
     public IReadOnlyList<AgentPidRecord> ReadAll() {
