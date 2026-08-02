@@ -13,20 +13,13 @@ namespace Capacitor.Cli.Tests.Unit;
 // so we mutate it per-test to point at the test's temp dir without disturbing
 // the assembly-wide value pinned by RepoPathStoreGlobalSetup.
 //
-// DaemonLockPaths.OverrideDirectoryForTesting: uninstall runs
-// `daemon stop --yes`, which ENUMERATES every name in the daemons directory and
-// kills the PID it finds. That directory is selected by a process-global static,
-// so while any daemon test holds the override, uninstall reads THAT test's temp
-// dir — and DaemonLockTests puts a real DaemonLock there, whose PID file contains
-// the TEST RUNNER'S OWN pid with a matching start token. Every identity check then
-// legitimately passes and uninstall kills the tree containing itself, failing with
-// "Cannot be used to terminate a process tree containing the calling process" in
-// whichever uninstall test happened to be running.
-//
-// This is why the per-test KCAP_CONFIG_DIR isolation above did not help: the
-// daemons directory deliberately ignores KCAP_CONFIG_DIR. Sharing the constraint
-// key with the mutators is the fix — a reader of a globally-selected directory has
-// to exclude everyone who can reselect it.
+// DaemonLockPaths.OverrideDirectoryForTesting: uninstall runs `daemon stop --yes`,
+// which enumerates the daemons directory and kills the PIDs it finds. That directory
+// comes from a process-global static, so a concurrent daemon test's override sends
+// uninstall at that test's temp dir — where a real DaemonLock has written the test
+// runner's own PID. Uninstall then kills the tree containing itself. The
+// KCAP_CONFIG_DIR isolation above cannot help; that directory ignores it by design.
+// See DaemonStopSelfPidTests for the full mechanism.
 [NotInParallel([
     "HomeEnvVarMutation",
     "ConfigDirEnvVar",
