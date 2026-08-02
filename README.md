@@ -113,10 +113,19 @@ server rejects it, or if the token was issued by a different server than the pro
 (re-run `kcap login`). If the server can't be reached it says so and still exits 0, so it stays
 usable offline.
 
-Setup closes by pointing you at the guided tour. Prompt your agent with **"Start kcap guided tour"**
-(or, in Claude Code, `/kcap:guided-tour`) to see what your team has recorded and work through
-per-use-case tutorials for evals, session recall, PR review, and analytics. It ships with the plugin
-and is also installed for Codex and the other `~/.agents/skills/` agents as `kcap-guided-tour`.
+Setup closes with a **Next steps** box. Each item opens with a question, because neither step is for
+everyone:
+
+- **Did you create this Capacitor server?** Complete server setup — inviting teammates, and
+  optionally Slack and your own AI keys — by following
+  [Setup Server](https://capacitor.kurrent.io/docs/getting-started/setup-server/). Always listed:
+  `kcap` can't tell whether you own the server, so you self-select.
+- **New to Capacitor?** Prompt **"Start kcap guided tour"** in your coding agent (or, in Claude Code,
+  `/kcap:guided-tour`) to see what your team has recorded and work through per-use-case tutorials for
+  evals, session recall, PR review, and analytics. It's a prompt rather than a slash command because
+  only Claude Code has slash commands — the skill ships with the plugin and is also installed for
+  Codex and the other `~/.agents/skills/` agents (plus Kiro and Antigravity) as `kcap-guided-tour`.
+  This item only appears when an agent was detected and one of them carries the skill.
 
 For non-interactive environments:
 

@@ -257,7 +257,48 @@ public class SetupCommandTests {
         // prompt it names must appear verbatim in that skill's description (asserted below)
         // or the phrase we tell users to type won't reliably fire it.
         await Assert.That(SetupCommand.GuidedTourCallToAction).IsEqualTo(
-            "Prompt \"Start kcap guided tour\" in your agent for a guided tour of Capacitor");
+            "New to Capacitor? Prompt \"Start kcap guided tour\" in your coding agent to see what "
+          + "Capacitor can do for you");
+    }
+
+    [Test]
+    public async Task ServerSetupCallToAction_is_the_exact_agreed_wording() {
+        // Opens with a question because the CLI cannot tell whether this reader owns the server —
+        // the reader self-selects, so the wording has to make "not me" an obvious answer. "server",
+        // never "workspace": that word means the local tree everywhere else in this CLI.
+        await Assert.That(SetupCommand.ServerSetupQuestion).IsEqualTo(
+            "Did you create this Capacitor server?");
+
+        // Opens with the instruction itself, so a reader who answered yes knows what to do without
+        // reading further; the docs page carries the detail.
+        await Assert.That(SetupCommand.ServerSetupAction).IsEqualTo(
+            "Complete server setup with instructions here:");
+
+        await Assert.That(SetupCommand.ServerSetupDocsUrl).IsEqualTo(
+            "https://capacitor.kurrent.io/docs/getting-started/setup-server/");
+    }
+
+    [Test]
+    public async Task NextSteps_always_lists_server_setup_and_only_adds_the_tour_when_offered() {
+        // Server setup can't be gated on anything local — admin-ness isn't knowable here — so it is
+        // the one item that must survive a run where no agent carried the tour skill.
+        var withoutTour = SetupCommand.NextStepItems(offerGuidedTour: false);
+
+        await Assert.That(withoutTour.Count).IsEqualTo(1);
+        await Assert.That(withoutTour[0].Question).IsEqualTo(SetupCommand.ServerSetupQuestion);
+
+        // Cyan: the URL and the prompt are what a reader retypes, so both are set off from the prose.
+        await Assert.That(withoutTour[0].Answer)
+                    .Contains($"[cyan]{SetupCommand.ServerSetupDocsUrl}[/]");
+
+        var withTour = SetupCommand.NextStepItems(offerGuidedTour: true);
+
+        // Server setup stays first: the reader who needs it is blocking their whole team.
+        await Assert.That(withTour.Count).IsEqualTo(2);
+        await Assert.That(withTour[0].Question).IsEqualTo(SetupCommand.ServerSetupQuestion);
+        await Assert.That(withTour[1].Question).IsEqualTo(SetupCommand.GuidedTourQuestion);
+        await Assert.That(withTour[1].Answer)
+                    .Contains($"[cyan]{SetupCommand.GuidedTourPromptQuoted}[/]");
     }
 
     [Test]
@@ -265,13 +306,13 @@ public class SetupCommandTests {
         // Vendors match a user's message against the frontmatter `description:` only — the body
         // is read after the skill fires. So asserting the phrase is somewhere in the file would
         // pass even if it moved below the fences, where it can no longer trigger anything.
-        var skill = Path.Combine(RepoRoot(), "kcap", "skills", "guided-tour", "SKILL.md");
+        var skill = Path.Combine(RepoRoot(), "kcap", "skills", SetupCommand.GuidedTourSkillName, "SKILL.md");
 
         await Assert.That(File.Exists(skill)).IsTrue();
 
         var description = FrontmatterDescription(await File.ReadAllTextAsync(skill));
 
-        await Assert.That(description).Contains("Start kcap guided tour");
+        await Assert.That(description).Contains(SetupCommand.GuidedTourPrompt);
     }
 
     /// <summary>
