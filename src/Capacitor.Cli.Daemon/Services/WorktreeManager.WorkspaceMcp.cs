@@ -120,13 +120,35 @@ public partial class WorktreeManager {
         }
     }
 
-    /// <summary>Removes a file, or a link of either kind, without recursing into a link's target.</summary>
+    /// <summary>
+    /// Removes a file, a link of either kind, or a real directory sitting at a config pathname — without
+    /// ever recursing into a LINK's target.
+    ///
+    /// <para>The kind is read from the attributes rather than from <c>Directory.Exists</c>, which FOLLOWS
+    /// links and so reports false for a dangling directory symlink; that would fall through to
+    /// <c>File.Delete</c>, which a Windows directory reparse point rejects. With fail-closed in place, a
+    /// hostile branch could have used that to refuse every launch.</para>
+    ///
+    /// <para>A real directory at, say, <c>.cursor/mcp.json/</c> is removed recursively rather than
+    /// refused. No vendor can parse a directory as its JSON config, so it is not itself the hazard — but
+    /// under fail-closed, throwing on it would let any repo (hostile or merely odd) block worktree
+    /// creation entirely. It is branch content at a path we do not permit, so it goes.</para>
+    /// </summary>
     static void Unlink(string path) {
-        if (Directory.Exists(path) && new DirectoryInfo(path).LinkTarget is not null) {
+        var attributes = new FileInfo(path).Attributes;    // does not follow: reports the link's own bits
+        var isDirectory = attributes.HasFlag(FileAttributes.Directory);
+        var isLink      = attributes.HasFlag(FileAttributes.ReparsePoint);
+
+        if (isDirectory && isLink) {
             Directory.Delete(path);                        // removes the LINK; the target is untouched
             return;
         }
 
-        File.Delete(path);                                 // also the right call for a file symlink
+        if (isDirectory) {
+            Directory.Delete(path, recursive: true);       // real directory at a config pathname
+            return;
+        }
+
+        File.Delete(path);                                 // file, or a file symlink (removes the link)
     }
 }

@@ -193,6 +193,39 @@ public class WorkspaceMcpNeutralizationTests {
         await Assert.That(removed).Contains(".mcp.json");
     }
 
+    /// <summary>A dangling DIRECTORY symlink. `Directory.Exists` follows links, so this reports false and
+    /// an implementation keyed on it falls through to the file path — harmless on Unix, but a Windows
+    /// directory reparse point rejects `File.Delete`. With fail-closed in place that would turn a hostile
+    /// branch into a launch failure, so the link kind has to be read from the attributes, not from
+    /// existence.</summary>
+    [Test]
+    public async Task A_dangling_config_DIRECTORY_symlink_is_still_unlinked() {
+        SkipUnlessPosixSymlinks();
+        var wt = NewDir("dangling-dir");
+        Directory.CreateSymbolicLink(Path.Combine(wt, ".cursor"), Path.Combine(NewDir("gone-dir"), "never-made"));
+
+        var removed = WorktreeManager.NeutralizeWorkspaceMcpConfig(wt);
+
+        await Assert.That(Path.Exists(Path.Combine(wt, ".cursor"))).IsFalse();
+        await Assert.That(removed).Contains(".cursor/mcp.json");
+    }
+
+    /// <summary>A branch can commit a real DIRECTORY where a config file is expected. Fail-closed turns any
+    /// unremovable path into a refused launch, so this shape would be a cheap denial of service if the
+    /// removal could not handle it. It is branch content at a path we do not allow, so it goes.</summary>
+    [Test]
+    public async Task A_real_directory_at_a_config_path_is_removed_rather_than_failing_the_launch() {
+        var wt = NewDir("dir-at-path");
+        var asDir = Path.Combine(wt, ".mcp.json");
+        Directory.CreateDirectory(Path.Combine(asDir, "nested"));
+        File.WriteAllText(Path.Combine(asDir, "nested", "payload"), "x");
+
+        var removed = WorktreeManager.NeutralizeWorkspaceMcpConfig(wt);
+
+        await Assert.That(Path.Exists(asDir)).IsFalse();
+        await Assert.That(removed).Contains(".mcp.json");
+    }
+
     // ── fail closed ──
 
     /// <summary>A present-but-unremovable entry must throw, not be silently skipped. Silently continuing

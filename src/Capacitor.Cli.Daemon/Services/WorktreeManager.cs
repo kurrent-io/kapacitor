@@ -213,16 +213,18 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
                     "fetch", "origin", $"{baseRef}:{fetchedRef}");
                 await WithWorktreeMetadataGate(repoPath, () =>
                     RunGit(repoPath, GitTimeout, [..NoBranchHooks(), "worktree", "add", "-B", branch, worktreePath, fetchedRef]));
-                StripWorkspaceMcpConfig(worktreePath);
+                var fetched = new WorktreeInfo(worktreePath, branch, repoPath, FetchedRef: fetchedRef);
+                await StripOrRollBackAsync(fetched);
 
-                return new WorktreeInfo(worktreePath, branch, repoPath, FetchedRef: fetchedRef);
+                return fetched;
             }
 
             await WithWorktreeMetadataGate(repoPath, () =>
                 RunGit(repoPath, GitTimeout, [..NoBranchHooks(), "worktree", "add", worktreePath, "-b", branch]));
-            StripWorkspaceMcpConfig(worktreePath);
+            var linked = new WorktreeInfo(worktreePath, branch, repoPath);
+            await StripOrRollBackAsync(linked);
 
-            return new WorktreeInfo(worktreePath, branch, repoPath);
+            return linked;
         }
 
         // Standalone: copy files + git init
@@ -255,12 +257,41 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
     /// had a chance to neutralize the tree. Review caught it: the MCP strip is pointless if creating the
     /// tree already executed the branch's code. Pointing <c>core.hooksPath</c> at a daemon-owned empty
     /// directory disables the whole mechanism for these commands without touching the operator's config.</para>
+    ///
+    /// <para><b>This covers the hook-DIRECTORY mechanism only. Do not read it as "no branch-controlled code
+    /// runs during checkout."</b> Two sibling vectors are known and deliberately NOT closed here, tracked on
+    /// their own issue (see the branch-controlled-execution follow-up): git's config-based hooks (<c>hook.&lt;name&gt;.event</c> / <c>.command</c>), which run
+    /// independently of <c>core.hooksPath</c>; and clean/smudge filters, which a branch selects through its
+    /// own <c>.gitattributes</c> and which this flag does not affect at all. Both need a rule for "does this
+    /// command resolve to branch content" — blunt disabling would break legitimate drivers such as
+    /// <c>filter.lfs</c>, so it is real work rather than another <c>-c</c> flag.</para>
     /// </summary>
     static string[] NoBranchHooks() {
         var empty = Path.Combine(Path.GetTempPath(), "kcap-no-hooks");
         Directory.CreateDirectory(empty);
 
         return ["-c", $"core.hooksPath={empty}"];
+    }
+
+    /// <summary>
+    /// Neutralizes the tree, and UNDOES the creation if that fails.
+    ///
+    /// <para>Neutralization is fail-closed, and it necessarily runs after <c>worktree add</c> has already
+    /// registered a worktree, a branch and (for a review launch) a fetched ref. Throwing straight out of
+    /// <see cref="CreateAsync"/> means no <see cref="WorktreeInfo"/> ever reaches the caller, so nothing
+    /// downstream can clean any of that up and repeated failures accumulate registrations — review caught
+    /// it. Rolling back here keeps fail-closed without making it a leak.</para>
+    ///
+    /// <para>A rollback failure is swallowed in favour of the original exception: the reason the launch is
+    /// being refused is more useful to an operator than whatever went wrong while tidying up after it.</para>
+    /// </summary>
+    async Task StripOrRollBackAsync(WorktreeInfo created) {
+        try {
+            StripWorkspaceMcpConfig(created.Path);
+        } catch {
+            try { await RemoveAsync(created); } catch { /* keep the original failure */ }
+            throw;
+        }
     }
 
     /// <summary>Removes branch-authored vendor MCP configuration and logs what went, so an operator whose
@@ -894,7 +925,11 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
             // therefore never have completed for a non-git source; it surfaced when a test finally covered
             // that branch. `.capacitor` is already excluded from the borrowed-snapshot copy for the same
             // reason it should be excluded here: it is kcap's state, not the user's content.
-            if (Path.GetFileName(dir) is ".git" or ".capacitor") {
+            // Case-INSENSITIVE: on a default macOS or Windows volume `.Capacitor` is the very directory
+            // the destination was created in, so an exact-spelling skip would descend into it and hit the
+            // same PathTooLong recursion this guard exists to prevent.
+            if (Path.GetFileName(dir).Equals(".git", StringComparison.OrdinalIgnoreCase)
+             || Path.GetFileName(dir).Equals(".capacitor", StringComparison.OrdinalIgnoreCase)) {
                 continue;
             }
 
