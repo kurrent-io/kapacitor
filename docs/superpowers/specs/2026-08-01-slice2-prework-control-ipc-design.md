@@ -244,22 +244,36 @@ server-origin launch/stop execution through the one existing serial lane:
   OCE, never terminates `RunLaneAsync`; the lane wrapper logs; no handler-side continuation);
   `Refused` (shutdown) → the caller owns the consequence (launch → best-effort
   `LaunchFailedAsync`, its own send failure swallowed; stop → log); `Coalesced` → nothing.
-- **Active-launch tracking (closes the executing-launch stop gap)**: the processor keeps
-  `_activeIds` — every launch id (either format) from lane commit until TERMINAL settlement,
-  removed under `_lock` only after the item's execute completes — so a launch that has been
-  DEQUEUED and is parked at the consent gate is still an admissible stop target. Admissible
-  stop targets = `_agents` ∪ `_activeIds`; anything else drops at admission with a log —
-  observably identical to the eventual unknown-agent no-op (§1.8). Removal ordering pinned:
-  an id leaves `_activeIds` only once its agent is in `_agents` (success) or terminally
-  failed — no window where a legitimate target is in neither set. A racing registry removal
-  (agent exits as a stop is admitted) yields a stop that no-ops at execution — harmless by
-  the same idempotence.
+- **Active-launch tracking (closes the executing-launch stop gap)**: the processor tracks
+  active launch INSTANCES — a per-committed-item token added under `_lock` at commit and
+  removed under `_lock` only when THAT item's execute completes (registration or terminal
+  failure); id membership in the active set lasts until the last instance for that id
+  settles (reference-counted — no id-non-reuse assumption anywhere). A launch that has been
+  DEQUEUED and is parked at the consent gate is therefore still an admissible stop target.
+  Admissible stop targets = `_agents` ∪ active-instance ids; anything else drops at
+  admission with a log — observably identical to the eventual unknown-agent no-op (§1.8).
+  Removal ordering pinned: an instance is removed only once its agent is in `_agents`
+  (success) or terminally failed — and the ID stays admissible while ANY instance remains.
+  A racing registry removal (agent exits as a stop is admitted) yields a stop that no-ops at
+  execution — harmless by the same idempotence.
+- **Sequenced integration (same structures, same lock)**: the sequenced lane item already
+  carries `SequencedKind` + `AgentId`, so the mutations live inside `SubmitLocked`'s ACCEPT
+  branch — the same critical section that advances the watermark and writes the lane item:
+  a NEWLY accepted sequenced Launch adds its active instance and clears the id's pending-stop
+  keys there; a duplicate replay (answered, never re-executed) mutates NOTHING; an
+  out-of-order / backpressure / stale-epoch / shutdown rejection mutates NOTHING. Pinned by
+  tests (duplicate and rejected sequenced launches alter neither active counts nor coalescing
+  keys nor queue order).
 - **Coalescing**, keyed (AgentId, PayloadKey) under the same `_lock`: the legacy `StopAgent`
   payload key is constant (§1.8); `StopAgentV2` keys on its force flag — payload-class
-  cardinality C is fixed (≤ 3). **Launch-aware**: a launch commit for id X clears ALL X's
-  pending-stop keys in the same critical section, so stop(X)→launch(X)→stop(X) keeps its
-  order even if an id recurs. Queue depth ≤ (capacity + |`_activeIds`|) launches +
-  (|`_agents`| + |`_activeIds`|) × C stops per launch segment — numeric, config-derived.
+  cardinality C is fixed (≤ 3). **Launch-aware**: a launch COMMIT for id X (either format,
+  in its commit critical section) clears ALL X's pending-stop keys, so
+  stop(X)→launch(X)→stop(X) keeps its order even if an id recurs. **Queue depth bound
+  (one formula, honest terms):** depth ≤ L + (|`_agents`| + L) × C, where L = active launch
+  instances (≤ `MaxConcurrentAgents` by the server's pre-dispatch reservation, §1.10) and
+  |`_agents`| is the registry size — finite, pruned by teardown, transiently above capacity
+  only by exiting stragglers. The claim is NOT "small constant"; it is "no duplicate or
+  unknown-target growth, every term finite and observable".
 - **Un-seq'd commands with `_processor` null** (pre-settlement server): the shipped inline
   await stays byte-for-byte. No sequenced traffic can exist (§1.7), so the single domain is
   trivially preserved, and the shipped backpressure story is unchanged for exactly the
@@ -314,8 +328,10 @@ the item wrapper contains it (no LaunchFailed — the daemon is exiting; §1.15 
 rest). **Lane shutdown order (pinned):** shutdown cancels the in-flight item (contained) and
 completes the channel writer (subsequent `SubmitUnsequenced` refuses). Before exiting, the
 lane settles every ACCEPTED queued SEQUENCED item through the existing synthesized-error
-machinery (best-effort terminal answer, cache/watermark bookkeeping completed — the shipped
-`SynthesizeErrorLocked` precedent), preserving exactly-one-terminal-answer wherever the
+machinery (best-effort terminal answer, cache/watermark bookkeeping completed, AND the item's
+execution-completion task completed exactly once with the documented failure — the shipped
+`SynthesizeErrorLocked` precedent extended to the per-item task), preserving
+exactly-one-terminal-answer wherever the
 transport still stands; where it does not, the settlement protocol's own recovery (duplicate
 replay from cache, boot-epoch fencing on restart) is the shipped answer to lost terminal
 acks. Queued UN-SEQ'D items are discarded silently by design — daemon-wide teardown
@@ -523,7 +539,12 @@ PR 1:
   (active-set pin, both formats); a handler paused between its null `_processor` snapshot and
   inline-slot reservation cannot overlap the lane's first item once the processor publishes
   (transition-lock pin); distinct stop payload classes for one target queue separately
-  (bound-formula pin).
+  (bound-formula pin); launch(X)→launch(X)→stop(X) with the first launch failing while the
+  second is parked keeps X admissible and the stop executes after the second settles (both
+  mixed-format orders — instance-count pin); a duplicate replay and each rejected sequenced
+  launch alter neither active counts nor coalescing keys (accept-branch-only pin); the task
+  returned by `SubmitAsync` for a shutdown-synthesized item completes exactly once with the
+  documented failure.
 - Handler classification: with a launch parked on consent, an input/resize for an UNKNOWN
   agent id is dropped-and-logged (no throw, no pump stall) and a status-report request is
   served from the registry snapshot omitting the in-flight launch.
