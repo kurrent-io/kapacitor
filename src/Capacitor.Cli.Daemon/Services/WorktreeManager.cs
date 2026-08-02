@@ -214,7 +214,7 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
 
         // Resolved once: `git config` on the SOURCE repo, whose definitions are the only ones a branch's
         // .gitattributes can select.
-        var filterOverrides = await BranchResolvableFilterOverridesAsync(repoPath);
+        var filterOverrides = await BranchFilterOverridesAsync(repoPath);
 
         if (await IsGitRepoWithCommits(repoPath)) {
             if (!string.IsNullOrEmpty(baseRef)) {
@@ -255,7 +255,7 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
         // either — a later `git checkout` inside the tree would otherwise restore it.
         StripWorkspaceMcpConfig(worktreePath);
         await RunGit(worktreePath, GitTimeout, [..NoBranchHooks(), "init"]);
-        await RunGit(worktreePath, GitTimeout, [..NoBranchHooks(), ..await BranchResolvableFilterOverridesAsync(worktreePath), "add", "-A"]);
+        await RunGit(worktreePath, GitTimeout, [..NoBranchHooks(), ..await BranchFilterOverridesAsync(worktreePath), "add", "-A"]);
         // Identity supplied explicitly. This is the daemon's OWN bookkeeping commit, not the user's work,
         // so it must not depend on the host having git identity configured — a machine without a global
         // user.email fails with "Author identity unknown". Found while CopyDirectory was temporarily
@@ -507,7 +507,7 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
             // Same guard as `worktree add`: this checkout materialises branch content, so a relative
             // core.hooksPath would run the branch's post-checkout here too. Missed when the guard was
             // added — it went on the worktree paths only.
-            await RunGit(destination, GitTimeout, [..NoBranchHooks(), ..await BranchResolvableFilterOverridesAsync(source), "checkout", "--detach", "HEAD"]);
+            await RunGit(destination, GitTimeout, [..NoBranchHooks(), ..await BranchFilterOverridesAsync(destination), "checkout", "--detach", "HEAD"]);
             var clonedHead = (await RunGitCapture(destination, GitTimeout, false, "rev-parse", "HEAD")).Trim();
             if (!string.Equals(sourceHead, clonedHead, StringComparison.Ordinal)) throw new SourceChangedException();
             await RunGitBestEffort(destination, "remote", "remove", "origin");

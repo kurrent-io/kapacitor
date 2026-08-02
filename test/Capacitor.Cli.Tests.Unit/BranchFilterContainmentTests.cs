@@ -11,101 +11,89 @@ namespace Capacitor.Cli.Tests.Unit;
 /// git runs it during <c>worktree add</c> — before anything has neutralised the tree.
 /// <c>core.hooksPath</c> does not affect filters, so the hook guard does nothing here.
 ///
-/// <para>The hard requirement pulling the other way is <c>git-lfs</c>: disabling filters wholesale makes it
-/// yield pointer files instead of content, silently. So the classifier has to separate branch-resolvable
-/// commands from PATH- and absolutely-resolved ones, and both directions are asserted.</para>
+/// <para>Containment is an allowlist of driver NAMES, not an analysis of command strings — a command is a
+/// shell program and a tokeniser cannot decide what one will execute. The hard requirement pulling the other
+/// way is <c>git-lfs</c>: disabling it does not fail loudly, it silently yields pointer files instead of
+/// content, so it is allowlisted.</para>
 /// </summary>
-public class BranchResolvableFilterTests {
-    // ── the classifier ──
-
-    /// <summary>Commands the BRANCH can supply. `sh -c 'cat ./tools/x'` is included deliberately: the
-    /// executable is PATH-resolved but the payload is not, and only inspecting the first token would miss
-    /// it.</summary>
-    [Test]
-    [Arguments("./tools/filter")]
-    [Arguments("../outside/filter")]
-    [Arguments("tools/filter")]
-    [Arguments("sh -c 'cat ./tools/x'")]
-    [Arguments("python scripts/clean.py")]
-    [Arguments(".\\tools\\filter.exe")]
-    public async Task A_branch_resolvable_command_is_neutralized(string command) =>
-        await Assert.That(WorktreeManager.ResolvesToBranchContent(command)).IsTrue();
-
-    /// <summary>The git-lfs case and its relatives. A bare name is PATH-resolved and an absolute path is
-    /// the operator's own — neither can be supplied by the branch, and disabling them would break real
-    /// setups.</summary>
-    [Test]
-    [Arguments("git-lfs filter-process")]
-    [Arguments("git-lfs clean -- %f")]
-    [Arguments("/usr/local/bin/filter")]
-    [Arguments("cat")]
-    public async Task A_path_or_absolutely_resolved_command_is_left_alone(string command) =>
-        await Assert.That(WorktreeManager.ResolvesToBranchContent(command)).IsFalse();
-
-    // ── the emitted overrides ──
+public class BranchFilterContainmentTests {
+    // ── the allowlist ──
 
     /// <summary>
-    /// A relative driver produces overrides, and they must include <c>required=false</c>. Measured: with
-    /// <c>filter.x.required=true</c> an empty smudge command is FATAL and `worktree add` fails outright —
-    /// so clearing the command alone would convert this guard into a launch failure for any repo using a
-    /// required filter.
+    /// Any driver the operator has defined that is NOT allowlisted gets disabled — regardless of what its
+    /// command looks like. That is the whole point of the redesign: the first version classified the command
+    /// string, and review defeated it four ways (`sh tools` and `python filter.py` execute a branch file
+    /// with no separator at all; `/bin/true;./tools/f` is one rooted token whose shell runs the relative
+    /// half; `%f` is substituted after any inspection). A command is a shell program; a name is not.
     /// </summary>
     [Test]
-    public async Task A_relative_driver_yields_overrides_including_required_false() {
+    [Arguments("./tools/f")]
+    [Arguments("sh tools")]                  // bare relative file — the old rule called this safe
+    [Arguments("python filter.py")]          // ditto
+    [Arguments("/bin/true;./tools/f")]       // rooted token, shell runs the relative half
+    [Arguments("cat %f")]                    // %f is substituted by git, after any inspection
+    [Arguments("/usr/local/bin/filter")]     // even an absolute one: not allowlisted, not trusted here
+    public async Task Any_non_allowlisted_driver_is_disabled_whatever_its_command(string command) {
         var repo = NewRepo();
-        Git(repo, "config", "filter.evil.smudge", "./tools/f");
-        Git(repo, "config", "filter.evil.required", "true");
+        Git(repo, "config", "filter.custom.smudge", command);
 
-        var overrides = await WorktreeManager.BranchResolvableFilterOverridesAsync(repo);
-        var joined = string.Join(' ', overrides);
+        var joined = string.Join(' ', await WorktreeManager.BranchFilterOverridesAsync(repo));
 
-        await Assert.That(joined).Contains("filter.evil.smudge=");
-        await Assert.That(joined).Contains("filter.evil.clean=");
-        await Assert.That(joined).Contains("filter.evil.process=");
-        await Assert.That(joined).Contains("filter.evil.required=false");
+        await Assert.That(joined).Contains("filter.custom.smudge=");
+        await Assert.That(joined).Contains("filter.custom.required=false");
     }
 
-    /// <summary>The regression that matters for real repositories: git-lfs must not be touched.</summary>
+    /// <summary>The git-lfs regression. Disabling it does not fail loudly — it silently yields pointer
+    /// files instead of content — so it is allowlisted and must stay untouched.</summary>
     [Test]
-    public async Task A_git_lfs_driver_yields_no_overrides() {
+    public async Task The_allowlisted_lfs_driver_is_left_alone() {
         var repo = NewRepo();
         Git(repo, "config", "filter.lfs.smudge", "git-lfs smudge -- %f");
-        Git(repo, "config", "filter.lfs.clean", "git-lfs clean -- %f");
         Git(repo, "config", "filter.lfs.process", "git-lfs filter-process");
         Git(repo, "config", "filter.lfs.required", "true");
 
-        await Assert.That(await WorktreeManager.BranchResolvableFilterOverridesAsync(repo)).IsEmpty();
+        await Assert.That(await WorktreeManager.BranchFilterOverridesAsync(repo)).IsEmpty();
     }
 
-    /// <summary>A repo with no filters at all — `config --get-regexp` exits non-zero, which must read as
-    /// "nothing to override" rather than as a failure.</summary>
     [Test]
     public async Task A_repo_with_no_filters_yields_no_overrides() =>
-        await Assert.That(await WorktreeManager.BranchResolvableFilterOverridesAsync(NewRepo())).IsEmpty();
+        await Assert.That(await WorktreeManager.BranchFilterOverridesAsync(NewRepo())).IsEmpty();
 
-    /// <summary>Only the offending driver is disabled; a legitimate one alongside it keeps working.</summary>
     [Test]
-    public async Task A_mixed_config_neutralizes_only_the_branch_resolvable_driver() {
+    public async Task A_mixed_config_disables_only_the_non_allowlisted_driver() {
         var repo = NewRepo();
         Git(repo, "config", "filter.lfs.process", "git-lfs filter-process");
         Git(repo, "config", "filter.evil.smudge", "./tools/f");
 
-        var joined = string.Join(' ', await WorktreeManager.BranchResolvableFilterOverridesAsync(repo));
+        var joined = string.Join(' ', await WorktreeManager.BranchFilterOverridesAsync(repo));
 
         await Assert.That(joined).Contains("filter.evil.");
         await Assert.That(joined).DoesNotContain("filter.lfs.");
     }
 
-    /// <summary>A driver name containing dots must not be truncated — `filter.my.tool.smudge` is driver
-    /// `my.tool`, and splitting naively would emit overrides for a driver that does not exist.</summary>
+    /// <summary>`filter.my.tool.smudge` is driver `my.tool`; naive splitting would emit overrides for a
+    /// driver that does not exist and leave the real one live.</summary>
     [Test]
     public async Task A_dotted_driver_name_survives_parsing() {
         var repo = NewRepo();
         Git(repo, "config", "filter.my.tool.smudge", "./tools/f");
 
-        var joined = string.Join(' ', await WorktreeManager.BranchResolvableFilterOverridesAsync(repo));
+        await Assert.That(string.Join(' ', await WorktreeManager.BranchFilterOverridesAsync(repo)))
+            .Contains("filter.my.tool.smudge=");
+    }
 
-        await Assert.That(joined).Contains("filter.my.tool.smudge=");
+    /// <summary>
+    /// A newline inside a config VALUE must not be able to hide a driver. A line-splitting inventory reads
+    /// `cat\n./tools/f` as a safe record plus an ignored line while git executes the whole value — which is
+    /// why enumeration is `--name-only -z` and never parses values at all.
+    /// </summary>
+    [Test]
+    public async Task A_newline_inside_a_config_value_cannot_hide_a_driver() {
+        var repo = NewRepo();
+        Git(repo, "config", "filter.sneaky.smudge", "cat\n./tools/f");
+
+        await Assert.That(string.Join(' ', await WorktreeManager.BranchFilterOverridesAsync(repo)))
+            .Contains("filter.sneaky.smudge=");
     }
 
     // ── end to end ──

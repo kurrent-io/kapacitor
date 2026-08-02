@@ -1,84 +1,84 @@
 namespace Capacitor.Cli.Daemon.Services;
 
+/// <summary>Thrown when the filter drivers active for a repository cannot be enumerated, so it is not known
+/// which of them a branch could reach. Fail-closed: the alternative is materialising branch content with
+/// every filter live.</summary>
+public sealed class BranchFilterInventoryException(string repoPath, string detail)
+    : Exception($"Refusing to build a worktree for '{repoPath}': the active git filter drivers could not be "
+              + $"enumerated, so branch-selected filters cannot be contained. {detail}") {
+    public string RepoPath { get; } = repoPath;
+}
+
 public partial class WorktreeManager {
     /// <summary>
-    /// Git config that disables any clean/smudge/process filter whose command would be supplied by the
-    /// branch, for the commands that materialise branch content.
+    /// Filter drivers permitted to run while branch content is materialised. Everything else defined in the
+    /// operator's config is disabled for those commands.
     ///
-    /// <para><b>The vector.</b> <c>.gitattributes</c> is branch content and SELECTS which filter driver
-    /// applies to a path. The driver's command comes from the operator's config — but if that command is
-    /// relative, it resolves against the worktree, so the branch supplies the executable. Measured:
-    /// <c>filter.x.smudge=./tools/f</c> plus a branch-committed <c>tools/f</c> runs during
-    /// <c>worktree add</c>, before anything has neutralised the tree. <c>core.hooksPath</c> does not affect
-    /// filters at all.</para>
-    ///
-    /// <para><b>Why not disable every filter.</b> That breaks <c>git-lfs</c>, whose <c>filter.lfs.smudge</c>
-    /// is entirely legitimate and whose absence yields pointer files instead of content — silently. The
-    /// distinguishing property is whether the command resolves to branch content, so only relative commands
-    /// are neutralised and PATH- or absolutely-resolved ones are left alone.</para>
-    ///
-    /// <para><b>Enumeration is sound here.</b> A filter can only run if it is DEFINED in config, and the
-    /// branch can only select from what is defined — so disabling the definitions that are branch-resolvable
-    /// covers every driver the branch could reach.</para>
-    ///
-    /// <para><b><c>required</c> must be cleared too.</b> Measured: with <c>filter.x.required=true</c>, an
-    /// empty smudge command is FATAL and <c>worktree add</c> fails outright. Suppressing the command alone
-    /// would turn this guard into a launch failure for any repo using a required filter.</para>
+    /// <para><c>lfs</c> is here because git-lfs is ubiquitous and its command is a fixed, PATH-resolved
+    /// binary the branch cannot influence — and because disabling it does not fail loudly, it silently
+    /// yields pointer files instead of content.</para>
     /// </summary>
-    internal static async Task<string[]> BranchResolvableFilterOverridesAsync(string repoPath) {
-        // Best effort: `config --get-regexp` exits non-zero when nothing matches, which is the common case
-        // (no filters defined at all). A failure here must not fail the launch — it simply means no
-        // overrides, and the guard is additive.
-        var listed = await RunGitCaptureResult(repoPath, GitTimeout, sourceReadOnly: true,
-            "config", "--get-regexp", "^filter\\..*\\.(clean|smudge|process)$");
-        if (listed.ExitCode != 0 || string.IsNullOrWhiteSpace(listed.Stdout)) return [];
+    internal static readonly string[] AllowedFilterDrivers = ["lfs"];
+
+    /// <summary>
+    /// Config overrides disabling every filter driver except <see cref="AllowedFilterDrivers"/>, for the
+    /// git commands that materialise or ingest branch content.
+    ///
+    /// <para><b>The vector.</b> <c>.gitattributes</c> is branch content and SELECTS which driver applies to
+    /// a path. The command comes from the operator's config, but a relative one resolves against the
+    /// worktree, so the branch supplies the executable. Measured: <c>filter.x.smudge=./tools/f</c> with a
+    /// branch-committed <c>tools/f</c> runs during <c>worktree add</c>. <c>core.hooksPath</c> does not
+    /// affect filters.</para>
+    ///
+    /// <para><b>Why an allowlist of NAMES and not an analysis of commands.</b> The first version classified
+    /// the command string — relative paths were disabled, PATH-resolved ones kept. Review took it apart:
+    /// <c>sh tools</c> and <c>python filter.py</c> execute a branch-supplied file with no path separator at
+    /// all; <c>/bin/true;./tools/f</c> is one rooted token whose shell runs the relative half; and <c>%f</c>
+    /// is substituted by git AFTER any inspection we could do. A command string is a shell program, and
+    /// deciding what a shell program will execute is not something a tokeniser can do. The name is not a
+    /// program — a branch can only select from drivers the operator already defined, and whether one of
+    /// those is trusted is the operator's answer to give, not ours to infer.</para>
+    ///
+    /// <para><b>Enumerated by NAME ONLY.</b> <c>--name-only -z</c> means values never enter the parse, which
+    /// removes the newline-in-a-config-value bypass a line-split inventory has: a value of
+    /// <c>cat\n./tools/f</c> reads as a safe record plus an ignored line while git executes the whole
+    /// thing.</para>
+    ///
+    /// <para><b>Enumerated in the SAME context the command will run in</b>, with the same config visibility
+    /// — not <c>sourceReadOnly</c>, which sets <c>GIT_CONFIG_NOSYSTEM</c> and would hide a system-scoped
+    /// driver that is then live during materialisation, and against the directory the command uses, so a
+    /// conditional <c>includeIf.gitdir</c> resolves the same way for both.</para>
+    /// </summary>
+    /// <exception cref="BranchFilterInventoryException">Enumeration failed for a reason other than "no
+    /// drivers defined".</exception>
+    internal static async Task<string[]> BranchFilterOverridesAsync(string gitContextPath) {
+        var listed = await RunGitCaptureResult(gitContextPath, GitTimeout, sourceReadOnly: false,
+            "config", "--name-only", "-z", "--get-regexp", "^filter\\..*\\.(clean|smudge|process)$");
+
+        // Exit 1 is git's "no key matched" — the common case of a repo with no filters at all. Anything
+        // else means we do not KNOW what is defined, and proceeding with an empty override set would run
+        // the materialisation with every driver live.
+        if (listed.ExitCode is not (0 or 1))
+            throw new BranchFilterInventoryException(gitContextPath,
+                $"`git config --get-regexp` exited {listed.ExitCode}: {listed.Stderr.Trim()}");
 
         var drivers = new SortedSet<string>(StringComparer.Ordinal);
 
-        foreach (var line in listed.Stdout.Split('\n', StringSplitOptions.RemoveEmptyEntries)) {
-            var split = line.IndexOf(' ');
-            if (split <= 0) continue;
+        foreach (var key in listed.Stdout.Split('\0', StringSplitOptions.RemoveEmptyEntries)) {
+            var parts = key.Trim().Split('.');
+            if (parts.Length < 3) continue;
 
-            var name    = line[..split];                       // filter.<driver>.<op>
-            var command = line[(split + 1)..].Trim();
-            var parts   = name.Split('.');
-            if (parts.Length < 3 || !ResolvesToBranchContent(command)) continue;
-
-            drivers.Add(string.Join('.', parts[1..^1]));       // a driver name may itself contain dots
+            var driver = string.Join('.', parts[1..^1]);       // a driver name may itself contain dots
+            if (!AllowedFilterDrivers.Contains(driver, StringComparer.Ordinal)) drivers.Add(driver);
         }
 
         return [.. drivers.SelectMany(static driver => new[] {
             "-c", $"filter.{driver}.clean=",
             "-c", $"filter.{driver}.smudge=",
             "-c", $"filter.{driver}.process=",
+            // Measured: with `required=true`, an empty command is FATAL and the checkout fails outright.
+            // Clearing the command alone would turn this guard into a denial of service.
             "-c", $"filter.{driver}.required=false"
         })];
-    }
-
-    /// <summary>
-    /// Whether a filter command could execute something the branch supplies.
-    ///
-    /// <para>Every whitespace-separated token is examined, not just the executable: <c>sh -c 'cat
-    /// ./tools/x'</c> has an absolute-or-PATH executable and a branch-controlled payload. Any token that
-    /// looks like a relative path condemns the whole command, which is the fail-closed direction — the cost
-    /// of a false positive is one legitimate filter disabled inside agent worktrees, against branch-supplied
-    /// code executing as the daemon user.</para>
-    /// </summary>
-    internal static bool ResolvesToBranchContent(string command) {
-        foreach (var raw in command.Split([' ', '\t'], StringSplitOptions.RemoveEmptyEntries)) {
-            var token = raw.Trim('"', '\'');
-            if (token.Length == 0) continue;
-
-            if (token.StartsWith("./", StringComparison.Ordinal) ||
-                token.StartsWith("../", StringComparison.Ordinal) ||
-                token.StartsWith(".\\", StringComparison.Ordinal) ||
-                token.StartsWith("..\\", StringComparison.Ordinal)) return true;
-
-            // A separator without an absolute root is relative — `tools/f`. A bare name (`git-lfs`) is
-            // PATH-resolved and cannot be supplied by the branch, so it is left alone.
-            if ((token.Contains('/') || token.Contains('\\')) && !Path.IsPathRooted(token)) return true;
-        }
-
-        return false;
     }
 }
