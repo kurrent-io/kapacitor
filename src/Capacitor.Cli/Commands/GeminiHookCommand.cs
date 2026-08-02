@@ -281,11 +281,16 @@ static class GeminiHookCommand {
             scopeRoot: GitRepository.FindRoot(cwd) ?? cwd,
             disabled: activeProfile?.DisableMemoryIndex is true,
             source: source,
-            // PARSED and round-tripped, not the raw string. Two spellings of one instant would otherwise
-            // produce different lease keys and re-inject on a redelivery, losing the exactly-once property
-            // this discriminator exists for. It also means a missing or malformed timestamp yields null,
-            // which suppresses the reset rather than inventing a unique id for it.
-            resetDiscriminator: TryGetIsoTimestamp(node, "timestamp")?.ToString("O"),
+            // DELIBERATELY none. Read from gemini-cli 0.53.0's own clearCommand: `/clear` mints a NEW
+            // session id (`resetNewSessionState(randomUUID())`) BEFORE firing the hook, so the session id
+            // is already the context generation and a discriminator would split one generation across two
+            // lease keys — making a later resume re-inject against context that is still intact.
+            //
+            // It would be inert regardless: that handler consumes only `result.systemMessage` and never
+            // reads `additionalContext`, which is how this adapter delivers. Injecting here would spend the
+            // lease and hand the model nothing. So a Gemini clear stays SUPPRESSED (a recognised reason
+            // declined, not an unknown one) until there is a delivery channel and a live receipt proving it.
+            resetDiscriminator: null,
             budget: HookBudget.Remaining(processStart, "session-start"),
             memoryClientFactory, memoryStoreFactory);
 

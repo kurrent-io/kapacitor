@@ -9,6 +9,11 @@ namespace Capacitor.Cli.Tests.Unit.SessionStartMemory;
 ///
 /// <para>These assert SEQUENCES, not states. A state-only suite passes against an implementation that
 /// always injects, which is the failure mode in the other direction.</para>
+///
+/// <para>Claude is the harness named throughout because it is the one that passes a discriminator. Gemini
+/// deliberately does not: read from gemini-cli 0.53.0, its `/clear` mints a NEW session id before firing
+/// the hook — so the session id is already the generation — and its handler consumes only
+/// `systemMessage`, never the `additionalContext` this adapter delivers through.</para>
 /// </summary>
 internal class ContextResetLeaseKeyTests {
     const string Session = "3f2a1b4c5d6e7f8091a2b3c4d5e6f708";
@@ -45,8 +50,8 @@ internal class ContextResetLeaseKeyTests {
         var startup = SessionStartMemoryHookSupport.ContextResetInstanceId(SessionLifecycleReason.New, "t0");
         var resume  = SessionStartMemoryHookSupport.ContextResetInstanceId(SessionLifecycleReason.Resume, "t1");
 
-        await Assert.That(KeyFor(SessionStartHarness.Gemini, resume))
-            .IsEqualTo(KeyFor(SessionStartHarness.Gemini, startup));
+        await Assert.That(KeyFor(SessionStartHarness.Claude, resume))
+            .IsEqualTo(KeyFor(SessionStartHarness.Claude, startup));
     }
 
     /// <summary>startup → clear: a SECOND key, so the index is injected again.</summary>
@@ -55,19 +60,19 @@ internal class ContextResetLeaseKeyTests {
         var startup = SessionStartMemoryHookSupport.ContextResetInstanceId(SessionLifecycleReason.New, "t0");
         var cleared = SessionStartMemoryHookSupport.ContextResetInstanceId(SessionLifecycleReason.Clear, "t1");
 
-        await Assert.That(KeyFor(SessionStartHarness.Gemini, cleared))
-            .IsNotEqualTo(KeyFor(SessionStartHarness.Gemini, startup));
+        await Assert.That(KeyFor(SessionStartHarness.Claude, cleared))
+            .IsNotEqualTo(KeyFor(SessionStartHarness.Claude, startup));
     }
 
     /// <summary>clear → clear: a THIRD key. Two genuine clears must both inject.</summary>
     [Test]
     public async Task Two_clears_yield_three_distinct_lease_keys() {
         var keys = new[] {
-            KeyFor(SessionStartHarness.Gemini,
+            KeyFor(SessionStartHarness.Claude,
                 SessionStartMemoryHookSupport.ContextResetInstanceId(SessionLifecycleReason.New, "t0")),
-            KeyFor(SessionStartHarness.Gemini,
+            KeyFor(SessionStartHarness.Claude,
                 SessionStartMemoryHookSupport.ContextResetInstanceId(SessionLifecycleReason.Clear, "t1")),
-            KeyFor(SessionStartHarness.Gemini,
+            KeyFor(SessionStartHarness.Claude,
                 SessionStartMemoryHookSupport.ContextResetInstanceId(SessionLifecycleReason.Clear, "t2"))
         };
 
@@ -84,8 +89,8 @@ internal class ContextResetLeaseKeyTests {
         var first  = SessionStartMemoryHookSupport.ContextResetInstanceId(SessionLifecycleReason.Clear, "t1");
         var repeat = SessionStartMemoryHookSupport.ContextResetInstanceId(SessionLifecycleReason.Clear, "t1");
 
-        await Assert.That(KeyFor(SessionStartHarness.Gemini, repeat))
-            .IsEqualTo(KeyFor(SessionStartHarness.Gemini, first));
+        await Assert.That(KeyFor(SessionStartHarness.Claude, repeat))
+            .IsEqualTo(KeyFor(SessionStartHarness.Claude, first));
     }
 
     // ── policy ──
@@ -96,7 +101,7 @@ internal class ContextResetLeaseKeyTests {
     [Test]
     public async Task A_clear_without_a_discriminator_is_ineligible() {
         var decision = SessionStartMemoryLifecyclePolicy.Decide(
-            new SessionMemoryLifecycle(SessionStartHarness.Gemini, Session, LifecycleInstanceId: null,
+            new SessionMemoryLifecycle(SessionStartHarness.Claude, Session, LifecycleInstanceId: null,
                 IsTopLevel: true, ClassificationAuthoritative: true,
                 SessionLifecycleReason.Clear, CallbackMayRepeat: false));
 
@@ -106,7 +111,7 @@ internal class ContextResetLeaseKeyTests {
     [Test]
     public async Task A_clear_with_a_discriminator_is_eligible() {
         var decision = SessionStartMemoryLifecyclePolicy.Decide(
-            new SessionMemoryLifecycle(SessionStartHarness.Gemini, Session,
+            new SessionMemoryLifecycle(SessionStartHarness.Claude, Session,
                 SessionStartMemoryHookSupport.ContextResetInstanceId(SessionLifecycleReason.Clear, "t1"),
                 IsTopLevel: true, ClassificationAuthoritative: true,
                 SessionLifecycleReason.Clear, CallbackMayRepeat: false));
@@ -128,7 +133,7 @@ internal class ContextResetLeaseKeyTests {
         var keys = spellings
             .Select(raw => DateTimeOffset.Parse(raw.Trim(), null,
                         System.Globalization.DateTimeStyles.RoundtripKind).ToString("O"))
-            .Select(canonical => KeyFor(SessionStartHarness.Gemini,
+            .Select(canonical => KeyFor(SessionStartHarness.Claude,
                         SessionStartMemoryHookSupport.ContextResetInstanceId(
                             SessionLifecycleReason.Clear, canonical)))
             .Distinct()
