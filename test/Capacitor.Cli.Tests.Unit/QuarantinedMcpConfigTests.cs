@@ -323,8 +323,12 @@ public class QuarantinedMcpConfigTests {
         Git(source, "add", "-A");
         Git(source, "commit", "-q", "-m", "init");
 
-        // An index entry whose NAME contains a backslash, with no file on disk.
-        var blob = GitCapture(source, "hash-object", "-w", "--stdin", "--path", "x").Trim();
+        // An index entry whose NAME contains a backslash, with no file on disk. Hash a REAL file rather
+        // than `--stdin`: the fixture helper does not redirect stdin, so `--stdin` inherits the test host's
+        // and fails outright on a CI runner ("Unable to add x to database"). This test skips on macOS
+        // BEFORE the fixture runs, so that mistake could only ever surface on the Windows leg.
+        WriteAt(source, "decoy.json", """{"decoy":true}""");
+        var blob = GitCapture(source, "hash-object", "-w", "decoy.json").Trim();
         try {
             Git(source, "update-index", "--add", "--cacheinfo", $"100644,{blob},.cursor\\mcp.json");
         } catch (InvalidOperationException) {
