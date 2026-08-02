@@ -215,6 +215,7 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
         // Resolved once: `git config` on the SOURCE repo, whose definitions are the only ones a branch's
         // .gitattributes can select.
         var filterOverrides = await BranchFilterOverridesAsync(repoPath);
+        LogDisabledFilters(filterOverrides, repoPath);
 
         if (await IsGitRepoWithCommits(repoPath)) {
             if (!string.IsNullOrEmpty(baseRef)) {
@@ -341,6 +342,23 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
             try { await RemoveAsync(created); } catch { /* keep the original failure */ }
             throw;
         }
+    }
+
+    /// <summary>Logs which filter drivers were disabled, so an operator whose LFS-tracked file checks out
+    /// as pointer text can see why rather than guessing. Silent containment is how a deliberate trade turns
+    /// into a bug report.</summary>
+    void LogDisabledFilters(string[] overrides, string repoPath) {
+        var drivers = overrides
+            .Where(static o => o.StartsWith("filter.", StringComparison.Ordinal) && o.EndsWith(".clean=", StringComparison.Ordinal))
+            .Select(static o => o["filter.".Length..^".clean=".Length])
+            .ToArray();
+
+        if (drivers.Length > 0)
+            logger.LogInformation(
+                "Disabled git filter drivers for agent worktree creation from {Repo}: {Drivers}. A branch's "
+              + ".gitattributes selects which driver runs, so a driver with a relative command would execute "
+              + "branch-supplied code. LFS-tracked files will appear as pointer text in the worktree.",
+                repoPath, string.Join(", ", drivers));
     }
 
     /// <summary>Removes branch-authored vendor MCP configuration and logs what went, so an operator whose

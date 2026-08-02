@@ -1145,18 +1145,13 @@ kcap agent start claude -d                    # start without attaching; prints 
     `core.hooksPath` such as `.githooks`, the hook scripts are themselves branch content and git would run
     `post-checkout` during `worktree add`. This applies only to kcap's own creation commands; hooks in the
     agent's own later commits are unaffected.
-  - **Clean/smudge filters are disabled for those same commands, except `lfs`.** `.gitattributes` is branch
-    content and selects which filter driver applies, so a driver whose command is relative —
-    `filter.x.smudge=./tools/f` — has the branch supply the executable. No filter command is inspected to
-    decide this: a command is a shell program, and no parsing reliably decides what one will execute.
-    Instead every driver but `lfs` is disabled outright, and `lfs` is **rebound to kcap's own command**
-    using an absolute `git-lfs` path resolved by the daemon — so LFS keeps working without anything from
-    your config being executed. If `git-lfs` cannot be found, `lfs` is disabled too and LFS files check out
-    as pointers. **A custom filter driver does not run inside an agent worktree**, and a wrapper you have
-    put in front of git-lfs is bypassed there; if you rely on either, raise it rather than treating it as a
-    bug.
-- **Detach** without stopping the agent with the prefix key **`Ctrl-Q` then `d`**. The agent keeps running in the daemon.
-- **Permissions:** for a registered agent, permission prompts appear in the web UI (the same dialog as hosted agents); with `--private`, prompts are answered natively in your terminal.
+  - **Clean/smudge filters are disabled for those same commands — all of them, including `lfs`.**
+    `.gitattributes` is branch content and selects which filter driver applies, so a driver whose command is
+    relative — `filter.x.smudge=./tools/f` — has the branch supply the executable. No command is inspected
+    and no driver is exempt: four narrower designs were each defeated at their exemption, so there is
+    deliberately nothing left to parse, resolve or impersonate. **LFS-tracked files therefore check out as
+    pointer text inside agent worktrees, and a custom filter driver does not run there.** Disabled drivers
+    are logged at startup of each worktree so the effect is visible rather than mysterious.
 
 ```bash
 kcap agent                 # no subcommand — same as `kcap agent ls`
