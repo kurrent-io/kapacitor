@@ -274,8 +274,7 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
         // Inventoried and logged here, not at the source: `add -A` in this worktree is where the standalone
         // path's filters resolve. Round 6 removed the source-level logging as dead, and this call was
         // applying overrides inline — silently disabling LFS against a README that promises the opposite.
-        var standaloneOverrides = await BranchFilterOverridesAsync(worktreePath);
-        LogDisabledFilters(standaloneOverrides, worktreePath);
+        var standaloneOverrides = await FilterOverridesForAsync(worktreePath);
         await RunGit(worktreePath, GitTimeout, [..NoBranchHooks(), ..standaloneOverrides, "add", "-A"]);
         // Identity supplied explicitly. This is the daemon's OWN bookkeeping commit, not the user's work,
         // so it must not depend on the host having git identity configured — a machine without a global
@@ -364,13 +363,28 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
     /// <c>--no-checkout</c> means nothing is materialised before that guarded step.</para>
     /// </summary>
     async Task CheckoutInTargetContextAsync(string worktreePath) {
-        var overrides = await BranchFilterOverridesAsync(worktreePath);
-        LogDisabledFilters(overrides, worktreePath);
+        var overrides = await FilterOverridesForAsync(worktreePath);
 
         // `reset --hard HEAD`, not `checkout -- .`: --no-checkout leaves the INDEX unpopulated too, so a
         // pathspec matches nothing. This is the step that materialises the tree, and therefore the step
         // the overrides have to guard.
         await RunGit(worktreePath, GitTimeout, [..NoBranchHooks(), ..overrides, "reset", "--hard", "HEAD"]);
+    }
+
+    /// <summary>
+    /// The filter overrides for a context, LOGGED as a side effect.
+    ///
+    /// <para>Single entry point on purpose. Each of the three materialising paths previously called the
+    /// inventory directly and remembered — or forgot — to log separately: standalone lost its logging when
+    /// a redundant source-level call was deleted, and the borrowed snapshot never had it, so a reviewer on
+    /// an LFS host silently got pointer files. Two rounds, one class. Computing and logging together means
+    /// a fourth path cannot repeat it.</para>
+    /// </summary>
+    async Task<string[]> FilterOverridesForAsync(string gitContextPath) {
+        var overrides = await BranchFilterOverridesAsync(gitContextPath);
+        LogDisabledFilters(overrides, gitContextPath);
+
+        return overrides;
     }
 
     /// <summary>Logs which filter drivers were disabled, so an operator whose LFS-tracked file checks out
@@ -567,7 +581,7 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
             // Same guard as `worktree add`: this checkout materialises branch content, so a relative
             // core.hooksPath would run the branch's post-checkout here too. Missed when the guard was
             // added — it went on the worktree paths only.
-            await RunGit(destination, GitTimeout, [..NoBranchHooks(), ..await BranchFilterOverridesAsync(destination), "checkout", "--detach", "HEAD"]);
+            await RunGit(destination, GitTimeout, [..NoBranchHooks(), ..await FilterOverridesForAsync(destination), "checkout", "--detach", "HEAD"]);
             var clonedHead = (await RunGitCapture(destination, GitTimeout, false, "rev-parse", "HEAD")).Trim();
             if (!string.Equals(sourceHead, clonedHead, StringComparison.Ordinal)) throw new SourceChangedException();
             await RunGitBestEffort(destination, "remote", "remove", "origin");
