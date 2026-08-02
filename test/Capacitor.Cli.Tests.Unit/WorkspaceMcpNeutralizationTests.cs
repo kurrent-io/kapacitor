@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Reflection;
 using Capacitor.Cli.Daemon;
 using Capacitor.Cli.Daemon.Services;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -371,6 +372,49 @@ public class WorkspaceMcpNeutralizationTests {
         await Assert.That(excluded).Contains(".capacitor");
         await Assert.That(excluded).Contains(".attached");
     }
+
+    /// <summary>
+    /// A borrowed launch from a SUBDIRECTORY runs the vendor in <c>snapshot/&lt;relativeCwd&gt;</c>, but the
+    /// exclusion list is repository-root-relative — so <c>src/.kiro/settings/mcp.json</c> did not match
+    /// <c>.kiro/settings/mcp.json</c> and survived into the snapshot, at exactly the path the vendor reads.
+    /// Ancestors are covered too, since a vendor may search upward and every level is branch-authored.
+    /// </summary>
+    [Test]
+    [Arguments("src")]
+    [Arguments("apps/web")]
+    public async Task Snapshot_exclusions_cover_the_execution_directory(string relativeCwd) {
+        var exclusions = InvokeExclusionsFor(relativeCwd);
+
+        foreach (var path in WorktreeManager.WorkspaceMcpConfigPaths) {
+            await Assert.That(exclusions).Contains(path);                      // repo root
+            await Assert.That(exclusions).Contains($"{relativeCwd}/{path}");   // the vendor's actual cwd
+        }
+
+        // An intermediate level is covered, not just the leaf.
+        if (relativeCwd.Contains('/'))
+            foreach (var path in WorktreeManager.WorkspaceMcpConfigPaths)
+                await Assert.That(exclusions).Contains($"apps/{path}");
+    }
+
+    /// <summary>A root-level launch must produce exactly the unprefixed list — no duplicates, no
+    /// "./"-prefixed variants that would match nothing.</summary>
+    [Test]
+    [Arguments(".")]
+    [Arguments("")]
+    public async Task Snapshot_exclusions_for_a_root_launch_are_unchanged(string relativeCwd) {
+        // Set equality both ways, and no growth — a "./"-prefixed duplicate would match nothing and
+        // silently widen the list.
+        var actual = InvokeExclusionsFor(relativeCwd);
+
+        await Assert.That(actual.Length).IsEqualTo(WorktreeManager.SnapshotExcludedPaths.Length);
+        foreach (var path in WorktreeManager.SnapshotExcludedPaths)
+            await Assert.That(actual).Contains(path);
+    }
+
+    static string[] InvokeExclusionsFor(string relativeCwd) =>
+        (string[])typeof(WorktreeManager)
+            .GetMethod("SnapshotExclusionsFor", BindingFlags.NonPublic | BindingFlags.Static)!
+            .Invoke(null, [relativeCwd])!;
 
     /// <summary>Windows needs Developer Mode or elevation to create a symlink, so these assert POSIX
     /// behaviour where the daemon's worktrees actually live. Skipped rather than adapted: a Windows variant

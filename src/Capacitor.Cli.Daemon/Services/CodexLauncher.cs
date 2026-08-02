@@ -93,22 +93,22 @@ internal sealed partial class CodexLauncher(
 
                 if (Directory.Exists(sourceCodexDir)) {
                     FileSystemOverlay.OverlayDirectory(sourceCodexDir, Path.Combine(ctx.Worktree.Path, ".codex"));
-
-                    // The overlay copies the SOURCE's whole .codex in, which re-materialises
-                    // `.codex/config.toml` after worktree creation deliberately removed it — undoing the
-                    // containment for every Codex launch. It matters where the source checkout is itself
-                    // the untrusted branch: a borrowed snapshot (source is the user's cwd) or `--worktree`
-                    // from a checkout already on that branch.
-                    //
-                    // Re-running the neutralizer is preferred over teaching the overlay an exclusion list:
-                    // it reuses the one canonical path list, and the overlay's actual purpose is
-                    // `.codex/hooks.json` (project-scope hooks; MCP servers are registered in the
-                    // USER-scope ~/.codex/config.toml), so nothing this launcher needs is lost.
-                    WorktreeManager.NeutralizeWorkspaceMcpConfig(ctx.Worktree.Path);
                 }
             } catch (Exception ex) {
                 LogOverlayFailed(ex, ctx.AgentId);
             }
+
+            // OUTSIDE the best-effort block on purpose. The overlay copies the SOURCE's whole .codex in,
+            // which re-materialises `.codex/config.toml` after worktree creation deliberately removed it —
+            // undoing the containment for every Codex launch, and mattering most where the source checkout
+            // IS the untrusted branch (a borrowed snapshot, or --worktree from a checkout on that branch).
+            //
+            // The first version of this fix sat inside the catch above, so an overlay that copied the file
+            // and then threw skipped neutralization entirely, and a neutralization failure was logged and
+            // swallowed — a fail-closed guard that failed open. Out here it runs whatever the overlay did,
+            // and WorkspaceMcpNeutralizationException propagates. Losing the launch is the correct outcome:
+            // both launch paths remove an owned worktree on failure, so nothing leaks.
+            WorktreeManager.NeutralizeWorkspaceMcpConfig(ctx.Worktree.Path);
         }
 
         // Step 2: hook preflight (fail-fast, read-only). Either worktree/cwd-scope OR

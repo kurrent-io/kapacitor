@@ -410,7 +410,7 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
         var staging = final + ".preparing-" + Guid.NewGuid().ToString("N")[..8];
         var promoted = false;
         try {
-            await BuildIndependentSnapshotAsync(source, staging, SnapshotExcludedPaths, ct);
+            await BuildIndependentSnapshotAsync(source, staging, SnapshotExclusionsFor(relativeCwd), ct);
             Directory.Move(staging, final);
             promoted = true;
             var executionPath = relativeCwd == "."
@@ -463,7 +463,11 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
             ?? throw new InvalidOperationException("Snapshot target has no parent directory.");
         var staging = Path.Combine(parent, Path.GetFileName(target) + ".refresh-" + Guid.NewGuid().ToString("N")[..8]);
         try {
-            var exclusions = SnapshotExcludedPaths.Concat(excludePaths).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+            // Derived, because this path carries absolute paths rather than the relative cwd the creation
+            // path has. Same requirement: the vendor runs in `execution`, so the exclusions must cover the
+            // config paths relative to THAT, not only to the snapshot root.
+            var exclusions = SnapshotExclusionsFor(Path.GetRelativePath(target, execution))
+                .Concat(excludePaths).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
             await BuildIndependentSnapshotAsync(source, staging, exclusions, ct);
             ReplaceTreeContentsNoFollow(target, staging, execution);
         } finally {
@@ -751,6 +755,34 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
     /// would show up as a DELETION inside the snapshot — polluting <c>git status</c> and diffs, and capable
     /// of producing a review finding about a deletion kcap performed. Driven from the same list, so the two
     /// cannot drift apart again.</para></summary>
+    /// <summary>
+    /// The snapshot exclusions, extended to cover the EXECUTION directory when a borrowed launch runs from
+    /// a subdirectory of the repository.
+    ///
+    /// <para>The exclusion list is repository-root-relative, but the vendor's working directory is
+    /// <c>snapshot/&lt;relativeCwd&gt;</c>. For a launch from <c>repo/src</c>, the vendor reads
+    /// <c>src/.kiro/settings/mcp.json</c> — which does not match <c>.kiro/settings/mcp.json</c> and so
+    /// survived the snapshot entirely. Every ANCESTOR segment is covered too, not just the leaf, because a
+    /// vendor may search upward from its cwd and each level is equally branch-authored.</para>
+    /// </summary>
+    static string[] SnapshotExclusionsFor(string relativeCwd) {
+        var normalized = relativeCwd.Replace('\\', '/').Trim('/');
+
+        if (normalized is "" or ".") return SnapshotExcludedPaths;
+
+        var prefixes = new List<string> { "" };
+        var walked   = "";
+
+        foreach (var segment in normalized.Split('/', StringSplitOptions.RemoveEmptyEntries)) {
+            walked = walked.Length == 0 ? segment : $"{walked}/{segment}";
+            prefixes.Add(walked + "/");
+        }
+
+        return [.. SnapshotExcludedPaths,
+                .. prefixes.SelectMany(prefix => WorkspaceMcpConfigPaths.Select(path => prefix + path))
+                           .Distinct(StringComparer.OrdinalIgnoreCase)];
+    }
+
     static async Task ApplyReservedIndexPolicyAsync(string destination) {
         foreach (var path in WorkspaceMcpConfigPaths)
             try { await RunGit(destination, GitTimeout, "update-index", "--skip-worktree", "--", path); }

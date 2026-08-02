@@ -75,6 +75,11 @@ internal sealed partial class PtyHostedAgentRuntimeFactory(
         } catch (CodexHooksNotInstalledException) {
             // Propagate — the orchestrator maps this to LaunchFailed + worktree cleanup.
             throw;
+        } catch (WorkspaceMcpNeutralizationException) {
+            // Propagate for the same reason, and because the generic handler below would otherwise turn a
+            // fail-closed containment failure into a soft log and spawn the vendor anyway — against a tree
+            // still holding branch-authored config that some vendors execute at session setup.
+            throw;
         } catch (Exception ex) {
             LogPrepareSoftFailure(ex, ctx.AgentId);
         }
