@@ -54,7 +54,8 @@ internal sealed class LaunchConsentGate(
         }
 
         var grace = TimeSpan.FromSeconds(Math.Min(5, policy.PromptTimeoutSeconds));
-        var wait  = grace < Remaining() ? grace : Remaining(); // computed immediately before waiting
+        var left  = Remaining();                       // single read: both uses see one value
+        var wait  = grace < left ? grace : left; // computed immediately before waiting
         if (!await prompter.WaitForSubscriberAsync(wait, time, ct))
             return Done(agentId, input, allowed: false, source: "prompt_no_ui",
                 // One decimal place: a sub-second grace must never render as a misleading "0s".

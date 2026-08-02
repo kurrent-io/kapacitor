@@ -141,6 +141,7 @@ internal sealed class SequencedCommandProcessor : IAsyncDisposable {
 
     readonly Channel<LaneItem> _lane = Channel.CreateUnbounded<LaneItem>(new UnboundedChannelOptions { SingleReader = true });
     readonly Task _laneTask;
+    int _disposed;
 
     /// <param name="isKnownStopTarget">§3.3 stop-admission probe — whether this id is a real stop target
     /// OUTSIDE the in-flight-launch set (the orchestrator's registry plus its durable PID records). Called
@@ -815,6 +816,9 @@ internal sealed class SequencedCommandProcessor : IAsyncDisposable {
     /// <see cref="SettleAtShutdown"/> before the lane exits, which also retires the exact active-launch
     /// tokens and returns the queued-stop counter to zero.</summary>
     public async ValueTask DisposeAsync() {
+        // Idempotent: the orchestrator disposes explicitly and the DI container may dispose
+        // again; a second pass must not CancelAsync an already-disposed CTS (that throws).
+        if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
         StopAcceptingForShutdown();
 
         // Releases the lane's start-barrier wait, so a processor whose barrier never completed (a

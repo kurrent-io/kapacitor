@@ -9,5 +9,5 @@ namespace Capacitor.Cli.Daemon.Services;
 /// a <c>StatusSubscribe</c> handler; until then it must not appear here.
 /// </summary>
 internal static class LocalControlCapabilities {
-    public static readonly List<string> Current = ["consent/1"];
+    public static readonly IReadOnlyList<string> Current = ["consent/1"];
 }
