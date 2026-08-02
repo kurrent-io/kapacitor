@@ -1149,8 +1149,11 @@ kcap agent start claude -d                    # start without attaching; prints 
     `.gitattributes` is branch content and selects which filter driver applies, so a driver whose command is
     relative — `filter.x.smudge=./tools/f` — has the branch supply the executable. No command is inspected
     and no driver is exempt: four narrower designs were each defeated at their exemption, so there is
-    deliberately nothing left to parse, resolve or impersonate. **No custom filter driver runs inside an agent
-    worktree.** What that means for file contents depends on how the worktree is built:
+    deliberately nothing left to parse, resolve or impersonate. **No custom filter driver runs during the git
+    commands kcap uses to create and populate a worktree** — that is the window in which branch content is
+    first materialised, before an agent is running. The overrides are per-command, not persistent: git
+    operations the agent itself runs inside the worktree afterwards use the repository's own configuration.
+    What the disabling means for file contents depends on how the worktree is built:
     - *Owned worktrees* check out through git, so LFS-tracked files appear as pointer text.
     - *Standalone snapshots* copy the source directory's bytes and re-commit them with the clean filter
       disabled, so whatever the source already held — smudged content included — is what you get.

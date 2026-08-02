@@ -281,6 +281,42 @@ public class BranchFilterContainmentTests {
         await Assert.That(File.Exists(marker)).IsFalse();
     }
 
+    /// <summary>
+    /// The refusal alone, with no filter execution — so it runs on WINDOWS too, which the end-to-end test
+    /// above cannot (it needs a POSIX shebang). That matters specifically here: the guard detects a
+    /// non-round-trippable name by the U+FFFD a UTF-8 decoder emits, and Windows is exactly where
+    /// redirected output would otherwise decode with a console codepage that turns 0xff into an ordinary
+    /// character — no U+FFFD, no refusal, and an override naming the wrong driver. This is the coverage for
+    /// `StandardOutputEncoding` being pinned rather than inherited.
+    /// </summary>
+    [Test]
+    public async Task A_non_round_trippable_driver_name_is_refused_on_every_platform() {
+        var repo = NewRepo();
+
+        // Written as BYTES: a process argument cannot carry 0xff — .NET would encode it to valid UTF-8.
+        var config = Path.Combine(repo, ".git", "config");
+        var bytes = new List<byte>(File.ReadAllBytes(config));
+        bytes.AddRange([.. "[filter \"ev"u8, 0xff, .. "il\"]\n\tsmudge = ./tools/f\n"u8]);
+        File.WriteAllBytes(config, [.. bytes]);
+
+        // Precondition via the REGEX-FREE listing. `EffectiveDriverNames` uses `--get-regexp`, which is
+        // blind to exactly this key — that blindness is the bug the enumeration change fixed, so using it
+        // here would fail the precondition rather than test the refusal. (It did, first time round.)
+        var psi = new ProcessStartInfo("git") {
+            WorkingDirectory = repo, RedirectStandardOutput = true, RedirectStandardError = true,
+            StandardOutputEncoding = new System.Text.UTF8Encoding(false, false)
+        };
+        foreach (var a in new[] { "config", "--list", "--name-only" }) psi.ArgumentList.Add(a);
+        using var listing = Process.Start(psi)!;
+        var keys = listing.StandardOutput.ReadToEnd();
+        listing.WaitForExit();
+        await Assert.That(keys).Contains("filter.")
+            .Because("git must report the key, or there is nothing for the guard to refuse");
+
+        await Assert.ThrowsAsync<BranchFilterInventoryException>(async () =>
+            await WorktreeManager.BranchFilterOverridesAsync(repo));
+    }
+
     // ── fixture ──
 
     static string NewDir(string tag) {

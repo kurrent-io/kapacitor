@@ -1020,6 +1020,16 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
             WorkingDirectory       = cwd,
             RedirectStandardOutput = true,
             RedirectStandardError  = true,
+            // EXPLICIT, because a guard depends on it. Paths and config keys are bytes to git, and the
+            // containment fails closed on names that cannot round-trip by detecting the U+FFFD a UTF-8
+            // decoder emits for an invalid sequence. Left implicit, redirected output decodes with the
+            // ambient console encoding — a Windows codepage maps 0xff to a perfectly ordinary character,
+            // no U+FFFD appears, the name looks round-trippable, and an override is emitted that names a
+            // DIFFERENT driver while looking applied. Replacement fallback is what makes the check sound.
+            StandardOutputEncoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false,
+                                                      throwOnInvalidBytes: false),
+            StandardErrorEncoding  = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false,
+                                                      throwOnInvalidBytes: false),
             CreateNoWindow         = true,
             Environment = {
                 ["GIT_TERMINAL_PROMPT"] = "0",
