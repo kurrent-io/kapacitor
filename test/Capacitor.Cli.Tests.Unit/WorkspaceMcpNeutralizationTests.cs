@@ -305,6 +305,49 @@ public class WorkspaceMcpNeutralizationTests {
 
 
 
+    /// <summary>
+    /// Stripping the branch's MCP config is pointless if CREATING the worktree already ran the branch's
+    /// code. With a relative <c>core.hooksPath</c> — <c>.githooks</c> is a widespread convention and a
+    /// documented setup step in many repos — the hook scripts ARE branch content, and git runs
+    /// <c>post-checkout</c> during <c>worktree add</c>.
+    ///
+    /// <para>The control runs first and must FIRE: a guard test whose hook could never have run either way
+    /// proves nothing. Only then does the absence in the real creation path mean something.</para>
+    /// </summary>
+    [Test]
+    public async Task CreateAsync_does_not_run_a_branch_authored_git_hook() {
+        Skip.Unless(!OperatingSystem.IsWindows(), "POSIX hook script with a shebang");
+
+        var marker = Path.Combine(NewDir("hookmarker"), "fired");
+        var repo = NewDir("hookrepo");
+        Git(repo, "init", "-q");
+        Git(repo, "config", "user.email", "t@e.com");
+        Git(repo, "config", "user.name", "T");
+        // The operator's own config points hooks at a path the BRANCH controls — the whole hazard.
+        Git(repo, "config", "core.hooksPath", ".githooks");
+
+        var hook = Path.Combine(repo, ".githooks", "post-checkout");
+        Directory.CreateDirectory(Path.GetDirectoryName(hook)!);
+        File.WriteAllText(hook, $"#!/bin/sh\nprintf fired > '{marker}'\n");
+        File.SetUnixFileMode(hook, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        File.WriteAllText(Path.Combine(repo, "README.md"), "hi");
+        Git(repo, "add", "-A");
+        Git(repo, "commit", "-q", "-m", "branch ships its own post-checkout");
+
+        // CONTROL — plain git, honouring the repo's hooksPath. This MUST run the hook.
+        Git(repo, "worktree", "add", "-q", Path.Combine(NewDir("ctl"), "wt"), "-b", "ctl-" + Guid.NewGuid().ToString("N")[..8]);
+        await Assert.That(File.Exists(marker))
+            .IsTrue()
+            .Because("the control must reproduce hook execution, or the assertion below is vacuous");
+
+        File.Delete(marker);
+
+        // SUBJECT — the daemon's creation path.
+        await Manager().CreateAsync(repo);
+
+        await Assert.That(File.Exists(marker)).IsFalse();
+    }
+
     /// <summary>Windows needs Developer Mode or elevation to create a symlink, so these assert POSIX
     /// behaviour where the daemon's worktrees actually live. Skipped rather than adapted: a Windows variant
     /// that silently could not create the link would be a test that passes by doing nothing.</summary>

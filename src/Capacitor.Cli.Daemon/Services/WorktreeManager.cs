@@ -268,40 +268,25 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
     /// command resolve to branch content" — blunt disabling would break legitimate drivers such as
     /// <c>filter.lfs</c>, so it is real work rather than another <c>-c</c> flag.</para>
     /// </summary>
-    /// <summary>The empty hooks directory, created ONCE per daemon process under an unguessable name.
-    /// <para>A FIXED path was the first version, and it was worse than useless: on a shared temp directory
-    /// another user pre-creates <c>kcap-no-hooks</c> containing an executable <c>post-checkout</c>,
-    /// <c>CreateDirectory</c> happily accepts the existing directory, and the guard against the branch's
-    /// hooks becomes a delivery mechanism for someone else's. A per-process GUID cannot be squatted, and
-    /// creating it fresh is what makes "empty and ours" true rather than assumed.</para></summary>
-    static readonly Lazy<string> EmptyHooksDirectory = new(() => {
-        // Base directory, per platform. On Unix, temp plus an atomic 0700 creation. On WINDOWS, temp is
-        // NOT reliably private — GetTempPath resolves TMP, then TEMP, then USERPROFILE, then the Windows
-        // directory, and verifies no access control; a service account or an admin-set shared TEMP lands
-        // somewhere another user can write. LocalApplicationData is genuinely per-user, so the base is
-        // chosen rather than the ACL patched. (I had asserted temp was already per-user here; it is not,
-        // and review was right to challenge it.)
-        var baseDir = OperatingSystem.IsWindows()
-            ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "kcap")
-            : Path.GetTempPath();
+    /// <summary>
+    /// A <c>core.hooksPath</c> that cannot contain a hook, because it cannot be a directory.
+    ///
+    /// <para>Three earlier revisions of this created an empty directory instead, and every review round
+    /// found a new problem with it: a fixed temp name another user could pre-create with a
+    /// <c>post-checkout</c>; a mkdir-then-chmod race; a Windows temp location not guaranteed private; an
+    /// empty <c>LocalApplicationData</c> silently yielding a RELATIVE path; and one leaked directory per
+    /// daemon process. All of that was incidental to needing somewhere with no hooks in it.</para>
+    ///
+    /// <para><c>/dev/null</c> is not a directory, so git finds no hook there and there is nothing to
+    /// create, permission, or clean up — and nothing for another user to squat. Measured: with the
+    /// branch's own <c>core.hooksPath</c> a committed <c>post-checkout</c> RUNS during
+    /// <c>worktree add</c>; with this it does not, and the worktree is still created normally. Safe on
+    /// Windows by construction too — git there either resolves it the same way or treats it as a relative
+    /// path that does not exist, and both mean no hook.</para>
+    /// </summary>
+    internal const string NoHooksPath = "/dev/null";
 
-        Directory.CreateDirectory(baseDir);
-
-        var dir = Path.Combine(baseDir, $"kcap-no-hooks-{Guid.NewGuid():N}");
-
-        // Created ATOMICALLY at 0700 on Unix. mkdir-then-chmod leaves a window in which a permissive umask
-        // lets another user drop a `post-checkout` into it, and the chmod does not remove a file already
-        // placed, so git would run it. The GUID makes the name unguessable; this makes the mode not-a-race.
-        if (OperatingSystem.IsWindows())
-            Directory.CreateDirectory(dir);
-        else
-            Directory.CreateDirectory(dir,
-                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
-
-        return dir;
-    });
-
-    static string[] NoBranchHooks() => ["-c", $"core.hooksPath={EmptyHooksDirectory.Value}"];
+    static string[] NoBranchHooks() => ["-c", $"core.hooksPath={NoHooksPath}"];
 
     /// <summary>
     /// Neutralizes the tree, and UNDOES the creation if that fails.
