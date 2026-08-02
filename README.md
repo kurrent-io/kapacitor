@@ -1145,6 +1145,11 @@ kcap agent start claude -d                    # start without attaching; prints 
     `core.hooksPath` such as `.githooks`, the hook scripts are themselves branch content and git would run
     `post-checkout` during `worktree add`. This applies only to kcap's own creation commands; hooks in the
     agent's own later commits are unaffected.
+  - **Branch-resolvable clean/smudge filters are disabled for those same commands.** `.gitattributes` is
+    branch content and selects which filter driver applies, so a driver whose command is *relative* —
+    `filter.x.smudge=./tools/f` — has the branch supply the executable. Only relative commands are
+    disabled: a PATH-resolved or absolute one such as `git-lfs filter-process` is left alone, so LFS
+    repositories check out normally.
 - **Detach** without stopping the agent with the prefix key **`Ctrl-Q` then `d`**. The agent keeps running in the daemon.
 - **Permissions:** for a registered agent, permission prompts appear in the web UI (the same dialog as hosted agents); with `--private`, prompts are answered natively in your terminal.
 
