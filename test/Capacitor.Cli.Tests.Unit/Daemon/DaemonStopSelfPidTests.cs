@@ -4,7 +4,7 @@ using Capacitor.Cli.Core;
 namespace Capacitor.Cli.Tests.Unit.Daemon;
 
 /// <summary>
-/// AI-1645 — <c>daemon stop</c> must refuse to kill a PID that is this very process.
+/// <c>daemon stop</c> must refuse to kill a PID that is this very process.
 ///
 /// <para>This is a REGRESSION test for a real kcap-cli CI failure, and it reproduces it exactly
 /// rather than approximating it. A live <see cref="DaemonLock"/> writes the acquiring process's own

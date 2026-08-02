@@ -13,7 +13,7 @@ namespace Capacitor.Cli.Tests.Unit;
 // so we mutate it per-test to point at the test's temp dir without disturbing
 // the assembly-wide value pinned by RepoPathStoreGlobalSetup.
 //
-// DaemonLockPaths.OverrideDirectoryForTesting (AI-1645): uninstall runs
+// DaemonLockPaths.OverrideDirectoryForTesting: uninstall runs
 // `daemon stop --yes`, which ENUMERATES every name in the daemons directory and
 // kills the PID it finds. That directory is selected by a process-global static,
 // so while any daemon test holds the override, uninstall reads THAT test's temp

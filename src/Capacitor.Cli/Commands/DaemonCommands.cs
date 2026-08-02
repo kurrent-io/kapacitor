@@ -366,7 +366,8 @@ public static class DaemonCommands {
             // Without this, Process.Kill(entireProcessTree: true) throws
             // "Cannot be used to terminate a process tree containing the calling process" — an
             // opaque InvalidOperationException that says nothing about WHICH pid file caused it.
-            // (AI-1645: that is exactly how this surfaced, as a random kcap-cli CI failure.)
+            // That is exactly how this surfaced: a random, always-different CI test failing
+            // with an identical stack, because the pid file named the test runner itself.
             if (entry.Pid == Environment.ProcessId) {
                 Console.Error.WriteLine(
                     $"Daemon '{name}' resolves to the current process (PID {entry.Pid}); refusing to stop it. "
