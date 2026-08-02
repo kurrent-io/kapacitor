@@ -3081,6 +3081,16 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
 
         await _shutdownCts.CancelAsync();
 
+        // Drain and settle the execution lane BEFORE the child-teardown snapshot below. The token
+        // cancellation above aborts a consent-parked launch promptly, but a launch that already
+        // passed consent keeps running to registration — and if the lane settled AFTER the
+        // enumeration, that late-registered child would miss teardown and survive graceful
+        // shutdown (the next-boot PID scan is a recovery backstop, not a substitute). The
+        // supersession semantics are unaffected: _closed was set first, so every queued item
+        // still settles (sequenced) or discards (un-sequenced) in the drain arm regardless of
+        // when the drain runs.
+        if (Processor is { } lane) await lane.DisposeAsync();
+
         foreach (var agent in _agents.Values.Where(a => a.Status is "Starting" or "Running")) {
             try {
                 await agent.ReadCts.CancelAsync();
@@ -3099,11 +3109,9 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
         _tokenRefresh.Dispose();
         _spoolDrain.Dispose();
 
-        // Phase B2-b (sequenced-settlement design §4.2.2) + §3.3: close the execution lane LAST. By now
-        // _shutdownCts is cancelled (so the in-flight item's own token has fired) and every registered child
-        // has been terminated and cleaned up above, which is exactly what makes discarding the lane's queued
-        // un-sequenced stops safe. Accepted-but-unrun SEQUENCED items still get a synthesized terminal
-        // answer inside DisposeAsync.
+        // The execution lane was drained and settled above, before the child-teardown snapshot;
+        // this second call is a no-op (DisposeAsync is idempotent) kept as belt-and-braces for
+        // any future early-return path added between the two.
         if (Processor is { } proc) await proc.DisposeAsync();
     }
 
