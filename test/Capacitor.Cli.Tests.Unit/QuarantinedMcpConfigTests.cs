@@ -264,6 +264,84 @@ public class QuarantinedMcpConfigTests {
         await Assert.That(ex!.Message).Contains("borrowed_snapshot_symlink_unsupported");
     }
 
+    /// <summary>
+    /// Backslash is a legal filename character on Unix, and the manifest used to fold `\` to `/`. A branch
+    /// could therefore track a DECOY named literally <c>.cursor\mcp.json</c>: that exact spelling satisfies
+    /// the tracked-authority check, then normalization rewrote it to <c>.cursor/mcp.json</c> — so the file
+    /// actually opened, hashed and quarantined was the developer's UNTRACKED local config. Both manifest
+    /// passes applied the same substitution, so verification agreed and nothing looked wrong.
+    ///
+    /// <para>The fix is structural: the validated path is git's path, unrewritten, so the identity that
+    /// passes the check is the identity that is read.</para>
+    /// </summary>
+    [Test]
+    public async Task A_backslash_decoy_cannot_redirect_the_read_to_untracked_content() {
+        Skip.Unless(!OperatingSystem.IsWindows(), "backslash is a path separator on Windows, not a filename");
+
+        const string secret = """{"local":"secret-never-committed"}""";
+        var source = NewRepo();
+
+        // The decoy: ONE component whose name contains a literal backslash. Tracked.
+        File.WriteAllText(Path.Combine(source, @".cursor\mcp.json"), """{"decoy":true}""");
+        Git(source, "add", "-A");
+        Git(source, "commit", "-q", "-m", "branch tracks a backslash decoy");
+
+        // The developer's real, untracked config at the path the decoy would normalize onto.
+        WriteAt(source, ".cursor/mcp.json", secret);
+
+        var info = await Manager(out _).CreateBorrowedSnapshotAsync(
+            source, "bs-" + Guid.NewGuid().ToString("N")[..8], CancellationToken.None);
+        var root = info.SnapshotRoot ?? info.Path;
+
+        // The secret must appear nowhere in the snapshot, under any name.
+        var leaked = Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories)
+            .Where(f => !f.Contains(Path.DirectorySeparatorChar + ".git" + Path.DirectorySeparatorChar))
+            .FirstOrDefault(f => File.ReadAllText(f) == secret);
+
+        await Assert.That(leaked).IsNull();
+    }
+
+    /// <summary>
+    /// The Windows half of the backslash decoy, and the reason preserving identity is not sufficient on its
+    /// own: there, the FILESYSTEM performs the substitution. `ContainedPath` maps `/` to the platform
+    /// separator, so an index entry literally named <c>.cursor\mcp.json</c> — which a Linux-authored branch
+    /// can hold, since backslash is a legal Unix filename character — is resolved by Windows as a directory
+    /// boundary and redirects the read to a real <c>.cursor\mcp.json</c>, with no managed code rewriting a
+    /// thing. Such a path cannot be represented faithfully on Windows (git cannot check it out), so it is
+    /// refused.
+    ///
+    /// <para>Runs only on Windows, where CI exercises it. The index entry is created without a working
+    /// file, since the name is unwritable there; if git declines it, the test skips rather than failing on
+    /// a fixture that could not be built.</para>
+    /// </summary>
+    [Test]
+    public async Task On_windows_a_backslash_in_a_git_path_is_refused() {
+        Skip.Unless(OperatingSystem.IsWindows(), "on Unix a backslash is a legal filename character");
+
+        var source = NewRepo();
+        WriteAt(source, "README.md", "hi");
+        Git(source, "add", "-A");
+        Git(source, "commit", "-q", "-m", "init");
+
+        // An index entry whose NAME contains a backslash, with no file on disk.
+        var blob = GitCapture(source, "hash-object", "-w", "--stdin", "--path", "x").Trim();
+        try {
+            Git(source, "update-index", "--add", "--cacheinfo", $"100644,{blob},.cursor\\mcp.json");
+        } catch (InvalidOperationException) {
+            Skip.Test("git declined to create a backslash index entry on this platform");
+            return;
+        }
+
+        Skip.Unless(GitCapture(source, "ls-files").Contains('\\'),
+            "git did not retain the backslash index entry, so there is nothing to refuse");
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+            await Manager(out _).CreateBorrowedSnapshotAsync(
+                source, "w-" + Guid.NewGuid().ToString("N")[..8], CancellationToken.None));
+
+        await Assert.That(ex!.Message).Contains("borrowed_snapshot_invalid_path");
+    }
+
     // ── fixture ──
 
     /// <summary>A manager rooted in a TEMP directory. The default DaemonConfig points at

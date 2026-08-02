@@ -562,7 +562,9 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
         long total = 0;
         foreach (var raw in stdout.Split('\0', StringSplitOptions.RemoveEmptyEntries)) {
             ct.ThrowIfCancellationRequested();
-            var rel = NormalizeRelativePath(raw);
+            // rel IS raw — validated, never rewritten — so the identity the tracked check authorises is the
+            // identity that gets opened, hashed, copied and verified.
+            var rel = ValidateRelativePath(raw);
             var quarantine = false;
 
             if (IsUnderExcluded(rel, exclusions)) {
@@ -744,12 +746,38 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
             throw new InvalidOperationException("borrowed_snapshot_root_inside_source");
     }
 
-    static string NormalizeRelativePath(string raw) {
-        var rel = raw.Replace('\\', '/').TrimStart('/').Normalize(NormalizationForm.FormC);
-        if (rel.Length == 0 || rel.Split('/').Any(p => p is "" or "." or "..") ||
-            rel.Split('/').Any(p => p.Equals(".git", StringComparison.OrdinalIgnoreCase)))
+    /// <summary>
+    /// Validates git's path and returns it UNCHANGED. It deliberately rewrites nothing.
+    ///
+    /// <para>This used to fold `\`→`/`, strip a leading `/`, and apply Form C — and every one of those was
+    /// a hole, because the value that passed the tracked-authority check stopped being the value that was
+    /// then opened and read. Backslash is a legal filename character on Unix: a branch could track a decoy
+    /// named literally <c>.cursor\mcp.json</c>, pass the tracked check on that exact spelling, and have it
+    /// rewritten into <c>.cursor/mcp.json</c> — reading and publishing the developer's untracked local
+    /// config. Both manifest passes applied the same substitution, so verification agreed.</para>
+    ///
+    /// <para>git's `-z` output is already repo-relative and forward-slash separated with no quoting, so
+    /// there is nothing legitimate to normalize. Anything not of that shape is refused rather than
+    /// repaired: an input we would have to rewrite to use is one we do not understand.</para>
+    /// </summary>
+    static string ValidateRelativePath(string raw) {
+        var parts = raw.Split('/');
+        if (raw.Length == 0 || raw.StartsWith('/') ||
+            parts.Any(p => p is "" or "." or "..") ||
+            parts.Any(p => p.Equals(".git", StringComparison.OrdinalIgnoreCase)))
             throw new InvalidOperationException($"borrowed_snapshot_invalid_path: {raw}");
-        return rel;
+
+        // On Windows the FILESYSTEM performs the substitution this method refuses to: `ContainedPath` maps
+        // `/` to the platform separator, and a component carrying a literal `\` — legal on Unix, so a
+        // Linux-authored index can hold one — is then resolved by Windows as a directory boundary. The
+        // backslash decoy would redirect the read there even though nothing in managed code rewrote it.
+        // Such a path cannot be represented faithfully on Windows (git cannot even check it out), so it is
+        // refused rather than approximated.
+        if (parts.Any(p => p.Contains(Path.DirectorySeparatorChar) ||
+                           p.Contains(Path.AltDirectorySeparatorChar)))
+            throw new InvalidOperationException($"borrowed_snapshot_invalid_path: {raw}");
+
+        return raw;
     }
 
     /// <summary>The first component of <paramref name="rel"/> that is a link, walking one component at a
@@ -872,15 +900,18 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
     /// <summary>Whether an excluded path is vendor MCP config — the kind that must stay REVIEWABLE — rather
     /// than kcap's own reserved state, which must not appear in a snapshot at all.</summary>
     static bool IsWorkspaceMcpConfigPath(string rel) {
-        var normalized = rel.Replace('\\', '/');
-
+        // Compared as-is. Folding `\` to `/` here classified a top-level file literally named
+        // `.cursor\mcp.json` as vendor config, which no vendor would ever read — quarantine would rename an
+        // ordinary tracked file and misrepresent the branch to the reviewer. Paths are git paths: `/`
+        // separates, and a backslash is just a character in a name.
         return WorkspaceMcpConfigPaths.Any(path =>
-            normalized.Equals(path, StringComparison.OrdinalIgnoreCase) ||
-            normalized.EndsWith("/" + path, StringComparison.OrdinalIgnoreCase));
+            rel.Equals(path, StringComparison.OrdinalIgnoreCase) ||
+            rel.EndsWith("/" + path, StringComparison.OrdinalIgnoreCase));
     }
 
     static bool IsUnderExcluded(string rel, string[] prefixes) {
-        rel = rel.Replace('\\', '/');
+        // `rel` is git's path and is not rewritten (see ValidateRelativePath); only the caller-supplied
+        // prefixes are normalized, since those are our own constants.
         foreach (var prefix in prefixes) {
             var normalized = prefix.Replace('\\', '/').TrimEnd('/');
             if (rel.Equals(normalized, StringComparison.OrdinalIgnoreCase) ||
