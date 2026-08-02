@@ -545,10 +545,17 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
         // source lists untracked files too, so without this a developer's local-only MCP config would be
         // copied into a snapshot the reviewer and its model can read: a disclosure the previous
         // drop-everything behaviour did not have. Untracked config is still simply dropped.
+        // ORDINAL, and against git's own bytes rather than the normalized key. Case-folding here is a
+        // disclosure bug on a case-sensitive filesystem — which is every Linux daemon: an index-tracked
+        // `.Cursor/mcp.json` that is absent on disk would admit an untracked, developer-local
+        // `.cursor/mcp.json` as "tracked", quarantining private config into a snapshot the reviewer and its
+        // model can read. Form C folding has the same shape for a decomposed spelling. Both `ls-files`
+        // calls are `-z`, so their paths are byte-identical for the same file and exact matching is right.
+        // Case-insensitive comparison stays correct for destination collisions below, where the question is
+        // whether two entries can occupy one path on THIS filesystem.
         var tracked = (await RunGitCapture(source, GitTimeout, true, "ls-files", "-z"))
             .Split('\0', StringSplitOptions.RemoveEmptyEntries)
-            .Select(NormalizeRelativePath)
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            .ToHashSet(StringComparer.Ordinal);
 
         var result = new Dictionary<string, SnapshotFile>(StringComparer.OrdinalIgnoreCase);
         var destinations = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -570,7 +577,14 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
                 // a pull request that adds a hostile `.kiro/settings/mcp.json` is invisible to the reviewer,
                 // which can then return clean on exactly the change the exclusion defends against.
                 // Carried under a suffix instead: reviewable content, at a path no vendor looks for.
-                if (!IsWorkspaceMcpConfigPath(rel) || !tracked.Contains(rel)) continue;
+                // `raw`, not `rel`: the tracked set holds git's exact paths (see above).
+                //
+                // A tracked file's WORKING-TREE bytes are what get quarantined, including uncommitted local
+                // edits — deliberate, and the same contract as every other file here. A borrowed snapshot
+                // mirrors the working tree the flow was launched from precisely so a reviewer sees the
+                // change as it stands. Tracked vs untracked is the line that matters: tracked config is
+                // part of what the reviewer was asked to judge, untracked config is nobody's business.
+                if (!IsWorkspaceMcpConfigPath(rel) || !tracked.Contains(raw)) continue;
 
                 quarantine = true;
             }

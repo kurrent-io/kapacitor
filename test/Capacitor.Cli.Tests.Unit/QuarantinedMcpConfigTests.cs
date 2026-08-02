@@ -127,6 +127,64 @@ public class QuarantinedMcpConfigTests {
         await Assert.That(ex!.Message).Contains("borrowed_snapshot_path_collision");
     }
 
+    /// <summary>
+    /// The tracked check is the ONLY thing separating branch-authored config from a developer's private
+    /// local config, so it has to hold git's exact path identity. Compared case-insensitively, an
+    /// index-tracked <c>.Cursor/mcp.json</c> that is absent on disk admits an untracked, local
+    /// <c>.cursor/mcp.json</c> as "tracked" — quarantining private content into a snapshot the reviewer and
+    /// its model can read.
+    ///
+    /// <para>Only reproducible where the two paths can coexist, so this SKIPS on a case-insensitive
+    /// filesystem (macOS, Windows) and runs for real on Linux — where every daemon runs. The tracked
+    /// <c>.mcp.json</c> alongside it is an in-run positive control: without it, a run in which quarantine
+    /// never happened at all would pass the absence assertion for the wrong reason.</para>
+    /// </summary>
+    [Test]
+    public async Task A_case_variant_tracked_path_does_not_admit_an_untracked_local_config() {
+        var source = NewRepo();
+        Skip.Unless(IsCaseSensitive(source), "needs a case-sensitive filesystem to hold both spellings");
+
+        const string secret = """{"local":"secret-not-under-review"}""";
+        WriteAt(source, ".Cursor/mcp.json", """{"mcpServers":{}}""");   // tracked, upper-C
+        WriteAt(source, ".mcp.json", """{"mcpServers":{"real":{}}}""");  // positive control
+        Git(source, "add", "-A");
+        Git(source, "commit", "-q", "-m", "tracked config");
+
+        // Tracked but absent from disk; the lower-case sibling is the developer's own, never committed.
+        File.Delete(Path.Combine(source, ".Cursor", "mcp.json"));
+        WriteAt(source, ".cursor/mcp.json", secret);
+
+        var info = await Manager(out _).CreateBorrowedSnapshotAsync(
+            source, "cs-" + Guid.NewGuid().ToString("N")[..8], CancellationToken.None);
+        var root = info.SnapshotRoot ?? info.Path;
+
+        // Positive control: quarantine really did run in THIS snapshot.
+        await Assert.That(File.Exists(Path.Combine(root, ".mcp.json" + WorktreeManager.QuarantineSuffix)))
+            .IsTrue();
+
+        // The local file is disclosed nowhere: not at its own path, not under either spelling's suffix.
+        foreach (var candidate in new[] {
+                     Path.Combine(root, ".cursor", "mcp.json"),
+                     Path.Combine(root, ".cursor", "mcp.json" + WorktreeManager.QuarantineSuffix),
+                     Path.Combine(root, ".Cursor", "mcp.json" + WorktreeManager.QuarantineSuffix) })
+            if (File.Exists(candidate))
+                await Assert.That(File.ReadAllText(candidate)).IsNotEqualTo(secret);
+
+        await Assert.That(Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories)
+                .Where(f => !f.Contains(Path.DirectorySeparatorChar + ".git" + Path.DirectorySeparatorChar))
+                .Any(f => File.ReadAllText(f) == secret))
+            .IsFalse();
+    }
+
+    /// <summary>A probe rather than an OS check: a developer can format a case-sensitive APFS volume, and
+    /// the repo may sit on a mounted share whose behaviour matches neither host default.</summary>
+    static bool IsCaseSensitive(string dir) {
+        var probe = Path.Combine(dir, "kcap-case-probe");
+        File.WriteAllText(probe, "");
+        try { return !File.Exists(Path.Combine(dir, "KCAP-CASE-PROBE")); }
+        finally { File.Delete(probe); }
+    }
+
     // ── fixture ──
 
     /// <summary>A manager rooted in a TEMP directory. The default DaemonConfig points at
