@@ -808,7 +808,15 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
     sealed class SourceChangedException : Exception;
 
     /// <summary>Suffix a quarantined config carries in the snapshot. No vendor looks for these names, so
-    /// the content is readable by a reviewer without being loadable by the agent.</summary>
+    /// the content is readable by a reviewer without being loadable by the agent.
+    ///
+    /// <para><b>Known residual, accepted.</b> A branch <c>.gitignore</c> carrying
+    /// <c>!*.kcap-quarantined</c> outranks <c>.git/info/exclude</c>, so the copy can be made to appear in
+    /// <c>git status</c> and be staged by a reviewer's <c>git add -A</c>. Nothing placed INSIDE the worktree
+    /// can escape branch-controlled ignore rules; only a sidecar outside it could, and a sidecar is
+    /// invisible to the reviewer until the flows layer points at it, which defeats the purpose this exists
+    /// for. The residual is diff noise in a commit reviewers rarely make, of content already present in the
+    /// branch — not execution, which the suffix still prevents. Tracked separately.</para></summary>
     internal const string QuarantineSuffix = ".kcap-quarantined";
 
     /// <summary>Whether an excluded path is vendor MCP config — the kind that must stay REVIEWABLE — rather
