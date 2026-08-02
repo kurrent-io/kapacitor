@@ -47,7 +47,8 @@ public class BranchFilterContainmentTests {
     /// <summary>
     /// `lfs` has NO exemption. Four designs tried to keep it working and review defeated each one at the
     /// exemption itself, so there is no longer a name to impersonate, a binding to authenticate, or a path
-    /// to resolve. The cost — LFS files as pointer text in agent worktrees — is documented and logged.
+    /// to resolve. The cost is documented and logged: an OWNED worktree checks out through git and so
+    /// holds LFS pointer text, while standalone and borrowed snapshots carry the source's own bytes.
     /// </summary>
     [Test]
     public async Task The_lfs_driver_has_no_exemption() {
