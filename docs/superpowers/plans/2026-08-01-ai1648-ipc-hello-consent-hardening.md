@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** PR 1 of the slice-2 pre-work — versioned hello frame on the daemon control socket, subscriber grace + monotonic deadline discipline for consent prompts, sequenced-lane receive-loop unparking with a daemon-lifetime cross-format latch.
+**Goal:** PR 1 of the slice-2 pre-work — versioned hello frame on the daemon control socket, subscriber grace + monotonic deadline discipline for consent prompts, receive-loop unparking with one serial execution domain for server launch/stop commands.
 
 **Architecture:** Extends the slice-1 control IPC (`FrameCodec`/`LocalControlServer`/`LaunchConsentBroker`/`LaunchConsentGate`) and the orchestrator's launch routing. Spec (authoritative, review-hardened over 6 rounds): `docs/superpowers/specs/2026-08-01-slice2-prework-control-ipc-design.md`. Read the spec sections named in each task; where this plan and the spec disagree, the spec governs.
 
@@ -15,8 +15,8 @@
 - `protocol_version` starts at 1; capabilities list for this PR is exactly `["consent/1"]`, assembled next to the `LocalControlServer` routing so a capability cannot be advertised without its handler.
 - Coded strings (stable contracts, do not rename): `prompt_no_ui`, `prompt_timeout`, `prompt_user`, `launch_denied_by_owner`. (An earlier draft added `mixed_command_formats`; that whole idea was retracted — see Task 5.)
 - Consent deadline discipline: ONE monotonic deadline per prompt path via injected `TimeProvider`; grace = `min(5 s, PromptTimeoutSeconds)` burned from the deadline; every wait duration computed immediately before waiting; zero remaining budget is legal and settles as `prompt_timeout`.
-- The format latch trips on RECEIPT of a launch/stop carrying ANY of `Epoch`/`Seq`/`CommandId` (the shipped `anySeq` discriminator), BEFORE routing/submission, via `Volatile` write; set once per process, never cleared.
-- The legacy lane's inline-await behavior is deliberately UNCHANGED (spec decision 4). Do not introduce any queue/worker for legacy commands.
+- One execution domain: server launch/stop execution routes through the processor lane per spec §3.3 — nothing is ever refused for its command format.
+- The inline-await behavior survives ONLY for a null `_processor` (a pre-settlement server), unchanged for exactly the population that already had it. Introduce no SECOND queue/worker: un-sequenced commands ride the one existing lane.
 - Tests: no wall-clock sleeps for consent timing — use `Microsoft.Extensions.TimeProvider.Testing` `FakeTimeProvider`. Real-socket tests use short daemon names (macOS `sockaddr_un` ~104-byte path limit).
 - kcap-cli conventions: no Linear issue ids in code comments; clean commit titles. 42 pre-existing unit failures in the codex-config/MCP-registry/uninstall area are an accepted baseline — do not chase them.
 
@@ -242,7 +242,7 @@ Implemented state and its deviations are recorded in
 ### Task 6: Full verification + docs
 
 **Files:**
-- Modify: `CLAUDE.md` (kcap-cli — one short entry: hello frame + capabilities, consent grace/deadline discipline, sequenced unparking + latch, pointer to the spec)
+- Modify: `CLAUDE.md` (kcap-cli — one short entry: hello frame + capabilities, consent grace/deadline discipline, one execution domain for server launch/stop routing (spec §3.3), pointer to the spec)
 - The spec already rides this branch (`docs/superpowers/specs/2026-08-01-slice2-prework-control-ipc-design.md`).
 
 - [ ] **Step 1:** Full unit suite run; assert no NEW failures beyond the accepted 42-failure baseline (codex-config/MCP-registry/uninstall area). Run the daemon/socket integration classes individually.

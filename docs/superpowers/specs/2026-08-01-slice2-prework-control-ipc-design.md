@@ -252,8 +252,15 @@ server-origin launch/stop execution through the one existing serial lane:
   and shutdown discard; id membership lasts until the last instance for that id settles
   (reference-counted — no id-non-reuse assumption anywhere). A launch that has been
   DEQUEUED and is parked at the consent gate is therefore still an admissible stop target.
-  Admissible stop targets = `_agents` ∪ active-instance ids; anything else drops at
-  admission with a log — observably identical to the eventual unknown-agent no-op (§1.8).
+  Admissible stop targets = `_agents` ∪ durable PID records ∪ active-instance ids; anything
+  else drops at admission with a log — observably identical to the eventual unknown-agent
+  no-op (§1.8). The PID-record arm is load-bearing, not belt-and-braces: the daemon's stop
+  path falls back to a record-driven reap for an id THIS incarnation never registered, which
+  is how the server's registry-independent physical stop reclaims a prior incarnation's
+  survivor (§1.15) — such a stop is a real action, not the no-op that justifies dropping, so
+  admission must see it. The probe stays cheap enough to evaluate inside the processor's
+  critical section: a lock-free registry hit answers the common case, and only a miss reaches
+  a single record existence check (never a full record read).
   Removal ordering pinned: an instance is removed only once its agent is in `_agents`
   (success) or terminally failed — and the ID stays admissible while ANY instance remains.
   A racing registry removal (agent exits as a stop is admitted) yields a stop that no-ops at
@@ -289,8 +296,9 @@ server-origin launch/stop execution through the one existing serial lane:
   accepted, monitored residual (§7), each entry O(bytes). The 256-entry alarm is
   **edge-triggered with hysteresis**: one Error on crossing, quiet during further growth,
   re-armed only after depth drains below 128 (half the threshold), plus a minimum 60 s
-  interval between alarm emissions; current and high-water depth are exposed as metrics —
-  boundary oscillation cannot turn the alarm into its own failure mode. **Scope of losslessness:**
+  interval between alarm emissions; current and high-water depth are carried in the alarm
+  message and exposed as accessors for future status surfaces (the supervision IPC is the
+  natural consumer) — boundary oscillation cannot turn the alarm into its own failure mode. **Scope of losslessness:**
   a known-target stop is never dropped while the lane is ACCEPTING; at daemon shutdown the
   deliberate supersession applies (queued un-seq'd items discarded). Registered children are
   killed by shutdown teardown (captured start identity); a late-starting child teardown

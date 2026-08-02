@@ -795,18 +795,13 @@ internal sealed class SequencedCommandProcessor : IAsyncDisposable {
         }
     }
 
-    /// <summary>§3.3 lane shutdown order. Closing the gate and completing the writer happen in the SAME
-    /// critical section a submitter uses, so no submission can slip past into a lane that will never run
-    /// it — after this, <see cref="SubmitUnsequenced"/> returns <see cref="SubmitOutcome.Refused"/> and the
-    /// caller owns the consequence. The in-flight item is cancelled by the token its own delegate captured
-    /// (the daemon shutdown token, cancelled by the orchestrator before it disposes this) and contained by
-    /// the per-item catch; every remaining queued item is then settled or discarded by
-    /// <see cref="SettleAtShutdown"/> before the lane exits, which also retires the exact active-launch
-    /// tokens and returns the queued-stop counter to zero.</summary>
-    /// <summary>§3.3: stop accepting, without waiting for anything. The orchestrator calls this the instant
-    /// its shutdown token is cancelled — BEFORE it tears down agents — so the window between "the daemon is
-    /// exiting" and "the lane is closed" cannot let queued per-agent stops run against agents that teardown
-    /// is already killing. Idempotent; <see cref="DisposeAsync"/> repeats it and then awaits the drain.</summary>
+    /// <summary>§3.3: stop accepting, without waiting for anything. Closing the gate and completing the
+    /// writer happen in the SAME critical section a submitter uses, so no submission can slip past into a
+    /// lane that will never run it — after this, <see cref="SubmitUnsequenced"/> returns
+    /// <see cref="SubmitOutcome.Refused"/> and the caller owns the consequence. The orchestrator calls this
+    /// BEFORE it cancels its shutdown token and tears down agents, so the window between "the daemon is
+    /// exiting" and "the lane is closed" cannot let queued per-agent stops run against children teardown is
+    /// already killing. Idempotent; <see cref="DisposeAsync"/> repeats it and then awaits the drain.</summary>
     public void StopAcceptingForShutdown() {
         lock (_lock) {
             _closed = true;
@@ -814,6 +809,11 @@ internal sealed class SequencedCommandProcessor : IAsyncDisposable {
         }
     }
 
+    /// <summary>§3.3 lane shutdown order. The in-flight item is cancelled by the token its own delegate
+    /// captured (the daemon shutdown token, cancelled by the orchestrator before it disposes this) and
+    /// contained by the per-item catch; every remaining queued item is then settled or discarded by
+    /// <see cref="SettleAtShutdown"/> before the lane exits, which also retires the exact active-launch
+    /// tokens and returns the queued-stop counter to zero.</summary>
     public async ValueTask DisposeAsync() {
         StopAcceptingForShutdown();
 

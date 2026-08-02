@@ -162,6 +162,11 @@ public partial class AgentOrchestratorVendorTests {
         await Assert.That(orch.BuildLiveAgents().Select(a => a.Id)).DoesNotContain(agentId);
     }
 
+    /// <summary>Bound EVERY await a §3.3 regression could turn infinite. The pins here work by parking the
+    /// lane and releasing it later in the same test, so a re-added execution await inside a handler would
+    /// block before the release ever runs — and with no <c>[Timeout]</c> on these tests that is a suite hang,
+    /// which is a far worse signal than a named failure. Every <c>Submit*ForTest</c> call (the seams that
+    /// must return WITHOUT execution) goes through here for exactly that reason.</summary>
     static async Task WaitBoundedAsync(Task task, string because) {
         var finished = await Task.WhenAny(task, Task.Delay(Bounded));
         await Assert.That(finished == task).IsTrue().Because(because);
@@ -214,8 +219,10 @@ public partial class AgentOrchestratorVendorTests {
             new Dictionary<string, IHostedAgentLauncher>(), consentGate: gate);
         var epoch = orch.DaemonEpochForTest;
 
-        await orch.SubmitLaunchAgentForTest(SequencedLaunch("a1", epoch, 1));
-        await orch.SubmitLaunchAgentForTest(SequencedLaunch("a2", epoch, 2));
+        await WaitBoundedAsync(orch.SubmitLaunchAgentForTest(SequencedLaunch("a1", epoch, 1)),
+            "the launch handler awaited execution instead of returning after acceptance");
+        await WaitBoundedAsync(orch.SubmitLaunchAgentForTest(SequencedLaunch("a2", epoch, 2)),
+            "the launch handler awaited execution instead of returning after acceptance");
 
         await Assert.That(orch.BuildStatusReport().HighestAcceptedSeq).IsEqualTo(2L);
         await Assert.That(server.Rejects).IsEmpty(); // no WrongNext — each was next when it arrived
@@ -300,7 +307,8 @@ public partial class AgentOrchestratorVendorTests {
             new Dictionary<string, IHostedAgentLauncher>(), consentGate: gate, lifetime: lifetime);
         var epoch = orch.DaemonEpochForTest;
 
-        await orch.SubmitLaunchAgentForTest(SequencedLaunch("cancel-me", epoch, 1));
+        await WaitBoundedAsync(orch.SubmitLaunchAgentForTest(SequencedLaunch("cancel-me", epoch, 1)),
+            "the launch handler awaited execution instead of returning after acceptance");
         lifetime.Cts.Cancel();
 
         await SpinUntilAsync(() => server.Acks.Count > 0, Bounded);
@@ -326,13 +334,15 @@ public partial class AgentOrchestratorVendorTests {
             new Dictionary<string, IHostedAgentLauncher>(), consentGate: gate, logger: logger);
 
         // An un-seq'd launch, committed to the lane and parked at the gate.
-        await orch.SubmitLaunchAgentForTest(UnsequencedLaunch("parked"));
+        await WaitBoundedAsync(orch.SubmitLaunchAgentForTest(UnsequencedLaunch("parked")),
+            "the launch handler awaited execution instead of returning after the lane commit");
         await prompter.WaitForPromptAsync("parked");
 
         // An un-seq'd stop for a live agent, submitted while the launch is parked: admitted, queued, and
         // provably not yet executed.
         orch.SeedAgentForTest("victim", status: "Running");
-        await orch.SubmitServerStopAgentForTest("victim");
+        await WaitBoundedAsync(orch.SubmitServerStopAgentForTest("victim"),
+            "the stop handler awaited execution behind the parked launch");
         await Assert.That(orch.GetAgentForTest("victim")!.Status).IsEqualTo("Running");
         await Assert.That(orch.ProcessorForTest!.QueuedStopDepth).IsEqualTo(1);
 
@@ -354,7 +364,8 @@ public partial class AgentOrchestratorVendorTests {
         await using var orch = BuildOrchestrator(server, new SpyPtyProcessFactory(),
             new Dictionary<string, IHostedAgentLauncher>(), consentGate: gate);
 
-        await orch.SubmitLaunchAgentForTest(UnsequencedLaunch("parked"));
+        await WaitBoundedAsync(orch.SubmitLaunchAgentForTest(UnsequencedLaunch("parked")),
+            "the launch handler awaited execution instead of returning after the lane commit");
         await prompter.WaitForPromptAsync("parked");
 
         orch.SeedAgentForTest("reviewer", LaunchKind.ReviewFlow, status: "Running");
@@ -378,7 +389,8 @@ public partial class AgentOrchestratorVendorTests {
         await using var orch = BuildOrchestrator(server, new SpyPtyProcessFactory(),
             new Dictionary<string, IHostedAgentLauncher>(), consentGate: gate);
 
-        await orch.SubmitLaunchAgentForTest(UnsequencedLaunch("parked"));
+        await WaitBoundedAsync(orch.SubmitLaunchAgentForTest(UnsequencedLaunch("parked")),
+            "the launch handler awaited execution instead of returning after the lane commit");
         await prompter.WaitForPromptAsync("parked");
 
         await Assert.That(orch.GetAgentForTest("parked")).IsNull();
@@ -447,7 +459,8 @@ public partial class AgentOrchestratorVendorTests {
 
         // A lane item now exists, but the lane must not start it while the inline slot is reserved.
         orch.SeedAgentForTest("victim", status: "Running");
-        await orch.SubmitServerStopAgentForTest("victim");
+        await WaitBoundedAsync(orch.SubmitServerStopAgentForTest("victim"),
+            "the stop handler awaited execution behind the reserved inline item");
         await Task.Delay(150);
         await Assert.That(orch.GetAgentForTest("victim")!.Status).IsEqualTo("Running")
             .Because("the lane executed its first item while a reserved inline item was still running");
@@ -502,7 +515,8 @@ public partial class AgentOrchestratorVendorTests {
         await using var orch = BuildOrchestrator(server, new SpyPtyProcessFactory(),
             new Dictionary<string, IHostedAgentLauncher>(), consentGate: gate, logger: logger);
 
-        await orch.SubmitLaunchAgentForTest(UnsequencedLaunch("in-flight"));
+        await WaitBoundedAsync(orch.SubmitLaunchAgentForTest(UnsequencedLaunch("in-flight")),
+            "the launch handler awaited execution instead of returning after the lane commit");
         await prompter.WaitForPromptAsync("in-flight");
 
         // Input for the in-flight (unregistered) launch: dropped and logged, no throw, no stall.
@@ -546,11 +560,14 @@ public partial class AgentOrchestratorVendorTests {
         orch.SeedAgentForTest("child-b", status: "Running", pty: new KillingPtyDouble(childB));
 
         // Park the lane so the stops below cannot drain before shutdown.
-        await orch.SubmitLaunchAgentForTest(UnsequencedLaunch("parked"));
+        await WaitBoundedAsync(orch.SubmitLaunchAgentForTest(UnsequencedLaunch("parked")),
+            "the launch handler awaited execution instead of returning after the lane commit");
         await prompter.WaitForPromptAsync("parked");
 
-        await orch.SubmitServerStopAgentForTest("child-a");
-        await orch.SubmitServerStopAgentForTest("child-b");
+        await WaitBoundedAsync(orch.SubmitServerStopAgentForTest("child-a"),
+            "the stop handler awaited execution behind the parked launch");
+        await WaitBoundedAsync(orch.SubmitServerStopAgentForTest("child-b"),
+            "the stop handler awaited execution behind the parked launch");
         await Assert.That(orch.ProcessorForTest!.QueuedStopDepth).IsEqualTo(2);
 
         // Real shutdown. Cancelling the shutdown token releases the parked prompt, and closing the lane to
