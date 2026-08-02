@@ -274,10 +274,15 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
     /// creating it fresh is what makes "empty and ours" true rather than assumed.</para></summary>
     static readonly Lazy<string> EmptyHooksDirectory = new(() => {
         var dir = Path.Combine(Path.GetTempPath(), $"kcap-no-hooks-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(dir);
 
-        if (!OperatingSystem.IsWindows())
-            File.SetUnixFileMode(dir, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        // Created ATOMICALLY at 0700. mkdir-then-chmod leaves a window in which a permissive umask lets
+        // another user drop a `post-checkout` into it; the chmod does not remove a file already placed, so
+        // git would run it. The GUID makes the name unguessable and this makes the mode not-a-race.
+        if (OperatingSystem.IsWindows())
+            Directory.CreateDirectory(dir);          // per-user %LOCALAPPDATA%\Temp; no shared-dir race
+        else
+            Directory.CreateDirectory(dir,
+                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
 
         return dir;
     });
@@ -628,7 +633,11 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
     }
 
     static void DeleteTreeNoFollow(string path) {
-        if (!File.Exists(path) && !Directory.Exists(path)) return;
+        // Path.Exists, not File.Exists || Directory.Exists: both of those FOLLOW, so a DANGLING symlink
+        // reports absent and this returned early, leaving the link behind. Its parent then failed to
+        // delete — and under the fail-closed config strip that turned a branch committing one dangling
+        // link into a refusal of every launch.
+        if (!Path.Exists(path)) return;
         var attrs = File.GetAttributes(path);
         if (attrs.HasFlag(FileAttributes.ReparsePoint) || !attrs.HasFlag(FileAttributes.Directory)) {
             if (OperatingSystem.IsWindows() && attrs.HasFlag(FileAttributes.ReadOnly))
@@ -924,52 +933,35 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
     [LoggerMessage(Level = LogLevel.Warning, Message = "Failed to clean up {Path}")]
     partial void LogCleanupFailed(Exception ex, string path);
 
-    static void CopyDirectory(string source, string dest) => CopyDirectory(source, dest, dest);
-
     /// <summary>
-    /// Copies <paramref name="source"/> into <paramref name="dest"/> for the standalone snapshot.
+    /// NOTE: this is the ORIGINAL implementation, restored deliberately.
     ///
-    /// <para><b>Links are skipped, never materialised.</b> <c>File.Copy</c> copies a symlink's TARGET, and
-    /// recursing through a directory link copies the target tree — so a source containing a link to
-    /// <c>~/.ssh</c> would import real credentials into the agent's worktree as ordinary files, defeating a
-    /// path-based sandbox. Skipping also removes the unbounded recursion a link cycle would cause. A
-    /// snapshot without the source's links is the right trade: the alternative is silently copying data the
-    /// source merely pointed at. This became reachable only when the recursion bug below was fixed.</para>
+    /// <para>It is broken: the standalone path's destination is
+    /// <c>&lt;source&gt;/.capacitor/worktrees/&lt;name&gt;</c>, so this descends into the directory it is
+    /// writing and recurses until the path length blows up. Standalone snapshot creation has therefore
+    /// never completed for a non-git source.</para>
     ///
-    /// <para><b>The destination is excluded by path IDENTITY, not by name.</b> It lives under the source
-    /// (<c>&lt;source&gt;/.capacitor/worktrees/&lt;name&gt;</c>), so without this the copy descends into
-    /// what it is writing and recurses until the path length blows up — standalone creation could never
-    /// complete for a non-git source. An earlier fix compared the NAME <c>.capacitor</c>
-    /// case-insensitively, which silently dropped a genuine <c>.Capacitor</c> directory on a case-sensitive
-    /// volume. Comparing the path answers the actual question — "is this the thing I am writing into?" —
-    /// with no case guessing, so <c>.git</c> keeps its original exact-name comparison.</para>
+    /// <para><b>Why it is not fixed here.</b> Repairing the recursion made the path REACHABLE, which armed
+    /// a second, worse latent bug in the same method: <c>File.Copy</c> copies a symlink's target, so a
+    /// source containing a link to <c>~/.ssh</c> would materialise real credentials inside the agent's
+    /// worktree. Hardening that then raised further questions about case semantics and about preserving
+    /// legitimate internal links. None of it belongs in a change about MCP containment, and shipping a
+    /// half-hardened live path is worse than leaving an inert broken one. Repair is tracked on its own
+    /// issue, with the exfiltration vector and the case-identity problem written up.</para>
     /// </summary>
-    static void CopyDirectory(string source, string dest, string excludedRoot) {
+    static void CopyDirectory(string source, string dest) {
         foreach (var file in Directory.GetFiles(source)) {
-            if (new FileInfo(file).LinkTarget is not null) continue;      // never materialise a link target
-
             File.Copy(file, Path.Combine(dest, Path.GetFileName(file)));
         }
 
         foreach (var dir in Directory.GetDirectories(source)) {
-            if (Path.GetFileName(dir) == ".git") continue;
-            if (new DirectoryInfo(dir).LinkTarget is not null) continue;  // ditto, and kills link cycles
-            if (IsSamePath(dir, excludedRoot) || IsAncestorOf(dir, excludedRoot)) continue;
+            if (Path.GetFileName(dir) == ".git") {
+                continue;
+            }
 
             var destDir = Path.Combine(dest, Path.GetFileName(dir));
             Directory.CreateDirectory(destDir);
-            CopyDirectory(dir, destDir, excludedRoot);
+            CopyDirectory(dir, destDir);
         }
     }
-
-    static bool IsSamePath(string a, string b) =>
-        Path.TrimEndingDirectorySeparator(Path.GetFullPath(a))
-            .Equals(Path.TrimEndingDirectorySeparator(Path.GetFullPath(b)), FileSystemPathComparison);
-
-    /// <summary>Whether <paramref name="candidate"/> contains <paramref name="descendant"/> — the chain of
-    /// directories leading down to the destination must be skipped too, not only the destination.</summary>
-    static bool IsAncestorOf(string candidate, string descendant) =>
-        Path.GetFullPath(descendant).StartsWith(
-            Path.TrimEndingDirectorySeparator(Path.GetFullPath(candidate)) + Path.DirectorySeparatorChar,
-            FileSystemPathComparison);
 }
