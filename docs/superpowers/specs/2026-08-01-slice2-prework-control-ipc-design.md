@@ -273,13 +273,20 @@ server-origin launch/stop execution through the one existing serial lane:
   same-payload retry after a started/faulted stop commits a FRESH item — retry semantics
   survive teardown failure. **Launch-aware**: a launch COMMIT for id X (either format, in
   its commit critical section) clears ALL X's pending-stop keys, so
-  stop(X)→launch(X)→stop(X) keeps its order. **Bound:** every queued stop was admitted
-  against a then-live target and retires its key at dequeue — no duplicate, unknown-target,
-  or retry growth; a target's ≤ C entries survive its registry removal only until they
-  start. As a defensive HARD cap, total queued un-seq'd stops are additionally limited to a
-  constant (256, matching the sequenced cache bound); overflow drops at admission with an
-  Error log — the same observable as the unknown-target drop, reachable only under
-  pathology. Launch items are ≤ capacity (§1.10). No unbounded structure, by cap.
+  stop(X)→launch(X)→stop(X) keeps its order. **Bound (lossless for known targets):** a stop
+  admitted for a known target is NEVER dropped — losing it would leave an agent running that
+  the command would have torn down, which no memory argument justifies. Boundedness is
+  structural: coalescing allows at most one queued entry per (target, payload class, launch
+  segment); segments per target ≤ that target's active launch instances + 1 (≤ capacity + 1);
+  targets are admission-checked against `_agents` ∪ active instances; every entry retires at
+  dequeue. Exceeding 256 queued stop entries is treated as pathology and logged at Error as
+  an ALARM (visibility, not a drop) — the only dropped stops remain unknown-target ones,
+  observably identical to their eventual no-op. Launch items are ≤ capacity (§1.10). The §7
+  residual ("stops are delayed, never lost or refused") therefore holds unweakened.
+  **Submission outcomes (complete):** `Committed` | `Coalesced` | `Refused` (shutdown) |
+  `DroppedUnknownTarget` — the processor owns the drop log; the queued-stop counter is
+  incremented at commit and retired under `_lock` at identity-guarded dequeue AND at shutdown
+  discard (a stale count can never reject or mis-alarm retries after shutdown).
 - **Un-seq'd commands with `_processor` null** (pre-settlement server): the shipped inline
   await stays byte-for-byte. No sequenced traffic can exist (§1.7), so the single domain is
   trivially preserved, and the shipped backpressure story is unchanged for exactly the
@@ -554,8 +561,10 @@ PR 1:
   tokens (active-count and id-membership assertions, not only task completion); a stop that
   throws followed by a same-payload retry commits and executes the retry (key-retire pin);
   an older stop starting after launch-aware clearing does not erase the newer post-launch
-  key (identity-guard pin); 257th distinct queued stop drops at admission with an Error log
-  (hard-cap pin).
+  key (identity-guard pin); the 257th queued known-target stop is ADMITTED and only alarms
+  (lossless pin), and stop(X)→launch(X)→stop(X) holds with the queue pre-filled to the alarm
+  threshold (saturation ordering pin); unknown-target drops report `DroppedUnknownTarget`;
+  the queued-stop counter returns to zero after shutdown discard (counter-cleanup pin).
 - Handler classification: with a launch parked on consent, an input/resize for an UNKNOWN
   agent id is dropped-and-logged (no throw, no pump stall) and a status-report request is
   served from the registry snapshot omitting the in-flight launch.
