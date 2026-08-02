@@ -376,24 +376,40 @@ public static class DaemonCommands {
             }
 
             var process = Process.GetProcessById(entry.Pid);
+            var killed  = false;
 
             try {
                 process.Kill(entireProcessTree: true);
+                killed = true;
+            } catch (InvalidOperationException) when (process.HasExited) {
+                // A BENIGN race, not corruption: the daemon exited on its own between
+                // GetProcessById and Kill. .NET reports that as InvalidOperationException too, so
+                // without this arm an ordinary well-timed stop would be accused of having a
+                // malformed PID file. The outcome the caller asked for has happened — the daemon is
+                // gone — so report it like the ArgumentException path below and fall through to the
+                // marker cleanup.
+                //
+                // No test: reproducing it needs the process to exit inside that window, which cannot
+                // be scheduled deterministically. Distinguished by HasExited rather than by message.
+                Console.Out.WriteLine($"Daemon '{name}' was not running.");
             } catch (InvalidOperationException ex) {
-                // The self-PID guard above covers the case we can name. This covers the rest of the
-                // same family — chiefly the PID being an ANCESTOR of this process, which .NET also
-                // refuses and which cannot be detected portably ahead of time. Report which daemon
-                // and which PID rather than letting an unattributed exception escape.
+                // What remains is the safety rejection: .NET refuses to kill a process tree that
+                // contains the caller. The self-PID guard above handles the case we can name in
+                // advance; this covers the ANCESTOR case, which cannot be detected portably. Report
+                // which daemon and which PID rather than letting an unattributed exception escape.
                 Console.Error.WriteLine(
                     $"Daemon '{name}' (PID {entry.Pid}) could not be stopped: {ex.Message} "
                   + $"Its PID file at {DaemonLockPaths.PidPath(name)} appears not to describe a daemon.");
 
                 return 1;
             }
-            // Wait for it to actually exit so the kernel releases its flock before
-            // we try to reclaim it for cleanup below.
-            try { process.WaitForExit(5000); } catch { /* best-effort */ }
-            Console.Out.WriteLine($"Daemon '{name}' stopped (PID {entry.Pid}).");
+
+            if (killed) {
+                // Wait for it to actually exit so the kernel releases its flock before
+                // we try to reclaim it for cleanup below.
+                try { process.WaitForExit(5000); } catch { /* best-effort */ }
+                Console.Out.WriteLine($"Daemon '{name}' stopped (PID {entry.Pid}).");
+            }
         } catch (ArgumentException) {
             Console.Out.WriteLine($"Daemon '{name}' was not running.");
         }

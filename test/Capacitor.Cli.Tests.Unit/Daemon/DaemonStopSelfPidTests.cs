@@ -64,9 +64,6 @@ public class DaemonStopSelfPidTests {
             var exit = await DaemonCommands.HandleAsync(["daemon", "stop", "--name", "self", "--yes"]);
 
             await Assert.That(exit).IsEqualTo(1);
-
-            // And the process is, obviously, still here to assert it.
-            await Assert.That(Environment.HasShutdownStarted).IsFalse();
         } finally {
             DaemonLockPaths.OverrideDirectoryForTesting(null);
 
