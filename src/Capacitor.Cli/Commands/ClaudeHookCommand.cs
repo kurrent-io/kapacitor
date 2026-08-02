@@ -896,8 +896,8 @@ public static class ClaudeHookCommand {
                     // clear injects again", and it makes Claude AT-LEAST-ONCE: a redelivered clear hook can
                     // inject twice. Documented rather than hidden, and strictly better than today, where a
                     // clear never re-injects at all. Gemini, which does stamp a timestamp, is exactly-once.
-                    SessionStartMemoryHookSupport.ContextResetInstanceId(
-                        reason, Guid.NewGuid().ToString("N")),
+                    SessionStartMemoryHookSupport.ContextResetInstanceId(reason,
+                        reason == SessionLifecycleReason.Clear ? Guid.NewGuid().ToString("N") : null),
                     IsTopLevel: true, ClassificationAuthoritative: true, reason,
                     CallbackMayRepeat: false),
                 new SessionStartMemoryContextRequest(baseUrl, cwd, disabled, budget, CancellationToken.None));

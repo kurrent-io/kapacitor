@@ -114,6 +114,29 @@ internal class ContextResetLeaseKeyTests {
         await Assert.That(decision).IsEqualTo(SessionMemoryLifecycleDecision.EligibleOneShot);
     }
 
+    /// <summary>
+    /// The discriminator must be CANONICAL, not the raw payload string. Two spellings of one instant —
+    /// a redelivery formatted differently, or with incidental whitespace — would otherwise produce
+    /// different lease keys and re-inject, losing the exactly-once property the timestamp exists to give.
+    /// The Gemini adapter parses and round-trips it for this reason.
+    /// </summary>
+    [Test]
+    public async Task Equivalent_timestamp_spellings_produce_one_lease_key() {
+        // Same instant, three spellings the host could plausibly emit.
+        var spellings = new[] { "2026-08-02T10:30:00.0000000+00:00", "2026-08-02T10:30:00Z", " 2026-08-02T10:30:00Z " };
+
+        var keys = spellings
+            .Select(raw => DateTimeOffset.Parse(raw.Trim(), null,
+                        System.Globalization.DateTimeStyles.RoundtripKind).ToString("O"))
+            .Select(canonical => KeyFor(SessionStartHarness.Gemini,
+                        SessionStartMemoryHookSupport.ContextResetInstanceId(
+                            SessionLifecycleReason.Clear, canonical)))
+            .Distinct()
+            .ToArray();
+
+        await Assert.That(keys.Length).IsEqualTo(1);
+    }
+
     // ── the mapper both harnesses now share ──
 
     /// <summary><c>clear</c> previously fell through to the catch-all — New for Claude's local copy of the

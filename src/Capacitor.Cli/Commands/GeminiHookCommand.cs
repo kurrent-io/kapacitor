@@ -281,9 +281,11 @@ static class GeminiHookCommand {
             scopeRoot: GitRepository.FindRoot(cwd) ?? cwd,
             disabled: activeProfile?.DisableMemoryIndex is true,
             source: source,
-            // The raw ISO timestamp Gemini stamps every hook payload with. Distinct per clear, identical on
-            // a redelivery, which is what makes Gemini's re-injection exactly-once.
-            resetDiscriminator: TryGetString(node, "timestamp"),
+            // PARSED and round-tripped, not the raw string. Two spellings of one instant would otherwise
+            // produce different lease keys and re-inject on a redelivery, losing the exactly-once property
+            // this discriminator exists for. It also means a missing or malformed timestamp yields null,
+            // which suppresses the reset rather than inventing a unique id for it.
+            resetDiscriminator: TryGetIsoTimestamp(node, "timestamp")?.ToString("O"),
             budget: HookBudget.Remaining(processStart, "session-start"),
             memoryClientFactory, memoryStoreFactory);
 
