@@ -271,7 +271,12 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
         // either — a later `git checkout` inside the tree would otherwise restore it.
         StripWorkspaceMcpConfig(worktreePath);
         await RunGit(worktreePath, GitTimeout, [..NoBranchHooks(), "init"]);
-        await RunGit(worktreePath, GitTimeout, [..NoBranchHooks(), ..await BranchFilterOverridesAsync(worktreePath), "add", "-A"]);
+        // Inventoried and logged here, not at the source: `add -A` in this worktree is where the standalone
+        // path's filters resolve. Round 6 removed the source-level logging as dead, and this call was
+        // applying overrides inline — silently disabling LFS against a README that promises the opposite.
+        var standaloneOverrides = await BranchFilterOverridesAsync(worktreePath);
+        LogDisabledFilters(standaloneOverrides, worktreePath);
+        await RunGit(worktreePath, GitTimeout, [..NoBranchHooks(), ..standaloneOverrides, "add", "-A"]);
         // Identity supplied explicitly. This is the daemon's OWN bookkeeping commit, not the user's work,
         // so it must not depend on the host having git identity configured — a machine without a global
         // user.email fails with "Author identity unknown". Found while CopyDirectory was temporarily
