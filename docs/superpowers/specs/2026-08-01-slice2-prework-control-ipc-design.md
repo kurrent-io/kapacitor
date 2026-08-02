@@ -47,9 +47,10 @@ Facts this design builds on, verified against `main` after the slice-1 merge:
    _cacheBound` (256) rejects further sequenced submissions with the coded `Backpressure`
    answer, identity preserved. Server-side, SEQUENCED (review-flow) launches are admitted one
    at a time per daemon — the kcap-server settlement admission (AI-1526) holds the daemon's
-   single sequenced slot for the duration of such a launch. The `_processor` exists only once
-   the server drives the sequenced protocol (epoch handshake); against a pre-settlement server
-   it is null and no sequenced traffic can exist.
+   single sequenced slot for the duration of such a launch. In the shipped daemon the
+   `_processor` is constructed unconditionally before any handler is wired — it is never null
+   in production; the inline arm and transition barrier are DEFENSE-IN-DEPTH for any future
+   construction ordering, exercised via a test-only deferred-publication seam.
 8. Legacy (un-seq'd) `StopAgent` is fire-and-forget on the wire — **no reply or failure surface
    exists** for it; the server learns outcomes from agent state, status reports, and its
    reconciliation lanes.
