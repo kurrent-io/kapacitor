@@ -93,6 +93,18 @@ internal sealed partial class CodexLauncher(
 
                 if (Directory.Exists(sourceCodexDir)) {
                     FileSystemOverlay.OverlayDirectory(sourceCodexDir, Path.Combine(ctx.Worktree.Path, ".codex"));
+
+                    // The overlay copies the SOURCE's whole .codex in, which re-materialises
+                    // `.codex/config.toml` after worktree creation deliberately removed it — undoing the
+                    // containment for every Codex launch. It matters where the source checkout is itself
+                    // the untrusted branch: a borrowed snapshot (source is the user's cwd) or `--worktree`
+                    // from a checkout already on that branch.
+                    //
+                    // Re-running the neutralizer is preferred over teaching the overlay an exclusion list:
+                    // it reuses the one canonical path list, and the overlay's actual purpose is
+                    // `.codex/hooks.json` (project-scope hooks; MCP servers are registered in the
+                    // USER-scope ~/.codex/config.toml), so nothing this launcher needs is lost.
+                    WorktreeManager.NeutralizeWorkspaceMcpConfig(ctx.Worktree.Path);
                 }
             } catch (Exception ex) {
                 LogOverlayFailed(ex, ctx.AgentId);

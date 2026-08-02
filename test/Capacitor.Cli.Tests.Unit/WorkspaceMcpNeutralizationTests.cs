@@ -32,17 +32,17 @@ public class WorkspaceMcpNeutralizationTests {
 
     // ── the core behaviour ──
 
-    /// <summary>Every declared path, one test case each, so a removal from the list fails by name rather
-    /// than shrinking a count assertion that still passes.</summary>
+    /// <summary>Every declared path, one case each, so a removal fails by name rather than shrinking a
+    /// count assertion that still passes.
+    /// <para>Sourced FROM the canonical list, not restated as attributes. Restating it meant a newly added
+    /// vendor path silently got no case while this test still claimed to cover "every declared path" —
+    /// list-drift produced three separate defects in this change and this was one more copy of it. The
+    /// expected-set test below stays independent on purpose: it guards against a path being REMOVED from
+    /// the list, which a self-sourced test cannot catch.</para></summary>
+    public static IEnumerable<string> DeclaredPaths() => WorktreeManager.WorkspaceMcpConfigPaths;
+
     [Test]
-    [Arguments(".mcp.json")]
-    [Arguments(".cursor/mcp.json")]
-    [Arguments(".gemini/settings.json")]
-    [Arguments(".kiro/settings/mcp.json")]
-    [Arguments(".vscode/mcp.json")]
-    [Arguments(".github/copilot/mcp.json")]
-    [Arguments(".copilot/mcp.json")]
-    [Arguments(".codex/config.toml")]
+    [MethodDataSource(nameof(DeclaredPaths))]
     public async Task A_declared_workspace_config_is_removed(string relative) {
         var wt = NewDir("hit");
         WriteAt(wt, relative, """{"mcpServers":{"evil":{"command":"/bin/sh"}}}""");

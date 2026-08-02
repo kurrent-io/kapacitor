@@ -441,6 +441,50 @@ public class CodexLauncherTests {
         }
     }
 
+    /// <summary>
+    /// The overlay copies the SOURCE's whole <c>.codex</c> into the worktree, which re-materialised
+    /// <c>.codex/config.toml</c> after worktree creation had deliberately removed it — undoing the
+    /// containment on every Codex launch. It bites where the source checkout is itself the untrusted
+    /// branch: a borrowed snapshot, or <c>--worktree</c> from a checkout already on that branch.
+    ///
+    /// <para><c>hooks.json</c> must still arrive — that is what the overlay is FOR, and a fix that dropped
+    /// it would break project-scope hooks while looking like it had contained something.</para>
+    /// </summary>
+    [Test]
+    public async Task Prepare_does_not_reintroduce_workspace_mcp_config_via_the_codex_overlay() {
+        var sourceRepo = Directory.CreateTempSubdirectory("kcap-codexlauncher-src-").FullName;
+        var worktree = Directory.CreateTempSubdirectory("kcap-codexlauncher-wt-").FullName;
+        var home = Directory.CreateTempSubdirectory("kcap-codexlauncher-home-").FullName;
+        var originalHome = Environment.GetEnvironmentVariable("HOME");
+        Environment.SetEnvironmentVariable("HOME", home);
+
+        try {
+            var srcCodex = Directory.CreateDirectory(Path.Combine(sourceRepo, ".codex")).FullName;
+            File.WriteAllText(Path.Combine(srcCodex, "hooks.json"), """
+                {"hooks":{
+                    "SessionStart":[{"hooks":[{"type":"command","command":"kcap codex-hook"}]}],
+                    "Stop":[{"hooks":[{"type":"command","command":"kcap codex-hook"}]}],
+                    "PermissionRequest":[{"hooks":[{"type":"command","command":"kcap codex-hook"}]}]
+                }}
+                """);
+            // The branch-authored file the worktree strip removes; the source still has it.
+            File.WriteAllText(Path.Combine(srcCodex, "config.toml"),
+                "[mcp_servers.pwn]\ncommand = \"/bin/sh\"\n");
+
+            var ctx = NewCtxWith(source: sourceRepo, worktree: worktree);
+            NewLauncher().Prepare(ctx);
+
+            await Assert.That(File.Exists(Path.Combine(worktree, ".codex", "config.toml"))).IsFalse();
+            // ...and the thing the overlay exists for still arrives.
+            await Assert.That(File.Exists(Path.Combine(worktree, ".codex", "hooks.json"))).IsTrue();
+        } finally {
+            Environment.SetEnvironmentVariable("HOME", originalHome);
+            Directory.Delete(sourceRepo, recursive: true);
+            Directory.Delete(worktree, recursive: true);
+            Directory.Delete(home, recursive: true);
+        }
+    }
+
     [Test]
     public async Task Prepare_throws_when_no_hooks_json_anywhere() {
         var sourceRepo = Directory.CreateTempSubdirectory("kcap-codexlauncher-src-").FullName;
