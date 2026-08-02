@@ -348,6 +348,30 @@ public class WorkspaceMcpNeutralizationTests {
         await Assert.That(File.Exists(marker)).IsFalse();
     }
 
+    /// <summary>
+    /// Borrowed snapshots are a supported launch mode and were NOT covered: the snapshot exclusion list
+    /// named two filenames, so <c>.kiro/settings/mcp.json</c> — the one file measured to get a command
+    /// executed at session setup — survived into a launched snapshot. Review found it; the doc comment on
+    /// the strip helper had claimed "every creation path" and was wrong.
+    ///
+    /// <para>Asserted on the LIST rather than by building a snapshot, because the two lists diverging is
+    /// the actual defect: a future vendor added to one and not the other reproduces it exactly. Read
+    /// directly rather than by reflection — the first version reflected on a private FIELD and broke the
+    /// moment that field became a property, which is a test failing for a reason unrelated to its
+    /// subject.</para>
+    /// </summary>
+    [Test]
+    public async Task Borrowed_snapshots_exclude_every_workspace_mcp_config_path() {
+        var excluded = WorktreeManager.SnapshotExcludedPaths;
+
+        foreach (var path in WorktreeManager.WorkspaceMcpConfigPaths)
+            await Assert.That(excluded).Contains(path);
+
+        // The pre-existing entries must survive the fold-in.
+        await Assert.That(excluded).Contains(".capacitor");
+        await Assert.That(excluded).Contains(".attached");
+    }
+
     /// <summary>Windows needs Developer Mode or elevation to create a symlink, so these assert POSIX
     /// behaviour where the daemon's worktrees actually live. Skipped rather than adapted: a Windows variant
     /// that silently could not create the link would be a test that passes by doing nothing.</summary>

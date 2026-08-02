@@ -1121,6 +1121,21 @@ kcap agent start claude -d                    # start without attaching; prints 
 - **`--` boundary:** flags before `--` are kcap's; everything after `--` is forwarded to the `claude`/`codex` CLI unchanged. kcap flags: `--worktree`, `--private`, `--daemon <name>`, `-d`/`--detach`.
 - **Visibility:** by default the agent is **registered with the server**, so it appears in your own web UI immediately and you can drive it from the browser — start in the terminal, continue from anywhere. It is **visible only to you** until you share it. Pass `--private` to keep it purely local: unregistered, not streamed to the server, and not shown in the web UI.
 - **Work location:** by default the agent runs **in place in your current directory** (it edits your real files). Pass `--worktree` to run in a throwaway git worktree instead.
+
+- **What a worktree deliberately does NOT inherit:** an agent worktree is a checkout of whatever branch is
+  being worked on, so anything committed there is content the agent's own author may not control. Two things
+  are therefore neutralised when kcap creates one:
+
+  - **Workspace MCP config is removed** — `.mcp.json`, `.cursor/mcp.json`, `.gemini/settings.json`,
+    `.kiro/settings/mcp.json`, `.vscode/mcp.json`, `.github/copilot/mcp.json`, `.copilot/mcp.json`,
+    `.codex/config.toml`. Some vendors execute the `command` these declare at session start — measured for
+    Kiro, which spawns it with no prompt and no model involvement — which would be branch-controlled code
+    running as the daemon user. Removals are logged. If your repo legitimately ships one, it will not apply
+    inside an agent worktree; configure it for the daemon instead.
+  - **Git hooks are disabled for the creation commands** (`core.hooksPath=/dev/null`). With a relative
+    `core.hooksPath` such as `.githooks`, the hook scripts are themselves branch content and git would run
+    `post-checkout` during `worktree add`. This applies only to kcap's own creation commands; hooks in the
+    agent's own later commits are unaffected.
 - **Detach** without stopping the agent with the prefix key **`Ctrl-Q` then `d`**. The agent keeps running in the daemon.
 - **Permissions:** for a registered agent, permission prompts appear in the web UI (the same dialog as hosted agents); with `--private`, prompts are answered natively in your terminal.
 

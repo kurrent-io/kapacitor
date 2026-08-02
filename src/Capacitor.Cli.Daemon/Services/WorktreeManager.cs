@@ -20,9 +20,17 @@ public record WorktreeInfo(
 }
 
 public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManager> logger) {
-    static readonly string[] SnapshotExcludedPaths = [
-        ".capacitor", ".attached", ".mcp.json", ".cursor/mcp.json"
-    ];
+    /// <summary>Excluded from a borrowed snapshot. The vendor MCP config paths are folded in from the one
+    /// list, rather than restated: this used to name <c>.mcp.json</c> and <c>.cursor/mcp.json</c> only, so
+    /// <c>.kiro/settings/mcp.json</c> — the file measured to get a command executed at session setup —
+    /// survived into a launched borrowed snapshot. Two lists of the same thing is how that happened.</summary>
+    /// <para><b>Lazy, not a field initializer.</b> Static field initializers across PARTIAL FILES have no
+    /// useful ordering, and <c>WorkspaceMcpConfigPaths</c> lives in the other partial — as a field this read
+    /// it while still <c>default</c>, and spreading a default <c>ImmutableArray</c> threw inside the type
+    /// initializer, which would have broken every worktree creation at runtime.</para>
+    static string[]? _snapshotExcludedPaths;
+    internal static string[] SnapshotExcludedPaths =>
+        _snapshotExcludedPaths ??= [".capacitor", ".attached", .. WorkspaceMcpConfigPaths];
     const int MaxSnapshotFiles = 50_000;
     const long MaxSnapshotBytes = 2L * 1024 * 1024 * 1024;
     static StringComparison FileSystemPathComparison =>
@@ -311,8 +319,11 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
 
     /// <summary>Removes branch-authored vendor MCP configuration and logs what went, so an operator whose
     /// repo legitimately ships one can tell that kcap removed it rather than that the vendor ignored it.
-    /// Every creation path calls this: the exposure is a property of the worktree, not of one branch of
-    /// this method.</summary>
+    /// <para>Called by the worktree creation paths. Borrowed snapshots do not call it — they never
+    /// materialise these files in the first place, because <see cref="SnapshotExcludedPaths"/> now folds in
+    /// the same list. An earlier version of this comment claimed "every creation path calls this", which
+    /// was not true and papered over exactly the gap that left <c>.kiro/settings/mcp.json</c> in a borrowed
+    /// snapshot.</para></summary>
     void StripWorkspaceMcpConfig(string worktreePath) {
         var removed = NeutralizeWorkspaceMcpConfig(worktreePath);
 
@@ -480,7 +491,10 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
                 throw new InvalidOperationException("borrowed_snapshot_sparse_checkout_unsupported");
 
             await RunGit(parent, GitTimeout, "clone", "--no-hardlinks", "--no-checkout", "--", bundle, destination);
-            await RunGit(destination, GitTimeout, "checkout", "--detach", "HEAD");
+            // Same guard as `worktree add`: this checkout materialises branch content, so a relative
+            // core.hooksPath would run the branch's post-checkout here too. Missed when the guard was
+            // added — it went on the worktree paths only.
+            await RunGit(destination, GitTimeout, [..NoBranchHooks(), "checkout", "--detach", "HEAD"]);
             var clonedHead = (await RunGitCapture(destination, GitTimeout, false, "rev-parse", "HEAD")).Trim();
             if (!string.Equals(sourceHead, clonedHead, StringComparison.Ordinal)) throw new SourceChangedException();
             await RunGitBestEffort(destination, "remote", "remove", "origin");
