@@ -131,7 +131,9 @@ internal sealed class SequencedCommandProcessor : IAsyncDisposable {
     int _queuedStops;
     int _queuedStopsHighWater;
     bool _stopAlarmArmed = true;
-    DateTimeOffset _lastStopAlarmAt = DateTimeOffset.MinValue;
+    // Monotonic (TimeProvider timestamp), never wall-clock: a UTC step must not stretch or
+    // shrink the minimum interval between emitted alarms. 0 = never emitted.
+    long _lastStopAlarmAtTimestamp;
     // Set with the writer completion in the same critical section, so a shutdown race can never both
     // commit an item and refuse it.
     bool _closed;
@@ -429,10 +431,10 @@ internal sealed class SequencedCommandProcessor : IAsyncDisposable {
         // emitting anything. Only a drain below the hysteresis watermark re-arms.
         _stopAlarmArmed = false;
 
-        var now = _time.GetUtcNow();
-        if (now - _lastStopAlarmAt < StopQueueAlarmMinInterval) return;
+        if (_lastStopAlarmAtTimestamp != 0
+                && _time.GetElapsedTime(_lastStopAlarmAtTimestamp) < StopQueueAlarmMinInterval) return;
 
-        _lastStopAlarmAt = now;
+        _lastStopAlarmAtTimestamp = _time.GetTimestamp();
         alarmDepth = _queuedStops;
         alarmHighWater = _queuedStopsHighWater;
     }
