@@ -226,6 +226,31 @@ public class WorkspaceMcpNeutralizationTests {
         await Assert.That(removed).Contains(".mcp.json");
     }
 
+    /// <summary>
+    /// The round-1 bug class, in the place the round-2 fix created. Removing a real directory at a config
+    /// path must not follow a symlink NESTED inside it: a branch commits `.cursor/mcp.json/` as a directory
+    /// containing a link to the operator's home, and a recursive delete that follows would destroy their
+    /// data. The whole tree goes; whatever the nested link pointed at does not.
+    /// </summary>
+    [Test]
+    public async Task Removing_a_real_directory_does_not_follow_a_symlink_nested_inside_it() {
+        SkipUnlessPosixSymlinks();
+        var wt = NewDir("nested-escape");
+        var operatorData = NewDir("operator-data");
+        var precious = Path.Combine(operatorData, "precious.json");
+        File.WriteAllText(precious, """{"operator":"data"}""");
+
+        var asDir = Path.Combine(wt, ".mcp.json");
+        Directory.CreateDirectory(asDir);
+        Directory.CreateSymbolicLink(Path.Combine(asDir, "escape"), operatorData);
+
+        WorktreeManager.NeutralizeWorkspaceMcpConfig(wt);
+
+        await Assert.That(Path.Exists(asDir)).IsFalse();
+        await Assert.That(File.Exists(precious)).IsTrue();
+        await Assert.That(File.ReadAllText(precious)).IsEqualTo("""{"operator":"data"}""");
+    }
+
     // ── fail closed ──
 
     /// <summary>A present-but-unremovable entry must throw, not be silently skipped. Silently continuing
@@ -321,6 +346,59 @@ public class WorkspaceMcpNeutralizationTests {
         await AssertNeutralized(info);
         // Stripped BEFORE the initial commit, so `git checkout` inside the tree cannot restore it.
         await Assert.That(File.Exists(Path.Combine(info.Path, ".kiro", "settings", "mcp.json"))).IsFalse();
+    }
+
+    /// <summary>
+    /// A standalone source may contain a symlink pointing at the operator's secrets. `File.Copy` copies a
+    /// symlink's TARGET, so materialising it would place real credentials inside the worktree as ordinary
+    /// files — readable by the agent and indistinguishable from repository content. Links are skipped.
+    ///
+    /// <para>Reachable only because the recursion bug in this path was fixed; it was inert while standalone
+    /// creation could never complete.</para>
+    /// </summary>
+    [Test]
+    public async Task Standalone_snapshot_does_not_materialize_a_symlink_to_content_outside_the_source() {
+        SkipUnlessPosixSymlinks();
+        var secrets = NewDir("secrets");
+        var key = Path.Combine(secrets, "id_rsa");
+        File.WriteAllText(key, "PRIVATE KEY MATERIAL");
+
+        var source = NewDir("standalone-src");     // no git init => standalone copy path
+        File.WriteAllText(Path.Combine(source, "README.md"), "hi");
+        File.CreateSymbolicLink(Path.Combine(source, "stolen-key"), key);
+        Directory.CreateSymbolicLink(Path.Combine(source, "stolen-dir"), secrets);
+
+        var info = await Manager().CreateAsync(source);
+
+        await Assert.That(info.IsStandalone).IsTrue();
+        await Assert.That(Path.Exists(Path.Combine(info.Path, "stolen-key"))).IsFalse();
+        await Assert.That(Path.Exists(Path.Combine(info.Path, "stolen-dir"))).IsFalse();
+        await Assert.That(File.Exists(Path.Combine(info.Path, "README.md"))).IsTrue();
+        // The operator's file is untouched where it lives.
+        await Assert.That(File.ReadAllText(key)).IsEqualTo("PRIVATE KEY MATERIAL");
+    }
+
+    /// <summary>A genuine `.Capacitor` directory on a case-sensitive volume is real source content, not the
+    /// destination. Excluding by name would silently hide it from the agent; excluding by path identity
+    /// keeps it while still not recursing into what we are writing.</summary>
+    [Test]
+    public async Task Standalone_snapshot_keeps_a_differently_cased_capacitor_directory() {
+        var source = NewDir("case-src");
+        File.WriteAllText(Path.Combine(source, "README.md"), "hi");
+        Directory.CreateDirectory(Path.Combine(source, ".Capacitor"));
+        File.WriteAllText(Path.Combine(source, ".Capacitor", "real-content.txt"), "source data");
+
+        var info = await Manager().CreateAsync(source);
+
+        // On a case-INSENSITIVE volume `.Capacitor` IS the destination's parent, so it is legitimately
+        // skipped; only assert the keep-it behaviour where the two names are genuinely distinct.
+        var caseSensitive = !Directory.Exists(Path.Combine(source, ".capacitor"))
+                          || !File.Exists(Path.Combine(source, ".capacitor", "real-content.txt"));
+
+        if (caseSensitive)
+            await Assert.That(File.Exists(Path.Combine(info.Path, ".Capacitor", "real-content.txt"))).IsTrue();
+
+        await Assert.That(File.Exists(Path.Combine(info.Path, "README.md"))).IsTrue();
     }
 
     /// <summary>Windows needs Developer Mode or elevation to create a symlink, so these assert POSIX

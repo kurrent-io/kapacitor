@@ -145,7 +145,11 @@ public partial class WorktreeManager {
         }
 
         if (isDirectory) {
-            Directory.Delete(path, recursive: true);       // real directory at a config pathname
+            // The class's own no-follow tree delete, not Directory.Delete(recursive: true). Both decline to
+            // follow a nested link on current .NET (pinned by a test), but this one ALSO clears the Windows
+            // read-only attribute — without which a branch committing a read-only file inside
+            // `.mcp.json/` would throw on Windows and, under fail-closed, refuse every launch.
+            DeleteTreeNoFollow(path);
             return;
         }
 

@@ -266,12 +266,23 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
     /// command resolve to branch content" — blunt disabling would break legitimate drivers such as
     /// <c>filter.lfs</c>, so it is real work rather than another <c>-c</c> flag.</para>
     /// </summary>
-    static string[] NoBranchHooks() {
-        var empty = Path.Combine(Path.GetTempPath(), "kcap-no-hooks");
-        Directory.CreateDirectory(empty);
+    /// <summary>The empty hooks directory, created ONCE per daemon process under an unguessable name.
+    /// <para>A FIXED path was the first version, and it was worse than useless: on a shared temp directory
+    /// another user pre-creates <c>kcap-no-hooks</c> containing an executable <c>post-checkout</c>,
+    /// <c>CreateDirectory</c> happily accepts the existing directory, and the guard against the branch's
+    /// hooks becomes a delivery mechanism for someone else's. A per-process GUID cannot be squatted, and
+    /// creating it fresh is what makes "empty and ours" true rather than assumed.</para></summary>
+    static readonly Lazy<string> EmptyHooksDirectory = new(() => {
+        var dir = Path.Combine(Path.GetTempPath(), $"kcap-no-hooks-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(dir);
 
-        return ["-c", $"core.hooksPath={empty}"];
-    }
+        if (!OperatingSystem.IsWindows())
+            File.SetUnixFileMode(dir, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+
+        return dir;
+    });
+
+    static string[] NoBranchHooks() => ["-c", $"core.hooksPath={EmptyHooksDirectory.Value}"];
 
     /// <summary>
     /// Neutralizes the tree, and UNDOES the creation if that fails.
@@ -913,29 +924,52 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
     [LoggerMessage(Level = LogLevel.Warning, Message = "Failed to clean up {Path}")]
     partial void LogCleanupFailed(Exception ex, string path);
 
-    static void CopyDirectory(string source, string dest) {
+    static void CopyDirectory(string source, string dest) => CopyDirectory(source, dest, dest);
+
+    /// <summary>
+    /// Copies <paramref name="source"/> into <paramref name="dest"/> for the standalone snapshot.
+    ///
+    /// <para><b>Links are skipped, never materialised.</b> <c>File.Copy</c> copies a symlink's TARGET, and
+    /// recursing through a directory link copies the target tree — so a source containing a link to
+    /// <c>~/.ssh</c> would import real credentials into the agent's worktree as ordinary files, defeating a
+    /// path-based sandbox. Skipping also removes the unbounded recursion a link cycle would cause. A
+    /// snapshot without the source's links is the right trade: the alternative is silently copying data the
+    /// source merely pointed at. This became reachable only when the recursion bug below was fixed.</para>
+    ///
+    /// <para><b>The destination is excluded by path IDENTITY, not by name.</b> It lives under the source
+    /// (<c>&lt;source&gt;/.capacitor/worktrees/&lt;name&gt;</c>), so without this the copy descends into
+    /// what it is writing and recurses until the path length blows up — standalone creation could never
+    /// complete for a non-git source. An earlier fix compared the NAME <c>.capacitor</c>
+    /// case-insensitively, which silently dropped a genuine <c>.Capacitor</c> directory on a case-sensitive
+    /// volume. Comparing the path answers the actual question — "is this the thing I am writing into?" —
+    /// with no case guessing, so <c>.git</c> keeps its original exact-name comparison.</para>
+    /// </summary>
+    static void CopyDirectory(string source, string dest, string excludedRoot) {
         foreach (var file in Directory.GetFiles(source)) {
+            if (new FileInfo(file).LinkTarget is not null) continue;      // never materialise a link target
+
             File.Copy(file, Path.Combine(dest, Path.GetFileName(file)));
         }
 
         foreach (var dir in Directory.GetDirectories(source)) {
-            // `.capacitor` holds the worktrees themselves, and the standalone path's DESTINATION is
-            // `<source>/.capacitor/worktrees/<name>` — so without this the copy descends into the directory
-            // it is writing, recursing until the path length blows up. Standalone snapshot creation could
-            // therefore never have completed for a non-git source; it surfaced when a test finally covered
-            // that branch. `.capacitor` is already excluded from the borrowed-snapshot copy for the same
-            // reason it should be excluded here: it is kcap's state, not the user's content.
-            // Case-INSENSITIVE: on a default macOS or Windows volume `.Capacitor` is the very directory
-            // the destination was created in, so an exact-spelling skip would descend into it and hit the
-            // same PathTooLong recursion this guard exists to prevent.
-            if (Path.GetFileName(dir).Equals(".git", StringComparison.OrdinalIgnoreCase)
-             || Path.GetFileName(dir).Equals(".capacitor", StringComparison.OrdinalIgnoreCase)) {
-                continue;
-            }
+            if (Path.GetFileName(dir) == ".git") continue;
+            if (new DirectoryInfo(dir).LinkTarget is not null) continue;  // ditto, and kills link cycles
+            if (IsSamePath(dir, excludedRoot) || IsAncestorOf(dir, excludedRoot)) continue;
 
             var destDir = Path.Combine(dest, Path.GetFileName(dir));
             Directory.CreateDirectory(destDir);
-            CopyDirectory(dir, destDir);
+            CopyDirectory(dir, destDir, excludedRoot);
         }
     }
+
+    static bool IsSamePath(string a, string b) =>
+        Path.TrimEndingDirectorySeparator(Path.GetFullPath(a))
+            .Equals(Path.TrimEndingDirectorySeparator(Path.GetFullPath(b)), FileSystemPathComparison);
+
+    /// <summary>Whether <paramref name="candidate"/> contains <paramref name="descendant"/> — the chain of
+    /// directories leading down to the destination must be skipped too, not only the destination.</summary>
+    static bool IsAncestorOf(string candidate, string descendant) =>
+        Path.GetFullPath(descendant).StartsWith(
+            Path.TrimEndingDirectorySeparator(Path.GetFullPath(candidate)) + Path.DirectorySeparatorChar,
+            FileSystemPathComparison);
 }
