@@ -233,7 +233,15 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
         StripWorkspaceMcpConfig(worktreePath);
         await RunGit(worktreePath, GitTimeout, [..NoBranchHooks(), "init"]);
         await RunGit(worktreePath, GitTimeout, [..NoBranchHooks(), "add", "-A"]);
-        await RunGit(worktreePath, GitTimeout, [..NoBranchHooks(), "commit", "-m", "Initial snapshot"]);
+        // Identity supplied explicitly. This is the daemon's OWN bookkeeping commit, not the user's work,
+        // so it must not depend on the host having git identity configured — a machine without a global
+        // user.email fails with "Author identity unknown" and standalone hosting dies. Surfaced by CI once
+        // the CopyDirectory fix above let this path actually reach the commit.
+        await RunGit(worktreePath, GitTimeout, [
+            ..NoBranchHooks(),
+            "-c", "user.email=daemon@kcap.local", "-c", "user.name=kcap",
+            "commit", "-m", "Initial snapshot"
+        ]);
 
         return new WorktreeInfo(worktreePath, "", repoPath, IsStandalone: true);
     }
