@@ -26,7 +26,7 @@ public class QuarantinedMcpConfigTests {
         Git(source, "add", "-A");
         Git(source, "commit", "-q", "-m", "branch ships an mcp config");
 
-        var info = await Manager().CreateBorrowedSnapshotAsync(source, "q-" + Guid.NewGuid().ToString("N")[..8], CancellationToken.None);
+        var info = await Manager(out _).CreateBorrowedSnapshotAsync(source, "q-" + Guid.NewGuid().ToString("N")[..8], CancellationToken.None);
         var root = info.SnapshotRoot ?? info.Path;
 
         // Not where a vendor reads it...
@@ -46,7 +46,7 @@ public class QuarantinedMcpConfigTests {
         Git(source, "add", "-A");
         Git(source, "commit", "-q", "-m", "init");
 
-        var info = await Manager().CreateBorrowedSnapshotAsync(source, "r-" + Guid.NewGuid().ToString("N")[..8], CancellationToken.None);
+        var info = await Manager(out _).CreateBorrowedSnapshotAsync(source, "r-" + Guid.NewGuid().ToString("N")[..8], CancellationToken.None);
         var root = info.SnapshotRoot ?? info.Path;
 
         await Assert.That(Directory.Exists(Path.Combine(root, ".capacitor"))).IsFalse();
@@ -62,7 +62,7 @@ public class QuarantinedMcpConfigTests {
         Git(source, "add", "-A");
         Git(source, "commit", "-q", "-m", "init");
 
-        var info = await Manager().CreateBorrowedSnapshotAsync(source, "o-" + Guid.NewGuid().ToString("N")[..8], CancellationToken.None);
+        var info = await Manager(out _).CreateBorrowedSnapshotAsync(source, "o-" + Guid.NewGuid().ToString("N")[..8], CancellationToken.None);
         var root = info.SnapshotRoot ?? info.Path;
 
         await Assert.That(File.ReadAllText(Path.Combine(root, "src", "Program.cs"))).IsEqualTo("class P {}");
@@ -79,16 +79,65 @@ public class QuarantinedMcpConfigTests {
         Git(source, "add", "-A");
         Git(source, "commit", "-q", "-m", "init");
 
-        var info = await Manager().CreateBorrowedSnapshotAsync(source, "s-" + Guid.NewGuid().ToString("N")[..8], CancellationToken.None);
+        var info = await Manager(out _).CreateBorrowedSnapshotAsync(source, "s-" + Guid.NewGuid().ToString("N")[..8], CancellationToken.None);
         var root = info.SnapshotRoot ?? info.Path;
 
         await Assert.That(GitCapture(root, "status", "--porcelain"))
             .DoesNotContain(WorktreeManager.QuarantineSuffix);
     }
 
+    /// <summary>
+    /// Quarantine is for BRANCH-authored config. The manifest source lists untracked files too, so without
+    /// a tracked check a developer's local-only MCP config would be copied into a snapshot the reviewer and
+    /// its model can read — a disclosure the previous drop-everything behaviour did not have.
+    /// </summary>
+    [Test]
+    public async Task An_untracked_local_mcp_config_is_dropped_rather_than_quarantined() {
+        var source = NewRepo();
+        WriteAt(source, "README.md", "hi");
+        Git(source, "add", "-A");
+        Git(source, "commit", "-q", "-m", "init");
+        // Never committed — the developer's own local config.
+        WriteAt(source, ".cursor/mcp.json", """{"local":"secret"}""");
+
+        var info = await Manager(out _).CreateBorrowedSnapshotAsync(
+            source, "u-" + Guid.NewGuid().ToString("N")[..8], CancellationToken.None);
+        var root = info.SnapshotRoot ?? info.Path;
+
+        await Assert.That(File.Exists(Path.Combine(root, ".cursor", "mcp.json"))).IsFalse();
+        await Assert.That(File.Exists(Path.Combine(root, ".cursor",
+            "mcp.json" + WorktreeManager.QuarantineSuffix))).IsFalse();
+    }
+
+    /// <summary>A branch can add the colliding name deliberately: with both `.mcp.json` and
+    /// `.mcp.json.kcap-quarantined` present, two sources map to one destination. Refused rather than
+    /// silently materialising one of them.</summary>
+    [Test]
+    public async Task A_destination_collision_is_refused() {
+        var source = NewRepo();
+        WriteAt(source, ".mcp.json", """{"mcpServers":{}}""");
+        WriteAt(source, ".mcp.json" + WorktreeManager.QuarantineSuffix, "decoy");
+        Git(source, "add", "-A");
+        Git(source, "commit", "-q", "-m", "collision");
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+            await Manager(out _).CreateBorrowedSnapshotAsync(
+                source, "c-" + Guid.NewGuid().ToString("N")[..8], CancellationToken.None));
+
+        await Assert.That(ex!.Message).Contains("borrowed_snapshot_path_collision");
+    }
+
     // ── fixture ──
 
-    static WorktreeManager Manager() => new(new DaemonConfig(), NullLogger<WorktreeManager>.Instance);
+    /// <summary>A manager rooted in a TEMP directory. The default DaemonConfig points at
+    /// <c>~/.capacitor/worktrees</c>, so using it would write borrowed snapshots into a developer's real
+    /// state and leave them there.</summary>
+    static WorktreeManager Manager(out string root) {
+        root = NewDir("root");
+
+        return new WorktreeManager(new DaemonConfig { WorktreeRoot = root },
+            NullLogger<WorktreeManager>.Instance);
+    }
 
     static string NewDir(string tag) {
         var p = Path.Combine(Path.GetTempPath(), $"kcap-quar-{tag}-{Guid.NewGuid():N}"[..40]);
@@ -113,15 +162,23 @@ public class QuarantinedMcpConfigTests {
         return repo;
     }
 
+    /// <summary>Both streams drained and the exit code checked — an unchecked capture reports a FAILURE as
+    /// empty output, which would make an assertion about absence pass for the wrong reason.</summary>
     static string GitCapture(string cwd, params string[] args) {
         var psi = new ProcessStartInfo("git") {
             WorkingDirectory = cwd, RedirectStandardOutput = true, RedirectStandardError = true
         };
         foreach (var a in args) psi.ArgumentList.Add(a);
         using var p = Process.Start(psi)!;
-        var stdout = p.StandardOutput.ReadToEnd();
+        var stdoutTask = p.StandardOutput.ReadToEndAsync();
+        var stderrTask = p.StandardError.ReadToEndAsync();
         p.WaitForExit();
-        return stdout;
+
+        if (p.ExitCode != 0)
+            throw new InvalidOperationException(
+                $"fixture `git {string.Join(' ', args)}` failed: {stderrTask.Result}");
+
+        return stdoutTask.Result;
     }
 
     static void Git(string cwd, params string[] args) {

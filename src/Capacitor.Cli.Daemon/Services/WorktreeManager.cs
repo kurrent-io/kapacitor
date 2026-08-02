@@ -540,7 +540,18 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
     static async Task<Dictionary<string, SnapshotFile>> ReadSourceManifestAsync(
             string source, string[] exclusions, CancellationToken ct) {
         var stdout = await RunGitCapture(source, GitTimeout, true, "ls-files", "-co", "--exclude-standard", "-z");
+
+        // Quarantine is for BRANCH-authored config — content the reviewer is there to judge. The manifest
+        // source lists untracked files too, so without this a developer's local-only MCP config would be
+        // copied into a snapshot the reviewer and its model can read: a disclosure the previous
+        // drop-everything behaviour did not have. Untracked config is still simply dropped.
+        var tracked = (await RunGitCapture(source, GitTimeout, true, "ls-files", "-z"))
+            .Split('\0', StringSplitOptions.RemoveEmptyEntries)
+            .Select(NormalizeRelativePath)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
         var result = new Dictionary<string, SnapshotFile>(StringComparer.OrdinalIgnoreCase);
+        var destinations = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         long total = 0;
         foreach (var raw in stdout.Split('\0', StringSplitOptions.RemoveEmptyEntries)) {
             ct.ThrowIfCancellationRequested();
@@ -559,7 +570,7 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
                 // a pull request that adds a hostile `.kiro/settings/mcp.json` is invisible to the reviewer,
                 // which can then return clean on exactly the change the exclusion defends against.
                 // Carried under a suffix instead: reviewable content, at a path no vendor looks for.
-                if (!IsWorkspaceMcpConfigPath(rel)) continue;
+                if (!IsWorkspaceMcpConfigPath(rel) || !tracked.Contains(rel)) continue;
 
                 quarantine = true;
             }
@@ -583,8 +594,17 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
             var hash = await SHA256.HashDataAsync(input, ct);
             if (input.Length != streamLength) throw new SourceChangedException();
             UnixFileMode? mode = OperatingSystem.IsWindows() ? null : File.GetUnixFileMode(path);
+            var destination = quarantine ? rel + QuarantineSuffix : rel;
+
+            // Destinations are checked independently of source keys. A repo containing BOTH `.mcp.json`
+            // and `.mcp.json.kcap-quarantined` maps two distinct sources onto one destination — one
+            // overwrites the other, and identical contents would even pass verification while silently
+            // materialising a single file. A hostile branch can add the colliding name deliberately.
+            if (!destinations.Add(destination))
+                throw new InvalidOperationException($"borrowed_snapshot_path_collision: {destination}");
+
             if (!result.TryAdd(rel, new SnapshotFile(streamLength, hash, mode,
-                    quarantine ? rel + QuarantineSuffix : null)))
+                    quarantine ? destination : null)))
                 throw new InvalidOperationException($"borrowed_snapshot_path_collision: {rel}");
         }
         return result;
