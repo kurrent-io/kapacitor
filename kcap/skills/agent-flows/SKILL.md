@@ -44,7 +44,10 @@ Once the user has explicitly opted into a flow (see above), pick the `definition
 
 For the reserved `spec-review` and `code-review` aliases, reviewer-vendor language is role-bound:
 pass the one vendor explicitly named as the reviewer, ignore driver-harness mentions, honor
-negation, omit the vendor when none is named, and ask when multiple candidates remain. Custom
+negation, omit the vendor when none is named, and ask when multiple candidates remain. Omitting
+`vendor` resolves to the definition's authored vendor when it declares one, then to your saved
+`flows.reviewer_vendor` preference, then (with nothing saved) a `reviewer_vendor_required`
+response — see `review-flows`' "Choosing the reviewer vendor" for the full chain. Custom
 catalog definitions keep their authored vendors unless an explicit single-participant override is
 requested; dynamic definitions always carry vendors per participant and reject a top-level override.
 
@@ -52,12 +55,15 @@ requested; dynamic definitions always carry vendors per participant and reject a
 
 Your harness is holding an MCP tool schema it cached before kcap was upgraded, and kcap cannot
 refresh a schema the harness has already cached. A parameter you cannot see is one you cannot send:
-**do not start the flow and then report that the named reviewer ran** — without `vendor` the server
-applies its own configured default, which may be a different vendor. Nothing server-side can catch
-this for you: an omitted `vendor` is indistinguishable from a caller who deliberately wanted the
-default, so the request carries no trace of the name the user asked for. Tell the user to restart
-the harness session (or reconnect the `kcap-flows` MCP server) and start a fresh task; start without
-`vendor` only if they then explicitly ask for the server default.
+**do not start the flow and then report that the named reviewer ran** — without `vendor` you get
+whatever the flow definition's authored vendor resolves to, or — for a vendor-less definition — an
+automatic retry against your saved `flows.reviewer_vendor` preference, or a
+`reviewer_vendor_required` response if none is saved; none of these is guaranteed to be the vendor
+the user named. Nothing server-side can catch this for you: an omitted `vendor` is indistinguishable
+from a caller who deliberately wants that resolved vendor, so the request carries no trace of the
+name the user asked for. Tell the user to restart the harness session (or reconnect the
+`kcap-flows` MCP server) and start a fresh task; start without `vendor` only if they then
+explicitly ask you to proceed with whatever vendor the definition or saved preference resolves to.
 
 Canonical reviewer aliases for reserved review flows: Claude / Claude Code → `claude`; Codex /
 OpenAI Codex → `codex`; Cursor / cursor-agent → `cursor`; GitHub Copilot / Copilot CLI → `copilot`;
@@ -204,7 +210,7 @@ report completion to user
 
 | Tool | Required args | Optional args | When to call |
 |---|---|---|---|
-| `start_flow` | Exactly one of `definition_id` (catalog id, e.g. `spec-review`, `code-review`, or a custom catalog id) or `definition_yaml` (inline dynamic definition — see "Composing a dynamic flow"); plus `target_kind` (what is being worked on: `spec`, `code`, `pr`, `branch`, `file`, etc.), `target_ref` (a path, branch name, or PR URL/number that identifies the target), `target_title` (short human-readable title), `context` (background context: what to focus on, constraints, definition of done) | `vendor` (reserved aliases only — explicit reviewer vendor; omit for server default), `model` (reserved aliases only — explicit reviewer model override; REQUIRES `vendor`, rejected on dynamic/multi-participant starts), `instructions`, `mode` (`context-only` — optional; by default the participant's worktree is mirrored from THIS SESSION's project directory, not from the directory you are working in. Pass `context-only` to opt out and treat the submitted context as authoritative) | Once, at the start of a flow task. |
+| `start_flow` | Exactly one of `definition_id` (catalog id, e.g. `spec-review`, `code-review`, or a custom catalog id) or `definition_yaml` (inline dynamic definition — see "Composing a dynamic flow"); plus `target_kind` (what is being worked on: `spec`, `code`, `pr`, `branch`, `file`, etc.), `target_ref` (a path, branch name, or PR URL/number that identifies the target), `target_title` (short human-readable title), `context` (background context: what to focus on, constraints, definition of done) | `vendor` (reserved aliases only — explicit reviewer vendor; omit to use the definition's authored vendor, or your saved `flows.reviewer_vendor` preference if it declares none), `model` (reserved aliases only — explicit reviewer model override; REQUIRES `vendor`, rejected on dynamic/multi-participant starts), `instructions`, `mode` (`context-only` — optional; by default the participant's worktree is mirrored from THIS SESSION's project directory, not from the directory you are working in. Pass `context-only` to opt out and treat the submitted context as authoritative) | Once, at the start of a flow task. |
 | `send_to_participant` | `flow_run_id`, `participant` (role name declared in the flow definition's `participants` map; single-participant definitions use `reviewer` — an unknown role is rejected, naming the valid ones), `message` | `instructions`, `async` (defaults to `true`) | After addressing a non-clean result for that role, or to launch a role for the first time. Pass the same `flow_run_id`, the role's name, and the updated message. |
 | `get_flow_status` | `flow_run_id` | — | Poll or check the current status of a flow run (running, waiting, completed, failed). |
 | `close_flow` | `flow_run_id` | — | Only after the definition's clean signal — or when abandoning the task early; the run otherwise stays open until closed. |

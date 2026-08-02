@@ -47,8 +47,12 @@ Treat the driver harness and reviewer as independent. A request such as "ask Cla
 selects `vendor: "claude"` even when the current driver is Codex; mentions of the driver do not
 select a reviewer. Anchor vendor language to the reviewer role ("Claude reviewer", "review with
 Cursor", "ask Codex for review"), including negation ("not Claude"). If exactly one reviewer
-vendor is named, pass it. If none is named, omit `vendor` and let the server's configured default
-apply. If multiple reviewer candidates remain after negation, ask the user to choose; never guess.
+vendor is named, pass it. If none is named, omit `vendor`: the flow definition's authored vendor
+applies when it declares one; otherwise your saved `flows.reviewer_vendor` preference is applied
+automatically (the response says so), and with no preference the server returns
+`reviewer_vendor_required` — ask the user which reviewer vendor to use, pass it explicitly, and
+offer to save it with `kcap config set flows.reviewer_vendor <vendor>`. If multiple reviewer
+candidates remain after negation, ask the user to choose; never guess.
 
 Canonical reviewer aliases: Claude / Claude Code → `claude`; Codex / OpenAI Codex → `codex`;
 Cursor / cursor-agent → `cursor`; GitHub Copilot / Copilot CLI → `copilot`; Gemini / Gemini CLI →
@@ -65,16 +69,19 @@ cannot send. kcap cannot refresh a schema the harness has already cached.
 
 When that happens and the user has named a reviewer:
 
-- **Do not start the flow and then report that the named reviewer ran.** Without `vendor` the
-  server applies its own configured default, which may be an entirely different vendor. Claiming
-  the named reviewer ran when you could not send the parameter is the single failure this
-  contract exists to prevent.
+- **Do not start the flow and then report that the named reviewer ran.** Without `vendor` you get
+  whatever the flow definition's authored vendor resolves to, or — for a vendor-less definition —
+  an automatic retry against your saved `flows.reviewer_vendor` preference, or a
+  `reviewer_vendor_required` response if none is saved; none of these is guaranteed to be the
+  vendor the user named. Claiming the named reviewer ran when you could not send the parameter is
+  the single failure this contract exists to prevent.
 - Tell the user their harness is holding a stale kcap MCP schema, and that the fix is to
   restart the harness session (or reconnect the `kcap-flows` MCP server) and start a fresh task.
-- Start without `vendor` only if the user, having been told, explicitly asks for the server default.
+- Start without `vendor` only if the user, having been told, explicitly asks you to proceed with
+  whatever vendor the definition or saved preference resolves to.
 
 **Nothing server-side catches this for you.** An omitted `vendor` is indistinguishable from a caller
-who deliberately wanted the server default — the request carries no trace of the name the user
+who deliberately wants that resolved vendor — the request carries no trace of the name the user
 asked for, so there is nothing for the server to reject. The `client_upgrade_required`,
 `flow_client_protocol_required`, and `flow_client_protocol_unsupported` errors below are separate
 protections, against *protocol* skew; they do **not** fire on a cached schema that simply omits the
@@ -131,8 +138,9 @@ After applying the role-surface safety gate, if `start_review_flow` / `submit_re
 
 - **`400` starting `no_daemon_available:`** — no connected daemon has the repo checked out. Relay the server's remediation verbatim, then act on the part you can: run `kcap daemon start -d` on a machine with the repo cloned (add `--name <new-name>` if the account already runs a daemon elsewhere), or get the repo cloned on a machine that already runs one. **You cannot redirect the flow at another daemon or checkout** — these tools expose no daemon or repo-path parameter. If the server's text suggests passing `daemon_name` / `repo_path`, ignore that part: do not invent those arguments, and do not retry unchanged.
 - **`400` starting `daemon_outdated:`** — the daemon's kcap is too old to host flow participants. Relay the server error's remediation verbatim — it names the outdated daemon; the fix: update kcap (`npm i -g @kurrent/kcap`), then `kcap daemon restart --name <its-name>` (works for detached and service-managed daemons alike — a raw `daemon stop` deliberately refuses a service-managed one; `kcap daemon status` lists names, and `--when-idle` defers the restart if the daemon is busy).
-- **`reviewer_vendor_required`** — no explicit vendor and no server default; ask the user to name a reviewer or have an admin configure `Flows:Review:DefaultVendor`.
+- **`reviewer_vendor_required`** — ask the user to name a reviewer vendor, pass it explicitly, and offer to save it (`kcap config set flows.reviewer_vendor <vendor>`); this appears only when the definition declares no vendor and no preference is saved.
 - **`reviewer_vendor_unavailable`** — the selected vendor is not installed/certified unattended on an eligible daemon; do not silently fall back to another vendor.
+- **`reviewer_vendor_unresolvable`** — returned from `submit_review_round` on a legacy in-flight run whose pinned definition lost its vendor and has no recorded assignment; close the flow and start a new one.
 - **`client_upgrade_required`, `flow_client_protocol_required`, or `flow_client_protocol_unsupported`** — update kcap; reserved review aliases fail closed on stale clients.
 - **`reserved_review_alias_shape`** — an admin changed a reserved alias to an invalid participant shape; restore exactly one participant named `reviewer`.
 - **`400` starting `participant_unavailable:`** — the reviewer agent died and automatic relaunch is not available yet. Close this flow and start a new one, carrying your context forward; re-submitting will keep failing.
@@ -161,7 +169,7 @@ if findings:
 
 | Tool | Required args | Optional args | When to call |
 |---|---|---|---|
-| `start_review_flow` | `kind` (`spec-review`\|`code-review`), `target_kind` (what is being reviewed: `spec`, `code`, `pr`, `branch`, `file`, etc.), `target_ref` (a path, branch name, or PR URL/number that identifies the target), `target_title` (short human-readable title, e.g. spec name or PR title), `context` (background context: what to focus on, constraints, definition of done) | `vendor` (explicit reviewer vendor; omit for server default), `model` (explicit reviewer model override — REQUIRES `vendor`; only pass it when the user named a model), `instructions`, `mode` (`context-only` — optional) | Once, at the start of a review task. |
+| `start_review_flow` | `kind` (`spec-review`\|`code-review`), `target_kind` (what is being reviewed: `spec`, `code`, `pr`, `branch`, `file`, etc.), `target_ref` (a path, branch name, or PR URL/number that identifies the target), `target_title` (short human-readable title, e.g. spec name or PR title), `context` (background context: what to focus on, constraints, definition of done) | `vendor` (explicit reviewer vendor; omit to use the definition's authored vendor, or your saved `flows.reviewer_vendor` preference if it declares none), `model` (explicit reviewer model override — REQUIRES `vendor`; only pass it when the user named a model), `instructions`, `mode` (`context-only` — optional) | Once, at the start of a review task. |
 | `submit_review_round` | `flow_run_id`, `context` | `instructions` | After addressing findings. Pass the same `flow_run_id` and the updated context. |
 | `get_review_flow_status` | `flow_run_id` | — | Poll or check the current status of a flow (running, waiting, completed, failed). |
 | `close_review_flow` | `flow_run_id` | — | Only after the reviewer returns `clean`. |

@@ -531,17 +531,18 @@ public class FlowsDriverSchemaConformanceTests {
                                           StringComparison.OrdinalIgnoreCase)
             .Because("the driver must be told NOT to claim a reviewer it could not name");
 
-        // 2. WHY omitting the parameter is not neutral -- specifically that the SERVER substitutes
-        //    its own configured default. Asserted as ONE contiguous phrase, which matters: a bare
-        //    Contains("default") was satisfiable by incidental prose, and splitting it into
-        //    Contains("the server applies its") + Contains("default") was no better, because both
-        //    blocks mention the server default AGAIN further down ("...explicitly asks for the
-        //    server default"). That second sentence would have satisfied the "default" half while
-        //    the consequence itself was edited into something else entirely. Whitespace is already
-        //    normalized, so a contiguous match is safe across the files' hard wrapping.
-        await Assert.That(block).Contains("the server applies its own configured default",
-                                          StringComparison.OrdinalIgnoreCase)
+        // 2. WHY omitting the parameter is not neutral -- there is no longer a single server-wide
+        //    default to fall back on: the vendor that actually applies is either the flow
+        //    definition's OWN authored vendor, or -- for a vendor-less definition -- a CLI-side
+        //    retry against the caller's saved `flows.reviewer_vendor` preference, and neither is
+        //    guaranteed to be the vendor the user named. Asserted as two DISTINCT phrases rather
+        //    than one tautological "something happens": a driver whose prose dropped either
+        //    resolution path would still describe SOME consequence, so the fix pins what the
+        //    consequence actually IS, in both flow skills.
+        await Assert.That(block).Contains("authored vendor", StringComparison.OrdinalIgnoreCase)
             .Because("without the consequence, 'do not claim it' reads as mere pedantry");
+        await Assert.That(block).Contains("flows.reviewer_vendor", StringComparison.OrdinalIgnoreCase)
+            .Because("the other half of the resolution chain -- the saved-preference retry -- must also be named");
 
         // 3. The actionable recovery. Documentation that names the failure but not the fix leaves
         //    the user stuck -- the design requires an actionable message, not just a warning.
