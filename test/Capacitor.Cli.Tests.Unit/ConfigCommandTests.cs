@@ -191,4 +191,59 @@ public class ConfigCommandTests {
         await Assert.That(() => ConfigCommand.ApplySet(profile, "default_visibility", "team"))
             .Throws<ArgumentException>();
     }
+
+    // ── flows.reviewer_vendor ────────────────────────────────────────────────
+
+    [Test]
+    public async Task ApplySet_FlowsReviewerVendor_StoresTrimmedLowercase() {
+        var profile = new Profile();
+
+        var updated = ConfigCommand.ApplySet(profile, "flows.reviewer_vendor", "  Claude ");
+
+        await Assert.That(updated.Flows!.ReviewerVendor).IsEqualTo("claude");
+    }
+
+    [Test]
+    public async Task ApplySet_FlowsReviewerVendor_BlankValue_Throws() {
+        var profile = new Profile();
+
+        await Assert.That(() => ConfigCommand.ApplySet(profile, "flows.reviewer_vendor", "   "))
+            .Throws<ArgumentException>();
+    }
+
+    [Test]
+    public async Task ApplyUnset_FlowsReviewerVendor_ClearsThePreference() {
+        var profile = ConfigCommand.ApplySet(new Profile(), "flows.reviewer_vendor", "codex");
+
+        var updated = ConfigCommand.ApplyUnset(profile, "flows.reviewer_vendor");
+
+        await Assert.That(updated.Flows!.ReviewerVendor).IsNull();
+    }
+
+    [Test]
+    public async Task ApplyUnset_UnknownKey_Throws() {
+        await Assert.That(() => ConfigCommand.ApplyUnset(new Profile(), "nope"))
+            .Throws<ArgumentException>();
+    }
+
+    [Test]
+    public async Task EffectiveReviewerVendorPreference_BlankStoredValue_ReadsAsNoPreference() {
+        var profile = new Profile { Flows = new FlowsSettings { ReviewerVendor = "  " } };
+
+        await Assert.That(profile.EffectiveReviewerVendorPreference()).IsNull();
+    }
+
+    [Test]
+    public async Task EffectiveReviewerVendorPreference_NoFlowsSettings_ReturnsNull() {
+        var profile = new Profile();
+
+        await Assert.That(profile.EffectiveReviewerVendorPreference()).IsNull();
+    }
+
+    [Test]
+    public async Task EffectiveReviewerVendorPreference_TrimmedValue_ReturnsTrimmed() {
+        var profile = new Profile { Flows = new FlowsSettings { ReviewerVendor = "  codex  " } };
+
+        await Assert.That(profile.EffectiveReviewerVendorPreference()).IsEqualTo("codex");
+    }
 }

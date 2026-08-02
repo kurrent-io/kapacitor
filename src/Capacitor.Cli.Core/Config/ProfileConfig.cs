@@ -95,6 +95,20 @@ public record Profile {
     /// </summary>
     [JsonPropertyName("import_org")]
     public string? ImportOrg { get; init; }
+
+    [JsonPropertyName("flows")]
+    public FlowsSettings? Flows { get; init; }
+
+    /// <summary>AI-1677: the saved reviewer-vendor preference, with null/blank/whitespace
+    /// defensively read as "no preference" — a blank treated as set would consume the single
+    /// preference retry with an effectively vendor-less request and re-fail identically.</summary>
+    public string? EffectiveReviewerVendorPreference() =>
+        string.IsNullOrWhiteSpace(Flows?.ReviewerVendor) ? null : Flows!.ReviewerVendor!.Trim();
+}
+
+public record FlowsSettings {
+    [JsonPropertyName("reviewer_vendor")]
+    public string? ReviewerVendor { get; init; }
 }
 
 /// <summary>Repo-level .kcap.json committed to VCS.</summary>
