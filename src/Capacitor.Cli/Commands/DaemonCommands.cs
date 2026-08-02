@@ -357,8 +357,39 @@ public static class DaemonCommands {
                 return 0;
             }
 
+            // Refuse to kill ourselves. IsOurDaemon has already said this PID is a live process
+            // whose start token matches, so every identity check upstream has PASSED — the PID is
+            // simply not a daemon. A real daemon is never the process running `daemon stop`, so
+            // reaching here means the PID file is describing something it should not, and killing
+            // its tree would take down this process and everything above it.
+            //
+            // Without this, Process.Kill(entireProcessTree: true) throws
+            // "Cannot be used to terminate a process tree containing the calling process" — an
+            // opaque InvalidOperationException that says nothing about WHICH pid file caused it.
+            // (AI-1645: that is exactly how this surfaced, as a random kcap-cli CI failure.)
+            if (entry.Pid == Environment.ProcessId) {
+                Console.Error.WriteLine(
+                    $"Daemon '{name}' resolves to the current process (PID {entry.Pid}); refusing to stop it. "
+                  + $"Its PID file at {DaemonLockPaths.PidPath(name)} does not describe a daemon.");
+
+                return 1;
+            }
+
             var process = Process.GetProcessById(entry.Pid);
-            process.Kill(entireProcessTree: true);
+
+            try {
+                process.Kill(entireProcessTree: true);
+            } catch (InvalidOperationException ex) {
+                // The self-PID guard above covers the case we can name. This covers the rest of the
+                // same family — chiefly the PID being an ANCESTOR of this process, which .NET also
+                // refuses and which cannot be detected portably ahead of time. Report which daemon
+                // and which PID rather than letting an unattributed exception escape.
+                Console.Error.WriteLine(
+                    $"Daemon '{name}' (PID {entry.Pid}) could not be stopped: {ex.Message} "
+                  + $"Its PID file at {DaemonLockPaths.PidPath(name)} appears not to describe a daemon.");
+
+                return 1;
+            }
             // Wait for it to actually exit so the kernel releases its flock before
             // we try to reclaim it for cleanup below.
             try { process.WaitForExit(5000); } catch { /* best-effort */ }
