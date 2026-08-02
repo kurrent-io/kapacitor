@@ -1,3 +1,4 @@
+using System.Net;
 using System.Text.Json.Nodes;
 using Capacitor.Cli.Commands;
 using WireMock.RequestBuilders;
@@ -412,6 +413,93 @@ public class ReviewerVendorFallbackTests {
         await Assert.That(isError).IsTrue();
         await Assert.That(text).DoesNotContain("saved preference");
         await Assert.That(PostCount(server, "/api/flows/review/start")).IsEqualTo(1);
+    }
+
+    // === The shared settlement budget ===
+
+    /// <summary>The retry runs on the FIRST send's elapsed budget, never a fresh one. Two
+    /// independent 3-minute windows plus the poll cap would outlast the harness MCP tool timeout the
+    /// deadline was sized against — and the way that ends is the worst one available: the retry POST
+    /// succeeds, a paid reviewer launches, the harness has already given up, and the driver starts
+    /// the flow a second time. Pinned as an EXACT total on the virtual clock, so a second window
+    /// shows up as any elapsed time past the single-call deadline.</summary>
+    [Test]
+    public async Task The_retry_shares_the_first_sends_settlement_budget() {
+        // Scripted transport rather than WireMock: the first POST is HELD server-side for 90s (the
+        // admission wait this budget exists to absorb) before refusing, and every later POST is
+        // busy. A WireMock scenario cannot express "busy from here on" — its state machine wraps and
+        // re-serves the refusal, which silently ends the retry instead of exhausting it.
+        var clock   = new VirtualFlowRetryClock();
+        var held    = TimeSpan.FromSeconds(90);
+        var handler = new ScriptedStartHandler(clock, held);
+        using var client = new HttpClient(handler) { BaseAddress = new Uri("http://flows.test") };
+
+        var response = await McpFlowsServer.HandleToolCallAsync(
+            JsonNode.Parse("1")!, ToolCallRequest("start_review_flow", StartArguments()),
+            client, "http://flows.test", cwd: "/tmp/cwd", repoRoot: null, repoInfo: null,
+            clock: clock, backoff: SettlementBackoff.Seeded(3),
+            reviewerVendorPreference: Preference("codex"));
+
+        var (isError, text) = Unwrap(response);
+        await Assert.That(isError).IsTrue();
+        await Assert.That(text).Contains("flow_settlement_busy");
+        await Assert.That(text).Contains("retryable");
+
+        // The whole tool call — first send AND retry — fits inside ONE deadline. On a fresh budget
+        // this would be the 90s the first send spent PLUS a full second window.
+        await Assert.That(clock.Elapsed).IsEqualTo(McpFlowsServer.SettlementElapsedDeadline);
+
+        // It really did fall back, and the retry really was the vendor-bearing one.
+        await Assert.That(handler.Requests).IsGreaterThan(2);
+        await Assert.That(handler.Bodies[0]).DoesNotContain("\"vendor\"");
+        await Assert.That(handler.Bodies[1]).Contains("\"vendor\":\"codex\"");
+    }
+
+    /// <summary>First POST: held for <paramref name="held"/> of virtual time, then the vendor
+    /// refusal that arms the fallback. Every later POST: a settlement busy, so the retry runs to
+    /// exhaustion rather than being let off the hook.</summary>
+    sealed class ScriptedStartHandler(VirtualFlowRetryClock clock, TimeSpan held) : HttpMessageHandler {
+        public int Requests { get; private set; }
+        public List<string> Bodies { get; } = [];
+
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct) {
+            Requests++;
+            Bodies.Add(request.Content is null ? "" : await request.Content.ReadAsStringAsync(ct));
+
+            if (Requests > 1)
+                return new(HttpStatusCode.Conflict) {
+                    Content = new StringContent(
+                        """{"error":"flow_settlement_busy","message":"A concurrent settlement operation is racing this flow run."}""")
+                };
+
+            clock.Advance(held);
+
+            return new(HttpStatusCode.BadRequest) { Content = new StringContent(VendorRequiredBody) };
+        }
+    }
+
+    /// <summary>The budget's other end, pinned at the wrapper: with the window already spent, the
+    /// send delegate is never invoked. A start is non-idempotent, so launching a paid reviewer when
+    /// no time remains to deliver its result is the one outcome worse than reporting the failure.</summary>
+    [Test]
+    public async Task A_spent_shared_budget_sends_nothing_at_all() {
+        var clock = new VirtualFlowRetryClock();
+        var sends = 0;
+        using var client = new HttpClient();
+
+        var result = await McpFlowsServer.SendWithSettlementRetryAsync(
+            client, "https://flows.example.test",
+            (_, _) => {
+                sends++;
+
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK));
+            },
+            clock, SettlementBackoff.Seeded(3),
+            budgetStartedAt: clock.UtcNow - McpFlowsServer.SettlementElapsedDeadline);
+
+        await Assert.That(result as McpFlowsServer.SettlementSendResult.DeadlineExhausted).IsNotNull();
+        await Assert.That(sends).IsEqualTo(0);
+        await Assert.That(clock.Elapsed).IsEqualTo(TimeSpan.Zero);
     }
 
     /// <summary>An expired token on the retry is an auth failure, not a vendor verdict — the caller

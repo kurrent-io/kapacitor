@@ -183,6 +183,12 @@ static class McpFlowsServer {
                     && toolName is "start_review_flow" or "start_flow"
                     && !string.IsNullOrWhiteSpace(arguments?["model"]?.GetValue<string>());
 
+                // When this call sends TWICE (the preference fallback below), both sends share ONE
+                // settlement budget measured from here — see budgetStartedAt on
+                // SendWithSettlementRetryAsync. Taken before the first send so the second can never
+                // extend the total past the single-call deadline.
+                var settlementStartedAt = clock.UtcNow;
+
                 var sendResult = toolName switch {
                     "start_review_flow"   => wasModelStart
                         ? new SettlementSendResult.Response(await SendWithRefreshRetryAsync(client, apiRoot, (c, ct) => StartFlowAsync(c, apiRoot, arguments, cwd, repoRoot, repoInfo, kindArgName: "kind", requestingSessionId: requestingSessionId, ct: ct)))
@@ -274,13 +280,18 @@ static class McpFlowsServer {
                     // here — a null one throws out of the required-argument reads before any POST.
                     arguments!["vendor"] = preference;
 
+                    // On the FIRST send's budget, not a fresh one: two 3-minute windows plus the poll
+                    // cap would outlast the harness tool timeout, and the way that ends is the worst
+                    // one available — this retry succeeds, a paid reviewer launches, the harness has
+                    // already timed the call out, and the driver starts the flow a second time. With
+                    // the budget shared, an exhausted window returns before POSTing at all.
                     var retryResult = await SendWithSettlementRetryAsync(
                         client, apiRoot,
                         (c, ct) => StartFlowAsync(
                             c, apiRoot, arguments, cwd, repoRoot, repoInfo,
                             kindArgName: toolName == "start_review_flow" ? "kind" : "definition_id",
                             requestingSessionId: requestingSessionId, ct: ct),
-                        clock, backoff);
+                        clock, backoff, budgetStartedAt: settlementStartedAt);
 
                     if (retryResult is SettlementSendResult.DeadlineExhausted retryExhausted)
                         return BuildToolResult(id, FormatSettlementDeadlineError(retryExhausted), isError: true);
@@ -423,6 +434,13 @@ static class McpFlowsServer {
     /// (MCP_TOOL_TIMEOUT, 10 minutes) and surface as a harness-level timeout instead of a clean
     /// tool result. Three minutes fits roughly two full server-side admission waits plus backoff
     /// while staying far under that ceiling. If the harness pin ever changes, re-derive this.
+    ///
+    /// <para>A tool call spends AT MOST ONE such window in total, which is what keeps that
+    /// derivation valid: the one caller that sends twice (the preference fallback) threads
+    /// <c>budgetStartedAt</c> so both sends share this budget rather than opening a second. The
+    /// worst case therefore stays this deadline plus <see cref="PollCap"/> — a second independent
+    /// window would push it past the harness pin, and precisely in the shape that matters, with a
+    /// paid reviewer launched by a POST whose result nobody is still waiting for.</para>
     /// </summary>
     internal static readonly TimeSpan SettlementElapsedDeadline = TimeSpan.FromMinutes(3);
 
@@ -488,6 +506,15 @@ static class McpFlowsServer {
     /// <para>Wraps (doesn't replace) <see cref="SendWithRefreshRetryAsync"/>, so the 401 refresh
     /// retry still applies on every attempt. All timing is injectable so unit tests run instantly on
     /// a virtual clock.</para>
+    ///
+    /// <para><paramref name="budgetStartedAt"/> lets a caller that sends TWICE within one tool call
+    /// (the preference fallback: a refused vendor-less start, then one re-send naming the saved
+    /// vendor) share ONE elapsed budget instead of opening a second full one. Two independent
+    /// budgets would put the worst case at 3m + 3m of settlement plus the poll cap — past the
+    /// harness MCP tool timeout this deadline was sized to stay under, with the specific hazard that
+    /// the second POST succeeds (a run minted, a paid reviewer launched) after the harness has
+    /// already given up, and the driver starts the flow again. Omitted, the budget starts now, which
+    /// is every other caller's behavior unchanged.</para>
     /// </summary>
     internal static async Task<SettlementSendResult> SendWithSettlementRetryAsync(
             HttpClient                                                    client,
@@ -495,9 +522,10 @@ static class McpFlowsServer {
             Func<HttpClient, CancellationToken, Task<HttpResponseMessage>> send,
             FlowRetryClock                                                clock,
             SettlementBackoff                                             backoff,
-            CancellationToken                                             callerToken = default
+            CancellationToken                                             callerToken = default,
+            DateTimeOffset?                                               budgetStartedAt = null
         ) {
-        var startedAt = clock.UtcNow;
+        var startedAt = budgetStartedAt ?? clock.UtcNow;
         var deadline  = startedAt + SettlementElapsedDeadline;
 
         string? lastCode    = null;
