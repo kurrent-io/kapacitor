@@ -227,6 +227,60 @@ public class BranchFilterContainmentTests {
         await Assert.That(File.Exists(Path.Combine(info.Path, "zz.txt"))).IsTrue();
     }
 
+    /// <summary>
+    /// A driver name is BYTES, not text. git config accepts a subsection containing a raw 0xff, and this
+    /// was a live bypass of the guard's own inventory: `--get-regexp` runs the platform regex in the
+    /// ambient locale, where `.` will not span a byte that is invalid in that encoding, so
+    /// <c>^filter\..*\.(clean|smudge|process)$</c> returned NOTHING for <c>[filter "ev\xffil"]</c> while
+    /// <c>^filter\.</c> found it. Empty inventory, no overrides emitted, driver executes — the exact
+    /// failure this file exists to prevent, arriving through the enumeration rather than the command.
+    ///
+    /// <para>Enumeration no longer uses a pattern. And because such a name cannot survive a round trip
+    /// through a UTF-8 string, an override built from it would name a DIFFERENT driver while looking
+    /// applied, so this refuses instead of guessing. The control proves plain git really does run it.</para>
+    /// </summary>
+    [Test]
+    public async Task A_driver_name_that_is_not_valid_utf8_is_refused_rather_than_missed() {
+        Skip.Unless(!OperatingSystem.IsWindows(), "POSIX filter script with a shebang");
+
+        var marker = Path.Combine(NewDir("utf8marker"), "fired");
+        var repo = NewRepo();
+        Directory.CreateDirectory(Path.Combine(repo, "tools"));
+        var script = Path.Combine(repo, "tools", "f");
+        File.WriteAllText(script, $"#!/bin/sh\nprintf fired > '{marker}'\ncat\n");
+        File.SetUnixFileMode(script, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+
+        // Raw bytes on both sides: the config subsection and the .gitattributes selector must carry the
+        // same 0xff, and neither can be written through a UTF-8 string without becoming U+FFFD.
+        static byte[] WithFF(string before, string after) =>
+            [.. System.Text.Encoding.ASCII.GetBytes(before), 0xff,
+             .. System.Text.Encoding.ASCII.GetBytes(after)];
+
+        File.WriteAllBytes(Path.Combine(repo, ".gitattributes"), WithFF("zz.txt filter=ev", "il\n"));
+        File.WriteAllText(Path.Combine(repo, "zz.txt"), "payload\n");   // sorts after tools/f — see above
+        Git(repo, "add", "-A");
+        Git(repo, "commit", "-q", "-m", "branch selects a driver named with a raw 0xff");
+
+        var config = Path.Combine(repo, ".git", "config");
+        var appended = new List<byte>(File.ReadAllBytes(config));
+        appended.AddRange(WithFF("[filter \"ev", "il\"]\n\tsmudge = ./tools/f\n"));
+        File.WriteAllBytes(config, [.. appended]);
+
+        // CONTROL — plain git honours the 0xff-named driver and runs branch code.
+        Git(repo, "worktree", "add", "-q", Path.Combine(NewDir("ctl"), "wt"),
+            "-b", "ctl-" + Guid.NewGuid().ToString("N")[..8]);
+        await Assert.That(File.Exists(marker))
+            .IsTrue()
+            .Because("the control must reproduce filter execution, or the assertion below is vacuous");
+
+        File.Delete(marker);
+
+        await Assert.ThrowsAsync<BranchFilterInventoryException>(async () =>
+            await WorktreeManager.BranchFilterOverridesAsync(repo));
+
+        await Assert.That(File.Exists(marker)).IsFalse();
+    }
+
     // ── fixture ──
 
     static string NewDir(string tag) {
