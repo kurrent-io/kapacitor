@@ -23,7 +23,16 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
     /// <summary>Excluded from a borrowed snapshot. The vendor MCP config paths are folded in from the one
     /// list, rather than restated: this used to name <c>.mcp.json</c> and <c>.cursor/mcp.json</c> only, so
     /// <c>.kiro/settings/mcp.json</c> — the file measured to get a command executed at session setup —
-    /// survived into a launched borrowed snapshot. Two lists of the same thing is how that happened.</summary>
+    /// survived into a launched borrowed snapshot. Two lists of the same thing is how that happened.
+    ///
+    /// <para><b>Known cost, and it cuts the wrong way.</b> An excluded file is not in the snapshot, so a
+    /// borrowed reviewer cannot SEE it — including when the change under review is the file itself. A pull
+    /// request that ADDS a hostile <c>.kiro/settings/mcp.json</c> is therefore invisible to the reviewer,
+    /// which is exactly the change this exclusion exists to defend against; the reviewer can return clean on
+    /// it. The exclusion still holds, because a reviewer that has already executed the payload is worse than
+    /// one that missed it, but the gap is real and is tracked separately (a borrowed reviewer cannot see a hostile config the change under review ADDS). Note it predates this change for
+    /// the original two paths — folding the list in widened it from two files to eight rather than
+    /// introducing it.</para></summary>
     /// <para><b>Lazy, not a field initializer.</b> Static field initializers across PARTIAL FILES have no
     /// useful ordering, and <c>WorkspaceMcpConfigPaths</c> lives in the other partial — as a field this read
     /// it while still <c>default</c>, and spreading a default <c>ImmutableArray</c> threw inside the type
@@ -735,8 +744,15 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
             right.TryGetValue(pair.Key, out var other) && pair.Value.Mode == other.Mode &&
             pair.Value.Length == other.Length && pair.Value.Hash.AsSpan().SequenceEqual(other.Hash));
 
+    /// <summary>Marks the excluded config paths <c>skip-worktree</c> so their absence from the snapshot is
+    /// not reported as a change.
+    /// <para>This iterated a hard-coded pair while the snapshot excluded the same pair. Now that the
+    /// exclusions fold in <see cref="WorkspaceMcpConfigPaths"/>, a tracked <c>.kiro/settings/mcp.json</c>
+    /// would show up as a DELETION inside the snapshot — polluting <c>git status</c> and diffs, and capable
+    /// of producing a review finding about a deletion kcap performed. Driven from the same list, so the two
+    /// cannot drift apart again.</para></summary>
     static async Task ApplyReservedIndexPolicyAsync(string destination) {
-        foreach (var path in new[] { ".mcp.json", ".cursor/mcp.json" })
+        foreach (var path in WorkspaceMcpConfigPaths)
             try { await RunGit(destination, GitTimeout, "update-index", "--skip-worktree", "--", path); }
             catch { /* absent from index */ }
         Directory.CreateDirectory(Path.Combine(destination, ".git", "info"));
