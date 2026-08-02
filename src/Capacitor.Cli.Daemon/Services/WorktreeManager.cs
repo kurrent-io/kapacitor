@@ -519,7 +519,10 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
             var manifest = await ReadSourceManifestAsync(source, exclusions, ct);
             await ApplyReservedIndexPolicyAsync(destination);
             await CopyManifestAsync(source, destination, manifest, ct);
-            RemoveFilesOutsideManifest(destination, manifest.Keys, ct);
+            // Destination names, not source keys — a quarantined entry lands under a different path and
+            // would otherwise be swept straight back out as "outside the manifest".
+            RemoveFilesOutsideManifest(destination,
+                manifest.Select(static e => e.Value.DestinationRelative ?? e.Key), ct);
             VerifyIndependentGit(destination, source);
             await VerifyDestinationManifestAsync(destination, manifest, ct);
 
@@ -542,13 +545,23 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
         foreach (var raw in stdout.Split('\0', StringSplitOptions.RemoveEmptyEntries)) {
             ct.ThrowIfCancellationRequested();
             var rel = NormalizeRelativePath(raw);
+            var quarantine = false;
+
             if (IsUnderExcluded(rel, exclusions)) {
                 if (rel.Equals(".attached", StringComparison.OrdinalIgnoreCase) ||
                     rel.StartsWith(".attached/", StringComparison.OrdinalIgnoreCase) ||
                     rel.Equals(".capacitor", StringComparison.OrdinalIgnoreCase) ||
                     rel.StartsWith(".capacitor/", StringComparison.OrdinalIgnoreCase))
                     throw new InvalidOperationException($"borrowed_snapshot_reserved_path: {rel}");
-                continue;
+
+                // Vendor MCP config is excluded so no vendor EXECUTES it — but a reviewer still has to be
+                // able to READ it, and the change under review may BE this file. Dropping it entirely means
+                // a pull request that adds a hostile `.kiro/settings/mcp.json` is invisible to the reviewer,
+                // which can then return clean on exactly the change the exclusion defends against.
+                // Carried under a suffix instead: reviewable content, at a path no vendor looks for.
+                if (!IsWorkspaceMcpConfigPath(rel)) continue;
+
+                quarantine = true;
             }
             var path = ContainedPath(source, rel);
             if (!File.Exists(path)) continue; // tracked deletion
@@ -570,7 +583,8 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
             var hash = await SHA256.HashDataAsync(input, ct);
             if (input.Length != streamLength) throw new SourceChangedException();
             UnixFileMode? mode = OperatingSystem.IsWindows() ? null : File.GetUnixFileMode(path);
-            if (!result.TryAdd(rel, new SnapshotFile(streamLength, hash, mode)))
+            if (!result.TryAdd(rel, new SnapshotFile(streamLength, hash, mode,
+                    quarantine ? rel + QuarantineSuffix : null)))
                 throw new InvalidOperationException($"borrowed_snapshot_path_collision: {rel}");
         }
         return result;
@@ -582,7 +596,7 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
         foreach (var (rel, file) in manifest) {
             ct.ThrowIfCancellationRequested();
             var sourcePath = ContainedPath(source, rel);
-            var path = ContainedPath(destination, rel);
+            var path = ContainedPath(destination, file.DestinationRelative ?? rel);
             EnsureParentDirectories(destination, path);
             if (Directory.Exists(path)) DeleteTreeNoFollow(path);
             await using (var input = OpenSequentialRead(sourcePath))
@@ -715,7 +729,9 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
     static async Task VerifyDestinationManifestAsync(
             string destination, Dictionary<string, SnapshotFile> manifest, CancellationToken ct) {
         foreach (var (rel, expected) in manifest) {
-            var path = ContainedPath(destination, rel);
+            // The DESTINATION name — a quarantined entry is written under a suffix, and verifying the
+            // source key would report a mismatch for a file that is exactly where it should be.
+            var path = ContainedPath(destination, expected.DestinationRelative ?? rel);
             if (!File.Exists(path) || new FileInfo(path).Length != expected.Length)
                 throw new InvalidOperationException($"borrowed_snapshot_destination_mismatch: {rel}");
             await using var input = OpenSequentialRead(path);
@@ -756,7 +772,8 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
             try { await RunGit(destination, GitTimeout, "update-index", "--skip-worktree", "--", path); }
             catch { /* absent from index */ }
         Directory.CreateDirectory(Path.Combine(destination, ".git", "info"));
-        File.AppendAllText(Path.Combine(destination, ".git", "info", "exclude"), "\n.attached/\n");
+        File.AppendAllText(Path.Combine(destination, ".git", "info", "exclude"),
+            $"\n.attached/\n*{QuarantineSuffix}\n");
     }
 
     static FileStream OpenSequentialRead(string path) => new(path, new FileStreamOptions {
@@ -764,8 +781,25 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
         Options = FileOptions.Asynchronous | FileOptions.SequentialScan
     });
 
-    sealed record SnapshotFile(long Length, byte[] Hash, UnixFileMode? Mode);
+    /// <param name="DestinationRelative">Where the file lands in the snapshot when that differs from where
+    /// it was read. Used only to QUARANTINE vendor MCP config: the content must be reviewable, but not at a
+    /// path any vendor reads.</param>
+    sealed record SnapshotFile(long Length, byte[] Hash, UnixFileMode? Mode, string? DestinationRelative = null);
     sealed class SourceChangedException : Exception;
+
+    /// <summary>Suffix a quarantined config carries in the snapshot. No vendor looks for these names, so
+    /// the content is readable by a reviewer without being loadable by the agent.</summary>
+    internal const string QuarantineSuffix = ".kcap-quarantined";
+
+    /// <summary>Whether an excluded path is vendor MCP config — the kind that must stay REVIEWABLE — rather
+    /// than kcap's own reserved state, which must not appear in a snapshot at all.</summary>
+    static bool IsWorkspaceMcpConfigPath(string rel) {
+        var normalized = rel.Replace('\\', '/');
+
+        return WorkspaceMcpConfigPaths.Any(path =>
+            normalized.Equals(path, StringComparison.OrdinalIgnoreCase) ||
+            normalized.EndsWith("/" + path, StringComparison.OrdinalIgnoreCase));
+    }
 
     static bool IsUnderExcluded(string rel, string[] prefixes) {
         rel = rel.Replace('\\', '/');
