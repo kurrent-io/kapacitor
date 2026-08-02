@@ -279,20 +279,25 @@ server-origin launch/stop execution through the one existing serial lane:
   structural: coalescing allows at most one queued entry per (target, payload class, launch
   segment); segments per target ≤ that target's active launch instances + 1 (≤ capacity + 1);
   targets are admission-checked against `_agents` ∪ active instances; every entry retires at
-  dequeue. **Boundedness is derived churn physics plus monitoring, not a theorem:** live
-  targets are capacity-capped (`MaxConcurrentAgents` governs server launches AND local
-  spawns), a removed target's entries never grow again (admission re-checks liveness), and
-  lane parking is ≤ 300 s per prompted launch — so per parked window, distinct admissible
-  targets ≤ capacity × (1 + window/teardown-time) and queued stops ≤ C × that. Under
-  PATHOLOGICAL sustained churn with a repeatedly parked lane, queued-stop memory grows with
-  churn — an accepted, monitored residual (§7), each entry O(bytes). The 256-entry alarm is
-  **edge-triggered with re-arm**: one Error on crossing, quiet during further growth,
-  re-armed when depth drains below threshold; current and high-water depth are exposed as
-  metrics — the alarm can never amplify the pathology it reports. **Scope of losslessness:**
+  dequeue. **Boundedness is monitored, not proven:** live targets are capacity-capped
+  (`MaxConcurrentAgents` governs server launches AND local spawns), a removed target's
+  entries never grow again (admission re-checks liveness), and entries retire at dequeue —
+  so queue growth requires agent churn DURING lane non-dequeue time (consent parking, launch
+  initialization, any long item), and no closed-form bound is claimed for that product.
+  Under sustained churn with a stalled lane, queued-stop memory grows with churn — an
+  accepted, monitored residual (§7), each entry O(bytes). The 256-entry alarm is
+  **edge-triggered with hysteresis**: one Error on crossing, quiet during further growth,
+  re-armed only after depth drains below 128 (half the threshold), plus a minimum 60 s
+  interval between alarm emissions; current and high-water depth are exposed as metrics —
+  boundary oscillation cannot turn the alarm into its own failure mode. **Scope of losslessness:**
   a known-target stop is never dropped while the lane is ACCEPTING; at daemon shutdown the
   deliberate supersession applies (queued un-seq'd items discarded) and is safe because
-  daemon teardown reaps every child process the daemon started — the stop's physical intent
-  is fulfilled by teardown itself. The only dropped stops remain unknown-target ones,
+  child reaping is the SHIPPED two-layer machinery, not this spec's promise: shutdown
+  teardown kills registered children by their captured start identity, and the next boot's
+  env-marker/PID-record scan reaps any survivor of the prior incarnation (including a
+  late-starting child teardown missed) — the stop's physical intent is fulfilled by that
+  pair. An integration test pins the first layer: live children + queued un-seq'd stops →
+  real shutdown → queue discarded AND every registered child gone. The only dropped stops remain unknown-target ones,
   observably identical to their eventual no-op. Launch items are ≤ capacity (§1.10).
   **Submission outcomes (complete):** `Committed` | `Coalesced` | `Refused` (shutdown) |
   `DroppedUnknownTarget` — the processor owns the drop log; the queued-stop counter is
@@ -576,8 +581,11 @@ PR 1:
   (lossless pin), and stop(X)→launch(X)→stop(X) holds with the queue pre-filled to the alarm
   threshold (saturation ordering pin); unknown-target drops report `DroppedUnknownTarget`;
   the queued-stop counter returns to zero after shutdown discard (counter-cleanup pin); the
-  alarm fires once on crossing the threshold, stays quiet during further growth, and re-arms
-  after draining below it (edge-trigger pin).
+  alarm fires once on crossing the threshold, stays quiet during further growth, re-arms
+  only after draining below the hysteresis watermark, and repeated boundary oscillation
+  within the minimum interval emits no further Errors (hysteresis pin); shutdown with live
+  and late-starting children plus queued un-seq'd stops discards the queue AND leaves every
+  registered child physically gone (teardown-reap pin).
 - Handler classification: with a launch parked on consent, an input/resize for an UNKNOWN
   agent id is dropped-and-logged (no throw, no pump stall) and a status-report request is
   served from the registry snapshot omitting the in-flight launch.
@@ -612,10 +620,10 @@ PR 2:
   accepting, stops are delayed, never lost, reordered, or refused — shutdown supersession is
   the deliberate exception, safe because teardown reaps the children. Non-launch/stop
   traffic and internal reaping are immune.
-- **Queued-stop memory under pathological churn** (§3.3) — with a repeatedly parked lane and
-  sustained agent churn, queued-stop entries grow with churn (per-window bound: capacity ×
-  window/teardown-time × C); accepted, monitored via the edge-triggered alarm + high-water
-  metric.
+- **Queued-stop memory under pathological churn** (§3.3) — with sustained agent churn during
+  lane NON-DEQUEUE time (consent parking, launch initialization, any long item), queued-stop
+  entries grow with churn; no closed-form bound is claimed. Accepted, monitored via the
+  hysteresis alarm + current/high-water metrics.
 - **Legacy inline-await persists only against pre-settlement servers** (`_processor` null) —
   shipped behavior for exactly the population that already had it.
 - **Debounce tuning** — 250 ms is a starting value; it is a constant in one place and not a
