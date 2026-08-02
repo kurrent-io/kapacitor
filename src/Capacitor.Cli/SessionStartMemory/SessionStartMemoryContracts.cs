@@ -14,10 +14,16 @@ internal enum SessionStartHarness {
     Antigravity
 }
 
-internal enum SessionLifecycleReason { New, Resume, Reopen, Fork, Compact, RepeatedTurnCallback, Unknown }
+/// <summary><c>Clear</c> is a CONTEXT RESET: the host destroyed the model context that held the injected
+/// index, so the session is still the same session but the memory is gone. It is the one reason that must
+/// re-inject — every other reason keeps the existing context and must stay silent.</summary>
+internal enum SessionLifecycleReason { New, Resume, Reopen, Fork, Compact, Clear, RepeatedTurnCallback, Unknown }
 internal enum SessionMemoryLifecycleDecision { EligibleWithLease, EligibleOneShot, IneligibleNoCommit, RetryLaterNoCommit }
 internal enum SessionStartMemoryDisposition { Ready, CompleteWithoutContext, RetryableFailure }
 
+/// <param name="LifecycleInstanceId">Distinguishes lease keys WITHIN one session. Null means generation
+/// zero, which hashes to the byte-identical legacy key — that is what keeps sessions started under a
+/// pre-generation CLI from re-injecting when a newer hook fires into them.</param>
 internal sealed record SessionMemoryLifecycle(
     SessionStartHarness Harness,
     string SessionId,

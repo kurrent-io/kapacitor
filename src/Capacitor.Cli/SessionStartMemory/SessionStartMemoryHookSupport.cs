@@ -76,7 +76,30 @@ internal static class SessionStartMemoryHookSupport {
         "reopen"           => SessionLifecycleReason.Reopen,
         "fork"             => SessionLifecycleReason.Fork,
         "compact"          => SessionLifecycleReason.Compact,
+        "clear"            => SessionLifecycleReason.Clear,
         null or ""         => SessionLifecycleReason.New,
         _                  => SessionLifecycleReason.Unknown
     };
+
+    /// <summary>
+    /// The lease-key discriminator for one context reset, or null for every other reason.
+    ///
+    /// <para>Null is what preserves the existing behaviour EXACTLY: it hashes to the byte-identical legacy
+    /// lease key, so a session started under a pre-generation CLI keeps its completed lease and a newer
+    /// hook firing into it stays silent. No dual-read migration is needed because generation zero was
+    /// always spelled this way.</para>
+    ///
+    /// <para><b>The id must distinguish two genuine clears while collapsing a redelivery of one.</b> That
+    /// is a property of what the host actually sends, and it differs by harness — measured, not assumed:
+    /// Gemini's SessionStart payload carries a <c>timestamp</c>, which changes between clears and is
+    /// identical on a redelivery, giving exactly-once. Claude's carries only session id, transcript path,
+    /// cwd and source, none of which differ between two clears of one session — so no usable id exists and
+    /// the caller must pass a per-invocation value, accepting AT-LEAST-ONCE. A redelivered Claude clear can
+    /// therefore inject twice; that is the documented trade, and it is strictly better than the current
+    /// behaviour of never re-injecting at all.</para>
+    /// </summary>
+    public static string? ContextResetInstanceId(SessionLifecycleReason reason, string? resetDiscriminator) =>
+        reason == SessionLifecycleReason.Clear && resetDiscriminator is { Length: > 0 }
+            ? "clear:" + resetDiscriminator
+            : null;
 }

@@ -201,10 +201,12 @@ public class GeminiSessionStartMemoryTests {
     /// defaulting to <c>New</c> would inject on an unverified source AND spend the once-per-session lease
     /// on it. The shared mapper returns <c>Unknown</c>, which the policy suppresses.</para>
     ///
-    /// <para><c>clear</c> therefore lands on <c>Unknown</c> and is suppressed by the POLICY rather than by
-    /// the lease. Same observable outcome — no re-injection after a context reset — but suppressed
-    /// explicitly. Re-injection on clear is a known foundation-wide gap tracked separately; pinned here so
-    /// it stays deliberate and visible.</para>
+    /// <para><c>clear</c> now maps to <c>Clear</c>, a real context reset, rather than falling through to
+    /// <c>Unknown</c>. It is still suppressed HERE, because this call site passes no reset discriminator and
+    /// a clear that cannot be told apart from the session start that already injected must not re-inject —
+    /// but it is suppressed as <c>IneligibleNoCommit</c> (a recognised reason, deliberately declined) rather
+    /// than <c>RetryLaterNoCommit</c> (an unrecognised one). The live adapter passes Gemini's payload
+    /// timestamp and does re-inject; that path is asserted in the context-reset suite.</para>
     /// </summary>
     // Expected value is passed by NAME: SessionLifecycleReason is internal, so a public test signature
     // cannot mention it.
@@ -214,7 +216,7 @@ public class GeminiSessionStartMemoryTests {
     [Arguments("compact", "Compact")]
     [Arguments(null,      "New")]
     [Arguments("RESUME",  "Resume")]
-    [Arguments("clear",   "Unknown")]
+    [Arguments("clear",   "Clear")]
     [Arguments("wat",     "Unknown")]
     public async Task source_maps_through_the_shared_lifecycle_mapper(string? source, string expected) {
         await Assert.That(SessionStartMemoryHookSupport.ReasonFor(source).ToString()).IsEqualTo(expected);
@@ -239,7 +241,7 @@ public class GeminiSessionStartMemoryTests {
     [Arguments("startup", "EligibleOneShot")]      // the positive control: this MUST be eligible, or
     [Arguments("resume",  "EligibleOneShot")]      // "suppressed" below would prove nothing
     [Arguments("compact", "IneligibleNoCommit")]
-    [Arguments("clear",   "RetryLaterNoCommit")]   // unknown reason ⇒ suppressed, lease NOT spent
+    [Arguments("clear",   "IneligibleNoCommit")]   // recognised reset, declined without a discriminator
     [Arguments("wat",     "RetryLaterNoCommit")]
     public async Task the_adapters_lifecycle_produces_the_expected_policy_decision(string source, string expected) {
         var lifecycle = GeminiHookCommand.LifecycleFor("3f2504e04f8911d39a0c0305e82c3301", source);

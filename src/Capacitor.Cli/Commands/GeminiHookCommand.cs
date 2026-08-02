@@ -101,8 +101,16 @@ static class GeminiHookCommand {
     /// <para><c>CallbackMayRepeat: false</c> — Gemini's SessionStart is a session-level event, not a
     /// per-turn callback like Kiro's agentSpawn. A `resume` re-fire on the same session id is made
     /// idempotent by the lease, not by this flag.</para></summary>
-    internal static SessionMemoryLifecycle LifecycleFor(string sessionId, string? source) =>
-        new(SessionStartHarness.Gemini, sessionId, LifecycleInstanceId: null,
+    /// <param name="resetDiscriminator">Gemini's ISO-8601 payload <c>timestamp</c>. It differs between two
+    /// genuine clears and is identical on a redelivery of one, which is exactly the property a context-reset
+    /// lease key needs — so Gemini gets exactly-once re-injection rather than the at-least-once a harness
+    /// without such a field is limited to. Null on every non-clear reason, and null here simply suppresses
+    /// the reset, never re-injects.</param>
+    internal static SessionMemoryLifecycle LifecycleFor(string sessionId, string? source,
+                                                        string? resetDiscriminator = null) =>
+        new(SessionStartHarness.Gemini, sessionId,
+            SessionStartMemoryHookSupport.ContextResetInstanceId(
+                SessionStartMemoryHookSupport.ReasonFor(source), resetDiscriminator),
             IsTopLevel: true, ClassificationAuthoritative: true,
             // Shared mapper, NOT a local one: it maps an unrecognised source to Unknown, which the
             // policy suppresses BEFORE any lease is acquired. A local mapper defaulting to New would
@@ -115,6 +123,7 @@ static class GeminiHookCommand {
             string?    scopeRoot,
             bool       disabled,
             string?    source,
+            string?    resetDiscriminator,
             TimeSpan   budget,
             Func<string?, CancellationToken, Task<HttpClient>>? memoryClientFactory,
             Func<SessionStartMemoryLeaseStore>?                 memoryStoreFactory) {
@@ -131,7 +140,7 @@ static class GeminiHookCommand {
                 disposeClients: memoryClientFactory is null);
 
             return new SessionStartMemoryOrchestrator(store, provider).GetFragmentAsync(
-                            LifecycleFor(sessionId, source),
+                            LifecycleFor(sessionId, source, resetDiscriminator),
     new SessionStartMemoryContextRequest(baseUrl, scopeRoot, disabled, budget, CancellationToken.None));
         } catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException) {
             return Task.FromResult<string?>(null);
@@ -272,6 +281,9 @@ static class GeminiHookCommand {
             scopeRoot: GitRepository.FindRoot(cwd) ?? cwd,
             disabled: activeProfile?.DisableMemoryIndex is true,
             source: source,
+            // The raw ISO timestamp Gemini stamps every hook payload with. Distinct per clear, identical on
+            // a redelivery, which is what makes Gemini's re-injection exactly-once.
+            resetDiscriminator: TryGetString(node, "timestamp"),
             budget: HookBudget.Remaining(processStart, "session-start"),
             memoryClientFactory, memoryStoreFactory);
 

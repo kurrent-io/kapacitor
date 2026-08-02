@@ -584,13 +584,10 @@ public static class ClaudeHookCommand {
             // after the ordering-guard / backlog returns above so a spooled session-start doesn't
             // pay for a fetch it won't use.
             var memoryDisabled = AppConfig.ResolvedProfile?.Profile?.DisableMemoryIndex is true;
-            var lifecycleReason = source?.ToLowerInvariant() switch {
-                "resume" => SessionLifecycleReason.Resume,
-                "reopen" => SessionLifecycleReason.Reopen,
-                "fork" => SessionLifecycleReason.Fork,
-                "compact" => SessionLifecycleReason.Compact,
-                _ => SessionLifecycleReason.New
-            };
+            // The SHARED mapper, so `clear` maps to Clear rather than falling through to New. The local
+            // copy that used to live here is why Claude had the silent-loss bug too: /clear re-fires
+            // SessionStart, the reason read as New, and the already-completed lease suppressed it.
+            var lifecycleReason = SessionStartMemoryHookSupport.ReasonFor(source);
             var memoryIndexTask = StartMemoryIndexTask(
                 client, baseUrl, nativeSessionId, sessionCwd, memoryDisabled, lifecycleReason,
                 HookBudget.Remaining(processStart, "session-start"), memoryClientFactory, memoryStoreFactory);
@@ -892,7 +889,15 @@ public static class ClaudeHookCommand {
                 memoryClientFactory ?? ((_, _) => Task.FromResult(sharedClient)),
                 disposeClients: memoryClientFactory is not null);
             return new SessionStartMemoryOrchestrator(store, provider).GetFragmentAsync(
-                new SessionMemoryLifecycle(SessionStartHarness.Claude, nativeSessionId, null,
+                new SessionMemoryLifecycle(SessionStartHarness.Claude, nativeSessionId,
+                    // Claude's SessionStart payload carries session id, transcript path, cwd and source —
+                    // none of which differ between two clears of one session, so there is no field to
+                    // dedupe on. A per-invocation value is therefore the only way to satisfy "a second
+                    // clear injects again", and it makes Claude AT-LEAST-ONCE: a redelivered clear hook can
+                    // inject twice. Documented rather than hidden, and strictly better than today, where a
+                    // clear never re-injects at all. Gemini, which does stamp a timestamp, is exactly-once.
+                    SessionStartMemoryHookSupport.ContextResetInstanceId(
+                        reason, Guid.NewGuid().ToString("N")),
                     IsTopLevel: true, ClassificationAuthoritative: true, reason,
                     CallbackMayRepeat: false),
                 new SessionStartMemoryContextRequest(baseUrl, cwd, disabled, budget, CancellationToken.None));

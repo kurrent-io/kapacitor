@@ -17,6 +17,35 @@ internal static class SessionStartMemoryIdentity {
         return Convert.ToHexStringLower(SHA256.HashData(stream.ToArray()));
     }
 
+    /// <summary>
+    /// The key of the durable CONTEXT GENERATION counter for a session — a different namespace from the
+    /// lease keys, so a generation record can never collide with a lease record.
+    /// </summary>
+    public static string CreateGenerationKey(SessionStartHarness harness, string sessionId) {
+        var normalized = NormalizeSessionId(harness, sessionId)
+            ?? throw new ArgumentException("A stable session identity is required.", nameof(sessionId));
+        using var stream = new MemoryStream();
+        stream.WriteByte(0x02);                       // 0x01 is the lease namespace; never reuse it here
+        WritePresent(stream, HarnessToken(harness));
+        WritePresent(stream, normalized);
+        return Convert.ToHexStringLower(SHA256.HashData(stream.ToArray()));
+    }
+
+    /// <summary>
+    /// The lease key for a context generation.
+    ///
+    /// <para><b>Generation zero returns the LEGACY key, byte for byte.</b> The lease key already hashed an
+    /// optional lifecycle instance id with an explicit absent-marker, and every harness passed null, so
+    /// generation zero is exactly what a pre-generation CLI wrote. That is what makes this safe to ship
+    /// across the already-merged adapters without a dual-read migration: a newer hook firing into a session
+    /// started under the old CLI computes the same key, finds the completed lease, and stays silent.</para>
+    /// </summary>
+    public static string CreateForGeneration(SessionStartHarness harness, string sessionId, int generation) {
+        if (generation < 0) throw new ArgumentOutOfRangeException(nameof(generation));
+
+        return Create(harness, sessionId, generation == 0 ? null : $"g{generation}");
+    }
+
     public static string? NormalizeSessionId(SessionStartHarness harness, string? value) {
         if (string.IsNullOrEmpty(value)) return null;
         if (harness is SessionStartHarness.Cursor or SessionStartHarness.Copilot or SessionStartHarness.Antigravity)
