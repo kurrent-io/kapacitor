@@ -5,6 +5,7 @@ Usage: kcap config <subcommand>
 Subcommands:
   show                    Print current configuration
   set <key> <value>       Update a config value
+  unset <key>             Remove a config value
 
 Config keys:
   server_url              Server URL
@@ -15,3 +16,4 @@ Config keys:
   disable_memory_index        Skip injecting the team-memory index at SessionStart (true/false)
   excluded_repos              Excluded repos, comma-separated (owner/repo,owner/repo)
   update_check                Enable update check (true/false)
+  flows.reviewer_vendor       Preferred review-flow reviewer vendor (used only when the definition names none)
