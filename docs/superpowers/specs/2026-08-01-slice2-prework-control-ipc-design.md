@@ -279,10 +279,21 @@ server-origin launch/stop execution through the one existing serial lane:
   structural: coalescing allows at most one queued entry per (target, payload class, launch
   segment); segments per target ≤ that target's active launch instances + 1 (≤ capacity + 1);
   targets are admission-checked against `_agents` ∪ active instances; every entry retires at
-  dequeue. Exceeding 256 queued stop entries is treated as pathology and logged at Error as
-  an ALARM (visibility, not a drop) — the only dropped stops remain unknown-target ones,
-  observably identical to their eventual no-op. Launch items are ≤ capacity (§1.10). The §7
-  residual ("stops are delayed, never lost or refused") therefore holds unweakened.
+  dequeue. **Boundedness is derived churn physics plus monitoring, not a theorem:** live
+  targets are capacity-capped (`MaxConcurrentAgents` governs server launches AND local
+  spawns), a removed target's entries never grow again (admission re-checks liveness), and
+  lane parking is ≤ 300 s per prompted launch — so per parked window, distinct admissible
+  targets ≤ capacity × (1 + window/teardown-time) and queued stops ≤ C × that. Under
+  PATHOLOGICAL sustained churn with a repeatedly parked lane, queued-stop memory grows with
+  churn — an accepted, monitored residual (§7), each entry O(bytes). The 256-entry alarm is
+  **edge-triggered with re-arm**: one Error on crossing, quiet during further growth,
+  re-armed when depth drains below threshold; current and high-water depth are exposed as
+  metrics — the alarm can never amplify the pathology it reports. **Scope of losslessness:**
+  a known-target stop is never dropped while the lane is ACCEPTING; at daemon shutdown the
+  deliberate supersession applies (queued un-seq'd items discarded) and is safe because
+  daemon teardown reaps every child process the daemon started — the stop's physical intent
+  is fulfilled by teardown itself. The only dropped stops remain unknown-target ones,
+  observably identical to their eventual no-op. Launch items are ≤ capacity (§1.10).
   **Submission outcomes (complete):** `Committed` | `Coalesced` | `Refused` (shutdown) |
   `DroppedUnknownTarget` — the processor owns the drop log; the queued-stop counter is
   incremented at commit and retired under `_lock` at identity-guarded dequeue AND at shutdown
@@ -564,7 +575,9 @@ PR 1:
   key (identity-guard pin); the 257th queued known-target stop is ADMITTED and only alarms
   (lossless pin), and stop(X)→launch(X)→stop(X) holds with the queue pre-filled to the alarm
   threshold (saturation ordering pin); unknown-target drops report `DroppedUnknownTarget`;
-  the queued-stop counter returns to zero after shutdown discard (counter-cleanup pin).
+  the queued-stop counter returns to zero after shutdown discard (counter-cleanup pin); the
+  alarm fires once on crossing the threshold, stays quiet during further growth, and re-arms
+  after draining below it (edge-trigger pin).
 - Handler classification: with a launch parked on consent, an input/resize for an UNKNOWN
   agent id is dropped-and-logged (no throw, no pump stall) and a status-report request is
   served from the registry snapshot omitting the in-flight launch.
@@ -595,8 +608,14 @@ PR 2:
 
 - **Launch/stop execution serialized behind a prompted launch** (§3.3) — accepted: it is the
   shipped pump serialization relocated off the pump, bounded by the 300 s prompt ceiling
-  (§1.14) and the server's capacity-gated dispatch depth (§1.10); stops are delayed, never
-  lost, reordered, or refused. Non-launch/stop traffic and internal reaping are immune.
+  (§1.14) and the server's capacity-gated dispatch depth (§1.10); while the lane is
+  accepting, stops are delayed, never lost, reordered, or refused — shutdown supersession is
+  the deliberate exception, safe because teardown reaps the children. Non-launch/stop
+  traffic and internal reaping are immune.
+- **Queued-stop memory under pathological churn** (§3.3) — with a repeatedly parked lane and
+  sustained agent churn, queued-stop entries grow with churn (per-window bound: capacity ×
+  window/teardown-time × C); accepted, monitored via the edge-triggered alarm + high-water
+  metric.
 - **Legacy inline-await persists only against pre-settlement servers** (`_processor` null) —
   shipped behavior for exactly the population that already had it.
 - **Debounce tuning** — 250 ms is a starting value; it is a constant in one place and not a
