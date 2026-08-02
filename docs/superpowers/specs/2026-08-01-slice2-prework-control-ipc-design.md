@@ -246,9 +246,10 @@ server-origin launch/stop execution through the one existing serial lane:
   `LaunchFailedAsync`, its own send failure swallowed; stop → log); `Coalesced` → nothing.
 - **Active-launch tracking (closes the executing-launch stop gap)**: the processor tracks
   active launch INSTANCES — a per-committed-item token added under `_lock` at commit and
-  removed under `_lock` only when THAT item's execute completes (registration or terminal
-  failure); id membership in the active set lasts until the last instance for that id
-  settles (reference-counted — no id-non-reuse assumption anywhere). A launch that has been
+  removed under `_lock` by ONE terminal-finalization path covering every ending: normal
+  execute completion, lane failure, shutdown-synthesized settlement (item never executed),
+  and shutdown discard; id membership lasts until the last instance for that id settles
+  (reference-counted — no id-non-reuse assumption anywhere). A launch that has been
   DEQUEUED and is parked at the consent gate is therefore still an admissible stop target.
   Admissible stop targets = `_agents` ∪ active-instance ids; anything else drops at
   admission with a log — observably identical to the eventual unknown-agent no-op (§1.8).
@@ -266,14 +267,19 @@ server-origin launch/stop execution through the one existing serial lane:
   keys nor queue order).
 - **Coalescing**, keyed (AgentId, PayloadKey) under the same `_lock`: the legacy `StopAgent`
   payload key is constant (§1.8); `StopAgentV2` keys on its force flag — payload-class
-  cardinality C is fixed (≤ 3). **Launch-aware**: a launch COMMIT for id X (either format,
-  in its commit critical section) clears ALL X's pending-stop keys, so
-  stop(X)→launch(X)→stop(X) keeps its order even if an id recurs. **Queue depth bound
-  (one formula, honest terms):** depth ≤ L + (|`_agents`| + L) × C, where L = active launch
-  instances (≤ `MaxConcurrentAgents` by the server's pre-dispatch reservation, §1.10) and
-  |`_agents`| is the registry size — finite, pruned by teardown, transiently above capacity
-  only by exiting stragglers. The claim is NOT "small constant"; it is "no duplicate or
-  unknown-target growth, every term finite and observable".
+  cardinality C is fixed (≤ 3). **Key lifecycle:** a pending-stop key is removed atomically
+  when ITS OWN lane item is dequeued to start (identity-guarded — the key stores the item it
+  refers to, so an older item starting can never clear a newer segment's key), so a
+  same-payload retry after a started/faulted stop commits a FRESH item — retry semantics
+  survive teardown failure. **Launch-aware**: a launch COMMIT for id X (either format, in
+  its commit critical section) clears ALL X's pending-stop keys, so
+  stop(X)→launch(X)→stop(X) keeps its order. **Bound:** every queued stop was admitted
+  against a then-live target and retires its key at dequeue — no duplicate, unknown-target,
+  or retry growth; a target's ≤ C entries survive its registry removal only until they
+  start. As a defensive HARD cap, total queued un-seq'd stops are additionally limited to a
+  constant (256, matching the sequenced cache bound); overflow drops at admission with an
+  Error log — the same observable as the unknown-target drop, reachable only under
+  pathology. Launch items are ≤ capacity (§1.10). No unbounded structure, by cap.
 - **Un-seq'd commands with `_processor` null** (pre-settlement server): the shipped inline
   await stays byte-for-byte. No sequenced traffic can exist (§1.7), so the single domain is
   trivially preserved, and the shipped backpressure story is unchanged for exactly the
@@ -544,7 +550,12 @@ PR 1:
   mixed-format orders — instance-count pin); a duplicate replay and each rejected sequenced
   launch alter neither active counts nor coalescing keys (accept-branch-only pin); the task
   returned by `SubmitAsync` for a shutdown-synthesized item completes exactly once with the
-  documented failure.
+  documented failure, and shutdown synthesis/discard retires the exact active-instance
+  tokens (active-count and id-membership assertions, not only task completion); a stop that
+  throws followed by a same-payload retry commits and executes the retry (key-retire pin);
+  an older stop starting after launch-aware clearing does not erase the newer post-launch
+  key (identity-guard pin); 257th distinct queued stop drops at admission with an Error log
+  (hard-cap pin).
 - Handler classification: with a launch parked on consent, an input/resize for an UNKNOWN
   agent id is dropped-and-logged (no throw, no pump stall) and a status-report request is
   served from the registry snapshot omitting the in-flight launch.
