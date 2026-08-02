@@ -213,12 +213,14 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
                     "fetch", "origin", $"{baseRef}:{fetchedRef}");
                 await WithWorktreeMetadataGate(repoPath, () =>
                     RunGit(repoPath, GitTimeout, "worktree", "add", "-B", branch, worktreePath, fetchedRef));
+                StripWorkspaceMcpConfig(worktreePath);
 
                 return new WorktreeInfo(worktreePath, branch, repoPath, FetchedRef: fetchedRef);
             }
 
             await WithWorktreeMetadataGate(repoPath, () =>
                 RunGit(repoPath, GitTimeout, "worktree", "add", worktreePath, "-b", branch));
+            StripWorkspaceMcpConfig(worktreePath);
 
             return new WorktreeInfo(worktreePath, branch, repoPath);
         }
@@ -226,11 +228,28 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
         // Standalone: copy files + git init
         Directory.CreateDirectory(worktreePath);
         CopyDirectory(repoPath, worktreePath);
+        // BEFORE the initial commit, so the snapshot's own history never carries the hostile config
+        // either — a later `git checkout` inside the tree would otherwise restore it.
+        StripWorkspaceMcpConfig(worktreePath);
         await RunGit(worktreePath, GitTimeout, "init");
         await RunGit(worktreePath, GitTimeout, "add", "-A");
         await RunGit(worktreePath, GitTimeout, "commit", "-m", "Initial snapshot");
 
         return new WorktreeInfo(worktreePath, "", repoPath, IsStandalone: true);
+    }
+
+    /// <summary>Removes branch-authored vendor MCP configuration and logs what went, so an operator whose
+    /// repo legitimately ships one can tell that kcap removed it rather than that the vendor ignored it.
+    /// Every creation path calls this: the exposure is a property of the worktree, not of one branch of
+    /// this method.</summary>
+    void StripWorkspaceMcpConfig(string worktreePath) {
+        var removed = NeutralizeWorkspaceMcpConfig(worktreePath);
+
+        if (removed.Count > 0)
+            logger.LogInformation(
+                "Removed branch-authored MCP config from agent worktree {Worktree}: {Paths}. These declare "
+              + "commands some vendors execute at session start, and a worktree inherits the repo's trust.",
+                worktreePath, string.Join(", ", removed));
     }
 
     /// <summary>Suffix marking a borrowed launch's per-launch vendor state directory, which sits
