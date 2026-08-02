@@ -1050,8 +1050,16 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
         var psi = NewGitPsi(cwd, args, sourceReadOnly);
         using var proc = Process.Start(psi)!;
         using var cts = new CancellationTokenSource(timeout);
-        var stdoutTask = proc.StandardOutput.ReadToEndAsync(cts.Token);
-        var stderrTask = proc.StandardError.ReadToEndAsync(cts.Token);
+
+        // Read BYTES and decode here. `StandardOutputEncoding` sets the encoding but does NOT disable BOM
+        // detection — .NET builds the redirected reader with detectEncodingFromByteOrderMarks enabled, so a
+        // leading EF BB BF is consumed before we see it. Measured: "<BOM>A\0<BOM>B" reads back as
+        // "A\0<BOM>B". U+FEFF is a legal character in a git path and `ls-files` output has no global
+        // prefix, so a tracked `\uFEFF.cursor/mcp.json` would arrive as `.cursor/mcp.json` in BOTH the
+        // tracked set and the manifest — the check passes on a name git does not have, and the read lands
+        // on the developer's untracked config. The authorised name must be the used name.
+        var stdoutTask = ReadAllDecodedAsync(proc.StandardOutput.BaseStream, cts.Token);
+        var stderrTask = ReadAllDecodedAsync(proc.StandardError.BaseStream, cts.Token);
         try {
             await proc.WaitForExitAsync(cts.Token);
         } catch (OperationCanceledException) {
@@ -1071,6 +1079,19 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
         return (proc.ExitCode, await stdoutTask, await stderrTask);
     }
 
+    /// <summary>Drains a redirected stream and decodes it as UTF-8 with replacement, preserving every byte
+    /// the child wrote — including a leading BOM, which <see cref="StreamReader"/> would consume.</summary>
+    static async Task<string> ReadAllDecodedAsync(Stream stream, CancellationToken ct) {
+        using var buffer = new MemoryStream();
+        await stream.CopyToAsync(buffer, ct);
+        return GitOutputEncoding.GetString(buffer.GetBuffer().AsSpan(0, (int)buffer.Length));
+    }
+
+    /// <summary>UTF-8 with replacement fallback: an invalid sequence becomes U+FFFD, which is how a path
+    /// that cannot round-trip is detected and refused. Never emits or consumes a BOM.</summary>
+    static readonly UTF8Encoding GitOutputEncoding =
+        new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: false);
+
     static async Task RunGitBestEffort(string cwd, params string[] args) {
         try { await RunGit(cwd, GitTimeout, args); } catch {
             /* best-effort */
@@ -1087,15 +1108,11 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
             WorkingDirectory       = cwd,
             RedirectStandardOutput = true,
             RedirectStandardError  = true,
-            // EXPLICIT, because a guard depends on it. Paths are bytes to git, and ValidateRelativePath
-            // fails closed on a path that cannot round-trip by detecting the U+FFFD a UTF-8 decoder emits
-            // for an invalid sequence. Left implicit, redirected output decodes with the ambient console
-            // encoding — a Windows codepage maps 0xff to an ordinary character, no U+FFFD appears, and the
-            // path is silently accepted and then silently skipped. Replacement fallback makes it sound.
-            StandardOutputEncoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false,
-                                                      throwOnInvalidBytes: false),
-            StandardErrorEncoding  = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false,
-                                                      throwOnInvalidBytes: false),
+            // Set for any caller using the StreamReader API. The capture path deliberately does NOT use it:
+            // it reads BaseStream and decodes with GitOutputEncoding, because this property alone does not
+            // disable the reader's BOM detection. See RunGitCaptureResult.
+            StandardOutputEncoding = GitOutputEncoding,
+            StandardErrorEncoding  = GitOutputEncoding,
             CreateNoWindow         = true,
             Environment = {
                 ["GIT_TERMINAL_PROMPT"] = "0",

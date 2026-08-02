@@ -385,6 +385,54 @@ public class QuarantinedMcpConfigTests {
         await Assert.That(ex!.Message).Contains("borrowed_snapshot_invalid_path");
     }
 
+    /// <summary>
+    /// `StandardOutputEncoding` does not disable .NET's BOM detection on a redirected reader — measured,
+    /// "&lt;BOM&gt;A\0&lt;BOM&gt;B" reads back as "A\0&lt;BOM&gt;B", first one consumed. U+FEFF is a legal character in a
+    /// git path and `ls-files` output carries no global prefix, so a branch can put a BOM-prefixed path
+    /// first. It then arrives as the STRIPPED name in both the tracked set and the manifest: the tracked
+    /// check passes on a name git does not have, and the read lands on the developer's untracked config,
+    /// which quarantine publishes to the reviewer.
+    /// </summary>
+    [Test]
+    public async Task A_bom_prefixed_tracked_path_cannot_redirect_the_read() {
+        const string secret = """{"local":"secret-behind-the-bom"}""";
+        var source = NewRepo();
+
+        // The fixture's `.gitkeep` sorts before a BOM (0x2E < 0xEF) and would lead the listing instead, so
+        // the decoy would never be the first record and the strip would not reach it. Ordering IS the
+        // vulnerability here, so the fixture has to produce it.
+        Git(source, "rm", "-q", "--cached", ".gitkeep");
+        File.Delete(Path.Combine(source, ".gitkeep"));
+
+        // Tracked, BOM-prefixed, and now the ONLY tracked entry, so it leads the -z listing.
+        var decoy = Path.Combine(source, "﻿.cursor");
+        Directory.CreateDirectory(decoy);
+        File.WriteAllText(Path.Combine(decoy, "mcp.json"), """{"decoy":true}""");
+        Git(source, "add", "-A");
+        Git(source, "commit", "-q", "-m", "branch tracks a BOM-prefixed path");
+
+        // The developer's real, untracked config at the path the stripped name resolves to.
+        WriteAt(source, ".cursor/mcp.json", secret);
+
+        // Precondition, checked in BYTES — the test's own StreamReader would strip the very thing under
+        // test, and `ls-files` without -z octal-escapes the path anyway. The TRACKED listing is what
+        // matters: it holds only this one entry, so the BOM leads the stream and a BOM-detecting reader
+        // turns the authority into `.cursor/mcp.json`, which is exactly the untracked secret's path.
+        await Assert.That(GitCaptureBytes(source, "ls-files", "-z").Take(3).ToArray())
+            .IsEquivalentTo(new byte[] { 0xEF, 0xBB, 0xBF })
+            .Because("the tracked listing must LEAD with the BOM, or nothing gets stripped");
+
+        var info = await Manager(out _).CreateBorrowedSnapshotAsync(
+            source, "bom-" + Guid.NewGuid().ToString("N")[..8], CancellationToken.None);
+        var root = info.SnapshotRoot ?? info.Path;
+
+        var leaked = Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories)
+            .Where(f => !f.Contains(Path.DirectorySeparatorChar + ".git" + Path.DirectorySeparatorChar))
+            .FirstOrDefault(f => File.ReadAllText(f) == secret);
+
+        await Assert.That(leaked).IsNull();
+    }
+
     // ── fixture ──
 
     /// <summary>A manager rooted in a TEMP directory. The default DaemonConfig points at
@@ -449,6 +497,24 @@ public class QuarantinedMcpConfigTests {
                 $"fixture `git {string.Join(' ', args)}` failed: {stderrTask.Result}");
 
         return stdoutTask.Result;
+    }
+
+    /// <summary>Captures git's stdout as BYTES. The StreamReader path applies BOM detection, which is the
+    /// behaviour under test — asserting through it would hide exactly what we are trying to observe.</summary>
+    static byte[] GitCaptureBytes(string cwd, params string[] args) {
+        var psi = new ProcessStartInfo("git") {
+            WorkingDirectory = cwd, RedirectStandardOutput = true, RedirectStandardError = true
+        };
+        foreach (var a in args) psi.ArgumentList.Add(a);
+        using var p = Process.Start(psi)!;
+        using var buffer = new MemoryStream();
+        p.StandardOutput.BaseStream.CopyTo(buffer);
+        p.WaitForExit();
+
+        if (p.ExitCode != 0)
+            throw new InvalidOperationException($"fixture `git {string.Join(' ', args)}` failed");
+
+        return buffer.ToArray();
     }
 
     /// <summary>Runs git with raw bytes on stdin. Needed because a process ARGUMENT cannot carry bytes
