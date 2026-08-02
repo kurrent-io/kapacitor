@@ -291,13 +291,16 @@ server-origin launch/stop execution through the one existing serial lane:
   interval between alarm emissions; current and high-water depth are exposed as metrics —
   boundary oscillation cannot turn the alarm into its own failure mode. **Scope of losslessness:**
   a known-target stop is never dropped while the lane is ACCEPTING; at daemon shutdown the
-  deliberate supersession applies (queued un-seq'd items discarded) and is safe because
-  child reaping is the SHIPPED two-layer machinery, not this spec's promise: shutdown
-  teardown kills registered children by their captured start identity, and the next boot's
-  env-marker/PID-record scan reaps any survivor of the prior incarnation (including a
-  late-starting child teardown missed) — the stop's physical intent is fulfilled by that
-  pair. An integration test pins the first layer: live children + queued un-seq'd stops →
-  real shutdown → queue discarded AND every registered child gone. The only dropped stops remain unknown-target ones,
+  deliberate supersession applies (queued un-seq'd items discarded). Registered children are
+  killed by shutdown teardown (captured start identity); a late-starting child teardown
+  missed is reaped by the next boot's env-marker/PID-record scan — which is CONDITIONAL on a
+  future boot, so the supersession is NOT claimed immediately safe: **an orphan may survive
+  from shutdown until the next daemon boot** (explicit §7 residual; relevant to uninstall or
+  a never-restarted daemon). Tests pin both layers: (a) live children + queued un-seq'd
+  stops → real shutdown → queue discarded AND every registered child gone; (b) end-to-end
+  handoff — a child started after the teardown snapshot survives shutdown WITH its durable
+  identity record, and the next boot's scan reaps exactly that child (start-identity match;
+  a PID-reused unrelated process is untouched). The only dropped stops remain unknown-target ones,
   observably identical to their eventual no-op. Launch items are ≤ capacity (§1.10).
   **Submission outcomes (complete):** `Committed` | `Coalesced` | `Refused` (shutdown) |
   `DroppedUnknownTarget` — the processor owns the drop log; the queued-stop counter is
@@ -584,8 +587,10 @@ PR 1:
   alarm fires once on crossing the threshold, stays quiet during further growth, re-arms
   only after draining below the hysteresis watermark, and repeated boundary oscillation
   within the minimum interval emits no further Errors (hysteresis pin); shutdown with live
-  and late-starting children plus queued un-seq'd stops discards the queue AND leaves every
-  registered child physically gone (teardown-reap pin).
+  children plus queued un-seq'd stops discards the queue AND leaves every registered child
+  physically gone (teardown-reap pin); a child started after the teardown snapshot survives
+  with a durable identity record and the next boot's scan reaps exactly that child, never a
+  PID-reused unrelated process (handoff pin).
 - Handler classification: with a launch parked on consent, an input/resize for an UNKNOWN
   agent id is dropped-and-logged (no throw, no pump stall) and a status-report request is
   served from the registry snapshot omitting the in-flight launch.
@@ -620,6 +625,10 @@ PR 2:
   accepting, stops are delayed, never lost, reordered, or refused — shutdown supersession is
   the deliberate exception, safe because teardown reaps the children. Non-launch/stop
   traffic and internal reaping are immune.
+- **Shutdown orphan window** (§3.3) — a child that starts after the shutdown teardown
+  snapshot survives until the NEXT daemon boot's env-marker/PID-record scan; if the daemon is
+  never restarted (uninstall, host decommission), the orphan persists. Deliberate residual of
+  shutdown supersession; the durable identity record makes the eventual reap exact.
 - **Queued-stop memory under pathological churn** (§3.3) — with sustained agent churn during
   lane NON-DEQUEUE time (consent parking, launch initialization, any long item), queued-stop
   entries grow with churn; no closed-form bound is claimed. Accepted, monitored via the
