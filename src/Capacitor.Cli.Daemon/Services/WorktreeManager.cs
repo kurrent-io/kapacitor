@@ -662,7 +662,20 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
     }
 
     static void RemoveFilesOutsideManifest(string destination, IEnumerable<string> accepted, CancellationToken ct) {
-        var keep = accepted.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        // The comparer has to match the FILESYSTEM, and neither constant is right on both.
+        //
+        // Case-insensitively, a case-only rename keeps the stale spelling: the manifest wants `Foo.txt`,
+        // the clone left `foo.txt`, the sweep decides `foo.txt` is wanted, and the snapshot keeps a file
+        // the branch renamed — so `git diff` shows the reviewer no rename at all.
+        //
+        // But plain Ordinal is worse where case does not distinguish files: there, writing `Foo.txt` lands
+        // on the same inode as `foo.txt` and enumeration reports the ORIGINAL spelling, so an exact compare
+        // would delete the very file the manifest just wrote.
+        //
+        // So ask the filesystem instead of assuming from the OS — a case-sensitive volume on macOS and a
+        // case-insensitive mount on Linux both exist, and `FileSystemPathComparison` gets both wrong.
+        var keep = accepted.ToHashSet(
+            IsCaseSensitiveFileSystem(destination) ? StringComparer.Ordinal : StringComparer.OrdinalIgnoreCase);
         foreach (var entry in Directory.EnumerateFileSystemEntries(destination)) {
             ct.ThrowIfCancellationRequested();
             if (Path.GetFileName(entry).Equals(".git", StringComparison.Ordinal)) continue;
@@ -876,12 +889,34 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
     /// of producing a review finding about a deletion kcap performed. Driven from the same list, so the two
     /// cannot drift apart again.</para></summary>
     static async Task ApplyReservedIndexPolicyAsync(string destination) {
-        foreach (var path in WorkspaceMcpConfigPaths)
+        // Drive this from the index's OWN spellings. Iterating the canonical lowercase list marks nothing
+        // when the index holds `.Cursor/mcp.json`, and the file then shows up as a DELETION in the
+        // snapshot — a phantom change kcap made, which a reviewer can and should flag. Case matters here on
+        // exactly the filesystems where the two spellings are different paths.
+        var indexed = (await RunGitCapture(destination, GitTimeout, false, "ls-files", "-z"))
+            .Split('\0', StringSplitOptions.RemoveEmptyEntries);
+
+        foreach (var path in indexed.Where(IsWorkspaceMcpConfigPath))
             try { await RunGit(destination, GitTimeout, "update-index", "--skip-worktree", "--", path); }
-            catch { /* absent from index */ }
+            catch { /* raced away, or the index changed under us */ }
         Directory.CreateDirectory(Path.Combine(destination, ".git", "info"));
         File.AppendAllText(Path.Combine(destination, ".git", "info", "exclude"),
             $"\n.attached/\n*{QuarantineSuffix}\n");
+    }
+
+    /// <summary>Whether <paramref name="root"/> distinguishes filenames by case, PROBED rather than
+    /// inferred from the OS. Falls back to case-insensitive — the conservative side, since it keeps rather
+    /// than deletes.</summary>
+    static bool IsCaseSensitiveFileSystem(string root) {
+        var probe = Path.Combine(root, ".kcap-case-probe");
+        try {
+            File.WriteAllBytes(probe, []);
+            return !File.Exists(Path.Combine(root, ".KCAP-CASE-PROBE"));
+        } catch {
+            return false;
+        } finally {
+            try { File.Delete(probe); } catch { /* nothing to clean up */ }
+        }
     }
 
     static FileStream OpenSequentialRead(string path) => new(path, new FileStreamOptions {

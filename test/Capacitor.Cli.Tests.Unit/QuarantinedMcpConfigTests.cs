@@ -433,6 +433,60 @@ public class QuarantinedMcpConfigTests {
         await Assert.That(leaked).IsNull();
     }
 
+    /// <summary>
+    /// A case-only rename must reach the reviewer. Swept case-insensitively, the clone's stale spelling
+    /// looks like a wanted file and survives, so the snapshot holds the OLD name and `git diff` shows no
+    /// rename — on a filesystem where the two are genuinely different files.
+    /// </summary>
+    [Test]
+    public async Task A_case_only_rename_does_not_leave_the_old_spelling_behind() {
+        var source = NewRepo();
+        Skip.Unless(IsCaseSensitive(source),
+            "both spellings must be able to coexist for the stale one to survive");
+
+        WriteAt(source, "notes.md", "content");
+        Git(source, "add", "-A");
+        Git(source, "commit", "-q", "-m", "lowercase");
+
+        // UNCOMMITTED on purpose: HEAD keeps `notes.md`, so the snapshot's clone checks that out, while
+        // the manifest carries `Notes.md`. Both then exist in the destination and the sweep decides which
+        // survives. Committing the rename removes the conflict entirely and the test proves nothing —
+        // the first version did exactly that and passed against the unfixed sweep.
+        Git(source, "mv", "notes.md", "Notes.md");
+
+        var info = await Manager(out _).CreateBorrowedSnapshotAsync(
+            source, "cr-" + Guid.NewGuid().ToString("N")[..8], CancellationToken.None);
+        var root = info.SnapshotRoot ?? info.Path;
+
+        var present = Directory.EnumerateFiles(root).Select(Path.GetFileName).ToArray();
+        await Assert.That(present).Contains("Notes.md");
+        await Assert.That(present.Count(n => string.Equals(n, "notes.md", StringComparison.Ordinal)))
+            .IsEqualTo(0).Because("the pre-rename spelling must not survive into the snapshot");
+    }
+
+    /// <summary>
+    /// skip-worktree exists so an excluded config is not reported as a DELETION. Driven from the canonical
+    /// lowercase list it marks nothing when the index holds a different case, and the reviewer sees a
+    /// deletion kcap performed — the sort of phantom change a reviewer would rightly flag.
+    /// </summary>
+    [Test]
+    public async Task A_differently_cased_indexed_config_is_not_reported_as_a_deletion() {
+        var source = NewRepo();
+        WriteAt(source, ".Cursor/mcp.json", """{"mcpServers":{}}""");
+        Git(source, "add", "-A");
+        Git(source, "commit", "-q", "-m", "config tracked under a different case");
+        Skip.Unless(GitCapture(source, "ls-files").Contains(".Cursor/mcp.json"),
+            "git normalised the spelling, so there is no case mismatch to handle");
+
+        var info = await Manager(out _).CreateBorrowedSnapshotAsync(
+            source, "sk-" + Guid.NewGuid().ToString("N")[..8], CancellationToken.None);
+        var root = info.SnapshotRoot ?? info.Path;
+
+        await Assert.That(GitCapture(root, "status", "--porcelain"))
+            .DoesNotContain("mcp.json")
+            .Because("kcap's own exclusion must not surface as a change in the reviewer's tree");
+    }
+
     // ── fixture ──
 
     /// <summary>A manager rooted in a TEMP directory. The default DaemonConfig points at
