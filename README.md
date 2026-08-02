@@ -1147,12 +1147,14 @@ kcap agent start claude -d                    # start without attaching; prints 
     agent's own later commits are unaffected.
   - **Clean/smudge filters are disabled for those same commands, except `lfs`.** `.gitattributes` is branch
     content and selects which filter driver applies, so a driver whose command is relative —
-    `filter.x.smudge=./tools/f` — has the branch supply the executable. Containment is an allowlist of
-    driver *names* rather than an analysis of commands: a command is a shell program, and no amount of
-    parsing reliably decides what one will execute. `lfs` is allowlisted because git-lfs is ubiquitous and
-    disabling it fails silently, yielding pointer files instead of content. **A custom filter driver
-    therefore does not run inside an agent worktree** — if you rely on one and have verified it, that is a
-    deliberate gap to raise rather than a bug.
+    `filter.x.smudge=./tools/f` — has the branch supply the executable. No filter command is inspected to
+    decide this: a command is a shell program, and no parsing reliably decides what one will execute.
+    Instead every driver but `lfs` is disabled outright, and `lfs` is **rebound to kcap's own command**
+    using an absolute `git-lfs` path resolved by the daemon — so LFS keeps working without anything from
+    your config being executed. If `git-lfs` cannot be found, `lfs` is disabled too and LFS files check out
+    as pointers. **A custom filter driver does not run inside an agent worktree**, and a wrapper you have
+    put in front of git-lfs is bypassed there; if you rely on either, raise it rather than treating it as a
+    bug.
 - **Detach** without stopping the agent with the prefix key **`Ctrl-Q` then `d`**. The agent keeps running in the daemon.
 - **Permissions:** for a registered agent, permission prompts appear in the web UI (the same dialog as hosted agents); with `--private`, prompts are answered natively in your terminal.
 

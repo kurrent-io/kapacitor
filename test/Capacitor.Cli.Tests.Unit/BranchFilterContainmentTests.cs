@@ -43,16 +43,28 @@ public class BranchFilterContainmentTests {
         await Assert.That(joined).Contains("filter.custom.required=false");
     }
 
-    /// <summary>The git-lfs regression. Disabling it does not fail loudly — it silently yields pointer
-    /// files instead of content — so it is allowlisted and must stay untouched.</summary>
+    /// <summary>
+    /// The git-lfs outcome, which now depends on whether the binary resolves. Resolvable: the driver is
+    /// rebound to our canonical command so LFS keeps working. Not resolvable: there is nothing trustworthy
+    /// to substitute, so it is DISABLED rather than left running the operator's command — pointer files
+    /// instead of an unvetted execution. Both branches are asserted, because the machine running the suite
+    /// decides which one is live and a test that silently covered neither would be worthless.
+    /// </summary>
     [Test]
-    public async Task The_allowlisted_lfs_driver_is_left_alone() {
+    public async Task An_allowlisted_driver_is_rebound_when_resolvable_and_disabled_otherwise() {
         var repo = NewRepo();
         Git(repo, "config", "filter.lfs.smudge", "git-lfs smudge -- %f");
         Git(repo, "config", "filter.lfs.process", "git-lfs filter-process");
-        Git(repo, "config", "filter.lfs.required", "true");
 
-        await Assert.That(await WorktreeManager.BranchFilterOverridesAsync(repo)).IsEmpty();
+        var joined = string.Join(' ', await WorktreeManager.BranchFilterOverridesAsync(repo));
+
+        if (WorktreeManager.ResolvedAllowedFilterBinary is { } binary) {
+            await Assert.That(joined).Contains(binary);
+            await Assert.That(joined).Contains("filter.lfs.required=true");
+        } else {
+            await Assert.That(joined).Contains("filter.lfs.smudge=");
+            await Assert.That(joined).Contains("filter.lfs.required=false");
+        }
     }
 
     [Test]
@@ -67,8 +79,12 @@ public class BranchFilterContainmentTests {
 
         var joined = string.Join(' ', await WorktreeManager.BranchFilterOverridesAsync(repo));
 
-        await Assert.That(joined).Contains("filter.evil.");
-        await Assert.That(joined).DoesNotContain("filter.lfs.");
+        // The non-allowlisted driver is always neutralised...
+        await Assert.That(joined).Contains("filter.evil.smudge=");
+        await Assert.That(joined).Contains("filter.evil.required=false");
+        // ...while lfs is rebound rather than neutralised, when it can be.
+        if (WorktreeManager.ResolvedAllowedFilterBinary is { } binary)
+            await Assert.That(joined).Contains($"filter.lfs.smudge={binary}");
     }
 
     /// <summary>`filter.my.tool.smudge` is driver `my.tool`; naive splitting would emit overrides for a
@@ -97,32 +113,36 @@ public class BranchFilterContainmentTests {
     }
 
     /// <summary>
-    /// The name `lfs` is a CONVENTION, not an identity. Nothing stops a config binding it to a relative
-    /// command, and a branch selecting `filter=lfs` would then ride the allowlist straight to its own file.
-    /// Trusting the name alone is the same mistake as trusting a command string, reached from the other
-    /// side — so the binding is authenticated and a mis-bound `lfs` is disabled like any other driver.
+    /// Whatever the operator bound `lfs` to, the guarded command runs OUR command, not theirs. Vetting
+    /// their string was the previous design and is unsound: git runs the whole value through a shell, so
+    /// `git-lfs smudge -- %f; ./tools/f` passes any first-token check and then executes branch content, and
+    /// a branch-owned `/repo/tools/git-lfs` passes by basename. Substitution removes the question.
     /// </summary>
     [Test]
+    [Arguments("git-lfs smudge -- %f; ./tools/f")]   // shell chaining past a valid-looking first token
+    [Arguments("/repo/tools/git-lfs smudge")]        // branch-owned binary with the right basename
     [Arguments("./tools/f")]
-    [Arguments("sh tools/f")]
-    [Arguments("/usr/local/bin/definitely-not-lfs")]
-    public async Task An_allowlisted_name_bound_to_the_wrong_binary_is_still_disabled(string command) {
+    public async Task An_allowlisted_driver_runs_our_command_not_the_operators(string command) {
+        Skip.Unless(WorktreeManager.ResolvedAllowedFilterBinary is not null,
+            "needs git-lfs on PATH to build the canonical form");
+
         var repo = NewRepo();
         Git(repo, "config", "filter.lfs.smudge", command);
 
-        await Assert.That(string.Join(' ', await WorktreeManager.BranchFilterOverridesAsync(repo)))
-            .Contains("filter.lfs.smudge=");
+        var joined = string.Join(' ', await WorktreeManager.BranchFilterOverridesAsync(repo));
+
+        await Assert.That(joined).DoesNotContain("./tools/f");
+        await Assert.That(joined).Contains("filter.lfs.smudge=");
+        await Assert.That(joined).Contains(WorktreeManager.ResolvedAllowedFilterBinary!);
     }
 
-    /// <summary>...and a genuine binding is still honoured, including an absolute path to the binary.</summary>
+    /// <summary>The substituted path must be ABSOLUTE — a bare `git-lfs` can be shadowed when the
+    /// inherited PATH carries a relative component.</summary>
     [Test]
-    [Arguments("git-lfs filter-process")]
-    [Arguments("/opt/homebrew/bin/git-lfs filter-process")]
-    public async Task An_allowlisted_name_bound_to_the_real_binary_is_honoured(string command) {
-        var repo = NewRepo();
-        Git(repo, "config", "filter.lfs.process", command);
+    public async Task The_substituted_command_uses_an_absolute_path() {
+        Skip.Unless(WorktreeManager.ResolvedAllowedFilterBinary is not null, "needs git-lfs on PATH");
 
-        await Assert.That(await WorktreeManager.BranchFilterOverridesAsync(repo)).IsEmpty();
+        await Assert.That(Path.IsPathRooted(WorktreeManager.ResolvedAllowedFilterBinary!)).IsTrue();
     }
 
     /// <summary>

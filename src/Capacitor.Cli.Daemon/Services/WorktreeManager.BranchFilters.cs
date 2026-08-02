@@ -20,8 +20,14 @@ public partial class WorktreeManager {
     /// </summary>
     internal static readonly string[] AllowedFilterDrivers = ["lfs"];
 
-    /// <summary>The executable an allowlisted driver must actually invoke.</summary>
+    /// <summary>The executable an allowlisted driver is rebound to.</summary>
     const string AllowedFilterBinary = "git-lfs";
+
+    /// <summary>The absolute path substituted into an allowlisted driver's command, or null when the binary
+    /// cannot be resolved — in which case the driver is disabled rather than left on the operator's own
+    /// command. Exposed so tests can skip when the host has no git-lfs.</summary>
+    internal static string? ResolvedAllowedFilterBinary =>
+        CliResolver.ResolveExecutable(AllowedFilterBinary) is { } p && Path.IsPathRooted(p) ? p : null;
 
     /// <summary>
     /// Config overrides disabling every filter driver except an authenticated
@@ -62,6 +68,7 @@ public partial class WorktreeManager {
                 $"`git config --get-regexp` exited {listed.ExitCode}: {listed.Stderr.Trim()}");
 
         var disable = new SortedSet<string>(StringComparer.Ordinal);
+        var allowed = new SortedSet<string>(StringComparer.Ordinal);
 
         foreach (var key in listed.Stdout.Split('\0', StringSplitOptions.RemoveEmptyEntries)) {
             var parts = key.Trim().Split('.');
@@ -78,10 +85,17 @@ public partial class WorktreeManager {
                     $"Filter driver '{driver}' has a name that cannot be safely expressed as a command-line "
                   + "override, so it cannot be contained.");
 
-            if (!await IsAuthenticAllowedDriverAsync(gitContextPath, driver)) disable.Add(driver);
+            if (AllowedFilterDrivers.Contains(driver, StringComparer.Ordinal)) allowed.Add(driver);
+            else disable.Add(driver);
         }
 
-        return [.. disable.SelectMany(static driver => new[] {
+        // An allowlisted driver whose canonical form cannot be built (no resolvable git-lfs) falls through
+        // to the disable set — never left live on the operator's own command.
+        foreach (var driver in allowed)
+            if (CanonicalAllowedDriverOverrides(driver).Length == 0) disable.Add(driver);
+
+        return [.. allowed.SelectMany(CanonicalAllowedDriverOverrides),
+                .. disable.SelectMany(static driver => new[] {
             "-c", $"filter.{driver}.clean=",
             "-c", $"filter.{driver}.smudge=",
             "-c", $"filter.{driver}.process=",
@@ -92,37 +106,35 @@ public partial class WorktreeManager {
     }
 
     /// <summary>
-    /// Whether <paramref name="driver"/> is allowlisted AND actually bound to the expected binary.
+    /// The overrides that keep an allowlisted driver working — by REPLACING its command with our own,
+    /// built from a <c>git-lfs</c> we resolved ourselves, rather than by vetting the operator's string.
     ///
-    /// <para>Trusting the NAME alone is the same mistake as trusting a command string, reached from the
-    /// other side: <c>filter.lfs.smudge=./tools/f</c> is a legal config, and a branch selecting
-    /// <c>filter=lfs</c> would ride the allowlist straight to its own file. This is NOT the general command
-    /// classification that was removed — it is the far narrower question "does this invoke the one binary
-    /// we decided to trust", decided on the first token's filename. Anything unreadable or unexpected fails
-    /// closed and the driver is disabled like any other.</para>
+    /// <para>Authenticating the operator's command was the previous attempt and review showed it unsound:
+    /// git runs the whole value through a shell, so <c>git-lfs smudge -- %f; ./tools/f</c> passes any
+    /// first-token check and then executes branch content; a branch-owned <c>/repo/tools/git-lfs</c> passes
+    /// by basename; and a bare <c>git-lfs</c> can be shadowed if the inherited PATH has a relative
+    /// component. Every one of those is a way for a string to look like the binary without being it.</para>
+    ///
+    /// <para>So nothing the operator wrote is executed. The command is ours, the path is absolute and
+    /// resolved by us, and the operator's value is simply overwritten for the guarded commands. If
+    /// <c>git-lfs</c> cannot be resolved there is nothing trustworthy to substitute, so the driver is
+    /// disabled like any other — pointer files rather than an unvetted execution.</para>
+    ///
+    /// <para>Cost, deliberately accepted: an operator who wraps git-lfs behind their own script loses that
+    /// wrapper inside agent worktrees. Their wrapper is exactly the branch-reachable indirection this
+    /// exists to remove.</para>
     /// </summary>
-    static async Task<bool> IsAuthenticAllowedDriverAsync(string gitContextPath, string driver) {
-        if (!AllowedFilterDrivers.Contains(driver, StringComparer.Ordinal)) return false;
+    static string[] CanonicalAllowedDriverOverrides(string driver) {
+        if (!AllowedFilterDrivers.Contains(driver, StringComparer.Ordinal)) return [];
 
-        foreach (var op in new[] { "clean", "smudge", "process" }) {
-            var value = await RunGitCaptureResult(gitContextPath, GitTimeout, sourceReadOnly: false,
-                "config", "--get", $"filter.{driver}.{op}");
+        var resolved = CliResolver.ResolveExecutable(AllowedFilterBinary);
+        if (resolved is null || !Path.IsPathRooted(resolved)) return [];
 
-            if (value.ExitCode == 1) continue;                 // not defined for this operation
-            if (value.ExitCode != 0) return false;             // unreadable — do not extend trust
-
-            var first = value.Stdout.Trim()
-                .Split([' ', '\t', '\n', '\r'], StringSplitOptions.RemoveEmptyEntries)
-                .FirstOrDefault();
-
-            if (first is null) return false;
-
-            var name = Path.GetFileName(first.Trim('"', '\''));
-            if (!name.Equals(AllowedFilterBinary, StringComparison.OrdinalIgnoreCase) &&
-                !name.Equals(AllowedFilterBinary + ".exe", StringComparison.OrdinalIgnoreCase))
-                return false;
-        }
-
-        return true;
+        return [
+            "-c", $"filter.{driver}.clean={resolved} clean -- %f",
+            "-c", $"filter.{driver}.smudge={resolved} smudge -- %f",
+            "-c", $"filter.{driver}.process={resolved} filter-process",
+            "-c", $"filter.{driver}.required=true"
+        ];
     }
 }
