@@ -263,14 +263,10 @@ public class SetupCommandTests {
 
     [Test]
     public async Task ServerSetupCallToAction_is_the_exact_agreed_wording() {
-        // Opens with a question because the CLI cannot tell whether this reader owns the server —
-        // the reader self-selects, so the wording has to make "not me" an obvious answer. "server",
-        // never "workspace": that word means the local tree everywhere else in this CLI.
+        // Pinned wording: a question the reader self-selects on, then the instruction itself.
         await Assert.That(SetupCommand.ServerSetupQuestion).IsEqualTo(
             "Did you create this Capacitor server?");
 
-        // Opens with the instruction itself, so a reader who answered yes knows what to do without
-        // reading further; the docs page carries the detail.
         await Assert.That(SetupCommand.ServerSetupAction).IsEqualTo(
             "Complete server setup with instructions here:");
 
@@ -280,20 +276,16 @@ public class SetupCommandTests {
 
     [Test]
     public async Task NextSteps_always_lists_server_setup_and_only_adds_the_tour_when_offered() {
-        // Server setup can't be gated on anything local — admin-ness isn't knowable here — so it is
-        // the one item that must survive a run where no agent carried the tour skill.
+        // Server setup is ungated, so it must survive a run where no agent carried the tour skill.
         var withoutTour = SetupCommand.NextStepItems(offerGuidedTour: false);
 
         await Assert.That(withoutTour.Count).IsEqualTo(1);
         await Assert.That(withoutTour[0].Question).IsEqualTo(SetupCommand.ServerSetupQuestion);
-
-        // Cyan: the URL and the prompt are what a reader retypes, so both are set off from the prose.
         await Assert.That(withoutTour[0].Answer)
                     .Contains($"[cyan]{SetupCommand.ServerSetupDocsUrl}[/]");
 
         var withTour = SetupCommand.NextStepItems(offerGuidedTour: true);
 
-        // Server setup stays first: the reader who needs it is blocking their whole team.
         await Assert.That(withTour.Count).IsEqualTo(2);
         await Assert.That(withTour[0].Question).IsEqualTo(SetupCommand.ServerSetupQuestion);
         await Assert.That(withTour[1].Question).IsEqualTo(SetupCommand.GuidedTourQuestion);

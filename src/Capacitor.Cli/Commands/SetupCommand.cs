@@ -547,20 +547,11 @@ public static class SetupCommand {
         return 0;
     }
 
-    /// <summary>
-    /// The closing "Next steps" box. Every item opens with a question the reader can answer about
-    /// themselves, because neither step applies to everyone and the CLI cannot tell which reader it
-    /// has: who owns the server is not knowable from a local setup run. Server setup is therefore
-    /// always listed and a reader who did not create the server self-selects out, while the tour
-    /// needs an agent and the skill on disk.
-    /// </summary>
+    /// <summary>The closing "Next steps" box: a question per item, its answer indented beneath.</summary>
     static void WriteNextSteps(bool offerGuidedTour) {
         var rows = new List<IRenderable>();
 
-        // Each question sits alone on an unindented line and its answer is indented beneath it, so
-        // a reader can skim only the questions and stop at the one that describes them. Padder (not
-        // a "  " prefix) does the indenting because the console wraps these lines — a literal
-        // prefix would only indent the first line of each wrapped answer.
+        // Padder, not a "  " prefix: these lines wrap, and a prefix indents only the first of them.
         foreach (var (question, answer) in NextStepItems(offerGuidedTour)) {
             if (rows.Count > 0) rows.Add(Text.Empty);
 
@@ -576,20 +567,15 @@ public static class SetupCommand {
                 .Padding(1, 0));
     }
 
-    /// <summary>
-    /// The box's items as (question, answer-markup) pairs, split out from the write so the copy can
-    /// be asserted without a console.
-    /// </summary>
+    /// <summary>The box's (question, answer-markup) pairs, split from the write so copy is testable.</summary>
     internal static List<(string Question, string Answer)> NextStepItems(bool offerGuidedTour) {
-        // The URL and the prompt are the two things on this screen a user retypes, so both are cyan.
         var items = new List<(string, string)> {
             (ServerSetupQuestion,
              $"{Markup.Escape(ServerSetupAction)}\n[cyan]{Markup.Escape(ServerSetupDocsUrl)}[/]"),
         };
 
         if (offerGuidedTour) {
-            // The quoted prompt carries no markup-special characters, so colouring it inside the
-            // escaped copy is a plain substring swap.
+            // Markup-safe: the quoted prompt has no [ or ], so escaping leaves it a plain substring.
             items.Add((GuidedTourQuestion,
                        Markup.Escape(GuidedTourAction)
                              .Replace(GuidedTourPromptQuoted,
@@ -636,18 +622,13 @@ public static class SetupCommand {
     internal const string GuidedTourQuestion = "New to Capacitor?";
 
     /// <summary>
-    /// A prompt rather than a slash command, because the invocation differs per vendor and this box
-    /// prints for all of them — only Claude Code has <c>/kcap:guided-tour</c>. Pinned against the
-    /// skill's trigger list by <c>SetupCommandTests</c>: vendors match this against the frontmatter
-    /// description, so a phrase that isn't in it won't reliably fire the skill.
+    /// A prompt, not <c>/kcap:guided-tour</c>: this box prints for every vendor and only Claude Code
+    /// has slash commands. Must stay a verbatim trigger in the skill's frontmatter description
+    /// (pinned by <c>SetupCommandTests</c>) or it fires nothing.
     /// </summary>
     internal const string GuidedTourPrompt = "Start kcap guided tour";
 
-    /// <summary>
-    /// The prompt as it is shown. Quoted as well as coloured: colour is the primary cue but it is
-    /// not always there — <c>NO_COLOR</c>, a redirected stdout, or a plain terminal all drop it, and
-    /// without the quotes the sentence gives no clue where the phrase to type starts and ends.
-    /// </summary>
+    /// <summary>Quoted as well as coloured — colour is lost to <c>NO_COLOR</c> and redirected stdout.</summary>
     internal const string GuidedTourPromptQuoted = $"\"{GuidedTourPrompt}\"";
 
     internal const string GuidedTourAction =
@@ -656,13 +637,9 @@ public static class SetupCommand {
     internal const string GuidedTourCallToAction = $"{GuidedTourQuestion} {GuidedTourAction}";
 
     /// <summary>
-    /// The owner-only half of server setup — everything that lives in the dashboard rather than in
-    /// this CLI, so it can only be pointed at, not done here.
-    /// <para>"Created this server" rather than "owner or admin" (a role the server hasn't told them
-    /// yet) or "for your team" (the common reader is solo, would answer no, and would skip the keys
-    /// and Slack that are theirs to set up). "Server" and not "workspace": the summary grid printed
-    /// three lines above says <c>Server</c>, and <c>workspace</c> already means the local tree
-    /// everywhere else, including in the review-flow output these same users read.</para>
+    /// Server setup lives in the dashboard, so this can only be pointed at. Always printed: who owns
+    /// the server is not knowable here, so the reader self-selects on the question. Says "server",
+    /// never "workspace" — that word means the local tree everywhere else in this CLI.
     /// </summary>
     internal const string ServerSetupQuestion = "Did you create this Capacitor server?";
 
