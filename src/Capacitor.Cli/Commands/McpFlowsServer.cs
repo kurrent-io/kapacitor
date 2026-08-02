@@ -141,9 +141,10 @@ static class McpFlowsServer {
             // it; the production dispatch in RunAsync always supplies it.
             string?             requestingSessionId = null,
             // How the saved reviewer-vendor preference is read, injectable for the same reason the
-            // clock is: the real read resolves the active profile from the user's own config file,
-            // which a unit test must never depend on. Production passes nothing and gets the real read.
-            Func<Task<string?>>? reviewerVendorPreference = null
+            // clock is: the real read resolves a profile from the user's own config file, which a
+            // unit test must never depend on. Production passes nothing and gets the real read — a
+            // fresh one per consultation, never a cached value (see LoadReviewerVendorPreferenceAsync).
+            Func<Task<SavedReviewerVendor>>? reviewerVendorPreference = null
         ) {
         clock                    ??= FlowRetryClock.System;
         backoff                  ??= SettlementBackoff.Default;
@@ -266,12 +267,13 @@ static class McpFlowsServer {
                     // rather than trusted from the accessor, because NormalizeVendor throws on one
                     // and an empty preference must degrade to "none saved", never to a crash.
                     var saved      = await reviewerVendorPreference();
-                    var preference = string.IsNullOrWhiteSpace(saved) ? null : NormalizeVendor(saved);
+                    var preference = string.IsNullOrWhiteSpace(saved.Vendor) ? null : NormalizeVendor(saved.Vendor);
 
                     if (preference is null)
                         return BuildToolResult(
                             id,
-                            FormatFlowStartError((int)postResponse.StatusCode, postBody, wasDynamicStart) + PreferenceMissingGuidance,
+                            FormatFlowStartError((int)postResponse.StatusCode, postBody, wasDynamicStart)
+                                + PreferenceMissingGuidance(saved.ProfileName),
                             isError: true);
 
                     // Injected as a real argument rather than passed alongside, so the retry is
@@ -324,7 +326,7 @@ static class McpFlowsServer {
                         return BuildToolResult(
                             id,
                             FormatFlowStartError((int)retryResponse.StatusCode, retryBody, wasDynamicStart)
-                                + (stale ? StalePreferenceGuidance(preference) : ""),
+                                + (stale ? StalePreferenceGuidance(preference, saved.ProfileName) : ""),
                             isError: true);
                     }
 
@@ -664,25 +666,30 @@ static class McpFlowsServer {
         && TryParseCodedError(body, out var code, out _)
         && code == "reviewer_vendor_required";
 
-    /// <summary>The canonical vendor tokens a driver may offer the user, and the one command that
-    /// saves the answer. Kept in one place so the no-preference and stale-preference messages can
-    /// never advertise different vendors or a different config key.</summary>
-    const string ReviewerVendorTokens = "claude, codex, copilot, cursor, gemini, kiro, opencode, pi, agy";
-
     /// <summary>Appended to the server's own coded rejection when nothing is saved: the driver must
     /// ask a human rather than pick a reviewer itself — the whole point of the server refusing is
-    /// that no one has said which vendor should review.</summary>
-    internal const string PreferenceMissingGuidance =
-        "\nNo saved reviewer-vendor preference. Ask the user which reviewer vendor to use (" +
-        ReviewerVendorTokens + "), pass it as 'vendor', and offer to save it: " +
-        "kcap config set flows.reviewer_vendor <vendor>";
+    /// that no one has said which vendor should review.
+    ///
+    /// <para>It names the profile this start actually consulted, because the two are resolved
+    /// differently: the flows lane reads the profile the repo/URL/env resolution selected, while
+    /// `kcap config set` writes to the config's ACTIVE profile. When they differ, a save the driver
+    /// dutifully performs lands somewhere this lane never reads, and without the name in the message
+    /// the symptom is a preference that "does not work" with nothing to look at.</para></summary>
+    internal static string PreferenceMissingGuidance(string profileName) =>
+        $"\nNo saved reviewer-vendor preference (profile: {profileName}). Ask the user which reviewer " +
+        $"vendor to use ({ReviewerVendors.Tokens}), pass it as 'vendor', and offer to save it: " +
+        "kcap config set flows.reviewer_vendor <vendor> — that writes to the ACTIVE profile, so if " +
+        $"'{profileName}' is not the active one (check with kcap config show), the saved value will not " +
+        "be read back here.";
 
     /// <summary>Appended when the retry's OWN failure says the saved vendor is the problem — the
     /// preference is stale (uninstalled, decertified, renamed), so re-asking and re-saving is the
-    /// fix, not another retry.</summary>
-    internal static string StalePreferenceGuidance(string preference) =>
-        $"\nYour saved preference '{preference}' (flows.reviewer_vendor) no longer works — ask the user " +
-        "for a reviewer vendor and update it: kcap config set flows.reviewer_vendor <vendor>";
+    /// fix, not another retry. Names the consulted profile for the same reason as above: that is
+    /// where the replacement has to land to be seen.</summary>
+    internal static string StalePreferenceGuidance(string preference, string profileName) =>
+        $"\nYour saved preference '{preference}' (flows.reviewer_vendor, profile: {profileName}) no longer " +
+        "works — ask the user for a reviewer vendor and update it: " +
+        $"kcap config set flows.reviewer_vendor <vendor>, in profile '{profileName}' — the one this start resolved.";
 
     /// <summary>Prefixed to a preference-retry success so the driver never reports a reviewer the
     /// user did not name in this conversation as though they had.</summary>
@@ -695,12 +702,37 @@ static class McpFlowsServer {
     static readonly HashSet<string> StalePreferenceCodes =
         new(StringComparer.Ordinal) { "reviewer_vendor_unavailable", "unknown_vendor" };
 
-    /// <summary>Reads the active profile's saved reviewer vendor. Same active-profile resolution
-    /// every other per-profile setting uses, so a --server-url / KCAP_PROFILE override picks the
-    /// preference of the profile it selected. Injectable at the dispatch seam (like the retry clock)
-    /// because reading it for real would make a test depend on the developer's own config file.</summary>
-    static async Task<string?> LoadReviewerVendorPreferenceAsync() =>
-        (await AppConfig.GetActiveProfileAsync())?.EffectiveReviewerVendorPreference();
+    /// <summary>What a preference lookup found, and the profile it looked in — the name travels with
+    /// the value because every message built from a lookup needs it, including the one built when
+    /// the value is null.</summary>
+    internal readonly record struct SavedReviewerVendor(string? Vendor, string ProfileName);
+
+    /// <summary>
+    /// Reads the saved reviewer vendor FROM DISK, every time it is asked. Not via the profile
+    /// deserialized at process start: `kcap mcp flows` is long-lived (the harness spawns it once per
+    /// session and keeps it), while the `kcap config set` this feature's own guidance asks the driver
+    /// to run is a different process writing that file. Against a start-time snapshot the
+    /// ask-the-user-once loop would never close inside a session — refuse, ask, save, and the very
+    /// next start still sees nothing and asks again.
+    ///
+    /// <para>Profile selection matches the rest of this process (the repo/URL/env resolution that
+    /// picked the server this start is talking to), falling back to the config's active profile when
+    /// a URL override made the resolver skip profile selection.</para>
+    ///
+    /// <para>Injectable at the dispatch seam (like the retry clock) because reading it for real would
+    /// make a unit test depend on the developer's own config file; the production binding is covered
+    /// end-to-end by the KCAP_CONFIG_DIR-isolated integration test.</para>
+    /// </summary>
+    static async Task<SavedReviewerVendor> LoadReviewerVendorPreferenceAsync() {
+        var config   = await AppConfig.LoadProfileConfig();
+        var resolved = AppConfig.ResolvedProfile?.ProfileName;
+
+        var name = !string.IsNullOrEmpty(resolved)              ? resolved
+                 : !string.IsNullOrEmpty(config.ActiveProfile)  ? config.ActiveProfile
+                 : "default";
+
+        return new(config.Profiles.GetValueOrDefault(name)?.EffectiveReviewerVendorPreference(), name);
+    }
 
     /// <summary>Reads a string property without throwing on a missing key, a null, or a
     /// wrong-typed (e.g. numeric) value — a wrong-typed applied-vendor echo must read as "no valid

@@ -56,15 +56,20 @@ public static class ConfigCommand {
         profileConfig = profileConfig with { Profiles = profiles };
         await AppConfig.SaveProfileConfig(profileConfig);
 
-        await Console.Out.WriteLineAsync($"Set {key} = {value} (profile: {profileName})");
+        // Echo what was STORED, not what was typed: flows.reviewer_vendor is canonicalized on the way
+        // in, and confirming "Set flows.reviewer_vendor = Codex" while holding "codex" invites a bug
+        // report about a value that is actually correct.
+        var stored = key == "flows.reviewer_vendor" ? ReviewerVendors.Normalize(value) : value;
 
-        if (key == "flows.reviewer_vendor") {
-            string[] knownVendors = ["agy", "claude", "codex", "copilot", "cursor", "gemini", "kiro", "opencode", "pi"];
-            var normalized = value.Trim().ToLowerInvariant();
-            if (!knownVendors.Contains(normalized))
-                await Console.Error.WriteLineAsync(
-                    $"Warning: '{normalized}' is not a vendor this kcap version knows; the server has the authoritative list and will reject an unknown vendor at start time.");
-        }
+        await Console.Out.WriteLineAsync($"Set {key} = {stored} (profile: {profileName})");
+
+        // Advisory only, and deliberately after the success line: the server owns the authoritative
+        // vendor list, so an unrecognized token here is a typo hint, not a rejection — refusing it
+        // would break the first user of a vendor newer than their CLI.
+        if (key == "flows.reviewer_vendor" && !ReviewerVendors.IsKnown(stored))
+            await Console.Error.WriteLineAsync(
+                $"Warning: '{stored}' is not a vendor this kcap version knows ({ReviewerVendors.Tokens}); " +
+                "the server has the authoritative list and will reject an unknown vendor at start time.");
 
         return 0;
     }
@@ -110,7 +115,7 @@ public static class ConfigCommand {
             "default_visibility" => throw new ArgumentException("Invalid value. Must be: private, project, org_public, or public"),
             "excluded_repos" => profile with { ExcludedRepos = value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries) },
             "flows.reviewer_vendor" when !string.IsNullOrWhiteSpace(value) =>
-                profile with { Flows = (profile.Flows ?? new FlowsSettings()) with { ReviewerVendor = value.Trim().ToLowerInvariant() } },
+                profile with { Flows = (profile.Flows ?? new FlowsSettings()) with { ReviewerVendor = ReviewerVendors.Normalize(value) } },
             "flows.reviewer_vendor" => throw new ArgumentException(
                 "Invalid value for flows.reviewer_vendor: must not be empty. Use 'kcap config unset flows.reviewer_vendor' to remove it."),
             _ => throw new ArgumentException($"Unknown config key: {key}")

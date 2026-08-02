@@ -125,6 +125,21 @@ public class ReviewerVendorFallbackTests {
                 "start_review_flow", false, false, null, false, body)).IsFalse();
     }
 
+    /// <summary>Both human-facing surfaces read the SAME vendor list: the flows guidance that offers
+    /// the tokens and the `kcap config set` warning that judges one. Two lists would let this feature
+    /// recommend a vendor its own config command warns about.</summary>
+    [Test]
+    public async Task Both_vendor_surfaces_share_one_token_list() {
+        await Assert.That(McpFlowsServer.PreferenceMissingGuidance("default")).Contains(ReviewerVendors.Tokens);
+
+        foreach (var token in ReviewerVendors.Tokens.Split(", "))
+            await Assert.That(ReviewerVendors.IsKnown(token)).IsTrue()
+                .Because($"'{token}' is offered to users but would be warned about on save");
+
+        await Assert.That(ReviewerVendors.IsKnown("kodex")).IsFalse();
+        await Assert.That(ReviewerVendors.IsKnown(ReviewerVendors.Normalize("  CoDeX "))).IsTrue();
+    }
+
     // === Wired into the start arm via HandleToolCallAsync (full dispatch, WireMock-backed) ===
 
     const string StartV2 = "/api/flows/review/start/v2";
@@ -158,7 +173,8 @@ public class ReviewerVendorFallbackTests {
         ["params"] = new JsonObject { ["name"] = toolName, ["arguments"] = arguments.DeepClone() }
     };
 
-    static Func<Task<string?>> Preference(string? value) => () => Task.FromResult(value);
+    static Func<Task<McpFlowsServer.SavedReviewerVendor>> Preference(string? value, string profile = "default") =>
+        () => Task.FromResult(new McpFlowsServer.SavedReviewerVendor(value, profile));
 
     static (bool IsError, string Text) Unwrap(string response) {
         var result = JsonNode.Parse(response)!.AsObject()["result"]!;
@@ -173,6 +189,57 @@ public class ReviewerVendorFallbackTests {
     static string? PostedVendor(WireMockServer server, int index) =>
         JsonNode.Parse(server.LogEntries.ElementAt(index).RequestMessage.Body!)!.AsObject()["vendor"]?.GetValue<string>();
 
+    /// <summary>The preference is consulted per triggering call, never remembered from an earlier
+    /// one. This MCP server is long-lived — the harness spawns it once per session — so the whole
+    /// refuse → ask → save → retry loop closes inside a session only if a value saved a moment ago
+    /// is visible to the NEXT start. Pinned here at the dispatch seam (nothing caches it in process);
+    /// the other half — that the production read goes back to DISK rather than to a start-time
+    /// snapshot — is pinned end-to-end by the KCAP_CONFIG_DIR-isolated integration test.</summary>
+    [Test]
+    public async Task A_preference_saved_between_two_starts_is_seen_by_the_second() {
+        using var server = WireMockServer.Start();
+        server.Given(Request.Create().WithPath(StartV2).UsingPost())
+              .InScenario("saved-later").WillSetStateTo("second-start")
+              .RespondWith(Response.Create().WithStatusCode(400).WithBody(VendorRequiredBody));
+        server.Given(Request.Create().WithPath(StartV2).UsingPost())
+              .InScenario("saved-later").WhenStateIs("second-start").WillSetStateTo("accept")
+              .RespondWith(Response.Create().WithStatusCode(400).WithBody(VendorRequiredBody));
+        server.Given(Request.Create().WithPath(StartV2).UsingPost())
+              .InScenario("saved-later").WhenStateIs("accept")
+              .RespondWith(Response.Create().WithStatusCode(200).WithBody(StartedWithVendor("codex")));
+        using var client = new HttpClient();
+
+        // Nothing saved yet; then the user saves — exactly what the first call's guidance asked for.
+        string? saved = null;
+        var     reads = 0;
+
+        Task<McpFlowsServer.SavedReviewerVendor> ReadPreference() {
+            reads++;
+
+            return Task.FromResult(new McpFlowsServer.SavedReviewerVendor(saved, "default"));
+        }
+
+        var first = await McpFlowsServer.HandleToolCallAsync(
+            JsonNode.Parse("1")!, ToolCallRequest("start_review_flow", StartArguments()),
+            client, server.Url!, cwd: "/tmp/cwd", repoRoot: null, repoInfo: null,
+            reviewerVendorPreference: ReadPreference);
+
+        await Assert.That(Unwrap(first).Text).Contains("No saved reviewer-vendor preference");
+
+        saved = "codex";
+
+        var second = await McpFlowsServer.HandleToolCallAsync(
+            JsonNode.Parse("2")!, ToolCallRequest("start_review_flow", StartArguments()),
+            client, server.Url!, cwd: "/tmp/cwd", repoRoot: null, repoInfo: null,
+            reviewerVendorPreference: ReadPreference);
+
+        var (isError, text) = Unwrap(second);
+        await Assert.That(isError).IsFalse();
+        await Assert.That(text).StartsWith("reviewer vendor 'codex' applied");
+        await Assert.That(reads).IsEqualTo(2);
+        await Assert.That(PostedVendor(server, 2)).IsEqualTo("codex");
+    }
+
     [Test]
     public async Task No_saved_preference_surfaces_the_coded_error_plus_ask_and_save_guidance() {
         using var server = WireMockServer.Start();
@@ -183,7 +250,7 @@ public class ReviewerVendorFallbackTests {
         var response = await McpFlowsServer.HandleToolCallAsync(
             JsonNode.Parse("1")!, ToolCallRequest("start_review_flow", StartArguments()),
             client, server.Url!, cwd: "/tmp/cwd", repoRoot: null, repoInfo: null,
-            reviewerVendorPreference: Preference(null));
+            reviewerVendorPreference: Preference(null, profile: "work"));
 
         var (isError, text) = Unwrap(response);
         await Assert.That(isError).IsTrue();
@@ -193,6 +260,12 @@ public class ReviewerVendorFallbackTests {
         await Assert.That(text).Contains("Ask the user which reviewer vendor to use");
         await Assert.That(text).Contains("kcap config set flows.reviewer_vendor");
         await Assert.That(text).Contains("copilot");
+
+        // The profile this start actually consulted is named — `kcap config set` writes to the
+        // ACTIVE profile, so a driver told to save without knowing which profile was read can put
+        // the answer somewhere this lane never looks and see the same refusal forever.
+        await Assert.That(text).Contains("(profile: work)");
+        await Assert.That(text).Contains("ACTIVE profile");
 
         // Nothing was retried and nothing was invented.
         await Assert.That(PostCount(server, StartV2)).IsEqualTo(1);
@@ -271,7 +344,7 @@ public class ReviewerVendorFallbackTests {
         var (isError, text) = Unwrap(response);
         await Assert.That(isError).IsTrue();
         await Assert.That(text).Contains("reviewer_vendor_unavailable");
-        await Assert.That(text).Contains("Your saved preference 'codex' (flows.reviewer_vendor) no longer works");
+        await Assert.That(text).Contains("Your saved preference 'codex' (flows.reviewer_vendor, profile: default) no longer");
         await Assert.That(text).Contains("kcap config set flows.reviewer_vendor");
 
         await Assert.That(PostCount(server, StartV2)).IsEqualTo(2);
@@ -296,7 +369,7 @@ public class ReviewerVendorFallbackTests {
 
         var (_, text) = Unwrap(response);
         await Assert.That(text).Contains("unknown_vendor");
-        await Assert.That(text).Contains("Your saved preference 'kodex' (flows.reviewer_vendor) no longer works");
+        await Assert.That(text).Contains("Your saved preference 'kodex' (flows.reviewer_vendor, profile: default) no longer");
         await Assert.That(PostCount(server, StartV2)).IsEqualTo(2);
     }
 
@@ -375,6 +448,9 @@ public class ReviewerVendorFallbackTests {
         await Assert.That(text).Contains("requested reviewer vendor 'codex'");
         await Assert.That(text).Contains("applied 'claude'");
         await Assert.That(PostCount(server, "/api/flows/f1/close")).IsEqualTo(1);
+
+        // The mismatch is terminal: the defensive close must not be followed by a third start.
+        await Assert.That(PostCount(server, StartV2)).IsEqualTo(2);
     }
 
     [Test]
@@ -525,6 +601,9 @@ public class ReviewerVendorFallbackTests {
         await Assert.That(isError).IsTrue();
         await Assert.That(text).Contains("Not logged in");
         await Assert.That(text).DoesNotContain("no longer works");
+
+        // An auth failure ends the call too — no third start behind the login message.
+        await Assert.That(PostCount(server, StartV2)).IsEqualTo(2);
     }
 
     /// <summary>The preference is read only when the trigger fires — a successful start must not
@@ -542,7 +621,11 @@ public class ReviewerVendorFallbackTests {
         var response = await McpFlowsServer.HandleToolCallAsync(
             JsonNode.Parse("1")!, ToolCallRequest("start_review_flow", StartArguments()),
             client, server.Url!, cwd: "/tmp/cwd", repoRoot: null, repoInfo: null,
-            reviewerVendorPreference: () => { reads++; return Task.FromResult<string?>("codex"); });
+            reviewerVendorPreference: () => {
+                reads++;
+
+                return Task.FromResult(new McpFlowsServer.SavedReviewerVendor("codex", "default"));
+            });
 
         var (isError, _) = Unwrap(response);
         await Assert.That(isError).IsFalse();
