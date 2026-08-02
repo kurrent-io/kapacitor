@@ -237,8 +237,10 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
         await RunGit(worktreePath, GitTimeout, [..NoBranchHooks(), "add", "-A"]);
         // Identity supplied explicitly. This is the daemon's OWN bookkeeping commit, not the user's work,
         // so it must not depend on the host having git identity configured — a machine without a global
-        // user.email fails with "Author identity unknown" and standalone hosting dies. Surfaced by CI once
-        // the CopyDirectory fix above let this path actually reach the commit.
+        // user.email fails with "Author identity unknown". Found while CopyDirectory was temporarily
+        // repaired and this line became reachable for the first time; that repair was then reverted (see
+        // CopyDirectory), so the path still cannot get here — the fix is kept because it is correct and
+        // because the repair will land eventually.
         await RunGit(worktreePath, GitTimeout, [
             ..NoBranchHooks(),
             "-c", "user.email=daemon@kcap.local", "-c", "user.name=kcap",
@@ -273,13 +275,25 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
     /// hooks becomes a delivery mechanism for someone else's. A per-process GUID cannot be squatted, and
     /// creating it fresh is what makes "empty and ours" true rather than assumed.</para></summary>
     static readonly Lazy<string> EmptyHooksDirectory = new(() => {
-        var dir = Path.Combine(Path.GetTempPath(), $"kcap-no-hooks-{Guid.NewGuid():N}");
+        // Base directory, per platform. On Unix, temp plus an atomic 0700 creation. On WINDOWS, temp is
+        // NOT reliably private — GetTempPath resolves TMP, then TEMP, then USERPROFILE, then the Windows
+        // directory, and verifies no access control; a service account or an admin-set shared TEMP lands
+        // somewhere another user can write. LocalApplicationData is genuinely per-user, so the base is
+        // chosen rather than the ACL patched. (I had asserted temp was already per-user here; it is not,
+        // and review was right to challenge it.)
+        var baseDir = OperatingSystem.IsWindows()
+            ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "kcap")
+            : Path.GetTempPath();
 
-        // Created ATOMICALLY at 0700. mkdir-then-chmod leaves a window in which a permissive umask lets
-        // another user drop a `post-checkout` into it; the chmod does not remove a file already placed, so
-        // git would run it. The GUID makes the name unguessable and this makes the mode not-a-race.
+        Directory.CreateDirectory(baseDir);
+
+        var dir = Path.Combine(baseDir, $"kcap-no-hooks-{Guid.NewGuid():N}");
+
+        // Created ATOMICALLY at 0700 on Unix. mkdir-then-chmod leaves a window in which a permissive umask
+        // lets another user drop a `post-checkout` into it, and the chmod does not remove a file already
+        // placed, so git would run it. The GUID makes the name unguessable; this makes the mode not-a-race.
         if (OperatingSystem.IsWindows())
-            Directory.CreateDirectory(dir);          // per-user %LOCALAPPDATA%\Temp; no shared-dir race
+            Directory.CreateDirectory(dir);
         else
             Directory.CreateDirectory(dir,
                 UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
