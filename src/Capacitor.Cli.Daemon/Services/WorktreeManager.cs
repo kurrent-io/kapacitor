@@ -397,10 +397,17 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
             .ToArray();
 
         if (drivers.Length > 0)
+            // Deliberately says WHAT was disabled and why, not what the file contents will look like. The
+            // outcome differs by path: an owned worktree or standalone snapshot really does leave
+            // LFS-tracked files as pointer text, but a borrowed snapshot overwrites checkout files from the
+            // source manifest and REJECTS source-side pointers outright — so it either holds real smudged
+            // bytes or fails to build. A single message claiming pointer text was true for two paths and
+            // false for the third, which is worse than saying less: this logging is the whole reason the
+            // no-exemption trade is defensible, so it has to be accurate.
             logger.LogInformation(
                 "Disabled git filter drivers for agent worktree creation from {Repo}: {Drivers}. A branch's "
               + ".gitattributes selects which driver runs, so a driver with a relative command would execute "
-              + "branch-supplied code. LFS-tracked files will appear as pointer text in the worktree.",
+              + "branch-supplied code. Content those drivers would have transformed is left untransformed.",
                 repoPath, string.Join(", ", drivers));
     }
 

@@ -1149,9 +1149,11 @@ kcap agent start claude -d                    # start without attaching; prints 
     `.gitattributes` is branch content and selects which filter driver applies, so a driver whose command is
     relative — `filter.x.smudge=./tools/f` — has the branch supply the executable. No command is inspected
     and no driver is exempt: four narrower designs were each defeated at their exemption, so there is
-    deliberately nothing left to parse, resolve or impersonate. **LFS-tracked files therefore check out as
-    pointer text inside agent worktrees, and a custom filter driver does not run there.** Disabled drivers
-    are logged at startup of each worktree so the effect is visible rather than mysterious.
+    deliberately nothing left to parse, resolve or impersonate. **A custom filter driver does not run inside an
+    agent worktree, and LFS-tracked files check out as pointer text there.** Borrowed review snapshots are
+    the exception: they are rebuilt from the source working tree, so they carry the real content the source
+    already had — and refuse to build if the source itself holds unsmudged pointers. Disabled drivers are
+    logged per worktree so the effect is visible rather than mysterious.
 
 - **Detach** without stopping the agent with the prefix key **`Ctrl-Q` then `d`**. The agent keeps running in the daemon.
 - **Permissions:** for a registered agent, permission prompts appear in the web UI (the same dialog as hosted agents); with `--private`, prompts are answered natively in your terminal.
