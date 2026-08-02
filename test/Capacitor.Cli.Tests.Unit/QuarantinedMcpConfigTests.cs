@@ -231,6 +231,39 @@ public class QuarantinedMcpConfigTests {
         await Assert.That(File.Exists(Path.Combine(root, "notes.txt"))).IsFalse();
     }
 
+    /// <summary>
+    /// The tracked check proves the INDEX SPELLING, not where the bytes come from. With `.cursor` replaced
+    /// by a link to somewhere outside the repo, `ls-files -co` still reports the cached `.cursor/mcp.json`,
+    /// so the path reads as tracked and branch-authored — while `File.Exists` and the read that follows
+    /// resolve through the link and pull the target's content, which quarantine then publishes to the
+    /// reviewer. A leaf-only symlink check never sees the parent.
+    /// </summary>
+    [Test]
+    public async Task A_symlinked_parent_directory_is_refused() {
+        Skip.Unless(!OperatingSystem.IsWindows(), "POSIX directory symlink");
+
+        var source = NewRepo();
+        WriteAt(source, ".cursor/mcp.json", """{"mcpServers":{}}""");
+        Git(source, "add", "-A");
+        Git(source, "commit", "-q", "-m", "tracked cursor config");
+
+        // Swap the real directory for a link to content outside the repository.
+        var outside = NewDir("outside");
+        File.WriteAllText(Path.Combine(outside, "mcp.json"), """{"local":"secret-outside-the-repo"}""");
+        Directory.Delete(Path.Combine(source, ".cursor"), recursive: true);
+        Directory.CreateSymbolicLink(Path.Combine(source, ".cursor"), outside);
+
+        // Precondition: git still reports the cached child, which is what makes the tracked check pass.
+        await Assert.That(GitCapture(source, "ls-files", "-co", "--exclude-standard"))
+            .Contains(".cursor/mcp.json");
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+            await Manager(out _).CreateBorrowedSnapshotAsync(
+                source, "sl-" + Guid.NewGuid().ToString("N")[..8], CancellationToken.None));
+
+        await Assert.That(ex!.Message).Contains("borrowed_snapshot_symlink_unsupported");
+    }
+
     // ── fixture ──
 
     /// <summary>A manager rooted in a TEMP directory. The default DaemonConfig points at
@@ -243,9 +276,21 @@ public class QuarantinedMcpConfigTests {
             NullLogger<WorktreeManager>.Instance);
     }
 
+    /// <summary>Every root this class creates, removed after the class runs. Each test needs a fresh repo,
+    /// so without this a full run leaves a cloned repository per test behind in the temp directory.</summary>
+    static readonly System.Collections.Concurrent.ConcurrentBag<string> Roots = [];
+
+    [After(Class)]
+    public static void RemoveTempRoots() {
+        foreach (var root in Roots)
+            try { if (Directory.Exists(root)) Directory.Delete(root, recursive: true); }
+            catch { /* a leftover temp dir must never fail the run */ }
+    }
+
     static string NewDir(string tag) {
         var p = Path.Combine(Path.GetTempPath(), $"kcap-quar-{tag}-{Guid.NewGuid():N}"[..40]);
         Directory.CreateDirectory(p);
+        Roots.Add(p);
         return p;
     }
 

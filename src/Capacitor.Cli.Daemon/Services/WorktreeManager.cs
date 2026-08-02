@@ -604,6 +604,16 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
 
             var path = ContainedPath(source, rel);
             if (!File.Exists(path)) continue; // tracked deletion
+            // EVERY component, not just the leaf. A leaf-only check proves the last name is not a link
+            // while `File.Exists`/`FileInfo`/`OpenSequentialRead` happily follow a symlinked PARENT: with a
+            // tracked `.cursor/mcp.json` whose `.cursor` has since been replaced by a link to somewhere
+            // outside the repo, `ls-files -co` still reports the cached child, so the index spelling looks
+            // tracked and branch-authored while the bytes read come from the link's target. Quarantine then
+            // publishes them to the reviewer. The tracked check answers a question about the NAME; this
+            // answers the one about where the bytes actually come from.
+            if (FirstLinkComponent(source, rel) is { } link)
+                throw new InvalidOperationException($"borrowed_snapshot_symlink_unsupported: {link}");
+
             var info = new FileInfo(path);
             if (info.LinkTarget is not null || info.Attributes.HasFlag(FileAttributes.ReparsePoint))
                 throw new InvalidOperationException($"borrowed_snapshot_symlink_unsupported: {rel}");
@@ -740,6 +750,26 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
             rel.Split('/').Any(p => p.Equals(".git", StringComparison.OrdinalIgnoreCase)))
             throw new InvalidOperationException($"borrowed_snapshot_invalid_path: {raw}");
         return rel;
+    }
+
+    /// <summary>The first component of <paramref name="rel"/> that is a link, walking one component at a
+    /// time and NEVER following — mirroring <c>FirstRemovableComponent</c> in the workspace-MCP partial.
+    /// Returns null when every component is an ordinary directory or file.</summary>
+    static string? FirstLinkComponent(string root, string rel) {
+        var current = root;
+        foreach (var part in rel.Split('/', StringSplitOptions.RemoveEmptyEntries)) {
+            current = Path.Combine(current, part);
+            try {
+                if (new FileInfo(current).LinkTarget is not null ||
+                    new DirectoryInfo(current).LinkTarget is not null)
+                    return current;
+            } catch {
+                // Unreadable: the leaf checks below still apply, and an unreadable path fails on open.
+                return null;
+            }
+            if (!Path.Exists(current)) return null;      // nothing here, nothing below it either
+        }
+        return null;
     }
 
     static string ContainedPath(string root, string rel) {
