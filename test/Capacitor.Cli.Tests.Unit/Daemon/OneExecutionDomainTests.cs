@@ -189,7 +189,8 @@ public partial class AgentOrchestratorVendorTests {
 
         var launchTask = orch.SubmitLaunchAgentForTest(SequencedLaunch("parked", epoch, 1));
         await WaitBoundedAsync(launchTask, "HandleLaunchAgent must not await the sequenced launch's execution");
-        await prompter.WaitForPromptAsync("parked"); // dequeued and genuinely parked at the gate
+        // dequeued and genuinely parked at the gate
+        await WaitBoundedAsync(prompter.WaitForPromptAsync("parked"), "the sequenced launch never reached the consent prompt");
 
         orch.SeedAgentForTest("other", status: "Running");
         // NOT awaited: SubmitAsync is not itself `async` — its whole body, including the lock-protected
@@ -336,7 +337,7 @@ public partial class AgentOrchestratorVendorTests {
         // An un-seq'd launch, committed to the lane and parked at the gate.
         await WaitBoundedAsync(orch.SubmitLaunchAgentForTest(UnsequencedLaunch("parked")),
             "the launch handler awaited execution instead of returning after the lane commit");
-        await prompter.WaitForPromptAsync("parked");
+        await WaitBoundedAsync(prompter.WaitForPromptAsync("parked"), "the un-sequenced launch never reached the consent prompt");
 
         // An un-seq'd stop for a live agent, submitted while the launch is parked: admitted, queued, and
         // provably not yet executed.
@@ -366,7 +367,7 @@ public partial class AgentOrchestratorVendorTests {
 
         await WaitBoundedAsync(orch.SubmitLaunchAgentForTest(UnsequencedLaunch("parked")),
             "the launch handler awaited execution instead of returning after the lane commit");
-        await prompter.WaitForPromptAsync("parked");
+        await WaitBoundedAsync(prompter.WaitForPromptAsync("parked"), "the un-sequenced launch never reached the consent prompt");
 
         orch.SeedAgentForTest("reviewer", LaunchKind.ReviewFlow, status: "Running");
         // The internal path, unchanged: bypasses the lane entirely and completes while it is parked.
@@ -391,7 +392,7 @@ public partial class AgentOrchestratorVendorTests {
 
         await WaitBoundedAsync(orch.SubmitLaunchAgentForTest(UnsequencedLaunch("parked")),
             "the launch handler awaited execution instead of returning after the lane commit");
-        await prompter.WaitForPromptAsync("parked");
+        await WaitBoundedAsync(prompter.WaitForPromptAsync("parked"), "the un-sequenced launch never reached the consent prompt");
 
         await Assert.That(orch.GetAgentForTest("parked")).IsNull();
         await Assert.That(orch.BuildLiveAgents().Select(a => a.Id)).DoesNotContain("parked");
@@ -451,7 +452,7 @@ public partial class AgentOrchestratorVendorTests {
 
         // Inline (pre-publication) un-seq'd launch, paused inside the core on the consent prompt.
         var inline = orch.SubmitLaunchAgentForTest(UnsequencedLaunch("inline"));
-        await prompter.WaitForPromptAsync("inline");
+        await WaitBoundedAsync(prompter.WaitForPromptAsync("inline"), "the inline launch never reached the consent prompt");
         await Assert.That(inline.IsCompleted).IsFalse();
 
         orch.PublishSequencedProcessorForTest();
@@ -517,7 +518,7 @@ public partial class AgentOrchestratorVendorTests {
 
         await WaitBoundedAsync(orch.SubmitLaunchAgentForTest(UnsequencedLaunch("in-flight")),
             "the launch handler awaited execution instead of returning after the lane commit");
-        await prompter.WaitForPromptAsync("in-flight");
+        await WaitBoundedAsync(prompter.WaitForPromptAsync("in-flight"), "the in-flight launch never reached the consent prompt");
 
         // Input for the in-flight (unregistered) launch: dropped and logged, no throw, no stall.
         await WaitBoundedAsync(orch.HandleSendInputForTest(new SendInputCommand("in-flight", "hello", null)),
@@ -562,7 +563,7 @@ public partial class AgentOrchestratorVendorTests {
         // Park the lane so the stops below cannot drain before shutdown.
         await WaitBoundedAsync(orch.SubmitLaunchAgentForTest(UnsequencedLaunch("parked")),
             "the launch handler awaited execution instead of returning after the lane commit");
-        await prompter.WaitForPromptAsync("parked");
+        await WaitBoundedAsync(prompter.WaitForPromptAsync("parked"), "the un-sequenced launch never reached the consent prompt");
 
         await WaitBoundedAsync(orch.SubmitServerStopAgentForTest("child-a"),
             "the stop handler awaited execution behind the parked launch");

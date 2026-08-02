@@ -15,7 +15,7 @@ namespace Capacitor.Cli.Tests.Unit.Daemon;
 /// the same <see cref="LocalControlServer.HandleConnectionAsync"/> routing switch a real
 /// `kcap` client talks to. The harness mirrors <c>LaunchConsentIpcTests</c> (temp
 /// DaemonLockPaths override, socket-file poll, Windows guard) but builds its own minimal
-/// AgentOrchestrator, since none of these tests exercise Spawn/Attach/List/Stop — the
+/// AgentOrchestrator, since none of these tests exercise Spawn/Attach/Stop — the
 /// orchestrator (and the consent plumbing) only need to exist to satisfy
 /// LocalControlServer's constructor.
 /// </summary>
@@ -199,8 +199,10 @@ public class LocalControlHelloTests {
         await RunAsync("hello-e", async (h, ct) => {
             await using var s = await ConnectAsync(h.SockPath, ct);
             // Detach is a valid, decodable FrameType that LocalControlServer's switch doesn't
-            // route anywhere — it falls into the default arm, the down-level discovery path a
-            // client uses to detect a stale/mismatched protocol.
+            // route anywhere — it falls into the default arm, which is what this pins: the Error
+            // reply for a decodable-but-unrouted frame. It is NOT the down-level discovery signal —
+            // that is hello-then-EOF (a pre-hello daemon can't even decode byte 15), never an Error
+            // frame (§3.1 of the design doc).
             await FrameCodec.WriteAsync(s, LocalFrame.Detach(), ct);
 
             var resp = await FrameCodec.ReadAsync(s, ct);

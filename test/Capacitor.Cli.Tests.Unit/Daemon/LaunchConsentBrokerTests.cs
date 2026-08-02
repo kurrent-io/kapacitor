@@ -4,6 +4,17 @@ using Microsoft.Extensions.Time.Testing;
 namespace Capacitor.Cli.Tests.Unit.Daemon;
 
 public class LaunchConsentBrokerTests {
+    static readonly TimeSpan Bounded = TimeSpan.FromSeconds(30);
+
+    /// <summary>Bounds an otherwise-unbounded wait so a broken invariant FAILS with a named assertion
+    /// instead of hanging the suite — same contract as the identically-named helper in
+    /// OneExecutionDomainProcessorTests/OneExecutionDomainTests.</summary>
+    static async Task<T> WaitBounded<T>(Task<T> task, string because) {
+        var finished = await Task.WhenAny(task, Task.Delay(Bounded));
+        await Assert.That(finished == task).IsTrue().Because(because);
+        return await task;
+    }
+
     static LaunchConsentPromptRequest Req(string id = "a1") =>
         new(id, "user_x", "agent", "/tmp/repo", "claude", DateTimeOffset.UtcNow.ToString("O"), 5);
 
@@ -161,7 +172,8 @@ public class LaunchConsentBrokerTests {
         broker.Unsubscribe(Guid.NewGuid()); // unknown id; _subscribers was already empty
 
         broker.Subscribe();
-        await Assert.That(await waiter).IsTrue();
+        await Assert.That(await WaitBounded(waiter, "a 0-to-0 Unsubscribe no-op orphaned the pending waiter — it never completed"))
+            .IsTrue();
     }
 
     [Test]

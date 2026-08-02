@@ -7,8 +7,14 @@ namespace Capacitor.Cli.Core.LocalIpc;
 /// default) — additive fields must never break an older client.
 public sealed record ClientHelloDto(string? ClientName, string? ClientVersion);
 
+/// <summary>
+/// <see cref="Capabilities"/> is <see langword="null"/> = field absent (older daemon); treat as
+/// empty. STJ leaves a missing reference-typed member at its default rather than throwing, so a
+/// non-nullable declaration here would be a lie a client could NRE on the moment it dereferences an
+/// older daemon's reply.
+/// </summary>
 public sealed record HelloReplyDto(
-    int ProtocolVersion, string DaemonVersion, string DaemonName, List<string> Capabilities);
+    int ProtocolVersion, string DaemonVersion, string DaemonName, List<string>? Capabilities);
 
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.SnakeCaseLower)]
 [JsonSerializable(typeof(ClientHelloDto))]

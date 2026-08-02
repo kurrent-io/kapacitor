@@ -8,6 +8,8 @@ internal sealed record LaunchConsentPromptRequest(
 
 /// Implemented by LaunchConsentBroker (Task 6). Null answer = timeout / subscriber vanished.
 internal interface ILaunchConsentPrompter {
+    /// No production reader — DecideAsync no longer short-circuits on this; it always goes through
+    /// <see cref="WaitForSubscriberAsync"/>. Kept for tests/diagnostics.
     bool HasSubscriber { get; }
     Task<bool> WaitForSubscriberAsync(TimeSpan wait, TimeProvider time, CancellationToken ct);
     Task<bool?> PromptAsync(LaunchConsentPromptRequest req, TimeSpan timeout, TimeProvider time, CancellationToken ct);
@@ -55,7 +57,8 @@ internal sealed class LaunchConsentGate(
         var wait  = grace < Remaining() ? grace : Remaining(); // computed immediately before waiting
         if (!await prompter.WaitForSubscriberAsync(wait, time, ct))
             return Done(agentId, input, allowed: false, source: "prompt_no_ui",
-                detail: $"owner approval required and no approval UI attached within {(int)wait.TotalSeconds}s grace");
+                // One decimal place: a sub-second grace must never render as a misleading "0s".
+                detail: $"owner approval required and no approval UI attached within {wait.TotalSeconds:0.0}s grace");
 
         var req = new LaunchConsentPromptRequest(agentId, input.RequesterUserId, input.Kind,
             input.RepoPath, input.Vendor, requestedAt, policy.PromptTimeoutSeconds);

@@ -80,9 +80,10 @@ public partial class AgentOrchestratorVendorTests {
             RepoPath: "/tmp/does-not-matter", Tools: null, AttachmentIds: null, Vendor: "claude",
             Epoch: orch.DaemonEpochForTest, Seq: 1, CommandId: "cmd-1"));
 
-        // §3.3: HandleLaunchAgentForTest now returns once the item is SUBMITTED (accepted), not once
-        // it's executed — the terminal rejection settles asynchronously on the processor's lane, so
-        // this must poll rather than assert immediately.
+        // §3.3: HandleLaunchAgentForTest drains the lane again since the fix round (it now awaits
+        // DrainLaneForTest after submitting), so the terminal rejection is already settled by the
+        // time this returns — the poll below is redundant but harmless, kept as defense-in-depth
+        // against a future regression reopening the async gap between acceptance and execution.
         await SpinUntilAsync(() => server.Rejects.Count > 0, TimeSpan.FromSeconds(30));
 
         await Assert.That(server.Rejects.Count).IsEqualTo(1);

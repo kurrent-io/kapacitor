@@ -107,7 +107,7 @@ Facts this design builds on, verified against `main` after the slice-1 merge:
 |---|----------|
 | 1 | Hello is an **optional** one-shot frame. Existing clients that open with `Spawn`/`List`/`ConsentSubscribe`/… are untouched; nothing ever requires hello-first. |
 | 2 | Feature discovery is **capability strings**, not protocol-version comparisons. `protocol_version` exists for a future framing break only; it starts at 1 and nothing gates on it yet. |
-| 3 | The no-UI instant deny gains a bounded **subscriber grace** — `min(5 s, prompt timeout)` — burned from a single **monotonic absolute deadline** established at prompt-path entry, not added to it. The coded deny reason stays `prompt_no_ui` (stable contract); the decision log records that grace elapsed. |
+| 3 | The no-UI instant deny gains a bounded **subscriber grace** — `min(5 s, prompt timeout)` — burned from a single **monotonic absolute deadline** established at prompt-path entry, not added to it. The coded deny reason stays `prompt_no_ui` (stable contract); the grace fact travels in the denial detail (the coded LaunchFailed reason); the local decision-log format is unchanged (§3.4). |
 | 4 | **One execution domain, latch abolished.** The receive pump never awaits launch/stop EXECUTION; all SERVER-ORIGIN launch/stop execution — sequenced and un-seq'd alike — runs in arrival order on the ONE existing single-reader lane (`RunLaneAsync`), so today's pump serialization is relocated, not changed, and cross-format ordering holds by construction. Sequenced acceptance/ack machinery is untouched. No command is ever refused for its format — the shipped server mixes formats by design (§1.9). Against a pre-settlement server (`_processor` null) the legacy inline-await stays (no sequenced traffic exists, single domain is trivial). Queue bounds are upstream and real: launches ≤ daemon capacity via server-side `TryReserve` (§1.10); stops bounded by live agents × reconcile cadence. |
 | 5 | Supervision pushes are **full snapshots** driven by a **monotonic change generation** with per-subscriber cursors (§4.2) — never per-event deltas, never a consumable one-shot signal — so N subscribers each converge and a missed pulse cannot desync anyone. |
 | 6 | The server→daemon "patience hint" (clamping prompt timeout to the server's launch-admission window) stays **out of scope** (cross-repo). The late-launch residual is bounded and reconciled: the prompt timeout is capped at 300 s by the existing store clamp, and an agent launched after the server abandoned its launch is reclaimed by the server's shipped reconciliation lanes (§1.15). |
@@ -207,7 +207,7 @@ explicitly generational lifecycle, all transitions under the existing `_delivery
 ```
 wait    = min(grace, max(0, deadline − now))       // computed immediately before waiting
 arrived = await prompter.WaitForSubscriberAsync(wait, time, ct)
-if (!arrived) → deny prompt_no_ui                  // same coded reason, log notes grace ran
+if (!arrived) → deny prompt_no_ui                  // same coded reason; grace fact travels in the denial detail (LaunchFailed), not the decision log — decision-log format unchanged (§3.4)
 else → PromptAsync(max(0, deadline − now), time, ct)   // recomputed, TimeSpan, zero allowed
 ```
 

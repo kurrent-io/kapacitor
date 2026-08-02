@@ -59,8 +59,22 @@ public class FrameCodecHelloTests {
         await Assert.That(dto!.ProtocolVersion).IsEqualTo(1);
         await Assert.That(dto.DaemonVersion).IsEqualTo("x");
         await Assert.That(dto.DaemonName).IsEqualTo("n");
-        await Assert.That(dto.Capabilities.Count).IsEqualTo(1);
+        await Assert.That(dto.Capabilities).IsNotNull();
+        await Assert.That(dto.Capabilities!.Count).IsEqualTo(1);
         await Assert.That(dto.Capabilities[0]).IsEqualTo("consent/1");
+    }
+
+    [Test]
+    public async Task HelloReply_with_omitted_capabilities_deserializes_to_null_and_is_treated_as_empty() {
+        // An older daemon's reply might not carry "capabilities" at all — STJ leaves the absent
+        // member at its default (null) rather than throwing. A client must be able to read this
+        // without an NRE and treat the absence as "no capabilities advertised".
+        var json = """{"protocol_version":1,"daemon_version":"x","daemon_name":"n"}""";
+        var dto = JsonSerializer.Deserialize(json, HelloIpcJsonContext.Default.HelloReplyDto);
+        await Assert.That(dto).IsNotNull();
+        await Assert.That(dto!.ProtocolVersion).IsEqualTo(1);
+        await Assert.That(dto.Capabilities).IsNull();
+        await Assert.That((dto.Capabilities ?? []).Count).IsEqualTo(0); // the client-side "treat as empty" idiom
     }
 
     [Test]

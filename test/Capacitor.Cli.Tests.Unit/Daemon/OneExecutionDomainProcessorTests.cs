@@ -103,7 +103,7 @@ public class OneExecutionDomainProcessorTests {
 
         await Assert.That(p.SubmitUnsequenced(h.Unseq(UnsequencedKind.Launch, "x", "launch", "launch", park.RunAsync)))
             .IsEqualTo(SubmitOutcome.Committed);
-        await park.Started.Task; // the launch is DEQUEUED and executing
+        await WaitBounded(park.Started.Task, "the launch was never dequeued and executing");
 
         // The launch's active instance makes x admissible even though nothing registered it.
         await Assert.That(p.SubmitUnsequenced(h.Unseq(UnsequencedKind.Stop, "x", "stop")))
@@ -126,7 +126,7 @@ public class OneExecutionDomainProcessorTests {
             await park.RunAsync();
             return new CommandOutcome(CommandOutcomeKind.LaunchExecuted, "x");
         });
-        await park.Started.Task;
+        await WaitBounded(park.Started.Task, "the sequenced launch never started executing");
 
         // Cross-format direction A: un-seq'd stop behind a SEQUENCED launch for the same agent.
         await Assert.That(p.SubmitUnsequenced(h.Unseq(UnsequencedKind.Stop, "x", "unseq-stop")))
@@ -148,7 +148,7 @@ public class OneExecutionDomainProcessorTests {
 
         await Assert.That(p.SubmitUnsequenced(h.Unseq(UnsequencedKind.Stop, "x", "unseq-stop", "stop", park.RunAsync)))
             .IsEqualTo(SubmitOutcome.Committed);
-        await park.Started.Task;
+        await WaitBounded(park.Started.Task, "the un-sequenced stop never started executing");
 
         // Cross-format direction B: a SEQUENCED item behind an un-seq'd one.
         var seq = p.SubmitAsync(h.SeqLaunch(1, "y"), () => {
@@ -200,7 +200,7 @@ public class OneExecutionDomainProcessorTests {
         // Park the lane so nothing can drain, then assert the SECOND submission is already queued the
         // instant SubmitUnsequenced returns — the same synchronous-commit contract sequenced acceptance has.
         p.SubmitUnsequenced(h.Unseq(UnsequencedKind.Stop, "x", "first", "stop", park.RunAsync));
-        await park.Started.Task;
+        await WaitBounded(park.Started.Task, "the first stop never started executing");
 
         p.SubmitUnsequenced(h.Unseq(UnsequencedKind.Stop, "y", "second"));
         await Assert.That(p.QueuedStopDepth).IsEqualTo(1); // visible with no await in between
@@ -219,7 +219,7 @@ public class OneExecutionDomainProcessorTests {
         h.Know("known");
 
         p.SubmitUnsequenced(h.Unseq(UnsequencedKind.Stop, "known", "known-stop", "stop", park.RunAsync));
-        await park.Started.Task;
+        await WaitBounded(park.Started.Task, "the known-target stop never started executing");
         await Assert.That(p.QueuedStopDepth).IsEqualTo(0); // dequeued to start, so its key already retired
 
         for (var i = 0; i < 12; i++)
@@ -257,7 +257,7 @@ public class OneExecutionDomainProcessorTests {
         else
             p.SubmitUnsequenced(h.Unseq(UnsequencedKind.Launch, "x", "launch", "launch", park.RunAsync));
 
-        await park.Started.Task;
+        await WaitBounded(park.Started.Task, "the parked launch never started executing");
         await Assert.That(p.IsActiveLaunchTargetForTest("x")).IsTrue();
 
         await Assert.That(p.SubmitUnsequenced(h.Unseq(UnsequencedKind.Stop, "x", "stop")))
@@ -279,7 +279,7 @@ public class OneExecutionDomainProcessorTests {
         h.Know("x", "blocker");
 
         p.SubmitUnsequenced(h.Unseq(UnsequencedKind.Stop, "blocker", "blocker", "stop", park.RunAsync));
-        await park.Started.Task;
+        await WaitBounded(park.Started.Task, "the blocker stop never started executing");
 
         await Assert.That(p.SubmitUnsequenced(h.Unseq(UnsequencedKind.Stop, "x", "x-stop")))
             .IsEqualTo(SubmitOutcome.Committed);
@@ -302,7 +302,7 @@ public class OneExecutionDomainProcessorTests {
         h.Know("x", "blocker");
 
         p.SubmitUnsequenced(h.Unseq(UnsequencedKind.Stop, "blocker", "blocker", "stop", park.RunAsync));
-        await park.Started.Task;
+        await WaitBounded(park.Started.Task, "the blocker stop never started executing");
 
         // Coalescing is per (target, payload CLASS) — a force flag is a different class, so it queues.
         await Assert.That(p.SubmitUnsequenced(h.Unseq(UnsequencedKind.Stop, "x", "plain", "stop")))
@@ -339,7 +339,7 @@ public class OneExecutionDomainProcessorTests {
         h.Know("x", "blocker");
 
         p.SubmitUnsequenced(h.Unseq(UnsequencedKind.Stop, "blocker", "blocker", "stop", park.RunAsync));
-        await park.Started.Task;
+        await WaitBounded(park.Started.Task, "the blocker stop never started executing");
 
         if (preFillToAlarm) {
             for (var i = 0; i < SequencedCommandProcessor.StopQueueAlarmThreshold; i++) {
@@ -403,7 +403,7 @@ public class OneExecutionDomainProcessorTests {
         h.Know("x", "blocker");
 
         p.SubmitUnsequenced(h.Unseq(UnsequencedKind.Stop, "blocker", "blocker", "stop", park.RunAsync));
-        await park.Started.Task;
+        await WaitBounded(park.Started.Task, "the blocker stop never started executing");
 
         p.SubmitUnsequenced(h.Unseq(UnsequencedKind.Stop, "x", "old"));            // segment 1
         p.SubmitUnsequenced(h.Unseq(UnsequencedKind.Launch, "x", "launch", "launch")); // clears segment 1's key
@@ -434,12 +434,20 @@ public class OneExecutionDomainProcessorTests {
 
     /// <summary>The instance-count pin, both mixed-format orders: launch(X) -> launch(X) -> stop(X) where the
     /// FIRST launch fails while the SECOND is still parked. Reference counting is what keeps X admissible —
-    /// an id-set with a single flag would have dropped the stop the moment the first instance settled.</summary>
+    /// an id-set with a single flag would have dropped the stop the moment the first instance settled.
+    ///
+    /// <para>A gate item is parked FIRST so both launches queue behind it: without that, nothing stops the
+    /// lane from dequeuing and finalizing the deliberately-failing first launch before the instance-count
+    /// assertion below runs, making <c>== 2</c> a race rather than a pin.</para></summary>
     static async Task LaunchLaunchStopAsync(bool firstIsSequenced) {
         var h = new Harness();
         await using var p = h.P();
+        using var gate = new Park();
         using var second = new Park();
         var firstFailed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        p.SubmitUnsequenced(h.Unseq(UnsequencedKind.Launch, "gate", "gate", "launch", gate.RunAsync));
+        await WaitBounded(gate.Started.Task, "the gate launch never started executing");
 
         Func<Task> failing = () => {
             h.ExecOrder.Enqueue("launch-1");
@@ -459,9 +467,13 @@ public class OneExecutionDomainProcessorTests {
             });
         }
 
+        // Both launches are queued behind the still-parked gate — neither has started, so this observes
+        // the submit-time instance count rather than racing the lane's drain.
         await Assert.That(p.ActiveLaunchInstancesForTest("x")).IsEqualTo(2);
+
+        gate.Release();
         await WaitBounded(firstFailed.Task, "the first launch never ran");
-        await second.Started.Task;
+        await WaitBounded(second.Started.Task, "the second launch never started executing");
 
         // One instance settled (terminally failed); the SECOND is still in flight, so x stays admissible.
         await SpinUntil(() => p.ActiveLaunchInstancesForTest("x") == 1, "the failed launch's instance was not retired");
@@ -490,7 +502,7 @@ public class OneExecutionDomainProcessorTests {
         // "blocker", one accepted sequenced launch for "keyed" (holding an active instance), and one queued
         // stop for "keyed" created AFTER that launch (so it is the current segment's key).
         p.SubmitUnsequenced(h.Unseq(UnsequencedKind.Stop, "blocker", "blocker", "stop", park.RunAsync));
-        await park.Started.Task;
+        await WaitBounded(park.Started.Task, "the blocker stop never started executing");
 
         var accepted = h.SeqLaunch(1, "keyed");
         _ = p.SubmitAsync(accepted, () => Task.FromResult(new CommandOutcome(CommandOutcomeKind.LaunchExecuted, "keyed")));
@@ -538,7 +550,7 @@ public class OneExecutionDomainProcessorTests {
         using var park = new Park();
 
         p.SubmitUnsequenced(h.Unseq(UnsequencedKind.Launch, "gate", "gate", "launch", park.RunAsync));
-        await park.Started.Task;
+        await WaitBounded(park.Started.Task, "the gate launch never started executing");
 
         p.SubmitUnsequenced(new UnsequencedItem(UnsequencedKind.Launch, "boom", "launch",
             () => throw new InvalidOperationException("item blew up")));
@@ -560,7 +572,7 @@ public class OneExecutionDomainProcessorTests {
         h.Know("blocker");
 
         p.SubmitUnsequenced(h.Unseq(UnsequencedKind.Stop, "blocker", "blocker", "stop", park.RunAsync));
-        await park.Started.Task;
+        await WaitBounded(park.Started.Task, "the blocker stop never started executing");
 
         // Grow to one below the threshold: silent.
         for (var i = 0; i < SequencedCommandProcessor.StopQueueAlarmThreshold - 1; i++) {
@@ -592,7 +604,7 @@ public class OneExecutionDomainProcessorTests {
         using var park2 = new Park();
         h.Know("blocker2");
         p.SubmitUnsequenced(h.Unseq(UnsequencedKind.Stop, "blocker2", "blocker2", "stop", park2.RunAsync));
-        await park2.Started.Task;
+        await WaitBounded(park2.Started.Task, "the second blocker stop never started executing");
         for (var i = 0; i < SequencedCommandProcessor.StopQueueAlarmThreshold; i++) {
             h.Know("c" + i);
             p.SubmitUnsequenced(h.Unseq(UnsequencedKind.Stop, "c" + i, "c" + i));
@@ -614,7 +626,7 @@ public class OneExecutionDomainProcessorTests {
             using var park = new Park();
             h.Know("gate" + round);
             p.SubmitUnsequenced(h.Unseq(UnsequencedKind.Stop, "gate" + round, "gate" + round, "stop", park.RunAsync));
-            await park.Started.Task;
+            await WaitBounded(park.Started.Task, "the round's gate stop never started executing");
 
             for (var i = 0; i < SequencedCommandProcessor.StopQueueAlarmThreshold; i++) {
                 var id = $"r{round}-{i}";
@@ -640,7 +652,7 @@ public class OneExecutionDomainProcessorTests {
         h.Know("victim");
 
         p.SubmitUnsequenced(h.Unseq(UnsequencedKind.Launch, "gate", "gate", "launch", park.RunAsync));
-        await park.Started.Task;
+        await WaitBounded(park.Started.Task, "the gate launch must be dequeued and running before shutdown begins");
 
         // Queued behind the in-flight item: one un-seq'd stop (to be discarded) and one ACCEPTED sequenced
         // launch (to be synthesized). The sequenced launch also holds an active instance, so its
@@ -690,7 +702,7 @@ public class OneExecutionDomainProcessorTests {
         using var park = new Park();
 
         p.SubmitUnsequenced(h.Unseq(UnsequencedKind.Launch, "gate", "gate", "launch", park.RunAsync));
-        await park.Started.Task;
+        await WaitBounded(park.Started.Task, "the gate launch must be dequeued and running before shutdown begins");
 
         var seqDone = p.SubmitAsync(h.SeqStop(1, "queued"), () => Task.FromResult(new CommandOutcome(CommandOutcomeKind.StopExecuted)));
 
