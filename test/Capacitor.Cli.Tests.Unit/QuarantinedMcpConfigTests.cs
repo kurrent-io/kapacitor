@@ -346,6 +346,45 @@ public class QuarantinedMcpConfigTests {
         await Assert.That(ex!.Message).Contains("borrowed_snapshot_invalid_path");
     }
 
+    /// <summary>
+    /// A git path is bytes. On Linux a filename need not be valid UTF-8, and the index carries whatever
+    /// bytes it was given, so `ls-files -z` can emit a path that decodes to U+FFFD. Re-encoded for the
+    /// syscall that becomes EF BF BD, `File.Exists` says no, and the entry was SILENTLY skipped as a
+    /// tracked deletion — letting a branch hide a tracked file from the reviewer by naming it un-decodably,
+    /// in a snapshot that exists precisely so the reviewer can see the change.
+    ///
+    /// <para>The entry is built through the INDEX rather than the filesystem, so this runs everywhere:
+    /// macOS and Windows both reject such a filename on disk, but neither cares what bytes are in a tree
+    /// object — which is exactly how a Linux-authored branch would deliver it.</para>
+    /// </summary>
+    [Test]
+    public async Task A_path_that_cannot_be_decoded_is_refused_rather_than_silently_dropped() {
+        var source = NewRepo();
+        WriteAt(source, "README.md", "hi");
+        WriteAt(source, "decoy.json", """{"decoy":true}""");
+        Git(source, "add", "-A");
+        Git(source, "commit", "-q", "-m", "init");
+
+        var blob = GitCapture(source, "hash-object", "-w", "decoy.json").Trim();
+
+        // The path bytes must reach git RAW. A process argument cannot carry them: .NET encodes the string
+        // it is given, so a `\u00ff` in an argument arrives as valid UTF-8 (C3 BF) and git stores a
+        // perfectly decodable path — the first version of this test did exactly that and passed against
+        // code with no guard at all. `--index-info` takes the record on stdin, where bytes stay bytes.
+        Git(source, [.. "100644 "u8, .. System.Text.Encoding.ASCII.GetBytes(blob),
+                     .. "\t.cursor/mcp"u8, 0xff, .. ".json\n"u8],
+            "update-index", "--add", "--index-info");
+
+        // Precondition: git really is holding a path we cannot decode.
+        await Assert.That(GitCapture(source, "ls-files")).Contains("mcp");
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+            await Manager(out _).CreateBorrowedSnapshotAsync(
+                source, "u8-" + Guid.NewGuid().ToString("N")[..8], CancellationToken.None));
+
+        await Assert.That(ex!.Message).Contains("borrowed_snapshot_invalid_path");
+    }
+
     // ── fixture ──
 
     /// <summary>A manager rooted in a TEMP directory. The default DaemonConfig points at
@@ -410,6 +449,26 @@ public class QuarantinedMcpConfigTests {
                 $"fixture `git {string.Join(' ', args)}` failed: {stderrTask.Result}");
 
         return stdoutTask.Result;
+    }
+
+    /// <summary>Runs git with raw bytes on stdin. Needed because a process ARGUMENT cannot carry bytes
+    /// that are not valid text — .NET encodes whatever string it is handed — so any fixture that must
+    /// deliver exact bytes to git has to go through stdin.</summary>
+    static void Git(string cwd, byte[] stdin, params string[] args) {
+        var psi = new ProcessStartInfo("git") {
+            WorkingDirectory = cwd, RedirectStandardInput = true,
+            RedirectStandardError = true, RedirectStandardOutput = true
+        };
+        foreach (var a in args) psi.ArgumentList.Add(a);
+        using var p = Process.Start(psi)!;
+        p.StandardInput.BaseStream.Write(stdin);
+        p.StandardInput.BaseStream.Flush();
+        p.StandardInput.Close();
+        var stderr = p.StandardError.ReadToEnd();
+        p.WaitForExit();
+
+        if (p.ExitCode != 0)
+            throw new InvalidOperationException($"fixture `git {string.Join(' ', args)}` failed: {stderr}");
     }
 
     static void Git(string cwd, params string[] args) {

@@ -777,6 +777,16 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
                            p.Contains(Path.AltDirectorySeparatorChar)))
             throw new InvalidOperationException($"borrowed_snapshot_invalid_path: {raw}");
 
+        // A git path is BYTES. On Linux — where the daemons run — a filename need not be valid UTF-8, and
+        // git's index carries whatever bytes it was given, so `ls-files -z` can emit a path we decode into
+        // U+FFFD. That identity no longer refers to anything: re-encoded for the syscall it becomes EF BF
+        // BD, `File.Exists` says no, and the entry is silently skipped as a tracked deletion. Silent is the
+        // problem — a borrowed snapshot exists so a reviewer can SEE the change, and a branch must not be
+        // able to hide a tracked file from them by naming it un-decodably. Same rule as a driver name that
+        // cannot round-trip: what we cannot represent, we refuse.
+        if (raw.Contains('\uFFFD'))
+            throw new InvalidOperationException($"borrowed_snapshot_invalid_path: {raw}");
+
         return raw;
     }
 
