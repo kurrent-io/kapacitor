@@ -340,6 +340,32 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
     volatile bool     _disposed;
     Task?             _eventProcessorTask;
 
+    /// <summary>
+    /// Guards <see cref="DisposeAsync"/> so its body runs exactly once — the DI container tracks
+    /// this singleton AND <c>DaemonRunner</c> disposes it explicitly, so DisposeAsync runs twice
+    /// by construction on every shutdown. Distinct from <see cref="_disposed"/>, which is a
+    /// live-path flag read by <see cref="OnClosed"/>.
+    /// </summary>
+    int _disposeOnce;
+
+    /// <summary>Counts entries into the <see cref="DisposeAsync"/> body (post-guard). Test seam:
+    /// proves durably that a second dispose did NOT re-enter the body, so removal of the run-once
+    /// guard fails a suite test permanently rather than only a one-off mutation check.</summary>
+    int _disposeBodyRuns;
+
+    internal int DisposeBodyRuns => Volatile.Read(ref _disposeBodyRuns);
+
+    /// <summary>Test seam: the terminal-sender CTS, so tests can assert it ends cancelled AND
+    /// disposed after the first dispose pass (removal of the Dispose call fails the suite).</summary>
+    internal CancellationTokenSource? TerminalSenderCtsForTests => _terminalSenderCts;
+
+    /// <summary>Test seam: lets a test swap in a faulting awaited task and assert the failure is
+    /// contained + logged while the mandatory resource release still runs.</summary>
+    internal Task? EventProcessorTaskForTests {
+        get => _eventProcessorTask;
+        set => _eventProcessorTask = value;
+    }
+
     readonly TerminalOutputSender    _terminalSender;
     Task?                            _terminalSenderTask;
     CancellationTokenSource?         _terminalSenderCts;
@@ -1205,28 +1231,71 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
     record PendingEvent(string AgentId, object Event);
 
     public async ValueTask DisposeAsync() {
-        _disposed = true;
-        _eventChannel.Writer.TryComplete();
-        _terminalSender.Complete();
+        if (Interlocked.Exchange(ref _disposeOnce, 1) != 0) return;
 
-        if (_eventProcessorTask is not null) {
-            await _eventProcessorTask;
+        Interlocked.Increment(ref _disposeBodyRuns);
+
+        _disposed = true; // live-path flag read by OnClosed — separate from the run-once guard
+
+        var cts = _terminalSenderCts;
+
+        try {
+            // Faultable awaits — each contained + logged individually so one faulted pipeline
+            // task can't skip its sibling or the mandatory resource release in the finally below.
+            // A disposal path must never throw into DI teardown (NativeAOT: unhandled → abort()).
+            try {
+                _eventChannel.Writer.TryComplete();
+                _terminalSender.Complete();
+
+                if (_eventProcessorTask is not null) {
+                    await _eventProcessorTask;
+                }
+            } catch (Exception ex) {
+                LogDisposeStepFailed(ex, "event-processor");
+            }
+
+            try {
+                // Cancel the sender's own token so a chunk being held through an outage
+                // can't block disposal regardless of the caller's token state.
+                if (cts is not null) {
+                    try {
+                        await cts.CancelAsync();
+                    } catch (ObjectDisposedException) {
+                        // Already torn down elsewhere — nothing left to cancel.
+                    }
+                }
+
+                if (_terminalSenderTask is not null) {
+                    await _terminalSenderTask;
+                }
+            } catch (Exception ex) {
+                LogDisposeStepFailed(ex, "terminal-sender");
+            }
+        } finally {
+            // Mandatory release — each step individually guarded so one failure can't skip the
+            // rest, and nothing here can throw into DI teardown.
+            try {
+                cts?.Dispose();
+            } catch (Exception ex) {
+                LogDisposeStepFailed(ex, "terminal-sender-cts");
+            }
+
+            try {
+                _httpClient?.Dispose();
+            } catch (Exception ex) {
+                LogDisposeStepFailed(ex, "http-client");
+            }
+
+            try {
+                await _hub.DisposeAsync();
+            } catch (Exception ex) {
+                LogDisposeStepFailed(ex, "hub");
+            }
         }
-
-        // Cancel the sender's own token so a chunk being held through an outage
-        // can't block disposal regardless of the caller's token state.
-        if (_terminalSenderCts is not null) {
-            await _terminalSenderCts.CancelAsync();
-        }
-
-        if (_terminalSenderTask is not null) {
-            await _terminalSenderTask;
-        }
-
-        _terminalSenderCts?.Dispose();
-        _httpClient?.Dispose();
-        await _hub.DisposeAsync();
     }
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "ServerConnection dispose step '{Step}' failed; continuing shutdown")]
+    partial void LogDisposeStepFailed(Exception ex, string step);
 
     [LoggerMessage(Level = LogLevel.Error, Message = "Daemon name '{Name}' is already in use by another live daemon on this account. Server rejected DaemonConnect: {Reason}")]
     partial void LogNameInUse(string name, string reason);
