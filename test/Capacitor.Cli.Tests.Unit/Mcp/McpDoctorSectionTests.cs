@@ -16,17 +16,18 @@ public class McpDoctorSectionTests {
             return new(dir, Path.Combine(dir, ".claude.json"), Path.Combine(dir, "settings.json"));
         }
 
-        /// <summary>An EFFECTIVE plugin install: enabled registration + a marketplace dir that
-        /// ships the payload — what the destructive duplicate audit requires.</summary>
+        /// <summary>An EFFECTIVE plugin install: enabled registration + the plugin's INSTALLED
+        /// payload (installed_plugins.json → installPath cache dir shipping .mcp.json) — what
+        /// the destructive duplicate audit requires.</summary>
         public void InstallPlugin() {
-            var marketplace = Path.Combine(Dir, "plugin");
-            Directory.CreateDirectory(marketplace);
-            File.WriteAllText(Path.Combine(marketplace, ".mcp.json"), "{}");
-            File.WriteAllText(ClaudeSettings, $$"""
-                { "enabledPlugins": { "kcap@kcap": true },
-                  "extraKnownMarketplaces": { "kcap": { "source": {
-                      "source": "local", "path": {{JsonValue.Create(marketplace).ToJsonString()}} } } } }
+            var installPath = Path.Combine(Dir, "plugins", "cache", "kcap", "kcap", "1.0.0");
+            Directory.CreateDirectory(installPath);
+            File.WriteAllText(Path.Combine(installPath, ".mcp.json"), "{}");
+            File.WriteAllText(Path.Combine(Dir, "plugins", "installed_plugins.json"), $$"""
+                { "version": 2, "plugins": { "kcap@kcap": [
+                    { "scope": "user", "installPath": {{JsonValue.Create(installPath).ToJsonString()}}, "version": "1.0.0" } ] } }
                 """);
+            File.WriteAllText(ClaudeSettings, """{ "enabledPlugins": { "kcap@kcap": true } }""");
         }
 
         /// <summary>The refresh gate's weakest signal: a version marker with no enabled
@@ -116,7 +117,7 @@ public class McpDoctorSectionTests {
     public async Task Enabled_registration_without_a_resolvable_payload_never_authorizes_cleanup() {
         var f = Fixture.Create();
         f.InstallPlugin();
-        Directory.Delete(Path.Combine(f.Dir, "plugin"), recursive: true); // npm re-layout: payload gone
+        Directory.Delete(Path.Combine(f.Dir, "plugins", "cache"), recursive: true); // re-layout: installed payload gone
         File.WriteAllText(f.ClaudeConfig, DuplicateAndConflictConfig);
 
         var (issues, _) = await RunAsync(f, clean: true);

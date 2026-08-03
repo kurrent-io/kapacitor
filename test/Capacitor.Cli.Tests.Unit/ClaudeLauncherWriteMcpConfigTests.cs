@@ -127,18 +127,21 @@ public class ClaudeLauncherWriteMcpConfigTests {
 
     static void MarkClaudePluginInstalled(string configDir) {
         // The merge-skip gates on ClaudePluginInstaller.IsEffectivelyInstalled: an enabled
-        // registration in settings.json ($CLAUDE_CONFIG_DIR/settings.json here) AND a registered
-        // marketplace dir that still ships the plugin payload (.mcp.json).
-        var marketplace = Path.Combine(configDir, "plugin");
-        Directory.CreateDirectory(marketplace);
-        File.WriteAllText(Path.Combine(marketplace, ".mcp.json"), "{}");
+        // registration in settings.json ($CLAUDE_CONFIG_DIR/settings.json here) AND the enabled
+        // plugin's INSTALLED payload — resolved via plugins/installed_plugins.json the way
+        // Claude loads it, never a marketplace source dir.
+        var installPath = Path.Combine(configDir, "plugins", "cache", "kcap", "kcap", "1.0.0");
+        Directory.CreateDirectory(installPath);
+        File.WriteAllText(Path.Combine(installPath, ".mcp.json"), "{}");
+        File.WriteAllText(
+            Path.Combine(configDir, "plugins", "installed_plugins.json"),
+            $$"""
+            { "version": 2, "plugins": { "kcap@kcap": [
+                { "scope": "user", "installPath": {{JsonValue.Create(installPath).ToJsonString()}}, "version": "1.0.0" } ] } }
+            """);
         File.WriteAllText(
             Path.Combine(configDir, "settings.json"),
-            $$"""
-            { "enabledPlugins": { "kcap@kcap": true },
-              "extraKnownMarketplaces": { "kcap": { "source": {
-                  "source": "local", "path": {{JsonValue.Create(marketplace).ToJsonString()}} } } } }
-            """);
+            """{ "enabledPlugins": { "kcap@kcap": true } }""");
     }
 
     static JsonObject KcapEntry(string suffix, string command = "kcap") => new() {

@@ -67,32 +67,78 @@ public static class ClaudePluginInstaller {
 
     /// <summary>
     /// True only when the plugin is CURRENTLY effective: an enabled plugin registration in
-    /// <paramref name="settingsPath"/> AND a resolvable payload — the registered marketplace
-    /// directory still ships the plugin's <c>.mcp.json</c>. Distinct from
+    /// <paramref name="settingsPath"/> AND a resolvable INSTALLED payload. Distinct from
     /// <see cref="IsInstalled"/>, which is the refresh gate ("previously installed → refresh
     /// it") and accepts the version marker alone: a stale marker (manual removal, failed
     /// refresh, npm re-layout) must never authorize a DESTRUCTIVE decision — doctor's
     /// duplicate cleanup and the launcher's merge-skip both assume Claude will actually load
     /// the plugin's servers in place of the entry being suppressed or removed.
+    ///
+    /// <para>The payload is resolved the way Claude loads it, not from a marketplace SOURCE
+    /// dir (whose content proves nothing about what is installed/active): the enabled key's
+    /// entry in <c>&lt;claude-home&gt;/plugins/installed_plugins.json</c> names the per-scope
+    /// <c>installPath</c> (the plugin cache). Directory-sourced marketplaces are the one
+    /// exception — Claude resolves those LIVE and their recorded cache path never
+    /// materializes (verified against Claude Code 2.x), so when no cache payload exists the
+    /// marketplace's <c>installLocation</c> in <c>known_marketplaces.json</c> is consulted.
+    /// Anything unresolvable → not effective (fail closed: no destructive action).</para>
     /// </summary>
     public static bool IsEffectivelyInstalled(string settingsPath) {
+        var enabledKey = EnabledKcapPluginKey(settingsPath);
+        if (enabledKey is null) return false;
+
+        var claudeHome = Path.GetDirectoryName(settingsPath);
+        if (string.IsNullOrEmpty(claudeHome)) return false;
+        var pluginsDir = Path.Combine(claudeHome, "plugins");
+
         try {
-            if (!File.Exists(settingsPath)) return false;
-            if (JsonNode.Parse(File.ReadAllText(settingsPath)) is not JsonObject root) return false;
-
-            if (root["enabledPlugins"] is not JsonObject enabled ||
-                !(HasEnabledFlag(enabled, "kcap@kcap")           ||
-                  HasEnabledFlag(enabled, "kcap@kurrent")        ||
-                  HasEnabledFlag(enabled, "kapacitor@kapacitor") ||
-                  HasEnabledFlag(enabled, "kapacitor@kurrent"))) {
+            // No install record for the enabled key → Claude has nothing to load.
+            if (JsonNode.Parse(File.ReadAllText(Path.Combine(pluginsDir, "installed_plugins.json")))
+                    is not JsonObject installedRoot ||
+                installedRoot["plugins"] is not JsonObject plugins ||
+                plugins[enabledKey] is not { } entryNode)
                 return false;
-            }
-        } catch {
-            return false; // malformed settings → nothing provably enabled
-        }
 
-        var marketplace = RegisteredMarketplacePath(settingsPath);
-        return marketplace is not null && File.Exists(Path.Combine(marketplace, ".mcp.json"));
+            // v2 records an array of per-scope installs; tolerate a bare object defensively.
+            IEnumerable<JsonObject> entries = entryNode switch {
+                JsonArray arr    => arr.OfType<JsonObject>(),
+                JsonObject single => [single],
+                _                 => []
+            };
+            foreach (var entry in entries) {
+                if (entry["installPath"] is JsonValue v && v.TryGetValue<string>(out var installPath) &&
+                    !string.IsNullOrWhiteSpace(installPath) &&
+                    File.Exists(Path.Combine(installPath, ".mcp.json")))
+                    return true;
+            }
+
+            // Directory-sourced marketplace: loaded live from installLocation, never cached.
+            var marketplaceName = enabledKey[(enabledKey.IndexOf('@') + 1)..];
+            return JsonNode.Parse(File.ReadAllText(Path.Combine(pluginsDir, "known_marketplaces.json")))
+                       is JsonObject markets &&
+                   markets[marketplaceName]?["installLocation"] is JsonValue loc &&
+                   loc.TryGetValue<string>(out var installLocation) &&
+                   !string.IsNullOrWhiteSpace(installLocation) &&
+                   File.Exists(Path.Combine(installLocation, ".mcp.json"));
+        } catch {
+            return false; // missing/malformed plugin records → fail closed
+        }
+    }
+
+    /// <summary>The first recognized kcap plugin key enabled in settings, else null.</summary>
+    static string? EnabledKcapPluginKey(string settingsPath) {
+        try {
+            if (!File.Exists(settingsPath)) return null;
+            if (JsonNode.Parse(File.ReadAllText(settingsPath)) is not JsonObject root) return null;
+            if (root["enabledPlugins"] is not JsonObject enabled) return null;
+
+            foreach (var key in (string[]) ["kcap@kcap", "kcap@kurrent", "kapacitor@kapacitor", "kapacitor@kurrent"])
+                if (HasEnabledFlag(enabled, key))
+                    return key;
+        } catch {
+            // malformed settings → nothing provably enabled
+        }
+        return null;
     }
 
     /// <summary>
