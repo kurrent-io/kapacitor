@@ -327,20 +327,27 @@ public partial class AgentOrchestratorVendorTests {
         await using var orch = BuildOrchestrator(
             server, ptyFactory, new Dictionary<string, IHostedAgentLauncher>(),
             extraRuntimeFactories: [codexSpy, claudeSpy], logger: logger);
-
-        await orch.HandleLaunchAgentForTest(new LaunchAgentCommand(
-            AgentId: agentId,
-            Prompt: "do a thing",
-            Model: "default",
-            Effort: null,
-            RepoPath: repoPath,
-            Tools: null,
-            AttachmentIds: null,
-            Vendor: vendor,
-            Kind: kind,
-            Borrowed: borrowed,
-            BorrowCwd: borrowed ? repoPath : null,
-            CodexPosture: posture));
+        var startsReviewerBridge = kind == LaunchKind.ReviewFlow && vendor == "codex";
+        if (startsReviewerBridge)
+            await orch.PermissionBridgeForTest.StartAsync(CancellationToken.None);
+        try {
+            await orch.HandleLaunchAgentForTest(new LaunchAgentCommand(
+                AgentId: agentId,
+                Prompt: "do a thing",
+                Model: "default",
+                Effort: null,
+                RepoPath: repoPath,
+                Tools: null,
+                AttachmentIds: null,
+                Vendor: vendor,
+                Kind: kind,
+                Borrowed: borrowed,
+                BorrowCwd: borrowed ? repoPath : null,
+                CodexPosture: posture));
+        } finally {
+            if (startsReviewerBridge)
+                await orch.PermissionBridgeForTest.DisposeAsync();
+        }
 
         return (server, codexSpy);
     }
@@ -396,7 +403,7 @@ public partial class AgentOrchestratorVendorTests {
     /// <summary>A snapshot-backed borrow maps to WorkLocation.OwnedWorktree, so `work` alone would
     /// wrongly qualify it as interactive and echo a posture the caller never chose. Guards the
     /// `!cmd.Borrowed` arm of the echo predicate.</summary>
-    [Test]
+    [Test, NotInParallel("LocalPermissionBridgeTests")]
     public async Task Snapshot_borrowed_launch_echoes_no_posture() {
         var (repoPath, cleanup) = CreateGitRepo();
 
@@ -413,32 +420,37 @@ public partial class AgentOrchestratorVendorTests {
             await using var orch = BuildOrchestrator(
                 server, ptyFactory, new Dictionary<string, IHostedAgentLauncher>(),
                 extraRuntimeFactories: [codexSpy]);
+            var bridge = orch.PermissionBridgeForTest;
+            await bridge.StartAsync(CancellationToken.None);
+            try {
+                await orch.HandleLaunchAgentForTest(new LaunchAgentCommand(
+                    AgentId: "agent-snapshot-borrow",
+                    Prompt: "hi",
+                    Model: "default",
+                    Effort: null,
+                    RepoPath: repoPath,
+                    Tools: null,
+                    AttachmentIds: null,
+                    Vendor: "codex",
+                    Kind: LaunchKind.Default,
+                    Borrowed: true,
+                    BorrowCwd: repoPath));
 
-            await orch.HandleLaunchAgentForTest(new LaunchAgentCommand(
-                AgentId: "agent-snapshot-borrow",
-                Prompt: "hi",
-                Model: "default",
-                Effort: null,
-                RepoPath: repoPath,
-                Tools: null,
-                AttachmentIds: null,
-                Vendor: "codex",
-                Kind: LaunchKind.Default,
-                Borrowed: true,
-                BorrowCwd: repoPath));
+                // The launch must actually REACH registration — otherwise an unrelated early failure
+                // would satisfy a "no non-null echo exists" assertion without ever exercising the
+                // predicate under test. Require exactly one registration, and require it to be null/null.
+                var registrations = server.AgentRegisteredPostures
+                    .Where(p => p.AgentId == "agent-snapshot-borrow")
+                    .ToList();
 
-            // The launch must actually REACH registration — otherwise an unrelated early failure
-            // would satisfy a "no non-null echo exists" assertion without ever exercising the
-            // predicate under test. Require exactly one registration, and require it to be null/null.
-            var registrations = server.AgentRegisteredPostures
-                .Where(p => p.AgentId == "agent-snapshot-borrow")
-                .ToList();
-
-            await Assert.That(registrations).Count().IsEqualTo(1);
-            await Assert.That(registrations[0].Sandbox).IsNull();
-            await Assert.That(registrations[0].Approval).IsNull();
-            // The runtime really started, so the snapshot-borrow path ran end to end.
-            await Assert.That(codexSpy.StartCalls).IsEqualTo(1);
+                await Assert.That(registrations).Count().IsEqualTo(1);
+                await Assert.That(registrations[0].Sandbox).IsNull();
+                await Assert.That(registrations[0].Approval).IsNull();
+                // The runtime really started, so the snapshot-borrow path ran end to end.
+                await Assert.That(codexSpy.StartCalls).IsEqualTo(1);
+            } finally {
+                await bridge.DisposeAsync();
+            }
         } finally {
             cleanup();
         }
@@ -458,7 +470,7 @@ public partial class AgentOrchestratorVendorTests {
         }
     }
 
-    [Test]
+    [Test, NotInParallel("LocalPermissionBridgeTests")]
     public async Task Review_flow_launch_echoes_no_posture() {
         // A reviewer's `never` is the containment invariant, not a selection — reporting it would
         // make every reviewer look like a user-chosen bridge-defeating launch.

@@ -42,6 +42,11 @@ public class WorktreeManagerTests {
 
         var clone = Path.Combine(Path.GetTempPath(), "kcap-clone-" + Guid.NewGuid().ToString("N")[..8]);
         Git(Path.GetTempPath(), "clone", "-q", upstream, clone);
+        // Repository-local identity is part of the fixture: several snapshot tests add commits in
+        // the clone, and CI intentionally has no global Git author configured. Without this the
+        // tests pass only on developer machines whose personal config happens to fill the gap.
+        Git(clone, "config", "user.email", "test@example.com");
+        Git(clone, "config", "user.name", "Test");
 
         return (upstream, clone);
     }
