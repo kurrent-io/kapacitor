@@ -3108,6 +3108,13 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
                 await _shutdownCts.CancelAsync();
             } catch (ObjectDisposedException) {
                 // Already torn down elsewhere — nothing left to cancel.
+            } catch (Exception ex) {
+                // A registered cancellation callback that throws faults the returned task
+                // (AggregateException per the CTS contract) even though the cancel itself
+                // succeeded. Uncontained, that fault would skip the processor drain and ALL
+                // child termination/cleanup below — and the run-once guard means the DI pass
+                // can never retry, stranding live child processes. Log and continue.
+                LogDisposeStepFailed(ex, "shutdown-cancel");
             }
 
             // Drain and settle the execution lane BEFORE the child-teardown snapshot below. The token
