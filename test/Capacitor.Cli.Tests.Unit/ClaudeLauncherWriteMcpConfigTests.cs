@@ -112,4 +112,75 @@ public class ClaudeLauncherWriteMcpConfigTests {
             await Assert.That(File.Exists(Path.Combine(worktree, ".mcp.json"))).IsFalse();
         });
     }
+
+    // ── Phase-1 dedupe: don't propagate plugin-shadowed kcap entries ────────────
+
+    static void WriteClaudeJsonWithServers(string configDir, string projectKey, JsonObject servers) {
+        var json = new JsonObject {
+            ["projects"] = new JsonObject {
+                [projectKey] = new JsonObject { ["mcpServers"] = servers }
+            }
+        };
+
+        File.WriteAllText(Path.Combine(configDir, ".claude.json"), json.ToJsonString());
+    }
+
+    static void MarkClaudePluginInstalled(string configDir) {
+        // ClaudePluginInstaller.IsInstalled recognises an enabledPlugins["kcap@kcap"] flag in
+        // the settings file — with CLAUDE_CONFIG_DIR set that is $CLAUDE_CONFIG_DIR/settings.json.
+        File.WriteAllText(
+            Path.Combine(configDir, "settings.json"),
+            """{ "enabledPlugins": { "kcap@kcap": true } }""");
+    }
+
+    static JsonObject KcapEntry(string suffix, string command = "kcap") => new() {
+        ["command"] = command,
+        ["args"]    = new JsonArray("mcp", suffix)
+    };
+
+    /// <summary>
+    /// The Claude plugin already ships the kcap servers session-wide, so a semantically
+    /// canonical project-scope copy would only spawn a duplicate resident server process in
+    /// the agent session. The skip is STRUCTURAL, never name-only: a divergent same-name
+    /// entry (different command) is a user customization and is still merged, as is any
+    /// non-kcap server.
+    /// </summary>
+    [Test]
+    public async Task Skips_canonical_kcap_duplicate_but_keeps_divergent_and_custom_servers() {
+        await RunWithRelocatedConfigAsync(async (configDir, sourceRepo, worktree) => {
+            MarkClaudePluginInstalled(configDir);
+            WriteClaudeJsonWithServers(configDir, ClaudeLauncher.NormalizeClaudeProjectKey(sourceRepo),
+                new JsonObject {
+                    ["kcap-flows"]    = KcapEntry("flows"),                          // canonical → skipped
+                    ["kcap-sessions"] = KcapEntry("sessions", "/custom/build/kcap"), // divergent → kept
+                    ["my-custom"]     = new JsonObject { ["command"] = "some-mcp" }  // foreign → kept
+                });
+
+            ClaudeLauncher.WriteMcpConfig(sourceRepo, worktree);
+
+            var servers = ReadWorktreeMcpServers(worktree);
+            await Assert.That(servers).IsNotNull();
+            await Assert.That(servers!.ContainsKey("kcap-flows")).IsFalse();
+            await Assert.That(servers.ContainsKey("kcap-sessions")).IsTrue();
+            await Assert.That(servers.ContainsKey("my-custom")).IsTrue();
+        });
+    }
+
+    /// <summary>
+    /// Without the Claude plugin installed nothing shadows the project-scope entry — it is
+    /// the user's only registration of the server and must keep being copied.
+    /// </summary>
+    [Test]
+    public async Task Merges_canonical_kcap_entry_when_plugin_not_installed() {
+        await RunWithRelocatedConfigAsync(async (configDir, sourceRepo, worktree) => {
+            WriteClaudeJsonWithServers(configDir, ClaudeLauncher.NormalizeClaudeProjectKey(sourceRepo),
+                new JsonObject { ["kcap-flows"] = KcapEntry("flows") });
+
+            ClaudeLauncher.WriteMcpConfig(sourceRepo, worktree);
+
+            var servers = ReadWorktreeMcpServers(worktree);
+            await Assert.That(servers).IsNotNull();
+            await Assert.That(servers!.ContainsKey("kcap-flows")).IsTrue();
+        });
+    }
 }

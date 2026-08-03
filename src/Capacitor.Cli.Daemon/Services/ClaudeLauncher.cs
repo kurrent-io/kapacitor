@@ -2,6 +2,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.LocalIpc;
+using Capacitor.Cli.Core.Mcp;
 using Microsoft.Extensions.Logging;
 
 namespace Capacitor.Cli.Daemon.Services;
@@ -626,8 +627,20 @@ internal sealed partial class ClaudeLauncher(
             merged = new JsonObject();
         }
 
+        // The kcap Claude plugin already ships its servers session-wide, so a semantically
+        // canonical project-scope copy would only spawn a duplicate resident server process
+        // in the agent session. Skip those — but STRUCTURALLY, never by name alone: a
+        // divergent same-name entry is a user customization and follows the conflict policy
+        // (merged like any other server; same name does not imply ownership). Gated on the
+        // plugin actually being installed: without it the copy is the only registration.
+        var pluginInstalled = ClaudePluginInstaller.IsInstalled(ClaudePaths.UserSettings);
+
         // Add servers from ~/.claude.json (don't overwrite repo-committed ones)
         foreach (var (name, value) in servers) {
+            if (pluginInstalled &&
+                McpRegistrationAudit.IsCanonicalKcapEntry(name, value, Environment.ProcessPath))
+                continue;
+
             if (!merged.ContainsKey(name) && value is not null) {
                 var clone = value.DeepClone().AsObject();
                 clone.Remove("env");
