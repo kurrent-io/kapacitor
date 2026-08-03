@@ -24,30 +24,38 @@ assert.deepStrictEqual(probeArgs(["--stable"]), ["update", "--check", "--no-upda
 assert.deepStrictEqual(probeArgs(["--foo", "--beta", "-x"]), ["update", "--check", "--no-update-check", "--beta"]); // only channel flags forwarded
 assert.deepStrictEqual(probeArgs(undefined), ["update", "--check", "--no-update-check"]); // defensive
 
+// Absolute fixture roots must be host-native: trashDirFromLauncher path.resolves
+// its input (a POSIX host treats "C:\…" as relative and cwd-prefixes it) and
+// filterKcapProcesses path.basenames it — so this test runs on every CI leg.
+const NPM_PREFIX = process.platform === "win32" ? "C:\\npm" : "/npm";
+
 // trashDirFor: sibling of node_modules (same volume as the install tree).
 assert.strictEqual(
-  trashDirFor(path.join("C:", "npm", "node_modules")),
-  path.join("C:", "npm", ".kcap-trash"),
+  trashDirFor(path.join(NPM_PREFIX, "node_modules")),
+  path.join(NPM_PREFIX, ".kcap-trash"),
 );
 
 // trashDirFromLauncher: derives the same dir from the launcher's location…
 assert.strictEqual(
-  trashDirFromLauncher(path.join("C:", "npm", "node_modules", "@kurrent", "kcap", "bin")),
-  path.join("C:", "npm", ".kcap-trash"),
+  trashDirFromLauncher(path.join(NPM_PREFIX, "node_modules", "@kurrent", "kcap", "bin")),
+  path.join(NPM_PREFIX, ".kcap-trash"),
 );
 // …and refuses non-node_modules layouts (dev checkout, packed tarball).
-assert.strictEqual(trashDirFromLauncher(path.join("C:", "git", "kcap", "npm", "kcap", "bin")), null);
+assert.strictEqual(trashDirFromLauncher(path.join(NPM_PREFIX, "..", "git", "kcap", "npm", "kcap", "bin")), null);
 
 // filterKcapProcesses: keeps only processes under the install root
 // (case-insensitive), tolerates a bare object (ConvertTo-Json unwraps
 // single-element arrays), null entries, and missing ExecutablePath.
-const installRoot = "C:\\Users\\u\\AppData\\Roaming\\npm\\node_modules\\@kurrent";
-const exePath = `${installRoot}\\kcap\\node_modules\\@kurrent\\kcap-win-x64\\bin\\kcap.exe`;
+const installRoot = process.platform === "win32"
+  ? "C:\\Users\\u\\AppData\\Roaming\\npm\\node_modules\\@kurrent"
+  : "/home/u/.npm-global/node_modules/@kurrent";
+const exePath = path.join(installRoot, "kcap", "node_modules", "@kurrent", "kcap-win-x64", "bin", "kcap.exe");
+const foreignExePath = process.platform === "win32" ? "C:\\other\\kcap.exe" : "/other/kcap.exe";
 assert.deepStrictEqual(
   filterKcapProcesses(
     [
       { ProcessId: 11, ExecutablePath: exePath.toUpperCase(), CommandLine: `"${exePath}" mcp sessions` },
-      { ProcessId: 22, ExecutablePath: "C:\\other\\kcap.exe", CommandLine: "kcap.exe mcp review" }, // foreign install
+      { ProcessId: 22, ExecutablePath: foreignExePath, CommandLine: "kcap.exe mcp review" }, // foreign install
       { ProcessId: 33 },       // no path (access denied)
       null,                    // defensive
     ],

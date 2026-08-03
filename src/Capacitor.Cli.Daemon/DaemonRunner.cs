@@ -462,81 +462,72 @@ public static partial class DaemonRunner {
             lifetime.StopApplication();
         };
 
-        // Start hosted services (LocalPermissionBridge in particular) BEFORE the SignalR
-        // connection comes up. Otherwise an early LaunchAgent message can arrive while
-        // BaseUrl is still null and the spawned Claude falls back to the HTTPS path —
-        // exactly what this bridge is meant to avoid.
-        await host.StartAsync(lifetime.ApplicationStopping);
+        // Resolved INSIDE the guarded startup below (after host start); nullable so the teardown
+        // can run null-safely when SIGTERM lands before the orchestrator was ever resolved.
+        AgentOrchestrator? orchestrator = null;
 
-        // Phase B (D4 §6.4(3)): resolve the orchestrator (which wires OnLaunchAgent +
-        // GetLiveAgents in its ctor) and reap any hosted-agent children that outlived a PRIOR daemon run
-        // — all BEFORE ConnectAsync advertises this daemon and the server can dispatch launches. Doing
-        // it after connect would let new work be admitted while old capacity is still being reclaimed
-        // (those survivors aren't yet in EffectiveCount), and would leave a window where a launch races
-        // an unwired handler. Under the daemon lock; best-effort (swallows its own faults).
-        var orchestrator = host.Services.GetRequiredService<AgentOrchestrator>();
+        // EVERY exit path from host start onward — success, the nameInUse early-exit, cooperative
+        // shutdown cancelling an in-flight startup await (including host.StartAsync itself: a
+        // hosted service still starting when SIGTERM lands surfaces the cancellation as
+        // TaskCanceledException out of StartAsync — dotnet/runtime#111013 behavior), OR any
+        // startup exception — MUST run the unified teardown so DisposeHostAsync(host) fires and
+        // the process can actually exit instead of hanging or aborting: once the orchestrator is
+        // resolved, the Unix IPtyProcessFactory has pulled in UnixSpawnerThread, whose foreground
+        // (non-background) OS thread parks forever until the ServiceProvider is disposed.
+        // Structural fix; backed by DaemonHostDisposalTests.
+        var startupExit = await RunGuardedStartupAsync(
+            logger,
+            lifetime.ApplicationStopping,
+            startupAndWait: async () => {
+                // Start hosted services (LocalPermissionBridge in particular) BEFORE the SignalR
+                // connection comes up. Otherwise an early LaunchAgent message can arrive while
+                // BaseUrl is still null and the spawned Claude falls back to the HTTPS path —
+                // exactly what this bridge is meant to avoid.
+                await host.StartAsync(lifetime.ApplicationStopping);
 
-        // Once the orchestrator is resolved, the Unix IPtyProcessFactory has pulled in
-        // UnixSpawnerThread — whose foreground (non-background) OS thread is now running and
-        // parks forever until the ServiceProvider is disposed (host.StopAsync() alone does NOT
-        // retire it; see the block comment in the finally below). So EVERY exit path from here on
-        // — success, the nameInUse early-return, OR any exception out of ReapOrphansOnceAsync,
-        // ConnectAsync (non-nameInUse), CleanupOrphanedAsync, or EvalRunner resolution — MUST run
-        // the unified finally so DisposeHostAsync(host) fires and the process can actually exit
-        // instead of hanging. That is why everything below is wrapped in this single try/finally.
-        // Structural fix; backed by DaemonHostDisposalTests, which proves StopAsync-then-dispose
-        // is what retires the DI-owned UnixSpawnerThread.
-        try {
-            // Phase B (D4 §6.4(3)): reap any hosted-agent children that outlived a PRIOR daemon run
-            // BEFORE ConnectAsync advertises this daemon (see the orchestrator-resolution comment
-            // above). Under the daemon lock; best-effort (swallows its own faults).
-            await orchestrator.ReapOrphansOnceAsync();
+                // Phase B (D4 §6.4(3)): resolve the orchestrator (which wires OnLaunchAgent +
+                // GetLiveAgents in its ctor) and reap any hosted-agent children that outlived a
+                // PRIOR daemon run — all BEFORE ConnectAsync advertises this daemon and the server
+                // can dispatch launches. Doing it after connect would let new work be admitted
+                // while old capacity is still being reclaimed (those survivors aren't yet in
+                // EffectiveCount), and would leave a window where a launch races an unwired
+                // handler. Under the daemon lock; best-effort (swallows its own faults).
+                orchestrator = host.Services.GetRequiredService<AgentOrchestrator>();
+                await orchestrator.ReapOrphansOnceAsync();
 
-            try {
-                await connection.ConnectAsync(lifetime.ApplicationStopping);
-            } catch (Exception ex) when (nameInUse) {
-                // ConnectAsync's initial-connect path threw because of NameInUse. OnNameInUse
-                // already fired and set our flag; the host hasn't started its main loop yet, so
-                // just exit with code 3 — the unified finally below disposes daemonLock,
-                // orchestrator, connection, and the host (retiring the spawner thread).
-                _ = ex;
+                try {
+                    await connection.ConnectAsync(lifetime.ApplicationStopping);
+                } catch (Exception ex) when (nameInUse) {
+                    // ConnectAsync's initial-connect path threw because of NameInUse. OnNameInUse
+                    // already fired and set our flag; the host hasn't started its main loop yet,
+                    // so just exit with code 3 — the unified teardown below disposes daemonLock,
+                    // orchestrator, connection, and the host (retiring the spawner thread).
+                    _ = ex;
 
-                return 3;
-            }
+                    return 3;
+                }
 
-            var worktreeManager = host.Services.GetRequiredService<WorktreeManager>();
-            await worktreeManager.CleanupOrphanedAsync();
+                var worktreeManager = host.Services.GetRequiredService<WorktreeManager>();
+                await worktreeManager.CleanupOrphanedAsync();
 
-            // Instantiate EvalRunner so it wires the per-phase eval handlers
-            // (PrepareEval / RunQuestion / FinalizeEval / CancelEval) on the
-            // ServerConnection. It's stateless beyond the handler assignment —
-            // cached context lives in EvalContextCache — so no disposal dance.
-            _ = host.Services.GetRequiredService<EvalRunner>();
+                // Instantiate EvalRunner so it wires the per-phase eval handlers
+                // (PrepareEval / RunQuestion / FinalizeEval / CancelEval) on the
+                // ServerConnection. It's stateless beyond the handler assignment —
+                // cached context lives in EvalContextCache — so no disposal dance.
+                _ = host.Services.GetRequiredService<EvalRunner>();
 
-            // Wait without passing the lifetime token: WaitForShutdownAsync(token) treats
-            // token cancellation as a fault, so a normal Ctrl+C / lifetime.StopApplication()
-            // would surface as OperationCanceledException. The no-arg overload listens
-            // internally for ApplicationStopping and returns cleanly.
-            await host.WaitForShutdownAsync();
-            LogWaitForShutdownReturned(logger);
-        } finally {
-            LogEnteringCleanup(logger);
-            daemonLock.Dispose();
-            await orchestrator.DisposeAsync();
-            await connection.DisposeAsync();
-            await host.StopAsync();
+                // Wait without passing the lifetime token: WaitForShutdownAsync(token) treats
+                // token cancellation as a fault, so a normal Ctrl+C / lifetime.StopApplication()
+                // would surface as OperationCanceledException. The no-arg overload listens
+                // internally for ApplicationStopping and returns cleanly.
+                await host.WaitForShutdownAsync();
+                LogWaitForShutdownReturned(logger);
 
-            // host.StopAsync() only STOPS IHostedServices — it does NOT dispose the
-            // ServiceProvider, so a plain AddSingleton<T>() IDisposable (e.g.
-            // UnixSpawnerThread, whose foreground, non-background OS thread parks
-            // forever on its queue until Dispose() completes it) is never released by
-            // StopAsync alone. Disposing the host is what disposes the ServiceProvider —
-            // and therefore every registered IDisposable singleton — so it must run
-            // after StopAsync on every shutdown path or the spawner thread's foreground
-            // thread keeps the process alive past WaitForShutdownAsync forever.
-            await DisposeHostAsync(host);
-            LogCleanupCompleted(logger);
-        }
+                return null;
+            },
+            teardown: () => RunDaemonTeardownAsync(logger, daemonLock, orchestrator, connection, host));
+
+        if (startupExit is { } earlyExit) return earlyExit;
 
         // Restart-after-update (supervised): exit non-zero so the unit's
         // failure-restart policy relaunches the now-updated binary.
@@ -568,6 +559,138 @@ public static partial class DaemonRunner {
         } else {
             host.Dispose();
         }
+    }
+
+    /// <summary>
+    /// The guarded startup skeleton around the daemon's whole start→wait lifecycle: runs
+    /// <paramref name="startupAndWait"/>, converts a cancellation observed while cooperative
+    /// shutdown was already requested into a clean exit (SIGTERM/Ctrl+C during host start or the
+    /// initial connect-retry loop otherwise escapes <c>Main</c> and aborts the NativeAOT process
+    /// — SIGABRT + an .ips crash report), and ALWAYS runs <paramref name="teardown"/>, logging a
+    /// summary line on partial teardown failure. A cancellation with no shutdown requested still
+    /// propagates (fail-loud preserved). Returns <paramref name="startupAndWait"/>'s early-exit
+    /// code, or null to fall through to the caller's normal exit-code selection — deliberately
+    /// unchanged by teardown failures: the process was already exiting (normally 0), and turning
+    /// a contained cleanup fault into a non-zero exit would make supervisors (systemd/launchd
+    /// restart-on-failure) relaunch a daemon the user just stopped. <c>internal</c> so
+    /// <c>DaemonHostDisposalTests</c> can pin the cancellation-during-host-start contract.
+    /// </summary>
+    internal static async Task<int?> RunGuardedStartupAsync(
+            ILogger           logger,
+            CancellationToken stopping,
+            Func<Task<int?>>  startupAndWait,
+            Func<Task<bool>>  teardown) {
+        try {
+            return await startupAndWait();
+        } catch (OperationCanceledException) when (stopping.IsCancellationRequested) {
+            LogStartupCancelledByShutdown(logger);
+
+            return null;
+        } finally {
+            LogEnteringCleanup(logger);
+
+            if (!await teardown()) LogTeardownPartialFailure(logger);
+
+            LogCleanupCompleted(logger);
+        }
+    }
+
+    /// <summary>
+    /// The daemon's production teardown: the six real steps, in order, run through
+    /// <see cref="RunTeardownAsync"/>. One shared step list (see
+    /// <see cref="BuildDaemonTeardownSteps"/>) so the sequencing tests drive EXACTLY what
+    /// <c>RunAsync</c> executes — a divergence (reordered/removed step) fails the tests.
+    /// </summary>
+    internal static Task<bool> RunDaemonTeardownAsync(
+            ILogger           logger,
+            IDisposable       daemonLock,
+            IAsyncDisposable? orchestrator,
+            IAsyncDisposable  connection,
+            IHost             host)
+        => RunTeardownAsync(logger, BuildDaemonTeardownSteps(daemonLock, orchestrator, connection, host));
+
+    /// <summary>
+    /// Builds the production teardown step list. Do NOT reorder: the explicit-dispose-before-
+    /// host-stop sequence is load-bearing (spawner-thread retirement, pinned by
+    /// <c>DaemonHostDisposalTests</c>). <paramref name="orchestrator"/> is nullable because
+    /// cooperative shutdown can land before it was ever resolved (mid <c>host.StartAsync</c>);
+    /// host disposal still releases whatever WAS partially resolved.
+    ///
+    /// LIMITATION: <see cref="RunTeardownAsync"/> contains a throw from each STEP, but it cannot
+    /// make the DI container's own dispose walk (inside <see cref="DisposeHostAsync"/>) resilient
+    /// — a tracked singleton whose Dispose/DisposeAsync throws still aborts the container's
+    /// INTERNAL walk partway, silently skipping the remaining singletons. The helper prevents the
+    /// process abort, not partial DI disposal; each disposable must still contain its own
+    /// failures (ServerConnection and AgentOrchestrator now do). The one skip that could strand
+    /// the process — <see cref="UnixSpawnerThread"/>, whose Dispose retires the FOREGROUND thread
+    /// that otherwise keeps a "shut down" daemon alive forever — is closed by the dedicated
+    /// spawner-retire step below, which runs BEFORE host disposal.
+    ///
+    /// Structural double-teardown sweep (explicit dispose here + a framework-driven dispose of
+    /// the SAME instance) and why each shape is safe today:
+    ///   • ServerConnection / AgentOrchestrator / UnixSpawnerThread: run-once dispose guards.
+    ///   • DaemonLock: disposed explicitly here AND DI-tracked; its Dispose is idempotent
+    ///     (releases the handle once, subsequent calls no-op).
+    ///   • RestartCoordinator / LocalControlServer / LocalPermissionBridge: registered through
+    ///     TWO singleton descriptors each (<c>AddSingleton&lt;T&gt;()</c> + an
+    ///     <c>AddHostedService</c> factory resolving the same instance). Microsoft DI tracks
+    ///     disposables per DESCRIPTOR and does not de-duplicate by reference, so the container's
+    ///     dispose walk visits each such instance TWICE (LocalPermissionBridge's own
+    ///     <c>_disposed</c> doc documents exactly this). LocalPermissionBridge carries its own
+    ///     run-once guard; RestartCoordinator and LocalControlServer inherit
+    ///     <c>BackgroundService.Dispose</c>, which is safe to re-enter under the current
+    ///     Microsoft.Extensions.Hosting behavior (it only cancels its stopping CTS) — a
+    ///     framework-version assumption.
+    ///
+    /// host-stop/host-dispose stay split because <c>host.StopAsync()</c> only STOPS
+    /// IHostedServices — it does NOT dispose the ServiceProvider, so a plain
+    /// <c>AddSingleton&lt;T&gt;()</c> IDisposable is never released by StopAsync alone; disposing
+    /// the host is what disposes the ServiceProvider and therefore every registered singleton.
+    /// </summary>
+    internal static (string Name, Func<ValueTask> Action)[] BuildDaemonTeardownSteps(
+            IDisposable       daemonLock,
+            IAsyncDisposable? orchestrator,
+            IAsyncDisposable  connection,
+            IHost             host) => [
+        ("daemon-lock",       () => { daemonLock.Dispose(); return ValueTask.CompletedTask; }),
+        ("orchestrator",      () => orchestrator?.DisposeAsync() ?? ValueTask.CompletedTask),
+        ("server-connection", connection.DisposeAsync),
+        // Retire the spawner thread EXPLICITLY, before host disposal, so even a DI walk aborted
+        // partway by some other singleton's throwing Dispose cannot strand its foreground thread
+        // (and with it the whole process). Idempotent — the host-dispose walk disposing the same
+        // instance again is a no-op. GetService instantiates a never-yet-created singleton
+        // (thread start + immediate join — cheap and deterministic) rather than probing; returns
+        // null on Windows, where the type is not registered.
+        ("spawner-retire",    () => {
+            host.Services.GetService<UnixSpawnerThread>()?.Dispose();
+
+            return ValueTask.CompletedTask;
+        }),
+        ("host-stop",         async () => await host.StopAsync()),
+        ("host-dispose",      async () => await DisposeHostAsync(host))
+    ];
+
+    /// <summary>
+    /// Teardown coordinator for the shutdown finally-block: runs each named step in the given
+    /// order, logging and containing any throw so every later step still runs and nothing can
+    /// escape into the NativeAOT unhandled path (which calls <c>abort()</c>). Returns whether
+    /// ALL steps succeeded so the caller can log a summary on partial failure. <c>internal</c>
+    /// so <c>DaemonHostDisposalTests</c> can pin the order/containment contract directly.
+    /// </summary>
+    internal static async Task<bool> RunTeardownAsync(
+            ILogger logger, IReadOnlyList<(string Name, Func<ValueTask> Action)> steps) {
+        var allSucceeded = true;
+
+        foreach (var (name, action) in steps) {
+            try {
+                await action();
+            } catch (Exception ex) {
+                allSucceeded = false;
+                LogTeardownStepFailed(logger, ex, name);
+            }
+        }
+
+        return allSucceeded;
     }
 
     /// <summary>
@@ -824,6 +947,15 @@ public static partial class DaemonRunner {
 
     [LoggerMessage(Level = LogLevel.Information, Message = "Cleanup: completed, daemon exiting")]
     static partial void LogCleanupCompleted(ILogger logger);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Teardown step '{Step}' failed; continuing shutdown")]
+    static partial void LogTeardownStepFailed(ILogger logger, Exception ex, string step);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Shutdown requested during startup; cancelling the in-flight startup step and exiting cleanly")]
+    static partial void LogStartupCancelledByShutdown(ILogger logger);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Cleanup: one or more teardown steps failed (see warnings above); daemon exiting anyway with its normal exit code")]
+    static partial void LogTeardownPartialFailure(ILogger logger);
 
     [LoggerMessage(Level = LogLevel.Critical, Message = "AppDomain.UnhandledException (terminating={IsTerminating})")]
     static partial void LogUnhandledException(ILogger logger, Exception ex, bool isTerminating);

@@ -38,7 +38,8 @@ public class PluginCommandKiroTests {
 
         var servers = JsonNode.Parse(await File.ReadAllTextAsync(env.KiroMcpJson))!.AsObject()["mcpServers"]!.AsObject();
         // Standard shape: command="kcap" + args, no `type`, no `trust` (autoApprove left unset).
-        await Assert.That(servers["kcap-review"]!["command"]!.GetValue<string>()).IsEqualTo("kcap");
+        // Registered command is the resolved native binary (injected seam), not the wrapper-resolved "kcap".
+        await Assert.That(servers["kcap-review"]!["command"]!.GetValue<string>()).IsEqualTo(TestBinaryPath);
         await Assert.That(servers["kcap-review"]!["type"]).IsNull();
         await Assert.That(servers["kcap-review"]!["trust"]).IsNull();
         await Assert.That(servers["kcap-review"]!["autoApprove"]).IsNull();
@@ -142,12 +143,17 @@ public class PluginCommandKiroTests {
         await Assert.That(File.Exists(env.KiroKcapAgentJson)).IsFalse();
     }
 
+    // Deterministic native-binary path: registration writes the resolved binary as the command
+    // (default: the running process), so tests inject their own value and assert that,
+    // never blessing whatever executable happens to run the suite.
+    internal const string TestBinaryPath = "/opt/kcap-test/bin/kcap";
+
     static PluginEnvironment TestEnv(string fakeHome) => new(
         HomeDirectory:     fakeHome,
         ResolvePluginPath: () => null,
         Stdout:            TextWriter.Null,
         Stderr:            TextWriter.Null
-    );
+    ) { ResolveMcpBinaryPath = () => TestBinaryPath };
 
     // Sets an env var for the test's lifetime and restores it on Dispose. Clears KIRO_HOME so
     // KiroPaths resolves under the fake home.

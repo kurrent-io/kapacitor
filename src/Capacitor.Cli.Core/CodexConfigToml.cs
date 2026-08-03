@@ -90,12 +90,18 @@ public static class CodexConfigToml {
     /// Registers the kcap MCP servers (<see cref="KcapMcpServers.ForCodex"/>) under the
     /// top-level <c>[mcp_servers]</c> table of <c>~/.codex/config.toml</c> (or
     /// <paramref name="configPath"/>) so Codex CLI picks them up with no manual TOML edit.
-    /// Idempotent, and non-destructive: an entry that already exists (a prior registration
-    /// or a user customization such as an absolute-path <c>command</c>) is left untouched;
-    /// only missing servers are added. User-defined <c>mcp_servers</c> entries are preserved.
+    /// The <c>command</c> is the resolved native binary path (see
+    /// <see cref="Mcp.KcapBinaryCommand"/>; <paramref name="resolveBinaryPath"/> is the test
+    /// seam). Idempotent, and non-destructive: an entry whose ownership-ledger fingerprint
+    /// still matches is HEALED to the current canonical shape (so an absolute path from a
+    /// previous npm layout is re-pointed), while an unclaimed or user-customized entry is
+    /// left untouched; only missing servers are added. User-defined <c>mcp_servers</c>
+    /// entries are preserved.
     /// </summary>
-    public static Change RegisterKcapMcpServers(string? configPath = null) =>
-        UpdateMcpRegistration(configPath ?? DefaultConfigPath, remove: false);
+    public static Change RegisterKcapMcpServers(string? configPath = null,
+                                                Func<string?>? resolveBinaryPath = null) =>
+        UpdateMcpRegistration(configPath ?? DefaultConfigPath, remove: false,
+                              Mcp.KcapBinaryCommand.Resolve(resolveBinaryPath));
 
     /// <summary>
     /// Removes the kcap-owned MCP server entries (<see cref="KcapMcpServers.ForCodex"/>)
@@ -104,9 +110,9 @@ public static class CodexConfigToml {
     /// entirely when removing them empties it, so uninstall leaves no bare table behind.
     /// </summary>
     public static Change UnregisterKcapMcpServers(string? configPath = null) =>
-        UpdateMcpRegistration(configPath ?? DefaultConfigPath, remove: true);
+        UpdateMcpRegistration(configPath ?? DefaultConfigPath, remove: true, KcapMcpServers.Command);
 
-    static Change UpdateMcpRegistration(string configPath, bool remove) {
+    static Change UpdateMcpRegistration(string configPath, bool remove, string command) {
         lock (_writeLock) {
             try {
                 configPath = CanonicalConfigPath(configPath);
@@ -136,15 +142,28 @@ public static class CodexConfigToml {
                     servers ??= GetOrAddTable(root, "mcp_servers");
                     foreach (var descriptor in KcapMcpServers.ForCodex) {
                         if (servers.TryGetValue(descriptor.Name, out var existingValue)) {
-                            if (claims[descriptor.Name] is JsonObject claim && existingValue is TomlTable existingTable &&
-                                !string.Equals(StringField(claim, "fingerprint"), Fingerprint(existingTable), StringComparison.Ordinal)) {
-                                claims.Remove(descriptor.Name); // user changed an owned entry: relinquish it
-                                ledgerChanged = true;
+                            if (claims[descriptor.Name] is JsonObject claim && existingValue is TomlTable existingTable) {
+                                if (!string.Equals(StringField(claim, "fingerprint"), Fingerprint(existingTable), StringComparison.Ordinal)) {
+                                    claims.Remove(descriptor.Name); // user changed an owned entry: relinquish it
+                                    ledgerChanged = true;
+                                    continue;
+                                }
+                                // Fingerprint still matches → the entry is exactly what kcap wrote,
+                                // so heal it to the current canonical shape (e.g. re-point an
+                                // absolute binary path left stale by an npm re-layout).
+                                var healed = BuildMcpTable(descriptor, command);
+                                if (!string.Equals(Fingerprint(healed), Fingerprint(existingTable), StringComparison.Ordinal)) {
+                                    servers[descriptor.Name] = healed;
+                                    tomlChanged = true;
+                                    claims[descriptor.Name] = BuildClaim(healed);
+                                    ledgerChanged = true;
+                                }
+                                continue;
                             }
-                            continue; // never mutate or claim a pre-existing/manual entry
+                            continue; // never mutate or claim a pre-existing/manual (unclaimed) entry
                         }
 
-                        var table = BuildMcpTable(descriptor);
+                        var table = BuildMcpTable(descriptor, command);
                         servers[descriptor.Name] = table;
                         tomlChanged = true;
                         claims[descriptor.Name] = BuildClaim(table);
@@ -203,9 +222,9 @@ public static class CodexConfigToml {
         }
     }
 
-    static TomlTable BuildMcpTable(KcapMcpServer descriptor) {
+    static TomlTable BuildMcpTable(KcapMcpServer descriptor, string command) {
         var table = new TomlTable {
-            ["command"] = KcapMcpServers.Command,
+            ["command"] = command,
             ["args"] = ToTomlArray(descriptor.Args)
         };
         if (descriptor.ReadOnly) table["default_tools_approval_mode"] = "approve";
@@ -307,6 +326,32 @@ public static class CodexConfigToml {
     /// (<c>Capacitor.Cli.Daemon.Services.CodexMcpInventory</c>), which reports the fully-composed
     /// effective list (config + plugins).
     /// </summary>
+    /// <summary>
+    /// Reads (name, command) pairs from the top-level <c>[mcp_servers]</c> table — the doctor's
+    /// stale-path scan input. Only string commands are returned (Codex has no argv-array shape).
+    /// Read-only; never throws; empty when the file is missing/unreadable/has no table.
+    /// </summary>
+    public static IReadOnlyList<(string Name, string Command)> ReadMcpServerCommands(string? configPath = null) {
+        var path = configPath ?? DefaultConfigPath;
+
+        if (!File.Exists(path)) return [];
+
+        try {
+            var root = TomlSerializer.Deserialize(File.ReadAllText(path), _tomlTypeInfo.TableInfo);
+
+            if (root is null || !root.TryGetValue("mcp_servers", out var v) || v is not TomlTable servers)
+                return [];
+
+            return servers
+                .Where(kv => kv.Value is TomlTable t && t.TryGetValue("command", out var c) && c is string)
+                .Select(kv => (kv.Key, (string)((TomlTable)kv.Value)["command"]))
+                .OrderBy(x => x.Key, StringComparer.Ordinal)
+                .ToArray();
+        } catch {
+            return [];
+        }
+    }
+
     public static IReadOnlyList<string> ReadMcpServerNames(string? configPath = null) {
         var path = configPath ?? DefaultConfigPath;
 
@@ -561,20 +606,11 @@ public static class CodexConfigToml {
     static IDisposable AcquireConfigLock(string canonicalConfigPath) {
         EnsureParentDirectory(canonicalConfigPath);
         RejectSymlinkComponents(canonicalConfigPath);
-        var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonicalConfigPath))).ToLowerInvariant();
-        var mutex = new Mutex(false, "kcap-codex-config-" + hash);
-        try {
-            try {
-                if (!mutex.WaitOne(TimeSpan.FromSeconds(10)))
-                    throw new TimeoutException("Timed out waiting for another kcap Codex configuration update.");
-            } catch (AbandonedMutexException) {
-                // The prior writer died while holding the lock; ownership transfers to us.
-            }
-            return new MutexLease(mutex);
-        } catch {
-            mutex.Dispose();
-            throw;
-        }
+        // Shared cross-process lock helper (Global\ + current-user DACL on Windows). This
+        // replaced a bare "kcap-codex-config-<hash>" mutex, which was session-local on
+        // Windows — a service-session daemon and the login-session CLI never excluded each
+        // other — and open to same-session squatting by other users.
+        return ConfigFileLock.Acquire(canonicalConfigPath);
     }
 
     static void SetOwnerOnly(string path) {
@@ -595,12 +631,6 @@ public static class CodexConfigToml {
             writer.Write(content);
         // Defense in depth for platforms/filesystems that ignore the create mode.
         SetOwnerOnly(path);
-    }
-
-    sealed class MutexLease(Mutex mutex) : IDisposable {
-        public void Dispose() {
-            try { mutex.ReleaseMutex(); } finally { mutex.Dispose(); }
-        }
     }
 
     /// <summary>

@@ -395,7 +395,12 @@ record McpTool(string Name, string Description, McpInputSchema InputSchema);
 
 record McpInputSchema(string Type, Dictionary<string, McpSchemaProperty> Properties, string[] Required);
 
-record McpSchemaProperty(string Type, string Description);
+// Items was added when the work-items server declared the first `array`-typed properties in any of
+// these MCP servers, and an array with no `items` is incomplete JSON Schema — a strict client can
+// reject it, and a model has to guess the element type. Optional and trailing, so every existing
+// `new("string", "…")` call is unchanged, and omitted from the wire entirely when null
+// (DefaultIgnoreCondition = WhenWritingNull below).
+record McpSchemaProperty(string Type, string Description, McpSchemaProperty? Items = null);
 
 record McpToolCallResult(McpContentItem[] Content, bool? IsError = null);
 

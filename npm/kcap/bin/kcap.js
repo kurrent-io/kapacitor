@@ -5,28 +5,11 @@
 const { execFileSync, spawnSync } = require("child_process");
 const path = require("path");
 const fs = require("fs");
-
-function isMusl() {
-  if (process.platform !== "linux") return false;
-  try {
-    return fs.readFileSync("/usr/bin/ldd", "utf8").includes("musl");
-  } catch {
-    try {
-      return fs.readdirSync("/lib").some((f) => f.startsWith("ld-musl-"));
-    } catch {
-      return false;
-    }
-  }
-}
-
-const PLATFORM_PACKAGES = {
-  "darwin-arm64":      "@kurrent/kcap-darwin-arm64",
-  "linux-x64":         "@kurrent/kcap-linux-x64",
-  "linux-arm64":       "@kurrent/kcap-linux-arm64",
-  "linux-musl-x64":    "@kurrent/kcap-linux-musl-x64",
-  "linux-musl-arm64":  "@kurrent/kcap-linux-musl-arm64",
-  "win32-x64":         "@kurrent/kcap-win-x64",
-};
+// Platform detection + native-binary resolution live in resolve.js — a
+// side-effect-free module shared with refresh.js (which must never require
+// THIS file: during `kcap update`, runUpdate executes before the final
+// module.exports below, so it would see partial exports).
+const { PLATFORM_PACKAGES, platformKey } = require("./resolve");
 
 // Resolves the npm dist-tag to install for `kcap update`, based on the
 // resolved channel reported by `kcap update --check`'s `install_tag` field.
@@ -203,12 +186,11 @@ function printLockedBinaryHelp(globalRoot, onlyIfFound = false) {
 // runs the update flow), so it's guarded to only run when this file is
 // executed directly — not when `require()`d (e.g. by the test).
 if (require.main === module) {
-  const musl = process.platform === "linux" && isMusl() ? "-musl" : "";
-  const platformKey = `${process.platform}${musl}-${process.arch}`;
-  const packageName = PLATFORM_PACKAGES[platformKey];
+  const key = platformKey();
+  const packageName = PLATFORM_PACKAGES[key];
 
   if (!packageName) {
-    console.error(`Unsupported platform: ${platformKey}`);
+    console.error(`Unsupported platform: ${key}`);
     console.error(`Supported: ${Object.keys(PLATFORM_PACKAGES).join(", ")}`);
     process.exit(1);
   }

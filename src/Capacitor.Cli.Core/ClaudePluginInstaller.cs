@@ -66,6 +66,101 @@ public static class ClaudePluginInstaller {
         enabled[key] is JsonValue v && v.TryGetValue<bool>(out var on) && on;
 
     /// <summary>
+    /// True only when the plugin is CURRENTLY effective: an enabled plugin registration in
+    /// <paramref name="settingsPath"/> AND a resolvable INSTALLED payload. Distinct from
+    /// <see cref="IsInstalled"/>, which is the refresh gate ("previously installed → refresh
+    /// it") and accepts the version marker alone: a stale marker (manual removal, failed
+    /// refresh, npm re-layout) must never authorize a DESTRUCTIVE decision — doctor's
+    /// duplicate cleanup and the launcher's merge-skip both assume Claude will actually load
+    /// the plugin's servers in place of the entry being suppressed or removed.
+    ///
+    /// <para>The payload is resolved the way Claude loads it, not from a marketplace SOURCE
+    /// dir (whose content proves nothing about what is installed/active): the enabled key's
+    /// entry in <c>&lt;claude-home&gt;/plugins/installed_plugins.json</c> names the per-scope
+    /// <c>installPath</c> (the plugin cache). Directory-sourced marketplaces are the one
+    /// exception — Claude resolves those LIVE and their recorded cache path never
+    /// materializes (verified against Claude Code 2.x), so when no cache payload exists the
+    /// marketplace's <c>installLocation</c> in <c>known_marketplaces.json</c> is consulted.
+    /// Anything unresolvable → not effective (fail closed: no destructive action).</para>
+    /// </summary>
+    public static bool IsEffectivelyInstalled(string settingsPath) {
+        var enabledKey = EnabledKcapPluginKey(settingsPath);
+        if (enabledKey is null) return false;
+
+        var claudeHome = Path.GetDirectoryName(settingsPath);
+        if (string.IsNullOrEmpty(claudeHome)) return false;
+        var pluginsDir = Path.Combine(claudeHome, "plugins");
+
+        try {
+            // No install record for the enabled key → Claude has nothing to load.
+            if (JsonNode.Parse(File.ReadAllText(Path.Combine(pluginsDir, "installed_plugins.json")))
+                    is not JsonObject installedRoot ||
+                installedRoot["plugins"] is not JsonObject plugins ||
+                plugins[enabledKey] is not { } entryNode)
+                return false;
+
+            // v2 records an array of per-scope installs. Both callers gate on the USER-scope
+            // settings.json enabled flag, so only a "user"-scoped install proves that flag's
+            // payload — a local/project-scoped install belonging to some unrelated repo must
+            // not make the plugin globally "effective". The bare-object shape (pre-v2
+            // compatibility) predates scopes and is accepted as-is.
+            List<JsonObject> entries = entryNode switch {
+                JsonArray arr => [.. arr.OfType<JsonObject>().Where(e =>
+                    e["scope"] is JsonValue sv && sv.TryGetValue<string>(out var scope) &&
+                    string.Equals(scope, "user", StringComparison.Ordinal))],
+                JsonObject single => [single],
+                _                 => []
+            };
+            // No eligible user-scoped record (v2 with only local/project installs, or an
+            // unrecognized shape) → not effective, and the directory-marketplace fallback
+            // below must not run either: it only excuses a PHANTOM cache path on an
+            // otherwise-eligible record, never the absence of an eligible record.
+            if (entries.Count == 0) return false;
+            foreach (var entry in entries) {
+                if (entry["installPath"] is JsonValue v && v.TryGetValue<string>(out var installPath) &&
+                    !string.IsNullOrWhiteSpace(installPath) &&
+                    File.Exists(Path.Combine(installPath, ".mcp.json")))
+                    return true;
+            }
+
+            // Directory-sourced marketplace: loaded live from installLocation, never cached.
+            // The exception applies ONLY when the source type is exactly "directory" — a
+            // git/github marketplace IS cached, so its lingering checkout under
+            // installLocation proves nothing once the installed cache is gone; accepting it
+            // would let doctor delete the only working registrations.
+            var marketplaceName = enabledKey[(enabledKey.IndexOf('@') + 1)..];
+            return JsonNode.Parse(File.ReadAllText(Path.Combine(pluginsDir, "known_marketplaces.json")))
+                       is JsonObject markets &&
+                   markets[marketplaceName] is JsonObject market &&
+                   market["source"]?["source"] is JsonValue srcType &&
+                   srcType.TryGetValue<string>(out var sourceType) &&
+                   string.Equals(sourceType, "directory", StringComparison.Ordinal) &&
+                   market["installLocation"] is JsonValue loc &&
+                   loc.TryGetValue<string>(out var installLocation) &&
+                   !string.IsNullOrWhiteSpace(installLocation) &&
+                   File.Exists(Path.Combine(installLocation, ".mcp.json"));
+        } catch {
+            return false; // missing/malformed plugin records → fail closed
+        }
+    }
+
+    /// <summary>The first recognized kcap plugin key enabled in settings, else null.</summary>
+    static string? EnabledKcapPluginKey(string settingsPath) {
+        try {
+            if (!File.Exists(settingsPath)) return null;
+            if (JsonNode.Parse(File.ReadAllText(settingsPath)) is not JsonObject root) return null;
+            if (root["enabledPlugins"] is not JsonObject enabled) return null;
+
+            foreach (var key in (string[]) ["kcap@kcap", "kcap@kurrent", "kapacitor@kapacitor", "kapacitor@kurrent"])
+                if (HasEnabledFlag(enabled, key))
+                    return key;
+        } catch {
+            // malformed settings → nothing provably enabled
+        }
+        return null;
+    }
+
+    /// <summary>
     /// The directory Claude actually loads the kcap plugin from —
     /// <c>extraKnownMarketplaces.kcap.source.path</c> in <paramref name="settingsPath"/> —
     /// or null when nothing is registered or the file is unreadable. Distinct from where the

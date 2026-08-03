@@ -2,6 +2,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.LocalIpc;
+using Capacitor.Cli.Core.Mcp;
 using Microsoft.Extensions.Logging;
 
 namespace Capacitor.Cli.Daemon.Services;
@@ -60,7 +61,7 @@ internal sealed partial class ClaudeLauncher(
         }
 
         try {
-            WriteMcpConfig(ctx.SourceRepoPath, ctx.Worktree.Path);
+            WriteMcpConfig(ctx.SourceRepoPath, ctx.Worktree.Path, config.KcapCliPath);
         } catch (Exception ex) {
             LogMcpConfigFailed(ex, ctx.AgentId);
         }
@@ -352,7 +353,7 @@ internal sealed partial class ClaudeLauncher(
         return OperatingSystem.IsWindows() ? full.Replace('\\', '/') : full;
     }
 
-    static void TrustWorktreeInClaudeConfig(string worktreePath) {
+    internal static void TrustWorktreeInClaudeConfig(string worktreePath) {
         // Serialize against concurrent agent launches. ~/.claude.json is shared
         // across the whole user and {worktree}/.claude/settings.local.json is
         // touched by MergeToolPermissions on the same path; interleaved reads and
@@ -366,7 +367,14 @@ internal sealed partial class ClaudeLauncher(
             // environment, so it reads/writes the same file we resolve here —
             // $CLAUDE_CONFIG_DIR/.claude.json when set, else ~/.claude.json.
             var claudeJsonPath = ClaudePaths.UserConfigJson();
-            var root           = LoadJsonObject(claudeJsonPath);
+
+            // The in-process lock above serializes only THIS daemon; every kcap writer of
+            // ~/.claude.json must also take the shared cross-process lock, or this write can
+            // land between another writer's inside-lock re-read and its rename (e.g. doctor
+            // --clean) and be silently overwritten. See ConfigFileLock.
+            using var _ = ConfigFileLock.Acquire(claudeJsonPath);
+
+            var root = LoadJsonObject(claudeJsonPath);
 
             if (root["projects"] is not JsonObject projects) {
                 projects         = [];
@@ -597,7 +605,8 @@ internal sealed partial class ClaudeLauncher(
         }
     }
 
-    internal static void WriteMcpConfig(string sourceRepoPath, string worktreePath) {
+    internal static void WriteMcpConfig(string sourceRepoPath, string worktreePath,
+                                        string? nativeKcapPath = null) {
         var claudeJsonPath = ClaudePaths.UserConfigJson();
 
         if (!File.Exists(claudeJsonPath)) return;
@@ -609,8 +618,8 @@ internal sealed partial class ClaudeLauncher(
         // the raw path for entries written by older kcap builds or by hand.
         var sourceKey = NormalizeClaudeProjectKey(sourceRepoPath);
 
-        var servers = root?["projects"]?[sourceKey]?["mcpServers"]?.AsObject()
-         ?? root?["projects"]?[sourceRepoPath]?["mcpServers"]?.AsObject();
+        var projectKey = root?["projects"]?[sourceKey]?["mcpServers"] is not null ? sourceKey : sourceRepoPath;
+        var servers = root?["projects"]?[projectKey]?["mcpServers"]?.AsObject();
 
         if (servers is null || servers.Count == 0) return;
 
@@ -626,8 +635,26 @@ internal sealed partial class ClaudeLauncher(
             merged = new JsonObject();
         }
 
+        // The kcap Claude plugin already ships its servers session-wide, so a semantically
+        // canonical project-scope copy would only spawn a duplicate resident server process
+        // in the agent session. Skip those — but STRUCTURALLY, never by name alone: a
+        // divergent same-name entry is a user customization and follows the conflict policy
+        // (merged like any other server; same name does not imply ownership). Gated on the
+        // plugin being EFFECTIVELY installed (enabled registration + resolvable payload,
+        // never the version marker alone): suppressing an entry is destructive, so a stale
+        // marker must not authorize it — without a loadable plugin the copy is the only
+        // registration.
+        var pluginInstalled = ClaudePluginInstaller.IsEffectivelyInstalled(ClaudePaths.UserSettings);
+
         // Add servers from ~/.claude.json (don't overwrite repo-committed ones)
         foreach (var (name, value) in servers) {
+            // nativeKcapPath comes from DaemonConfig (the CLI binary sibling of this daemon):
+            // Environment.ProcessPath here would be kcap-daemon, misclassifying a canonical
+            // absolute-path entry as divergent and copying the duplicate anyway.
+            if (pluginInstalled &&
+                McpRegistrationAudit.IsCanonicalKcapEntry(name, value, nativeKcapPath, projectKey))
+                continue;
+
             if (!merged.ContainsKey(name) && value is not null) {
                 var clone = value.DeepClone().AsObject();
                 clone.Remove("env");

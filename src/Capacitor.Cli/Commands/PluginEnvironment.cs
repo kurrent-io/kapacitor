@@ -26,6 +26,13 @@ public sealed record PluginEnvironment(
     TextWriter     Stdout,
     TextWriter     Stderr
 ) {
+    /// <summary>
+    /// Resolves the native binary path written as the <c>command</c> of generated MCP
+    /// registrations. Null → the production default (<see cref="Environment.ProcessPath"/>, see
+    /// <c>KcapBinaryCommand</c>). Tests inject a deterministic path so assertions never bless
+    /// whatever executable happens to be running the test.
+    /// </summary>
+    public Func<string?>? ResolveMcpBinaryPath { get; init; }
     public string ClaudeHome          => ClaudePaths.Home(HomeDirectory);
     public string ClaudeUserSettings  => Path.Combine(ClaudeHome, "settings.json");
     public string CodexHome           => CodexPaths.Home(HomeDirectory);

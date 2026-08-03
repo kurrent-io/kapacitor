@@ -39,7 +39,8 @@ public class PluginCommandAntigravityTests {
         await Assert.That(exit).IsEqualTo(0);
 
         var servers = JsonNode.Parse(await File.ReadAllTextAsync(env.AntigravityMcpConfigJson))!.AsObject()["mcpServers"]!.AsObject();
-        await Assert.That(servers["kcap-review"]!["command"]!.GetValue<string>()).IsEqualTo("kcap");
+        // Registered command is the resolved native binary (injected seam), not the wrapper-resolved "kcap".
+        await Assert.That(servers["kcap-review"]!["command"]!.GetValue<string>()).IsEqualTo(TestBinaryPath);
         await Assert.That(servers["kcap-review"]!["type"]).IsNull();   // Standard shape: no `type`
         await Assert.That(servers["kcap-review"]!["trust"]).IsNull();  // Antigravity has no config trust knob
         await Assert.That(servers.Select(kv => kv.Key)).Contains("kcap-sessions");
@@ -150,12 +151,17 @@ public class PluginCommandAntigravityTests {
         await Assert.That(content).Contains(AgentInstructionsWriter.BeginMarker);   // kcap block LEFT for Gemini
     }
 
+    // Deterministic native-binary path: registration writes the resolved binary as the command
+    // (default: the running process), so tests inject their own value and assert that,
+    // never blessing whatever executable happens to run the suite.
+    internal const string TestBinaryPath = "/opt/kcap-test/bin/kcap";
+
     static PluginEnvironment TestEnv(string fakeHome) => new(
         HomeDirectory:     fakeHome,
         ResolvePluginPath: () => null,   // skills source unavailable → skills install no-ops (covered elsewhere)
         Stdout:            TextWriter.Null,
         Stderr:            TextWriter.Null
-    );
+    ) { ResolveMcpBinaryPath = () => TestBinaryPath };
 
     sealed class EnvScope : IDisposable {
         readonly string  _key;

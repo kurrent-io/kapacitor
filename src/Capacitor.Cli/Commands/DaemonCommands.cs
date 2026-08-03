@@ -603,6 +603,17 @@ public static class DaemonCommands {
     static async Task<int> DoctorAsync(string[] args) {
         var clean = args.Contains("--clean");
 
+        // MCP-registrations audit runs BEFORE the daemon-file early return below — a machine
+        // with no daemon state still has registrations worth checking (duplicate Claude-scope
+        // entries cost one extra server process per session; a stale absolute binary path
+        // breaks the servers outright after an npm re-layout).
+        await McpDoctorSection.RunAsync(Console.Out, clean,
+            ClaudePaths.UserConfigJson(), ClaudePaths.UserSettings,
+            McpDoctorSection.DefaultJsonRegistrations(),
+            Path.Combine(CodexPaths.Home(), "config.toml"),
+            Environment.ProcessPath);
+        await Console.Out.WriteLineAsync();
+
         DaemonLockPaths.EnsureDirectory();
 
         var names = DaemonLockPaths.EnumerateNames();

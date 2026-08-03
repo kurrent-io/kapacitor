@@ -363,6 +363,23 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     readonly CancellationTokenSource _shutdownCts;
     readonly LaunchConsentGate _consentGate;
 
+    /// <summary>Guards <see cref="DisposeAsync"/> so its body runs exactly once — the DI
+    /// container tracks this singleton AND <c>DaemonRunner</c> disposes it explicitly, so
+    /// DisposeAsync runs twice by construction on every shutdown. Without the guard, disposing
+    /// <see cref="_shutdownCts"/> would make the second pass throw ObjectDisposedException into
+    /// DI teardown (NativeAOT: unhandled → abort()).</summary>
+    int _disposeOnce;
+
+    /// <summary>Counts entries into the <see cref="DisposeAsync"/> body (post-guard). Test seam:
+    /// proves durably that a second dispose did NOT re-enter the body.</summary>
+    int _disposeBodyRuns;
+
+    internal int DisposeBodyRuns => Volatile.Read(ref _disposeBodyRuns);
+
+    /// <summary>Test seam: the shutdown CTS, so tests can assert it ends cancelled AND disposed
+    /// after the first dispose pass (removal of the Dispose call fails the suite).</summary>
+    internal CancellationTokenSource ShutdownCtsForTests => _shutdownCts;
+
     public AgentOrchestrator(
             DaemonConfig                                      config,
             ServerConnection                                  server,
@@ -3100,50 +3117,101 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     }
 
     public async ValueTask DisposeAsync() {
-        // §3.3: close the execution lane to new work FIRST — before anything else, and without waiting for
-        // anything. Order matters: cancelling the shutdown token below releases whatever the in-flight item
-        // was waiting on (a consent prompt, say), and if the lane were still open at that moment it would
-        // simply move on to the queued per-agent stops and run them against children the teardown below is
-        // already killing. Closing the door first is what makes the supersession deterministic rather than a
-        // race. The drain and the terminal settlement of accepted sequenced items happen in the processor's
-        // own DisposeAsync at the very end of this method.
-        Processor?.StopAcceptingForShutdown();
+        if (Interlocked.Exchange(ref _disposeOnce, 1) != 0) return;
 
-        await _shutdownCts.CancelAsync();
+        Interlocked.Increment(ref _disposeBodyRuns);
 
-        // Drain and settle the execution lane BEFORE the child-teardown snapshot below. The token
-        // cancellation above aborts a consent-parked launch promptly, but a launch that already
-        // passed consent keeps running to registration — and if the lane settled AFTER the
-        // enumeration, that late-registered child would miss teardown and survive graceful
-        // shutdown (the next-boot PID scan is a recovery backstop, not a substitute). The
-        // supersession semantics are unaffected: _closed was set first, so every queued item
-        // still settles (sequenced) or discards (un-sequenced) in the drain arm regardless of
-        // when the drain runs.
-        if (Processor is { } lane) await lane.DisposeAsync();
+        // Faultable awaits below are each contained + logged individually so one failure can't
+        // skip its siblings or the mandatory resource release in the finally — a disposal path
+        // must never throw into DI teardown (NativeAOT: unhandled → abort()).
+        try {
+            // §3.3: close the execution lane to new work FIRST — before anything else, and without waiting for
+            // anything. Order matters: cancelling the shutdown token below releases whatever the in-flight item
+            // was waiting on (a consent prompt, say), and if the lane were still open at that moment it would
+            // simply move on to the queued per-agent stops and run them against children the teardown below is
+            // already killing. Closing the door first is what makes the supersession deterministic rather than a
+            // race. The drain and the terminal settlement of accepted sequenced items happen in the processor's
+            // own DisposeAsync at the very end of this method.
+            Processor?.StopAcceptingForShutdown();
 
-        foreach (var agent in _agents.Values.Where(a => a.Status is "Starting" or "Running")) {
             try {
-                await agent.ReadCts.CancelAsync();
-                await agent.Runtime.TerminateAsync(TimeSpan.FromSeconds(5));
-            } catch {
-                /* best-effort */
+                await _shutdownCts.CancelAsync();
+            } catch (ObjectDisposedException) {
+                // Already torn down elsewhere — nothing left to cancel.
+            } catch (Exception ex) {
+                // A registered cancellation callback that throws faults the returned task
+                // (AggregateException per the CTS contract) even though the cancel itself
+                // succeeded. Uncontained, that fault would skip the processor drain and ALL
+                // child termination/cleanup below — and the run-once guard means the DI pass
+                // can never retry, stranding live child processes. Log and continue.
+                LogDisposeStepFailed(ex, "shutdown-cancel");
+            }
+
+            // Drain and settle the execution lane BEFORE the child-teardown snapshot below. The token
+            // cancellation above aborts a consent-parked launch promptly, but a launch that already
+            // passed consent keeps running to registration — and if the lane settled AFTER the
+            // enumeration, that late-registered child would miss teardown and survive graceful
+            // shutdown (the next-boot PID scan is a recovery backstop, not a substitute). The
+            // supersession semantics are unaffected: _closed was set first, so every queued item
+            // still settles (sequenced) or discards (un-sequenced) in the drain arm regardless of
+            // when the drain runs.
+            try {
+                if (Processor is { } lane) await lane.DisposeAsync();
+            } catch (Exception ex) {
+                LogDisposeStepFailed(ex, "processor-drain");
+            }
+
+            foreach (var agent in _agents.Values.Where(a => a.Status is "Starting" or "Running")) {
+                try {
+                    await agent.ReadCts.CancelAsync();
+                    await agent.Runtime.TerminateAsync(TimeSpan.FromSeconds(5));
+                } catch {
+                    /* best-effort */
+                }
+            }
+
+            foreach (var agentId in _agents.Keys.ToList()) {
+                try {
+                    await CleanupAgentAsync(agentId);
+                } catch (Exception ex) {
+                    LogCleanupStepFailed(ex, "final cleanup", agentId);
+                }
+            }
+        } finally {
+            // Mandatory release — runs even if a step above threw, each step individually
+            // guarded so one failure can't skip the rest.
+            try {
+                _heartbeatTimer.Dispose();
+                _daemonHeartbeat.Dispose();
+                _tokenRefresh.Dispose();
+                _spoolDrain.Dispose();
+            } catch (Exception ex) {
+                LogDisposeStepFailed(ex, "timers");
+            }
+
+            // The execution lane was drained and settled above, before the child-teardown snapshot;
+            // this second call is a no-op (DisposeAsync is idempotent) kept as belt-and-braces for
+            // any future early-return path added between the two.
+            try {
+                if (Processor is { } proc) await proc.DisposeAsync();
+            } catch (Exception ex) {
+                LogDisposeStepFailed(ex, "processor");
+            }
+
+            // LAST: the shutdown CTS is disposed only after every token-dependent step above
+            // (the agent-teardown loop, the lane drain and the timer-driven loops all use its
+            // token). It stays readonly — the run-once guard, not a null-swap, is what makes
+            // this safe against the structural double dispose.
+            try {
+                _shutdownCts.Dispose();
+            } catch (Exception ex) {
+                LogDisposeStepFailed(ex, "shutdown-cts");
             }
         }
-
-        foreach (var agentId in _agents.Keys.ToList()) {
-            await CleanupAgentAsync(agentId);
-        }
-
-        _heartbeatTimer.Dispose();
-        _daemonHeartbeat.Dispose();
-        _tokenRefresh.Dispose();
-        _spoolDrain.Dispose();
-
-        // The execution lane was drained and settled above, before the child-teardown snapshot;
-        // this second call is a no-op (DisposeAsync is idempotent) kept as belt-and-braces for
-        // any future early-return path added between the two.
-        if (Processor is { } proc) await proc.DisposeAsync();
     }
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "AgentOrchestrator dispose step '{Step}' failed; continuing shutdown")]
+    partial void LogDisposeStepFailed(Exception ex, string step);
 
     /// <summary>
     /// Extracts readable text from the terminal output buffer by decoding UTF-8
