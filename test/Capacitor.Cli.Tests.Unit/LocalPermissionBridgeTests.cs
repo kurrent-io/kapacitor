@@ -512,10 +512,11 @@ public class LocalPermissionBridgeTests {
         }
     }
 
-    // Follow-up: a review-flow reviewer's own result-submission tool must be auto-approved
-    // by the bridge WITHOUT surfacing a user prompt. Codex fires a PermissionRequest for the MCP
-    // tool call even under `--ask-for-approval never`, and its hook bridges here; without this the
-    // unattended reviewer blocks on a decision it can never get.
+    // A review-flow reviewer's own result-submission tool must be auto-approved by the bridge
+    // WITHOUT surfacing a user prompt. Codex fires a PermissionRequest for the MCP tool call even
+    // under `--ask-for-approval never`, and its hook bridges here; without this the unattended
+    // reviewer blocks on a decision it can never get. The auto-approve is reviewer-token-gated:
+    // only the participant's dedicated token reaches it (see the shared-token tests below).
     [Test, NotInParallel(nameof(LocalPermissionBridgeTests))]
     public async Task Codex_flow_result_submission_is_auto_approved_without_a_server_round_trip() {
         var (bridge, server) = CreateBridge((_, _, _, _, _) =>
@@ -526,6 +527,7 @@ public class LocalPermissionBridgeTests {
 
         try {
             await bridge.StartAsync(CancellationToken.None);
+            var reviewerUrl = bridge.RegisterReviewerToken(["kcap-review"]);
 
             using var client = CreateClient();
 
@@ -534,7 +536,7 @@ public class LocalPermissionBridgeTests {
                 tool_name  = "mcp__kcap_flow_result__submit_review_result",
                 tool_input = new { kind = "clean" }
             };
-            using var response = await client.PostAsync($"{bridge.BaseUrl}/codex/permission-request", JsonContent.Create(payload));
+            using var response = await client.PostAsync($"{reviewerUrl}/codex/permission-request", JsonContent.Create(payload));
 
             await Assert.That((int)response.StatusCode).IsEqualTo(200);
 
@@ -598,7 +600,9 @@ public class LocalPermissionBridgeTests {
     }
 
     // The bare tool name (a vendor that passes the raw MCP tool name with no server prefix) is the
-    // flow-result tool and is auto-approved without a server round-trip.
+    // flow-result tool and is auto-approved without a server round-trip — on a reviewer token, even
+    // for a non-config-locked vendor (claude): the bare names are unique to the reserved channel,
+    // which only flow participants receive. This pins the bare-name arm as intentional.
     [Test, NotInParallel(nameof(LocalPermissionBridgeTests))]
     public async Task Bare_flow_result_tool_name_is_auto_approved() {
         var (bridge, server) = CreateBridge((_, _, _, _, _) =>
@@ -607,11 +611,12 @@ public class LocalPermissionBridgeTests {
 
         try {
             await bridge.StartAsync(CancellationToken.None);
+            var reviewerUrl = bridge.RegisterReviewerToken(["kcap-review"]);
 
             using var client = CreateClient();
 
             var payload = new { session_id = "abc", tool_name = "submit_review_result" };
-            using var response = await client.PostAsync($"{bridge.BaseUrl}/codex/permission-request", JsonContent.Create(payload));
+            using var response = await client.PostAsync($"{reviewerUrl}/claude/permission-request", JsonContent.Create(payload));
 
             await Assert.That((int)response.StatusCode).IsEqualTo(200);
             await Assert.That(server.Calls.Count).IsEqualTo(0);
@@ -620,6 +625,196 @@ public class LocalPermissionBridgeTests {
             using var doc      = JsonDocument.Parse(body);
             var       decision = doc.RootElement.GetProperty("hookSpecificOutput").GetProperty("decision");
             await Assert.That(decision.GetProperty("behavior").GetString()).IsEqualTo("allow");
+        } finally {
+            await bridge.DisposeAsync();
+        }
+    }
+
+    // ── Reserved-channel auto-approve: send_flow_message + adversarial shapes ────────────
+    //
+    // The production defect: an unattended Codex participant calling send_flow_message got
+    // "Denied out-of-allowlist tool mcp__kcap_flow_result__send_flow_message" — only
+    // submit_review_result was special-cased. The fix generalizes the special case to the
+    // catalog's unattended-safe set, parsed (never substring-matched) and reviewer-gated.
+
+    [Test, NotInParallel(nameof(LocalPermissionBridgeTests))]
+    public async Task Reviewer_token_auto_approves_server_qualified_send_flow_message() {
+        var (bridge, server) = CreateBridge((_, _, _, _, _) =>
+            Task.FromResult(new PermissionDecision("deny", null, null))
+        );
+
+        try {
+            await bridge.StartAsync(CancellationToken.None);
+            var reviewerUrl = bridge.RegisterReviewerToken(["kcap-review"]);
+
+            using var client = CreateClient();
+
+            var payload = new { session_id = "abc", tool_name = "mcp__kcap_flow_result__send_flow_message" };
+            using var r = await client.PostAsync($"{reviewerUrl}/codex/permission-request", JsonContent.Create(payload));
+
+            await Assert.That((int)r.StatusCode).IsEqualTo(200);
+            await Assert.That(server.Calls.Count).IsEqualTo(0);
+            await Assert.That(await Behavior(r)).IsEqualTo("allow");
+        } finally {
+            await bridge.DisposeAsync();
+        }
+    }
+
+    [Test, NotInParallel(nameof(LocalPermissionBridgeTests))]
+    public async Task Bare_send_flow_message_is_auto_approved() {
+        var (bridge, server) = CreateBridge((_, _, _, _, _) =>
+            Task.FromResult(new PermissionDecision("deny", null, null))
+        );
+
+        try {
+            await bridge.StartAsync(CancellationToken.None);
+            var reviewerUrl = bridge.RegisterReviewerToken(["kcap-review"]);
+
+            using var client = CreateClient();
+
+            var payload = new { session_id = "abc", tool_name = "send_flow_message" };
+            using var r = await client.PostAsync($"{reviewerUrl}/claude/permission-request", JsonContent.Create(payload));
+
+            await Assert.That((int)r.StatusCode).IsEqualTo(200);
+            await Assert.That(server.Calls.Count).IsEqualTo(0);
+            await Assert.That(await Behavior(r)).IsEqualTo("allow");
+        } finally {
+            await bridge.DisposeAsync();
+        }
+    }
+
+    [Test, NotInParallel(nameof(LocalPermissionBridgeTests))]
+    public async Task Reviewer_token_auto_approves_hyphenated_reserved_server_qualified_tool() {
+        // Claude normalizes hyphens to underscores, but the parse accepts the raw hyphenated
+        // server id too — both normalize to the same exact server segment.
+        var (bridge, server) = CreateBridge((_, _, _, _, _) =>
+            Task.FromResult(new PermissionDecision("deny", null, null))
+        );
+
+        try {
+            await bridge.StartAsync(CancellationToken.None);
+            var reviewerUrl = bridge.RegisterReviewerToken(["kcap-review"]);
+
+            using var client = CreateClient();
+
+            var payload = new { session_id = "abc", tool_name = "mcp__kcap-flow-result__send_flow_message" };
+            using var r = await client.PostAsync($"{reviewerUrl}/claude/permission-request", JsonContent.Create(payload));
+
+            await Assert.That((int)r.StatusCode).IsEqualTo(200);
+            await Assert.That(server.Calls.Count).IsEqualTo(0);
+            await Assert.That(await Behavior(r)).IsEqualTo("allow");
+        } finally {
+            await bridge.DisposeAsync();
+        }
+    }
+
+    [Test, NotInParallel(nameof(LocalPermissionBridgeTests))]
+    public async Task Reviewer_token_denies_prefixed_spoof_of_reserved_server() {
+        // "mcp__evil_kcap_flow_result__send_flow_message": a Contains-based matcher would see
+        // "kcap_flow_result" inside the server segment and auto-approve. The ENTIRE server
+        // segment must equal the reserved channel id → deny (never a prompt on a reviewer token).
+        var (bridge, server) = CreateBridge((_, _, _, _, _) =>
+            Task.FromResult(new PermissionDecision("allow", null, null))
+        );
+
+        try {
+            await bridge.StartAsync(CancellationToken.None);
+            var reviewerUrl = bridge.RegisterReviewerToken(["kcap-review"]);
+
+            using var client = CreateClient();
+
+            var payload = new { session_id = "abc", tool_name = "mcp__evil_kcap_flow_result__send_flow_message" };
+            using var r = await client.PostAsync($"{reviewerUrl}/codex/permission-request", JsonContent.Create(payload));
+
+            await Assert.That((int)r.StatusCode).IsEqualTo(200);
+            await Assert.That(server.Calls.Count).IsEqualTo(0);
+            await Assert.That(await Behavior(r)).IsEqualTo("deny");
+        } finally {
+            await bridge.DisposeAsync();
+        }
+    }
+
+    [Test, NotInParallel(nameof(LocalPermissionBridgeTests))]
+    public async Task Reviewer_token_denies_suffixed_spoof_of_reserved_tool() {
+        // "mcp__kcap_flow_result__evil_send_flow_message": an EndsWith-based matcher would see the
+        // "send_flow_message" suffix and auto-approve. The ENTIRE tool segment must be an exact
+        // safe-set member → deny.
+        var (bridge, server) = CreateBridge((_, _, _, _, _) =>
+            Task.FromResult(new PermissionDecision("allow", null, null))
+        );
+
+        try {
+            await bridge.StartAsync(CancellationToken.None);
+            var reviewerUrl = bridge.RegisterReviewerToken(["kcap-review"]);
+
+            using var client = CreateClient();
+
+            var payload = new { session_id = "abc", tool_name = "mcp__kcap_flow_result__evil_send_flow_message" };
+            using var r = await client.PostAsync($"{reviewerUrl}/codex/permission-request", JsonContent.Create(payload));
+
+            await Assert.That((int)r.StatusCode).IsEqualTo(200);
+            await Assert.That(server.Calls.Count).IsEqualTo(0);
+            await Assert.That(await Behavior(r)).IsEqualTo("deny");
+        } finally {
+            await bridge.DisposeAsync();
+        }
+    }
+
+    [Test, NotInParallel(nameof(LocalPermissionBridgeTests))]
+    public async Task Shared_token_reserved_channel_tool_names_consult_the_server() {
+        // The auto-approve is reviewer-gated: the reserved channel is only injected for flow
+        // participants, so on the SHARED (interactive) token an identically-named tool is
+        // untrusted — it takes the normal server prompt path, qualified or bare. (Previously the
+        // shared token also auto-approved mcp__kcap_flow_result__submit_review_result.)
+        var (bridge, server) = CreateBridge((_, _, _, _, _) =>
+            Task.FromResult(new PermissionDecision("allow", null, null))
+        );
+
+        try {
+            await bridge.StartAsync(CancellationToken.None);
+
+            using var client = CreateClient();
+
+            string[] toolNames = [
+                "mcp__kcap_flow_result__submit_review_result",
+                "submit_review_result",
+                "mcp__kcap_flow_result__send_flow_message",
+                "send_flow_message"
+            ];
+
+            foreach (var toolName in toolNames) {
+                var payload = new { session_id = "abc", tool_name = toolName };
+                using var r = await client.PostAsync($"{bridge.BaseUrl}/codex/permission-request", JsonContent.Create(payload));
+                await Assert.That((int)r.StatusCode).IsEqualTo(200);
+            }
+
+            await Assert.That(server.Calls.Count).IsEqualTo(toolNames.Length);
+        } finally {
+            await bridge.DisposeAsync();
+        }
+    }
+
+    [Test, NotInParallel(nameof(LocalPermissionBridgeTests))]
+    public async Task Reviewer_token_with_empty_allowlist_still_auto_approves_reserved_channel_tools() {
+        // A generic flow participant (arbitrary role, no read allowlist) gets a token bound to an
+        // EMPTY server list — the reserved channel is injected independently of the allowlist, so
+        // its tools must still auto-approve.
+        var (bridge, server) = CreateBridge((_, _, _, _, _) =>
+            Task.FromResult(new PermissionDecision("deny", null, null))
+        );
+
+        try {
+            await bridge.StartAsync(CancellationToken.None);
+            var participantUrl = bridge.RegisterReviewerToken([]);
+
+            using var client = CreateClient();
+
+            var payload = new { session_id = "abc", tool_name = "mcp__kcap_flow_result__send_flow_message" };
+            using var r = await client.PostAsync($"{participantUrl}/codex/permission-request", JsonContent.Create(payload));
+
+            await Assert.That((int)r.StatusCode).IsEqualTo(200);
+            await Assert.That(server.Calls.Count).IsEqualTo(0);
+            await Assert.That(await Behavior(r)).IsEqualTo("allow");
         } finally {
             await bridge.DisposeAsync();
         }

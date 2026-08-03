@@ -51,6 +51,44 @@ public partial class AgentOrchestratorVendorTests {
         }
     }
 
+    // A GENERIC flow participant (arbitrary FlowRole from start_flow, not a review-flow reviewer)
+    // launches through the same LaunchKind.ReviewFlow lane, so it gets the same reserved-channel
+    // treatment: a dedicated bridge token is minted even with no MCP allowlist at all (the reserved
+    // result channel is injected independently of the allowlist, and the bridge auto-approves its
+    // unattended-safe tools on any participant token — see
+    // LocalPermissionBridgeTests.Reviewer_token_with_empty_allowlist_still_auto_approves_reserved_channel_tools).
+    [Test, NotInParallel("LocalPermissionBridgeTests")]
+    public async Task Generic_flow_participant_codex_launch_mints_a_reviewer_token_like_a_reviewer() {
+        var (repoPath, cleanup) = CreateGitRepo();
+
+        try {
+            var server     = new CaptureServerConnection();
+            var ptyFactory = new FixedPtyProcessFactory(new OneChunkThenBlockPtyProcess());
+
+            await using var orch = BuildOrchestrator(server, ptyFactory, Launcher("codex"), allowedRepoPath: repoPath);
+            var bridge = orch.PermissionBridgeForTest;
+            await bridge.StartAsync(CancellationToken.None);
+
+            try {
+                await orch.HandleLaunchAgentForTest(new LaunchAgentCommand(
+                    AgentId: "part-1", Prompt: "research the topic", Model: "default", Effort: null,
+                    RepoPath: repoPath, Tools: null, AttachmentIds: null, Vendor: "codex",
+                    Kind: LaunchKind.ReviewFlow, McpAllowlist: null,
+                    FlowRunId: "flow-run-1", FlowRole: "researcher"));
+
+                var agent = orch.GetAgentForTest("part-1");
+                await Assert.That(agent).IsNotNull();
+                await Assert.That(agent!.ReviewerBridgeToken).IsNotNull();
+                await Assert.That(agent.ReviewerBridgeToken).IsNotEqualTo(bridge.BaseUrl);   // a dedicated token
+                await Assert.That(bridge.ReviewerTokenCountForTest).IsEqualTo(1);
+            } finally {
+                await bridge.DisposeAsync();
+            }
+        } finally {
+            cleanup();
+        }
+    }
+
     // Defense in depth: a non-Codex reviewer (Claude) is NOT minted a token, even for a ReviewFlow —
     // its config-lock doesn't apply, so a bare tool name wouldn't be provably a kcap tool.
     [Test, NotInParallel("LocalPermissionBridgeTests")]

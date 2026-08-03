@@ -387,17 +387,8 @@ internal sealed partial class LocalPermissionBridge(
             // would give us per-request cancellation; out of scope for this PR.
             PermissionDecision decision;
 
-            if (IsFlowResultSubmission(toolName)) {
-                // The reviewer's own result-submission tool (kcap-flow-result → submit_review_result)
-                // is unique to a server only injected for review-flow reviewers, so it's always safe.
-                // Auto-approve on ANY live token without a server round-trip — an unattended reviewer
-                // can't get a user decision otherwise.
-                LogFlowResultAutoApproved(logger, sessionId, vendor);
-                decision = new PermissionDecision("allow", null, null);
-            } else if (isReviewer) {
-                // Unattended reviewer: auto-approve its bound kcap tools; DENY an out-of-allowlist
-                // (or non-config-locked-vendor bare) call outright rather than defer to a prompt no
-                // human can answer. A well-formed tool name is required to classify.
+            if (isReviewer) {
+                // Unattended participant: a well-formed tool name is required to classify.
                 if (string.IsNullOrWhiteSpace(toolName)) {
                     context.Response.StatusCode = 400;
                     context.Response.Close();
@@ -405,14 +396,29 @@ internal sealed partial class LocalPermissionBridge(
                     return;
                 }
 
-                if (IsReviewerToolAllowed(vendor, toolName, reviewerAllowlist!)) {
+                if (IsReservedChannelTool(toolName)) {
+                    // The reserved result channel (kcap-flow-result) is injected only for flow
+                    // participants, and every tool it advertises is in the contract-tested
+                    // unattended-safe set — each only POSTs to the participant's own flow run,
+                    // authorized server-side against the caller's active agent assignment.
+                    // Auto-approve without a server round-trip: an unattended participant can't
+                    // get a user decision otherwise.
+                    LogReservedChannelToolAutoApproved(logger, toolName, sessionId, vendor);
+                    decision = new PermissionDecision("allow", null, null);
+                } else if (IsReviewerToolAllowed(vendor, toolName, reviewerAllowlist!)) {
+                    // Auto-approve its bound kcap tools; DENY an out-of-allowlist (or
+                    // non-config-locked-vendor bare) call outright rather than defer to a prompt
+                    // no human can answer.
                     decision = new PermissionDecision("allow", null, null);
                 } else {
                     LogReviewerToolDenied(logger, sessionId, toolName);
                     decision = new PermissionDecision("deny", null, null);
                 }
             } else {
-                // Shared (interactive) token → the server permission path, unchanged.
+                // Shared (interactive) token → the server permission path, unchanged. This
+                // deliberately includes the reserved channel's own tool names: an interactive
+                // session never legitimately carries that server, so an identically-named tool
+                // here is untrusted and takes the normal prompt.
                 try {
                     decision = await server.RequestPermissionAsync(sessionId, toolName, toolInput, suggestions, ct);
                 } catch (Exception ex) {
@@ -455,29 +461,46 @@ internal sealed partial class LocalPermissionBridge(
     }
 
     /// <summary>
-    /// True when the permission request is for the review-flow reviewer's result-submission tool
-    /// (the <c>kcap-flow-result</c> server's <c>submit_review_result</c>). This auto-approve bypasses
-    /// the server permission boundary, so the match is deliberately precise rather than a loose
-    /// substring: it accepts either the bare tool name (a vendor that passes the raw MCP tool name,
-    /// e.g. Codex) OR a vendor-prefixed id that both names the <c>kcap-flow-result</c> server AND ends
-    /// in the exact tool — e.g. Claude's <c>mcp__kcap_flow_result__submit_review_result</c> (Claude
-    /// sanitizes the hyphens to underscores). Requiring the server token means a coincidental
-    /// "…submit_review_result" exposed by some other MCP server on an interactive hosted agent can't
-    /// slip past the prompt.
+    /// True when the permission request is for one of the reserved result channel's
+    /// unattended-safe tools (<c>KcapMcpRegistry.ReservedResultChannelUnattendedSafeTools</c> on the
+    /// <c>kcap-flow-result</c> server). This auto-approve bypasses the server permission boundary,
+    /// so the match PARSES the canonical <c>mcp__&lt;server&gt;__&lt;tool&gt;</c> shape and compares
+    /// whole segments — never <c>Contains</c>/<c>EndsWith</c>, which are spoofable
+    /// (<c>mcp__evil_kcap_flow_result__send_flow_message</c>,
+    /// <c>mcp__kcap_flow_result__evil_send_flow_message</c>): the ENTIRE server segment must equal
+    /// the reserved channel id (hyphens normalized to underscores, since Claude sanitizes
+    /// <c>kcap-flow-result</c> to <c>kcap_flow_result</c>) and the ENTIRE tool segment must be an
+    /// exact Ordinal member of the safe set. A bare name (a vendor that passes the raw MCP tool
+    /// name, e.g. Codex) is exact set membership only. Callers additionally gate this on the
+    /// reviewer token — the channel is injected only for flow participants, so an interactive
+    /// session's identically-named tool still takes the normal prompt path.
     /// </summary>
-    static bool IsFlowResultSubmission(string? toolName) {
+    static bool IsReservedChannelTool(string? toolName) {
         if (string.IsNullOrEmpty(toolName)) return false;
 
-        // Bare tool name, no server prefix.
-        if (string.Equals(toolName, "submit_review_result", StringComparison.Ordinal)) return true;
+        const string prefix = "mcp__";
 
-        // Vendor-prefixed MCP id: require the flow-result server identity AND the exact tool suffix.
-        var namesFlowResultServer =
-            toolName.Contains("kcap_flow_result", StringComparison.Ordinal) ||
-            toolName.Contains("kcap-flow-result", StringComparison.Ordinal);
+        // Bare tool name, no server prefix: exact safe-set membership only.
+        if (!toolName.StartsWith(prefix, StringComparison.Ordinal))
+            return KcapMcpRegistry.ReservedResultChannelUnattendedSafeTools.Contains(toolName);
 
-        return namesFlowResultServer && toolName.EndsWith("submit_review_result", StringComparison.Ordinal);
+        var afterPrefix = toolName[prefix.Length..];
+        var sep         = afterPrefix.IndexOf("__", StringComparison.Ordinal);
+
+        if (sep <= 0) return false;   // malformed qualified name → not the reserved channel (fail-safe)
+
+        var server = afterPrefix[..sep].Replace('-', '_');
+        var tool   = afterPrefix[(sep + 2)..];
+
+        return string.Equals(server, ReservedChannelServerSegment, StringComparison.Ordinal)
+            && KcapMcpRegistry.ReservedResultChannelUnattendedSafeTools.Contains(tool);
     }
+
+    /// <summary>The reserved channel id in its underscore normalization (<c>kcap_flow_result</c>) —
+    /// the form a hyphenated or Claude-sanitized server segment reduces to for the exact-equality
+    /// comparison above.</summary>
+    static readonly string ReservedChannelServerSegment =
+        KcapMcpRegistry.ReservedResultChannelId.Replace('-', '_');
 
     /// <summary>
     /// Whether a tool call arriving on a reviewer token is within the reviewer's bound (read-only)
@@ -558,8 +581,8 @@ internal sealed partial class LocalPermissionBridge(
     [LoggerMessage(Level = LogLevel.Warning, Message = "RequestPermission via SignalR failed for session {SessionId}; falling back to deny")]
     static partial void LogRequestPermissionFailed(ILogger logger, Exception exception, string sessionId);
 
-    [LoggerMessage(Level = LogLevel.Debug, Message = "Auto-approved review-flow result submission for session {SessionId} (vendor={Vendor}) without surfacing a prompt")]
-    static partial void LogFlowResultAutoApproved(ILogger logger, string sessionId, string vendor);
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Auto-approved reserved flow-channel tool {ToolName} for unattended participant session {SessionId} (vendor={Vendor}) without surfacing a prompt")]
+    static partial void LogReservedChannelToolAutoApproved(ILogger logger, string toolName, string sessionId, string vendor);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Denied out-of-allowlist tool {ToolName} for unattended reviewer session {SessionId}")]
     static partial void LogReviewerToolDenied(ILogger logger, string sessionId, string toolName);
