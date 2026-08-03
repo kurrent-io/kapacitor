@@ -93,6 +93,33 @@ public class ClaudePluginInstallerTests {
         await Assert.That(ClaudePluginInstaller.IsEffectivelyInstalled(settingsPath)).IsFalse();
     }
 
+    /// <summary>
+    /// The cross-product of the two round-3 gates: a v2 record with ONLY a project-scoped
+    /// install must not fall through to the directory-marketplace fallback either — that
+    /// fallback only excuses a phantom cache path on an otherwise-eligible (user-scoped)
+    /// record, never the absence of an eligible record.
+    /// </summary>
+    [Test]
+    public async Task IsEffectivelyInstalled_false_for_project_only_record_even_with_directory_marketplace() {
+        using var tmp = new TempDir();
+        var settingsPath = WriteEnabledSettings(tmp.Path);
+        var install = Directory.CreateDirectory(Path.Combine(tmp.Path, "plugins", "cache", "kcap", "kcap", "1.0.0")).FullName;
+        File.WriteAllText(Path.Combine(install, ".mcp.json"), "{}");
+        var checkout = Directory.CreateDirectory(Path.Combine(tmp.Path, "marketplace-src", "kcap")).FullName;
+        File.WriteAllText(Path.Combine(checkout, ".mcp.json"), "{}");
+        var pluginsDir = Directory.CreateDirectory(Path.Combine(tmp.Path, "plugins")).FullName;
+        File.WriteAllText(Path.Combine(pluginsDir, "installed_plugins.json"), $$"""
+            { "version": 2, "plugins": { "kcap@kcap": [
+                { "scope": "project", "installPath": {{JsonValue.Create(install).ToJsonString()}}, "version": "1.0.0" } ] } }
+            """);
+        File.WriteAllText(Path.Combine(pluginsDir, "known_marketplaces.json"), $$"""
+            { "kcap": { "source": { "source": "directory" },
+                        "installLocation": {{JsonValue.Create(checkout).ToJsonString()}} } }
+            """);
+
+        await Assert.That(ClaudePluginInstaller.IsEffectivelyInstalled(settingsPath)).IsFalse();
+    }
+
     /// <summary>Pre-v2 compatibility: a bare-object install record predates scopes and stays accepted.</summary>
     [Test]
     public async Task IsEffectivelyInstalled_true_for_bare_object_install_record_with_payload() {

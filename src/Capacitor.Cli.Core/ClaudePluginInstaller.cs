@@ -104,13 +104,18 @@ public static class ClaudePluginInstaller {
             // payload — a local/project-scoped install belonging to some unrelated repo must
             // not make the plugin globally "effective". The bare-object shape (pre-v2
             // compatibility) predates scopes and is accepted as-is.
-            IEnumerable<JsonObject> entries = entryNode switch {
-                JsonArray arr => arr.OfType<JsonObject>().Where(e =>
+            List<JsonObject> entries = entryNode switch {
+                JsonArray arr => [.. arr.OfType<JsonObject>().Where(e =>
                     e["scope"] is JsonValue sv && sv.TryGetValue<string>(out var scope) &&
-                    string.Equals(scope, "user", StringComparison.Ordinal)),
+                    string.Equals(scope, "user", StringComparison.Ordinal))],
                 JsonObject single => [single],
                 _                 => []
             };
+            // No eligible user-scoped record (v2 with only local/project installs, or an
+            // unrecognized shape) → not effective, and the directory-marketplace fallback
+            // below must not run either: it only excuses a PHANTOM cache path on an
+            // otherwise-eligible record, never the absence of an eligible record.
+            if (entries.Count == 0) return false;
             foreach (var entry in entries) {
                 if (entry["installPath"] is JsonValue v && v.TryGetValue<string>(out var installPath) &&
                     !string.IsNullOrWhiteSpace(installPath) &&
