@@ -173,9 +173,11 @@ public class McpWorkItemsServerTests {
         // builders, asserted separately below.
         var tools = McpWorkItemsServer.BuildToolsList();
 
-        // Non-vacuity: without this the loop body would never run if BuildToolsList returned empty,
-        // and the test would pass having checked nothing.
-        await Assert.That(tools.Length).IsEqualTo(7);
+        // Non-vacuity only: without this the loop body would never run if BuildToolsList returned
+        // empty and the test would pass having checked nothing. Deliberately NOT an exact count
+        // (review finding) — Tools_list_exposes_the_declare_and_breakdown_surface already pins the
+        // exact set, and duplicating it here would make an unrelated new tool fail this test too.
+        await Assert.That(tools.Length).IsGreaterThan(0);
 
         foreach (var tool in tools) {
             await Assert.That(tool.InputSchema.Properties.Keys).DoesNotContain("source")
@@ -348,15 +350,20 @@ public class McpWorkItemsServerTests {
         // then REMOVES the segment: "." would reach /api/work-items/breakdown and ".." would reach
         // /api/breakdown — a different route whose response would be attributed to the id passed.
         // The slash test does not cover this, because the hazard is normalization, not escaping.
-        foreach (var id in new[] { ".", "..", "..." }) {
+        foreach (var id in new[] { ".", ".." }) {
             var ex = Assert.Throws<ArgumentException>(
                 () => McpWorkItemsServer.ItemUrl("http://x", Args($$"""{"parent_id":"{{id}}"}"""), "parent_id", "breakdown"));
 
             await Assert.That(ex!.Message).Contains("parent_id").Because($"id {id} must be rejected");
         }
 
-        // Precondition: a dot INSIDE an otherwise-real id is still fine — the guard must not be a
-        // blanket ban on the character.
+        // And ONLY those two (review correction — an earlier revision rejected any all-dot id, and
+        // this test pinned that over-broad behaviour). "..." is an ordinary path segment, not a dot
+        // segment, so refusing it would reject an id the server might accept.
+        var threeDots = McpWorkItemsServer.ItemUrl("http://x", Args("""{"parent_id":"..."}"""), "parent_id", "breakdown");
+        await Assert.That(threeDots).IsEqualTo("http://x/api/work-items/.../breakdown");
+
+        // A dot INSIDE an otherwise-real id is fine too — the guard must not ban the character.
         var ok = McpWorkItemsServer.ItemUrl("http://x", Args("""{"parent_id":"wi.1"}"""), "parent_id", "breakdown");
         await Assert.That(ok).IsEqualTo("http://x/api/work-items/wi.1/breakdown");
     }

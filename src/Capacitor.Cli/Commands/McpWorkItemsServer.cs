@@ -258,9 +258,13 @@ static class McpWorkItemsServer {
         // normalization before the request is sent: an id of "." collapses
         // /api/work-items/./breakdown to /api/work-items/breakdown, and ".." reaches
         // /api/breakdown — a different route entirely, whose response would be attributed to the
-        // id the caller passed. Rejected outright rather than escaped, since no real work-item id
-        // is made only of dots.
-        if (id.Trim('.').Length == 0) throw new ArgumentException($"'{idKey}' is not a valid work item id.");
+        // id the caller passed.
+        //
+        // Exactly these two, and no more (review correction): "..." and longer runs are ordinary
+        // path segments, not dot segments, so rejecting them would refuse an id the server might
+        // accept. A caller-supplied "%2e" is inert — EscapeDataString escapes the '%' itself to
+        // "%252e", and standard URI processing does not decode twice.
+        if (id is "." or "..") throw new ArgumentException($"'{idKey}' is not a valid work item id.");
 
         return $"{baseUrl}/api/work-items/{Uri.EscapeDataString(id)}/{suffix}";
     }
@@ -273,12 +277,10 @@ static class McpWorkItemsServer {
 
         if (node is null) throw new ArgumentException($"'{key}' is required.");
 
-        string? value;
-        try {
-            value = node.GetValue<string>();
-        } catch {
+        // Shape-tested rather than try/catch (review finding): a bare catch would report an
+        // unrelated failure as a type error.
+        if (node is not JsonValue jsonValue || !jsonValue.TryGetValue<string>(out var value))
             throw new ArgumentException($"'{key}' must be a string.");
-        }
 
         if (string.IsNullOrWhiteSpace(value)) throw new ArgumentException($"'{key}' must not be blank.");
 
@@ -317,25 +319,25 @@ static class McpWorkItemsServer {
         // previous `is { Length: > 0 }` form dropped an explicit empty string, so the caller got the
         // server's "required" error instead of its more useful "invalid value" one. Absence stays
         // absence; a present non-string still fails locally, as shape validation should.
-        CopyRequiredishString(args, "to_id", body);
-        CopyRequiredishString(args, "relation_kind", body);
+        CopySuppliedString(args, "to_id", body);
+        CopySuppliedString(args, "relation_kind", body);
 
         return body;
     }
 
-    /// <summary>Copies a string argument into the request body if the caller supplied the key at all.
-    /// A present non-string (or explicit null) throws; an absent key is left absent so the server's
-    /// own "required" error surfaces.</summary>
-    static void CopyRequiredishString(JsonObject? args, string key, JsonObject body) {
+    /// <summary>Copies a string argument into the request body if the caller SUPPLIED the key at
+    /// all. An empty string is a supplied value and is forwarded; an explicit null or a non-string is
+    /// a wrong shape and throws; an absent key is left absent so the server's own "required" error
+    /// surfaces rather than a local guess.</summary>
+    static void CopySuppliedString(JsonObject? args, string key, JsonObject body) {
         if (args is null || !args.TryGetPropertyValue(key, out var node)) return;
 
         if (node is null) throw new ArgumentException($"'{key}' must be a string, not null.");
 
-        try {
-            body[key] = node.GetValue<string>();
-        } catch {
+        if (node is not JsonValue value || !value.TryGetValue<string>(out var text))
             throw new ArgumentException($"'{key}' must be a string.");
-        }
+
+        body[key] = text;
     }
 
     /// <summary>Reads a JSON array of non-blank strings. Any other present shape — a bare string, an
@@ -347,12 +349,8 @@ static class McpWorkItemsServer {
         var result = new JsonArray();
 
         foreach (var element in array) {
-            string? value;
-            try {
-                value = element?.GetValue<string>();
-            } catch {
+            if (element is not JsonValue elementValue || !elementValue.TryGetValue<string>(out var value))
                 throw new ArgumentException($"'{key}' must contain only strings.");
-            }
 
             if (string.IsNullOrWhiteSpace(value)) throw new ArgumentException($"'{key}' must not contain blank entries.");
 
