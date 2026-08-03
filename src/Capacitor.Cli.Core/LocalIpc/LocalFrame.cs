@@ -31,4 +31,8 @@ public sealed record LocalFrame(FrameType Type) {
     /// Constructs a Hello or HelloReply frame, whose payload is UTF-8 JSON
     /// (snake_case via HelloIpcJsonContext) carried in Text — see HelloIpc.cs.
     public static LocalFrame HelloJson(FrameType type, string json) => new(type) { Text = json };
+
+    /// Constructs a DaemonStatus frame, whose payload is UTF-8 JSON
+    /// (snake_case via StatusIpcJsonContext) carried in Text — see StatusIpc.cs.
+    public static LocalFrame StatusJson(FrameType type, string json) => new(type) { Text = json };
 }

@@ -45,7 +45,7 @@ public static class FrameCodec {
     static byte[] Encode(LocalFrame f) => f.Type switch {
         FrameType.Stdin or FrameType.Stdout => f.Bytes,
         FrameType.Resize                    => Dims(f.Cols, f.Rows),
-        FrameType.Detach or FrameType.List  => [],
+        FrameType.Detach or FrameType.List or FrameType.StatusSubscribe => [],
         FrameType.Exited                    => BeInt(f.ExitCode),
         FrameType.Error or FrameType.Attach or FrameType.AgentList
             or FrameType.Restart or FrameType.RestartAck
@@ -54,7 +54,7 @@ public static class FrameCodec {
             or FrameType.ConsentSubscribe or FrameType.ConsentResolve
             or FrameType.ConsentRulesGet or FrameType.ConsentRulesPut
             or FrameType.ConsentPending or FrameType.ConsentRules
-            or FrameType.ConsentAck => Encoding.UTF8.GetBytes(f.Text),
+            or FrameType.ConsentAck or FrameType.DaemonStatus => Encoding.UTF8.GetBytes(f.Text),
         FrameType.Attached or FrameType.Spawn
             or FrameType.StopV2 or FrameType.AttachedReadOnly => f.Bytes, // pre-encoded by the helpers below
         _ => throw new InvalidDataException($"unencodable frame {f.Type}"),
@@ -63,7 +63,7 @@ public static class FrameCodec {
     static LocalFrame Decode(FrameType t, byte[] p) => t switch {
         FrameType.Stdin or FrameType.Stdout => new(t) { Bytes = p },
         FrameType.Resize  => new(t) { Cols = Be16(p, 0), Rows = Be16(p, 2) },
-        FrameType.Detach or FrameType.List => new(t),
+        FrameType.Detach or FrameType.List or FrameType.StatusSubscribe => new(t),
         FrameType.Exited  => new(t) { ExitCode = BinaryPrimitives.ReadInt32BigEndian(p) },
         FrameType.Error or FrameType.Attach or FrameType.AgentList
             or FrameType.Restart or FrameType.RestartAck
@@ -72,7 +72,7 @@ public static class FrameCodec {
             or FrameType.ConsentSubscribe or FrameType.ConsentResolve
             or FrameType.ConsentRulesGet or FrameType.ConsentRulesPut
             or FrameType.ConsentPending or FrameType.ConsentRules
-            or FrameType.ConsentAck => new(t) { Text = Encoding.UTF8.GetString(p) },
+            or FrameType.ConsentAck or FrameType.DaemonStatus => new(t) { Text = Encoding.UTF8.GetString(p) },
         FrameType.Attached or FrameType.Spawn
             or FrameType.StopV2 or FrameType.AttachedReadOnly => new(t) { Bytes = p },
         _ => throw new InvalidDataException($"undecodable frame {t}"),
