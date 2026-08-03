@@ -36,8 +36,8 @@ public class PluginCommandGeminiTests {
 
         var root    = JsonNode.Parse(await File.ReadAllTextAsync(env.GeminiSettingsJson))!.AsObject();
         var servers = root["mcpServers"]!.AsObject();
-        // Registered command is the running native binary (the test host here), not the wrapper-resolved "kcap".
-        await Assert.That(servers["kcap-review"]!["command"]!.GetValue<string>()).IsEqualTo(Environment.ProcessPath!);
+        // Registered command is the resolved native binary (injected seam), not the wrapper-resolved "kcap".
+        await Assert.That(servers["kcap-review"]!["command"]!.GetValue<string>()).IsEqualTo(TestBinaryPath);
         await Assert.That(servers["kcap-review"]!["type"]).IsNull();  // Gemini shape: no `type`
         await Assert.That(servers.Select(kv => kv.Key)).Contains("kcap-sessions");
         await Assert.That(servers.Select(kv => kv.Key)).Contains("kcap-flows");
@@ -282,12 +282,17 @@ public class PluginCommandGeminiTests {
         await Assert.That(File.Exists(env.GeminiSettingsJson)).IsFalse();
     }
 
+    // Deterministic native-binary path: registration writes the resolved binary as the command
+    // (default: the running process), so tests inject their own value and assert that,
+    // never blessing whatever executable happens to run the suite.
+    internal const string TestBinaryPath = "/opt/kcap-test/bin/kcap";
+
     static PluginEnvironment TestEnv(string fakeHome) => new(
         HomeDirectory:     fakeHome,
         ResolvePluginPath: () => null,
         Stdout:            TextWriter.Null,
         Stderr:            TextWriter.Null
-    );
+    ) { ResolveMcpBinaryPath = () => TestBinaryPath };
 
     // Sets an env var for the test's lifetime and restores the previous value on Dispose.
     // Used to clear GEMINI_CLI_HOME so GeminiPaths resolves under the fake home.

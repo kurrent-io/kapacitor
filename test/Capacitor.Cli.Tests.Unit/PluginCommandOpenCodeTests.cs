@@ -137,7 +137,7 @@ public class PluginCommandOpenCodeTests {
         await Assert.That(review["type"]!.GetValue<string>()).IsEqualTo("local");
         await Assert.That(review["enabled"]!.GetValue<bool>()).IsTrue();
         var cmd = string.Join(",", review["command"]!.AsArray().Select(n => n!.GetValue<string>()));
-        await Assert.That(cmd).IsEqualTo($"{Environment.ProcessPath},mcp,review"); // argv head = the running native binary
+        await Assert.That(cmd).IsEqualTo($"{TestBinaryPath},mcp,review"); // argv head = the resolved native binary (injected seam)
         await Assert.That(mcp.Select(kv => kv.Key)).Contains("kcap-sessions");
         await Assert.That(mcp.Select(kv => kv.Key)).Contains("kcap-flows");
         await Assert.That(mcp.Select(kv => kv.Key)).Contains("kcap-memory");
@@ -237,12 +237,17 @@ public class PluginCommandOpenCodeTests {
         public void Dispose() => Environment.SetEnvironmentVariable(_key, _prev);
     }
 
+    // Deterministic native-binary path: registration writes the resolved binary as the command
+    // (default: the running process), so tests inject their own value and assert that,
+    // never blessing whatever executable happens to run the suite.
+    internal const string TestBinaryPath = "/opt/kcap-test/bin/kcap";
+
     static PluginEnvironment TestEnv(string fakeHome) => new(
         HomeDirectory:     fakeHome,
         ResolvePluginPath: () => null,
         Stdout:            TextWriter.Null,
         Stderr:            TextWriter.Null
-    );
+    ) { ResolveMcpBinaryPath = () => TestBinaryPath };
 
     sealed class TempDir : IDisposable {
         public string Path { get; } = System.IO.Path.Combine(

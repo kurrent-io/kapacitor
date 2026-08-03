@@ -212,9 +212,17 @@ public class FlowsDriverSchemaConformanceTests {
         public void Dispose() => Environment.SetEnvironmentVariable(_key, _prev);
     }
 
+    /// <summary>Deterministic native-binary path injected into every installer arm. Registration
+    /// writes the resolved binary as the command (default: Environment.ProcessPath) — under the
+    /// test host that default would be the test-runner executable, so the suite injects its own
+    /// value and asserts THAT, never blessing whatever happens to be running the tests.</summary>
+    internal const string InjectedBinaryPath = "/opt/conformance/bin/kcap";
+
     static PluginEnvironment TestEnv(string home, string? pluginRoot = null) =>
         new(HomeDirectory: home, ResolvePluginPath: () => pluginRoot,
-            Stdout: TextWriter.Null, Stderr: TextWriter.Null);
+            Stdout: TextWriter.Null, Stderr: TextWriter.Null) {
+            ResolveMcpBinaryPath = () => InjectedBinaryPath
+        };
 
     /// <summary>Codex is the one arm that does not use the `--if-installed` refresh branch (it
     /// installs unconditionally), so it needs a resolvable plugin root carrying the skills source —
@@ -340,7 +348,7 @@ public class FlowsDriverSchemaConformanceTests {
     public async Task Every_installed_driver_launches_the_same_flows_server(Arm arm) {
         var p = await InstallAndRead(arm);
 
-        await Assert.That(p.Command).IsEqualTo(KcapMcpServers.Command)
+        await Assert.That(p.Command).IsEqualTo(InjectedBinaryPath)
             .Because($"{p.Harness} must launch the same executable as every other driver");
         // ORDERED: argv order is semantic. An unordered comparison passes ["flows","mcp"], which
         // launches nothing.

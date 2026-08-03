@@ -7,6 +7,9 @@ namespace Capacitor.Cli.Tests.Unit.Codex;
 // EnableNetworkAccess/TrustWorktree take an explicit config path, so these tests
 // use a temp file and never touch HOME — safe to run in parallel.
 public class CodexConfigTomlTests {
+    // Injected native-binary path for command assertions - never bless the test runner.
+    const string TestBinaryPath = "/opt/kcap-test/bin/kcap";
+
     static string TempConfig() =>
         Path.Combine(Directory.CreateTempSubdirectory("kcap-codextoml-").FullName, "config.toml");
 
@@ -222,7 +225,7 @@ public class CodexConfigTomlTests {
     public async Task RegisterKcapMcpServers_on_missing_config_writes_all_servers() {
         var path = TempConfig();
 
-        var change = CodexConfigToml.RegisterKcapMcpServers(path);
+        var change = CodexConfigToml.RegisterKcapMcpServers(path, resolveBinaryPath: () => TestBinaryPath);
 
         await Assert.That(change).IsEqualTo(CodexConfigToml.Change.Updated);
 
@@ -232,14 +235,14 @@ public class CodexConfigTomlTests {
         var flows    = (TomlTable)servers["kcap-flows"];
         var memory   = (TomlTable)servers["kcap-memory"];
 
-        // Registered command is the running native binary (the test host here), not the wrapper-resolved "kcap".
-        await Assert.That((string)review["command"]).IsEqualTo(Environment.ProcessPath!);
+        // Registered command is the resolved native binary (injected seam), not the wrapper-resolved "kcap".
+        await Assert.That((string)review["command"]).IsEqualTo(TestBinaryPath);
         await Assert.That(ArgsOf(review)).IsEquivalentTo(new[] { "mcp", "review" });
-        await Assert.That((string)sessions["command"]).IsEqualTo(Environment.ProcessPath!);
+        await Assert.That((string)sessions["command"]).IsEqualTo(TestBinaryPath);
         await Assert.That(ArgsOf(sessions)).IsEquivalentTo(new[] { "mcp", "sessions" });
         await Assert.That(ArgsOf(flows)).IsEquivalentTo(new[] { "mcp", "flows" });
         // kcap-memory is now auto-registered for Codex too.
-        await Assert.That((string)memory["command"]).IsEqualTo(Environment.ProcessPath!);
+        await Assert.That((string)memory["command"]).IsEqualTo(TestBinaryPath);
         await Assert.That(ArgsOf(memory)).IsEquivalentTo(new[] { "mcp", "memory" });
         await Assert.That(File.Exists(Path.Combine(Path.GetDirectoryName(path)!, "mcp-ownership-v1.json"))).IsTrue();
     }
@@ -448,14 +451,14 @@ public class CodexConfigTomlTests {
             args = ["mcp", "sessions"]
             """);
 
-        var change = CodexConfigToml.RegisterKcapMcpServers(path);
+        var change = CodexConfigToml.RegisterKcapMcpServers(path, resolveBinaryPath: () => TestBinaryPath);
 
         // kcap-review added; kcap-sessions left as-is → overall Updated.
         await Assert.That(change).IsEqualTo(CodexConfigToml.Change.Updated);
 
         var servers = (TomlTable)ReadToml(path)["mcp_servers"];
         await Assert.That((string)((TomlTable)servers["kcap-sessions"])["command"]).IsEqualTo("/opt/homebrew/bin/kcap");
-        await Assert.That((string)((TomlTable)servers["kcap-review"])["command"]).IsEqualTo(Environment.ProcessPath!);
+        await Assert.That((string)((TomlTable)servers["kcap-review"])["command"]).IsEqualTo(TestBinaryPath);
     }
 
     [Test]
