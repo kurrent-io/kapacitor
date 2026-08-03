@@ -208,6 +208,11 @@ public class TerminalOutputBuffer {
 internal partial class AgentOrchestrator : IAsyncDisposable {
     readonly ConcurrentDictionary<string, AgentInstance>       _agents = new();
 
+    // The change-generation counter behind the DaemonStatus push. Optional ctor param so the
+    // existing direct-construction sites (and DI, which resolves an optional parameter to a
+    // registered singleton when one exists) keep compiling unchanged.
+    readonly DaemonStatusNotifier _statusNotifier;
+
     // Phase B (D4): durable PID records + this daemon's logical identity/epoch for
     // crash-survivor reaping. Initialized in the ctor from config.
     AgentPidRecordStore? _pidRecords;
@@ -384,7 +389,11 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             // pre-settlement inline arm and the publication barrier explicitly (see
             // PublishSequencedProcessorForTest). Production ALWAYS publishes here, before any handler is
             // wired, so the null window this exposes never exists in a running daemon.
-            bool                                              deferProcessorPublication = false
+            bool                                              deferProcessorPublication = false,
+            // Null in every pre-existing construction site — those daemons just get a private
+            // notifier nobody subscribes to. DaemonRunner passes the DI-registered singleton so a
+            // StatusSubscribe waiter sees every mutation this orchestrator makes.
+            DaemonStatusNotifier?                             statusNotifier = null
         ) {
         _shutdownCts       = CancellationTokenSource.CreateLinkedTokenSource(lifetime.ApplicationStopping);
         _config            = config;
@@ -398,6 +407,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
         _runtimeFactories  = runtimeFactories;
         _logger            = logger;
         _consentGate       = consentGate;
+        _statusNotifier    = statusNotifier ?? new();
 
         // Phase B (D4): per-daemon PID-record store + this daemon's logical id + boot epoch.
         // Records live under "{stateDir}/{name}/agents" so they are unambiguously THIS daemon's own
@@ -570,6 +580,25 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     }
 
     internal int ActiveCount => _agents.Count(a => a.Value.Status is "Starting" or "Running");
+
+    /// Mutation FIRST, Pulse() second — always (a pulse published before its mutation lets a
+    /// subscriber read the new version, snapshot the OLD state, and wait forever). These
+    /// helpers are the only writers of agent status and registry membership, so the ordering
+    /// cannot be forgotten at a call site.
+    internal void SetAgentStatus(AgentInstance agent, string status) {
+        agent.Status = status;
+        _statusNotifier.Pulse();
+    }
+
+    internal void PublishAgent(AgentInstance agent) {
+        _agents[agent.Id] = agent;
+        _statusNotifier.Pulse();
+    }
+
+    internal void UnpublishAgent(string agentId) {
+        _agents.TryRemove(agentId, out _);
+        _statusNotifier.Pulse();
+    }
 
     /// <summary>Phase B (D3): clock seam so the reviewer-TTL heartbeat check is testable with a
     /// fixed time. Production uses the real UTC clock.</summary>
@@ -974,7 +1003,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
         };
         agent.Status = status;
         if (lastOutputAt is { } lo) agent.LastOutputAt = lo;
-        _agents[id] = agent;
+        PublishAgent(agent);
         return agent;
     }
 
@@ -1482,7 +1511,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
                 FlowRole            = cmd.FlowRole,
                 RequesterUserId     = cmd.RequesterUserId
             };
-            _agents[agentId] = agent;
+            PublishAgent(agent);
 
             // Phase B (D4 §6.4(2)): capture the start-identity + write the durable PID record
             // immediately after the process exists (before registration) so a daemon crash right after
@@ -1501,7 +1530,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             // runtimes are unaffected — they keep the existing on-first-chunk flip in
             // ReadAgentOutputAsync unchanged.
             if (!runtime.EmitsTerminalOutput) {
-                agent.Status            = "Running";
+                SetAgentStatus(agent, "Running");
                 agent.HasReceivedOutput = true;
                 if (!agent.IsPrivate) _ = _server.AgentStatusChangedAsync(agent.Id, "Running", agent.SessionId);
             }
@@ -1753,7 +1782,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
                 agent.HasReceivedOutput = true;
 
                 if (agent.Status == "Starting") {
-                    agent.Status = "Running";
+                    SetAgentStatus(agent, "Running");
                     if (!agent.IsPrivate) _ = _server.AgentStatusChangedAsync(agent.Id, "Running", agent.SessionId);
                 }
 
@@ -1835,7 +1864,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
         // Capture the banner before termination/cleanup discards the buffer.
         PersistFailedLaunchLog(agent, reason);
 
-        agent.Status           = "Failed";
+        SetAgentStatus(agent, "Failed");
         agent.PendingEndReason = "consent_dialog_wedge";
 
         if (!agent.IsPrivate) {
@@ -1914,7 +1943,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
                     if (!agent.IsPrivate) _ = _server.LaunchFailedAsync(agent.Id, reason);
                 }
 
-                agent.Status = status;
+                SetAgentStatus(agent, status);
 
                 // PrivateLocal agents make no per-agent server calls (deny-all).
                 if (!agent.IsPrivate) {
@@ -2105,7 +2134,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
 
             // Set status BEFORE cancelling ReadCts so the read loop's finally
             // block sees "Completed" and skips its own status change / event append.
-            agent.Status = "Completed";
+            SetAgentStatus(agent, "Completed");
             // Mark this as a user-initiated stop so the read-loop's finally-block
             // EndAgentSessionAsync call uses "agent_stopped" if it ends up being
             // the only successful call (e.g., transient SignalR failure here).
@@ -3061,7 +3090,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
 
         // Now drop the agent from the live registry — after a surviving child is already in quarantine,
         // so a concurrent launch never sees EffectiveCount transiently under-count this agent.
-        _agents.TryRemove(agentId, out _);
+        UnpublishAgent(agentId);
 
         // Skip server unregister during shutdown — _ct is cancelled and the call
         // would throw TaskCanceledException. The server detects the daemon
@@ -3344,7 +3373,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     internal FailedLaunchLog? FailedLaunchLogForTest => _failedLaunchLog;
 
     /// <summary>Test-only: register a pre-built agent so cleanup/lifecycle can be driven directly.</summary>
-    internal void RegisterAgentForTest(AgentInstance agent) => _agents[agent.Id] = agent;
+    internal void RegisterAgentForTest(AgentInstance agent) => PublishAgent(agent);
 
     /// <summary>Test-only: look up a tracked agent by id (null if absent), so a launch test can
     /// assert the resolved <see cref="AgentInstance.Work"/> / <see cref="AgentInstance.Worktree"/>.</summary>

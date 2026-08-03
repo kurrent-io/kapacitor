@@ -36,6 +36,20 @@ internal partial class AgentOrchestrator {
     };
 
     /// <summary>
+    /// The supervision payload's agent rows: every entry in _agents (all statuses — same
+    /// visibility as `kcap agent ls`; quarantined-but-removed children are gone from _agents
+    /// already). Order is a wire contract: created_at ascending, id-ordinal tie-break —
+    /// ConcurrentDictionary enumeration order must never leak into the payload.
+    /// </summary>
+    internal List<AgentStatusDto> SnapshotAgentsForStatus() =>
+        [.. _agents.Values
+            .OrderBy(a => a.CreatedAt)
+            .ThenBy(a => a.Id, StringComparer.Ordinal)
+            .Select(a => new AgentStatusDto(
+                a.Id, KindText(a.Kind), a.Vendor, a.RepoPath, a.Status,
+                a.FlowRunId, a.FlowRole, a.RequesterUserId, a.CreatedAt, a.Model))];
+
+    /// <summary>
     /// Serves the legacy <c>Stop</c> frame from older clients that predate --force. That frame
     /// has no force concept, so it always behaves as if --force were passed: an older client
     /// gets exactly its previous (unprotected) behaviour, and gains no new refusals it has no
@@ -182,7 +196,7 @@ internal partial class AgentOrchestrator {
                 CurrentCols    = cols,
                 CurrentRows    = rows
             };
-            _agents[agentId] = agent;
+            PublishAgent(agent);
         } catch (Exception ex) {
             // Don't leak a daemon-created worktree if Prepare / passthrough-arg building /
             // spawn fails after the worktree was created (mirrors the server launch path).
