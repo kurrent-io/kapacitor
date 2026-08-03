@@ -68,7 +68,14 @@ public partial class AgentOrchestratorVendorTests {
             // pre-existing test (none of which know about consent) keeps passing unchanged. A test
             // exercising a deny/prompt policy passes its own gate (e.g. built with a Deny-default
             // LaunchConsentStore) instead.
-            LaunchConsentGate?                                  consentGate            = null
+            LaunchConsentGate?                                  consentGate            = null,
+            // §3.3: defaults to the fixed never-cancels StubHostLifetime every pre-existing test relies
+            // on. A test that needs to simulate shutdown firing mid-launch (e.g. a gate OCE parked on a
+            // consent prompt) passes its own lifetime with a controllable ApplicationStopping token.
+            IHostApplicationLifetime?                           lifetime               = null,
+            // §3.3: leaves the sequenced processor unpublished, so a test can drive the pre-settlement
+            // inline arm and the publication barrier. Production never has that window.
+            bool                                                deferProcessorPublication = false
         ) {
         var config = new DaemonConfig {
             Name                = "test",
@@ -105,7 +112,7 @@ public partial class AgentOrchestratorVendorTests {
         consentGate ??= new LaunchConsentGate(
             new LaunchConsentStore(config.StateDir!, NullLogger.Instance),
             new LaunchConsentDecisionLog(config.StateDir!, NullLogger.Instance),
-            prompter: null, NullLogger<LaunchConsentGate>.Instance);
+            prompter: null, TimeProvider.System, NullLogger<LaunchConsentGate>.Instance);
 
         return new AgentOrchestrator(
             config,
@@ -117,9 +124,10 @@ public partial class AgentOrchestratorVendorTests {
             permissionBridge,
             launchers,
             runtimeFactories,
-            new StubHostLifetime(),
+            lifetime ?? new StubHostLifetime(),
             logger ?? NullLogger<AgentOrchestrator>.Instance,
-            consentGate
+            consentGate,
+            deferProcessorPublication
         );
     }
 
@@ -1600,7 +1608,7 @@ public partial class AgentOrchestratorVendorTests {
         var store = new LaunchConsentStore(dir, NullLogger.Instance);
         store.TryReplace(new LaunchConsentPolicy(LaunchConsentDefault.Deny, 5, []), out _);
         return new LaunchConsentGate(store, new LaunchConsentDecisionLog(dir, NullLogger.Instance),
-            prompter: null, NullLogger<LaunchConsentGate>.Instance);
+            prompter: null, TimeProvider.System, NullLogger<LaunchConsentGate>.Instance);
     }
 
     [Test]

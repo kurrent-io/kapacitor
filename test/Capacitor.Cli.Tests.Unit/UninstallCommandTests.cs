@@ -12,7 +12,20 @@ namespace Capacitor.Cli.Tests.Unit;
 // ConfigDirEnvVar: uninstall reads KCAP_CONFIG_DIR fresh on every call,
 // so we mutate it per-test to point at the test's temp dir without disturbing
 // the assembly-wide value pinned by RepoPathStoreGlobalSetup.
-[NotInParallel(["HomeEnvVarMutation", "ConfigDirEnvVar", "CwdMutation"])]
+//
+// DaemonLockPaths.OverrideDirectoryForTesting: uninstall runs `daemon stop --yes`,
+// which enumerates the daemons directory and kills the PIDs it finds. That directory
+// comes from a process-global static, so a concurrent daemon test's override sends
+// uninstall at that test's temp dir — where a real DaemonLock has written the test
+// runner's own PID. Uninstall then kills the tree containing itself. The
+// KCAP_CONFIG_DIR isolation above cannot help; that directory ignores it by design.
+// See DaemonStopSelfPidTests for the full mechanism.
+[NotInParallel([
+    "HomeEnvVarMutation",
+    "ConfigDirEnvVar",
+    "CwdMutation",
+    nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting"
+])]
 public class UninstallCommandTests {
     [Test]
     public async Task User_level_uninstall_removes_kcap_entries_and_preserves_user_data() {

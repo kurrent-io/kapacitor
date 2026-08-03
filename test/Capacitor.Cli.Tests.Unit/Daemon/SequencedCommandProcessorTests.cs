@@ -28,6 +28,31 @@ public class SequencedCommandProcessorTests {
         await Assert.That(h.ExecOrder.ToArray()).IsEquivalentTo(new[] { 1L, 2L });
     }
 
+    // §3.3 (unpark the receive loop): the invariant AgentOrchestrator.HandleLaunchAgent's detached
+    // execution depends on — SubmitAsync decides ACCEPTANCE (lock, watermark bump, cache write, channel
+    // enqueue) fully and synchronously before returning, so a caller that never awaits the returned
+    // execution-completion task (as the unparked receive loop now does) still gets in-order acceptance
+    // for whatever it submits next, even while the FIRST item's execution is still blocked/parked.
+    [Test] public async Task SubmitAsync_accepts_the_next_item_without_waiting_for_the_previous_executions_completion() {
+        var h = new Harness(); await using var p = h.P();
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        // Item 1 is submitted but its execution BLOCKS (simulating a launch parked on consent).
+        var t1 = p.SubmitAsync(h.Launch(1),
+            async () => { await gate.Task; return new CommandOutcome(CommandOutcomeKind.LaunchExecuted); });
+
+        // Item 2 is submitted while item 1 is still executing/blocked — its ACCEPTANCE must still
+        // complete synchronously and in order (no WrongNext), proving the caller need not await t1.
+        var t2 = p.SubmitAsync(h.Launch(2), () => Task.FromResult(new CommandOutcome(CommandOutcomeKind.LaunchExecuted)));
+
+        await Assert.That(p.HighestAcceptedSeq).IsEqualTo(2L); // both accepted, in wire order
+        await Assert.That(h.Rejects).IsEmpty();                // no WrongNext — 2 was next when it arrived
+
+        gate.SetResult();  // let item 1 (and, serially, item 2) drain
+        await t1; await t2;
+        await Assert.That(p.LastProcessedSeq).IsEqualTo(2L);
+    }
+
     [Test] public async Task Out_of_order_command_is_not_accepted() {
         var h = new Harness(); await using var p = h.P();
         var ran = false;

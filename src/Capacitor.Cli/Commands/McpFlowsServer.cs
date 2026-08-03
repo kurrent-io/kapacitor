@@ -8,6 +8,7 @@ using System.Text.Json.Serialization;
 using System.Text.Json.Serialization.Metadata;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Auth;
+using Capacitor.Cli.Core.Config;
 
 namespace Capacitor.Cli.Commands;
 
@@ -138,10 +139,16 @@ static class McpFlowsServer {
             // the environment down here — see HarnessRequesterContext). Optional so the tests that
             // exercise routing/retry/error paths, where requester identity is irrelevant, can omit
             // it; the production dispatch in RunAsync always supplies it.
-            string?             requestingSessionId = null
+            string?             requestingSessionId = null,
+            // How the saved reviewer-vendor preference is read, injectable for the same reason the
+            // clock is: the real read resolves a profile from the user's own config file, which a
+            // unit test must never depend on. Production passes nothing and gets the real read — a
+            // fresh one per consultation, never a cached value (see LoadReviewerVendorPreferenceAsync).
+            Func<Task<SavedReviewerVendor>>? reviewerVendorPreference = null
         ) {
-        clock   ??= FlowRetryClock.System;
-        backoff ??= SettlementBackoff.Default;
+        clock                    ??= FlowRetryClock.System;
+        backoff                  ??= SettlementBackoff.Default;
+        reviewerVendorPreference ??= LoadReviewerVendorPreferenceAsync;
         var paramsNode = request["params"]?.AsObject();
         var toolName   = paramsNode?["name"]?.GetValue<string>();
         var arguments  = paramsNode?["arguments"]?.AsObject();
@@ -176,6 +183,12 @@ static class McpFlowsServer {
                 var wasModelStart = !wasDynamicStart
                     && toolName is "start_review_flow" or "start_flow"
                     && !string.IsNullOrWhiteSpace(arguments?["model"]?.GetValue<string>());
+
+                // When this call sends TWICE (the preference fallback below), both sends share ONE
+                // settlement budget measured from here — see budgetStartedAt on
+                // SendWithSettlementRetryAsync. Taken before the first send so the second can never
+                // extend the total past the single-call deadline.
+                var settlementStartedAt = clock.UtcNow;
 
                 var sendResult = toolName switch {
                     "start_review_flow"   => wasModelStart
@@ -240,6 +253,86 @@ static class McpFlowsServer {
                         await BestEffortCloseAsync(client, apiRoot, flowRunIdToClose);
 
                     return BuildToolResult(id, vendorCheck.Message, vendorCheck.IsError);
+                }
+
+                // The saved-preference fallback. The server refuses a start it cannot resolve a
+                // reviewer for (explicit → definition-authored → refuse); the LAST rung is local, so
+                // a user who told us once which reviewer they want isn't asked again every run. It
+                // runs at most ONCE per tool call and only for a refusal that provably started
+                // nothing — see ShouldPreferenceRetry for why every conjunct of that gate matters.
+                if (ShouldPreferenceRetry(toolName, wasDynamicStart, wasModelStart, requestedVendor, postResponse.IsSuccessStatusCode, postBody)) {
+                    // Normalized exactly like an explicit argument would be: the canonical token is
+                    // what the server echoes back, so a preference saved as "Codex" must not read as
+                    // a vendor mismatch and close the run it just started. Blank is re-checked here
+                    // rather than trusted from the accessor, because NormalizeVendor throws on one
+                    // and an empty preference must degrade to "none saved", never to a crash.
+                    var saved      = await reviewerVendorPreference();
+                    var preference = string.IsNullOrWhiteSpace(saved.Vendor) ? null : NormalizeVendor(saved.Vendor);
+
+                    if (preference is null)
+                        return BuildToolResult(
+                            id,
+                            FormatFlowStartError((int)postResponse.StatusCode, postBody, wasDynamicStart)
+                                + PreferenceMissingGuidance(saved.ProfileName),
+                            isError: true);
+
+                    // Injected as a real argument rather than passed alongside, so the retry is
+                    // indistinguishable from an explicit request: StartFlowAsync sends it AND
+                    // CheckVendorOverrideResult asserts the echo against it. arguments is non-null
+                    // here — a null one throws out of the required-argument reads before any POST.
+                    arguments!["vendor"] = preference;
+
+                    // On the FIRST send's budget, not a fresh one: two 3-minute windows plus the poll
+                    // cap would outlast the harness tool timeout, and the way that ends is the worst
+                    // one available — this retry succeeds, a paid reviewer launches, the harness has
+                    // already timed the call out, and the driver starts the flow a second time. With
+                    // the budget shared, an exhausted window returns before POSTing at all.
+                    var retryResult = await SendWithSettlementRetryAsync(
+                        client, apiRoot,
+                        (c, ct) => StartFlowAsync(
+                            c, apiRoot, arguments, cwd, repoRoot, repoInfo,
+                            kindArgName: toolName == "start_review_flow" ? "kind" : "definition_id",
+                            requestingSessionId: requestingSessionId, ct: ct),
+                        clock, backoff, budgetStartedAt: settlementStartedAt);
+
+                    if (retryResult is SettlementSendResult.DeadlineExhausted retryExhausted)
+                        return BuildToolResult(id, FormatSettlementDeadlineError(retryExhausted), isError: true);
+
+                    using var retryResponse = ((SettlementSendResult.Response)retryResult).Value;
+
+                    var retryBody = await retryResponse.Content.ReadAsStringAsync();
+
+                    // Same ordering as the first POST: an expired token (the refresh retry inside the
+                    // send already had its go) is an auth problem, not a vendor one — say so, rather
+                    // than printing a raw HTTP 401 the caller would read as a flow rejection.
+                    if (retryResponse.StatusCode == HttpStatusCode.Unauthorized)
+                        return BuildToolResult(id, "Not logged in. Run 'kcap login' on the host shell.", isError: true);
+
+                    if (CheckVendorOverrideResult(toolName, preference, retryResponse.StatusCode, retryResponse.IsSuccessStatusCode, retryBody, out var retryRunIdToClose) is { } retryVendorCheck) {
+                        if (retryRunIdToClose is not null)
+                            await BestEffortCloseAsync(client, apiRoot, retryRunIdToClose);
+
+                        return BuildToolResult(id, retryVendorCheck.Message, retryVendorCheck.IsError);
+                    }
+
+                    // Terminal either way: the retry is the whole budget. A failure that indicts the
+                    // saved vendor itself gets the re-ask-and-re-save remedy; anything else surfaces
+                    // as itself, because blaming the preference for an unrelated fault would send the
+                    // user to change a setting that was never wrong.
+                    if (!retryResponse.IsSuccessStatusCode) {
+                        var stale = TryParseCodedError(retryBody, out var retryCode, out _)
+                                    && StalePreferenceCodes.Contains(retryCode!);
+
+                        return BuildToolResult(
+                            id,
+                            FormatFlowStartError((int)retryResponse.StatusCode, retryBody, wasDynamicStart)
+                                + (stale ? StalePreferenceGuidance(preference, saved.ProfileName) : ""),
+                            isError: true);
+                    }
+
+                    var (retryPayload, retryIsError) = await ResolveRoundResultAsync(client, apiRoot, retryBody, toolName, wasDynamicStart, clock, backoff);
+
+                    return BuildToolResult(id, $"{PreferenceAppliedPrefix(preference)}\n{retryPayload}", retryIsError);
                 }
 
                 if (!postResponse.IsSuccessStatusCode)
@@ -343,6 +436,13 @@ static class McpFlowsServer {
     /// (MCP_TOOL_TIMEOUT, 10 minutes) and surface as a harness-level timeout instead of a clean
     /// tool result. Three minutes fits roughly two full server-side admission waits plus backoff
     /// while staying far under that ceiling. If the harness pin ever changes, re-derive this.
+    ///
+    /// <para>A tool call spends AT MOST ONE such window in total, which is what keeps that
+    /// derivation valid: the one caller that sends twice (the preference fallback) threads
+    /// <c>budgetStartedAt</c> so both sends share this budget rather than opening a second. The
+    /// worst case therefore stays this deadline plus <see cref="PollCap"/> — a second independent
+    /// window would push it past the harness pin, and precisely in the shape that matters, with a
+    /// paid reviewer launched by a POST whose result nobody is still waiting for.</para>
     /// </summary>
     internal static readonly TimeSpan SettlementElapsedDeadline = TimeSpan.FromMinutes(3);
 
@@ -408,6 +508,15 @@ static class McpFlowsServer {
     /// <para>Wraps (doesn't replace) <see cref="SendWithRefreshRetryAsync"/>, so the 401 refresh
     /// retry still applies on every attempt. All timing is injectable so unit tests run instantly on
     /// a virtual clock.</para>
+    ///
+    /// <para><paramref name="budgetStartedAt"/> lets a caller that sends TWICE within one tool call
+    /// (the preference fallback: a refused vendor-less start, then one re-send naming the saved
+    /// vendor) share ONE elapsed budget instead of opening a second full one. Two independent
+    /// budgets would put the worst case at 3m + 3m of settlement plus the poll cap — past the
+    /// harness MCP tool timeout this deadline was sized to stay under, with the specific hazard that
+    /// the second POST succeeds (a run minted, a paid reviewer launched) after the harness has
+    /// already given up, and the driver starts the flow again. Omitted, the budget starts now, which
+    /// is every other caller's behavior unchanged.</para>
     /// </summary>
     internal static async Task<SettlementSendResult> SendWithSettlementRetryAsync(
             HttpClient                                                    client,
@@ -415,9 +524,10 @@ static class McpFlowsServer {
             Func<HttpClient, CancellationToken, Task<HttpResponseMessage>> send,
             FlowRetryClock                                                clock,
             SettlementBackoff                                             backoff,
-            CancellationToken                                             callerToken = default
+            CancellationToken                                             callerToken = default,
+            DateTimeOffset?                                               budgetStartedAt = null
         ) {
-        var startedAt = clock.UtcNow;
+        var startedAt = budgetStartedAt ?? clock.UtcNow;
         var deadline  = startedAt + SettlementElapsedDeadline;
 
         string? lastCode    = null;
@@ -522,6 +632,106 @@ static class McpFlowsServer {
             $"'{applied ?? "(none)"}' — closed the run defensively. This should not happen " +
             "when the versioned start route matched; please report it.",
             true);
+    }
+
+    /// <summary>
+    /// The saved-preference retry trigger. A flow start is NON-IDEMPOTENT — an accepted POST mints a
+    /// run and launches a paid reviewer — so the only retryable failure is one the server provably
+    /// refused before doing anything: the STRUCTURED reviewer_vendor_required code, which the
+    /// vendor-resolution ladder returns after exhausting explicit → definition-authored and before
+    /// any run exists.
+    ///
+    /// <para>Every conjunct is load-bearing. A vendor-less AND model-less catalog start is the only
+    /// shape that means "I never named a vendor": the v3 (model-bearing) route rejects a blank vendor
+    /// with the SAME code, where retrying would let a saved preference shadow the vendor a pinned
+    /// model belongs to. A dynamic (definition_yaml) start declares vendors per participant and
+    /// rejects a top-level override outright. A non-start tool never resolves a reviewer at all.</para>
+    ///
+    /// <para>Ambiguity can never reach here: a timeout, a cancelled POST or a dropped connection
+    /// produces no (status, body) pair — the settlement lane returns DeadlineExhausted and the
+    /// caller has already returned, or the exception unwinds to the tool-error catch. What this
+    /// function CAN see and refuses: success, any other code (server_catching_up,
+    /// reviewer_vendor_unavailable, the send-surface reviewer_vendor_unresolvable, …), and uncoded
+    /// bodies — including the text-prefixed 400s (no_daemon_available:, daemon_outdated:) that carry
+    /// a code's words without its structure. Codes match ordinally and whole, never by prefix.</para>
+    /// </summary>
+    internal static bool ShouldPreferenceRetry(
+            string toolName, bool wasDynamicStart, bool wasModelStart,
+            string? requestedVendor, bool isSuccess, string body) =>
+        toolName is "start_review_flow" or "start_flow"
+        && !wasDynamicStart
+        && !wasModelStart
+        && requestedVendor is null
+        && !isSuccess
+        && TryParseCodedError(body, out var code, out _)
+        && code == "reviewer_vendor_required";
+
+    /// <summary>Appended to the server's own coded rejection when nothing is saved: the driver must
+    /// ask a human rather than pick a reviewer itself — the whole point of the server refusing is
+    /// that no one has said which vendor should review.
+    ///
+    /// <para>It names the profile this start actually consulted, because the two are resolved
+    /// differently: the flows lane reads the profile the repo/URL/env resolution selected, while
+    /// `kcap config set` writes to the config's ACTIVE profile. When they differ, a save the driver
+    /// dutifully performs lands somewhere this lane never reads, and without the name in the message
+    /// the symptom is a preference that "does not work" with nothing to look at.</para></summary>
+    internal static string PreferenceMissingGuidance(string profileName) =>
+        $"\nNo saved reviewer-vendor preference (profile: {profileName}). Ask the user which reviewer " +
+        $"vendor to use ({ReviewerVendors.Tokens}), pass it as 'vendor', and offer to save it: " +
+        "kcap config set flows.reviewer_vendor <vendor> — that writes to the ACTIVE profile, so if " +
+        $"'{profileName}' is not the active one (check with kcap config show), the saved value will not " +
+        "be read back here.";
+
+    /// <summary>Appended when the retry's OWN failure says the saved vendor is the problem — the
+    /// preference is stale (uninstalled, decertified, renamed), so re-asking and re-saving is the
+    /// fix, not another retry. Names the consulted profile for the same reason as above: that is
+    /// where the replacement has to land to be seen.</summary>
+    internal static string StalePreferenceGuidance(string preference, string profileName) =>
+        $"\nYour saved preference '{preference}' (flows.reviewer_vendor, profile: {profileName}) no longer " +
+        "works — ask the user for a reviewer vendor and update it: " +
+        $"kcap config set flows.reviewer_vendor <vendor>, in profile '{profileName}' — the one this start resolved.";
+
+    /// <summary>Prefixed to a preference-retry success so the driver never reports a reviewer the
+    /// user did not name in this conversation as though they had.</summary>
+    internal static string PreferenceAppliedPrefix(string preference) =>
+        $"reviewer vendor '{preference}' applied from your saved preference (flows.reviewer_vendor)";
+
+    /// <summary>The retry's own coded failures that indict the SAVED vendor rather than the request:
+    /// the vendor is not launchable on any eligible daemon, or the server does not know the token at
+    /// all (a preference saved before a rename, or simply mistyped).</summary>
+    static readonly HashSet<string> StalePreferenceCodes =
+        new(StringComparer.Ordinal) { "reviewer_vendor_unavailable", "unknown_vendor" };
+
+    /// <summary>What a preference lookup found, and the profile it looked in — the name travels with
+    /// the value because every message built from a lookup needs it, including the one built when
+    /// the value is null.</summary>
+    internal readonly record struct SavedReviewerVendor(string? Vendor, string ProfileName);
+
+    /// <summary>
+    /// Reads the saved reviewer vendor FROM DISK, every time it is asked. Not via the profile
+    /// deserialized at process start: `kcap mcp flows` is long-lived (the harness spawns it once per
+    /// session and keeps it), while the `kcap config set` this feature's own guidance asks the driver
+    /// to run is a different process writing that file. Against a start-time snapshot the
+    /// ask-the-user-once loop would never close inside a session — refuse, ask, save, and the very
+    /// next start still sees nothing and asks again.
+    ///
+    /// <para>Profile selection matches the rest of this process (the repo/URL/env resolution that
+    /// picked the server this start is talking to), falling back to the config's active profile when
+    /// a URL override made the resolver skip profile selection.</para>
+    ///
+    /// <para>Injectable at the dispatch seam (like the retry clock) because reading it for real would
+    /// make a unit test depend on the developer's own config file; the production binding is covered
+    /// end-to-end by the KCAP_CONFIG_DIR-isolated integration test.</para>
+    /// </summary>
+    static async Task<SavedReviewerVendor> LoadReviewerVendorPreferenceAsync() {
+        var config   = await AppConfig.LoadProfileConfig();
+        var resolved = AppConfig.ResolvedProfile?.ProfileName;
+
+        var name = !string.IsNullOrEmpty(resolved)              ? resolved
+                 : !string.IsNullOrEmpty(config.ActiveProfile)  ? config.ActiveProfile
+                 : "default";
+
+        return new(config.Profiles.GetValueOrDefault(name)?.EffectiveReviewerVendorPreference(), name);
     }
 
     /// <summary>Reads a string property without throwing on a missing key, a null, or a
@@ -1542,7 +1752,7 @@ static class McpFlowsServer {
                     ["context"]      = new("string", "Background context for the reviewer: what to focus on, constraints, definition of done. State where the changes live — the reviewer sees a mirror of THIS SESSION's project directory, not of the directory you are working in; if your changeset is elsewhere or incomplete there, say so, give an explicit commit range, and inline the relevant diffs. Whether it sees your UNCOMMITTED work is conditional: only when the run actually borrows your checkout. Responses report this as workspace: borrowed | fallback (<reason>) | unknown — for the reserved review aliases; other flow kinds report unknown. On fallback your checkout was NOT borrowed, so inline anything uncommitted that matters."),
                     ["instructions"] = new("string", "Optional additional instructions for the reviewer agent."),
                     ["mode"]         = new("string", "Optional. Pass 'context-only' to have the reviewer treat the submitted context/diff as authoritative rather than reading the repository. By default, on the same machine, it reviews a worktree mirrored from THIS SESSION's project directory — not from the directory you are working in — with uncommitted changes only when your checkout is borrowed."),
-                    ["vendor"]       = new("string", "Optional reviewer vendor for the reserved alias, independent of the driver harness. Omit to use the server's Flows:Review:DefaultVendor. The selected vendor must be installed and certified unattended on an eligible daemon; there is no silent fallback. Pass the lowercase canonical vendor token (e.g. 'claude', 'codex')."),
+                    ["vendor"]       = new("string", "Optional reviewer vendor for the reserved alias, independent of the driver harness. Omit to use the flow definition's authored vendor; if the definition names none, your saved flows.reviewer_vendor preference is applied, else the server asks for one. The selected vendor must be installed and certified unattended on an eligible daemon; there is no silent fallback. Pass the lowercase canonical vendor token (e.g. 'claude', 'codex')."),
                     ["model"]        = new("string", "Optional reviewer model override for this review. REQUIRES 'vendor' — the model is interpreted against that vendor (there is no vendor->model table here), so passing model without vendor is rejected locally. Omit to use the vendor's default reviewer model. The chosen model must be resolvable and certified on the selected daemon; there is no silent fallback. Pass the vendor's own model id or alias verbatim (case-sensitive) — do not translate or guess it. Requires a server that supports the v3 flow-start protocol.")
                 },
                 ["kind", "target_kind", "target_ref", "target_title", "context"]
@@ -1605,7 +1815,7 @@ static class McpFlowsServer {
                     ["context"]        = new("string", "Background context for the agent: what to focus on, constraints, definition of done. State where the changes live — the participant sees a mirror of THIS SESSION's project directory, not of the directory you are working in; if your changeset is elsewhere or incomplete there, say so, give an explicit commit range, and inline the relevant diffs."),
                     ["instructions"]   = new("string", "Optional additional instructions for the agent."),
                     ["mode"]           = new("string", "Optional. Pass 'context-only' to have the agent treat the submitted context/diff as authoritative rather than reading the repository. By default, on the same machine, it works in a worktree mirrored from THIS SESSION's project directory — not from the directory you are working in — with uncommitted changes only when your checkout is borrowed."),
-                    ["vendor"]         = new("string", "Optional reviewer vendor. Reserved spec-review/code-review aliases use it independently of the driver, or use the server default when omitted. Custom single-participant catalog definitions accept an explicit override. Rejected for multi-participant and definition_yaml flows. The selected vendor must be certified unattended on an eligible daemon; no silent fallback. Pass a lowercase canonical token."),
+                    ["vendor"]         = new("string", "Optional reviewer vendor. Reserved spec-review/code-review aliases use it independently of the driver. Omit to use the flow definition's authored vendor; if the definition names none, your saved flows.reviewer_vendor preference is applied, else the server asks for one. Custom single-participant catalog definitions accept an explicit override. Rejected for multi-participant and definition_yaml flows. The selected vendor must be certified unattended on an eligible daemon; no silent fallback. Pass a lowercase canonical token."),
                     ["model"]          = new("string", "Optional reviewer model override for a single-participant catalog review definition. REQUIRES 'vendor' — the model is interpreted against that vendor (there is no vendor->model table here), so passing model without vendor is rejected locally. Rejected for definition_yaml (dynamic) and multi-participant flows. Omit to use the vendor's default reviewer model. The chosen model must be resolvable and certified on the selected daemon; there is no silent fallback. Pass the vendor's own model id or alias verbatim (case-sensitive) — do not translate or guess it. Requires a server that supports the v3 flow-start protocol.")
                 },
                 ["target_kind", "target_ref", "target_title", "context"]

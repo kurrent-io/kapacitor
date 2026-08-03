@@ -55,7 +55,7 @@ public class LaunchConsentIpcTests {
         store.TryReplace(new LaunchConsentPolicy(def, promptTimeoutSeconds, []), out _);
         var broker = new LaunchConsentBroker();
         var decisionLog = new LaunchConsentDecisionLog(stateDir, NullLogger.Instance);
-        var gate = new LaunchConsentGate(store, decisionLog, broker, NullLogger<LaunchConsentGate>.Instance);
+        var gate = new LaunchConsentGate(store, decisionLog, broker, TimeProvider.System, NullLogger<LaunchConsentGate>.Instance);
         var consentIpc = new LaunchConsentIpc(broker, store, NullLogger<LaunchConsentIpc>.Instance);
 
         var config = new DaemonConfig {
@@ -127,7 +127,7 @@ public class LaunchConsentIpcTests {
     /// Waits for the daemon's accept loop to actually process a just-sent ConsentSubscribe frame
     /// (i.e. for LaunchConsentIpc.HandleSubscribeAsync to call broker.Subscribe()) — a bounded poll
     /// bridging the gap between "frame written to the socket" and "server-side subscription live".
-    static async Task WaitForSubscriberAsync(LaunchConsentBroker broker, CancellationToken ct) {
+    static async Task SpinUntilSubscribedAsync(LaunchConsentBroker broker, CancellationToken ct) {
         var deadline = DateTime.UtcNow.AddSeconds(5);
         while (!broker.HasSubscriber && DateTime.UtcNow < deadline) await Task.Delay(10, ct);
     }
@@ -179,15 +179,16 @@ public class LaunchConsentIpcTests {
 
         await RunAsync("test-consent-subscribe", LaunchConsentDefault.Prompt, 30, async (h, ct) => {
             await using var subscriber = await ConnectAsync(h.SockPath, ct);
-            // Subscribe FIRST so the gate's HasSubscriber check (evaluated synchronously before it
-            // ever awaits the prompt) sees a live subscriber — otherwise DecideAsync would
-            // short-circuit to "prompt_no_ui". Writing the frame only queues it; the daemon-side
-            // broker.Subscribe() call (what actually flips HasSubscriber) happens asynchronously
-            // once the accept loop reads it off the socket, so wait for that to land for real
-            // before starting the background decide — a bare write-then-go race intermittently
-            // hung this test (DecideAsync denying with prompt_no_ui before ever touching the broker).
+            // Subscribe FIRST and wait for it to actually land server-side before starting the
+            // background decide. The gate no longer short-circuits synchronously on HasSubscriber —
+            // DecideAsync now runs a bounded grace wait (WaitForSubscriberAsync) that would tolerate
+            // a subscriber arriving a little late — but this test still wants the subscription
+            // GUARANTEED live up front, both to stay deterministic and to avoid burning part of that
+            // grace window. Writing the frame only queues it; the daemon-side broker.Subscribe() call
+            // (what actually flips HasSubscriber) happens asynchronously once the accept loop reads
+            // it off the socket.
             await FrameCodec.WriteAsync(subscriber, new LocalFrame(FrameType.ConsentSubscribe), ct);
-            await WaitForSubscriberAsync(h.Broker, ct);
+            await SpinUntilSubscribedAsync(h.Broker, ct);
 
             var input = new LaunchConsentInput("user_x", RequesterIsOwner: false, "agent", "/tmp/repo", "claude");
             var decideTask = h.Gate.DecideAsync("a9", input, ct);
@@ -220,7 +221,7 @@ public class LaunchConsentIpcTests {
         await RunAsync("test-consent-saverule", LaunchConsentDefault.Prompt, 30, async (h, ct) => {
             await using var subscriber = await ConnectAsync(h.SockPath, ct);
             await FrameCodec.WriteAsync(subscriber, new LocalFrame(FrameType.ConsentSubscribe), ct);
-            await WaitForSubscriberAsync(h.Broker, ct);
+            await SpinUntilSubscribedAsync(h.Broker, ct);
 
             var input = new LaunchConsentInput("user_x", RequesterIsOwner: false, "review-flow", "/tmp/repo", "claude");
             var decideTask = h.Gate.DecideAsync("a10", input, ct);
@@ -343,7 +344,7 @@ public class LaunchConsentIpcTests {
         await RunAsync("saverule-bad", LaunchConsentDefault.Prompt, 30, async (h, ct) => {
             await using var subscriber = await ConnectAsync(h.SockPath, ct);
             await FrameCodec.WriteAsync(subscriber, new LocalFrame(FrameType.ConsentSubscribe), ct);
-            await WaitForSubscriberAsync(h.Broker, ct);
+            await SpinUntilSubscribedAsync(h.Broker, ct);
 
             var input = new LaunchConsentInput("user_x", RequesterIsOwner: false, "agent", "/tmp/repo", "claude");
             var decideTask = h.Gate.DecideAsync("a11", input, ct);

@@ -212,6 +212,11 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
 
         Directory.CreateDirectory(worktreeRoot);
 
+        // No filter inventory here on purpose. `worktree add --no-checkout` materialises nothing, so no
+        // filter can run during it, and the guarded reset re-inventories inside the TARGET — which is the
+        // context that actually decides which drivers load. A source-context inventory would add no
+        // containment and could reject a safe launch, since a source-only conditional include can define a
+        // driver the target never sees.
         if (await IsGitRepoWithCommits(repoPath)) {
             if (!string.IsNullOrEmpty(baseRef)) {
                 // Fetch into a per-worktree ref instead of the shared FETCH_HEAD
@@ -229,7 +234,8 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
                     "-c", "maintenance.auto=false", "-c", "gc.auto=0",
                     "fetch", "origin", $"{baseRef}:{fetchedRef}");
                 await WithWorktreeMetadataGate(repoPath, () =>
-                    RunGit(repoPath, GitTimeout, [..NoBranchHooks(), "worktree", "add", "-B", branch, worktreePath, fetchedRef]));
+                    RunGit(repoPath, GitTimeout, [..NoBranchHooks(),
+                        "worktree", "add", "--no-checkout", "-B", branch, worktreePath, fetchedRef]));
                 var fetched = new WorktreeInfo(worktreePath, branch, repoPath, FetchedRef: fetchedRef);
                 await StripOrRollBackAsync(fetched);
 
@@ -237,21 +243,39 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
             }
 
             await WithWorktreeMetadataGate(repoPath, () =>
-                RunGit(repoPath, GitTimeout, [..NoBranchHooks(), "worktree", "add", worktreePath, "-b", branch]));
+                RunGit(repoPath, GitTimeout, [..NoBranchHooks(),
+                    "worktree", "add", "--no-checkout", worktreePath, "-b", branch]));
             var linked = new WorktreeInfo(worktreePath, branch, repoPath);
             await StripOrRollBackAsync(linked);
 
             return linked;
         }
 
-        // Standalone: copy files + git init
+        // Standalone: copy files + git init.
+        // Wrapped because every step after the directory exists can throw — the MCP strip and the filter
+        // inventory are both fail-closed — and this branch returns no WorktreeInfo on the way out, so
+        // nothing downstream could clean up the partial tree. The linked paths gained rollback earlier for
+        // exactly this; review caught that the standalone one never did.
         Directory.CreateDirectory(worktreePath);
+        try {
+            return await BuildStandaloneSnapshotAsync(repoPath, worktreePath);
+        } catch {
+            try { DeleteTreeNoFollow(worktreePath); } catch { /* keep the original failure */ }
+            throw;
+        }
+    }
+
+    async Task<WorktreeInfo> BuildStandaloneSnapshotAsync(string repoPath, string worktreePath) {
         CopyDirectory(repoPath, worktreePath);
         // BEFORE the initial commit, so the snapshot's own history never carries the hostile config
         // either — a later `git checkout` inside the tree would otherwise restore it.
         StripWorkspaceMcpConfig(worktreePath);
         await RunGit(worktreePath, GitTimeout, [..NoBranchHooks(), "init"]);
-        await RunGit(worktreePath, GitTimeout, [..NoBranchHooks(), "add", "-A"]);
+        // Inventoried and logged here, not at the source: `add -A` in this worktree is where the standalone
+        // path's filters resolve. Round 6 removed the source-level logging as dead, and this call was
+        // applying overrides inline — silently disabling LFS against a README that promises the opposite.
+        var standaloneOverrides = await FilterOverridesForAsync(worktreePath);
+        await RunGit(worktreePath, GitTimeout, [..NoBranchHooks(), ..standaloneOverrides, "add", "-A"]);
         // Identity supplied explicitly. This is the daemon's OWN bookkeeping commit, not the user's work,
         // so it must not depend on the host having git identity configured — a machine without a global
         // user.email fails with "Author identity unknown". Found while CopyDirectory was temporarily
@@ -277,13 +301,12 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
     /// tree already executed the branch's code. Pointing <c>core.hooksPath</c> at a daemon-owned empty
     /// directory disables the whole mechanism for these commands without touching the operator's config.</para>
     ///
-    /// <para><b>This covers the hook-DIRECTORY mechanism only. Do not read it as "no branch-controlled code
-    /// runs during checkout."</b> Two sibling vectors are known and deliberately NOT closed here, tracked on
-    /// their own issue (see the branch-controlled-execution follow-up): git's config-based hooks (<c>hook.&lt;name&gt;.event</c> / <c>.command</c>), which run
-    /// independently of <c>core.hooksPath</c>; and clean/smudge filters, which a branch selects through its
-    /// own <c>.gitattributes</c> and which this flag does not affect at all. Both need a rule for "does this
-    /// command resolve to branch content" — blunt disabling would break legitimate drivers such as
-    /// <c>filter.lfs</c>, so it is real work rather than another <c>-c</c> flag.</para>
+    /// <para><b>This covers the hook-DIRECTORY mechanism only.</b> Clean/smudge filters are a separate
+    /// vector — a branch selects them through its own <c>.gitattributes</c>, and this flag does not affect
+    /// them at all — handled by <see cref="BranchFilterOverridesAsync"/>, which disables every defined
+    /// driver rather than trying to judge commands. Git's config-based hooks
+    /// (<c>hook.&lt;name&gt;.event</c> / <c>.command</c>) are not covered and need not be: measured on git
+    /// 2.49, that config is undocumented and does not run.</para>
     /// </summary>
     /// <summary>
     /// A <c>core.hooksPath</c> that cannot contain a hook, because it cannot be a directory.
@@ -319,11 +342,74 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
     /// </summary>
     async Task StripOrRollBackAsync(WorktreeInfo created) {
         try {
+            // The add above used --no-checkout, so the tree is still empty here. Populating it inside the
+            // rollback means a filter-inventory failure cleans up like any other fail-closed step.
+            await CheckoutInTargetContextAsync(created.Path);
             StripWorkspaceMcpConfig(created.Path);
         } catch {
             try { await RemoveAsync(created); } catch { /* keep the original failure */ }
             throw;
         }
+    }
+
+    /// <summary>
+    /// Populates a worktree created with <c>--no-checkout</c>, using an override set enumerated IN that
+    /// worktree.
+    ///
+    /// <para>Inventorying the SOURCE while checking out in the TARGET is a context mismatch: git runs the
+    /// checkout in the new worktree, where <c>includeIf "onbranch:capacitor/**"</c> or a gitdir-matching
+    /// conditional include can expose a driver the source never reported. Splitting the add from the
+    /// checkout is what lets the inventory be taken where the filters actually resolve, and
+    /// <c>--no-checkout</c> means nothing is materialised before that guarded step.</para>
+    /// </summary>
+    async Task CheckoutInTargetContextAsync(string worktreePath) {
+        var overrides = await FilterOverridesForAsync(worktreePath);
+
+        // `reset --hard HEAD`, not `checkout -- .`: --no-checkout leaves the INDEX unpopulated too, so a
+        // pathspec matches nothing. This is the step that materialises the tree, and therefore the step
+        // the overrides have to guard.
+        await RunGit(worktreePath, GitTimeout, [..NoBranchHooks(), ..overrides, "reset", "--hard", "HEAD"]);
+    }
+
+    /// <summary>
+    /// The filter overrides for a context, LOGGED as a side effect.
+    ///
+    /// <para>Single entry point on purpose. Each of the three materialising paths previously called the
+    /// inventory directly and remembered — or forgot — to log separately: standalone lost its logging when
+    /// a redundant source-level call was deleted, and the borrowed snapshot never had it, so a reviewer on
+    /// an LFS host silently got pointer files. Two rounds, one class. Computing and logging together means
+    /// a fourth path cannot repeat it.</para>
+    /// </summary>
+    async Task<string[]> FilterOverridesForAsync(string gitContextPath) {
+        var overrides = await BranchFilterOverridesAsync(gitContextPath);
+        LogDisabledFilters(overrides, gitContextPath);
+
+        return overrides;
+    }
+
+    /// <summary>Logs which filter drivers were disabled, so an operator whose LFS-tracked file checks out
+    /// as pointer text can see why rather than guessing. Silent containment is how a deliberate trade turns
+    /// into a bug report.</summary>
+    void LogDisabledFilters(string[] overrides, string repoPath) {
+        var drivers = overrides
+            .Where(static o => o.StartsWith("filter.", StringComparison.Ordinal) && o.EndsWith(".clean=", StringComparison.Ordinal))
+            .Select(static o => o["filter.".Length..^".clean=".Length])
+            .ToArray();
+
+        if (drivers.Length > 0)
+            // States WHAT was disabled and why, and stops there. Three callers materialise content three
+            // different ways — an owned worktree checks out through git, a standalone snapshot copies
+            // source bytes and re-commits with the clean filter off, a borrowed snapshot overwrites the
+            // checkout from the source manifest and refuses source-side pointers — so ANY sentence about
+            // what the resulting bytes look like is false for at least one of them. Two rounds of review
+            // were spent narrowing such a sentence before concluding it should not be here at all: this
+            // logging is the whole reason the no-exemption trade is defensible, so it has to be accurate,
+            // and per-path behaviour is documented in the README where there is room to be exact.
+            logger.LogInformation(
+                "Disabled git filter drivers for agent worktree creation from {Repo}: {Drivers}. A branch's "
+              + ".gitattributes selects which driver runs, so a driver with a relative command would execute "
+              + "branch-supplied code.",
+                repoPath, string.Join(", ", drivers));
     }
 
     /// <summary>Removes branch-authored vendor MCP configuration and logs what went, so an operator whose
@@ -503,7 +589,7 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
             // Same guard as `worktree add`: this checkout materialises branch content, so a relative
             // core.hooksPath would run the branch's post-checkout here too. Missed when the guard was
             // added — it went on the worktree paths only.
-            await RunGit(destination, GitTimeout, [..NoBranchHooks(), "checkout", "--detach", "HEAD"]);
+            await RunGit(destination, GitTimeout, [..NoBranchHooks(), ..await FilterOverridesForAsync(destination), "checkout", "--detach", "HEAD"]);
             var clonedHead = (await RunGitCapture(destination, GitTimeout, false, "rev-parse", "HEAD")).Trim();
             if (!string.Equals(sourceHead, clonedHead, StringComparison.Ordinal)) throw new SourceChangedException();
             await RunGitBestEffort(destination, "remote", "remove", "origin");
@@ -1156,6 +1242,11 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
         // tracked set and the manifest — the check passes on a name git does not have, and the read lands
         // on the developer's untracked config. The authorised name must be the used name.
         // BOTH drained concurrently, always: a child that fills an unread stderr pipe blocks forever.
+        //
+        // Measured reachability, so the claim is not broader than the evidence: for
+        // `config --list` the first records come from system/global config, which a branch does not
+        // control. `ls-files` has no such prefix and IS reachable — that is where the regression
+        // test lives. The property should not depend on which caller happens to be safe.
         var stdoutTask = ReadAllBytesAsync(proc.StandardOutput.BaseStream, cts.Token);
         var stderrTask = ReadAllDecodedAsync(proc.StandardError.BaseStream, cts.Token);
         try {
@@ -1258,7 +1349,7 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
             WorkingDirectory       = cwd,
             RedirectStandardOutput = true,
             RedirectStandardError  = true,
-            // Set for any caller using the StreamReader API. The capture path deliberately does NOT use it:
+            // Set for any caller that uses the StreamReader API. The capture path deliberately does NOT:
             // it reads BaseStream and decodes with GitOutputEncoding, because this property alone does not
             // disable the reader's BOM detection. See RunGitCaptureResult.
             StandardOutputEncoding = GitOutputEncoding,

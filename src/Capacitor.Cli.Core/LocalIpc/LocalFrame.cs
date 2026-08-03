@@ -27,4 +27,8 @@ public sealed record LocalFrame(FrameType Type) {
     /// Constructs any of the consent control frames, whose payload is always UTF-8 JSON
     /// (snake_case via ConsentIpcJsonContext) carried in Text — see ConsentIpc.cs.
     public static LocalFrame ConsentJson(FrameType type, string json) => new(type) { Text = json };
+
+    /// Constructs a Hello or HelloReply frame, whose payload is UTF-8 JSON
+    /// (snake_case via HelloIpcJsonContext) carried in Text — see HelloIpc.cs.
+    public static LocalFrame HelloJson(FrameType type, string json) => new(type) { Text = json };
 }

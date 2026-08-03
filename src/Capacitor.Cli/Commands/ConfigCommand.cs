@@ -7,7 +7,7 @@ namespace Capacitor.Cli.Commands;
 public static class ConfigCommand {
     public static async Task<int> HandleAsync(string[] args) {
         if (args.Length < 2) {
-            await Console.Error.WriteLineAsync("Usage: kcap config <show|set> [key] [value]");
+            await Console.Error.WriteLineAsync("Usage: kcap config <show|set|unset> [key] [value]");
 
             return 1;
         }
@@ -16,10 +16,12 @@ public static class ConfigCommand {
         var skipProbe  = args.Contains("--no-probe");
 
         return subcommand switch {
-            "show"                      => await Show(),
-            "set" when args.Length >= 4 => await Set(args[2], args[3], skipProbe),
-            "set"                       => SetUsage(),
-            _                           => UnknownSubcommand(subcommand)
+            "show"                        => await Show(),
+            "set" when args.Length >= 4   => await Set(args[2], args[3], skipProbe),
+            "set"                         => SetUsage(),
+            "unset" when args.Length >= 3 => await Unset(args[2]),
+            "unset"                       => UnsetUsage(),
+            _                             => UnknownSubcommand(subcommand)
         };
     }
 
@@ -54,7 +56,36 @@ public static class ConfigCommand {
         profileConfig = profileConfig with { Profiles = profiles };
         await AppConfig.SaveProfileConfig(profileConfig);
 
-        await Console.Out.WriteLineAsync($"Set {key} = {value} (profile: {profileName})");
+        // Echo what was STORED, not what was typed: flows.reviewer_vendor is canonicalized on the way
+        // in, and confirming "Set flows.reviewer_vendor = Codex" while holding "codex" invites a bug
+        // report about a value that is actually correct.
+        var stored = key == "flows.reviewer_vendor" ? ReviewerVendors.Normalize(value) : value;
+
+        await Console.Out.WriteLineAsync($"Set {key} = {stored} (profile: {profileName})");
+
+        // Advisory only, and deliberately after the success line: the server owns the authoritative
+        // vendor list, so an unrecognized token here is a typo hint, not a rejection — refusing it
+        // would break the first user of a vendor newer than their CLI.
+        if (key == "flows.reviewer_vendor" && !ReviewerVendors.IsKnown(stored))
+            await Console.Error.WriteLineAsync(
+                $"Warning: '{stored}' is not a vendor this kcap version knows ({ReviewerVendors.Tokens}); " +
+                "the server has the authoritative list and will reject an unknown vendor at start time.");
+
+        return 0;
+    }
+
+    static async Task<int> Unset(string key) {
+        var profileConfig = await AppConfig.LoadProfileConfig();
+        var profileName   = profileConfig.ActiveProfile;
+        var profile       = profileConfig.Profiles.GetValueOrDefault(profileName) ?? new Profile();
+
+        profile = ApplyUnset(profile, key);
+
+        var profiles = new Dictionary<string, Profile>(profileConfig.Profiles) { [profileName] = profile };
+        profileConfig = profileConfig with { Profiles = profiles };
+        await AppConfig.SaveProfileConfig(profileConfig);
+
+        await Console.Out.WriteLineAsync($"Unset {key} (profile: {profileName})");
 
         return 0;
     }
@@ -83,7 +114,21 @@ public static class ConfigCommand {
             "default_visibility" when value is "private" or "project" or "org_public" or "public" => profile with { DefaultVisibility = value },
             "default_visibility" => throw new ArgumentException("Invalid value. Must be: private, project, org_public, or public"),
             "excluded_repos" => profile with { ExcludedRepos = value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries) },
+            "flows.reviewer_vendor" when !string.IsNullOrWhiteSpace(value) =>
+                profile with { Flows = (profile.Flows ?? new FlowsSettings()) with { ReviewerVendor = ReviewerVendors.Normalize(value) } },
+            "flows.reviewer_vendor" => throw new ArgumentException(
+                "Invalid value for flows.reviewer_vendor: must not be empty. Use 'kcap config unset flows.reviewer_vendor' to remove it."),
             _ => throw new ArgumentException($"Unknown config key: {key}")
+        };
+
+    /// <summary>
+    /// Applies a single key removal to a <see cref="Profile"/>. Pure function, exposed for testing.
+    /// Throws <see cref="ArgumentException"/> on unknown or non-unsettable keys.
+    /// </summary>
+    public static Profile ApplyUnset(Profile profile, string key) =>
+        key switch {
+            "flows.reviewer_vendor" => profile with { Flows = (profile.Flows ?? new FlowsSettings()) with { ReviewerVendor = null } },
+            _ => throw new ArgumentException($"Unknown or non-unsettable config key: {key}")
         };
 
     static int SetUsage() {
@@ -100,9 +145,16 @@ public static class ConfigCommand {
         Console.Error.WriteLine("  disable_session_guidelines  Skip injecting recurring-lessons context at SessionStart (true/false)");
         Console.Error.WriteLine("  use_provider_api_key        Keep ANTHROPIC_API_KEY/OPENAI_API_KEY in headless agent spawns (true/false)");
         Console.Error.WriteLine("  excluded_repos              Excluded repos, comma-separated (owner/repo,owner/repo)");
+        Console.Error.WriteLine("  flows.reviewer_vendor       Preferred review-flow reviewer vendor (used only when the definition names none)");
         Console.Error.WriteLine();
         Console.Error.WriteLine("Flags:");
         Console.Error.WriteLine("  --no-probe                  Skip the reachability check when setting server_url");
+
+        return 1;
+    }
+
+    static int UnsetUsage() {
+        Console.Error.WriteLine("Usage: kcap config unset <key>");
 
         return 1;
     }

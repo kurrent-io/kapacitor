@@ -50,6 +50,7 @@ public static class FrameCodec {
         FrameType.Error or FrameType.Attach or FrameType.AgentList
             or FrameType.Restart or FrameType.RestartAck
             or FrameType.Stop or FrameType.StopAck
+            or FrameType.Hello or FrameType.HelloReply
             or FrameType.ConsentSubscribe or FrameType.ConsentResolve
             or FrameType.ConsentRulesGet or FrameType.ConsentRulesPut
             or FrameType.ConsentPending or FrameType.ConsentRules
@@ -67,6 +68,7 @@ public static class FrameCodec {
         FrameType.Error or FrameType.Attach or FrameType.AgentList
             or FrameType.Restart or FrameType.RestartAck
             or FrameType.Stop or FrameType.StopAck
+            or FrameType.Hello or FrameType.HelloReply
             or FrameType.ConsentSubscribe or FrameType.ConsentResolve
             or FrameType.ConsentRulesGet or FrameType.ConsentRulesPut
             or FrameType.ConsentPending or FrameType.ConsentRules

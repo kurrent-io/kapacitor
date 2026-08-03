@@ -357,12 +357,60 @@ public static class DaemonCommands {
                 return 0;
             }
 
+            // Refuse to kill ourselves. IsOurDaemon has already said this PID is a live process
+            // whose start token matches, so every identity check upstream has PASSED — the PID is
+            // simply not a daemon. A real daemon is never the process running `daemon stop`, so
+            // reaching here means the PID file is describing something it should not, and killing
+            // its tree would take down this process and everything above it.
+            //
+            // Without this, Process.Kill(entireProcessTree: true) throws
+            // "Cannot be used to terminate a process tree containing the calling process" — an
+            // opaque InvalidOperationException that says nothing about WHICH pid file caused it.
+            // That is exactly how this surfaced: a random, always-different CI test failing
+            // with an identical stack, because the pid file named the test runner itself.
+            if (entry.Pid == Environment.ProcessId) {
+                Console.Error.WriteLine(
+                    $"Daemon '{name}' resolves to the current process (PID {entry.Pid}); refusing to stop it. "
+                  + $"Its PID file at {DaemonLockPaths.PidPath(name)} does not describe a daemon.");
+
+                return 1;
+            }
+
             var process = Process.GetProcessById(entry.Pid);
-            process.Kill(entireProcessTree: true);
-            // Wait for it to actually exit so the kernel releases its flock before
-            // we try to reclaim it for cleanup below.
-            try { process.WaitForExit(5000); } catch { /* best-effort */ }
-            Console.Out.WriteLine($"Daemon '{name}' stopped (PID {entry.Pid}).");
+            var killed  = false;
+
+            try {
+                process.Kill(entireProcessTree: true);
+                killed = true;
+            } catch (InvalidOperationException) when (process.HasExited) {
+                // A BENIGN race, not corruption: the daemon exited on its own between
+                // GetProcessById and Kill. .NET reports that as InvalidOperationException too, so
+                // without this arm an ordinary well-timed stop would be accused of having a
+                // malformed PID file. The outcome the caller asked for has happened — the daemon is
+                // gone — so report it like the ArgumentException path below and fall through to the
+                // marker cleanup.
+                //
+                // No test: reproducing it needs the process to exit inside that window, which cannot
+                // be scheduled deterministically. Distinguished by HasExited rather than by message.
+                Console.Out.WriteLine($"Daemon '{name}' was not running.");
+            } catch (InvalidOperationException ex) {
+                // What remains is the safety rejection: .NET refuses to kill a process tree that
+                // contains the caller. The self-PID guard above handles the case we can name in
+                // advance; this covers the ANCESTOR case, which cannot be detected portably. Report
+                // which daemon and which PID rather than letting an unattributed exception escape.
+                Console.Error.WriteLine(
+                    $"Daemon '{name}' (PID {entry.Pid}) could not be stopped: {ex.Message} "
+                  + $"Its PID file at {DaemonLockPaths.PidPath(name)} appears not to describe a daemon.");
+
+                return 1;
+            }
+
+            if (killed) {
+                // Wait for it to actually exit so the kernel releases its flock before
+                // we try to reclaim it for cleanup below.
+                try { process.WaitForExit(5000); } catch { /* best-effort */ }
+                Console.Out.WriteLine($"Daemon '{name}' stopped (PID {entry.Pid}).");
+            }
         } catch (ArgumentException) {
             Console.Out.WriteLine($"Daemon '{name}' was not running.");
         }

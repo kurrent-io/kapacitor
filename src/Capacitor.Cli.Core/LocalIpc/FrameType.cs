@@ -13,6 +13,7 @@ public enum FrameType : byte {
     Restart = 7,   // request restart-after-update (Text = "when-idle"|"now"|"force")
     Stop    = 8,   // stop an agent (Text = agent id; empty = every agent this daemon hosts)
     StopV2  = 10,  // stop with a force flag (see FrameCodec.StopV2); supersedes Stop
+    Hello   = 15,  // optional one-shot: client info (Text = ClientHelloDto JSON; empty valid)
     // Consent control frames — values append-only
     ConsentSubscribe = 11, // long-lived: replay pending + push new ConsentPending frames
     ConsentResolve   = 12, // one-shot: resolve a pending request (Text = ConsentResolveDto JSON)
@@ -27,6 +28,7 @@ public enum FrameType : byte {
     RestartAck = 69, // acknowledgement for Restart (Text = short status)
     StopAck    = 70, // acknowledgement for Stop (Text = one `id\tstatus` line per agent; status is "stopped", "skipped", or "failed")
     AttachedReadOnly = 71, // Attached for a protected agent: id + reason + snapshot, no input accepted
+    HelloReply = 75, // Text = HelloReplyDto JSON: protocol/daemon version, name, capabilities
     // Consent control frames — values append-only
     ConsentPending = 72, // Text = ConsentPendingDto JSON, pushed on ConsentSubscribe
     ConsentRules   = 73, // Text = ConsentPolicyDto JSON, reply to ConsentRulesGet

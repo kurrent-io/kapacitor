@@ -221,6 +221,9 @@ public static partial class DaemonRunner {
         // The owner consent gate — policy store + append-only decision log share the
         // per-daemon state root with the coverage journal above; the prompter is null until
         // Task 6 registers the broker (a Prompt-default policy then denies with "prompt_no_ui").
+        // TimeProvider.System drives the gate's monotonic deadline discipline (spec §3.2) — a
+        // real singleton in production, swapped for a FakeTimeProvider in tests.
+        builder.Services.AddSingleton(TimeProvider.System);
         builder.Services.AddSingleton(sp => new LaunchConsentStore(
             coverageStateDir, sp.GetRequiredService<ILogger<LaunchConsentStore>>()));
         builder.Services.AddSingleton(sp => new LaunchConsentDecisionLog(
@@ -229,6 +232,7 @@ public static partial class DaemonRunner {
             sp.GetRequiredService<LaunchConsentStore>(),
             sp.GetRequiredService<LaunchConsentDecisionLog>(),
             sp.GetService<ILaunchConsentPrompter>(),   // null until Task 6 registers the broker
+            sp.GetRequiredService<TimeProvider>(),
             sp.GetRequiredService<ILogger<LaunchConsentGate>>()));
         builder.Services.AddSingleton<LaunchConsentBroker>();
         builder.Services.AddSingleton<ILaunchConsentPrompter>(sp => sp.GetRequiredService<LaunchConsentBroker>());
