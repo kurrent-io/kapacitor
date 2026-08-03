@@ -85,6 +85,12 @@ static class McpFlowResultServer {
                 if (toolName is null)
                     return BuildErrorResponse(callId, -32602, "Missing params.name");
 
+                // Deliberately EXHAUSTIVE explicit cases (no catalog-driven dispatch): a future tool
+                // added to KcapMcpRegistry.ReservedResultChannelTools without a case here hits the
+                // unknown-tool default rather than being routed to some existing handler. The
+                // contract test against the catalog keeps tools/list honest; this gate keeps
+                // dispatch honest. Checked BEFORE creating the authenticated client so an unknown
+                // name never triggers auth setup.
                 if (toolName is not ("submit_review_result" or "send_flow_message"))
                     return BuildToolResult(callId, $"Error: Unknown tool: {toolName}", isError: true);
 
@@ -92,7 +98,8 @@ static class McpFlowResultServer {
 
                 var (text, isError) = toolName switch {
                     "submit_review_result" => await SubmitCoreAsync(client, apiRoot, agentId, arguments, delay: Task.Delay),
-                    _                       => await SendMessageCoreAsync(client, apiRoot, agentId, arguments, delay: Task.Delay)
+                    "send_flow_message"    => await SendMessageCoreAsync(client, apiRoot, agentId, arguments, delay: Task.Delay),
+                    _                      => ($"Error: Unknown tool: {toolName}", true)
                 };
 
                 return BuildToolResult(callId, text, isError);
@@ -361,7 +368,10 @@ static class McpFlowResultServer {
         return envelope.ToJsonString();
     }
 
-    static McpTool[] BuildToolsList() => [
+    /// <summary>The advertised tool list. Contract-tested to match
+    /// <c>KcapMcpRegistry.ReservedResultChannelTools</c> name-for-name, in order — internal (not
+    /// private) solely so that test can compare it directly against the catalog.</summary>
+    internal static McpTool[] BuildToolsList() => [
         new(
             Name: "submit_review_result",
             Description: "Submit your review result for the current round. Call once. kind=\"findings\" with your findings text, or kind=\"clean\" when there are no actionable findings. round_token comes from the \"round token\" line in your prompt.",

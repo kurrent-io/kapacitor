@@ -1,3 +1,4 @@
+using Capacitor.Cli.Commands;
 using Capacitor.Cli.Core;
 
 namespace Capacitor.Cli.Tests.Unit;
@@ -89,5 +90,43 @@ public class KcapMcpRegistryReviewFlowTests {
     public async Task Classification_only_covers_auto_approvable_servers() {
         foreach (var srv in KcapMcpRegistry.ReviewFlowUnattendedSafeTools.Keys)
             await Assert.That(KcapMcpRegistry.ReviewFlowAutoApprovableServers.Contains(srv)).IsTrue();
+    }
+
+    // ── Reserved result channel tool catalog ─────────────────────────────────────────
+    //
+    // The ordered catalog on KcapMcpRegistry is the single source of truth for the reserved
+    // channel's tools. The flow-result server's tools/list is compared against it DIRECTLY
+    // (bidirectional: an advertised tool missing from the catalog fails just like a catalog
+    // entry the server no longer advertises), so the next tool addition can't silently leave
+    // the bridge auto-approve or the Copilot ACP argv behind.
+
+    [Test]
+    public async Task Flow_result_server_advertises_exactly_the_reserved_channel_catalog_in_order() {
+        var advertised = McpFlowResultServer.BuildToolsList().Select(t => t.Name).ToArray();
+        var catalog    = KcapMcpRegistry.ReservedResultChannelTools.Select(t => t.Name).ToArray();
+
+        await Assert.That(advertised.SequenceEqual(catalog, StringComparer.Ordinal)).IsTrue();
+    }
+
+    [Test]
+    public async Task Unattended_safe_set_is_exactly_the_catalogs_safe_names() {
+        var safeNames = KcapMcpRegistry.ReservedResultChannelTools
+            .Where(t => t.UnattendedSafe)
+            .Select(t => t.Name)
+            .ToArray();
+
+        await Assert.That(KcapMcpRegistry.ReservedResultChannelUnattendedSafeTools.Count)
+            .IsEqualTo(safeNames.Length);
+        foreach (var name in safeNames)
+            await Assert.That(KcapMcpRegistry.ReservedResultChannelUnattendedSafeTools.Contains(name)).IsTrue();
+    }
+
+    [Test]
+    public async Task Unattended_safe_set_membership_is_case_sensitive() {
+        // The set feeds a permission auto-approve, so membership must be exact Ordinal —
+        // a case variant of a safe tool name is NOT the safe tool.
+        await Assert.That(KcapMcpRegistry.ReservedResultChannelUnattendedSafeTools.Contains("submit_review_result")).IsTrue();
+        await Assert.That(KcapMcpRegistry.ReservedResultChannelUnattendedSafeTools.Contains("Submit_Review_Result")).IsFalse();
+        await Assert.That(KcapMcpRegistry.ReservedResultChannelUnattendedSafeTools.Contains("SEND_FLOW_MESSAGE")).IsFalse();
     }
 }
