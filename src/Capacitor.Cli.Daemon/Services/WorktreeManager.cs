@@ -1112,7 +1112,11 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
         return string.Equals(result.Stdout.Trim(), "true", StringComparison.OrdinalIgnoreCase);
     }
 
-    static async Task<(int ExitCode, string Stdout, string Stderr)> RunGitCaptureResult(
+    /// <summary>The ONE git capture. Returns stdout as raw bytes; string callers decode from these, byte
+    /// callers take them as-is. Written as a single implementation deliberately: a second copy of this
+    /// shipped without draining stderr and without the kill-and-grace below, which is a pipe deadlock and a
+    /// leaked process respectively — bugs that exist only because the logic was duplicated.</summary>
+    static async Task<(int ExitCode, byte[] Stdout, string Stderr)> RunGitCaptureRaw(
             string cwd, TimeSpan timeout, bool sourceReadOnly, params string[] args) {
         var psi = NewGitPsi(cwd, args, sourceReadOnly);
         using var proc = Process.Start(psi)!;
@@ -1125,7 +1129,8 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
         // prefix, so a tracked `\uFEFF.cursor/mcp.json` would arrive as `.cursor/mcp.json` in BOTH the
         // tracked set and the manifest — the check passes on a name git does not have, and the read lands
         // on the developer's untracked config. The authorised name must be the used name.
-        var stdoutTask = ReadAllDecodedAsync(proc.StandardOutput.BaseStream, cts.Token);
+        // BOTH drained concurrently, always: a child that fills an unread stderr pipe blocks forever.
+        var stdoutTask = ReadAllBytesAsync(proc.StandardOutput.BaseStream, cts.Token);
         var stderrTask = ReadAllDecodedAsync(proc.StandardError.BaseStream, cts.Token);
         try {
             await proc.WaitForExitAsync(cts.Token);
@@ -1144,6 +1149,23 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
                 $"git {string.Join(' ', args)} timed out after {timeout.TotalSeconds:F0}s");
         }
         return (proc.ExitCode, await stdoutTask, await stderrTask);
+    }
+
+    static async Task<(int ExitCode, string Stdout, string Stderr)> RunGitCaptureResult(
+            string cwd, TimeSpan timeout, bool sourceReadOnly, params string[] args) {
+        var (exitCode, stdout, stderr) = await RunGitCaptureRaw(cwd, timeout, sourceReadOnly, args);
+        return (exitCode, GitOutputEncoding.GetString(stdout), stderr);
+    }
+
+    /// <summary>Stdout as raw BYTES, for callers that must decide on the bytes rather than a decoding of
+    /// them. Keeps stderr for the failure message.</summary>
+    static async Task<byte[]> RunGitCaptureBytes(string cwd, TimeSpan timeout, bool sourceReadOnly,
+            params string[] args) {
+        var (exitCode, stdout, stderr) = await RunGitCaptureRaw(cwd, timeout, sourceReadOnly, args);
+        if (exitCode != 0)
+            throw new InvalidOperationException(
+                $"git {string.Join(' ', args)} exited {exitCode}: {stderr.Trim()}");
+        return stdout;
     }
 
     /// <summary>
@@ -1178,29 +1200,15 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
         }
     }
 
-    /// <summary>Runs git and returns stdout as raw BYTES, for callers that must decide on the bytes.</summary>
-    static async Task<byte[]> RunGitCaptureBytes(string cwd, TimeSpan timeout, bool sourceReadOnly,
-            params string[] args) {
-        var psi = NewGitPsi(cwd, args, sourceReadOnly);
-        using var proc = Process.Start(psi)!;
-        using var cts = new CancellationTokenSource(timeout);
-        using var buffer = new MemoryStream();
-        var copy = proc.StandardOutput.BaseStream.CopyToAsync(buffer, cts.Token);
-        await proc.WaitForExitAsync(cts.Token);
-        await copy;
-
-        if (proc.ExitCode != 0)
-            throw new InvalidOperationException($"git {string.Join(' ', args)} exited {proc.ExitCode}");
-
-        return buffer.ToArray();
-    }
-
     /// <summary>Drains a redirected stream and decodes it as UTF-8 with replacement, preserving every byte
     /// the child wrote — including a leading BOM, which <see cref="StreamReader"/> would consume.</summary>
-    static async Task<string> ReadAllDecodedAsync(Stream stream, CancellationToken ct) {
+    static async Task<string> ReadAllDecodedAsync(Stream stream, CancellationToken ct) =>
+        GitOutputEncoding.GetString(await ReadAllBytesAsync(stream, ct));
+
+    static async Task<byte[]> ReadAllBytesAsync(Stream stream, CancellationToken ct) {
         using var buffer = new MemoryStream();
         await stream.CopyToAsync(buffer, ct);
-        return GitOutputEncoding.GetString(buffer.GetBuffer().AsSpan(0, (int)buffer.Length));
+        return buffer.ToArray();
     }
 
     /// <summary>UTF-8 with replacement fallback: an invalid sequence becomes U+FFFD, which is how a path
