@@ -42,6 +42,16 @@ jobs:
       - name: Build solution
         run: dotnet build Capacitor.slnx
 
+      - name: Run npm wrapper tests
+        # Plain-Node assertion scripts for the npm launcher/refresh/resolve
+        # modules (no test framework, no npm install). `shell: bash` gives
+        # fail-fast -e semantics on both matrix legs.
+        shell: bash
+        run: |
+          node npm/kcap/bin/kcap.test.js
+          node npm/kcap/bin/resolve.test.js
+          node npm/kcap/bin/refresh.test.js
+
       - name: Run unit tests
         # --maximum-parallel-tests 1 serializes the entire unit suite.
         # The codebase has many tests that mutate process-global state
