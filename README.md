@@ -1132,8 +1132,8 @@ kcap agent start claude -d                    # start without attaching; prints 
 - **Work location:** by default the agent runs **in place in your current directory** (it edits your real files). Pass `--worktree` to run in a throwaway git worktree instead.
 
 - **What a worktree deliberately does NOT inherit:** an agent worktree is a checkout of whatever branch is
-  being worked on, so anything committed there is content the agent's own author may not control. Two things
-  are therefore neutralised when kcap creates one:
+  being worked on, so anything committed there is content the agent's own author may not control. These are
+  therefore neutralised when kcap creates one:
 
   - **Workspace MCP config is removed** — `.mcp.json`, `.cursor/mcp.json`, `.gemini/settings.json`,
     `.kiro/settings/mcp.json`, `.vscode/mcp.json`, `.github/copilot/mcp.json`, `.copilot/mcp.json`,
