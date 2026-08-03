@@ -45,6 +45,10 @@ internal record AgentInstance(
     public string?              FlowRunId         { get; init; }
     public string?              FlowRole          { get; init; }
 
+    /// <summary>Who asked for this launch (server-stamped requester user id). Null for old
+    /// servers and local spawns — the supervision payload renders null as unknown.</summary>
+    public string?              RequesterUserId   { get; init; }
+
     /// <summary>The applied Codex sandbox/approval pair — the values actually passed to the vendor
     /// CLI, whether caller-selected or derived. Set only for an interactive Codex launch on a
     /// daemon-owned worktree; null everywhere else. Stored HERE (not recomputed at each send) so the
@@ -958,14 +962,15 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             string id, LaunchKind kind = LaunchKind.Default, string status = "Running",
             string? flowRunId = null, string? flowRole = null,
             DateTime? createdAt = null, DateTime? lastOutputAt = null, bool isPrivate = false,
-            IPtyProcess? pty = null, string? startIdentity = null) {
+            IPtyProcess? pty = null, string? startIdentity = null, string? requester = null) {
         var agent = new AgentInstance(
             id, null, "default", null, "/repo", "codex",
             new PtyHostedAgentRuntime("codex", pty ?? NoopPtyProcess.Instance),
             new WorktreeInfo("/repo", "b", "/repo"),
             new CancellationTokenSource()) {
             Kind = kind, FlowRunId = flowRunId, FlowRole = flowRole, IsPrivate = isPrivate,
-            CreatedAt = createdAt ?? DateTime.UtcNow, StartIdentity = startIdentity
+            CreatedAt = createdAt ?? DateTime.UtcNow, StartIdentity = startIdentity,
+            RequesterUserId = requester
         };
         agent.Status = status;
         if (lastOutputAt is { } lo) agent.LastOutputAt = lo;
@@ -1474,7 +1479,8 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
                 BorrowedSnapshotSource = borrowedSnapshotSource,
                 Kind                = cmd.Kind,       // Phase B (D2): flow identity + kind for LiveAgents/status report
                 FlowRunId           = cmd.FlowRunId,
-                FlowRole            = cmd.FlowRole
+                FlowRole            = cmd.FlowRole,
+                RequesterUserId     = cmd.RequesterUserId
             };
             _agents[agentId] = agent;
 
