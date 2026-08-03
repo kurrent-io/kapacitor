@@ -242,7 +242,12 @@ public static partial class DaemonRunner {
 
         // The DaemonStatus push: ONE notifier singleton shared by ServerConnection (pulses on hub
         // state transitions) and AgentOrchestrator (pulses on agent mutation) via their optional
-        // ctor params, so a StatusSubscribe waiter sees both kinds of change.
+        // ctor params, so a StatusSubscribe waiter sees both kinds of change. This depends on the
+        // ServerConnection/AgentOrchestrator registrations below/above staying bare AddSingleton<T>()
+        // (no factory delegate) — DI only injects a registered service into an optional trailing
+        // parameter when it resolves the constructor itself. A factory delegate that constructs
+        // either type without passing this notifier would silently sever status pushes with no
+        // failing test; DaemonStatusWiringTests pins this mechanism.
         builder.Services.AddSingleton<DaemonStatusNotifier>();
         builder.Services.AddSingleton<DaemonStatusIpc>();
 

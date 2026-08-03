@@ -28,6 +28,11 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
     // subclass ServerConnection calling the 3-arg base, which the trailing default preserves.
     readonly DaemonStatusNotifier _statusNotifier;
 
+    /// <summary>Test seam: exposes which notifier this connection actually pulses into, so a DI
+    /// wiring test can pin that the registered singleton — not a private fallback nobody
+    /// subscribes to — is the one every hub-state pulse reaches (see DaemonStatusWiringTests).</summary>
+    internal DaemonStatusNotifier StatusNotifierForTest => _statusNotifier;
+
     /// <summary>
     /// Every currently-active ACP session↔agent binding this daemon owns, keyed by agentId.
     /// Populated by <see cref="RegisterAcpBinding"/> (right after the initial

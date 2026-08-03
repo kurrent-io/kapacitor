@@ -213,6 +213,11 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     // registered singleton when one exists) keep compiling unchanged.
     readonly DaemonStatusNotifier _statusNotifier;
 
+    /// <summary>Test seam: exposes which notifier this orchestrator actually pulses into, so a DI
+    /// wiring test can pin that the registered singleton — not a private fallback nobody
+    /// subscribes to — is the one every agent mutation reaches (see DaemonStatusWiringTests).</summary>
+    internal DaemonStatusNotifier StatusNotifierForTest => _statusNotifier;
+
     // Phase B (D4): durable PID records + this daemon's logical identity/epoch for
     // crash-survivor reaping. Initialized in the ctor from config.
     AgentPidRecordStore? _pidRecords;
