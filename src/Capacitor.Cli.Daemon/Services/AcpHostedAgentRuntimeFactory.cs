@@ -580,8 +580,12 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
     static IEnumerable<string> CopilotAvailableToolIds(IReadOnlyList<AcpMcpServerSpec> servers) {
         foreach (var server in servers) {
             if (string.Equals(server.Name, KcapMcpRegistry.ReservedResultChannelId, StringComparison.Ordinal)) {
-                yield return $"{server.Name}-submit_review_result";
-                yield return $"{server.Name}-send_flow_message";
+                // Derived from the ordered catalog (the single source of truth), filtered to the
+                // unattended-safe tools — this launch is unattended, so a future non-safe catalog
+                // entry must not be advertised here. Catalog order is stable and byte-exact-tested.
+                foreach (var tool in KcapMcpRegistry.ReservedResultChannelTools) {
+                    if (tool.UnattendedSafe) yield return $"{server.Name}-{tool.Name}";
+                }
                 continue;
             }
 
