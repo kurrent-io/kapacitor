@@ -516,7 +516,8 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
                 .Any(entry => entry.StartsWith("160000 ", StringComparison.Ordinal)))
                 throw new InvalidOperationException("borrowed_snapshot_submodules_unsupported");
 
-            var manifest = await ReadSourceManifestAsync(source, exclusions, ct);
+            var destinationCaseSensitive = IsCaseSensitiveFileSystem(destination);
+            var manifest = await ReadSourceManifestAsync(source, exclusions, destinationCaseSensitive, ct);
             await ApplyReservedIndexPolicyAsync(destination,
                 manifest.Where(e => e.Value.DestinationRelative is not null).Select(e => e.Key));
             await CopyManifestAsync(source, destination, manifest, ct);
@@ -528,7 +529,7 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
             await VerifyDestinationManifestAsync(destination, manifest, ct);
 
             var finalHead = (await RunGitCapture(source, GitTimeout, true, "rev-parse", "HEAD")).Trim();
-            var finalManifest = await ReadSourceManifestAsync(source, exclusions, ct);
+            var finalManifest = await ReadSourceManifestAsync(source, exclusions, destinationCaseSensitive, ct);
             if (!string.Equals(sourceHead, finalHead, StringComparison.Ordinal) ||
                 !ManifestsEqual(manifest, finalManifest))
                 throw new SourceChangedException();
@@ -539,8 +540,9 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
     }
 
     static async Task<Dictionary<string, SnapshotFile>> ReadSourceManifestAsync(
-            string source, string[] exclusions, CancellationToken ct) {
-        var stdout = await RunGitCapture(source, GitTimeout, true, "ls-files", "-co", "--exclude-standard", "-z");
+            string source, string[] exclusions, bool destinationCaseSensitive, CancellationToken ct) {
+        var listing = DecodeNulSeparatedStrictly(
+            await RunGitCaptureBytes(source, GitTimeout, true, "ls-files", "-co", "--exclude-standard", "-z"));
 
         // Quarantine is for BRANCH-authored config — content the reviewer is there to judge. The manifest
         // source lists untracked files too, so without this a developer's local-only MCP config would be
@@ -554,14 +556,22 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
         // calls are `-z`, so their paths are byte-identical for the same file and exact matching is right.
         // Case-insensitive comparison stays correct for destination collisions below, where the question is
         // whether two entries can occupy one path on THIS filesystem.
-        var tracked = (await RunGitCapture(source, GitTimeout, true, "ls-files", "-z"))
-            .Split('\0', StringSplitOptions.RemoveEmptyEntries)
+        var tracked = DecodeNulSeparatedStrictly(
+                await RunGitCaptureBytes(source, GitTimeout, true, "ls-files", "-z"))
             .ToHashSet(StringComparer.Ordinal);
 
         var result = new Dictionary<string, SnapshotFile>(StringComparer.OrdinalIgnoreCase);
-        var destinations = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        // Match the DESTINATION filesystem. Reserving destinations before the tracked-deletion skip (the
+        // fix for a real hole) had a cost I first dismissed as pre-existing and was wrong about: a repo
+        // tracking both `Foo` and `foo` with one spelling deleted used to snapshot fine, because the absent
+        // entry never reached the manifest dictionary. Folded here, it now collides and aborts — so this
+        // change WIDENED the limitation rather than inheriting it. Two entries only contend for one path
+        // where the filesystem says they do.
+        var destinations = new HashSet<string>(
+            destinationCaseSensitive ? StringComparer.Ordinal : StringComparer.OrdinalIgnoreCase);
         long total = 0;
-        foreach (var raw in stdout.Split('\0', StringSplitOptions.RemoveEmptyEntries)) {
+        foreach (var raw in listing) {
             ct.ThrowIfCancellationRequested();
             // rel IS raw — validated, never rewritten — so the identity the tracked check authorises is the
             // identity that gets opened, hashed, copied and verified.
@@ -791,16 +801,6 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
                            p.Contains(Path.AltDirectorySeparatorChar)))
             throw new InvalidOperationException($"borrowed_snapshot_invalid_path: {raw}");
 
-        // A git path is BYTES. On Linux — where the daemons run — a filename need not be valid UTF-8, and
-        // git's index carries whatever bytes it was given, so `ls-files -z` can emit a path we decode into
-        // U+FFFD. That identity no longer refers to anything: re-encoded for the syscall it becomes EF BF
-        // BD, `File.Exists` says no, and the entry is silently skipped as a tracked deletion. Silent is the
-        // problem — a borrowed snapshot exists so a reviewer can SEE the change, and a branch must not be
-        // able to hide a tracked file from them by naming it un-decodably. Same rule as a driver name that
-        // cannot round-trip: what we cannot represent, we refuse.
-        if (raw.Contains('\uFFFD'))
-            throw new InvalidOperationException($"borrowed_snapshot_invalid_path: {raw}");
-
         return raw;
     }
 
@@ -889,7 +889,8 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
     /// would show up as a DELETION inside the snapshot — polluting <c>git status</c> and diffs, and capable
     /// of producing a review finding about a deletion kcap performed. Driven from the same list, so the two
     /// cannot drift apart again.</para></summary>
-    static async Task ApplyReservedIndexPolicyAsync(string destination, IEnumerable<string> quarantined) {
+    static async Task ApplyReservedIndexPolicyAsync(string destination, IEnumerable<string> quarantinedPaths) {
+        var quarantined = quarantinedPaths.ToArray();   // enumerated twice below
         // Drive this from the paths the manifest ACTUALLY remapped, in their exact spellings.
         //
         // Two ways to get this wrong, both seen in review. Iterating the canonical lowercase list marks
@@ -903,9 +904,24 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
         foreach (var path in quarantined)
             try { await RunGit(destination, GitTimeout, "update-index", "--skip-worktree", "--", path); }
             catch { /* raced away, or the index changed under us */ }
+        // EXACT destinations, never `*{suffix}`. A wildcard suppresses every untracked file with that
+        // suffix, so a developer's own `fixtures/result.kcap-quarantined` is copied into the snapshot and
+        // then vanishes from `git status` — hiding genuine dirty context from the reviewer, the same defect
+        // shape as the over-broad skip-worktree. Each pattern is rooted at `/` and escaped, because a
+        // branch chooses these path names and gitignore has its own metacharacters.
+        static string EscapeExclude(string rel) {
+            var escaped = new System.Text.StringBuilder("/");
+            foreach (var c in rel) {
+                if (c is '*' or '?' or '[' or ']' or '\\' or '!' or '#') escaped.Append('\\');
+                escaped.Append(c);
+            }
+            return escaped.ToString();
+        }
+
         Directory.CreateDirectory(Path.Combine(destination, ".git", "info"));
         File.AppendAllText(Path.Combine(destination, ".git", "info", "exclude"),
-            $"\n.attached/\n*{QuarantineSuffix}\n");
+            "\n.attached/\n"
+          + string.Concat(quarantined.Select(rel => EscapeExclude(rel + QuarantineSuffix) + "\n")));
     }
 
     /// <summary>Whether <paramref name="root"/> distinguishes filenames by case, PROBED rather than
@@ -1128,6 +1144,55 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
                 $"git {string.Join(' ', args)} timed out after {timeout.TotalSeconds:F0}s");
         }
         return (proc.ExitCode, await stdoutTask, await stderrTask);
+    }
+
+    /// <summary>
+    /// Splits a NUL-separated git listing and decodes each record STRICTLY.
+    ///
+    /// <para>A git path is bytes; on Linux a filename need not be valid UTF-8. Such a path must be refused,
+    /// because decoded lossily it becomes U+FFFD, no longer names anything, and would be silently skipped
+    /// as a tracked deletion — letting a branch hide a tracked file from the reviewer in a snapshot that
+    /// exists so the reviewer can see the change.</para>
+    ///
+    /// <para>But testing the DECODED string for U+FFFD cannot tell an invalid byte from a filename that
+    /// legitimately contains U+FFFD (EF BF BD decodes to exactly that), so a valid `notes\uFFFD.md` was
+    /// refused too. Deciding on the bytes removes the ambiguity instead of narrowing the guess.</para>
+    /// </summary>
+    static IEnumerable<string> DecodeNulSeparatedStrictly(byte[] listing) {
+        var strict = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
+        var start = 0;
+        for (var i = 0; i <= listing.Length; i++) {
+            if (i != listing.Length && listing[i] != 0) continue;
+            if (i > start) {
+                var record = listing.AsSpan(start, i - start);
+                string decoded;
+                try { decoded = strict.GetString(record); }
+                catch (DecoderFallbackException) {
+                    throw new InvalidOperationException(
+                        "borrowed_snapshot_invalid_path: a path is not valid UTF-8, so it cannot be "
+                      + "represented faithfully in the snapshot");
+                }
+                yield return decoded;
+            }
+            start = i + 1;
+        }
+    }
+
+    /// <summary>Runs git and returns stdout as raw BYTES, for callers that must decide on the bytes.</summary>
+    static async Task<byte[]> RunGitCaptureBytes(string cwd, TimeSpan timeout, bool sourceReadOnly,
+            params string[] args) {
+        var psi = NewGitPsi(cwd, args, sourceReadOnly);
+        using var proc = Process.Start(psi)!;
+        using var cts = new CancellationTokenSource(timeout);
+        using var buffer = new MemoryStream();
+        var copy = proc.StandardOutput.BaseStream.CopyToAsync(buffer, cts.Token);
+        await proc.WaitForExitAsync(cts.Token);
+        await copy;
+
+        if (proc.ExitCode != 0)
+            throw new InvalidOperationException($"git {string.Join(' ', args)} exited {proc.ExitCode}");
+
+        return buffer.ToArray();
     }
 
     /// <summary>Drains a redirected stream and decodes it as UTF-8 with replacement, preserving every byte

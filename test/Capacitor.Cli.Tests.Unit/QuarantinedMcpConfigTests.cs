@@ -546,6 +546,86 @@ public class QuarantinedMcpConfigTests {
             .Because("skip-worktree on a non-quarantined path hides a real change from the reviewer");
     }
 
+    /// <summary>
+    /// A filename may legitimately CONTAIN U+FEFF's cousin U+FFFD — the bytes EF BF BD are valid UTF-8 and
+    /// decode to exactly the replacement character. Testing the decoded string for U+FFFD cannot tell that
+    /// apart from an invalid byte, so a perfectly ordinary `notes�.md` was refused. The decision is
+    /// made on the BYTES now, which removes the ambiguity rather than narrowing the guess.
+    /// </summary>
+    [Test]
+    public async Task A_filename_legitimately_containing_the_replacement_character_is_accepted() {
+        var source = NewRepo();
+        WriteAt(source, "notes�.md", "ordinary content");
+        Git(source, "add", "-A");
+        Git(source, "commit", "-q", "-m", "a valid name that happens to contain U+FFFD");
+
+        var info = await Manager(out _).CreateBorrowedSnapshotAsync(
+            source, "fd-" + Guid.NewGuid().ToString("N")[..8], CancellationToken.None);
+        var root = info.SnapshotRoot ?? info.Path;
+
+        await Assert.That(File.ReadAllText(Path.Combine(root, "notes�.md")))
+            .IsEqualTo("ordinary content");
+    }
+
+    /// <summary>
+    /// The quarantine exclude must name EXACT destinations. `*{suffix}` suppresses every untracked file
+    /// with that suffix, so a developer's own `fixtures/result.kcap-quarantined` is copied into the
+    /// snapshot and then vanishes from `git status` — hiding genuine dirty context from the reviewer.
+    /// </summary>
+    [Test]
+    public async Task An_unrelated_file_sharing_the_quarantine_suffix_stays_visible() {
+        var source = NewRepo();
+        WriteAt(source, ".mcp.json", """{"mcpServers":{}}""");   // forces a real quarantine entry
+        Git(source, "add", "-A");
+        Git(source, "commit", "-q", "-m", "init");
+
+        // The developer's own untracked file that merely shares the suffix.
+        WriteAt(source, "fixtures/result" + WorktreeManager.QuarantineSuffix, "my scratch output");
+
+        var info = await Manager(out _).CreateBorrowedSnapshotAsync(
+            source, "ex-" + Guid.NewGuid().ToString("N")[..8], CancellationToken.None);
+        var root = info.SnapshotRoot ?? info.Path;
+
+        // `-uall` so untracked files are listed individually — plain --porcelain collapses them to
+        // `?? fixtures/`, which would pass this while telling us nothing about the file itself.
+        var status = GitCapture(root, "status", "--porcelain", "-uall");
+
+        // The real quarantine destination is still hidden...
+        await Assert.That(status).DoesNotContain(".mcp.json" + WorktreeManager.QuarantineSuffix);
+        // ...while the user's own file is present AND visible as dirty context.
+        await Assert.That(File.Exists(
+            Path.Combine(root, "fixtures", "result" + WorktreeManager.QuarantineSuffix))).IsTrue();
+        await Assert.That(status)
+            .Contains("fixtures/result" + WorktreeManager.QuarantineSuffix)
+            .Because("a wildcard exclude would hide the developer's own untracked file");
+    }
+
+    /// <summary>
+    /// Reserving destinations before the tracked-deletion skip closed a real hole, but folding case while
+    /// doing it broke a repo that legitimately tracks two paths differing only by case: with one spelling
+    /// deleted in the working tree, the absent entry used to be skipped before reaching the manifest, and
+    /// now it reserves a folded destination and the whole snapshot aborts. Where the filesystem says the
+    /// two are distinct files, they do not contend for one path.
+    /// </summary>
+    [Test]
+    public async Task Two_paths_differing_only_by_case_do_not_collide_where_the_filesystem_allows_both() {
+        var source = NewRepo();
+        Skip.Unless(IsCaseSensitive(source), "both spellings must be able to exist to be tracked at all");
+
+        WriteAt(source, "Foo", "upper");
+        WriteAt(source, "foo", "lower");
+        Git(source, "add", "-A");
+        Git(source, "commit", "-q", "-m", "both spellings tracked");
+        File.Delete(Path.Combine(source, "foo"));       // one resolved away in the working tree
+
+        var info = await Manager(out _).CreateBorrowedSnapshotAsync(
+            source, "cc-" + Guid.NewGuid().ToString("N")[..8], CancellationToken.None);
+        var root = info.SnapshotRoot ?? info.Path;
+
+        await Assert.That(File.ReadAllText(Path.Combine(root, "Foo"))).IsEqualTo("upper");
+        await Assert.That(File.Exists(Path.Combine(root, "foo"))).IsFalse();
+    }
+
     // ── fixture ──
 
     /// <summary>A manager rooted in a TEMP directory. The default DaemonConfig points at
