@@ -14,9 +14,14 @@ namespace Capacitor.Cli.Tests.Unit.Daemon;
 /// End-to-end coverage of the StatusSubscribe/DaemonStatus frame pair over a REAL Unix-domain
 /// socket — the same <see cref="LocalControlServer.HandleConnectionAsync"/> routing switch a real
 /// `kcap` client talks to. The harness mirrors <see cref="LocalControlHelloTests"/> (temp
-/// DaemonLockPaths override, socket-file poll, Windows guard) and is reused verbatim by the
-/// follow-up task that exercises the debounce/pulse matrix — hence the harness exposing
-/// <c>Notifier</c>/<c>StatusIpc</c> on <see cref="Harness"/>.
+/// DaemonLockPaths override, socket-file poll, Windows guard). Beyond the single wiring test,
+/// this file pins the debounce/pulse/convergence behavior matrix: every mutation triggers a
+/// re-push, a pulse burst coalesces into one trailing snapshot, two subscribers converge
+/// independently via their own cursors, a mutation landing exactly at the snapshot/cursor
+/// boundary still converges, subscriber EOF reaps the handler promptly, concurrent mutations
+/// never produce an internally-inconsistent payload, and a shutting-down daemon just closes the
+/// connection. The observable guarantee throughout is CONVERGENCE, not per-generation delivery —
+/// debounce is free to collapse a burst into fewer pushes than pulses.
 /// </summary>
 public class DaemonStatusIpcTests {
     sealed class NoopHostLifetime : IHostApplicationLifetime {
@@ -43,7 +48,18 @@ public class DaemonStatusIpcTests {
 
     sealed record Harness(
         LocalControlServer Server, AgentOrchestrator Orchestrator, ServerConnection Connection,
-        DaemonConfig Config, string SockPath, DaemonStatusNotifier Notifier, DaemonStatusIpc StatusIpc);
+        DaemonConfig Config, string SockPath, DaemonStatusNotifier Notifier, DaemonStatusIpc StatusIpc,
+        string StateDir) {
+        int _serverStopped;
+
+        /// Re-entrant-safe: the shutdown test stops the server itself (to observe the
+        /// subscription close), and RunAsync's finally stops it again unconditionally
+        /// afterward. The guard makes the second call a no-op instead of a crash.
+        internal async Task StopServerOnceAsync(CancellationToken ct) {
+            if (Interlocked.Exchange(ref _serverStopped, 1) != 0) return;
+            await Server.StopAsync(ct);
+        }
+    }
 
     static async Task<Harness> StartAsync(string daemonName, CancellationToken ct) {
         var stateDir = Directory.CreateTempSubdirectory("kcap-status-ipc-state-").FullName;
@@ -85,14 +101,15 @@ public class DaemonStatusIpcTests {
         var deadline = DateTime.UtcNow.AddSeconds(5);
         while (!File.Exists(sockPath) && DateTime.UtcNow < deadline) await Task.Delay(20, ct);
 
-        return new Harness(server, orchestrator, connection, config, sockPath, notifier, statusIpc);
+        return new Harness(server, orchestrator, connection, config, sockPath, notifier, statusIpc, stateDir);
     }
 
     static async Task StopAsync(Harness h) {
         await h.Orchestrator.DisposeAsync();
-        await h.Server.StopAsync(CancellationToken.None);
+        await h.StopServerOnceAsync(CancellationToken.None);
         h.Server.Dispose();
         await h.Connection.DisposeAsync();
+        try { Directory.Delete(h.StateDir, true); } catch { /* best-effort */ }
     }
 
     /// Wraps a test body with the temp-dir DaemonLockPaths override + harness lifecycle, mirroring
@@ -128,6 +145,23 @@ public class DaemonStatusIpcTests {
         return JsonSerializer.Deserialize(f.Text, StatusIpcJsonContext.Default.DaemonStatusDto)!;
     }
 
+    /// Reads one frame or returns null when none arrives within the window — for asserting
+    /// "no further push" without hanging the suite.
+    static async Task<LocalFrame?> ReadOrNullAsync(Stream s, TimeSpan window, CancellationToken ct) {
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        cts.CancelAfter(window);
+        try { return await FrameCodec.ReadAsync(s, cts.Token); }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested) { return null; }
+    }
+
+    /// Internal-consistency invariant every DaemonStatus payload must satisfy, regardless of
+    /// how many mutations landed between pushes: ActiveAgents is derived from the SAME
+    /// materialized Agents array it ships with, so the two can never disagree.
+    static async Task AssertConsistent(DaemonStatusDto dto) {
+        var expectedActive = dto.Agents.Count(a => a.Status is "Starting" or "Running");
+        await Assert.That(dto.Daemon.ActiveAgents).IsEqualTo(expectedActive);
+    }
+
     [Test]
     [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task Subscribe_pushes_an_immediate_snapshot_with_daemon_block_and_agents() {
@@ -152,6 +186,220 @@ public class DaemonStatusIpcTests {
             var r1 = dto.Agents.Single(a => a.Id == "s1");
             await Assert.That(r1.Kind).IsEqualTo("review-flow");
             await Assert.That(r1.Requester).IsEqualTo("github:12345");
+        });
+    }
+
+    [Test] // add / status-change / removal each trigger a re-push
+    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
+    public async Task Each_mutation_triggers_a_re_push() {
+        if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
+
+        await RunAsync("st-b", async (h, ct) => {
+            await using var s = await ConnectAsync(h.SockPath, ct);
+            await FrameCodec.WriteAsync(s, new LocalFrame(FrameType.StatusSubscribe), ct);
+
+            var initial = await ReadStatusAsync(s, ct);
+            await AssertConsistent(initial);
+            await Assert.That(initial.Agents).IsEmpty();
+
+            var m1 = h.Orchestrator.SeedAgentForTest("m1");
+            var afterAdd = await ReadStatusAsync(s, ct);
+            await AssertConsistent(afterAdd);
+            await Assert.That(afterAdd.Agents.Select(a => a.Id)).Contains("m1");
+
+            h.Orchestrator.SetAgentStatus(m1, "Completed");
+            var afterStatus = await ReadStatusAsync(s, ct);
+            await AssertConsistent(afterStatus);
+            await Assert.That(afterStatus.Agents.Single(a => a.Id == "m1").Status).IsEqualTo("Completed");
+            await Assert.That(afterStatus.Daemon.ActiveAgents).IsEqualTo(0); // Completed isn't active
+
+            h.Orchestrator.UnpublishAgent("m1");
+            var afterRemove = await ReadStatusAsync(s, ct);
+            await AssertConsistent(afterRemove);
+            await Assert.That(afterRemove.Agents).IsEmpty();
+        });
+    }
+
+    [Test] // burst coalescing: at most one trailing snapshot after the in-flight push
+    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
+    public async Task A_pulse_burst_coalesces_into_one_trailing_snapshot() {
+        if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
+
+        await RunAsync("st-c", async (h, ct) => {
+            // Wide enough that 5 back-to-back synchronous pulses land inside one debounce window.
+            h.StatusIpc.Debounce = TimeSpan.FromMilliseconds(150);
+
+            await using var s = await ConnectAsync(h.SockPath, ct);
+            await FrameCodec.WriteAsync(s, new LocalFrame(FrameType.StatusSubscribe), ct);
+            await ReadStatusAsync(s, ct); // drain immediate snapshot
+
+            for (var i = 0; i < 5; i++) h.Orchestrator.SeedAgentForTest($"b{i}");
+
+            var converged = await ReadStatusAsync(s, ct);
+            await AssertConsistent(converged);
+            var ids = converged.Agents.Select(a => a.Id).ToHashSet();
+            for (var i = 0; i < 5; i++) await Assert.That(ids).Contains($"b{i}");
+
+            // No second trailing push for the same burst.
+            await Assert.That(await ReadOrNullAsync(s, TimeSpan.FromMilliseconds(400), ct)).IsNull();
+        });
+    }
+
+    [Test] // two-subscriber convergence + slow subscriber doesn't stall the fast one
+    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
+    public async Task Both_subscribers_converge_after_a_change_and_a_slow_one_stalls_only_itself() {
+        if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
+
+        await RunAsync("st-d", async (h, ct) => {
+            await using var a = await ConnectAsync(h.SockPath, ct);
+            await FrameCodec.WriteAsync(a, new LocalFrame(FrameType.StatusSubscribe), ct);
+            await ReadStatusAsync(a, ct); // drain A's immediate snapshot
+
+            await using var b = await ConnectAsync(h.SockPath, ct);
+            await FrameCodec.WriteAsync(b, new LocalFrame(FrameType.StatusSubscribe), ct);
+            await ReadStatusAsync(b, ct); // drain B's immediate snapshot
+
+            h.Orchestrator.SeedAgentForTest("both");
+
+            // A reads promptly, converging on the mutation.
+            DaemonStatusDto dtoA;
+            while (true) {
+                dtoA = await ReadStatusAsync(a, ct);
+                await AssertConsistent(dtoA);
+                if (dtoA.Agents.Any(x => x.Id == "both")) break;
+            }
+
+            // B never read until now — its cursor still converges to at least this generation
+            // (buffered or next frame), and reading it does not disturb A above.
+            DaemonStatusDto dtoB;
+            while (true) {
+                dtoB = await ReadStatusAsync(b, ct);
+                await AssertConsistent(dtoB);
+                if (dtoB.Agents.Any(x => x.Id == "both")) break;
+            }
+        });
+    }
+
+    [Test] // cursor-before-snapshot + pulse-after-mutation regressions, deterministic via the hook
+    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
+    public async Task A_mutation_at_the_snapshot_boundary_still_converges() {
+        if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
+
+        await RunAsync("st-e", async (h, ct) => {
+            // BEFORE subscribing: land a mutation+pulse exactly between snapshot and wait,
+            // deterministically, via the self-clearing test hook.
+            h.StatusIpc.AfterSnapshotForTest = () => {
+                h.StatusIpc.AfterSnapshotForTest = null; // fire once
+                h.Orchestrator.SeedAgentForTest("boundary"); // mutation + pulse land here
+            };
+
+            await using var s = await ConnectAsync(h.SockPath, ct);
+            await FrameCodec.WriteAsync(s, new LocalFrame(FrameType.StatusSubscribe), ct);
+
+            // The snapshot was taken (and the hook fired) BEFORE the mutation, so the first
+            // frame must not contain it — pinning cursor-before-snapshot.
+            var first = await ReadStatusAsync(s, ct);
+            await AssertConsistent(first);
+            await Assert.That(first.Agents.Any(a => a.Id == "boundary")).IsFalse();
+
+            // No further external pulses: this converges purely because the hook's seed already
+            // advanced the generation past the pre-snapshot cursor — WaitBeyondAsync(seen)
+            // completes synchronously and the loop immediately re-snapshots and pushes.
+            var second = await ReadStatusAsync(s, ct);
+            await AssertConsistent(second);
+            await Assert.That(second.Agents.Any(a => a.Id == "boundary")).IsTrue();
+        });
+    }
+
+    [Test] // subscriber EOF reaps the handler promptly
+    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
+    public async Task Subscriber_eof_reaps_the_handler_promptly() {
+        if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
+
+        await RunAsync("st-f", async (h, ct) => {
+            var s = await ConnectAsync(h.SockPath, ct);
+            await FrameCodec.WriteAsync(s, new LocalFrame(FrameType.StatusSubscribe), ct);
+            await ReadStatusAsync(s, ct); // drain immediate snapshot
+            await Assert.That(h.StatusIpc.ActiveSubscribersForTest).IsEqualTo(1);
+
+            await s.DisposeAsync(); // subscriber vanishes
+
+            var deadline = DateTime.UtcNow.AddSeconds(5);
+            while (h.StatusIpc.ActiveSubscribersForTest != 0 && DateTime.UtcNow < deadline)
+                await Task.Delay(20, ct);
+            await Assert.That(h.StatusIpc.ActiveSubscribersForTest).IsEqualTo(0);
+        });
+    }
+
+    [Test] // snapshot stress: no exceptions, every payload internally consistent, converges
+    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
+    public async Task Concurrent_mutations_never_produce_an_inconsistent_payload() {
+        if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
+
+        await RunAsync("st-g", async (h, ct) => {
+            h.StatusIpc.Debounce = TimeSpan.FromMilliseconds(25);
+
+            await using var s = await ConnectAsync(h.SockPath, ct);
+            await FrameCodec.WriteAsync(s, new LocalFrame(FrameType.StatusSubscribe), ct);
+            await ReadStatusAsync(s, ct); // drain immediate snapshot
+
+            // Known ahead of time from the fixed mutation pattern below — no mutable state
+            // shared between the mutator loop and the reader task besides the notifier/registry.
+            var finalIds = Enumerable.Range(0, 50).Where(i => i % 3 != 0).Select(i => $"x{i}").ToHashSet();
+            var converged = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+            var reader = Task.Run(async () => {
+                while (!converged.Task.IsCompleted) {
+                    var frame = await ReadOrNullAsync(s, TimeSpan.FromSeconds(5), ct);
+                    if (frame is null) return; // nothing else pins this iteration; outer wait decides pass/fail
+                    await Assert.That(frame.Type).IsEqualTo(FrameType.DaemonStatus);
+                    var dto = JsonSerializer.Deserialize(frame.Text, StatusIpcJsonContext.Default.DaemonStatusDto)!;
+                    await AssertConsistent(dto);
+                    if (dto.Agents.Select(a => a.Id).ToHashSet().SetEquals(finalIds)) converged.TrySetResult();
+                }
+            }, ct);
+
+            // 50 iterations of seed(Starting) -> Running, then either settle (2/3) or
+            // complete+unpublish (1/3) — a mix of add/status-change/removal under load.
+            for (var i = 0; i < 50; i++) {
+                var id = $"x{i}";
+                var agent = h.Orchestrator.SeedAgentForTest(id, status: "Starting");
+                h.Orchestrator.SetAgentStatus(agent, "Running");
+                if (i % 3 == 0) {
+                    h.Orchestrator.SetAgentStatus(agent, "Completed");
+                    h.Orchestrator.UnpublishAgent(id);
+                }
+            }
+
+            // Convergence, not per-generation delivery: the final registry state must show up
+            // in SOME payload within a generous deadline, however many pulses got coalesced.
+            await converged.Task.WaitAsync(TimeSpan.FromSeconds(5), ct);
+            await reader; // propagate any per-payload assertion failure from inside the loop
+        });
+    }
+
+    [Test] // §5: StatusSubscribe on a shutting-down daemon — the connection just closes
+    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
+    public async Task Daemon_shutdown_closes_the_subscription() {
+        if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
+
+        await RunAsync("st-h", async (h, ct) => {
+            await using var s = await ConnectAsync(h.SockPath, ct);
+            await FrameCodec.WriteAsync(s, new LocalFrame(FrameType.StatusSubscribe), ct);
+            await ReadStatusAsync(s, ct); // drain immediate snapshot
+
+            // Stop the daemon's local control server directly (RunAsync's finally will try to
+            // stop it again — StopServerOnceAsync's guard makes that a no-op, not a crash).
+            await h.StopServerOnceAsync(ct);
+
+            // The peer closes the connection: a clean EOF (null) or an abrupt-close read error —
+            // either is "the connection just closes"; never another DaemonStatus frame.
+            try {
+                var frame = await FrameCodec.ReadAsync(s, ct);
+                await Assert.That(frame).IsNull();
+            } catch (Exception ex) when (ex is IOException or SocketException) {
+                // an abrupt close surfacing as a read error is an equally valid outcome
+            }
         });
     }
 }
