@@ -166,16 +166,47 @@ public class McpWorkItemsServerTests {
     // ── declared breakdown + relations ───────────────────────────────────────
 
     [Test]
-    public async Task No_tool_accepts_a_server_owned_source_or_declared_by_argument() {
-        // The server resolves Source/DeclaredBy from the authenticated caller and rejects a Source of
-        // "user" outright. Accepting either here would be an argument the server ignores at best, and
-        // a spoofing surface at worst — so the absence is asserted, not left to reviewer vigilance.
-        foreach (var tool in McpWorkItemsServer.BuildToolsList()) {
+    public async Task No_tool_advertises_a_server_owned_source_or_declared_by_argument() {
+        // Named "advertises", not "accepts" (review correction): without additionalProperties:false a
+        // JSON Schema does not forbid a caller supplying these keys, so this test proves only that we
+        // never invite them. The guarantee that they are never FORWARDED is a property of the body
+        // builders, asserted separately below.
+        var tools = McpWorkItemsServer.BuildToolsList();
+
+        // Non-vacuity: without this the loop body would never run if BuildToolsList returned empty,
+        // and the test would pass having checked nothing.
+        await Assert.That(tools.Length).IsEqualTo(7);
+
+        foreach (var tool in tools) {
             await Assert.That(tool.InputSchema.Properties.Keys).DoesNotContain("source")
-                .Because($"{tool.Name} must not expose a server-owned field");
+                .Because($"{tool.Name} must not advertise a server-owned field");
             await Assert.That(tool.InputSchema.Properties.Keys).DoesNotContain("declared_by")
-                .Because($"{tool.Name} must not expose a server-owned field");
+                .Because($"{tool.Name} must not advertise a server-owned field");
         }
+    }
+
+    [Test]
+    public async Task Body_builders_never_forward_a_caller_supplied_source_or_declared_by() {
+        // THIS is the real guarantee: the builders whitelist their output, so even a caller that
+        // ignores the schema and sends these keys cannot get them onto the wire. The server resolves
+        // both from the authenticated identity and rejects a source of "user" outright.
+        const string spoofed = """
+                               {"parent_id":"p1","part_ids":["a"],"to_id":"b","relation_kind":"blocks",
+                                "source":"user","declared_by":"someone-else"}
+                               """;
+
+        var breakdown = McpWorkItemsServer.BuildBreakdownBody(Args(spoofed));
+        var relation  = McpWorkItemsServer.BuildRelationBody(Args(spoofed));
+
+        foreach (var body in new[] { breakdown, relation }) {
+            await Assert.That(body.ContainsKey("source")).IsFalse();
+            await Assert.That(body.ContainsKey("declared_by")).IsFalse();
+        }
+
+        // Precondition: the bodies are not empty for an unrelated reason, so the absences above mean
+        // "filtered out" rather than "nothing was built".
+        await Assert.That(breakdown.ContainsKey("part_ids")).IsTrue();
+        await Assert.That(relation.ContainsKey("to_id")).IsTrue();
     }
 
     [Test]
@@ -275,6 +306,62 @@ public class McpWorkItemsServerTests {
     }
 
     [Test]
+    public async Task Breakdown_body_rejects_an_explicit_null_part_ids() {
+        // A PRESENT null is a wrong shape, not absence. An earlier revision's `is { } node` form read
+        // it as absence and silently omitted the field (review finding).
+        var ex = Assert.Throws<ArgumentException>(
+            () => McpWorkItemsServer.BuildBreakdownBody(Args("""{"parent_id":"p1","part_ids":null}""")));
+
+        await Assert.That(ex!.Message).Contains("part_ids");
+    }
+
+    [Test]
+    public async Task Relation_body_forwards_an_explicitly_empty_string_rather_than_dropping_it() {
+        // Dropping "" would make the server answer "relation_kind is required" when the caller DID
+        // supply it — the wrong diagnosis. Forwarding it gets the server's invalid-value error, which
+        // is the one that helps.
+        var body = McpWorkItemsServer.BuildRelationBody(Args("""{"from_id":"a","to_id":"","relation_kind":""}"""));
+
+        await Assert.That(body.ContainsKey("to_id")).IsTrue();
+        await Assert.That(body["to_id"]!.GetValue<string>()).IsEqualTo("");
+        await Assert.That(body["relation_kind"]!.GetValue<string>()).IsEqualTo("");
+    }
+
+    [Test]
+    public async Task Relation_body_leaves_absent_keys_absent_and_rejects_present_wrong_types() {
+        var absent = McpWorkItemsServer.BuildRelationBody(Args("""{"from_id":"a"}"""));
+        await Assert.That(absent.ContainsKey("to_id")).IsFalse();
+        await Assert.That(absent.ContainsKey("relation_kind")).IsFalse();
+
+        var nullKind = Assert.Throws<ArgumentException>(
+            () => McpWorkItemsServer.BuildRelationBody(Args("""{"to_id":"b","relation_kind":null}""")));
+        await Assert.That(nullKind!.Message).Contains("relation_kind");
+
+        var numericKind = Assert.Throws<ArgumentException>(
+            () => McpWorkItemsServer.BuildRelationBody(Args("""{"to_id":"b","relation_kind":7}""")));
+        await Assert.That(numericKind!.Message).Contains("relation_kind");
+    }
+
+    [Test]
+    public async Task Item_url_rejects_dot_segment_ids_that_escaping_alone_would_not_contain() {
+        // `.` is unreserved in RFC 3986, so EscapeDataString leaves it alone and URI normalization
+        // then REMOVES the segment: "." would reach /api/work-items/breakdown and ".." would reach
+        // /api/breakdown — a different route whose response would be attributed to the id passed.
+        // The slash test does not cover this, because the hazard is normalization, not escaping.
+        foreach (var id in new[] { ".", "..", "..." }) {
+            var ex = Assert.Throws<ArgumentException>(
+                () => McpWorkItemsServer.ItemUrl("http://x", Args($$"""{"parent_id":"{{id}}"}"""), "parent_id", "breakdown"));
+
+            await Assert.That(ex!.Message).Contains("parent_id").Because($"id {id} must be rejected");
+        }
+
+        // Precondition: a dot INSIDE an otherwise-real id is still fine — the guard must not be a
+        // blanket ban on the character.
+        var ok = McpWorkItemsServer.ItemUrl("http://x", Args("""{"parent_id":"wi.1"}"""), "parent_id", "breakdown");
+        await Assert.That(ok).IsEqualTo("http://x/api/work-items/wi.1/breakdown");
+    }
+
+    [Test]
     public async Task Relation_body_does_not_enumerate_the_relation_kind_vocabulary() {
         // The server owns the vocabulary. Passing an unknown kind through means the caller gets the
         // server's coded rejection naming the real reason, rather than a client-side guess that could
@@ -282,5 +369,102 @@ public class McpWorkItemsServerTests {
         var body = McpWorkItemsServer.BuildRelationBody(Args("""{"from_id":"a","to_id":"b","relation_kind":"depends_on"}"""));
 
         await Assert.That(body["relation_kind"]!.GetValue<string>()).IsEqualTo("depends_on");
+    }
+
+    // ── dispatch: the route/method/body pairing itself ────────────────────────
+
+    /// <summary>
+    /// Review finding: the helper tests above verify URL and body construction INDEPENDENTLY, so none
+    /// of them would catch a switch entry that used GET instead of POST, picked the wrong suffix, or
+    /// paired a route with the wrong body builder. These drive the real dispatch through a fake
+    /// transport and assert what would actually go on the wire.
+    /// </summary>
+    sealed class CapturingHandler : HttpMessageHandler {
+        public HttpMethod? Method  { get; private set; }
+        public string?     Url     { get; private set; }
+        public string?     Body    { get; private set; }
+        public int         Calls   { get; private set; }
+
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct) {
+            Calls++;
+            Method = request.Method;
+            Url    = request.RequestUri?.ToString();
+            Body   = request.Content is null ? null : await request.Content.ReadAsStringAsync(ct);
+
+            return new HttpResponseMessage(System.Net.HttpStatusCode.OK) { Content = new StringContent("{}") };
+        }
+    }
+
+    static async Task<CapturingHandler> DispatchAsync(string toolName, string argsJson) {
+        var handler = new CapturingHandler();
+        using var client = new HttpClient(handler);
+
+        // Built as nodes rather than an interpolated raw string: the trailing brace run in a
+        // hand-written JSON-RPC envelope collides with raw-string interpolation delimiters.
+        var request = new JsonObject {
+            ["params"] = new JsonObject {
+                ["name"]      = toolName,
+                ["arguments"] = JsonNode.Parse(argsJson)
+            }
+        };
+
+        await McpWorkItemsServer.HandleToolCallAsync(JsonValue.Create(1)!, request, client, "http://x");
+
+        return handler;
+    }
+
+    [Test]
+    public async Task Dispatch_declare_work_breakdown_posts_part_ids_to_the_breakdown_route() {
+        var h = await DispatchAsync("declare_work_breakdown", """{"parent_id":"p1","part_ids":["a","b"]}""");
+
+        await Assert.That(h.Calls).IsEqualTo(1);
+        await Assert.That(h.Method).IsEqualTo(HttpMethod.Post);
+        await Assert.That(h.Url).IsEqualTo("http://x/api/work-items/p1/breakdown");
+        await Assert.That(h.Body).IsEqualTo("""{"part_ids":["a","b"]}""");
+    }
+
+    [Test]
+    public async Task Dispatch_retract_work_breakdown_targets_the_retract_route_with_the_same_body() {
+        var h = await DispatchAsync("retract_work_breakdown", """{"parent_id":"p1","part_ids":["a"]}""");
+
+        await Assert.That(h.Method).IsEqualTo(HttpMethod.Post);
+        await Assert.That(h.Url).IsEqualTo("http://x/api/work-items/p1/breakdown/retract");
+        await Assert.That(h.Body).IsEqualTo("""{"part_ids":["a"]}""");
+    }
+
+    [Test]
+    public async Task Dispatch_declare_work_relation_posts_the_relation_body_not_the_breakdown_body() {
+        var h = await DispatchAsync("declare_work_relation", """{"from_id":"a","to_id":"b","relation_kind":"blocks"}""");
+
+        await Assert.That(h.Method).IsEqualTo(HttpMethod.Post);
+        await Assert.That(h.Url).IsEqualTo("http://x/api/work-items/a/relations");
+        await Assert.That(h.Body).IsEqualTo("""{"to_id":"b","relation_kind":"blocks"}""");
+    }
+
+    [Test]
+    public async Task Dispatch_retract_work_relation_targets_the_relation_retract_route() {
+        var h = await DispatchAsync("retract_work_relation", """{"from_id":"a","to_id":"b","relation_kind":"blocked_by"}""");
+
+        await Assert.That(h.Method).IsEqualTo(HttpMethod.Post);
+        await Assert.That(h.Url).IsEqualTo("http://x/api/work-items/a/relations/retract");
+        await Assert.That(h.Body).IsEqualTo("""{"to_id":"b","relation_kind":"blocked_by"}""");
+    }
+
+    [Test]
+    public async Task Dispatch_get_work_item_topology_is_a_GET_with_no_body() {
+        var h = await DispatchAsync("get_work_item_topology", """{"work_item_id":"wi-1"}""");
+
+        await Assert.That(h.Method).IsEqualTo(HttpMethod.Get);
+        await Assert.That(h.Url).IsEqualTo("http://x/api/work-items/wi-1/topology");
+        await Assert.That(h.Body).IsNull();
+    }
+
+    [Test]
+    public async Task Dispatch_of_a_breakdown_tool_with_a_missing_id_never_reaches_the_network() {
+        // The local validation must fail BEFORE a request is built — otherwise a malformed call would
+        // hit some other route and the error would describe the wrong thing.
+        var h = await DispatchAsync("declare_work_breakdown", """{"part_ids":["a"]}""");
+
+        await Assert.That(h.Calls).IsEqualTo(0);
     }
 }

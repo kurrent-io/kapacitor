@@ -250,8 +250,20 @@ static class McpWorkItemsServer {
     /// Escaped, so an id containing a slash or a percent cannot walk out of its path segment and hit
     /// a different route.
     /// </summary>
-    internal static string ItemUrl(string baseUrl, JsonObject? args, string idKey, string suffix) =>
-        $"{baseUrl}/api/work-items/{Uri.EscapeDataString(RequireString(args, idKey))}/{suffix}";
+    internal static string ItemUrl(string baseUrl, JsonObject? args, string idKey, string suffix) {
+        var id = RequireString(args, idKey);
+
+        // Escaping alone is NOT sufficient containment. `.` is unreserved in RFC 3986, so
+        // EscapeDataString leaves it untouched, and a dot segment is then removed by URI
+        // normalization before the request is sent: an id of "." collapses
+        // /api/work-items/./breakdown to /api/work-items/breakdown, and ".." reaches
+        // /api/breakdown — a different route entirely, whose response would be attributed to the
+        // id the caller passed. Rejected outright rather than escaped, since no real work-item id
+        // is made only of dots.
+        if (id.Trim('.').Length == 0) throw new ArgumentException($"'{idKey}' is not a valid work item id.");
+
+        return $"{baseUrl}/api/work-items/{Uri.EscapeDataString(id)}/{suffix}";
+    }
 
     /// <summary>Reads a required non-blank string argument, throwing the clean tool-error shape when
     /// it is absent, null, blank, or the wrong JSON type. A whitespace-only id is rejected here
@@ -283,7 +295,15 @@ static class McpWorkItemsServer {
     internal static JsonObject BuildBreakdownBody(JsonObject? args) {
         var body = new JsonObject();
 
-        if (args?["part_ids"] is { } node) body["part_ids"] = ReadStringArray(node, "part_ids");
+        // Presence, not truthiness (review finding): `{"part_ids": null}` is a PRESENT wrong shape,
+        // and the `is { } node` form treated it as absence — silently omitting it and turning a
+        // malformed declare into a differently-shaped request. Explicit null now fails like any other
+        // wrong type.
+        if (args is not null && args.TryGetPropertyValue("part_ids", out var node)) {
+            if (node is null) throw new ArgumentException("'part_ids' must be an array of strings, not null.");
+
+            body["part_ids"] = ReadStringArray(node, "part_ids");
+        }
 
         return body;
     }
@@ -291,12 +311,31 @@ static class McpWorkItemsServer {
     internal static JsonObject BuildRelationBody(JsonObject? args) {
         var body = new JsonObject();
 
-        // to_id and relation_kind are left to the server to require: it owns the vocabulary and the
-        // structural rules, and a coded 400 naming the real reason beats a guess made here.
-        if (args?["to_id"]?.GetValue<string>() is { Length: > 0 } toId) body["to_id"] = toId;
-        if (args?["relation_kind"]?.GetValue<string>() is { Length: > 0 } kind) body["relation_kind"] = kind;
+        // to_id and relation_kind are left to the server to require and to interpret: it owns the
+        // vocabulary and the structural rules, and a coded 400 naming the real reason beats a guess
+        // made here. Every SUPPLIED string is forwarded verbatim, including "" (review finding): the
+        // previous `is { Length: > 0 }` form dropped an explicit empty string, so the caller got the
+        // server's "required" error instead of its more useful "invalid value" one. Absence stays
+        // absence; a present non-string still fails locally, as shape validation should.
+        CopyRequiredishString(args, "to_id", body);
+        CopyRequiredishString(args, "relation_kind", body);
 
         return body;
+    }
+
+    /// <summary>Copies a string argument into the request body if the caller supplied the key at all.
+    /// A present non-string (or explicit null) throws; an absent key is left absent so the server's
+    /// own "required" error surfaces.</summary>
+    static void CopyRequiredishString(JsonObject? args, string key, JsonObject body) {
+        if (args is null || !args.TryGetPropertyValue(key, out var node)) return;
+
+        if (node is null) throw new ArgumentException($"'{key}' must be a string, not null.");
+
+        try {
+            body[key] = node.GetValue<string>();
+        } catch {
+            throw new ArgumentException($"'{key}' must be a string.");
+        }
     }
 
     /// <summary>Reads a JSON array of non-blank strings. Any other present shape — a bare string, an
