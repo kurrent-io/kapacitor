@@ -220,13 +220,19 @@ public class McpDoctorSectionTests {
         var f = Fixture.Create();
         var missing = Path.Combine(f.Dir, "gone", "kcap");
         var codex = Path.Combine(f.Dir, "config.toml");
+        // LITERAL (single-quoted) TOML strings: `\` is an escape introducer in a basic
+        // (double-quoted) string, so interpolating a Windows temp path into one produced
+        // invalid TOML — Tomlyn threw, the never-throws ReadMcpServerCommands returned [],
+        // and this test reported 0 issues on the Windows CI leg. Production is unaffected
+        // (the writer emits properly-escaped TOML via TomlSerializer); a literal string is
+        // the canonical hand-written form for Windows paths and parses on every platform.
         File.WriteAllText(codex, $"""
             [mcp_servers.kcap-review]
-            command = "{missing}"
+            command = '{missing}'
             args = ["mcp", "review"]
 
             [mcp_servers.my-tool]
-            command = "/also/gone/my-tool"
+            command = '/also/gone/my-tool'
             """);
 
         var (issues, output) = await RunAsync(f, codexConfigPath: codex);
