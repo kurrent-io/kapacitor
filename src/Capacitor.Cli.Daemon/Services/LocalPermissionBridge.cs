@@ -461,19 +461,12 @@ internal sealed partial class LocalPermissionBridge(
     }
 
     /// <summary>
-    /// True when the permission request is for one of the reserved result channel's
-    /// unattended-safe tools (<c>KcapMcpRegistry.ReservedResultChannelUnattendedSafeTools</c> on the
-    /// <c>kcap-flow-result</c> server). This auto-approve bypasses the server permission boundary,
-    /// so the match PARSES the canonical <c>mcp__&lt;server&gt;__&lt;tool&gt;</c> shape and compares
-    /// whole segments — never <c>Contains</c>/<c>EndsWith</c>, which are spoofable
-    /// (<c>mcp__evil_kcap_flow_result__send_flow_message</c>,
-    /// <c>mcp__kcap_flow_result__evil_send_flow_message</c>): the ENTIRE server segment must equal
-    /// the reserved channel id (hyphens normalized to underscores, since Claude sanitizes
-    /// <c>kcap-flow-result</c> to <c>kcap_flow_result</c>) and the ENTIRE tool segment must be an
-    /// exact Ordinal member of the safe set. A bare name (a vendor that passes the raw MCP tool
-    /// name, e.g. Codex) is exact set membership only. Callers additionally gate this on the
-    /// reviewer token — the channel is injected only for flow participants, so an interactive
-    /// session's identically-named tool still takes the normal prompt path.
+    /// True when the permission request names one of the reserved result channel's unattended-safe
+    /// tools. The match parses the canonical <c>mcp__&lt;server&gt;__&lt;tool&gt;</c> shape and
+    /// compares whole segments (hyphens normalized to underscores) — substring matching here is
+    /// spoofable, e.g. <c>mcp__evil_kcap_flow_result__send_flow_message</c>. Bare names are exact
+    /// set membership. Callers gate this on the reviewer token, so an interactive session's
+    /// identically-named tool still takes the normal prompt path.
     /// </summary>
     static bool IsReservedChannelTool(string? toolName) {
         if (string.IsNullOrEmpty(toolName)) return false;
@@ -584,7 +577,7 @@ internal sealed partial class LocalPermissionBridge(
     [LoggerMessage(Level = LogLevel.Debug, Message = "Auto-approved reserved flow-channel tool {ToolName} for unattended participant session {SessionId} (vendor={Vendor}) without surfacing a prompt")]
     static partial void LogReservedChannelToolAutoApproved(ILogger logger, string toolName, string sessionId, string vendor);
 
-    [LoggerMessage(Level = LogLevel.Warning, Message = "Denied out-of-allowlist tool {ToolName} for unattended reviewer session {SessionId}")]
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Denied out-of-allowlist tool {ToolName} for unattended participant session {SessionId}")]
     static partial void LogReviewerToolDenied(ILogger logger, string sessionId, string toolName);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Permission bridge handler error")]
