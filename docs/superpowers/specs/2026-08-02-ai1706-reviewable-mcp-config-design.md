@@ -209,11 +209,11 @@ complete new generation, never a partially written manifest. If refresh fails, t
 existing behavior terminates the reviewer with `borrowed_snapshot_refresh_failed`.
 
 Before publication, the daemon strictly parses and validates the completed on-disk
-manifest and loads the entire bounded generation into one immutable in-memory grant
+manifest and loads the entire bounded generation into one immutable in-memory generation
 object. Each request snapshots that object reference and serializes from memory; it never
 reopens the manifest during a tool call. Publication is one atomic reference swap. Old
 on-disk generations may be deleted after the swap because in-flight requests retain the
-old in-memory object, so correctness does not depend on POSIX unlink-while-open behavior
+old in-memory generation, so correctness does not depend on POSIX unlink-while-open behavior
 or Windows file-sharing flags.
 
 A daemon crash cannot leave a live reviewer using stale state: the existing
@@ -242,7 +242,8 @@ cleanup, so a late tool call receives 404 and cannot race deletion.
 ### 5.1 Local capability endpoint
 
 The existing loopback `LocalPermissionBridge` gains a separate review-context grant. The
-grant binds an unguessable per-reviewer token to one immutable sidecar generation. The
+grant binds an unguessable per-reviewer token to the sidecar's atomically published current
+generation object. The token remains stable across refreshes; it is not reminted. The
 shared interactive permission token cannot access review context.
 
 The exact read contract is:
@@ -256,18 +257,25 @@ existing `POST /<token>/<vendor>/permission-request` parser and its `claude`/`co
 vendor restriction. Unknown/revoked tokens, other methods, other paths, extra path
 segments or query parameters, and attempts to choose a filesystem path return 404. The
 request contains no user-supplied path. The bridge serves the immutable in-memory
-generation bound to the grant; it does not read a caller-selected file or reopen the
-sidecar manifest per request.
+generation object referenced by the current grant record at request time; it does not
+read a caller-selected file or reopen the sidecar manifest per request.
 
 The current `ConcurrentDictionary<string, string[]>` reviewer-token value widens to one
 immutable `ReviewerGrant` record with independent `AutoApproveServers` and optional
-`ReviewContextGeneration` fields. `AgentOrchestrator` changes the current Codex-only
-`RegisterReviewerToken` gate: every review launch for which
-`RuntimeStartContext.IsBorrowedSnapshot` is true mints a grant. A vendor that also needs
-permission auto-approval may carry both fields; other independent-snapshot vendors receive
-a context-only record with an empty auto-approval set. There is no parallel context-token
-dictionary: mint, lookup, publication swap, and `RevokeReviewerToken` operate on the one
-record so revocation cannot drift between maps.
+`ReviewContextGeneration` fields. `AgentOrchestrator` mints a grant when either the
+existing `(isReviewFlow && vendor == "codex")` permission condition is true or
+`RuntimeStartContext.IsBorrowedSnapshot` is true. These are a union, not a replacement:
+the existing Codex condition populates `AutoApproveServers`, the borrowed-snapshot
+condition populates `ReviewContextGeneration`, and a launch satisfying both receives both
+fields. A direct-borrow or owned-worktree Codex reviewer therefore retains its existing
+permissions-only grant, while another independent-snapshot vendor receives a context-only
+record with an empty auto-approval set. There is no parallel context-token dictionary:
+mint, lookup, publication, and `RevokeReviewerToken` operate on the one record so
+revocation cannot drift between maps. Refresh atomically replaces the dictionary value
+for the same token with a new immutable `ReviewerGrant` that preserves
+`AutoApproveServers` and references the newly published generation object. A request
+captures either the complete old or complete new grant value; an in-flight request may
+finish from the old generation object after publication without observing mixed content.
 
 ### 5.2 Reserved MCP server
 
@@ -415,6 +423,9 @@ filename legality.
   non-regular mode without presenting its blob bytes as config.
 - Cover invalid/zero object id, non-blob object, matching invalid path encoding, and
   probed path collision independently and assert their exact §3.3 failure-code prefixes.
+- Assert a total raw config size of exactly 256 KiB succeeds, while 256 KiB plus one byte
+  refuses the borrowed launch with the exact
+  `borrowed_snapshot_review_context_capacity_exceeded` code.
 - Assert exact path, object id, byte length, SHA-256, base64 content, provenance fields,
   and the empty-manifest affirmative result.
 - Put instruction-like hostile text in a config field and assert the tool instructions,
@@ -503,9 +514,10 @@ Expected CLI areas are:
 
 - `WorktreeManager.cs` and a focused partial for review-context extraction/lifecycle;
 - `WorktreeManager.WorkspaceMcp.cs` for the shared path classification contract;
-- `AgentOrchestrator.cs` for capability-driven grant minting (replacing the current
-  Codex-only token gate for `IsBorrowedSnapshot` launches), ownership, failure cleanup,
-  and refresh publication;
+- `AgentOrchestrator.cs` for unioned grant minting that preserves the existing
+  `(isReviewFlow && vendor == "codex")` permission path and adds the
+  `IsBorrowedSnapshot` context path, plus ownership, failure cleanup, and refresh
+  publication;
 - `LocalPermissionBridge.cs` for the separately dispatched read-only context route and
   the widened single reviewer-grant record (not a second token map);
 - `McpReviewServer.cs` and the early `Program.cs` mode dispatch;
