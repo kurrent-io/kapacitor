@@ -519,6 +519,14 @@ public static partial class DaemonRunner {
             // internally for ApplicationStopping and returns cleanly.
             await host.WaitForShutdownAsync();
             LogWaitForShutdownReturned(logger);
+        } catch (OperationCanceledException) when (lifetime.ApplicationStopping.IsCancellationRequested) {
+            // Cooperative shutdown (SIGTERM/Ctrl+C) arrived while one of the startup awaits above
+            // was still in flight — most commonly the initial ConnectAsync retry loop when the
+            // server is unreachable. The cancellation IS the requested shutdown, not a fault:
+            // swallow it so it can't escape Main and abort the NativeAOT process (SIGABRT + .ips),
+            // and fall through to the normal exit-code selection below. A cancellation with no
+            // shutdown requested still propagates (fail-loud preserved).
+            LogStartupCancelledByShutdown(logger);
         } finally {
             LogEnteringCleanup(logger);
 
@@ -558,8 +566,8 @@ public static partial class DaemonRunner {
             // thread keeps the process alive past WaitForShutdownAsync forever.
             var allStepsSucceeded = await RunTeardownAsync(logger, [
                 ("daemon-lock",       () => { daemonLock.Dispose(); return ValueTask.CompletedTask; }),
-                ("orchestrator",      () => orchestrator.DisposeAsync()),
-                ("server-connection", () => connection.DisposeAsync()),
+                ("orchestrator",      orchestrator.DisposeAsync),
+                ("server-connection", connection.DisposeAsync),
                 ("host-stop",         async () => await host.StopAsync()),
                 ("host-dispose",      async () => await DisposeHostAsync(host))
             ]);
@@ -885,6 +893,9 @@ public static partial class DaemonRunner {
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Teardown step '{Step}' failed; continuing shutdown")]
     static partial void LogTeardownStepFailed(ILogger logger, Exception ex, string step);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Shutdown requested during startup; cancelling the in-flight startup step and exiting cleanly")]
+    static partial void LogStartupCancelledByShutdown(ILogger logger);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Cleanup: one or more teardown steps failed (see warnings above); daemon exiting anyway with its normal exit code")]
     static partial void LogTeardownPartialFailure(ILogger logger);
