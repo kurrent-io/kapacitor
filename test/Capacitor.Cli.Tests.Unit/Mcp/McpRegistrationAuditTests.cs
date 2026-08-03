@@ -57,6 +57,7 @@ public class McpRegistrationAuditTests {
     [Arguments("""{ "command": "kcap", "args": ["mcp","memory"] }""")]                                     // wrong args for name
     [Arguments("""{ "command": "kcap", "args": ["mcp","flows"], "custom": true }""")]                      // extra field
     [Arguments("""{ "command": "kcap", "args": ["mcp","flows","--extra"] }""")]                            // extra arg
+    [Arguments("""{ "command": "kcap", "args": ["mcp","flows"], "cwd": "/some/other/repo" }""")]           // arbitrary cwd redirects execution context
     public async Task Divergent_same_name_entry_is_a_conflict_and_never_removed(string entryJson) {
         var json = $$"""{ "mcpServers": { "kcap-flows": {{entryJson}} } }""";
 
@@ -69,6 +70,41 @@ public class McpRegistrationAuditTests {
         var servers = (JsonObject)JsonNode.Parse(removed)!["mcpServers"]!;
         await Assert.That(servers.ContainsKey("kcap-flows")).IsTrue();
         await Assert.That(JsonNode.DeepEquals(servers["kcap-flows"], JsonNode.Parse(entryJson))).IsTrue();
+    }
+
+    /// <summary>
+    /// cwd changes execution context (repo scoping), so it is never blanket-cosmetic: canonical
+    /// only as the shipped <c>${CLAUDE_PROJECT_DIR}</c> placeholder on a server that requires a
+    /// project cwd, or — project scope — the project's own path (what the placeholder expands to).
+    /// A wrong path, or ANY cwd on a server that takes none, is a customization to preserve.
+    /// </summary>
+    [Test]
+    public async Task Cwd_is_canonical_only_as_the_placeholder_or_the_projects_own_path() {
+        // User scope: placeholder OK (the shipped plugin shape); kcap-review takes no cwd at all.
+        var json = """
+        { "mcpServers": {
+            "kcap-flows":  { "command": "kcap", "args": ["mcp","flows"], "cwd": "${CLAUDE_PROJECT_DIR}" },
+            "kcap-review": { "command": "kcap", "args": ["mcp","review"], "cwd": "${CLAUDE_PROJECT_DIR}" } },
+          "projects": { "/w/repo": { "mcpServers": {
+            "kcap-sessions": { "command": "kcap", "args": ["mcp","sessions"], "cwd": "/w/repo" },
+            "kcap-memory":   { "command": "kcap", "args": ["mcp","memory"], "cwd": "/other/repo" } } } } }
+        """;
+
+        var findings = McpRegistrationAudit.FindClaudeDuplicates(json);
+
+        await Assert.That(findings.Single(f => f.Name == "kcap-flows").Issue).IsEqualTo(McpRegistrationIssue.CanonicalDuplicate);
+        await Assert.That(findings.Single(f => f.Name == "kcap-review").Issue).IsEqualTo(McpRegistrationIssue.Conflict);   // no-cwd server
+        await Assert.That(findings.Single(f => f.Name == "kcap-sessions").Issue).IsEqualTo(McpRegistrationIssue.CanonicalDuplicate); // == project key
+        await Assert.That(findings.Single(f => f.Name == "kcap-memory").Issue).IsEqualTo(McpRegistrationIssue.Conflict);   // != project key
+
+        // And removal honors the same split.
+        var removed = McpRegistrationAudit.RemoveClaudeDuplicates(json);
+        var root = (JsonObject)JsonNode.Parse(removed)!;
+        await Assert.That(((JsonObject)root["mcpServers"]!).ContainsKey("kcap-flows")).IsFalse();
+        await Assert.That(((JsonObject)root["mcpServers"]!).ContainsKey("kcap-review")).IsTrue();
+        var project = (JsonObject)root["projects"]!["/w/repo"]!["mcpServers"]!;
+        await Assert.That(project.ContainsKey("kcap-sessions")).IsFalse();
+        await Assert.That(project.ContainsKey("kcap-memory")).IsTrue();
     }
 
     [Test]

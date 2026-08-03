@@ -51,12 +51,12 @@ public static class McpRegistrationAudit {
         try {
             if (JsonNode.Parse(claudeUserConfigJson) is not JsonObject root) return findings;
 
-            Collect(root["mcpServers"] as JsonObject, UserScope, nativeBinaryPath, findings);
+            Collect(root["mcpServers"] as JsonObject, UserScope, nativeBinaryPath, projectPath: null, findings);
 
             if (root["projects"] is JsonObject projects)
                 foreach (var (key, project) in projects)
                     Collect((project as JsonObject)?["mcpServers"] as JsonObject,
-                            $"projects[{key}]", nativeBinaryPath, findings);
+                            $"projects[{key}]", nativeBinaryPath, projectPath: key, findings);
         } catch {
             // Unreadable config — nothing to report.
         }
@@ -73,11 +73,12 @@ public static class McpRegistrationAudit {
         try {
             if (JsonNode.Parse(claudeUserConfigJson) is not JsonObject root) return claudeUserConfigJson;
 
-            RemoveCanonical(root["mcpServers"] as JsonObject, nativeBinaryPath);
+            RemoveCanonical(root["mcpServers"] as JsonObject, nativeBinaryPath, projectPath: null);
 
             if (root["projects"] is JsonObject projects)
-                foreach (var (_, project) in projects)
-                    RemoveCanonical((project as JsonObject)?["mcpServers"] as JsonObject, nativeBinaryPath);
+                foreach (var (key, project) in projects)
+                    RemoveCanonical((project as JsonObject)?["mcpServers"] as JsonObject, nativeBinaryPath,
+                                    projectPath: key);
 
             return root.ToJsonString(new JsonSerializerOptions { WriteIndented = true });
         } catch {
@@ -85,15 +86,27 @@ public static class McpRegistrationAudit {
         }
     }
 
+    /// <summary>The <c>cwd</c> value the shipped Claude plugin uses for repo-scoped servers —
+    /// Claude expands it to the project dir, so it never customizes execution context.</summary>
+    public const string ClaudeProjectDirPlaceholder = "${CLAUDE_PROJECT_DIR}";
+
     /// <summary>
     /// True when <paramref name="entry"/> is semantically the canonical registration of the
     /// kcap server named <paramref name="name"/>: a recognized kcap command (the literal
     /// <c>kcap</c>, or exactly <paramref name="nativeBinaryPath"/> when provided), the exact
-    /// canonical args, and only cosmetic extra fields (<c>type: "stdio"</c>, <c>cwd</c>,
+    /// canonical args, and only cosmetic extra fields (<c>type: "stdio"</c>,
     /// <c>description</c>, an EMPTY <c>env</c>). Anything else — including a same-named entry
     /// pointing at a different binary — is not canonical and must be preserved.
+    ///
+    /// <para><c>cwd</c> is NOT cosmetic — it changes the server's execution context (repo
+    /// scoping), so an arbitrary value is a customization. It is canonical only on a server
+    /// that requires a project cwd (<see cref="KcapMcpServer.NeedsProjectCwd"/>) and only when
+    /// it is the shipped <see cref="ClaudeProjectDirPlaceholder"/>, or — for a project-scoped
+    /// entry — exactly the project's own path (<paramref name="projectPath"/>), which is what
+    /// the placeholder would expand to anyway.</para>
     /// </summary>
-    public static bool IsCanonicalKcapEntry(string? name, JsonNode? entry, string? nativeBinaryPath) {
+    public static bool IsCanonicalKcapEntry(string? name, JsonNode? entry, string? nativeBinaryPath,
+                                            string? projectPath = null) {
         if (name is null || FindDescriptor(name) is not { } descriptor || entry is not JsonObject obj) return false;
 
         if (!IsRecognizedKcapCommand(StringValue(obj["command"]), nativeBinaryPath)) return false;
@@ -110,7 +123,15 @@ public static class McpRegistrationAudit {
                 case "type":
                     if (!string.Equals(StringValue(value), "stdio", StringComparison.Ordinal)) return false;
                     break;
-                case "cwd" or "description":
+                case "cwd":
+                    if (!descriptor.NeedsProjectCwd) return false; // this server takes no cwd → customization
+                    var cwd = StringValue(value);
+                    if (cwd is null) return false;
+                    if (!string.Equals(cwd, ClaudeProjectDirPlaceholder, StringComparison.Ordinal) &&
+                        !(projectPath is not null && string.Equals(cwd, projectPath, StringComparison.Ordinal)))
+                        return false; // any other cwd redirects execution context → preserved
+                    break;
+                case "description":
                     if (StringValue(value) is null) return false;
                     break;
                 case "env":
@@ -170,7 +191,7 @@ public static class McpRegistrationAudit {
         return string.Equals(baseName, "kcap", StringComparison.OrdinalIgnoreCase);
     }
 
-    static void Collect(JsonObject? block, string scope, string? nativeBinaryPath,
+    static void Collect(JsonObject? block, string scope, string? nativeBinaryPath, string? projectPath,
                         List<McpRegistrationFinding> findings) {
         if (block is null) return;
 
@@ -179,17 +200,17 @@ public static class McpRegistrationAudit {
 
             findings.Add(new McpRegistrationFinding(
                 scope, name,
-                IsCanonicalKcapEntry(name, entry, nativeBinaryPath)
+                IsCanonicalKcapEntry(name, entry, nativeBinaryPath, projectPath)
                     ? McpRegistrationIssue.CanonicalDuplicate
                     : McpRegistrationIssue.Conflict));
         }
     }
 
-    static void RemoveCanonical(JsonObject? block, string? nativeBinaryPath) {
+    static void RemoveCanonical(JsonObject? block, string? nativeBinaryPath, string? projectPath) {
         if (block is null) return;
 
         foreach (var name in block
-                     .Where(kv => IsCanonicalKcapEntry(kv.Key, kv.Value, nativeBinaryPath))
+                     .Where(kv => IsCanonicalKcapEntry(kv.Key, kv.Value, nativeBinaryPath, projectPath))
                      .Select(kv => kv.Key)
                      .ToArray())
             block.Remove(name);
