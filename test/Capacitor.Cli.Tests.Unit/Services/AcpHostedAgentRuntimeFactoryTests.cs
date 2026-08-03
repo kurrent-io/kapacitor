@@ -610,8 +610,9 @@ public class AcpHostedAgentRuntimeFactoryTests {
     /// registry the review path already trusts, so the test still fails if the argv builder starts
     /// emitting an id from anywhere else.</para></summary>
     static string[] ExpectedAvailableTools(string[] allowlisted, IReadOnlyList<string> extra) => [
-        $"--available-tools={KcapMcpRegistry.ReservedResultChannelId}-submit_review_result",
-        $"--available-tools={KcapMcpRegistry.ReservedResultChannelId}-send_flow_message",
+        .. KcapMcpRegistry.ReservedResultChannelTools
+              .Where(t => t.UnattendedSafe)
+              .Select(t => $"--available-tools={KcapMcpRegistry.ReservedResultChannelId}-{t.Name}"),
         .. allowlisted.SelectMany(name => KcapMcpRegistry.ReviewFlowUnattendedSafeTools[name]
                                              .Order(StringComparer.Ordinal)
                                              .Select(t => $"--available-tools={name}-{t}")),
