@@ -78,7 +78,32 @@ public sealed class McpMarker(string harness, Func<string, string>? markerPathFo
         };
         var dir = Path.GetDirectoryName(path);
         if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
-        File.WriteAllText(path, doc.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+        // Atomic sibling-rename, never an in-place truncate-rewrite: the marker is the ownership
+        // record for ABSOLUTE-path entries (v2 fingerprints), so a write interrupted mid-truncate
+        // would strand every such entry as unowned forever — no heal, no uninstall. Owner-only on
+        // create (defense in depth; it holds no secrets but has no business being group-writable).
+        WriteAtomicOwnerOnly(path, doc.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+    }
+
+    static void WriteAtomicOwnerOnly(string path, string content) {
+        var options = new FileStreamOptions {
+            Mode   = FileMode.CreateNew,
+            Access = FileAccess.Write,
+            Share  = FileShare.None
+        };
+        if (!OperatingSystem.IsWindows())
+            options.UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+
+        var tmp = path + ".tmp-" + Environment.ProcessId + "-" + Guid.NewGuid().ToString("N");
+        try {
+            using (var stream = new FileStream(tmp, options))
+            using (var writer = new StreamWriter(stream))
+                writer.Write(content);
+            File.Move(tmp, path, overwrite: true);
+        } catch {
+            try { File.Delete(tmp); } catch { /* best-effort */ }
+            throw;
+        }
     }
 
     /// <summary>Names-only convenience (legacy v1 semantics: no fingerprint, ownership by the

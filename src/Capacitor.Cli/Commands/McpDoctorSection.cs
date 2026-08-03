@@ -92,20 +92,108 @@ static class McpDoctorSection {
         }
 
         if (clean && duplicates > 0) {
-            try {
-                var cleaned = McpRegistrationAudit.RemoveClaudeDuplicates(json, nativeBinaryPath);
-                // Atomic sibling-rename so a crash can never truncate Claude's config.
-                var tmp = claudeConfigPath + ".tmp-" + Environment.ProcessId + "-" + Guid.NewGuid().ToString("N");
-                await File.WriteAllTextAsync(tmp, cleaned);
-                try { File.Move(tmp, claudeConfigPath, overwrite: true); }
-                catch { try { File.Delete(tmp); } catch { /* best-effort */ } throw; }
-                await output.WriteLineAsync($"  removed {duplicates} duplicate MCP registration(s) from {claudeConfigPath}");
-            } catch (Exception ex) {
-                await output.WriteLineAsync($"  could not clean {claudeConfigPath}: {ex.Message}");
+            switch (TryCleanClaudeConfig(claudeConfigPath, json, nativeBinaryPath, out var error)) {
+                case CleanOutcome.Cleaned:
+                    await output.WriteLineAsync($"  removed {duplicates} duplicate MCP registration(s) from {claudeConfigPath}");
+                    break;
+                case CleanOutcome.Conflicted:
+                    await output.WriteLineAsync(
+                        $"  {claudeConfigPath} changed while doctor was running — skipped the clean; " +
+                        "re-run `kcap daemon doctor --clean`");
+                    break;
+                case CleanOutcome.Failed:
+                    await output.WriteLineAsync($"  could not clean {claudeConfigPath}: {error}");
+                    break;
             }
         }
 
         return findings.Count;
+    }
+
+    internal enum CleanOutcome { Cleaned, Conflicted, Failed }
+
+    /// <summary>
+    /// Commits the duplicate removal computed from <paramref name="snapshotJson"/>. The config is
+    /// shared: Claude itself and the daemon's trust write both update it, and nothing in this
+    /// codebase offers a cross-process lock for it (the daemon's trust write serializes only
+    /// in-process) — so kcap-side writers serialize under a named mutex keyed on the path, and the
+    /// remaining window against OTHER writers is closed by re-reading INSIDE the lock immediately
+    /// before committing and aborting (<see cref="CleanOutcome.Conflicted"/>, nothing written) when
+    /// the file no longer matches the snapshot the findings were computed from — a blind rewrite
+    /// there would silently drop their update. The write is an atomic sibling-rename that preserves
+    /// the target's Unix mode (a 0600 config must not come back 0644; new files default owner-only).
+    /// </summary>
+    internal static CleanOutcome TryCleanClaudeConfig(string claudeConfigPath, string snapshotJson,
+                                                      string? nativeBinaryPath, out string? error) {
+        error = null;
+        try {
+            using var _ = AcquireClaudeConfigLock(claudeConfigPath);
+
+            if (!string.Equals(File.ReadAllText(claudeConfigPath), snapshotJson, StringComparison.Ordinal))
+                return CleanOutcome.Conflicted;
+
+            var cleaned = McpRegistrationAudit.RemoveClaudeDuplicates(snapshotJson, nativeBinaryPath);
+            WriteAtomicPreservingMode(claudeConfigPath, cleaned);
+            return CleanOutcome.Cleaned;
+        } catch (Exception ex) {
+            error = ex.Message;
+            return CleanOutcome.Failed;
+        }
+    }
+
+    /// <summary>Cross-process serialization among kcap writers of one Claude config file —
+    /// the same named-mutex shape as <c>CodexConfigToml.AcquireConfigLock</c>.</summary>
+    static IDisposable AcquireClaudeConfigLock(string claudeConfigPath) {
+        var hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+            System.Text.Encoding.UTF8.GetBytes(System.IO.Path.GetFullPath(claudeConfigPath)))).ToLowerInvariant();
+        var mutex = new Mutex(false, "kcap-claude-config-" + hash);
+        try {
+            try {
+                if (!mutex.WaitOne(TimeSpan.FromSeconds(10)))
+                    throw new TimeoutException("Timed out waiting for another kcap Claude configuration update.");
+            } catch (AbandonedMutexException) {
+                // The prior writer died while holding the lock; ownership transfers to us.
+            }
+            return new MutexLease(mutex);
+        } catch {
+            mutex.Dispose();
+            throw;
+        }
+    }
+
+    sealed class MutexLease(Mutex mutex) : IDisposable {
+        public void Dispose() {
+            try { mutex.ReleaseMutex(); } finally { mutex.Dispose(); }
+        }
+    }
+
+    static void WriteAtomicPreservingMode(string path, string content) {
+        var options = new FileStreamOptions {
+            Mode   = FileMode.CreateNew,
+            Access = FileAccess.Write,
+            Share  = FileShare.None
+        };
+        if (!OperatingSystem.IsWindows()) {
+            UnixFileMode mode;
+            try {
+                mode = File.Exists(path) ? File.GetUnixFileMode(path)
+                                         : UnixFileMode.UserRead | UnixFileMode.UserWrite;
+            } catch {
+                mode = UnixFileMode.UserRead | UnixFileMode.UserWrite; // unreadable → fail safe to owner-only
+            }
+            options.UnixCreateMode = mode;
+        }
+
+        var tmp = path + ".tmp-" + Environment.ProcessId + "-" + Guid.NewGuid().ToString("N");
+        try {
+            using (var stream = new FileStream(tmp, options))
+            using (var writer = new StreamWriter(stream))
+                writer.Write(content);
+            File.Move(tmp, path, overwrite: true);
+        } catch {
+            try { File.Delete(tmp); } catch { /* best-effort */ }
+            throw;
+        }
     }
 
     static async Task<int> AuditStalePathsAsync(TextWriter output, string claudeConfigPath,

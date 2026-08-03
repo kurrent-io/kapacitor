@@ -164,6 +164,56 @@ public class McpDoctorSectionTests {
         await Assert.That(output).DoesNotContain("my-tool");                             // non-kcap → never inspected
     }
 
+    /// <summary>
+    /// The clean commits under a lock and re-reads first: a concurrent write to ~/.claude.json
+    /// (Claude itself, the daemon's trust write) between the snapshot and the commit must abort
+    /// the clean rather than be silently overwritten by a rewrite of the stale snapshot.
+    /// </summary>
+    [Test]
+    public async Task Clean_aborts_without_writing_when_the_config_changed_after_the_snapshot() {
+        var f = Fixture.Create();
+        File.WriteAllText(f.ClaudeConfig, DuplicateAndConflictConfig);
+        var snapshot = DuplicateAndConflictConfig;
+
+        // Another writer lands between the findings snapshot and the commit.
+        var concurrent = """{ "mcpServers": { "kcap-flows": { "command": "kcap", "args": ["mcp","flows"] } }, "newTrust": true }""";
+        File.WriteAllText(f.ClaudeConfig, concurrent);
+
+        var outcome = McpDoctorSection.TryCleanClaudeConfig(f.ClaudeConfig, snapshot, null, out _);
+
+        await Assert.That(outcome).IsEqualTo(McpDoctorSection.CleanOutcome.Conflicted);
+        await Assert.That(File.ReadAllText(f.ClaudeConfig)).IsEqualTo(concurrent); // the other writer's update survives
+    }
+
+    [Test]
+    public async Task Clean_commits_when_the_snapshot_is_still_current() {
+        var f = Fixture.Create();
+        File.WriteAllText(f.ClaudeConfig, DuplicateAndConflictConfig);
+
+        var outcome = McpDoctorSection.TryCleanClaudeConfig(f.ClaudeConfig, DuplicateAndConflictConfig, null, out _);
+
+        await Assert.That(outcome).IsEqualTo(McpDoctorSection.CleanOutcome.Cleaned);
+        var servers = (JsonObject)JsonNode.Parse(File.ReadAllText(f.ClaudeConfig))!["mcpServers"]!;
+        await Assert.That(servers.ContainsKey("kcap-flows")).IsFalse();
+        // No temp litter left beside the config.
+        await Assert.That(Directory.GetFiles(f.Dir, ".claude.json.tmp-*")).IsEmpty();
+    }
+
+    /// <summary>A 0600 config must not come back 0644: the rewrite preserves the target's mode.</summary>
+    [Test]
+    public async Task Clean_preserves_the_configs_unix_mode() {
+        if (OperatingSystem.IsWindows()) return;
+        var f = Fixture.Create();
+        File.WriteAllText(f.ClaudeConfig, DuplicateAndConflictConfig);
+        File.SetUnixFileMode(f.ClaudeConfig, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+
+        var outcome = McpDoctorSection.TryCleanClaudeConfig(f.ClaudeConfig, DuplicateAndConflictConfig, null, out _);
+
+        await Assert.That(outcome).IsEqualTo(McpDoctorSection.CleanOutcome.Cleaned);
+        await Assert.That(File.GetUnixFileMode(f.ClaudeConfig))
+            .IsEqualTo(UnixFileMode.UserRead | UnixFileMode.UserWrite);
+    }
+
     [Test]
     public async Task Stale_scan_covers_codex_toml_kcap_entries_only() {
         var f = Fixture.Create();

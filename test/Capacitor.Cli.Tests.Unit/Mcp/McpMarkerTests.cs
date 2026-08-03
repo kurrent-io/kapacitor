@@ -146,6 +146,21 @@ public class McpMarkerTests {
         await Assert.That(marker.Owns(cfg, "kcap-sessions", CanonicalEntry("/opt/a/kcap"))).IsTrue();
     }
 
+    /// <summary>The marker is the ownership record for absolute-path entries: it is written via
+    /// sibling temp + atomic rename (never an in-place truncate), owner-only on Unix.</summary>
+    [Test]
+    public async Task Record_writes_atomically_owner_only_with_no_temp_litter() {
+        var (marker, cfg, markerFile) = NewMarker();
+        marker.Record(cfg, [KeyValuePair.Create("kcap-review", (JsonNode?)CanonicalEntry("/opt/a/kcap"))]);
+        marker.Record(cfg, [KeyValuePair.Create("kcap-sessions", (JsonNode?)CanonicalEntry("/opt/a/kcap"))]); // rewrite path too
+
+        await Assert.That(marker.Owned(cfg)).Contains("kcap-review");
+        await Assert.That(Directory.GetFiles(Path.GetDirectoryName(markerFile)!, "*.tmp-*")).IsEmpty();
+        if (!OperatingSystem.IsWindows())
+            await Assert.That(File.GetUnixFileMode(markerFile))
+                .IsEqualTo(UnixFileMode.UserRead | UnixFileMode.UserWrite);
+    }
+
     // Exercises the REAL central-path resolution (no per-config markerPathFor override). The central
     // root is the assembly-pinned throwaway temp dir (McpMarkerGlobalSetup), never the real
     // ~/.kcap/mcp-markers, so this touches no shared real state — no cleanup or serialization needed
