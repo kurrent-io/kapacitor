@@ -38,7 +38,8 @@ public class PluginCommandKiroTests {
 
         var servers = JsonNode.Parse(await File.ReadAllTextAsync(env.KiroMcpJson))!.AsObject()["mcpServers"]!.AsObject();
         // Standard shape: command="kcap" + args, no `type`, no `trust` (autoApprove left unset).
-        await Assert.That(servers["kcap-review"]!["command"]!.GetValue<string>()).IsEqualTo("kcap");
+        // Registered command is the running native binary (the test host here), not the wrapper-resolved "kcap".
+        await Assert.That(servers["kcap-review"]!["command"]!.GetValue<string>()).IsEqualTo(Environment.ProcessPath!);
         await Assert.That(servers["kcap-review"]!["type"]).IsNull();
         await Assert.That(servers["kcap-review"]!["trust"]).IsNull();
         await Assert.That(servers["kcap-review"]!["autoApprove"]).IsNull();

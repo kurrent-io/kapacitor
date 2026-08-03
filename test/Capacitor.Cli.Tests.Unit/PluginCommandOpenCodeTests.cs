@@ -137,7 +137,7 @@ public class PluginCommandOpenCodeTests {
         await Assert.That(review["type"]!.GetValue<string>()).IsEqualTo("local");
         await Assert.That(review["enabled"]!.GetValue<bool>()).IsTrue();
         var cmd = string.Join(",", review["command"]!.AsArray().Select(n => n!.GetValue<string>()));
-        await Assert.That(cmd).IsEqualTo("kcap,mcp,review");
+        await Assert.That(cmd).IsEqualTo($"{Environment.ProcessPath},mcp,review"); // argv head = the running native binary
         await Assert.That(mcp.Select(kv => kv.Key)).Contains("kcap-sessions");
         await Assert.That(mcp.Select(kv => kv.Key)).Contains("kcap-flows");
         await Assert.That(mcp.Select(kv => kv.Key)).Contains("kcap-memory");

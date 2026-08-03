@@ -94,6 +94,58 @@ public class McpMarkerTests {
         await Assert.That(m.Owned(equiv)).Contains("kcap-review"); // equivalent path form still recognized
     }
 
+    // ── v2 fingerprints + v1 migration ──────────────────────────────────────────
+
+    static JsonObject CanonicalEntry(string cmd = "kcap") =>
+        new() { ["command"] = cmd, ["args"] = new JsonArray { "mcp", "review" } };
+
+    [Test]
+    public async Task Owns_v2_matches_the_exact_recorded_entry_including_absolute_command() {
+        var (marker, cfg, _) = NewMarker();
+        var entry = CanonicalEntry("/opt/a/kcap");
+        marker.Record(cfg, [KeyValuePair.Create("kcap-review", (JsonNode?)entry)]);
+
+        // Same content, different instance + key order + formatting → still owned.
+        var reparsed = JsonNode.Parse("""{ "args": ["mcp","review"], "command": "/opt/a/kcap" }""")!;
+        await Assert.That(marker.Owns(cfg, "kcap-review", reparsed)).IsTrue();
+    }
+
+    [Test]
+    public async Task Owns_v2_rejects_a_user_edited_entry_even_with_command_kcap() {
+        var (marker, cfg, _) = NewMarker();
+        marker.Record(cfg, [KeyValuePair.Create("kcap-review", (JsonNode?)CanonicalEntry())]);
+
+        var edited = CanonicalEntry(); // command is still the literal "kcap"…
+        edited["env"] = new JsonObject { ["X"] = "1" }; // …but the user customized it
+        await Assert.That(marker.Owns(cfg, "kcap-review", edited)).IsFalse();
+    }
+
+    [Test]
+    public async Task V1_marker_file_reads_with_legacy_command_semantics_and_migrates_on_record() {
+        var dir = Directory.CreateTempSubdirectory("kcap-marker-v1-").FullName;
+        var cfg = Path.Combine(dir, "mcp.json");
+        var markerFile = Path.Combine(dir, "marker.json");
+        var marker = new McpMarker("test", _ => markerFile);
+
+        // The exact on-disk v1 format an older kcap wrote: servers as a bare name array.
+        File.WriteAllText(markerFile, $$"""
+            { "version": 1, "harness": "test", "config": {{JsonValue.Create(Path.GetFullPath(cfg)).ToJsonString()}},
+              "servers": ["kcap-review"] }
+            """);
+
+        // v1 semantics: command "kcap" (string or argv head) is ours; anything else is not.
+        await Assert.That(marker.Owns(cfg, "kcap-review", CanonicalEntry())).IsTrue();
+        await Assert.That(marker.Owns(cfg, "kcap-review", CanonicalEntry("/opt/a/kcap"))).IsFalse();
+
+        // Recording upgrades the file to v2 and keeps the v1 name (fingerprint-less).
+        marker.Record(cfg, [KeyValuePair.Create("kcap-sessions", (JsonNode?)CanonicalEntry("/opt/a/kcap"))]);
+        var root = (JsonObject)JsonNode.Parse(File.ReadAllText(markerFile))!;
+        await Assert.That((int)root["version"]!).IsEqualTo(2);
+        await Assert.That(marker.Owned(cfg)).Contains("kcap-review");   // migrated, still legacy-owned
+        await Assert.That(marker.Owns(cfg, "kcap-review", CanonicalEntry())).IsTrue();
+        await Assert.That(marker.Owns(cfg, "kcap-sessions", CanonicalEntry("/opt/a/kcap"))).IsTrue();
+    }
+
     // Exercises the REAL central-path resolution (no per-config markerPathFor override). The central
     // root is the assembly-pinned throwaway temp dir (McpMarkerGlobalSetup), never the real
     // ~/.kcap/mcp-markers, so this touches no shared real state — no cleanup or serialization needed

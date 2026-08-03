@@ -36,7 +36,8 @@ public class PluginCommandCopilotTests {
 
         var root    = JsonNode.Parse(await File.ReadAllTextAsync(env.CopilotMcpConfigJson))!.AsObject();
         var servers = root["mcpServers"]!.AsObject();
-        await Assert.That(servers["kcap-review"]!["command"]!.GetValue<string>()).IsEqualTo("kcap");
+        // Registered command is the running native binary (the test host here), not the wrapper-resolved "kcap".
+        await Assert.That(servers["kcap-review"]!["command"]!.GetValue<string>()).IsEqualTo(Environment.ProcessPath!);
         await Assert.That(servers["kcap-review"]!["type"]!.GetValue<string>()).IsEqualTo("stdio");
         await Assert.That(servers.Select(kv => kv.Key)).Contains("kcap-sessions");
         await Assert.That(servers.Select(kv => kv.Key)).Contains("kcap-flows");

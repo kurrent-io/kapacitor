@@ -10,6 +10,17 @@ public class CodexConfigTomlTests {
     static string TempConfig() =>
         Path.Combine(Directory.CreateTempSubdirectory("kcap-codextoml-").FullName, "config.toml");
 
+    // The writer under test rejects symlinked path components (CanonicalConfigPath), and macOS's
+    // default temp root lives under /var and /tmp — both symlinks into /private. Resolving the
+    // prefix lets these tests run on macOS dev machines too (CI's Linux/Windows tmp is real).
+    static string RealTempConfig() {
+        var dir = Directory.CreateTempSubdirectory("kcap-codextoml-real-").FullName;
+        if (OperatingSystem.IsMacOS() && (dir.StartsWith("/var/", StringComparison.Ordinal) ||
+                                          dir.StartsWith("/tmp/", StringComparison.Ordinal)))
+            dir = "/private" + dir;
+        return Path.Combine(dir, "config.toml");
+    }
+
     static TomlTable ReadToml(string path) =>
         TomlSerializer.Deserialize<TomlTable>(File.ReadAllText(path))!;
 
@@ -221,13 +232,14 @@ public class CodexConfigTomlTests {
         var flows    = (TomlTable)servers["kcap-flows"];
         var memory   = (TomlTable)servers["kcap-memory"];
 
-        await Assert.That((string)review["command"]).IsEqualTo("kcap");
+        // Registered command is the running native binary (the test host here), not the wrapper-resolved "kcap".
+        await Assert.That((string)review["command"]).IsEqualTo(Environment.ProcessPath!);
         await Assert.That(ArgsOf(review)).IsEquivalentTo(new[] { "mcp", "review" });
-        await Assert.That((string)sessions["command"]).IsEqualTo("kcap");
+        await Assert.That((string)sessions["command"]).IsEqualTo(Environment.ProcessPath!);
         await Assert.That(ArgsOf(sessions)).IsEquivalentTo(new[] { "mcp", "sessions" });
         await Assert.That(ArgsOf(flows)).IsEquivalentTo(new[] { "mcp", "flows" });
         // kcap-memory is now auto-registered for Codex too.
-        await Assert.That((string)memory["command"]).IsEqualTo("kcap");
+        await Assert.That((string)memory["command"]).IsEqualTo(Environment.ProcessPath!);
         await Assert.That(ArgsOf(memory)).IsEquivalentTo(new[] { "mcp", "memory" });
         await Assert.That(File.Exists(Path.Combine(Path.GetDirectoryName(path)!, "mcp-ownership-v1.json"))).IsTrue();
     }
@@ -329,6 +341,65 @@ public class CodexConfigTomlTests {
     }
 
     [Test]
+    public async Task RegisterKcapMcpServers_falls_back_to_kcap_when_binary_path_unresolvable() {
+        var path = RealTempConfig();
+
+        CodexConfigToml.RegisterKcapMcpServers(path, resolveBinaryPath: () => null);
+
+        var servers = (TomlTable)ReadToml(path)["mcp_servers"];
+        await Assert.That((string)((TomlTable)servers["kcap-review"])["command"]).IsEqualTo("kcap");
+    }
+
+    [Test]
+    public async Task RegisterKcapMcpServers_heals_owned_entries_across_binary_relayout() {
+        var path = RealTempConfig();
+
+        // Fresh install at binary A, then an npm re-layout moves the binary to B. The
+        // ownership-ledger fingerprint recorded at A still matches the on-disk entry → heal.
+        CodexConfigToml.RegisterKcapMcpServers(path, resolveBinaryPath: () => "/opt/a/kcap");
+        var change = CodexConfigToml.RegisterKcapMcpServers(path, resolveBinaryPath: () => "/opt/b/kcap");
+
+        await Assert.That(change).IsEqualTo(CodexConfigToml.Change.Updated);
+        var servers = (TomlTable)ReadToml(path)["mcp_servers"];
+        await Assert.That((string)((TomlTable)servers["kcap-review"])["command"]).IsEqualTo("/opt/b/kcap");
+        await Assert.That((string)((TomlTable)servers["kcap-sessions"])["command"]).IsEqualTo("/opt/b/kcap");
+
+        // And the heal is idempotent once current.
+        var again = CodexConfigToml.RegisterKcapMcpServers(path, resolveBinaryPath: () => "/opt/b/kcap");
+        await Assert.That(again).IsEqualTo(CodexConfigToml.Change.Unchanged);
+    }
+
+    [Test]
+    public async Task RegisterKcapMcpServers_never_heals_a_customized_owned_entry() {
+        var path = RealTempConfig();
+        CodexConfigToml.RegisterKcapMcpServers(path, resolveBinaryPath: () => "/opt/a/kcap");
+
+        // The user edits the owned entry — fingerprint no longer matches, so the relayout
+        // heal must relinquish the claim and preserve the customization.
+        var root = ReadToml(path);
+        var review = (TomlTable)((TomlTable)root["mcp_servers"])["kcap-review"];
+        review["env"] = new TomlTable { ["KCAP_URL"] = "https://x" };
+        File.WriteAllText(path, TomlSerializer.Serialize(root));
+
+        CodexConfigToml.RegisterKcapMcpServers(path, resolveBinaryPath: () => "/opt/b/kcap");
+
+        var after = (TomlTable)((TomlTable)ReadToml(path)["mcp_servers"])["kcap-review"];
+        await Assert.That((string)after["command"]).IsEqualTo("/opt/a/kcap"); // untouched
+        await Assert.That(after.ContainsKey("env")).IsTrue();                 // customization preserved
+    }
+
+    [Test]
+    public async Task UnregisterKcapMcpServers_removes_absolute_registered_owned_entries() {
+        var path = RealTempConfig();
+        CodexConfigToml.RegisterKcapMcpServers(path, resolveBinaryPath: () => "/opt/a/kcap");
+
+        var change = CodexConfigToml.UnregisterKcapMcpServers(path);
+
+        await Assert.That(change).IsEqualTo(CodexConfigToml.Change.Updated);
+        await Assert.That(ReadToml(path).ContainsKey("mcp_servers")).IsFalse();
+    }
+
+    [Test]
     public async Task RegisterKcapMcpServers_is_idempotent() {
         var path = TempConfig();
 
@@ -384,7 +455,7 @@ public class CodexConfigTomlTests {
 
         var servers = (TomlTable)ReadToml(path)["mcp_servers"];
         await Assert.That((string)((TomlTable)servers["kcap-sessions"])["command"]).IsEqualTo("/opt/homebrew/bin/kcap");
-        await Assert.That((string)((TomlTable)servers["kcap-review"])["command"]).IsEqualTo("kcap");
+        await Assert.That((string)((TomlTable)servers["kcap-review"])["command"]).IsEqualTo(Environment.ProcessPath!);
     }
 
     [Test]

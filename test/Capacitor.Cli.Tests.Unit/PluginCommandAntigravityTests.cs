@@ -39,7 +39,8 @@ public class PluginCommandAntigravityTests {
         await Assert.That(exit).IsEqualTo(0);
 
         var servers = JsonNode.Parse(await File.ReadAllTextAsync(env.AntigravityMcpConfigJson))!.AsObject()["mcpServers"]!.AsObject();
-        await Assert.That(servers["kcap-review"]!["command"]!.GetValue<string>()).IsEqualTo("kcap");
+        // Registered command is the running native binary (the test host here), not the wrapper-resolved "kcap".
+        await Assert.That(servers["kcap-review"]!["command"]!.GetValue<string>()).IsEqualTo(Environment.ProcessPath!);
         await Assert.That(servers["kcap-review"]!["type"]).IsNull();   // Standard shape: no `type`
         await Assert.That(servers["kcap-review"]!["trust"]).IsNull();  // Antigravity has no config trust knob
         await Assert.That(servers.Select(kv => kv.Key)).Contains("kcap-sessions");

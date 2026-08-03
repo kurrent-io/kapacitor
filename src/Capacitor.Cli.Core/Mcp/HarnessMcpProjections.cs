@@ -20,8 +20,9 @@ public sealed record HarnessMcpProjection(
     /// <summary>Writes this harness's kcap servers into <paramref name="configPath"/>. The marker name
     /// is derived from the harness rather than passed in, so the two call sites cannot disagree about
     /// which entries kcap owns — a mismatch there would strand entries on uninstall.</summary>
-    public JsonMcpConfigWriter.Change Register(string configPath, string? cwd = null) =>
-        JsonMcpConfigWriter.Register(configPath, Servers, Shape, cwd, new McpMarker(Harness));
+    public JsonMcpConfigWriter.Change Register(string configPath, string? cwd = null,
+                                               Func<string?>? resolveBinaryPath = null) =>
+        JsonMcpConfigWriter.Register(configPath, Servers, Shape, cwd, new McpMarker(Harness), resolveBinaryPath);
 
     public JsonMcpConfigWriter.Change Unregister(string configPath) =>
         JsonMcpConfigWriter.Unregister(configPath, Shape, new McpMarker(Harness));
