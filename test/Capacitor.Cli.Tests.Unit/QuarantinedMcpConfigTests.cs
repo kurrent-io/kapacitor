@@ -626,6 +626,98 @@ public class QuarantinedMcpConfigTests {
         await Assert.That(File.Exists(Path.Combine(root, "foo"))).IsFalse();
     }
 
+    /// <summary>
+    /// The worst shape found on this PR: a write OUTSIDE the snapshot, not a disclosure. The clone
+    /// materialises HEAD, so the destination can already hold a symlink where a quarantine copy is about to
+    /// land — and `FileMode.Create` follows one, truncating whatever it points at. Checking only
+    /// `Directory.Exists` missed the file case entirely.
+    /// </summary>
+    [Test]
+    public async Task A_quarantine_write_cannot_truncate_a_file_outside_the_snapshot() {
+        Skip.Unless(!OperatingSystem.IsWindows(), "POSIX symlink");
+
+        var outside = Path.Combine(NewDir("outside"), "precious.txt");
+        File.WriteAllText(outside, "MUST SURVIVE");
+
+        var source = NewRepo();
+        WriteAt(source, ".mcp.json", """{"mcpServers":{}}""");
+        // Committed AS A LINK at exactly the path the quarantine copy targets.
+        File.CreateSymbolicLink(Path.Combine(source, ".mcp.json" + WorktreeManager.QuarantineSuffix), outside);
+        Git(source, "add", "-A");
+        Git(source, "commit", "-q", "-m", "branch commits a link at the quarantine destination");
+
+        // Staged deletion: gone from the source tree (so the collision set never sees it) but still in HEAD,
+        // which is what the clone checks out.
+        Git(source, "rm", "-q", "--cached", ".mcp.json" + WorktreeManager.QuarantineSuffix);
+        File.Delete(Path.Combine(source, ".mcp.json" + WorktreeManager.QuarantineSuffix));
+
+        try {
+            await Manager(out _).CreateBorrowedSnapshotAsync(
+                source, "tr-" + Guid.NewGuid().ToString("N")[..8], CancellationToken.None);
+        } catch (InvalidOperationException) {
+            // Refusing is a fine outcome; writing through the link is not.
+        }
+
+        await Assert.That(File.ReadAllText(outside)).IsEqualTo("MUST SURVIVE")
+            .Because("a write must never follow a link out of the snapshot");
+    }
+
+    /// <summary>
+    /// `.git/info/exclude` is line-oriented with no escape for a newline, so a tracked path containing one
+    /// would inject EXTRA patterns and hide unrelated untracked context from the reviewer. Legal on Unix,
+    /// unrepresentable here, so refused rather than mangled.
+    /// </summary>
+    [Test]
+    public async Task A_path_containing_a_newline_is_refused() {
+        Skip.Unless(!OperatingSystem.IsWindows(), "newline is not a legal filename character on Windows");
+
+        var source = NewRepo();
+        WriteAt(source, "README.md", "hi");
+        WriteAt(source, "decoy.json", "{}");
+        Git(source, "add", "-A");
+        Git(source, "commit", "-q", "-m", "init");
+
+        // `-z` on index-info: its default record format is newline-TERMINATED, so a path containing one
+        // cannot be expressed that way at all ("malformed index info"). NUL-terminated records can.
+        var blob = GitCapture(source, "hash-object", "-w", "decoy.json").Trim();
+        Git(source, [.. "100644 "u8, .. System.Text.Encoding.ASCII.GetBytes(blob),
+                     .. "\ta\nb/.mcp.json\0"u8], "update-index", "-z", "--add", "--index-info");
+
+        // Precondition: git really is holding a path with a newline in it.
+        await Assert.That(GitCaptureBytes(source, "ls-files", "-z")).Contains((byte)'\n');
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+            await Manager(out _).CreateBorrowedSnapshotAsync(
+                source, "nl-" + Guid.NewGuid().ToString("N")[..8], CancellationToken.None));
+
+        await Assert.That(ex!.Message).Contains("borrowed_snapshot_invalid_path");
+    }
+
+    /// <summary>
+    /// Classification answers "will a VENDOR open this?", so the filesystem's case rule governs it. On
+    /// Linux, `.Cursor/mcp.json` is a different file that no vendor resolves — yet folding case quarantined
+    /// it, marked it skip-worktree, and removed it from both `git status` and normal diffs, hiding an
+    /// ordinary tracked file from the reviewer.
+    /// </summary>
+    [Test]
+    public async Task A_differently_cased_config_path_is_ordinary_content_where_case_distinguishes() {
+        var source = NewRepo();
+        Skip.Unless(IsCaseSensitive(source), "the two spellings must be different files to tell them apart");
+
+        WriteAt(source, ".Cursor/mcp.json", """{"not":"what a vendor opens"}""");
+        Git(source, "add", "-A");
+        Git(source, "commit", "-q", "-m", "an ordinary file that merely resembles vendor config");
+
+        var info = await Manager(out _).CreateBorrowedSnapshotAsync(
+            source, "cs2-" + Guid.NewGuid().ToString("N")[..8], CancellationToken.None);
+        var root = info.SnapshotRoot ?? info.Path;
+
+        // Present under its own name, NOT quarantined, and visible to the reviewer as ordinary content.
+        await Assert.That(File.Exists(Path.Combine(root, ".Cursor", "mcp.json"))).IsTrue();
+        await Assert.That(File.Exists(Path.Combine(root, ".Cursor",
+            "mcp.json" + WorktreeManager.QuarantineSuffix))).IsFalse();
+    }
+
     // ── fixture ──
 
     /// <summary>A manager rooted in a TEMP directory. The default DaemonConfig points at

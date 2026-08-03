@@ -578,7 +578,7 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
             var rel = ValidateRelativePath(raw);
             var quarantine = false;
 
-            if (IsUnderExcluded(rel, exclusions)) {
+            if (IsUnderExcluded(rel, exclusions, destinationCaseSensitive)) {
                 if (rel.Equals(".attached", StringComparison.OrdinalIgnoreCase) ||
                     rel.StartsWith(".attached/", StringComparison.OrdinalIgnoreCase) ||
                     rel.Equals(".capacitor", StringComparison.OrdinalIgnoreCase) ||
@@ -597,7 +597,7 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
                 // mirrors the working tree the flow was launched from precisely so a reviewer sees the
                 // change as it stands. Tracked vs untracked is the line that matters: tracked config is
                 // part of what the reviewer was asked to judge, untracked config is nobody's business.
-                if (!IsWorkspaceMcpConfigPath(rel) || !tracked.Contains(raw)) continue;
+                if (!IsWorkspaceMcpConfigPath(rel, destinationCaseSensitive) || !tracked.Contains(raw)) continue;
 
                 quarantine = true;
             }
@@ -661,6 +661,17 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
             var sourcePath = ContainedPath(source, rel);
             var path = ContainedPath(destination, file.DestinationRelative ?? rel);
             EnsureParentDirectories(destination, path);
+
+            // The clone materialises HEAD, so the DESTINATION can already hold a symlink here — and
+            // `FileMode.Create` follows one, truncating whatever it points at. That is a write OUTSIDE the
+            // snapshot: with `.mcp.json.kcap-quarantined` committed as a link to an external file and the
+            // source staging its deletion, the collision set never sees it (absent from the source tree)
+            // while the clone still creates it. Checking `Directory.Exists` alone missed the file case
+            // entirely. Remove any link at the destination, and refuse if a PARENT is one, before writing.
+            if (FirstLinkComponent(destination, file.DestinationRelative ?? rel) is { } link) {
+                if (string.Equals(link, path, StringComparison.Ordinal)) File.Delete(link);
+                else throw new InvalidOperationException($"borrowed_snapshot_symlink_unsupported: {link}");
+            }
             if (Directory.Exists(path)) DeleteTreeNoFollow(path);
             await using (var input = OpenSequentialRead(sourcePath))
             await using (var output = new FileStream(path, new FileStreamOptions {
@@ -789,6 +800,13 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
         if (raw.Length == 0 || raw.StartsWith('/') ||
             parts.Any(p => p is "" or "." or "..") ||
             parts.Any(p => p.Equals(".git", StringComparison.OrdinalIgnoreCase)))
+            throw new InvalidOperationException($"borrowed_snapshot_invalid_path: {raw}");
+
+        // A newline cannot be represented in `.git/info/exclude`: gitignore is line-oriented with no escape
+        // for one, so a tracked path containing `\n` would inject EXTRA patterns — `/fixtures/` and the
+        // like — hiding unrelated untracked context from the reviewer. Legal on Unix, unrepresentable here,
+        // so refused rather than mangled, same rule as the other identities we cannot reproduce.
+        if (raw.Contains('\n') || raw.Contains('\r'))
             throw new InvalidOperationException($"borrowed_snapshot_invalid_path: {raw}");
 
         // On Windows the FILESYSTEM performs the substitution this method refuses to: `ContainedPath` maps
@@ -976,23 +994,31 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
 
     /// <summary>Whether an excluded path is vendor MCP config — the kind that must stay REVIEWABLE — rather
     /// than kcap's own reserved state, which must not appear in a snapshot at all.</summary>
-    static bool IsWorkspaceMcpConfigPath(string rel) {
-        // Compared as-is. Folding `\` to `/` here classified a top-level file literally named
-        // `.cursor\mcp.json` as vendor config, which no vendor would ever read — quarantine would rename an
-        // ordinary tracked file and misrepresent the branch to the reviewer. Paths are git paths: `/`
-        // separates, and a backslash is just a character in a name.
+    /// <summary>
+    /// Whether this path is one a VENDOR would load as MCP config. Compared as-is, and with the
+    /// filesystem's own case rule.
+    ///
+    /// <para>Folding `\` to `/` here classified a top-level file literally named `.cursor\mcp.json` as
+    /// vendor config — no vendor reads that, and quarantine would rename an ordinary tracked file.
+    /// Case-folding unconditionally has the same shape one step further out: on Linux, `.Cursor/mcp.json`
+    /// is a different file that no vendor resolves, yet it was quarantined, marked skip-worktree, and
+    /// removed from both `git status` and normal diffs. The question is what the vendor will open, so the
+    /// filesystem's answer is the one that counts.</para>
+    /// </summary>
+    static bool IsWorkspaceMcpConfigPath(string rel, bool caseSensitive) {
+        var comparison = caseSensitive ? StringComparison.Ordinal : StringComparison.OrdinalIgnoreCase;
         return WorkspaceMcpConfigPaths.Any(path =>
-            rel.Equals(path, StringComparison.OrdinalIgnoreCase) ||
-            rel.EndsWith("/" + path, StringComparison.OrdinalIgnoreCase));
+            rel.Equals(path, comparison) || rel.EndsWith("/" + path, comparison));
     }
 
-    static bool IsUnderExcluded(string rel, string[] prefixes) {
+    static bool IsUnderExcluded(string rel, string[] prefixes, bool caseSensitive) {
         // `rel` is git's path and is not rewritten (see ValidateRelativePath); only the caller-supplied
-        // prefixes are normalized, since those are our own constants.
+        // prefixes are normalized, since those are our own constants. Case follows the filesystem for the
+        // same reason as the classifier above.
+        var comparison = caseSensitive ? StringComparison.Ordinal : StringComparison.OrdinalIgnoreCase;
         foreach (var prefix in prefixes) {
             var normalized = prefix.Replace('\\', '/').TrimEnd('/');
-            if (rel.Equals(normalized, StringComparison.OrdinalIgnoreCase) ||
-                rel.StartsWith(normalized + "/", StringComparison.OrdinalIgnoreCase))
+            if (rel.Equals(normalized, comparison) || rel.StartsWith(normalized + "/", comparison))
                 return true;
         }
         return false;
