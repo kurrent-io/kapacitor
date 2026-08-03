@@ -64,7 +64,10 @@ internal sealed class DaemonStatusIpc(
         return JsonSerializer.Serialize(dto, StatusIpcJsonContext.Default.DaemonStatusDto);
     }
 
-    static string ConnectionText(HubConnectionState s) => s switch {
+    /// Wire spelling of <see cref="HubConnectionState"/>. Internal (not private) so
+    /// <c>DaemonStatusIpcTests</c> can pin all four spellings directly — a pure static switch is
+    /// smaller to test this way than standing up a HubState test double through the full snapshot.
+    internal static string ConnectionText(HubConnectionState s) => s switch {
         HubConnectionState.Connected    => "connected",
         HubConnectionState.Connecting   => "connecting",
         HubConnectionState.Reconnecting => "reconnecting",

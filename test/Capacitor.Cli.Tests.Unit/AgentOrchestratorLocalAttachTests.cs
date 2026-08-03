@@ -30,11 +30,12 @@ public partial class AgentOrchestratorVendorTests {
             NullLogger<LaunchConsentIpc>.Instance);
     }
 
-    // Status: a throwaway connection + notifier — these pre-existing LocalControlServer tests
-    // don't exercise StatusSubscribe at all, so the wiring only needs to satisfy the ctor.
-    static DaemonStatusIpc TestStatusIpc(DaemonConfig config, AgentOrchestrator orch) =>
-        new(config, orch, new ServerConnection(config, NullLoggerFactory.Instance, NullLogger<ServerConnection>.Instance),
-            new DaemonStatusNotifier());
+    // Status: reuses the caller's own ServerConnection (already passed to BuildOrchestrator, and
+    // already the caller's to dispose) rather than minting a second one this helper couldn't hand
+    // back for disposal — these pre-existing LocalControlServer tests don't exercise StatusSubscribe
+    // at all, so the wiring only needs to satisfy the ctor.
+    static DaemonStatusIpc TestStatusIpc(DaemonConfig config, AgentOrchestrator orch, ServerConnection connection) =>
+        new(config, orch, connection, new DaemonStatusNotifier());
 
     static DaemonConfig LauncherCfg() => new() { Name = "t", ServerUrl = "http://127.0.0.1:1" };
 
@@ -537,7 +538,8 @@ public partial class AgentOrchestratorVendorTests {
         AgentOrchestrator?  orch     = null;
 
         try {
-            orch = BuildOrchestrator(new CaptureServerConnection(), new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>());
+            var server = new CaptureServerConnection();
+            orch = BuildOrchestrator(server, new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>());
             orch.RegisterAgentForTest(new AgentInstance(
                 "agent-xyz", null, "", null, "/tmp/repo", "claude",
                 new PtyHostedAgentRuntime("claude", new StubPtyProcess()), new WorktreeInfo("/tmp/repo", "", "/tmp/repo"), new CancellationTokenSource()
@@ -546,7 +548,7 @@ public partial class AgentOrchestratorVendorTests {
             });
 
             var config = new DaemonConfig { Name = "test", ServerUrl = "http://127.0.0.1:1" };
-            listener = new LocalControlServer(config, orch, TestCoordinator(), TestConsentIpc(), TestStatusIpc(config, orch), NullLogger<LocalControlServer>.Instance);
+            listener = new LocalControlServer(config, orch, TestCoordinator(), TestConsentIpc(), TestStatusIpc(config, orch, server), NullLogger<LocalControlServer>.Instance);
             await listener.StartAsync(cts.Token);
 
             var sockPath = LocalSocketPaths.Socket("test");
@@ -587,11 +589,12 @@ public partial class AgentOrchestratorVendorTests {
         AgentOrchestrator?  orch     = null;
 
         try {
-            orch = BuildOrchestrator(new TripwireServerConnection(), new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>());
+            var server = new TripwireServerConnection();
+            orch = BuildOrchestrator(server, new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>());
             orch.SeedAgentForTest("flow-1", kind: LaunchKind.ReviewFlow, flowRunId: "flow-7f3a", flowRole: "reviewer");
 
             var config = new DaemonConfig { Name = daemonName, ServerUrl = "http://127.0.0.1:1" };
-            listener = new LocalControlServer(config, orch, TestCoordinator(), TestConsentIpc(), TestStatusIpc(config, orch), NullLogger<LocalControlServer>.Instance);
+            listener = new LocalControlServer(config, orch, TestCoordinator(), TestConsentIpc(), TestStatusIpc(config, orch, server), NullLogger<LocalControlServer>.Instance);
             await listener.StartAsync(cts.Token);
 
             var sockPath = LocalSocketPaths.Socket(daemonName);

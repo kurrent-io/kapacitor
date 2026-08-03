@@ -16,6 +16,10 @@ using Microsoft.Extensions.Logging.Abstractions;
 namespace Capacitor.Cli.Daemon;
 
 public static partial class DaemonRunner {
+    // Reflection-resolved once: the assembly attribute is fixed for the process lifetime, and
+    // DaemonStatusIpc's Snapshot() now calls ResolveDaemonVersion() on every status push.
+    static string? _cachedDaemonVersion;
+
     /// <summary>
     /// Daemon binary version from <c>[AssemblyInformationalVersion]</c>,
     /// baked at build time by MSBuild's git-info integration. Surfaces on
@@ -23,7 +27,7 @@ public static partial class DaemonRunner {
     /// line and <c>DaemonInfo</c> can show "v0.4.11+sha.abc1234".
     /// </summary>
     public static string ResolveDaemonVersion() =>
-        typeof(DaemonRunner).Assembly
+        _cachedDaemonVersion ??= typeof(DaemonRunner).Assembly
             .GetCustomAttribute<AssemblyInformationalVersionAttribute>()
             ?.InformationalVersion ?? "unknown";
 

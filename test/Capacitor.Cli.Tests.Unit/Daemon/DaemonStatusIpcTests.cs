@@ -5,6 +5,7 @@ using Capacitor.Cli.Core.LocalIpc;
 using Capacitor.Cli.Daemon;
 using Capacitor.Cli.Daemon.Pty;
 using Capacitor.Cli.Daemon.Services;
+using Microsoft.AspNetCore.SignalR.Client;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -160,6 +161,21 @@ public class DaemonStatusIpcTests {
     static async Task AssertConsistent(DaemonStatusDto dto) {
         var expectedActive = dto.Agents.Count(a => a.Status is "Starting" or "Running");
         await Assert.That(dto.Daemon.ActiveAgents).IsEqualTo(expectedActive);
+    }
+
+    /// <summary>
+    /// Pins all four <see cref="HubConnectionState"/> spellings through
+    /// <see cref="DaemonStatusIpc.ConnectionText"/> — the end-to-end tests below only ever
+    /// observe "disconnected" (no live hub in tests), so the other three arms
+    /// (connected/connecting/reconnecting) were untested through this mapping.
+    /// </summary>
+    [Test]
+    [Arguments(HubConnectionState.Connected,    "connected")]
+    [Arguments(HubConnectionState.Connecting,   "connecting")]
+    [Arguments(HubConnectionState.Reconnecting, "reconnecting")]
+    [Arguments(HubConnectionState.Disconnected, "disconnected")]
+    public async Task ConnectionText_maps_every_HubConnectionState_spelling(HubConnectionState state, string expected) {
+        await Assert.That(DaemonStatusIpc.ConnectionText(state)).IsEqualTo(expected);
     }
 
     [Test]

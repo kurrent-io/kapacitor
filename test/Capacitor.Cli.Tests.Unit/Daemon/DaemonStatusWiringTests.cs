@@ -1,6 +1,8 @@
 using Capacitor.Cli.Daemon;
+using Capacitor.Cli.Daemon.Pty;
 using Capacitor.Cli.Daemon.Services;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -39,6 +41,87 @@ public class DaemonStatusWiringTests {
             await Assert.That(ReferenceEquals(connection.StatusNotifierForTest, notifier)).IsTrue();
         } finally {
             await connection.DisposeAsync();
+        }
+    }
+
+    sealed class NoopHostLifetime : IHostApplicationLifetime {
+        public CancellationToken ApplicationStarted  => CancellationToken.None;
+        public CancellationToken ApplicationStopping => CancellationToken.None;
+        public CancellationToken ApplicationStopped  => CancellationToken.None;
+        public void StopApplication() { }
+    }
+
+    sealed class NoopPtyProcessFactory : IPtyProcessFactory {
+        public IPtyProcess Spawn(
+                string command, string[] args, string cwd,
+                Dictionary<string, string>? extraEnv = null, ushort cols = 120, ushort rows = 40
+            ) => throw new NotSupportedException("DaemonStatusWiringTests never spawns a PTY");
+    }
+
+    sealed class NoopHttpClientFactory : IHttpClientFactory {
+        public HttpClient CreateClient(string name) => new();
+    }
+
+    /// <summary>
+    /// The AgentOrchestrator-side half of the same DI wiring hazard pinned above for
+    /// ServerConnection: AgentOrchestrator's ctor also ends in an optional
+    /// <c>DaemonStatusNotifier?</c> parameter, resolved to the ONE registered singleton only
+    /// because its production registration (<c>DaemonRunner</c>) is a bare
+    /// <c>AddSingleton&lt;AgentOrchestrator&gt;()</c> — no factory delegate. If a future change
+    /// rewrites that registration with a factory that omits the notifier, every agent mutation
+    /// (SetAgentStatus/PublishAgent/UnpublishAgent) would silently stop reaching StatusSubscribe
+    /// clients — with no other test noticing, since every other observable behavior (including
+    /// SnapshotAgentsForStatus's own contents) stays correct. Builds the full DI graph
+    /// AgentOrchestrator's ctor needs, mirroring AgentStatusSnapshotTests's Build(), so the SAME
+    /// bare-registration mechanism DaemonRunner relies on is exercised — a direct
+    /// <c>new AgentOrchestrator(...)</c> call wouldn't exercise DI resolution at all.
+    /// </summary>
+    [Test]
+    public async Task AgentOrchestrator_resolved_via_DI_shares_the_one_registered_notifier() {
+        var stateDir = Directory.CreateTempSubdirectory("kcap-wiring-orch-state-").FullName;
+        try {
+            var services = new ServiceCollection();
+            services.AddSingleton(new DaemonConfig {
+                Name         = "wiring-orch-test",
+                ServerUrl    = "http://127.0.0.1:1",
+                StateDir     = stateDir,
+                WorktreeRoot = Path.Combine(Path.GetTempPath(), "kcap-wiring-orch-wt-" + Guid.NewGuid().ToString("N")[..8]),
+            });
+            services.AddSingleton<ILoggerFactory>(NullLoggerFactory.Instance);
+            services.AddSingleton(typeof(ILogger<>), typeof(NullLogger<>));
+            services.AddSingleton<DaemonStatusNotifier>();
+            services.AddSingleton<ServerConnection>();
+            services.AddSingleton<WorktreeManager>();
+            services.AddSingleton<RepoMatcher>();
+            services.AddSingleton<IPtyProcessFactory>(new NoopPtyProcessFactory());
+            services.AddSingleton<IHttpClientFactory>(new NoopHttpClientFactory());
+            services.AddSingleton<LocalPermissionBridge>();
+            services.AddSingleton<IReadOnlyDictionary<string, IHostedAgentLauncher>>(
+                new Dictionary<string, IHostedAgentLauncher>());
+            services.AddSingleton<IReadOnlyDictionary<string, IHostedAgentRuntimeFactory>>(
+                new Dictionary<string, IHostedAgentRuntimeFactory>());
+            services.AddSingleton<IHostApplicationLifetime>(new NoopHostLifetime());
+            services.AddSingleton(sp => new LaunchConsentGate(
+                new LaunchConsentStore(stateDir, NullLogger.Instance),
+                new LaunchConsentDecisionLog(stateDir, NullLogger.Instance),
+                prompter: null,
+                TimeProvider.System,
+                sp.GetRequiredService<ILogger<LaunchConsentGate>>()));
+            services.AddSingleton<AgentOrchestrator>();
+
+            await using var provider = services.BuildServiceProvider();
+
+            var notifier     = provider.GetRequiredService<DaemonStatusNotifier>();
+            var orchestrator = provider.GetRequiredService<AgentOrchestrator>();
+
+            try {
+                await Assert.That(ReferenceEquals(orchestrator.StatusNotifierForTest, notifier)).IsTrue();
+            } finally {
+                await orchestrator.DisposeAsync();
+                await provider.GetRequiredService<ServerConnection>().DisposeAsync();
+            }
+        } finally {
+            try { Directory.Delete(stateDir, true); } catch { /* best-effort */ }
         }
     }
 }
