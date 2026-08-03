@@ -35,18 +35,34 @@ public class AgentStatusSnapshotTests {
         public HttpClient CreateClient(string name) => new();
     }
 
-    static (AgentOrchestrator Orchestrator, DaemonStatusNotifier Notifier) Build() {
+    /// <summary>Bundles the orchestrator with the two temp directories <see cref="Build"/> creates,
+    /// so callers can delete them once done — <see cref="Directory.CreateTempSubdirectory"/> leaves
+    /// its directory on disk until something explicitly removes it.</summary>
+    sealed record Fixture(AgentOrchestrator Orchestrator, DaemonStatusNotifier Notifier, string StateDir, string WorktreeRoot) {
+        public async Task CleanupAsync() {
+            await Orchestrator.DisposeAsync();
+            try { Directory.Delete(StateDir, true); } catch { /* best-effort */ }
+            // Never actually created by these tests (no PTY spawn touches it), but delete
+            // defensively in case a future test starts using it.
+            if (Directory.Exists(WorktreeRoot)) {
+                try { Directory.Delete(WorktreeRoot, true); } catch { /* best-effort */ }
+            }
+        }
+    }
+
+    static Fixture Build() {
         var stateDir = Directory.CreateTempSubdirectory("kcap-status-snapshot-state-").FullName;
         var store       = new LaunchConsentStore(stateDir, NullLogger.Instance);
         var broker      = new LaunchConsentBroker();
         var decisionLog = new LaunchConsentDecisionLog(stateDir, NullLogger.Instance);
         var gate        = new LaunchConsentGate(store, decisionLog, broker, TimeProvider.System, NullLogger<LaunchConsentGate>.Instance);
+        var worktreeRoot = Path.Combine(Path.GetTempPath(), "kcap-status-snapshot-wt-" + Guid.NewGuid().ToString("N")[..8]);
 
         var config = new DaemonConfig {
             Name         = "status-snapshot-test",
             ServerUrl    = "http://127.0.0.1:1",
             StateDir     = stateDir,
-            WorktreeRoot = Path.Combine(Path.GetTempPath(), "kcap-status-snapshot-wt-" + Guid.NewGuid().ToString("N")[..8]),
+            WorktreeRoot = worktreeRoot,
         };
 
         var connection       = new ServerConnection(config, NullLoggerFactory.Instance, NullLogger<ServerConnection>.Instance);
@@ -61,12 +77,13 @@ public class AgentStatusSnapshotTests {
             new Dictionary<string, IHostedAgentRuntimeFactory>(), new NoopHostLifetime(),
             NullLogger<AgentOrchestrator>.Instance, gate, statusNotifier: notifier);
 
-        return (orchestrator, notifier);
+        return new Fixture(orchestrator, notifier, stateDir, worktreeRoot);
     }
 
     [Test]
     public async Task Snapshot_orders_by_created_at_then_id_ordinal_and_includes_all_statuses() {
-        var (orch, _) = Build();
+        var fixture = Build();
+        var orch    = fixture.Orchestrator;
         try {
             var t0 = new DateTime(2026, 8, 1, 10, 0, 0, DateTimeKind.Utc);
             orch.SeedAgentForTest("b-second", status: "Quarantined", createdAt: t0.AddMinutes(1));
@@ -81,13 +98,14 @@ public class AgentStatusSnapshotTests {
             await Assert.That(agents.Select(a => a.Status)).IsEquivalentTo(
                 new[] { "Starting", "Completed", "Quarantined" }, CollectionOrdering.Matching);
         } finally {
-            await orch.DisposeAsync();
+            await fixture.CleanupAsync();
         }
     }
 
     [Test]
     public async Task Snapshot_maps_kind_spellings_requester_and_nullables() {
-        var (orch, _) = Build();
+        var fixture = Build();
+        var orch    = fixture.Orchestrator;
         try {
             var createdAt = new DateTime(2026, 8, 1, 12, 30, 0, DateTimeKind.Utc);
             orch.SeedAgentForTest("r1", kind: LaunchKind.ReviewFlow, flowRunId: "flow_1",
@@ -110,13 +128,15 @@ public class AgentStatusSnapshotTests {
             await Assert.That(byId["d1"].Requester).IsNull();
             await Assert.That(byId["d1"].FlowRunId).IsNull();
         } finally {
-            await orch.DisposeAsync();
+            await fixture.CleanupAsync();
         }
     }
 
     [Test]
     public async Task Publish_status_change_and_unpublish_each_advance_the_generation() {
-        var (orch, notifier) = Build();
+        var fixture = Build();
+        var orch     = fixture.Orchestrator;
+        var notifier = fixture.Notifier;
         try {
             var v0 = notifier.Version;
             var agent = orch.SeedAgentForTest("gen-1"); // registers via PublishAgent
@@ -131,7 +151,7 @@ public class AgentStatusSnapshotTests {
             await Assert.That(notifier.Version).IsGreaterThan(v2);
             await Assert.That(orch.SnapshotAgentsForStatus()).IsEmpty();
         } finally {
-            await orch.DisposeAsync();
+            await fixture.CleanupAsync();
         }
     }
 }

@@ -1,3 +1,4 @@
+using System.Net.Sockets;
 using System.Text.Json;
 using Capacitor.Cli.Core.LocalIpc;
 using Microsoft.AspNetCore.SignalR.Client;
@@ -46,6 +47,14 @@ internal sealed class DaemonStatusIpc(
             }
         } catch (OperationCanceledException) {
             // subscriber EOF or daemon shutdown — either way the connection just closes
+        } catch (IOException) {
+            // A vanished subscriber is normal lifecycle for a long-lived subscription, not a
+            // fault: FrameCodec.WriteAsync throws IOException (EndOfStreamException included —
+            // it derives from IOException) when the client disconnects mid-push. Absorb it here
+            // so LocalControlServer's generic catch doesn't log a routine disconnect at Warning.
+        } catch (SocketException) {
+            // Same as above, for the underlying transport signaling the disconnect instead of
+            // the stream wrapper.
         } finally {
             Interlocked.Decrement(ref _subscribers);
         }

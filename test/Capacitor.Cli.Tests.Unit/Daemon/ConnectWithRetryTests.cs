@@ -18,10 +18,11 @@ namespace Capacitor.Cli.Tests.Unit.Daemon;
 public class ConnectWithRetryTests {
     static readonly TimeSpan HangGuard = TimeSpan.FromSeconds(5);
 
-    sealed class RetryTestConnection() : ServerConnection(
+    sealed class RetryTestConnection(DaemonStatusNotifier? notifier = null) : ServerConnection(
         new DaemonConfig { Name = "test", ServerUrl = "http://127.0.0.1:1" },
         NullLoggerFactory.Instance,
-        NullLogger<ServerConnection>.Instance
+        NullLogger<ServerConnection>.Instance,
+        notifier
     ) {
         public HubConnectionState State { get; set; } = HubConnectionState.Disconnected;
         public bool Ready { get; set; }
@@ -32,6 +33,11 @@ public class ConnectWithRetryTests {
         /// <summary>How many RegisterDaemonAsync calls should throw before they start
         /// succeeding — drives the "register failed after a successful start" path.</summary>
         public int FailRegisterRemaining { get; set; }
+
+        /// <summary>When set, every StartHubAsync call throws this instead of attempting the
+        /// normal Disconnected-state contract — drives the initial-start-failure pulse test,
+        /// which needs StartAsync to fail regardless of State.</summary>
+        public Exception? StartThrows { get; set; }
 
         /// <summary>When set, StartHubAsync awaits this before returning — lets a test hold the
         /// first loop mid-connect while a concurrent ConnectWithRetryAsync call is issued.</summary>
@@ -50,6 +56,8 @@ public class ConnectWithRetryTests {
 
         internal override async Task StartHubAsync(CancellationToken ct) {
             StartCalls++;
+
+            if (StartThrows is { } ex) throw ex;
 
             if (State != HubConnectionState.Disconnected)
                 throw new InvalidOperationException("The HubConnection cannot be started if it is not in the Disconnected state.");
@@ -209,5 +217,40 @@ public class ConnectWithRetryTests {
 
         await Assert.That(async () => await conn.ConnectWithRetryAsync(cts.Token).WaitAsync(HangGuard))
             .Throws<OperationCanceledException>();
+    }
+
+    /// <summary>
+    /// Codex P2 (production): ConnectWithRetryAsync only pulsed <c>_statusNotifier</c> on the
+    /// success path (after LogConnected). An initial-start failure fired neither
+    /// OnReconnecting nor OnClosed, so a status subscriber that snapshotted while the hub was
+    /// Connecting kept displaying "connecting" for the whole outage — no pulse ever refreshed
+    /// it, and <c>DaemonRunner</c> starts <c>LocalControlServer</c> before <c>ConnectAsync</c>,
+    /// so the race is reachable. Drives a StartHubAsync that always throws (simulating repeated
+    /// initial-connect failures) with a fast retry schedule, and polls the notifier's Version
+    /// until it advances past its pre-call snapshot — proving every failed attempt now pulses,
+    /// not just the eventual success.
+    /// </summary>
+    [Test]
+    public async Task Failed_connect_attempts_pulse_the_status_notifier() {
+        var notifier = new DaemonStatusNotifier();
+        var conn = new RetryTestConnection(notifier) {
+            State              = HubConnectionState.Disconnected,
+            StartThrows        = new InvalidOperationException("simulated transport failure"),
+            ConnectRetryDelays = [TimeSpan.FromMilliseconds(1)]
+        };
+
+        var versionBefore = notifier.Version;
+
+        using var cts = new CancellationTokenSource();
+        var loop = conn.ConnectWithRetryAsync(cts.Token);
+
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+        while (notifier.Version <= versionBefore && DateTime.UtcNow < deadline)
+            await Task.Delay(5);
+
+        cts.Cancel();
+        try { await loop.WaitAsync(HangGuard); } catch (OperationCanceledException) { /* expected teardown */ }
+
+        await Assert.That(notifier.Version).IsGreaterThan(versionBefore);
     }
 }

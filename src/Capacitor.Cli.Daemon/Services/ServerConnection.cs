@@ -462,6 +462,10 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
                     if (HubState == HubConnectionState.Disconnected) {
                         LogConnecting(_config.ServerUrl);
                         await StartHubAsync(ct);
+                        // Hub is now Connected (pre-registration) — pulse so a subscriber that
+                        // snapshotted while still "connecting" converges without waiting for
+                        // RegisterDaemonAsync too.
+                        _statusNotifier.Pulse();
                     }
 
                     await RegisterDaemonAsync();
@@ -483,6 +487,10 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
                 } catch (Exception ex) {
                     var delay = ConnectRetryDelays[Math.Min(attempt, ConnectRetryDelays.Length - 1)];
                     LogConnectionAttemptFailed(ex, attempt + 1, delay.TotalSeconds);
+                    // The failed attempt has returned the hub to Disconnected — pulse so a
+                    // subscriber converges to "disconnected" during the backoff instead of a
+                    // stale "connecting" (Codex P2: initial-start failures never fired a pulse).
+                    _statusNotifier.Pulse();
                     await Task.Delay(delay, ct);
                     attempt++;
                 }

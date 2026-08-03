@@ -47,6 +47,82 @@ public class DaemonStatusIpcTests {
         public RestartOutcome Restart() => RestartOutcome.NoOp;
     }
 
+    /// <summary>
+    /// Fake <see cref="Stream"/> for <see cref="HandleSubscribeAsync_absorbs_a_write_side_disconnect_without_faulting"/>:
+    /// <see cref="ReadAsync"/> never completes (until cancelled) — mirroring a subscriber that
+    /// vanished without an explicit EOF — so the WRITE path has to be what surfaces the
+    /// disconnect. Once <see cref="ThrowOnNextWrite"/> is armed, the next write throws exactly
+    /// what a broken pipe against a real socket throws: an <see cref="IOException"/> wrapping a
+    /// <see cref="SocketException"/>.
+    /// </summary>
+    sealed class VanishedSubscriberStream : Stream {
+        public volatile bool ThrowOnNextWrite;
+
+        public override bool CanRead  => true;
+        public override bool CanSeek  => false;
+        public override bool CanWrite => true;
+        public override long Length   => throw new NotSupportedException();
+        public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default) {
+            await Task.Delay(Timeout.Infinite, cancellationToken);
+
+            return 0;
+        }
+
+        public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default) {
+            if (ThrowOnNextWrite)
+                throw new IOException("Broken pipe", new SocketException((int)SocketError.ConnectionReset));
+
+            return ValueTask.CompletedTask;
+        }
+
+        public override Task FlushAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
+
+        public override void Flush()                                            { }
+        public override int  Read(byte[] buffer, int offset, int count)         => throw new NotSupportedException();
+        public override long Seek(long offset, SeekOrigin origin)               => throw new NotSupportedException();
+        public override void SetLength(long value)                              => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count)        => throw new NotSupportedException();
+    }
+
+    /// <summary>Bare orchestrator + notifier + DaemonStatusIpc, no LocalControlServer/socket —
+    /// mirrors <c>AgentStatusSnapshotTests.Build</c> — for the pure write-path exception test
+    /// below, which drives <see cref="DaemonStatusIpc.HandleSubscribeAsync"/> directly against a
+    /// fake stream instead of a real connection.</summary>
+    static (AgentOrchestrator Orchestrator, DaemonStatusIpc StatusIpc, string StateDir) BuildBareStatusIpc(string name) {
+        var stateDir = Directory.CreateTempSubdirectory("kcap-status-ipc-throw-state-").FullName;
+        var store       = new LaunchConsentStore(stateDir, NullLogger.Instance);
+        var broker      = new LaunchConsentBroker();
+        var decisionLog = new LaunchConsentDecisionLog(stateDir, NullLogger.Instance);
+        var gate        = new LaunchConsentGate(store, decisionLog, broker, TimeProvider.System, NullLogger<LaunchConsentGate>.Instance);
+
+        var config = new DaemonConfig {
+            Name         = name,
+            ServerUrl    = "http://127.0.0.1:1",
+            StateDir     = stateDir,
+            WorktreeRoot = Path.Combine(Path.GetTempPath(), "kcap-status-ipc-throw-wt-" + Guid.NewGuid().ToString("N")[..8]),
+        };
+
+        var notifier         = new DaemonStatusNotifier();
+        var connection       = new ServerConnection(config, NullLoggerFactory.Instance, NullLogger<ServerConnection>.Instance, notifier);
+        var worktreeManager  = new WorktreeManager(config, NullLogger<WorktreeManager>.Instance);
+        var repoMatcher      = new RepoMatcher(config, NullLogger<RepoMatcher>.Instance);
+        var permissionBridge = new LocalPermissionBridge(connection, NullLogger<LocalPermissionBridge>.Instance);
+
+        var orchestrator = new AgentOrchestrator(
+            config, connection, worktreeManager, repoMatcher, new NoopPtyProcessFactory(), new NoopHttpClientFactory(),
+            permissionBridge, new Dictionary<string, IHostedAgentLauncher>(),
+            new Dictionary<string, IHostedAgentRuntimeFactory>(), new NoopHostLifetime(),
+            NullLogger<AgentOrchestrator>.Instance, gate, statusNotifier: notifier);
+
+        var statusIpc = new DaemonStatusIpc(config, orchestrator, connection, notifier) {
+            Debounce = TimeSpan.FromMilliseconds(1),
+        };
+
+        return (orchestrator, statusIpc, stateDir);
+    }
+
     sealed record Harness(
         LocalControlServer Server, AgentOrchestrator Orchestrator, ServerConnection Connection,
         DaemonConfig Config, string SockPath, DaemonStatusNotifier Notifier, DaemonStatusIpc StatusIpc,
@@ -345,6 +421,54 @@ public class DaemonStatusIpcTests {
                 await Task.Delay(20, ct);
             await Assert.That(h.StatusIpc.ActiveSubscribersForTest).IsEqualTo(0);
         });
+    }
+
+    /// <summary>
+    /// Qodo (production): a client vanishing mid-push makes <c>FrameCodec.WriteAsync</c> throw
+    /// <see cref="IOException"/>/<see cref="SocketException"/>, which only
+    /// <see cref="OperationCanceledException"/> was treated as normal termination for — the
+    /// exception bubbled out of <c>HandleSubscribeAsync</c> to <c>LocalControlServer</c>'s
+    /// generic catch and logged "Local control connection faulted" at Warning for a routine
+    /// disconnect. Drives <see cref="DaemonStatusIpc.HandleSubscribeAsync"/> directly against a
+    /// fake stream (no socket/LocalControlServer involved) whose first write (the immediate
+    /// snapshot) succeeds and whose second write throws — deterministic, no OS-level raciness
+    /// between the read-side EOF watcher and the write path. Before the fix, this IOException
+    /// escaped uncaught; after it, <c>HandleSubscribeAsync</c> returns cleanly.
+    /// </summary>
+    [Test]
+    public async Task HandleSubscribeAsync_absorbs_a_write_side_disconnect_without_faulting() {
+        var (orchestrator, statusIpc, stateDir) = BuildBareStatusIpc("status-ipc-throw-test");
+        try {
+            var stream           = new VanishedSubscriberStream();
+            var firstSnapshotSeen = false;
+            statusIpc.AfterSnapshotForTest = () => {
+                if (firstSnapshotSeen) stream.ThrowOnNextWrite = true; // arm for the SECOND push only
+                firstSnapshotSeen = true;
+            };
+
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            try {
+                var handleTask = statusIpc.HandleSubscribeAsync(stream, cts.Token);
+
+                var deadline = DateTime.UtcNow.AddSeconds(5);
+                while (!firstSnapshotSeen && DateTime.UtcNow < deadline) await Task.Delay(5);
+                await Assert.That(firstSnapshotSeen).IsTrue();
+
+                // Triggers the second push, whose write hits the now-armed stream and throws —
+                // exactly what a real vanished subscriber does mid-push.
+                orchestrator.SeedAgentForTest("throw-trigger");
+
+                // Must return cleanly within the deadline: before the fix this IOException would
+                // propagate out of HandleSubscribeAsync uncaught (only OCE was absorbed).
+                await handleTask.WaitAsync(TimeSpan.FromSeconds(5));
+                await Assert.That(statusIpc.ActiveSubscribersForTest).IsEqualTo(0);
+            } finally {
+                cts.Cancel(); // unblock the fake stream's indefinitely-blocked ReadAsync promptly
+            }
+        } finally {
+            await orchestrator.DisposeAsync();
+            try { Directory.Delete(stateDir, true); } catch { /* best-effort */ }
+        }
     }
 
     [Test] // snapshot stress: no exceptions, every payload internally consistent, converges
