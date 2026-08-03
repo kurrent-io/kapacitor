@@ -30,6 +30,13 @@ public sealed class UnixSpawnerThread : IDisposable {
     volatile bool                             _stopping;
     volatile bool                             _testCrashRequested;
 
+    /// <summary>Guards <see cref="Dispose"/> so its body runs exactly once: the daemon's explicit
+    /// spawner-retire teardown step disposes this instance BEFORE the host-dispose DI walk visits
+    /// the same singleton again, and the second pass would otherwise call
+    /// <see cref="BlockingCollection{T}.CompleteAdding"/> on the already-disposed queue
+    /// (ObjectDisposedException).</summary>
+    int _disposeOnce;
+
     public UnixSpawnerThread() {
         _thread = new Thread(RunLoop) { IsBackground = false, Name = "kcap-unix-spawner" };
         _thread.Start();
@@ -101,6 +108,8 @@ public sealed class UnixSpawnerThread : IDisposable {
     /// deliberately do NOT dispose <c>_queue</c> (leaving it to process exit) rather than free it
     /// under a thread that may still touch it.</summary>
     public void Dispose() {
+        if (Interlocked.Exchange(ref _disposeOnce, 1) != 0) return;
+
         _stopping = true;
         _queue.CompleteAdding();
         // Bound comfortably above the native worst case (~30s handshake + kill/reap). Only
