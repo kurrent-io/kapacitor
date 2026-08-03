@@ -132,7 +132,7 @@ public class AgentStatusSnapshotTests {
         }
     }
 
-    /// <summary>AI-1649 review finding: a blank/whitespace <c>Model</c> is the orchestrator's
+    /// <summary>A blank/whitespace <c>Model</c> is the orchestrator's
     /// "no model" sentinel (local spawns store "" verbatim; see
     /// <c>AgentOrchestrator.HandleLocalSpawnAsync</c>), but the wire contract represents an
     /// absent model as JSON <c>null</c>. The snapshot mapping must normalize at the wire
