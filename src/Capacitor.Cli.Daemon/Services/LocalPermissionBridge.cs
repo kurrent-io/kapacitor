@@ -59,7 +59,7 @@ internal sealed partial class LocalPermissionBridge(
     // a reviewer token auto-approves that reviewer's kcap tools; the shared token keeps the
     // interactive prompt path. The token is a secret only the reviewer process holds, so an
     // interactive agent (which has only the shared token) can't reach the unattended path.
-    readonly ConcurrentDictionary<string, string[]> _reviewerTokens = new(StringComparer.Ordinal);
+    readonly ConcurrentDictionary<string, ReviewerGrant> _reviewerTokens = new(StringComparer.Ordinal);
     readonly object                                 _prefixLock     = new();
 
     /// <summary>
@@ -209,7 +209,9 @@ internal sealed partial class LocalPermissionBridge(
     /// and gets its own listener prefix so only that reviewer's hook can reach the unattended path.
     /// Revoke with <see cref="RevokeReviewerToken"/> once the reviewer exits.
     /// </summary>
-    public string RegisterReviewerToken(IReadOnlyList<string> allowlistServers) {
+    public string RegisterReviewerToken(
+            IReadOnlyList<string> allowlistServers,
+            BorrowedReviewContextGeneration? reviewContext = null) {
         if (_listener is null || _sharedToken is null)
             throw new InvalidOperationException("LocalPermissionBridge not started");
 
@@ -219,7 +221,7 @@ internal sealed partial class LocalPermissionBridge(
                 token = NewToken();   // CSPRNG collisions are negligible; never silently reuse one
 
             _listener.Prefixes.Add($"http://127.0.0.1:{_port}/{token}/");
-            _reviewerTokens[token] = [.. allowlistServers];
+            _reviewerTokens[token] = new ReviewerGrant([.. allowlistServers], reviewContext);
 
             return $"http://127.0.0.1:{_port}/{token}";
         }
@@ -235,6 +237,21 @@ internal sealed partial class LocalPermissionBridge(
             if (_reviewerTokens.TryRemove(token, out _))
                 _listener?.Prefixes.Remove($"http://127.0.0.1:{_port}/{token}/");
         }
+    }
+
+    /// <summary>Atomically publishes a completed immutable sidecar generation for a live reviewer.
+    /// Returns the retired generation so its on-disk storage can be removed after the swap.</summary>
+    public BorrowedReviewContextGeneration? PublishReviewerContext(
+            string reviewerBridgeUrlOrToken,
+            BorrowedReviewContextGeneration generation) {
+        var token = ExtractToken(reviewerBridgeUrlOrToken)
+            ?? throw new InvalidOperationException("reviewer_context_token_invalid");
+        while (_reviewerTokens.TryGetValue(token, out var current)) {
+            var replacement = current with { ReviewContext = generation };
+            if (_reviewerTokens.TryUpdate(token, replacement, current))
+                return current.ReviewContext;
+        }
+        throw new InvalidOperationException("reviewer_context_token_revoked");
     }
 
     /// <summary>Test seam: number of live reviewer tokens (verifies mint/revoke without a real
@@ -289,6 +306,32 @@ internal sealed partial class LocalPermissionBridge(
 
     async Task HandleAsync(HttpListenerContext context, CancellationToken ct) {
         try {
+            // This capability is deliberately routed before the permission-request parser. It has
+            // one exact method/path, accepts no query or caller-selected path, and exists only on a
+            // live reviewer grant. The shared interactive token is absent from this dictionary.
+            var rawUrl = context.Request.RawUrl;
+            if (context.Request.HttpMethod == "GET" && rawUrl is not null) {
+                var trimmedRaw = rawUrl.TrimStart('/');
+                var slash = trimmedRaw.IndexOf('/');
+                if (slash > 0) {
+                    var contextToken = trimmedRaw[..slash];
+                    var expected = $"/{contextToken}/review-context/workspace-mcp-configs";
+                    if (rawUrl.Equals(expected, StringComparison.Ordinal) &&
+                        _reviewerTokens.TryGetValue(contextToken, out var contextGrant) &&
+                        contextGrant.ReviewContext is { } generation) {
+                        context.Response.ContentType = "application/json";
+                        context.Response.StatusCode = 200;
+                        context.Response.ContentLength64 = generation.JsonUtf8.LongLength;
+                        await context.Response.OutputStream.WriteAsync(generation.JsonUtf8, ct);
+                        context.Response.Close();
+                        return;
+                    }
+                }
+                context.Response.StatusCode = 404;
+                context.Response.Close();
+                return;
+            }
+
             // Require token + vendor + endpoint match. The HttpListener prefix already routed us
             // here, but we re-validate explicitly so a stray prefix can't quietly admit anything.
             // Path shape: /{token}/{vendor}/permission-request.
@@ -318,7 +361,7 @@ internal sealed partial class LocalPermissionBridge(
 
             var token      = trimmed[..firstSlash];
             var isShared   = string.Equals(token, _sharedToken, StringComparison.Ordinal);
-            var isReviewer = _reviewerTokens.TryGetValue(token, out var reviewerAllowlist);
+            var isReviewer = _reviewerTokens.TryGetValue(token, out var reviewerGrant);
 
             if (!isShared && !isReviewer) {
                 context.Response.StatusCode = 404;
@@ -405,7 +448,7 @@ internal sealed partial class LocalPermissionBridge(
                     return;
                 }
 
-                if (IsReviewerToolAllowed(vendor, toolName, reviewerAllowlist!)) {
+                if (IsReviewerToolAllowed(vendor, toolName, reviewerGrant!.AllowlistServers)) {
                     decision = new PermissionDecision("allow", null, null);
                 } else {
                     LogReviewerToolDenied(logger, sessionId, toolName);
@@ -509,6 +552,10 @@ internal sealed partial class LocalPermissionBridge(
 
         return false;
     }
+
+    sealed record ReviewerGrant(
+        string[] AllowlistServers,
+        BorrowedReviewContextGeneration? ReviewContext);
 
     static string BuildHookResponseJson(PermissionDecision decision, string vendor) =>
         vendor switch {

@@ -13,7 +13,9 @@ namespace Capacitor.Cli.Daemon.Services;
 /// </summary>
 public record WorktreeInfo(
         string Path, string Branch, string SourceRepo, bool IsStandalone = false,
-        string? FetchedRef = null, string? SnapshotRoot = null) {
+        string? FetchedRef = null, string? SnapshotRoot = null, string? ReviewContextRoot = null) {
+    internal BorrowedReviewContextGeneration? ReviewContextGeneration { get; init; }
+
     /// <summary>A borrowed cwd (local in-place launch) the daemon does NOT own. Cleanup
     /// never removes it — the <see cref="AgentInstance.Work"/> guard enforces that.</summary>
     public static WorktreeInfo Borrowed(string cwd) => new(cwd, "", cwd, IsStandalone: false);
@@ -449,6 +451,9 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
             if (worktree.SnapshotRoot is not null)
                 DeleteTreeNoFollow(VendorStateRootFor(worktree.SnapshotRoot));
 
+            if (worktree.ReviewContextRoot is not null)
+                DeleteTreeNoFollow(worktree.ReviewContextRoot);
+
             DeleteTreeNoFollow(root);
 
             return;
@@ -489,26 +494,34 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
             throw new InvalidOperationException("borrowed_snapshot_cwd_outside_source");
         var root = Path.GetFullPath(Path.Combine(config.WorktreeRoot, "borrowed-snapshots"));
         EnsureSeparateRoots(source, root);
-        Directory.CreateDirectory(root);
+        CreateOwnerOnlyDirectory(root);
 
         name ??= $"borrowed-{Guid.NewGuid():N}"[..25];
         var final = Path.Combine(root, name);
         var staging = final + ".preparing-" + Guid.NewGuid().ToString("N")[..8];
+        var reviewContextRoot = ReviewContextRootFor(final);
         var promoted = false;
         try {
-            await BuildIndependentSnapshotAsync(source, staging, SnapshotExcludedPaths, ct);
+            var reviewContextGeneration = await BuildIndependentSnapshotAsync(
+                source, staging, SnapshotExcludedPaths, reviewContextRoot, ct)
+                ?? throw new InvalidOperationException("borrowed_snapshot_review_context_missing");
             Directory.Move(staging, final);
             promoted = true;
+            reviewContextGeneration = PublishReviewContextGeneration(
+                reviewContextGeneration, reviewContextRoot);
             var executionPath = relativeCwd == "."
                 ? final
                 : ContainedPath(final, relativeCwd);
             if (!Directory.Exists(executionPath))
                 throw new InvalidOperationException("borrowed_snapshot_cwd_missing");
             return new WorktreeInfo(final == executionPath ? final : executionPath, "", source,
-                IsStandalone: true, SnapshotRoot: final);
+                IsStandalone: true, SnapshotRoot: final, ReviewContextRoot: reviewContextRoot) {
+                ReviewContextGeneration = reviewContextGeneration
+            };
         } catch {
             DeleteTreeNoFollow(staging);
             if (promoted) DeleteTreeNoFollow(final);
+            DeleteTreeNoFollow(reviewContextRoot);
             throw;
         }
     }
@@ -526,6 +539,22 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
     public async Task SyncFromSourceAsync(
             string sourceRepoRoot, string targetWorktreePath, string executionPath,
             string[] excludePaths, CancellationToken ct) {
+        _ = await SyncFromSourceCoreAsync(
+            sourceRepoRoot, targetWorktreePath, executionPath,
+            excludePaths, reviewContextRoot: null, ct);
+    }
+
+    internal async Task<BorrowedReviewContextGeneration> SyncBorrowedSnapshotFromSourceAsync(
+            string sourceRepoRoot, string targetWorktreePath, string executionPath,
+            string[] excludePaths, string reviewContextRoot, CancellationToken ct) =>
+        await SyncFromSourceCoreAsync(
+            sourceRepoRoot, targetWorktreePath, executionPath,
+            excludePaths, reviewContextRoot, ct)
+        ?? throw new InvalidOperationException("borrowed_snapshot_review_context_missing");
+
+    async Task<BorrowedReviewContextGeneration?> SyncFromSourceCoreAsync(
+            string sourceRepoRoot, string targetWorktreePath, string executionPath,
+            string[] excludePaths, string? reviewContextRoot, CancellationToken ct) {
         if (string.IsNullOrEmpty(sourceRepoRoot))
             throw new ArgumentException("Source repo root must not be empty.", nameof(sourceRepoRoot));
         if (string.IsNullOrEmpty(targetWorktreePath))
@@ -548,39 +577,57 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
         var parent = Directory.GetParent(target)?.FullName
             ?? throw new InvalidOperationException("Snapshot target has no parent directory.");
         var staging = Path.Combine(parent, Path.GetFileName(target) + ".refresh-" + Guid.NewGuid().ToString("N")[..8]);
+        BorrowedReviewContextGeneration? generation = null;
         try {
             var exclusions = SnapshotExcludedPaths.Concat(excludePaths).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
-            await BuildIndependentSnapshotAsync(source, staging, exclusions, ct);
+            generation = await BuildIndependentSnapshotAsync(
+                source, staging, exclusions, reviewContextRoot, ct);
             ReplaceTreeContentsNoFollow(target, staging, execution);
+            if (generation is not null)
+                generation = PublishReviewContextGeneration(
+                    generation, reviewContextRoot!);
+            return generation;
+        } catch {
+            if (generation is not null) DeleteTreeNoFollow(generation.StoragePath);
+            throw;
         } finally {
             DeleteTreeNoFollow(staging);
         }
     }
 
-    async Task BuildIndependentSnapshotAsync(
-            string source, string destination, string[] exclusions, CancellationToken ct) {
+    async Task<BorrowedReviewContextGeneration?> BuildIndependentSnapshotAsync(
+            string source, string destination, string[] exclusions,
+            string? reviewContextRoot, CancellationToken ct) {
         for (var attempt = 0; attempt < 2; attempt++) {
+            BorrowedReviewContextGeneration? generation = null;
             try {
-                await BuildIndependentSnapshotOnceAsync(source, destination, exclusions, ct);
-                return;
+                generation = await BuildIndependentSnapshotOnceAsync(
+                    source, destination, exclusions, reviewContextRoot, ct);
+                return generation;
             } catch (SourceChangedException) when (attempt == 0) {
                 DeleteTreeNoFollow(destination);
+                if (generation is not null) DeleteTreeNoFollow(generation.StoragePath);
             } catch (SourceChangedException) {
                 DeleteTreeNoFollow(destination);
+                if (generation is not null) DeleteTreeNoFollow(generation.StoragePath);
                 throw new InvalidOperationException("borrowed_snapshot_source_changed");
             }
         }
         throw new InvalidOperationException("borrowed_snapshot_source_changed");
     }
 
-    async Task BuildIndependentSnapshotOnceAsync(
-            string source, string destination, string[] exclusions, CancellationToken ct) {
+    async Task<BorrowedReviewContextGeneration?> BuildIndependentSnapshotOnceAsync(
+            string source, string destination, string[] exclusions,
+            string? reviewContextRoot, CancellationToken ct) {
         var parent = Directory.GetParent(destination)?.FullName
             ?? throw new InvalidOperationException("Snapshot destination has no parent directory.");
         Directory.CreateDirectory(parent);
         var bundle = Path.Combine(parent, ".bundle-" + Guid.NewGuid().ToString("N") + ".git");
+        BorrowedReviewContextGeneration? generation = null;
         try {
             var sourceHead = (await RunGitCapture(source, GitTimeout, true, "rev-parse", "HEAD")).Trim();
+            var initialIndex = await RunGitCaptureBytes(source, GitTimeout, true, ct,
+                "ls-files", "--stage", "-z");
             await RunGit(source, GitTimeout, sourceReadOnly: true, "bundle", "create", bundle, "HEAD");
             if (await GitConfigBoolAsync(source, "core.sparseCheckout"))
                 throw new InvalidOperationException("borrowed_snapshot_sparse_checkout_unsupported");
@@ -596,48 +643,83 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
             await RunGitBestEffort(destination, "reflog", "expire", "--expire=now", "--all");
             var fetchHead = Path.Combine(destination, ".git", "FETCH_HEAD");
             if (File.Exists(fetchHead)) File.Delete(fetchHead);
+            var caseSensitive = ProbeCaseSensitiveFileSystem(destination);
 
-            var staged = await RunGitCapture(source, GitTimeout, true, "ls-files", "--stage", "-z");
-            if (staged.Split('\0', StringSplitOptions.RemoveEmptyEntries)
-                .Any(entry => entry.StartsWith("160000 ", StringComparison.Ordinal)))
+            if (reviewContextRoot is not null)
+                generation = await CreateReviewContextGenerationAsync(
+                    source, reviewContextRoot, sourceHead, initialIndex, caseSensitive, ct);
+
+            if (SplitNulRecords(initialIndex)
+                .Any(entry => entry.Span.StartsWith("160000 "u8)))
                 throw new InvalidOperationException("borrowed_snapshot_submodules_unsupported");
 
-            var manifest = await ReadSourceManifestAsync(source, exclusions, ct);
+            var manifest = await ReadSourceManifestAsync(source, exclusions, caseSensitive, ct);
             await ApplyReservedIndexPolicyAsync(destination);
             await CopyManifestAsync(source, destination, manifest, ct);
-            RemoveFilesOutsideManifest(destination, manifest.Keys, ct);
+            RemoveFilesOutsideManifest(destination, manifest.Keys, caseSensitive, ct);
             VerifyIndependentGit(destination, source);
             await VerifyDestinationManifestAsync(destination, manifest, ct);
 
             var finalHead = (await RunGitCapture(source, GitTimeout, true, "rev-parse", "HEAD")).Trim();
-            var finalManifest = await ReadSourceManifestAsync(source, exclusions, ct);
+            var finalIndex = await RunGitCaptureBytes(source, GitTimeout, true, ct,
+                "ls-files", "--stage", "-z");
+            var finalManifest = await ReadSourceManifestAsync(
+                source, exclusions, caseSensitive, ct);
             if (!string.Equals(sourceHead, finalHead, StringComparison.Ordinal) ||
+                !initialIndex.AsSpan().SequenceEqual(finalIndex) ||
                 !ManifestsEqual(manifest, finalManifest))
                 throw new SourceChangedException();
             LogSyncCompleted(source, destination, manifest.Count);
+            return generation;
+        } catch {
+            if (generation is not null) DeleteTreeNoFollow(generation.StoragePath);
+            throw;
         } finally {
             try { if (File.Exists(bundle)) File.Delete(bundle); } catch { /* startup sweep handles leftovers */ }
         }
     }
 
     static async Task<Dictionary<string, SnapshotFile>> ReadSourceManifestAsync(
-            string source, string[] exclusions, CancellationToken ct) {
-        var stdout = await RunGitCapture(source, GitTimeout, true, "ls-files", "-co", "--exclude-standard", "-z");
-        var result = new Dictionary<string, SnapshotFile>(StringComparer.OrdinalIgnoreCase);
+            string source, string[] exclusions, bool caseSensitive, CancellationToken ct) {
+        var stdout = await RunGitCaptureBytes(source, GitTimeout, true, ct,
+            "ls-files", "-co", "--exclude-standard", "-z");
+        // A stage-only addition has no working-tree bytes to mirror. Skip those exact raw paths
+        // before decoding so an unrelated, absent non-UTF8 index entry cannot interfere with the
+        // review-context extractor's classify-before-decode guarantee.
+        var deleted = await RunGitCaptureBytes(source, GitTimeout, true, ct,
+            "ls-files", "--deleted", "-z");
+        var deletedPaths = SplitNulRecords(deleted)
+            .Select(static path => Convert.ToBase64String(path.Span))
+            .ToHashSet(StringComparer.Ordinal);
+        var comparison = caseSensitive
+            ? StringComparer.Ordinal
+            : StringComparer.OrdinalIgnoreCase;
+        var result = new Dictionary<string, SnapshotFile>(comparison);
         long total = 0;
-        foreach (var raw in stdout.Split('\0', StringSplitOptions.RemoveEmptyEntries)) {
+        foreach (var rawBytes in SplitNulRecords(stdout)) {
             ct.ThrowIfCancellationRequested();
+            if (deletedPaths.Contains(Convert.ToBase64String(rawBytes.Span))) continue;
+            string raw;
+            try { raw = StrictUtf8.GetString(rawBytes.Span); }
+            catch (DecoderFallbackException ex) {
+                throw new InvalidOperationException(
+                    "borrowed_snapshot_invalid_path_encoding", ex);
+            }
             var rel = NormalizeRelativePath(raw);
-            if (IsUnderExcluded(rel, exclusions)) {
-                if (rel.Equals(".attached", StringComparison.OrdinalIgnoreCase) ||
-                    rel.StartsWith(".attached/", StringComparison.OrdinalIgnoreCase) ||
-                    rel.Equals(".capacitor", StringComparison.OrdinalIgnoreCase) ||
-                    rel.StartsWith(".capacitor/", StringComparison.OrdinalIgnoreCase))
+            if (IsUnderExcluded(rel, exclusions, caseSensitive)) {
+                var pathComparison = caseSensitive
+                    ? StringComparison.Ordinal
+                    : StringComparison.OrdinalIgnoreCase;
+                if (rel.Equals(".attached", pathComparison) ||
+                    rel.StartsWith(".attached/", pathComparison) ||
+                    rel.Equals(".capacitor", pathComparison) ||
+                    rel.StartsWith(".capacitor/", pathComparison))
                     throw new InvalidOperationException($"borrowed_snapshot_reserved_path: {rel}");
                 continue;
             }
             var path = ContainedPath(source, rel);
             if (!File.Exists(path)) continue; // tracked deletion
+            EnsureNoLinkedComponents(source, path, rel);
             var info = new FileInfo(path);
             if (info.LinkTarget is not null || info.Attributes.HasFlag(FileAttributes.ReparsePoint))
                 throw new InvalidOperationException($"borrowed_snapshot_symlink_unsupported: {rel}");
@@ -670,6 +752,7 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
             var sourcePath = ContainedPath(source, rel);
             var path = ContainedPath(destination, rel);
             EnsureParentDirectories(destination, path);
+            EnsureDestinationLeafNoFollow(path);
             if (Directory.Exists(path)) DeleteTreeNoFollow(path);
             await using (var input = OpenSequentialRead(sourcePath))
             await using (var output = new FileStream(path, new FileStreamOptions {
@@ -681,8 +764,12 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
         }
     }
 
-    static void RemoveFilesOutsideManifest(string destination, IEnumerable<string> accepted, CancellationToken ct) {
-        var keep = accepted.ToHashSet(StringComparer.OrdinalIgnoreCase);
+    static void RemoveFilesOutsideManifest(
+            string destination, IEnumerable<string> accepted, bool caseSensitive,
+            CancellationToken ct) {
+        var keep = accepted.ToHashSet(caseSensitive
+            ? StringComparer.Ordinal
+            : StringComparer.OrdinalIgnoreCase);
         foreach (var entry in Directory.EnumerateFileSystemEntries(destination)) {
             ct.ThrowIfCancellationRequested();
             if (Path.GetFileName(entry).Equals(".git", StringComparison.Ordinal)) continue;
@@ -766,12 +853,25 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
             throw new InvalidOperationException("borrowed_snapshot_root_inside_source");
     }
 
-    static string NormalizeRelativePath(string raw) {
-        var rel = raw.Replace('\\', '/').TrimStart('/').Normalize(NormalizationForm.FormC);
-        if (rel.Length == 0 || rel.Split('/').Any(p => p is "" or "." or "..") ||
-            rel.Split('/').Any(p => p.Equals(".git", StringComparison.OrdinalIgnoreCase)))
+    internal static string NormalizeRelativePath(string raw) {
+        if (raw.Length == 0 || raw.StartsWith('/') || raw.Contains('\\') ||
+            raw.Contains('\r') || raw.Contains('\n') ||
+            !raw.IsNormalized(NormalizationForm.FormC) ||
+            raw.Split('/').Any(p => p is "" or "." or "..") ||
+            raw.Split('/').Any(p => p.Equals(".git", StringComparison.OrdinalIgnoreCase)))
             throw new InvalidOperationException($"borrowed_snapshot_invalid_path: {raw}");
-        return rel;
+        return raw;
+    }
+
+    static void EnsureNoLinkedComponents(string root, string path, string rel) {
+        var current = Path.GetFullPath(root);
+        foreach (var component in rel.Split('/')) {
+            current = Path.Combine(current, component);
+            if (!Path.Exists(current)) return;
+            if (File.GetAttributes(current).HasFlag(FileAttributes.ReparsePoint))
+                throw new InvalidOperationException(
+                    $"borrowed_snapshot_symlink_unsupported: {rel}");
+        }
     }
 
     static string ContainedPath(string root, string rel) {
@@ -782,7 +882,7 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
         return path;
     }
 
-    static void EnsureParentDirectories(string root, string path) {
+    internal static void EnsureParentDirectories(string root, string path) {
         var normalizedRoot = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar);
         var parent = Path.GetDirectoryName(path)
             ?? throw new InvalidOperationException($"borrowed_snapshot_parent_missing: {path}");
@@ -793,9 +893,27 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
                 ?? throw new InvalidOperationException($"borrowed_snapshot_parent_outside_root: {path}");
         }
         while (stack.TryPop(out var dir)) {
-            if (File.Exists(dir)) File.Delete(dir);
-            Directory.CreateDirectory(dir);
+            if (Path.Exists(dir)) {
+                var attributes = File.GetAttributes(dir);
+                if (attributes.HasFlag(FileAttributes.ReparsePoint))
+                    throw new InvalidOperationException(
+                        $"borrowed_snapshot_destination_symlink_unsupported: {dir}");
+                if (!attributes.HasFlag(FileAttributes.Directory)) File.Delete(dir);
+            }
+            if (!Directory.Exists(dir)) Directory.CreateDirectory(dir);
+            var created = File.GetAttributes(dir);
+            if (created.HasFlag(FileAttributes.ReparsePoint) ||
+                !created.HasFlag(FileAttributes.Directory))
+                throw new InvalidOperationException(
+                    $"borrowed_snapshot_destination_symlink_unsupported: {dir}");
         }
+    }
+
+    internal static void EnsureDestinationLeafNoFollow(string path) {
+        if (!Path.Exists(path)) return;
+        if (File.GetAttributes(path).HasFlag(FileAttributes.ReparsePoint))
+            throw new InvalidOperationException(
+                $"borrowed_snapshot_destination_symlink_unsupported: {path}");
     }
 
     static async Task VerifyDestinationManifestAsync(
@@ -853,12 +971,14 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
     sealed record SnapshotFile(long Length, byte[] Hash, UnixFileMode? Mode);
     sealed class SourceChangedException : Exception;
 
-    static bool IsUnderExcluded(string rel, string[] prefixes) {
-        rel = rel.Replace('\\', '/');
+    static bool IsUnderExcluded(string rel, string[] prefixes, bool caseSensitive) {
+        var comparison = caseSensitive
+            ? StringComparison.Ordinal
+            : StringComparison.OrdinalIgnoreCase;
         foreach (var prefix in prefixes) {
-            var normalized = prefix.Replace('\\', '/').TrimEnd('/');
-            if (rel.Equals(normalized, StringComparison.OrdinalIgnoreCase) ||
-                rel.StartsWith(normalized + "/", StringComparison.OrdinalIgnoreCase))
+            var normalized = prefix.TrimEnd('/');
+            if (rel.Equals(normalized, comparison) ||
+                rel.StartsWith(normalized + "/", comparison))
                 return true;
         }
         return false;
@@ -868,7 +988,18 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
         // Legacy global root — clean up any leftover worktrees from before the per-repo change
         var worktreePaths = activeWorktreePaths as string[] ?? [..activeWorktreePaths ?? []];
         CleanupDirectory(config.WorktreeRoot, worktreePaths, "borrowed-snapshots");
-        CleanupDirectory(Path.Combine(config.WorktreeRoot, "borrowed-snapshots"), worktreePaths);
+        var borrowedSnapshotsRoot = Path.Combine(config.WorktreeRoot, "borrowed-snapshots");
+        // This name is a daemon-owned routing entry. Never enumerate through a pre-existing link:
+        // doing so would turn orphan cleanup into deletion of directories outside WorktreeRoot.
+        // Removing the link itself is safe and leaves its target untouched.
+        if (Path.Exists(borrowedSnapshotsRoot) &&
+            File.GetAttributes(borrowedSnapshotsRoot).HasFlag(FileAttributes.ReparsePoint)) {
+            LogCleaningUp(borrowedSnapshotsRoot);
+            try { DeleteTreeNoFollow(borrowedSnapshotsRoot); }
+            catch (Exception ex) { LogCleanupFailed(ex, borrowedSnapshotsRoot); }
+        } else {
+            CleanupDirectory(borrowedSnapshotsRoot, worktreePaths);
+        }
 
         // Per-repo roots — scan each allowed repo for .capacitor/worktrees/
         foreach (var repoPath in config.AllowedRepoPaths) {
@@ -905,6 +1036,9 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
             if (IsActive(fullDir, activePaths)) continue;
             if (fullDir.EndsWith(VendorStateSuffix, StringComparison.OrdinalIgnoreCase) &&
                 IsActive(fullDir[..^VendorStateSuffix.Length], activePaths))
+                continue;
+            if (fullDir.EndsWith(ReviewContextSuffix, StringComparison.OrdinalIgnoreCase) &&
+                IsActive(fullDir[..^ReviewContextSuffix.Length], activePaths))
                 continue;
 
             LogCleaningUp(dir);

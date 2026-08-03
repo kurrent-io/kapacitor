@@ -147,6 +147,9 @@ internal sealed record RuntimeStartContext(
         // True only when a borrowed request has been materialized into a fully independent,
         // daemon-owned repository snapshot. Factories use this to revalidate exact artifacts.
         bool               IsBorrowedSnapshot = false,
+        // Exact loopback GET capability for the immutable Git-index review-context generation.
+        // Present only for borrowed-snapshot review flows; never a backend or filesystem URL.
+        string?            ReviewContextCapabilityUrl = null,
         // Caller-selected Codex sandbox/approval posture, carried verbatim from
         // LaunchAgentCommand.CodexPosture through to LauncherContext.CodexPosture. Non-null only for
         // an interactive daemon-owned-worktree Codex launch that passed the orchestrator's guard.

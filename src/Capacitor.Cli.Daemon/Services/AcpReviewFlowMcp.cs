@@ -35,6 +35,16 @@ internal static class AcpReviewFlowMcp {
             servers.Add(new(descriptor.Id, ctx.CapacitorPath, descriptor.Args, [new("KCAP_URL", ctx.ServerUrl!)]));
         }
 
+        if (ctx.IsBorrowedSnapshot) {
+            if (string.IsNullOrWhiteSpace(ctx.ReviewContextCapabilityUrl))
+                throw new InvalidOperationException(
+                    "Borrowed-snapshot review cannot inject kcap-review-context (missing capability URL).");
+            servers.Add(new(
+                "kcap-review-context", ctx.CapacitorPath, ["mcp", "review"],
+                [new("KCAP_REVIEW_CONTEXT_MODE", "1"),
+                 new("KCAP_REVIEW_CONTEXT_URL", ctx.ReviewContextCapabilityUrl)]));
+        }
+
         return servers;
     }
 }

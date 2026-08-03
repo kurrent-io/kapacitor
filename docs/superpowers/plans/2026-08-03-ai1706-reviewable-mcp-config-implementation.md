@@ -1,5 +1,8 @@
 # AI-1706 Reviewable Branch-Authored MCP Config Implementation Plan
 
+**Execution status (2026-08-03):** implementation and focused local verification complete.
+Full unit/integration suites and NativeAOT publishing are intentionally reserved for CI.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Expose exact, bounded Git-index bytes for branch-authored workspace MCP configuration to independent-snapshot reviewers without placing executable configuration in their worktree.
@@ -324,4 +327,3 @@ Confirm exact provenance, snapshot absence, one-tool MCP authority, unified gran
 git add README.md docs/superpowers/plans/2026-08-03-ai1706-reviewable-mcp-config-implementation.md
 git commit -m "docs: document borrowed review context"
 ```
-

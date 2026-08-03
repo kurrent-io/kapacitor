@@ -585,6 +585,11 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
                 continue;
             }
 
+            if (string.Equals(server.Name, "kcap-review-context", StringComparison.Ordinal)) {
+                yield return "kcap-review-context-get_branch_authored_mcp_configs";
+                continue;
+            }
+
             if (!KcapMcpRegistry.ReviewFlowUnattendedSafeTools.TryGetValue(server.Name, out var tools))
                 continue;
 

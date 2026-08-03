@@ -17,6 +17,13 @@ if (args.Length < 1) {
 
 var command = args[0];
 
+// Daemon-only borrowed-review context mode. This exact invocation is dispatched before server URL
+// resolution and update checks so the sidecar reader has no backend, auth, Git, or config authority.
+if (args is ["mcp", "review"] &&
+    Environment.GetEnvironmentVariable(McpReviewContextServer.ModeEnvVar) == "1")
+    return await McpReviewContextServer.RunAsync(
+        Environment.GetEnvironmentVariable(McpReviewContextServer.UrlEnvVar));
+
 // Interactive commands block on synchronous Spectre.Console prompts. Install a
 // signal + parent-liveness safety net so an abandoned prompt (closed terminal,
 // killed launching agent, detached pseudo-console) can't orphan this process

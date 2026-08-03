@@ -1,7 +1,7 @@
 # AI-1706 — Reviewable branch-authored MCP config outside the executable worktree
 
-**Status:** proposed design, 2026-08-02, against `origin/main` (`1c413ef`). Approved for
-spec review; implementation has not started.
+**Status:** implemented on `codex/ai-1706-reviewable-mcp-config` against `origin/main`
+(`1c413ef`); focused local verification complete, full suites and NativeAOT verification pending CI.
 **Repository:** `kurrent-io/kcap-cli`
 **Supersedes:** AI-1680 and closed PR #437. The in-tree `.kcap-quarantined` mechanism
 must not be rebuilt.

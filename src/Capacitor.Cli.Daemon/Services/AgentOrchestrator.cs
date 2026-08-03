@@ -1345,14 +1345,23 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             // the launch FAST rather than falling back to a prompt that would hang.
             var daemonBridgeUrl    = _permissionBridge.BaseUrl;
             var effectiveAllowlist = cmd.McpAllowlist;
+            string? reviewContextCapabilityUrl = null;
 
-            // Only Codex reviewers get a token: their MCP config-lock is what makes a bare tool name
-            // provably a bound kcap tool (see LocalPermissionBridge.IsReviewerToolAllowed). Claude
-            // reviewers run via bypassPermissions with only the flow-result channel, so they need
-            // none. Also guarded on the bridge listening (BaseUrl != null) — a graceful no-op otherwise.
-            if (isReviewFlow && daemonBridgeUrl is not null
-                && string.Equals(cmd.Vendor, "codex", StringComparison.OrdinalIgnoreCase)) {
-                if (!KcapMcpRegistry.TryResolveReviewFlowAllowlist(cmd.McpAllowlist, out var reviewerServers, out var rejected)) {
+            // A token record is minted for the union of two independent authorities: Codex's
+            // unattended permission allowlist and a borrowed snapshot's immutable review context.
+            // Direct Codex keeps its permissions-only grant; non-Codex snapshot runtimes get an
+            // empty permission set plus context. One record means one revocation cannot drift.
+            var codexReviewer = isReviewFlow &&
+                string.Equals(cmd.Vendor, "codex", StringComparison.OrdinalIgnoreCase);
+            if (codexReviewer || snapshotBorrow) {
+                if (daemonBridgeUrl is null)
+                    throw new InvalidOperationException(
+                        "Borrowed review context requires the local permission bridge.");
+
+                string[] reviewerServers = [];
+                if (codexReviewer &&
+                    !KcapMcpRegistry.TryResolveReviewFlowAllowlist(
+                        cmd.McpAllowlist, out reviewerServers, out var rejected)) {
                     await _server.LaunchFailedAsync(agentId,
                         $"Review-flow reviewer MCP allowlist contains a server that is not auto-approvable: '{rejected}'.");
 
@@ -1363,9 +1372,21 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
                     return new CommandOutcome(CommandOutcomeKind.LaunchRejected, agentId, RejectReason: CommandRejectedReason.Semantic);
                 }
 
-                daemonBridgeUrl    = _permissionBridge.RegisterReviewerToken(reviewerServers);
-                reviewerToken      = daemonBridgeUrl;   // the URL doubles as the revoke handle
-                effectiveAllowlist = reviewerServers;   // single source: the set the launcher materializes
+                var reviewGeneration = snapshotBorrow
+                    ? worktree.ReviewContextGeneration
+                      ?? throw new InvalidOperationException(
+                          "borrowed_snapshot_review_context_missing")
+                    : null;
+                var reviewerUrl = _permissionBridge.RegisterReviewerToken(
+                    reviewerServers, reviewGeneration);
+                reviewerToken = reviewerUrl; // the URL doubles as the revoke handle
+                if (codexReviewer) {
+                    daemonBridgeUrl = reviewerUrl;
+                    effectiveAllowlist = reviewerServers;
+                }
+                if (snapshotBorrow)
+                    reviewContextCapabilityUrl = reviewerUrl +
+                        "/review-context/workspace-mcp-configs";
             }
 
             var runtimeCtx = new RuntimeStartContext(
@@ -1394,6 +1415,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
                 DaemonId: _daemonId,       // Phase B (D4 §6.4(3)): child env markers for the OrphanReaper scan
                 DaemonEpoch: _daemonEpoch,
                 IsBorrowedSnapshot: snapshotBorrow,
+                ReviewContextCapabilityUrl: reviewContextCapabilityUrl,
                 CodexPosture: cmd.CodexPosture
             );
 
@@ -2277,9 +2299,17 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
                 !SameFileSystemPath(auth.CanonicalCwd, source) ||
                 !SameFileSystemPath(auth.CanonicalGitRoot, agent.Worktree.SourceRepo))
                 throw new InvalidOperationException($"borrow_auth_failed: {auth.Reason ?? "source_identity_changed"}");
-            await _worktreeManager.SyncFromSourceAsync(
+            var generation = await _worktreeManager.SyncBorrowedSnapshotFromSourceAsync(
                 agent.Worktree.SourceRepo, agent.Worktree.SnapshotRoot ?? agent.Worktree.Path,
-                agent.Worktree.Path, [], timeout.Token);
+                agent.Worktree.Path, [], agent.Worktree.ReviewContextRoot
+                    ?? throw new InvalidOperationException(
+                        "borrowed_snapshot_review_context_missing"), timeout.Token);
+            var reviewerToken = agent.ReviewerBridgeToken
+                ?? throw new InvalidOperationException(
+                    "borrowed_snapshot_review_context_token_missing");
+            var retired = _permissionBridge.PublishReviewerContext(reviewerToken, generation);
+            if (retired is not null)
+                WorktreeManager.RemoveReviewContextGeneration(retired);
             return true;
         } catch (Exception ex) when (ex is not OperationCanceledException || !_shutdownCts.IsCancellationRequested) {
             LogBorrowedSnapshotRefreshFailed(ex, agent.Id);

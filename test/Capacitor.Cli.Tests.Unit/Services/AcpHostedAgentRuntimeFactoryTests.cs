@@ -612,6 +612,7 @@ public class AcpHostedAgentRuntimeFactoryTests {
     static string[] ExpectedAvailableTools(string[] allowlisted, IReadOnlyList<string> extra) => [
         $"--available-tools={KcapMcpRegistry.ReservedResultChannelId}-submit_review_result",
         $"--available-tools={KcapMcpRegistry.ReservedResultChannelId}-send_flow_message",
+        "--available-tools=kcap-review-context-get_branch_authored_mcp_configs",
         .. allowlisted.SelectMany(name => KcapMcpRegistry.ReviewFlowUnattendedSafeTools[name]
                                              .Order(StringComparer.Ordinal)
                                              .Select(t => $"--available-tools={name}-{t}")),
@@ -973,7 +974,9 @@ public class AcpHostedAgentRuntimeFactoryTests {
         MakeContext("agent-1") with {
             IsReviewFlow = true,
             ServerUrl    = "http://kcap.test",
-            McpAllowlist = allowlist
+            McpAllowlist = allowlist,
+            ReviewContextCapabilityUrl =
+                "http://127.0.0.1:1234/0123456789abcdef0123456789abcdef/review-context/workspace-mcp-configs"
         };
 
     /// <summary>A factory whose connectionSource INCREMENTS a counter (never throws — a throw would

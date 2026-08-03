@@ -1812,6 +1812,7 @@ public partial class AgentOrchestratorVendorTests {
         public int     StartCalls  { get; private set; }
         public string? LastAgentId { get; private set; }
         public RuntimeStartContext? LastContext { get; private set; }
+        public Exception? StartThrow { get; init; }
 
         public FakeHostedAgentRuntime? LastRuntime { get; private set; }
 
@@ -1821,6 +1822,7 @@ public partial class AgentOrchestratorVendorTests {
             StartCalls++;
             LastAgentId = ctx.AgentId;
             LastContext = ctx;
+            if (StartThrow is not null) throw StartThrow;
 
             var runtime = new FakeHostedAgentRuntime(vendor, EmitsTerminalOutput);
             LastRuntime = runtime;
