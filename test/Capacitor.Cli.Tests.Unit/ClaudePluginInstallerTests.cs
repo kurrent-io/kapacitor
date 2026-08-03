@@ -52,6 +52,63 @@ public class ClaudePluginInstallerTests {
         await Assert.That(ClaudePluginInstaller.IsEffectivelyInstalled(settingsPath)).IsTrue();
     }
 
+    /// <summary>
+    /// The directory-marketplace exception is for LIVE resolution only. A git/github-sourced
+    /// marketplace IS cached: once its installed cache payload is gone, a lingering checkout
+    /// under installLocation proves nothing — accepting it would let doctor --clean delete the
+    /// user's only working registrations.
+    /// </summary>
+    [Test]
+    public async Task IsEffectivelyInstalled_false_for_git_marketplace_with_lingering_checkout_and_no_cache() {
+        using var tmp = new TempDir();
+        var settingsPath = WriteEnabledSettings(tmp.Path);
+        WriteInstallRecord(tmp.Path, Path.Combine(tmp.Path, "plugins", "cache", "kcap", "kcap", "1.0.0")); // cache gone
+        var checkout = Directory.CreateDirectory(Path.Combine(tmp.Path, "plugins", "marketplaces", "kcap")).FullName;
+        File.WriteAllText(Path.Combine(checkout, ".mcp.json"), "{}"); // stale clone still ships the payload
+        File.WriteAllText(Path.Combine(tmp.Path, "plugins", "known_marketplaces.json"), $$"""
+            { "kcap": { "source": { "source": "github", "repo": "kurrent-io/kcap-cli" },
+                        "installLocation": {{JsonValue.Create(checkout).ToJsonString()}} } }
+            """);
+
+        await Assert.That(ClaudePluginInstaller.IsEffectivelyInstalled(settingsPath)).IsFalse();
+    }
+
+    /// <summary>
+    /// Both callers gate on the USER-scope settings.json enabled flag, so only a user-scoped
+    /// v2 install entry proves that flag's payload — a project/local-scoped install belonging
+    /// to some unrelated repo must not make the plugin globally "effective".
+    /// </summary>
+    [Test]
+    public async Task IsEffectivelyInstalled_false_when_only_a_project_scoped_install_has_the_payload() {
+        using var tmp = new TempDir();
+        var settingsPath = WriteEnabledSettings(tmp.Path);
+        var install = Directory.CreateDirectory(Path.Combine(tmp.Path, "plugins", "cache", "kcap", "kcap", "1.0.0")).FullName;
+        File.WriteAllText(Path.Combine(install, ".mcp.json"), "{}");
+        File.WriteAllText(Path.Combine(Directory.CreateDirectory(Path.Combine(tmp.Path, "plugins")).FullName,
+                                       "installed_plugins.json"), $$"""
+            { "version": 2, "plugins": { "kcap@kcap": [
+                { "scope": "project", "installPath": {{JsonValue.Create(install).ToJsonString()}}, "version": "1.0.0" } ] } }
+            """);
+
+        await Assert.That(ClaudePluginInstaller.IsEffectivelyInstalled(settingsPath)).IsFalse();
+    }
+
+    /// <summary>Pre-v2 compatibility: a bare-object install record predates scopes and stays accepted.</summary>
+    [Test]
+    public async Task IsEffectivelyInstalled_true_for_bare_object_install_record_with_payload() {
+        using var tmp = new TempDir();
+        var settingsPath = WriteEnabledSettings(tmp.Path);
+        var install = Directory.CreateDirectory(Path.Combine(tmp.Path, "plugins", "cache", "kcap", "kcap", "1.0.0")).FullName;
+        File.WriteAllText(Path.Combine(install, ".mcp.json"), "{}");
+        File.WriteAllText(Path.Combine(Directory.CreateDirectory(Path.Combine(tmp.Path, "plugins")).FullName,
+                                       "installed_plugins.json"), $$"""
+            { "version": 1, "plugins": { "kcap@kcap":
+                { "installPath": {{JsonValue.Create(install).ToJsonString()}}, "version": "1.0.0" } } }
+            """);
+
+        await Assert.That(ClaudePluginInstaller.IsEffectivelyInstalled(settingsPath)).IsTrue();
+    }
+
     [Test]
     public async Task IsEffectivelyInstalled_false_when_enabled_but_no_install_record() {
         using var tmp = new TempDir();

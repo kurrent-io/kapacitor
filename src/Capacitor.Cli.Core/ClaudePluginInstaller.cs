@@ -99,9 +99,15 @@ public static class ClaudePluginInstaller {
                 plugins[enabledKey] is not { } entryNode)
                 return false;
 
-            // v2 records an array of per-scope installs; tolerate a bare object defensively.
+            // v2 records an array of per-scope installs. Both callers gate on the USER-scope
+            // settings.json enabled flag, so only a "user"-scoped install proves that flag's
+            // payload — a local/project-scoped install belonging to some unrelated repo must
+            // not make the plugin globally "effective". The bare-object shape (pre-v2
+            // compatibility) predates scopes and is accepted as-is.
             IEnumerable<JsonObject> entries = entryNode switch {
-                JsonArray arr    => arr.OfType<JsonObject>(),
+                JsonArray arr => arr.OfType<JsonObject>().Where(e =>
+                    e["scope"] is JsonValue sv && sv.TryGetValue<string>(out var scope) &&
+                    string.Equals(scope, "user", StringComparison.Ordinal)),
                 JsonObject single => [single],
                 _                 => []
             };
@@ -113,10 +119,18 @@ public static class ClaudePluginInstaller {
             }
 
             // Directory-sourced marketplace: loaded live from installLocation, never cached.
+            // The exception applies ONLY when the source type is exactly "directory" — a
+            // git/github marketplace IS cached, so its lingering checkout under
+            // installLocation proves nothing once the installed cache is gone; accepting it
+            // would let doctor delete the only working registrations.
             var marketplaceName = enabledKey[(enabledKey.IndexOf('@') + 1)..];
             return JsonNode.Parse(File.ReadAllText(Path.Combine(pluginsDir, "known_marketplaces.json")))
                        is JsonObject markets &&
-                   markets[marketplaceName]?["installLocation"] is JsonValue loc &&
+                   markets[marketplaceName] is JsonObject market &&
+                   market["source"]?["source"] is JsonValue srcType &&
+                   srcType.TryGetValue<string>(out var sourceType) &&
+                   string.Equals(sourceType, "directory", StringComparison.Ordinal) &&
+                   market["installLocation"] is JsonValue loc &&
                    loc.TryGetValue<string>(out var installLocation) &&
                    !string.IsNullOrWhiteSpace(installLocation) &&
                    File.Exists(Path.Combine(installLocation, ".mcp.json"));
