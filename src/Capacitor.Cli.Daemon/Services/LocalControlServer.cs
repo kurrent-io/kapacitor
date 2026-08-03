@@ -12,7 +12,7 @@ namespace Capacitor.Cli.Daemon.Services;
 /// the same trust boundary as the daemon PID/lock files.
 internal sealed partial class LocalControlServer(
         DaemonConfig config, AgentOrchestrator orchestrator, RestartCoordinator restart,
-        LaunchConsentIpc consentIpc, ILogger<LocalControlServer> logger
+        LaunchConsentIpc consentIpc, DaemonStatusIpc statusIpc, ILogger<LocalControlServer> logger
     ) : BackgroundService {
     protected override async Task ExecuteAsync(CancellationToken ct) {
         var path = LocalSocketPaths.Socket(config.Name);
@@ -57,7 +57,8 @@ internal sealed partial class LocalControlServer(
                 case FrameType.ConsentRulesGet:  await consentIpc.HandleRulesGetAsync(stream, ct); break;
                 case FrameType.ConsentRulesPut:  await consentIpc.HandleRulesPutAsync(first.Text, stream, ct); break;
                 case FrameType.Hello: await HandleHelloAsync(first.Text, stream, ct); break;
-                default: await FrameCodec.WriteAsync(stream, LocalFrame.Error($"expected Spawn/Attach/List/Stop/StopV2/Restart/ConsentSubscribe/ConsentResolve/ConsentRulesGet/ConsentRulesPut/Hello, got {first.Type}"), ct); break;
+                case FrameType.StatusSubscribe: await statusIpc.HandleSubscribeAsync(stream, ct); break;
+                default: await FrameCodec.WriteAsync(stream, LocalFrame.Error($"expected Spawn/Attach/List/Stop/StopV2/Restart/ConsentSubscribe/ConsentResolve/ConsentRulesGet/ConsentRulesPut/Hello/StatusSubscribe, got {first.Type}"), ct); break;
             }
         } catch (Exception ex) when (ex is not OperationCanceledException) {
             LogConnectionError(ex);

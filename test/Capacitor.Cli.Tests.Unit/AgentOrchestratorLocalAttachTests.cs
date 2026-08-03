@@ -30,6 +30,12 @@ public partial class AgentOrchestratorVendorTests {
             NullLogger<LaunchConsentIpc>.Instance);
     }
 
+    // Status: a throwaway connection + notifier — these pre-existing LocalControlServer tests
+    // don't exercise StatusSubscribe at all, so the wiring only needs to satisfy the ctor.
+    static DaemonStatusIpc TestStatusIpc(DaemonConfig config, AgentOrchestrator orch) =>
+        new(config, orch, new ServerConnection(config, NullLoggerFactory.Instance, NullLogger<ServerConnection>.Instance),
+            new DaemonStatusNotifier());
+
     static DaemonConfig LauncherCfg() => new() { Name = "t", ServerUrl = "http://127.0.0.1:1" };
 
     static LauncherContext CtxFor(string path)
@@ -540,7 +546,7 @@ public partial class AgentOrchestratorVendorTests {
             });
 
             var config = new DaemonConfig { Name = "test", ServerUrl = "http://127.0.0.1:1" };
-            listener = new LocalControlServer(config, orch, TestCoordinator(), TestConsentIpc(), NullLogger<LocalControlServer>.Instance);
+            listener = new LocalControlServer(config, orch, TestCoordinator(), TestConsentIpc(), TestStatusIpc(config, orch), NullLogger<LocalControlServer>.Instance);
             await listener.StartAsync(cts.Token);
 
             var sockPath = LocalSocketPaths.Socket("test");
@@ -585,7 +591,7 @@ public partial class AgentOrchestratorVendorTests {
             orch.SeedAgentForTest("flow-1", kind: LaunchKind.ReviewFlow, flowRunId: "flow-7f3a", flowRole: "reviewer");
 
             var config = new DaemonConfig { Name = daemonName, ServerUrl = "http://127.0.0.1:1" };
-            listener = new LocalControlServer(config, orch, TestCoordinator(), TestConsentIpc(), NullLogger<LocalControlServer>.Instance);
+            listener = new LocalControlServer(config, orch, TestCoordinator(), TestConsentIpc(), TestStatusIpc(config, orch), NullLogger<LocalControlServer>.Instance);
             await listener.StartAsync(cts.Token);
 
             var sockPath = LocalSocketPaths.Socket(daemonName);

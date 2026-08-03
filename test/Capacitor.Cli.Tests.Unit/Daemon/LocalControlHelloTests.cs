@@ -70,8 +70,9 @@ public class LocalControlHelloTests {
             new Dictionary<string, IHostedAgentRuntimeFactory>(), new NoopHostLifetime(),
             NullLogger<AgentOrchestrator>.Instance, gate);
 
+        var statusIpc = new DaemonStatusIpc(config, orchestrator, connection, new DaemonStatusNotifier());
         var restart = RestartCoordinator.ForTest(daemonName, daemonName, new NoopRestartStrategy());
-        var server = new LocalControlServer(config, orchestrator, restart, consentIpc, NullLogger<LocalControlServer>.Instance);
+        var server = new LocalControlServer(config, orchestrator, restart, consentIpc, statusIpc, NullLogger<LocalControlServer>.Instance);
         await server.StartAsync(ct);
 
         var sockPath = LocalSocketPaths.Socket(daemonName);
@@ -132,7 +133,7 @@ public class LocalControlHelloTests {
             await Assert.That(dto!.ProtocolVersion).IsEqualTo(1);
             await Assert.That(dto.DaemonVersion).IsNotEmpty();
             await Assert.That(dto.DaemonName).IsEqualTo(h.Config.Name);
-            await Assert.That(dto.Capabilities).IsEquivalentTo(new[] { "consent/1" });
+            await Assert.That(dto.Capabilities).IsEquivalentTo(new[] { "consent/1", "status/1" });
         });
     }
 
@@ -151,7 +152,7 @@ public class LocalControlHelloTests {
             await Assert.That(dto!.ProtocolVersion).IsEqualTo(1);
             await Assert.That(dto.DaemonVersion).IsNotEmpty();
             await Assert.That(dto.DaemonName).IsEqualTo(h.Config.Name);
-            await Assert.That(dto.Capabilities).IsEquivalentTo(new[] { "consent/1" });
+            await Assert.That(dto.Capabilities).IsEquivalentTo(new[] { "consent/1", "status/1" });
         });
     }
 
@@ -173,7 +174,7 @@ public class LocalControlHelloTests {
             await Assert.That(dto!.ProtocolVersion).IsEqualTo(1);
             await Assert.That(dto.DaemonVersion).IsNotEmpty();
             await Assert.That(dto.DaemonName).IsEqualTo(h.Config.Name);
-            await Assert.That(dto.Capabilities).IsEquivalentTo(new[] { "consent/1" });
+            await Assert.That(dto.Capabilities).IsEquivalentTo(new[] { "consent/1", "status/1" });
         });
     }
 

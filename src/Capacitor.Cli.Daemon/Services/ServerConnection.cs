@@ -22,6 +22,12 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
     readonly PendingPermissionRegistry _pendingPermissions  = new();
     readonly PendingAcpInteractionRegistry _pendingAcpInteractions = new();
 
+    // The change-generation counter behind the DaemonStatus push. Optional ctor param so the
+    // existing direct-construction sites (and DI, which resolves an optional parameter to a
+    // registered singleton when one exists) keep compiling unchanged; several test files
+    // subclass ServerConnection calling the 3-arg base, which the trailing default preserves.
+    readonly DaemonStatusNotifier _statusNotifier;
+
     /// <summary>
     /// Every currently-active ACP session↔agent binding this daemon owns, keyed by agentId.
     /// Populated by <see cref="RegisterAcpBinding"/> (right after the initial
@@ -167,9 +173,12 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
         catch (Exception ex) { _logger.LogDebug(ex, "CommandRejected send failed (old server or transient)"); }
     }
 
-    public ServerConnection(DaemonConfig config, ILoggerFactory loggerFactory, ILogger<ServerConnection> logger) {
-        _config = config;
-        _logger = logger;
+    public ServerConnection(
+            DaemonConfig config, ILoggerFactory loggerFactory, ILogger<ServerConnection> logger,
+            DaemonStatusNotifier? statusNotifier = null) {
+        _config          = config;
+        _logger          = logger;
+        _statusNotifier  = statusNotifier ?? new();
 
         _hub = new HubConnectionBuilder()
             .WithUrl(
@@ -453,6 +462,7 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
                     await RegisterDaemonAsync();
                     _connectedTimestamp = Stopwatch.GetTimestamp();
                     LogConnected(_config.Name);
+                    _statusNotifier.Pulse();
 
                     return;
                 } catch (OperationCanceledException) when (ct.IsCancellationRequested) {
@@ -480,6 +490,7 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
     }
 
     async Task OnClosed(Exception? ex) {
+        _statusNotifier.Pulse();
         _gate.MarkUnregistered();
 
         if (_disposed || _ct.IsCancellationRequested) {
@@ -648,6 +659,7 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
     /// </summary>
     Task OnReconnecting(Exception? error) {
         _gate.MarkUnregistered();
+        _statusNotifier.Pulse();
 
         return Task.CompletedTask;
     }
@@ -667,6 +679,7 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
     internal virtual string? CurrentConnectionId => _hub.ConnectionId;
 
     async Task OnReconnected(string? connectionId) {
+        _statusNotifier.Pulse();
         LogReconnected();
         await RegisterDaemonAsync();
         _connectedTimestamp = Stopwatch.GetTimestamp();

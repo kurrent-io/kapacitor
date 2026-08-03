@@ -240,6 +240,12 @@ public static partial class DaemonRunner {
         // through, so a subscriber connected via ConsentSubscribe sees the gate's own pending requests.
         builder.Services.AddSingleton<LaunchConsentIpc>();
 
+        // The DaemonStatus push: ONE notifier singleton shared by ServerConnection (pulses on hub
+        // state transitions) and AgentOrchestrator (pulses on agent mutation) via their optional
+        // ctor params, so a StatusSubscribe waiter sees both kinds of change.
+        builder.Services.AddSingleton<DaemonStatusNotifier>();
+        builder.Services.AddSingleton<DaemonStatusIpc>();
+
         // Local HTTP bridge that fronts the server's permission flow. Registered as a
         // singleton so AgentOrchestrator can read its bound URL at agent-spawn time, AND
         // as a hosted service so its IHostedService lifecycle starts the listener before
