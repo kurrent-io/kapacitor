@@ -25,6 +25,15 @@ public static class KcapBinaryCommand {
     /// must then treat only the literal <c>"kcap"</c> as recognized, never their own
     /// executable: inside <c>kcap-daemon</c>, <see cref="Environment.ProcessPath"/> is the
     /// daemon binary, not the CLI the registrations point at.
+    ///
+    /// <para><b>Accepted limitation (deliberate, no config knob):</b> a hand-rolled layout
+    /// that ships <c>kcap-daemon</c> WITHOUT its sibling <c>kcap</c> resolves null. Every
+    /// official layout (npm platform packages, release archives, the dev build script)
+    /// publishes both binaries into one directory, so such a layout is unsupported rather
+    /// than configurable. The failure direction is safe: an absolute-path registration is
+    /// then merely not recognized as canonical, so the launcher keeps the wrapper duplicate
+    /// in the agent worktree — a wasted resident process, never a lost or suppressed
+    /// registration.</para>
     /// </summary>
     public static string? ResolveCliSibling() {
         var processPath = Environment.ProcessPath;
