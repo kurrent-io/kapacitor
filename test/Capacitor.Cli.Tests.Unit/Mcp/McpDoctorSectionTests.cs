@@ -1,0 +1,146 @@
+using System.Text.Json.Nodes;
+using Capacitor.Cli.Commands;
+
+namespace Capacitor.Cli.Tests.Unit.Mcp;
+
+/// <summary>
+/// The MCP-registrations doctor section, run entirely against fixture files in temp dirs
+/// (never the real ~/.claude.json or harness configs). Pins: the plugin-installed gate, the
+/// structural duplicate-vs-conflict split, --clean removing only canonical duplicates, and
+/// the two-tier stale-path scan (missing binary vs. differs-from-current-resolution).
+/// </summary>
+public class McpDoctorSectionTests {
+    sealed record Fixture(string Dir, string ClaudeConfig, string ClaudeSettings) {
+        public static Fixture Create() {
+            var dir = Directory.CreateTempSubdirectory("kcap-mcpdoctor-").FullName;
+            return new(dir, Path.Combine(dir, ".claude.json"), Path.Combine(dir, "settings.json"));
+        }
+
+        public void InstallPlugin() =>
+            File.WriteAllText(ClaudeSettings, """{ "enabledPlugins": { "kcap@kcap": true } }""");
+    }
+
+    static async Task<(int Issues, string Output)> RunAsync(Fixture f, bool clean = false,
+            IReadOnlyList<McpDoctorSection.RegistrationFile>? files = null,
+            string? codexConfigPath = null, string? nativeBinaryPath = null) {
+        await using var writer = new StringWriter();
+        var issues = await McpDoctorSection.RunAsync(writer, clean, f.ClaudeConfig, f.ClaudeSettings,
+                                                     files ?? [], codexConfigPath, nativeBinaryPath);
+        return (issues, writer.ToString());
+    }
+
+    const string DuplicateAndConflictConfig = """
+        { "mcpServers": {
+            "kcap-flows":    { "command": "kcap", "args": ["mcp","flows"] },
+            "kcap-sessions": { "command": "kcap", "args": ["mcp","sessions"], "env": { "X": "1" } },
+            "other":         { "command": "npx" } },
+          "projects": { "/w/repo": { "mcpServers": {
+            "kcap-review": { "command": "kcap", "args": ["mcp","review"] } } } } }
+        """;
+
+    [Test]
+    public async Task Reports_duplicates_in_both_scopes_and_conflicts_without_mutating() {
+        var f = Fixture.Create();
+        f.InstallPlugin();
+        File.WriteAllText(f.ClaudeConfig, DuplicateAndConflictConfig);
+
+        var (issues, output) = await RunAsync(f);
+
+        await Assert.That(issues).IsEqualTo(3);
+        await Assert.That(output).Contains("duplicate MCP registration 'kcap-flows' (user)");
+        await Assert.That(output).Contains("duplicate MCP registration 'kcap-review' (projects[/w/repo])");
+        await Assert.That(output).Contains("same-named MCP registration 'kcap-sessions'");
+        // Read-only by default (passive doctor must not mutate).
+        await Assert.That(File.ReadAllText(f.ClaudeConfig)).IsEqualTo(DuplicateAndConflictConfig);
+    }
+
+    [Test]
+    public async Task Clean_removes_only_canonical_duplicates_and_preserves_conflicts() {
+        var f = Fixture.Create();
+        f.InstallPlugin();
+        File.WriteAllText(f.ClaudeConfig, DuplicateAndConflictConfig);
+
+        var (_, output) = await RunAsync(f, clean: true);
+
+        await Assert.That(output).Contains("removed 2 duplicate MCP registration(s)");
+        var root = (JsonObject)JsonNode.Parse(File.ReadAllText(f.ClaudeConfig))!;
+        var servers = (JsonObject)root["mcpServers"]!;
+        await Assert.That(servers.ContainsKey("kcap-flows")).IsFalse();     // canonical → removed
+        await Assert.That(servers.ContainsKey("kcap-sessions")).IsTrue();   // conflict → preserved
+        await Assert.That(servers.ContainsKey("other")).IsTrue();           // foreign → preserved
+        var project = (JsonObject)root["projects"]!["/w/repo"]!["mcpServers"]!;
+        await Assert.That(project.ContainsKey("kcap-review")).IsFalse();    // project scope cleaned too
+    }
+
+    [Test]
+    public async Task Without_the_plugin_installed_nothing_is_flagged_or_removed() {
+        var f = Fixture.Create(); // no settings.json → plugin not installed
+        File.WriteAllText(f.ClaudeConfig, DuplicateAndConflictConfig);
+
+        var (issues, output) = await RunAsync(f, clean: true);
+
+        await Assert.That(issues).IsEqualTo(0);
+        await Assert.That(output).Contains("no issues found");
+        await Assert.That(File.ReadAllText(f.ClaudeConfig)).IsEqualTo(DuplicateAndConflictConfig);
+    }
+
+    [Test]
+    public async Task Missing_claude_config_reports_healthy() {
+        var f = Fixture.Create();
+        var (issues, output) = await RunAsync(f);
+        await Assert.That(issues).IsEqualTo(0);
+        await Assert.That(output).Contains("no issues found");
+    }
+
+    [Test]
+    public async Task Stale_scan_distinguishes_missing_binary_from_outdated_resolution() {
+        var f = Fixture.Create();
+        var current = Path.Combine(f.Dir, "kcap");     // exists = the "current" binary
+        var old     = Path.Combine(f.Dir, "old", "kcap"); // exists but differs from current
+        File.WriteAllText(current, "bin");
+        Directory.CreateDirectory(Path.GetDirectoryName(old)!);
+        File.WriteAllText(old, "bin");
+        var missing = Path.Combine(f.Dir, "gone", "kcap"); // never created
+
+        var cursor = Path.Combine(f.Dir, "cursor-mcp.json");
+        File.WriteAllText(cursor, $$"""
+            { "mcpServers": {
+                "kcap-review":   { "command": {{JsonValue.Create(missing).ToJsonString()}}, "args": ["mcp","review"] },
+                "kcap-sessions": { "command": {{JsonValue.Create(old).ToJsonString()}}, "args": ["mcp","sessions"] },
+                "kcap-flows":    { "command": {{JsonValue.Create(current).ToJsonString()}}, "args": ["mcp","flows"] },
+                "my-tool":       { "command": "/does/not/exist/anywhere" } } }
+            """);
+
+        var (issues, output) = await RunAsync(f,
+            files: [new McpDoctorSection.RegistrationFile("Cursor", cursor, "mcpServers")],
+            nativeBinaryPath: current);
+
+        await Assert.That(issues).IsEqualTo(2);
+        await Assert.That(output).Contains("stale MCP registration 'kcap-review'");     // missing file
+        await Assert.That(output).Contains("re-run `kcap setup`");
+        await Assert.That(output).Contains("outdated MCP registration 'kcap-sessions'"); // differs from current
+        await Assert.That(output).DoesNotContain("kcap-flows");                          // current → healthy
+        await Assert.That(output).DoesNotContain("my-tool");                             // non-kcap → never inspected
+    }
+
+    [Test]
+    public async Task Stale_scan_covers_codex_toml_kcap_entries_only() {
+        var f = Fixture.Create();
+        var missing = Path.Combine(f.Dir, "gone", "kcap");
+        var codex = Path.Combine(f.Dir, "config.toml");
+        File.WriteAllText(codex, $"""
+            [mcp_servers.kcap-review]
+            command = "{missing}"
+            args = ["mcp", "review"]
+
+            [mcp_servers.my-tool]
+            command = "/also/gone/my-tool"
+            """);
+
+        var (issues, output) = await RunAsync(f, codexConfigPath: codex);
+
+        await Assert.That(issues).IsEqualTo(1);
+        await Assert.That(output).Contains("stale MCP registration 'kcap-review' (Codex)");
+        await Assert.That(output).DoesNotContain("my-tool");
+    }
+}

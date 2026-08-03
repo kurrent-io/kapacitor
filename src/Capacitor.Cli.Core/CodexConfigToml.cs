@@ -326,6 +326,32 @@ public static class CodexConfigToml {
     /// (<c>Capacitor.Cli.Daemon.Services.CodexMcpInventory</c>), which reports the fully-composed
     /// effective list (config + plugins).
     /// </summary>
+    /// <summary>
+    /// Reads (name, command) pairs from the top-level <c>[mcp_servers]</c> table — the doctor's
+    /// stale-path scan input. Only string commands are returned (Codex has no argv-array shape).
+    /// Read-only; never throws; empty when the file is missing/unreadable/has no table.
+    /// </summary>
+    public static IReadOnlyList<(string Name, string Command)> ReadMcpServerCommands(string? configPath = null) {
+        var path = configPath ?? DefaultConfigPath;
+
+        if (!File.Exists(path)) return [];
+
+        try {
+            var root = TomlSerializer.Deserialize(File.ReadAllText(path), _tomlTypeInfo.TableInfo);
+
+            if (root is null || !root.TryGetValue("mcp_servers", out var v) || v is not TomlTable servers)
+                return [];
+
+            return servers
+                .Where(kv => kv.Value is TomlTable t && t.TryGetValue("command", out var c) && c is string)
+                .Select(kv => (kv.Key, (string)((TomlTable)kv.Value)["command"]))
+                .OrderBy(x => x.Key, StringComparer.Ordinal)
+                .ToArray();
+        } catch {
+            return [];
+        }
+    }
+
     public static IReadOnlyList<string> ReadMcpServerNames(string? configPath = null) {
         var path = configPath ?? DefaultConfigPath;
 
