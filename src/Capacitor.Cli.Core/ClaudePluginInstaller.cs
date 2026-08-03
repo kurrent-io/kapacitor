@@ -66,6 +66,36 @@ public static class ClaudePluginInstaller {
         enabled[key] is JsonValue v && v.TryGetValue<bool>(out var on) && on;
 
     /// <summary>
+    /// True only when the plugin is CURRENTLY effective: an enabled plugin registration in
+    /// <paramref name="settingsPath"/> AND a resolvable payload — the registered marketplace
+    /// directory still ships the plugin's <c>.mcp.json</c>. Distinct from
+    /// <see cref="IsInstalled"/>, which is the refresh gate ("previously installed → refresh
+    /// it") and accepts the version marker alone: a stale marker (manual removal, failed
+    /// refresh, npm re-layout) must never authorize a DESTRUCTIVE decision — doctor's
+    /// duplicate cleanup and the launcher's merge-skip both assume Claude will actually load
+    /// the plugin's servers in place of the entry being suppressed or removed.
+    /// </summary>
+    public static bool IsEffectivelyInstalled(string settingsPath) {
+        try {
+            if (!File.Exists(settingsPath)) return false;
+            if (JsonNode.Parse(File.ReadAllText(settingsPath)) is not JsonObject root) return false;
+
+            if (root["enabledPlugins"] is not JsonObject enabled ||
+                !(HasEnabledFlag(enabled, "kcap@kcap")           ||
+                  HasEnabledFlag(enabled, "kcap@kurrent")        ||
+                  HasEnabledFlag(enabled, "kapacitor@kapacitor") ||
+                  HasEnabledFlag(enabled, "kapacitor@kurrent"))) {
+                return false;
+            }
+        } catch {
+            return false; // malformed settings → nothing provably enabled
+        }
+
+        var marketplace = RegisteredMarketplacePath(settingsPath);
+        return marketplace is not null && File.Exists(Path.Combine(marketplace, ".mcp.json"));
+    }
+
+    /// <summary>
     /// The directory Claude actually loads the kcap plugin from —
     /// <c>extraKnownMarketplaces.kcap.source.path</c> in <paramref name="settingsPath"/> —
     /// or null when nothing is registered or the file is unreadable. Distinct from where the

@@ -65,8 +65,10 @@ static class McpDoctorSection {
                                                       string claudeConfigPath, string claudeSettingsPath,
                                                       string? nativeBinaryPath) {
         if (!File.Exists(claudeConfigPath)) return 0;
-        // Without the plugin nothing is shadowed — a user-scope entry is the only registration.
-        if (!ClaudePluginInstaller.IsInstalled(claudeSettingsPath)) return 0;
+        // Without an EFFECTIVE plugin (enabled registration + resolvable payload — never the
+        // version marker alone) nothing is shadowed: the user-scope entry is the only
+        // registration, and cleanup would delete the servers outright.
+        if (!ClaudePluginInstaller.IsEffectivelyInstalled(claudeSettingsPath)) return 0;
 
         string json;
         try { json = await File.ReadAllTextAsync(claudeConfigPath); } catch { return 0; }

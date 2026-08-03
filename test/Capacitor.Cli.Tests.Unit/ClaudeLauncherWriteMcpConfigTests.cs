@@ -126,11 +126,19 @@ public class ClaudeLauncherWriteMcpConfigTests {
     }
 
     static void MarkClaudePluginInstalled(string configDir) {
-        // ClaudePluginInstaller.IsInstalled recognises an enabledPlugins["kcap@kcap"] flag in
-        // the settings file — with CLAUDE_CONFIG_DIR set that is $CLAUDE_CONFIG_DIR/settings.json.
+        // The merge-skip gates on ClaudePluginInstaller.IsEffectivelyInstalled: an enabled
+        // registration in settings.json ($CLAUDE_CONFIG_DIR/settings.json here) AND a registered
+        // marketplace dir that still ships the plugin payload (.mcp.json).
+        var marketplace = Path.Combine(configDir, "plugin");
+        Directory.CreateDirectory(marketplace);
+        File.WriteAllText(Path.Combine(marketplace, ".mcp.json"), "{}");
         File.WriteAllText(
             Path.Combine(configDir, "settings.json"),
-            """{ "enabledPlugins": { "kcap@kcap": true } }""");
+            $$"""
+            { "enabledPlugins": { "kcap@kcap": true },
+              "extraKnownMarketplaces": { "kcap": { "source": {
+                  "source": "local", "path": {{JsonValue.Create(marketplace).ToJsonString()}} } } } }
+            """);
     }
 
     static JsonObject KcapEntry(string suffix, string command = "kcap") => new() {
@@ -181,6 +189,51 @@ public class ClaudeLauncherWriteMcpConfigTests {
             var servers = ReadWorktreeMcpServers(worktree);
             await Assert.That(servers).IsNotNull();
             await Assert.That(servers!.ContainsKey("kcap-flows")).IsTrue();
+        });
+    }
+
+    /// <summary>
+    /// A stale <c>.kcap-plugin-version</c> marker (manual removal, failed refresh, npm
+    /// re-layout) satisfies the refresh gate but must NOT authorize the merge-skip: without a
+    /// loadable plugin payload the copy is the user's only registration of the server.
+    /// </summary>
+    [Test]
+    public async Task Version_marker_alone_does_not_authorize_the_merge_skip() {
+        await RunWithRelocatedConfigAsync(async (configDir, sourceRepo, worktree) => {
+            File.WriteAllText(Path.Combine(configDir, ".kcap-plugin-version"), "9.9.9");
+            WriteClaudeJsonWithServers(configDir, ClaudeLauncher.NormalizeClaudeProjectKey(sourceRepo),
+                new JsonObject { ["kcap-flows"] = KcapEntry("flows") });
+
+            ClaudeLauncher.WriteMcpConfig(sourceRepo, worktree);
+
+            var servers = ReadWorktreeMcpServers(worktree);
+            await Assert.That(servers).IsNotNull();
+            await Assert.That(servers!.ContainsKey("kcap-flows")).IsTrue(); // still merged
+        });
+    }
+
+    /// <summary>
+    /// Inside the daemon Environment.ProcessPath is kcap-daemon, so recognizing a canonical
+    /// absolute-path entry needs the CLI path from DaemonConfig — without it, exactly the
+    /// duplicate this skip exists to remove would be copied into the worktree.
+    /// </summary>
+    [Test]
+    public async Task Skips_canonical_absolute_path_entry_when_the_cli_path_is_supplied() {
+        await RunWithRelocatedConfigAsync(async (configDir, sourceRepo, worktree) => {
+            MarkClaudePluginInstalled(configDir);
+            var cliPath = Path.Combine(configDir, "bin", "kcap"); // deterministic, never this test host
+            WriteClaudeJsonWithServers(configDir, ClaudeLauncher.NormalizeClaudeProjectKey(sourceRepo),
+                new JsonObject {
+                    ["kcap-flows"]    = KcapEntry("flows", cliPath),          // canonical at the CLI path → skipped
+                    ["kcap-sessions"] = KcapEntry("sessions", "/other/kcap")  // different binary → conflict, kept
+                });
+
+            ClaudeLauncher.WriteMcpConfig(sourceRepo, worktree, nativeKcapPath: cliPath);
+
+            var servers = ReadWorktreeMcpServers(worktree);
+            await Assert.That(servers).IsNotNull();
+            await Assert.That(servers!.ContainsKey("kcap-flows")).IsFalse();
+            await Assert.That(servers.ContainsKey("kcap-sessions")).IsTrue();
         });
     }
 }

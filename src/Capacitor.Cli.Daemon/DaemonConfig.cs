@@ -9,6 +9,16 @@ public class DaemonConfig {
     public int      MaxConcurrentAgents { get; set; } = 5;
 
     /// <summary>
+    /// Absolute path of the native <c>kcap</c> CLI binary, resolved as the daemon's sibling
+    /// (<see cref="Capacitor.Cli.Core.Mcp.KcapBinaryCommand.ResolveCliSibling"/>) — inside the
+    /// daemon, <see cref="Environment.ProcessPath"/> is <c>kcap-daemon</c>, NOT the binary that
+    /// generated MCP registrations point at. Used to recognize a canonical absolute-path kcap
+    /// entry (e.g. <see cref="Services.ClaudeLauncher"/>'s worktree merge-skip). Null when no
+    /// sibling resolves; consumers then recognize only the literal <c>"kcap"</c>.
+    /// </summary>
+    public string? KcapCliPath { get; set; } = Core.Mcp.KcapBinaryCommand.ResolveCliSibling();
+
+    /// <summary>
     /// Phase B (D3): backstop lifetime/idle bounds for a hosted review-flow reviewer, enforced
     /// in the daemon heartbeat. A reviewer whose run went terminal on the server without the daemon
     /// hearing about it (or whose driver vanished) is reaped here so it can't hold a slot forever.

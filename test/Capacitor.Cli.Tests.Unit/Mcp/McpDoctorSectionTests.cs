@@ -16,8 +16,23 @@ public class McpDoctorSectionTests {
             return new(dir, Path.Combine(dir, ".claude.json"), Path.Combine(dir, "settings.json"));
         }
 
-        public void InstallPlugin() =>
-            File.WriteAllText(ClaudeSettings, """{ "enabledPlugins": { "kcap@kcap": true } }""");
+        /// <summary>An EFFECTIVE plugin install: enabled registration + a marketplace dir that
+        /// ships the payload — what the destructive duplicate audit requires.</summary>
+        public void InstallPlugin() {
+            var marketplace = Path.Combine(Dir, "plugin");
+            Directory.CreateDirectory(marketplace);
+            File.WriteAllText(Path.Combine(marketplace, ".mcp.json"), "{}");
+            File.WriteAllText(ClaudeSettings, $$"""
+                { "enabledPlugins": { "kcap@kcap": true },
+                  "extraKnownMarketplaces": { "kcap": { "source": {
+                      "source": "local", "path": {{JsonValue.Create(marketplace).ToJsonString()}} } } } }
+                """);
+        }
+
+        /// <summary>The refresh gate's weakest signal: a version marker with no enabled
+        /// registration and no payload — must never authorize the duplicate audit.</summary>
+        public void WriteStaleMarkerOnly() =>
+            File.WriteAllText(Path.Combine(Dir, ".kcap-plugin-version"), "9.9.9");
     }
 
     static async Task<(int Issues, string Output)> RunAsync(Fixture f, bool clean = false,
@@ -81,6 +96,32 @@ public class McpDoctorSectionTests {
 
         await Assert.That(issues).IsEqualTo(0);
         await Assert.That(output).Contains("no issues found");
+        await Assert.That(File.ReadAllText(f.ClaudeConfig)).IsEqualTo(DuplicateAndConflictConfig);
+    }
+
+    [Test]
+    public async Task Stale_version_marker_alone_never_authorizes_flagging_or_cleanup() {
+        var f = Fixture.Create();
+        f.WriteStaleMarkerOnly(); // satisfies the refresh gate (IsInstalled) but is not effective
+        File.WriteAllText(f.ClaudeConfig, DuplicateAndConflictConfig);
+
+        var (issues, output) = await RunAsync(f, clean: true);
+
+        await Assert.That(issues).IsEqualTo(0);
+        await Assert.That(output).Contains("no issues found");
+        await Assert.That(File.ReadAllText(f.ClaudeConfig)).IsEqualTo(DuplicateAndConflictConfig);
+    }
+
+    [Test]
+    public async Task Enabled_registration_without_a_resolvable_payload_never_authorizes_cleanup() {
+        var f = Fixture.Create();
+        f.InstallPlugin();
+        Directory.Delete(Path.Combine(f.Dir, "plugin"), recursive: true); // npm re-layout: payload gone
+        File.WriteAllText(f.ClaudeConfig, DuplicateAndConflictConfig);
+
+        var (issues, _) = await RunAsync(f, clean: true);
+
+        await Assert.That(issues).IsEqualTo(0);
         await Assert.That(File.ReadAllText(f.ClaudeConfig)).IsEqualTo(DuplicateAndConflictConfig);
     }
 

@@ -61,7 +61,7 @@ internal sealed partial class ClaudeLauncher(
         }
 
         try {
-            WriteMcpConfig(ctx.SourceRepoPath, ctx.Worktree.Path);
+            WriteMcpConfig(ctx.SourceRepoPath, ctx.Worktree.Path, config.KcapCliPath);
         } catch (Exception ex) {
             LogMcpConfigFailed(ex, ctx.AgentId);
         }
@@ -598,7 +598,8 @@ internal sealed partial class ClaudeLauncher(
         }
     }
 
-    internal static void WriteMcpConfig(string sourceRepoPath, string worktreePath) {
+    internal static void WriteMcpConfig(string sourceRepoPath, string worktreePath,
+                                        string? nativeKcapPath = null) {
         var claudeJsonPath = ClaudePaths.UserConfigJson();
 
         if (!File.Exists(claudeJsonPath)) return;
@@ -610,8 +611,8 @@ internal sealed partial class ClaudeLauncher(
         // the raw path for entries written by older kcap builds or by hand.
         var sourceKey = NormalizeClaudeProjectKey(sourceRepoPath);
 
-        var servers = root?["projects"]?[sourceKey]?["mcpServers"]?.AsObject()
-         ?? root?["projects"]?[sourceRepoPath]?["mcpServers"]?.AsObject();
+        var projectKey = root?["projects"]?[sourceKey]?["mcpServers"] is not null ? sourceKey : sourceRepoPath;
+        var servers = root?["projects"]?[projectKey]?["mcpServers"]?.AsObject();
 
         if (servers is null || servers.Count == 0) return;
 
@@ -632,13 +633,19 @@ internal sealed partial class ClaudeLauncher(
         // in the agent session. Skip those — but STRUCTURALLY, never by name alone: a
         // divergent same-name entry is a user customization and follows the conflict policy
         // (merged like any other server; same name does not imply ownership). Gated on the
-        // plugin actually being installed: without it the copy is the only registration.
-        var pluginInstalled = ClaudePluginInstaller.IsInstalled(ClaudePaths.UserSettings);
+        // plugin being EFFECTIVELY installed (enabled registration + resolvable payload,
+        // never the version marker alone): suppressing an entry is destructive, so a stale
+        // marker must not authorize it — without a loadable plugin the copy is the only
+        // registration.
+        var pluginInstalled = ClaudePluginInstaller.IsEffectivelyInstalled(ClaudePaths.UserSettings);
 
         // Add servers from ~/.claude.json (don't overwrite repo-committed ones)
         foreach (var (name, value) in servers) {
+            // nativeKcapPath comes from DaemonConfig (the CLI binary sibling of this daemon):
+            // Environment.ProcessPath here would be kcap-daemon, misclassifying a canonical
+            // absolute-path entry as divergent and copying the duplicate anyway.
             if (pluginInstalled &&
-                McpRegistrationAudit.IsCanonicalKcapEntry(name, value, Environment.ProcessPath))
+                McpRegistrationAudit.IsCanonicalKcapEntry(name, value, nativeKcapPath, projectKey))
                 continue;
 
             if (!merged.ContainsKey(name) && value is not null) {
