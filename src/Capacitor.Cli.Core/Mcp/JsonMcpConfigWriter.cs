@@ -20,21 +20,34 @@ public static class JsonMcpConfigWriter {
                                   Func<string?>? resolveBinaryPath = null) {
         var command = KcapBinaryCommand.Resolve(resolveBinaryPath);
         var written = new List<KeyValuePair<string, JsonNode?>>();
+        var adopted = false;
 
         var change = Update(configPath, root => {
             var block   = GetOrAddObject(root, shape.BlockKey); // throws on wrong-type → Failed
             var changed = false;
             written.Clear(); // Update may retry the mutate in principle — never double-record
+            adopted = false;
 
             foreach (var s in servers) {
                 var rendered = RenderEntry(s, shape, cwd, command);
                 if (block[s.Name] is JsonNode existing) {
-                    if (!marker.Owns(configPath, s.Name, existing)) continue;   // user look-alike — never clobber
-                    written.Add(new(s.Name, rendered));                         // kcap-owned → keep recorded
-                    if (JsonNode.DeepEquals(existing, rendered)) continue;      // identical → idempotent no-op
-                    block[s.Name] = rendered;                                   // stale/old shape → heal to canonical
-                    changed = true;
-                    continue;
+                    if (marker.Owns(configPath, s.Name, existing)) {
+                        written.Add(new(s.Name, rendered));                     // kcap-owned → keep recorded
+                        if (JsonNode.DeepEquals(existing, rendered)) continue;  // identical → idempotent no-op
+                        block[s.Name] = rendered;                               // stale/old shape → heal to canonical
+                        changed = true;
+                        continue;
+                    }
+                    // Unowned but EXACTLY the entry this register would write: adopt it. This
+                    // is the recovery lane for config-committed-but-marker-failed (a crash or
+                    // marker-write failure after the config landed): re-claiming a shape
+                    // indistinguishable from our own write strands nothing user-authored —
+                    // uninstall would remove only what registration itself would have written.
+                    if (JsonNode.DeepEquals(existing, rendered)) {
+                        written.Add(new(s.Name, rendered));
+                        adopted = true;
+                    }
+                    continue;                                                   // divergent user look-alike — never clobber
                 }
                 block[s.Name] = rendered;                                       // missing → add
                 written.Add(new(s.Name, rendered));
@@ -48,7 +61,17 @@ public static class JsonMcpConfigWriter {
         // the CodexConfigToml crash ordering): a crash between the two leaks an unowned entry,
         // which registration and uninstall deliberately preserve, whereas the reverse order
         // could claim (fingerprint) a shape that never reached disk and strand healing.
-        if (change == Change.Updated && written.Count > 0) marker.Record(configPath, written);
+        // Adoption records even on an Unchanged config (that IS the marker-only repair).
+        if ((change == Change.Updated || (change == Change.Unchanged && adopted)) && written.Count > 0) {
+            // A marker failure must never fail the caller: the config — the user-visible
+            // artifact — already committed, and setup/plugin install must not report a
+            // registration that IS in place as a hard failure (never-fails-install contract).
+            // Degraded ownership self-heals: the adoption lane above re-records it on the
+            // next register/refresh pass, because the committed entries still match the
+            // canonical shape it renders.
+            try { marker.Record(configPath, written); }
+            catch { /* degraded: ownership heals via adoption on the next pass */ }
+        }
         return change;
     }
 

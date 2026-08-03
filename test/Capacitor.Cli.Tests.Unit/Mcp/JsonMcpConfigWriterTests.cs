@@ -313,6 +313,63 @@ public class JsonMcpConfigWriterTests {
         await Assert.That(((JsonObject)JsonNode.Parse(File.ReadAllText(path))!).ContainsKey("mcpServers")).IsFalse();
     }
 
+    // ── marker-failure containment + adoption recovery ──────────────────────────
+
+    sealed class ThrowingMarker : IMcpMarker {
+        public bool Owns(string cfg, string name, JsonNode entry) => false;
+        public void Record(string cfg, IReadOnlyList<KeyValuePair<string, JsonNode?>> entries) =>
+            throw new IOException("marker volume is read-only");
+        public IEnumerable<string> Owned(string cfg) => [];
+        public void Clear(string cfg) { }
+    }
+
+    /// <summary>
+    /// The marker write runs after Update's guarded boundary, so it must never throw through
+    /// the caller: setup/plugin install must not report a registration that IS committed as a
+    /// hard failure (never-fails-install contract). The config result stands; ownership is
+    /// degraded and self-heals via adoption on the next pass.
+    /// </summary>
+    [Test]
+    public async Task Register_swallows_a_marker_write_failure_and_keeps_the_config_result() {
+        var path = TempConfig();
+
+        var change = JsonMcpConfigWriter.Register(path, KcapMcpServers.All, McpConfigShape.Standard, null,
+                                                  new ThrowingMarker(), resolveBinaryPath: () => "/opt/a/kcap");
+
+        await Assert.That(change).IsEqualTo(JsonMcpConfigWriter.Change.Updated); // no throw, config committed
+        var servers = (JsonObject)Read(path)["mcpServers"]!;
+        await Assert.That(servers.ContainsKey("kcap-review")).IsTrue();
+    }
+
+    /// <summary>
+    /// The recovery story for config-committed-but-marker-failed: a canonical entry left
+    /// unowned (marker lost/never written) is RE-ADOPTED by the next register pass — the
+    /// marker is re-recorded without touching the config — so healing and uninstall work again.
+    /// </summary>
+    [Test]
+    public async Task Register_readopts_a_committed_but_unmarked_canonical_entry() {
+        var dir = Directory.CreateTempSubdirectory("kcap-adopt-").FullName;
+        var path = Path.Combine(dir, "mcp.json");
+        var markerFile = Path.Combine(dir, "marker.json");
+        var marker = new McpMarker("test", _ => markerFile);
+
+        JsonMcpConfigWriter.Register(path, KcapMcpServers.All, McpConfigShape.Standard, null, marker,
+                                     resolveBinaryPath: () => "/opt/a/kcap");
+        File.Delete(markerFile); // simulate the marker write having failed/crashed post-commit
+        await Assert.That(marker.Owned(path)).IsEmpty();
+
+        var again = JsonMcpConfigWriter.Register(path, KcapMcpServers.All, McpConfigShape.Standard, null, marker,
+                                                 resolveBinaryPath: () => "/opt/a/kcap");
+
+        await Assert.That(again).IsEqualTo(JsonMcpConfigWriter.Change.Unchanged); // config untouched…
+        await Assert.That(marker.Owned(path)).Contains("kcap-review");            // …ownership re-acquired
+
+        // And the re-acquired ownership is REAL: uninstall removes the absolute-path entries.
+        var removed = JsonMcpConfigWriter.Unregister(path, McpConfigShape.Standard, marker);
+        await Assert.That(removed).IsEqualTo(JsonMcpConfigWriter.Change.Updated);
+        await Assert.That(((JsonObject)JsonNode.Parse(File.ReadAllText(path))!).ContainsKey("mcpServers")).IsFalse();
+    }
+
     [Test]
     public async Task Register_preserves_a_genuine_user_edit_of_a_previously_owned_entry() {
         var dir = Directory.CreateTempSubdirectory("kcap-useredit-").FullName;
