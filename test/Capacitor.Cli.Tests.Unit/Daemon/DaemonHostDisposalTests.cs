@@ -3,6 +3,8 @@ using Capacitor.Cli.Daemon;
 using Capacitor.Cli.Daemon.Pty.Unix;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Capacitor.Cli.Tests.Unit.Daemon;
 
@@ -62,5 +64,79 @@ public class DaemonHostDisposalTests {
         var builder = Host.CreateApplicationBuilder();
         builder.Services.AddSingleton<UnixSpawnerThread>();
         return builder.Build();
+    }
+
+    // ---- Teardown coordinator (DaemonRunner.RunTeardownAsync) ----
+    // The daemon's finally-block teardown must never let one failing step (e.g. a disposal
+    // throwing ObjectDisposedException) skip the later steps: under NativeAOT an escaped
+    // teardown exception aborts the process (SIGABRT), and a skipped host-dispose leaves the
+    // DI-owned UnixSpawnerThread's foreground thread parked forever.
+
+    /// <summary>The production teardown step names, in the load-bearing order (explicit
+    /// dispose before host stop — spawner-thread retirement, pinned by the tests above).</summary>
+    static readonly string[] ProductionSteps =
+        ["daemon-lock", "orchestrator", "server-connection", "host-stop", "host-dispose"];
+
+    sealed class CaptureLogger : ILogger {
+        public List<string> Messages { get; } = [];
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(LogLevel logLevel) => true;
+        public void Log<TState>(
+                LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+                Func<TState, Exception?, string> formatter)
+            => Messages.Add(formatter(state, exception));
+    }
+
+    [Test]
+    public async Task Teardown_steps_run_in_the_exact_given_order_and_report_success() {
+        var ran = new List<string>();
+
+        var steps = new List<(string Name, Func<ValueTask> Action)>();
+
+        foreach (var name in ProductionSteps) {
+            steps.Add((name, () => { ran.Add(name); return ValueTask.CompletedTask; }));
+        }
+
+        var ok = await DaemonRunner.RunTeardownAsync(NullLogger.Instance, steps);
+
+        await Assert.That(ok).IsTrue();
+        await Assert.That(string.Join(",", ran)).IsEqualTo(string.Join(",", ProductionSteps));
+    }
+
+    [Test]
+    [Arguments(0)]
+    [Arguments(1)]
+    [Arguments(2)]
+    [Arguments(3)]
+    [Arguments(4)]
+    public async Task A_throwing_step_at_any_position_does_not_prevent_later_steps(int throwAt) {
+        var ran = new List<string>();
+        var log = new CaptureLogger();
+
+        var steps = new List<(string Name, Func<ValueTask> Action)>();
+
+        for (var i = 0; i < ProductionSteps.Length; i++) {
+            var name = ProductionSteps[i];
+            var idx  = i;
+
+            steps.Add((name, () => {
+                if (idx == throwAt) throw new ObjectDisposedException(name);
+
+                ran.Add(name);
+
+                return ValueTask.CompletedTask;
+            }));
+        }
+
+        var ok = await DaemonRunner.RunTeardownAsync(log, steps);
+
+        // Every step after (and before) the throwing one still ran, in order.
+        await Assert.That(ok).IsFalse();
+        await Assert.That(string.Join(",", ran))
+            .IsEqualTo(string.Join(",", ProductionSteps.Where((_, i) => i != throwAt)));
+
+        // The failing step is named in the log so an operator can tell WHICH disposal broke.
+        await Assert.That(log.Messages.Any(m =>
+            m.Contains($"Teardown step '{ProductionSteps[throwAt]}' failed", StringComparison.Ordinal))).IsTrue();
     }
 }

@@ -521,11 +521,33 @@ public static partial class DaemonRunner {
             LogWaitForShutdownReturned(logger);
         } finally {
             LogEnteringCleanup(logger);
-            daemonLock.Dispose();
-            await orchestrator.DisposeAsync();
-            await connection.DisposeAsync();
-            await host.StopAsync();
 
+            // Each teardown step runs through RunTeardownAsync so a throw (e.g. a disposal
+            // ObjectDisposedException) is logged and contained instead of escaping this finally —
+            // under NativeAOT an escaped teardown exception aborts the process (SIGABRT) — and so
+            // every later step still runs (a skipped host-dispose would leave the DI-owned
+            // UnixSpawnerThread's foreground thread parked forever). Do NOT reorder the steps:
+            // the explicit-dispose-before-host-stop sequence is load-bearing (spawner-thread
+            // retirement, pinned by DaemonHostDisposalTests).
+            //
+            // LIMITATION: the coordinator contains a throw from each STEP, but it cannot make the
+            // DI container's own dispose walk (inside DisposeHostAsync) resilient — a tracked
+            // singleton whose Dispose/DisposeAsync throws still aborts the container's INTERNAL
+            // walk partway, silently skipping the remaining singletons. The helper prevents the
+            // process abort, not partial DI disposal; each disposable must still contain its own
+            // failures (ServerConnection and AgentOrchestrator now do).
+            //
+            // Structural double-teardown sweep (explicit dispose here + a second framework-driven
+            // dispose of the SAME instance) and why each shape is safe today:
+            //   - ServerConnection / AgentOrchestrator: run-once dispose guards (this change).
+            //   - DaemonLock: disposed explicitly here AND DI-tracked; its Dispose is
+            //     idempotent (releases the handle once, subsequent calls no-op).
+            //   - RestartCoordinator / LocalControlServer: concrete singleton + same-instance
+            //     AddHostedService registration — the host stops them once and the container
+            //     disposes the single instance once; BackgroundService.Dispose is safe to
+            //     re-enter under the current Microsoft.Extensions.Hosting behavior (it only
+            //     cancels/disposes its stopping CTS) — a framework-version assumption.
+            //
             // host.StopAsync() only STOPS IHostedServices — it does NOT dispose the
             // ServiceProvider, so a plain AddSingleton<T>() IDisposable (e.g.
             // UnixSpawnerThread, whose foreground, non-background OS thread parks
@@ -534,7 +556,20 @@ public static partial class DaemonRunner {
             // and therefore every registered IDisposable singleton — so it must run
             // after StopAsync on every shutdown path or the spawner thread's foreground
             // thread keeps the process alive past WaitForShutdownAsync forever.
-            await DisposeHostAsync(host);
+            var allStepsSucceeded = await RunTeardownAsync(logger, [
+                ("daemon-lock",       () => { daemonLock.Dispose(); return ValueTask.CompletedTask; }),
+                ("orchestrator",      () => orchestrator.DisposeAsync()),
+                ("server-connection", () => connection.DisposeAsync()),
+                ("host-stop",         async () => await host.StopAsync()),
+                ("host-dispose",      async () => await DisposeHostAsync(host))
+            ]);
+
+            // A partial teardown failure is summarized but deliberately does NOT change the exit
+            // code: the process was already exiting (normally 0), and turning a contained cleanup
+            // fault into a non-zero exit would make supervisors (systemd/launchd restart-on-
+            // failure) relaunch a daemon the user just stopped.
+            if (!allStepsSucceeded) LogTeardownPartialFailure(logger);
+
             LogCleanupCompleted(logger);
         }
 
@@ -568,6 +603,29 @@ public static partial class DaemonRunner {
         } else {
             host.Dispose();
         }
+    }
+
+    /// <summary>
+    /// Teardown coordinator for the shutdown finally-block: runs each named step in the given
+    /// order, logging and containing any throw so every later step still runs and nothing can
+    /// escape into the NativeAOT unhandled path (which calls <c>abort()</c>). Returns whether
+    /// ALL steps succeeded so the caller can log a summary on partial failure. <c>internal</c>
+    /// so <c>DaemonHostDisposalTests</c> can pin the order/containment contract directly.
+    /// </summary>
+    internal static async Task<bool> RunTeardownAsync(
+            ILogger logger, IReadOnlyList<(string Name, Func<ValueTask> Action)> steps) {
+        var allSucceeded = true;
+
+        foreach (var (name, action) in steps) {
+            try {
+                await action();
+            } catch (Exception ex) {
+                allSucceeded = false;
+                LogTeardownStepFailed(logger, ex, name);
+            }
+        }
+
+        return allSucceeded;
     }
 
     /// <summary>
@@ -824,6 +882,12 @@ public static partial class DaemonRunner {
 
     [LoggerMessage(Level = LogLevel.Information, Message = "Cleanup: completed, daemon exiting")]
     static partial void LogCleanupCompleted(ILogger logger);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Teardown step '{Step}' failed; continuing shutdown")]
+    static partial void LogTeardownStepFailed(ILogger logger, Exception ex, string step);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Cleanup: one or more teardown steps failed (see warnings above); daemon exiting anyway with its normal exit code")]
+    static partial void LogTeardownPartialFailure(ILogger logger);
 
     [LoggerMessage(Level = LogLevel.Critical, Message = "AppDomain.UnhandledException (terminating={IsTerminating})")]
     static partial void LogUnhandledException(ILogger logger, Exception ex, bool isTerminating);
