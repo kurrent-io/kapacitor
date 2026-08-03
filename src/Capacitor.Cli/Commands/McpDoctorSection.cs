@@ -123,14 +123,22 @@ static class McpDoctorSection {
     /// there would silently drop their update. The write is an atomic sibling-rename that preserves
     /// the target's Unix mode (a 0600 config must not come back 0644; new files default owner-only).
     /// </summary>
+    /// <param name="afterReReadForTesting">Test hook, invoked INSIDE the config lock after the
+    /// snapshot re-check passes and before the write — lets a test park the commit while it
+    /// proves a concurrent kcap writer blocks on the same lock. Never set in production.</param>
     internal static CleanOutcome TryCleanClaudeConfig(string claudeConfigPath, string snapshotJson,
-                                                      string? nativeBinaryPath, out string? error) {
+                                                      string? nativeBinaryPath, out string? error,
+                                                      Action? afterReReadForTesting = null) {
         error = null;
         try {
-            using var _ = AcquireClaudeConfigLock(claudeConfigPath);
+            // The shared cross-process lock every kcap writer of this file takes
+            // (ClaudeLauncher's trust write included) — see ConfigFileLock.
+            using var _ = ConfigFileLock.Acquire(claudeConfigPath);
 
             if (!string.Equals(File.ReadAllText(claudeConfigPath), snapshotJson, StringComparison.Ordinal))
                 return CleanOutcome.Conflicted;
+
+            afterReReadForTesting?.Invoke();
 
             var cleaned = McpRegistrationAudit.RemoveClaudeDuplicates(snapshotJson, nativeBinaryPath);
             WriteAtomicPreservingMode(claudeConfigPath, cleaned);
@@ -138,32 +146,6 @@ static class McpDoctorSection {
         } catch (Exception ex) {
             error = ex.Message;
             return CleanOutcome.Failed;
-        }
-    }
-
-    /// <summary>Cross-process serialization among kcap writers of one Claude config file —
-    /// the same named-mutex shape as <c>CodexConfigToml.AcquireConfigLock</c>.</summary>
-    static IDisposable AcquireClaudeConfigLock(string claudeConfigPath) {
-        var hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
-            System.Text.Encoding.UTF8.GetBytes(System.IO.Path.GetFullPath(claudeConfigPath)))).ToLowerInvariant();
-        var mutex = new Mutex(false, "kcap-claude-config-" + hash);
-        try {
-            try {
-                if (!mutex.WaitOne(TimeSpan.FromSeconds(10)))
-                    throw new TimeoutException("Timed out waiting for another kcap Claude configuration update.");
-            } catch (AbandonedMutexException) {
-                // The prior writer died while holding the lock; ownership transfers to us.
-            }
-            return new MutexLease(mutex);
-        } catch {
-            mutex.Dispose();
-            throw;
-        }
-    }
-
-    sealed class MutexLease(Mutex mutex) : IDisposable {
-        public void Dispose() {
-            try { mutex.ReleaseMutex(); } finally { mutex.Dispose(); }
         }
     }
 
@@ -189,7 +171,14 @@ static class McpDoctorSection {
             using (var stream = new FileStream(tmp, options))
             using (var writer = new StreamWriter(stream))
                 writer.Write(content);
-            File.Move(tmp, path, overwrite: true);
+            if (OperatingSystem.IsWindows()) {
+                // File.Replace (ReplaceFile semantics) preserves the DESTINATION's ACL and
+                // attributes; Move(overwrite) would publish the temp file's inherited DACL
+                // over an explicitly-restricted config ACL.
+                File.Replace(tmp, path, destinationBackupFileName: null);
+            } else {
+                File.Move(tmp, path, overwrite: true);
+            }
         } catch {
             try { File.Delete(tmp); } catch { /* best-effort */ }
             throw;

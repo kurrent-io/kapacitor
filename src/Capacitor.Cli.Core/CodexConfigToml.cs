@@ -606,20 +606,11 @@ public static class CodexConfigToml {
     static IDisposable AcquireConfigLock(string canonicalConfigPath) {
         EnsureParentDirectory(canonicalConfigPath);
         RejectSymlinkComponents(canonicalConfigPath);
-        var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonicalConfigPath))).ToLowerInvariant();
-        var mutex = new Mutex(false, "kcap-codex-config-" + hash);
-        try {
-            try {
-                if (!mutex.WaitOne(TimeSpan.FromSeconds(10)))
-                    throw new TimeoutException("Timed out waiting for another kcap Codex configuration update.");
-            } catch (AbandonedMutexException) {
-                // The prior writer died while holding the lock; ownership transfers to us.
-            }
-            return new MutexLease(mutex);
-        } catch {
-            mutex.Dispose();
-            throw;
-        }
+        // Shared cross-process lock helper (Global\ + current-user DACL on Windows). This
+        // replaced a bare "kcap-codex-config-<hash>" mutex, which was session-local on
+        // Windows — a service-session daemon and the login-session CLI never excluded each
+        // other — and open to same-session squatting by other users.
+        return ConfigFileLock.Acquire(canonicalConfigPath);
     }
 
     static void SetOwnerOnly(string path) {
@@ -640,12 +631,6 @@ public static class CodexConfigToml {
             writer.Write(content);
         // Defense in depth for platforms/filesystems that ignore the create mode.
         SetOwnerOnly(path);
-    }
-
-    sealed class MutexLease(Mutex mutex) : IDisposable {
-        public void Dispose() {
-            try { mutex.ReleaseMutex(); } finally { mutex.Dispose(); }
-        }
     }
 
     /// <summary>

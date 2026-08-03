@@ -216,6 +216,42 @@ public class ClaudeLauncherWriteMcpConfigTests {
     }
 
     /// <summary>
+    /// ALL kcap writers of ~/.claude.json share one cross-process lock (ConfigFileLock): the
+    /// daemon's trust write must not be able to commit between doctor --clean's inside-lock
+    /// re-read and its rename, where the rename would silently overwrite it. The doctor is
+    /// parked inside its lock via a test hook; the trust write started there must block until
+    /// the clean commits, and then land ON TOP of the cleaned file — both changes survive.
+    /// Without the trust writer taking the lock, it completes inside the parked window and the
+    /// doctor's rename deterministically erases it.
+    /// </summary>
+    [Test]
+    public async Task Trust_write_during_a_parked_doctor_clean_cannot_be_lost() {
+        await RunWithRelocatedConfigAsync(async (configDir, sourceRepo, worktree) => {
+            var cfgPath  = Path.Combine(configDir, ".claude.json");
+            var snapshot = """{ "mcpServers": { "kcap-flows": { "command": "kcap", "args": ["mcp","flows"] } } }""";
+            File.WriteAllText(cfgPath, snapshot);
+
+            Task? trust = null;
+            var outcome = Capacitor.Cli.Commands.McpDoctorSection.TryCleanClaudeConfig(
+                cfgPath, snapshot, null, out _,
+                afterReReadForTesting: () => {
+                    trust = Task.Run(() => ClaudeLauncher.TrustWorktreeInClaudeConfig(worktree));
+                    // With the shared lock the trust writer blocks here (this thread holds the
+                    // lock), so the bounded wait elapses. Without it, the trust write finishes
+                    // NOW, and the doctor's rename below deterministically overwrites it.
+                    trust.Wait(TimeSpan.FromSeconds(2));
+                });
+            await trust!;
+
+            await Assert.That(outcome).IsEqualTo(Capacitor.Cli.Commands.McpDoctorSection.CleanOutcome.Cleaned);
+            var root = (JsonObject)JsonNode.Parse(File.ReadAllText(cfgPath))!;
+            await Assert.That(((JsonObject)root["mcpServers"]!).ContainsKey("kcap-flows")).IsFalse(); // clean applied
+            var trustKey = ClaudeLauncher.NormalizeClaudeProjectKey(worktree);
+            await Assert.That((bool)root["projects"]![trustKey]!["hasTrustDialogAccepted"]!).IsTrue(); // trust survived
+        });
+    }
+
+    /// <summary>
     /// Inside the daemon Environment.ProcessPath is kcap-daemon, so recognizing a canonical
     /// absolute-path entry needs the CLI path from DaemonConfig — without it, exactly the
     /// duplicate this skip exists to remove would be copied into the worktree.

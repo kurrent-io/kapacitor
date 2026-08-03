@@ -353,7 +353,7 @@ internal sealed partial class ClaudeLauncher(
         return OperatingSystem.IsWindows() ? full.Replace('\\', '/') : full;
     }
 
-    static void TrustWorktreeInClaudeConfig(string worktreePath) {
+    internal static void TrustWorktreeInClaudeConfig(string worktreePath) {
         // Serialize against concurrent agent launches. ~/.claude.json is shared
         // across the whole user and {worktree}/.claude/settings.local.json is
         // touched by MergeToolPermissions on the same path; interleaved reads and
@@ -367,7 +367,14 @@ internal sealed partial class ClaudeLauncher(
             // environment, so it reads/writes the same file we resolve here —
             // $CLAUDE_CONFIG_DIR/.claude.json when set, else ~/.claude.json.
             var claudeJsonPath = ClaudePaths.UserConfigJson();
-            var root           = LoadJsonObject(claudeJsonPath);
+
+            // The in-process lock above serializes only THIS daemon; every kcap writer of
+            // ~/.claude.json must also take the shared cross-process lock, or this write can
+            // land between another writer's inside-lock re-read and its rename (e.g. doctor
+            // --clean) and be silently overwritten. See ConfigFileLock.
+            using var _ = ConfigFileLock.Acquire(claudeJsonPath);
+
+            var root = LoadJsonObject(claudeJsonPath);
 
             if (root["projects"] is not JsonObject projects) {
                 projects         = [];
