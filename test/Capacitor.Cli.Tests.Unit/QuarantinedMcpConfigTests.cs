@@ -487,6 +487,65 @@ public class QuarantinedMcpConfigTests {
             .Because("kcap's own exclusion must not surface as a change in the reviewer's tree");
     }
 
+    /// <summary>
+    /// The case probe must not be spoofable. With a fixed `.kcap-case-probe`, a branch shipping a tracked
+    /// `.KCAP-CASE-PROBE` makes the upper-case check find ITS file, so a case-sensitive filesystem reports
+    /// as insensitive, the sweep falls back to folding, and the stale-spelling bug returns. kcap-cli is
+    /// public — a literal sentinel is simply a name the branch can use.
+    /// </summary>
+    [Test]
+    public async Task A_branch_cannot_spoof_the_case_probe() {
+        var source = NewRepo();
+        Skip.Unless(IsCaseSensitive(source), "the misclassification only matters where case distinguishes");
+
+        // Only the UPPER spelling — the one a fixed-name probe checks for after writing the lower. Shipping
+        // both would trip the destination-collision refusal (that set folds case) and the snapshot would
+        // fail for an unrelated reason, which is what the first version of this test did.
+        WriteAt(source, ".KCAP-CASE-PROBE", "decoy");
+        WriteAt(source, "notes.md", "content");
+        Git(source, "add", "-A");
+        Git(source, "commit", "-q", "-m", "branch ships probe-shaped files");
+        Git(source, "mv", "notes.md", "Notes.md");        // uncommitted, as in the rename test
+
+        var info = await Manager(out _).CreateBorrowedSnapshotAsync(
+            source, "sp-" + Guid.NewGuid().ToString("N")[..8], CancellationToken.None);
+        var root = info.SnapshotRoot ?? info.Path;
+
+        var present = Directory.EnumerateFiles(root).Select(Path.GetFileName).ToArray();
+        await Assert.That(present.Count(n => string.Equals(n, "notes.md", StringComparison.Ordinal)))
+            .IsEqualTo(0)
+            .Because("a spoofed probe would misclassify the filesystem and keep the stale spelling");
+    }
+
+    /// <summary>
+    /// skip-worktree must cover ONLY what quarantine actually remapped. `IsWorkspaceMcpConfigPath` matches
+    /// on a `/`-suffix, so `fixtures/.mcp.json` qualifies — an ordinary nested file the root-prefix manifest
+    /// rules neither exclude nor quarantine. Marking it before its working-tree bytes are copied over hides
+    /// a REAL modification from `git status`, which is the reviewer's view of the change.
+    /// </summary>
+    [Test]
+    public async Task A_nested_file_that_merely_looks_like_config_is_not_suppressed() {
+        var source = NewRepo();
+        WriteAt(source, "fixtures/.mcp.json", """{"committed":true}""");
+        Git(source, "add", "-A");
+        Git(source, "commit", "-q", "-m", "an ordinary nested fixture");
+
+        // A real, uncommitted modification the reviewer must be able to see.
+        WriteAt(source, "fixtures/.mcp.json", """{"committed":false,"modified":true}""");
+
+        var info = await Manager(out _).CreateBorrowedSnapshotAsync(
+            source, "nf-" + Guid.NewGuid().ToString("N")[..8], CancellationToken.None);
+        var root = info.SnapshotRoot ?? info.Path;
+
+        // It is an ordinary file: present under its own name, carrying the modified bytes...
+        await Assert.That(File.ReadAllText(Path.Combine(root, "fixtures", ".mcp.json")))
+            .Contains("modified");
+        // ...and git must still report it as changed.
+        await Assert.That(GitCapture(root, "status", "--porcelain"))
+            .Contains("fixtures/.mcp.json")
+            .Because("skip-worktree on a non-quarantined path hides a real change from the reviewer");
+    }
+
     // ── fixture ──
 
     /// <summary>A manager rooted in a TEMP directory. The default DaemonConfig points at

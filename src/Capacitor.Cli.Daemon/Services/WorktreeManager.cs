@@ -517,7 +517,8 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
                 throw new InvalidOperationException("borrowed_snapshot_submodules_unsupported");
 
             var manifest = await ReadSourceManifestAsync(source, exclusions, ct);
-            await ApplyReservedIndexPolicyAsync(destination);
+            await ApplyReservedIndexPolicyAsync(destination,
+                manifest.Where(e => e.Value.DestinationRelative is not null).Select(e => e.Key));
             await CopyManifestAsync(source, destination, manifest, ct);
             // Destination names, not source keys — a quarantined entry lands under a different path and
             // would otherwise be swept straight back out as "outside the manifest".
@@ -888,15 +889,18 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
     /// would show up as a DELETION inside the snapshot — polluting <c>git status</c> and diffs, and capable
     /// of producing a review finding about a deletion kcap performed. Driven from the same list, so the two
     /// cannot drift apart again.</para></summary>
-    static async Task ApplyReservedIndexPolicyAsync(string destination) {
-        // Drive this from the index's OWN spellings. Iterating the canonical lowercase list marks nothing
-        // when the index holds `.Cursor/mcp.json`, and the file then shows up as a DELETION in the
-        // snapshot — a phantom change kcap made, which a reviewer can and should flag. Case matters here on
-        // exactly the filesystems where the two spellings are different paths.
-        var indexed = (await RunGitCapture(destination, GitTimeout, false, "ls-files", "-z"))
-            .Split('\0', StringSplitOptions.RemoveEmptyEntries);
-
-        foreach (var path in indexed.Where(IsWorkspaceMcpConfigPath))
+    static async Task ApplyReservedIndexPolicyAsync(string destination, IEnumerable<string> quarantined) {
+        // Drive this from the paths the manifest ACTUALLY remapped, in their exact spellings.
+        //
+        // Two ways to get this wrong, both seen in review. Iterating the canonical lowercase list marks
+        // nothing when the index holds `.Cursor/mcp.json`, so kcap's own exclusion surfaces as a DELETION.
+        // But classifying every indexed path is worse: IsWorkspaceMcpConfigPath matches on a `/`-suffix, so
+        // `fixtures/.mcp.json` qualifies — an ordinary nested file that the root-prefix manifest rules
+        // neither exclude nor quarantine. Marking it skip-worktree before its working-tree bytes are copied
+        // over hides a REAL staged or unstaged change from `git status` and `git diff`.
+        //
+        // The manifest already knows exactly which entries were remapped, so ask it instead of re-deriving.
+        foreach (var path in quarantined)
             try { await RunGit(destination, GitTimeout, "update-index", "--skip-worktree", "--", path); }
             catch { /* raced away, or the index changed under us */ }
         Directory.CreateDirectory(Path.Combine(destination, ".git", "info"));
@@ -908,14 +912,26 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
     /// inferred from the OS. Falls back to case-insensitive — the conservative side, since it keeps rather
     /// than deletes.</summary>
     static bool IsCaseSensitiveFileSystem(string root) {
-        var probe = Path.Combine(root, ".kcap-case-probe");
+        // The name must be UNGUESSABLE, and both spellings must be confirmed absent before probing. With a
+        // fixed `.kcap-case-probe`, a branch shipping a tracked `.KCAP-CASE-PROBE` makes the upper-case
+        // check find ITS file, so a case-sensitive filesystem reports as insensitive, the sweep falls back
+        // to folding, and the stale-spelling bug it exists to prevent comes straight back. kcap-cli is
+        // public: a literal sentinel is something the branch can simply name its file.
+        var stem  = ".kcap-probe-" + Guid.NewGuid().ToString("N");
+        var lower = Path.Combine(root, stem);
+        var upper = Path.Combine(root, stem.ToUpperInvariant());
         try {
-            File.WriteAllBytes(probe, []);
-            return !File.Exists(Path.Combine(root, ".KCAP-CASE-PROBE"));
+            // If either spelling somehow exists, we cannot attribute the result — say nothing rather than
+            // guess. Insensitive is the conservative answer: the sweep then keeps rather than deletes.
+            if (File.Exists(lower) || File.Exists(upper) ||
+                Directory.Exists(lower) || Directory.Exists(upper)) return false;
+
+            File.WriteAllBytes(lower, []);
+            return !File.Exists(upper);
         } catch {
             return false;
         } finally {
-            try { File.Delete(probe); } catch { /* nothing to clean up */ }
+            try { File.Delete(lower); } catch { /* nothing to clean up */ }
         }
     }
 
