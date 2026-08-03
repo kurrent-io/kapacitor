@@ -47,7 +47,13 @@ internal partial class AgentOrchestrator {
             .ThenBy(a => a.Id, StringComparer.Ordinal)
             .Select(a => new AgentStatusDto(
                 a.Id, KindText(a.Kind), a.Vendor, a.RepoPath, a.Status,
-                a.FlowRunId, a.FlowRole, a.RequesterUserId, a.CreatedAt, a.Model))];
+                a.FlowRunId, a.FlowRole, a.RequesterUserId, a.CreatedAt,
+                // Local spawns store "" for "no model" (HandleLocalSpawnAsync's LauncherContext),
+                // and a server-driven launch with a blank requested model can retain "" too
+                // (ModelSelectionLaunchPolicy.Evaluate treats blank as Honor, i.e. pass-through
+                // unchanged) — but the wire contract pins absent = null. Normalize here, at the
+                // wire boundary, rather than changing what AgentInstance stores.
+                string.IsNullOrWhiteSpace(a.Model) ? null : a.Model))];
 
     /// <summary>
     /// Serves the legacy <c>Stop</c> frame from older clients that predate --force. That frame

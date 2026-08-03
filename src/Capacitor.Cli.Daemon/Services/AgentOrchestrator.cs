@@ -996,9 +996,10 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             string id, LaunchKind kind = LaunchKind.Default, string status = "Running",
             string? flowRunId = null, string? flowRole = null,
             DateTime? createdAt = null, DateTime? lastOutputAt = null, bool isPrivate = false,
-            IPtyProcess? pty = null, string? startIdentity = null, string? requester = null) {
+            IPtyProcess? pty = null, string? startIdentity = null, string? requester = null,
+            string? model = "default") {
         var agent = new AgentInstance(
-            id, null, "default", null, "/repo", "codex",
+            id, null, model, null, "/repo", "codex",
             new PtyHostedAgentRuntime("codex", pty ?? NoopPtyProcess.Instance),
             new WorktreeInfo("/repo", "b", "/repo"),
             new CancellationTokenSource()) {

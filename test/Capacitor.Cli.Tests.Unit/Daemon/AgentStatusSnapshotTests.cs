@@ -132,6 +132,28 @@ public class AgentStatusSnapshotTests {
         }
     }
 
+    /// <summary>AI-1649 review finding: a blank/whitespace <c>Model</c> is the orchestrator's
+    /// "no model" sentinel (local spawns store "" verbatim; see
+    /// <c>AgentOrchestrator.HandleLocalSpawnAsync</c>), but the wire contract represents an
+    /// absent model as JSON <c>null</c>. The snapshot mapping must normalize at the wire
+    /// boundary rather than leak the sentinel.</summary>
+    [Test]
+    public async Task Snapshot_normalizes_blank_model_to_null_and_passes_real_model_verbatim() {
+        var fixture = Build();
+        var orch    = fixture.Orchestrator;
+        try {
+            orch.SeedAgentForTest("blank-model", model: "");
+            orch.SeedAgentForTest("real-model",  model: "gpt-5-codex");
+
+            var byId = orch.SnapshotAgentsForStatus().ToDictionary(a => a.Id);
+
+            await Assert.That(byId["blank-model"].Model).IsNull();
+            await Assert.That(byId["real-model"].Model).IsEqualTo("gpt-5-codex");
+        } finally {
+            await fixture.CleanupAsync();
+        }
+    }
+
     [Test]
     public async Task Publish_status_change_and_unpublish_each_advance_the_generation() {
         var fixture = Build();
