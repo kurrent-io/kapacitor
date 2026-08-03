@@ -129,6 +129,21 @@ static class McpWorkItemsServer {
             using var httpResponse = toolName switch {
                 "declare_work_item"      => await SendWithRefreshRetryAsync(client, baseUrl, c => c.PostAsync($"{baseUrl}/api/work-items/declare", ToJsonContent(BuildDeclareBody(arguments)))),
                 "get_session_work_items" => await SendWithRefreshRetryAsync(client, baseUrl, c => c.GetAsync(BuildSessionUrl(baseUrl, arguments))),
+
+                // The declared breakdown/relation surface. Every id is a
+                // REQUIRED argument here, unlike session_id: there is no ambient "current work item"
+                // to fall back to, and guessing one would attach the wrong graph edge.
+                "declare_work_breakdown" => await SendWithRefreshRetryAsync(client, baseUrl, c => c.PostAsync(
+                    ItemUrl(baseUrl, arguments, "parent_id", "breakdown"), ToJsonContent(BuildBreakdownBody(arguments)))),
+                "retract_work_breakdown" => await SendWithRefreshRetryAsync(client, baseUrl, c => c.PostAsync(
+                    ItemUrl(baseUrl, arguments, "parent_id", "breakdown/retract"), ToJsonContent(BuildBreakdownBody(arguments)))),
+                "declare_work_relation"  => await SendWithRefreshRetryAsync(client, baseUrl, c => c.PostAsync(
+                    ItemUrl(baseUrl, arguments, "from_id", "relations"), ToJsonContent(BuildRelationBody(arguments)))),
+                "retract_work_relation"  => await SendWithRefreshRetryAsync(client, baseUrl, c => c.PostAsync(
+                    ItemUrl(baseUrl, arguments, "from_id", "relations/retract"), ToJsonContent(BuildRelationBody(arguments)))),
+                "get_work_item_topology" => await SendWithRefreshRetryAsync(client, baseUrl, c => c.GetAsync(
+                    ItemUrl(baseUrl, arguments, "work_item_id", "topology"))),
+
                 _                        => throw new ArgumentException($"Unknown tool: {toolName}")
             };
 
@@ -227,6 +242,87 @@ static class McpWorkItemsServer {
     internal static string BuildSessionUrl(string baseUrl, JsonObject? args) =>
         $"{baseUrl}/api/work-items/session/{Uri.EscapeDataString(ResolveSessionId(args))}";
 
+    /// <summary>
+    /// Builds a work-item-scoped URL, reading a REQUIRED id from <paramref name="idKey"/>.
+    /// Required with no fallback, deliberately: <see cref="ResolveSessionId"/> can default to the
+    /// ambient session because "the session I am running in" is unambiguous, whereas there is no
+    /// ambient work item — a default here would silently attach the wrong edge of the graph.
+    /// Escaped, so an id containing a slash or a percent cannot walk out of its path segment and hit
+    /// a different route.
+    /// </summary>
+    internal static string ItemUrl(string baseUrl, JsonObject? args, string idKey, string suffix) =>
+        $"{baseUrl}/api/work-items/{Uri.EscapeDataString(RequireString(args, idKey))}/{suffix}";
+
+    /// <summary>Reads a required non-blank string argument, throwing the clean tool-error shape when
+    /// it is absent, null, blank, or the wrong JSON type. A whitespace-only id is rejected here
+    /// rather than escaped into a URL that would 404 for an unrelated-looking reason.</summary>
+    internal static string RequireString(JsonObject? args, string key) {
+        var node = args?[key];
+
+        if (node is null) throw new ArgumentException($"'{key}' is required.");
+
+        string? value;
+        try {
+            value = node.GetValue<string>();
+        } catch {
+            throw new ArgumentException($"'{key}' must be a string.");
+        }
+
+        if (string.IsNullOrWhiteSpace(value)) throw new ArgumentException($"'{key}' must not be blank.");
+
+        return value;
+    }
+
+    // Server-side validation is NOT duplicated here — same reasoning as BuildDeclareBody's note. The
+    // rules the server owns (cross-repo edges, unknown/deleted ids, a parent listed among its own
+    // parts, self-relations, an empty parts list, the relation_kind vocabulary) all surface as coded
+    // 4xx bodies through HandleToolCallAsync. What IS validated locally is SHAPE: a present-but-
+    // wrong-typed argument must fail loudly rather than be dropped, because a silently omitted
+    // part_ids turns a malformed declare into a differently-shaped request whose rejection reads as
+    // if the caller had sent nothing.
+    internal static JsonObject BuildBreakdownBody(JsonObject? args) {
+        var body = new JsonObject();
+
+        if (args?["part_ids"] is { } node) body["part_ids"] = ReadStringArray(node, "part_ids");
+
+        return body;
+    }
+
+    internal static JsonObject BuildRelationBody(JsonObject? args) {
+        var body = new JsonObject();
+
+        // to_id and relation_kind are left to the server to require: it owns the vocabulary and the
+        // structural rules, and a coded 400 naming the real reason beats a guess made here.
+        if (args?["to_id"]?.GetValue<string>() is { Length: > 0 } toId) body["to_id"] = toId;
+        if (args?["relation_kind"]?.GetValue<string>() is { Length: > 0 } kind) body["relation_kind"] = kind;
+
+        return body;
+    }
+
+    /// <summary>Reads a JSON array of non-blank strings. Any other present shape — a bare string, an
+    /// object, an array holding a number or a blank — throws, so a malformed argument surfaces as a
+    /// validation error instead of being partially dropped.</summary>
+    internal static JsonArray ReadStringArray(JsonNode node, string key) {
+        if (node is not JsonArray array) throw new ArgumentException($"'{key}' must be an array of strings.");
+
+        var result = new JsonArray();
+
+        foreach (var element in array) {
+            string? value;
+            try {
+                value = element?.GetValue<string>();
+            } catch {
+                throw new ArgumentException($"'{key}' must contain only strings.");
+            }
+
+            if (string.IsNullOrWhiteSpace(value)) throw new ArgumentException($"'{key}' must not contain blank entries.");
+
+            result.Add(value);
+        }
+
+        return result;
+    }
+
     /// <summary>Decodes the JSON-RPC <c>method</c> field, returning null for a present but
     /// wrong-shaped value (e.g. an object) instead of throwing — a malformed request must yield
     /// an invalid-request response, never terminate the stdio loop.</summary>
@@ -313,6 +409,52 @@ static class McpWorkItemsServer {
             "List the work items the current session is attached to.",
             new("object", new() {
                 ["session_id"] = new("string", "Session id to look up. Defaults to the current kcap-hooked session (KCAP_SESSION_ID) when omitted.")
-            }, []))
+            }, [])),
+
+        // The declared work-breakdown / relation surface. NOTE: no tool
+        // here accepts `source` or `declared_by`. The server resolves both from the authenticated
+        // caller and rejects a `source` of "user" outright, so exposing either would be an argument
+        // the server ignores at best and a spoofing surface at worst.
+        new("declare_work_breakdown",
+            "Declare that a work item is broken down into parts (sub-items). Idempotent: re-declaring an "
+          + "existing part is accepted and reported as existing rather than created. A part can have at "
+          + "most one parent, and all items must live in the same repository.",
+            new("object", new() {
+                ["parent_id"] = new("string", "The work item being broken down."),
+                ["part_ids"]  = new("array", "Work item ids that are parts of the parent.", new("string", "A work item id."))
+            }, ["parent_id", "part_ids"])),
+
+        new("retract_work_breakdown",
+            "Retract a previously declared breakdown, detaching the named parts from the parent.",
+            new("object", new() {
+                ["parent_id"] = new("string", "The work item whose breakdown is being retracted."),
+                ["part_ids"]  = new("array", "Work item ids to detach from the parent.", new("string", "A work item id."))
+            }, ["parent_id", "part_ids"])),
+
+        new("declare_work_relation",
+            "Declare a dependency between two work items: 'blocks' means from_id blocks to_id, "
+          + "'blocked_by' means from_id is blocked by to_id. Both items must live in the same repository, "
+          + "and an item cannot relate to itself.",
+            new("object", new() {
+                ["from_id"]       = new("string", "The work item the relation starts from."),
+                ["to_id"]         = new("string", "The work item on the other end of the relation."),
+                ["relation_kind"] = new("string", "Either 'blocks' or 'blocked_by'.")
+            }, ["from_id", "to_id", "relation_kind"])),
+
+        new("retract_work_relation",
+            "Retract a previously declared dependency between two work items.",
+            new("object", new() {
+                ["from_id"]       = new("string", "The work item the relation starts from."),
+                ["to_id"]         = new("string", "The work item on the other end of the relation."),
+                ["relation_kind"] = new("string", "Either 'blocks' or 'blocked_by'.")
+            }, ["from_id", "to_id", "relation_kind"])),
+
+        new("get_work_item_topology",
+            "Read a work item's declared breakdown and relations — its parent, parts, and dependencies. "
+          + "Scoped to what the caller can see, so items you have no access to are absent rather than hidden "
+          + "placeholders.",
+            new("object", new() {
+                ["work_item_id"] = new("string", "The work item whose topology to read.")
+            }, ["work_item_id"]))
     ];
 }
