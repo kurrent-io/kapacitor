@@ -1,0 +1,203 @@
+using System.Text.Json;
+using System.Text.Json.Nodes;
+
+namespace Capacitor.Cli.Core.Mcp;
+
+public enum McpRegistrationIssue {
+    /// <summary>The entry is semantically the canonical kcap registration (recognized kcap
+    /// command, exact canonical args, no customization), so a plugin-shipped entry fully
+    /// shadows it and it is safe to remove.</summary>
+    CanonicalDuplicate,
+
+    /// <summary>Same name as a kcap server but structurally divergent (custom command, args,
+    /// env, or extra fields). Reported so the user can decide; never removed — same name does
+    /// not imply ownership.</summary>
+    Conflict
+}
+
+/// <param name="Scope"><c>user</c> for the top-level <c>mcpServers</c> block, or
+/// <c>projects[&lt;path&gt;]</c> for a per-project block.</param>
+public sealed record McpRegistrationFinding(string Scope, string Name, McpRegistrationIssue Issue);
+
+/// <summary>
+/// Pure audit over Claude Code's user config (<c>~/.claude.json</c>) content: finds user- and
+/// project-scope MCP registrations that duplicate the kcap Claude plugin's shipped servers.
+/// Each duplicate costs one extra resident server process per open Claude session.
+///
+/// Classification is STRUCTURAL, never name-only: an entry is a removable duplicate only when
+/// it is semantically canonical (a recognized kcap command, the exact canonical
+/// <c>["mcp", "&lt;name&gt;"]</c> args, and no custom env/extra fields). A divergent same-name
+/// entry is reported as a <see cref="McpRegistrationIssue.Conflict"/> and preserved — this
+/// repo's standing policy is that same name does not imply ownership (see
+/// <c>JsonMcpConfigWriter</c> / <c>CodexConfigToml</c>).
+///
+/// Callers own the "is the kcap Claude plugin actually present?" gate
+/// (<c>ClaudePluginInstaller.IsInstalled</c>) — without the plugin nothing is shadowed and
+/// nothing here is a duplicate.
+/// </summary>
+public static class McpRegistrationAudit {
+    public const string UserScope = "user";
+
+    /// <summary>
+    /// Finds kcap-named MCP entries in both Claude config scopes: the top-level
+    /// <c>mcpServers</c> block and every <c>projects[&lt;path&gt;].mcpServers</c> block (the
+    /// latter is what <c>ClaudeLauncher.WriteMcpConfig</c> copies into agent worktrees).
+    /// Unreadable/misshapen JSON yields no findings — the audit is diagnostics, never a gate.
+    /// </summary>
+    public static IReadOnlyList<McpRegistrationFinding> FindClaudeDuplicates(
+        string claudeUserConfigJson, string? nativeBinaryPath = null) {
+        var findings = new List<McpRegistrationFinding>();
+
+        try {
+            if (JsonNode.Parse(claudeUserConfigJson) is not JsonObject root) return findings;
+
+            Collect(root["mcpServers"] as JsonObject, UserScope, nativeBinaryPath, findings);
+
+            if (root["projects"] is JsonObject projects)
+                foreach (var (key, project) in projects)
+                    Collect((project as JsonObject)?["mcpServers"] as JsonObject,
+                            $"projects[{key}]", nativeBinaryPath, findings);
+        } catch {
+            // Unreadable config — nothing to report.
+        }
+
+        return findings;
+    }
+
+    /// <summary>
+    /// Returns the config with every <see cref="McpRegistrationIssue.CanonicalDuplicate"/>
+    /// entry removed from both scopes; conflicts and everything else are preserved verbatim.
+    /// Returns the input unchanged when it cannot be parsed (never clobber).
+    /// </summary>
+    public static string RemoveClaudeDuplicates(string claudeUserConfigJson, string? nativeBinaryPath = null) {
+        try {
+            if (JsonNode.Parse(claudeUserConfigJson) is not JsonObject root) return claudeUserConfigJson;
+
+            RemoveCanonical(root["mcpServers"] as JsonObject, nativeBinaryPath);
+
+            if (root["projects"] is JsonObject projects)
+                foreach (var (_, project) in projects)
+                    RemoveCanonical((project as JsonObject)?["mcpServers"] as JsonObject, nativeBinaryPath);
+
+            return root.ToJsonString(new JsonSerializerOptions { WriteIndented = true });
+        } catch {
+            return claudeUserConfigJson;
+        }
+    }
+
+    /// <summary>
+    /// True when <paramref name="entry"/> is semantically the canonical registration of the
+    /// kcap server named <paramref name="name"/>: a recognized kcap command (the literal
+    /// <c>kcap</c>, or exactly <paramref name="nativeBinaryPath"/> when provided), the exact
+    /// canonical args, and only cosmetic extra fields (<c>type: "stdio"</c>, <c>cwd</c>,
+    /// <c>description</c>, an EMPTY <c>env</c>). Anything else — including a same-named entry
+    /// pointing at a different binary — is not canonical and must be preserved.
+    /// </summary>
+    public static bool IsCanonicalKcapEntry(string? name, JsonNode? entry, string? nativeBinaryPath) {
+        if (name is null || FindDescriptor(name) is not { } descriptor || entry is not JsonObject obj) return false;
+
+        if (!IsRecognizedKcapCommand(StringValue(obj["command"]), nativeBinaryPath)) return false;
+
+        if (obj["args"] is not JsonArray args || args.Count != descriptor.Args.Length) return false;
+        for (var i = 0; i < descriptor.Args.Length; i++)
+            if (!string.Equals(StringValue(args[i]), descriptor.Args[i], StringComparison.Ordinal))
+                return false;
+
+        foreach (var (key, value) in obj) {
+            switch (key) {
+                case "command" or "args":
+                    break;
+                case "type":
+                    if (!string.Equals(StringValue(value), "stdio", StringComparison.Ordinal)) return false;
+                    break;
+                case "cwd" or "description":
+                    if (StringValue(value) is null) return false;
+                    break;
+                case "env":
+                    if (value is not JsonObject env || env.Count != 0) return false;
+                    break;
+                default:
+                    return false; // custom field → not canonical
+            }
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Extracts kcap-named entries under <paramref name="blockKey"/> whose command is an
+    /// absolute path to a kcap binary (string command, or argv-array first element — the
+    /// OpenCode shape). Pure: the caller decides what "stale" means (typically the file no
+    /// longer existing after an npm re-layout) and owns the filesystem check.
+    /// </summary>
+    public static IReadOnlyList<(string Name, string Command)> FindAbsoluteKcapCommands(
+        string configJson, string blockKey = "mcpServers") {
+        var results = new List<(string, string)>();
+
+        try {
+            if (JsonNode.Parse(configJson) is not JsonObject root ||
+                root[blockKey] is not JsonObject block)
+                return results;
+
+            foreach (var (name, entry) in block) {
+                if (FindDescriptor(name) is null || entry is not JsonObject obj) continue;
+
+                var command = StringValue(obj["command"])
+                    ?? (obj["command"] is JsonArray argv && argv.Count > 0 ? StringValue(argv[0]) : null);
+
+                if (command is not null && IsAbsoluteKcapBinaryPath(command))
+                    results.Add((name, command));
+            }
+        } catch {
+            // Unreadable config — nothing to report.
+        }
+
+        return results;
+    }
+
+    /// <summary>The literal <c>kcap</c> (PATH/wrapper resolution) or, when the caller can
+    /// resolve it, exactly the current native binary path. Deliberately NOT any path whose
+    /// basename happens to be <c>kcap</c> — a user pointing a same-named entry at a custom
+    /// build is a conflict to preserve, not a duplicate to remove.</summary>
+    static bool IsRecognizedKcapCommand(string? command, string? nativeBinaryPath) =>
+        command is not null &&
+        (string.Equals(command, KcapMcpServers.Command, StringComparison.Ordinal) ||
+         (nativeBinaryPath is not null && string.Equals(command, nativeBinaryPath, StringComparison.Ordinal)));
+
+    internal static bool IsAbsoluteKcapBinaryPath(string command) {
+        if (!Path.IsPathRooted(command)) return false;
+        var baseName = Path.GetFileNameWithoutExtension(command);
+        return string.Equals(baseName, "kcap", StringComparison.OrdinalIgnoreCase);
+    }
+
+    static void Collect(JsonObject? block, string scope, string? nativeBinaryPath,
+                        List<McpRegistrationFinding> findings) {
+        if (block is null) return;
+
+        foreach (var (name, entry) in block) {
+            if (FindDescriptor(name) is null) continue;
+
+            findings.Add(new McpRegistrationFinding(
+                scope, name,
+                IsCanonicalKcapEntry(name, entry, nativeBinaryPath)
+                    ? McpRegistrationIssue.CanonicalDuplicate
+                    : McpRegistrationIssue.Conflict));
+        }
+    }
+
+    static void RemoveCanonical(JsonObject? block, string? nativeBinaryPath) {
+        if (block is null) return;
+
+        foreach (var name in block
+                     .Where(kv => IsCanonicalKcapEntry(kv.Key, kv.Value, nativeBinaryPath))
+                     .Select(kv => kv.Key)
+                     .ToArray())
+            block.Remove(name);
+    }
+
+    static KcapMcpServer? FindDescriptor(string name) =>
+        KcapMcpServers.All.FirstOrDefault(s => string.Equals(s.Name, name, StringComparison.OrdinalIgnoreCase));
+
+    static string? StringValue(JsonNode? node) =>
+        node is JsonValue v && v.TryGetValue(out string? s) ? s : null;
+}
