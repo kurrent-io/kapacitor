@@ -12,8 +12,13 @@
 //   A: protocol-valid, rendered        — MUST pass schema validation; classifier Renderable.
 //   B: protocol-valid, subset-rejected — MUST pass schema validation; daemon cancels (reason).
 //   C: protocol-invalid                — MUST fail schema validation where expressible.
-//   D: open cases                      — no protocol-validity claim; verdict RECORDED only.
-// Any A/B failure or expressible-C pass is SDK/schema drift: generation FAILS LOUDLY (exit 1).
+//   D: open cases                      — no protocol-validity claim; the SDK verdict is
+//      RECORDED **and pinned**: each D fixture declares the verdict observed when it was
+//      authored, and a regeneration that observes a different verdict FAILS LOUDLY too —
+//      reserved-union semantics drifting is exactly what this generator exists to surface.
+//      (A per-fixture `verdictNondeterministic: true` opt-out exists for genuinely
+//      environment-dependent cases; none are currently needed.)
+// Any A/B failure, expressible-C pass, or D verdict change is SDK/schema drift: exit 1.
 //
 // Outputs (committed):
 //   fixtures.json                                   — frames + groups + verdicts (human diffing)
@@ -197,6 +202,27 @@ for (const [t, name] of [["number", "MetaNumber"], ["boolean", "MetaBoolean"], [
 
 // ---------- validation ----------
 
+// Pinned SDK verdicts for group D (observed at authoring time; a change is drift — R1-3).
+const pinnedDVerdicts = {
+  Schema_ItemsEnumPlusAnyOf: "pass",
+  Schema_Bound100Digits: "pass",
+  Schema_BoundExponent1e3: "pass",
+  Schema_Bound1e30: "pass",
+  Schema_BoundDecimal5Point0: "pass",
+  Schema_BoundNegativeZero: "pass",
+  Schema_MultiPropertyMalformedChildren: "fail",
+  Schema_Malformed40EntrySelector: "fail",
+  Schema_MalformedEarlyEntryOverlongLater: "fail",
+  Schema_MetaNumberTitle: "fail",
+  Schema_MetaNumberDescription: "fail",
+  Schema_MetaBooleanTitle: "fail",
+  Schema_MetaBooleanDescription: "fail",
+  Schema_MetaObjectTitle: "fail",
+  Schema_MetaObjectDescription: "fail",
+  Schema_MetaArrayTitle: "fail",
+  Schema_MetaArrayDescription: "fail",
+};
+
 let failed = false;
 const results = [];
 for (const f of fixtures) {
@@ -217,6 +243,16 @@ for (const f of fixtures) {
   if (f.group === "C" && expressible && verdict !== "fail") {
     console.error(`DRIFT: ${f.name} (group C) expected SDK-FAIL but PASSED`);
     failed = true;
+  }
+  if (f.group === "D" && !f.verdictNondeterministic) {
+    const pinned = pinnedDVerdicts[f.name];
+    if (pinned === undefined) {
+      console.error(`DRIFT: ${f.name} (group D) has no pinned SDK verdict — pin it in pinnedDVerdicts`);
+      failed = true;
+    } else if (verdict !== pinned) {
+      console.error(`DRIFT: ${f.name} (group D) pinned SDK verdict '${pinned}' but observed '${verdict}'`);
+      failed = true;
+    }
   }
   results.push({ name: f.name, group: f.group, kind: f.kind, reason: f.reason ?? null, sdkVerdict: verdict, frame: frameJson, note: f.note ?? null });
 }

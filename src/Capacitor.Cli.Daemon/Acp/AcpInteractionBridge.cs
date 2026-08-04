@@ -60,12 +60,17 @@ internal sealed partial class AcpInteractionBridge(
             unexpectedUnattendedInteraction?.Invoke(request.Method);
 
             // Each method cancels in ITS OWN protocol's result shape — the stabilized
-            // elicitation response is a different object from the permission outcome.
-            return request.Method switch {
-                "session/request_permission" => CancelledResult(),
-                "elicitation/create"         => ElicitationCancelResult(),
-                _                            => null
-            };
+            // elicitation response is a different object from the permission outcome. The
+            // elicitation arm still counts toward the reason-tagged metric (with its own stable
+            // reason) so every non-routed elicitation cancel is metric-visible; the Error-level
+            // reap log above is the audit trail, so no additional reason log is emitted.
+            if (request.Method == "elicitation/create") {
+                AcpMetrics.RecordElicitationUnrenderable("unattended_forbidden");
+
+                return ElicitationCancelResult();
+            }
+
+            return request.Method == "session/request_permission" ? CancelledResult() : null;
         }
 
         return request.Method switch {
@@ -211,6 +216,9 @@ internal sealed partial class AcpInteractionBridge(
         // unrenderable-reason double-log.
         if (unattendedPolicy == AcpUnattendedInteractionPolicy.AutoApprove) {
             LogUnattendedElicitationDeclined(agentId);
+            // Metric-visible like every other non-routed cancel (its own stable reason); the
+            // dedicated unattended log above is the log trail — no reason-log double-fire.
+            AcpMetrics.RecordElicitationUnrenderable("unattended_declined");
 
             return ElicitationCancelResult();
         }

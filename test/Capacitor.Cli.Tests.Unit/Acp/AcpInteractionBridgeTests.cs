@@ -1,4 +1,5 @@
 // test/Capacitor.Cli.Tests.Unit/Acp/AcpInteractionBridgeTests.cs
+using System.Diagnostics.Metrics;
 using System.Text.Json;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Acp;
@@ -1075,5 +1076,74 @@ public class AcpInteractionBridgeTests {
             ElicitationRequest(FormParams("""{"type":"object","properties":{"proceed":{"type":"string","enum":["yes"]}}}""")),
             CancellationToken.None);
         await Assert.That(result!.Value.GetRawText()).IsEqualTo("""{"action":"cancel"}""");
+    }
+
+    // ── Stabilized elicitation: metric-path positive controls ───────────────────────────────────
+    //
+    // The reason LOG is asserted throughout the gate matrix; these pin the METRIC half of the
+    // cancel contract from the bridge path itself (the AcpMetricsTests listener test only proves
+    // the metric API works — it cannot detect a bridge branch that forgets to call it).
+    // Presence (not count) is asserted, so concurrent tests emitting the same reason can't break
+    // these; the reason tag filter keeps unrelated emissions out.
+
+    static (MeterListener Listener, Func<bool> Observed) ElicitationMetricListener(string reason) {
+        var observed = false;
+        var listener = new MeterListener();
+        listener.InstrumentPublished = (instrument, l) => {
+            if (instrument.Meter.Name == "Capacitor.Cli.Daemon.Acp" && instrument.Name == "acp.elicitation_unrenderable")
+                l.EnableMeasurementEvents(instrument);
+        };
+        listener.SetMeasurementEventCallback<long>((_, _, tags, _) => {
+            foreach (var tag in tags) {
+                if (tag.Key == "reason" && (tag.Value?.ToString()) == reason)
+                    observed = true;
+            }
+        });
+        listener.Start();
+        return (listener, () => Volatile.Read(ref observed));
+    }
+
+    [Test]
+    public async Task ElicitationGate_UrlMode_IncrementsReasonTaggedMetric() {
+        var (listener, observed) = ElicitationMetricListener("url_mode");
+        using var _ = listener;
+        var (bridge, _, _) = GateBridge(new AcpInteractionDecision("answered", "x", null, null, null, null));
+
+        await bridge.HandleAsync(ElicitationRequest(ElicitationFixtures.Params_UrlMode), CancellationToken.None);
+
+        await Assert.That(observed()).IsTrue();
+    }
+
+    [Test]
+    public async Task AutoApprove_Elicitation_IncrementsUnattendedDeclinedMetric() {
+        var (listener, observed) = ElicitationMetricListener("unattended_declined");
+        using var _ = listener;
+        var (bridge, calls) = AutoApproveBridge();
+
+        await bridge.HandleAsync(
+            ElicitationRequest(FormParams("""{"type":"object","properties":{"proceed":{"type":"string","enum":["yes"]}}}""", "Proceed?")),
+            CancellationToken.None);
+
+        await Assert.That(observed()).IsTrue();
+        await Assert.That(calls()).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task FailPolicy_Elicitation_IncrementsUnattendedForbiddenMetric() {
+        var (listener, observed) = ElicitationMetricListener("unattended_forbidden");
+        using var _ = listener;
+        var bridge = new AcpInteractionBridge(
+            requestInteraction: (req, ct) => throw new InvalidOperationException("must not be called"),
+            agentId: AgentId,
+            logger: NullLogger.Instance,
+            unattendedPolicy: AcpUnattendedInteractionPolicy.Fail,
+            unexpectedUnattendedInteraction: _ => { });
+
+        var result = await bridge.HandleAsync(
+            ElicitationRequest(FormParams("""{"type":"object","properties":{"proceed":{"type":"string","enum":["yes"]}}}""", "Proceed?")),
+            CancellationToken.None);
+
+        await Assert.That(result!.Value.GetRawText()).IsEqualTo("""{"action":"cancel"}""");
+        await Assert.That(observed()).IsTrue();
     }
 }
