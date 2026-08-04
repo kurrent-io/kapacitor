@@ -65,6 +65,11 @@ jobs:
         # runs stay parallel (the flag lives only in CI).
         run: dotnet run --project test/Capacitor.Cli.Tests.Unit/Capacitor.Cli.Tests.Unit.csproj -- --maximum-parallel-tests 1
 
+      - name: Run app tests
+        # Same serial discipline as the unit suite: the app tests share process-global
+        # Avalonia/Rx state behind [NotInParallel("AvaloniaSession")].
+        run: dotnet run --project test/Capacitor.App.Tests.Unit/Capacitor.App.Tests.Unit.csproj -- --maximum-parallel-tests 1
+
       - name: Run integration tests
         # Linux only: the integration suite does real loopback HTTP (WireMock).
         # On the Windows runner an https probe against the plain-HTTP test server
