@@ -315,14 +315,17 @@ internal static class AcpVendorDescriptors {
     /// unguessable name — reduces the allowlist to nothing the repository can match, which blocks it. Repo-authored <i>hooks</i> were separately measured NOT to run on the ACP path (they do
     /// on the <c>--prompt</c> path — the two paths differ, and neither predicts the other).</para>
     ///
-    /// <para><b>Deny-all is the launch default, and any launch that injects servers must open the
-    /// gate to exactly those names.</b> A review launch replaces the substituted value with the
-    /// injected result channel's wire name (replace, never append — the option is comma-coerced, so
-    /// a second entry would widen the gate rather than move it); an interactive launch injects
-    /// nothing and keeps the unguessable deny-all, which permits nothing and costs nothing. A future
-    /// interactive caller that starts populating <c>RuntimeStartContext.McpServers</c> must widen
-    /// the allowlist in the SAME change, or its servers ship silently blocked.
-    /// <c>AcpVendorDescriptorTests</c> and <c>GeminiReviewerLaunchTests</c> assert both halves.</para>
+    /// <para><b>Deny-all is the launch default; a review launch opens the gate to exactly ONE name —
+    /// the injected result channel's wire name</b> (replace, never append — the option is
+    /// comma-coerced, so appending would widen the gate rather than move it); an interactive launch
+    /// injects nothing and keeps the unguessable deny-all, which permits nothing and costs nothing.
+    /// <c>AcpVendorDescriptorTests</c> and <c>GeminiReviewerLaunchTests</c> assert both halves.
+    /// KNOWN LIMIT (#449): <c>AcpReviewFlowMcp.Build</c> puts any additional validated allowlist
+    /// servers in <c>session/new.mcpServers</c> under their canonical ids, which this single-name
+    /// gate does NOT admit — inert today because the built-in review definitions carry no MCP
+    /// allowlist, but a launch that needs those servers (or a future interactive caller populating
+    /// <c>RuntimeStartContext.McpServers</c>) must widen the gate in the same change, or its servers
+    /// ship silently blocked.</para>
     ///
     /// <para><see cref="NoOpModelSelector"/> for the same reason as Kiro: <c>session/new</c> does return a
     /// <c>models</c> object, so <see cref="ConfigOptionModelSelector"/>'s read half would fit, but its
