@@ -112,23 +112,33 @@ of each" is not a policy (the two lines version independently and NuGet will not
 them; mismatched pins under CPM produce downgrade/restore failures, not silent resolution):
 
 - the Avalonia family (`Avalonia`, `Avalonia.Desktop`, `Avalonia.Themes.Fluent`,
-  `Avalonia.Headless`) at ONE identical version: **12.1.1**;
-- `ReactiveUI.Avalonia` **12.1.1** (its declared dependency range requires Avalonia ≥ 12.1.1
-  — the matched current-major pair; a brand-new app does not start on the superseded 11.x
-  line and buy a migration);
-- `DynamicData` at its latest stable at implementation time (no cross-constraint with the
-  pair).
+  `Avalonia.Headless`) at ONE identical version: **11.3.18**;
+- `ReactiveUI.Avalonia` **11.4.13** — the SYSTEM.REACTIVE-ERA integration. This is a
+  deliberate flavor choice, not just a version choice: `ReactiveUI.Avalonia` 12.x depends on
+  ReactiveUI 24's new **Primitives** distribution (`IScheduler → ISequencer`,
+  `Subject<T> → Signal<T>` — no System.Reactive), which is incompatible with this design's
+  `IObservable`/`RxApp.MainThreadScheduler` contract and with DynamicData's System.Reactive
+  foundation; the Rx-flavor 12.x integration (`ReactiveUI.Avalonia.Reactive`) has no published
+  stable package. The mature stack that motivated choosing ReactiveUI IS the
+  System.Reactive flavor. Moving to a 12.x pair is a deliberate future migration, taken only
+  when a stable Rx-flavor integration is published (or Primitives is consciously adopted) —
+  never as a routine bump;
+- `DynamicData` at its latest stable at implementation time (System.Reactive-based; no
+  cross-constraint with the pair).
 
-If a newer compatible pair exists at implementation time, take it only as a PAIR — the
-integration package's declared Avalonia range must be satisfied by the family version — and
-record the actual versions here. The legacy `Avalonia.ReactiveUI` package (deprecated at
+Any substitution must preserve BOTH properties as a set: a compatible Avalonia range AND the
+System.Reactive flavor — and record the actual versions here. The legacy `Avalonia.ReactiveUI` package (deprecated at
 11.3.8) is deliberately NOT used. `ReactiveUI` and `System.Reactive` are deliberately NOT
 direct references — they arrive transitively via `ReactiveUI.Avalonia`/`DynamicData`, so they
 get no `PackageVersion` entries and no project can silently pin a conflicting version.
 Bootstrap/base types (`UseReactiveUI()`, `ReactiveWindow<>`) come from `ReactiveUI.Avalonia`'s
 namespaces. Acceptance: restore + build green on both CI legs with the RESOLVED versions
 asserted equal to the pins and ZERO NuGet downgrade warnings (NU1605/NU1109 class) — "it
-restored" alone is not acceptance. Core
+restored" alone is not acceptance — PLUS a scheduler-identity test proving the flavor holds
+end-to-end: `RxApp.MainThreadScheduler` is a System.Reactive `IScheduler` that the service's
+observable projections actually consume (`ObserveOn(RxApp.MainThreadScheduler)` compiles
+against the same type the headless helper swaps for an immediate scheduler; the §8 helper test
+asserts a value published on a background thread is observed on the swapped scheduler). Core
 gains no packages. Both new projects join the solution; the ubuntu and windows CI legs gain an
 explicit `dotnet run --project test/Capacitor.App.Tests.Unit/...` step (§1.11 — solution
 membership alone runs nothing). The AOT-publish checks are untouched and must stay warning-free
