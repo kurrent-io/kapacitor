@@ -134,10 +134,19 @@ public class DaemonClientServiceTests {
         await using var svc = new DaemonClientService("daemon-a", script.Run, new FakeProcessRunner(), "kcap");
         svc.Start();
 
-        var pairs = new List<(AttachState Status, DaemonStatusDto? LatestSnapshot)>();
+        // Captures (status, latest Snapshots value, current Agents keys) all read SYNCHRONOUSLY
+        // from inside the Status subscription callback, i.e. at the exact moment Apply()
+        // publishes AttachStatus — the point after which Snapshots/EditDiff are pinned to have
+        // already run (no-stale pin, spec §5). Sampling Agents.Keys from OUTSIDE this callback
+        // (e.g. after a separate poll) would not prove the ordering — only this synchronous
+        // read does, and it's cheap enough to take on every status transition.
+        var pairs = new List<(AttachState Status, DaemonStatusDto? LatestSnapshot, string[] AgentKeys)>();
         DaemonStatusDto? latestSnapshot = null;
         using var subSnap = svc.Snapshots.Subscribe(s => latestSnapshot = s);
-        using var subStatus = svc.Status.Subscribe(s => pairs.Add((s.State, latestSnapshot)));
+        using var subStatus = svc.Status.Subscribe(s => pairs.Add((
+            s.State,
+            latestSnapshot,
+            svc.Agents.Keys.OrderBy(k => k, StringComparer.Ordinal).ToArray())));
 
         await WaitUntilAsync(() => pairs.Count >= 1); // initial Connecting
 
@@ -145,6 +154,11 @@ public class DaemonClientServiceTests {
         var snapA = Snap("daemon-a", "a1");
         script.Feed(new LocalControlEvent.Connected(capsA, snapA));
         await WaitUntilAsync(() => pairs.Count >= 2);
+
+        // First connect: cache already holds exactly A's keys at the Connected moment.
+        var firstConnectedMoment = pairs[1];
+        await Assert.That(firstConnectedMoment.Status).IsEqualTo(AttachState.Connected);
+        await Assert.That(firstConnectedMoment.AgentKeys).IsEquivalentTo(["a1"], CollectionOrdering.Matching);
 
         script.Feed(new LocalControlEvent.Unreachable("daemon_unreachable"));
         await WaitUntilAsync(() => pairs.Count >= 3);
@@ -154,11 +168,67 @@ public class DaemonClientServiceTests {
         script.Feed(new LocalControlEvent.Connected(capsB, snapB));
         await WaitUntilAsync(() => pairs.Count >= 4);
 
-        // At the moment status flips to Connected the second time, the snapshot observed
-        // alongside it must ALREADY be snapB — never a stale snapA/no-snapshot pairing.
+        // At the moment status flips to Connected the second time, BOTH the snapshot AND the
+        // cache observed alongside it must ALREADY be B's — never a stale A snapshot/keys, and
+        // never a "connected but still showing A" moment.
         var connectedMoment = pairs[3];
         await Assert.That(connectedMoment.Status).IsEqualTo(AttachState.Connected);
         await Assert.That(connectedMoment.LatestSnapshot).IsEqualTo(snapB);
+        await Assert.That(connectedMoment.AgentKeys).IsEquivalentTo(["b1"], CollectionOrdering.Matching);
+    }
+
+    [Test]
+    public async Task Pump_fault_does_not_brick_restart_or_disposal() {
+        // A scripted event stream whose enumeration throws mid-stream — representative of
+        // Apply() throwing from a downstream Rx/DynamicData observer (the same PumpAsync
+        // catch site sees both, since Apply() runs inside the awaited foreach body). Before the
+        // fix, this would fault `_loop` forever: every later RestartLoopAsync would rethrow at
+        // `await _loop` without ever reaching reassignment, and DisposeAsync would throw at its
+        // `await _loop`, skipping subject/cache disposal.
+        var faultCount = 0;
+        var script = new Script();
+
+        async IAsyncEnumerable<LocalControlEvent> FaultingThenNormalRun([EnumeratorCancellation] CancellationToken ct) {
+            if (Interlocked.Increment(ref faultCount) == 1) {
+                Interlocked.Increment(ref script.LiveEnumerations);
+                Interlocked.Increment(ref script.StartCount);
+                try {
+                    yield return new LocalControlEvent.Connecting();
+                    await Task.Yield();
+                    throw new InvalidOperationException("simulated pump fault");
+                } finally {
+                    Interlocked.Decrement(ref script.LiveEnumerations);
+                }
+            } else {
+                await foreach (var e in script.Run(ct)) yield return e;
+            }
+        }
+
+        // Not `await using` — DisposeAsync is called explicitly below as the assertion under
+        // test, so a second implicit call at scope exit is avoided rather than relied upon to
+        // be idempotent.
+        var svc = new DaemonClientService("daemon-a", FaultingThenNormalRun, new FakeProcessRunner(), "kcap");
+        svc.Start();
+
+        // Let the faulting first enumeration run to completion (fault contained, no crash).
+        await WaitUntilAsync(() => faultCount >= 1);
+        await WaitUntilAsync(() => script.LiveEnumerations == 0, TimeSpan.FromSeconds(5));
+
+        // RestartLoopAsync must still work after a faulted pump — this is the regression pin:
+        // it must not rethrow, and it must reach a fresh, live enumeration.
+        await svc.RestartLoopAsync();
+        await WaitUntilAsync(() => script.LiveEnumerations >= 1, TimeSpan.FromSeconds(5));
+
+        var statuses = new List<AttachStatus>();
+        using var sub = svc.Status.Subscribe(statuses.Add);
+        script.Feed(new LocalControlEvent.Connecting());
+        await WaitUntilAsync(() => statuses.Count >= 1);
+        await Assert.That(statuses[^1]).IsEqualTo(new AttachStatus(AttachState.Connecting, null, null));
+
+        // DisposeAsync must also complete cleanly (not throw, not skip cleanup) even though a
+        // fault occurred earlier in this service's lifetime.
+        await svc.DisposeAsync();
+        await Assert.That(script.LiveEnumerations).IsEqualTo(0);
     }
 
     [Test]

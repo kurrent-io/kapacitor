@@ -81,7 +81,7 @@ public sealed class DaemonClientService : IDaemonClientService, IAsyncDisposable
             if (_lifetime.IsCancellationRequested) return; // shutdown won the race for the gate
 
             _loopCts?.Cancel();
-            await _loop.ConfigureAwait(false); // AWAIT the old enumeration's end before starting a new one
+            await AwaitLoopQuietly(_loop); // AWAIT the old enumeration's end before starting a new one
 
             _loopCts = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
             _loop    = Task.Run(() => PumpAsync(_loopCts.Token));
@@ -95,7 +95,22 @@ public sealed class DaemonClientService : IDaemonClientService, IAsyncDisposable
             await foreach (var e in _runClient(ct)) Apply(e);
         } catch (OperationCanceledException) {
             // Expected on restart/shutdown — the enumeration simply ends, no fabricated event.
+        } catch (Exception) {
+            // Contain a faulted pump (e.g. a downstream Apply()/Rx observer throwing) exactly
+            // like a cancellation: end THIS enumeration only. Letting this escape would fault
+            // the `_loop` task forever, bricking every later RestartLoopAsync/DisposeAsync at
+            // their `await _loop`. No logger is wired into this service — containment here is
+            // deliberate over a rethrow; AwaitLoopQuietly below is defense-in-depth for the same
+            // property in case a future edit reintroduces an escaping path.
         }
+    }
+
+    // Defense-in-depth alongside PumpAsync's catch-all: even if a future edit reintroduces a
+    // path where `_loop` faults, a bricked loop must never block RestartLoopAsync or
+    // DisposeAsync from progressing.
+    static async Task AwaitLoopQuietly(Task loop) {
+        try { await loop.ConfigureAwait(false); }
+        catch { /* contained — see PumpAsync */ }
     }
 
     public async Task<StartDaemonResult> StartDaemonAsync(CancellationToken ct) {
@@ -138,7 +153,7 @@ public sealed class DaemonClientService : IDaemonClientService, IAsyncDisposable
         await _restartGate.WaitAsync().ConfigureAwait(false);
         try {
             _loopCts?.Cancel();
-            await _loop.ConfigureAwait(false);
+            await AwaitLoopQuietly(_loop);
         } finally {
             _restartGate.Release();
         }
