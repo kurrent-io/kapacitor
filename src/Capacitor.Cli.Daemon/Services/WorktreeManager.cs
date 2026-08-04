@@ -900,57 +900,38 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
     /// worktree-metadata gate already documents as defeating a different path-identity check.</para>
     /// </summary>
     static void EnsureSeparateRoots(string source, string snapshotRoot) {
-        // Probed on the SOURCE, which is the volume that matters: for the snapshot root to land inside the
-        // source it has to be on the source's filesystem. Never inferred from the OS — a normalisation-
-        // sensitive volume can be mounted on macOS and an insensitive one on Linux.
-        var foldNormalization = ProbeNormalizationInsensitive(source);
-        if (IsAtOrUnder(snapshotRoot, source, foldNormalization) ||
-            IsAtOrUnder(ResolveDeepestExisting(snapshotRoot), ResolveDeepestExisting(source),
-                foldNormalization))
+        if (IsAtOrUnder(snapshotRoot, source) ||
+            IsAtOrUnder(ResolveDeepestExisting(snapshotRoot), ResolveDeepestExisting(source)))
             throw new InvalidOperationException("borrowed_snapshot_root_inside_source");
     }
 
-    /// <summary>Whether <paramref name="directory"/>'s filesystem treats composed and decomposed spellings
-    /// of the same name as one entry.
-    /// <para>Probed rather than assumed, and the direction matters both ways. On a typical macOS volume
-    /// they ARE one directory, so comparing without folding lets a snapshot root spelled one way sit
-    /// inside a source spelled the other. On Linux they are genuinely DISTINCT directories, so folding
-    /// unconditionally would refuse a perfectly valid configuration — a fail-closed availability
-    /// regression rather than an escape, but a regression.</para>
-    /// <para>Falls back to folding when the probe cannot run: over-refusing a legitimate layout is the
-    /// better failure of the two.</para></summary>
-    static bool ProbeNormalizationInsensitive(string directory) {
-        // U+00E9 versus "e" + U+0301 — the same grapheme, two encodings.
-        var stem = "norm-probe-" + Guid.NewGuid().ToString("N");
-        var composed = Path.Combine(directory, stem + "é");
-        var decomposed = Path.Combine(directory, stem + "é");
-        try {
-            using (new FileStream(composed, FileMode.CreateNew, FileAccess.Write, FileShare.None)) { }
-            return File.Exists(decomposed);
-        } catch {
-            return true;
-        } finally {
-            try { File.Delete(composed); } catch { }
-            try { File.Delete(decomposed); } catch { }
-        }
-    }
-
-    /// <summary>Ancestry over path STRINGS, folding Unicode normalisation only when the filesystem does.
-    /// <para>Case folding alone is not enough on a normalisation-insensitive volume: a typical macOS
-    /// filesystem treats <c>café</c> composed and decomposed as one directory, while no
-    /// <c>StringComparison</c> makes those two strings equal. A source spelled one way and a configured
-    /// snapshot root spelled the other would then fail both the lexical and the resolved check and still
-    /// land the snapshot inside the source. Folding UNCONDITIONALLY is equally wrong in the other
-    /// direction — on Linux those are distinct directories and a valid layout would be refused — which is
-    /// why <paramref name="foldNormalization"/> is probed rather than assumed.</para>
-    /// <para>This does not reach true filesystem identity — .NET exposes no portable device/inode pair —
-    /// so exotic equivalences remain in the same trusted-configuration residual as bind mounts and SUBST
-    /// aliases, documented on <see cref="EnsureSeparateRoots"/>.</para></summary>
-    static bool IsAtOrUnder(string candidate, string root, bool foldNormalization) {
-        if (foldNormalization) {
-            candidate = candidate.Normalize(NormalizationForm.FormC);
-            root = root.Normalize(NormalizationForm.FormC);
-        }
+    /// <summary>Ancestry over path STRINGS, with both operands normalised to NFC.
+    ///
+    /// <para><b>Why fold at all.</b> Case folding alone is not enough on a normalisation-insensitive
+    /// volume: a typical macOS filesystem treats <c>caf\u00e9</c> composed and decomposed as ONE directory,
+    /// while no <c>StringComparison</c> makes those two strings equal. A source spelled one way and a
+    /// configured snapshot root spelled the other would otherwise fail both the lexical and the resolved
+    /// check and still land the snapshot inside the source.</para>
+    ///
+    /// <para><b>Why unconditionally, and what it costs.</b> On a normalisation-SENSITIVE volume those are
+    /// genuinely distinct directories, so folding can refuse a layout that is actually fine. The refusal
+    /// needs an operator to have spelled the source and the worktree root with different normalisations of
+    /// the same name, on such a volume, and it fails closed with a specific coded error — so the cost is a
+    /// clear error in a vanishingly rare configuration, against a containment bypass in a common one.</para>
+    ///
+    /// <para>A probe was written to make this conditional and then REMOVED. Deciding by probe meant
+    /// creating a file inside the user's own checkout — which the source manifest reads as untracked
+    /// content — and deleting a second pathname the probe had not created; and its lookup used
+    /// <c>File.Exists</c>, which reports <c>false</c> for access and I/O errors as well as for absence, so
+    /// a failed probe read as "normalisation-sensitive" and silently reopened the bypass. Fail-open plus a
+    /// destructive cleanup is a worse trade than an over-refusal.</para>
+    ///
+    /// <para>True filesystem identity would settle it, but .NET exposes no portable device/inode pair, so
+    /// exotic aliases stay in the trusted-configuration residual documented on
+    /// <see cref="EnsureSeparateRoots"/>.</para></summary>
+    static bool IsAtOrUnder(string candidate, string root) {
+        candidate = candidate.Normalize(NormalizationForm.FormC);
+        root = root.Normalize(NormalizationForm.FormC);
         var prefix = root.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
         return candidate.Equals(root, FileSystemPathComparison) ||
                candidate.StartsWith(prefix, FileSystemPathComparison);
