@@ -100,11 +100,20 @@ test/Capacitor.App.Tests.Unit/                           ← new TUnit/MTP proje
   AvaloniaSession.cs                                      — HeadlessUnitTestSession helper
   MainWindowViewModelTests.cs, MainWindowSmokeTests.cs, DaemonClientServiceTests.cs
 .github/workflows/ci.yml                                  ← modified: run the app test project (§8)
+Directory.Packages.props                                  ← modified: central versions for the new packages
 ```
 
-Dependencies: `Capacitor.App` → `Capacitor.Cli.Core`, `Avalonia`, `Avalonia.ReactiveUI`,
-`DynamicData` (+ `Avalonia.Themes.Fluent`, `Avalonia.Headless` in the test project). Core gains
-no packages. Both new projects join the solution; the ubuntu and windows CI legs gain an
+Dependencies: `Capacitor.App` → `Capacitor.Cli.Core`, `Avalonia`, `Avalonia.Desktop`,
+`Avalonia.Themes.Fluent`, `Avalonia.ReactiveUI`, `DynamicData` (+ `Avalonia.Headless` in the
+test project). **Central package management**: the repo has
+`ManagePackageVersionsCentrally=true`, so `Directory.Packages.props` gains `PackageVersion`
+entries for exactly these packages — the whole Avalonia family (`Avalonia`, `Avalonia.Desktop`,
+`Avalonia.Themes.Fluent`, `Avalonia.ReactiveUI`, `Avalonia.Headless`) pinned to ONE identical
+latest-stable 11.x version, and `DynamicData` at its latest stable. `ReactiveUI` and
+`System.Reactive` are deliberately NOT direct references — they arrive transitively via
+`Avalonia.ReactiveUI`/`DynamicData`, so they get no `PackageVersion` entries and no project can
+silently pin a conflicting version. Acceptance: restore + build green on both CI legs. Core
+gains no packages. Both new projects join the solution; the ubuntu and windows CI legs gain an
 explicit `dotnet run --project test/Capacitor.App.Tests.Unit/...` step (§1.11 — solution
 membership alone runs nothing). The AOT-publish checks are untouched and must stay warning-free
 (the client is BCL-only).
@@ -115,53 +124,82 @@ membership alone runs nothing). The AOT-publish checks are untouched and must st
 public sealed class LocalControlClient(string daemonName, TimeProvider? time = null) {
     /// Backoff schedule between failed attach cycles (stays at the last entry). Settable for tests.
     public TimeSpan[] RetryDelays { get; set; } = [1s, 2s, 5s, 10s, 30s]; // TimeSpan values; sketch shorthand
+    /// Per-phase deadlines (§4.1): a silent peer must classify, never hang the state machine.
+    public TimeSpan ConnectTimeout       { get; set; } = 5s;
+    public TimeSpan HelloReplyTimeout    { get; set; } = 5s;
+    public TimeSpan FirstSnapshotTimeout { get; set; } = 10s;
     public IAsyncEnumerable<LocalControlEvent> RunAsync(CancellationToken ct);
 }
 
 public abstract record LocalControlEvent {
-    public sealed record StateChanged(AttachState State, string? Reason,
-        IReadOnlyList<string>? Capabilities) : LocalControlEvent;
+    public sealed record Connecting : LocalControlEvent;
+    /// Carries the FIRST validated snapshot: no consumer can observe "connected"
+    /// while holding only stale data from a previous incarnation (§4.3).
+    public sealed record Connected(
+        IReadOnlyList<string>? Capabilities, DaemonStatusDto FirstSnapshot) : LocalControlEvent;
+    public sealed record Unreachable(string Reason) : LocalControlEvent;
     public sealed record Status(DaemonStatusDto Snapshot) : LocalControlEvent;
 }
-public enum AttachState { Connecting, Connected, Unreachable }
 ```
 
-Backoff waits run on the injected `TimeProvider` (default `TimeProvider.System`) so tests drive
-them deterministically — no wall-clock races.
+All waits — backoff delays AND the three phase deadlines — run on the injected `TimeProvider`
+(default `TimeProvider.System`) so tests drive them deterministically; no wall-clock races.
 
 ### 4.1 Attach cycle
 
 Resolve `LocalSocketPaths.Socket(daemonName)` → **connection 1: hello** (frame 15 → 75; hello
 is one-shot, the daemon answers and closes) → gate on the reply → **connection 2:
-`StatusSubscribe`** → read frames. The cycle SUCCEEDS only when the first valid `DaemonStatus`
-frame arrives (decision 7): at that point the client yields `Connected` (carrying the hello
-reply's capabilities), resets the backoff schedule to its start, and then yields `Status` for
-that first snapshot and every subsequent one. A subscribe connection that opens and then
-EOFs/faults before the first frame is a FAILED cycle — no `Connected`, no backoff reset.
+`StatusSubscribe`** → read frames. Each phase has a finite deadline (`ConnectTimeout` on the
+socket connect, `HelloReplyTimeout` on the hello reply, `FirstSnapshotTimeout` on the first
+snapshot after subscribing) — a peer that accepts and then stays silent (wedged daemon,
+unrelated process squatting the socket) classifies and enters backoff instead of pinning the
+state machine on `Connecting` forever. The cycle SUCCEEDS only when the first VALID snapshot
+arrives: the client yields `Connected(capabilities, firstSnapshot)` — the first snapshot rides
+inside the `Connected` event — resets the backoff schedule to its start, and yields `Status`
+for every subsequent frame. A subscribe connection that opens and then EOFs, faults, or goes
+silent before the first valid frame is a FAILED cycle — no `Connected`, no backoff reset.
+
+**Snapshot validity** (what "valid `DaemonStatus`" means — the first frame and every later
+one): deserialization succeeds AND the root, `Daemon`, and `Agents` members are non-null AND
+every `Agents` element is non-null with a non-empty `Id`. STJ source-gen does not enforce
+non-nullable members at runtime, so the client validates structurally and NEVER yields an
+unusable DTO — the app may dereference what it receives. An invalid snapshot is protocol
+evidence (§4.2), not data.
+
+**Explicit non-goal:** no idle timeout on the ESTABLISHED stream. After the first snapshot the
+daemon is legitimately silent until something changes; detecting a wedged daemon at idle would
+need a heartbeat, which is not designed here.
 
 ### 4.2 Failure classification (exhaustive)
 
 Every cycle failure is contained and classified; nothing but cancellation escapes `RunAsync`:
 
-- **`daemon_unreachable`** (transport): socket file absent, connect refused/timed out,
+- **`daemon_unreachable`** (transport/unresponsive): socket file absent, connect refused,
+  `ConnectTimeout`/`HelloReplyTimeout`/`FirstSnapshotTimeout` expiry,
   `IOException`/`SocketException` (including `EndOfStreamException` truncation) at any point,
   clean EOF on the subscribe connection, and — as the catch-all — any other non-cancellation
   exception inside a cycle.
-- **`daemon_incompatible`** (protocol): hello-then-clean-EOF with no reply (pre-hello daemon —
-  a HEURISTIC per §1.1: a dying current daemon looks the same, and retries self-correct it);
-  a `HelloReply` whose capabilities (null ⇒ empty, §1.2) lack `"status/1"`; an `Error` frame
-  or any unexpected frame type answering `Hello` or arriving on the subscribe connection;
-  `InvalidDataException` from the codec; malformed `HelloReply` JSON (`JsonException`).
+- **`daemon_incompatible`** (protocol evidence): hello-then-clean-EOF with no reply (pre-hello
+  daemon — a HEURISTIC per §1.1: a dying current daemon looks the same, and retries
+  self-correct it); a `HelloReply` whose capabilities (null ⇒ empty, §1.2) lack `"status/1"`;
+  an `Error` frame or any unexpected frame type answering `Hello` or arriving on the subscribe
+  connection; `InvalidDataException` from the codec; malformed `HelloReply` JSON
+  (`JsonException`); a malformed or structurally invalid `DaemonStatus` payload (§4.1
+  validity) — first frame or mid-stream (a mid-stream one ends the Connected streak as
+  `Unreachable("daemon_incompatible")`).
   Incompatible is STILL retried on the same schedule — a daemon update/restart fixes it and
-  the retry then succeeds; the reason string only changes what the UI says while waiting.
-  Unknown/extra capability strings are ignored (forward compat); `protocol_version` is not
-  gated (§1.2).
+  the retry then succeeds; the reason string only changes what the UI says while waiting
+  (neutrally: version skew, not a verdict about which side is old — §5). Unknown/extra
+  capability strings are ignored (forward compat); `protocol_version` is not gated (§1.2).
 
 ### 4.3 Observable state machine (pinned sequence)
 
 - On enumeration start (initial run or a manual restart — each `RunAsync` call is one
   enumeration): yield `Connecting`, then run attach cycles.
-- Success path: `Connecting` → `Connected` (first snapshot proven) → `Status`* .
+- Success path: `Connecting` → `Connected(caps, first)` → `Status`* — the first snapshot
+  travels IN the `Connected` event, so no consumer can observe the connected state before the
+  fresh data exists (§5 pins the service-side publication order that preserves this
+  end-to-end).
 - Failure path: yield `Unreachable(reason)` and begin backed-off retries. **Background retries
   are silent**: no `Connecting` is emitted for automatic re-attempts, and the externally
   observable state stays `Unreachable` until either a cycle succeeds (→ `Connected`) or a
@@ -178,16 +216,25 @@ initiated is in flight", not "a socket dial happened". Manual Retry restarts the
 ### 4.4 Tests
 
 Kcap-cli unit suite, reusing the AI-1649 harness (Windows guard, `NotInParallel`, short daemon
-names), controlled `TimeProvider` for backoff:
+names), controlled `TimeProvider` for backoff and phase deadlines:
 
-- Gate pass → `Connecting`, `Connected` (with capabilities), first `Status` — in that order.
+- Gate pass → `Connecting`, then `Connected` carrying capabilities AND the first snapshot,
+  then `Status` per push — in that order; nothing yields between `Connecting` and `Connected`.
 - Capability-missing, hello-EOF, `Error`-reply, and undecodable-frame gates each classify as
   `daemon_incompatible`; socket-absent and connect-refused classify as `daemon_unreachable`.
+- Silent-peer matrix (scripted socket server): accepts then stays silent during hello →
+  `HelloReplyTimeout` expiry → `daemon_unreachable`; accepts `StatusSubscribe` then never
+  pushes → `FirstSnapshotTimeout` expiry → `daemon_unreachable`; both enter backoff, no hang.
+- Malformed/invalid status: unparseable JSON as the first frame → failed cycle,
+  `daemon_incompatible`; structurally invalid payloads (`{"daemon":null,"agents":null}`, an
+  agents array containing null or blank-id entries) → same; a malformed frame mid-stream ends
+  the streak with `Unreachable("daemon_incompatible")`; no invalid DTO is ever yielded.
 - Subscribe-EOF-before-first-frame: no `Connected`, no backoff reset, one `Unreachable`.
 - Persistent outage across ≥2 cycles: exactly one `Unreachable` event (transition-only pin);
   a reason CHANGE (unreachable daemon replaced by an incompatible one) yields a second event.
 - Backoff schedule advances across failed cycles and resets after a proven `Connected`.
-- Daemon stop mid-stream → `Unreachable`; daemon restart → `Connected` + fresh snapshot.
+- Daemon stop mid-stream → `Unreachable`; daemon restart → `Connected` with a FRESH first
+  snapshot (reconnect pin).
 - Clean cancellation mid-backoff-wait and mid-stream.
 
 ## 5. App: service, ViewModel, window
@@ -203,6 +250,12 @@ the app-lifetime token; interface exists so ViewModel tests script the stream):
   single stream — split state/reason observables that can tear are forbidden.
 - `IObservable<DaemonStatusDto> Snapshots` — replay-1 that emits NOTHING until the first real
   snapshot (no fabricated seed; the UI renders placeholders until then).
+- **Publication order on reconnect (no-stale pin):** on a `Connected(caps, first)` event the
+  service applies the carried first snapshot FIRST — publish to `Snapshots`, `EditDiff` into
+  the cache — and only THEN publishes `AttachStatus(Connected, …)`. Combined with §4.3 (the
+  first snapshot rides inside `Connected`), a consumer that gates rendering on `Connected` can
+  never observe the connected state alongside a previous incarnation's data. §8 has the
+  reconnect assertion.
 - `SourceCache<AgentStatusDto, string> Agents` (keyed by `Id`, `EditDiff` per snapshot).
   **Retained across disconnects**: neither the cache nor the last snapshot is cleared on
   `Unreachable` — staleness is a presentation concern (the VM stops showing the count when not
@@ -233,8 +286,10 @@ and `Snapshots` observed on `RxApp.MainThreadScheduler` — `DaemonName`, `Daemo
 `Connected`; "—" otherwise — no free-slots claim, §1.5), `State`, `Reason`, `StartMessage`.
 Commands: `StartDaemonCommand` — enabled iff the current `AttachStatus` is
 `(Unreachable, "daemon_unreachable")` and no start is in flight; `RetryCommand` — always
-enabled outside `Connected`. `Unreachable("daemon_incompatible")` renders "daemon is too old —
-update kcap" with Retry only (§4.2: it self-corrects after an update; Start is not the fix).
+enabled outside `Connected`. `Unreachable("daemon_incompatible")` renders the NEUTRAL skew message
+"app and daemon are incompatible — make sure both are up to date" with Retry only (§4.2 is a
+broad heuristic — an unexpected frame can equally mean the APP is the older side, so the UI
+must not prescribe an upgrade direction; Start stays disabled because the daemon is alive).
 `StartMessage` (start-daemon failure text) clears on the next start attempt and on any
 transition to `Connected`. All VM subscriptions are activation-scoped (`WhenActivated`);
 the service outlives ViewModels and owns its subjects.
@@ -274,14 +329,23 @@ is corrected after spec approval.
   projections from the atomic `AttachStatus` (no torn intermediate states possible — pinned by
   construction, asserted by a state×reason command-enablement matrix); agent-count text shows
   values only in `Connected` and "—" after a disconnect WITHOUT the cache being cleared
-  (disconnect test); `SourceCache` diffing add/update/remove across snapshots; `Snapshots`
-  emits nothing before the first snapshot; initial `AttachStatus` replay is `Connecting`.
+  (disconnect test); **reconnect no-stale assertion**: script Connected(A) → Unreachable →
+  Connected(B) and assert that at the moment status flips back to `Connected`, `Snapshots`
+  and every rendered field already carry B's values — old identity/count are never visible as
+  connected; `SourceCache` diffing add/update/remove across snapshots; `Snapshots` emits
+  nothing before the first snapshot; initial `AttachStatus` replay is `Connecting`;
+  **deactivation-disposal test**: activate the VM, deliver events, deactivate (window close),
+  deliver more events, assert no projection updates and the activation subscriptions are
+  released.
 - **App — service integration tests** (fake process-runner seam): `StartDaemonAsync` exact
   argv pin (`daemon start -d --name <resolved>` through the `KCAP_APP_CLI_PATH` binary);
   failure capture (spawn exception / non-zero exit / empty stderr → non-empty message);
   exit-0 triggers an immediate `RestartLoopAsync`. Rapid double `RestartLoopAsync` produces
   one live enumeration and no interleaved events (single-flight pin). Shutdown leaves no live
-  loop (awaited-completion pin).
+  loop (awaited-completion pin); **shutdown-during-start test**: begin `StartDaemonAsync`
+  against a non-exiting fake process, trigger app shutdown, assert the wait is abandoned and
+  shutdown completes (no child-process wait survives exit); **disposal assertions**: after
+  shutdown the service's subjects and `SourceCache` are disposed and publish nothing.
 - **App — headless UI**: one smoke test booting `MainWindow` and asserting the §5 fields
   render (incl. the deliverable's identity block — rendering acceptance). Every test touching
   Avalonia or `RxApp` globals carries `[NotInParallel("AvaloniaSession")]` — the session and
