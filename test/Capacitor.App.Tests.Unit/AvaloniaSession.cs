@@ -18,7 +18,25 @@ internal static class AvaloniaSession {
     }
 
     static readonly Lazy<HeadlessUnitTestSession> Session =
-        new(() => HeadlessUnitTestSession.StartNew(typeof(TestAppBuilder)));
+        new(() => {
+            var session = HeadlessUnitTestSession.StartNew(typeof(TestAppBuilder));
+            // Defensive, decompiler-verified: ReactiveUI.Avalonia's UseReactiveUI() only applies
+            // WithAvalonia()'s AvaloniaScheduler wiring by calling ReactiveUIBuilder.BuildApp()
+            // when Avalonia.AppBuilder.HasBeenBuilt is still false at that point in the pipeline
+            // — and in this headless test process that flag can already be true (MTP/Avalonia
+            // test infra builds its own AppBuilder earlier), silently skipping the wiring. When
+            // that happens RxSchedulers.MainThreadScheduler is left at ReactiveUI's own default
+            // (System.Reactive.Concurrency.DefaultScheduler — a background/thread-pool
+            // scheduler), NOT the real Avalonia dispatcher, and every ObserveOn(RxSchedulers.
+            // MainThreadScheduler) call in the app would silently deliver off the UI thread —
+            // reproduced directly: constructing a MainWindowViewModel/MainWindow and publishing
+            // a Status transition crashed with Avalonia's VerifyAccess() thread-affinity check,
+            // from a System.Reactive DefaultScheduler.LongRunning worker thread. Set it
+            // explicitly here so the baseline scheduler outside WithImmediateRxScheduler is
+            // ALWAYS the real one, regardless of what UseReactiveUI's internal gating decided.
+            RxSchedulers.MainThreadScheduler = AvaloniaScheduler.Instance;
+            return session;
+        });
 
     public static Task<T> DispatchAsync<T>(Func<T> body) =>
         Session.Value.Dispatch(body, CancellationToken.None);
@@ -33,6 +51,15 @@ internal static class AvaloniaSession {
     /// moved the ambient scheduler off the classic static `RxApp` type onto `RxSchedulers`;
     /// `RxApp` scheduler properties no longer exist in this ReactiveUI line.)
     public static async Task WithImmediateRxScheduler(Func<Task> body) {
+        // Force the (lazy, process-wide) session to actually start BEFORE snapshotting "prior" —
+        // the Session factory above is what pins RxSchedulers.MainThreadScheduler to the real
+        // AvaloniaScheduler. If this were the FIRST scheduler-touching call in the whole test
+        // run, capturing "prior" before that pin would snapshot whatever System.Reactive's
+        // unconfigured default is instead, and the `finally` below would then "restore" the
+        // global to that wrong value forever — corrupting every later test that assumes the
+        // real dispatcher scheduler is live outside this method.
+        _ = Session.Value;
+
         IScheduler prior = RxSchedulers.MainThreadScheduler;
         RxSchedulers.MainThreadScheduler = ImmediateScheduler.Instance;
         try { await body(); } finally { RxSchedulers.MainThreadScheduler = prior; }

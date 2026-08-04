@@ -14,4 +14,7 @@
         <PackageReference Include="ReactiveUI.Avalonia" />
         <PackageReference Include="DynamicData" />
     </ItemGroup>
+    <ItemGroup>
+        <InternalsVisibleTo Include="Capacitor.App.Tests.Unit" />
+    </ItemGroup>
 </Project>

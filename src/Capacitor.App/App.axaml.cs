@@ -31,7 +31,22 @@ public partial class App : Application {
         var service = await DaemonClientService.CreateDefaultAsync();
         service.Start();
         _service = service;
-        desktop.MainWindow = new MainWindow { DataContext = new MainWindowViewModel(service, _shutdown.Token) };
+        desktop.MainWindow = BuildAndShowMainWindow(service, _shutdown.Token);
+    }
+
+    // Split out of StartAsync so a test can drive "build VM+window, assign, and Show()" against
+    // a fake service without needing a real daemon/profile (CreateDefaultAsync does real config
+    // I/O). This is also the actual bug fix: Avalonia's StartWithClassicDesktopLifetime calls
+    // ShowMainWindow() exactly ONCE, synchronously, right after Start — and at that moment
+    // desktop.MainWindow is still null, because CreateDefaultAsync genuinely awaits (config.json
+    // read). By the time this continuation resumes and assigns desktop.MainWindow, nothing else
+    // will ever call .Show() for us, so this method must call it explicitly. Show() on an
+    // already-visible window is a no-op, so this stays correct even if a future edit changes the
+    // timing such that ShowMainWindow() DOES still see a non-null MainWindow.
+    internal static MainWindow BuildAndShowMainWindow(IDaemonClientService service, CancellationToken shutdownToken) {
+        var window = new MainWindow { DataContext = new MainWindowViewModel(service, shutdownToken) };
+        window.Show();
+        return window;
     }
 
     // Async-safe shutdown: ShutdownRequested fires on the UI thread and can be cancelled, so the

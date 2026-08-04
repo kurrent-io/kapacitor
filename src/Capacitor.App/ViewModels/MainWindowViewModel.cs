@@ -10,6 +10,11 @@ namespace Capacitor.App.ViewModels;
 /// Projects IDaemonClientService.Status/Snapshots into display text and drives Start/Retry.
 /// All display projections are activation-scoped (WhenActivated) — the service outlives this
 /// ViewModel and owns its subjects (spec §5), so nothing here disposes the service itself.
+/// DEVIATION: StartDaemonCommand/RetryCommand and their canExecute pipelines are built in the
+/// CONSTRUCTOR, not inside WhenActivated — commands must exist (and be assertable via
+/// CanExecute) independent of window activation; service.Status/service.Snapshots are the
+/// service's own long-lived subjects, not resources the VM needs to scope to a window's
+/// lifetime.
 public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel {
     const string IncompatibleReason = "daemon_incompatible";
     const string UnreachableReason  = "daemon_unreachable";
@@ -76,8 +81,20 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
         // "not currently executing" (confirmed against the installed ReactiveUI 23.2.28 API
         // docs) — no separate in-flight flag is needed to satisfy "Start also disabled while a
         // start is in flight".
-        var canStart = service.Status.Select(s => s.State == AttachState.Unreachable && s.Reason == UnreachableReason);
-        var canRetry = service.Status.Select(s => s.State != AttachState.Connected);
+        //
+        // ReactiveCommand does NOT reschedule the SUPPLIED canExecute onto outputScheduler
+        // (decompile-verified: only IsExecuting/ThrownExceptions ride outputScheduler) — without
+        // an explicit ObserveOn here, a Status event arriving on a background thread (the
+        // service's pump thread) would carry CanExecuteChanged, and therefore a bound Button's
+        // IsEnabled write, onto that same background thread, tripping Avalonia's dispatcher
+        // thread-affinity check. These stay constructor-scoped (not inside WhenActivated) since
+        // commands must exist and be assertable pre-activation — see the class doc comment.
+        var canStart = service.Status
+            .Select(s => s.State == AttachState.Unreachable && s.Reason == UnreachableReason)
+            .ObserveOn(RxSchedulers.MainThreadScheduler);
+        var canRetry = service.Status
+            .Select(s => s.State != AttachState.Connected)
+            .ObserveOn(RxSchedulers.MainThreadScheduler);
 
         StartDaemonCommand = ReactiveCommand.CreateFromTask(() => RunStartAsync(shutdownToken), canStart);
         RetryCommand        = ReactiveCommand.CreateFromTask(service.RestartLoopAsync, canRetry);
