@@ -67,6 +67,15 @@ internal sealed record ElicitationClassification(
 /// Caps (UTF-16 code units, resource bounds — not wire-byte bounds): raw schema 32 Ki, selector
 /// entries 32, option id/label 1024 each. With those, the produced <see cref="AcpInteractionOption"/>
 /// payload is a fixed, bounded function of the caps regardless of the raw schema's content.
+///
+/// On JSON access style: the validation stages below branch on <see cref="JsonElement.ValueKind"/>
+/// DIRECTLY and deliberately do not go through the shared <c>JsonElementExtensions</c> helpers.
+/// Those helpers implement a wrong-typed-reads-as-absent convenience contract, which is the exact
+/// opposite of what a validator needs — this pipeline must DISTINGUISH missing/JSON-null (absent,
+/// scoped null-equivalence) from a present wrong-typed value (`malformed_schema`, with a
+/// deterministic stage-ordered reason) — so routing through them would silently reclassify
+/// malformed frames as renderable. The one place the helper contract genuinely matches — the
+/// display-metadata reads, where wrong-typed IS treated as absent — uses <c>Str</c>.
 /// </summary>
 internal static class ElicitationSchemaClassifier {
     const int MaxSchemaCodeUnits = 32 * 1024;
@@ -124,8 +133,11 @@ internal static class ElicitationSchemaClassifier {
         if (typeName is not ("string" or "array"))
             return Fail("unsupported_type", out unrenderableReason);
 
-        var title       = OptionalString(property, "title");
-        var description = OptionalString(property, "description");
+        // Display metadata reads via the shared JsonElementExtensions.Str helper — its
+        // wrong-typed-reads-as-absent contract is exactly the pinned x-deserialize-default-on-error
+        // semantics for these two members.
+        var title       = property.Str("title");
+        var description = property.Str("description");
 
         if (typeName == "string") {
             // Stage 5 (string variant): enum (untitled) xor oneOf (titled); JSON null = absent.
@@ -233,11 +245,6 @@ internal static class ElicitationSchemaClassifier {
         value = default;
         return false;
     }
-
-    /// <summary>Missing, JSON-null, and NON-STRING values are all "absent" — mirroring the pinned
-    /// schema's x-deserialize-default-on-error annotation on title/description.</summary>
-    static string? OptionalString(JsonElement obj, string name) =>
-        obj.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
 
     /// <summary>`required` stage: missing/JSON-null → no required set; non-array or non-string
     /// entries → `malformed_schema` (pinned typing); a well-typed entry naming another property →
