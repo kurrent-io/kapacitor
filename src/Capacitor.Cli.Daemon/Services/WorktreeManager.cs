@@ -562,8 +562,20 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
     public async Task SyncFromSourceAsync(
             string sourceRepoRoot, string sourceCwd, string targetWorktreePath,
             string[] excludePaths, CancellationToken ct) {
-        var gitRelativeCwd = await ReadGitRelativeCwdAsync(
-            Path.GetFullPath(sourceRepoRoot), Path.GetFullPath(sourceCwd), ct);
+        // The same admission checks CreateBorrowedSnapshotAsync applies to its requested cwd. The
+        // work-tree-top check inside ReadGitRelativeCwdAsync already refuses a foreign repository, so
+        // these are defence in depth — but they turn "git failed: ..." into a specific coded error, and
+        // this overload had no containment check of its own at all.
+        var source = Path.GetFullPath(sourceRepoRoot);
+        var cwd = Path.GetFullPath(sourceCwd);
+        var requestedRelative = Path.GetRelativePath(source, cwd).Replace(Path.DirectorySeparatorChar, '/');
+        if (Path.IsPathRooted(requestedRelative) || requestedRelative == ".." ||
+            requestedRelative.StartsWith("../", StringComparison.Ordinal))
+            throw new InvalidOperationException("borrowed_snapshot_cwd_outside_source");
+        if (!Directory.Exists(cwd))
+            throw new InvalidOperationException("borrowed_snapshot_cwd_missing");
+
+        var gitRelativeCwd = await ReadGitRelativeCwdAsync(source, cwd, ct);
         _ = await SyncFromSourceCoreAsync(
             sourceRepoRoot, targetWorktreePath, gitRelativeCwd,
             excludePaths, reviewContextRoot: null, ct);
