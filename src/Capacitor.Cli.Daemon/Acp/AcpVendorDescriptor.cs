@@ -200,7 +200,7 @@ internal static class AcpVendorDescriptors {
     /// <para><b><see cref="AcpVendorDescriptor.SupportsMcpServers"/> is <c>false</c> on call-level
     /// measurement, not on the <c>mcpCapabilities</c> advertisement</b> — the advertised
     /// <c>{http, sse}</c> shape cannot decide this flag either way (Kiro and Gemini advertise exactly
-    /// the same shape and both honour stdio servers). Measured against Copilot CLI 1.0.78
+    /// the same shape and both honour stdio servers). Measured on macOS against Copilot CLI 1.0.78
     /// (2026-08-04): a purpose-built stdio server passed in <c>session/new.mcpServers</c> is silently
     /// ignored. <c>session/new</c> succeeds, but the server process is never spawned (its own log
     /// stays empty), no tool-call frame ever references it, and the model reports the tool
@@ -297,7 +297,7 @@ internal static class AcpVendorDescriptors {
     internal const string UnmatchableMcpNamePlaceholder = "__kcap_unmatchable_mcp_name__";
 
     /// <summary>Google Gemini CLI as an ACP hosted agent (<c>gemini --experimental-acp</c>).
-    /// Interactive hosting only; the unattended reviewer is its own issue, as with Kiro.
+    /// Hosted interactively and as an unattended review-flow reviewer.
     ///
     /// <para><b><c>--skip-trust</c> is required, and is NOT a containment measure.</b> Gemini refuses a
     /// headless turn in an untrusted directory outright — <c>exit 55</c> before any model call — and a
@@ -315,11 +315,14 @@ internal static class AcpVendorDescriptors {
     /// unguessable name — reduces the allowlist to nothing the repository can match, which blocks it. Repo-authored <i>hooks</i> were separately measured NOT to run on the ACP path (they do
     /// on the <c>--prompt</c> path — the two paths differ, and neither predicts the other).</para>
     ///
-    /// <para><b>Denying everything is only correct while <see cref="AcpVendorDescriptor.SupportsMcpServers"/>
-    /// is false.</b> It permits nothing, so with nothing injected it costs nothing. The day the stdio
-    /// call-level probe flips that flag, this list must become the injected server names in the SAME
-    /// change, or hosted Gemini ships with MCP silently broken. <c>AcpVendorDescriptorTests</c> asserts
-    /// the coupling so the two cannot drift apart.</para>
+    /// <para><b>Deny-all is the launch default, and any launch that injects servers must open the
+    /// gate to exactly those names.</b> A review launch replaces the substituted value with the
+    /// injected result channel's wire name (replace, never append — the option is comma-coerced, so
+    /// a second entry would widen the gate rather than move it); an interactive launch injects
+    /// nothing and keeps the unguessable deny-all, which permits nothing and costs nothing. A future
+    /// interactive caller that starts populating <c>RuntimeStartContext.McpServers</c> must widen
+    /// the allowlist in the SAME change, or its servers ship silently blocked.
+    /// <c>AcpVendorDescriptorTests</c> and <c>GeminiReviewerLaunchTests</c> assert both halves.</para>
     ///
     /// <para><see cref="NoOpModelSelector"/> for the same reason as Kiro: <c>session/new</c> does return a
     /// <c>models</c> object, so <see cref="ConfigOptionModelSelector"/>'s read half would fit, but its
