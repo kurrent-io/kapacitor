@@ -196,36 +196,51 @@ public sealed record PermissionOutcomeDto(
 );
 
 /// <summary>
-/// Capability-gated, NOT part of the core ACP spec — modeled defensively on the same
-/// request/response shape as <see cref="SessionRequestPermissionParams"/> since no confirmed
-/// elicitation schema exists for Cursor (R3's open question: "Does Cursor use the ACP
-/// elicitation RFD shape or a vendor extension?" is unanswered). The daemon never advertises
-/// support for this method in <c>initialize</c> (see <c>AcpHostedAgentRuntime.StartAsync</c>'s
-/// existing minimal-capabilities <c>ClientCapabilities</c>, unchanged by this plan) — if a real
-/// agent sends it anyway, <c>AcpInteractionBridge</c> still answers deterministically (see Task
-/// B2) rather than crashing or hanging, but this is explicitly a defensive best-effort path, not a
-/// negotiated capability.
-///
-/// <b>Spec-review Finding 1:</b> <see cref="RequestedSchema"/> is the JSON-Schema half of the
-/// roadmap spec's "options OR JSON Schema" elicitation shape — spec-derived field name
-/// (<c>requestedSchema</c> on the wire), following the MCP elicitation convention this
-/// ACP-capability-gated method is modeled after (there is no ACP-native precedent for it at all).
-/// <see cref="Options"/> and <see cref="RequestedSchema"/> are independent optional fields, not a
-/// discriminated union — a real agent could in principle send either, both, or neither;
-/// <see cref="Capacitor.Cli.Daemon.Acp.AcpInteractionBridge"/> (Task B3) forwards
-/// <see cref="RequestedSchema"/> to the server verbatim (capped server-side, Task A1/A3) and never
-/// attempts to render or validate it itself.
+/// Agent→client <c>elicitation/create</c> request params — the STABILIZED ACP shape
+/// (agent-client-protocol #1779, 2026-07-24; <c>schema/v1/schema.json</c>
+/// <c>CreateElicitationRequest</c>), replacing the pre-stabilization draft this daemon was
+/// originally modeled on (whose <c>options</c> array never existed on any stabilized wire).
+/// Mode variants: <c>"form"</c> carries <see cref="RequestedSchema"/>; <c>"url"</c> carries
+/// <see cref="ElicitationId"/> + <see cref="Url"/> (unsupported by this client — cancelled).
+/// Scope variants: session-scoped (<see cref="SessionId"/>) or request-scoped
+/// (<see cref="RequestId"/>, unsupported — cancelled). Every member is nullable at the DTO
+/// layer: <c>Capacitor.Cli.Daemon.Acp.AcpInteractionBridge</c> owns ALL semantic validation
+/// (a non-nullable C# string would not guarantee the wire supplied one). The daemon still never
+/// advertises the <c>elicitation</c> client capability (see
+/// <c>AcpHostedAgentRuntime.StartAsync</c>'s minimal <see cref="ClientCapabilities"/>) — that
+/// flip ships with the end-to-end multi-select work; until then this lane answers unsolicited
+/// frames spec-correctly instead of with the old malformed <c>{outcome}</c> result.
+/// <see cref="RequestedSchema"/> is forwarded to the server verbatim for audit (capped
+/// server-side); the daemon's own <c>ElicitationSchemaClassifier</c> parses it separately.
 /// </summary>
 public sealed record ElicitationCreateParams(
-    [property: JsonPropertyName("sessionId")] string SessionId,
-    [property: JsonPropertyName("message")]   string Message,
-    [property: JsonPropertyName("options"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-                                               PermissionOptionDto[]? Options = null,
+    [property: JsonPropertyName("sessionId"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+                                                string?      SessionId = null,
+    [property: JsonPropertyName("requestId"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+                                                JsonElement? RequestId = null,
+    [property: JsonPropertyName("message"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+                                                string?      Message = null,
+    [property: JsonPropertyName("mode"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+                                                string?      Mode = null,
     [property: JsonPropertyName("requestedSchema"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-                                               JsonElement? RequestedSchema = null
+                                                JsonElement? RequestedSchema = null,
+    [property: JsonPropertyName("elicitationId"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+                                                string?      ElicitationId = null,
+    [property: JsonPropertyName("url"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+                                                string?      Url = null
 );
 
-/// <summary>Client's JSON-RPC <c>result</c> for a (capability-gated) <c>elicitation/create</c> request.</summary>
-public sealed record ElicitationCreateResult(
-    [property: JsonPropertyName("outcome")] PermissionOutcomeDto Outcome
+/// <summary>
+/// Client's JSON-RPC <c>result</c> for <c>elicitation/create</c> — the STABILIZED
+/// <c>CreateElicitationResponse</c> shape: <see cref="ActionName"/> is <c>"accept"</c> (with
+/// <see cref="Content"/> keyed by the requested schema's property name; a value is a JSON string
+/// or an array of JSON strings), <c>"decline"</c>, or <c>"cancel"</c> (both content-free — the
+/// member is OMITTED, not null). Deliberately a separate type from the permission path's
+/// <c>PermissionOutcomeResult</c>: the two are different protocol objects, and sharing the
+/// builder is exactly how the obsolete <c>{outcome}</c> elicitation result shape leaked in.
+/// </summary>
+public sealed record ElicitationResponse(
+    [property: JsonPropertyName("action")]  string ActionName,
+    [property: JsonPropertyName("content"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+                                            Dictionary<string, JsonElement>? Content = null
 );

@@ -16,6 +16,7 @@ internal static class AcpMetrics {
     public static readonly Counter<long> SessionsStarted = Meter.CreateCounter<long>("acp.sessions_started");
     public static readonly Counter<long> BlockingRequests = Meter.CreateCounter<long>("acp.blocking_requests");
     public static readonly Counter<long> Failures         = Meter.CreateCounter<long>("acp.failures");
+    public static readonly Counter<long> ElicitationUnrenderable = Meter.CreateCounter<long>("acp.elicitation_unrenderable");
 
     /// <summary><paramref name="kind"/> is <c>"permission"</c> or <c>"elicitation"</c> — mirrors <see cref="Daemon.Acp.AcpInteractionBridge"/>'s own kind vocabulary.</summary>
     public static void RecordBlockingRequest(string kind) =>
@@ -24,4 +25,12 @@ internal static class AcpMetrics {
     /// <summary><paramref name="stage"/> is a short token, e.g. <c>"handshake"</c>.</summary>
     public static void RecordFailure(string stage) =>
         Failures.Add(1, new KeyValuePair<string, object?>("stage", stage));
+
+    /// <summary>
+    /// One count per elicitation cancelled BEFORE routing to a human (parse/gate/classifier
+    /// failures alike) — <paramref name="reason"/> is the same snake_case token the
+    /// "cancelled before routing" log carries, so the metric and the log always agree.
+    /// </summary>
+    public static void RecordElicitationUnrenderable(string reason) =>
+        ElicitationUnrenderable.Add(1, new KeyValuePair<string, object?>("reason", reason));
 }

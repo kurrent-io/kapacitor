@@ -176,7 +176,7 @@ internal static class ElicitationFixtures {
     public const string Reason_Params_RequestScoped = "request_scoped_unsupported";
 
     /// <summary>Group C; SDK verdict: fail; expected daemon reason: malformed_schema.</summary>
-    public const string Schema_NonObjectRoot = """"not-an-object"""";
+    public const string Schema_NonObjectRoot = "\"not-an-object\"";
     public const string Reason_Schema_NonObjectRoot = "malformed_schema";
 
     /// <summary>Group C; SDK verdict: fail; expected daemon reason: malformed_schema.</summary>
@@ -284,7 +284,7 @@ internal static class ElicitationFixtures {
     public const string Reason_Params_JsonNullRequestId = "session_uncorrelatable";
 
     /// <summary>Group C; SDK verdict: n/a; expected daemon reason: malformed_request.</summary>
-    public const string Params_MalformedJson = """"{\"sessionId\": \"x\", \"message\": """";
+    public const string Params_MalformedJson = "\"{\\\"sessionId\\\": \\\"x\\\", \\\"message\\\": \"";
     public const string Reason_Params_MalformedJson = "malformed_request";
 
     /// <summary>Group D; SDK verdict: pass; expected daemon reason: unsupported_selector_combination.</summary>
@@ -310,6 +310,18 @@ internal static class ElicitationFixtures {
     /// <summary>Group D; SDK verdict: pass; expected daemon reason: malformed_schema.</summary>
     public const string Schema_BoundNegativeZero = """{"type":"object","properties":{"choice":{"type":"array","maxItems":-0,"items":{"type":"string","enum":["x","y"]}}}}""";
     public const string Reason_Schema_BoundNegativeZero = "malformed_schema";
+
+    /// <summary>Group D; SDK verdict: fail; expected daemon reason: multi_property.</summary>
+    public const string Schema_MultiPropertyMalformedChildren = """{"type":"object","properties":{"a":"nope","b":5}}""";
+    public const string Reason_Schema_MultiPropertyMalformedChildren = "multi_property";
+
+    /// <summary>Group D; SDK verdict: fail; expected daemon reason: too_many_options.</summary>
+    public const string Schema_Malformed40EntrySelector = """{"type":"object","properties":{"choice":{"type":"string","enum":["o0","o1","o2","o3","o4","o5","o6","o7","o8","o9","o10","o11","o12","o13","o14","o15","o16","o17","o18","o19","o20","o21","o22","o23","o24","o25","o26","o27","o28","o29","o30","o31","o32","o33","o34","o35","o36","o37","o38",7]}}}""";
+    public const string Reason_Schema_Malformed40EntrySelector = "too_many_options";
+
+    /// <summary>Group D; SDK verdict: fail; expected daemon reason: malformed_schema.</summary>
+    public const string Schema_MalformedEarlyEntryOverlongLater = """{"type":"object","properties":{"choice":{"type":"string","enum":[5,"ooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooo"]}}}""";
+    public const string Reason_Schema_MalformedEarlyEntryOverlongLater = "malformed_schema";
 
     /// <summary>Group D; SDK verdict: fail.</summary>
     public const string Schema_MetaNumberTitle = """{"type":"object","properties":{"choice":{"type":"string","title":7,"enum":["a","b"]}}}""";

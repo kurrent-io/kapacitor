@@ -182,6 +182,13 @@ for (const [name, lexeme] of [
   const f = fixtures.find((x) => x.name === name);
   f.rawJson = `{"type":"object","properties":{"choice":{"type":"array","maxItems":${lexeme},"items":{"type":"string","enum":["x","y"]}}}}`;
 }
+// Ordering-pinning fixtures (spec §8 classifier tests): protocol validity depends on the
+// reserved-variant tolerance observed above, so recorded as group D; daemon reasons are fixed
+// by the §4.2 stage order.
+S("MultiPropertyMalformedChildren", "D", { type: "object", properties: { a: "nope", b: 5 } }, "multi_property");
+S("Malformed40EntrySelector", "D", oneProp({ type: "string", enum: [...Array.from({ length: 39 }, (_, i) => `o${i}`), 7] }), "too_many_options");
+S("MalformedEarlyEntryOverlongLater", "D", oneProp({ type: "string", enum: [5, "o".repeat(1025)] }), "malformed_schema");
+
 for (const [t, name] of [["number", "MetaNumber"], ["boolean", "MetaBoolean"], ["object", "MetaObject"], ["array", "MetaArray"]]) {
   const v = { number: 7, boolean: true, object: { k: 1 }, array: [1, 2] }[t];
   S(`${name}Title`, "D", oneProp({ type: "string", title: v, enum: ["a", "b"] }));
@@ -244,11 +251,18 @@ namespace Capacitor.Cli.Tests.Unit.Acp;
 
 internal static class ElicitationFixtures {
 `;
+const csLiteral = (text) => {
+  // A raw string cannot represent content that starts/ends with a quote (the delimiter eats it)
+  // or contains a quad-quote run — fall back to a regular escaped literal for those.
+  if (!text.startsWith('"') && !text.endsWith('"') && !text.includes('""""'))
+    return `"""${text}"""`;
+  const escaped = text.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\n/g, "\\n").replace(/\r/g, "\\r").replace(/\t/g, "\\t");
+  return `"${escaped}"`;
+};
 for (const r of results) {
   const id = csName(r.name);
-  const quotes = r.frame.includes('"""') ? '""""' : '"""';
   cs += `    /// <summary>Group ${r.group}; SDK verdict: ${r.sdkVerdict}${r.reason ? `; expected daemon reason: ${r.reason}` : ""}.</summary>\n`;
-  cs += `    public const string ${id} = ${quotes}${r.frame}${quotes};\n`;
+  cs += `    public const string ${id} = ${csLiteral(r.frame)};\n`;
   if (r.reason) cs += `    public const string Reason_${id} = "${r.reason}";\n`;
   cs += "\n";
 }

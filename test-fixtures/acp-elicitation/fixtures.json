@@ -729,6 +729,33 @@
   "note": null
  },
  {
+  "name": "Schema_MultiPropertyMalformedChildren",
+  "group": "D",
+  "kind": "schema",
+  "reason": "multi_property",
+  "sdkVerdict": "fail",
+  "frame": "{\"type\":\"object\",\"properties\":{\"a\":\"nope\",\"b\":5}}",
+  "note": null
+ },
+ {
+  "name": "Schema_Malformed40EntrySelector",
+  "group": "D",
+  "kind": "schema",
+  "reason": "too_many_options",
+  "sdkVerdict": "fail",
+  "frame": "{\"type\":\"object\",\"properties\":{\"choice\":{\"type\":\"string\",\"enum\":[\"o0\",\"o1\",\"o2\",\"o3\",\"o4\",\"o5\",\"o6\",\"o7\",\"o8\",\"o9\",\"o10\",\"o11\",\"o12\",\"o13\",\"o14\",\"o15\",\"o16\",\"o17\",\"o18\",\"o19\",\"o20\",\"o21\",\"o22\",\"o23\",\"o24\",\"o25\",\"o26\",\"o27\",\"o28\",\"o29\",\"o30\",\"o31\",\"o32\",\"o33\",\"o34\",\"o35\",\"o36\",\"o37\",\"o38\",7]}}}",
+  "note": null
+ },
+ {
+  "name": "Schema_MalformedEarlyEntryOverlongLater",
+  "group": "D",
+  "kind": "schema",
+  "reason": "malformed_schema",
+  "sdkVerdict": "fail",
+  "frame": "{\"type\":\"object\",\"properties\":{\"choice\":{\"type\":\"string\",\"enum\":[5,\"ooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooo\"]}}}",
+  "note": null
+ },
+ {
   "name": "Schema_MetaNumberTitle",
   "group": "D",
   "kind": "schema",
