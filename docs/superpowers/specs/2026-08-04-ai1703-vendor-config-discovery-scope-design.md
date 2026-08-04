@@ -3,7 +3,7 @@
 Design for AI-1703. Builds on the merged AI-1632 containment (kcap-cli#427) and the merged
 AI-1706 review-context server (kcap-cli#443).
 
-Revision 4, after three rounds of spec review. Revision 2 moved the cwd prefix from the filesystem to
+Revision 5, after four rounds of spec review. Revision 2 moved the cwd prefix from the filesystem to
 git's own bytes. Revision 3 withdrew an unconditional case fold that was a launch-refusal primitive,
 pinned the `--show-prefix` byte protocol, and persisted the prefix across a refresh. Revision 4
 closes the last structural hole: **the launch path and the classifier are now derived from the same
@@ -239,6 +239,29 @@ This is a user-visible compatibility limitation on one platform class, stated as
 dressed up as a security property, and the error is coded so the daemon can surface something
 actionable. All canonical suffixes are ASCII, so nothing else is affected.
 
+### Sequencing: where the prefix is captured and where the plan is built
+
+Step 5 makes prefix acceptance depend on `caseSensitive`, which is probed inside
+`BuildIndependentSnapshotOnceAsync` **after** the destination checkout. Revision 3 also described the
+caller building the plan and passing it to the builder. Round 4 is right that both cannot hold, and
+that this is a security-relevant contract rather than a code detail — so it is pinned:
+
+1. **At creation**, before any snapshot exists: capture `--show-prefix` and apply parse steps 0–4
+   (bound, framing, root special case, decode, `NormalizeRelativePath`). This yields
+   `GitRelativeCwd`, and it is what gets persisted on `WorktreeInfo`.
+2. **Inside each build attempt**, after the destination checkout and its `ProbeCaseSensitiveFileSystem`
+   call: apply step 5 (the destination-dependent non-ASCII rule) and construct the plan **exactly
+   once**, before review-context extraction and before manifest filtering, so both consumers read one
+   plan classified under one probe result.
+
+The probe must be taken on the **actual destination**, never on its parent or on the configured
+worktree root as a stand-in: case behaviour can differ per directory on supported platforms, and a
+substituted probe would silently classify under the wrong semantics.
+
+`BuildIndependentSnapshotAsync` retries once on `SourceChangedException` against a freshly created
+destination, so the probe and the plan are per-attempt by construction — a retry must not reuse the
+previous attempt's plan.
+
 ### One classifier, not two
 
 `IsUnderExcluded` compares decoded strings with `StringComparison.OrdinalIgnoreCase` (full Unicode
@@ -323,10 +346,23 @@ Bounds, all of which revision 2 got wrong or left open:
 ### Review-context validation
 
 `ValidateReviewContextManifest` capped `Entries.Length` against the static canonical list. With an
-expanded per-build set, the validator needs the same set the extractor used. The concrete reserved
-path list is written into the generation alongside the manifest and threaded into every validation
-call, so the validator checks that every entry path is a member of that set — strictly stronger than
-the old length cap, which only bounded the count.
+expanded per-build set, the validator needs the same set the extractor used.
+
+Round 4 caught the trap in the obvious implementation. A review-context entry preserves the **actual
+git path**, while `VendorConfigPaths` holds **canonical expanded spellings**. On a case-insensitive
+destination a tracked `SRC/.MCP.JSON` is legitimately classified against canonical `src/.mcp.json` —
+so exact membership against the canonical set would reject a valid entry, and relaxing it to an
+`OrdinalIgnoreCase` set would reintroduce a second matcher, which is the defect this design exists to
+remove.
+
+So the generation persists the **exact actual paths `ClassifyReservedPath` matched**, not the
+canonical set, and the validator checks exact membership against those. No folding happens at
+validation time, and there is no second matcher: the only case decision was made once, by the
+classifier, at extraction. This is strictly stronger than the old length cap, which bounded only the
+count.
+
+Test 20 exercises the round trip that none of the other tests reached: a case-varied tracked config on
+a case-insensitive destination, surviving generation serialization and read-time validation.
 
 ### Reviewability, narrowed rather than claimed
 
@@ -351,8 +387,29 @@ It has **no production callers today** — the only call sites are in
 `test/Capacitor.Cli.Tests.Unit/WorktreeManagerTests.cs` and
 `test/Capacitor.Cli.Tests.Unit/Services/AcpHostedAgentRuntimeFactoryLiveTests.cs`. That is a caller
 invariant, not a guarantee: it is a public method that produces a tree an agent could be launched
-into. It therefore takes a plan derived for its own execution path, including the widened ancestor
-rule, and gets consumers 1 and 2. Only consumer 3 (review context) is absent, because it passes no
+into.
+
+Round 4 caught a contradiction in revision 3: this path was kept in scope for consumers 1 and 2, while
+the filesystem-relative derivation it would have had to use was banned everywhere else. Left as
+written, the only way to implement it was to recreate exactly the derivation the round-3 Critical
+removed.
+
+So the API changes rather than inferring. The overloads that take only a target-side execution path
+are **removed** — with no production callers, deleting them is cheaper and safer than preserving an
+unsafe inference — and replaced by one that requires a **source-side cwd**:
+
+```csharp
+public async Task SyncFromSourceAsync(
+    string sourceRepoRoot, string sourceCwd, string targetWorktreePath,
+    string[] excludePaths, CancellationToken ct);
+```
+
+`sourceCwd` goes through the same `rev-parse --show-prefix` derivation as
+`CreateBorrowedSnapshotAsync`, and the one resulting prefix drives both the plan and the target
+execution path — the same single-prefix rule as the borrowed path. A caller that cannot supply a
+source cwd cannot use this method; there is no fallback.
+
+Consumers 1 and 2 apply. Only consumer 3 (review context) is absent, because this overload passes no
 review-context root.
 
 ### The `.github/mcp.json` addition
@@ -385,11 +442,14 @@ found tests that could pass vacuously; those are rewritten rather than patched.
    revision 3 wrongly relied on failing.
 7. **`--show-prefix` protocol, against real git** — invoke the actual command from a real
    subdirectory and compare the parsed bytes against the directory prefixes in a real `ls-files`
-   listing, on macOS, with an alternate-case entry. The composed/decomposed pair is asserted here as
-   the **coded prefix rejection** on a case-insensitive destination, not as a byte comparison —
-   revision 3's test description was self-contradictory, since a non-ASCII prefix is refused there
-   before any comparison happens. A separate case on a case-sensitive volume asserts a non-ASCII
-   prefix is admitted and compared byte-exactly.
+   listing, on macOS, with an alternate-case entry. The non-ASCII cases assert the error the **pinned
+   parse order** actually produces, which round 4 caught revision 3 getting wrong: normalization
+   (step 4) runs before the destination-dependent rule (step 5), so an **NFD** non-ASCII prefix fails
+   with `borrowed_snapshot_invalid_path`, and only an **NFC** non-ASCII prefix on a case-insensitive
+   destination reaches `borrowed_snapshot_cwd_prefix_non_ascii`. A third case on a case-sensitive
+   volume asserts an NFC non-ASCII prefix is admitted and compared byte-exactly. The order is kept as
+   pinned — normalizing before the case-dependent rule is correct, since step 5's reasoning assumes
+   an NFC operand.
 8. **Root prefix** — the empty-prefix path is exercised through the real command output (`"\n"`), not
    through a pre-normalized `""`, and yields a plan equal to `WorkspaceMcpConfigPaths` exactly.
 9. **NFD is rejected, not matched** — an NFD path in the index fails the build via the existing
@@ -423,13 +483,20 @@ found tests that could pass vacuously; those are rewritten rather than patched.
     rejected with `borrowed_snapshot_root_inside_source`, with a control proving the lexical check
     alone passes it. Scoped to the symlink class; the bind-mount and volume-alias residuals are
     documented above and are **not** claimed to be covered by this test.
-17. **Non-borrowed sync** — `SyncFromSourceAsync` with a sub-cwd execution path excludes ancestor
-    configs, proving the static-property removal did not drop its exclusions.
+17. **Non-borrowed sync** — the **new** `SyncFromSourceAsync(sourceRepoRoot, sourceCwd, …)` overload
+    with a sub-cwd excludes ancestor configs, proving the static-property removal did not drop its
+    exclusions. Includes the cross-volume alternate-spelling case from test 6, since round 4 is right
+    that a same-spelling fixture would pass while missing exactly that problem.
 18. **Oversized ancestor config** — one tracked ancestor `.mcp.json` over 256 KiB trips
     `borrowed_snapshot_review_context_capacity_exceeded`. This documents the **pre-existing** DoS
     covered by the separately-filed issue so a later reader does not mistake it for a regression here.
     It is a characterization test, not a passing security property, and is named and commented so.
 19. **List membership** — `.github/mcp.json` and `.copilot/mcp-config.json` required.
+20. **Reserved-set round trip** — on a case-insensitive destination, a tracked config whose actual git
+    path varies in case from the canonical spelling (`SRC/.MCP.JSON` against `src/.mcp.json`) is
+    classified, written into the generation, serialized, and passes read-time validation. This is the
+    path where an exact-membership check against *canonical* spellings would wrongly reject, and where
+    a relaxed check would smuggle a second matcher back in.
 
 The AI-1632 live certification (`KCAP_WORKSPACE_MCP_CERT=1`) is re-run unchanged, with its existing
 control asserting the declared command *does* spawn when the guard is removed.
