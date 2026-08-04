@@ -27,11 +27,20 @@ public partial class App : Application {
         base.OnFrameworkInitializationCompleted();
     }
 
+    // This continuation is the ONLY path to a visible window: OnFrameworkInitializationCompleted
+    // fires it fire-and-forget and returns immediately, so an exception escaping here would
+    // otherwise leave a live process with an empty dispatcher loop, no window, and no error
+    // surface (stderr is invisible for a GUI-launched WinExe) — it must fail loudly instead.
     async Task StartAsync(IClassicDesktopStyleApplicationLifetime desktop) {
-        var service = await DaemonClientService.CreateDefaultAsync();
-        service.Start();
-        _service = service;
-        desktop.MainWindow = BuildAndShowMainWindow(service, _shutdown.Token);
+        try {
+            var service = await DaemonClientService.CreateDefaultAsync();
+            service.Start();
+            _service = service;
+            desktop.MainWindow = BuildAndShowMainWindow(service, _shutdown.Token);
+        } catch (Exception ex) {
+            Console.Error.WriteLine($"kcap app failed to start: {ex}");
+            desktop.Shutdown(1);
+        }
     }
 
     // Split out of StartAsync so a test can drive "build VM+window, assign, and Show()" against

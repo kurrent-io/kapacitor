@@ -69,10 +69,10 @@ public class DaemonClientServiceTests {
             agents);
     }
 
-    static async Task WaitUntilAsync(Func<bool> condition, TimeSpan? timeout = null) {
+    static async Task WaitUntilAsync(Func<bool> condition, TimeSpan? timeout = null, string what = "condition") {
         var deadline = DateTime.UtcNow + (timeout ?? TimeSpan.FromSeconds(5));
         while (!condition()) {
-            if (DateTime.UtcNow > deadline) throw new TimeoutException("Condition was not met within the deadline.");
+            if (DateTime.UtcNow > deadline) throw new TimeoutException($"Timed out waiting for: {what}");
             await Task.Delay(10);
         }
     }
@@ -81,7 +81,9 @@ public class DaemonClientServiceTests {
     /// EditDiff runs on the background pump thread and Apply() does not always follow it with
     /// an event a test can synchronize on (a plain Status snapshot never republishes AttachStatus).
     static Task WaitForAgentsAsync(IDaemonClientService svc, params string[] expectedSortedIds) =>
-        WaitUntilAsync(() => svc.Agents.Keys.OrderBy(k => k, StringComparer.Ordinal).SequenceEqual(expectedSortedIds, StringComparer.Ordinal));
+        WaitUntilAsync(
+            () => svc.Agents.Keys.OrderBy(k => k, StringComparer.Ordinal).SequenceEqual(expectedSortedIds, StringComparer.Ordinal),
+            what: $"Agents cache to equal [{string.Join(", ", expectedSortedIds)}]");
 
     [Test]
     public async Task Initial_status_replays_connecting() {
@@ -105,21 +107,21 @@ public class DaemonClientServiceTests {
 
         var seen = new List<AttachStatus>();
         using var sub = svc.Status.Subscribe(seen.Add);
-        await WaitUntilAsync(() => seen.Count >= 1); // initial Connecting
+        await WaitUntilAsync(() => seen.Count >= 1, what: "initial Connecting status"); // initial Connecting
 
         var capsA = new List<string> { "status/1" };
         var snapA = Snap("daemon-a", "a1");
         script.Feed(new LocalControlEvent.Connected(capsA, snapA));
-        await WaitUntilAsync(() => seen.Count >= 2);
+        await WaitUntilAsync(() => seen.Count >= 2, what: "Connected status after Connected event");
 
         script.Feed(new LocalControlEvent.Unreachable("daemon_unreachable"));
-        await WaitUntilAsync(() => seen.Count >= 3);
+        await WaitUntilAsync(() => seen.Count >= 3, what: "Unreachable status after Unreachable event");
 
         // Restart begins a fresh enumeration on the SAME script channel; the test feeds the
         // Connecting event the fresh enumeration should see before it starts reading.
         script.Feed(new LocalControlEvent.Connecting());
         await svc.RestartLoopAsync();
-        await WaitUntilAsync(() => seen.Count >= 4);
+        await WaitUntilAsync(() => seen.Count >= 4, what: "Connecting status after restart");
 
         await Assert.That(seen).Count().IsEqualTo(4);
         await Assert.That(seen[0]).IsEqualTo(new AttachStatus(AttachState.Connecting, null, null));
@@ -148,12 +150,12 @@ public class DaemonClientServiceTests {
             latestSnapshot,
             svc.Agents.Keys.OrderBy(k => k, StringComparer.Ordinal).ToArray())));
 
-        await WaitUntilAsync(() => pairs.Count >= 1); // initial Connecting
+        await WaitUntilAsync(() => pairs.Count >= 1, what: "initial Connecting pair"); // initial Connecting
 
         var capsA = new List<string> { "status/1" };
         var snapA = Snap("daemon-a", "a1");
         script.Feed(new LocalControlEvent.Connected(capsA, snapA));
-        await WaitUntilAsync(() => pairs.Count >= 2);
+        await WaitUntilAsync(() => pairs.Count >= 2, what: "Connected pair after first Connected event");
 
         // First connect: cache already holds exactly A's keys at the Connected moment.
         var firstConnectedMoment = pairs[1];
@@ -161,12 +163,12 @@ public class DaemonClientServiceTests {
         await Assert.That(firstConnectedMoment.AgentKeys).IsEquivalentTo(["a1"], CollectionOrdering.Matching);
 
         script.Feed(new LocalControlEvent.Unreachable("daemon_unreachable"));
-        await WaitUntilAsync(() => pairs.Count >= 3);
+        await WaitUntilAsync(() => pairs.Count >= 3, what: "Unreachable pair after Unreachable event");
 
         var capsB = new List<string> { "status/1" };
         var snapB = Snap("daemon-a", "b1");
         script.Feed(new LocalControlEvent.Connected(capsB, snapB));
-        await WaitUntilAsync(() => pairs.Count >= 4);
+        await WaitUntilAsync(() => pairs.Count >= 4, what: "Connected pair after second Connected event");
 
         // At the moment status flips to Connected the second time, BOTH the snapshot AND the
         // cache observed alongside it must ALREADY be B's — never a stale A snapshot/keys, and
@@ -211,18 +213,18 @@ public class DaemonClientServiceTests {
         svc.Start();
 
         // Let the faulting first enumeration run to completion (fault contained, no crash).
-        await WaitUntilAsync(() => faultCount >= 1);
-        await WaitUntilAsync(() => script.LiveEnumerations == 0, TimeSpan.FromSeconds(5));
+        await WaitUntilAsync(() => faultCount >= 1, what: "faulting enumeration to run");
+        await WaitUntilAsync(() => script.LiveEnumerations == 0, TimeSpan.FromSeconds(5), what: "faulted enumeration to end");
 
         // RestartLoopAsync must still work after a faulted pump — this is the regression pin:
         // it must not rethrow, and it must reach a fresh, live enumeration.
         await svc.RestartLoopAsync();
-        await WaitUntilAsync(() => script.LiveEnumerations >= 1, TimeSpan.FromSeconds(5));
+        await WaitUntilAsync(() => script.LiveEnumerations >= 1, TimeSpan.FromSeconds(5), what: "fresh enumeration after restart");
 
         var statuses = new List<AttachStatus>();
         using var sub = svc.Status.Subscribe(statuses.Add);
         script.Feed(new LocalControlEvent.Connecting());
-        await WaitUntilAsync(() => statuses.Count >= 1);
+        await WaitUntilAsync(() => statuses.Count >= 1, what: "Connecting status from the fresh enumeration");
         await Assert.That(statuses[^1]).IsEqualTo(new AttachStatus(AttachState.Connecting, null, null));
 
         // DisposeAsync must also complete cleanly (not throw, not skip cleanup) even though a
@@ -245,7 +247,7 @@ public class DaemonClientServiceTests {
         var caps = new List<string> { "status/1" };
         var snap1 = Snap("daemon-a", "a1", "a2");
         script.Feed(new LocalControlEvent.Connected(caps, snap1));
-        await WaitUntilAsync(() => snapshots.Count >= 1);
+        await WaitUntilAsync(() => snapshots.Count >= 1, what: "first snapshot");
         // Apply() publishes Snapshots BEFORE running EditDiff, so waiting on the snapshot count
         // alone races the cache write — poll the cache to its expected state directly instead.
         await WaitForAgentsAsync(svc, "a1", "a2");
@@ -254,7 +256,7 @@ public class DaemonClientServiceTests {
 
         var snap2 = Snap("daemon-a", "a2", "a3");
         script.Feed(new LocalControlEvent.Status(snap2));
-        await WaitUntilAsync(() => snapshots.Count >= 2);
+        await WaitUntilAsync(() => snapshots.Count >= 2, what: "second snapshot");
         await WaitForAgentsAsync(svc, "a2", "a3");
         await Assert.That(svc.Agents.Keys.OrderBy(k => k, StringComparer.Ordinal).ToArray())
             .IsEquivalentTo(["a2", "a3"], CollectionOrdering.Matching);
@@ -268,18 +270,18 @@ public class DaemonClientServiceTests {
 
         var statuses = new List<AttachStatus>();
         using var sub = svc.Status.Subscribe(statuses.Add);
-        await WaitUntilAsync(() => statuses.Count >= 1);
+        await WaitUntilAsync(() => statuses.Count >= 1, what: "initial Connecting status");
 
         var caps = new List<string> { "status/1" };
         var snap = Snap("daemon-a", "a1", "a2");
         script.Feed(new LocalControlEvent.Connected(caps, snap));
-        await WaitUntilAsync(() => statuses.Count >= 2);
+        await WaitUntilAsync(() => statuses.Count >= 2, what: "Connected status");
         await WaitForAgentsAsync(svc, "a1", "a2");
         await Assert.That(svc.Agents.Keys.OrderBy(k => k, StringComparer.Ordinal).ToArray())
             .IsEquivalentTo(["a1", "a2"], CollectionOrdering.Matching);
 
         script.Feed(new LocalControlEvent.Unreachable("daemon_unreachable"));
-        await WaitUntilAsync(() => statuses.Count >= 3);
+        await WaitUntilAsync(() => statuses.Count >= 3, what: "Unreachable status");
 
         await Assert.That(svc.Agents.Keys.OrderBy(k => k, StringComparer.Ordinal).ToArray())
             .IsEquivalentTo(["a1", "a2"], CollectionOrdering.Matching);
@@ -290,7 +292,7 @@ public class DaemonClientServiceTests {
         var script = new Script();
         await using var svc = new DaemonClientService("daemon-a", script.Run, new FakeProcessRunner(), "kcap");
         svc.Start();
-        await WaitUntilAsync(() => script.LiveEnumerations >= 1);
+        await WaitUntilAsync(() => script.LiveEnumerations >= 1, what: "first enumeration to start");
 
         for (var i = 0; i < 10; i++) {
             var t1 = svc.RestartLoopAsync();
@@ -310,7 +312,7 @@ public class DaemonClientServiceTests {
         var runner = new FakeProcessRunner { Behavior = _ => Task.FromResult((0, "")) };
         await using var svc = new DaemonClientService("daemon-a", script.Run, runner, "/opt/kcap");
         svc.Start();
-        await WaitUntilAsync(() => script.LiveEnumerations >= 1);
+        await WaitUntilAsync(() => script.LiveEnumerations >= 1, what: "enumeration to start");
         var startCountBefore = script.StartCount;
 
         var result = await svc.StartDaemonAsync(CancellationToken.None);
@@ -324,8 +326,8 @@ public class DaemonClientServiceTests {
         // Exit 0 immediately kicks RestartLoopAsync — a NEW enumeration begins without a
         // manual restart call and without waiting for backoff (StartCount strictly increases,
         // not just LiveEnumerations dipping and recovering, which would be racy to observe).
-        await WaitUntilAsync(() => script.StartCount > startCountBefore, TimeSpan.FromSeconds(2));
-        await WaitUntilAsync(() => script.LiveEnumerations == 1);
+        await WaitUntilAsync(() => script.StartCount > startCountBefore, TimeSpan.FromSeconds(2), what: "restart kick after successful start");
+        await WaitUntilAsync(() => script.LiveEnumerations == 1, what: "single live enumeration after restart kick");
         await Assert.That(script.PeakLiveEnumerations).IsLessThanOrEqualTo(1);
     }
 
@@ -366,7 +368,7 @@ public class DaemonClientServiceTests {
         var script = new Script();
         var svc = new DaemonClientService("daemon-a", script.Run, new FakeProcessRunner(), "kcap");
         svc.Start();
-        await WaitUntilAsync(() => script.LiveEnumerations >= 1);
+        await WaitUntilAsync(() => script.LiveEnumerations >= 1, what: "enumeration to start");
 
         var statusValues = new List<AttachStatus>();
         var snapshotValues = new List<DaemonStatusDto>();
@@ -408,7 +410,7 @@ public class DaemonClientServiceTests {
 
         var svc = new DaemonClientService("daemon-a", script.Run, runner, "kcap");
         svc.Start();
-        await WaitUntilAsync(() => script.LiveEnumerations >= 1);
+        await WaitUntilAsync(() => script.LiveEnumerations >= 1, what: "enumeration to start");
 
         var startTask = svc.StartDaemonAsync(startCts.Token);
         await runnerEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));

@@ -70,6 +70,8 @@ public sealed class DaemonClientService : IDaemonClientService, IAsyncDisposable
             case LocalControlEvent.Unreachable(var reason):
                 _status.OnNext(new(AttachState.Unreachable, reason, null));
                 break;
+            default:
+                throw new UnreachableException($"unhandled event {e.GetType().Name}");
         }
     }
 

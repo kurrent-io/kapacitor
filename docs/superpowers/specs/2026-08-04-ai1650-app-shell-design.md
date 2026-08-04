@@ -253,7 +253,11 @@ initiated is in flight", not "a socket dial happened". Manual Retry restarts the
 ### 4.4 Tests
 
 Kcap-cli unit suite, reusing the AI-1649 harness (Windows guard, `NotInParallel`, short daemon
-names), controlled `TimeProvider` for backoff and phase deadlines:
+names), controlled `TimeProvider` for backoff and phase deadlines. **Amendment (final review):**
+the backoff-schedule test (below) deviates from this — it asserts one-sided real-clock bounds
+(a lower bound per cycle, generous polling deadlines) rather than driving a `FakeTimeProvider`,
+since the scripted peer answers or stalls instantly; the reasoning is documented on the test
+itself (`LocalControlClientTests.Backoff_delay_advances_across_failures_and_resets_after_connected`).
 
 - Gate pass → `Connecting`, then `Connected` carrying capabilities AND the first snapshot,
   then `Status` per push — in that order; nothing yields between `Connecting` and `Connected`.
@@ -309,8 +313,12 @@ the app-lifetime token; interface exists so ViewModel tests script the stream):
 - `Task RestartLoopAsync()` — SINGLE-FLIGHT serialized restart: cancels the current client
   enumeration, AWAITS its completion, then starts the next one; at most one enumeration is
   ever live, so two publishers can never interleave into the subjects/cache. Concurrent calls
-  coalesce onto the in-flight restart. After shutdown has begun it is a no-op. Backs the Retry
-  button and the post-start kick (below).
+  coalesce onto the in-flight restart. **Amendment (final review):** the implementation is
+  strictly stronger than "coalesce" — a gate (`SemaphoreSlim(1,1)`) SERIALIZES concurrent
+  callers rather than merging them onto one shared wait, so at most one live enumeration ever
+  exists and every caller's `Task` still completes once its own turn through the gate finishes
+  (`RestartLoop_is_single_flight` pins both properties). After shutdown has begun it is a no-op.
+  Backs the Retry button and the post-start kick (below).
 - `Task<StartDaemonResult> StartDaemonAsync(CancellationToken ct)` with
   `sealed record StartDaemonResult(bool Ok, string? Message)` — spawns the CLI (decision 6)
   with the EXPLICIT resolved name: `kcap daemon start -d --name <resolvedName>` — never bare
@@ -338,7 +346,12 @@ broad heuristic — an unexpected frame can equally mean the APP is the older si
 must not prescribe an upgrade direction; Start stays disabled because the daemon is alive).
 `StartMessage` (start-daemon failure text) clears on the next start attempt and on any
 transition to `Connected`. All VM subscriptions are activation-scoped (`WhenActivated`);
-the service outlives ViewModels and owns its subjects.
+the service outlives ViewModels and owns its subjects. **Amendment (final review):**
+`StartDaemonCommand`/`RetryCommand` and their `canExecute` pipelines are the one exception —
+they are built in the CONSTRUCTOR, not inside `WhenActivated`, because commands must exist (and
+be assertable via `CanExecute`) independent of window activation; `service.Status`/
+`service.Snapshots` are the service's own long-lived subjects, not resources that need to be
+scoped to a window's lifetime, so constructing the commands early does not leak anything.
 
 **`MainWindow`** (`ReactiveWindow<MainWindowViewModel>`, `WhenActivated`-scoped bindings): one
 bare window — daemon identity block (name, version), server URL, connection state, agent

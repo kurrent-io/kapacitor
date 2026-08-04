@@ -148,7 +148,16 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
 
     async Task RunStartAsync(CancellationToken ct) {
         StartMessage = null; // clear on every new attempt
-        var result = await _service.StartDaemonAsync(ct);
-        if (!result.Ok) StartMessage = result.Message;
+        try {
+            var result = await _service.StartDaemonAsync(ct);
+            if (!result.Ok) StartMessage = result.Message;
+        } catch (OperationCanceledException) {
+            // App is quitting: OnShutdownRequested cancelled `ct` while this start was still in
+            // flight, and StartDaemonAsync deliberately rethrows OCE for exactly that case (spec
+            // §5 — ct abandons the WAIT, not the started daemon). Nothing subscribes to
+            // StartDaemonCommand.ThrownExceptions, so letting this escape would have ReactiveUI's
+            // default handler reschedule an UnhandledErrorException onto the still-alive
+            // dispatcher. The app is exiting — there is nothing left to render.
+        }
     }
 }

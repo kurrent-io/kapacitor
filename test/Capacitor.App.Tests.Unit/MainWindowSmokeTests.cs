@@ -1,3 +1,4 @@
+using System.Reactive.Threading.Tasks;
 using Avalonia.Controls;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
@@ -98,5 +99,71 @@ public class MainWindowSmokeTests {
 
         await Assert.That(thrown).IsNull();
         await Assert.That(startEnabledAfter).IsTrue();
+    }
+
+    /// Regression coverage for a Critical bug found in review: RunStartAsync did not catch
+    /// OperationCanceledException, but DaemonClientService.StartDaemonAsync deliberately
+    /// rethrows it when the caller-supplied ct fires mid-wait (App's `_shutdown` token — spec
+    /// §5, "ct abandons the WAIT, not the started daemon"). App.OnShutdownRequested cancels
+    /// that very token on Cmd+Q while a start may still be in flight. Nothing subscribes to
+    /// StartDaemonCommand.ThrownExceptions, so ReactiveCommand's own default handler
+    /// (decompile-verified: ReactiveUI.RxState.DefaultExceptionHandler) reschedules an
+    /// UnhandledErrorException onto RxSchedulers.MainThreadScheduler — the still-alive
+    /// dispatcher — crashing the app.
+    ///
+    /// Deliberately NOT wrapped in WithImmediateRxScheduler, for the same reason as the sibling
+    /// test above: only a REAL dispatcher round-trip (via Dispatcher.UIThread.RunJobs(), which
+    /// decompile-verified drains Avalonia's dispatcher queue including jobs enqueued mid-drain,
+    /// and re-throws an unhandled job exception out of the call since nothing subscribes to
+    /// Dispatcher.UIThread.UnhandledException) actually reproduces — and proves the fix for — a
+    /// scheduler-rescheduled exception.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Quit_during_start_does_not_crash() {
+        var (thrown, completed) = await AvaloniaSession.DispatchAsync(() => {
+            var service = new FakeDaemonClientService();
+            service.StatusSubject.OnNext(new AttachStatus(AttachState.Unreachable, "daemon_unreachable", null));
+
+            var shutdown = new CancellationTokenSource();
+            var vm = new MainWindowViewModel(service, shutdown.Token);
+            var window = new MainWindow { DataContext = vm };
+            window.Show();
+            Dispatcher.UIThread.RunJobs();
+
+            service.StartBehavior = async ct => {
+                // Blocks until ct fires, then throws OCE — mirrors StartDaemonAsync's real
+                // ct-abandons-the-wait contract (e.g. its own process.WaitForExitAsync(ct)).
+                await Task.Delay(Timeout.InfiniteTimeSpan, ct);
+                return new StartDaemonResult(true, null); // unreachable
+            };
+
+            var executeTask = vm.StartDaemonCommand.Execute().ToTask();
+
+            Exception? caught = null;
+            try {
+                shutdown.Cancel(); // simulates Cmd+Q mid-start: OnShutdownRequested cancels this same token
+
+                // The ct-cancellation continuation (and any exception ReactiveCommand reschedules
+                // as a result) may hop through a thread-pool continuation before landing back on
+                // the dispatcher queue, so poll rather than assume one RunJobs() drains it all.
+                var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(2);
+                while (!executeTask.IsCompleted && DateTime.UtcNow < deadline) {
+                    Dispatcher.UIThread.RunJobs();
+                    Thread.Sleep(5);
+                }
+            } catch (Exception ex) {
+                caught = ex;
+            }
+
+            var isCompleted = executeTask.IsCompleted;
+
+            window.Close();
+            Dispatcher.UIThread.RunJobs();
+
+            return (caught, isCompleted);
+        });
+
+        await Assert.That(thrown).IsNull();
+        await Assert.That(completed).IsTrue();
     }
 }
