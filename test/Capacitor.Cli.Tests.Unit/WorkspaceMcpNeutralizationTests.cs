@@ -60,7 +60,8 @@ public class WorkspaceMcpNeutralizationTests {
     public async Task Every_hosted_vendors_workspace_file_is_covered() {
         foreach (var expected in new[] {
                      ".mcp.json", ".cursor/mcp.json", ".gemini/settings.json", ".kiro/settings/mcp.json",
-                     ".vscode/mcp.json", ".github/copilot/mcp.json", ".copilot/mcp.json",
+                     ".vscode/mcp.json", ".github/mcp.json", ".github/copilot/mcp.json",
+                     ".copilot/mcp.json", ".copilot/mcp-config.json",
                      ".codex/config.toml" })
             await Assert.That(WorktreeManager.WorkspaceMcpConfigPaths).Contains(expected);
     }
@@ -362,14 +363,30 @@ public class WorkspaceMcpNeutralizationTests {
     /// </summary>
     [Test]
     public async Task Borrowed_snapshots_exclude_every_workspace_mcp_config_path() {
-        var excluded = WorktreeManager.SnapshotExcludedPaths;
+        var plan = WorktreeManager.PlanSnapshotExclusions("", caseSensitive: true);
 
         foreach (var path in WorktreeManager.WorkspaceMcpConfigPaths)
-            await Assert.That(excluded).Contains(path);
+            await Assert.That(plan.VendorConfigPaths).Contains(path);
 
-        // The pre-existing entries must survive the fold-in.
-        await Assert.That(excluded).Contains(".capacitor");
-        await Assert.That(excluded).Contains(".attached");
+        // At the repository root the expansion must be EXACTLY the canonical list — the overwhelmingly
+        // common launch shape, and the no-regression claim for it.
+        await Assert.That(plan.VendorConfigPaths.Length)
+            .IsEqualTo(WorktreeManager.WorkspaceMcpConfigPaths.Length);
+
+        // The pre-existing entries must survive. They live in SnapshotExclusions, not VendorConfigPaths:
+        // vendor paths go exclusively through the shared byte classifier, these two do not.
+        await Assert.That(plan.SnapshotExclusions).Contains(".capacitor");
+        await Assert.That(plan.SnapshotExclusions).Contains(".attached");
+    }
+
+    /// <summary>The two most recently added paths, called out separately from the membership sweep above
+    /// because each is a distinct defect: <c>.github/mcp.json</c> is a Copilot discovery path the list
+    /// simply never had (it carried <c>.github/copilot/mcp.json</c>, a different file), and it was
+    /// unprotected at the root of every borrowed snapshot regardless of cwd scope.</summary>
+    [Test]
+    public async Task Canonical_list_covers_the_copilot_paths_that_were_missing() {
+        await Assert.That(WorktreeManager.WorkspaceMcpConfigPaths).Contains(".github/mcp.json");
+        await Assert.That(WorktreeManager.WorkspaceMcpConfigPaths).Contains(".copilot/mcp-config.json");
     }
 
     /// <summary>Windows needs Developer Mode or elevation to create a symlink, so these assert POSIX

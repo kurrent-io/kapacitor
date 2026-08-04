@@ -2359,7 +2359,13 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
                 throw new InvalidOperationException($"borrow_auth_failed: {auth.Reason ?? "source_identity_changed"}");
             var generation = await _worktreeManager.SyncBorrowedSnapshotFromSourceAsync(
                 agent.Worktree.SourceRepo, agent.Worktree.SnapshotRoot ?? agent.Worktree.Path,
-                agent.Worktree.Path, [], agent.Worktree.ReviewContextRoot
+                // The prefix computed at creation, carried — never re-derived. The only path available
+                // here is the TARGET-side execution path, and deriving from that is what lets the launch
+                // cwd and the exclusion classifier end up on two different spellings.
+                agent.Worktree.GitRelativeCwd
+                    ?? throw new InvalidOperationException(
+                        "borrowed_snapshot_git_relative_cwd_missing"),
+                [], agent.Worktree.ReviewContextRoot
                     ?? throw new InvalidOperationException(
                         "borrowed_snapshot_review_context_missing"), timeout.Token);
             var reviewerToken = agent.ReviewerBridgeToken

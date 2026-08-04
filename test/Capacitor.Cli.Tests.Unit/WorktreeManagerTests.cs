@@ -263,7 +263,7 @@ public class WorktreeManagerTests {
                 File.WriteAllText(Path.Combine(snapshot.Path, "reviewer-created.txt"), "must disappear");
                 File.WriteAllText(Path.Combine(snapshot.Path, ".git", "reviewer-metadata"), "must disappear");
                 File.WriteAllText(Path.Combine(clone, "untracked.txt"), "two");
-                await manager.SyncFromSourceAsync(clone, snapshot.Path, [], CancellationToken.None);
+                await manager.SyncFromSourceAsync(clone, clone, snapshot.Path, [], CancellationToken.None);
 
                 await Assert.That(File.Exists(Path.Combine(snapshot.Path, "reviewer-created.txt"))).IsFalse();
                 await Assert.That(File.Exists(Path.Combine(snapshot.Path, ".git", "reviewer-metadata"))).IsFalse();
@@ -313,7 +313,7 @@ public class WorktreeManagerTests {
                 File.WriteAllText(Path.Combine(sourceCwd, "round.txt"), "two");
                 File.WriteAllText(Path.Combine(snapshot.Path, "reviewer-created.txt"), "remove");
                 await manager.SyncFromSourceAsync(
-                    clone, snapshot.SnapshotRoot!, snapshot.Path, [], CancellationToken.None);
+                    clone, sourceCwd, snapshot.SnapshotRoot!, [], CancellationToken.None);
 
                 await Assert.That(holder!.HasExited).IsFalse();
                 await Assert.That(Directory.Exists(snapshot.Path)).IsTrue();

@@ -27,15 +27,27 @@ public partial class WorktreeManager {
     /// protected by their own argv, a property of each launcher rather than of the worktree. Kiro arrived
     /// with no gate at all and nobody noticed, so the list covers every hosted vendor's file plus the
     /// editor-generic ones — the point is that the next vendor is safe before anyone thinks about it.</para>
+    ///
+    /// <para><b>These are the names; the SCOPE is separate.</b> Every entry is relative to a directory,
+    /// not to the repository root. For a borrowed snapshot the set of directories is the ancestor chain of
+    /// the execution cwd — see <see cref="PlanSnapshotExclusions"/>. Reading this list as root-relative is
+    /// what left <c>src/.codex/config.toml</c> live in a snapshot launched from <c>src</c>.</para>
     /// </summary>
     internal static readonly ImmutableArray<string> WorkspaceMcpConfigPaths = [
-        ".mcp.json",                    // Claude Code / generic
+        ".mcp.json",                    // Claude Code / generic; Copilot CLI also reads it
         ".cursor/mcp.json",
         ".gemini/settings.json",
         ".kiro/settings/mcp.json",
-        ".vscode/mcp.json",             // editor-generic; several CLIs read it
+        ".vscode/mcp.json",             // editor-generic; GitHub documents Copilot CLI does NOT read it,
+                                        // but VS Code and other CLIs do
+        ".github/mcp.json",             // Copilot CLI, alongside .mcp.json in the same walk. The list
+                                        // long carried .github/copilot/mcp.json, a DIFFERENT path, so this
+                                        // one was unprotected at every snapshot root.
         ".github/copilot/mcp.json",
         ".copilot/mcp.json",
+        ".copilot/mcp-config.json",     // GitHub documents ~/.copilot/mcp-config.json as USER scope; the
+                                        // workspace form is not documented and is carried under the
+                                        // "wider than known readers" rationale above
         ".codex/config.toml"
     ];
 

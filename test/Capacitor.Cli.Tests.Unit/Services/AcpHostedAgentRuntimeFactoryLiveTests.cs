@@ -266,7 +266,7 @@ public class AcpHostedAgentRuntimeFactoryLiveTests {
                 await runtime.WaitForTurnIdleAsync(startCts.Token);
                 File.WriteAllText(protectedPath, "ROUND2\n");
                 await manager.SyncFromSourceAsync(
-                    sourceDir.FullName, snapshot.Path, [], startCts.Token);
+                    sourceDir.FullName, sourceDir.FullName, snapshot.Path, [], startCts.Token);
                 File.Delete(markerPath);
                 await runtime.SendUserInputAndWaitForWriteAsync(
                     "Read protected.txt and call submit_review_result exactly once with verdict CLEAN and put its exact contents in summary. Do not modify files.");
