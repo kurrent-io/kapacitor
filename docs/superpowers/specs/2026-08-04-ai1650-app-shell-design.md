@@ -112,22 +112,25 @@ of each" is not a policy (the two lines version independently and NuGet will not
 them; mismatched pins under CPM produce downgrade/restore failures, not silent resolution):
 
 - the Avalonia family (`Avalonia`, `Avalonia.Desktop`, `Avalonia.Themes.Fluent`,
-  `Avalonia.Headless`) at ONE identical version: **11.3.18**;
-- `ReactiveUI.Avalonia` **11.4.13** — the SYSTEM.REACTIVE-ERA integration. This is a
-  deliberate flavor choice, not just a version choice: `ReactiveUI.Avalonia` 12.x depends on
-  ReactiveUI 24's new **Primitives** distribution (`IScheduler → ISequencer`,
-  `Subject<T> → Signal<T>` — no System.Reactive), which is incompatible with this design's
+  `Avalonia.Headless`) at ONE identical version: **12.1.1** (current stable major — a
+  brand-new app does not start on the superseded 11.x line);
+- `ReactiveUI.Avalonia` **12.0.3** — the last SYSTEM.REACTIVE-flavored stable integration
+  (declared deps: ReactiveUI ≥ 23.2.28, Avalonia ≥ 12.0.4 — a floor that 12.1.1 satisfies).
+  The flavor cutoff is PRECISE: `ReactiveUI.Avalonia` **≥ 12.1** switches to ReactiveUI 24's
+  **Primitives** distribution (`IScheduler → ISequencer`, `Subject<T> → Signal<T>` — no
+  System.Reactive), which is incompatible with this design's
   `IObservable`/`RxApp.MainThreadScheduler` contract and with DynamicData's System.Reactive
-  foundation; the Rx-flavor 12.x integration (`ReactiveUI.Avalonia.Reactive`) has no published
-  stable package. The mature stack that motivated choosing ReactiveUI IS the
-  System.Reactive flavor. Moving to a 12.x pair is a deliberate future migration, taken only
-  when a stable Rx-flavor integration is published (or Primitives is consciously adopted) —
-  never as a routine bump;
+  foundation; the Rx-flavor ReactiveUI-24-era integration (`ReactiveUI.Avalonia.Reactive`)
+  has no published stable package. The mature stack that motivated choosing ReactiveUI IS the
+  System.Reactive flavor. Moving to integration ≥ 12.1 is a deliberate future migration,
+  taken only when a stable Rx-flavor integration is published (or Primitives is consciously
+  adopted) — never as a routine bump;
 - `DynamicData` at its latest stable at implementation time (System.Reactive-based; no
   cross-constraint with the pair).
 
-Any substitution must preserve BOTH properties as a set: a compatible Avalonia range AND the
-System.Reactive flavor — and record the actual versions here. The legacy `Avalonia.ReactiveUI` package (deprecated at
+Any substitution must preserve BOTH properties as a set: the integration's declared Avalonia
+range satisfied by the family version AND the System.Reactive flavor (integration < 12.1,
+until the Rx-flavor successor ships stable) — and record the actual versions here. The legacy `Avalonia.ReactiveUI` package (deprecated at
 11.3.8) is deliberately NOT used. `ReactiveUI` and `System.Reactive` are deliberately NOT
 direct references — they arrive transitively via `ReactiveUI.Avalonia`/`DynamicData`, so they
 get no `PackageVersion` entries and no project can silently pin a conflicting version.
