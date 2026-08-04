@@ -107,17 +107,28 @@ Dependencies: `Capacitor.App` → `Capacitor.Cli.Core`, `Avalonia`, `Avalonia.De
 `Avalonia.Themes.Fluent`, `ReactiveUI.Avalonia`, `DynamicData` (+ `Avalonia.Headless` in the
 test project). **Central package management**: the repo has
 `ManagePackageVersionsCentrally=true`, so `Directory.Packages.props` gains `PackageVersion`
-entries for exactly these packages — the Avalonia family (`Avalonia`, `Avalonia.Desktop`,
-`Avalonia.Themes.Fluent`, `Avalonia.Headless`) pinned to ONE identical latest-stable 11.3.x
-version, `ReactiveUI.Avalonia` at ITS OWN latest stable (the integration package versions on
-its own line — it is never forced to equal Avalonia's version; NuGet's dependency ranges
-enforce Avalonia compatibility), and `DynamicData` at its latest stable. The legacy
-`Avalonia.ReactiveUI` package (deprecated at 11.3.8) is deliberately NOT used. `ReactiveUI`
-and `System.Reactive` are deliberately NOT direct references — they arrive transitively via
-`ReactiveUI.Avalonia`/`DynamicData`, so they get no `PackageVersion` entries and no project can
-silently pin a conflicting version. Bootstrap/base types (`UseReactiveUI()`,
-`ReactiveWindow<>`) come from `ReactiveUI.Avalonia`'s namespaces. Acceptance: restore + build
-green on both CI legs. Core
+entries for exactly these packages, pinned as an explicitly COMPATIBLE PAIR — "latest stable
+of each" is not a policy (the two lines version independently and NuGet will not reconcile
+them; mismatched pins under CPM produce downgrade/restore failures, not silent resolution):
+
+- the Avalonia family (`Avalonia`, `Avalonia.Desktop`, `Avalonia.Themes.Fluent`,
+  `Avalonia.Headless`) at ONE identical version: **12.1.1**;
+- `ReactiveUI.Avalonia` **12.1.1** (its declared dependency range requires Avalonia ≥ 12.1.1
+  — the matched current-major pair; a brand-new app does not start on the superseded 11.x
+  line and buy a migration);
+- `DynamicData` at its latest stable at implementation time (no cross-constraint with the
+  pair).
+
+If a newer compatible pair exists at implementation time, take it only as a PAIR — the
+integration package's declared Avalonia range must be satisfied by the family version — and
+record the actual versions here. The legacy `Avalonia.ReactiveUI` package (deprecated at
+11.3.8) is deliberately NOT used. `ReactiveUI` and `System.Reactive` are deliberately NOT
+direct references — they arrive transitively via `ReactiveUI.Avalonia`/`DynamicData`, so they
+get no `PackageVersion` entries and no project can silently pin a conflicting version.
+Bootstrap/base types (`UseReactiveUI()`, `ReactiveWindow<>`) come from `ReactiveUI.Avalonia`'s
+namespaces. Acceptance: restore + build green on both CI legs with the RESOLVED versions
+asserted equal to the pins and ZERO NuGet downgrade warnings (NU1605/NU1109 class) — "it
+restored" alone is not acceptance. Core
 gains no packages. Both new projects join the solution; the ubuntu and windows CI legs gain an
 explicit `dotnet run --project test/Capacitor.App.Tests.Unit/...` step (§1.11 — solution
 membership alone runs nothing). The AOT-publish checks are untouched and must stay warning-free
