@@ -308,10 +308,32 @@ public static class HttpClientExtensions {
     }
 
     /// <summary>
-    /// Writes a structured JSON error to stderr for when the API is unreachable after all retries.
+    /// Renders the one stderr line written when the API is unreachable after every retry.
+    ///
+    /// <para>The URL goes through <see cref="UnusableUrlDiagnostic.Sanitize"/> — the same helper, in the
+    /// same assembly, that the unusable-URL guard has always used. A <c>server_url</c> may carry userinfo
+    /// credentials, and this line is reachable from the HOOK path (<c>AgentHookPoster</c> calls it on any
+    /// transport fault), so echoing it raw printed them on every lifecycle POST for every vendor. The host
+    /// survives sanitization, which is the part that makes the line actionable.</para>
+    ///
+    /// <para>Control characters are stripped from EVERY variable component, not just the URL: this line
+    /// goes to a stream harnesses parse — Gemini reads hook stderr as the hook's own result when stdout
+    /// is empty — so either half of the interpolation could otherwise fabricate a line. The fixed hint's
+    /// own <c>\r</c> is left alone; it is not attacker-reachable, and changing it would alter output
+    /// every existing call site produces.</para>
+    /// </summary>
+    public static string RenderUnreachableError(string? baseUrl, string? exceptionMessage) =>
+        $"{UnreachableHint} {UnusableUrlDiagnostic.Sanitize(baseUrl)} {StripControlCharacters(exceptionMessage)}";
+
+    static string StripControlCharacters(string? value) =>
+        string.IsNullOrEmpty(value) ? "" : new string(value.Where(c => !char.IsControl(c)).ToArray());
+
+    /// <summary>
+    /// Writes the unreachable-API diagnostic to stderr. See <see cref="RenderUnreachableError"/> for why
+    /// nothing here may be interpolated raw.
     /// </summary>
     public static void WriteUnreachableError(string baseUrl, HttpRequestException ex) {
-        Console.Error.WriteLine($"{UnreachableHint} {baseUrl} {ex.Message}");
+        Console.Error.WriteLine(RenderUnreachableError(baseUrl, ex.Message));
     }
 
     /// <summary>
