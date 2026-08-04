@@ -223,6 +223,7 @@ public partial class WorktreeManager {
         timeoutCts.CancelAfter(timeout);
         using var stdout = new MemoryStream();
         var stderrTask = ReadAllDecodedAsync(process.StandardError.BaseStream, timeoutCts.Token);
+        var stderr = "";
         try {
             var buffer = new byte[4096];
             while (true) {
@@ -233,16 +234,19 @@ public partial class WorktreeManager {
                 stdout.Write(buffer, 0, read);
             }
             await process.WaitForExitAsync(timeoutCts.Token);
+            // Captured INSIDE the protected block. Awaiting it after the finally would re-await a pump
+            // the cleanup may have abandoned, wait out the remainder of the git timeout, and surface a
+            // raw task exception instead of this method's contextual timeout message.
+            stderr = await stderrTask;
         } catch (OperationCanceledException) {
             throw new InvalidOperationException(
                 $"git {string.Join(' ', args)} timed out after {timeout.TotalSeconds:F0}s");
         } finally {
-            // Every abnormal exit ran through here: the overflow throw and the cancellation branch both
+            // Every abnormal exit runs through here: the overflow throw and the cancellation branch both
             // used to kill inline and leave the stderr pump unobserved and the child unreaped.
             // Process.Dispose is not a termination guarantee.
             await TerminateAndDrainAsync(process, stderrTask);
         }
-        var stderr = await stderrTask;
         if (process.ExitCode != 0)
             throw new InvalidOperationException($"git {string.Join(' ', args)} failed: {stderr}");
         return stdout.ToArray();
@@ -267,7 +271,11 @@ public partial class WorktreeManager {
     static async Task TerminateAndDrainAsync(Process process, params Task[] pumps) {
         using var budget = new CancellationTokenSource(CleanupBudget);
         try { if (!process.HasExited) process.Kill(entireProcessTree: true); }
-        catch { /* already gone, or genuinely unkillable — the bounded waits below cover both */ }
+        catch { /* already gone, or tree enumeration failed — the direct kill below is the fallback */ }
+        // Tree termination can fail while killing the process itself still succeeds, and returning from
+        // here with a live owned child is a leak: disposing Process does not terminate it.
+        try { if (!process.HasExited) process.Kill(); }
+        catch { /* genuinely unkillable — the bounded waits below stop us hanging on it */ }
         try { await process.WaitForExitAsync(budget.Token); } catch { /* reaped, or over budget */ }
         foreach (var pump in pumps) {
             // Abandoning a pump past the budget must not leave its exception unobserved — WaitAsync
@@ -296,6 +304,7 @@ public partial class WorktreeManager {
         timeoutCts.CancelAfter(timeout);
         var stderrTask = ReadAllDecodedAsync(process.StandardError.BaseStream, timeoutCts.Token);
         var stdoutTask = ReadAllDecodedAsync(process.StandardOutput.BaseStream, timeoutCts.Token);
+        var stderr = "";
         try {
             // Disposing the stream is the EOF signal git waits for; it must happen even if a write
             // faults part-way, or the child blocks on a read that will never complete.
@@ -307,6 +316,7 @@ public partial class WorktreeManager {
             }
             await process.WaitForExitAsync(timeoutCts.Token);
             await stdoutTask;
+            stderr = await stderrTask;   // inside the protected block, as above
         } catch (OperationCanceledException) {
             throw new InvalidOperationException(
                 $"git {string.Join(' ', args)} timed out after {timeout.TotalSeconds:F0}s");
@@ -315,7 +325,6 @@ public partial class WorktreeManager {
             // running child and two unobserved pumps behind.
             await TerminateAndDrainAsync(process, stdoutTask, stderrTask);
         }
-        var stderr = await stderrTask;
         if (process.ExitCode != 0)
             throw new InvalidOperationException($"git {string.Join(' ', args)} failed: {stderr}");
     }
