@@ -170,6 +170,27 @@ public class GeminiReviewerLaunchTests {
         await Assert.That(gate).Contains(Identity.AllowlistWireName("kcap-review"));
     }
 
+    /// <summary>
+    /// Same guarantee on the direct-builder path with NO caller-supplied identity (review finding): the
+    /// builder's fallback identity must also be what the MCP-list builder reads, or the gate is computed
+    /// from a null identity's canonical fallbacks — repository-matchable names — while the argv
+    /// substitution uses the fresh identity. The checked value must BE the used value.
+    /// </summary>
+    [Test]
+    public async Task ReviewLaunchWithoutACallerIdentity_StillGatesOnAliasedNames_NeverCanonical() {
+        var ctx = Ctx(isReviewFlow: true, mcpAllowlist: ["kcap-review"]) with { LaunchIdentity = null };
+
+        var argv = AcpHostedAgentRuntimeFactory.BuildProcessStartInfo(
+                AcpVendorDescriptors.Gemini, EnabledConfig, ctx,
+                resolveGeminiVersion: _ => CertifiedVersion)
+            .ArgumentList;
+
+        var gate = argv[argv.IndexOf("--allowed-mcp-server-names") + 1].Split(',');
+
+        await Assert.That(gate).DoesNotContain(KcapMcpRegistry.ReservedResultChannelId);
+        await Assert.That(gate).DoesNotContain("kcap-review");
+    }
+
     /// <summary>Neither the placeholder nor a deny-all name may survive into a review launch — the review arm
     /// REPLACES the value, and appending instead would leave the gate open on the deny entry.</summary>
     [Test]

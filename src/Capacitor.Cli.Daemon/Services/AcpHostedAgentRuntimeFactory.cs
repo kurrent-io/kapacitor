@@ -407,6 +407,12 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
         // different identities and the allowlist would not admit its own result channel.
         var identity = ctx.LaunchIdentity ?? LaunchIdentity.ForLaunch(AliasesResultChannel(descriptor));
 
+        // The fallback identity must also be what every ctx-reading consumer below sees —
+        // AcpReviewFlowMcp.Build derives server wire names from ctx.LaunchIdentity, and with ctx still
+        // carrying null it falls back to canonical, repository-matchable ids while the argv substitution
+        // uses the fresh identity (review finding). The checked value must BE the used value.
+        ctx = ctx with { LaunchIdentity = identity };
+
         // Defence in depth: StartAsync gates before any connection source runs, but a direct builder call
         // (a test, a future caller, a refactor that inlines the spawn) is its own path to an argv.
         RequireGeminiReviewerCapability(descriptor, config, ctx.IsReviewFlow, resolveGeminiVersion);
