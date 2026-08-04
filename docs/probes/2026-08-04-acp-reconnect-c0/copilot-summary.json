@@ -1,0 +1,441 @@
+{
+  "vendor": "copilot",
+  "argv": [
+    "copilot",
+    "--acp",
+    "--stdio"
+  ],
+  "started": "2026-08-04T18:35:28.841993+00:00",
+  "notes": [
+    "initialize ok; loadSession=True",
+    "session/new ok; sessionId=8083c3b3-ad02-46b9-b285-4c09a0c488c0",
+    "turns A/B/C stopReasons: end_turn/end_turn/end_turn",
+    "SIGKILL fired after 3 live chunks of turn D",
+    "NOTE: turn D response arrived before/despite kill: {\"jsonrpc\": \"2.0\", \"id\": 6, \"result\": {\"stopReason\": \"end_turn\", \"usage\": {\"inputTokens\": 114392, \"outputTokens\": 305, \"totalTokens\": 114697, \"thoughtTokens\": 42, \"cachedReadTokens\": 94895, \"cachedWri",
+    "session/load ok=True err=None",
+    "post-load prompt ok=True"
+  ],
+  "load_session_advertised": true,
+  "agent_capabilities": {
+    "loadSession": true,
+    "mcpCapabilities": {
+      "http": true,
+      "sse": true
+    },
+    "promptCapabilities": {
+      "image": true,
+      "audio": false,
+      "embeddedContext": true
+    },
+    "sessionCapabilities": {
+      "close": {},
+      "list": {}
+    }
+  },
+  "session_id": "8083c3b3-ad02-46b9-b285-4c09a0c488c0",
+  "turn_a_stop": "end_turn",
+  "turn_b_stop": "end_turn",
+  "turn_c_stop": "end_turn",
+  "kill_fired_after_chunks": 3,
+  "turn_d_response_after_kill": true,
+  "load_response": {
+    "models": {
+      "availableModels": [
+        {
+          "modelId": "auto",
+          "name": "Auto",
+          "description": "Let Copilot pick the best model"
+        },
+        {
+          "modelId": "claude-sonnet-4.6",
+          "name": "Claude Sonnet 4.6",
+          "description": "Claude Sonnet 4.6",
+          "_meta": {
+            "copilotUsage": "1x",
+            "copilotPriceCategory": "medium",
+            "copilotEnablement": "enabled"
+          }
+        },
+        {
+          "modelId": "claude-sonnet-4.5",
+          "name": "Claude Sonnet 4.5",
+          "description": "Claude Sonnet 4.5",
+          "_meta": {
+            "copilotUsage": "1x",
+            "copilotPriceCategory": "medium",
+            "copilotEnablement": "enabled"
+          }
+        },
+        {
+          "modelId": "claude-haiku-4.5",
+          "name": "Claude Haiku 4.5",
+          "description": "Claude Haiku 4.5",
+          "_meta": {
+            "copilotUsage": "0.33x",
+            "copilotPriceCategory": "low",
+            "copilotEnablement": "enabled"
+          }
+        },
+        {
+          "modelId": "claude-opus-4.6",
+          "name": "Claude Opus 4.6",
+          "description": "Claude Opus 4.6",
+          "_meta": {
+            "copilotUsage": "3x",
+            "copilotPriceCategory": "high",
+            "copilotEnablement": "enabled"
+          }
+        },
+        {
+          "modelId": "claude-opus-4.5",
+          "name": "Claude Opus 4.5",
+          "description": "Claude Opus 4.5",
+          "_meta": {
+            "copilotUsage": "3x",
+            "copilotPriceCategory": "high",
+            "copilotEnablement": "enabled"
+          }
+        },
+        {
+          "modelId": "gpt-5.3-codex",
+          "name": "GPT-5.3-Codex",
+          "description": "GPT-5.3-Codex",
+          "_meta": {
+            "copilotUsage": "1x",
+            "copilotPriceCategory": "medium",
+            "copilotEnablement": "enabled"
+          }
+        },
+        {
+          "modelId": "gpt-5-mini",
+          "name": "GPT-5 mini",
+          "description": "GPT-5 mini",
+          "_meta": {
+            "copilotUsage": "0x",
+            "copilotPriceCategory": "low",
+            "copilotEnablement": "enabled"
+          }
+        },
+        {
+          "modelId": "gemini-3.1-pro-preview",
+          "name": "Gemini 3.1 Pro",
+          "description": "Gemini 3.1 Pro",
+          "_meta": {
+            "copilotUsage": "1x",
+            "copilotPriceCategory": "medium",
+            "copilotEnablement": "enabled"
+          }
+        }
+      ],
+      "currentModelId": "claude-sonnet-4.6"
+    },
+    "modes": {
+      "availableModes": [
+        {
+          "id": "https://agentclientprotocol.com/protocol/session-modes#agent",
+          "name": "Agent",
+          "description": "Default agent mode for conversational interactions"
+        },
+        {
+          "id": "https://agentclientprotocol.com/protocol/session-modes#plan",
+          "name": "Plan",
+          "description": "Plan mode for creating and executing multi-step plans"
+        },
+        {
+          "id": "https://agentclientprotocol.com/protocol/session-modes#autopilot",
+          "name": "Autopilot",
+          "description": "Autonomous mode that enables allow-all and runs until task completion without user interaction (experimental)"
+        }
+      ],
+      "currentModeId": "https://agentclientprotocol.com/protocol/session-modes#agent"
+    },
+    "configOptions": [
+      {
+        "type": "select",
+        "id": "mode",
+        "name": "Mode",
+        "currentValue": "https://agentclientprotocol.com/protocol/session-modes#agent",
+        "options": [
+          {
+            "value": "https://agentclientprotocol.com/protocol/session-modes#agent",
+            "name": "Agent",
+            "description": "Default agent mode for conversational interactions"
+          },
+          {
+            "value": "https://agentclientprotocol.com/protocol/session-modes#plan",
+            "name": "Plan",
+            "description": "Plan mode for creating and executing multi-step plans"
+          },
+          {
+            "value": "https://agentclientprotocol.com/protocol/session-modes#autopilot",
+            "name": "Autopilot",
+            "description": "Autonomous mode that enables allow-all and runs until task completion without user interaction (experimental)"
+          }
+        ],
+        "category": "mode",
+        "description": "Controls how Copilot responds: a conversational agent, planning multi-step work, or autonomous autopilot."
+      },
+      {
+        "type": "select",
+        "id": "model",
+        "name": "Model",
+        "currentValue": "claude-sonnet-4.6",
+        "options": [
+          {
+            "value": "auto",
+            "name": "Auto",
+            "description": "Let Copilot pick the best model"
+          },
+          {
+            "value": "claude-sonnet-4.6",
+            "name": "Claude Sonnet 4.6",
+            "description": "Claude Sonnet 4.6",
+            "_meta": {
+              "copilotUsage": "1x",
+              "copilotPriceCategory": "medium",
+              "copilotEnablement": "enabled"
+            }
+          },
+          {
+            "value": "claude-sonnet-4.5",
+            "name": "Claude Sonnet 4.5",
+            "description": "Claude Sonnet 4.5",
+            "_meta": {
+              "copilotUsage": "1x",
+              "copilotPriceCategory": "medium",
+              "copilotEnablement": "enabled"
+            }
+          },
+          {
+            "value": "claude-haiku-4.5",
+            "name": "Claude Haiku 4.5",
+            "description": "Claude Haiku 4.5",
+            "_meta": {
+              "copilotUsage": "0.33x",
+              "copilotPriceCategory": "low",
+              "copilotEnablement": "enabled"
+            }
+          },
+          {
+            "value": "claude-opus-4.6",
+            "name": "Claude Opus 4.6",
+            "description": "Claude Opus 4.6",
+            "_meta": {
+              "copilotUsage": "3x",
+              "copilotPriceCategory": "high",
+              "copilotEnablement": "enabled"
+            }
+          },
+          {
+            "value": "claude-opus-4.5",
+            "name": "Claude Opus 4.5",
+            "description": "Claude Opus 4.5",
+            "_meta": {
+              "copilotUsage": "3x",
+              "copilotPriceCategory": "high",
+              "copilotEnablement": "enabled"
+            }
+          },
+          {
+            "value": "gpt-5.3-codex",
+            "name": "GPT-5.3-Codex",
+            "description": "GPT-5.3-Codex",
+            "_meta": {
+              "copilotUsage": "1x",
+              "copilotPriceCategory": "medium",
+              "copilotEnablement": "enabled"
+            }
+          },
+          {
+            "value": "gpt-5-mini",
+            "name": "GPT-5 mini",
+            "description": "GPT-5 mini",
+            "_meta": {
+              "copilotUsage": "0x",
+              "copilotPriceCategory": "low",
+              "copilotEnablement": "enabled"
+            }
+          },
+          {
+            "value": "gemini-3.1-pro-preview",
+            "name": "Gemini 3.1 Pro",
+            "description": "Gemini 3.1 Pro",
+            "_meta": {
+              "copilotUsage": "1x",
+              "copilotPriceCategory": "medium",
+              "copilotEnablement": "enabled"
+            }
+          }
+        ],
+        "category": "model",
+        "description": "The AI model Copilot uses to generate responses."
+      },
+      {
+        "type": "select",
+        "id": "reasoning_effort",
+        "name": "Reasoning Effort",
+        "currentValue": "medium",
+        "options": [
+          {
+            "value": "low",
+            "name": "low",
+            "description": "Minimal reasoning before responding."
+          },
+          {
+            "value": "medium",
+            "name": "medium",
+            "description": "Balanced reasoning and speed."
+          },
+          {
+            "value": "high",
+            "name": "high",
+            "description": "More thorough reasoning; slower responses."
+          },
+          {
+            "value": "max",
+            "name": "max",
+            "description": "Maximum reasoning; slowest but most thorough."
+          }
+        ],
+        "category": "thought_level",
+        "description": "How much reasoning the model performs before responding. Higher effort can improve quality at the cost of speed."
+      },
+      {
+        "type": "select",
+        "id": "allow_all",
+        "name": "Allow All",
+        "currentValue": "off",
+        "options": [
+          {
+            "value": "on",
+            "name": "On",
+            "description": "Automatically approve all tool, path, and URL requests"
+          },
+          {
+            "value": "off",
+            "name": "Off",
+            "description": "Require approval for tool, path, and URL requests"
+          }
+        ],
+        "category": "permissions",
+        "description": "Controls whether Copilot prompts for approval before using tools, accessing paths, or fetching URLs."
+      }
+    ]
+  },
+  "post_load_prompt_ok": true,
+  "replay_load_ok": true,
+  "replay_load_error": null,
+  "ended": "2026-08-04T18:36:21.043801+00:00",
+  "interrupted_turn_replay_shape": "user_plus_3_agent_updates",
+  "live_analysis": {
+    "kinds": {
+      "available_commands_update": 2,
+      "config_option_update": 1,
+      "usage_update": 6,
+      "agent_thought_chunk": 6,
+      "agent_message_chunk": 7,
+      "tool_call": 2,
+      "tool_call_update": 6
+    },
+    "keys_by_kind": {
+      "available_commands_update": [
+        "availableCommands",
+        "sessionUpdate"
+      ],
+      "config_option_update": [
+        "configOptions",
+        "sessionUpdate"
+      ],
+      "usage_update": [
+        "sessionUpdate",
+        "size",
+        "used"
+      ],
+      "agent_thought_chunk": [
+        "content",
+        "sessionUpdate"
+      ],
+      "agent_message_chunk": [
+        "content",
+        "sessionUpdate"
+      ],
+      "tool_call": [
+        "kind",
+        "rawInput",
+        "sessionUpdate",
+        "status",
+        "title",
+        "toolCallId"
+      ],
+      "tool_call_update": [
+        "content",
+        "rawOutput",
+        "sessionUpdate",
+        "status",
+        "toolCallId"
+      ]
+    },
+    "msgid_values": {},
+    "tool_call_ids": [
+      "toolu_01L8yjvcbXSmLuCquCCNscdw",
+      "toolu_01JAyf4Spwi2j97SgyWvzNS1"
+    ]
+  },
+  "replay_analysis": {
+    "kinds": {
+      "user_message_chunk": 5,
+      "agent_message_chunk": 4,
+      "tool_call": 2,
+      "tool_call_update": 2,
+      "available_commands_update": 2
+    },
+    "keys_by_kind": {
+      "user_message_chunk": [
+        "content",
+        "sessionUpdate"
+      ],
+      "agent_message_chunk": [
+        "content",
+        "sessionUpdate"
+      ],
+      "tool_call": [
+        "kind",
+        "rawInput",
+        "sessionUpdate",
+        "status",
+        "title",
+        "toolCallId"
+      ],
+      "tool_call_update": [
+        "content",
+        "rawOutput",
+        "sessionUpdate",
+        "status",
+        "toolCallId"
+      ],
+      "available_commands_update": [
+        "availableCommands",
+        "sessionUpdate"
+      ]
+    },
+    "msgid_values": {},
+    "tool_call_ids": [
+      "toolu_01L8yjvcbXSmLuCquCCNscdw",
+      "toolu_01JAyf4Spwi2j97SgyWvzNS1"
+    ],
+    "user_chunks": [
+      "Reply with exactly: alpha",
+      "",
+      "Reply with exactly: alpha",
+      "Run the shell command `echo kcap-probe-c0` and then reply with exactly: tool-don",
+      "Count from 1 to 40, one number per line. Do not use any tools for the counting. "
+    ],
+    "after_response_conversation": 0,
+    "trailer_kinds_after_response": [
+      "available_commands_update",
+      "available_commands_update"
+    ]
+  },
+  "live_vs_replay_msgid_overlap": {},
+  "tool_call_id_overlap": 2
+}
