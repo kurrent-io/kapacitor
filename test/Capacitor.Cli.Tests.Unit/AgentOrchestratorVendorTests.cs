@@ -1480,6 +1480,91 @@ public partial class AgentOrchestratorVendorTests {
         }
     }
 
+    /// <summary>
+    /// The request-level sibling of the capability-level test above: this vendor CAN select models,
+    /// but THIS request did not take (no availableModels match, or the agent rejected the config
+    /// option — the selector is best-effort and the vendor's default runs). The runtime's transcript
+    /// carries the confirmed outcome (<c>ResolvedModel == null</c>), and the registration must report
+    /// that — never the unresolved request the dashboard and analytics would otherwise claim is live.
+    /// </summary>
+    [Test]
+    public async Task Acp_launch_whose_requested_model_did_not_resolve_registers_no_model() {
+        var (repoPath, cleanup) = CreateGitRepo();
+
+        try {
+            var server        = new CaptureServerConnection();
+            var ptyFactory    = new SpyPtyProcessFactory();
+            var cursorFactory = new SpyAcpHostedAgentRuntimeFactory { ResolvedModel = null };
+
+            await using var orch = BuildOrchestrator(
+                server, ptyFactory, new Dictionary<string, IHostedAgentLauncher>(),
+                allowedRepoPath: repoPath, extraRuntimeFactories: [cursorFactory]);
+            orch.AcpFinalDrainBudget = TimeSpan.FromMilliseconds(200);
+
+            await orch.HandleLaunchAgentForTest(new LaunchAgentCommand(
+                AgentId: "agent-acp-unresolved",
+                Prompt: "do the thing",
+                Model: "claude-opus-4-8",
+                Effort: null,
+                RepoPath: repoPath,
+                Tools: null,
+                AttachmentIds: null,
+                Vendor: "cursor"));
+
+            // Not refused, and the REQUEST still reached the runtime (selection stays best-effort
+            // there) — this test is about what gets reported, not what gets attempted.
+            await Assert.That(server.LaunchFailedCalls).IsEmpty();
+            await Assert.That(cursorFactory.StartCalls).IsEqualTo(1);
+            await Assert.That(cursorFactory.LastContext!.Model).IsEqualTo("claude-opus-4-8");
+
+            await Assert.That(server.AgentRegisteredCalls).Contains(("agent-acp-unresolved", (string?)null));
+
+            await orch.HandleStopAgentForTest("agent-acp-unresolved");
+        } finally {
+            cleanup();
+        }
+    }
+
+    /// <summary>Paired positive: when the handshake CONFIRMS the applied model, the registration
+    /// reports the confirmed id — for ACP that is the vendor's own (possibly parameterized) form,
+    /// not necessarily the requested string. Proves the fix forwards the confirmation rather than
+    /// blanking every ACP launch's model.</summary>
+    [Test]
+    public async Task Acp_launch_whose_requested_model_resolved_registers_the_confirmed_id() {
+        var (repoPath, cleanup) = CreateGitRepo();
+
+        try {
+            var server        = new CaptureServerConnection();
+            var ptyFactory    = new SpyPtyProcessFactory();
+            var cursorFactory = new SpyAcpHostedAgentRuntimeFactory {
+                ResolvedModel = "claude-opus-4-8[thinking=true,context=200k]"
+            };
+
+            await using var orch = BuildOrchestrator(
+                server, ptyFactory, new Dictionary<string, IHostedAgentLauncher>(),
+                allowedRepoPath: repoPath, extraRuntimeFactories: [cursorFactory]);
+            orch.AcpFinalDrainBudget = TimeSpan.FromMilliseconds(200);
+
+            await orch.HandleLaunchAgentForTest(new LaunchAgentCommand(
+                AgentId: "agent-acp-resolved",
+                Prompt: "do the thing",
+                Model: "claude-opus-4-8",
+                Effort: null,
+                RepoPath: repoPath,
+                Tools: null,
+                AttachmentIds: null,
+                Vendor: "cursor"));
+
+            await Assert.That(server.LaunchFailedCalls).IsEmpty();
+            await Assert.That(server.AgentRegisteredCalls)
+                .Contains(("agent-acp-resolved", (string?)"claude-opus-4-8[thinking=true,context=200k]"));
+
+            await orch.HandleStopAgentForTest("agent-acp-resolved");
+        } finally {
+            cleanup();
+        }
+    }
+
     /// <summary>The other half of <see cref="ModelSelectionLaunchPolicy"/>: a PINNED reviewer model is
     /// different in kind from an interactive request. A review round's authority depends on which model
     /// produced it, so silently reviewing with the vendor default — even with truthful metadata — is
