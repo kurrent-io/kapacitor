@@ -322,10 +322,11 @@ internal static class AcpVendorDescriptors {
     /// <c>AcpVendorDescriptorTests</c> and <c>GeminiReviewerLaunchTests</c> assert both halves.
     /// KNOWN LIMIT (#449): <c>AcpReviewFlowMcp.Build</c> puts any additional validated allowlist
     /// servers in <c>session/new.mcpServers</c> under their canonical ids, which this single-name
-    /// gate does NOT admit — inert today because the built-in review definitions carry no MCP
-    /// allowlist, but a launch that needs those servers (or a future interactive caller populating
-    /// <c>RuntimeStartContext.McpServers</c>) must widen the gate in the same change, or its servers
-    /// ship silently blocked.</para>
+    /// gate does NOT admit. The built-in review definitions carry no MCP allowlist and do not
+    /// exercise the gap, but any catalog or dynamic definition with a non-empty <c>mcp:</c> list
+    /// targeting a Gemini reviewer reaches it today: its servers are injected and silently blocked.
+    /// A launch that needs those servers (or a future interactive caller populating
+    /// <c>RuntimeStartContext.McpServers</c>) must widen the gate in the same change.</para>
     ///
     /// <para><see cref="NoOpModelSelector"/> for the same reason as Kiro: <c>session/new</c> does return a
     /// <c>models</c> object, so <see cref="ConfigOptionModelSelector"/>'s read half would fit, but its
