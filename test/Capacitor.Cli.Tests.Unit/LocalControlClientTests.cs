@@ -103,6 +103,19 @@ public class LocalControlClientTests {
         foreach (var json in statusJsons)
             await FrameCodec.WriteAsync(s, LocalFrame.StatusJson(FrameType.DaemonStatus, json), ct);
     };
+    /// Same push sequence again, but afterward BLOCKS ON A READ instead of an infinite delay —
+    /// a real Unix-socket peer close (not the server's own cancellation) unblocks that read
+    /// with a clean EOF, which is the only way the SERVER side can observe that the CLIENT
+    /// closed the subscribe connection. Used to pin that disposing the enumerator without
+    /// cancelling (a bare `break`) still closes the socket.
+    static ConnScript SubscribePushThenObserveClose(TaskCompletionSource closed, params string[] statusJsons) => async (s, ct) => {
+        var f = await FrameCodec.ReadAsync(s, ct);
+        if (f?.Type != FrameType.StatusSubscribe) return;
+        foreach (var json in statusJsons)
+            await FrameCodec.WriteAsync(s, LocalFrame.StatusJson(FrameType.DaemonStatus, json), ct);
+        try { await FrameCodec.ReadAsync(s, ct); } catch { } // null (EOF) or an exception once the peer closes
+        closed.TrySetResult();
+    };
     static ConnScript SubscribeEof() => async (s, ct) => { await FrameCodec.ReadAsync(s, ct); };
     static ConnScript SubscribeStall() => async (s, ct) => {
         await FrameCodec.ReadAsync(s, ct); await Task.Delay(Timeout.Infinite, ct);
@@ -149,6 +162,18 @@ public class LocalControlClientTests {
             DaemonLockPaths.OverrideDirectoryForTesting(null);
             try { Directory.Delete(sockDir.FullName, true); } catch { }
         }
+    }
+
+    /// Lock-guarded reads for the two tests below that poll a `List&lt;LocalControlEvent&gt;`
+    /// from the test thread while a background `Task.Run` concurrently calls `events.Add` —
+    /// `List&lt;T&gt;` isn't thread-safe, so an unguarded enumeration (`Count`, `OfType`, `Any`)
+    /// racing an `Add` can throw `InvalidOperationException` (a real, if infrequent, CI flake).
+    /// Both the writer and these readers take the SAME lock.
+    static int CountLocked(object gate, List<LocalControlEvent> events) {
+        lock (gate) return events.Count;
+    }
+    static bool HasConnectedLocked(object gate, List<LocalControlEvent> events) {
+        lock (gate) return events.OfType<LocalControlEvent.Connected>().Any();
     }
 
     [Test]
@@ -329,6 +354,40 @@ public class LocalControlClientTests {
         await Assert.That(events.OfType<LocalControlEvent.Unreachable>().Count()).IsEqualTo(1);
     }
 
+    [Test] // pins the disposal-leak fix: breaking out of the enumeration (no cancel) must still
+           // close the live subscribe socket, not merely stop reading from it
+    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
+    public async Task Breaking_out_of_the_enumeration_after_connected_disposes_the_subscribe_socket() {
+        if (OperatingSystem.IsWindows()) return;
+
+        var sockDir = Directory.CreateTempSubdirectory("kcap-lcc-");
+        DaemonLockPaths.OverrideDirectoryForTesting(sockDir.FullName);
+        try {
+            var name = "lcc-" + Guid.NewGuid().ToString("N")[..6];
+            var closed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            await using var server = new ScriptedServer(LocalSocketPaths.Socket(name),
+                HelloThen(GoodHello("status/1")), SubscribePushThenObserveClose(closed, ValidStatusJson("m", "a1")));
+            var client = new LocalControlClient(name) { RetryDelays = [TimeSpan.FromMilliseconds(1)] };
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+
+            await foreach (var e in client.RunAsync(cts.Token)) {
+                // A bare `break` — never cancels `cts` — is exactly the disposal path the fix
+                // targets: `await foreach` calls the enumerator's DisposeAsync() while it's
+                // suspended at this very `yield return Connected`.
+                if (e is LocalControlEvent.Connected) break;
+            }
+
+            // Without the fix this never completes (the server's read stays parked on a socket
+            // nobody ever closed) and the test fails on this timeout — a deterministic signal,
+            // not a flaky one: the WaitAsync bound only needs to be "generous enough", never
+            // "tight enough".
+            await closed.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        } finally {
+            DaemonLockPaths.OverrideDirectoryForTesting(null);
+            try { Directory.Delete(sockDir.FullName, true); } catch { }
+        }
+    }
+
     [Test] // clean cancellation mid-backoff-wait, no fabricated events
     [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task Cancellation_ends_the_enumeration_cleanly() {
@@ -339,15 +398,20 @@ public class LocalControlClientTests {
         try {
             var client = new LocalControlClient("lcc-cxl") { RetryDelays = [TimeSpan.FromSeconds(30)] };
             using var cts = new CancellationTokenSource();
+            var gate = new object();
             var events = new List<LocalControlEvent>();
             var run = Task.Run(async () => {
-                await foreach (var e in client.RunAsync(cts.Token)) events.Add(e);
+                await foreach (var e in client.RunAsync(cts.Token)) lock (gate) events.Add(e);
             });
-            // wait for Connecting + first Unreachable, then cancel mid-backoff-wait
+            // wait for Connecting + first Unreachable, then cancel mid-backoff-wait. The poll
+            // reads `events` from the test thread while the background task above still writes
+            // it — both sides must go through the same lock, or an Add landing mid-enumeration
+            // throws InvalidOperationException (List<T> is not thread-safe).
             var deadline = DateTime.UtcNow.AddSeconds(5);
-            while (events.Count < 2 && DateTime.UtcNow < deadline) await Task.Delay(10);
+            while (CountLocked(gate, events) < 2 && DateTime.UtcNow < deadline) await Task.Delay(10);
             cts.Cancel();
             await run.WaitAsync(TimeSpan.FromSeconds(5));
+            // `run` has completed here, so the background writer is done — a plain read is safe.
             await Assert.That(events.Count).IsEqualTo(2); // nothing fabricated after cancel
         } finally {
             DaemonLockPaths.OverrideDirectoryForTesting(null);
@@ -368,18 +432,21 @@ public class LocalControlClientTests {
                 HelloThen(GoodHello("status/1")), SubscribePush(ValidStatusJson("m", "a1")));
             var client = new LocalControlClient(name) { RetryDelays = [TimeSpan.FromMilliseconds(1)] };
             using var cts = new CancellationTokenSource();
+            var gate = new object();
             var events = new List<LocalControlEvent>();
             var run = Task.Run(async () => {
-                await foreach (var e in client.RunAsync(cts.Token)) events.Add(e);
+                await foreach (var e in client.RunAsync(cts.Token)) lock (gate) events.Add(e);
             });
 
+            // Same lock-guarded poll as above: the background writer and this read must not
+            // race List<T>'s internal state.
             var deadline = DateTime.UtcNow.AddSeconds(5);
-            while (!events.OfType<LocalControlEvent.Connected>().Any() && DateTime.UtcNow < deadline)
-                await Task.Delay(10);
+            while (!HasConnectedLocked(gate, events) && DateTime.UtcNow < deadline) await Task.Delay(10);
 
             cts.Cancel(); // cancels the pending (indefinitely blocked) read on the live stream
             await run.WaitAsync(TimeSpan.FromSeconds(5));
 
+            // `run` has completed here, so the background writer is done — plain reads are safe.
             await Assert.That(events.Count).IsEqualTo(2); // Connecting, Connected — nothing fabricated after cancel
             await Assert.That(events.OfType<LocalControlEvent.Unreachable>().Any()).IsFalse();
         } finally {

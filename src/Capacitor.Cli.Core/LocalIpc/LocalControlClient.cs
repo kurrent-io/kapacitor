@@ -101,17 +101,29 @@ public sealed class LocalControlClient(string daemonName, TimeProvider? time = n
             // backoff schedule and yield Connected carrying that very snapshot (§4.1/§4.3).
             lastReason = null;
             attempt = 0;
-            yield return new LocalControlEvent.Connected(cycle.Capabilities, cycle.FirstSnapshot!);
 
             var sub = cycle.Stream!;
             string streakReason;
-            while (true) {
-                var next = await ReadSnapshotAsync(sub, timeout: null, ct);
-                if (ct.IsCancellationRequested) { await DisposeQuietly(sub); yield break; }
-                if (next.Reason is { } r) { streakReason = r; break; }
-                yield return new LocalControlEvent.Status(next.Snapshot!);
+            // `sub` is held live across every yield below (Connected, then each Status). A
+            // consumer that leaves the enumeration WITHOUT cancelling — break, Take(n), an
+            // exception thrown from its own await-foreach body, or an explicit
+            // DisposeAsync() — disposes this iterator while it's suspended at one of those
+            // yields; only code inside an ENCLOSING try/finally still runs on that path (a
+            // statement after the loop, like the old `await DisposeQuietly(sub);`, would be
+            // skipped entirely). The close must therefore live in a finally wrapping every
+            // yield that can observe `sub`, not after them.
+            try {
+                yield return new LocalControlEvent.Connected(cycle.Capabilities, cycle.FirstSnapshot!);
+
+                while (true) {
+                    var next = await ReadSnapshotAsync(sub, timeout: null, ct);
+                    if (ct.IsCancellationRequested) yield break;
+                    if (next.Reason is { } r) { streakReason = r; break; }
+                    yield return new LocalControlEvent.Status(next.Snapshot!);
+                }
+            } finally {
+                await DisposeQuietly(sub);
             }
-            await DisposeQuietly(sub);
 
             if (streakReason != lastReason) {
                 lastReason = streakReason;
