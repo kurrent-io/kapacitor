@@ -303,7 +303,10 @@ public class DaemonClientServiceTests {
         }
 
         await Assert.That(script.PeakLiveEnumerations).IsLessThanOrEqualTo(1);
-        await Assert.That(script.LiveEnumerations).IsEqualTo(1);
+        // The new pump starts via Task.Run — poll for the steady state instead of asserting
+        // immediately (the restart's await covers the OLD loop's completion, not the new
+        // loop's scheduling; Windows CI exposed the gap).
+        await WaitUntilAsync(() => script.LiveEnumerations == 1, what: "steady-state single enumeration after restarts");
     }
 
     [Test]
