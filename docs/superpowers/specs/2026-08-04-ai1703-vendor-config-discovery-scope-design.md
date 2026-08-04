@@ -3,21 +3,18 @@
 Design for AI-1703. Builds on the merged AI-1632 containment (kcap-cli#427) and the merged
 AI-1706 review-context server (kcap-cli#443).
 
-Revision 2 — rewritten after round 1 of spec review. The load-bearing change from revision 1 is
-that the cwd prefix is now derived from **git's own path bytes**, not from the filesystem, and that
-one byte-level classifier serves both the exclusion filter and the review-context extractor.
+Revision 3, after two rounds of spec review. Revision 2 moved the cwd prefix from the filesystem to
+git's own bytes. Revision 3 replaces revision 2's unconditional case fold — which was a launch-refusal
+primitive — pins the `--show-prefix` byte protocol, persists the prefix across a refresh instead of
+re-deriving it, and corrects a factually wrong justification.
 
 ## The defect
 
-`WorktreeManager.WorkspaceMcpConfigPaths` is a list of **root-relative** paths. Every consumer
-matches it against a path relative to the repository root:
-
-- `IsUnderExcluded(rel, exclusions, caseSensitive)` — the borrowed-snapshot manifest filter, a plain
-  `rel == prefix || rel.StartsWith(prefix + "/")` over a decoded string;
-- `NeutralizeWorkspaceMcpConfig(worktreePath)` — the owned-worktree strip;
-- `ApplyReservedIndexPolicyAsync` — the `skip-worktree` marking;
-- `ExtractReviewContextEntriesAsync` → `ClassifyReservedPath` — the AI-1706 reserved-path classifier,
-  over raw bytes.
+`WorktreeManager.WorkspaceMcpConfigPaths` is a list of **root-relative** paths, and every consumer
+matches it against a path relative to the repository root: the borrowed-snapshot manifest filter
+(`IsUnderExcluded`), the owned-worktree strip (`NeutralizeWorkspaceMcpConfig`), the `skip-worktree`
+marking (`ApplyReservedIndexPolicyAsync`), and the AI-1706 reserved-path classifier
+(`ClassifyReservedPath`).
 
 A borrowed snapshot can execute in a directory **below** the repository root.
 `CreateBorrowedSnapshotAsync(sourceRepoRoot, requestedCwd, …)` takes the two independently, and
@@ -27,288 +24,334 @@ So a review flow started from `<repo>/src` produces a snapshot whose cwd is `<sn
 `src/.codex/config.toml` is matched against a list containing only `.codex/config.toml`. It is not
 excluded, and it lands in the tree the reviewer executes in.
 
-Separately and independently of scope, `.github/mcp.json` is **not on the list at all** — the list
-has `.github/copilot/mcp.json`, a different path. That one is live today at the repository root of
-every borrowed snapshot.
+Separately and independently of scope, `.github/mcp.json` is **not on the list at all** — the list has
+`.github/copilot/mcp.json`, a different path. That gap is live today at the repository root of every
+borrowed snapshot.
 
 ## Vendor discovery matrix
 
-Round 1 correctly refused to accept an ancestor-chain closure proved from two vendors and applied to
-eight paths. Each canonical entry, with the discovery rule that justifies its scope:
-
 | Path | Vendor | Documented discovery | Within ancestor chain? |
 |---|---|---|---|
-| `.mcp.json` | Claude Code | Searches **upward** through parent directories, merging; continues above the git root | yes |
-| `.mcp.json`, `.github/mcp.json` | Copilot CLI | Walks **cwd → repository root**; `.mcp.json` wins in the same directory | yes |
-| `.codex/config.toml` | Codex | Layers **repository root → cwd**, closest wins, trusted projects only | yes |
+| `.mcp.json` | Claude Code | Searches **upward** through parents, merging; continues above the git root | yes, plus see "above the snapshot root" |
+| `.mcp.json`, `.github/mcp.json` | Copilot CLI | Walks cwd → repository root; `.mcp.json` wins in the same directory | yes |
+| `.codex/config.toml` | Codex | Layers repository root → cwd, closest wins, trusted projects only | yes |
 | `.cursor/mcp.json` | Cursor | Project root only; no documented nested discovery | yes (subset) |
 | `.gemini/settings.json` | Gemini | Workspace root; measured root-scoped during AI-1632 | yes (subset) |
-| `.kiro/settings/mcp.json` | Kiro | Workspace root; **measured** to spawn at session setup during AI-1632 | yes (subset) |
-| `.vscode/mcp.json` | editor-generic | Workspace-folder root. GitHub documents that Copilot CLI does **not** read it; kept because VS Code and other CLIs do | yes (subset) |
-| `.copilot/mcp.json`, `.copilot/mcp-config.json` | Copilot | GitHub documents `~/.copilot/mcp-config.json` as **user**-scope; no documented workspace form | speculative, see below |
+| `.kiro/settings/mcp.json` | Kiro | Workspace root; **measured** to spawn at session setup | yes (subset) |
+| `.vscode/mcp.json` | editor-generic | Workspace-folder root; GitHub documents Copilot CLI does **not** read it; kept for VS Code and others | yes (subset) |
+| `.copilot/mcp.json`, `.copilot/mcp-config.json` | Copilot | GitHub documents `~/.copilot/mcp-config.json` as **user**-scope; no documented workspace form | speculative, kept under the list's standing "wider than known readers" rationale |
 
-No supported vendor is documented to search **downward** into descendants, or to load config from a
-sibling of the cwd. Claude Code searches above the git root; above the snapshot root is the daemon's
-own `borrowed-snapshots/` parent, which holds no branch content, so that direction is closed by
-construction rather than by this rule.
+No supported vendor is documented to search **downward** into descendants, or into a sibling of the
+cwd.
 
-The two `.copilot/…` entries are not documented workspace discovery paths. They are kept, and
-`.copilot/mcp-config.json` added, under the list's standing rationale — recorded verbatim in the code
-today — that the list is deliberately wider than the set of vendors known to read each file, "the
-point is that the next vendor is safe before anyone thinks about it". An entry that no vendor reads
-costs one string.
+### Above the snapshot root
+
+Claude Code's upward walk does not stop at the git root, so the physical ancestors of the snapshot
+matter. Those are `…/borrowed-snapshots/`, then `config.WorktreeRoot`, then whatever contains it —
+daemon- and user-owned, holding no branch content.
+
+The property that keeps it that way is `EnsureSeparateRoots(source, root)`, which already refuses a
+snapshot root at or under the source checkout with `borrowed_snapshot_root_inside_source`. Round 2
+raised this as a Critical bypass; it does not reproduce, because that guard exists.
+
+It has one real residual, which round 2 named and this design closes: the guard is a **lexical**
+prefix comparison over `Path.GetFullPath` output, which does not resolve symlinks. A `WorktreeRoot`
+configured as a symlink whose target is inside the source checkout passes the string comparison and
+lands the snapshot under the source anyway — at which point the source's own root `.mcp.json` is a
+physical ancestor of the reviewer's cwd and is loaded by an upward-walking vendor. The guard is
+therefore extended to compare fully resolved paths as well as lexical ones, with the same coded
+error, and gains the test round 2 asked for.
 
 ### Threat-model boundary, stated rather than assumed
 
-The property this design delivers is: **no branch-authored vendor config is loaded by the vendor
-process the daemon launches, at the cwd the daemon launches it in, without model involvement.** That
-is the AI-1632 property — Kiro was measured spawning a declared command at session setup, with no
-prompt and no tool call.
+The property delivered is: **no branch-authored vendor config is loaded by the vendor process the
+daemon launches, at the cwd it launches it in, without model involvement.** That is the AI-1632
+property — Kiro was measured spawning a declared command at session setup, no prompt, no tool call.
 
-It does **not** cover a model that deliberately changes directory and launches another supported CLI
-in a descendant or sibling. That is not a config-discovery hole: a model that can spawn a CLI is
-already executing arbitrary commands, and the boundary for that is the reviewer's OS sandbox (the
-AI-1584 profile), not this path list. Saying so explicitly is the point — revision 1 left it
-implicit, which reads as a closure claim the design does not make.
+It does not cover a model that deliberately changes directory and launches another supported CLI in a
+descendant or sibling. That is not a config-discovery hole: a model that can spawn a CLI is already
+executing arbitrary commands, and the boundary there is the reviewer's OS sandbox (the AI-1584
+profile), not this path list.
 
 ### Alternative considered and rejected: exclude at every directory
 
-Excluding these names at *every* directory in the tree would also cover the nested-launch case, and
-the AI-1706 review-context server means it would cost no review coverage — the content is surfaced
-to the reviewer either way.
+Whole-tree exclusion would also cover the nested-launch case, and — because the AI-1706
+review-context server surfaces the content either way — at no review-coverage cost.
 
-It is rejected because it makes a fail-closed cap attacker-reachable. `MaxReviewContextBytes` is
-256 KiB across the whole manifest, and today at most eight files can be admitted. Under a whole-tree
-rule a branch could commit 300 KiB spread across many `.mcp.json` files and make
-`borrowed_snapshot_review_context_capacity_exceeded` refuse **every** launch of that repository. The
-earlier work on this surface was bitten twice by exactly this shape — a hostile branch weaponizing a
-fail-closed guard — and the ancestor chain keeps the candidate set bounded by `paths × depth`.
+**Revision 2 rejected it for a reason that was false**, and round 2 was right to say so. The claim
+was that whole-tree exclusion would newly expose the fail-closed `MaxReviewContextBytes` cap. It
+would not: one tracked ancestor `.mcp.json` over 256 KiB already trips
+`borrowed_snapshot_review_context_capacity_exceeded` today, and the ancestor chain itself admits
+`paths × depth` entries rather than "at most 8". Whole-tree exclusion increases the number of trigger
+locations for an existing DoS; it does not introduce the class.
 
-It would also strip this repository's own committed `kcap/.mcp.json` from every snapshot.
+The rejection stands on the two reasons that survive scrutiny:
+
+1. **Scope.** Given the explicitly scoped property above — the launched vendor, at its launch cwd,
+   without model involvement — the ancestor chain is exactly the closure. Whole-tree buys coverage
+   only for the nested-launch case, which is deliberately the sandbox's problem.
+2. **Functional regression.** It deletes sibling configs that no vendor in the launch can discover,
+   including this repository's own committed `kcap/.mcp.json`.
+
+The pre-existing review-context capacity DoS is real, is not introduced or widened here, and is
+**filed separately** rather than folded into this change. Containment must not be gated on
+review-context capacity: the right shape is to contain everything and emit a bounded manifest that
+declares what it omitted, which is a change to AI-1706's contract, not to this exclusion rule.
 
 ## Correction to the issue's premise
 
 AI-1703 states that "AI-1632's owned-worktree neutralization walks real ancestor directories and does
-cover this". **That is wrong**, and the fix must not be designed around it.
-`NeutralizeWorkspaceMcpConfig` walks the components of each *relative path* (`.kiro`, then
-`settings`, then `mcp.json`) so it can unlink the first component that is a symlink. It does not walk
-directories of the tree. It is exactly as root-scoped as the borrowed path.
+cover this". **That is wrong.** `NeutralizeWorkspaceMcpConfig` walks the components of each *relative
+path* (`.kiro`, then `settings`, then `mcp.json`) so it can unlink the first component that is a
+symlink. It does not walk directories of the tree. It is exactly as root-scoped as the borrowed path.
 
-It is nonetheless **not** a live defect, for a reason unrelated to the walk: every owned-worktree
-launch runs at the worktree root. `CreateAsync` and `BuildStandaloneSnapshotAsync` return a
-`WorktreeInfo` whose `Path` is the worktree root, and no caller narrows it. With cwd == root the
-ancestor chain is `[root]` and root-scoped matching is complete. The owned path is therefore left
-alone here, and this document records why, so the next reader does not re-derive it.
+It is nonetheless not a live defect, for an unrelated reason: every owned-worktree launch runs at the
+worktree root. `CreateAsync` and `BuildStandaloneSnapshotAsync` both return a `WorktreeInfo` whose
+`Path` is the worktree root, and `AgentOrchestrator` uses `worktree.Path` directly as the launch cwd
+without narrowing. With cwd == root the chain is `[root]` and root-scoped matching is complete.
 
 The direct-borrow path (`WorktreeInfo.Borrowed(cwd)`, non-snapshot) is out of scope by construction:
-it is the user's own checkout, guarded by a certified read-only runtime boundary, and nothing is
-stripped there today.
+it is the user's own checkout behind a certified read-only runtime boundary, and nothing is stripped
+there today.
 
 ## Design
 
-### The pathname-namespace rule
+### Deriving the prefix: byte-exact protocol
 
-Round 1's first finding is the one that reshapes this design: **a prefix derived from the filesystem
-is not in the same namespace as the paths git reports**, and concatenating one onto the other
-produces a comparison that can silently fail to match. Three concrete divergences were named, all
-real:
-
-1. **Unicode normalization.** On macOS a directory created as NFC is reported by the filesystem as
-   NFD. `NormalizeRelativePath` already rejects any git path that is not NFC — so the *git* side is
-   guaranteed NFC or the build fails closed — but nothing normalizes the *prefix*. An NFD prefix
-   against an NFC git path under-excludes.
-2. **Case sensitivity read from the wrong volume.** `caseSensitive` is probed with
-   `ProbeCaseSensitiveFileSystem(destination)` and then applied to paths resolved against the
-   *source*. A case-insensitive source plus a case-sensitive snapshot volume yields `SRC` from the
-   requested cwd and `src/.mcp.json` from git, and no match.
-3. **Rooted relative results.** `Path.GetRelativePath` returns a *rooted* path when the two paths are
-   on different Windows volumes. The existing guard tests only for `".."` and a `"../"` prefix, so
-   revision 1's claim that escape "is already rejected" was false.
-
-The fix is to stop deriving the prefix from the filesystem at all.
-
-**Derive the prefix from git.** Run, in the source repository, with the process cwd set to the
-requested cwd:
+The prefix comes from git, not the filesystem, so it lands in the same namespace as `ls-files` and
+the separator, rooted-path and `..` classes disappear by construction:
 
 ```
 git -c core.quotePath=false rev-parse --show-prefix
 ```
 
-and read the raw bytes. This returns the cwd's path relative to the work-tree top **in git's own
-spelling and byte representation** — the same namespace as `ls-files` output — or empty for the
-root. It removes the separator, rooted-path and `..` classes outright, because the value never
-passes through `Path.GetRelativePath`. `core.quotePath=false` is required or non-ASCII components
-come back C-quoted.
+run in the source repository with the process cwd set to the requested cwd, captured as raw bytes.
+`core.quotePath=false` is required or non-ASCII components come back C-quoted.
 
-The result is then put through the existing `NormalizeRelativePath` (after strict UTF-8 decoding),
-so a prefix carrying `\`, CR, LF, a `.git` component, or non-NFC bytes fails the build closed
-exactly as a manifest path would. The existing filesystem-derived `relativeCwd` is kept **only** for
-`ContainedPath(final, relativeCwd)` and `Directory.Exists(executionPath)`, which are filesystem
-operations and belong in filesystem terms — and its rooted-path gap is fixed there independently
-(`Path.IsPathRooted` rejected alongside the `..` checks), because that check guards a path escape
-regardless of this feature.
+Round 2 is right that "then pass it through `NormalizeRelativePath`" is not a specification — that
+function rejects LF, an empty string, and a trailing empty component, all three of which this output
+has. The parse is therefore pinned:
 
-**Compare prefixes permissively, and say which way the error goes.** Even with a git-derived prefix,
-an exact byte comparison is not obviously right: git's index spelling and git's cwd resolution can
-still disagree on a case-insensitive volume. So the directory-prefix portion of a match is compared
-with ASCII case folding applied *unconditionally*, independent of the probed `caseSensitive`, and
-with both sides already NFC by construction.
+1. The capture must end with exactly one `0x0A`. Zero, more than one, or any `0x0D` anywhere is
+   rejected (`borrowed_snapshot_cwd_prefix_malformed`). Strip that one byte.
+2. If what remains is empty, the cwd **is** the repository root: the chain is `[""]` and no further
+   parsing happens. This is the common case and it must not go through the path validator at all.
+3. Otherwise the remainder must end with exactly one `/`. Strip it.
+4. The remainder must be **ASCII** (every byte `< 0x80`). If not, the launch is refused with
+   `borrowed_snapshot_cwd_prefix_non_ascii` — see below.
+5. Strict-UTF-8 decode, then `NormalizeRelativePath`, which now sees a well-formed relative path and
+   applies the existing `\`, CR, LF, `.`/`..`, `.git` and NFC rules.
 
-This is deliberately over-broad, and the error direction is the argument: an over-broad prefix
-excludes a vendor config file at a *differently-cased sibling directory* — content that is excluded
-anyway under any spelling, and that the review-context server still surfaces. An under-broad prefix
-leaves a hostile config live in the tree. Over-exclusion is a non-event; under-exclusion is the
-vulnerability this issue exists to close.
+The filesystem-derived `relativeCwd` is retained **only** for `ContainedPath(final, relativeCwd)` and
+`Directory.Exists(executionPath)`, which are filesystem operations. Its rooted-path gap — round 1's
+finding, real and independent of this feature — is fixed there by rejecting `Path.IsPathRooted`
+alongside the existing `..` checks.
+
+### Case: use the probed volume, not an unconditional fold
+
+Revision 2 folded ASCII case on the directory prefix unconditionally. Round 2 showed that is a
+**launch-refusal primitive**: on a case-sensitive destination, tracked `a/.mcp.json` and
+`A/.mcp.json` both fold to one canonical candidate, `matchedCanonicalPaths.Add` fails, and
+`borrowed_snapshot_review_context_path_collision` refuses every launch of that repository. It also
+excluded a sibling no vendor in the launch can discover, contradicting this design's own sibling rule.
+Both objections are correct and the unconditional fold is withdrawn.
+
+The comparison instead uses the **existing probed `caseSensitive`**, and the reason it is the right
+input is that it is probed on the destination — the volume the vendor actually executes on:
+
+- **Case-insensitive destination.** `SRC` and `src` are the same directory there, so folding is
+  correct and no case-varying sibling can exist to collide. This is the case that matters, because it
+  is where a `--show-prefix` spelling taken from the on-disk cwd can differ from the index spelling
+  and silently fail an exact match.
+- **Case-sensitive destination.** `a` and `A` are genuinely distinct, so not folding is correct: the
+  sibling rule holds and the collision primitive does not exist.
+
+The cross-volume combination round 1 raised (case-insensitive source, case-sensitive destination,
+prefix `SRC` versus index `src`) does not under-exclude: the file is materialised at the index
+spelling `src/…`, while the execution path is `ContainedPath(final, "SRC")`, which does not exist on a
+case-sensitive destination — so the launch fails closed with `borrowed_snapshot_cwd_missing` rather
+than running in a directory whose config was not excluded.
+
+**The ASCII-only prefix restriction (step 4) is what makes this complete.** `AsciiPathEquals` folds
+ASCII only; a case-insensitive volume also equates non-ASCII pairs such as `Å`/`å`, which that
+matcher would miss — a genuine under-exclusion. Rather than build a second, Unicode-aware folding
+path and have two matchers again, a non-ASCII cwd prefix is refused with a coded error. The cost is
+bounded and visible: a review flow launched from a subdirectory whose name is not ASCII fails loudly
+with a specific error instead of silently under-excluding. The prefix is the operator's own launch
+cwd, not branch content, so this is a configuration limitation rather than an attacker-facing one.
+The canonical suffixes are all ASCII already, so nothing else is affected.
 
 ### One classifier, not two
 
-Round 1's fifth finding: passing one array to two matchers does not make them agree.
 `IsUnderExcluded` compares decoded strings with `StringComparison.OrdinalIgnoreCase` (full Unicode
-case folding); `ClassifyReservedPath` compares raw bytes with `AsciiPathEquals` (ASCII folding only).
-With a purely ASCII canonical list the difference was unobservable. A cwd prefix can contain
-non-ASCII, so it becomes observable — a path could be excluded by one and `Unrelated` to the other,
-which is precisely the "contained but not reviewable" state this change must not create.
-
-So the expansion is classified **once**, over raw bytes, by `ClassifyReservedPath`, and both
-consumers read that one result:
+folding); `ClassifyReservedPath` compares raw bytes with `AsciiPathEquals` (ASCII only). Invisible
+with an ASCII-only canonical list; observable the moment a prefix can vary. So the vendor list flows
+through `ClassifyReservedPath` **only**:
 
 ```csharp
 internal sealed record SnapshotExclusionPlan(
-    ImmutableArray<string> VendorConfigPaths,   // canonical list × the git-derived ancestor chain
-    ImmutableArray<byte[]> VendorConfigPathBytes,
-    string[] SnapshotExclusions);               // .capacitor, .attached, vendor paths, caller extras
-
-internal static SnapshotExclusionPlan PlanSnapshotExclusions(
-    string gitRelativeCwd, IEnumerable<string>? additional = null);
+    string GitRelativeCwd,                          // "" for the repository root
+    ImmutableArray<string> VendorConfigPaths,       // canonical list × the ancestor chain
+    ReadOnlyMemory<byte>[] VendorConfigPathBytes,   // the same set, as the classifier consumes it
+    string[] SnapshotExclusions);                   // .capacitor, .attached, caller extras only
 ```
 
-`ReadSourceManifestAsync` already iterates raw records and calls `NormalizeRelativePath` on the
-decoded form; it gains a `ClassifyReservedPath` call on the raw bytes *before* decoding, and treats
-`Exact` and `Descendant` as excluded. `IsUnderExcluded` is retained only for `.capacitor`,
-`.attached` and caller-supplied `excludePaths`, which are ASCII constants and daemon-supplied — the
-namespace question does not arise for them. The vendor list no longer flows through it.
+`ReadSourceManifestAsync` calls `ClassifyReservedPath` on the raw bytes before decoding — preserving
+the existing classify-before-decode guarantee — and treats `Exact` and `Descendant` as excluded.
+`IsUnderExcluded` is retained only for `.capacitor`, `.attached` and caller-supplied `excludePaths`,
+which are ASCII daemon-supplied constants where the namespace question does not arise. The vendor
+paths are no longer in `SnapshotExclusions` at all, which is what makes "one classifier" true rather
+than asserted.
 
-A test asserts the invariant directly: for a corpus of paths spanning case and normalization
-variants, `excluded(path) == (ClassifyReservedPath(path) != Unrelated)` for every vendor path in the
-plan. That is the lockstep property, stated as an equivalence rather than as "we passed the same
-array to both".
+`SnapshotExcludedPaths` is **removed**, not left beside the plan — leaving it is the two-lists shape
+whose comment in the code today reads "Two lists of the same thing is how that happened".
 
-The `SnapshotExcludedPaths` static property is **removed**, not left beside the new plan. Leaving it
-is precisely the two-lists shape whose comment in the code today reads "Two lists of the same thing
-is how that happened".
+Round 2 is right that `ImmutableArray<byte[]>` is not deeply immutable and that a `string[]` is not
+immutable at all. The plan is a value the daemon constructs and never publishes; the byte set is
+stored as `ReadOnlyMemory<byte>` and the plan is documented as *not* being a security boundary in
+itself — the guarantee is that it is built once per build and passed, not mutated. Stating that is
+better than claiming an immutability the type system does not give.
 
-### What "reviewable" actually means — narrowed, not claimed
+### Refresh: persist the prefix, never re-derive it
 
-Round 1 is right that containment and reviewability range over different data. Containment operates
-on the working tree (`ls-files -co --exclude-standard`); review context contains **index stage-0
-blobs only**, and the manifest says so in a field (`UnstagedAndUntrackedOmitted: true`). So an
-*untracked* reserved config, or unstaged working-tree bytes of a tracked one, is contained but not
-reviewable.
+Round 2's second finding is a genuine hole in revision 2. `SyncFromSourceCoreAsync` has only
+`sourceRepoRoot`, a target root and an `executionPath` **inside the target**. Deriving a source-relative
+prefix from the target filesystem would reintroduce exactly the namespace problem the git derivation
+exists to remove.
 
-That is a pre-existing property of AI-1706, not something this change introduces, and it is not
-silently inherited: the reviewer is told, by that manifest field, which bytes it is looking at. This
-design states the narrowing explicitly and does not widen it — carrying untracked working-tree bytes
-into review context would reintroduce the AI-1680 failure that killed the previous attempt, where
-a developer's `skip-worktree` local override would have been published to the reviewer's model.
-
-The lockstep property this design does claim is therefore precise: **for tracked stage-0 content,
-every path excluded from the snapshot is classified as reserved by the extractor.**
-
-### Ordering
-
-`CreateReviewContextGenerationAsync` runs before `ReadSourceManifestAsync` in
-`BuildIndependentSnapshotOnceAsync`. That is safe here because the plan is computed once, before
-either, and is immutable; both read the same `VendorConfigPathBytes`. Both also read the same
-`initialIndex` / source, and the existing end-of-build re-check (`sourceHead`, `initialIndex`,
-`ManifestsEqual`) still fails the whole build with `SourceChangedException` if the source moved
-underneath. Failed generations are deleted on every throw path already.
+So the git prefix is computed **once**, at `CreateBorrowedSnapshotAsync`, and persisted on
+`WorktreeInfo` (`GitRelativeCwd`, alongside `SnapshotRoot` and `ReviewContextRoot`). The refresh path
+takes it as a parameter and never recomputes it. A refresh that is not given one is a programming
+error and throws; it does not silently fall back to a filesystem derivation.
 
 ### Reserved index policy
 
-Round 1's third finding is a real bug in revision 1: `initialIndex` is read from **source**, while
-`update-index` runs in **destination**. The destination is a fresh clone checked out at `HEAD`, so a
-path that is staged-but-not-committed in the source is in the source index and *not* in the
-destination index. Batching it in would make `update-index --skip-worktree` fail on a legitimate
-snapshot — and revision 1 also proposed promoting that failure from a swallowed catch to a hard
-error, which together would refuse the launch.
+Revision 2 intersected against `initialIndex`, read from **source**, while `update-index` runs in
+**destination** — a fresh clone checked out at `HEAD`. A staged-but-uncommitted `src/.mcp.json` is in
+the source index and not in the destination index, so revision 2 would have batched it and, having
+promoted the failure to hard, refused a legitimate launch.
 
-Corrected: read the **destination** index after checkout (`git -C destination ls-files -z`),
-intersect the plan's vendor paths with that, and mark only paths proven present. With membership
-established, a failure is a real failure and propagates. The source-side consistency re-check at the
-end of the build is unchanged and still catches a source that moved.
+Corrected: read the **destination** index after checkout (`git -C destination ls-files -z`), intersect
+the plan's vendor paths with that, mark only paths proven present, and let a failure propagate. The
+end-of-build source consistency re-check is unchanged.
 
-Round 1's fourth finding bounds the mechanism:
+Bounds, all of which revision 2 got wrong or left open:
 
-- The batch is fed on **stdin**: `git update-index --skip-worktree -z --stdin`. This removes the
-  `ARG_MAX` ceiling for a deep cwd and removes pathspec interpretation of a leading `:` or `-` in an
-  ancestor directory name — `--stdin` paths are literal.
-- Aggregate pathname bytes are `O(depth²)`, not `O(depth)`. An explicit cap on the plan's candidate
-  count and on its aggregate path bytes is added, rejected at plan construction with a coded error
-  (`borrowed_snapshot_cwd_too_deep`), so the bound is stated rather than inherited from `ARG_MAX`.
-- `MaxReviewContextBytes` charges only blob content. The serialized manifest is bounded separately —
-  path strings, base64 expansion and JSON overhead are not free — with its own cap and coded error.
-  Revision 1's claim that the content cap was "the real bound" was wrong.
+- The batch is fed on stdin — `git update-index --skip-worktree -z --stdin` — removing the `ARG_MAX`
+  ceiling and pathspec interpretation of a leading `:` or `-` in an ancestor name.
+- Aggregate pathname bytes are `O(depth²)`. Concrete caps, enforced at plan construction and rejected
+  with `borrowed_snapshot_cwd_too_deep`: **depth ≤ 32** ancestor components, and **aggregate vendor
+  path bytes ≤ 64 KiB**. With a 10-entry canonical list that is at most 330 candidates.
+- `MaxReviewContextBytes` charges only blob content; the serialized manifest also carries path
+  strings, base64 expansion and JSON framing. A separate **1 MiB** cap on the serialized manifest is
+  enforced on write *and* checked before parsing on read, so an oversized manifest is rejected before
+  allocation rather than after. Revision 2's claim that the content cap was "the real bound" was
+  wrong.
 
-### Deriving the prefix on both build paths
+### Review-context validation
 
-`CreateBorrowedSnapshotAsync` and `SyncFromSourceCoreAsync` both compute the git-relative cwd the
-same way, through one private helper, from the same `git rev-parse --show-prefix` primitive. If they
-diverged, a per-round refresh would reintroduce a file the initial build excluded.
+`ValidateReviewContextManifest` capped `Entries.Length` against the static canonical list. With an
+expanded per-build set, the validator needs the same set the extractor used. The concrete reserved
+path list is written into the generation alongside the manifest and threaded into every validation
+call, so the validator checks that every entry path is a member of that set — strictly stronger than
+the old length cap, which only bounded the count.
 
-That is asserted at the security boundary, not at the helper — see test 7.
+### Reviewability, narrowed rather than claimed
+
+Containment ranges over the working tree (`ls-files -co --exclude-standard`); review context contains
+**index stage-0 blobs only**, and the manifest declares it (`UnstagedAndUntrackedOmitted: true`). An
+untracked reserved config, or unstaged bytes of a tracked one, is therefore contained but not
+reviewable.
+
+That is pre-existing AI-1706 behaviour and is deliberately **not** widened. Carrying untracked
+working-tree bytes into review context is what killed the predecessor effort (AI-1680): a developer's
+`skip-worktree` local override would be published to the reviewer's model. The lockstep property this
+design claims is correspondingly precise: **for tracked stage-0 content, every path excluded from the
+snapshot is classified reserved by the extractor.**
+
+### The non-borrowed sync path
+
+`SyncFromSourceAsync` (the public overloads, `reviewContextRoot: null`) takes an `executionPath` and
+previously received `SnapshotExcludedPaths`. Removing that static property must not silently drop even
+its root-level exclusions.
+
+It has **no production callers today** — the only call sites are in
+`test/Capacitor.Cli.Tests.Unit/WorktreeManagerTests.cs` and
+`test/Capacitor.Cli.Tests.Unit/Services/AcpHostedAgentRuntimeFactoryLiveTests.cs`. That is a caller
+invariant, not a guarantee: it is a public method that produces a tree an agent could be launched
+into. It therefore takes a plan derived for its own execution path, including the widened ancestor
+rule, and gets consumers 1 and 2. Only consumer 3 (review context) is absent, because it passes no
+review-context root.
+
+### The `.github/mcp.json` addition
+
+Added to `WorkspaceMcpConfigPaths`, independent of the scope change and live even at cwd == root.
+`.copilot/mcp-config.json` is added alongside the existing `.copilot/mcp.json` under the list's
+standing rationale.
 
 ## Testing
 
-Every test names the discovery shape it defends and carries a **positive control** proving the file
-would otherwise be present. Round 1 found four of revision 1's tests could pass vacuously; those are
-rewritten here.
+Every test names the discovery shape it defends and carries a positive control. Rounds 1 and 2 each
+found tests that could pass vacuously; those are rewritten rather than patched.
 
-1. **Codex sub-cwd** — source repo with tracked `src/.codex/config.toml`; borrowed snapshot with
-   `requestedCwd = <source>/src`; assert absent from the snapshot. Control: the same build with
-   `requestedCwd = <source>` leaves it present.
-2. **Copilot `.github/mcp.json` at root** — the file is **tracked**, and the test asserts it appears
-   in `ls-files -co` before asserting it is absent from the snapshot. (Revision 1 used a surviving
-   sibling, which proved only that something under `.github/` was copied.)
-3. **Intermediate directory** — `relativeCwd = "a/b"`, tracked config at `a/.mcp.json`; excluded.
-   Control: a root-cwd build of the same fixture leaves `a/.mcp.json` present.
-4. **Sibling not excluded** — `relativeCwd = "a"`, config at `b/.mcp.json`; **present**. Keeps the
-   rule from silently becoming the whole-tree variant rejected above.
-5. **Root cwd unchanged** — for an empty git prefix, `plan.VendorConfigPaths` equals
-   `WorkspaceMcpConfigPaths` exactly. Pins the no-regression claim for the common launch.
-6. **Classifier equivalence** — over a corpus including NFC/NFD pairs, mixed case, and non-ASCII
-   ancestor names: for every path, snapshot exclusion and `ClassifyReservedPath != Unrelated` agree.
-   This is the lockstep test.
-7. **Refresh parity at the boundary** — an initial sub-cwd snapshot; then add and modify configs at
-   the root, an intermediate directory and the cwd; run `SyncBorrowedSnapshotFromSourceAsync`; assert
-   every ancestor config is absent, each tracked one appears in the newly published review context, a
-   sibling survives, and no kcap-created deletion appears in `git status`. Includes a refresh whose
-   source spelling differs in case from the destination spelling. (Revision 1 compared two plan
-   objects, which proves nothing about the consumers.)
-8. **Reserved index policy** — a **HEAD-tracked** `src/.mcp.json` under `relativeCwd = "src"`: assert
-   the destination index contains it, that its skip-worktree bit is set, and that `git status` in the
-   snapshot is clean. Negative control: with the policy disabled the same fixture reports a deletion,
-   proving the assertion is not vacuous.
-9. **Staged-only addition** — `src/.mcp.json` added to the source index but not committed: the build
-   succeeds (it is not in the destination index, so it is not batched), the file is excluded from the
-   snapshot, and it appears in review context. This is the case revision 1's design would have
-   crashed on.
-10. **Rooted / escaping cwd** — a cwd that yields a rooted `Path.GetRelativePath` result is rejected;
+1. **Codex sub-cwd** — tracked `src/.codex/config.toml`, `requestedCwd = <source>/src`, absent from the
+   snapshot. Control: root-cwd build of the same fixture leaves it present.
+2. **Copilot `.github/mcp.json` at root** — the file is **tracked**, asserted present in `ls-files -co`
+   before asserting it is absent from the snapshot.
+3. **Intermediate directory** — cwd `a/b`, tracked `a/.mcp.json` excluded. Control: root-cwd build of
+   the same fixture leaves it present.
+4. **Sibling not excluded** — cwd `a`, `b/.mcp.json` present.
+5. **Case-sensitive sibling** — on a case-sensitive volume, cwd `a`, tracked `A/.mcp.json`: **present**,
+   and the build succeeds. This is the test that pins revision 2's withdrawn fold: with it, the file
+   was excluded and, with `a/.mcp.json` also tracked, the build failed with a path collision.
+6. **`--show-prefix` protocol, against real git** — invoke the actual command from a real
+   subdirectory and compare the parsed bytes against the directory prefixes in a real `ls-files`
+   listing. Run on macOS (case-insensitive by default) with an alternate-case entry and with
+   composed/decomposed names, since that is the volume where the two spellings can diverge. This is
+   the independent oracle; the plan builder is not permitted to be its own oracle.
+7. **Root prefix** — the empty-prefix path is exercised through the real command output (`"\n"`), not
+   through a pre-normalized `""`, and yields a plan equal to `WorkspaceMcpConfigPaths` exactly.
+8. **Non-ASCII prefix refused** — a cwd whose git prefix is non-ASCII fails with
+   `borrowed_snapshot_cwd_prefix_non_ascii` rather than building.
+9. **NFD is rejected, not matched** — an NFD path in the index fails the build via the existing
+   normalization rule. Asserted explicitly, because revision 2's phrasing implied NFD and NFC were
+   treated as equivalent.
+10. **End-to-end exclusion oracle** — for a fixture spanning ancestor, sibling, descendant, mixed-case
+    and non-ASCII-filename paths, the set of paths absent from the snapshot equals the set computed
+    from the real git prefix and the real source listing. Replaces revision 2's test 6, which asserted
+    exclusion against the same classifier exclusion now calls — true by construction.
+11. **Refresh parity at the boundary** — initial sub-cwd snapshot; add and modify configs at root, an
+    intermediate directory and the cwd; `SyncBorrowedSnapshotFromSourceAsync` with the **persisted**
+    prefix; assert every ancestor config absent, each tracked one present in the newly published
+    review context, sibling survives, no kcap-created deletion in `git status`. A separate case
+    asserts a refresh given no persisted prefix throws rather than re-deriving.
+12. **Reserved index policy** — HEAD-tracked `src/.mcp.json` under cwd `src`: destination index
+    contains it, skip-worktree bit set, `git status` clean. Negative control: with the policy disabled
+    the same fixture reports a deletion.
+13. **Staged-only addition** — `src/.mcp.json` in the source index but not committed: the build
+    **succeeds**, the file is excluded, and it appears in review context. This is the case revision 2
+    would have crashed on.
+14. **Caps at the boundary** — depth exactly 32 succeeds, 33 fails; aggregate bytes exactly at the
+    limit succeeds, one over fails; a serialized manifest one byte over 1 MiB is rejected on write and
+    on read.
+15. **Rooted / escaping cwd** — a cwd yielding a rooted `Path.GetRelativePath` result is rejected;
     `..` and `../` remain rejected.
-11. **Depth cap** — a cwd deep enough to exceed the candidate/aggregate-byte cap is rejected with the
-    coded error rather than producing an oversized batch.
-12. **List membership** — the existing `WorkspaceMcpNeutralizationTests` membership assertion is
-    extended to require `.github/mcp.json` and `.copilot/mcp-config.json`.
+16. **Symlinked snapshot root** — `WorktreeRoot` a symlink resolving inside the source checkout is
+    rejected with `borrowed_snapshot_root_inside_source`, with a control proving the lexical check
+    alone passes it.
+17. **Non-borrowed sync** — `SyncFromSourceAsync` with a sub-cwd execution path excludes ancestor
+    configs, proving the static-property removal did not drop its exclusions.
+18. **Oversized ancestor config** — one tracked ancestor `.mcp.json` over 256 KiB trips
+    `borrowed_snapshot_review_context_capacity_exceeded`, documenting the pre-existing DoS that the
+    separately-filed issue covers, so a later reader does not mistake it for a regression here.
+19. **List membership** — `.github/mcp.json` and `.copilot/mcp-config.json` required.
 
 The AI-1632 live certification (`KCAP_WORKSPACE_MCP_CERT=1`) is re-run unchanged, with its existing
-control, which asserts the declared command *does* spawn when the guard is removed. This change
-widens the excluded set and must not disturb the measured root-level behaviour.
+control asserting the declared command *does* spawn when the guard is removed.
 
 ## Out of scope
 
-- The owned-worktree strip, for the reason recorded above (cwd is always the worktree root). If a
-  sub-cwd owned launch is ever added, `NeutralizeWorkspaceMcpConfig` gains the same chain and this
-  document is the reason it must.
-- Widening review context to untracked or working-tree bytes. Stated above as a deliberate
-  narrowing.
-- AI-1675 (`CopyDirectory` recursion / symlink dereference). Untouched, and repairing it here would
-  arm the exfiltration that issue describes.
+- The owned-worktree strip (cwd is always the worktree root).
+- Widening review context to untracked or working-tree bytes.
+- The pre-existing review-context capacity DoS — filed separately; test 18 documents it.
+- AI-1675 (`CopyDirectory` recursion / symlink dereference).
