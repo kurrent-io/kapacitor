@@ -275,6 +275,16 @@ public class BorrowedReviewContextTests {
                 OmissionManifest(validOmission) with { Entries = [entry] }, "g", "h", matched));
         await Assert.That(dup!.Message)
             .StartsWith("borrowed_snapshot_review_context_invalid_manifest");
+
+        // Every matched path must be REPRESENTED, not merely every representation matched: a
+        // manifest that lost a record between write and read-back would otherwise validate — and
+        // an empty one now reads as an affirmative all-clear to the reviewer.
+        var incomplete = Assert.Throws<InvalidOperationException>(() =>
+            WorktreeManager.ValidateReviewContextManifest(
+                OmissionManifest(validOmission), "g", "h",
+                new HashSet<string>(StringComparer.Ordinal) { ".mcp.json", ".cursor/mcp.json" }));
+        await Assert.That(incomplete!.Message)
+            .StartsWith("borrowed_snapshot_review_context_invalid_manifest");
     }
 
     static BorrowedReviewContextManifest OmissionManifest(BorrowedReviewContextOmission omission) =>

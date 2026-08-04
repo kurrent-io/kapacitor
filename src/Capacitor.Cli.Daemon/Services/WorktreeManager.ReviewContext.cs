@@ -276,6 +276,7 @@ public partial class WorktreeManager {
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeoutCts.CancelAfter(GitTimeout);
         var stderrTask = ReadAllDecodedAsync(process.StandardError.BaseStream, timeoutCts.Token);
+        var stderr = "";
         using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
         long streamed = 0;
         try {
@@ -287,12 +288,16 @@ public partial class WorktreeManager {
                 hash.AppendData(buffer.AsSpan(0, read));
             }
             await process.WaitForExitAsync(timeoutCts.Token);
+            stderr = await stderrTask;   // inside the protected block — see RunGitCaptureBoundedAsync
         } catch (OperationCanceledException) {
-            try { process.Kill(entireProcessTree: true); } catch { }
             throw new InvalidOperationException(
                 $"git cat-file blob {objectId} timed out after {GitTimeout.TotalSeconds:F0}s");
+        } finally {
+            // Every abnormal exit — timeout, cancellation, or an IOException mid-read — must reap the
+            // child and observe the stderr pump, or a wedged git survives into the bounded refresh
+            // window. Same discipline as the bounded capture helpers.
+            await TerminateAndDrainAsync(process, stderrTask);
         }
-        var stderr = await stderrTask;
         if (process.ExitCode != 0)
             throw new InvalidOperationException($"git cat-file blob {objectId} failed: {stderr}");
         // Object ids are content-addressed, so a length disagreement with `cat-file -s` means a
@@ -356,6 +361,12 @@ public partial class WorktreeManager {
                 throw new InvalidOperationException(
                     "borrowed_snapshot_review_context_invalid_manifest");
         }
+        // Coverage, not just membership: every matched path must be represented in one of the two
+        // lists. A manifest that LOST a record between write and read-back would otherwise verify —
+        // and an empty one is exactly what the reviewer is told to read as an affirmative all-clear.
+        if (!seen.SetEquals(matchedPaths))
+            throw new InvalidOperationException(
+                "borrowed_snapshot_review_context_invalid_manifest");
     }
 
     static bool IsLowercaseSha256(string value) =>
