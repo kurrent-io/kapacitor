@@ -71,7 +71,9 @@ Enforced entirely in the daemon so headless behavior is identical machinery, not
 
 ## 6. The app
 
-Avalonia + MVVM (CommunityToolkit.Mvvm); `Avalonia.Headless` for ViewModel/UI tests.
+Avalonia + MVVM (ReactiveUI + DynamicData — amended 2026-08-03 from CommunityToolkit.Mvvm, see
+[2026-08-04-ai1650-app-shell-design.md](2026-08-04-ai1650-app-shell-design.md) §7);
+`Avalonia.Headless` for ViewModel/UI tests.
 
 - **Menu bar:** icon encodes daemon state (stopped / connecting / idle / *n* agents running / attention-needed). Popover: running agents with per-agent Stop and "Open in web" deep links; quick toggles (pause new launches, open main window).
 - **Main window:** three areas — **Agents** (richer list: kind, requester, repo, vendor, uptime, stop), **Activity** (consent/launch decision log), **Settings**. First run opens the **Onboarding wizard** instead.
