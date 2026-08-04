@@ -71,7 +71,7 @@ Facts this design builds on, verified against `main` after the AI-1649 merge (PR
 |---|----------|
 | 1 | **The typed IPC client lives in `Capacitor.Cli.Core/LocalIpc`** — one home for the whole protocol (codec + DTOs + client). BCL-only (`IAsyncEnumerable`, no Rx types on its surface) so the shared AOT core gains no dependencies. Future CLI verbs (e.g. a live status watch) can adopt it. |
 | 2 | **The client is self-healing**: it owns connect → hello gate → subscribe → reconnect-with-backoff, and surfaces everything through one event stream. The app renders states; it does not implement retry. |
-| 3 | **MVVM framework: ReactiveUI (+ DynamicData), via `Avalonia.ReactiveUI`** — this AMENDS umbrella §6, which named CommunityToolkit.Mvvm (§7 below). The app is stream/collection-shaped (status pushes, agents list, activity feed, consent prompts all arrive as pushes); DynamicData's keyed diffing is exactly the full-snapshot→delta machinery AI-1651's list needs, and retrofitting a reactive substrate after ViewModels exist costs more than starting with it. |
+| 3 | **MVVM framework: ReactiveUI (+ DynamicData), via `ReactiveUI.Avalonia`** — the MAINTAINED ReactiveUI↔Avalonia integration (the historical `Avalonia.ReactiveUI` package is marked legacy on NuGet, stopped at 11.3.8, and redirects to `ReactiveUI.Avalonia`, which versions on its own line). This AMENDS umbrella §6, which named CommunityToolkit.Mvvm (§7 below). The app is stream/collection-shaped (status pushes, agents list, activity feed, consent prompts all arrive as pushes); DynamicData's keyed diffing is exactly the full-snapshot→delta machinery AI-1651's list needs, and retrofitting a reactive substrate after ViewModels exist costs more than starting with it. |
 | 4 | **App tests: TUnit on MTP driving `Avalonia.Headless` through `HeadlessUnitTestSession`** via a small shared helper — one test framework and one CI invocation shape across the repo, instead of Avalonia's xunit/NUnit adapters. Avalonia/Rx globals are process-wide, so every test touching them serializes (§8). |
 | 5 | **The app is not NativeAOT** — plain framework-dependent build this slice; packaging/trimming decisions belong to distribution (AI-1653). |
 | 6 | **Dev-time CLI resolution for "start daemon"**: `KCAP_APP_CLI_PATH` env override, else `kcap` on PATH. The bundled binary is AI-1653's concern. |
@@ -104,15 +104,20 @@ Directory.Packages.props                                  ← modified: central 
 ```
 
 Dependencies: `Capacitor.App` → `Capacitor.Cli.Core`, `Avalonia`, `Avalonia.Desktop`,
-`Avalonia.Themes.Fluent`, `Avalonia.ReactiveUI`, `DynamicData` (+ `Avalonia.Headless` in the
+`Avalonia.Themes.Fluent`, `ReactiveUI.Avalonia`, `DynamicData` (+ `Avalonia.Headless` in the
 test project). **Central package management**: the repo has
 `ManagePackageVersionsCentrally=true`, so `Directory.Packages.props` gains `PackageVersion`
-entries for exactly these packages — the whole Avalonia family (`Avalonia`, `Avalonia.Desktop`,
-`Avalonia.Themes.Fluent`, `Avalonia.ReactiveUI`, `Avalonia.Headless`) pinned to ONE identical
-latest-stable 11.x version, and `DynamicData` at its latest stable. `ReactiveUI` and
-`System.Reactive` are deliberately NOT direct references — they arrive transitively via
-`Avalonia.ReactiveUI`/`DynamicData`, so they get no `PackageVersion` entries and no project can
-silently pin a conflicting version. Acceptance: restore + build green on both CI legs. Core
+entries for exactly these packages — the Avalonia family (`Avalonia`, `Avalonia.Desktop`,
+`Avalonia.Themes.Fluent`, `Avalonia.Headless`) pinned to ONE identical latest-stable 11.3.x
+version, `ReactiveUI.Avalonia` at ITS OWN latest stable (the integration package versions on
+its own line — it is never forced to equal Avalonia's version; NuGet's dependency ranges
+enforce Avalonia compatibility), and `DynamicData` at its latest stable. The legacy
+`Avalonia.ReactiveUI` package (deprecated at 11.3.8) is deliberately NOT used. `ReactiveUI`
+and `System.Reactive` are deliberately NOT direct references — they arrive transitively via
+`ReactiveUI.Avalonia`/`DynamicData`, so they get no `PackageVersion` entries and no project can
+silently pin a conflicting version. Bootstrap/base types (`UseReactiveUI()`,
+`ReactiveWindow<>`) come from `ReactiveUI.Avalonia`'s namespaces. Acceptance: restore + build
+green on both CI legs. Core
 gains no packages. Both new projects join the solution; the ubuntu and windows CI legs gain an
 explicit `dotnet run --project test/Capacitor.App.Tests.Unit/...` step (§1.11 — solution
 membership alone runs nothing). The AOT-publish checks are untouched and must stay warning-free
@@ -122,12 +127,14 @@ membership alone runs nothing). The AOT-publish checks are untouched and must st
 
 ```csharp
 public sealed class LocalControlClient(string daemonName, TimeProvider? time = null) {
-    /// Backoff schedule between failed attach cycles (stays at the last entry). Settable for tests.
-    public TimeSpan[] RetryDelays { get; set; } = [1s, 2s, 5s, 10s, 30s]; // TimeSpan values; sketch shorthand
+    // INTERNAL test seams (Core grants the unit suite internals access): production always
+    // runs the defaults, so no public validation contract is needed — an invalid value is a
+    // test-authoring bug, not a runtime surface. Defaults below are the shipped behavior.
+    internal TimeSpan[] RetryDelays { get; set; } = [1s, 2s, 5s, 10s, 30s]; // TimeSpan values; sketch shorthand
     /// Per-phase deadlines (§4.1): a silent peer must classify, never hang the state machine.
-    public TimeSpan ConnectTimeout       { get; set; } = 5s;
-    public TimeSpan HelloReplyTimeout    { get; set; } = 5s;
-    public TimeSpan FirstSnapshotTimeout { get; set; } = 10s;
+    internal TimeSpan ConnectTimeout       { get; set; } = 5s; // applies to EACH dial: hello AND subscribe
+    internal TimeSpan HelloReplyTimeout    { get; set; } = 5s;
+    internal TimeSpan FirstSnapshotTimeout { get; set; } = 10s;
     public IAsyncEnumerable<LocalControlEvent> RunAsync(CancellationToken ct);
 }
 
@@ -160,8 +167,13 @@ for every subsequent frame. A subscribe connection that opens and then EOFs, fau
 silent before the first valid frame is a FAILED cycle — no `Connected`, no backoff reset.
 
 **Snapshot validity** (what "valid `DaemonStatus`" means — the first frame and every later
-one): deserialization succeeds AND the root, `Daemon`, and `Agents` members are non-null AND
-every `Agents` element is non-null with a non-empty `Id`. STJ source-gen does not enforce
+one): deserialization succeeds AND every member `StatusIpc.cs` declares non-nullable is
+actually non-null — the root, `Daemon` (with `Name`, `Version`, `ServerUrl`, `Connection`),
+`Agents`, and each agent element's `Id`, `Kind`, `Vendor`, `Status` — AND every `Id` is
+non-whitespace and unique within the snapshot (ordinal). Uniqueness is load-bearing: the app
+feeds the array into a `SourceCache` keyed by `Id`, and a snapshot with duplicate keys has no
+unambiguous keyed-diff meaning. Unknown vocabulary in `Kind`/`Status`/`Connection` remains
+fine — open vocabularies, non-null is the only requirement. STJ source-gen does not enforce
 non-nullable members at runtime, so the client validates structurally and NEVER yields an
 unusable DTO — the app may dereference what it receives. An invalid snapshot is protocol
 evidence (§4.2), not data.
@@ -226,9 +238,11 @@ names), controlled `TimeProvider` for backoff and phase deadlines:
   `HelloReplyTimeout` expiry → `daemon_unreachable`; accepts `StatusSubscribe` then never
   pushes → `FirstSnapshotTimeout` expiry → `daemon_unreachable`; both enter backoff, no hang.
 - Malformed/invalid status: unparseable JSON as the first frame → failed cycle,
-  `daemon_incompatible`; structurally invalid payloads (`{"daemon":null,"agents":null}`, an
-  agents array containing null or blank-id entries) → same; a malformed frame mid-stream ends
-  the streak with `Unreachable("daemon_incompatible")`; no invalid DTO is ever yielded.
+  `daemon_incompatible`; structurally invalid payloads (`{"daemon":null,"agents":null}`, null
+  daemon leaf fields like `version`/`connection`, an agents array containing null elements,
+  null/whitespace-only ids, null `kind`/`vendor`/`status` leaves, and DUPLICATE ids) → same;
+  each shape tested both as the first frame and mid-stream; a mid-stream one ends the streak
+  with `Unreachable("daemon_incompatible")`; no invalid DTO is ever yielded.
 - Subscribe-EOF-before-first-frame: no `Connected`, no backoff reset, one `Unreachable`.
 - Persistent outage across ≥2 cycles: exactly one `Unreachable` event (transition-only pin);
   a reason CHANGE (unreachable daemon replaced by an incompatible one) yields a second event.
@@ -244,10 +258,17 @@ the app-lifetime token; interface exists so ViewModel tests script the stream):
 
 - `IObservable<AttachStatus> Status` where
   `sealed record AttachStatus(AttachState State, string? Reason, IReadOnlyList<string>? Capabilities)`
-  — ONE atomic value (decision 8; capabilities are retained for later slices' feature gating),
-  replay-1, initial value `AttachStatus(Connecting, null, null)` published synchronously at
-  service start. Projections (state text, reason text, command enablement) derive from this
-  single stream — split state/reason observables that can tear are forbidden.
+  and `enum AttachState { Connecting, Connected, Unreachable }` — both APP-side types
+  (`Capacitor.App`; Core models state solely through its event records and needs no enum).
+  ONE atomic value (decision 8), replay-1, initial value `AttachStatus(Connecting, null, null)`
+  published synchronously at service start. **Event→status mapping (complete):**
+  `Connecting` → `(Connecting, null, null)`; `Connected(caps, first)` →
+  `(Connected, null, caps)`; `Unreachable(reason)` → `(Unreachable, reason, null)` —
+  capabilities are CLEARED on every non-connected state (null), never retained from a previous
+  incarnation: a consumer that needs capability gating while disconnected is making a
+  category error, and the next `Connected` carries the fresh list. Projections (state text,
+  reason text, command enablement) derive from this single stream — split state/reason
+  observables that can tear are forbidden.
 - `IObservable<DaemonStatusDto> Snapshots` — replay-1 that emits NOTHING until the first real
   snapshot (no fabricated seed; the UI renders placeholders until then).
 - **Publication order on reconnect (no-stale pin):** on a `Connected(caps, first)` event the
@@ -315,10 +336,10 @@ richer UI are later slices.
 ## 7. Amendment to the umbrella
 
 Umbrella §6 named CommunityToolkit.Mvvm as the MVVM framework. Amended 2026-08-03 (decision 3
-above) to **ReactiveUI + DynamicData**: `Avalonia.ReactiveUI` is a first-party integration,
-the ecosystem matches the app's push-stream shape, and DynamicData is its native collection
-layer. The umbrella document's §6 line is updated alongside this spec; the AI-1650 issue text
-is corrected after spec approval.
+above) to **ReactiveUI + DynamicData**, integrated via the MAINTAINED `ReactiveUI.Avalonia`
+package (successor to the deprecated `Avalonia.ReactiveUI`): the ecosystem matches the app's
+push-stream shape, and DynamicData is its native collection layer. The umbrella document's §6
+line is updated alongside this spec; the AI-1650 issue text is corrected after spec approval.
 
 ## 8. Testing
 
@@ -334,6 +355,9 @@ is corrected after spec approval.
   and every rendered field already carry B's values — old identity/count are never visible as
   connected; `SourceCache` diffing add/update/remove across snapshots; `Snapshots` emits
   nothing before the first snapshot; initial `AttachStatus` replay is `Connecting`;
+  **capability-clearing assertion**: script Connected(caps) → Unreachable and a manual restart
+  → Connecting, asserting `Capabilities` is null in both non-connected statuses (never
+  retained across incarnations);
   **deactivation-disposal test**: activate the VM, deliver events, deactivate (window close),
   deliver more events, assert no projection updates and the activation subscriptions are
   released.
