@@ -18,12 +18,7 @@ namespace Capacitor.Cli.Tests.Unit;
 /// otherwise put kcap text into the model's context.</para>
 /// </summary>
 public class GeminiSessionStartMemoryTests {
-    static string Write(string? fragment) {
-        var sw = new StringWriter();
-        GeminiHookCommand.WriteSessionStartOutput(sw, fragment);
-
-        return sw.ToString();
-    }
+    static string Write(string? fragment) => GeminiHookCommand.RenderSessionStartPayload(fragment);
 
     // ── the divergence from every other adapter ───────────────────────────────
 
@@ -112,37 +107,8 @@ public class GeminiSessionStartMemoryTests {
         await Assert.That(isObject).IsTrue();
     }
 
-    // ── a failing writer must not change the command's exit code ──────────────
-
-    /// <summary>Writes <paramref name="charsBeforeThrowing"/> characters of the payload and THEN throws,
-    /// so 0 exercises "fails before any byte" and a positive value exercises a genuine partial write.
-    /// An earlier version only ever threw before writing, leaving the advertised partial-write case
-    /// untested — caught in review.</summary>
-    sealed class ThrowingWriter(int charsBeforeThrowing) : StringWriter {
-        public override void Write(string? value) {
-            if (value is { Length: > 0 } && charsBeforeThrowing > 0)
-                base.Write(value[..Math.Min(charsBeforeThrowing, value.Length)]);
-
-            throw new IOException("stdout closed");
-        }
-    }
-
-    /// <summary>A write that throws — before any byte, or mid-payload — must be swallowed. Rendering
-    /// completes before the single write, so a partial payload is the only exposure, and Gemini degrades
-    /// truncated JSON to plain text rather than synthesising a block.</summary>
-    [Test]
-    [Arguments(0)]
-    [Arguments(5)]
-    public async Task a_throwing_writer_does_not_propagate(int charsBeforeThrowing) {
-        var writer = new ThrowingWriter(charsBeforeThrowing);
-
-        GeminiHookCommand.WriteSessionStartOutput(writer, "## Team memory");
-        GeminiHookCommand.WriteSessionStartOutput(writer, null);
-
-        // Reaching here without an exception is the contract. Also prove the writer really did what the
-        // case name claims, so neither case can pass by never throwing at all.
-        await Assert.That(writer.ToString().Length).IsEqualTo(charsBeforeThrowing == 0 ? 0 : charsBeforeThrowing * 2);
-    }
+    // The writer half of this contract — a throwing stdout must be swallowed, and the single write
+    // claimed either way — now belongs to the write-once sink and lives in GeminiHookOutputContractTests.
 
     // ── the invariant at the Handle level, not just the writer ────────────────
 
