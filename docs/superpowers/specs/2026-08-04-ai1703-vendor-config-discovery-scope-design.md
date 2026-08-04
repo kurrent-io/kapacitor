@@ -3,10 +3,11 @@
 Design for AI-1703. Builds on the merged AI-1632 containment (kcap-cli#427) and the merged
 AI-1706 review-context server (kcap-cli#443).
 
-Revision 3, after two rounds of spec review. Revision 2 moved the cwd prefix from the filesystem to
-git's own bytes. Revision 3 replaces revision 2's unconditional case fold — which was a launch-refusal
-primitive — pins the `--show-prefix` byte protocol, persists the prefix across a refresh instead of
-re-deriving it, and corrects a factually wrong justification.
+Revision 4, after three rounds of spec review. Revision 2 moved the cwd prefix from the filesystem to
+git's own bytes. Revision 3 withdrew an unconditional case fold that was a launch-refusal primitive,
+pinned the `--show-prefix` byte protocol, and persisted the prefix across a refresh. Revision 4
+closes the last structural hole: **the launch path and the classifier are now derived from the same
+prefix**, so they cannot diverge.
 
 ## The defect
 
@@ -54,13 +55,28 @@ The property that keeps it that way is `EnsureSeparateRoots(source, root)`, whic
 snapshot root at or under the source checkout with `borrowed_snapshot_root_inside_source`. Round 2
 raised this as a Critical bypass; it does not reproduce, because that guard exists.
 
-It has one real residual, which round 2 named and this design closes: the guard is a **lexical**
-prefix comparison over `Path.GetFullPath` output, which does not resolve symlinks. A `WorktreeRoot`
-configured as a symlink whose target is inside the source checkout passes the string comparison and
-lands the snapshot under the source anyway — at which point the source's own root `.mcp.json` is a
-physical ancestor of the reviewer's cwd and is loaded by an upward-walking vendor. The guard is
-therefore extended to compare fully resolved paths as well as lexical ones, with the same coded
-error, and gains the test round 2 asked for.
+It has one real residual, which round 2 named: the guard is a **lexical** prefix comparison over
+`Path.GetFullPath` output, which does not resolve symlinks. A `WorktreeRoot` configured as a symlink
+whose target is inside the source checkout passes the string comparison and lands the snapshot under
+the source anyway — at which point the source's own root `.mcp.json` is a physical ancestor of the
+reviewer's cwd and is loaded by an upward-walking vendor.
+
+The guard is extended to compare **resolved** paths as well as lexical ones, same coded error. Two
+details round 3 was right to demand:
+
+- **Resolving a path that does not exist yet.** `borrowed-snapshots` is created by this very call, so
+  "fully resolve the final path" is undefined. The guard walks from the configured root toward the
+  leaf, resolves the **deepest existing ancestor**, and appends the remaining components literally
+  without re-resolving — so a component substituted later cannot be followed, and a nonexistent leaf
+  does not defeat the check.
+- **What it does not close.** Resolution handles symlinks and Windows junctions. It does **not**
+  close a Unix bind mount of a source subdirectory at an apparently external path, nor Windows SUBST
+  or 8.3 short-name aliases unless the chosen final-path API canonicalises them. Those remain a
+  **trusted-configuration residual**: `WorktreeRoot` is daemon operator configuration, so reaching
+  them requires an already-compromised host config rather than branch content, and this file's own
+  class documentation elsewhere already records the same alias classes defeating a different
+  path-identity check. This is stated as a residual, not claimed as closure, and test 16 is scoped to
+  the symlink class only — it must not be described as proving the broader invariant.
 
 ### Threat-model boundary, stated rather than assumed
 
@@ -137,15 +153,49 @@ has. The parse is therefore pinned:
 2. If what remains is empty, the cwd **is** the repository root: the chain is `[""]` and no further
    parsing happens. This is the common case and it must not go through the path validator at all.
 3. Otherwise the remainder must end with exactly one `/`. Strip it.
-4. The remainder must be **ASCII** (every byte `< 0x80`). If not, the launch is refused with
-   `borrowed_snapshot_cwd_prefix_non_ascii` — see below.
-5. Strict-UTF-8 decode, then `NormalizeRelativePath`, which now sees a well-formed relative path and
+4. Strict-UTF-8 decode, then `NormalizeRelativePath`, which now sees a well-formed relative path and
    applies the existing `\`, CR, LF, `.`/`..`, `.git` and NFC rules.
+5. If the destination is case-**insensitive** and the prefix is not ASCII, the launch is refused with
+   `borrowed_snapshot_cwd_prefix_non_ascii` — see "Case", below. A non-ASCII prefix on a
+   case-sensitive destination is admitted and compared byte-exactly.
 
-The filesystem-derived `relativeCwd` is retained **only** for `ContainedPath(final, relativeCwd)` and
-`Directory.Exists(executionPath)`, which are filesystem operations. Its rooted-path gap — round 1's
-finding, real and independent of this feature — is fixed there by rejecting `Path.IsPathRooted`
-alongside the existing `..` checks.
+The capture itself is bounded at **4 KiB** before decoding, rejected with the same
+`borrowed_snapshot_cwd_prefix_malformed`. The later depth and aggregate-byte caps would eventually
+reject an absurd prefix, but only after the capture helper has already allocated it; bounding at the
+read is the cheaper and more honest place.
+
+### One prefix for the classifier and the launch
+
+Round 3's critical finding: revision 3 still located the execution directory with the
+*filesystem*-derived `relativeCwd` while classifying with the *git*-derived prefix, and two
+independently derived spellings can disagree. The concrete bypass:
+
+- the source working directory is physically `src`, so `rev-parse --show-prefix` returns `src/`;
+- the caller-derived relative cwd is `SRC`;
+- the source index contains `SRC/.mcp.json` — reachable when a branch authored on a case-sensitive
+  system is checked out on a case-insensitive one.
+
+The plan then excludes `src/.mcp.json` and not `SRC/.mcp.json`; copying the latter *creates*
+`final/SRC`, so `Directory.Exists(executionPath)` succeeds, and the vendor launches in a directory
+whose config was never excluded. Revision 3's appeal to `borrowed_snapshot_cwd_missing` firing was
+therefore unsound — a benign tracked `SRC/keep` produces the same directory-creating side effect
+without any config at all.
+
+The fix is to remove the second derivation rather than to reconcile the two. **The execution path is
+`ContainedPath(final, GitRelativeCwd)`**, derived from the same prefix the classifier uses. This is
+also simply more correct: the snapshot materialises every file at its *git* path, so the directories
+that exist in the snapshot carry git's spelling, and the git prefix is the only spelling guaranteed
+to name one of them.
+
+The filesystem-derived `relativeCwd` survives only as an authorization-time containment check on the
+*requested* cwd — that it is not `..`, not `../…`, and (round 1's finding, real and independent of
+this feature) not rooted, which `Path.GetRelativePath` can return across Windows volumes. It never
+locates a directory again.
+
+A source index that genuinely carries both `src/…` and `SRC/…` still fails closed on a
+case-insensitive destination: `ReadSourceManifestAsync` builds its dictionary with
+`OrdinalIgnoreCase` there and throws `borrowed_snapshot_path_collision`. That is pre-existing
+behaviour, not something this design adds.
 
 ### Case: use the probed volume, not an unconditional fold
 
@@ -166,20 +216,28 @@ input is that it is probed on the destination — the volume the vendor actually
 - **Case-sensitive destination.** `a` and `A` are genuinely distinct, so not folding is correct: the
   sibling rule holds and the collision primitive does not exist.
 
-The cross-volume combination round 1 raised (case-insensitive source, case-sensitive destination,
-prefix `SRC` versus index `src`) does not under-exclude: the file is materialised at the index
-spelling `src/…`, while the execution path is `ContainedPath(final, "SRC")`, which does not exist on a
-case-sensitive destination — so the launch fails closed with `borrowed_snapshot_cwd_missing` rather
-than running in a directory whose config was not excluded.
+The cross-volume divergence round 1 raised is no longer a matcher question at all: with one prefix
+feeding both the classifier and the launch, there is no second spelling to disagree with.
 
-**The ASCII-only prefix restriction (step 4) is what makes this complete.** `AsciiPathEquals` folds
-ASCII only; a case-insensitive volume also equates non-ASCII pairs such as `Å`/`å`, which that
-matcher would miss — a genuine under-exclusion. Rather than build a second, Unicode-aware folding
-path and have two matchers again, a non-ASCII cwd prefix is refused with a coded error. The cost is
-bounded and visible: a review flow launched from a subdirectory whose name is not ASCII fails loudly
-with a specific error instead of silently under-excluding. The prefix is the operator's own launch
-cwd, not branch content, so this is a configuration limitation rather than an attacker-facing one.
-The canonical suffixes are all ASCII already, so nothing else is affected.
+**Non-ASCII prefixes, narrowly.** `AsciiPathEquals` folds ASCII only, while a case-insensitive volume
+also equates pairs such as `Å`/`å` — a genuine under-exclusion. Revision 3 refused every non-ASCII
+prefix outright. Round 3 is right that this is broader than the matcher requires and that the
+justification ("the prefix is the operator's cwd, not branch content") was wrong: the *directory
+name* is branch-authored, so an internationalised — or deliberately hostile — repository could make
+every sub-cwd launch in that part of the tree fail.
+
+The rule is therefore narrowed to exactly where equivalence cannot be proved:
+
+- **Case-sensitive destination.** A non-ASCII prefix is admitted and compared byte-exactly. Both
+  sides are NFC (the index side by `NormalizeRelativePath`, the prefix side by the same call), so
+  exact comparison is sound and no folding is involved.
+- **Case-insensitive destination.** ASCII prefixes fold correctly; a non-ASCII prefix is refused with
+  `borrowed_snapshot_cwd_prefix_non_ascii`, because proving equivalence would require a second,
+  Unicode-aware matcher — which is the two-matcher defect this design exists to remove.
+
+This is a user-visible compatibility limitation on one platform class, stated as such rather than
+dressed up as a security property, and the error is coded so the daemon can surface something
+actionable. All canonical suffixes are ASCII, so nothing else is affected.
 
 ### One classifier, not two
 
@@ -223,6 +281,20 @@ So the git prefix is computed **once**, at `CreateBorrowedSnapshotAsync`, and pe
 `WorktreeInfo` (`GitRelativeCwd`, alongside `SnapshotRoot` and `ReviewContextRoot`). The refresh path
 takes it as a parameter and never recomputes it. A refresh that is not given one is a programming
 error and throws; it does not silently fall back to a filesystem derivation.
+
+Round 3 asked for the lifecycle acceptance criteria, which is a fair demand on an in-memory field.
+The evidence that in-memory is sufficient: the only borrowed-refresh caller is
+`AgentOrchestrator.TryRefreshBorrowedSnapshotAsync`, which reads `agent.Worktree` off the in-memory
+`AgentInstance` created at launch and passes `agent.Worktree.SnapshotRoot`, `.Path` and
+`.ReviewContextRoot` from that same object. `AgentInstance` does not survive a daemon restart — a
+restarted daemon reports zero live agents, which is why `OrphanedHostedAgentReaper` exists — so there
+is no reconstruction path that could arrive without the field, and none that could be tempted back
+into recomputation. That refresh also already re-authorizes and requires
+`SameFileSystemPath(auth.CanonicalCwd, source)`, so the source identity cannot drift underneath the
+persisted prefix.
+
+Should a durable agent registry ever be added, `GitRelativeCwd` must be part of what it persists;
+the throw is what makes that failure loud rather than silent.
 
 ### Reserved index policy
 
@@ -291,7 +363,7 @@ standing rationale.
 
 ## Testing
 
-Every test names the discovery shape it defends and carries a positive control. Rounds 1 and 2 each
+Every test names the discovery shape it defends and carries a positive control. Rounds 1-3 each
 found tests that could pass vacuously; those are rewritten rather than patched.
 
 1. **Codex sub-cwd** — tracked `src/.codex/config.toml`, `requestedCwd = <source>/src`, absent from the
@@ -301,30 +373,41 @@ found tests that could pass vacuously; those are rewritten rather than patched.
 3. **Intermediate directory** — cwd `a/b`, tracked `a/.mcp.json` excluded. Control: root-cwd build of
    the same fixture leaves it present.
 4. **Sibling not excluded** — cwd `a`, `b/.mcp.json` present.
-5. **Case-sensitive sibling** — on a case-sensitive volume, cwd `a`, tracked `A/.mcp.json`: **present**,
-   and the build succeeds. This is the test that pins revision 2's withdrawn fold: with it, the file
-   was excluded and, with `a/.mcp.json` also tracked, the build failed with a path collision.
-6. **`--show-prefix` protocol, against real git** — invoke the actual command from a real
+5. **Case-sensitive sibling and collision** — on a case-sensitive volume, cwd `a`, with **both**
+   `a/.mcp.json` and `A/.mcp.json` tracked: the former is excluded, the latter is **present**, and the
+   build **succeeds**. Tracking only `A` would not exercise the collision, which is the failure
+   revision 2's withdrawn fold produced (`borrowed_snapshot_review_context_path_collision`).
+6. **Cross-volume alternate prefix** — the round-3 bypass fixture, and the reason the two derivations
+   were collapsed into one: a source whose on-disk directory is `src` (so `--show-prefix` yields
+   `src/`), a requested cwd spelled `SRC`, and a source index carrying `SRC/.mcp.json`. Assert the
+   launch does not end up in a directory whose config survived — with a variant carrying a benign
+   tracked `SRC/keep` instead of a config, since that reproduces the directory-creating side effect
+   revision 3 wrongly relied on failing.
+7. **`--show-prefix` protocol, against real git** — invoke the actual command from a real
    subdirectory and compare the parsed bytes against the directory prefixes in a real `ls-files`
-   listing. Run on macOS (case-insensitive by default) with an alternate-case entry and with
-   composed/decomposed names, since that is the volume where the two spellings can diverge. This is
-   the independent oracle; the plan builder is not permitted to be its own oracle.
-7. **Root prefix** — the empty-prefix path is exercised through the real command output (`"\n"`), not
+   listing, on macOS, with an alternate-case entry. The composed/decomposed pair is asserted here as
+   the **coded prefix rejection** on a case-insensitive destination, not as a byte comparison —
+   revision 3's test description was self-contradictory, since a non-ASCII prefix is refused there
+   before any comparison happens. A separate case on a case-sensitive volume asserts a non-ASCII
+   prefix is admitted and compared byte-exactly.
+8. **Root prefix** — the empty-prefix path is exercised through the real command output (`"\n"`), not
    through a pre-normalized `""`, and yields a plan equal to `WorkspaceMcpConfigPaths` exactly.
-8. **Non-ASCII prefix refused** — a cwd whose git prefix is non-ASCII fails with
-   `borrowed_snapshot_cwd_prefix_non_ascii` rather than building.
 9. **NFD is rejected, not matched** — an NFD path in the index fails the build via the existing
    normalization rule. Asserted explicitly, because revision 2's phrasing implied NFD and NFC were
    treated as equivalent.
 10. **End-to-end exclusion oracle** — for a fixture spanning ancestor, sibling, descendant, mixed-case
-    and non-ASCII-filename paths, the set of paths absent from the snapshot equals the set computed
-    from the real git prefix and the real source listing. Replaces revision 2's test 6, which asserted
-    exclusion against the same classifier exclusion now calls — true by construction.
+    and non-ASCII-filename paths, the set of paths absent from the snapshot equals a **hard-coded
+    expected set written out per fixture**. It must not be computed by `ClassifyReservedPath`,
+    `PlanSnapshotExclusions`, or any helper production shares — round 3 is right that an oracle built
+    from the code under test is true by construction and would pass against an identically wrong
+    matcher. Replaces revision 2's test 6, which had exactly that defect.
 11. **Refresh parity at the boundary** — initial sub-cwd snapshot; add and modify configs at root, an
     intermediate directory and the cwd; `SyncBorrowedSnapshotFromSourceAsync` with the **persisted**
-    prefix; assert every ancestor config absent, each tracked one present in the newly published
-    review context, sibling survives, no kcap-created deletion in `git status`. A separate case
-    asserts a refresh given no persisted prefix throws rather than re-deriving.
+    prefix taken off the `WorktreeInfo` the creation returned — driven through
+    `TryRefreshBorrowedSnapshotAsync`'s own path, not by hand-passing the field, so the test exercises
+    the real caller. Assert every ancestor config absent, each tracked one present in the newly
+    published review context, sibling survives, no kcap-created deletion in `git status`. A separate
+    case asserts a refresh given no persisted prefix throws rather than re-deriving.
 12. **Reserved index policy** — HEAD-tracked `src/.mcp.json` under cwd `src`: destination index
     contains it, skip-worktree bit set, `git status` clean. Negative control: with the policy disabled
     the same fixture reports a deletion.
@@ -338,12 +421,14 @@ found tests that could pass vacuously; those are rewritten rather than patched.
     `..` and `../` remain rejected.
 16. **Symlinked snapshot root** — `WorktreeRoot` a symlink resolving inside the source checkout is
     rejected with `borrowed_snapshot_root_inside_source`, with a control proving the lexical check
-    alone passes it.
+    alone passes it. Scoped to the symlink class; the bind-mount and volume-alias residuals are
+    documented above and are **not** claimed to be covered by this test.
 17. **Non-borrowed sync** — `SyncFromSourceAsync` with a sub-cwd execution path excludes ancestor
     configs, proving the static-property removal did not drop its exclusions.
 18. **Oversized ancestor config** — one tracked ancestor `.mcp.json` over 256 KiB trips
-    `borrowed_snapshot_review_context_capacity_exceeded`, documenting the pre-existing DoS that the
-    separately-filed issue covers, so a later reader does not mistake it for a regression here.
+    `borrowed_snapshot_review_context_capacity_exceeded`. This documents the **pre-existing** DoS
+    covered by the separately-filed issue so a later reader does not mistake it for a regression here.
+    It is a characterization test, not a passing security property, and is named and commented so.
 19. **List membership** — `.github/mcp.json` and `.copilot/mcp-config.json` required.
 
 The AI-1632 live certification (`KCAP_WORKSPACE_MCP_CERT=1`) is re-run unchanged, with its existing
