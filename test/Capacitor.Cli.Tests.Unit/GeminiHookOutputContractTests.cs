@@ -15,13 +15,11 @@ namespace Capacitor.Cli.Tests.Unit;
 /// exists to prevent, which has now been shipped twice (Codex's early <c>return 1</c>, and every Gemini
 /// event but SessionStart).</para>
 ///
-/// <para>"Attempt", not "one object reaches stdout": a throwing writer still consumes the claim, leaving
-/// stdout empty or truncated and the stderr fallback live.
-/// <see cref="A_throwing_write_is_swallowed_and_still_consumes_the_single_claim"/> pins both shapes
-/// deliberately. That is an accepted residue — retrying cannot distinguish them, and a second object
-/// appended to a partial one is unparseable, which is itself what falls back to reading stderr — and a
-/// stdout we cannot write to is not recoverable from inside this process. Do not let the stated
-/// invariant drift back to the absolute form these very tests disprove.</para>
+/// <para>"Attempt", not "one object reaches stdout": a throwing writer still consumes the claim.
+/// <see cref="A_throwing_write_is_swallowed_and_still_consumes_the_single_claim"/> pins both resulting
+/// shapes deliberately — see <c>GeminiHookCommand.HookResultWriter</c> for which residue each one is and
+/// why neither is worth retrying. Do not let the stated invariant drift back to the absolute form these
+/// very tests disprove.</para>
 /// </summary>
 public class GeminiHookOutputContractTests {
     const string SessionId = "3f2504e0-4f89-11d3-9a0c-0305e82c3301";
@@ -133,13 +131,10 @@ public class GeminiHookOutputContractTests {
     }
 
     /// <summary>
-    /// A stdout write that throws — before any byte, or mid-payload — must be swallowed, so it cannot
-    /// alter the command's exit code and push it into Gemini's <c>deny</c> band. It must ALSO still
-    /// consume the single claim: retrying would append a second object onto a partial one, and two
-    /// concatenated objects are exactly the unparseable input that falls back to plain text.
-    ///
-    /// <para>A truncated payload on its own is safe — Gemini degrades truncated JSON to plain text and,
-    /// at the exit codes this command returns, that stays an allow.</para>
+    /// A stdout write that throws — before any byte (arg 0), or mid-payload (arg 5) — must be swallowed,
+    /// so it cannot alter the command's exit code and push it into Gemini's <c>deny</c> band, and must
+    /// still consume the single claim. The two arguments are the two residues; which is which, and why
+    /// neither is retried, is on <c>GeminiHookCommand.HookResultWriter</c>.
     /// </summary>
     [Test]
     [Arguments(0)]
