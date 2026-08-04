@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json.Nodes;
 using Capacitor.Cli.Daemon;
@@ -127,7 +128,7 @@ public class BorrowedReviewContextTests {
     }
 
     [Test]
-    public async Task Aggregate_capacity_accepts_exact_limit_and_rejects_one_extra_byte() {
+    public async Task Aggregate_capacity_accepts_exact_limit_and_declares_one_extra_byte_as_omitted() {
         var exactRepo = NewGitRepo();
         var exactRoot = NewRoot();
         var overRepo = NewGitRepo();
@@ -141,20 +142,144 @@ public class BorrowedReviewContextTests {
                 var manifest = JsonNode.Parse(exact.ReviewContextGeneration!.JsonUtf8)!.AsObject();
                 await Assert.That(manifest["entries"]![0]!["byteCount"]!.GetValue<long>())
                     .IsEqualTo(256L * 1024);
+                await Assert.That(manifest["omittedForCapacity"]!.AsArray()).IsEmpty();
             } finally { await WorktreeManager.RemoveAsync(exact); }
 
-            await File.WriteAllBytesAsync(Path.Combine(overRepo, ".mcp.json"), new byte[256 * 1024 + 1]);
+            // One byte past the cap no longer refuses the launch: the build succeeds, the config
+            // stays out of the executable tree, and the manifest declares the omission by path,
+            // size and hash so the reviewer can flag what it could not read.
+            var overBytes = new byte[256 * 1024 + 1];
+            overBytes[0] = (byte)'x';
+            await File.WriteAllBytesAsync(Path.Combine(overRepo, ".mcp.json"), overBytes);
             Git(overRepo, "add", ".mcp.json");
-            var ex = await Assert.ThrowsAsync<InvalidOperationException>(async () =>
-                await Manager(overRoot).CreateBorrowedSnapshotAsync(
-                    overRepo, "review", CancellationToken.None));
-            await Assert.That(ex!.Message)
-                .StartsWith("borrowed_snapshot_review_context_capacity_exceeded");
+            var expectedOid = GitCapture(overRepo, "rev-parse", ":.mcp.json").Trim();
+            var over = await Manager(overRoot).CreateBorrowedSnapshotAsync(
+                overRepo, "review", CancellationToken.None);
+            try {
+                await Assert.That(File.Exists(Path.Combine(over.SnapshotRoot!, ".mcp.json"))).IsFalse();
+                var manifest = JsonNode.Parse(over.ReviewContextGeneration!.JsonUtf8)!.AsObject();
+                await Assert.That(manifest["entries"]!.AsArray()).IsEmpty();
+                var omitted = manifest["omittedForCapacity"]!.AsArray();
+                await Assert.That(omitted.Count).IsEqualTo(1);
+                var record = omitted[0]!.AsObject();
+                await Assert.That(record["path"]!.GetValue<string>()).IsEqualTo(".mcp.json");
+                await Assert.That(record["indexMode"]!.GetValue<string>()).IsEqualTo("100644");
+                await Assert.That(record["blobObjectId"]!.GetValue<string>()).IsEqualTo(expectedOid);
+                await Assert.That(record["byteCount"]!.GetValue<long>()).IsEqualTo(256L * 1024 + 1);
+                await Assert.That(record["sha256"]!.GetValue<string>())
+                    .IsEqualTo(Convert.ToHexString(SHA256.HashData(overBytes)).ToLowerInvariant());
+                await Assert.That(record["base64"]).IsNull();
+                await Assert.That(record["text"]).IsNull();
+            } finally { await WorktreeManager.RemoveAsync(over); }
         } finally {
             TryDelete(exactRepo); TryDelete(exactRoot);
             TryDelete(overRepo); TryDelete(overRoot);
         }
     }
+
+    [Test]
+    public async Task Omitted_oversized_config_does_not_consume_capacity_needed_by_later_configs() {
+        var repo = NewGitRepo();
+        var root = NewRoot();
+        // `.cursor/mcp.json` sorts before `.mcp.json` in the index, so the oversized blob is
+        // considered first — a later, small config must still be admitted in full.
+        var oversized = new byte[256 * 1024 + 1];
+        var small = "{\"mcpServers\":{\"small\":{}}}"u8.ToArray();
+        try {
+            Directory.CreateDirectory(Path.Combine(repo, ".cursor"));
+            await File.WriteAllBytesAsync(Path.Combine(repo, ".cursor", "mcp.json"), oversized);
+            await File.WriteAllBytesAsync(Path.Combine(repo, ".mcp.json"), small);
+            Git(repo, "add", ".cursor/mcp.json", ".mcp.json");
+
+            var snapshot = await Manager(root).CreateBorrowedSnapshotAsync(
+                repo, "review", CancellationToken.None);
+            try {
+                var manifest = JsonNode.Parse(snapshot.ReviewContextGeneration!.JsonUtf8)!.AsObject();
+                var entries = manifest["entries"]!.AsArray();
+                await Assert.That(entries.Count).IsEqualTo(1);
+                await Assert.That(entries[0]!["path"]!.GetValue<string>()).IsEqualTo(".mcp.json");
+                await Assert.That(entries[0]!["base64"]!.GetValue<string>())
+                    .IsEqualTo(Convert.ToBase64String(small));
+                var omitted = manifest["omittedForCapacity"]!.AsArray();
+                await Assert.That(omitted.Count).IsEqualTo(1);
+                await Assert.That(omitted[0]!["path"]!.GetValue<string>()).IsEqualTo(".cursor/mcp.json");
+            } finally { await WorktreeManager.RemoveAsync(snapshot); }
+        } finally { TryDelete(repo); TryDelete(root); }
+    }
+
+    [Test]
+    public async Task Refresh_after_config_grows_past_capacity_succeeds_and_declares_omission() {
+        var repo = NewGitRepo();
+        var root = NewRoot();
+        var small = "{\"mcpServers\":{\"initial\":{}}}"u8.ToArray();
+        try {
+            await File.WriteAllBytesAsync(Path.Combine(repo, ".mcp.json"), small);
+            Git(repo, "add", ".mcp.json");
+            var manager = Manager(root);
+            var snapshot = await manager.CreateBorrowedSnapshotAsync(
+                repo, "review", CancellationToken.None);
+            try {
+                // A between-rounds refresh with a config grown past the cap must not fail — a
+                // throw here is what used to terminate a live reviewer mid-flow.
+                await File.WriteAllBytesAsync(
+                    Path.Combine(repo, ".mcp.json"), new byte[256 * 1024 + 1]);
+                Git(repo, "add", ".mcp.json");
+
+                var generation = await manager.SyncBorrowedSnapshotFromSourceAsync(
+                    repo, snapshot.SnapshotRoot!, snapshot.GitRelativeCwd!, [],
+                    snapshot.ReviewContextRoot!, CancellationToken.None);
+                await Assert.That(File.Exists(Path.Combine(snapshot.SnapshotRoot!, ".mcp.json")))
+                    .IsFalse();
+                var manifest = JsonNode.Parse(generation.JsonUtf8)!.AsObject();
+                await Assert.That(manifest["entries"]!.AsArray()).IsEmpty();
+                var omitted = manifest["omittedForCapacity"]!.AsArray();
+                await Assert.That(omitted.Count).IsEqualTo(1);
+                await Assert.That(omitted[0]!["path"]!.GetValue<string>()).IsEqualTo(".mcp.json");
+                await Assert.That(omitted[0]!["byteCount"]!.GetValue<long>())
+                    .IsEqualTo(256L * 1024 + 1);
+            } finally { await WorktreeManager.RemoveAsync(snapshot); }
+        } finally { TryDelete(repo); TryDelete(root); }
+    }
+
+    [Test]
+    public async Task Manifest_validation_rejects_malformed_or_out_of_set_omissions() {
+        var validOmission = new BorrowedReviewContextOmission(
+            ".mcp.json", "100644", new string('a', 40), 1, new string('b', 64));
+        var matched = new HashSet<string>(StringComparer.Ordinal) { ".mcp.json" };
+
+        WorktreeManager.ValidateReviewContextManifest(
+            OmissionManifest(validOmission), "g", "h", matched);
+
+        foreach (var (label, omission, paths) in new (string, BorrowedReviewContextOmission, IReadOnlySet<string>)[] {
+            ("outside matched set", validOmission, new HashSet<string>(StringComparer.Ordinal) { "other" }),
+            ("zero byte count", validOmission with { ByteCount = 0 }, matched),
+            ("invalid mode", validOmission with { IndexMode = "120000" }, matched),
+            ("invalid object id", validOmission with { BlobObjectId = new string('0', 40) }, matched),
+            ("uppercase sha", validOmission with { Sha256 = new string('B', 64) }, matched),
+            ("truncated sha", validOmission with { Sha256 = new string('b', 63) }, matched),
+        }) {
+            var ex = Assert.Throws<InvalidOperationException>(() =>
+                WorktreeManager.ValidateReviewContextManifest(
+                    OmissionManifest(omission), "g", "h", paths));
+            await Assert.That(ex!.Message)
+                .StartsWith("borrowed_snapshot_review_context_invalid_manifest")
+                .Because(label);
+        }
+
+        // A path may appear as shipped content or as an omission, never both.
+        var entry = new BorrowedReviewContextEntry(
+            ".mcp.json", "100644", new string('a', 40), 0,
+            Convert.ToHexString(SHA256.HashData([])).ToLowerInvariant(), "", "");
+        var dup = Assert.Throws<InvalidOperationException>(() =>
+            WorktreeManager.ValidateReviewContextManifest(
+                OmissionManifest(validOmission) with { Entries = [entry] }, "g", "h", matched));
+        await Assert.That(dup!.Message)
+            .StartsWith("borrowed_snapshot_review_context_invalid_manifest");
+    }
+
+    static BorrowedReviewContextManifest OmissionManifest(BorrowedReviewContextOmission omission) =>
+        new(1, "g", "h", "git-index-stage-0", WorkingTreeBytes: false,
+            UnstagedAndUntrackedOmitted: true, "-", [], [omission]);
 
     [Test]
     public async Task Matching_unmerged_index_entry_fails_closed() {
@@ -378,6 +503,7 @@ public class BorrowedReviewContextTests {
                 var manifest = JsonNode.Parse(
                     snapshot.ReviewContextGeneration!.JsonUtf8)!.AsObject();
                 await Assert.That(manifest["entries"]!.AsArray()).IsEmpty();
+                await Assert.That(manifest["omittedForCapacity"]!.AsArray()).IsEmpty();
                 await Assert.That(File.Exists(Path.Combine(
                     snapshot.SnapshotRoot!, ".mcp.json"))).IsFalse();
             } finally { await WorktreeManager.RemoveAsync(snapshot); }

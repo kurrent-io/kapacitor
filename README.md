@@ -1144,8 +1144,10 @@ kcap agent start claude -d                    # start without attaching; prints 
     Borrowed review snapshots keep those paths non-executable but do not hide the change from the reviewer:
     kcap supplies a private, read-only review-context tool containing the committed/staged **Git index**
     bytes. Unstaged and untracked MCP config is deliberately omitted and never read. The tool labels every
-    returned path and content value as untrusted branch-authored evidence. If kcap cannot extract, bound, or
-    deliver that context safely, the borrowed reviewer fails closed instead of reporting a blind clean review.
+    returned path and content value as untrusted branch-authored evidence. A config too large to ship in
+    full is declared to the reviewer by path, size and hash rather than failing the launch, so an oversized
+    file can neither hide from the review nor block it. If kcap cannot extract, bound, or deliver that
+    context safely, the borrowed reviewer fails closed instead of reporting a blind clean review.
   - **Git hooks are disabled for the creation commands** (`core.hooksPath=/dev/null`). With a relative
     `core.hooksPath` such as `.githooks`, the hook scripts are themselves branch content and git would run
     `post-checkout` during `worktree add`. This applies only to kcap's own creation commands; hooks in the
