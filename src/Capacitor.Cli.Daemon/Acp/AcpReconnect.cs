@@ -25,8 +25,9 @@ internal sealed class AcpReconnectSupport {
     /// orchestrator after agent registration (it owns the record store and the agent's identity
     /// fields). MUST throw on failure: an unrecorded child may never proceed, or daemon-death leak
     /// containment is fiction — the runtime treats a throw as the attempt failing and disposes the
-    /// candidate before any handshake. Null (never wired — tests, or a non-orchestrator host)
-    /// degrades to no record, which is exactly the pre-reconnect status quo for that host.
+    /// candidate before any handshake. The FACTORY installs a fail-closed throwing placeholder, so
+    /// a crash racing the orchestrator's wiring window fails its attempts honestly instead of
+    /// proceeding unrecorded; null is a test-harness-only state and degrades to no record.
     /// </summary>
     public Action<int>? RecordCandidatePid { get; set; }
 

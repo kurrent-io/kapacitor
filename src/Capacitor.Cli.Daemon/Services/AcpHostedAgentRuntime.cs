@@ -325,12 +325,13 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
                 HandleUnexpectedUnattendedInteraction);
         }
 
-        // Incarnation 1 — the original launch. Every later candidate goes through the same wiring
+        // The original launch's incarnation. Every later candidate goes through the same wiring
         // (WireIncarnation), so hook stamping, notification routing, and the interaction router are
-        // identical for the original child and a resume candidate.
-        _nextIncarnationId = 1;
+        // identical for the original child and a resume candidate. The id comes from the SAME
+        // monotonic allocator candidates use (code-review r1: a hand-assigned literal here plus a
+        // seeded counter is a reuse bug waiting for a refactor — one allocator, no drift).
         _installed = new Incarnation {
-            Id         = 1,
+            Id         = Interlocked.Increment(ref _nextIncarnationId),
             Connection = connection,
             Process    = process,
             LoopCts    = CancellationTokenSource.CreateLinkedTokenSource(_cts.Token)
@@ -500,6 +501,19 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
     /// store and the agent's identity fields are orchestrator-owned, so the runtime can only carry
     /// the seam.</summary>
     internal AcpReconnectSupport? ReconnectSupport => _reconnect;
+
+    /// <summary>Test-only: invoked by the reconnect owner immediately after a successful commit,
+    /// before the settlement wait — the instant a successor death is a CHAINED crash (§5.2).
+    /// Never set in production.</summary>
+    internal Action? TestHookAfterCommit { get; set; }
+
+    /// <summary>Test-only observable for the §5.2 chained-crash marker, so a test injecting a
+    /// post-commit successor death can wait for the signal to be OBSERVED before letting the owner
+    /// proceed — pinning the chained arm deterministically instead of racing the EOF propagation
+    /// (both interleavings are legal in production; the test wants exactly one).</summary>
+    internal bool ChainedCrashPendingForTest {
+        get { lock (_reconnectLock) return _crashedAgainIncarnation != -1; }
+    }
 
     /// <inheritdoc cref="IAcpTranscriptSource.Envelopes"/>
     public ChannelReader<AcpEventEnvelope> Envelopes => _transcript.Reader;
@@ -1353,13 +1367,16 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
         List<PendingInteraction>? swept = null;
 
         lock (_reconnectLock) {
-            if (_intentionalStop || _phase == RuntimePhase.Terminal)
-                return; // stop/terminal dispositions own the signals from here
-
-            if (incarnationId != _installed.Id)
+            if (_intentionalStop || _phase == RuntimePhase.Terminal) {
+                // Stop/terminal dispositions own the incident machinery from here — but the
+                // TERMINAL SIGNALS must still fire for an intentionally-stopped child's transport
+                // end (code-review r1: TerminateAsync from Running otherwise left ReadOutputAsync
+                // waiting forever — the finalize trigger the old process-exit wait used to fire).
+                // Idempotent against dispose/terminal paths that already completed them.
+                terminal = true;
+            } else if (incarnationId != _installed.Id) {
                 return; // a candidate's or disposed incarnation's signal — structurally inert (§5.1)
-
-            if (_phase == RuntimePhase.Reconnecting) {
+            } else if (_phase == RuntimePhase.Reconnecting) {
                 if (incarnationId == _lastHandledCrashIncarnation)
                     return; // duplicate signal for the crash already being handled (r4 B1)
 
@@ -1368,45 +1385,53 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
                 _crashedAgainIncarnation = incarnationId;
                 LogCrashedAgain(_agentId, incarnationId);
                 return;
-            }
-
-            // Phase == Running: this crash either opens an incident or ends the session.
-            _lastHandledCrashIncarnation = incarnationId;
-
-            if (!EligibleForReconnectLocked()) {
-                _phase = RuntimePhase.Terminal;
-                _gateOpen.TrySetResult();
-                swept    = MarkPendingInteractionsCancelledLocked();
-                terminal = true;
             } else {
-                _phase                 = RuntimePhase.Reconnecting;
-                _suppressNotifications = true;
-                _suppressedUpdates     = 0;
-                _gateOpen              = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-                // The C8 snapshot (§5.3/§7): entered/written ⇒ the surfaced cases ⇒ the note's
-                // resend sentence. A not-started registration will park at write entry and be
-                // delivered automatically — no sentence.
-                _incidentResendSentence = _inFlight is { WriteState: >= InFlightTurn.Entered };
-                _ownerCts              = CancellationTokenSource.CreateLinkedTokenSource(_cts.Token);
-                swept                  = MarkPendingInteractionsCancelledLocked();
-                scheduleOwner          = true;
+                // Phase == Running: this crash either opens an incident or ends the session.
+                _lastHandledCrashIncarnation = incarnationId;
+
+                if (!EligibleForReconnectLocked()) {
+                    _phase = RuntimePhase.Terminal;
+                    _gateOpen.TrySetResult();
+                    swept    = MarkPendingInteractionsCancelledLocked();
+                    terminal = true;
+                } else {
+                    _phase                 = RuntimePhase.Reconnecting;
+                    // Counter reset BEFORE the volatile flag publishes (code-review r1 minor): a
+                    // notification that observes the flag can only increment a counter that has
+                    // already been zeroed for this incident.
+                    _suppressedUpdates     = 0;
+                    _suppressNotifications = true;
+                    _gateOpen              = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                    // The C8 snapshot (§5.3/§7): entered/written ⇒ the surfaced cases ⇒ the note's
+                    // resend sentence. A not-started registration will park at write entry and be
+                    // delivered automatically — no sentence.
+                    _incidentResendSentence = _inFlight is { WriteState: >= InFlightTurn.Entered };
+                    _ownerCts              = CancellationTokenSource.CreateLinkedTokenSource(_cts.Token);
+                    swept                  = MarkPendingInteractionsCancelledLocked();
+                    // Owner PUBLICATION happens inside the lock (code-review r1: publishing after
+                    // release let DisposeAsync snapshot a stale completed _ownerTask in the gap and
+                    // return while the new owner still ran). Task.Run only schedules — the hook
+                    // stays non-blocking.
+                    _ownerTask    = Task.Run(RunReconnectOwnerAsync);
+                    scheduleOwner = true;
+                }
             }
         }
 
         ScheduleInteractionSweep(swept);
 
         if (terminal) {
-            // Today's behavior, byte-for-byte in effect: child death finalizes. The re-keyed
-            // terminal signal fires here — the same moment the old process-exit wait used to.
+            // Today's behavior, byte-for-byte in effect: the transport is gone and no reconnect
+            // will absorb it, so the re-keyed terminal signal fires here — the same moment the old
+            // process-exit wait used to. TryComplete/TrySetResult are idempotent against the
+            // dispose/terminalize paths.
             _updates.Writer.TryComplete();
             _runtimeTerminal.TrySetResult();
             return;
         }
 
-        if (scheduleOwner) {
+        if (scheduleOwner)
             LogReconnectStarted(_agentId, _vendor, incarnationId);
-            _ownerTask = Task.Run(RunReconnectOwnerAsync);
-        }
     }
 
     /// <summary>
@@ -1469,6 +1494,11 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
                     }
 
                     candidate = null; // installed — ownership transferred to the runtime
+
+                    // Deterministic seam for the chained-crash tests: fires at the exact
+                    // post-commit, pre-settlement instant a successor death takes the §5.2
+                    // chained arm. Production never sets it.
+                    TestHookAfterCommit?.Invoke();
 
                     // Settlement (§6.4): the faulted incident turn — including its retained
                     // partial flush — must complete before the note, so transcript order is
@@ -1750,11 +1780,13 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
     /// </summary>
     async Task TerminalizeIncidentAsync(string reason, Incarnation? leftoverCandidate, AcpReconnectSupport support) {
         List<PendingInteraction>? swept;
+        Incarnation installed;
 
         lock (_reconnectLock) {
             _phase                 = RuntimePhase.Terminal;
             _suppressNotifications = false;
             swept                  = MarkPendingInteractionsCancelledLocked();
+            installed              = _installed;
             _gateOpen.TrySetResult();
         }
 
@@ -1762,6 +1794,17 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
 
         if (leftoverCandidate is not null)
             await DisposeCandidateAsync(leftoverCandidate, support).ConfigureAwait(false);
+
+        // A successor that COMMITTED and then went terminal (settlement timeout, chained-crash
+        // exhaustion) is the installed incarnation, not a leftover candidate — retire its process
+        // here rather than leaving it to the orchestrator's eventual finalize→dispose, so the
+        // incident's terminal path leaks nothing on its own authority (code-review r1). Best-effort
+        // and idempotent: a corpse is already dead, and dispose covers whatever this misses.
+        try {
+            await installed.Process.TerminateAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false);
+        } catch (Exception ex) {
+            _logger.LogDebug(ex, "ACP reconnect: terminal-path retirement of the installed child failed (best-effort).");
+        }
 
         AcpMetrics.RecordReconnect(reason == "stopped" ? "stopped" : "exhausted");
         LogGaveUp(_agentId, reason);

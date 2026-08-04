@@ -165,7 +165,15 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
         // candidate is spawned by the same code path — argv, env, cwd — as the original child, and
         // carries no registration/forwarder/slot side effects (§6.2's pure-spawn contract).
         var reconnect = descriptor.SupportsReconnectResume && !ctx.IsReviewFlow && config.AcpReconnectEnabled
-            ? new AcpReconnectSupport { Spawn = () => _connectionSource(ctx) }
+            ? new AcpReconnectSupport {
+                Spawn = () => _connectionSource(ctx),
+                // FAIL-CLOSED until the orchestrator wires the real recorder post-registration
+                // (code-review r1): a crash landing in the wiring window must fail its attempts —
+                // §6.2's record-before-any-handshake MUST — rather than silently proceed with an
+                // unrecorded candidate the daemon-death reclamation could never find.
+                RecordCandidatePid = _ => throw new InvalidOperationException(
+                    "ACP reconnect: PID recorder not yet wired (crash raced launch registration)."),
+            }
             : null;
 
         // Spec-review Finding 4: real production wiring — every launch now gets the

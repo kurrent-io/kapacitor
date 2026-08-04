@@ -474,12 +474,15 @@ internal sealed partial class AcpConnection : IAsyncDisposable {
             try {
                 await _writeStream.WriteAsync(bytes, ct).ConfigureAwait(false);
                 await _writeStream.FlushAsync(ct).ConfigureAwait(false);
-            } catch (Exception ex) when (ex is not OperationCanceledException) {
+            } catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested) {
                 // A failure of the stream write/flush ITSELF is transport evidence (broken pipe /
-                // torn-down stream) and triggers the reconnect pre-fault path. Deliberately narrow:
-                // gate-acquisition cancellation and anything before this inner try (serialization
-                // happens in the caller) are local faults on a healthy child and must NOT trigger
-                // reconnect (reconnect spec §5.2).
+                // torn-down stream) and triggers the reconnect pre-fault path. Deliberately narrow
+                // on the exclusion side too: only a cancellation the CALLER actually requested is a
+                // local (non-transport) outcome — a stream throwing OperationCanceledException while
+                // ct is un-cancelled is a dying transport wearing the wrong exception type
+                // (code-review r1) and must latch like any other write failure. Gate-acquisition
+                // cancellation and anything before this inner try (serialization happens in the
+                // caller) never reach here.
                 MarkTransportEnded();
                 throw;
             }

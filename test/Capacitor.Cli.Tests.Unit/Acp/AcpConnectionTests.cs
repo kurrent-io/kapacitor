@@ -659,6 +659,35 @@ public class AcpConnectionTests {
         public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken ct = default) => throw new IOException("broken pipe");
     }
 
+    /// <summary>A stream that throws OperationCanceledException from writes while the CALLER's
+    /// token is not cancelled — a dying transport wearing the wrong exception type. The latch must
+    /// still trip: only caller-requested cancellation is a local (non-transport) outcome.</summary>
+    sealed class CancellationThrowingWriteStream : Stream {
+        public override bool CanRead => false;
+        public override bool CanSeek => false;
+        public override bool CanWrite => true;
+        public override long Length => 0;
+        public override long Position { get => 0; set { } }
+        public override void Flush() { }
+        public override int Read(byte[] buffer, int offset, int count) => 0;
+        public override long Seek(long offset, SeekOrigin origin) => 0;
+        public override void SetLength(long value) { }
+        public override void Write(byte[] buffer, int offset, int count) => throw new OperationCanceledException("transport died");
+        public override Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken ct) => throw new OperationCanceledException("transport died");
+        public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken ct = default) => throw new OperationCanceledException("transport died");
+    }
+
+    [Test]
+    public async Task Uncancelled_operation_cancelled_write_failure_still_sets_the_latch() {
+        await using var connection = new AcpConnection(
+            new CancellationThrowingWriteStream(), new MemoryStream(), NullLogger.Instance);
+
+        await Assert.That(async () => await connection.NotifyAsync("session/cancel", null))
+            .Throws<OperationCanceledException>();
+
+        await Assert.That(connection.TransportEnded).IsTrue();
+    }
+
     [Test]
     public async Task Stream_write_failure_sets_transport_ended_latch_and_fires_pre_fault_hook_before_throwing() {
         var hookFired = false;

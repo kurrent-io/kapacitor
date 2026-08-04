@@ -420,6 +420,64 @@ public class AcpHostedAgentRuntimeReconnectTests {
     }
 
     [Test]
+    public async Task Committed_successor_death_before_reopen_chains_into_the_same_incident() {
+        await using var h = new Harness();
+
+        var chained = false;
+        h.Runtime.TestHookAfterCommit = () => {
+            // Fires at the exact post-commit, pre-settlement instant. Kill the FIRST committed
+            // successor only: its death must take the §5.2 chained arm (installed stamp, still
+            // Reconnecting, stamp ≠ lastHandledCrash), fold into the SAME incident, and the next
+            // candidate must resume — one owner, one eventual note. The crash signal propagates
+            // via EOF on another thread, so BLOCK here (owner thread, no lock held) until the
+            // marker is observed — otherwise the owner can legally reach reopen first and the
+            // death becomes a fresh incident, which is correct behavior but not the arm this test
+            // exists to pin.
+            if (!chained) {
+                chained = true;
+                h.Incarnations[1].Fake.SimulateCrash();
+                h.Incarnations[1].Process.SignalExited(1);
+
+                var deadline = DateTime.UtcNow + HangGuard;
+                while (!h.Runtime.ChainedCrashPendingForTest && DateTime.UtcNow < deadline)
+                    Thread.Sleep(5);
+            }
+        };
+
+        await h.StartAsync();
+        h.CrashOriginal();
+
+        await Harness.PollUntilAsync(() => h.EnvelopeSnapshot().Any(e => e.Kind == AcpEventKind.SystemNote));
+
+        // Candidate 1 committed then died (chained); candidate 2 resumed. Exactly one note — the
+        // chained pass skipped its own note/reopen.
+        await Assert.That(h.CandidateSpawns).IsEqualTo(2);
+        await Assert.That(h.EnvelopeSnapshot().Count(e => e.Kind == AcpEventKind.SystemNote)).IsEqualTo(1);
+
+        await h.Runtime.SendUserInputAsync("after-chained-resume").WaitAsync(HangGuard);
+        await Harness.PollUntilAsync(() => h.Incarnations[2].Fake.ReceivedCalls.Any(c =>
+            c.Method == "session/prompt" &&
+            c.Params!.Value.GetProperty("prompt")[0].GetProperty("text").GetString() == "after-chained-resume"));
+    }
+
+    [Test]
+    public async Task Terminate_from_running_completes_the_finalize_signal() {
+        await using var h = new Harness();
+        await h.StartAsync();
+
+        var terminal = h.RuntimeTerminalAsync();
+
+        // A plain intentional stop of a HEALTHY session: the child exits, and the re-keyed
+        // finalize signal must still fire (the pre-reconnect implementation had this implicitly by
+        // waiting on process exit) — no reconnect incident, no candidates.
+        await h.Runtime.TerminateAsync(TimeSpan.FromSeconds(2)).WaitAsync(HangGuard);
+        h.Incarnations[0].Fake.SimulateCrash();
+
+        await terminal.WaitAsync(HangGuard);
+        await Assert.That(h.CandidateSpawns).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task Held_turn_ack_resolves_on_resumed_delivery() {
         await using var h = new Harness();
         await h.StartAsync();
