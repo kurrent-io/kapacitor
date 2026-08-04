@@ -126,7 +126,8 @@ them; mismatched pins under CPM produce downgrade/restore failures, not silent r
   taken only when a stable Rx-flavor integration is published (or Primitives is consciously
   adopted) — never as a routine bump;
 - `DynamicData` at its latest stable at implementation time (System.Reactive-based; no
-  cross-constraint with the pair).
+  cross-constraint with the pair): **9.4.33** (declared dependency: System.Reactive 6.1.0 on
+  net10.0, no cross-constraint with the Avalonia/ReactiveUI.Avalonia pair above).
 
 Any substitution must preserve BOTH properties as a set: the integration's declared Avalonia
 range satisfied by the family version AND the System.Reactive flavor (integration < 12.1,

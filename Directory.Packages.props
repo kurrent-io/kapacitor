@@ -3,8 +3,13 @@
         <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
     </PropertyGroup>
     <ItemGroup>
+        <PackageVersion Include="Avalonia" Version="12.1.1" />
+        <PackageVersion Include="Avalonia.Desktop" Version="12.1.1" />
+        <PackageVersion Include="Avalonia.Headless" Version="12.1.1" />
+        <PackageVersion Include="Avalonia.Themes.Fluent" Version="12.1.1" />
         <PackageVersion Include="Duende.IdentityModel.OidcClient" Version="7.1.0" />
         <PackageVersion Include="Duende.IdentityModel" Version="8.1.0" />
+        <PackageVersion Include="DynamicData" Version="9.4.33" />
         <PackageVersion Include="Microsoft.AspNetCore.SignalR.Client" Version="10.0.8" />
         <PackageVersion Include="Microsoft.Extensions.Hosting" Version="10.0.8" />
         <PackageVersion Include="Microsoft.Extensions.Http" Version="10.0.8" />
@@ -13,6 +18,7 @@
         <PackageVersion Include="MinVer" Version="7.0.0" />
         <PackageVersion Include="SQLitePCLRaw.bundle_e_sqlite3" Version="3.0.3" />
         <PackageVersion Include="NSubstitute" Version="5.3.0" />
+        <PackageVersion Include="ReactiveUI.Avalonia" Version="12.0.3" />
         <PackageVersion Include="Spectre.Console" Version="0.55.2" />
         <PackageVersion Include="System.Threading.AccessControl" Version="10.0.0" />
         <PackageVersion Include="Tomlyn" Version="2.4.0" />
