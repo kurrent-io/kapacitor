@@ -1550,10 +1550,11 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             // take (no availableModels match / the agent rejected the option — the vendor's default
             // runs in every null case). Register the CONFIRMED value, never the request: agent.Model
             // feeds AgentRegisteredAsync (live model chip + hosted_agent_started analytics),
-            // AgentRunStarted (agent_runs), and every reconnect re-registration. Same
-            // requested-vs-running rule as ModelSelectionLaunchPolicy, applied per-request instead of
-            // per-capability. PTY runtimes have no confirmation seam (Transcript is null) and keep
-            // reporting effectiveModel.
+            // AgentRunStarted (agent_runs), every reconnect re-registration, and the local
+            // supervision status payload (SnapshotAgentsForStatus). Same requested-vs-running rule
+            // as ModelSelectionLaunchPolicy, applied per-request instead of per-capability. PTY
+            // runtimes have no confirmation seam (Transcript is null) and keep reporting
+            // effectiveModel.
             var registeredModel = start.Transcript is { } confirmed ? confirmed.ResolvedModel : effectiveModel;
 
             var agent = new AgentInstance(agentId, prompt, registeredModel, effort, repoPath, cmd.Vendor, runtime, worktree, cts) {
