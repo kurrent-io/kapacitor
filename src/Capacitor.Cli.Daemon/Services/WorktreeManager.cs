@@ -509,7 +509,7 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
             throw new InvalidOperationException("borrowed_snapshot_cwd_outside_source");
         if (!Directory.Exists(cwd))
             throw new InvalidOperationException("borrowed_snapshot_cwd_missing");
-        var gitRelativeCwd = await ReadGitRelativeCwdAsync(cwd, ct);
+        var gitRelativeCwd = await ReadGitRelativeCwdAsync(source, cwd, ct);
         var root = Path.GetFullPath(Path.Combine(config.WorktreeRoot, "borrowed-snapshots"));
         EnsureSeparateRoots(source, root);
         CreateOwnerOnlyDirectory(root);
@@ -562,7 +562,8 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
     public async Task SyncFromSourceAsync(
             string sourceRepoRoot, string sourceCwd, string targetWorktreePath,
             string[] excludePaths, CancellationToken ct) {
-        var gitRelativeCwd = await ReadGitRelativeCwdAsync(Path.GetFullPath(sourceCwd), ct);
+        var gitRelativeCwd = await ReadGitRelativeCwdAsync(
+            Path.GetFullPath(sourceRepoRoot), Path.GetFullPath(sourceCwd), ct);
         _ = await SyncFromSourceCoreAsync(
             sourceRepoRoot, targetWorktreePath, gitRelativeCwd,
             excludePaths, reviewContextRoot: null, ct);
@@ -910,30 +911,51 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
                candidate.StartsWith(prefix, FileSystemPathComparison);
     }
 
-    /// <summary>Resolves links up to the deepest component that exists, then appends the rest literally.
+    /// <summary>Resolves links along the whole existing prefix of <paramref name="path"/>, then appends
+    /// whatever does not exist yet literally.
     /// <para>The snapshot root is created by the very call that checks it, so "resolve the final path" is
     /// undefined. Appending the tail without re-resolving also means a component substituted after the
-    /// check cannot be followed by this function.</para></summary>
+    /// check cannot be followed by this function.</para>
+    /// <para><b>Every component, not just the deepest.</b> An earlier version tested <c>LinkTarget</c> on
+    /// the deepest existing component alone, so with <c>/alias -> /real</c> and an ordinary
+    /// <c>/alias/existing</c>, resolving <c>/alias/existing/new</c> returned the lexical path and the
+    /// containment check still missed a snapshot root reaching inside the source through the ancestor
+    /// link. Chains are followed with a bounded iteration count rather than trusted to terminate.</para>
+    /// </summary>
     static string ResolveDeepestExisting(string path) {
+        const int maxLinkHops = 64;
         var full = Path.GetFullPath(path);
         var tail = new List<string>();
         var current = full;
-        while (true) {
-            if (Path.Exists(current)) {
-                var resolved = new DirectoryInfo(current).LinkTarget is null && new FileInfo(current).LinkTarget is null
-                    ? current
-                    : Path.GetFullPath(
-                        new DirectoryInfo(current).ResolveLinkTarget(returnFinalTarget: true)?.FullName
-                        ?? new FileInfo(current).ResolveLinkTarget(returnFinalTarget: true)?.FullName
-                        ?? current);
-                tail.Reverse();
-                return tail.Count == 0 ? resolved : Path.Combine([resolved, .. tail]);
-            }
+
+        // Split off the components that do not exist yet; they are re-appended verbatim below.
+        while (!Path.Exists(current)) {
             var parent = Path.GetDirectoryName(current);
             if (string.IsNullOrEmpty(parent) || parent == current) return full;
             tail.Add(Path.GetFileName(current));
             current = parent;
         }
+        tail.Reverse();
+
+        // Walk the existing prefix component by component, resolving each link as it is encountered so an
+        // ancestor link is followed rather than skipped.
+        var resolved = Path.GetPathRoot(current) ?? "";
+        var components = current[resolved.Length..]
+            .Split(Path.DirectorySeparatorChar, StringSplitOptions.RemoveEmptyEntries);
+        foreach (var component in components) {
+            resolved = Path.Combine(resolved, component);
+            for (var hop = 0; hop < maxLinkHops; hop++) {
+                var target = new DirectoryInfo(resolved).LinkTarget is not null
+                        || new FileInfo(resolved).LinkTarget is not null
+                    ? new DirectoryInfo(resolved).ResolveLinkTarget(returnFinalTarget: true)?.FullName
+                      ?? new FileInfo(resolved).ResolveLinkTarget(returnFinalTarget: true)?.FullName
+                    : null;
+                if (target is null) break;
+                resolved = Path.GetFullPath(target);
+            }
+        }
+
+        return tail.Count == 0 ? resolved : Path.Combine([resolved, .. tail]);
     }
 
     internal static string NormalizeRelativePath(string raw) {
@@ -1059,8 +1081,15 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
         var targets = new List<string>();
         foreach (var record in SplitNulRecords(indexListing)) {
             ct.ThrowIfCancellationRequested();
+            // Every non-Unrelated match, Exact AND Descendant — the same set ReadSourceManifestAsync
+            // excludes. An earlier version marked only Exact on the reasoning that a descendant of a
+            // config path is not an index entry, which is backwards: the reserved parent may not be an
+            // entry, but a repository CAN track `.codex/config.toml/child` (the config pathname as a
+            // directory), and each such child is a real index entry. Omitted from the snapshot and left
+            // unmarked, it reads as a deletion — and an ordinary git operation in the snapshot could
+            // restore it and rebuild a live vendor-config tree.
             if (ClassifyReservedPath(record.Span, plan.Reserved, caseSensitive).Kind
-                    != ReservedPathMatchKind.Exact)
+                    == ReservedPathMatchKind.Unrelated)
                 continue;
             // A non-UTF8 index path cannot have matched an ASCII candidate, so this cannot throw for a
             // path that reached here; the guard is for the impossible case rather than a silent skip.

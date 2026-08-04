@@ -224,7 +224,8 @@ public class BorrowedSnapshotExclusionScopeTests {
         using var fixture = NewFixture(("src/cli/keep.txt", "keep"));
         var cwd = Path.Combine(fixture.Source, "src", "cli");
 
-        var prefix = await WorktreeManager.ReadGitRelativeCwdAsync(cwd, CancellationToken.None);
+        var prefix = await WorktreeManager.ReadGitRelativeCwdAsync(
+            fixture.Source, cwd, CancellationToken.None);
 
         // The oracle is git's OWN listing, not our plan builder — a builder validated against itself
         // would pass with an identically wrong derivation.
@@ -237,7 +238,7 @@ public class BorrowedSnapshotExclusionScopeTests {
         using var fixture = NewFixture();
 
         var prefix = await WorktreeManager.ReadGitRelativeCwdAsync(
-            fixture.Source, CancellationToken.None);
+            fixture.Source, fixture.Source, CancellationToken.None);
 
         await Assert.That(prefix).IsEqualTo("");
     }
@@ -419,6 +420,96 @@ public class BorrowedSnapshotExclusionScopeTests {
                 .Throws<InvalidOperationException>()
                 .Because("Claude Code's .mcp.json lookup walks upward past the git root, so a snapshot "
                        + "under the source would sit beneath the source's own config");
+        } finally {
+            try { Directory.Delete(link); } catch { }
+        }
+    }
+
+    // ---------- descendants of a reserved path are index entries too ----------
+
+    /// <summary>A repository CAN track <c>.mcp.json/child</c> — the config pathname as a DIRECTORY — and
+    /// that child is a real index entry, which is why the index policy marks every non-<c>Unrelated</c>
+    /// match rather than only <c>Exact</c>.
+    /// <para>On the BORROWED path this state is unreachable: the review-context extractor refuses a
+    /// reserved path that is a directory before the index policy is ever reached. That is pre-existing
+    /// fail-closed behaviour, pinned here so a later change cannot quietly relax it into the very
+    /// deletion-and-restore case the index fix defends against.</para></summary>
+    [Test]
+    public async Task A_reserved_path_tracked_as_a_directory_refuses_a_borrowed_build() {
+        using var fixture = NewFixture((".mcp.json/child", "{}"), ("keep.txt", "keep"));
+
+        await Assert.That(async () => await SnapshotAsync(fixture, ""))
+            .Throws<InvalidOperationException>();
+    }
+
+    /// <summary>The same fixture through the path that has NO review context, where the descendant does
+    /// reach the index policy. Marked skip-worktree, it leaves a clean status; marked only on
+    /// <c>Exact</c>, it would read as a deletion the reviewer could file a finding about — and an
+    /// ordinary git operation could restore it, rebuilding a live vendor-config tree.</summary>
+    [Test]
+    public async Task A_tracked_descendant_of_a_reserved_path_does_not_show_as_a_deletion() {
+        using var fixture = NewFixture(("keep.txt", "keep"));
+        var manager = NewManager(fixture);
+
+        // The target is an existing snapshot — SyncFromSourceAsync replaces contents, it does not create
+        // the tree. Built before the descendant exists, so the sync below is the operation under test.
+        var snapshot = await SnapshotAsync(fixture, "");
+        try {
+            var target = snapshot.SnapshotRoot!;
+
+            Write(fixture.Source, ".mcp.json/child", "{}");
+            Git(fixture.Source, "add", "-A");
+            Git(fixture.Source, "commit", "-q", "-m", "config as a directory");
+
+            await manager.SyncFromSourceAsync(
+                fixture.Source, fixture.Source, target, [], CancellationToken.None);
+
+            await Assert.That(File.Exists(Path.Combine(target, ".mcp.json", "child"))).IsFalse();
+            await Assert.That(GitCapture(target, "status", "--porcelain").Trim()).IsEqualTo("");
+        } finally { await WorktreeManager.RemoveAsync(snapshot); }
+    }
+
+    // ---------- the prefix must belong to the repository whose manifest it filters ----------
+
+    [Test]
+    public async Task A_cwd_in_a_nested_repository_is_refused() {
+        using var fixture = NewFixture(("keep.txt", "keep"));
+        // A nested repository inside the source tree. `rev-parse` run there reports the NESTED repo's
+        // work-tree top, so its prefix is in a different namespace from the source's ls-files output —
+        // and matching one against the other is exactly the invariant this derivation exists to hold.
+        var nested = Path.Combine(fixture.Source, "vendored");
+        Directory.CreateDirectory(nested);
+        Git(nested, "init", "-q");
+
+        await Assert.That(async () => await NewManager(fixture).CreateBorrowedSnapshotAsync(
+                fixture.Source, nested, null, CancellationToken.None))
+            .Throws<InvalidOperationException>();
+    }
+
+    // ---------- snapshot root reaching the source through an ANCESTOR link ----------
+
+    [Test]
+    public async Task Snapshot_root_reaching_the_source_through_an_ancestor_symlink_is_refused() {
+        if (OperatingSystem.IsWindows()) {
+            await Assert.That(true).IsTrue();
+            return;
+        }
+
+        using var fixture = NewFixture();
+        // The link is an ANCESTOR of the configured root, and the configured root's own deepest existing
+        // component is an ordinary directory. Resolving only that deepest component returns the lexical
+        // path and the containment check passes — which is the bug this covers.
+        var inside = Path.Combine(fixture.Source, "nested", "existing");
+        Directory.CreateDirectory(inside);
+        var link = Path.Combine(Path.GetTempPath(), "kcap-anc-" + Guid.NewGuid().ToString("N")[..8]);
+        Directory.CreateSymbolicLink(link, Path.Combine(fixture.Source, "nested"));
+        try {
+            var manager = new WorktreeManager(
+                new DaemonConfig { WorktreeRoot = Path.Combine(link, "existing") },
+                NullLogger<WorktreeManager>.Instance);
+            await Assert.That(async () => await manager.CreateBorrowedSnapshotAsync(
+                    fixture.Source, fixture.Source, null, CancellationToken.None))
+                .Throws<InvalidOperationException>();
         } finally {
             try { Directory.Delete(link); } catch { }
         }
