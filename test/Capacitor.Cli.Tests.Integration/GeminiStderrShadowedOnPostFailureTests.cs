@@ -89,7 +89,7 @@ public class GeminiStderrShadowedOnPostFailureTests : IDisposable {
         await Assert.That(exit).IsEqualTo(0);
 
         using var doc = JsonDocument.Parse(stdout.Trim());
-        await Assert.That(doc.RootElement.TryGetProperty("decision", out _)).IsFalse();
+        await Assert.That(doc.RootElement.Str("decision")).IsNull();
     }
 
     async Task UseServerProfileAsync() =>

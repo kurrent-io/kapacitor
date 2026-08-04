@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Capacitor.Cli.Commands;
+using Capacitor.Cli.Core;
 
 namespace Capacitor.Cli.Tests.Unit;
 
@@ -114,8 +115,12 @@ public class GeminiHookOutputContractTests {
         sink.EnsureWritten();
 
         await Assert.That(writer.ToString()).IsEqualTo("""{"hookSpecificOutput":{"additionalContext":"memory"}}""");
-        using var doc = JsonDocument.Parse(writer.ToString());   // throwing IS the failure
-        await Assert.That(doc.RootElement.ValueKind).IsEqualTo(JsonValueKind.Object);
+
+        // Parse throwing IS the failure — a second object appended behind the first is what makes this
+        // unparseable. Reading the nested key back through the project's helper proves the root really is
+        // an object as well: Obj() yields null for any non-object root.
+        using var doc = JsonDocument.Parse(writer.ToString());
+        await Assert.That(doc.RootElement.Obj("hookSpecificOutput")).IsNotNull();
     }
 
     /// <summary>Writes <paramref name="charsBeforeThrowing"/> characters and THEN throws, so 0 exercises
@@ -152,19 +157,26 @@ public class GeminiHookOutputContractTests {
     }
 
     /// <summary>Asserts what Gemini would actually do with these bytes, not merely that some were
-    /// written: the runner must select stdout, parse it as an object, and find no blocking decision.</summary>
+    /// written: the runner must select stdout, parse it, and find no blocking decision.</summary>
     static async Task AssertNonBlockingJsonObject(string stdout) {
         await Assert.That(stdout.Trim()).IsNotEmpty();
 
+        // Parse throwing IS the failure: Gemini only treats the payload as a decision object when it
+        // parses, and anything else degrades to plain text.
         using var doc = JsonDocument.Parse(stdout.Trim());
 
-        await Assert.That(doc.RootElement.ValueKind).IsEqualTo(JsonValueKind.Object);
+        // `isBlockingDecision()` is `decision === "block" || decision === "deny"`. Str() returns null
+        // unless the root is an object AND the property is a string — the same two conditions Gemini
+        // itself applies before honouring a decision — so this one read covers both.
+        var decision = doc.RootElement.Str("decision");
 
-        // `isBlockingDecision()` is `decision === "block" || decision === "deny"`.
-        if (doc.RootElement.TryGetProperty("decision", out var decision)) {
-            await Assert.That(decision.GetString()).IsNotEqualTo("block");
-            await Assert.That(decision.GetString()).IsNotEqualTo("deny");
-        }
+        await Assert.That(decision).IsNotEqualTo("block");
+        await Assert.That(decision).IsNotEqualTo("deny");
+
+        // Every path reaching here is a suppression path, so the payload is the backstop verbatim. That
+        // equality is strictly stronger than a shape check, and pins the object-ness the read above
+        // cannot distinguish from a missing key.
+        await Assert.That(stdout.Trim()).IsEqualTo(GeminiHookCommand.AllowPayload);
     }
 
     static async Task<string> RunAsync(string payload) {
