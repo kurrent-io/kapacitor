@@ -1367,15 +1367,22 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
         List<PendingInteraction>? swept = null;
 
         lock (_reconnectLock) {
-            if (_intentionalStop || _phase == RuntimePhase.Terminal) {
-                // Stop/terminal dispositions own the incident machinery from here — but the
-                // TERMINAL SIGNALS must still fire for an intentionally-stopped child's transport
-                // end (code-review r1: TerminateAsync from Running otherwise left ReadOutputAsync
-                // waiting forever — the finalize trigger the old process-exit wait used to fire).
-                // Idempotent against dispose/terminal paths that already completed them.
+            if (_phase == RuntimePhase.Terminal) {
+                // Already terminal: completing the signals again is idempotent and harmless.
                 terminal = true;
             } else if (incarnationId != _installed.Id) {
-                return; // a candidate's or disposed incarnation's signal — structurally inert (§5.1)
+                // A candidate's or disposed incarnation's signal — structurally inert (§5.1), and
+                // deliberately checked BEFORE the intentional-stop arm (code-review r2): a delayed
+                // stale callback arriving after a stop of the healthy successor must not become a
+                // premature finalize trigger while that successor's own termination is still in
+                // flight.
+                return;
+            } else if (_intentionalStop) {
+                // The INSTALLED child's transport ended under an intentional stop: fire the
+                // terminal signals (code-review r1: TerminateAsync from Running otherwise left
+                // ReadOutputAsync waiting forever — the finalize trigger the old process-exit wait
+                // used to fire). Idempotent against dispose/terminalize.
+                terminal = true;
             } else if (_phase == RuntimePhase.Reconnecting) {
                 if (incarnationId == _lastHandledCrashIncarnation)
                     return; // duplicate signal for the crash already being handled (r4 B1)
@@ -1479,7 +1486,7 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
                     // daemon dies mid-attempt, restart reclamation kills the recorded candidate).
                     // A throw here lands in the attempt-failure catch below, which disposes the
                     // candidate and clears the record.
-                    support.RecordCandidatePid?.Invoke(candidate.Process.Pid);
+                    support.PidCallbacks.Record(candidate.Process.Pid);
 
                     await InitializeCandidateAsync(candidate, ownerCt).ConfigureAwait(false);
                     await LoadSessionAsync(candidate, ownerCt).ConfigureAwait(false);
@@ -1757,16 +1764,29 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
     async Task DisposeCandidateAsync(Incarnation candidate, AcpReconnectSupport support) {
         try { candidate.LoopCts.Cancel(); } catch (ObjectDisposedException) { }
 
+        // Each cleanup step is INDEPENDENTLY best-effort (code-review r2): a throwing connection
+        // disposal must never suppress process-tree retirement — that ordering would leave an
+        // untracked live child right before its PID record is cleared.
         try {
             await candidate.Connection.DisposeAsync().ConfigureAwait(false);
-            await candidate.Process.TerminateAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false);
-            await candidate.Process.DisposeAsync().ConfigureAwait(false);
         } catch (Exception ex) {
-            _logger.LogDebug(ex, "ACP reconnect: candidate disposal failed (best-effort).");
+            _logger.LogDebug(ex, "ACP reconnect: candidate connection disposal failed (best-effort).");
         }
 
         try {
-            support.ClearCandidatePidRecord?.Invoke();
+            await candidate.Process.TerminateAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false);
+        } catch (Exception ex) {
+            _logger.LogDebug(ex, "ACP reconnect: candidate process termination failed (best-effort).");
+        }
+
+        try {
+            await candidate.Process.DisposeAsync().ConfigureAwait(false);
+        } catch (Exception ex) {
+            _logger.LogDebug(ex, "ACP reconnect: candidate process disposal failed (best-effort).");
+        }
+
+        try {
+            support.PidCallbacks.Clear();
         } catch (Exception ex) {
             _logger.LogDebug(ex, "ACP reconnect: clearing the candidate PID record failed (best-effort).");
         }
@@ -1796,14 +1816,36 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
             await DisposeCandidateAsync(leftoverCandidate, support).ConfigureAwait(false);
 
         // A successor that COMMITTED and then went terminal (settlement timeout, chained-crash
-        // exhaustion) is the installed incarnation, not a leftover candidate — retire its process
-        // here rather than leaving it to the orchestrator's eventual finalize→dispose, so the
-        // incident's terminal path leaks nothing on its own authority (code-review r1). Best-effort
-        // and idempotent: a corpse is already dead, and dispose covers whatever this misses.
+        // exhaustion) is the INSTALLED incarnation, not a leftover candidate. Run the FULL
+        // retirement on it — loop cancel, connection disposal, tree termination with a bounded
+        // confirm, and the PID-record clear — on the incident's own authority (code-review r1+r2),
+        // BEFORE the terminal signals fire, so finalize never overlaps a still-live successor this
+        // path knew about. Idempotent for the already-retired-original case (a corpse is already
+        // dead and disposed), and the orchestrator's finalize->dispose remains the backstop for
+        // anything a refusing process leaves behind (logged loudly below, never silently).
+        try { installed.LoopCts.Cancel(); } catch (ObjectDisposedException) { }
+
         try {
-            await installed.Process.TerminateAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false);
+            await installed.Connection.DisposeAsync().ConfigureAwait(false);
+        } catch (Exception ex) {
+            _logger.LogDebug(ex, "ACP reconnect: terminal-path connection disposal failed (best-effort).");
+        }
+
+        try {
+            await installed.Process.TerminateAsync(support.RetirementWait).ConfigureAwait(false);
+            if (!installed.Process.HasExited)
+                _logger.LogWarning(
+                    "ACP reconnect: installed child (pid {Pid}) did not confirm exit during terminal-path retirement; the finalize path's dispose is the backstop.",
+                    installed.Process.Pid);
+            await installed.Process.DisposeAsync().ConfigureAwait(false);
         } catch (Exception ex) {
             _logger.LogDebug(ex, "ACP reconnect: terminal-path retirement of the installed child failed (best-effort).");
+        }
+
+        try {
+            support.PidCallbacks.Clear();
+        } catch (Exception ex) {
+            _logger.LogDebug(ex, "ACP reconnect: terminal-path PID-record clear failed (best-effort).");
         }
 
         AcpMetrics.RecordReconnect(reason == "stopped" ? "stopped" : "exhausted");

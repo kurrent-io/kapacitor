@@ -85,11 +85,12 @@ public class AcpHostedAgentRuntimeReconnectTests {
                 : null;
 
             if (Support is not null) {
-                Support.RecordCandidatePid = pid => {
-                    if (FailPidRecord) throw new IOException("simulated PID record write failure");
-                    RecordedPids.Add(pid);
-                };
-                Support.ClearCandidatePidRecord = () => ClearRecordCalls++;
+                Support.PidCallbacks = new AcpPidRecordCallbacks(
+                    Record: pid => {
+                        if (FailPidRecord) throw new IOException("simulated PID record write failure");
+                        RecordedPids.Add(pid);
+                    },
+                    Clear: () => ClearRecordCalls++);
             }
 
             var connection = new AcpConnection(fake0.ClientWriteStream, fake0.ClientReadStream, NullLogger.Instance);

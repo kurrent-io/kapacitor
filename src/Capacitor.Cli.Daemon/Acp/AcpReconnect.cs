@@ -21,19 +21,18 @@ internal sealed class AcpReconnectSupport {
     public TimeProvider TimeProvider { get; init; } = TimeProvider.System;
 
     /// <summary>
-    /// Durable PID-record writer for a freshly spawned candidate (spec §6.2 step 1) — wired by the
-    /// orchestrator after agent registration (it owns the record store and the agent's identity
-    /// fields). MUST throw on failure: an unrecorded child may never proceed, or daemon-death leak
-    /// containment is fiction — the runtime treats a throw as the attempt failing and disposes the
-    /// candidate before any handshake. The FACTORY installs a fail-closed throwing placeholder, so
-    /// a crash racing the orchestrator's wiring window fails its attempts honestly instead of
-    /// proceeding unrecorded; null is a test-harness-only state and degrades to no record.
+    /// The durable PID-record callbacks, published as ONE immutable bundle (code-review r2: two
+    /// independently-settable callbacks had a partial-wiring window — real recorder installed,
+    /// clearer still absent — in which a failed attempt could persist a candidate record it could
+    /// never clear). <c>Record</c> runs at candidate spawn, before any handshake, and MUST throw on
+    /// failure — an unrecorded child may never proceed, or daemon-death leak containment is
+    /// fiction; the runtime treats a throw as the attempt failing and disposes the candidate.
+    /// <c>Clear</c> runs after a failed candidate's disposal and at incident terminalization,
+    /// bounding the window in which a stale record names a dead pid. The FACTORY installs a
+    /// fail-closed default (throwing Record, no-op Clear); the orchestrator replaces the whole
+    /// bundle in one atomic reference assignment after registration. Tests install their own.
     /// </summary>
-    public Action<int>? RecordCandidatePid { get; set; }
-
-    /// <summary>Clears the agent's durable PID record after a failed candidate is disposed
-    /// (spec §6.2), bounding the window in which a stale record names a dead pid.</summary>
-    public Action? ClearCandidatePidRecord { get; set; }
+    public AcpPidRecordCallbacks PidCallbacks { get; set; } = AcpPidRecordCallbacks.Unwired;
 
     /// <summary>Delays BETWEEN the up-to-3 candidate spawns of one incident (spec §6: t=0, +1s, +4s).</summary>
     public IReadOnlyList<TimeSpan> AttemptDelays { get; init; } = [TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(3)];
@@ -51,6 +50,19 @@ internal sealed class AcpReconnectSupport {
     /// resume counts exactly when the atomic reopen commits). The next crash past the cap
     /// finalizes — a child that dies after every resume is a broken installation, not a transient.</summary>
     public int MaxResumesPerSession { get; init; } = 5;
+}
+
+/// <summary>The atomic PID-record callback bundle — see
+/// <see cref="AcpReconnectSupport.PidCallbacks"/> for the contract and why it is one reference,
+/// never two setters.</summary>
+internal sealed record AcpPidRecordCallbacks(Action<int> Record, Action Clear) {
+    /// <summary>The fail-closed pre-wiring state: recording throws (an attempt racing the
+    /// orchestrator's wiring window fails honestly, per §6.2's record-before-any-handshake MUST),
+    /// clearing is a no-op (there is no record to clear).</summary>
+    public static readonly AcpPidRecordCallbacks Unwired = new(
+        _ => throw new InvalidOperationException(
+            "ACP reconnect: PID recorder not yet wired (crash raced launch registration)."),
+        () => { });
 }
 
 /// <summary>

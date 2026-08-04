@@ -1606,8 +1606,9 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             // attempt failing and disposes the candidate. Wired here, after registration, because
             // no reconnect can begin before the launch path completes.
             if (runtime is AcpHostedAgentRuntime { ReconnectSupport: { } reconnectSupport }) {
-                reconnectSupport.RecordCandidatePid     = pid => PersistPidRecordOrThrow(agent, pid, null);
-                reconnectSupport.ClearCandidatePidRecord = () => DeletePidRecord(agent.Id);
+                reconnectSupport.PidCallbacks = new AcpPidRecordCallbacks(
+                    Record: pid => PersistPidRecordOrThrow(agent, pid, null),
+                    Clear:  () => DeletePidRecord(agent.Id));
             }
 
             // Start reading output
