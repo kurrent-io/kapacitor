@@ -248,16 +248,37 @@ public partial class WorktreeManager {
         return stdout.ToArray();
     }
 
+    /// <summary>Budget for cleanup after a git helper has already failed. Bounded on purpose — see below.
+    /// </summary>
+    static readonly TimeSpan CleanupBudget = TimeSpan.FromSeconds(5);
+
     /// <summary>Kills the process if it is still running, waits for it to be reaped, and observes the
     /// supplied pump tasks so a faulted read cannot surface as an unobserved exception.
-    /// <para>Every failure here is swallowed deliberately: this runs in a <c>finally</c>, and the
-    /// original exception is more useful to an operator than whatever went wrong tidying up after it.</para>
+    ///
+    /// <para><b>Every wait is bounded.</b> This runs from a <c>finally</c>, so anything unbounded here
+    /// swallows the original timeout or overflow exception by never returning. An unbounded
+    /// <c>WaitForExitAsync</c> hangs forever if the kill genuinely failed, and an unbounded pump await
+    /// hangs if a surviving descendant inherited the redirected pipe. Past the budget the streams are
+    /// abandoned rather than awaited — the original exception is the thing that matters.</para>
+    ///
+    /// <para>Failures here are swallowed deliberately: the reason the command failed is more useful to an
+    /// operator than whatever went wrong tidying up after it.</para>
     /// </summary>
     static async Task TerminateAndDrainAsync(Process process, params Task[] pumps) {
-        try { if (!process.HasExited) process.Kill(entireProcessTree: true); } catch { /* already gone */ }
-        try { await process.WaitForExitAsync(CancellationToken.None); } catch { /* already reaped */ }
-        foreach (var pump in pumps)
-            try { await pump; } catch { /* observed, not handled */ }
+        using var budget = new CancellationTokenSource(CleanupBudget);
+        try { if (!process.HasExited) process.Kill(entireProcessTree: true); }
+        catch { /* already gone, or genuinely unkillable — the bounded waits below cover both */ }
+        try { await process.WaitForExitAsync(budget.Token); } catch { /* reaped, or over budget */ }
+        foreach (var pump in pumps) {
+            // Abandoning a pump past the budget must not leave its exception unobserved — WaitAsync
+            // observes only the wait, not the underlying task — so every pump also gets a terminal
+            // continuation regardless of which way this goes.
+            _ = pump.ContinueWith(static t => _ = t.Exception,
+                CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted,
+                TaskScheduler.Default);
+            try { await pump.WaitAsync(budget.Token); }
+            catch { /* observed, or abandoned past the budget */ }
+        }
     }
 
     /// <summary>Runs a git command feeding <paramref name="lines"/> as NUL-separated stdin.

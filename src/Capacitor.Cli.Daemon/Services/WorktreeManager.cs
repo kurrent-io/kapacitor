@@ -905,7 +905,18 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
             throw new InvalidOperationException("borrowed_snapshot_root_inside_source");
     }
 
+    /// <summary>Ancestry over path STRINGS, with both operands normalised to NFC first.
+    /// <para>Case folding alone is not enough on a normalisation-insensitive volume: a typical macOS
+    /// filesystem treats <c>café</c> composed and decomposed as one directory, while no
+    /// <c>StringComparison</c> makes those two strings equal. A source spelled one way and a configured
+    /// snapshot root spelled the other would then fail both the lexical and the resolved check and still
+    /// land the snapshot inside the source.</para>
+    /// <para>This does not reach true filesystem identity — .NET exposes no portable device/inode pair —
+    /// so exotic equivalences remain in the same trusted-configuration residual as bind mounts and SUBST
+    /// aliases, documented on <see cref="EnsureSeparateRoots"/>.</para></summary>
     static bool IsAtOrUnder(string candidate, string root) {
+        candidate = candidate.Normalize(NormalizationForm.FormC);
+        root = root.Normalize(NormalizationForm.FormC);
         var prefix = root.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
         return candidate.Equals(root, FileSystemPathComparison) ||
                candidate.StartsWith(prefix, FileSystemPathComparison);
@@ -944,7 +955,12 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
             .Split(Path.DirectorySeparatorChar, StringSplitOptions.RemoveEmptyEntries);
         foreach (var component in components) {
             resolved = Path.Combine(resolved, component);
-            for (var hop = 0; hop < maxLinkHops; hop++) {
+            // ResolveLinkTarget(returnFinalTarget: true) already follows a chain, so this loop is
+            // belt-and-braces for a target that is itself a link relative to a different parent. It fails
+            // CLOSED on exhaustion rather than continuing with a half-resolved path — silently carrying on
+            // is how a containment check ends up comparing something that is not the real location.
+            var hop = 0;
+            for (; hop < maxLinkHops; hop++) {
                 var target = new DirectoryInfo(resolved).LinkTarget is not null
                         || new FileInfo(resolved).LinkTarget is not null
                     ? new DirectoryInfo(resolved).ResolveLinkTarget(returnFinalTarget: true)?.FullName
@@ -953,6 +969,8 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
                 if (target is null) break;
                 resolved = Path.GetFullPath(target);
             }
+            if (hop == maxLinkHops)
+                throw new InvalidOperationException("borrowed_snapshot_path_link_chain_too_deep");
         }
 
         return tail.Count == 0 ? resolved : Path.Combine([resolved, .. tail]);
