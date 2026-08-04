@@ -9,10 +9,19 @@ namespace Capacitor.Cli.Tests.Unit;
 /// consumes kcap's STDERR as the hook result whenever kcap writes nothing to stdout, and kcap writes
 /// failed-POST and auth diagnostics to stderr on all of them.
 ///
-/// <para>These tests pin the shadowing invariant: a recognised hook firing emits exactly one JSON object,
-/// on every returning path, so stdout always wins the <c>||</c>. They fail if someone reintroduces an
-/// empty-stdout return alongside a stderr write — the regression this file exists to prevent, which has
-/// now been shipped twice (Codex's early <c>return 1</c>, and every Gemini event but SessionStart).</para>
+/// <para>These tests pin the shadowing invariant: a recognised hook firing makes exactly one write
+/// ATTEMPT, on every returning path, so stdout wins the <c>||</c> whenever stdout is writable. They fail
+/// if someone reintroduces an empty-stdout return alongside a stderr write — the regression this file
+/// exists to prevent, which has now been shipped twice (Codex's early <c>return 1</c>, and every Gemini
+/// event but SessionStart).</para>
+///
+/// <para>"Attempt", not "one object reaches stdout": a throwing writer still consumes the claim, leaving
+/// stdout empty or truncated and the stderr fallback live.
+/// <see cref="A_throwing_write_is_swallowed_and_still_consumes_the_single_claim"/> pins both shapes
+/// deliberately. That is an accepted residue — retrying cannot distinguish them, and a second object
+/// appended to a partial one is unparseable, which is itself what falls back to reading stderr — and a
+/// stdout we cannot write to is not recoverable from inside this process. Do not let the stated
+/// invariant drift back to the absolute form these very tests disprove.</para>
 /// </summary>
 public class GeminiHookOutputContractTests {
     const string SessionId = "3f2504e0-4f89-11d3-9a0c-0305e82c3301";

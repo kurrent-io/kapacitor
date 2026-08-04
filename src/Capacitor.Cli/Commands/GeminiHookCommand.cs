@@ -36,11 +36,22 @@ namespace Capacitor.Cli.Commands;
 ///
 /// Hence the invariant, enforced structurally by <see cref="Handle"/>'s
 /// <c>finally</c> rather than by each path remembering: a RECOGNISED hook firing
-/// writes exactly one JSON object — the memory envelope on SessionStart when there
+/// makes exactly one write ATTEMPT — the memory envelope on SessionStart when there
 /// is one, else an explicit <c>{"continue":true}</c>. Only input with no parseable
 /// <c>hook_event_name</c> stays silent. Do not add a returning path that skips it,
 /// and do not "harmonise" the empty-fragment write away to match the other memory
 /// adapters: those harnesses have no such fallback.
+///
+/// State it as an ATTEMPT, not as "exactly one object reaches stdout", because the
+/// stronger claim is one this code deliberately does not make — and an invariant
+/// stated more absolutely than the code holds is an invitation to "restore" it. If
+/// the write itself throws, <see cref="HookResultWriter"/> still consumes the claim,
+/// so stdout is left empty (throw before any byte) or truncated (throw mid-payload),
+/// and the stderr fallback is back in play. That residue is accepted, not overlooked:
+/// retrying cannot tell those two cases apart, and appending a second object onto a
+/// partial one produces unparseable output — which is the very thing that degrades to
+/// reading stderr as plain text. A stdout we cannot write to has no recovery from
+/// inside this process. `GeminiHookOutputContractTests` pins both shapes.
 ///
 /// The second half of the contract is the EXIT CODE, which is easy to miss because
 /// nothing on this path mentions it. Gemini's plain-text fallback (what a stderr
@@ -69,7 +80,8 @@ static class GeminiHookCommand {
     /// <summary>Gemini's explicit allow-with-no-context result. A literal rather than a serializer call
     /// ON PURPOSE: this is the payload every failure path degrades to, so producing it must itself be
     /// incapable of failing. Serializing it would add a throw path to the one value that exists to
-    /// guarantee we never emit zero bytes.
+    /// remove one. That is a guarantee about RENDERING, not delivery: whether the bytes reach stdout is
+    /// <see cref="HookResultWriter"/>'s business, and it deliberately cannot promise that either.
     ///
     /// <para>Carries no <c>hookSpecificOutput</c> key, so Gemini's <c>getAdditionalContext()</c>
     /// short-circuits on its own <c>"additionalContext" in …</c> guard and contributes nothing; and no
@@ -115,7 +127,14 @@ static class GeminiHookCommand {
 
         /// <summary>Writes <paramref name="payload"/> unless something has already been written. The
         /// claim is recorded BEFORE the attempt, so a throwing write cannot let the backstop append a
-        /// second object onto a partial one.</summary>
+        /// second object onto a partial one.
+        ///
+        /// <para>The consequence is deliberate and is the reason the invariant is phrased as an ATTEMPT:
+        /// a write that throws before any byte leaves stdout EMPTY, and one that throws mid-payload
+        /// leaves it TRUNCATED — in both cases the backstop no-ops and Gemini falls back to stderr.
+        /// Retrying is not the better trade: nothing here can distinguish the two cases, and appending a
+        /// second object onto a partial one is unparseable, which is the same fallback with extra
+        /// steps.</para></summary>
         internal void Write(string payload) {
             if (_written) return;
 
@@ -203,11 +222,13 @@ static class GeminiHookCommand {
         // result to attribute and nothing that would read it.
         if (string.IsNullOrEmpty(eventName)) return 0;
 
-        // Invariant: a RECOGNISED hook firing writes exactly one JSON object on every returning path.
-        // Held structurally by the finally rather than by each path remembering — the per-path version
-        // held for SessionStart alone and left every other event emitting nothing, which handed Gemini
-        // kcap's stderr as the hook result. `eventName` is deliberately not filtered to the events we
-        // route: Gemini's close handler never consults it, so an unrouted event reads our stdout too.
+        // Invariant: a RECOGNISED hook firing makes exactly one write ATTEMPT, on every returning path —
+        // one object reaches stdout whenever stdout is writable at all (see the remarks for the residue
+        // when it is not). Held structurally by the finally rather than by each path remembering: the
+        // per-path version held for SessionStart alone and left every other event emitting nothing,
+        // which handed Gemini kcap's stderr as the hook result. `eventName` is deliberately not filtered
+        // to the events we route — Gemini's close handler never consults it, so an unrouted event reads
+        // our stdout too.
         var result = new HookResultWriter(Console.Out);
 
         try {
