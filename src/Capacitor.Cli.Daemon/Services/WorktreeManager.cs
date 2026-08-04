@@ -550,11 +550,10 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
         }
     }
 
-    /// <summary>Rebuilds a borrowed snapshot from a pristine independent generation, then replaces
-    /// the live snapshot contents. The source repository is never used as the reviewer's cwd and
-    /// reviewer-created git metadata cannot survive into the next round.</summary>
-    /// <summary>Rebuilds <paramref name="targetWorktreePath"/> from the source, excluding vendor config
-    /// along the ancestor chain of <paramref name="sourceCwd"/>.
+    /// <summary>Rebuilds <paramref name="targetWorktreePath"/> from a pristine independent generation,
+    /// then replaces the live contents — the source repository is never used as the reviewer's cwd, and
+    /// reviewer-created git metadata cannot survive into the next round. Vendor config is excluded along
+    /// the ancestor chain of <paramref name="sourceCwd"/>.
     /// <para><b>Takes a SOURCE cwd, not a target execution path.</b> The overloads this replaces took only
     /// a target-side path, which left no way to obtain the git-derived prefix except by re-deriving it from
     /// the target filesystem — the derivation that lets the launch and the classifier disagree. They had no
