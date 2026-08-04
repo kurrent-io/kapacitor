@@ -1598,6 +1598,18 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
                 _ = StartAcpForwardingAsync(agent, transcript, cmd.Vendor, acpCts);
             }
 
+            // Reconnect PID-record seam (reconnect spec §6.2 step 1): a resume candidate's pid is
+            // durably recorded at its spawn — before any handshake — through the SAME record + agent
+            // identity machinery as the original launch (PersistPidRecordOrThrow refreshes
+            // agent.StartIdentity too, so teardown's identity check tracks the live incarnation).
+            // The record write THROWS on failure by contract; the runtime treats that as the
+            // attempt failing and disposes the candidate. Wired here, after registration, because
+            // no reconnect can begin before the launch path completes.
+            if (runtime is AcpHostedAgentRuntime { ReconnectSupport: { } reconnectSupport }) {
+                reconnectSupport.RecordCandidatePid     = pid => PersistPidRecordOrThrow(agent, pid, null);
+                reconnectSupport.ClearCandidatePidRecord = () => DeletePidRecord(agent.Id);
+            }
+
             // Start reading output
             _ = ReadAgentOutputAsync(agent);
 

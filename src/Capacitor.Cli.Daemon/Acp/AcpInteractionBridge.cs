@@ -385,7 +385,10 @@ internal sealed partial class AcpInteractionBridge(
             new PermissionOutcomeResult(new PermissionOutcomeDto("selected", chosen.OptionId)),
             CapacitorJsonContext.Default.PermissionOutcomeResult);
 
-    static JsonElement? CancelledResult() =>
+    /// <summary>Internal (not private) so the ACP runtime's reconnect interaction router can answer
+    /// a declined/uninstalled-incarnation request with the SAME well-formed cancelled outcome this
+    /// bridge uses everywhere — one decline shape, never two that could drift.</summary>
+    internal static JsonElement? CancelledResult() =>
         JsonSerializer.SerializeToElement(
             new PermissionOutcomeResult(new PermissionOutcomeDto("cancelled")),
             CapacitorJsonContext.Default.PermissionOutcomeResult);

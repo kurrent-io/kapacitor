@@ -1021,6 +1021,7 @@ public sealed record CurationApplyResponse {
 [JsonSerializable(typeof(Acp.InitializeResult))]
 [JsonSerializable(typeof(Acp.AgentCapabilities))]
 [JsonSerializable(typeof(Acp.SessionNewParams))]
+[JsonSerializable(typeof(Acp.SessionLoadParams))]
 [JsonSerializable(typeof(Acp.AcpMcpServerSpec))]
 [JsonSerializable(typeof(Acp.AcpMcpServerEnvVar))]
 [JsonSerializable(typeof(Acp.AcpMcpServerSpec[]))]
@@ -1167,6 +1168,13 @@ public static class AcpEventKind {
     public const string SessionTitle       = "session_title";
     public const string SessionEnded       = "session_ended";
     public const string Usage              = "usage";
+
+    /// <summary>Daemon-synthesized informational note rendered as system-attributed text (never as
+    /// user or assistant speech) — today emitted only by the ACP reconnect path after a successful
+    /// resume. Additive: a server that predates this kind skips it while still advancing its ack
+    /// cursor (verified against <c>CapacitorHub.AcpSessionEvents</c>'s unrecognised-Kind branch), so
+    /// a newer daemon degrades to log-only rather than wedging the forwarder.</summary>
+    public const string SystemNote         = "system_note";
 }
 
 /// <summary>

@@ -92,6 +92,19 @@ public sealed record SessionNewParams(
     [property: JsonPropertyName("mcpServers")] AcpMcpServerSpec[] McpServers
 );
 
+/// <summary><c>session/load</c> params — protocol-native resume of a prior session on a freshly
+/// spawned agent process (same <c>sessionId</c>, same absolute <c>cwd</c>, and the SAME
+/// <c>mcpServers</c> list the original launch carried). The agent replays the session's history as
+/// <c>session/update</c> notifications and, per the ACP spec's MUST, responds only after all
+/// conversation entries have streamed — the response is the reconnect path's closed-world
+/// end-of-replay barrier (probe-verified for Cursor and Copilot,
+/// <c>docs/probes/2026-08-04-acp-reconnect-c0/</c>).</summary>
+public sealed record SessionLoadParams(
+    [property: JsonPropertyName("sessionId")]  string             SessionId,
+    [property: JsonPropertyName("cwd")]        string             Cwd,
+    [property: JsonPropertyName("mcpServers")] AcpMcpServerSpec[] McpServers
+);
+
 /// <summary><c>session/prompt</c> params — a content-block array, per the probe (not a bare string).</summary>
 public sealed record SessionPromptParams(
     [property: JsonPropertyName("sessionId")] string             SessionId,

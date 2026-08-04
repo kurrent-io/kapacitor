@@ -153,6 +153,8 @@ public static partial class DaemonRunner {
 
         config.DebugFrames = ParseDebugFramesFlag(Environment.GetEnvironmentVariable("KCAP_ACP_DEBUG_FRAMES"));
 
+        config.AcpReconnectEnabled = ParseAcpReconnectFlag(Environment.GetEnvironmentVariable("KCAP_ACP_RECONNECT"));
+
         // Shared name resolution with the CLI supervisor — the CLI's
         // DaemonCommands and the daemon binary must agree on the name so
         // the per-name PID file the CLI inspects is the one the daemon
@@ -741,6 +743,16 @@ public static partial class DaemonRunner {
     /// </summary>
     internal static bool ParseDebugFramesFlag(string? value) =>
         value?.Trim() is { } v && (v == "1" || string.Equals(v, "true", StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>
+    /// Parses the <c>KCAP_ACP_RECONNECT</c> kill switch into
+    /// <see cref="DaemonConfig.AcpReconnectEnabled"/>. Opposite default polarity from
+    /// <see cref="ParseDebugFramesFlag"/>, deliberately: reconnect is ON unless explicitly
+    /// disabled — only <c>0</c>/<c>false</c> (case-insensitive) turn it off; anything else,
+    /// including unset/blank, leaves it on.
+    /// </summary>
+    internal static bool ParseAcpReconnectFlag(string? value) =>
+        value?.Trim() is not { } v || !(v == "0" || string.Equals(v, "false", StringComparison.OrdinalIgnoreCase));
 
     /// <summary>
     /// True when a "cursor" <see cref="IHostedAgentRuntimeFactory"/> is registered but

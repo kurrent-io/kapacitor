@@ -641,4 +641,44 @@ public class AcpConnectionTests {
         cts.Cancel();
         await SwallowCancellation(runTask);
     }
+
+    /// <summary>A stream whose writes always fail — models a broken pipe (child dead) so the
+    /// write-side reconnect trigger is directly assertable.</summary>
+    sealed class ThrowingWriteStream : Stream {
+        public override bool CanRead => false;
+        public override bool CanSeek => false;
+        public override bool CanWrite => true;
+        public override long Length => 0;
+        public override long Position { get => 0; set { } }
+        public override void Flush() { }
+        public override int Read(byte[] buffer, int offset, int count) => 0;
+        public override long Seek(long offset, SeekOrigin origin) => 0;
+        public override void SetLength(long value) { }
+        public override void Write(byte[] buffer, int offset, int count) => throw new IOException("broken pipe");
+        public override Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken ct) => throw new IOException("broken pipe");
+        public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken ct = default) => throw new IOException("broken pipe");
+    }
+
+    [Test]
+    public async Task Stream_write_failure_sets_transport_ended_latch_and_fires_pre_fault_hook_before_throwing() {
+        var hookFired = false;
+        var latchAtHookTime = false;
+
+        await using var connection = new AcpConnection(
+            new ThrowingWriteStream(), new MemoryStream(), NullLogger.Instance);
+
+        connection.BeforeFaultingPending = () => {
+            hookFired       = true;
+            latchAtHookTime = connection.TransportEnded;
+        };
+
+        await Assert.That(async () => await connection.NotifyAsync("session/cancel", null))
+            .Throws<IOException>();
+
+        await Assert.That(hookFired).IsTrue();
+        // The latch is set strictly BEFORE the hook is invoked (reconnect spec §5.2) — the commit
+        // liveness check depends on that ordering.
+        await Assert.That(latchAtHookTime).IsTrue();
+        await Assert.That(connection.TransportEnded).IsTrue();
+    }
 }

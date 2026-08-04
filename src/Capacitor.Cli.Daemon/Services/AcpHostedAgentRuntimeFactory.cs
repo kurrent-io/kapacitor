@@ -158,6 +158,16 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
         var (input, output, acpProcess) = _connectionSource(ctx);
         var acpConnection = new AcpConnection(input, output, connLogger, config.DebugFrames);
 
+        // Reconnect eligibility (reconnect spec §4), decided at construction: probe-verified
+        // vendor AND an interactive launch AND the kill switch off. The remaining conjuncts
+        // (advertised loadSession, the resume cap) are runtime facts the runtime itself gates on
+        // per incident. The spawn closure re-invokes THIS launch's connection source, so a
+        // candidate is spawned by the same code path — argv, env, cwd — as the original child, and
+        // carries no registration/forwarder/slot side effects (§6.2's pure-spawn contract).
+        var reconnect = descriptor.SupportsReconnectResume && !ctx.IsReviewFlow && config.AcpReconnectEnabled
+            ? new AcpReconnectSupport { Spawn = () => _connectionSource(ctx) }
+            : null;
+
         // Spec-review Finding 4: real production wiring — every launch now gets the
         // permission/elicitation bridge, not the default MethodNotFound/decline.
         var runtime = new AcpHostedAgentRuntime(
@@ -169,7 +179,8 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
             debugFrames: config.DebugFrames,
             vendor: descriptor.Vendor,
             modelSelector: descriptor.ModelSelector,
-            unattendedInteractionPolicy: unattendedInteractionPolicy
+            unattendedInteractionPolicy: unattendedInteractionPolicy,
+            reconnect: reconnect
         );
 
         // Review flow: the injected result channel + allowlist. Otherwise unchanged (null today).

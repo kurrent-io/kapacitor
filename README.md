@@ -1109,6 +1109,23 @@ Accepted values: `trace`, `debug`, `information` (default), `warning`, `error`, 
 KCAP_ACP_DEBUG_FRAMES=1 KCAP_DAEMON_LOG_LEVEL=debug kcap daemon
 ```
 
+#### ACP crash reconnect (`KCAP_ACP_RECONNECT`)
+
+When a hosted ACP agent's child process dies mid-session (a crash, an OOM kill — not a stop you
+asked for), the daemon transparently resumes the session where the vendor supports it: it relaunches
+the agent binary and restores the same session via ACP `session/load`, keeping the dashboard
+session, transcript, and agent slot intact. A note appears in the transcript ("Agent process
+restarted; the session was resumed"), and if a message was in flight at the crash it asks you to
+resend it rather than guessing. Resume is attempted only for vendors verified to support it across a
+crashed process (currently `cursor` and `copilot`; Kiro and Gemini refuse a crashed session's load,
+so their agents end as before), and a session that keeps crashing stops being resumed after 5
+recoveries. Set `KCAP_ACP_RECONNECT=0` to disable reconnect entirely — a child death then ends the
+session immediately, the pre-reconnect behavior:
+
+```bash
+KCAP_ACP_RECONNECT=0 kcap daemon
+```
+
 #### Diagnosing a hard death
 
 A daemon killed by an uncatchable `SIGKILL` (macOS **jetsam** / Linux **OOM**, `kill -9`, power loss) or a hard native crash can't log its own exit — the process is gone before any handler runs. Two things help tell those apart from a normal stop:

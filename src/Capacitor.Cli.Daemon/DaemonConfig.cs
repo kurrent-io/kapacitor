@@ -183,6 +183,17 @@ public class DaemonConfig {
     public bool DebugFrames { get; set; }
 
     /// <summary>
+    /// Kill switch for ACP hosted-agent crash reconnect/resume (<c>KCAP_ACP_RECONNECT</c>). Default
+    /// ON; set <c>0</c>/<c>false</c> to disable globally. When off — or for a vendor whose
+    /// descriptor is not probe-verified reconnect-capable, a launch that is a review flow, or a
+    /// session whose handshake didn't advertise <c>loadSession</c> — a child-process death keeps
+    /// today's behavior byte-for-byte: the read loop ends and the agent finalizes. Deliberately the
+    /// only knob: attempts, backoff, and the per-session resume cap are fixed constants
+    /// (reconnect spec §4).
+    /// </summary>
+    public bool AcpReconnectEnabled { get; set; } = true;
+
+    /// <summary>
     /// Path to the kcap CLI binary. Used by the daemon to spawn auxiliary
     /// processes (e.g. <c>generate-whats-done</c>) when claude didn't fire its
     /// own session-end hook. Defaults to "kcap" — resolved via PATH, which

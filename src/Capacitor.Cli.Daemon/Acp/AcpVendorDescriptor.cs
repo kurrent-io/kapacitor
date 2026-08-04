@@ -110,6 +110,22 @@ internal sealed record AcpVendorDescriptor {
     public bool                        SupportsBorrowedReviewFlow { get; }
     public AcpBorrowedReviewContainment BorrowedReviewContainment { get; }
 
+    /// <summary>
+    /// Whether an INTERACTIVE hosted session of this vendor may attempt crash reconnect/resume
+    /// (relaunch → <c>initialize</c> → <c>session/load</c>, replay suppressed). This is a
+    /// PROBE-VERIFIED fact, never inferred from the vendor's advertised <c>loadSession</c>
+    /// capability — all four registered vendors advertise it, and two measurably cannot honor it
+    /// across a crashed owner (<c>docs/probes/2026-08-04-acp-reconnect-c0/</c>): Kiro refuses with a
+    /// durable stale-owner lock ("Session is active in another process", identical at 0/15/60s), and
+    /// Gemini never persists a crash-killed session ("No previous sessions found"). Flipping a
+    /// vendor to <see langword="true"/> requires a passing re-run of that probe, because the resume
+    /// path additionally relies on the vendor honoring the ACP session/load response-after-replay
+    /// barrier — a violation would duplicate transcript content. Runtime eligibility is conjunctive
+    /// with the handshake's actual <c>loadSession</c> advertisement, an interactive (non-review)
+    /// launch, and the <c>KCAP_ACP_RECONNECT</c> kill switch.
+    /// </summary>
+    public bool                        SupportsReconnectResume { get; }
+
     public AcpVendorDescriptor(
             string                      Vendor,
             Func<DaemonConfig, string>  ResolveBinaryPath,
@@ -122,7 +138,8 @@ internal sealed record AcpVendorDescriptor {
             AcpReviewFlowMcpTransport   ReviewFlowMcpTransport = AcpReviewFlowMcpTransport.Default,
             bool                        SupportsBorrowedReviewFlow = false,
             AcpUnattendedInteractionPolicy UnattendedInteractionPolicy = AcpUnattendedInteractionPolicy.Disabled,
-            AcpBorrowedReviewContainment BorrowedReviewContainment = AcpBorrowedReviewContainment.None
+            AcpBorrowedReviewContainment BorrowedReviewContainment = AcpBorrowedReviewContainment.None,
+            bool                        SupportsReconnectResume = false
         ) {
         var normalizedUnattendedTrustArgv = UnattendedTrustArgv.IsDefault ? ImmutableArray<string>.Empty : UnattendedTrustArgv;
 
@@ -162,6 +179,7 @@ internal sealed record AcpVendorDescriptor {
         this.SupportsMcpServers  = SupportsMcpServers;
         this.SupportsBorrowedReviewFlow = SupportsBorrowedReviewFlow;
         this.BorrowedReviewContainment = BorrowedReviewContainment;
+        this.SupportsReconnectResume = SupportsReconnectResume;
         this.ReviewFlowMcpTransport = ReviewFlowMcpTransport switch {
             AcpReviewFlowMcpTransport.Default when SupportsMcpServers => AcpReviewFlowMcpTransport.SessionNew,
             AcpReviewFlowMcpTransport.Default                         => AcpReviewFlowMcpTransport.Unsupported,
@@ -192,7 +210,13 @@ internal static class AcpVendorDescriptors {
         SupportsMcpServers:  true,
         SupportsBorrowedReviewFlow: true,
         BorrowedReviewContainment: AcpBorrowedReviewContainment.IndependentSnapshot,
-        UnattendedInteractionPolicy: AcpUnattendedInteractionPolicy.Fail
+        UnattendedInteractionPolicy: AcpUnattendedInteractionPolicy.Fail,
+        // Probe-verified 2026-08-04 (docs/probes/2026-08-04-acp-reconnect-c0/): session/load works
+        // across a SIGKILLed owner, the response-after-replay barrier holds, and a loaded session
+        // prompts normally. Note the same probe found Cursor's replay REWRITES toolCallIds and
+        // drops the interrupted turn — both irrelevant to the suppress-the-replay resume, but they
+        // are why per-envelope replay matching stays impossible for this vendor.
+        SupportsReconnectResume: true
     );
 
     /// <summary>GitHub Copilot CLI as an ACP hosted agent (<c>copilot --acp --stdio</c>).
@@ -231,7 +255,12 @@ internal static class AcpVendorDescriptors {
         // reader who consulted it would get a containment token that no longer describes the launch.
         // If the platform special case were ever dropped, this default disables borrowed review
         // rather than silently permitting an unverified surface — the safe direction to fail.
-        UnattendedInteractionPolicy: AcpUnattendedInteractionPolicy.AutoApprove
+        UnattendedInteractionPolicy: AcpUnattendedInteractionPolicy.AutoApprove,
+        // Probe-verified 2026-08-04 (docs/probes/2026-08-04-acp-reconnect-c0/): session/load works
+        // across a SIGKILLed owner, the barrier holds, toolCallIds are stable, and — unlike
+        // Cursor — Copilot PERSISTS a mid-turn-killed prompt agent-side, which is why the
+        // interrupted-turn disposition keys on local send facts, never on replay content.
+        SupportsReconnectResume: true
     );
 
     /// <summary>AWS Kiro CLI as an ACP hosted agent (<c>kiro-cli acp</c>). Interactive hosting only:
@@ -277,7 +306,13 @@ internal static class AcpVendorDescriptors {
         UnattendedTrustArgv: [],
         SupportsUnattended:  false,
         ModelSelector:       NoOpModelSelector.Instance,
-        SupportsMcpServers:  true
+        SupportsMcpServers:  true,
+        // Measured INELIGIBLE 2026-08-04 (docs/probes/2026-08-04-acp-reconnect-c0/): Kiro advertises
+        // loadSession but refuses session/load after a SIGKILLed owner with a DURABLE stale-owner
+        // lock — "Failed to start session: Session is active in another process (PID <dead>)",
+        // byte-identical at 0s/+15s/+45s, so bounded-backoff retries cannot clear it. Flip only
+        // after a vendor fix AND a passing probe re-run.
+        SupportsReconnectResume: false
     );
 
     /// <summary>
@@ -359,6 +394,13 @@ internal static class AcpVendorDescriptors {
         // Fail rather than AutoApprove: with --approval-mode yolo, Gemini emits NO interaction frame at all,
         // so receiving one means the launch contract regressed (a dropped flag, a vendor change) and the
         // honest response is to reap the reviewer rather than auto-approve whatever it asked for (§3.4).
-        UnattendedInteractionPolicy: AcpUnattendedInteractionPolicy.Fail
+        UnattendedInteractionPolicy: AcpUnattendedInteractionPolicy.Fail,
+        // Measured INELIGIBLE 2026-08-04 (docs/probes/2026-08-04-acp-reconnect-c0/): Gemini
+        // advertises loadSession but a crash-killed session is never persisted — session/load
+        // refuses with "No previous sessions found for this project", so there is nothing to
+        // resume. Gemini also self-re-execs (a sandbox wrapper spawns an inner process with
+        // identical argv), so "the spawned pid exited" and "the agent died" are different events;
+        // any future enablement must re-probe BOTH persistence and process-tree semantics.
+        SupportsReconnectResume: false
     );
 }

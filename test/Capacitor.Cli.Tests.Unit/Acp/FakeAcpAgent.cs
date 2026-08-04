@@ -185,6 +185,45 @@ public sealed class FakeAcpAgent : IAsyncDisposable {
     /// </summary>
     public void SetInitializeResult(JsonElement result) => _initializeResult = result;
 
+    // ── Reconnect/resume support (session/load + crash simulation) ──────────────────────────────
+
+    readonly List<JsonElement> _loadReplayUpdates = [];
+    (int Code, string Message)? _failSessionLoad;
+
+    /// <summary>When set, one conversation update is written AFTER the <c>session/load</c>
+    /// response — the deliberately barrier-violating variant (reconnect spec §11.13): the ACP spec
+    /// says the response comes only after all replayed entries, so this models a vendor breaking
+    /// that MUST.</summary>
+    public bool EmitConversationUpdateAfterLoadResponse { get; set; }
+
+    /// <summary>When set, the <c>initialize</c> RESPONSE is held until the gate completes (the
+    /// request is still recorded immediately) — used to park a reconnect candidate mid-handshake so
+    /// a test can crash it there.</summary>
+    public TaskCompletionSource? HoldInitializeResponse { get; set; }
+
+    /// <summary>Scripts the <c>session/update</c> notifications replayed by the NEXT (and every
+    /// later) <c>session/load</c>, in order, before the response — models the coalesced history
+    /// replay both capable vendors produce.</summary>
+    public void SetSessionLoadReplay(IReadOnlyList<JsonElement> updateNotifications) {
+        _loadReplayUpdates.Clear();
+        _loadReplayUpdates.AddRange(updateNotifications);
+    }
+
+    /// <summary>Makes every <c>session/load</c> fail with a JSON-RPC error — persistent, not
+    /// one-shot, modeling the two measured refusal classes (Kiro's durable stale-owner lock,
+    /// Gemini's unpersisted session), which do not clear with retries.</summary>
+    public void FailSessionLoad(int code, string message) => _failSessionLoad = (code, message);
+
+    /// <summary>
+    /// Simulates the agent process crashing: completes the fake's outbound pipe, so the connection
+    /// under test reads EOF and its loop ends — the primary crash signal. Bytes the connection
+    /// writes afterwards buffer into a pipe nobody will ever read, exactly the
+    /// written-but-never-read ambiguity a real dead child produces. The paired
+    /// <c>FakeAcpProcess</c>'s exit must be signalled separately by the test, mirroring reality:
+    /// pipe teardown and process exit are distinct events.
+    /// </summary>
+    public void SimulateCrash() => _toClient.Writer.Complete();
+
     /// <summary>
     /// Arranges the NEXT <c>initialize</c> request to be answered with a JSON-RPC error instead of
     /// a success result — models a logged-out/unsubscribed <c>cursor-agent</c> rejecting
@@ -367,6 +406,9 @@ public sealed class FakeAcpAgent : IAsyncDisposable {
 
         switch (method) {
             case "initialize":
+                if (HoldInitializeResponse is { } initGate)
+                    await initGate.Task.ConfigureAwait(false);
+
                 if (_failNextInitialize is { } failInit) {
                     _failNextInitialize = null;
                     await WriteErrorResponseAsync(id, failInit.Code, failInit.Message, ct).ConfigureAwait(false);
@@ -377,6 +419,25 @@ public sealed class FakeAcpAgent : IAsyncDisposable {
 
             case "session/new":
                 await WriteResponseAsync(id, _sessionNewResult, ct).ConfigureAwait(false);
+                break;
+
+            case "session/load":
+                if (_failSessionLoad is { } failLoad) {
+                    await WriteErrorResponseAsync(id, failLoad.Code, failLoad.Message, ct).ConfigureAwait(false);
+                    break;
+                }
+
+                // Replay first, then the response — the ACP MUST this fixture models (and the
+                // reconnect suppression window's far edge). The response reuses the session/new
+                // shape: the probe confirmed a real load returns the same modes/models structure.
+                foreach (var update in _loadReplayUpdates)
+                    await WriteRawFrameAsync(update, ct).ConfigureAwait(false);
+
+                await WriteResponseAsync(id, _sessionNewResult, ct).ConfigureAwait(false);
+
+                if (EmitConversationUpdateAfterLoadResponse)
+                    await WriteRawFrameAsync(
+                        DefaultAgentMessageChunkUpdate(FixedSessionId, "late-after-barrier"), ct).ConfigureAwait(false);
                 break;
 
             case "session/set_config_option":
