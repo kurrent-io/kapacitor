@@ -2058,6 +2058,7 @@ public class AcpHostedAgentRuntimeFactoryTests {
         var attacker = LaunchIdentity.FromGuids(
             Guid.Parse("cccccccc-cccc-cccc-cccc-cccccccccccc"),
             Guid.Parse("dddddddd-dddd-dddd-dddd-dddddddddddd"),
+            Guid.Parse("eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee"),
             aliasResultChannel: true);
 
         var seen = (LaunchIdentity?)null;

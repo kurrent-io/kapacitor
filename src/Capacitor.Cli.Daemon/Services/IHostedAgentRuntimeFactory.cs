@@ -123,9 +123,9 @@ internal sealed record RuntimeStartContext(
         string?           DaemonBridgeUrl,
         string            CapacitorPath,
         // D-c: the review-flow definition's MCP allowlist, carried verbatim from
-        // LaunchAgentCommand.McpAllowlist through to LauncherContext.McpAllowlist for the PTY
-        // launchers to materialize. Unused by the ACP factory (Cursor has no MCP-allowlist
-        // materialization yet).
+        // LaunchAgentCommand.McpAllowlist. PTY launchers materialize it into a temp mcp-config;
+        // the ACP factory resolves it (TryResolveReviewFlowAllowlist) into extra session/new
+        // servers, admitted by an aliasing vendor's name gate under per-launch wire names.
         string[]?         McpAllowlist = null,
         // Phase A: owned worktree (daemon-created) vs borrowed cwd (the user's own
         // checkout), carried from LaunchAgentCommand.Borrowed through to LauncherContext.Work.

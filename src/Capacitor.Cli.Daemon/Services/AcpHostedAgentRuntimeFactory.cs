@@ -413,17 +413,34 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
 
         var argv = SubstituteUnmatchableNames([.. descriptor.Argv], identity);
 
+        // The comma-joined allowlist value a review launch opens its MCP gate to — null on every other
+        // launch. Held here so the whole-vector assertion below asserts the same value the argv got.
+        string? reviewGate = null;
+
         if (ctx.IsReviewFlow) {
             argv.AddRange(descriptor.UnattendedTrustArgv);
 
-            // A review launch REPLACES the deny-all allowlist value with the channel's wire name. Replace,
-            // never append: the option is array-typed and comma-coerced by the vendor, so a second entry
-            // would widen the gate rather than move it. Deny-all is what a launch gets by default and only
-            // this arm opens it, which is the fail-closed direction.
-            if (AliasesResultChannel(descriptor))
+            // A review launch REPLACES the deny-all allowlist value with the names of exactly the servers
+            // this launch injects — the result channel plus any resolved allowlist servers — as ONE
+            // comma-joined value. Replace, never append: the option is array-typed and comma-coerced by
+            // the vendor, so a second option occurrence would widen the gate rather than move it. Deriving
+            // the value from the BUILT list (not re-deriving from ids) is what keeps the gate and the
+            // session/new payload the same set by construction: Build is deterministic given ctx (every
+            // name comes from the identity or the registry), so StartAsync's own call for session/new
+            // yields the same names — the same-instance identity threading is what guarantees it.
+            // Measured on gemini 0.53.0: both admitted servers spawn and reach tools/call, a third
+            // injected name outside the gate never spawns. Deny-all is what a launch gets by default and
+            // only this arm opens it, the fail-closed direction. Built inside the arm (like Copilot's
+            // below) because only these two argv consumers need the list here — for every other vendor
+            // session/new is the sole consumer and StartAsync builds it, so validating in the builder too
+            // would change direct-builder behavior for vendors whose argv never carries MCP names.
+            if (AliasesResultChannel(descriptor)) {
+                var reviewMcp = ValidateAndBuildReviewFlowMcp(ctx, descriptor, resolved)!;
+                reviewGate = string.Join(",", reviewMcp.Select(s => s.Name));
                 for (var i = 0; i < argv.Count; i++)
                     if (argv[i] == identity.UnmatchableMcpName)
-                        argv[i] = identity.ResultChannelWireName;
+                        argv[i] = reviewGate;
+            }
 
             if (descriptor.ReviewFlowMcpTransport == AcpReviewFlowMcpTransport.CopilotAdditionalConfig) {
                 var reviewMcp = ValidateAndBuildReviewFlowMcp(ctx, descriptor, resolved)!;
@@ -526,7 +543,7 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
         // touches it. Asserting the local list instead would certify something the OS never sees, which is
         // worse than no assertion because it looks like coverage.
         if (AliasesResultChannel(descriptor) && psi.FileName != BorrowedReviewSandbox.SandboxExecPath)
-            AssertGeminiArgvIsCanonical(psi.ArgumentList, ctx.IsReviewFlow, identity);
+            AssertGeminiArgvIsCanonical(psi.ArgumentList, ctx.IsReviewFlow, identity, reviewGate);
 
         return psi;
     }
@@ -704,10 +721,14 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
     /// an oracle derived from the thing under test. Written out so a fourth contributor to the argv, or an
     /// edited constant, goes red.</para>
     /// </summary>
-    internal static string[] ExpectedGeminiArgv(bool isReviewFlow, LaunchIdentity identity) =>
+    internal static string[] ExpectedGeminiArgv(bool isReviewFlow, LaunchIdentity identity, string? reviewGate) =>
         isReviewFlow
             ? ["--experimental-acp", "--skip-trust",
-               "--allowed-mcp-server-names", identity.ResultChannelWireName,
+               "--allowed-mcp-server-names",
+               reviewGate ?? throw new InvalidOperationException(
+                   "gemini_review_gate_missing: a review launch's expected argv needs the comma-joined "
+                 + "allowlist value the launch computed; asserting against a re-derived one would let the "
+                 + "gate and the assertion drift apart."),
                "--approval-mode", "yolo"]
             : ["--experimental-acp", "--skip-trust",
                "--allowed-mcp-server-names", identity.UnmatchableMcpName];
@@ -722,12 +743,17 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
     /// approval or widens the MCP gate. It should be unfalsifiable today; if it ever throws, a contributor
     /// was added without reading this.</para>
     ///
+    /// <para>The review gate value is an INPUT, not re-derived here: the template's job is catching a new
+    /// argv contributor, while gate↔session/new parity is pinned separately by the launch tests, against
+    /// the built server list.</para>
+    ///
     /// <para>Whole-vector rather than a scan for dangerous options, because a template fails on any new
     /// token whatever its spelling — so it needs no model of the vendor's option grammar, where camel-case
     /// expansion and boolean negation both make an enumerated key list unprovable.</para>
     /// </summary>
-    internal static void AssertGeminiArgvIsCanonical(IReadOnlyList<string> argv, bool isReviewFlow, LaunchIdentity identity) {
-        var expected = ExpectedGeminiArgv(isReviewFlow, identity);
+    internal static void AssertGeminiArgvIsCanonical(
+            IReadOnlyList<string> argv, bool isReviewFlow, LaunchIdentity identity, string? reviewGate) {
+        var expected = ExpectedGeminiArgv(isReviewFlow, identity, reviewGate);
 
         if (argv.SequenceEqual(expected)) return;
 
@@ -735,8 +761,8 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
             $"gemini_launch_argv_not_canonical: built [{string.Join(" ", argv)}] but this launch shape is "
           + $"[{string.Join(" ", expected)}]. A contributor to the Gemini argv was added or changed; a "
           + "review launch must carry exactly one --approval-mode yolo and exactly one allowlist entry "
-          + "naming its own result channel, and an interactive launch must carry the deny-all name and no "
-          + "approval mode (the Gemini reviewer design spec §3.3a).");
+          + "naming exactly the servers it injects, and an interactive launch must carry the deny-all name "
+          + "and no approval mode (the Gemini reviewer design spec §3.3a).");
     }
 
     /// <summary>

@@ -282,7 +282,7 @@ internal static class AcpVendorDescriptors {
     internal const string UnmatchableMcpNamePlaceholder = "__kcap_unmatchable_mcp_name__";
 
     /// <summary>Google Gemini CLI as an ACP hosted agent (<c>gemini --experimental-acp</c>).
-    /// Interactive hosting only; the unattended reviewer is its own issue, as with Kiro.
+    /// Hosted interactively and as an unattended review-flow reviewer.
     ///
     /// <para><b><c>--skip-trust</c> is required, and is NOT a containment measure.</b> Gemini refuses a
     /// headless turn in an untrusted directory outright — <c>exit 55</c> before any model call — and a
@@ -300,11 +300,16 @@ internal static class AcpVendorDescriptors {
     /// unguessable name — reduces the allowlist to nothing the repository can match, which blocks it. Repo-authored <i>hooks</i> were separately measured NOT to run on the ACP path (they do
     /// on the <c>--prompt</c> path — the two paths differ, and neither predicts the other).</para>
     ///
-    /// <para><b>Denying everything is only correct while <see cref="AcpVendorDescriptor.SupportsMcpServers"/>
-    /// is false.</b> It permits nothing, so with nothing injected it costs nothing. The day the stdio
-    /// call-level probe flips that flag, this list must become the injected server names in the SAME
-    /// change, or hosted Gemini ships with MCP silently broken. <c>AcpVendorDescriptorTests</c> asserts
-    /// the coupling so the two cannot drift apart.</para>
+    /// <para><b>Deny-all is the launch default; a review launch opens the gate to exactly the servers it
+    /// injects.</b> The factory replaces the substituted value with the comma-joined names of the built
+    /// <c>session/new</c> list — the result channel plus any resolved allowlist servers, every one under
+    /// a per-launch aliased name, because a canonical id is a fixed public literal the reviewed
+    /// repository could declare its own server under and have it spawned as the daemon user (the
+    /// impersonation shape measured in spec §2.3/§2.6; multi-name admission measured on 0.53.0 — both
+    /// admitted servers reach <c>tools/call</c>, an injected name outside the gate never spawns). An
+    /// interactive launch injects nothing and keeps the unguessable deny-all, which permits nothing and
+    /// costs nothing; a future interactive caller populating <c>RuntimeStartContext.McpServers</c> must
+    /// widen the gate in the same change. <c>GeminiReviewerLaunchTests</c> pins gate == injected set.</para>
     ///
     /// <para><see cref="NoOpModelSelector"/> for the same reason as Kiro: <c>session/new</c> does return a
     /// <c>models</c> object, so <see cref="ConfigOptionModelSelector"/>'s read half would fit, but its

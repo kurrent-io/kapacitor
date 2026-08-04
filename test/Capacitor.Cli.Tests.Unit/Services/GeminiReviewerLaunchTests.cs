@@ -16,28 +16,32 @@ namespace Capacitor.Cli.Tests.Unit.Services;
 /// restored (it stalls on a permission frame no human answers).</para>
 /// </summary>
 public class GeminiReviewerLaunchTests {
-    static readonly Guid ChannelGuid = Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
-    static readonly Guid DenyGuid    = Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
+    static readonly Guid ChannelGuid   = Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
+    static readonly Guid DenyGuid      = Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
+    static readonly Guid AllowlistGuid = Guid.Parse("cccccccc-cccc-cccc-cccc-cccccccccccc");
 
-    static LaunchIdentity Identity => LaunchIdentity.FromGuids(ChannelGuid, DenyGuid, aliasResultChannel: true);
+    static LaunchIdentity Identity =>
+        LaunchIdentity.FromGuids(ChannelGuid, DenyGuid, AllowlistGuid, aliasResultChannel: true);
 
     /// <summary>A daemon that has opted in, on a certified vendor build — the only combination that launches.</summary>
     static DaemonConfig EnabledConfig => new() { GeminiUnattendedReviewerEnabled = true };
 
     static string CertifiedVersion => GeminiReviewerCapability.CertifiedVersions.First();
 
-    static RuntimeStartContext Ctx(bool isReviewFlow) => new RuntimeStartContext(
+    static RuntimeStartContext Ctx(bool isReviewFlow, string[]? mcpAllowlist = null) => new RuntimeStartContext(
         AgentId: "agent-1", Vendor: "gemini", SourceRepoPath: "/repo",
         Worktree: new WorktreeInfo(Path: "/abs/wt", Branch: "b", SourceRepo: "/repo"), Prompt: "",
         Model: null, Effort: null, Tools: null,
         IsReview: false, IsReviewFlow: isReviewFlow, Review: null,
         Cols: 80, Rows: 24,
         ServerUrl: isReviewFlow ? "http://kcap.test" : null,
-        DaemonBridgeUrl: null, CapacitorPath: "/usr/local/bin/kcap") with { LaunchIdentity = Identity };
+        DaemonBridgeUrl: null, CapacitorPath: "/usr/local/bin/kcap")
+        with { LaunchIdentity = Identity, McpAllowlist = mcpAllowlist };
 
-    static string[] Build(bool isReviewFlow, DaemonConfig? config = null, string? version = null) =>
+    static string[] Build(bool isReviewFlow, DaemonConfig? config = null, string? version = null,
+                          string[]? mcpAllowlist = null) =>
         [.. AcpHostedAgentRuntimeFactory.BuildProcessStartInfo(
-                AcpVendorDescriptors.Gemini, config ?? EnabledConfig, Ctx(isReviewFlow),
+                AcpVendorDescriptors.Gemini, config ?? EnabledConfig, Ctx(isReviewFlow, mcpAllowlist),
                 resolveGeminiVersion: _ => version ?? CertifiedVersion)
             .ArgumentList];
 
@@ -98,8 +102,9 @@ public class GeminiReviewerLaunchTests {
         await Assert.That(allowed).IsEqualTo(ctx.LaunchIdentity!.ResultChannelWireName);
     }
 
-    /// <summary>The allowlist must hold exactly one name: the option is array-typed and comma-coerced by the
-    /// vendor, so a second entry widens the gate, and an EMPTY one disables it rather than denying all.</summary>
+    /// <summary>The allowlist is exactly one OPTION occurrence (a second occurrence widens the gate — the
+    /// option is array-typed) with one non-empty value (an EMPTY one disables the gate rather than denying
+    /// all). With nothing extra injected the value is a single name, no comma.</summary>
     [Test]
     [Arguments(true)]
     [Arguments(false)]
@@ -111,6 +116,58 @@ public class GeminiReviewerLaunchTests {
         var value = argv[Array.IndexOf(argv, "--allowed-mcp-server-names") + 1];
         await Assert.That(value).IsNotEmpty();
         await Assert.That(value).DoesNotContain(",");
+    }
+
+    // ── allowlist servers: the gate widens to exactly the injected set, under aliased names ──
+
+    /// <summary>
+    /// A review launch with a definition MCP allowlist still carries ONE option occurrence; the extra
+    /// servers ride the same value comma-joined (the option is comma-coerced — measured on 0.53.0: both
+    /// admitted servers spawn and reach tools/call, an injected name outside the gate never spawns).
+    /// </summary>
+    [Test]
+    public async Task ReviewLaunchWithAllowlist_StillCarriesExactlyOneAllowlistOption() {
+        var argv = Build(isReviewFlow: true, mcpAllowlist: ["kcap-review"]);
+
+        await Assert.That(argv.Count(a => a == "--allowed-mcp-server-names")).IsEqualTo(1);
+        await Assert.That(argv[Array.IndexOf(argv, "--allowed-mcp-server-names") + 1])
+            .IsEqualTo($"{Identity.ResultChannelWireName},{Identity.AllowlistWireName("kcap-review")}");
+    }
+
+    /// <summary>
+    /// THE parity assertion for the widened gate: the comma-split gate value must equal — same names, same
+    /// order — the server list the SAME launch context builds for <c>session/new</c>. A gate admitting fewer
+    /// names than the injection ships blocked servers (the original defect: injected but silently excluded);
+    /// a gate admitting more opens the exact-name allowlist beyond what this launch runs.
+    /// </summary>
+    [Test]
+    public async Task ReviewLaunchWithAllowlist_GateNamesExactlyTheInjectedServerSet() {
+        var ctx = Ctx(isReviewFlow: true, mcpAllowlist: ["kcap-review", "kcap-sessions"]);
+
+        var argv = AcpHostedAgentRuntimeFactory.BuildProcessStartInfo(
+                AcpVendorDescriptors.Gemini, EnabledConfig, ctx,
+                resolveGeminiVersion: _ => CertifiedVersion)
+            .ArgumentList;
+        var injected = AcpReviewFlowMcp.Build(ctx, ["kcap-review", "kcap-sessions"]);
+
+        var gate = argv[argv.IndexOf("--allowed-mcp-server-names") + 1];
+
+        await Assert.That(gate.Split(',').SequenceEqual(injected.Select(s => s.Name))).IsTrue();
+    }
+
+    /// <summary>
+    /// The gate must never admit a CANONICAL allowlist id: it is a fixed public literal the reviewed
+    /// repository can declare its own <c>.gemini/settings.json</c> server under, and the vendor's gate is an
+    /// exact-name match — admitting it would spawn that repo-authored process as the daemon user, the same
+    /// impersonation shape the result channel's per-launch alias closes (spec §2.3/§2.6).
+    /// </summary>
+    [Test]
+    public async Task ReviewLaunchWithAllowlist_AdmitsAliasedNames_NeverTheCanonicalId() {
+        var argv = Build(isReviewFlow: true, mcpAllowlist: ["kcap-review"]);
+        var gate = argv[Array.IndexOf(argv, "--allowed-mcp-server-names") + 1].Split(',');
+
+        await Assert.That(gate).DoesNotContain("kcap-review");
+        await Assert.That(gate).Contains(Identity.AllowlistWireName("kcap-review"));
     }
 
     /// <summary>Neither the placeholder nor a deny-all name may survive into a review launch — the review arm
@@ -203,7 +260,7 @@ public class GeminiReviewerLaunchTests {
     public async Task CursorReviewLaunch_IsUnaffectedByTheGeminiAlias() {
         var ctx = Ctx(isReviewFlow: true) with {
             Vendor         = "cursor",
-            LaunchIdentity = LaunchIdentity.FromGuids(ChannelGuid, DenyGuid, aliasResultChannel: false)
+            LaunchIdentity = LaunchIdentity.FromGuids(ChannelGuid, DenyGuid, AllowlistGuid, aliasResultChannel: false)
         };
 
         var argv = AcpHostedAgentRuntimeFactory
@@ -213,8 +270,11 @@ public class GeminiReviewerLaunchTests {
         await Assert.That(argv).DoesNotContain("--allowed-mcp-server-names");
         await Assert.That(argv).DoesNotContain("--approval-mode");
 
-        var injected = AcpReviewFlowMcp.Build(ctx, []);
+        var injected = AcpReviewFlowMcp.Build(ctx, ["kcap-review"]);
         await Assert.That(injected.Select(s => s.Name)).Contains(KcapMcpRegistry.ReservedResultChannelId);
+        // Allowlist servers keep their CANONICAL ids for a non-aliasing vendor — Cursor has no name gate,
+        // and renaming its servers as a side effect of a Gemini change is exactly what this guard exists for.
+        await Assert.That(injected.Select(s => s.Name)).Contains("kcap-review");
     }
 
     // ── the whole-vector assertion itself ──
@@ -281,7 +341,8 @@ public class GeminiReviewerLaunchTests {
             "--approval-mode", "yolo"
         ];
 
-        AcpHostedAgentRuntimeFactory.AssertGeminiArgvIsCanonical(argv, isReviewFlow: true, Identity);
+        AcpHostedAgentRuntimeFactory.AssertGeminiArgvIsCanonical(
+            argv, isReviewFlow: true, Identity, reviewGate: Identity.ResultChannelWireName);
 
         await Assert.That(argv).HasCount().EqualTo(6);
     }
@@ -293,7 +354,7 @@ public class GeminiReviewerLaunchTests {
             "--allowed-mcp-server-names", Identity.UnmatchableMcpName
         ];
 
-        AcpHostedAgentRuntimeFactory.AssertGeminiArgvIsCanonical(argv, isReviewFlow: false, Identity);
+        AcpHostedAgentRuntimeFactory.AssertGeminiArgvIsCanonical(argv, isReviewFlow: false, Identity, reviewGate: null);
 
         await Assert.That(argv).HasCount().EqualTo(4);
     }
@@ -309,7 +370,8 @@ public class GeminiReviewerLaunchTests {
         ];
 
         var ex = Assert.Throws<InvalidOperationException>(
-            () => AcpHostedAgentRuntimeFactory.AssertGeminiArgvIsCanonical(argv, true, Identity));
+            () => AcpHostedAgentRuntimeFactory.AssertGeminiArgvIsCanonical(
+                argv, true, Identity, Identity.ResultChannelWireName));
 
         await Assert.That(ex!.Message).Contains("not_canonical");
     }
@@ -324,8 +386,20 @@ public class GeminiReviewerLaunchTests {
         ];
 
         var ex = Assert.Throws<InvalidOperationException>(
-            () => AcpHostedAgentRuntimeFactory.AssertGeminiArgvIsCanonical(argv, true, Identity));
+            () => AcpHostedAgentRuntimeFactory.AssertGeminiArgvIsCanonical(
+                argv, true, Identity, Identity.ResultChannelWireName));
 
         await Assert.That(ex!.Message).Contains("not_canonical");
+    }
+
+    /// <summary>A review launch whose gate the caller failed to compute cannot be asserted canonical —
+    /// asserting against a re-derived gate would let the gate and the assertion drift apart.</summary>
+    [Test]
+    public async Task AReviewVectorWithoutAGateValue_FailsTheAssertion() {
+        var ex = Assert.Throws<InvalidOperationException>(
+            () => AcpHostedAgentRuntimeFactory.AssertGeminiArgvIsCanonical(
+                ["--experimental-acp"], isReviewFlow: true, Identity, reviewGate: null));
+
+        await Assert.That(ex!.Message).Contains("gemini_review_gate_missing");
     }
 }
