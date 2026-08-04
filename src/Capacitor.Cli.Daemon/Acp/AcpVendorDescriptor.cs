@@ -196,9 +196,24 @@ internal static class AcpVendorDescriptors {
     );
 
     /// <summary>GitHub Copilot CLI as an ACP hosted agent (<c>copilot --acp --stdio</c>).
-    /// ACP itself advertises MCP over http/sse only, so interactive <c>session/new</c> stdio servers
-    /// stay disabled. Review flows preload their validated stdio servers through Copilot's
-    /// <c>--additional-mcp-config</c> process argument and clamp the visible tool surface.</summary>
+    ///
+    /// <para><b><see cref="AcpVendorDescriptor.SupportsMcpServers"/> is <c>false</c> on call-level
+    /// measurement, not on the <c>mcpCapabilities</c> advertisement</b> — the advertised
+    /// <c>{http, sse}</c> shape cannot decide this flag either way (Kiro and Gemini advertise exactly
+    /// the same shape and both honour stdio servers). Measured against Copilot CLI 1.0.78
+    /// (2026-08-04): a purpose-built stdio server passed in <c>session/new.mcpServers</c> is silently
+    /// ignored. <c>session/new</c> succeeds, but the server process is never spawned (its own log
+    /// stays empty), no tool-call frame ever references it, and the model reports the tool
+    /// unavailable — identical on the interactive argv and on the full unattended review argv, where
+    /// <c>--available-tools</c> additionally rejects the injected tool's flattened id as an unknown
+    /// tool name. The same server, same build, same driver preloaded through
+    /// <c>--additional-mcp-config</c> completes <c>initialize</c> → <c>tools/list</c> →
+    /// <c>tools/call</c> with the tool's nonce reaching the model and the turn ending
+    /// <c>end_turn</c> — so the negative is Copilot's <c>session/new</c> handling, not the probe.
+    /// Re-flip only on an equivalent call-level probe succeeding against a newer build.</para>
+    ///
+    /// <para>Review flows therefore preload their validated stdio servers through Copilot's
+    /// <c>--additional-mcp-config</c> process argument and clamp the visible tool surface.</para></summary>
     public static readonly AcpVendorDescriptor Copilot = new(
         Vendor:              "copilot",
         ResolveBinaryPath:   cfg => cfg.CopilotPath,

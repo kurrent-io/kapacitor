@@ -543,9 +543,10 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
             throw new InvalidOperationException("borrowed_snapshot_containment_mismatch");
     }
 
-    /// <summary>Builds Copilot CLI's process-level stdio MCP config. Copilot's ACP capability
-    /// advertises only HTTP/SSE for <c>session/new</c>, but the CLI accepts stdio servers in this
-    /// alternate config shape before the ACP session starts.</summary>
+    /// <summary>Builds Copilot CLI's process-level stdio MCP config. Copilot silently ignores stdio
+    /// servers passed in <c>session/new.mcpServers</c> (measured at call level against CLI 1.0.78 —
+    /// see the <see cref="AcpVendorDescriptors.Copilot"/> descriptor comment), but accepts them in
+    /// this alternate config shape before the ACP session starts.</summary>
     static string BuildCopilotAdditionalMcpConfig(IReadOnlyList<AcpMcpServerSpec> servers) {
         var mcpServers = new JsonObject();
 
