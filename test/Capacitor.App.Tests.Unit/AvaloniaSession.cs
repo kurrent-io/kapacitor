@@ -9,10 +9,8 @@ namespace Capacitor.App.Tests.Unit;
 /// One process-global headless Avalonia session shared by every UI-touching test. The
 /// session AND RxSchedulers.MainThreadScheduler are process-wide, so every test using this
 /// class must carry [NotInParallel("AvaloniaSession")].
-internal static class AvaloniaSession
-{
-    sealed class TestAppBuilder
-    {
+internal static class AvaloniaSession {
+    sealed class TestAppBuilder {
         public static AppBuilder BuildAvaloniaApp() =>
             AppBuilder.Configure<Capacitor.App.App>()
                 .UseReactiveUI(_ => { })
@@ -34,8 +32,7 @@ internal static class AvaloniaSession
     /// consumed by ObserveOn — the spec's scheduler-identity acceptance. (ReactiveUI 23.2.28
     /// moved the ambient scheduler off the classic static `RxApp` type onto `RxSchedulers`;
     /// `RxApp` scheduler properties no longer exist in this ReactiveUI line.)
-    public static async Task WithImmediateRxScheduler(Func<Task> body)
-    {
+    public static async Task WithImmediateRxScheduler(Func<Task> body) {
         IScheduler prior = RxSchedulers.MainThreadScheduler;
         RxSchedulers.MainThreadScheduler = ImmediateScheduler.Instance;
         try { await body(); } finally { RxSchedulers.MainThreadScheduler = prior; }
