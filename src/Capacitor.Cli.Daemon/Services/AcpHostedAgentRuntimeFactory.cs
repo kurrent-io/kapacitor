@@ -464,7 +464,15 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
         string? reviewGate = null;
 
         if (ctx.IsReviewFlow) {
-            argv.AddRange(descriptor.UnattendedTrustArgv);
+            // A vendor whose trust argv depends on what this launch injects builds it from the SAME
+            // spec list session/new gets and the SAME identity. Deriving it from server ids instead
+            // would be a second derivation of the same names, and that failure is silent: the
+            // reviewer starts normally and can never call its own channel.
+            if (descriptor.UnattendedTrustArgvBuilder is { } buildTrustArgv)
+                argv.AddRange(buildTrustArgv(
+                    ValidateAndBuildReviewFlowMcp(ctx, descriptor, resolved)!, identity));
+            else
+                argv.AddRange(descriptor.UnattendedTrustArgv);
 
             // A review launch REPLACES the deny-all allowlist value with the names of exactly the servers
             // this launch injects — the result channel plus any resolved allowlist servers — as ONE
@@ -574,6 +582,15 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
 
         if (!string.IsNullOrEmpty(ctx.ServerUrl))
             psi.Environment["KCAP_URL"] = ctx.ServerUrl;
+
+        // The isolated home is what suppresses the operator's GLOBAL MCP servers — the flows server
+        // among them, which would let a reviewer start nested review flows. Created here rather than
+        // left to the vendor: it must exist, and be owner-only, before the child writes the first
+        // transcript line into it. Review launches only; an interactive hosted Kiro must behave as the
+        // user's own session does, global servers included.
+        if (ctx.IsReviewFlow && descriptor.Vendor == AcpVendorDescriptors.Kiro.Vendor)
+            psi.Environment["KIRO_HOME"] = KiroReviewerHome.Create(
+                ReviewerStateDir(config), config.DaemonEpoch ?? "unpinned", ctx.AgentId);
 
         if (stateRoot is not null) {
             // HOME and TMPDIR both move into the per-launch root, which is what keeps the reviewer

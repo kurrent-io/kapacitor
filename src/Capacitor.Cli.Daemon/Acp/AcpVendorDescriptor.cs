@@ -103,6 +103,16 @@ internal sealed record AcpVendorDescriptor {
     public Func<DaemonConfig, string?> ResolveDefaultModel   { get; }
     public ImmutableArray<string>      Argv                   { get; }
     public ImmutableArray<string>      UnattendedTrustArgv    { get; }
+
+    /// <summary>Builds this vendor's unattended trust argv from the launch's OWN injected MCP specs,
+    /// when a fixed <see cref="UnattendedTrustArgv"/> cannot express it. Mutually exclusive with it.
+    ///
+    /// <para>Null for every vendor whose trust argv is a constant. Present for Kiro, whose SCOPED
+    /// trust list has to name the per-launch wire name of everything <c>session/new</c> injects — a
+    /// fixed list would omit the review's allowlist servers, and under the <c>Fail</c> policy their
+    /// first tool call would end the round.</para></summary>
+    public Func<IReadOnlyList<Core.Acp.AcpMcpServerSpec>, LaunchIdentity, ImmutableArray<string>>?
+                                       UnattendedTrustArgvBuilder { get; }
     public bool                        SupportsUnattended     { get; }
     public AcpUnattendedInteractionPolicy UnattendedInteractionPolicy { get; }
     public IAcpModelSelector           ModelSelector          { get; }
@@ -140,7 +150,9 @@ internal sealed record AcpVendorDescriptor {
             bool                        SupportsBorrowedReviewFlow = false,
             AcpUnattendedInteractionPolicy UnattendedInteractionPolicy = AcpUnattendedInteractionPolicy.Disabled,
             AcpBorrowedReviewContainment BorrowedReviewContainment = AcpBorrowedReviewContainment.None,
-            bool                        SupportsReconnectResume = false
+            bool                        SupportsReconnectResume = false,
+            Func<IReadOnlyList<Core.Acp.AcpMcpServerSpec>, LaunchIdentity, ImmutableArray<string>>?
+                                        UnattendedTrustArgvBuilder = null
         ) {
         var normalizedUnattendedTrustArgv = UnattendedTrustArgv.IsDefault ? ImmutableArray<string>.Empty : UnattendedTrustArgv;
 
@@ -148,6 +160,18 @@ internal sealed record AcpVendorDescriptor {
             throw new ArgumentException(
                 $"{nameof(UnattendedTrustArgv)} must be empty when {nameof(SupportsUnattended)} is false (vendor: {Vendor}).",
                 nameof(UnattendedTrustArgv));
+
+        if (!SupportsUnattended && UnattendedTrustArgvBuilder is not null)
+            throw new ArgumentException(
+                $"{nameof(UnattendedTrustArgvBuilder)} must be null when {nameof(SupportsUnattended)} is false (vendor: {Vendor}).",
+                nameof(UnattendedTrustArgvBuilder));
+
+        // Two sources for one argv is the ambiguity this rejects: a reader could not tell which wins,
+        // and the answer would live in the factory rather than here.
+        if (UnattendedTrustArgvBuilder is not null && !normalizedUnattendedTrustArgv.IsEmpty)
+            throw new ArgumentException(
+                $"{nameof(UnattendedTrustArgvBuilder)} and a non-empty {nameof(UnattendedTrustArgv)} are mutually exclusive (vendor: {Vendor}).",
+                nameof(UnattendedTrustArgvBuilder));
 
         if (SupportsBorrowedReviewFlow && !SupportsUnattended)
             throw new ArgumentException(
@@ -174,6 +198,7 @@ internal sealed record AcpVendorDescriptor {
         this.ResolveDefaultModel = ResolveDefaultModel;
         this.Argv                = Argv.IsDefault ? ImmutableArray<string>.Empty : Argv;
         this.UnattendedTrustArgv = normalizedUnattendedTrustArgv;
+        this.UnattendedTrustArgvBuilder = UnattendedTrustArgvBuilder;
         this.SupportsUnattended  = SupportsUnattended;
         this.UnattendedInteractionPolicy = UnattendedInteractionPolicy;
         this.ModelSelector       = ModelSelector;
