@@ -1,6 +1,6 @@
 # AI-1410 — Kiro CLI as an unattended review-flow reviewer
 
-**Status:** IMPLEMENTATION-READY (rev 2, after spec review). Re-specced **2026-08-05** against
+**Status:** IMPLEMENTATION-READY (rev 3, after two spec-review rounds). Re-specced **2026-08-05** against
 `kiro-cli 2.16.0` and `origin/main` (`2ed9d91`). The 2026-07-30 revision was **BLOCKED**; this
 revision unblocks it by reversing that revision's containment decision, on the owner's direction
 that Kiro is user-installed and user-authenticated.
@@ -13,6 +13,14 @@ injects, so any review with an allowlist would die under `Fail` (§3.4); and the
 written deletes a *live* peer daemon's home (§7). Rev 2 also reframes §0/§2 — what dissolved is the
 **authentication** blocker, not the need for a read boundary — and closes §9's embedded-context
 question on evidence (`embeddedContext` has zero consumers in the tree).
+
+**Rev 3** closes the round-2 findings. Two were real: §10's duplicate-name item was **incoherent**
+(§5.1 rejected only names *outside* the injected set, and a duplicate of an injected name is inside
+it — §5.1 now **counts**, each injected name expected exactly once), and the non-empty-`McpAllowlist`
+round could pass **without ever calling an allowlisted tool**, which is vacuous for exactly the
+defect it exists to catch. Rev 3 also **withdraws a §5 over-claim**: `KIRO_HOME` suppression is not
+version-independent — AI-1632's file deletion is ours, but Kiro honouring `KIRO_HOME` and reading no
+other global config source are behaviours of the build.
 
 **Repository:** kurrent-io/kcap-cli
 **Parent:** AI-1400 (reviewer choice in review flows)
