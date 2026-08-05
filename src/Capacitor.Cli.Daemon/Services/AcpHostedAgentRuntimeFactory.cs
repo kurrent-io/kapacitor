@@ -203,7 +203,7 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
             // successful review's home needs this hook — it holds review context, and would
             // otherwise survive until a later daemon epoch swept it.
             onDisposed: ctx.IsReviewFlow && descriptor.Vendor == AcpVendorDescriptors.Kiro.Vendor
-                ? () => DeleteKiroReviewerHome(descriptor, config, ctx)
+                ? (Action)(() => DeleteKiroReviewerHome(descriptor, config, ctx, _logger))
                 : null,
             // The second half of the launch bound. The deadline below covers spawn through the
             // handshake; StartAsync deliberately does NOT await the first turn, so a peer that
@@ -305,7 +305,7 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
             // Only after the child is gone: deleting under a live Kiro leaves it writing into an
             // unlinked path. The home is transcript-bearing, so this is disposal, not disk hygiene.
             await runtime.DisposeAsync().ConfigureAwait(false);
-            DeleteKiroReviewerHome(descriptor, config, ctx);
+            DeleteKiroReviewerHome(descriptor, config, ctx, _logger);
 
             throw new InvalidOperationException(
                 $"kiro_reviewer_launch_timeout: the reviewer did not complete its first prompt within "
@@ -320,7 +320,7 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
             // The runtime owns both the connection and the process; dispose on a failed handshake
             // so a half-started child process is never leaked.
             await runtime.DisposeAsync().ConfigureAwait(false);
-            DeleteKiroReviewerHome(descriptor, config, ctx);
+            DeleteKiroReviewerHome(descriptor, config, ctx, _logger);
 
             throw;
         }
@@ -351,7 +351,7 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
     /// <summary>Best-effort disposal of a failed launch's reviewer home. Never throws: a home we
     /// cannot delete must not replace the launch's real error with a cleanup one.</summary>
     static void DeleteKiroReviewerHome(
-            AcpVendorDescriptor descriptor, DaemonConfig config, RuntimeStartContext ctx) {
+            AcpVendorDescriptor descriptor, DaemonConfig config, RuntimeStartContext ctx, ILogger log) {
         if (!ctx.IsReviewFlow || descriptor.Vendor != AcpVendorDescriptors.Kiro.Vendor) return;
 
         var stateDir = ReviewerStateDir(config);

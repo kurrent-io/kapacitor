@@ -255,8 +255,12 @@ public static partial class DaemonRunner {
         // Recovers reviewer homes left by a SIGKILLed predecessor. Runs unconditionally: a daemon
         // whose operator has since disabled the reviewer still owns whatever its last incarnation
         // left behind, and those directories hold review context.
+        // A real logger, not NullLogger: Delete warns precisely so a retained transcript-bearing home
+        // is never silent, and passing NullLogger would defeat the diagnostic this cleanup exists to
+        // emit. The host's logging is not built yet at this point, so this writes to stderr like the
+        // seeding block above.
         KiroReviewerHome.SweepStale(
-            coverageStateDir, config.DaemonEpoch ?? "unpinned", NullLogger.Instance);
+            coverageStateDir, config.DaemonEpoch ?? "unpinned", new ConsoleErrorLogger());
 
         config.RecordlessSurvivorsImpossible = new CoverageJournal(coverageStateDir, NullLogger.Instance)
             .RecordBoot(daemonLock.InstanceId, daemonLock.PriorInstanceId,

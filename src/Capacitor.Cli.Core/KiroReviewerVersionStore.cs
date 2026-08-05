@@ -39,7 +39,14 @@ public sealed class KiroReviewerVersionStore(string stateDir) {
     public string? Affirmed {
         get {
             try {
-                var text = File.ReadAllText(_path).Trim();
+                // FileShare.ReadWrite, not File.ReadAllText: the `kcap daemon reviewer affirm` verb
+                // writes this file from a DIFFERENT process while a daemon may be reading it, and a
+                // write-denying open blocks that writer outright on platforms with mandatory sharing.
+                using var stream = new FileStream(
+                    _path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+                using var reader = new StreamReader(stream);
+
+                var text = reader.ReadToEnd().Trim();
                 return text.Length == 0 ? null : text;
             } catch {
                 return null;

@@ -42,7 +42,7 @@ internal static class KiroReviewerHome {
     internal static string NameFor(string daemonEpoch, string launchId) =>
         $"{Prefix}{Sanitize(daemonEpoch)}-{Sanitize(launchId)}";
 
-    internal static string Create(string stateDir, string daemonEpoch, string launchId) {
+    internal static string Create(string stateDir, string daemonEpoch, string launchId, ILogger? log = null) {
         var root = RootFor(stateDir);
         CreateOwnerOnly(root);
 
@@ -51,7 +51,7 @@ internal static class KiroReviewerHome {
         // A repeated launch under the same epoch+agent id must not inherit the previous one's
         // transcript: CreateDirectory silently succeeds on an existing directory, so "empty" would be
         // a hope rather than a property. Remove first, then create.
-        if (Path.Exists(home)) Delete(home, stateDir, NullLogger.Instance);
+        if (Path.Exists(home)) Delete(home, stateDir, log ?? NullLogger.Instance);
 
         CreateOwnerOnly(home);
 
@@ -207,4 +207,23 @@ internal static class KiroReviewerHome {
 
     static string Sanitize(string value) =>
         string.Concat(value.Select(c => char.IsLetterOrDigit(c) ? c : '_'));
+}
+
+/// <summary>
+/// Minimal stderr logger for the pre-host phase of daemon startup, where the DI logging pipeline does
+/// not exist yet. Exists so the reviewer-home sweep's failure warnings are actually emitted: passing
+/// <c>NullLogger</c> there would silence the one diagnostic that says review context was retained.
+/// </summary>
+internal sealed class ConsoleErrorLogger : ILogger {
+    public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+    public bool IsEnabled(LogLevel logLevel) => logLevel >= LogLevel.Warning;
+
+    public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+                            Func<TState, Exception?, string> formatter) {
+        if (!IsEnabled(logLevel)) return;
+
+        Console.Error.WriteLine(exception is null
+            ? formatter(state, exception)
+            : $"{formatter(state, exception)}: {exception.Message}");
+    }
 }
