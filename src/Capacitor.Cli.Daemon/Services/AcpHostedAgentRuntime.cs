@@ -1964,7 +1964,8 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
 
     /// <summary>Each method declines in ITS OWN protocol's result shape — the stabilized
     /// elicitation response (`{"action":"cancel"}`) is a different object from the permission
-    /// outcome (the AI-1733 elicitation-lane contract, honored here too). An elicitation declined
+    /// outcome (the stabilized elicitation-lane contract of #453, honored here too). An
+    /// elicitation declined
     /// by the router is an elicitation cancelled before routing to a human, so it carries the same
     /// reason-tagged metric the bridge's own pre-routing cancels do.</summary>
     JsonElement? DeclineFor(AcpRequest request) {
