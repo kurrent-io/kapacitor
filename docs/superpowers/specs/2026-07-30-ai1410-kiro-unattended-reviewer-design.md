@@ -260,12 +260,19 @@ trust argv — one derivation, or a reviewer ends up trusted to call a tool the 
 Non-permission methods (elicitation included) are treated exactly as `Fail`.
 
 **The uncomfortable part, stated rather than buried:** Kiro's permission frame carries no structured
-tool identity — `toolCall` is `{toolCallId, title}`, and `title` is presentation text. Keying a
-security decision on a display string is normally indefensible. What makes it acceptable *here* is
-that the admitted names are per-launch aliases carrying an unguessable GUID, so the reviewed
-repository cannot author content that matches one. **Aliasing (§5.2) and this policy are therefore a
-package** — remove the aliasing and this reverts to string classification. Fail-closed in every
-direction: no `@server/tool` token at all is a denial, and every token found must be admitted.
+tool identity — `toolCall` is `{toolCallId, title}`, and `title` is presentation text.
+
+An earlier revision matched a `@server/tool` token *within* that title and argued the per-launch
+unguessable alias made it safe, since the reviewed repository cannot predict one. **That argument was
+wrong, and is recorded here because it is the kind that sounds right:** the MODEL knows its own alias
+— Kiro puts it in the tool list — so injected content never needed to predict it, only to make the
+model echo it. `Running: execute_bash echo @alias/submit_review_result` was admitted.
+
+**The match is therefore on the COMPLETE title.** One measured presentation prefix is stripped; the
+remainder must EQUAL an admitted id, ordinal. Any surrounding text is a denial, which removes that
+whole class. What remains, and cannot be removed here, is that we are trusting Kiro's title to
+describe the call it is asking about — the protocol offers nothing else to key on. A vendor
+title-format change matches nothing and therefore reaps: visibly broken, fail-closed.
 
 ### 3.3-bis The original reasoning, retained as the record of what was falsified
 
@@ -304,6 +311,8 @@ could skip.
 to `session/new`, in the same launch, from the same `LaunchIdentity`:
 
 * fixed native entries: `fs_read`, `thinking` — never `fs_write`, never `execute_bash`;
+  (precisely: `StartAsync` and the argv builder each CALL `ValidateAndBuildReviewFlowMcp` over the
+  same context and identity — two calls of one deterministic function, not literally one list);
 * `@{wireName}/submit_review_result` for the result channel;
 * `@{wireName}/{tool}` for every tool of every injected allowlist server, taken from
   `KcapMcpRegistry.ReviewFlowUnattendedSafeTools` — the same authoritative table
@@ -662,7 +671,7 @@ attempt, not silently applied, so the audit trail names the model that actually 
 // LaunchIdentity that session/new uses. The descriptor carries the native half only.
 UnattendedTrustArgvBuilder: KiroReviewerTrustList.Build,   // fs_read, thinking + @wire/tool entries
 SupportsUnattended:  true,
-UnattendedInteractionPolicy: AcpUnattendedInteractionPolicy.Fail,      // §3.3 — NOT AutoApprove
+UnattendedInteractionPolicy: AcpUnattendedInteractionPolicy.AllowlistedAutoApprove,  // §3.3
 ReviewFlowMcpTransport:      AcpReviewFlowMcpTransport.SessionNew,     // measured GO
 // unchanged:
 ModelSelector:           SetModelSelector.Instance,                    // §8 — interactive path only

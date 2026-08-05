@@ -291,6 +291,54 @@ public class KiroReviewerLaunchTests {
         await started.Runtime.DisposeAsync();
     }
 
+    /// <summary>
+    /// The NEGATIVE half, and what the positive test alone cannot prove. Round 8's point: a mutation
+    /// that WIDENED the production admitted set — or wired Kiro to blanket AutoApprove — would satisfy
+    /// "the injected tool is approved" while silently approving everything. This asserts the other
+    /// direction through the same real factory and runtime: a frame naming a tool this launch did not
+    /// inject is refused and the reviewer is reaped.
+    /// </summary>
+    [Test]
+    public async Task AReviewLaunch_ReapsAPermissionFrameNamingAToolItDidNotInject() {
+        Skip.Unless(!OperatingSystem.IsWindows(),
+            "The Kiro unattended reviewer is POSIX-only.");
+
+        var config = EnabledConfig(StateDir());
+        var agent  = new FakeAcpAgent();
+        var conn   = new CaptureServerConnection();
+        var child  = new AliveSilentProcess();
+
+        var factory = new AcpHostedAgentRuntimeFactory(
+            descriptor: AcpVendorDescriptors.Kiro,
+            config: config,
+            loggerFactory: NullLoggerFactory.Instance,
+            connection: conn,
+            connectionSource: _ => (agent.ClientWriteStream, agent.ClientReadStream, child),
+            resolveVendorVersion: _ => InstalledVersion);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        _ = agent.RunAsync(cts.Token);
+
+        var started = await factory.StartAsync(Ctx(isReviewFlow: true), cts.Token)
+                                   .WaitAsync(TimeSpan.FromSeconds(30));
+
+        // kcap-flows is the tool the whole containment design exists to keep away from a reviewer.
+        agent.EnqueuePermissionRequestDuringNextPrompt(
+            toolCallJson: """{"toolCallId":"call-1","title":"Running: @kcap-flows/start_flow"}""",
+            optionsJson:  """[{"optionId":"allow-once","name":"Yes","kind":"allow_once"}]""");
+
+        await started.Runtime.SendUserInputAsync("review").WaitAsync(TimeSpan.FromSeconds(30));
+
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(20);
+        while (!child.Terminated && DateTime.UtcNow < deadline)
+            await Task.Delay(25, cts.Token);
+
+        await Assert.That(child.Terminated).IsTrue();
+        await Assert.That(conn.RequestAcpInteractionAsyncCalled).IsFalse();
+
+        await started.Runtime.DisposeAsync();
+    }
+
     sealed class CaptureServerConnection() : ServerConnection(
             new() { Name = "test", ServerUrl = "http://127.0.0.1:1" },
             NullLoggerFactory.Instance,

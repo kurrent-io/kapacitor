@@ -34,9 +34,10 @@ internal static class UnattendedToolAdmission {
     /// loosely: everything after it must BE an admitted id.</summary>
     const string TitlePrefix = "Running: ";
 
-    /// <summary>The admitted <c>@server/tool</c> identities for a launch, built from the SAME injected
-    /// spec list and identity the trust argv is built from. One derivation: a second would admit a set
-    /// that does not match what was actually injected.</summary>
+    /// <summary>The admitted <c>@server/tool</c> identities for a launch, built from the same injected
+    /// specs and identity the trust argv is built from — precisely, from another call of the same
+    /// deterministic builder over the same context, not a literally shared list. One BUILDER: a
+    /// second would admit a set that does not match what was actually injected.</summary>
     internal static IReadOnlySet<string> AdmittedFor(
             IReadOnlyList<AcpMcpServerSpec> injected, LaunchIdentity identity) =>
         KiroReviewerTrustList.NamespacedEntries(injected, identity).ToHashSet(StringComparer.Ordinal);
