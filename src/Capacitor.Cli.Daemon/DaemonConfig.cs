@@ -179,6 +179,15 @@ public class DaemonConfig {
     /// </summary>
     public bool GeminiUnattendedReviewerEnabled { get; set; }
 
+    /// <summary>
+    /// Whether THIS daemon may run Kiro as an unattended review-flow reviewer. Off by default, and
+    /// turning it on is the operator's consent event — see <c>KiroReviewerCapability</c> for exactly
+    /// what is being consented to, which is broader than it looks: a trusted read tool is not
+    /// path-scoped, so a review can read every file this daemon user can read and return what it read
+    /// to whoever requested the review. Overridable via <c>KCAP_KIRO_UNATTENDED_REVIEWER</c>.
+    /// </summary>
+    public bool KiroUnattendedReviewerEnabled { get; set; }
+
     /// <summary>Reserved — see CopilotPath. Overridable via KCAP_OPENCODE_PATH.</summary>
     public string OpenCodePath { get; set; } = "opencode";
 

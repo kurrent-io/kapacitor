@@ -154,6 +154,15 @@ public static partial class DaemonRunner {
         if (Environment.GetEnvironmentVariable("KCAP_GEMINI_PATH") is { Length: > 0 } envGeminiPath)
             config.GeminiPath = envGeminiPath;
 
+        // The operator consent flags for the two unattended ACP reviewers. Both were previously
+        // reachable only from a test constructor, which made the shipped Gemini reviewer impossible
+        // to turn on in production; binding one and not the other would just move that hole.
+        config.GeminiUnattendedReviewerEnabled =
+            ParseConsentFlag(Environment.GetEnvironmentVariable("KCAP_GEMINI_UNATTENDED_REVIEWER"));
+
+        config.KiroUnattendedReviewerEnabled =
+            ParseConsentFlag(Environment.GetEnvironmentVariable("KCAP_KIRO_UNATTENDED_REVIEWER"));
+
         config.DebugFrames = ParseDebugFramesFlag(Environment.GetEnvironmentVariable("KCAP_ACP_DEBUG_FRAMES"));
 
         config.AcpReconnectEnabled = ParseAcpReconnectFlag(Environment.GetEnvironmentVariable("KCAP_ACP_RECONNECT"));
@@ -756,6 +765,19 @@ public static partial class DaemonRunner {
     /// </summary>
     internal static bool ParseAcpReconnectFlag(string? value) =>
         value?.Trim() is not { } v || !(v == "0" || string.Equals(v, "false", StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>
+    /// Parses an unattended-reviewer consent flag. Fail-closed polarity, the opposite of
+    /// <see cref="ParseAcpReconnectFlag"/>: only an explicit <c>1</c>/<c>true</c>/<c>yes</c>/<c>on</c>
+    /// enables it, and unset, blank or unrecognised leaves it OFF. Enabling one of these is a
+    /// security consent event, so a typo must not be read as consent.
+    /// </summary>
+    internal static bool ParseConsentFlag(string? value) =>
+        value?.Trim() is { Length: > 0 } v
+     && (v == "1"
+      || string.Equals(v, "true", StringComparison.OrdinalIgnoreCase)
+      || string.Equals(v, "yes",  StringComparison.OrdinalIgnoreCase)
+      || string.Equals(v, "on",   StringComparison.OrdinalIgnoreCase));
 
     /// <summary>
     /// True when a "cursor" <see cref="IHostedAgentRuntimeFactory"/> is registered but
