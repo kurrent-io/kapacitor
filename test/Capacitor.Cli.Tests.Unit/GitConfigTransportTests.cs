@@ -144,7 +144,7 @@ public class GitConfigTransportTests {
 
         WorktreeManager.ApplyConfigOverrides(environment, []);
 
-        await Assert.That(environment).HasCount(1);
+        await Assert.That(environment).Count().IsEqualTo(1);
         await Assert.That(environment["GIT_CONFIG_COUNT"]).IsEqualTo("bogus");
     }
 

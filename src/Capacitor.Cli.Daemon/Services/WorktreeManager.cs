@@ -1316,7 +1316,7 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
     internal static async Task<(int ExitCode, string Stdout, string Stderr)> RunGitCaptureResult(
             string cwd, TimeSpan timeout, bool sourceReadOnly, GitConfigOverride[] config,
             params string[] args) {
-        await ProveConfigTransportIfCarryingAsync(cwd, config);
+        await ProveConfigTransportIfCarryingAsync(cwd, sourceReadOnly, config);
 
         return await RunGitCaptureResultUnproven(cwd, timeout, sourceReadOnly, config, args);
     }
@@ -1328,14 +1328,21 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
     /// Review found the hole that shape leaves: <c>ReadGitRelativeCwdAsync</c> passes
     /// <c>core.quotePath=false</c> and is not a containment producer, so it carried an override past no
     /// proof at all — a fourth call site would have had the same problem, and a fifth. Gating on "this run
-    /// carries config" cannot be forgotten by a new caller.</para>
+    /// carries overrides" cannot be forgotten by a new caller.</para>
     ///
-    /// <para>Deliberately keyed on caller-supplied config, NOT on <c>sourceReadOnly</c>: that flag's own two
-    /// suppressions ride the same transport, but losing them costs a maintenance run, not containment, and
-    /// gating every plain read would turn an old git into a daemon that cannot read a repository at all.</para>
+    /// <para><b>Including <c>sourceReadOnly</c>'s own pair.</b> A revision of this gated only on
+    /// caller-supplied config, reasoning that losing that flag's suppressions costs a maintenance run.
+    /// Review corrected it: <c>core.fsmonitor</c> set to anything other than a boolean names a HOOK
+    /// PROGRAM, which git runs whenever a command refreshes the index, so silently dropping
+    /// <c>core.fsmonitor=false</c> re-exposes an execution surface — not a performance one. There is no
+    /// per-key classification here for the same reason there is no filter-driver exemption: the argument
+    /// for "this one is harmless to lose" is exactly what keeps turning out to be wrong. Every git run
+    /// carrying ANY override proves the transport first. The cost is that a git too old to honour the
+    /// transport cannot be used for these reads either — that git already cannot create a worktree.</para>
     /// </summary>
-    static Task ProveConfigTransportIfCarryingAsync(string cwd, GitConfigOverride[] config) =>
-        config.Length > 0 ? ProveConfigTransportAsync(cwd) : Task.CompletedTask;
+    static Task ProveConfigTransportIfCarryingAsync(
+            string cwd, bool sourceReadOnly, GitConfigOverride[] config) =>
+        sourceReadOnly || config.Length > 0 ? ProveConfigTransportAsync(cwd) : Task.CompletedTask;
 
     /// <summary>Runs git WITHOUT proving the transport first. Only the probe itself may use this — it is
     /// what the gate above is measuring, so routing it through the gate would deadlock on the

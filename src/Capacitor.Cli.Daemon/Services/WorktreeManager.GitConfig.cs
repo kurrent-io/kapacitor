@@ -92,7 +92,10 @@ public partial class WorktreeManager {
 
     /// <summary>The <c>sourceReadOnly</c> suppressions, composed through the same transport as everything
     /// else so their indices are allocated in one place. <c>maintenance.auto</c> stops a read from launching
-    /// background maintenance that would touch <c>.git/worktrees</c> outside the metadata gate.</summary>
+    /// background maintenance that would touch <c>.git/worktrees</c> outside the metadata gate.
+    /// <c>core.fsmonitor</c> set to anything but a boolean names a hook PROGRAM that git runs whenever it
+    /// refreshes the index, so this pair is an execution surface and not merely a performance one — which is
+    /// why a run carrying it proves the transport like any other.</summary>
     static readonly GitConfigOverride[] SourceReadOnlyConfig = [
         new("maintenance.auto", "false"),
         new("core.fsmonitor", "false")
