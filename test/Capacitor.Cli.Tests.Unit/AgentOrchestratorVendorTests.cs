@@ -75,12 +75,12 @@ public partial class AgentOrchestratorVendorTests {
             // the moment of failure so the NEXT occurrence diagnoses itself instead of costing
             // another investigation.
             var cwdExists = Directory.Exists(cwd);
-            var onPath    = ResolveOnPath("git");
+            var gitProbe  = ProbeGitStartable();
 
             throw new InvalidOperationException(
                 $"Failed to start 'git {string.Join(' ', args)}'. " +
                 $"WorkingDirectory '{cwd}' exists: {cwdExists}. " +
-                $"'git' resolved on PATH: {onPath ?? "NOT FOUND"}. " +
+                $"'git' startable from a known-good directory: {gitProbe}. " +
                 $"PATH={Environment.GetEnvironmentVariable("PATH")}",
                 ex);
         }
@@ -128,67 +128,56 @@ public partial class AgentOrchestratorVendorTests {
         await Assert.That(ex!.Message).Contains(neverCreated);
         await Assert.That(ex.Message).Contains("exists: False");
 
-        // ...and its second horn: whether the executable resolved at all. Asserting only that the
-        // FIELD is present would pass while the resolver reported "NOT FOUND" for everything, which
-        // is precisely the half of the ambiguity this is supposed to settle. Every sibling test in
-        // this class spawns git successfully, so on any machine that runs this suite git IS
-        // resolvable — a NOT FOUND here means the resolver is broken, not the environment.
-        await Assert.That(ex.Message).Contains("resolved on PATH:");
-        await Assert.That(ex.Message).DoesNotContain("resolved on PATH: NOT FOUND");
+        // ...and its second horn, answered by actually starting git. Asserting only that the FIELD
+        // is present would pass while the probe reported NO for everything, leaving exactly the half
+        // of the ambiguity this exists to settle unverified. Every sibling test in this class spawns
+        // git successfully, so on any machine running this suite git IS startable — a NO here means
+        // the probe is broken, not the environment.
+        await Assert.That(ex.Message).Contains("startable from a known-good directory: YES");
 
         // The original Win32Exception must be preserved, not swallowed for a prettier message.
         await Assert.That(ex.InnerException).IsTypeOf<Win32Exception>();
     }
 
     /// <summary>
-    /// Returns the resolved absolute path of <paramref name="exe"/> on PATH, or null. Used only to
-    /// make a failed spawn explain itself, so it is best-effort — but deliberately not naive:
-    /// existence is NOT resolvability, and reporting a path the OS would have refused to execute
-    /// would send the next investigator the wrong way, which is the exact failure this whole change
-    /// exists to prevent.
+    /// Answers "could this process start git at all?" by ASKING THE OS — spawning `git --version`
+    /// in a directory known to exist — rather than trying to re-implement executable resolution.
     ///
-    ///   • Unix requires the execute bit; a readable-but-not-executable file is not on PATH as far
-    ///     as execve is concerned.
-    ///   • Windows resolves by PATHEXT, not by a hardcoded guess at .exe/.cmd (git ships a .exe,
-    ///     but shims are commonly .cmd or .bat and PATHEXT is the authority).
+    /// Review round 2 killed the previous approach, and the reason generalises: a hand-rolled PATH
+    /// walk cannot be right. Existence is not resolvability; `Process.Start` with
+    /// UseShellExecute=false (which redirecting streams forces) will not run a .cmd/.bat shim via
+    /// PATHEXT even though PATHEXT lists it; and a Unix execute bit says nothing about EFFECTIVE
+    /// permission for this user, nor whether every PATH directory is traversable. Each of those is
+    /// another rule to replicate, and a diagnostic that reports a false positive is worse than
+    /// none — misdirecting the next investigator is the exact failure this change exists to stop.
+    ///
+    /// The probe is authoritative because it uses the same mechanism that just failed. It also
+    /// splits the ENOENT ambiguity cleanly: startable means the fault was the working directory,
+    /// not startable means it was the executable.
     /// </summary>
-    static string? ResolveOnPath(string exe) {
-        var path = Environment.GetEnvironmentVariable("PATH");
+    static string ProbeGitStartable() {
+        try {
+            var psi = new ProcessStartInfo("git", "--version") {
+                WorkingDirectory       = Path.GetTempPath(), // known to exist; not the suspect dir
+                RedirectStandardOutput = true,
+                RedirectStandardError  = true
+            };
 
-        if (string.IsNullOrEmpty(path)) return null;
+            using var probe = Process.Start(psi);
 
-        var candidates = OperatingSystem.IsWindows()
-            ? (Environment.GetEnvironmentVariable("PATHEXT") ?? ".EXE;.CMD;.BAT")
-                .Split(';', StringSplitOptions.RemoveEmptyEntries)
-                .Select(ext => exe + ext)
-                .Prepend(exe)
-                .ToArray()
-            : [exe];
+            if (probe is null) return "NO — Process.Start returned null";
 
-        foreach (var dir in path.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries)) {
-            foreach (var candidate in candidates) {
-                string full;
+            var version = probe.StandardOutput.ReadToEnd().Trim();
+            _           = probe.StandardError.ReadToEnd();
 
-                try { full = Path.Combine(dir, candidate); } catch { continue; }
+            probe.WaitForExit();
 
-                if (!File.Exists(full)) continue;
-
-                if (OperatingSystem.IsWindows()) return full;
-
-                // Unix: the execute bit is what makes it resolvable.
-                try {
-                    var mode = File.GetUnixFileMode(full);
-
-                    if ((mode & (UnixFileMode.UserExecute | UnixFileMode.GroupExecute | UnixFileMode.OtherExecute)) != 0)
-                        return full;
-                } catch {
-                    // Unreadable mode — report it as found rather than losing the fact entirely.
-                    return full;
-                }
-            }
+            return probe.ExitCode == 0
+                ? $"YES ({version})"
+                : $"NO — exited {probe.ExitCode}";
+        } catch (Exception probeEx) {
+            return $"NO — {probeEx.GetType().Name}: {probeEx.Message}";
         }
-
-        return null;
     }
 
     static AgentOrchestrator BuildOrchestrator(
