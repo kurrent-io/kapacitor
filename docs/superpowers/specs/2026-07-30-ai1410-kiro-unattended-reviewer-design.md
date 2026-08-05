@@ -405,6 +405,8 @@ regress in the field, or Kiro gains a second global-config source, add the certi
 then. Until one of those happens there is nothing a version number would tell us that the tripwire
 does not.
 
+---
+
 ## 6. Failure surfaces: coded errors, never a wedged round
 
 The 2026-07-30 revision's auth-specific criterion — "a tier/auth failure surfaces a coded error" —
