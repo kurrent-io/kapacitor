@@ -108,9 +108,9 @@ public partial class WorktreeManager {
     /// <para>The probe asserts both value shapes the overrides use: an EMPTY value, which is how a filter
     /// command is disabled and the one an environment block is least likely to carry, and a non-empty one at
     /// a non-zero index, which fails if the count is miscomputed. Its key contains <c>=</c>, so the boundary
-    /// this transport exists for is measured rather than assumed. The key is unguessable per probe and the
-    /// probe runs outside any repository, so nothing a repository or branch can write could satisfy it in
-    /// the transport's place.</para>
+    /// this transport exists for is measured rather than assumed. The key is unguessable per probe, so no
+    /// config a repository or branch can write could supply the record that would satisfy it in the
+    /// transport's place.</para>
     ///
     /// <para>Only success is remembered: a spawn that failed for an unrelated reason must not wedge the
     /// daemon until restart. Whether the entries apply is a property of the git binary and the platform, not
