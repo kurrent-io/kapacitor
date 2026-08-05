@@ -221,14 +221,18 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
         var worktreePath = Path.Combine(worktreeRoot, name);
         var branch       = $"capacitor/{name}";
 
-        Directory.CreateDirectory(worktreeRoot);
-
         // No filter inventory here on purpose. `worktree add --no-checkout` materialises nothing, so no
         // filter can run during it, and the guarded reset re-inventories inside the TARGET — which is the
         // context that actually decides which drivers load. A source-context inventory would add no
         // containment and could reject a safe launch, since a source-only conditional include can define a
         // driver the target never sees.
         if (await IsGitRepoWithCommits(repoPath)) {
+            // Created HERE rather than in a shared prologue. The standalone branch below must validate the
+            // destination chain BEFORE anything is created — a pre-existing `.capacitor` or `worktrees`
+            // symlink is FOLLOWED by this call, so a check placed after the branch decision would run once
+            // the snapshot had already been rooted wherever the source tree chose.
+            Directory.CreateDirectory(worktreeRoot);
+
             if (!string.IsNullOrEmpty(baseRef)) {
                 // Fetch into a per-worktree ref instead of the shared FETCH_HEAD
                 // so concurrent review launches in the same source repo can't
@@ -263,21 +267,140 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
         }
 
         // Standalone: copy files + git init.
-        // Wrapped because every step after the directory exists can throw — the MCP strip and the filter
-        // inventory are both fail-closed — and this branch returns no WorktreeInfo on the way out, so
-        // nothing downstream could clean up the partial tree. The linked paths gained rollback earlier for
-        // exactly this; review caught that the standalone one never did.
-        Directory.CreateDirectory(worktreePath);
+        return await CreateStandaloneAsync(repoPath, name, worktreeRoot, worktreePath);
+    }
+
+    /// <summary>Validates, claims, and builds a standalone snapshot.
+    ///
+    /// <para><b>Ordering is the entire point of this method.</b> Every check happens before any write, and
+    /// the claim's lifetime strictly encloses rollback. Getting either wrong reopens a race or an escape
+    /// that the checks themselves cannot detect.</para>
+    /// </summary>
+    async Task<WorktreeInfo> CreateStandaloneAsync(
+            string repoPath, string name, string worktreeRoot, string worktreePath) {
+        // `name` reaches Path.Combine, which DISCARDS the root for an absolute value and would place the
+        // destination anywhere; `../evil` would land it outside `worktrees`, where the marker cannot
+        // exclude it and the copy recurses into its own destination again. Defense-in-depth today — both
+        // real callers omit `name` — but this is a public method.
+        if (name.Length == 0 || name is "." or ".." ||
+            name != Path.GetFileName(name) || name.AsSpan().ContainsAny('/', '\\'))
+            throw new InvalidOperationException($"standalone_snapshot_invalid_name: {name}");
+
+        if (!IsAtOrUnder(ResolveDeepestExisting(worktreePath), ResolveDeepestExisting(repoPath)))
+            throw new InvalidOperationException("standalone_snapshot_destination_escape");
+
+        // No-follow, attribute-based, over the components WE introduce below the source root — not from the
+        // filesystem root, since a source legitimately reached through a system symlink (macOS /tmp) is
+        // normal and must not be refused.
+        RefuseIfLink(Path.Combine(repoPath, ".capacitor"));
+        RefuseIfLink(worktreeRoot);
+
+        Directory.CreateDirectory(worktreeRoot);
+
+        // Atomic claim. Directory.CreateDirectory is a NO-OP on an existing directory, so the freshness
+        // check below is check-then-create and cannot by itself exclude a concurrent SAME-PRINCIPAL caller
+        // — both racers would consider the directory theirs, and either rollback would delete the other's
+        // snapshot. There is no portable atomic directory claim, but FileMode.CreateNew on a FILE is atomic
+        // everywhere, so the claim file supplies the exclusion the directory create cannot.
+        var claimPath = Path.Combine(worktreeRoot, ClaimPrefix + name);
         try {
-            return await BuildStandaloneSnapshotAsync(repoPath, worktreePath);
-        } catch {
-            try { DeleteTreeNoFollow(worktreePath); } catch { /* keep the original failure */ }
-            throw;
+            using (new FileStream(claimPath, FileMode.CreateNew, FileAccess.Write, FileShare.None)) { }
+        } catch (IOException) {
+            // Loser path: throws WITHOUT touching the destination. The rollback below is unconditional on
+            // worktreePath, so a loser falling through it would delete the WINNER's directory — a claim
+            // that made things strictly worse than no claim at all.
+            throw new InvalidOperationException($"standalone_snapshot_name_in_use: {name}");
+        }
+
+        // The claim is held until all success work is done, or until all rollback has finished, and is
+        // released LAST. Releasing it inside BuildStandaloneSnapshotAsync would reopen the very race it
+        // closes: that method's own unwinding completes BEFORE the catch below deletes the tree, so a new
+        // same-name call could claim, create, and then be deleted by this call's delayed rollback.
+        try {
+            // Absent, not merely "not a link". An existing ordinary directory would be silently adopted:
+            // the snapshot would overlay a tree we never created, the rollback would then delete it
+            // wholesale, and any repository control data already sitting there escapes the source-side
+            // `.git` exclusion entirely — putting `git init`/`commit` back outside the snapshot.
+            if (IsPresentEntry(worktreePath))
+                throw new InvalidOperationException($"standalone_snapshot_destination_occupied: {name}");
+
+            Directory.CreateDirectory(worktreePath);
+
+            try {
+                return await BuildStandaloneSnapshotAsync(repoPath, worktreePath);
+            } catch {
+                // Only the successful claimant reaches here, so this delete is ownership-gated.
+                try { DeleteTreeNoFollow(worktreePath); } catch { /* keep the original failure */ }
+                // Test barrier, INSIDE the claim's protected region and after the delete: this is the exact
+                // window in which a same-name caller must still be excluded.
+                SnapshotRollbackHook?.Invoke().GetAwaiter().GetResult();
+                throw;
+            }
+        } finally {
+            // Best effort: a stale claim fails CLOSED, refusing that one name until an operator clears it.
+            try { File.Delete(claimPath); } catch { /* the refusal names the file */ }
         }
     }
 
+    internal const string ClaimPrefix = ".kcap-claim-";
+
+    static bool IsClaimName(string name) => name.StartsWith(ClaimPrefix, StringComparison.Ordinal);
+
+    /// <summary>Refuses a destination-chain component that is a link, WITHOUT following it.</summary>
+    static void RefuseIfLink(string path) {
+        if (IsPresentEntry(path) && File.GetAttributes(path).HasFlag(FileAttributes.ReparsePoint))
+            throw new InvalidOperationException($"standalone_snapshot_destination_link: {path}");
+    }
+
+    /// <summary>Whether an entry exists at this path, INCLUDING a dangling link.
+    ///
+    /// <para>Attribute-based rather than <c>Path.Exists</c>, which follows: a dangling link would report
+    /// absent and then be created through — the same trap <see cref="DeleteTreeNoFollow"/> documents.</para>
+    /// </summary>
+    static bool IsPresentEntry(string path) {
+        try {
+            _ = File.GetAttributes(path);
+
+            return true;
+        } catch (FileNotFoundException) {
+            return false;
+        } catch (DirectoryNotFoundException) {
+            return false;
+        }
+    }
+
+    /// <summary>Test-only injected failure point. The claim-ownership tests need a DETERMINISTIC rollback
+    /// window: a wall-clock race would be flaky and, worse, could pass by luck.</summary>
+    internal static string? SnapshotFailurePoint;
+
+    /// <summary>Runs inside the claimant's rollback, after the tree is deleted and before the claim is
+    /// released — the window a same-name caller must still be excluded from.</summary>
+    internal static Func<Task>? SnapshotRollbackHook;
+
+    static void FailHereIfRequested(string point) {
+        if (SnapshotFailurePoint != point) return;
+
+        throw new InvalidOperationException("injected_standalone_failure");
+    }
+
     async Task<WorktreeInfo> BuildStandaloneSnapshotAsync(string repoPath, string worktreePath) {
-        CopyDirectory(repoPath, worktreePath);
+        // Unique per invocation and created CreateNew, so a collision is detected rather than silently
+        // shared, a hostile source cannot plant one that suppresses real content, and a marker orphaned by
+        // a crash can never suppress anything on a later run.
+        var markerName = $".kcap-snapshot-exclude-{Guid.NewGuid():N}";
+        var markerPath = Path.Combine(Path.GetDirectoryName(worktreePath)!, markerName);
+
+        try {
+            // Fail-closed: without the marker the walk recurses into its own destination.
+            using (new FileStream(markerPath, FileMode.CreateNew, FileAccess.Write, FileShare.None)) { }
+
+            CopySnapshotTree(repoPath, worktreePath, markerName);
+            FailHereIfRequested(nameof(CopySnapshotTree));
+        } finally {
+            // Cleanup failure logs nothing and fails nothing: the snapshot is already built and correct.
+            try { File.Delete(markerPath); } catch { /* best effort */ }
+        }
+
         // BEFORE the initial commit, so the snapshot's own history never carries the hostile config
         // either — a later `git checkout` inside the tree would otherwise restore it.
         StripWorkspaceMcpConfig(worktreePath);
@@ -289,10 +412,9 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
         await RunGit(worktreePath, GitTimeout, [..NoBranchHooks(), ..standaloneOverrides, "add", "-A"]);
         // Identity supplied explicitly. This is the daemon's OWN bookkeeping commit, not the user's work,
         // so it must not depend on the host having git identity configured — a machine without a global
-        // user.email fails with "Author identity unknown". Found while CopyDirectory was temporarily
-        // repaired and this line became reachable for the first time; that repair was then reverted (see
-        // CopyDirectory), so the path still cannot get here — the fix is kept because it is correct and
-        // because the repair will land eventually.
+        // user.email fails with "Author identity unknown". Found while the broken copy was temporarily
+        // repaired and this line became reachable for the first time; that repair was reverted then and has
+        // landed now, so this is live rather than speculative.
         await RunGit(worktreePath, GitTimeout, [
             ..NoBranchHooks(),
             "-c", "user.email=daemon@kcap.local", "-c", "user.name=kcap",
@@ -1400,35 +1522,4 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
     [LoggerMessage(Level = LogLevel.Warning, Message = "Failed to clean up {Path}")]
     partial void LogCleanupFailed(Exception ex, string path);
 
-    /// <summary>
-    /// NOTE: this is the ORIGINAL implementation, restored deliberately.
-    ///
-    /// <para>It is broken: the standalone path's destination is
-    /// <c>&lt;source&gt;/.capacitor/worktrees/&lt;name&gt;</c>, so this descends into the directory it is
-    /// writing and recurses until the path length blows up. Standalone snapshot creation has therefore
-    /// never completed for a non-git source.</para>
-    ///
-    /// <para><b>Why it is not fixed here.</b> Repairing the recursion made the path REACHABLE, which armed
-    /// a second, worse latent bug in the same method: <c>File.Copy</c> copies a symlink's target, so a
-    /// source containing a link to <c>~/.ssh</c> would materialise real credentials inside the agent's
-    /// worktree. Hardening that then raised further questions about case semantics and about preserving
-    /// legitimate internal links. None of it belongs in a change about MCP containment, and shipping a
-    /// half-hardened live path is worse than leaving an inert broken one. Repair is tracked on its own
-    /// issue, with the exfiltration vector and the case-identity problem written up.</para>
-    /// </summary>
-    static void CopyDirectory(string source, string dest) {
-        foreach (var file in Directory.GetFiles(source)) {
-            File.Copy(file, Path.Combine(dest, Path.GetFileName(file)));
-        }
-
-        foreach (var dir in Directory.GetDirectories(source)) {
-            if (Path.GetFileName(dir) == ".git") {
-                continue;
-            }
-
-            var destDir = Path.Combine(dest, Path.GetFileName(dir));
-            Directory.CreateDirectory(destDir);
-            CopyDirectory(dir, destDir);
-        }
-    }
 }
