@@ -87,7 +87,7 @@ public class GeminiReviewerCapabilityTests {
     [Arguments("Update available!\n0.53.0\n", "0.53.0")]
     [Arguments("0.53.0 (build abc)", "0.53.0")]
     public async Task AVersionTokenIsExtractedFromNoisyOutput(string output, string expected) {
-        await Assert.That(AcpHostedAgentRuntimeFactory.ExtractVersionToken(output)).IsEqualTo(expected);
+        await Assert.That(VendorVersionResolver.ExtractVersionToken(output)).IsEqualTo(expected);
     }
 
     /// <summary>Anything not recognisably a version must read as UNKNOWN — which denies — rather than as a
@@ -100,13 +100,13 @@ public class GeminiReviewerCapabilityTests {
     [Arguments("abc")]
     [Arguments("53")]
     public async Task NonVersionOutputExtractsToNull(string? output) {
-        await Assert.That(AcpHostedAgentRuntimeFactory.ExtractVersionToken(output)).IsNull();
+        await Assert.That(VendorVersionResolver.ExtractVersionToken(output)).IsNull();
     }
 
     /// <summary>End to end: noisy output still gates correctly, which is the property that matters.</summary>
     [Test]
     public async Task ABannerBeforeTheVersion_StillPermitsACertifiedBuild() {
-        var extracted = AcpHostedAgentRuntimeFactory.ExtractVersionToken(
+        var extracted = VendorVersionResolver.ExtractVersionToken(
             $"Update available: run npm i -g @google/gemini-cli\n{Certified}\n");
 
         await Assert.That(GeminiReviewerCapability.IsEnabled(true, extracted)).IsTrue();
