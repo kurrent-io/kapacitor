@@ -85,8 +85,9 @@ public class KiroReviewerHomeTests {
 
     [Test]
     public async Task Delete_RefusesAPathOutsideTheRoot() {
-        Skip.Unless(!OperatingSystem.IsWindows(),
-            "The reviewer home is POSIX-only: CreateOwnerOnly refuses a platform where the transcript directory cannot be made owner-only.");
+        // Runs everywhere: it never calls Create, uses no symlink and reads no file mode. The
+        // containment check it asserts is platform-independent, so skipping it on Windows would drop
+        // real coverage for no reason.
 
         var stateDir = TempStateDir();
         var outside  = TempStateDir();

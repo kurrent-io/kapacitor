@@ -247,6 +247,10 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
     /// successful review's home would otherwise sit on disk until a later daemon epoch swept it.</summary>
     readonly Action? _onDisposed;
 
+    /// <summary>The in-flight out-of-band reap, if one was started. Awaited by disposal so cleanup
+    /// never runs ahead of the termination it depends on.</summary>
+    volatile Task? _reapTask;
+
     /// <summary>
     /// How long the FIRST turn may produce nothing at all before the child is reaped. Null disables
     /// it, which is every launch but an unattended Kiro review.
@@ -417,7 +421,11 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
         _logger.LogError("ACP: reaping unattended reviewer — {Violation}", violation);
 
         _cts.Cancel();
-        _ = ReapUnexpectedInteractionAsync(violation);
+
+        // TRACKED, not fire-and-forget. Disposal deletes the reviewer's transcript-bearing home, and
+        // doing that while an in-flight reap has not yet confirmed the child is gone would leave a
+        // live reviewer writing into a deleted path — and recreating it.
+        _reapTask = ReapUnexpectedInteractionAsync(violation);
     }
 
     void HandleUnexpectedUnattendedInteraction(string method) {
@@ -721,11 +729,6 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
     void ArmFirstOutputWatchdog() {
         if (_firstOutputDeadline is not { } deadline) return;
 
-        // Completion disarms it too, not just output. A turn that legitimately finishes having
-        // emitted no session/update at all would otherwise leave the timer armed and reap a healthy,
-        // still-hosted reviewer some seconds later.
-        _ = _firstTurnSettled.Task.ContinueWith(
-            _ => Interlocked.Exchange(ref _sawFirstUpdate, 1), TaskScheduler.Default);
 
         _ = Task.Run(async () => {
             try {
@@ -910,6 +913,11 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
                 // However this turn ended — stopReason, fault, cancellation — it is settled, which
                 // disarms the first-output watchdog. Without this a turn that legitimately produced
                 // no session/update at all would leave the timer armed to reap a healthy reviewer.
+                // Disarms the first-output watchdog SYNCHRONOUSLY, here, rather than through a
+                // continuation on _firstTurnSettled: continuations run asynchronously, so the
+                // watchdog could read zero after the turn settled but before the continuation ran,
+                // and reap a healthy reviewer whose zero-update turn finished near the deadline.
+                Interlocked.Exchange(ref _sawFirstUpdate, 1);
                 _firstTurnSettled.TrySetResult();
 
                 lock (_reconnectLock) {
@@ -1110,8 +1118,6 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
         if (notification.Method != "session/update")
             return;
 
-        Interlocked.Exchange(ref _sawFirstUpdate, 1);
-
         // Notification suppression (reconnect spec §5.4): while an incident is in flight, every
         // session/update — the dying connection's last gasps and the candidate's entire replay —
         // is dropped before it can reach _updates or aggregation. A volatile read, never a lock:
@@ -1127,6 +1133,11 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
             _logger.LogDebug("ACP: session/update notification missing 'update' object; skipping.");
             return;
         }
+
+        // AFTER the shape check, deliberately. Setting it on any session/update would let a peer
+        // send one malformed frame, never settle its turn, and disarm the watchdog for good — which
+        // is precisely the unbounded silence the watchdog exists to catch.
+        Interlocked.Exchange(ref _sawFirstUpdate, 1);
 
         var reduced = Reduce(updateElement.Clone());
         if (!_updates.Writer.TryWrite(reduced))
@@ -1453,11 +1464,41 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
         // reviewer that callback deletes the transcript-bearing home, so skipping it on a faulted
         // teardown is precisely the leak this hook exists to close.
         try {
-            await installed.Connection.DisposeAsync().ConfigureAwait(false);
-            await installed.Process.DisposeAsync().ConfigureAwait(false);
+            // NESTED, not sequential in one try: a faulting Connection.DisposeAsync would otherwise
+            // skip Process.DisposeAsync entirely and fall straight into the cleanup below — deleting
+            // the reviewer's home while its child was still running, which is the exact ordering the
+            // callback's contract forbids.
+            try {
+                await installed.Connection.DisposeAsync().ConfigureAwait(false);
+            } finally {
+                await installed.Process.DisposeAsync().ConfigureAwait(false);
+            }
         } finally {
-            // Never allowed to throw out of disposal — an undeletable home is logged and must not
-            // fail the teardown that reaped the process.
+            // Ordered cleanup, and ONLY when there is cleanup to order against: every other launch
+            // has nothing depending on the child being gone, and a blanket wait here would add
+            // seconds to the disposal of every hosted agent.
+            if (_onDisposed is not null) {
+                // Neither an in-flight out-of-band reap nor Process.DisposeAsync (which signals but
+                // does not wait) establishes on its own that the child has actually exited.
+                if (_reapTask is { } reap) {
+                    try { await reap.ConfigureAwait(false); } catch { /* already logged by the reap */ }
+                }
+
+                try {
+                    // Bounded HERE with WaitAsync rather than by trusting the timeout argument: the
+                    // interface takes one but does not oblige an implementation to honour it, and the
+                    // test doubles return a task that completes only on an explicit exit signal — so
+                    // relying on the parameter hung every suite that disposes a fake.
+                    await installed.Process.WaitForExitAsync(TimeSpan.FromSeconds(5))
+                                           .WaitAsync(TimeSpan.FromSeconds(5))
+                                           .ConfigureAwait(false);
+                } catch (Exception ex) {
+                    // An exit we cannot confirm must not pin disposal. The deletion below is
+                    // best-effort and logged, so the worst case is a warning rather than a hang.
+                    _logger.LogDebug(ex, "ACP: could not confirm child exit before post-dispose cleanup.");
+                }
+            }
+
             try {
                 _onDisposed?.Invoke();
             } catch (Exception ex) {
