@@ -1,6 +1,6 @@
 # AI-1410 — Kiro CLI as an unattended review-flow reviewer
 
-**Status:** IMPLEMENTATION-READY (rev 3, after two spec-review rounds). Re-specced **2026-08-05** against
+**Status:** IMPLEMENTATION-READY (rev 4). Re-specced **2026-08-05** against
 `kiro-cli 2.16.0` and `origin/main` (`2ed9d91`). The 2026-07-30 revision was **BLOCKED**; this
 revision unblocks it by reversing that revision's containment decision, on the owner's direction
 that Kiro is user-installed and user-authenticated.
@@ -21,6 +21,13 @@ round could pass **without ever calling an allowlisted tool**, which is vacuous 
 defect it exists to catch. Rev 3 also **withdraws a §5 over-claim**: `KIRO_HOME` suppression is not
 version-independent — AI-1632's file deletion is ours, but Kiro honouring `KIRO_HOME` and reading no
 other global config source are behaviours of the build.
+
+**Rev 4** settles the one decision rev 3 left open. The reviewer refused to accept a
+detection-only answer, and it was right that "escalate after a field regression" permits the
+exposure first. Rather than adopt Gemini's maintainer-curated `CertifiedVersions` — which would take
+the reviewer dark on every `kiro-cli` release — §5.4 fails closed on a **version change**, cleared by
+an explicit **operator** affirmation. Fail-closed without the treadmill, and the affirming party is
+the one who already consents under §1.
 
 **Repository:** kurrent-io/kcap-cli
 **Parent:** AI-1400 (reviewer choice in review flows)
@@ -65,7 +72,7 @@ flag rather than a containment mechanism.
 | §1.5 namespaced `@kcap-flow-result/…` trust | ❓ unmeasured, blocking | ✅ **GO**, with negative control (§3) |
 | Global-MCP suppression | measured on 2.15.2 | re-measured on **2.16.0**, positive control (§4.1) |
 | Branch-authored `.kiro/settings/mcp.json` | open | ✅ closed by AI-1632, merged (§4.2) |
-| Version certification | n/a | **Runtime tripwire**, no certified-version set (§5) |
+| Version certification | n/a | **Runtime tripwire** (§5) + **operator affirmation on upgrade** (§5.4) — fail-closed, no maintainer-curated set |
 | Model override | "out of scope — Kiro can't select a model" | Out of scope, **reason corrected** (§8) |
 | Reviewer-home lifecycle | "subsumed by the sandbox state root" | **Back in scope** — we own it (§7) |
 
@@ -427,10 +434,52 @@ It is accepted, on these grounds and no others:
 * the exposure it would hide — the reviewer holding `kcap-flows` — is bounded by §2's already-accepted
   surface rather than being a new class of risk.
 
+**And it is bounded rather than open-ended**, because §5.4 stops an *unreviewed* Kiro build from
+running a reviewer at all. The residual above therefore requires a build the operator has already
+looked at and affirmed — a materially smaller window than "any future auto-update".
+
 **Escalation trigger, so this is a decision and not a shrug:** if suppression is ever observed to
-regress in the field, or Kiro gains a second global-config source, add the certified-version gate
-then. Until one of those happens there is nothing a version number would tell us that the tripwire
-does not.
+regress in the field, or Kiro gains a second global-config source, upgrade §5.4's operator
+affirmation to a maintainer-curated certified set (Gemini's shape). Until then, affirmation gives
+the fail-closed property without the treadmill.
+
+### 5.4 Version affirmation: fail closed on upgrade, without a curated set
+
+**Decision (owner, 2026-08-05, reversing this spec's earlier "no version gate at all").** The
+tripwire is detection; §5.3's residual and the version-dependence admitted at the top of §5 mean
+detection alone lets an unreviewed build run before anyone escalates. So the reviewer additionally
+**fails closed when the installed `kiro-cli` version changes**.
+
+What it is **not** is Gemini's `CertifiedVersions` set. That set is maintainer-curated, so every
+`kiro-cli` release would take the reviewer dark until *we* ship a re-certification PR — untenable
+against a vendor that moved 2.12.1 → 2.15.2 → 2.16.0 inside a week. Here the affirming party is the
+**operator**, who is already the consenting party under §1, and who clears it locally.
+
+* **Record:** the version this daemon last ran a Kiro reviewer under, in the daemon's own state
+  directory (`{stateDir}/kiro-reviewer-affirmed-version`), owner-only, written with the mode set
+  before any content exists — the `LaunchConsentStore` pattern, for the same reason.
+* **Seeded by the consent event, not by a first refusal.** Enabling the reviewer affirms the
+  then-current version. Otherwise every operator who turns it on is immediately refused by a gate
+  about an upgrade that never happened, which trains people to clear it without reading.
+* **Gate:** resolve the installed version at launch; refuse with `kiro_reviewer_version_unaffirmed`
+  when it differs from the record, naming **both** versions and the command that clears it. An
+  operator seeing "affirmed 2.16.0, installed 2.17.0" has the exact question in front of them.
+* **Unresolvable version refuses**, with `kiro_reviewer_version_unresolved` — the direction Gemini
+  fails, for the same reason: a build we cannot identify is one whose behaviour we cannot speak to.
+* **Re-affirmation is an explicit operator act** (`kcap daemon reviewer affirm --vendor kiro`),
+  never implicit in a launch and never automatic on upgrade. A gate that clears itself is not a gate.
+* **Version resolution is shared, not copied.** `ResolveGeminiVersion` already implements the bounded
+  shape this needs — concurrent stdout/stderr drain, bounded wait, kill on timeout, token extraction
+  rather than whole-output equality, and any failure treated as unknown. Generalize it to a
+  vendor-parameterized helper rather than writing a second one; the deadlock and banner-line traps
+  its comments record are not Gemini-specific.
+* **Ordering, as for the consent flag:** operator flag first and short-circuiting, so a daemon that
+  has not enabled the reviewer never interrogates the vendor binary at startup — otherwise an
+  installed-but-wedged Kiro can hang daemon startup on a feature the operator switched off.
+
+Advertisement reflects the gate (an unaffirmed daemon does not offer the vendor), and the
+authoritative check runs in `StartAsync` before any connection source, exactly as §9 requires of the
+consent gate.
 
 ---
 
@@ -491,6 +540,8 @@ Coded errors this design introduces:
 | `kiro_reviewer_result_channel_unavailable` | `server_init_failure` named the result channel |
 | `kiro_reviewer_trust_list_rejected` | Kiro warned on a `--trust-tools` entry (§3.2) |
 | `kiro_reviewer_launch_timeout` | The §6.1 deadline expired (covers the alive-but-silent auth wedge) |
+| `kiro_reviewer_version_unaffirmed` | Installed `kiro-cli` differs from the affirmed version (§5.4) |
+| `kiro_reviewer_version_unresolved` | The installed version could not be determined (§5.4) |
 
 Advertisement is gated on `CliResolver.Exists(KiroPath)`, as AI-1404 already does for interactive
 hosting: a daemon advertising Kiro on a host with no `kiro-cli` converts a clean
@@ -597,6 +648,15 @@ share one derivation rather than compounding.
 `IndependentSnapshot`) grounded in what Kiro's clamp actually permits, and §2's finding — a trusted
 `fs_read` is not path-scoped — says `NativeToolClamp` would be the wrong token. Its own issue.
 
+**Version affirmation (§5.4) is daemon-local state, not config.** `{stateDir}/kiro-reviewer-affirmed-version`
+written owner-only, seeded when the operator enables the reviewer, cleared only by
+`kcap daemon reviewer affirm --vendor kiro`. Deliberately **not** an env var or a config key: a
+value the operator can set from their shell profile would be re-affirmed by their dotfiles rather
+than by them, which is the same "consent that isn't consent" failure §1 rules out for the enable
+flag. `GeminiReviewerCapability.CertifiedVersions` stays as it is — the two gates answer to
+different parties (maintainer vs operator) and merging them would either impose our treadmill on
+Kiro or hand Gemini's certification to the operator.
+
 **Consent flag: generalize, do not copy.** Kiro is the second vendor to need one, and a third copy
 of the pattern is how they drift. `GeminiUnattendedReviewerEnabled` becomes a per-vendor lookup
 (adding `KiroUnattendedReviewerEnabled` / `KCAP_KIRO_UNATTENDED_REVIEWER`), while
@@ -681,6 +741,23 @@ an inert one.
 - [ ] The gate runs before any connection source (a supplied source cannot bypass it)
 - [ ] A host without `kiro-cli` does not advertise the reviewer
 - [ ] A Windows host does not advertise the reviewer (§0.2)
+
+**Version affirmation (§5.4)**
+- [ ] Enabling the reviewer **seeds** the affirmed version, so the first launch after enabling is not
+      refused; **control:** with the record absent *and* not seeded, a launch IS refused — otherwise
+      a seeding bug and a working gate are indistinguishable
+- [ ] A launch whose installed version differs from the record is refused with
+      `kiro_reviewer_version_unaffirmed`, and the message names **both** versions
+- [ ] An unresolvable version is refused with `kiro_reviewer_version_unresolved`; asserted with a
+      binary that exits non-zero on `--version` and one that never exits, so a resolution *timeout*
+      is proven to refuse rather than hang the gate
+- [ ] Re-affirmation happens ONLY via the explicit operator verb — a refused launch, a daemon
+      restart, and a successful launch all leave a changed version still unaffirmed. **Mutation
+      check:** make the launch path write the record and this test must fail, or it does not
+      distinguish a gate from a counter
+- [ ] The record is written owner-only with the mode set before any content exists
+- [ ] The operator flag is evaluated **before** the version is resolved, so a disabled daemon never
+      executes the vendor binary at startup (asserted with a binary that would hang if run)
 
 **Round behaviour — content-sensitive**
 - [ ] **Seeded-defect round.** A spec/diff carrying one unique, unambiguous planted defect yields a
