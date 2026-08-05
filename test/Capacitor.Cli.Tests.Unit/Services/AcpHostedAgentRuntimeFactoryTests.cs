@@ -582,6 +582,12 @@ public class AcpHostedAgentRuntimeFactoryTests {
         await Assert.That(initializeCall.Params!.Value.GetProperty("protocolVersion").GetInt32()).IsEqualTo(1);
         await Assert.That(initializeCall.Params!.Value.GetProperty("clientCapabilities").GetProperty("terminal").GetBoolean()).IsFalse();
         await Assert.That(initializeCall.Params!.Value.GetProperty("clientCapabilities").GetProperty("fs").GetProperty("readTextFile").GetBoolean()).IsFalse();
+        // Elicitation capability flip: the LIVE StartAsync path must advertise form-mode (the bare
+        // {} is the schema's "supported" signal) and must never advertise url-mode — asserted here
+        // through the real runtime rather than only on the hand-built InitializeParams (see
+        // InitializeCapabilityAdvertisementTests for the full-payload pin).
+        await Assert.That(initializeCall.Params!.Value.GetProperty("clientCapabilities").GetProperty("elicitation").GetProperty("form").GetRawText()).IsEqualTo("{}");
+        await Assert.That(initializeCall.Params!.Value.GetProperty("clientCapabilities").GetProperty("elicitation").TryGetProperty("url", out _)).IsFalse();
 
         var sessionNewCall = fake.ReceivedCalls.Single(c => c.Method == "session/new");
         await Assert.That(sessionNewCall.Params!.Value.GetProperty("cwd").GetString()).IsEqualTo(ctx.Worktree.Path);

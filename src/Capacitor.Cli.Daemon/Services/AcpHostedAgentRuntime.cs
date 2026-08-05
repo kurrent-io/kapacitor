@@ -563,12 +563,16 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
             // Advertise NO client fs/terminal: cursor-agent does file/shell ops itself and never asks
             // the client to serve them (rationale: docs/ai-687-fs-terminal-capability-decision-design.md).
             // Any unadvertised request is declined -32601 by AcpConnection, never falsely acknowledged.
+            // Elicitation IS advertised (form mode only, never url) — the end-to-end multi-select
+            // lane shipped on both sides, so agents may now send elicitation/create; the bridge's
+            // gate pipeline still owns every per-frame accept/cancel decision.
             var initializeParams = JsonSerializer.SerializeToElement(
                 new InitializeParams(
                     ProtocolVersion: 1,
                     ClientCapabilities: new ClientCapabilities(
                         Fs: new FsCapabilities(ReadTextFile: false, WriteTextFile: false),
-                        Terminal: false)),
+                        Terminal: false,
+                        Elicitation: new ElicitationCapabilities(Form: new ElicitationFormCapabilities()))),
                 CapacitorJsonContext.Default.InitializeParams);
 
             var initializeResultElement = await connection.RequestAsync("initialize", initializeParams, ct).ConfigureAwait(false);
@@ -1667,12 +1671,16 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
     }
 
     async Task InitializeCandidateAsync(Incarnation candidate, CancellationToken ct) {
+        // Must advertise the SAME capability set as StartAsync's initialize — a reconnect
+        // candidate that silently dropped the elicitation advertisement would flip the agent
+        // back to never asking, mid-session.
         var initializeParams = JsonSerializer.SerializeToElement(
             new InitializeParams(
                 ProtocolVersion: 1,
                 ClientCapabilities: new ClientCapabilities(
                     Fs: new FsCapabilities(ReadTextFile: false, WriteTextFile: false),
-                    Terminal: false)),
+                    Terminal: false,
+                    Elicitation: new ElicitationCapabilities(Form: new ElicitationFormCapabilities()))),
             CapacitorJsonContext.Default.InitializeParams);
 
         var resultElement = await candidate.Connection.RequestAsync("initialize", initializeParams, ct).ConfigureAwait(false);

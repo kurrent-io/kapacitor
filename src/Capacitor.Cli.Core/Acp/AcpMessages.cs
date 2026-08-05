@@ -18,7 +18,9 @@ namespace Capacitor.Cli.Core.Acp;
 /// <summary>
 /// <c>initialize</c> params. Deliberately advertises MINIMAL client capabilities (no <c>fs</c>, no
 /// <c>terminal</c>) — those get decided later based on ACP probe findings; this type implements
-/// neither capability.
+/// neither capability. Since the multi-select end-to-end shipped (form-mode elicitation lane in
+/// this daemon + the server/UI half in kcap-server), <see cref="ClientCapabilities.Elicitation"/>
+/// advertises FORM-mode elicitation support.
 /// </summary>
 public sealed record InitializeParams(
     [property: JsonPropertyName("protocolVersion")]  int                     ProtocolVersion,
@@ -27,8 +29,27 @@ public sealed record InitializeParams(
 
 public sealed record ClientCapabilities(
     [property: JsonPropertyName("fs")]       FsCapabilities Fs,
-    [property: JsonPropertyName("terminal")] bool           Terminal
+    [property: JsonPropertyName("terminal")] bool           Terminal,
+    // Trailing + WhenWritingNull so every pre-existing 2-arg construction (and its wire shape)
+    // stays byte-for-byte unchanged; the runtime's initialize call sites opt in explicitly.
+    [property: JsonPropertyName("elicitation"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+                                             ElicitationCapabilities? Elicitation = null
 );
+
+/// <summary>
+/// Client elicitation capability advertisement (marked UNSTABLE in the SDK schema — pinned by
+/// the fixture generator's drift contract, see <c>test-fixtures/acp-elicitation/generate.mjs</c>).
+/// FORM mode only: supplying <c>{}</c> for <see cref="Form"/> means "form-based elicitation
+/// supported" per the schema. <c>url</c> is DELIBERATELY not modeled — omission is the spec's
+/// "unsupported" signal, and this daemon cancels url-mode frames
+/// (<c>AcpInteractionBridge</c>'s mode gate) rather than opening arbitrary URLs on the host.
+/// </summary>
+public sealed record ElicitationCapabilities(
+    [property: JsonPropertyName("form")] ElicitationFormCapabilities Form
+);
+
+/// <summary>Serializes as the bare <c>{}</c> the schema requires for "supported".</summary>
+public sealed record ElicitationFormCapabilities;
 
 /// <summary>
 /// <c>initialize</c> result — <c>AcpHostedAgentRuntime.StartAsync</c> deserializes the agent's
@@ -218,11 +239,11 @@ public sealed record PermissionOutcomeDto(
 /// Scope variants: session-scoped (<see cref="SessionId"/>) or request-scoped
 /// (<see cref="RequestId"/>, unsupported — cancelled). Every member is nullable at the DTO
 /// layer: <c>Capacitor.Cli.Daemon.Acp.AcpInteractionBridge</c> owns ALL semantic validation
-/// (a non-nullable C# string would not guarantee the wire supplied one). The daemon still never
-/// advertises the <c>elicitation</c> client capability (see
-/// <c>AcpHostedAgentRuntime.StartAsync</c>'s minimal <see cref="ClientCapabilities"/>) — that
-/// flip ships with the end-to-end multi-select work; until then this lane answers unsolicited
-/// frames spec-correctly instead of with the old malformed <c>{outcome}</c> result.
+/// (a non-nullable C# string would not guarantee the wire supplied one). The daemon now
+/// advertises the <c>elicitation</c> client capability (form mode only — see
+/// <see cref="ElicitationCapabilities"/> and <c>AcpHostedAgentRuntime</c>'s initialize call
+/// sites), the end-to-end multi-select work having shipped; this lane also still answers
+/// UNSOLICITED frames spec-correctly instead of with the old malformed <c>{outcome}</c> result.
 /// <see cref="RequestedSchema"/> is forwarded to the server verbatim for audit (capped
 /// server-side); the daemon's own <c>ElicitationSchemaClassifier</c> parses it separately.
 /// </summary>
