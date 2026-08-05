@@ -89,3 +89,65 @@ anything about the vendor.
 - `summary-free.json` / `summary-turn.json` / `summary-control.json` — the three runs, home
   directory rewritten to `~` and temp paths to `<tmp>`. Frames, stderr and MCP logs are not
   committed; the decisive lines are quoted above.
+
+---
+
+# Seeded-defect differential, and a blocking finding (2026-08-05, later)
+
+`seeded_defect_probe.py` + `result_channel_server.py`. Three billable requests, all on `deepseek-3.2`.
+
+## The reviewer genuinely reviews
+
+Two arms over the same prompt, differing only in one planted off-by-one:
+
+| arm | code | result delivered through the injected channel |
+|---|---|---|
+| A | `range(len(items) - 1)` | **`findings`** — *"it returns all items except the last one… The loop uses `range(len(items) - 1)` which excludes the last index."* |
+| B | `range(len(items))` | **`clean`** |
+
+Both halves are needed. A alone passes for a reviewer that always finds something; B alone for one
+that always says clean. The pair is the oracle, and it is the only evidence in this feature that
+distinguishes a working reviewer from an inert one — completion, zero human routing, reap and
+channel-invoked are jointly satisfiable by a reviewer that ignores its input.
+
+## ⛔ BLOCKING: namespaced trust is NOT deterministic
+
+Arm B raised **one `session/request_permission`**, naming the tool that is *explicitly in the trust
+list*:
+
+```json
+{"toolCall": {"title": "Running: @kcap-flow-result/submit_review_result"},
+ "options": [{"optionId": "allow_once"}, {"optionId": "allow_always"}, {"optionId": "reject_once"}]}
+```
+
+Same `--trust-tools` value, same isolated `KIRO_HOME`, same injected server, a fresh session per arm:
+**arm A raised zero frames, arm B raised one.** Re-running arm B alone reproduced it. So the earlier
+measurement in this document — zero frames with the namespaced entry, one without — was correct but
+*incomplete*: the entry does something, and it is not reliable.
+
+**Why this blocks.** The shipped interaction policy is `Fail`: any server→client frame reaps the
+reviewer, on the reasoning that with scoped trust a reviewer emits none on its expected path. That
+reasoning is now falsified. A Kiro reviewer would fail an unpredictable fraction of otherwise-clean
+rounds, on the very call that delivers its result.
+
+This is almost certainly the upstream trust-flag prompt leak the original issue cited (#7398). The
+spec anticipated it in the abstract — *"if upstream's prompt leaks fire, Kiro reviewer rounds fail
+rather than silently auto-approving; that is the correct direction"* — but as a rare event. At
+roughly one round in three on the simplest possible review, "a visibly flaky reviewer is a bug
+report" no longer describes the situation.
+
+**Options, none free; this is an owner decision:**
+
+1. **`--trust-all-tools`** (Gemini's `yolo` equivalent). Removes the frame, and removes the scoped
+   posture that made Kiro's reviewer tighter than the one already in production.
+2. **A tool-aware auto-approve policy** — approve only the injected result channel's tools, fail on
+   anything else. This is the allowlist-aware policy §2 of the spec deferred as foundation work
+   rather than a Kiro detail, and it is the option that keeps the scoping.
+3. **Ship with `Fail`** and accept intermittent round failures. Honest, and probably unusable.
+
+Option 2 preserves what this design was for; it is also the largest.
+
+## Note on cost
+
+Three requests bought the functional proof AND a blocking behavioural finding that no unit test
+would surface — every launch-shape assertion in this feature passes with this bug present.
