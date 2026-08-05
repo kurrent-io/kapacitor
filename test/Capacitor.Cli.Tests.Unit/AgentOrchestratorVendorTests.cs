@@ -156,6 +156,11 @@ public partial class AgentOrchestratorVendorTests {
     /// not startable means it was the executable.
     /// </summary>
     static string ProbeGitStartable() {
+        // Bounded so the diagnostic can never become the problem. This runs on a FAILURE path in a
+        // suite CI executes serially, so an unbounded wait would wedge the entire run and produce no
+        // report at all — strictly worse than the error it is trying to explain.
+        const int probeTimeoutMs = 10_000;
+
         try {
             var psi = new ProcessStartInfo("git", "--version") {
                 WorkingDirectory       = Path.GetTempPath(), // known to exist; not the suspect dir
@@ -165,23 +170,28 @@ public partial class AgentOrchestratorVendorTests {
 
             using var probe = Process.Start(psi);
 
+            // "NO" is reserved for genuinely NOT STARTABLE — Start threw, or handed back nothing.
             if (probe is null) return "NO — Process.Start returned null";
 
-            // Drained the same way as the main path above, not with a blocking ReadToEnd pair.
-            // `git --version` is far too small to fill a pipe, but the shape is the defect — and a
-            // helper that only runs on a FAILURE path is the worst place to leave a potential hang,
-            // since it would replace a diagnosable error with a run that produces no report at all.
+            // Past this point startability is PROVEN: Start returned a process. Whatever the child
+            // then does is a separate fact and must not be folded back into the startable verdict.
+            // Reporting NO for a nonzero `--version` exit would misclassify precisely the question
+            // this probe exists to answer.
             var versionTask = probe.StandardOutput.ReadToEndAsync();
             var errTask     = probe.StandardError.ReadToEndAsync();
 
-            probe.WaitForExit();
+            if (!probe.WaitForExit(probeTimeoutMs)) {
+                try { probe.Kill(entireProcessTree: true); } catch { /* best effort */ }
+
+                return $"YES (startable; probe did not exit within {probeTimeoutMs}ms, killed)";
+            }
 
             var version = versionTask.GetAwaiter().GetResult().Trim();
-            _           = errTask.GetAwaiter().GetResult();
+            var err     = errTask.GetAwaiter().GetResult().Trim();
 
             return probe.ExitCode == 0
                 ? $"YES ({version})"
-                : $"NO — exited {probe.ExitCode}";
+                : $"YES (startable; --version exited {probe.ExitCode}: {err})";
         } catch (Exception probeEx) {
             return $"NO — {probeEx.GetType().Name}: {probeEx.Message}";
         }
