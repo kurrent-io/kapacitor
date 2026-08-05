@@ -91,6 +91,40 @@ public class DaemonConfigEnvOverrideTests {
         await Assert.That(config.KiroPath).IsEqualTo("kiro-cli");
     }
 
+    // ── KCAP_KIRO_MODEL ───────────────────────────────────────────────────────
+
+    // Mirrors DaemonRunner.RunAsync's KCAP_KIRO_MODEL conditional verbatim, same pattern as
+    // ApplyEnvOverrides above (kept separate so the four-path helper's signature stays a verbatim
+    // copy of the block it mirrors).
+    static DaemonConfig ApplyKiroModelOverride(DaemonConfig config, string? kiroModel) {
+        if (kiroModel is { Length: > 0 })
+            config.KiroModel = kiroModel;
+
+        return config;
+    }
+
+    /// <summary>Unlike <c>CursorModel</c>'s <c>"claude-sonnet-4-5"</c>, the default is NULL:
+    /// zero-configuration Kiro hosting keeps the vendor's own default model with nothing requested
+    /// and nothing reported, exactly the pre-override behaviour.</summary>
+    [Test]
+    public async Task KiroModel_DefaultsToNull_NoDaemonWideDefaultModel() {
+        await Assert.That(new DaemonConfig().KiroModel).IsNull();
+    }
+
+    [Test]
+    public async Task KiroModel_EnvVarSet_OverridesDefault() {
+        var config = ApplyKiroModelOverride(new DaemonConfig(), kiroModel: "claude-haiku-4.5");
+
+        await Assert.That(config.KiroModel).IsEqualTo("claude-haiku-4.5");
+    }
+
+    [Test]
+    public async Task KiroModel_EnvVarEmpty_KeepsNull() {
+        var config = ApplyKiroModelOverride(new DaemonConfig(), kiroModel: "");
+
+        await Assert.That(config.KiroModel).IsNull();
+    }
+
     // ── KCAP_OPENCODE_PATH ────────────────────────────────────────────────────
 
     [Test]

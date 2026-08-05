@@ -1,0 +1,107 @@
+{
+  "started": "2026-08-05T02:02:37.580770+00:00",
+  "argv": [
+    "kiro-cli",
+    "acp"
+  ],
+  "turn_requested": false,
+  "notes": [
+    "initialize ok",
+    "session/new ok; sessionId=5b4fb355-c146-457f-8e9b-23ea89d445c2 currentModelId=minimax-m2.5 availableModels=['auto', 'claude-sonnet-4.5', 'claude-sonnet-4', 'claude-haiku-4.5', 'deepseek-3.2', 'minimax-m2.5', 'minimax-m2.1', 'glm-5', 'qwen3-coder-next']",
+    "target model: claude-haiku-4.5",
+    "session/set_config_option -> {\"jsonrpc\": \"2.0\", \"error\": {\"code\": -32601, \"message\": \"Method not found\", \"data\": \"session/set_config_option\"}, \"id\": 3}",
+    "session/set_model (for the record) -> {\"jsonrpc\": \"2.0\", \"result\": {}, \"id\": 4}",
+    "sidecar after set: {\"conversation_id\": \"5b4fb355-c146-457f-8e9b-23ea89d445c2\", \"model_info\": null, \"context_usage_percentage\": null}"
+  ],
+  "agent_capabilities": {
+    "loadSession": true,
+    "promptCapabilities": {
+      "image": true,
+      "audio": false,
+      "embeddedContext": false
+    },
+    "mcpCapabilities": {
+      "http": true,
+      "sse": false
+    },
+    "sessionCapabilities": {},
+    "auth": {}
+  },
+  "session_id": "5b4fb355-c146-457f-8e9b-23ea89d445c2",
+  "session_new_models": {
+    "currentModelId": "minimax-m2.5",
+    "availableModels": [
+      {
+        "modelId": "auto",
+        "name": "auto",
+        "description": "Models chosen by task for optimal usage and consistent quality"
+      },
+      {
+        "modelId": "claude-sonnet-4.5",
+        "name": "claude-sonnet-4.5",
+        "description": "Claude Sonnet 4.5 model"
+      },
+      {
+        "modelId": "claude-sonnet-4",
+        "name": "claude-sonnet-4",
+        "description": "Hybrid reasoning and coding for regular use"
+      },
+      {
+        "modelId": "claude-haiku-4.5",
+        "name": "claude-haiku-4.5",
+        "description": "The latest Claude Haiku model"
+      },
+      {
+        "modelId": "deepseek-3.2",
+        "name": "deepseek-3.2",
+        "description": "Experimental preview of DeepSeek V3.2"
+      },
+      {
+        "modelId": "minimax-m2.5",
+        "name": "minimax-m2.5",
+        "description": "MiniMax M2.5 model"
+      },
+      {
+        "modelId": "minimax-m2.1",
+        "name": "minimax-m2.1",
+        "description": "Experimental preview of MiniMax M2.1"
+      },
+      {
+        "modelId": "glm-5",
+        "name": "glm-5",
+        "description": "GLM-5 model"
+      },
+      {
+        "modelId": "qwen3-coder-next",
+        "name": "qwen3-coder-next",
+        "description": "Experimental preview of Qwen3 Coder Next"
+      }
+    ]
+  },
+  "session_new_config_options": null,
+  "target_model": "claude-haiku-4.5",
+  "set_config_option_response": {
+    "jsonrpc": "2.0",
+    "error": {
+      "code": -32601,
+      "message": "Method not found",
+      "data": "session/set_config_option"
+    },
+    "id": 3
+  },
+  "set_model_response": {
+    "jsonrpc": "2.0",
+    "result": {},
+    "id": 4
+  },
+  "sidecar_after_set": {
+    "path": "~/.kiro/sessions/cli/5b4fb355-c146-457f-8e9b-23ea89d445c2.json",
+    "rts_model_state": {
+      "conversation_id": "5b4fb355-c146-457f-8e9b-23ea89d445c2",
+      "model_info": null,
+      "context_usage_percentage": null
+    }
+  },
+  "ended": "2026-08-05T02:03:03.893005+00:00",
+  "_note": "raw client-log excerpt fields stripped before commit: kiro_home_log_model_lines, session_log_model_lines"
+}

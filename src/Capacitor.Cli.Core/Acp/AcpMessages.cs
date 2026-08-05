@@ -141,6 +141,22 @@ public sealed record SetConfigOptionParams(
 );
 
 /// <summary>
+/// <c>session/set_model</c> params — the stabilized ACP model-selection method, used by vendors
+/// that do not implement <c>session/set_config_option</c>. Sent at the same point in the handshake
+/// as <see cref="SetConfigOptionParams"/> (after <c>session/new</c>, before the first
+/// <c>session/prompt</c>, response awaited). Wire shape probe-confirmed against real
+/// <c>kiro-cli</c> 2.16.0 (<c>docs/probes/2026-08-05-kiro-model-override/</c>):
+/// <see cref="ModelId"/> is an exact id from <see cref="SessionModelsInfo.AvailableModels"/>
+/// (Kiro's are bare, e.g. <c>deepseek-3.2</c> — resolved by
+/// <c>Capacitor.Cli.Core.Acp.AcpModelResolver</c> like Cursor's), and the success response is an
+/// empty object.
+/// </summary>
+public sealed record SetModelParams(
+    [property: JsonPropertyName("sessionId")] string SessionId,
+    [property: JsonPropertyName("modelId")]   string ModelId
+);
+
+/// <summary>
 /// Typed shape for <c>session/new</c>'s <c>result.models</c> object — the daemon
 /// otherwise treats the <c>session/new</c> result as an opaque <see cref="JsonElement"/> (only
 /// <c>sessionId</c> is read out of it today); this record exists purely so

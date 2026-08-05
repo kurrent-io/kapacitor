@@ -284,16 +284,21 @@ internal static class AcpVendorDescriptors {
     /// <c>tools/list</c>, refused by trust policy, mis-namespaced, or fail at invocation. Flipping
     /// Copilot's flag needs an equivalent call-level probe against Copilot, not this result.</para>
     ///
-    /// <para><see cref="NoOpModelSelector"/> is deliberate rather than inherited: Kiro's
-    /// <c>session/new</c> does return a <c>models</c> object, so the read half of
-    /// <see cref="ConfigOptionModelSelector"/> would find the shape it needs — but the write half
-    /// (<c>session/set_config_option</c> actually taking effect) is unverified on Kiro, and that
-    /// selector fails SILENTLY when it does not take. Carrying a live selector would risk a session
-    /// that reports the requested model while running another. <c>ResolveDefaultModel: null</c> alone
-    /// would not be enough, because <c>ResolveRequestedModel</c> prioritises a per-launch
-    /// <c>RuntimeStartContext.Model</c> and would reach a live selector anyway; the selector itself
-    /// has to be the no-op. Model override arrives with the follow-up that verifies the write
-    /// half.</para>
+    /// <para><see cref="SetModelSelector"/>, not <see cref="ConfigOptionModelSelector"/> and no
+    /// longer <see cref="NoOpModelSelector"/> — measured, both halves
+    /// (<c>docs/probes/2026-08-05-kiro-model-override/</c>, kiro-cli 2.16.0). The hosting work had
+    /// deferred model override because <c>session/set_config_option</c>'s write half was unverified
+    /// and the selector fails SILENTLY; the probe settled it in a direction the deferral did not
+    /// anticipate: <c>session/set_config_option</c> does not exist on Kiro at all (<c>-32601 Method
+    /// not found</c>), while the stabilized <c>session/set_model</c> both succeeds and TAKES EFFECT
+    /// at the turn level — the next turn's backend inference request carried the requested
+    /// <c>modelId</c> verbatim, the model self-identified as it (a different vendor family from the
+    /// account's default, so not confusable), and Kiro's persisted session state recorded it with
+    /// model-specific parameters (context window, rate multiplier). <c>ResolveDefaultModel</c> reads
+    /// <c>DaemonConfig.KiroModel</c> (<c>KCAP_KIRO_MODEL</c>), which defaults to NULL — so a
+    /// zero-configuration launch still runs Kiro's own default model and reports none, exactly the
+    /// pre-override behaviour; a per-launch <c>RuntimeStartContext.Model</c> takes precedence as for
+    /// Cursor.</para>
     ///
     /// <para><c>--agent-engine v1|v2|v3</c> (default <c>v2</c>) is deliberately NOT passed: pinning it
     /// diverges the hosted session from what the user gets interactively and buys an upgrade
@@ -301,11 +306,11 @@ internal static class AcpVendorDescriptors {
     public static readonly AcpVendorDescriptor Kiro = new(
         Vendor:              "kiro",
         ResolveBinaryPath:   cfg => cfg.KiroPath,
-        ResolveDefaultModel: _ => null,
+        ResolveDefaultModel: cfg => cfg.KiroModel,
         Argv:                ["acp"],
         UnattendedTrustArgv: [],
         SupportsUnattended:  false,
-        ModelSelector:       NoOpModelSelector.Instance,
+        ModelSelector:       SetModelSelector.Instance,
         SupportsMcpServers:  true,
         // Measured INELIGIBLE 2026-08-04 (docs/probes/2026-08-04-acp-reconnect-c0/): Kiro advertises
         // loadSession but refuses session/load after a SIGKILLed owner with a DURABLE stale-owner
@@ -364,12 +369,17 @@ internal static class AcpVendorDescriptors {
     /// <c>AcpVendorDescriptorTests</c> and <c>GeminiReviewerLaunchTests</c> assert both halves, the
     /// latter pinning gate == injected set.</para>
     ///
-    /// <para><see cref="NoOpModelSelector"/> for the same reason as Kiro: <c>session/new</c> does return a
-    /// <c>models</c> object, so <see cref="ConfigOptionModelSelector"/>'s read half would fit, but its
-    /// write half is unverified on Gemini and that selector fails SILENTLY — a session that reports the
-    /// requested model while running another. <c>ResolveDefaultModel: null</c> alone is not enough,
-    /// because <c>ResolveRequestedModel</c> prioritises a per-launch model and would reach a live
-    /// selector anyway.</para>
+    /// <para><see cref="NoOpModelSelector"/> because Gemini's model-selection WRITE half is
+    /// unverified: <c>session/new</c> does return a <c>models</c> object, so a live selector's read
+    /// half would fit, but both wire selectors fail SILENTLY when the write does not take — a
+    /// session that reports the requested model while running another. <c>ResolveDefaultModel:
+    /// null</c> alone is not enough, because <c>ResolveRequestedModel</c> prioritises a per-launch
+    /// model and would reach a live selector anyway. Kiro's probe
+    /// (<c>docs/probes/2026-08-05-kiro-model-override/</c>) is the template for flipping this: it
+    /// found Kiro rejects <c>session/set_config_option</c> outright but honours
+    /// <c>session/set_model</c> at effect level — Gemini needs its own equivalent effect-level
+    /// measurement (which method, and does the turn actually run on it) before carrying
+    /// <see cref="SetModelSelector"/> or <see cref="ConfigOptionModelSelector"/>.</para>
     ///
     /// <para><c>--approval-mode</c> is deliberately not passed: interactive hosting should behave as the
     /// user's own session does, and pinning <c>plan</c> would silently make hosted Gemini read-only.

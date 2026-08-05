@@ -145,6 +145,9 @@ public static partial class DaemonRunner {
         if (Environment.GetEnvironmentVariable("KCAP_KIRO_PATH") is { Length: > 0 } envKiroPath)
             config.KiroPath = envKiroPath;
 
+        if (Environment.GetEnvironmentVariable("KCAP_KIRO_MODEL") is { Length: > 0 } envKiroModel)
+            config.KiroModel = envKiroModel;
+
         if (Environment.GetEnvironmentVariable("KCAP_OPENCODE_PATH") is { Length: > 0 } envOpenCodePath)
             config.OpenCodePath = envOpenCodePath;
 

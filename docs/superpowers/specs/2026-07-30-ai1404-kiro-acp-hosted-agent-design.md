@@ -88,6 +88,20 @@ The selector parses `session/new`'s `models.availableModels` and then sends
 shape it needs. Its write half (`session/set_config_option` actually taking effect) is **still
 unverified** and must be measured before relying on it.
 
+> **Resolved 2026-08-05** (the follow-up this premise deferred to;
+> `docs/probes/2026-08-05-kiro-model-override/`, kiro-cli 2.16.0): `session/set_config_option`
+> **does not exist on Kiro** — it answers `-32601 Method not found`, so `ConfigOptionModelSelector`
+> can never work there and the silent-failure risk this premise guarded against was real. The
+> stabilized `session/set_model {sessionId, modelId}` succeeds instead **and takes effect at the
+> turn level**: the next turn's backend inference request carried the requested `modelId` verbatim,
+> the reply self-identified as it (a different vendor family from the account's default), and
+> Kiro's persisted session state recorded it with model-specific parameters. Kiro now carries
+> `SetModelSelector` + `DaemonConfig.KiroModel` (`KCAP_KIRO_MODEL`, default null so
+> zero-configuration behaviour is unchanged). The rest of this premise — `NoOpModelSelector`
+> mechanics, `ResolveDefaultModel: null` being insufficient alone — is kept as written for the
+> historical record, and the reviewer-model paragraph below still stands: `ReviewerModelResolver`
+> stays `null`, so review-flow model override remains a separate follow-up.
+
 **Decision: Kiro ships with `NoOpModelSelector` and no model override in either issue.** An earlier draft
 kept `ConfigOptionModelSelector` while AI-1410 deferred override — two implementers could then ship
 opposite behaviour, each following part of the spec. Note that `ResolveDefaultModel: null` is NOT

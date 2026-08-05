@@ -21,8 +21,9 @@ internal interface IAcpTranscriptSource {
     string Cwd { get; }
 
     /// <summary>
-    /// The model id actually resolved AND applied by model selection (i.e.
-    /// <c>session/set_config_option</c> was sent and answered without error) — or
+    /// The model id actually resolved AND applied by model selection (i.e. the vendor's
+    /// model-selection RPC — <c>session/set_config_option</c> or <c>session/set_model</c>,
+    /// whichever the descriptor's selector sends — was sent and answered without error) — or
     /// <see langword="null"/> when no model was requested, resolution found no match in
     /// <c>session/new</c>'s <c>availableModels</c>, or the agent rejected the option. In every "null"
     /// case Cursor's own default model applies, which is why this is nullable rather than falling

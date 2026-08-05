@@ -82,16 +82,20 @@ public class ModelSelectionLaunchPolicyTests {
     // ── the selectors are the source of truth for the flag above ──────────────
 
     [Test]
-    public async Task ConfigOptionSelector_CanSelect_NoOpSelector_Cannot() {
+    public async Task ConfigOptionSelector_And_SetModelSelector_CanSelect_NoOpSelector_Cannot() {
         await Assert.That(ConfigOptionModelSelector.Instance.CanSelectModel).IsTrue();
+        await Assert.That(SetModelSelector.Instance.CanSelectModel).IsTrue();
         await Assert.That(NoOpModelSelector.Instance.CanSelectModel).IsFalse();
     }
 
-    /// <summary>The whole reason this policy exists: Kiro's descriptor is the first to report false.
-    /// Pinned per-vendor so flipping Kiro's selector cannot quietly re-open the mismatch.</summary>
+    /// <summary>Pinned per-vendor so flipping a selector cannot quietly re-open the
+    /// reported-vs-running mismatch. Kiro flipped to true on the probe that verified
+    /// <c>session/set_model</c> at effect level (docs/probes/2026-08-05-kiro-model-override/);
+    /// Gemini is now the vendor this policy exists for — its write half stays unverified.</summary>
     [Test]
     public async Task DescriptorSelectors_ReportSelectionCapabilityPerVendor() {
-        await Assert.That(AcpVendorDescriptors.Kiro.ModelSelector.CanSelectModel).IsFalse();
+        await Assert.That(AcpVendorDescriptors.Kiro.ModelSelector.CanSelectModel).IsTrue();
+        await Assert.That(AcpVendorDescriptors.Gemini.ModelSelector.CanSelectModel).IsFalse();
         await Assert.That(AcpVendorDescriptors.Cursor.ModelSelector.CanSelectModel).IsTrue();
         await Assert.That(AcpVendorDescriptors.Copilot.ModelSelector.CanSelectModel).IsTrue();
     }

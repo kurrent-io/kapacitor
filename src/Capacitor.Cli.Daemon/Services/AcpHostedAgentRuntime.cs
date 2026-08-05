@@ -529,8 +529,10 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
     /// Performs the ACP handshake: starts the connection's read loop, then
     /// <c>initialize</c> → <c>session/new</c> (with the absolute <paramref name="cwd"/>) → an optional
     /// model-selection step — resolves <paramref name="requestedModel"/> against
-    /// <c>session/new</c>'s <c>availableModels</c> and, if it matches, sends
-    /// <c>session/set_config_option</c> and awaits the response BEFORE the first turn fires (see
+    /// <c>session/new</c>'s <c>availableModels</c> and, if it matches, sends the vendor's
+    /// model-selection RPC (<c>session/set_config_option</c> for Cursor/Copilot,
+    /// <c>session/set_model</c> for Kiro — the descriptor's selector decides) and awaits the
+    /// response BEFORE the first turn fires (see
     /// <see cref="IAcpModelSelector.TrySelectAsync"/>). If <paramref name="initialPrompt"/> is non-empty,
     /// <see cref="EnqueueTurn"/>s it onto the serialized prompt-turn worker (see
     /// <see cref="RunTurnWorkerAsync"/>) and returns as soon as the session is established — it

@@ -96,11 +96,14 @@ public class AcpVendorDescriptorTests {
         await Assert.That(descriptor.ReviewFlowMcpTransport)
             .IsEqualTo(AcpReviewFlowMcpTransport.SessionNew);
 
-        // NoOp, not ConfigOptionModelSelector. Kiro's session/new DOES return a models object, so the
-        // selector's read half would find its shape — but the write half
-        // (session/set_config_option taking effect) is unverified, and that selector fails SILENTLY.
-        // A live selector would risk a session reporting one model while running another.
-        await Assert.That(descriptor.ModelSelector).IsEqualTo(NoOpModelSelector.Instance);
+        // SetModelSelector, not ConfigOptionModelSelector: probe-measured (docs/probes/
+        // 2026-08-05-kiro-model-override/, kiro-cli 2.16.0) — session/set_config_option does not
+        // exist on Kiro (-32601 Method not found), while session/set_model succeeds AND takes
+        // effect: the very next turn's backend request carried the requested modelId, the reply
+        // self-identified as it, and Kiro's own session state persisted it with model-specific
+        // parameters. Not NoOp either — that deferral existed only while the write half was
+        // unverified.
+        await Assert.That(descriptor.ModelSelector).IsEqualTo(SetModelSelector.Instance);
     }
 
     [Test]
@@ -128,14 +131,18 @@ public class AcpVendorDescriptorTests {
             .IsEqualTo("kiro-cli");
     }
 
-    /// <summary>Model override is out of scope until <c>session/set_config_option</c> is verified on
-    /// Kiro, so no daemon-wide default model is offered either — for ANY config, including one whose
-    /// other vendor model fields are populated.</summary>
+    /// <summary>Zero-configuration behaviour is unchanged from the no-override era: with no
+    /// <c>KiroModel</c> configured the descriptor offers no daemon-wide default — Kiro runs its own
+    /// default model and none is reported — and ANOTHER vendor's model field must never leak in.
+    /// When <c>KiroModel</c> IS configured it is the daemon-wide default, resolved against
+    /// <c>session/new</c>'s <c>availableModels</c> at launch like Cursor's.</summary>
     [Test]
-    public async Task Kiro_ResolveDefaultModel_IsAlwaysNull() {
+    public async Task Kiro_ResolveDefaultModel_ReadsConfigKiroModel_NullByDefault() {
         await Assert.That(AcpVendorDescriptors.Kiro.ResolveDefaultModel(new DaemonConfig())).IsNull();
         await Assert.That(AcpVendorDescriptors.Kiro.ResolveDefaultModel(
             new DaemonConfig { CursorModel = "claude-opus-4-8" })).IsNull();
+        await Assert.That(AcpVendorDescriptors.Kiro.ResolveDefaultModel(
+            new DaemonConfig { KiroModel = "claude-haiku-4.5" })).IsEqualTo("claude-haiku-4.5");
     }
 
     [Test]

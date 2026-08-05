@@ -1021,17 +1021,27 @@ failing at launch.
 KCAP_KIRO_PATH=/opt/kiro/bin/kiro-cli kcap daemon
 ```
 
-Two limits are worth knowing before you pick Kiro:
+`KCAP_KIRO_MODEL` overrides the model a `kiro` hosted agent runs, mirroring `KCAP_CURSOR_MODEL` —
+with one deliberate difference: there is **no built-in default**, so with nothing set (and no
+per-launch model from the dashboard, which takes precedence) a Kiro hosted agent runs whatever
+Kiro's own default model is and kcap reports none. The value is matched against the models the Kiro
+account actually offers (Kiro's ids are bare names like `claude-haiku-4.5`); an unrecognized value
+falls back to Kiro's own default with none reported. Applied over ACP `session/set_model` —
+verified to take effect at the turn level, not just accepted — because Kiro does not implement the
+`session/set_config_option` call Cursor uses.
+
+```bash
+KCAP_KIRO_MODEL=claude-haiku-4.5 kcap daemon
+```
+
+One limit is worth knowing before you pick Kiro:
 
 - **Interactive hosting only.** Kiro cannot yet be selected as an unattended review-flow reviewer.
   Kiro inherits the MCP servers from your global `~/.kiro/settings/mcp.json` into every ACP session,
   which is exactly what you want for a session you are driving yourself, but means an unattended
   reviewer would be handed the flow-starting `kcap-flows` server. Containment for that is tracked
-  separately.
-- **No model override.** A Kiro hosted agent always runs Kiro's own default model. Kiro's ACP
-  model-selection call is unverified and fails silently, so rather than report a model it might not be
-  running, kcap ignores a requested model for `kiro` and reports none — there is deliberately no
-  `KCAP_KIRO_MODEL`. A *pinned reviewer* model is refused outright rather than silently substituted.
+  separately. (This also means a *pinned reviewer* model never reaches Kiro today — reviewer model
+  overrides remain gated on the vendors that advertise resolver support.)
 
 **Hosted Cursor agents run over ACP.** The `cursor` vendor is launched by the daemon as
 `cursor-agent acp` (Cursor's Agent Client Protocol server) in an isolated worktree, driven from the

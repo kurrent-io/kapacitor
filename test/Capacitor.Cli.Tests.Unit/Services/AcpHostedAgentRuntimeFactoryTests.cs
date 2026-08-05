@@ -106,7 +106,11 @@ public class AcpHostedAgentRuntimeFactoryTests {
                 connectionSource: _ => throw new InvalidOperationException(
                     "SupportsModelSelection must not spawn a process."));
 
-        await Assert.That(Build(AcpVendorDescriptors.Kiro).SupportsModelSelection).IsFalse();
+        // Kiro reports true since the probe that verified session/set_model at effect level
+        // (docs/probes/2026-08-05-kiro-model-override/); Gemini keeps the false arm of this
+        // mutation guard — its write half stays unverified, so it still carries NoOpModelSelector.
+        await Assert.That(Build(AcpVendorDescriptors.Kiro).SupportsModelSelection).IsTrue();
+        await Assert.That(Build(AcpVendorDescriptors.Gemini).SupportsModelSelection).IsFalse();
         await Assert.That(Build(AcpVendorDescriptors.Cursor).SupportsModelSelection).IsTrue();
         await Assert.That(Build(AcpVendorDescriptors.Copilot).SupportsModelSelection).IsTrue();
     }

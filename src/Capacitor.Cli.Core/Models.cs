@@ -1029,6 +1029,7 @@ public sealed record CurationApplyResponse {
 [JsonSerializable(typeof(Acp.PromptContentBlock))]
 [JsonSerializable(typeof(Acp.SessionCancelParams))]
 [JsonSerializable(typeof(Acp.SetConfigOptionParams))]
+[JsonSerializable(typeof(Acp.SetModelParams))]
 [JsonSerializable(typeof(Acp.SessionModelsInfo))]
 [JsonSerializable(typeof(Acp.AvailableModelDto))]
 [JsonSerializable(typeof(Acp.SessionRequestPermissionParams))]
