@@ -31,8 +31,11 @@ internal sealed partial class AcpInteractionBridge(
         string                                                                       agentId,
         ILogger                                                                      logger,
         AcpUnattendedInteractionPolicy                                                unattendedPolicy = AcpUnattendedInteractionPolicy.Disabled,
-        Action<string>?                                                               unexpectedUnattendedInteraction = null
+        Action<string>?                                                               unexpectedUnattendedInteraction = null,
+        IReadOnlySet<string>?                                                         admittedToolIds = null
     ) {
+    static readonly IReadOnlySet<string> EmptyAdmitted = new HashSet<string>(StringComparer.Ordinal);
+
     /// <summary>
     /// Handles one inbound <see cref="AcpRequest"/>. Returns <see langword="null"/> for any method
     /// this bridge doesn't recognize (letting <see cref="AcpConnection.HandleServerRequestAsync"/>'s
@@ -55,7 +58,13 @@ internal sealed partial class AcpInteractionBridge(
         // Cursor review flows launch with Cursor's own no-prompt flags. Any server→client request
         // therefore proves that the zero-interaction contract has regressed. Never turn it into a
         // local approval and never forward it to a human; signal the runtime to reap the reviewer.
-        if (unattendedPolicy == AcpUnattendedInteractionPolicy.Fail) {
+        // A permission frame under AllowlistedAutoApprove is NOT reaped here: it goes to
+        // HandlePermissionAsync, which is the only place the tool identity and the offered options
+        // are both available, and reaps there if the tool is not one this launch injected. Every
+        // OTHER method under that policy — elicitation included — is treated exactly as Fail.
+        if (unattendedPolicy == AcpUnattendedInteractionPolicy.Fail
+        || (unattendedPolicy == AcpUnattendedInteractionPolicy.AllowlistedAutoApprove
+            && request.Method != "session/request_permission")) {
             LogUnexpectedUnattendedInteraction(agentId, request.Method);
             unexpectedUnattendedInteraction?.Invoke(request.Method);
 
@@ -117,6 +126,36 @@ internal sealed partial class AcpInteractionBridge(
         // (MapPermissionDecision's existing `options.Count == 0 → cancelled` branch) rather than two
         // separate null-checks that could drift.
         var options = parsed.Options?.Where(o => o is not null).ToArray() ?? [];
+
+        // Tool-AWARE auto-approve: the launch's own injected tools are approved; anything else is
+        // reaped exactly as Fail would. This is the middle ground the other two policies cannot
+        // express — AutoApprove below does not inspect the tool at all, and Fail's premise that a
+        // correctly-configured reviewer never raises a frame is measurably false on Kiro, which
+        // intermittently prompts for a tool that is in its own trust list.
+        if (unattendedPolicy == AcpUnattendedInteractionPolicy.AllowlistedAutoApprove) {
+            if (!UnattendedToolAdmission.IsAdmitted(parsed.ToolCall, admittedToolIds ?? EmptyAdmitted)) {
+                LogUnexpectedUnattendedInteraction(agentId, request.Method);
+                unexpectedUnattendedInteraction?.Invoke(request.Method);
+
+                return CancelledResult();
+            }
+
+            var admittedChoice = TrySelectLeastPrivilegeAllow(options);
+
+            if (admittedChoice is not null) {
+                LogUnattendedAutoApproved(
+                    agentId, admittedChoice.Kind ?? "", TryGetToolTitle(parsed.ToolCall) ?? "(untitled)");
+
+                return SelectedResult(admittedChoice);
+            }
+
+            // Admitted tool, but no allow option we can identify. Reap rather than guess: an
+            // unrecognised option set is exactly where a wrong pick grants something nobody asked for.
+            LogUnexpectedUnattendedInteraction(agentId, request.Method);
+            unexpectedUnattendedInteraction?.Invoke(request.Method);
+
+            return CancelledResult();
+        }
 
         // Unattended reviewer: auto-approve a least-privilege allow option without a human, fail
         // closed when there's no unambiguous one. A trust decision — it does not inspect the tool.

@@ -239,7 +239,37 @@ Native names, for reference (enumeration oracle: an unknown name warns, a valid 
 `fs_read`, `fs_write`, `execute_bash`, `use_aws`, `knowledge`, `thinking`, `introspect`,
 `todo_list`, `gh_issue`, `web_search`.
 
-### 3.3 Interaction policy: `Fail`
+### 3.3 Interaction policy: `AllowlistedAutoApprove` (rev 5 — `Fail` was falsified)
+
+**`Fail` was the original decision and the live e2e disproved its premise.** That premise was: with
+scoped trust a reviewer emits no frame on its expected path, so any frame means something outside the
+intended surface. Measured on kiro-cli 2.16.0, in a seeded-defect round
+(`docs/probes/2026-08-05-kiro-reviewer-trust/`), a `session/request_permission` appeared for
+`@kcap-flow-result/submit_review_result` — **a tool in this launch's own `--trust-tools`** — while an
+identical arm raised none. Namespaced trust is not deterministic; this is almost certainly the
+upstream trust-flag prompt leak (#7398). Under `Fail` that reaps the reviewer on the very call that
+delivers its result, in an unpredictable share of otherwise-clean rounds.
+
+**`AutoApprove` is still not the answer**, for the reason §3.3 originally gave: it selects an allow
+option without inspecting the tool, so it would approve exactly the out-of-surface request scoping
+exists to reject.
+
+**Decision: approve the launch's own tools, reap everything else.** `UnattendedToolAdmission` builds
+the admitted set from the SAME injected `AcpMcpServerSpec` list and the SAME `LaunchIdentity` as the
+trust argv — one derivation, or a reviewer ends up trusted to call a tool the policy then refuses.
+Non-permission methods (elicitation included) are treated exactly as `Fail`.
+
+**The uncomfortable part, stated rather than buried:** Kiro's permission frame carries no structured
+tool identity — `toolCall` is `{toolCallId, title}`, and `title` is presentation text. Keying a
+security decision on a display string is normally indefensible. What makes it acceptable *here* is
+that the admitted names are per-launch aliases carrying an unguessable GUID, so the reviewed
+repository cannot author content that matches one. **Aliasing (§5.2) and this policy are therefore a
+package** — remove the aliasing and this reverts to string classification. Fail-closed in every
+direction: no `@server/tool` token at all is a denial, and every token found must be admitted.
+
+### 3.3-bis The original reasoning, retained
+
+
 
 Not `AutoApprove`. `AcpInteractionBridge`'s `AutoApprove` selects an allow option and **does not
 inspect the tool**, so it would auto-approve exactly the excluded request §3's scoping exists to

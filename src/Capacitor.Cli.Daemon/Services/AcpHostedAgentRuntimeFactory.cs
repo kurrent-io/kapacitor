@@ -211,6 +211,14 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
             // unbounded. Time-to-first-OUTPUT, never turn completion — a real review runs long.
             firstOutputDeadline: ctx.IsReviewFlow && descriptor.Vendor == AcpVendorDescriptors.Kiro.Vendor
                 ? TimeSpan.FromSeconds(config.KiroReviewerLaunchTimeoutSeconds)
+                : null,
+            // The set AllowlistedAutoApprove admits, built from the SAME injected specs and identity
+            // the trust argv is built from. Two derivations would let the reviewer be TRUSTED to call
+            // a tool the policy then refuses to approve — a round that dies on its own result call.
+            admittedToolIds: descriptor.UnattendedInteractionPolicy
+                                 == AcpUnattendedInteractionPolicy.AllowlistedAutoApprove
+                          && ctx.IsReviewFlow && reviewMcp is { Count: > 0 } && ctx.LaunchIdentity is { } id
+                ? UnattendedToolAdmission.AdmittedFor(reviewMcp, id)
                 : null
         );
 

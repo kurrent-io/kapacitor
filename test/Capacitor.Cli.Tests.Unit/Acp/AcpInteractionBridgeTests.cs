@@ -1146,4 +1146,101 @@ public class AcpInteractionBridgeTests {
         await Assert.That(result!.Value.GetRawText()).IsEqualTo("""{"action":"cancel"}""");
         await Assert.That(observed()).IsTrue();
     }
+
+    // ── AllowlistedAutoApprove ───────────────────────────────────────────────────────────────────
+    //
+    // The policy that exists because neither neighbour works for Kiro: Fail assumes a scoped-trust
+    // reviewer raises no frame (measurably false — it intermittently prompts for a tool in its own
+    // trust list), and AutoApprove does not inspect the tool at all.
+
+    const string Admitted = "@kcap-flow-result-abc/submit_review_result";
+
+    static JsonElement PermissionParamsFor(string title, string optionsJson) =>
+        JsonDocument.Parse(
+            $$"""{"sessionId":"{{AcpSessionId}}","toolCall":{"toolCallId":"call-1","title":"{{title}}"},"options":{{optionsJson}}}""")
+            .RootElement.Clone();
+
+    static (AcpInteractionBridge Bridge, List<string> Reaped, Func<int> Routed) AdmissionBridge() {
+        var routed = 0;
+        var reaped = new List<string>();
+
+        var bridge = new AcpInteractionBridge(
+            requestInteraction: (req, ct) => {
+                Interlocked.Increment(ref routed);
+                return Task.FromResult(new AcpInteractionDecision("allow", null, null, null, null, null));
+            },
+            agentId: AgentId,
+            logger: NullLogger.Instance,
+            unattendedPolicy: AcpUnattendedInteractionPolicy.AllowlistedAutoApprove,
+            unexpectedUnattendedInteraction: reaped.Add,
+            admittedToolIds: new HashSet<string>(StringComparer.Ordinal) { Admitted });
+
+        return (bridge, reaped, () => routed);
+    }
+
+    /// <summary>The frame this policy exists for: the reviewer's own result tool, approved without a
+    /// human and without reaping.</summary>
+    [Test]
+    public async Task AllowlistedAutoApprove_AdmittedTool_IsApprovedWithoutRoutingOrReaping() {
+        var (bridge, reaped, routed) = AdmissionBridge();
+
+        var result = await bridge.HandleAsync(
+            new AcpRequest(1, "session/request_permission",
+                PermissionParamsFor($"Running: {Admitted}",
+                    """[{"optionId":"allow-once","name":"Yes","kind":"allow_once"}]""")),
+            CancellationToken.None);
+
+        await Assert.That(result!.Value.GetProperty("outcome").GetProperty("outcome").GetString())
+            .IsEqualTo("selected");
+        await Assert.That(reaped).IsEmpty();
+        await Assert.That(routed()).IsEqualTo(0);
+    }
+
+    /// <summary>The control, and what separates this policy from AutoApprove: a tool this launch did
+    /// not inject is reaped, exactly as Fail would.</summary>
+    [Test]
+    public async Task AllowlistedAutoApprove_UnadmittedTool_IsReaped() {
+        var (bridge, reaped, routed) = AdmissionBridge();
+
+        var result = await bridge.HandleAsync(
+            new AcpRequest(1, "session/request_permission",
+                PermissionParamsFor("Running: @kcap-flows/start_flow",
+                    """[{"optionId":"allow-once","name":"Yes","kind":"allow_once"}]""")),
+            CancellationToken.None);
+
+        await Assert.That(result!.Value.GetProperty("outcome").GetProperty("outcome").GetString())
+            .IsEqualTo("cancelled");
+        await Assert.That(reaped).IsEquivalentTo(["session/request_permission"]);
+        await Assert.That(routed()).IsEqualTo(0);
+    }
+
+    /// <summary>An admitted tool with no identifiable allow option is still reaped: guessing among
+    /// unrecognised options is where a wrong pick grants something nobody asked for.</summary>
+    [Test]
+    public async Task AllowlistedAutoApprove_AdmittedToolWithNoAllowOption_IsReaped() {
+        var (bridge, reaped, _) = AdmissionBridge();
+
+        await bridge.HandleAsync(
+            new AcpRequest(1, "session/request_permission",
+                PermissionParamsFor($"Running: {Admitted}", "[]")),
+            CancellationToken.None);
+
+        await Assert.That(reaped).IsEquivalentTo(["session/request_permission"]);
+    }
+
+    /// <summary>Every NON-permission method under this policy behaves exactly as Fail — the tool
+    /// admission is about permission frames only, and an elicitation has no tool to admit.</summary>
+    [Test]
+    [Arguments("elicitation/create")]
+    [Arguments("vendor/unknown_interaction")]
+    public async Task AllowlistedAutoApprove_NonPermissionMethods_AreReapedLikeFail(string method) {
+        var (bridge, reaped, routed) = AdmissionBridge();
+
+        await bridge.HandleAsync(
+            new AcpRequest(1, method, PermissionParamsFor($"Running: {Admitted}", "[]")),
+            CancellationToken.None);
+
+        await Assert.That(reaped).IsEquivalentTo([method]);
+        await Assert.That(routed()).IsEqualTo(0);
+    }
 }

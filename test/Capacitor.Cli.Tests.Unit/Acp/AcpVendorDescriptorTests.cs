@@ -86,11 +86,12 @@ public class AcpVendorDescriptorTests {
         await Assert.That(descriptor.UnattendedTrustArgv.IsEmpty).IsTrue();
         await Assert.That(descriptor.UnattendedTrustArgvBuilder).IsNotNull();
 
-        // Fail, not AutoApprove: with scoped trust a reviewer emits no interaction frame on its
-        // expected path, so a frame means something outside the intended surface was attempted.
-        // AutoApprove does not inspect the tool and would approve exactly that.
+        // AllowlistedAutoApprove, measured rather than preferred. Fail's premise -- a scoped-trust
+        // reviewer raises no frame -- is false on kiro-cli 2.16.0: a live round raised one for the
+        // result tool that IS in this launch's trust list. AutoApprove is not the alternative, since
+        // it does not inspect the tool at all.
         await Assert.That(descriptor.UnattendedInteractionPolicy)
-            .IsEqualTo(AcpUnattendedInteractionPolicy.Fail);
+            .IsEqualTo(AcpUnattendedInteractionPolicy.AllowlistedAutoApprove);
         await Assert.That(descriptor.SupportsBorrowedReviewFlow).IsFalse();
         await Assert.That(descriptor.BorrowedReviewContainment)
             .IsEqualTo(AcpBorrowedReviewContainment.None);

@@ -37,15 +37,20 @@ internal static class KiroReviewerTrustList {
     /// safe-tool table — failing the launch rather than injecting a server whose tools cannot be
     /// trusted, which would wedge the round at the first call instead.
     /// </summary>
-    internal static string Build(IReadOnlyList<AcpMcpServerSpec> injected, LaunchIdentity identity) {
-        var entries = new List<string>(NativeTools);
+    internal static string Build(IReadOnlyList<AcpMcpServerSpec> injected, LaunchIdentity identity) =>
+        string.Join(",", NativeTools.Concat(NamespacedEntries(injected, identity)));
 
+    /// <summary>
+    /// The <c>@server/tool</c> half of the trust list. Public to the admission policy so the set it
+    /// approves and the set the launch trusts are ONE derivation — deriving them separately is how a
+    /// reviewer ends up trusted to call a tool the policy then refuses to approve, or the reverse.
+    /// </summary>
+    internal static IEnumerable<string> NamespacedEntries(
+            IReadOnlyList<AcpMcpServerSpec> injected, LaunchIdentity identity) {
         foreach (var server in injected) {
             foreach (var tool in ToolsFor(server, identity))
-                entries.Add($"@{server.Name}/{tool}");
+                yield return $"@{server.Name}/{tool}";
         }
-
-        return string.Join(",", entries);
     }
 
     /// <summary>Builds the whole <c>--trust-tools</c> argv pair, so the descriptor carries one

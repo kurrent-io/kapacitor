@@ -309,6 +309,11 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
     /// </summary>
     readonly TimeSpan? _firstOutputDeadline;
 
+    /// <summary>The <c>@server/tool</c> identities this launch injected — the set
+    /// <see cref="AcpUnattendedInteractionPolicy.AllowlistedAutoApprove"/> approves. Null for every
+    /// other policy.</summary>
+    readonly IReadOnlySet<string>? _admittedToolIds;
+
     int _sawFirstUpdate;
 
     /// <summary>Completes when the first turn ends, however it ends — the other way to disarm the
@@ -377,8 +382,10 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
             AcpReconnectSupport?                                                            reconnect = null,
             KiroMcpSurfaceMonitor?                                                          mcpSurfaceMonitor = null,
             Action?                                                                         onDisposed = null,
-            TimeSpan?                                                                       firstOutputDeadline = null
+            TimeSpan?                                                                       firstOutputDeadline = null,
+            IReadOnlySet<string>?                                                           admittedToolIds = null
         ) {
+        _admittedToolIds = admittedToolIds;
         _firstOutputDeadline = firstOutputDeadline;
         _mcpSurfaceMonitor = mcpSurfaceMonitor;
         _onDisposed        = onDisposed;
@@ -414,7 +421,8 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
                 agentId,
                 logger,
                 unattendedInteractionPolicy,
-                HandleUnexpectedUnattendedInteraction);
+                HandleUnexpectedUnattendedInteraction,
+                admittedToolIds);
         }
 
         // The original launch's incarnation. Every later candidate goes through the same wiring

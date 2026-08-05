@@ -21,7 +21,15 @@ internal enum AcpReviewFlowMcpTransport {
 internal enum AcpUnattendedInteractionPolicy {
     Disabled,
     AutoApprove,
-    Fail
+    Fail,
+
+    /// <summary>Approve a frame that names only tools THIS launch injected; treat every other frame
+    /// exactly as <see cref="Fail"/> does. The middle ground the other two cannot express:
+    /// <see cref="AutoApprove"/> does not inspect the tool, and <see cref="Fail"/> assumes a correctly
+    /// configured reviewer never raises a frame — measurably false on Kiro, which intermittently
+    /// prompts for a tool that is in its own trust list. See <see cref="UnattendedToolAdmission"/>.
+    /// </summary>
+    AllowlistedAutoApprove
 }
 
 /// <summary>The security boundary used to serve borrowed-checkout context without exposing the
@@ -343,11 +351,19 @@ internal static class AcpVendorDescriptors {
         UnattendedTrustArgv:        [],
         UnattendedTrustArgvBuilder: KiroReviewerTrustList.BuildArgv,
         SupportsUnattended:  true,
-        // Fail, not AutoApprove: with the scoped trust list a reviewer emits NO interaction frame on
-        // its expected path (measured), so a frame means something outside the intended surface was
-        // attempted. AutoApprove does not inspect the tool, and would approve exactly the request the
-        // scoping exists to reject.
-        UnattendedInteractionPolicy: AcpUnattendedInteractionPolicy.Fail,
+        // AllowlistedAutoApprove, and the reason is measured rather than preferred.
+        //
+        // Fail was the original choice, on the premise that a scoped-trust reviewer emits no frame at
+        // all. That premise is FALSE on kiro-cli 2.16.0: a live seeded-defect round raised a
+        // session/request_permission for @kcap-flow-result/submit_review_result -- a tool that is in
+        // this launch's own --trust-tools -- while an identical arm raised none. Under Fail that
+        // intermittently reaps the reviewer on the very call that delivers its result.
+        //
+        // AutoApprove is not the alternative: it does not inspect the tool, so it would approve
+        // exactly the out-of-surface request the scoping exists to reject. This policy approves only
+        // the tools THIS launch injected and reaps anything else, which keeps the scoped posture --
+        // still no fs_write, still no execute_bash -- while surviving the vendor's prompt leak.
+        UnattendedInteractionPolicy: AcpUnattendedInteractionPolicy.AllowlistedAutoApprove,
         ModelSelector:       SetModelSelector.Instance,
         SupportsMcpServers:  true,
         ReviewFlowMcpTransport: AcpReviewFlowMcpTransport.SessionNew,
