@@ -1,0 +1,62 @@
+{
+  "started": "2026-08-05T13:42:00.952811+00:00",
+  "kiro_version": "kiro-cli 2.16.0",
+  "phases": {
+    "A_isolated_scoped_trust": {
+      "kiro_home": "<tmp>",
+      "trust_tools": "fs_read,thinking,@kcap-flow-result/submit_review_result",
+      "trust_warnings": [],
+      "mcp_servers_initialized": [
+        {
+          "sessionId": "50158fde-1784-48cd-8eb3-239cc977d1f4",
+          "serverName": "kcap-flow-result"
+        },
+        {
+          "sessionId": "50158fde-1784-48cd-8eb3-239cc977d1f4",
+          "serverName": "kcap-flow-result"
+        }
+      ],
+      "session_new_ok": true,
+      "session_id": "50158fde-1784-48cd-8eb3-239cc977d1f4",
+      "available_models": [
+        "auto",
+        "claude-sonnet-4.5",
+        "claude-sonnet-4",
+        "claude-haiku-4.5",
+        "deepseek-3.2",
+        "minimax-m2.5",
+        "minimax-m2.1",
+        "glm-5",
+        "qwen3-coder-next"
+      ]
+    },
+    "B_real_home_control": {
+      "kiro_home": "(unset - real ~/.kiro)",
+      "mcp_servers_initialized": [
+        {
+          "sessionId": "dd8c192b-f493-4388-90f8-a8ec4e16c3f5",
+          "serverName": "kcap-flow-result"
+        },
+        {
+          "sessionId": "dd8c192b-f493-4388-90f8-a8ec4e16c3f5",
+          "serverName": "kcap-review"
+        },
+        {
+          "sessionId": "dd8c192b-f493-4388-90f8-a8ec4e16c3f5",
+          "serverName": "kcap-memory"
+        },
+        {
+          "sessionId": "dd8c192b-f493-4388-90f8-a8ec4e16c3f5",
+          "serverName": "kcap-sessions"
+        },
+        {
+          "sessionId": "dd8c192b-f493-4388-90f8-a8ec4e16c3f5",
+          "serverName": "kcap-flows"
+        }
+      ],
+      "session_new_ok": true
+    }
+  },
+  "finished": "2026-08-05T13:42:12.177392+00:00",
+  "_redaction": "home dir -> ~, temp paths -> <tmp>; frames/stderr/mcp logs not committed"
+}

@@ -1,432 +1,457 @@
 # AI-1410 — Kiro CLI as an unattended review-flow reviewer
 
-**Status:** re-specced 2026-07-30 against `kiro-cli 2.12.1` / ACP-reported `2.15.2`, and current
-`origin/main` (`bc09eac`). **NOT implementation-ready** — §1.2 is an open containment decision the probe
-created, and §1.5 lists what is still unmeasured. See "Readiness" below.
+**Status:** IMPLEMENTATION-READY. Re-specced **2026-08-05** against `kiro-cli 2.16.0` and
+`origin/main` (`2ed9d91`). The 2026-07-30 revision was **BLOCKED**; this revision unblocks it by
+reversing that revision's containment decision, on the owner's direction that Kiro is
+user-installed and user-authenticated. Every previously-open measurement is now closed — see
+"What changed" and the probe record.
+
 **Repository:** kurrent-io/kcap-cli
 **Parent:** AI-1400 (reviewer choice in review flows)
-**Depends on:** AI-1404 (Kiro hosting) · AI-1407 (ACP reviewer foundation) · AI-1402 (vendor selection)
-**Companion spec:** `2026-07-30-ai1404-kiro-acp-hosted-agent-design.md` — all measured protocol facts
-live there and are not repeated.
+**Depends on:** AI-1404 (Kiro hosting, shipped) · AI-1407 (ACP reviewer foundation) ·
+AI-1402 (vendor selection) — all landed.
+**Companion specs:** `2026-07-30-ai1404-kiro-acp-hosted-agent-design.md` (Kiro protocol facts) ·
+`2026-07-31-ai899-gemini-acp-hosted-agent-design.md` (the reviewer shape this follows).
+**Probe record:** `docs/probes/2026-08-05-kiro-reviewer-trust/` — two billable requests, both on
+`deepseek-3.2` (`rate_multiplier: 0.25`).
 
-## Readiness
+---
 
-The MCP result channel is a GO (below). The **containment mechanism is not settled**, and the reason is
-a measurement rather than an omission: §1.2 found that a trusted `fs_read` reads the whole filesystem, so
-`--trust-tools` scoping is not the read boundary the earlier draft assumed. Two things must happen before
-anyone implements this:
+## 0. What changed, and why the blocker dissolved
 
-1. **Decide §1.2** — OS sandbox (the Copilot `sandbox-exec` route) versus explicitly accepting an
-   owned-worktree-only read surface with the residual risk written down. This is a product/security call,
-   not an implementation detail.
-2. **Probe §1.5** — namespaced `@kcap-flow-result/...` trust on the ACP path. If the reviewer cannot call
-   `flow-result` without approval it cannot deliver a result at all, and it would present as a silent
-   round timeout rather than an error.
+The 2026-07-30 revision chose an **OS sandbox** (`BorrowedReviewSandbox`) as Kiro's read boundary,
+then measured that the choice was unimplementable: the sandbox redirects `HOME` to a per-launch
+state root and grants nothing under the user's home, but Kiro's credential lives at
+`~/Library/Application Support/kiro-cli/data.sqlite3`. Deprived of it, `kiro-cli` does not emit a
+coded auth error — it opens an **interactive browser login** and never returns, which is precisely
+the wedge that design existed to prevent. The recommended way out was brokering a `KIRO_API_KEY`
+we could not obtain.
 
-Everything else in this spec is decided and measured.
+**The owner's direction removes the premise.** Kiro is installed and authenticated by the operator,
+by whatever mechanism they choose, exactly as Gemini is; we require only an authenticated CLI that
+can launch on the user's machine. A daemon that never redirects `HOME` never separates Kiro from
+its credential, and the blocker does not arise. There is nothing to broker, nothing to grant
+file-granularly, and no rotating-credential exposure.
 
-## The go/no-go, resolved: GO
+This is not a novel posture. It is the one **already shipped** for Gemini
+(`GeminiReviewerCapability`, merged 2026-08-01): an unattended reviewer runs in a daemon-owned
+worktree with the daemon's own `HOME`, and the security decision is a daemon-local operator consent
+flag rather than a containment mechanism.
 
-The original design listed *"verify `mcpServers` honoring (go/no-go for the flow-result channel)"* as
-an open question. It is now measured and answered — but the FIRST answer was on insufficient evidence
-and is recorded here as a caution.
+| Item | 2026-07-30 | This revision |
+|---|---|---|
+| Containment mechanism | OS sandbox | **No sandbox** — operator consent, Gemini's shape |
+| Kiro auth | ⛔ blocker (browser-login wedge) | Non-issue; operator-managed, daemon never touches it |
+| Platform gate | Required (macOS + `sandbox-exec`) | **Dropped** — nothing to gate on |
+| §1.2 whole-filesystem `fs_read` | Reason the sandbox was chosen | **Explicitly accepted** (§2) |
+| §1.5 namespaced `@kcap-flow-result/…` trust | ❓ unmeasured, blocking | ✅ **GO**, with negative control (§3) |
+| Global-MCP suppression | measured on 2.15.2 | re-measured on **2.16.0**, positive control (§4.1) |
+| Branch-authored `.kiro/settings/mcp.json` | open | ✅ closed by AI-1632, merged (§4.2) |
+| Version certification | n/a | **Runtime assertion**, no certified-version set (§5) |
+| Model override | "out of scope — Kiro can't select a model" | Out of scope, **reason corrected** (§8) |
+| Reviewer-home lifecycle | "subsumed by the sandbox state root" | **Back in scope** — we own it (§7) |
 
-An initial probe showed `_kiro.dev/mcp/server_initialized` naming an injected stdio server, and an
-earlier draft of this spec called GO on that. **That was premature**: `server_initialized` proves a
-server process started, not that its tools are discoverable or invocable — a tool can be missing from
-`tools/list`, refused by trust policy, mis-namespaced, or fail at `tools/call`.
+### 0.1 What is deliberately NOT reversed
 
-Re-probed at the call level: a purpose-built stdio server exposing one uniquely named tool was passed
-in `session/new.mcpServers`, Kiro was asked to call it, and **the server's own log recorded
-`initialize` → `tools/list` → `tools/call`**, with the tool's nonce reaching the model and the turn
-ending `end_turn` under `--trust-all-tools`. That is a real GO.
+The 2026-07-30 finding that produced the sandbox decision stands unaltered as a **fact**: a trusted
+`fs_read` is a whole-filesystem read primitive under the daemon's uid, and `--trust-tools` scopes
+the tool surface, not the filesystem. What changed is not the measurement but the **response** to
+it. §2 accepts that surface in writing; it does not claim it was mismeasured.
 
-**But note the flag.** That probe trusted everything, which §1 forbids for a reviewer. It establishes the
-*transport* (Kiro honours stdio servers passed in `session/new`), not that the result tool is callable
-under the scoped trust set we will actually ship — see §1.5, which keeps that open.
+---
 
-So Kiro can carry the injected `flow-result` channel over `session/new`, meaning
-`ReviewFlowMcpTransport: SessionNew` — the Cursor route, not Copilot's `--additional-mcp-config`
-workaround. **Without this the whole issue would have been blocked**, because results arrive *only*
-via the `flow-result` tool (markers are inert since AI-1190) and Kiro has no Copilot-style
-config-preload flag.
+## 1. Threat model, stated before the mechanisms
 
-Worth stating because it looks contradictory: Kiro advertises `mcpCapabilities: {http:true, sse:false}`
-and the Copilot descriptor reads that same shape as *"stdio servers stay disabled."* That is an
-empirical finding about Copilot, not a rule about ACP. Kiro honours stdio without advertising it.
+An unattended Kiro reviewer runs in a daemon-owned worktree with the daemon user's full authority.
+Repository content reaching the model's tool use can therefore read anything that user can read.
+**That risk lands on the daemon operator, who is not necessarily the person requesting the review** —
+a caller can ask for `vendor: "kiro"` without owning the exposed host.
 
-## The blocker — and my first proposed mechanism was wrong
+So the decision belongs in daemon-local configuration, and **enabling it is the operator's consent
+event**. A non-default plus documentation would be informed guidance, not consent. This is
+`GeminiReviewerCapability`'s reasoning verbatim, and it applies to Kiro for the same reason.
 
-**Kiro inherits pre-configured MCP servers into every ACP session.** Measured: with `mcpServers: []`,
-Kiro still initialized `kcap-flows`, `kcap-review`, `kcap-sessions` and `kcap-memory`.
+What the design still owes, *given* that consent:
 
-For an unattended reviewer this is not cosmetic — **`kcap-flows` would let a reviewer start nested
-review flows.** The `review-flows` skill tells hosted reviewers not to, and the platform strips MCP
-servers from hosted reviewers precisely so it *cannot*. Copilot handles this with
-`--disable-builtin-mcps`; Kiro has no equivalent flag.
+1. The reviewer must not be handed capabilities the operator did not intend for a reviewer —
+   specifically `kcap-flows`, which would let it start nested review flows (§4.1).
+2. Repository-authored configuration must not execute (§4.2).
+3. The reviewer must be able to deliver a result without a human (§3).
+4. Failures must be coded errors, never wedged rounds (§6).
+5. Review context written to disk must be disposed of (§7).
 
-### Why the obvious fix does not work
+---
 
-An earlier draft proposed a purpose-built minimal agent selected via `--agent kcap-reviewer`, reasoning
-that Kiro's MCP servers come from the agent config. **That reasoning was wrong.**
-`PluginCommand.InstallKiro` registers those four servers in GLOBAL `~/.kiro/settings/mcp.json` — and
-inspecting that file confirms it contains exactly `kcap-review`, `kcap-sessions`, `kcap-flows`,
-`kcap-memory`. Both `PluginCommand.cs` and `KiroPaths.cs` document that file as independent of
-`~/.kiro/agents/kcap.json`. So **selecting a different agent may leave `kcap-flows` fully exposed.**
+## 2. Accepted risk, recorded explicitly
 
-`session/setMode` remains too late (servers are already initialized by `session/new`), but that only
-rules out one alternative; it does not rescue the agent approach.
+**A Kiro reviewer can read any file the daemon user can read.** On a daemon host that includes
+`~/.config/kcap/tokens.json`, `~/.aws/credentials`, SSH keys, and other concurrent reviews'
+worktrees. Scoped trust (§3) excludes `fs_write` and `execute_bash` but does **not** bound `fs_read`
+to the worktree; only an OS sandbox would, and an OS sandbox is incompatible with a
+user-authenticated Kiro (§0).
 
-### Decision: a daemon-owned reviewer `KIRO_HOME` (measured)
+This is accepted, not overlooked, and it is the same surface already accepted for Gemini — whose
+`--approval-mode yolo` additionally permits writes and shell execution, so **Kiro's reviewer is
+strictly more contained than the reviewer already in production**.
 
-**Measured:** launching `kiro-cli acp` with `KIRO_HOME` pointed at an empty temporary directory
-initializes **zero** MCP servers — `kcap-flows` absent — while `initialize` and `session/new` both
-still succeed. So the containment mechanism is settled, and it is not agent selection: it is an
-isolated `KIRO_HOME` owned by the daemon for reviewer launches.
+The mitigation is consent plus scope, not containment: the operator opts in per daemon, and the
+opt-in text says what is being accepted. Anything stronger requires either a vendor-supplied
+non-interactive credential (which reopens the 2026-07-30 sandbox route) or a Kiro sandbox mode.
+Both are out of scope and neither is available today.
 
-This is a decision, not a candidate list. The prior draft's matrix is collapsed to the one cell that
-mattered.
+---
 
-**Validated for the operation this issue actually performs** — not just handshake. In an isolated empty
-home, with the probe MCP server injected via `session/new.mcpServers`:
+## 3. Trust at spawn — measured, both directions
 
-* `session/new` succeeded;
-* `session/prompt` completed `end_turn`;
-* the probe server logged a real **`tools/call`** and its nonce reached the model;
-* **no authentication error of any kind** — nothing on stderr, no auth frame, no failure.
+**Decision: scoped `--trust-tools`, not `--trust-all-tools`.**
 
-**Therefore Kiro's credentials do NOT live under `KIRO_HOME`,** for the auth configuration measured.
-That collapses the *inbound* half of this section: nothing secret has to be copied INTO a reviewer
-home, so the design needs no credential source, no refresh/expiry handling, no atomic secret
-materialization, and no symlink validation of copied secrets.
+```
+--trust-tools fs_read,thinking,@kcap-flow-result/submit_review_result
+```
 
-**But an earlier draft then concluded "a reviewer home contains nothing sensitive", and that is
-wrong.** The inbound direction is not the only one. `KiroPaths.ConfigRoot` reads `KIRO_HOME` first, so
-`SessionsDir()` resolves to `{KIRO_HOME}/sessions/cli` — meaning **Kiro writes the reviewer's own
-conversation JSONL into the isolated home**, and that transcript contains the review context it was
-given: the caller's diff, source excerpts, and the reviewer's findings. A reviewer home is therefore
-**write-sensitive even though it is read-empty**, and it is created on a shared multi-tenant daemon
-host.
+The open question from the 2026-07-30 revision (§1.5) was whether a **namespaced** MCP tool can be
+trusted at all on the **ACP** path — the prior GO used `--trust-all-tools`, which that revision
+forbade, so it did not transfer. A reviewer that cannot call `flow-result` without approval cannot
+deliver a result at all, and presents as a silent round timeout. Measured on `kiro-cli 2.16.0`:
 
-The practical difference: permissions and cleanup are **security requirements with a stated threat**,
-not tidiness. Concretely —
+| turn | `--trust-tools` | `session/request_permission` | `tools/call` reached the server |
+|---|---|---|---|
+| test | `fs_read,thinking,@kcap-flow-result/submit_review_result` | **0 frames** | yes |
+| **control** | `fs_read,thinking` | **1 frame**, naming the tool | yes, after approval |
 
-* **Contents at creation:** nothing. Create it empty. `settings/mcp.json` and the user's agents are
-  excluded by simply not being there, which is why the mechanism works.
-* **Permissions:** `0700`, owner-only, set **at creation** rather than after — a world-readable window
-  between `mkdir` and `chmod` is exactly long enough to leak a transcript on a shared host. Do not
-  place the home inside a world-writable shared temp path that another user could pre-create or
-  substitute; root it under a daemon-owned directory.
-* **Concurrency:** one home per reviewer launch, so concurrent reviews cannot race shared state — and,
-  now that the home is transcript-bearing, so one caller's review context is never readable from
-  another caller's reviewer home.
-* **Cleanup, including after a daemon crash** — see §4b. This is a transcript-disposal requirement, not
-  merely a disk-hygiene one, which is why §4b specifies reaping the process before deleting the tree
-  rather than deleting opportunistically.
+Both ended `stopReason: end_turn`; the server logged the full
+`initialize → notifications/initialized → tools/list → tools/call` sequence and its nonce reached
+the transcript, so the result was really delivered rather than merely permitted.
 
-Because this touches daemon process launch rather than the installer it is still the largest item here,
-but it is now a small, measured one.
+**The control is load-bearing and its absence would have been a defect.** "No permission frame" on
+its own does not show the namespaced entry did anything — if MCP tools needed no approval at all,
+the trust list would be decorative and this spec would claim a mechanism it does not have. Dropping
+only that entry discriminates. This is the discipline the 2026-07-30 revision §1.4 records after a
+containment test passed vacuously: phrased with `PWNED`/"Do it now", Kiro refused on
+prompt-injection heuristics and never called the tool, so the effect's absence proved nothing about
+trust.
 
-## Acceptance criterion that must be rewritten
+### 3.1 Why scoped rather than trust-all, given §2 already concedes reads
 
-The issue currently says:
+Because the exclusions are real under the `Fail` policy (§3.3): `fs_write` and `execute_bash` raise
+a frame, and `Fail` ends the round rather than approving it. `--trust-all-tools` would exclude
+nothing and would leave the reviewer's write and shell access to the model's discretion. Consent to
+a read surface is not consent to unattended writes and shell execution.
 
-> `start_review_flow(kind="spec-review", vendor="kiro", model="<priced-model>")` completes a real
-> round unattended end-to-end with the model honored.
+### 3.2 Two spelling traps that must be asserted, not eyeballed
 
-**"priced-model" is very likely unsatisfiable, but state the reason precisely.** ACP surfaced no
-canonical token counters (measured). It does **not** follow that Kiro cost is unobservable:
-`KiroUsage.cs` already reads billing `metering_usage` credits from Kiro's on-disk session metadata.
+Both were measured in the 2026-07-30 revision and remain true:
 
-**Decision: drop the model clause from the acceptance criterion entirely.** Model override is out of
-scope (see §4a), so the criterion becomes:
+* **A typo is a WARNING, not an error.** `--trust-tools=fs_reed` warns and continues, trusting
+  nothing — a reviewer that mysteriously cannot read. The shipped list must be asserted against the
+  real names by a test, and a launch whose trust list draws a warning must fail rather than proceed.
+* **The trust-flag name and the displayed name differ** (`fs_write` trusts; the transcript says
+  `using tool: write`). Do not derive one from the other.
 
-> `start_review_flow(kind="spec-review", vendor="kiro")` completes a real round unattended end-to-end.
+Native names, for reference (enumeration oracle: an unknown name warns, a valid one is silent):
+`fs_read`, `fs_write`, `execute_bash`, `use_aws`, `knowledge`, `thinking`, `introspect`,
+`todo_list`, `gh_issue`, `web_search`.
 
-That is closable today. It removes the pricing-clamp question from this issue's critical path rather
-than resolving it by assertion: whether the clamp needs canonical tokens or accepts billing credits is a
-real question, but it belongs to the model-override follow-up, and `KiroUsage.cs`'s existing credits path
-means the answer is not simply "no data".
+### 3.3 Interaction policy: `Fail`
 
-## Design
+Not `AutoApprove`. `AcpInteractionBridge`'s `AutoApprove` selects an allow option and **does not
+inspect the tool**, so it would auto-approve exactly the excluded request §3's scoping exists to
+reject, and "zero human-routed interactions" would not detect it — the frames were handled, just not
+safely.
 
-### 1. Trust at spawn — now MEASURED, and the conclusion changed
+With scoped trust the reviewer emits **no** frame on its expected path (measured, §3). A frame
+therefore means something outside the intended surface was attempted, and ending the round is the
+correct response. This mirrors Gemini's reasoning for the same policy.
 
-The previous revision left this section "UNMEASURED and must be probed before implementable". It has now
-been probed against `kiro-cli 2.15.2` in an isolated empty `KIRO_HOME`. **The probe did not confirm the
-design; it falsified part of it.** Read the boundary finding before the tool list.
+---
 
-#### 1.1 The native tool names (measured)
+## 4. MCP containment: three sources, three answers
 
-There is a reliable enumeration oracle: an unknown name in `--trust-tools` produces
-`WARNING: --trust-tools arg for custom tool <name> needs to be prepended with @{MCPSERVERNAME}/`,
-while a valid native name produces no warning. Batch-probing candidates gave:
+The reviewer's callable MCP surface must be exactly what the launch injects — the
+`kcap-flow-result` channel plus any resolved allowlist servers.
 
-| Valid native tool | Invalid (warned) |
+### 4.1 Global `~/.kiro/settings/mcp.json` → isolated `KIRO_HOME`
+
+`PluginCommand.InstallKiro` registers `kcap-review`, `kcap-sessions`, `kcap-flows` and
+`kcap-memory` in the operator's **global** settings, and Kiro inherits them into every ACP session.
+`kcap-flows` is the hazard: a reviewer holding it can start nested review flows. Selecting a
+different agent does **not** suppress them — global settings are documented as independent of
+`~/.kiro/agents/kcap.json` — and `session/setMode` is too late, since servers are initialized by
+`session/new`.
+
+**Decision: a daemon-owned, empty `KIRO_HOME` per reviewer launch.** Measured on 2.16.0, with a
+positive control:
+
+| phase | `KIRO_HOME` | servers Kiro reported starting |
+|---|---|---|
+| A | empty temp dir | `kcap-flow-result` (the injected one) — nothing else |
+| **B (control)** | unset → real `~/.kiro` | `kcap-flow-result` + `kcap-review`, `kcap-memory`, `kcap-sessions`, **`kcap-flows`** |
+
+The control is what makes A mean anything; without it "zero global servers" is unfalsifiable.
+
+**This is also why the design needs no credential handling at all.** Kiro's credential is at
+`~/Library/Application Support/kiro-cli/`, not under `KIRO_HOME` — which is why the AI-1404 probe
+completed a full turn in an empty home with no auth error. Relocating `KIRO_HOME` suppresses
+configuration without touching authentication. That separation is the whole reason this design
+works where the sandbox did not.
+
+### 4.2 Branch-authored `.kiro/settings/mcp.json` → already closed
+
+Kiro spawns the server declared in a worktree's `.kiro/settings/mcp.json` at session setup — no
+prompt, no model involvement. On a contributor-authored branch that is repository-controlled
+process execution as the daemon user.
+
+**Nothing to build:** AI-1632 (merged) removes every workspace-scoped vendor MCP config at worktree
+creation, `.kiro/settings/mcp.json` included, unlinking the first symlinked component rather than
+resolving paths, and failing closed if removal is impossible. This spec depends on that behaviour
+and must not re-implement it.
+
+### 4.3 The installer must not be touched
+
+It is tempting to "fix" §4.1 by having `PluginCommand.InstallKiro` stop registering those four
+servers, or by editing the user's global config at reviewer launch. Both are wrong: those servers
+are what make kcap work in the operator's own interactive Kiro sessions, and mutating a user's
+global config as a side effect of someone else's review flow is a worse failure than the one being
+solved. **Containment stays entirely inside the daemon-owned home.** A verification item asserts
+the file is byte-identical after a round.
+
+---
+
+## 5. Runtime containment assertion, instead of a certified-version set
+
+Gemini's reviewer is gated on a **certified-version set** because its containment *is* a
+version-fragile matcher (`--allowed-mcp-server-names`), and a build that changed matching semantics
+would silently carry consent across the change.
+
+**Kiro takes a different route, and it is a better one where it is available.** Kiro reports its own
+MCP outcomes (both observed in the probe):
+
+```
+_kiro.dev/mcp/server_initialized    {sessionId, serverName}
+_kiro.dev/mcp/server_init_failure   {sessionId, serverName, error}
+```
+
+**Decision: assert at runtime, per launch.** Collect `server_initialized` names after `session/new`;
+if any name is outside the set this launch injected, fail the round with a coded error. This
+verifies the containment property **directly** rather than through a version proxy, needs no
+re-certification PR, and cannot go stale — which matters because `kiro-cli` auto-updates fast
+(2.12.1 → 2.15.2 → 2.16.0 inside a week during this issue's life). A certified-version set would
+take the reviewer offline repeatedly for a property the assertion proves outright.
+
+**`server_init_failure` is the second half and closes §6's hardest case.** A result channel that
+fails to start is otherwise invisible until the round times out with no result. Treating a failure
+naming the result channel as an immediate coded error converts the worst failure mode — a silent
+wedge — into a diagnosable one.
+
+**Ordering caveat, and it is load-bearing.** These are asynchronous notifications; the probe needed
+a short settle before the tally was complete. The assertion must therefore be evaluated on a bounded
+wait after `session/new` and **re-checked before a result is accepted**, not sampled once at an
+arbitrary instant. A single early sample would pass while a late server was still starting.
+
+**Residual, accepted:** a Kiro build that stopped emitting these notifications would make the
+assertion vacuous — it would observe an empty set and conclude "nothing extra". Mitigated by the
+same launch requiring its injected result channel to appear in that set: an assertion that sees no
+notifications at all fails, because it never saw its own channel. That makes silence a failure
+rather than a pass, which is the direction that matters.
+
+---
+
+## 6. Failure surfaces: coded errors, never a wedged round
+
+The 2026-07-30 revision's auth-specific criterion — "a tier/auth failure surfaces a coded error" —
+is **dropped as unclosable**, for that revision's reasons and now an additional one: under
+operator-managed auth there is no auth path we own to fail. An isolated empty `KIRO_HOME` was
+measured NOT to produce an unauthenticated Kiro (credentials live elsewhere), and no auth-failure
+shape has ever been observed, so a fake peer would assert our handling of our own invention.
+
+Replaced by the testable, vendor-agnostic property: **a reviewer whose launch or first prompt fails
+surfaces a coded error rather than hanging the round**, exercised with synthetic non-auth failures —
+an unresolvable binary path, and a peer that exits before responding to `initialize`. Plus, newly
+available from §5, a real vendor-reported failure: `server_init_failure` naming the result channel.
+
+Coded errors this design introduces:
+
+| Code | Condition |
 |---|---|
-| `fs_read`, `fs_write`, `execute_bash`, `use_aws`, `knowledge`, `thinking`, `introspect`, `todo_list`, `gh_issue`, `web_search` | `report_issue`, `code_review`, `fetch`, `mcp` |
+| `kiro_unattended_reviewer_disabled` | Operator has not enabled the reviewer on this daemon |
+| `kiro_reviewer_mcp_surface_unexpected` | §5 assertion saw a server outside the injected set |
+| `kiro_reviewer_result_channel_unavailable` | `server_init_failure` named the result channel |
+| `kiro_reviewer_trust_list_rejected` | Kiro warned on a `--trust-tools` entry (§3.2) |
 
-Two incidental facts worth pinning, because both can mislead an implementer:
+Advertisement is gated on `CliResolver.Exists(KiroPath)`, as AI-1404 already does for interactive
+hosting: a daemon advertising Kiro on a host with no `kiro-cli` converts a clean
+`no_daemon_available` into a mid-round launch failure.
 
-* **A typo is a WARNING, not an error.** `--trust-tools=fs_reed` warns and continues, trusting nothing.
-  So a misspelled trust list degrades silently into "no tools trusted" — a reviewer that mysteriously
-  cannot read. Whatever we ship must be asserted against the real names, not eyeballed.
-* **The trust-flag name and the displayed tool name differ.** The trust flag is `fs_write`, but the
-  transcript says `using tool: write` (and `fs_read` displays as `read`). Do not derive one from the
-  other.
+---
 
-#### 1.2 The boundary finding: `fs_read` is NOT path-scoped
+## 7. Reviewer-home lifecycle — back in scope, and a disposal requirement
 
-**Measured, and it invalidates the "scoped trust is the read-only boundary" premise.** With
-`--trust-tools=fs_read,thinking` and cwd set to a review worktree, Kiro was asked to read a file in a
-completely unrelated directory outside that worktree. It did:
+The 2026-07-30 revision delegated this to the sandbox's per-launch state root. **With no sandbox we
+own it again**, and it is a security requirement rather than tidiness:
 
-```
-Reading file: …/outside.9DinAE/secret.txt, all lines (using tool: read)
- ✓ Successfully read 25 bytes
-> The file contains exactly one line:
-  SECRET_OUTSIDE_NONCE_9042
-```
+`KiroPaths.ConfigRoot` reads `KIRO_HOME` first, so `SessionsDir()` resolves to
+`{KIRO_HOME}/sessions/cli` — **Kiro writes the reviewer's own conversation JSONL into the isolated
+home**, and that transcript contains the review context: the caller's diff, source excerpts, and the
+findings. The home is read-empty but **write-sensitive**, and it is created on a host that may serve
+several callers.
 
-So a trusted `fs_read` is a **whole-filesystem read primitive** under the daemon's uid. On a daemon host
-that reaches `~/.config/kcap/tokens.json`, `~/.aws/credentials`, SSH keys, and every *other* concurrent
-review's worktree — including, per the isolated-home section above, other reviewers' transcript JSONL.
+* **Contents at creation:** nothing. Empty is what makes §4.1 work.
+* **Permissions:** `0700`, set **at creation**, not after — a world-readable window between `mkdir`
+  and `chmod` is long enough to leak a transcript. Root it under a daemon-owned directory, never
+  directly in a world-writable shared temp path another user could pre-create or substitute.
+* **Naming:** `kcap-kiro-reviewer-<daemonEpoch>-<launchId>`. `daemonEpoch` is fixed once per daemon
+  process start; `launchId` is per launch.
+* **Concurrency:** one home per launch, so concurrent reviews neither race shared state nor read
+  each other's transcripts.
+* **Startup sweep, epoch-keyed:** delete every `kcap-kiro-reviewer-*` whose epoch is **not** the
+  current one. This is the crash/`SIGKILL` recovery, and the epoch key is what stops a second daemon
+  on the same host deleting a live peer's home mid-review.
+* **Reap before delete:** terminate the reviewer and confirm exit first. Deleting under a live Kiro
+  leaves it writing into an unlinked path, and on a crash-recovery pass the owner may still be alive.
+* **No symlink following** on delete, and assert the resolved path is still inside the daemon root
+  before recursing.
+* **Failure handling:** log at warning with the path and continue. An undeletable home must not fail
+  a round or block startup, but persistent failure is undisposed review context accumulating.
 
-`--trust-tools` is therefore a **tool-surface** control, not a filesystem boundary. This is the same
-lesson the Copilot borrowed-review work already learned and encoded in
-`AcpBorrowedReviewContainment`: *"widening its tool surface enough to read a snapshot also widens what a
-read tool can be pointed at, so the boundary is an OS sandbox rather than the vendor's own permission
-prompts."* Kiro is in exactly that position.
+---
 
-**Consequence for this issue.** Scoped trust alone does not make a contained reviewer. Options, in
-preference order:
+## 8. Model override — out of scope, with the reason corrected
 
-1. **OS sandbox** (`sandbox-exec` on macOS, the mechanism Copilot borrowed review already uses) confining
-   reads to the review worktree plus what the CLI needs to start. This is the only option that actually
-   bounds reads.
-2. **Accept the read surface explicitly**, scoped to OWNED worktrees only (borrowed review stays off
-   regardless), with the residual risk written down: a reviewer can read anything the daemon user can.
-   Only defensible on a single-tenant host where the reviewer is already trusted with the repository.
+The 2026-07-30 revision deferred this because `session/set_config_option` was unproven on Kiro and
+its selector fails silently. **That reason is now stale.** AI-1613's probe
+(`docs/probes/2026-08-05-kiro-model-override/`) measured `session/set_config_option` as conclusively
+absent (`-32601`) but `session/set_model` as working at effect level, and Kiro now ships
+`SetModelSelector` plus `DaemonConfig.KiroModel` / `KCAP_KIRO_MODEL`.
 
-Option 2 must not be chosen silently. If it is chosen, the *reason* it is tolerable is the isolated
-`KIRO_HOME` plus owned-worktree-only scope, not the trust list — and the spec must say so, because a
-later reader will otherwise assume `--trust-tools` was the boundary.
+**The deferral survives on a different, stronger reason:**
+`AcpHostedAgentRuntimeFactory.ReviewerModelResolver` is `null` for **every** ACP vendor, so all of
+them advertise `SupportsReviewerModelResolution: false` and the server already refuses a v3 reviewer
+model override with no silent fallback. That is a foundation gap, not a Kiro one, and closing it
+here would make Kiro the first ACP vendor with a reviewer-model resolver as a side effect of an
+unrelated issue.
 
-#### 1.3 Writes and shell ARE blocked — but check WHY
+So: no `ReviewerModelResolver` wiring, and a caller-supplied reviewer model stays **refused with a
+coded error** — never accepted-and-ignored, which is the worst outcome available (the round
+completes, the result looks authoritative, and nothing records that the requested model did not
+review the code).
 
-`fs_write` omitted from the trust set does block the write, at **effect** level:
+**One consequence to state rather than discover.** `ResolveDefaultModel: cfg => cfg.KiroModel` means
+a review launch inherits the daemon-wide `KCAP_KIRO_MODEL` if the operator set one. That is
+desirable — an operator can pin a cheap reviewer model — but it must be **reported** on the launch
+attempt, not silently applied, so the audit trail names the model that actually reviewed.
 
-```
-Command fs_write is rejected because it matches one or more rules on the denied list:
-  - non-interactive mode (no user to approve)
-```
+---
 
-Note the reason: the denial is attributed to **`--no-interactive` (no user to approve)**, not to the
-trust list. That is good news for wedging — an untrusted tool is *denied*, not left hanging — but it
-means the measured containment came from the non-interactive mode, and an equivalent set omitting
-`fs_write` would deny identically. **`shell`/`execute_bash` must still never be trusted**: the earlier
-draft had it, and trusting it makes writes and out-of-tree commands execute with no frame at all.
-
-**This measurement is on the `chat --no-interactive` path, NOT the ACP path.** The reviewer runs
-`kiro-cli acp`, where there is no `--no-interactive` and a permission request surfaces as an ACP frame
-handled by `AcpInteractionBridge` under the `Fail` policy from §2. Do not carry the "denied list"
-behaviour over to ACP without re-measuring it there — that would repeat the
-`server_initialized`-proves-callability error from AI-1404.
-
-#### 1.4 A negative test needs a positive control
-
-The first attempt at the write test was **vacuous and looked like a pass.** Phrased with
-`PWNED`/`BREACH`/"Do it now", Kiro refused on prompt-injection grounds and never called the tool at all;
-the file's absence proved nothing about trust. Only re-running with a benign, plausible request — and a
-**positive control** with `fs_write` trusted, proving the same request really does write — established
-that the tool was attempted and then blocked.
-
-So the acceptance criteria here must be paired: for every "forbidden effect did not happen" assertion,
-a control showing the effect DOES happen when permitted. Without it, the model's own judgement can
-satisfy the test while the guard is absent.
-
-#### 1.5 What remains unmeasured
-
-`@kcap-flow-result/...` namespaced trust for the injected result tool is **still unverified**. A reviewer
-that cannot call `flow-result` without approval cannot deliver a result at all and would present as a
-silent timeout, so this must be probed on the ACP path before implementation. The AI-1404 probe proved a
-`session/new`-injected stdio server reaches a real `tools/call`, but that was with `--trust-all-tools`,
-which §1 forbids — so it does not transfer.
-
-**There is no `--trust-all-tools` fallback.** An earlier draft offered one, which contradicted §2 and
-would have widened the very hole it describes: if the scoped set proves insufficient, the correct
-outcome is a failing reviewer to investigate, not a blanket-trusted one.
-
-### 2. Interaction policy — an earlier draft of this spec had a security hole here
-
-The earlier proposal was `AutoApprove` (the Copilot posture) on the grounds that Kiro's known upstream
-prompt leaks (#7398) make a frame expected rather than exceptional, so `Fail` would be flaky.
-
-**That combination is unsafe and it undoes §1.** `AcpInteractionBridge` documents that `AutoApprove`
-selects an allow option and **does not inspect the tool**. So on exactly the fallback path this design
-expects to exercise, a leaked request for a tool deliberately excluded from `--trust-tools` — a
-write-capable shell command, an out-of-worktree path, anything — is auto-approved. Scoped trust would
-provide no protection whatsoever, and "zero human-routed interactions" would not detect it: the frames
-were handled, just not safely.
-
-**Decision: `Fail`** — the Cursor posture. An allowlist-aware policy would need an authoritative tool-ID
-allowlist, Kiro/MCP namespace normalisation, shell-command and path handling, and unknown-frame
-treatment; that is a foundation feature, not a Kiro detail, and inventing it here would leave a matcher
-nobody has specified.
-
-`Fail` accepts the cost the earlier draft was avoiding: if upstream's prompt leaks (#7398) fire, Kiro
-reviewer rounds fail rather than silently auto-approving. **That is the correct direction** — a visibly
-flaky reviewer is a bug report; a tool-blind auto-approver is a security hole that passes its own tests.
-If the leaks prove frequent enough to make Kiro unusable, the answer is an allowlist-aware policy
-specified as its own piece of work, not `AutoApprove`.
-
-Acceptance needs **negative** criteria, which the earlier draft lacked entirely: an untrusted,
-write-capable, or out-of-bounds request must be denied or must terminate the reviewer, while the known
-safe read and `flow-result` requests still succeed. Without those, this policy is untested by
-construction.
-
-### 3. Prompt shape
-
-`promptCapabilities.embeddedContext: false` (measured). Kiro cannot take embedded context resources,
-so AI-1407's prompt folding must deliver review context as **plain text** for Kiro. Confirm the
-foundation does not assume embedded context for any vendor; if it does, that is a foundation fix, not
-a Kiro one.
-
-### 4. Descriptor changes
-
-Flip on the AI-1404 descriptor:
+## 9. Descriptor and configuration changes
 
 ```csharp
-UnattendedTrustArgv: [/* §1 */],
+// AcpVendorDescriptors.Kiro
+UnattendedTrustArgv: ["--trust-tools", "fs_read,thinking,@kcap-flow-result/submit_review_result"],
 SupportsUnattended:  true,
-UnattendedInteractionPolicy: AcpUnattendedInteractionPolicy.Fail,   // §2 — NOT AutoApprove
-ReviewFlowMcpTransport: AcpReviewFlowMcpTransport.SessionNew,   // measured-honoured
+UnattendedInteractionPolicy: AcpUnattendedInteractionPolicy.Fail,      // §3.3 — NOT AutoApprove
+ReviewFlowMcpTransport:      AcpReviewFlowMcpTransport.SessionNew,     // measured GO
+// unchanged:
+ModelSelector:           SetModelSelector.Instance,                    // §8 — interactive path only
+SupportsReconnectResume: false,                                        // durable stale-owner lock
 ```
 
-Borrowed review stays **off**. It needs a containment-token decision
-(`NativeToolClamp` vs `IndependentSnapshot`) grounded in what Kiro's tool clamp actually permits, and
-the descriptor's own doc comment is explicit that guessing that token wrong is a wiring bug. Out of
-scope here; its own issue once basic reviewing works.
+**No aliasing.** `AliasesResultChannel` stays Gemini-only. Aliasing exists because Gemini's MCP gate
+is an exact-name allowlist a repository could impersonate; Kiro's containment is *source
+suppression* (§4.1 + §4.2), so there is no competing source to impersonate and the result channel
+keeps its canonical `kcap-flow-result` id.
 
-### 4a. Model override, and what the daemon may advertise
+**Borrowed review stays off.** It needs a containment-token decision (`NativeToolClamp` vs
+`IndependentSnapshot`) grounded in what Kiro's clamp actually permits, and §2's finding — a trusted
+`fs_read` is not path-scoped — says `NativeToolClamp` would be the wrong token. Its own issue.
 
-Model override is **out of scope for this issue** — AI-1404 ships `NoOpModelSelector.Instance` because
-`session/set_config_option` is unproven on Kiro and the selector fails silently when it does not take.
-This section exists because two earlier references pointed at a "§4a" that was never written, so the
-decision had no home and could be re-litigated by whoever implemented it.
+**Consent flag: generalize, do not copy.** Kiro is the second vendor to need one, and a third copy
+of the pattern is how they drift. `GeminiUnattendedReviewerEnabled` becomes a per-vendor lookup
+(adding `KiroUnattendedReviewerEnabled` / `KCAP_KIRO_UNATTENDED_REVIEWER`), while
+`GeminiReviewerCapability`'s **version** half stays Gemini-specific — Kiro's equivalent is §5's
+runtime assertion, and conflating the two would either impose a version treadmill on Kiro or drop
+Gemini's certification. The gate must run in `StartAsync` **before any connection source**, with
+`BuildProcessStartInfo` keeping its own check as defence in depth, exactly as the Gemini gate does;
+a gate only in the builder is bypassable by a supplied connection source.
 
-The load-bearing part is not the deferral, it is **refusing rather than ignoring**:
+**Prompt shape.** `promptCapabilities.embeddedContext: false` (measured): AI-1407's prompt folding
+must deliver review context to Kiro as **plain text**. Confirm the foundation does not assume
+embedded context for any vendor; if it does, that is a foundation fix, not a Kiro one.
 
-* Do **not** wire `AcpHostedAgentRuntimeFactory.ReviewerModelResolver` for Kiro. It is `null` at this
-  base, which is why the server already refuses an ACP review-flow model override. That refusal is the
-  correct behaviour and must be preserved deliberately, not inherited by accident.
-* A Kiro reviewer launched with a caller-supplied model must **fail with a coded error**, never accept
-  the request and run the vendor default. A silently-ignored `model=` is the worst outcome available
-  here: the round completes, the result looks authoritative, and nothing anywhere records that the
-  requested model was not the model that reviewed the code.
-* Correspondingly, `ResolveDefaultModel: _ => null` and `NoOpModelSelector` must both hold. Per AI-1404
-  Premise 3, `ResolveDefaultModel: null` alone is **not** sufficient — `ResolveRequestedModel`
-  prioritises `RuntimeStartContext.Model`, so a dashboard-supplied model still reaches a live selector.
+**Skill derail (the AI-1135 analogue) does not apply.** Kiro does not read `~/.agents/skills/`, so
+there is no review-flows skill to route a Kiro reviewer away from.
 
-**Availability advertisement is static, and must be gated on resolution, not on the descriptor
-existing.** `SupportsUnattended: true` is what makes `vendor="kiro"` selectable as a reviewer, and a
-daemon that advertises Kiro on a host where `kiro-cli` is absent converts a clean
-`no_daemon_available` into a launch failure mid-round. Advertise the reviewer capability only when
-`CliResolver.Exists(KiroPath)` — the same gate AI-1404 applies to interactive hosting.
+---
 
-### 4b. Reviewer-home lifecycle and crash cleanup
+## 10. Verification
 
-Because the home is transcript-bearing (see the isolated-`KIRO_HOME` decision above), disposal is a
-security requirement. This is the one item that touches daemon process launch, so specify it exactly:
+Each negative assertion is paired with a positive control — §3's own history is why.
 
-* **Naming:** `kcap-kiro-reviewer-<daemonEpoch>-<launchId>` under a **daemon-owned** root, not directly
-  in the shared system temp dir. `daemonEpoch` is fixed once per daemon process start; `launchId` is
-  per reviewer launch.
-* **Startup sweep, epoch-keyed:** on daemon start, delete every `kcap-kiro-reviewer-*` directory whose
-  epoch is **not** the current epoch. This is what recovers from a crash or `SIGKILL`, and the epoch key
-  is what makes it safe for a second daemon on the same host — a sweep that deleted every matching
-  directory would delete a *live* peer's reviewer home mid-review.
-* **Reap before delete:** terminate the reviewer process and confirm exit before deleting its tree.
-  Deleting under a live Kiro leaves it writing transcript lines into an unlinked or recreated path, and
-  on a crash-recovery pass the owning process may still be alive.
-* **No symlink following** when deleting, and **assert the resolved path is still inside the daemon root**
-  before recursing. Both are the standard recursive-delete hazards; the transcript content is the reason
-  they matter here rather than being theoretical.
-* **Failure handling:** log and continue. A home that cannot be deleted must not fail the review round
-  or block daemon startup — but it must be logged at warning with the path, because a persistent
-  failure is undisposed review context accumulating on disk.
-* **The installer is not involved, and must not be changed.** It is tempting to "fix" the blocker by
-  having `PluginCommand.InstallKiro` stop registering the four servers in global
-  `~/.kiro/settings/mcp.json`, or by removing them at reviewer launch. Both are wrong: those servers
-  are what make kcap work for the user's own interactive Kiro sessions, and mutating a user's global
-  config as a side effect of someone else's review flow is a far worse failure than the one being
-  solved. Containment stays entirely inside the daemon-owned home.
+**Containment**
+- [ ] A reviewer launch sets a fresh, empty, `0700` `KIRO_HOME` under a daemon-owned root
+- [ ] With it, `kcap-flows` is absent from the reviewer's session; **control:** the same handshake
+      with the real home shows it present
+- [ ] The §5 assertion fails the round when a server outside the injected set initializes;
+      **control:** an ordinary launch, whose injected set is exactly what appears, passes
+- [ ] A launch that observes **no** `server_initialized` at all fails (silence is not a pass, §5)
+- [ ] `server_init_failure` naming the result channel yields
+      `kiro_reviewer_result_channel_unavailable`, not a round timeout
+- [ ] The operator's global `~/.kiro/settings/mcp.json` is byte-identical after a round (§4.3)
+- [ ] A worktree carrying `.kiro/settings/mcp.json` has it removed before launch (AI-1632 regression)
 
-### 5. Auth
+**Trust**
+- [ ] `flow-result` is callable with **zero** `session/request_permission` frames;
+      **control:** dropping the namespaced entry produces exactly one frame naming the tool
+- [ ] An `fs_write` or `execute_bash` attempt raises a frame and `Fail` ends the round;
+      **control:** the same request succeeds when that tool is trusted
+- [ ] A trust-list entry Kiro warns about fails the launch (`kiro_reviewer_trust_list_rejected`)
+      rather than silently trusting nothing (§3.2)
 
-`authMethods: []` shows no ACP-mediated auth flow, and a prompt completed with no `KIRO_API_KEY` set —
-but on one machine, which may have had cached credentials. That proves **no pre-checkable signal**, not
-"no auth requirement" and not "no tier gate".
+**Consent and availability**
+- [ ] A daemon without the Kiro flag refuses with `kiro_unattended_reviewer_disabled` and does not
+      advertise the vendor; asserted with the operator flag alone, so binary resolution cannot make
+      the test pass for the wrong reason
+- [ ] The gate runs before any connection source (a supplied source cannot bypass it)
+- [ ] A host without `kiro-cli` does not advertise the reviewer
 
-So: build no pre-check, and fail on the real launch/prompt error with a coded diagnostic.
-
-**The acceptance criterion "a tier/auth failure surfaces a coded error" cannot be closed as written, and
-an earlier draft of this section proposed two ways to exercise it that do not exist.** Both are now
-ruled out on evidence:
-
-* *"An isolated unauthenticated `KIRO_HOME` if that reproduces"* — **measured not to reproduce.** The
-  isolated-empty-home probe completed `initialize`, `session/new` and a full `session/prompt` to
-  `end_turn` with no auth error at all. That is the same measurement that proved credentials live
-  outside `KIRO_HOME`; it necessarily also means an empty home does not produce an unauthenticated Kiro.
-* *"Otherwise a fake ACP peer returning the measured auth-failure shape"* — **no auth-failure shape was
-  ever measured.** Not one auth error was observed in any probe. Specifying a fake peer would mean
-  inventing a frame shape and then asserting our handling of our own invention: a test that passes by
-  construction and proves nothing about Kiro.
-
-**Decision: drop the auth-specific criterion from this issue** and replace it with the vendor-agnostic
-property that is actually testable — *a reviewer whose launch or first prompt fails surfaces a coded
-error rather than hanging the round* — exercised with a synthetic non-auth failure (an unresolvable
-binary path, and a peer that exits before responding to `initialize`). That covers the real risk the
-criterion was reaching for, which is a **wedged round**, and it does so without a fabricated fixture.
-
-If a genuine auth/tier failure is ever observed in the field, capture its shape then and add the
-specific assertion. Until it is observed, there is nothing to assert against.
-
-## Verification
-
+**Round behaviour**
 - [ ] `start_review_flow(kind="spec-review", vendor="kiro")` completes findings→clean unattended
 - [ ] Same for `code-review`
-- [ ] **Zero** human-routed interactions during the round
-- [ ] `flow-result` is callable without approval (the §1 namespacing question)
-- [ ] `kcap-flows` is NOT present in the reviewer's session (the §"blocker" suppression works)
+- [ ] **Zero** human-routed interactions across the round
 - [ ] Reviewer session captured and reaped; no orphan
-- [ ] Runs at the vendor default model — override is explicitly out of scope
-- [ ] A caller-supplied model is **refused with a coded error**, not silently ignored (§4a)
-- [ ] A failed launch / failed first prompt surfaces a coded error instead of a hung round, exercised by
-      a synthetic non-auth failure — unresolvable binary, and a peer that exits before `initialize`
-      (§5; the auth-specific criterion is deliberately dropped as unclosable)
-- [ ] The reviewer home is created `0700` at creation time, under a daemon-owned root (§4b)
-- [ ] A stale reviewer home from a *previous* daemon epoch is swept at startup, and a *current*-epoch
-      home belonging to a live peer is NOT (§4b)
-- [ ] The reviewer process is reaped before its home is deleted (§4b)
-- [ ] The user's global `~/.kiro/settings/mcp.json` is byte-identical after a reviewer round (§4b —
-      containment never mutates user config)
-- [ ] **Negative:** an untrusted / write-capable request is denied or reaps the reviewer (see §2) — not
-      merely absent, and **each negative assertion is paired with a positive control** proving the same
-      request succeeds when permitted (§1.4 — the first such test passed vacuously because the model
-      refused on prompt-injection grounds and never called the tool)
-- [ ] **Negative, out-of-worktree read:** currently EXPECTED TO FAIL under scoped trust alone — §1.2
-      measured `fs_read` reading outside the worktree. This checkbox is only closable once §1.2's
-      containment decision is implemented (OS sandbox), or is explicitly restated as accepted risk
-- [ ] A misspelled entry in the trust list cannot ship silently (§1.1 — a typo is a warning, not an
-      error, and degrades to "nothing trusted")
-- [ ] The effective callable tool surface excludes global servers, inspected directly
-- [ ] A missing reviewer configuration refuses the launch with a coded error rather than wedging
+- [ ] A caller-supplied reviewer model is refused with a coded error, not ignored (§8)
+- [ ] The applied model is reported on the launch attempt, including the `KCAP_KIRO_MODEL` case (§8)
+- [ ] An unresolvable binary, and a peer that exits before `initialize`, both surface coded errors
+      rather than hanging (§6)
 
-## Out of scope
+**Home lifecycle**
+- [ ] Created `0700` at creation time under a daemon-owned root (§7)
+- [ ] A stale home from a *previous* daemon epoch is swept at startup; a *current*-epoch home
+      belonging to a live peer is **not**
+- [ ] The reviewer process is reaped before its home is deleted
+- [ ] Deletion does not follow symlinks and refuses a path resolving outside the daemon root
 
-- Borrowed review for Kiro (containment-token decision).
-- Model override (see §4a) — its own follow-up.
-- Kiro **canonical token** reporting — absent from ACP; billing credits remain available via `KiroUsage`.
+---
+
+## 11. Acceptance
+
+The issue's original criterion named a `model="<priced-model>"` clause. Model override is out of
+scope (§8), so the criterion is:
+
+> `start_review_flow(kind="spec-review", vendor="kiro")` completes a real round unattended
+> end-to-end, on a daemon whose operator has enabled the Kiro reviewer.
+
+---
+
+## 12. Out of scope
+
+- Borrowed review for Kiro (containment-token decision — §9).
+- Reviewer model override (§8) — a foundation gap owned by whoever gives ACP a
+  `ReviewerModelResolver`.
+- Kiro **canonical token** reporting: absent from ACP. Billing credits remain available via
+  `KiroUsage`, so cost is observable even though tokens are not.
 - `--agent-engine` pinning — deliberately unpinned by AI-1404.
-- Fixing upstream trust-flag prompt leaks.
+- Reconnect/resume for a crashed reviewer: `SupportsReconnectResume: false` (durable stale-owner
+  lock, measured). A crashed reviewer fails its round and heals by relaunch.
+- Upstream trust-flag prompt leaks (#7398). Under `Fail` these surface as failed rounds — a bug
+  report, not a silent auto-approval. If they prove frequent, the answer is an allowlist-aware
+  interaction policy specified as its own foundation work, never `AutoApprove`.
