@@ -263,6 +263,10 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
 
     int _sawFirstUpdate;
 
+    /// <summary>Completes when the first turn ends, however it ends — the other way to disarm the
+    /// first-output watchdog.</summary>
+    readonly TaskCompletionSource _firstTurnSettled = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
     /// <summary>Agent capabilities negotiated by <see cref="StartAsync"/>'s <c>initialize</c> call; null before that.</summary>
     AgentCapabilities? _negotiatedCapabilities;
 
@@ -717,6 +721,12 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
     void ArmFirstOutputWatchdog() {
         if (_firstOutputDeadline is not { } deadline) return;
 
+        // Completion disarms it too, not just output. A turn that legitimately finishes having
+        // emitted no session/update at all would otherwise leave the timer armed and reap a healthy,
+        // still-hosted reviewer some seconds later.
+        _ = _firstTurnSettled.Task.ContinueWith(
+            _ => Interlocked.Exchange(ref _sawFirstUpdate, 1), TaskScheduler.Default);
+
         _ = Task.Run(async () => {
             try {
                 await Task.Delay(deadline, _timeProvider, _cts.Token).ConfigureAwait(false);
@@ -896,6 +906,11 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
                 // skip-whole-replay nothing is ever re-emitted from replay, so the flushed partial
                 // run cannot be duplicated; it is the only copy of what the agent said before dying.
                 FlushOpenRun();
+
+                // However this turn ended — stopReason, fault, cancellation — it is settled, which
+                // disarms the first-output watchdog. Without this a turn that legitimately produced
+                // no session/update at all would leave the timer armed to reap a healthy reviewer.
+                _firstTurnSettled.TrySetResult();
 
                 lock (_reconnectLock) {
                     if (_inFlight is { } f && ReferenceEquals(f.Turn, turn))
@@ -1433,17 +1448,21 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
 
         _cts.Dispose();
 
-        await installed.Connection.DisposeAsync().ConfigureAwait(false);
-        await installed.Process.DisposeAsync().ConfigureAwait(false);
-
-        // LAST, and only once the child is gone: for the Kiro reviewer this deletes the isolated,
-        // transcript-bearing home. Deleting under a live child would leave it writing into an
-        // unlinked path. Never allowed to throw out of disposal — an undeletable home is logged by
-        // the callback itself and must not fail the teardown that reaped the process.
+        // In a finally, because _disposed is latched at the top: if connection or process disposal
+        // faults, a retry returns immediately and the callback would never run at all. For the Kiro
+        // reviewer that callback deletes the transcript-bearing home, so skipping it on a faulted
+        // teardown is precisely the leak this hook exists to close.
         try {
-            _onDisposed?.Invoke();
-        } catch (Exception ex) {
-            _logger.LogWarning(ex, "ACP: post-dispose cleanup failed for agent {AgentId}.", _agentId);
+            await installed.Connection.DisposeAsync().ConfigureAwait(false);
+            await installed.Process.DisposeAsync().ConfigureAwait(false);
+        } finally {
+            // Never allowed to throw out of disposal — an undeletable home is logged and must not
+            // fail the teardown that reaped the process.
+            try {
+                _onDisposed?.Invoke();
+            } catch (Exception ex) {
+                _logger.LogWarning(ex, "ACP: post-dispose cleanup failed for agent {AgentId}.", _agentId);
+            }
         }
     }
 

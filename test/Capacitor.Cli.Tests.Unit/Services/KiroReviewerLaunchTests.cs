@@ -107,8 +107,9 @@ public class KiroReviewerLaunchTests {
     /// because a hosted Kiro the user drives should behave exactly as their own session does.</summary>
     [Test]
     public async Task AnInteractiveLaunch_HasNoTrustArgvAndNoIsolatedHome() {
-        Skip.Unless(!OperatingSystem.IsWindows(),
-            "The Kiro unattended reviewer is POSIX-only: its isolated home holds review context and cannot be created owner-only on Windows.");
+        // Deliberately NOT skipped on Windows: it asserts the interactive path creates no home and
+        // no trust argv, which is exactly the assertion that should hold on a platform where the
+        // reviewer is unavailable. Skipping it there would drop the coverage that matters most.
 
         var psi = Psi(isReviewFlow: false, EnabledConfig(StateDir()));
 

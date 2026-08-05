@@ -33,8 +33,16 @@ public class KiroReviewerFirstOutputTests {
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 
+    // The fake's OWN envelope builder, not a hand-rolled one. WriteRawFrameAsync writes the value as
+    // a whole JSON-RPC frame, so a hand-built params object produces a frame with no "method" — it is
+    // never dispatched as session/update, and the "peer emitted output" premise silently fails. That
+    // is exactly how a fixture ends up testing the consumer against itself.
+    static JsonElement Chunk(string text) =>
+        FakeAcpAgent.DefaultAgentMessageChunkUpdate(FakeAcpAgent.FixedSessionId, text);
+
     static async Task<(TrackingProcess Process, FakeAcpAgent Agent, AcpHostedAgentRuntime Runtime)>
-            StartAsync(TimeSpan? firstOutputDeadline, CancellationToken ct) {
+            StartAsync(TimeSpan? firstOutputDeadline, CancellationToken ct,
+                       IReadOnlyList<JsonElement>? updates = null) {
         var agent   = new FakeAcpAgent();
         var conn    = new AcpConnection(agent.ClientWriteStream, agent.ClientReadStream, NullLogger.Instance);
         var process = new TrackingProcess();
@@ -44,7 +52,7 @@ public class KiroReviewerFirstOutputTests {
         // exactly that reason, and it was the test that was wrong. An empty update list plus a held
         // response models a child that accepted the turn and then produced nothing at all.
         agent.EnqueuePromptScript(
-            [], JsonDocument.Parse("""{"stopReason":"end_turn"}""").RootElement.Clone());
+            updates ?? [], JsonDocument.Parse("""{"stopReason":"end_turn"}""").RootElement.Clone());
         agent.HoldPromptResponses = new TaskCompletionSource();
 
         _ = agent.RunAsync(ct);
@@ -87,6 +95,25 @@ public class KiroReviewerFirstOutputTests {
         var (process, _, runtime) = await StartAsync(firstOutputDeadline: null, cts.Token);
 
         await Task.Delay(600, cts.Token);
+
+        await Assert.That(process.Terminated).IsFalse();
+        await runtime.DisposeAsync();
+    }
+
+    /// <summary>
+    /// The control that makes the reap test mean something. An implementation that killed
+    /// unconditionally whenever a deadline is configured passes both tests above — this is the one it
+    /// fails. Same deadline, same held (never-completing) turn; the only difference is that this peer
+    /// emits one update, so it must be left alone well past the deadline.
+    /// </summary>
+    [Test]
+    public async Task APeerThatEmitsOutput_SurvivesPastTheDeadline() {
+        using var cts = new CancellationTokenSource(Guard);
+
+        var (process, _, runtime) = await StartAsync(
+            TimeSpan.FromMilliseconds(300), cts.Token, updates: [Chunk("reviewing")]);
+
+        await Task.Delay(1200, cts.Token);
 
         await Assert.That(process.Terminated).IsFalse();
         await runtime.DisposeAsync();

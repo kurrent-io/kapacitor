@@ -17,6 +17,9 @@ public class KiroReviewerHomeTests {
 
     [Test]
     public async Task Create_MakesAnEmptyOwnerOnlyDirectory() {
+        Skip.Unless(!OperatingSystem.IsWindows(),
+            "The reviewer home is POSIX-only: CreateOwnerOnly refuses a platform where the transcript directory cannot be made owner-only.");
+
         var home = KiroReviewerHome.Create(TempStateDir(), "epochA", "launch1");
 
         await Assert.That(Directory.Exists(home)).IsTrue();
@@ -32,6 +35,9 @@ public class KiroReviewerHomeTests {
 
     [Test]
     public async Task Sweep_DeletesAHomeFromAPreviousEpoch() {
+        Skip.Unless(!OperatingSystem.IsWindows(),
+            "The reviewer home is POSIX-only: CreateOwnerOnly refuses a platform where the transcript directory cannot be made owner-only.");
+
         var stateDir = TempStateDir();
         var stale    = KiroReviewerHome.Create(stateDir, "epochA", "launch1");
 
@@ -46,6 +52,9 @@ public class KiroReviewerHomeTests {
     /// </summary>
     [Test]
     public async Task Sweep_KeepsAHomeFromTheCurrentEpoch() {
+        Skip.Unless(!OperatingSystem.IsWindows(),
+            "The reviewer home is POSIX-only: CreateOwnerOnly refuses a platform where the transcript directory cannot be made owner-only.");
+
         var stateDir = TempStateDir();
         var live     = KiroReviewerHome.Create(stateDir, "epochB", "launch2");
 
@@ -62,6 +71,9 @@ public class KiroReviewerHomeTests {
     /// </summary>
     [Test]
     public async Task Sweep_NeverReachesAPeerDaemonsRoot() {
+        Skip.Unless(!OperatingSystem.IsWindows(),
+            "The reviewer home is POSIX-only: CreateOwnerOnly refuses a platform where the transcript directory cannot be made owner-only.");
+
         var mine     = TempStateDir();
         var peer     = TempStateDir();
         var peerLive = KiroReviewerHome.Create(peer, "peerEpoch", "launch9");
@@ -73,6 +85,9 @@ public class KiroReviewerHomeTests {
 
     [Test]
     public async Task Delete_RefusesAPathOutsideTheRoot() {
+        Skip.Unless(!OperatingSystem.IsWindows(),
+            "The reviewer home is POSIX-only: CreateOwnerOnly refuses a platform where the transcript directory cannot be made owner-only.");
+
         var stateDir = TempStateDir();
         var outside  = TempStateDir();
         var victim   = Path.Combine(outside, "not-ours");

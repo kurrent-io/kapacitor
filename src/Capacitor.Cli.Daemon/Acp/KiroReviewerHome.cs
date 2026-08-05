@@ -54,6 +54,18 @@ internal static class KiroReviewerHome {
         if (Path.Exists(home)) Delete(home, stateDir, NullLogger.Instance);
 
         CreateOwnerOnly(home);
+
+        // Delete is best-effort by design (an undeletable home must not fail a round), so a partial
+        // failure could leave the previous launch's transcript in place and CreateOwnerOnly would
+        // happily accept the surviving directory. Emptiness is the mechanism that suppresses the
+        // operator's global MCP servers AND the guarantee that one review cannot read another's
+        // context, so it is verified rather than assumed.
+        if (Directory.EnumerateFileSystemEntries(home).Any())
+            throw new InvalidOperationException(
+                $"kiro_reviewer_home_not_empty: '{home}' still holds content from a previous launch that "
+              + "could not be removed. Refusing rather than handing a reviewer another review's context, "
+              + "or the global MCP servers an empty home exists to suppress.");
+
         return home;
     }
 
@@ -67,7 +79,19 @@ internal static class KiroReviewerHome {
 
         var live = $"{Prefix}{Sanitize(currentEpoch)}-";
 
-        foreach (var dir in Directory.EnumerateDirectories(root)) {
+        // Enumeration itself can throw on an unreadable or corrupt root, BEFORE any per-directory
+        // Delete gets a chance to catch. This runs at daemon boot, so an inaccessible reviewer root
+        // must degrade to "swept nothing" rather than take the daemon down with it.
+        IReadOnlyList<string> candidates;
+
+        try {
+            candidates = [.. Directory.EnumerateDirectories(root)];
+        } catch (Exception ex) {
+            log.LogWarning(ex, "Could not enumerate the Kiro reviewer home root {Root}; skipping the sweep", root);
+            return;
+        }
+
+        foreach (var dir in candidates) {
             var name = Path.GetFileName(dir);
             if (!name.StartsWith(Prefix, StringComparison.Ordinal)) continue;
             if (name.StartsWith(live,   StringComparison.Ordinal)) continue;
@@ -81,6 +105,13 @@ internal static class KiroReviewerHome {
     /// not resolve inside this daemon's root. Both are standard recursive-delete hazards; the
     /// transcript content is why they are requirements here rather than theoretical.
     /// </summary>
+    /// <para><b>Residual, accepted and documented rather than coded against:</b> every check here is
+    /// check-then-use. A component swapped for a symlink between reading its attributes and opening
+    /// it would be followed. Closing that needs <c>unlinkat</c>-style handle semantics .NET does not
+    /// expose — the same residual <c>WorktreeManager.NeutralizeWorkspaceMcpConfig</c> records for the
+    /// same reason. The window is narrow here specifically: the path lives under the daemon's own
+    /// state directory, so winning the race needs an already-compromised process running as the
+    /// daemon user, which has this authority regardless.</para>
     internal static void Delete(string homePath, string stateDir, ILogger log) {
         var root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(RootFor(stateDir)));
         var full = Path.TrimEndingDirectorySeparator(Path.GetFullPath(homePath));
