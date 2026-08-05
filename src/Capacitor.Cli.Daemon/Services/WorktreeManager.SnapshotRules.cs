@@ -166,32 +166,26 @@ public partial class WorktreeManager {
         else File.CreateSymbolicLink(destPath, target);
     }
 
-    /// <summary>Timeout for copying one ordinary file. Overridable for tests only.</summary>
-    internal static TimeSpan CopyEntryTimeout = TimeSpan.FromSeconds(30);
-
-    /// <summary>Copies one non-directory, non-link entry, bounded in time.
+    /// <summary>Copies one non-directory, non-link entry.
     ///
-    /// <para><b>Why bounded.</b> .NET exposes no portable file-TYPE probe: a FIFO reports exactly the same
-    /// <c>FileAttributes</c> (<c>Normal</c>), the same <c>UnixFileMode</c> and the same zero length as an
-    /// ordinary empty file — measured, not assumed. So a FIFO or device node placed in the source would
-    /// make <c>File.Copy</c> block forever waiting for a writer, wedging the launch. Since the entry cannot
-    /// be identified, the COPY is bounded instead: one that does not complete promptly fails the snapshot
-    /// closed and names the path, turning an indefinite hang by hostile content into an attributable
-    /// refusal.</para>
+    /// <para><b>A special file here would block, and that is deliberately NOT worked around.</b> .NET
+    /// exposes no portable file-TYPE probe — a FIFO reports exactly the same <c>FileAttributes</c>
+    /// (<c>Normal</c>), the same <c>UnixFileMode</c> and the same zero length as an ordinary empty file
+    /// (measured, not assumed) — so one cannot be identified and skipped without per-platform
+    /// <c>stat</c> P/Invoke.</para>
     ///
-    /// <para>The abandoned copy's thread is not cancellable — a blocking open cannot be interrupted — so it
-    /// remains parked until a writer appears or the process exits. That is one parked thread per hostile
-    /// entry, and the launch aborts, which is strictly better than the whole daemon wedging.</para>
+    /// <para>A time-bounded copy was implemented and then REMOVED, because it was worse than the problem.
+    /// A blocking open cannot be cancelled, so the abandoned worker outlives the claim and the rollback: a
+    /// later writer can wake it after a new same-name snapshot exists, letting it write into that
+    /// SUCCESSOR's destination — the exact ownership violation the claim exists to prevent — and it parks a
+    /// thread-pool thread per occurrence, turning one stuck launch into process-wide exhaustion.</para>
+    ///
+    /// <para>The residual is bounded by what can actually reach a source tree: <b>git cannot track a
+    /// special file</b> (verified — <c>git add -A</c> silently ignores a FIFO), so one cannot arrive by
+    /// clone, i.e. never through hostile content at rest. It takes a local writer on the workspace, which
+    /// is precisely the principal the documented guarantee already excludes.</para>
     /// </summary>
-    static void CopyRegularFile(string source, string dest) {
-        var copy = Task.Run(() => File.Copy(source, dest));
-
-        if (!copy.Wait(CopyEntryTimeout))
-            throw new InvalidOperationException($"standalone_snapshot_unreadable_entry: {source}");
-
-        // Re-throw a genuine copy failure rather than letting the wait swallow it.
-        copy.GetAwaiter().GetResult();
-    }
+    static void CopyRegularFile(string source, string dest) => File.Copy(source, dest);
 
     static string CombineRelative(string relative, string name) =>
         relative.Length == 0 ? name : relative + "/" + name;

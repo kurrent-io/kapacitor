@@ -519,13 +519,59 @@ public class StandaloneSnapshotTests {
 
     // ---- 14: claim ownership --------------------------------------------------------------------------
 
-    /// <summary>Two callers genuinely overlapping in the window where BOTH still see the destination
-    /// absent: exactly one wins, the loser is refused by the CLAIM, and the winner's snapshot is intact.
+    /// <summary>The claim's EXISTENCE excludes a second caller — not the brief non-shared handle.
     ///
-    /// <para>The barrier is load-bearing. Without it the two calls can run sequentially, and the second is
-    /// then refused by the occupied-destination check instead — so the test passes with exactly the same
-    /// counts even if the claim were removed or made non-atomic, never exercising the property it
-    /// names.</para></summary>
+    /// <para>Deterministic by construction. The winner is held after the claim file exists but before the
+    /// destination does, and only then does the second caller attempt acquisition. At that instant the
+    /// winner's handle is already closed, so the only thing that can refuse the second caller is the file
+    /// being there — which is exactly what <c>FileMode.CreateNew</c> provides.</para>
+    ///
+    /// <para>An earlier version merely started both callers behind a pre-claim barrier. That passed even
+    /// with the mode weakened to <c>FileMode.Create</c>, because the loser was then refused by the winner's
+    /// transient <c>FileShare.None</c> handle instead — a scheduling accident, not the property under
+    /// test.</para></summary>
+    [Test, NotInParallel]
+    public async Task The_claim_files_existence_excludes_a_second_caller() {
+        var (root, source) = MakeNonGitSource();
+        var claimed = new TaskCompletionSource();
+        var release = new TaskCompletionSource();
+        try {
+            WorktreeManager.SnapshotPostClaimHook = async () => {
+                claimed.TrySetResult();
+                await release.Task.WaitAsync(TimeSpan.FromSeconds(30));
+            };
+
+            var manager = NewManager();
+            var winner = Task.Run(() => manager.CreateAsync(source, "contended"));
+
+            await claimed.Task.WaitAsync(TimeSpan.FromSeconds(30));
+
+            var worktrees = Path.Combine(source, ".capacitor", "worktrees");
+            await Assert.That(IsPresent(Path.Combine(worktrees, WorktreeManager.ClaimPrefix + "contended")))
+                .IsTrue().Because("fixture control: the claim really was taken before the second attempt");
+            await Assert.That(IsPresent(Path.Combine(worktrees, "contended"))).IsFalse()
+                .Because("fixture control: the destination does not exist, so only the claim can refuse");
+
+            // Cleared so the second caller is not itself parked by the hook.
+            WorktreeManager.SnapshotPostClaimHook = null;
+
+            var loser = await Assert.That(async () => await manager.CreateAsync(source, "contended"))
+                .Throws<InvalidOperationException>();
+            await Assert.That(loser!.Message).Contains("standalone_snapshot_name_in_use")
+                .Because("refusal must come from the claim, not the occupied-destination check");
+
+            release.TrySetResult();
+            var built = await winner;
+            await Assert.That(CommittedPaths(built.Path)).Contains("README.md")
+                .Because("the winner's snapshot must be intact");
+        } finally {
+            WorktreeManager.SnapshotPostClaimHook = null;
+            release.TrySetResult();
+            Cleanup(root);
+        }
+    }
+
+    /// <summary>Two callers racing from the same starting line still yield exactly one winner.</summary>
     [Test, NotInParallel]
     public async Task Concurrent_same_name_creates_yield_one_winner() {
         var (root, source) = MakeNonGitSource();
@@ -538,19 +584,16 @@ public class StandaloneSnapshotTests {
             };
 
             var manager = NewManager();
-            var a = Task.Run(() => manager.CreateAsync(source, "contended"));
-            var b = Task.Run(() => manager.CreateAsync(source, "contended"));
+            var a = Task.Run(() => manager.CreateAsync(source, "raced"));
+            var b = Task.Run(() => manager.CreateAsync(source, "raced"));
 
             var outcomes = await Task.WhenAll(
                 a.ContinueWith(t => t.IsCompletedSuccessfully ? null : Message(t)),
                 b.ContinueWith(t => t.IsCompletedSuccessfully ? null : Message(t)));
 
             await Assert.That(outcomes.Count(m => m is null)).IsEqualTo(1)
-                .Because("the claim is atomic — exactly one caller may own the destination");
-            await Assert.That(outcomes.Single(m => m is not null)).Contains("standalone_snapshot_name_in_use")
-                .Because("the loser must be refused by the CLAIM, not by the occupied-destination check — "
-                       + "the latter would mean the two calls never actually overlapped");
-            await Assert.That(CommittedPaths(Path.Combine(source, ".capacitor", "worktrees", "contended")))
+                .Because("exactly one caller may own the destination");
+            await Assert.That(CommittedPaths(Path.Combine(source, ".capacitor", "worktrees", "raced")))
                 .Contains("README.md").Because("the winner's snapshot must be intact");
         } finally {
             WorktreeManager.SnapshotPreClaimHook = null;
@@ -771,34 +814,4 @@ public class StandaloneSnapshotTests {
         }
     }
 
-    /// <summary>A FIFO in the source fails the snapshot closed instead of hanging the launch.
-    ///
-    /// <para>.NET reports a FIFO with exactly the same <c>FileAttributes</c>, <c>UnixFileMode</c> and zero
-    /// length as an ordinary empty file — measured — so it cannot be identified and skipped. The copy is
-    /// bounded instead, turning an indefinite block by hostile content into an attributable refusal. The
-    /// timeout is shortened here so the test does not wait for the production bound.</para></summary>
-    [Test, NotInParallel]
-    public async Task A_fifo_in_the_source_fails_closed_rather_than_hanging() {
-        Skip.Unless(!OperatingSystem.IsWindows(), "POSIX FIFO semantics.");
-        var (root, source) = MakeNonGitSource();
-        var original = WorktreeManager.CopyEntryTimeout;
-        try {
-            WorktreeManager.CopyEntryTimeout = TimeSpan.FromSeconds(2);
-
-            var fifo = Path.Combine(source, "pipe");
-            using (var mk = Process.Start(new ProcessStartInfo("mkfifo", fifo))!) {
-                mk.WaitForExit();
-                Skip.Unless(mk.ExitCode == 0, "mkfifo unavailable");
-            }
-
-            await Assert.That(IsPresent(fifo)).IsTrue().Because("fixture control: the FIFO exists");
-
-            await Assert.That(async () => await NewManager().CreateAsync(source))
-                .Throws<InvalidOperationException>()
-                .Because("an entry that cannot be copied promptly must refuse, not wedge the daemon");
-        } finally {
-            WorktreeManager.CopyEntryTimeout = original;
-            Cleanup(root);
-        }
-    }
 }

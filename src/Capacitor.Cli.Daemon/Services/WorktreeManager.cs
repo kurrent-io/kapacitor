@@ -323,6 +323,12 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
         // closes: that method's own unwinding completes BEFORE the catch below deletes the tree, so a new
         // same-name call could claim, create, and then be deleted by this call's delayed rollback.
         try {
+            // Test barrier: holds the winner after the claim FILE exists but before the destination does,
+            // so a second caller's acquisition is decided purely by the claim's existence. Without this the
+            // handle's own FileShare.None can do the excluding instead, and a weakened FileMode goes
+            // undetected.
+            SnapshotPostClaimHook?.Invoke().GetAwaiter().GetResult();
+
             // Absent, not merely "not a link". An existing ordinary directory would be silently adopted:
             // the snapshot would overlay a tree we never created, the rollback would then delete it
             // wholesale, and any repository control data already sitting there escapes the source-side
@@ -384,6 +390,11 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
     /// <summary>Runs immediately before the claim is attempted, while the destination is still absent.
     /// Test-only, so two callers can be made to genuinely overlap.</summary>
     internal static Func<Task>? SnapshotPreClaimHook;
+
+    /// <summary>Runs after the claim file exists but before the destination is created. Test-only: lets a
+    /// second caller attempt acquisition at the one moment when only the claim's EXISTENCE can exclude it.
+    /// </summary>
+    internal static Func<Task>? SnapshotPostClaimHook;
 
     static void FailHereIfRequested(string point) {
         if (SnapshotFailurePoint != point) return;
