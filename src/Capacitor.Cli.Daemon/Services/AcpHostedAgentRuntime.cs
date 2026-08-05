@@ -1368,24 +1368,31 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
 
         lock (_reconnectLock) {
             if (_phase == RuntimePhase.Terminal) {
-                // Already terminal: completing the signals again is idempotent and harmless.
-                terminal = true;
+                // Terminal already has an owner — HandleTransportEnded's own ineligible arm,
+                // TerminalizeIncidentAsync, or DisposeAsync — and THAT owner completes the signals
+                // after its cleanup settles. Completing here would defeat the retire-first,
+                // signal-afterward ordering: the terminal path's own connection disposal re-enters
+                // this method mid-retirement (code-review r3). Inert.
+                return;
             } else if (incarnationId != _installed.Id) {
                 // A candidate's or disposed incarnation's signal — structurally inert (§5.1), and
-                // deliberately checked BEFORE the intentional-stop arm (code-review r2): a delayed
-                // stale callback arriving after a stop of the healthy successor must not become a
+                // deliberately checked BEFORE any stop handling (code-review r2): a delayed stale
+                // callback arriving after a stop of the healthy successor must not become a
                 // premature finalize trigger while that successor's own termination is still in
                 // flight.
                 return;
-            } else if (_intentionalStop) {
-                // The INSTALLED child's transport ended under an intentional stop: fire the
-                // terminal signals (code-review r1: TerminateAsync from Running otherwise left
-                // ReadOutputAsync waiting forever — the finalize trigger the old process-exit wait
-                // used to fire). Idempotent against dispose/terminalize.
-                terminal = true;
             } else if (_phase == RuntimePhase.Reconnecting) {
+                // While an incident is in flight, its atomically-published owner is the sole
+                // terminal authority — including under intentional stop (code-review r3: the
+                // corpse's SECOND signal still carries the installed stamp here, and a stop arm
+                // ahead of this one signalled finalize while the owner still held a candidate).
+                // Stop cancels the owner's token; the owner's finally terminalizes and completes
+                // the signals after ITS cleanup.
                 if (incarnationId == _lastHandledCrashIncarnation)
                     return; // duplicate signal for the crash already being handled (r4 B1)
+
+                if (_intentionalStop)
+                    return; // the owner's unwind owns completion
 
                 // A committed successor died during the settlement/note/reopen window: chain it
                 // into the SAME incident — never a second owner, never a discarded crash (r3 B1).
@@ -1393,7 +1400,16 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
                 LogCrashedAgain(_agentId, incarnationId);
                 return;
             } else {
-                // Phase == Running: this crash either opens an incident or ends the session.
+                // Phase == Running: no owner exists, so this arm owns the disposition.
+                if (_intentionalStop) {
+                    // The INSTALLED child's transport ended under an intentional stop: fire the
+                    // terminal signals (code-review r1: TerminateAsync from Running otherwise left
+                    // ReadOutputAsync waiting forever — the finalize trigger the old process-exit
+                    // wait used to fire). Only valid in Running — in Reconnecting the owner
+                    // completes (above), and its cleanup must not be overtaken.
+                    terminal = true;
+                }
+                else {
                 _lastHandledCrashIncarnation = incarnationId;
 
                 if (!EligibleForReconnectLocked()) {
@@ -1421,6 +1437,7 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
                     // stays non-blocking.
                     _ownerTask    = Task.Run(RunReconnectOwnerAsync);
                     scheduleOwner = true;
+                }
                 }
             }
         }
@@ -1455,6 +1472,12 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
         var reason  = "exhausted";
         var resumed = false;
         Incarnation? candidate = null;
+        // The PID-callback bundle each candidate actually RECORDED with (code-review r3): cleanup
+        // must clear through the same generation that recorded, and clear nothing when the record
+        // never happened — re-reading support.PidCallbacks at cleanup time could observe a
+        // newly-wired real bundle and delete the ORIGINAL agent's record for a candidate that
+        // recorded nothing under the throwing placeholder.
+        AcpPidRecordCallbacks? recordedWith = null;
 
         try {
             var attempts = 0;
@@ -1485,8 +1508,12 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
                     // the daemon cannot durably record must not proceed (leak containment: if the
                     // daemon dies mid-attempt, restart reclamation kills the recorded candidate).
                     // A throw here lands in the attempt-failure catch below, which disposes the
-                    // candidate and clears the record.
-                    support.PidCallbacks.Record(candidate.Process.Pid);
+                    // candidate WITHOUT clearing (recordedWith stays null — nothing was recorded).
+                    // The bundle is snapshotted once and carried: Record and any later Clear must
+                    // be the same generation (code-review r3).
+                    var attemptPidCallbacks = support.PidCallbacks;
+                    attemptPidCallbacks.Record(candidate.Process.Pid);
+                    recordedWith = attemptPidCallbacks;
 
                     await InitializeCandidateAsync(candidate, ownerCt).ConfigureAwait(false);
                     await LoadSessionAsync(candidate, ownerCt).ConfigureAwait(false);
@@ -1495,7 +1522,7 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
                     ownerCt.ThrowIfCancellationRequested();
 
                     if (!TryCommit(candidate)) {
-                        await DisposeCandidateAsync(candidate, support).ConfigureAwait(false);
+                        await DisposeCandidateAsync(candidate, recordedWith).ConfigureAwait(false);
                         candidate = null;
                         continue; // attempt failed (candidate died pre-install)
                     }
@@ -1545,7 +1572,7 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
                     LogAttemptFailed(ex, _agentId, attempts);
 
                     if (candidate is not null) {
-                        await DisposeCandidateAsync(candidate, support).ConfigureAwait(false);
+                        await DisposeCandidateAsync(candidate, recordedWith).ConfigureAwait(false);
                         candidate = null;
                     }
                 }
@@ -1559,7 +1586,7 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
             reason = "owner_fault";
         } finally {
             if (!resumed)
-                await TerminalizeIncidentAsync(reason, candidate, support).ConfigureAwait(false);
+                await TerminalizeIncidentAsync(reason, candidate, recordedWith, support).ConfigureAwait(false);
         }
     }
 
@@ -1761,7 +1788,7 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
         return true;
     }
 
-    async Task DisposeCandidateAsync(Incarnation candidate, AcpReconnectSupport support) {
+    async Task DisposeCandidateAsync(Incarnation candidate, AcpPidRecordCallbacks? recordedWith) {
         try { candidate.LoopCts.Cancel(); } catch (ObjectDisposedException) { }
 
         // Each cleanup step is INDEPENDENTLY best-effort (code-review r2): a throwing connection
@@ -1785,8 +1812,11 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
             _logger.LogDebug(ex, "ACP reconnect: candidate process disposal failed (best-effort).");
         }
 
+        // Clear ONLY through the generation that recorded, and only when a record actually
+        // happened (code-review r3 — a null recordedWith means the Record threw or never ran, so
+        // there is nothing of ours to delete and the original agent's record must survive).
         try {
-            support.PidCallbacks.Clear();
+            recordedWith?.Clear();
         } catch (Exception ex) {
             _logger.LogDebug(ex, "ACP reconnect: clearing the candidate PID record failed (best-effort).");
         }
@@ -1798,7 +1828,9 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
     /// disposed and its record cleared, and the re-keyed terminal signal finally fires so the
     /// orchestrator finalizes exactly as an ineligible crash does today — once.
     /// </summary>
-    async Task TerminalizeIncidentAsync(string reason, Incarnation? leftoverCandidate, AcpReconnectSupport support) {
+    async Task TerminalizeIncidentAsync(
+            string reason, Incarnation? leftoverCandidate, AcpPidRecordCallbacks? recordedWith,
+            AcpReconnectSupport support) {
         List<PendingInteraction>? swept;
         Incarnation installed;
 
@@ -1812,8 +1844,10 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
 
         ScheduleInteractionSweep(swept);
 
-        if (leftoverCandidate is not null)
-            await DisposeCandidateAsync(leftoverCandidate, support).ConfigureAwait(false);
+        if (leftoverCandidate is not null) {
+            await DisposeCandidateAsync(leftoverCandidate, recordedWith).ConfigureAwait(false);
+            recordedWith = null; // its clear (if any) just ran — the installed block below must not double-clear
+        }
 
         // A successor that COMMITTED and then went terminal (settlement timeout, chained-crash
         // exhaustion) is the INSTALLED incarnation, not a leftover candidate. Run the FULL
@@ -1831,19 +1865,27 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
             _logger.LogDebug(ex, "ACP reconnect: terminal-path connection disposal failed (best-effort).");
         }
 
+        // Independent best-effort blocks (code-review r3 — same rule as DisposeCandidateAsync): a
+        // throwing termination must not suppress process disposal, and neither may suppress the
+        // record clear.
         try {
             await installed.Process.TerminateAsync(support.RetirementWait).ConfigureAwait(false);
             if (!installed.Process.HasExited)
                 _logger.LogWarning(
                     "ACP reconnect: installed child (pid {Pid}) did not confirm exit during terminal-path retirement; the finalize path's dispose is the backstop.",
                     installed.Process.Pid);
-            await installed.Process.DisposeAsync().ConfigureAwait(false);
         } catch (Exception ex) {
-            _logger.LogDebug(ex, "ACP reconnect: terminal-path retirement of the installed child failed (best-effort).");
+            _logger.LogDebug(ex, "ACP reconnect: terminal-path termination of the installed child failed (best-effort).");
         }
 
         try {
-            support.PidCallbacks.Clear();
+            await installed.Process.DisposeAsync().ConfigureAwait(false);
+        } catch (Exception ex) {
+            _logger.LogDebug(ex, "ACP reconnect: terminal-path process disposal failed (best-effort).");
+        }
+
+        try {
+            recordedWith?.Clear();
         } catch (Exception ex) {
             _logger.LogDebug(ex, "ACP reconnect: terminal-path PID-record clear failed (best-effort).");
         }
