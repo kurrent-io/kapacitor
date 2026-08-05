@@ -212,8 +212,15 @@ public partial class WorktreeManager {
         return true;
     }
 
-    /// <summary>Reports paths verbatim. Without it a non-ASCII component comes back C-quoted, and the
-    /// prefix would not match the manifest it filters.</summary>
+    /// <summary>Stops git escaping bytes at or above 0x80 in path output, so a non-ASCII component cannot
+    /// come back C-quoted and fail to match the manifest it filters.
+    ///
+    /// <para>That is ALL this governs — measured: with it set, <c>ls-files</c> still returns
+    /// <c>"a\"b/f"</c> for a path containing a double quote, and the same holds for a backslash or a control
+    /// character. It is not a request for verbatim output. The two consumers here are
+    /// <c>rev-parse --show-prefix</c> and <c>--show-toplevel</c>, which print the path raw with or without
+    /// it (measured on git 2.49, both spellings), so for them this is belt-and-braces rather than
+    /// load-bearing; the manifest side reads <c>ls-files -z</c>, which never quotes.</para></summary>
     static readonly GitConfigOverride[] NoQuotedPaths = [new("core.quotePath", "false")];
 
     /// <summary>Captures a git command's stdout, refusing rather than truncating past
