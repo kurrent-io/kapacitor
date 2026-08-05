@@ -93,7 +93,14 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
     readonly List<PendingInteraction> _pendingInteractions = [];
 
     Incarnation  _installed;
-    RuntimePhase _phase = RuntimePhase.Running;
+    int          _phase = (int)RuntimePhase.Running;
+
+    /// <summary>The runtime phase with acquire semantics — the backing field is written only under
+    /// <see cref="_reconnectLock"/>, but several readers (`HasExited`/`ExitCode`, the graceful-stop
+    /// catch filter) run lock-free, and a plain enum field gives them no visibility guarantee
+    /// (Qodo review #2). Backed by an int because <c>volatile</c>/<see cref="Volatile.Read(ref int)"/>
+    /// don't apply to enum fields. Reads under the lock use this too — uniform and harmless.</summary>
+    RuntimePhase Phase => (RuntimePhase)Volatile.Read(ref _phase);
     volatile bool _suppressNotifications;
     bool         _intentionalStop;
     long         _nextIncarnationId;
@@ -449,13 +456,13 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
     /// contract — a dead child mid-swap must not read as agent death to the orchestrator — so this
     /// reports <see langword="false"/> until the runtime is Running (current process's view) or
     /// Terminal (<see langword="true"/>).</summary>
-    public bool   HasExited           => _phase switch {
+    public bool   HasExited           => Phase switch {
         RuntimePhase.Reconnecting => false,
         RuntimePhase.Terminal     => true,
         _                         => _installed.Process.HasExited
     };
 
-    public int?   ExitCode            => _phase == RuntimePhase.Reconnecting ? null : _installed.Process.ExitCode;
+    public int?   ExitCode            => Phase == RuntimePhase.Reconnecting ? null : _installed.Process.ExitCode;
     public bool   EmitsTerminalOutput => false;
 
     /// <summary>The ACP <c>sessionId</c> once <see cref="StartAsync"/>'s <c>session/new</c> has resolved; null before that.</summary>
@@ -723,9 +730,9 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
                 var   terminal = false;
 
                 lock (_reconnectLock) {
-                    if (_phase == RuntimePhase.Terminal) {
+                    if (Phase == RuntimePhase.Terminal) {
                         terminal = true;
-                    } else if (_phase == RuntimePhase.Reconnecting) {
+                    } else if (Phase == RuntimePhase.Reconnecting) {
                         _heldTurn             = turn;
                         _heldTurnSkipEnvelope = skipEnvelope;
                         reopen                = _gateOpen.Task;
@@ -784,7 +791,7 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
             AcpConnection connection;
 
             lock (_reconnectLock) {
-                if (_phase != RuntimePhase.Running || _inFlight is not { } inFlight || !ReferenceEquals(inFlight.Turn, turn)) {
+                if (Phase != RuntimePhase.Running || _inFlight is not { } inFlight || !ReferenceEquals(inFlight.Turn, turn)) {
                     _heldTurn             = turn;
                     _heldTurnSkipEnvelope = true;
                     _inFlight             = null;
@@ -961,7 +968,7 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
 
         try {
             await _installed.Connection.NotifyAsync("session/cancel", cancelParams).ConfigureAwait(false);
-        } catch (Exception ex) when (_phase != RuntimePhase.Running) {
+        } catch (Exception ex) when (Phase != RuntimePhase.Running) {
             // A graceful-stop notify against a dead or mid-swap connection is expected while
             // reconnecting/terminal — swallow and log (reconnect spec §9); the hard stop path
             // (TerminateAsync) is what actually ends the incident.
@@ -1284,7 +1291,7 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
 
         lock (_reconnectLock) {
             _intentionalStop = true;
-            _phase           = RuntimePhase.Terminal;
+            _phase           = (int)RuntimePhase.Terminal;
             _ownerCts?.Cancel();
             swept     = MarkPendingInteractionsCancelledLocked();
             installed = _installed;
@@ -1367,7 +1374,7 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
         List<PendingInteraction>? swept = null;
 
         lock (_reconnectLock) {
-            if (_phase == RuntimePhase.Terminal) {
+            if (Phase == RuntimePhase.Terminal) {
                 // Terminal already has an owner — HandleTransportEnded's own ineligible arm,
                 // TerminalizeIncidentAsync, or DisposeAsync — and THAT owner completes the signals
                 // after its cleanup settles. Completing here would defeat the retire-first,
@@ -1381,7 +1388,7 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
                 // premature finalize trigger while that successor's own termination is still in
                 // flight.
                 return;
-            } else if (_phase == RuntimePhase.Reconnecting) {
+            } else if (Phase == RuntimePhase.Reconnecting) {
                 // While an incident is in flight, its atomically-published owner is the sole
                 // terminal authority — including under intentional stop (code-review r3: the
                 // corpse's SECOND signal still carries the installed stamp here, and a stop arm
@@ -1413,12 +1420,12 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
                 _lastHandledCrashIncarnation = incarnationId;
 
                 if (!EligibleForReconnectLocked()) {
-                    _phase = RuntimePhase.Terminal;
+                    _phase = (int)RuntimePhase.Terminal;
                     _gateOpen.TrySetResult();
                     swept    = MarkPendingInteractionsCancelledLocked();
                     terminal = true;
                 } else {
-                    _phase                 = RuntimePhase.Reconnecting;
+                    _phase                 = (int)RuntimePhase.Reconnecting;
                     // Counter reset BEFORE the volatile flag publishes (code-review r1 minor): a
                     // notification that observes the flag can only increment a counter that has
                     // already been zeroed for this incident.
@@ -1728,7 +1735,7 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
     /// </summary>
     bool TryCommit(Incarnation candidate) {
         lock (_reconnectLock) {
-            if (_intentionalStop || _phase == RuntimePhase.Terminal)
+            if (_intentionalStop || Phase == RuntimePhase.Terminal)
                 throw new OperationCanceledException("stop during reconnect commit");
 
             if (candidate.Connection.TransportEnded || candidate.Process.HasExited)
@@ -1770,13 +1777,13 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
         int suppressed;
 
         lock (_reconnectLock) {
-            if (_intentionalStop || _phase == RuntimePhase.Terminal)
+            if (_intentionalStop || Phase == RuntimePhase.Terminal)
                 throw new OperationCanceledException("stop during reconnect reopen");
 
             if (_crashedAgainIncarnation != -1)
                 return false;
 
-            _phase                 = RuntimePhase.Running;
+            _phase                 = (int)RuntimePhase.Running;
             _suppressNotifications = false;
             _resumeCount++;
             suppressed = _suppressedUpdates;
@@ -1835,7 +1842,7 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
         Incarnation installed;
 
         lock (_reconnectLock) {
-            _phase                 = RuntimePhase.Terminal;
+            _phase                 = (int)RuntimePhase.Terminal;
             _suppressNotifications = false;
             swept                  = MarkPendingInteractionsCancelledLocked();
             installed              = _installed;
@@ -1914,7 +1921,7 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
         PendingInteraction entry;
 
         lock (_reconnectLock) {
-            if (_intentionalStop || _phase != RuntimePhase.Running || incarnationId != _installed.Id)
+            if (_intentionalStop || Phase != RuntimePhase.Running || incarnationId != _installed.Id)
                 return DeclineFor(request);
 
             entry = new PendingInteraction(incarnationId);
