@@ -289,12 +289,21 @@ internal static class AcpVendorDescriptors {
         SupportsReconnectResume: true
     );
 
-    /// <summary>AWS Kiro CLI as an ACP hosted agent (<c>kiro-cli acp</c>). Interactive hosting only:
-    /// unattended review is deliberately withheld until its own issue lands the containment mechanism
-    /// (Kiro inherits the user's GLOBAL <c>~/.kiro/settings/mcp.json</c> servers into every ACP
-    /// session, so an unattended reviewer would be handed <c>kcap-flows</c> and could start nested
-    /// flows). Interactive hosting is unaffected by that inheritance — it is the desired behavior
-    /// there.
+    /// <summary>AWS Kiro CLI as an ACP hosted agent (<c>kiro-cli acp</c>). Hosted interactively and as
+    /// an unattended review-flow reviewer.
+    ///
+    /// <para><b>Unattended containment is SOURCE SUPPRESSION, not a tool clamp.</b> Kiro inherits the
+    /// operator's GLOBAL <c>~/.kiro/settings/mcp.json</c> servers into every ACP session, which would
+    /// hand a reviewer <c>kcap-flows</c> and let it start nested flows. A review launch therefore runs
+    /// with a daemon-owned, empty <c>KIRO_HOME</c> (measured: zero global servers initialize, while an
+    /// injected <c>session/new</c> server still starts), and branch-authored workspace config is
+    /// removed at the worktree layer. Interactive hosting keeps the inheritance — there it is the
+    /// desired behaviour.</para>
+    ///
+    /// <para><b>What is NOT contained, and is accepted.</b> A trusted <c>fs_read</c> is not
+    /// path-scoped, so an unattended reviewer can read anything the daemon user can. That is an
+    /// operator consent decision, gated by <c>KiroReviewerCapability</c>, not something the trust list
+    /// bounds.</para>
     ///
     /// <para><b><see cref="SupportsMcpServers"/> is <c>true</c> here while <see cref="Copilot"/> sets
     /// it <c>false</c>, and the reasoning is NOT contradictory.</b> Both vendors advertise the same
@@ -328,10 +337,20 @@ internal static class AcpVendorDescriptors {
         ResolveBinaryPath:   cfg => cfg.KiroPath,
         ResolveDefaultModel: cfg => cfg.KiroModel,
         Argv:                ["acp"],
-        UnattendedTrustArgv: [],
-        SupportsUnattended:  false,
+        // Built PER LAUNCH from the same injected MCP specs and the same LaunchIdentity session/new
+        // gets: a fixed list would omit the review's allowlist servers, and under the Fail policy
+        // their first tool call would end the round. Never fs_write, never execute_bash.
+        UnattendedTrustArgv:        [],
+        UnattendedTrustArgvBuilder: KiroReviewerTrustList.BuildArgv,
+        SupportsUnattended:  true,
+        // Fail, not AutoApprove: with the scoped trust list a reviewer emits NO interaction frame on
+        // its expected path (measured), so a frame means something outside the intended surface was
+        // attempted. AutoApprove does not inspect the tool, and would approve exactly the request the
+        // scoping exists to reject.
+        UnattendedInteractionPolicy: AcpUnattendedInteractionPolicy.Fail,
         ModelSelector:       SetModelSelector.Instance,
         SupportsMcpServers:  true,
+        ReviewFlowMcpTransport: AcpReviewFlowMcpTransport.SessionNew,
         // Measured INELIGIBLE 2026-08-04 (docs/probes/2026-08-04-acp-reconnect-c0/): Kiro advertises
         // loadSession but refuses session/load after a SIGKILLed owner with a DURABLE stale-owner
         // lock — "Failed to start session: Session is active in another process (PID <dead>)",

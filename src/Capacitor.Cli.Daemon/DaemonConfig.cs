@@ -188,6 +188,17 @@ public class DaemonConfig {
     /// </summary>
     public bool KiroUnattendedReviewerEnabled { get; set; }
 
+    /// <summary>
+    /// One absolute budget, in seconds, for a Kiro reviewer launch: spawn through the first prompt
+    /// completing. On expiry the child is terminated, its isolated home removed, and the launch fails
+    /// with a coded error.
+    ///
+    /// <para>Not a per-stage timeout — a fresh one per stage lets a slow sequence approach a multiple
+    /// of the budget. The failure it exists for is measured: an unauthenticated kiro-cli does not
+    /// error, it opens a browser prompt and stays alive indefinitely.</para>
+    /// </summary>
+    public int KiroReviewerLaunchTimeoutSeconds { get; set; } = 120;
+
     /// <summary>Reserved — see CopilotPath. Overridable via KCAP_OPENCODE_PATH.</summary>
     public string OpenCodePath { get; set; } = "opencode";
 

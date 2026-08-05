@@ -6,6 +6,7 @@ using Capacitor.Cli.Core.Acp;
 using Capacitor.Cli.Core.LocalIpc;
 using Capacitor.Cli.Daemon.Acp;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Capacitor.Cli.Daemon.Services;
 
@@ -250,14 +251,50 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
                 string.Join(",", (reviewMcp ?? []).Select(spec => spec.Name)));
         }
 
+        // ONE absolute budget across spawn -> initialize -> session/new -> first prompt, not a fresh
+        // timeout per stage: re-deriving it per stage lets a slow sequence approach a multiple of it.
+        //
+        // Why this exists at all. Operator-managed authentication is a launch PRECONDITION, not an
+        // invariant: a credential can expire or be revoked between the operator's login and a review
+        // three weeks later. Measured, an unauthenticated kiro-cli does not fail — it prints
+        // "Opening browser..." and STAYS ALIVE FOREVER. Nothing else here bounds that: the runtime
+        // bounds only its settlement wait, and a server-side round timeout would fail the round while
+        // leaving this child, and its transcript-bearing home, behind.
+        using var launchDeadline = KiroReviewerLaunchDeadline(descriptor, config, ctx, ct);
+
         try {
             await runtime.StartAsync(
                 ctx.Worktree.Path,
                 ctx.Prompt,
-                ct,
+                launchDeadline?.Token ?? ct,
                 ResolveRequestedModel(descriptor, config, ctx),
                 mcpServers
             ).ConfigureAwait(false);
+        } catch (OperationCanceledException) when (launchDeadline is { IsCancellationRequested: true }
+                                                && !ct.IsCancellationRequested) {
+            LogSurfaceOnceIfEstablished();
+
+            // Terminate EXPLICITLY, and before disposal. Disposal alone is not a reap — it releases
+            // our handles, which for a child that is alive and silent (the shape this branch exists
+            // for) leaves it running. Caught by the alive-but-silent test, which asserted termination
+            // rather than just the coded error.
+            try {
+                await acpProcess.TerminateAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            } catch (Exception ex) {
+                _logger.LogDebug(ex, "ACP: failed to reap Kiro reviewer after its launch deadline expired.");
+            }
+
+            // Only after the child is gone: deleting under a live Kiro leaves it writing into an
+            // unlinked path. The home is transcript-bearing, so this is disposal, not disk hygiene.
+            await runtime.DisposeAsync().ConfigureAwait(false);
+            DeleteKiroReviewerHome(descriptor, config, ctx);
+
+            throw new InvalidOperationException(
+                $"kiro_reviewer_launch_timeout: the reviewer did not complete its first prompt within "
+              + $"{config.KiroReviewerLaunchTimeoutSeconds}s. The child was terminated and its isolated "
+              + "home removed. A kiro-cli whose credential has expired stays alive on an interactive "
+              + "browser prompt rather than failing, which is the shape this bound exists for — check "
+              + "that the daemon user's kiro-cli is still authenticated.");
         } catch {
             // An established session is a fact the record must keep even though the launch failed.
             LogSurfaceOnceIfEstablished();
@@ -265,6 +302,7 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
             // The runtime owns both the connection and the process; dispose on a failed handshake
             // so a half-started child process is never leaked.
             await runtime.DisposeAsync().ConfigureAwait(false);
+            DeleteKiroReviewerHome(descriptor, config, ctx);
 
             throw;
         }
@@ -280,6 +318,32 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
     /// <summary>
     /// Fail-closed validation + build of the review-flow MCP list, run as the FIRST thing in
     /// <see cref="StartAsync"/> — before <c>_connectionSource</c> can spawn a child. Returns
+    /// <summary>The single absolute budget for a Kiro review launch, or null for every other launch
+    /// (which keeps their behaviour byte-identical). Linked to the caller's token so a real shutdown
+    /// still wins and is not misreported as a timeout.</summary>
+    static CancellationTokenSource? KiroReviewerLaunchDeadline(
+            AcpVendorDescriptor descriptor, DaemonConfig config, RuntimeStartContext ctx, CancellationToken ct) {
+        if (!ctx.IsReviewFlow || descriptor.Vendor != AcpVendorDescriptors.Kiro.Vendor) return null;
+
+        var linked = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        linked.CancelAfter(TimeSpan.FromSeconds(config.KiroReviewerLaunchTimeoutSeconds));
+        return linked;
+    }
+
+    /// <summary>Best-effort disposal of a failed launch's reviewer home. Never throws: a home we
+    /// cannot delete must not replace the launch's real error with a cleanup one.</summary>
+    static void DeleteKiroReviewerHome(
+            AcpVendorDescriptor descriptor, DaemonConfig config, RuntimeStartContext ctx) {
+        if (!ctx.IsReviewFlow || descriptor.Vendor != AcpVendorDescriptors.Kiro.Vendor) return;
+
+        var stateDir = ReviewerStateDir(config);
+
+        KiroReviewerHome.Delete(
+            Path.Combine(KiroReviewerHome.RootFor(stateDir),
+                         KiroReviewerHome.NameFor(config.DaemonEpoch ?? "unpinned", ctx.AgentId)),
+            stateDir, NullLogger.Instance);
+    }
+
     internal static AcpUnattendedInteractionPolicy ResolveUnattendedInteractionPolicy(
             RuntimeStartContext ctx, AcpVendorDescriptor descriptor) =>
         !ctx.IsReviewFlow                 ? AcpUnattendedInteractionPolicy.Disabled

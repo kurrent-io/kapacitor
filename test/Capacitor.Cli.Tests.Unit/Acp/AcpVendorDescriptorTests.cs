@@ -73,15 +73,24 @@ public class AcpVendorDescriptorTests {
         await Assert.That(descriptor.Vendor).IsEqualTo("kiro");
         await Assert.That(descriptor.Argv.SequenceEqual(["acp"])).IsTrue();
 
-        // Interactive hosting only. Kiro inherits the user's GLOBAL ~/.kiro/settings/mcp.json servers
-        // into every ACP session, so an unattended reviewer would be handed kcap-flows and could start
-        // nested review flows. Unattended stays off until its own issue lands the containment
-        // mechanism; the empty trust argv is enforced by the constructor when SupportsUnattended is
-        // false, and Disabled is the policy that pairs with it.
-        await Assert.That(descriptor.SupportsUnattended).IsFalse();
+        // Unattended review is ON. The containment that was missing is now source suppression: a
+        // review launch runs with a daemon-owned EMPTY KIRO_HOME (so the operator's global
+        // ~/.kiro/settings/mcp.json servers, kcap-flows among them, do not initialize), and
+        // branch-authored workspace config is removed at the worktree layer.
+        await Assert.That(descriptor.SupportsUnattended).IsTrue();
+
+        // The fixed trust argv stays EMPTY and the BUILDER carries it, because the value depends on
+        // what this launch injects: a review with an MCP allowlist gets servers whose tools a fixed
+        // list could not name, and under Fail their first call would end the round. The constructor
+        // rejects carrying both.
         await Assert.That(descriptor.UnattendedTrustArgv.IsEmpty).IsTrue();
+        await Assert.That(descriptor.UnattendedTrustArgvBuilder).IsNotNull();
+
+        // Fail, not AutoApprove: with scoped trust a reviewer emits no interaction frame on its
+        // expected path, so a frame means something outside the intended surface was attempted.
+        // AutoApprove does not inspect the tool and would approve exactly that.
         await Assert.That(descriptor.UnattendedInteractionPolicy)
-            .IsEqualTo(AcpUnattendedInteractionPolicy.Disabled);
+            .IsEqualTo(AcpUnattendedInteractionPolicy.Fail);
         await Assert.That(descriptor.SupportsBorrowedReviewFlow).IsFalse();
         await Assert.That(descriptor.BorrowedReviewContainment)
             .IsEqualTo(AcpBorrowedReviewContainment.None);

@@ -36,12 +36,17 @@ internal static class KiroReviewerHome {
     /// Creates an empty, owner-only home. Empty is what makes the global-MCP suppression work, so
     /// nothing may ever be seeded into it.
     /// </summary>
+    /// <summary>One derivation of a home's directory name. Create and delete both go through it, so
+    /// a failed launch's cleanup cannot target a path the launch never made.</summary>
+    internal static string NameFor(string daemonEpoch, string launchId) =>
+        $"{Prefix}{Sanitize(daemonEpoch)}-{Sanitize(launchId)}";
+
     internal static string Create(string stateDir, string daemonEpoch, string launchId) {
         var root = RootFor(stateDir);
         Directory.CreateDirectory(root);
         Harden(root);
 
-        var home = Path.Combine(root, $"{Prefix}{Sanitize(daemonEpoch)}-{Sanitize(launchId)}");
+        var home = Path.Combine(root, NameFor(daemonEpoch, launchId));
         Directory.CreateDirectory(home);
 
         // Hardened immediately after creation, before the child can write a transcript line into it.
