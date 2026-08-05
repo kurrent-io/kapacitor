@@ -128,29 +128,63 @@ public partial class AgentOrchestratorVendorTests {
         await Assert.That(ex!.Message).Contains(neverCreated);
         await Assert.That(ex.Message).Contains("exists: False");
 
-        // ...and its second horn: whether the executable resolved at all.
+        // ...and its second horn: whether the executable resolved at all. Asserting only that the
+        // FIELD is present would pass while the resolver reported "NOT FOUND" for everything, which
+        // is precisely the half of the ambiguity this is supposed to settle. Every sibling test in
+        // this class spawns git successfully, so on any machine that runs this suite git IS
+        // resolvable — a NOT FOUND here means the resolver is broken, not the environment.
         await Assert.That(ex.Message).Contains("resolved on PATH:");
+        await Assert.That(ex.Message).DoesNotContain("resolved on PATH: NOT FOUND");
 
         // The original Win32Exception must be preserved, not swallowed for a prettier message.
         await Assert.That(ex.InnerException).IsTypeOf<Win32Exception>();
     }
 
-    /// <summary>Returns the resolved absolute path of <paramref name="exe"/> on PATH, or null.
-    /// Used only to make a failed spawn explain itself.</summary>
+    /// <summary>
+    /// Returns the resolved absolute path of <paramref name="exe"/> on PATH, or null. Used only to
+    /// make a failed spawn explain itself, so it is best-effort — but deliberately not naive:
+    /// existence is NOT resolvability, and reporting a path the OS would have refused to execute
+    /// would send the next investigator the wrong way, which is the exact failure this whole change
+    /// exists to prevent.
+    ///
+    ///   • Unix requires the execute bit; a readable-but-not-executable file is not on PATH as far
+    ///     as execve is concerned.
+    ///   • Windows resolves by PATHEXT, not by a hardcoded guess at .exe/.cmd (git ships a .exe,
+    ///     but shims are commonly .cmd or .bat and PATHEXT is the authority).
+    /// </summary>
     static string? ResolveOnPath(string exe) {
         var path = Environment.GetEnvironmentVariable("PATH");
 
         if (string.IsNullOrEmpty(path)) return null;
 
+        var candidates = OperatingSystem.IsWindows()
+            ? (Environment.GetEnvironmentVariable("PATHEXT") ?? ".EXE;.CMD;.BAT")
+                .Split(';', StringSplitOptions.RemoveEmptyEntries)
+                .Select(ext => exe + ext)
+                .Prepend(exe)
+                .ToArray()
+            : [exe];
+
         foreach (var dir in path.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries)) {
-            foreach (var candidate in OperatingSystem.IsWindows()
-                         ? new[] { exe + ".exe", exe + ".cmd", exe }
-                         : new[] { exe }) {
+            foreach (var candidate in candidates) {
                 string full;
 
                 try { full = Path.Combine(dir, candidate); } catch { continue; }
 
-                if (File.Exists(full)) return full;
+                if (!File.Exists(full)) continue;
+
+                if (OperatingSystem.IsWindows()) return full;
+
+                // Unix: the execute bit is what makes it resolvable.
+                try {
+                    var mode = File.GetUnixFileMode(full);
+
+                    if ((mode & (UnixFileMode.UserExecute | UnixFileMode.GroupExecute | UnixFileMode.OtherExecute)) != 0)
+                        return full;
+                } catch {
+                    // Unreadable mode — report it as found rather than losing the fact entirely.
+                    return full;
+                }
             }
         }
 
