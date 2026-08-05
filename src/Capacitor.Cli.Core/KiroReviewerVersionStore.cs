@@ -30,6 +30,12 @@ public sealed class KiroReviewerVersionStore(string stateDir) {
     /// missing, unreadable, or a directory sitting at the pathname all read as "not affirmed", which
     /// is the fail-closed direction, and a daemon boot must not brick on this file.
     /// </summary>
+    /// <summary>Whether the record is PRESENT, whatever its content. Distinct from
+    /// <see cref="Affirmed"/> being non-null: a corrupt or unreadable record exists but affirms
+    /// nothing, and conflating the two lets a deleted record be silently re-seeded.</summary>
+    public static bool RecordExists(string stateDir) =>
+        Path.Exists(Path.Combine(stateDir, FileName));
+
     public string? Affirmed {
         get {
             try {

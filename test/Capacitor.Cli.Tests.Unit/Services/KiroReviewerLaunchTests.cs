@@ -85,11 +85,21 @@ public class KiroReviewerLaunchTests {
         var psi   = Psi(isReviewFlow: true, EnabledConfig(StateDir()), mcpAllowlist: ["kcap-review"]);
         var value = TrustValue(psi);
 
-        // Every trusted namespaced entry must name a server this launch actually injects, and every
-        // injected non-result server's tools must appear.
-        await Assert.That(value).Contains("kcap-review");
+        // Assert the exact @server/tool PAIRS. Checking "kcap-review" and "/{tool}" separately would
+        // pass a mutation that emitted the server name once and namespaced every tool under the WRONG
+        // server — the two substrings would both be present and the reviewer still could not call it.
+        var entries = value.Split(',');
+        var reviewWire = entries
+            .Where(e => e.StartsWith('@') && e.Contains("kcap-review", StringComparison.Ordinal))
+            .Select(e => e[1..e.IndexOf('/', StringComparison.Ordinal)])
+            .Distinct()
+            .Single();
 
         foreach (var tool in KcapMcpRegistry.ReviewFlowUnattendedSafeTools["kcap-review"])
+            await Assert.That(entries).Contains($"@{reviewWire}/{tool}");
+
+        // And the result channel is still there alongside it — widening the gate must not move it.
+        foreach (var tool in KcapMcpRegistry.ReservedResultChannelUnattendedSafeTools)
             await Assert.That(value).Contains($"/{tool}");
     }
 

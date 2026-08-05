@@ -195,7 +195,18 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
             // Built from the SAME spec list session/new receives, so the expected set is what was
             // actually sent rather than a re-derivation of it.
             mcpSurfaceMonitor: KiroMcpSurfaceMonitor.For(
-                descriptor, ctx.IsReviewFlow, reviewMcp, ctx.LaunchIdentity)
+                descriptor, ctx.IsReviewFlow, reviewMcp, ctx.LaunchIdentity),
+            // The factory can only clean up launches that FAILED. A successful review's home would
+            // otherwise survive until a later daemon epoch swept it — and it holds review context, so
+            // that is undisposed data, not stale disk.
+            onDisposed: () => DeleteKiroReviewerHome(descriptor, config, ctx),
+            // The second half of the launch bound. The deadline below covers spawn through the
+            // handshake; StartAsync deliberately does NOT await the first turn, so a peer that
+            // completes initialize and then wedges on the credential path would otherwise be
+            // unbounded. Time-to-first-OUTPUT, never turn completion — a real review runs long.
+            firstOutputDeadline: ctx.IsReviewFlow && descriptor.Vendor == AcpVendorDescriptors.Kiro.Vendor
+                ? TimeSpan.FromSeconds(config.KiroReviewerLaunchTimeoutSeconds)
+                : null
         );
 
         // Review flow: the injected result channel + allowlist. Otherwise unchanged (null today).
@@ -251,8 +262,10 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
                 string.Join(",", (reviewMcp ?? []).Select(spec => spec.Name)));
         }
 
-        // ONE absolute budget across spawn -> initialize -> session/new -> first prompt, not a fresh
-        // timeout per stage: re-deriving it per stage lets a slow sequence approach a multiple of it.
+        // ONE absolute budget across spawn -> initialize -> session/new -> model selection, not a
+        // fresh timeout per stage: re-deriving it per stage lets a slow sequence approach a multiple
+        // of it. It does NOT cover the first turn — StartAsync enqueues that without awaiting, by
+        // design, so the turn is bounded separately by the runtime's first-OUTPUT watchdog.
         //
         // Why this exists at all. Operator-managed authentication is a launch PRECONDITION, not an
         // invariant: a credential can expire or be revoked between the operator's login and a review

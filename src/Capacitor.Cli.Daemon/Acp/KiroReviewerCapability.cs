@@ -88,7 +88,7 @@ internal static class KiroReviewerCapability {
               + "daemon user can read — including its own credentials — with no filesystem boundary, "
               + "and a reviewer can return what it read to whoever requested the review. Enable it "
               + "only on a daemon whose operator and review requesters are in one trust domain: set "
-              + "KiroUnattendedReviewerEnabled on the daemon (not on the server).",
+              + "KCAP_KIRO_UNATTENDED_REVIEWER=1 in the daemon's environment (not on the server).",
 
             KiroReviewerDecision.VersionUnresolved =>
                 "kiro_reviewer_version_unresolved: the installed kiro-cli version could not be "

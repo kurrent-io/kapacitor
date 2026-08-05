@@ -65,4 +65,22 @@ public class KiroReviewerVersionStoreTests {
 
         await Assert.That(store.Affirmed).IsEqualTo("2.17.0");
     }
+
+    /// <summary>
+    /// RecordExists must be distinct from "Affirmed is non-null". Boot seeds on absence, so
+    /// conflating the two would let a record deleted after an upgrade be silently re-seeded — and
+    /// would make boot attempt a write that a directory at the pathname turns into a crash.
+    /// </summary>
+    [Test]
+    public async Task RecordExists_IsTrueForACorruptRecordThatAffirmsNothing() {
+        var dir = TempStateDir();
+        Directory.CreateDirectory(Path.Combine(dir, KiroReviewerVersionStore.FileName));
+
+        await Assert.That(KiroReviewerVersionStore.RecordExists(dir)).IsTrue();
+        await Assert.That(new KiroReviewerVersionStore(dir).Affirmed).IsNull();
+    }
+
+    [Test]
+    public async Task RecordExists_IsFalseWhenNothingHasEverBeenWritten() =>
+        await Assert.That(KiroReviewerVersionStore.RecordExists(TempStateDir())).IsFalse();
 }

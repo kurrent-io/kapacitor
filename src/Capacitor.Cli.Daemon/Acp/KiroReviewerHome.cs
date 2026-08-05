@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Capacitor.Cli.Daemon.Acp;
 
@@ -43,15 +44,16 @@ internal static class KiroReviewerHome {
 
     internal static string Create(string stateDir, string daemonEpoch, string launchId) {
         var root = RootFor(stateDir);
-        Directory.CreateDirectory(root);
-        Harden(root);
+        CreateOwnerOnly(root);
 
         var home = Path.Combine(root, NameFor(daemonEpoch, launchId));
-        Directory.CreateDirectory(home);
 
-        // Hardened immediately after creation, before the child can write a transcript line into it.
-        // A world-readable window between mkdir and chmod is long enough to leak review context.
-        Harden(home);
+        // A repeated launch under the same epoch+agent id must not inherit the previous one's
+        // transcript: CreateDirectory silently succeeds on an existing directory, so "empty" would be
+        // a hope rather than a property. Remove first, then create.
+        if (Path.Exists(home)) Delete(home, stateDir, NullLogger.Instance);
+
+        CreateOwnerOnly(home);
         return home;
     }
 
@@ -89,6 +91,19 @@ internal static class KiroReviewerHome {
         }
 
         try {
+            // The containment check above is LEXICAL, so a link planted AT the home path resolves
+            // inside the root and would then be enumerated — following it into the target and
+            // deleting the target's contents. DeleteTreeNoFollow protects nested entries but takes
+            // the top-level path on trust, so the top level is checked here.
+            var attributes = new FileInfo(full).Attributes;
+
+            if (attributes.HasFlag(FileAttributes.ReparsePoint)) {
+                if (attributes.HasFlag(FileAttributes.Directory)) Directory.Delete(full);
+                else                                             File.Delete(full);
+
+                return;
+            }
+
             DeleteTreeNoFollow(full);
         } catch (Exception ex) {
             // Log and continue: an undeletable home must not fail a round or block daemon startup.
@@ -117,17 +132,40 @@ internal static class KiroReviewerHome {
         Directory.Delete(path);
     }
 
-    static void Harden(string path) {
-        if (OperatingSystem.IsWindows()) return;
+    const UnixFileMode OwnerOnly =
+        UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute;
 
-        try {
-            File.SetUnixFileMode(path,
-                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
-        } catch {
-            // Best-effort, as LaunchConsentStore does for its own state dir and for the same reason:
-            // a mode we cannot set must not stop the daemon, and the caller's own gate (the POSIX-only
-            // platform check) is what keeps this from being the only protection.
+    /// <summary>
+    /// Creates a directory that is owner-only FROM ITS FIRST INSTANT, and verifies it.
+    ///
+    /// <para>Not create-then-chmod: that leaves a window in which the directory exists at the default
+    /// umask, and the thing written into it is review context. .NET's mode-carrying overload closes
+    /// the window at the syscall.</para>
+    ///
+    /// <para>And not best-effort. An earlier revision swallowed every mode failure, on the LaunchConsentStore
+    /// precedent — but that store degrades to a safe default, whereas here the mode IS the protection.
+    /// A POSIX host where it cannot be achieved must not run a reviewer at all, so this throws and the
+    /// launch fails.</para>
+    /// </summary>
+    static void CreateOwnerOnly(string path) {
+        if (OperatingSystem.IsWindows()) {
+            // Unreachable in production: KiroReviewerCapability refuses Windows before any launch.
+            // Kept total so a direct call in a test cannot silently create a world-readable directory.
+            throw new PlatformNotSupportedException(
+                "kiro_reviewer_unsupported_platform: a reviewer home cannot be created owner-only here.");
         }
+
+        Directory.CreateDirectory(path, OwnerOnly);
+
+        // An existing directory keeps its own mode — CreateDirectory's mode argument applies only when
+        // it creates. Verifying covers that, and any filesystem that ignores the request.
+        var mode = File.GetUnixFileMode(path);
+
+        if ((mode & (UnixFileMode.GroupRead  | UnixFileMode.GroupWrite | UnixFileMode.GroupExecute |
+                     UnixFileMode.OtherRead  | UnixFileMode.OtherWrite | UnixFileMode.OtherExecute)) != 0)
+            throw new InvalidOperationException(
+                $"kiro_reviewer_home_not_owner_only: '{path}' is mode {mode}. The reviewer's transcript, "
+              + "and so the review context, would be readable by other users on this host.");
     }
 
     static string Sanitize(string value) =>

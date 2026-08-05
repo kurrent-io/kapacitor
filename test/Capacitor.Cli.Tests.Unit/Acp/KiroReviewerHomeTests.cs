@@ -112,4 +112,69 @@ public class KiroReviewerHomeTests {
         await Assert.That(File.Exists(transcript)).IsFalse();
         await Assert.That(File.Exists(canary)).IsTrue();          // link target untouched
     }
+
+    /// <summary>
+    /// A repeated launch under the same epoch and agent id must not inherit the previous transcript.
+    /// CreateDirectory silently succeeds on an existing directory, so "empty" has to be established
+    /// rather than assumed.
+    /// </summary>
+    [Test]
+    public async Task Create_DoesNotInheritAPreviousHomesContents() {
+        Skip.Unless(!OperatingSystem.IsWindows(), "POSIX file-mode semantics.");
+
+        var stateDir = TempStateDir();
+        var first    = KiroReviewerHome.Create(stateDir, "epochA", "launch1");
+        await File.WriteAllTextAsync(Path.Combine(first, "leftover.jsonl"), "previous review context");
+
+        var second = KiroReviewerHome.Create(stateDir, "epochA", "launch1");
+
+        await Assert.That(second).IsEqualTo(first);
+        await Assert.That(Directory.GetFileSystemEntries(second).Length).IsEqualTo(0);
+    }
+
+    /// <summary>
+    /// A link planted AT the home path resolves inside the root, so the lexical containment check
+    /// admits it — and enumerating it would follow it into the target. The nested-link test does not
+    /// cover this: it links something BENEATH a real home.
+    /// </summary>
+    [Test]
+    public async Task Delete_DoesNotFollowALinkAtTheHomePathItself() {
+        Skip.Unless(!OperatingSystem.IsWindows(), "POSIX symlink semantics.");
+
+        var stateDir = TempStateDir();
+        var outside  = TempStateDir();
+        var canary   = Path.Combine(outside, "canary.txt");
+        await File.WriteAllTextAsync(canary, "keep me");
+
+        var root = KiroReviewerHome.RootFor(stateDir);
+        Directory.CreateDirectory(root);
+
+        var impostor = Path.Combine(root, "kcap-kiro-reviewer-epochA-launch1");
+        Directory.CreateSymbolicLink(impostor, outside);
+
+        KiroReviewerHome.Delete(impostor, stateDir, NullLogger.Instance);
+
+        await Assert.That(Path.Exists(impostor)).IsFalse();   // the routing entry is gone
+        await Assert.That(File.Exists(canary)).IsTrue();      // its target is untouched
+    }
+
+    /// <summary>
+    /// The mode is the protection, so a host that cannot deliver it must fail the launch rather than
+    /// run a reviewer whose transcript directory others can read.
+    /// </summary>
+    [Test]
+    public async Task Create_ThrowsWhenAnExistingDirectoryIsNotOwnerOnly() {
+        Skip.Unless(!OperatingSystem.IsWindows(), "POSIX file-mode semantics.");
+
+        var stateDir = TempStateDir();
+        var root     = KiroReviewerHome.RootFor(stateDir);
+        Directory.CreateDirectory(root);
+        File.SetUnixFileMode(root, UnixFileMode.UserRead | UnixFileMode.UserWrite |
+                                   UnixFileMode.UserExecute | UnixFileMode.OtherRead |
+                                   UnixFileMode.OtherExecute);
+
+        await Assert.That(() => KiroReviewerHome.Create(stateDir, "epochA", "launch1"))
+            .Throws<InvalidOperationException>()
+            .WithMessageContaining("kiro_reviewer_home_not_owner_only");
+    }
 }

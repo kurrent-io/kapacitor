@@ -13,6 +13,10 @@ namespace Capacitor.Cli.Commands;
 /// enable flag avoids — so the only way to clear the gate is to run this, deliberately, after
 /// looking at what changed.</para>
 ///
+/// <para><b>Not a security boundary.</b> Anyone who can delete the record can also set the enable
+/// variable and restart, and both live under the daemon user's own authority — so this stops an
+/// unnoticed vendor auto-update from carrying consent forward, not a local attacker.</para>
+///
 /// <para>Deliberately does NOT enable the reviewer. Affirming a build and consenting to unattended
 /// review are separate decisions, and collapsing them would let an upgrade acknowledgement silently
 /// turn the feature on.</para>

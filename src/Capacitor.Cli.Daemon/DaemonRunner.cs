@@ -231,14 +231,25 @@ public static partial class DaemonRunner {
         // Two things the Kiro unattended reviewer needs at boot, both cheap and both no-ops when the
         // operator has not opted in.
         if (config.KiroUnattendedReviewerEnabled) {
-            var kiroVersions = new KiroReviewerVersionStore(coverageStateDir);
+            // Seeded by the CONSENT event, not by a first refusal: an operator who has just turned the
+            // reviewer on should not be refused over an upgrade that never happened, which teaches
+            // people to clear the gate without reading it.
+            //
+            // Keyed on the record's ABSENCE AS A FILE, not on "Affirmed is null". The store reports
+            // null for a corrupt or unreadable record too, and seeding on that would (a) re-affirm
+            // whatever is installed after the record was removed post-upgrade, silently clearing the
+            // gate, and (b) attempt a write that a directory at the pathname makes throw — bricking a
+            // boot on a file that is supposed to fail closed, never fatally.
+            try {
+                var kiroVersions = new KiroReviewerVersionStore(coverageStateDir);
 
-            // Seeded by the CONSENT event, not by a first refusal. Otherwise an operator who has just
-            // turned the reviewer on is immediately refused over an upgrade that never happened, which
-            // teaches people to clear the gate without reading it.
-            if (kiroVersions.Affirmed is null
-             && VendorVersionResolver.Resolve(config.KiroPath) is { Length: > 0 } installedKiro)
-                kiroVersions.Affirm(installedKiro);
+                if (!KiroReviewerVersionStore.RecordExists(coverageStateDir)
+                 && VendorVersionResolver.Resolve(config.KiroPath) is { Length: > 0 } installedKiro)
+                    kiroVersions.Affirm(installedKiro);
+            } catch (Exception ex) {
+                // The gate fails closed on its own if this never ran; a boot must not die for it.
+                Console.Error.WriteLine($"Kiro reviewer version seeding skipped: {ex.Message}");
+            }
         }
 
         // Recovers reviewer homes left by a SIGKILLed predecessor. Runs unconditionally: a daemon

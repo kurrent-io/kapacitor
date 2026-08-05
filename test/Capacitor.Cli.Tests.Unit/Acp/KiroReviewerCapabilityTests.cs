@@ -87,7 +87,7 @@ public class KiroReviewerCapabilityTests {
         await Assert.That(reason).Contains("every file this daemon user can read");
         await Assert.That(reason).Contains("return what it read to whoever requested the review");
         await Assert.That(reason).Contains("one trust domain");
-        await Assert.That(reason).Contains("KiroUnattendedReviewerEnabled");
+        await Assert.That(reason).Contains("KCAP_KIRO_UNATTENDED_REVIEWER");
     }
 
     /// <summary>

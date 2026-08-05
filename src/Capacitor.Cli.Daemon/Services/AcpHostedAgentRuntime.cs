@@ -242,6 +242,27 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
     /// launch was admitted under no longer holds.</summary>
     readonly KiroMcpSurfaceMonitor? _mcpSurfaceMonitor;
 
+    /// <summary>Runs once the child is gone. Carries the Kiro reviewer's isolated-home deletion: the
+    /// home is transcript-bearing, and the FACTORY can only clean up launches that FAILED — a
+    /// successful review's home would otherwise sit on disk until a later daemon epoch swept it.</summary>
+    readonly Action? _onDisposed;
+
+    /// <summary>
+    /// How long the FIRST turn may produce nothing at all before the child is reaped. Null disables
+    /// it, which is every launch but an unattended Kiro review.
+    ///
+    /// <para><b>Why first OUTPUT and not turn completion.</b> The obvious reading of "bound the first
+    /// prompt" is to time the turn — but a real review turn legitimately runs for minutes, which is
+    /// exactly why <see cref="StartAsync"/> enqueues it without awaiting. Bounding completion would
+    /// kill good reviews. The failure actually being defended against is a peer that is ALIVE and
+    /// SILENT: a kiro-cli whose credential expired sits on an interactive browser prompt and emits
+    /// nothing, ever. Time-to-first-update separates those two: once the model starts streaming, the
+    /// turn may take as long as it likes.</para>
+    /// </summary>
+    readonly TimeSpan? _firstOutputDeadline;
+
+    int _sawFirstUpdate;
+
     /// <summary>Agent capabilities negotiated by <see cref="StartAsync"/>'s <c>initialize</c> call; null before that.</summary>
     AgentCapabilities? _negotiatedCapabilities;
 
@@ -302,9 +323,13 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
             IAcpModelSelector?                                                             modelSelector = null,
             AcpUnattendedInteractionPolicy                                                  unattendedInteractionPolicy = AcpUnattendedInteractionPolicy.Disabled,
             AcpReconnectSupport?                                                            reconnect = null,
-            KiroMcpSurfaceMonitor?                                                          mcpSurfaceMonitor = null
+            KiroMcpSurfaceMonitor?                                                          mcpSurfaceMonitor = null,
+            Action?                                                                         onDisposed = null,
+            TimeSpan?                                                                       firstOutputDeadline = null
         ) {
+        _firstOutputDeadline = firstOutputDeadline;
         _mcpSurfaceMonitor = mcpSurfaceMonitor;
+        _onDisposed        = onDisposed;
         _reconnect     = reconnect;
         _logger        = logger;
         _timeProvider  = timeProvider ?? TimeProvider.System;
@@ -678,8 +703,36 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
         // awaiting it: a real ACP turn can run arbitrarily long, and blocking StartAsync on it would
         // delay agent registration/stoppability for the whole turn. Completion is
         // observed via the Updates/Envelopes channels, not this method's return.
-        if (!string.IsNullOrEmpty(initialPrompt))
+        if (!string.IsNullOrEmpty(initialPrompt)) {
             _ = EnqueueTurn(initialPrompt, acknowledgeWrite: false);
+            ArmFirstOutputWatchdog();
+        }
+    }
+
+    /// <summary>
+    /// Reaps a first turn that produces NO output at all within the deadline. Fire-and-forget by
+    /// design: StartAsync must not block on the turn (see <see cref="_firstOutputDeadline"/>), so the
+    /// bound cannot be a cancellation token threaded through it.
+    /// </summary>
+    void ArmFirstOutputWatchdog() {
+        if (_firstOutputDeadline is not { } deadline) return;
+
+        _ = Task.Run(async () => {
+            try {
+                await Task.Delay(deadline, _timeProvider, _cts.Token).ConfigureAwait(false);
+            } catch (OperationCanceledException) {
+                return;   // disposed, reaped, or already finished — nothing to police
+            }
+
+            if (Volatile.Read(ref _sawFirstUpdate) != 0) return;
+
+            HandleMcpSurfaceViolation(
+                $"kiro_reviewer_first_output_timeout: the reviewer produced no output within "
+              + $"{deadline.TotalSeconds:0}s of its first prompt. A kiro-cli whose credential has "
+              + "expired stays alive on an interactive browser prompt rather than failing, which is "
+              + "the shape this bound exists for — check that the daemon user's kiro-cli is still "
+              + "authenticated.");
+        });
     }
 
     /// <summary>
@@ -1042,6 +1095,8 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
         if (notification.Method != "session/update")
             return;
 
+        Interlocked.Exchange(ref _sawFirstUpdate, 1);
+
         // Notification suppression (reconnect spec §5.4): while an incident is in flight, every
         // session/update — the dying connection's last gasps and the candidate's entire replay —
         // is dropped before it can reach _updates or aggregation. A volatile read, never a lock:
@@ -1380,6 +1435,16 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
 
         await installed.Connection.DisposeAsync().ConfigureAwait(false);
         await installed.Process.DisposeAsync().ConfigureAwait(false);
+
+        // LAST, and only once the child is gone: for the Kiro reviewer this deletes the isolated,
+        // transcript-bearing home. Deleting under a live child would leave it writing into an
+        // unlinked path. Never allowed to throw out of disposal — an undeletable home is logged by
+        // the callback itself and must not fail the teardown that reaped the process.
+        try {
+            _onDisposed?.Invoke();
+        } catch (Exception ex) {
+            _logger.LogWarning(ex, "ACP: post-dispose cleanup failed for agent {AgentId}.", _agentId);
+        }
     }
 
     // ── Reconnect/resume (skip-whole-replay — docs/superpowers/specs/2026-08-04-ai1325-acp-reconnect-resume-design.md) ──
