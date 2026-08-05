@@ -631,6 +631,17 @@ After discovery, the import surfaces a one-shot report of any transcript working
 
 The daemon connects to the Capacitor server and runs Claude Code, Codex, or Cursor agents in isolated git worktrees, controlled from the dashboard. Hosted Claude and Codex agents run on macOS, Linux, **and Windows**; hosted Cursor (`cursor` vendor) is macOS and Linux only — choose the vendor from the dashboard's launch dialog. At startup the daemon probes `daemon.claude_path`, `daemon.codex_path`, and the Cursor CLI (`cursor-agent`, overridable via `KCAP_CURSOR_PATH` — see [Daemon config settings](#daemon-config-settings)) and advertises only the vendors it can actually spawn, so the launch dialog hides whichever agent isn't installed on the selected daemon.
 
+> **Snapshotting a workspace that isn't a git repo:** when an agent targets a directory that is not a git
+> repository with commits, the daemon takes a *standalone snapshot* — it copies the directory rather than
+> creating a git worktree. Symlinks are recreated as links (never followed) and anything pointing outside
+> the workspace is skipped, so the snapshot cannot pull in credentials or other out-of-tree content.
+> **That guarantee assumes nothing else writes to the workspace while the agent is starting.** The check
+> that classifies an entry and the read that copies it are not a single atomic operation, so a separate
+> account or process that can swap a file for a symlink in between can still get the target's contents
+> copied in. In practice: don't point a hosted agent at a directory that any account or process other than
+> the daemon's own can write to during a launch. A normal single-user checkout is fine; a shared or
+> world-writable directory is not.
+
 > **Windows and hosted Codex:** needs Windows 10 1809 (build 17763) or newer — Windows 11 recommended — because that's the floor for Codex's own Windows sandbox. Older builds don't advertise the `codex` vendor at all. The sandbox *implementation* (`elevated`, which needs one-time admin-approved `winget` setup, vs `unelevated`) is whatever your `~/.codex/config.toml` `[windows] sandbox` says; the daemon inherits it rather than overriding it. Codex is found on `PATH` whether installed via `winget` (`codex.exe`) or npm (`codex.cmd`).
 
 ```bash

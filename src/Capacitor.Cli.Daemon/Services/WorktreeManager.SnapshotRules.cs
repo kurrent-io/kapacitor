@@ -87,8 +87,9 @@ public partial class WorktreeManager {
     /// principal, nothing from outside <paramref name="source"/> is materialised here. Classification and
     /// the subsequent read are NOT atomic, and .NET exposes no portable no-follow open
     /// (<c>O_NOFOLLOW</c>/<c>openat</c>) for an AOT-compiled binary to use, so a principal able to swap an
-    /// entry between the two can still defeat it. That limitation is accepted deliberately and is
-    /// documented for operators under "Daemon" in the README; it is not closable at this layer.</para>
+    /// entry between the two can still defeat it. That limitation is accepted deliberately and is stated as
+    /// an operator precondition under "Daemon" in the README ("Snapshotting a workspace that isn't a git
+    /// repo") — keep the two in step. It is not closable at this layer.</para>
     /// </summary>
     void CopySnapshotTree(string source, string dest, string markerName) =>
         CopySnapshotLevel(source, dest, relative: "", markerName);
