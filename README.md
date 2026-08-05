@@ -96,7 +96,7 @@ kcap setup --server-url <url>   # explicit server (self-hosted, or a full URL)
 
 The setup wizard walks you through:
 
-1. **Server** — with no `--server-url`/`<tenant>`, kcap **discovers** your tenant: it signs you in with your organization's single sign-on (pass `--github` to use GitHub instead), then lets you choose from the tenants you belong to. A bare `<tenant>` slug expands to `https://<tenant>.kcap.ai`; a full URL is used as-is. If you sign in with your organization's single sign-on and don't yet have a Capacitor tenant, `kcap setup` offers to create one for you (name + workspace URL), provisions it, and continues once it's live.
+1. **Server** — with no `--server-url`/`<tenant>`, kcap **discovers** your tenant: it signs you in with your organization's single sign-on (pass `--github` to use GitHub instead), then lets you choose from the tenants you belong to. A bare `<tenant>` slug expands to `https://<tenant>.kcap.ai`; a full URL is used as-is. If you sign in with your organization's single sign-on and discovery finds no Capacitor tenant, `kcap setup` asks how to continue: create one for you (name + workspace URL, provisioned and waited for until it's live), point at a workspace you already belong to (enter its slug or URL — the same as `kcap setup <tenant>`), or cancel. That middle choice matters because SSO discovery only lists workspaces that use org SSO: a workspace whose members sign in with the GitHub App shows up here as "no tenant", so pick **I already have a workspace**, or re-run with `--github`.
 2. **Login** — authenticates via your tenant's configured sign-in method; discovery completes the sign-in inline
 3. **Default visibility** — choose how your sessions are visible to others
 4. **Coding-agent hooks** — detects Claude Code and Codex CLI on `PATH`, Cursor by user-dir presence (`~/.cursor/`), GitHub Copilot CLI by `~/.copilot/` or `copilot` on `PATH`, Google Gemini CLI by `~/.gemini/` or `gemini` on `PATH`, AWS Kiro CLI by `~/.kiro/` or `kiro`/`kiro-cli` on `PATH`, Pi by `~/.pi/` or `pi` on `PATH`, SST OpenCode by `~/.config/opencode/` (or `~/.local/share/opencode/`) or `opencode` on `PATH`, and Google Antigravity by `~/.gemini/antigravity/` or `antigravity` on `PATH`, lists what it found, then asks **one** yes/no prompt to install kcap for every detected agent (hooks — or, for Pi/OpenCode/Antigravity, the live-ingest plugin — plus skills, instructions, and MCP) — plus a single shared set of agent skills under `~/.agents/skills/`, installed once when any of Codex, Cursor, Copilot, Gemini, Pi, or OpenCode is detected (Claude gets its skills from the bundled plugin; AWS Kiro and Google Antigravity read their own skills dirs — `~/.kiro/skills` and `~/.gemini/skills` respectively — so each gets its own copy there instead of the shared tree) — all user-wide. For Codex it also offers to enable **sandbox network access** for kcap (see below) — Codex blocks sandbox network by default, so the kcap skills can't reach the server without it. Each agent's own config-relocation environment variable is honored when set: `CLAUDE_CONFIG_DIR` (Claude), `CODEX_HOME` (Codex), `GEMINI_CLI_HOME` (Gemini — names the parent of `.gemini`), `KIRO_HOME` (Kiro), `COPILOT_HOME` (Copilot), `OPENCODE_CONFIG_DIR` (OpenCode), and `PI_CODING_AGENT_DIR` (Pi). Cursor's hooks path is fixed at `~/.cursor/hooks.json` and is not relocated.
@@ -1032,17 +1032,27 @@ failing at launch.
 KCAP_KIRO_PATH=/opt/kiro/bin/kiro-cli kcap daemon
 ```
 
-Two limits are worth knowing before you pick Kiro:
+`KCAP_KIRO_MODEL` overrides the model a `kiro` hosted agent runs, mirroring `KCAP_CURSOR_MODEL` —
+with one deliberate difference: there is **no built-in default**, so with nothing set (and no
+per-launch model from the dashboard, which takes precedence) a Kiro hosted agent runs whatever
+Kiro's own default model is and kcap reports none. The value is matched against the models the Kiro
+account actually offers (Kiro's ids are bare names like `claude-haiku-4.5`); an unrecognized value
+falls back to Kiro's own default with none reported. Applied over ACP `session/set_model` —
+verified to take effect at the turn level, not just accepted — because Kiro does not implement the
+`session/set_config_option` call Cursor uses.
+
+```bash
+KCAP_KIRO_MODEL=claude-haiku-4.5 kcap daemon
+```
+
+One limit is worth knowing before you pick Kiro:
 
 - **Interactive hosting only.** Kiro cannot yet be selected as an unattended review-flow reviewer.
   Kiro inherits the MCP servers from your global `~/.kiro/settings/mcp.json` into every ACP session,
   which is exactly what you want for a session you are driving yourself, but means an unattended
   reviewer would be handed the flow-starting `kcap-flows` server. Containment for that is tracked
-  separately.
-- **No model override.** A Kiro hosted agent always runs Kiro's own default model. Kiro's ACP
-  model-selection call is unverified and fails silently, so rather than report a model it might not be
-  running, kcap ignores a requested model for `kiro` and reports none — there is deliberately no
-  `KCAP_KIRO_MODEL`. A *pinned reviewer* model is refused outright rather than silently substituted.
+  separately. (This also means a *pinned reviewer* model never reaches Kiro today — reviewer model
+  overrides remain gated on the vendors that advertise resolver support.)
 
 **Hosted Cursor agents run over ACP.** The `cursor` vendor is launched by the daemon as
 `cursor-agent acp` (Cursor's Agent Client Protocol server) in an isolated worktree, driven from the
@@ -1196,6 +1206,12 @@ kcap agent start claude -d                    # start without attaching; prints 
       refuse to build if the source itself holds unsmudged LFS pointers.
 
     Disabled drivers are logged per worktree so the effect is visible rather than mysterious.
+
+    Both the hook and the filter overrides are carried in git's environment (`GIT_CONFIG_COUNT` /
+    `GIT_CONFIG_KEY_n`) rather than on the command line, so a config key that legally contains `=` — a filter
+    driver named `evil=x` — stays intact instead of being cut at the `=` and left live. kcap measures at
+    launch that the git it found honours those variables and refuses to build the worktree if not, rather
+    than reporting containment it does not have: **creating an agent worktree needs git 2.31 or newer.**
 
 - **Detach** without stopping the agent with the prefix key **`Ctrl-Q` then `d`**. The agent keeps running in the daemon.
 - **Permissions:** for a registered agent, permission prompts appear in the web UI (the same dialog as hosted agents); with `--private`, prompts are answered natively in your terminal.

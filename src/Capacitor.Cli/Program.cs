@@ -783,8 +783,17 @@ async Task<int> HandleDiscoverLoginAsync(bool forceDevice) {
     var provider = OAuthLoginFlow.ChooseDiscoveryProvider(args, isInteractive: !HeadlessEnvironment.IsHeadless());
 
     if (provider == AuthProvider.WorkOS) {
-        return await WorkOSDiscovery.RunWithLiveAuthAsync(
+        var workosDiscovery = await WorkOSDiscovery.RunWithLiveAuthAsync(
             AuthProxyEndpoint.Url, proxyConfig, proxyClient, new SpectreTenantPicker());
+
+        // Unreachable today: this call site passes no provisioner, so discovery dead-ends before it
+        // can offer the choice. Kept because RunWithLiveAuthAsync is shared — if login ever gains a
+        // provisioner, point at the command that can configure a workspace instead of failing mutely.
+        if (workosDiscovery.RetargetServerInput is { } target) {
+            await Console.Error.WriteLineAsync($"Run `kcap setup {target}` to configure that workspace.");
+        }
+
+        return workosDiscovery.ExitCode;
     }
 
     if (string.IsNullOrEmpty(proxyConfig.GitHubClientId)) {

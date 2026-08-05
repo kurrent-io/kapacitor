@@ -47,7 +47,9 @@ public partial class WorktreeManager {
     /// </summary>
     /// <exception cref="BranchFilterInventoryException">Enumeration failed, or a driver name cannot be
     /// safely expressed as an override.</exception>
-    internal static async Task<string[]> BranchFilterOverridesAsync(string gitContextPath) {
+    /// <exception cref="GitConfigTransportException">Thrown by the runner these overrides are passed to,
+    /// when the transport carrying them does not reach git and they would be silently dropped.</exception>
+    internal static async Task<GitConfigOverride[]> BranchFilterOverridesAsync(string gitContextPath) {
         // Enumerate EVERY key and match the shape here, rather than asking git to match a regex.
         //
         // Measured: git's `--get-regexp` runs through the platform regex in the ambient locale, where `.`
@@ -58,7 +60,7 @@ public partial class WorktreeManager {
         // bypass this file exists to prevent, reintroduced by trusting git to enumerate.
         //
         // `--list` takes no pattern, so there is no regex, no locale, and nothing to slip past.
-        var listed = await RunGitCaptureResult(gitContextPath, GitTimeout, sourceReadOnly: false,
+        var listed = await RunGitCaptureResult(gitContextPath, GitTimeout, sourceReadOnly: false, [],
             "config", "--list", "--name-only", "-z");
 
         // No "no keys" exit code to tolerate here: `--list` succeeds on an empty config. A non-zero exit
@@ -91,26 +93,21 @@ public partial class WorktreeManager {
                     "A filter driver name is not valid UTF-8, so an override cannot be expressed for it "
                   + "and the driver cannot be contained.");
 
-            // `-c key=value` splits at the FIRST '='. A driver legally named `evil=x` would be written as
-            // key `filter.evil`, leaving `filter.evil=x.smudge` live while the override LOOKED applied.
-            // Git permits arbitrary subsection characters, so refuse rather than mis-encode: a guard that
-            // silently does nothing is worse than a launch that fails. The env transport that would carry
-            // such a name safely is tracked separately.
-            if (driver.Contains('=') || driver.Contains('\n') || driver.Contains('\0'))
-                throw new BranchFilterInventoryException(gitContextPath,
-                    $"Filter driver '{driver}' has a name that cannot be safely expressed as a command-line "
-                  + "override, so it cannot be contained.");
-
+            // A name containing `=` needs no special handling: overrides travel as key/value PAIRS in the
+            // environment, so `filter.evil=x.smudge` arrives whole. It could not be spelled as
+            // `-c key=value`, which splits at the first `=` — key `filter.evil`, the real driver still live,
+            // the override apparently applied — and was refused for that reason alone. Measured: plain git
+            // runs such a driver, `-c` does not stop it, this does.
             drivers.Add(driver);
         }
 
-        return [.. drivers.SelectMany(static driver => new[] {
-            "-c", $"filter.{driver}.clean=",
-            "-c", $"filter.{driver}.smudge=",
-            "-c", $"filter.{driver}.process=",
+        return [.. drivers.SelectMany(static driver => new GitConfigOverride[] {
+            new($"filter.{driver}.clean", ""),
+            new($"filter.{driver}.smudge", ""),
+            new($"filter.{driver}.process", ""),
             // Measured: with `required=true`, an empty command is FATAL and the checkout fails outright.
             // Clearing the command alone would turn this guard into a denial of service.
-            "-c", $"filter.{driver}.required=false"
+            new($"filter.{driver}.required", "false")
         })];
     }
 }

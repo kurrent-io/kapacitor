@@ -106,7 +106,11 @@ public class AcpHostedAgentRuntimeFactoryTests {
                 connectionSource: _ => throw new InvalidOperationException(
                     "SupportsModelSelection must not spawn a process."));
 
-        await Assert.That(Build(AcpVendorDescriptors.Kiro).SupportsModelSelection).IsFalse();
+        // Kiro reports true since the probe that verified session/set_model at effect level
+        // (docs/probes/2026-08-05-kiro-model-override/); Gemini keeps the false arm of this
+        // mutation guard — its write half stays unverified, so it still carries NoOpModelSelector.
+        await Assert.That(Build(AcpVendorDescriptors.Kiro).SupportsModelSelection).IsTrue();
+        await Assert.That(Build(AcpVendorDescriptors.Gemini).SupportsModelSelection).IsFalse();
         await Assert.That(Build(AcpVendorDescriptors.Cursor).SupportsModelSelection).IsTrue();
         await Assert.That(Build(AcpVendorDescriptors.Copilot).SupportsModelSelection).IsTrue();
     }
@@ -582,6 +586,12 @@ public class AcpHostedAgentRuntimeFactoryTests {
         await Assert.That(initializeCall.Params!.Value.GetProperty("protocolVersion").GetInt32()).IsEqualTo(1);
         await Assert.That(initializeCall.Params!.Value.GetProperty("clientCapabilities").GetProperty("terminal").GetBoolean()).IsFalse();
         await Assert.That(initializeCall.Params!.Value.GetProperty("clientCapabilities").GetProperty("fs").GetProperty("readTextFile").GetBoolean()).IsFalse();
+        // Elicitation capability flip: the LIVE StartAsync path must advertise form-mode (the bare
+        // {} is the schema's "supported" signal) and must never advertise url-mode — asserted here
+        // through the real runtime rather than only on the hand-built InitializeParams (see
+        // InitializeCapabilityAdvertisementTests for the full-payload pin).
+        await Assert.That(initializeCall.Params!.Value.GetProperty("clientCapabilities").GetProperty("elicitation").GetProperty("form").GetRawText()).IsEqualTo("{}");
+        await Assert.That(initializeCall.Params!.Value.GetProperty("clientCapabilities").GetProperty("elicitation").TryGetProperty("url", out _)).IsFalse();
 
         var sessionNewCall = fake.ReceivedCalls.Single(c => c.Method == "session/new");
         await Assert.That(sessionNewCall.Params!.Value.GetProperty("cwd").GetString()).IsEqualTo(ctx.Worktree.Path);

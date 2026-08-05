@@ -94,8 +94,13 @@ skills, instructions, MCP) for all of them, instead of one prompt per agent.
 Hooks are installed user-wide (Pi, OpenCode, and Antigravity install a
 plugin/hooks-block rather than a shell-hooks file).
 
-When you sign in with Kurrent's hosted auth and have no tenant yet, setup can
-create one for you (organization name + workspace slug) and wait for it to go live.
+When you sign in with Kurrent's hosted auth and discovery finds no tenant, setup
+asks how to continue: create one for you (organization name + workspace slug) and
+wait for it to go live, point at a workspace you already belong to (enter its slug
+or URL — same as `kcap setup <tenant>`), or cancel. SSO discovery only lists
+workspaces that use org SSO, so a workspace whose members sign in with the GitHub
+App appears here as "no tenant": choose "I already have a workspace", or re-run
+with --github.
 
 As a final step, setup offers to import this repository's past sessions across
 every detected agent (equivalent to `kcap import --repo .`). It's only offered

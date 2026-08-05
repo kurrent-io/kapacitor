@@ -38,10 +38,10 @@ public class BranchFilterContainmentTests {
         var repo = NewRepo();
         Git(repo, "config", "filter.custom.smudge", command);
 
-        var joined = string.Join(' ', await WorktreeManager.BranchFilterOverridesAsync(repo));
+        var overrides = await WorktreeManager.BranchFilterOverridesAsync(repo);
 
-        await Assert.That(joined).Contains("filter.custom.smudge=");
-        await Assert.That(joined).Contains("filter.custom.required=false");
+        await Assert.That(overrides).Contains(new GitConfigOverride("filter.custom.smudge", ""));
+        await Assert.That(overrides).Contains(new GitConfigOverride("filter.custom.required", "false"));
     }
 
     /// <summary>
@@ -57,10 +57,10 @@ public class BranchFilterContainmentTests {
         Git(repo, "config", "filter.lfs.process", "git-lfs filter-process");
         Git(repo, "config", "filter.lfs.required", "true");
 
-        var joined = string.Join(' ', await WorktreeManager.BranchFilterOverridesAsync(repo));
+        var overrides = await WorktreeManager.BranchFilterOverridesAsync(repo);
 
-        await Assert.That(joined).Contains("filter.lfs.smudge=");
-        await Assert.That(joined).Contains("filter.lfs.required=false");
+        await Assert.That(overrides).Contains(new GitConfigOverride("filter.lfs.smudge", ""));
+        await Assert.That(overrides).Contains(new GitConfigOverride("filter.lfs.required", "false"));
     }
 
     /// <summary>
@@ -77,17 +77,14 @@ public class BranchFilterContainmentTests {
         Git(repo, "config", "filter.custom.smudge", "./tools/f");
 
         var expected = EffectiveDriverNames(repo);
-        var joined = string.Join(' ', await WorktreeManager.BranchFilterOverridesAsync(repo));
+        var overrides = await WorktreeManager.BranchFilterOverridesAsync(repo);
 
         await Assert.That(expected).Contains("custom");          // the fixture's own driver is in scope
         foreach (var driver in expected)
-            await Assert.That(joined).Contains($"filter.{driver}.smudge=");
+            await Assert.That(overrides).Contains(new GitConfigOverride($"filter.{driver}.smudge", ""));
 
         // ...and nothing outside that set is emitted.
-        var emitted = joined.Split(' ')
-            .Where(static t => t.StartsWith("filter.", StringComparison.Ordinal) && t.EndsWith(".clean=", StringComparison.Ordinal))
-            .Select(static t => t["filter.".Length..^".clean=".Length])
-            .ToHashSet(StringComparer.Ordinal);
+        var emitted = DisabledDriverNames(overrides);
 
         await Assert.That(emitted.Except(expected).Any()).IsFalse();
     }
@@ -119,13 +116,22 @@ public class BranchFilterContainmentTests {
         // Precondition: git really does resolve the value under the canonical spelling.
         await Assert.That(EffectiveDriverNames(repo)).Contains(subsection);
 
-        var joined = string.Join(' ', await WorktreeManager.BranchFilterOverridesAsync(repo));
+        var overrides = await WorktreeManager.BranchFilterOverridesAsync(repo);
+        var prefix = canonical[..canonical.LastIndexOf('.')];
 
-        await Assert.That(joined).Contains($"{canonical[..canonical.LastIndexOf('.')]}.clean=");
-        await Assert.That(joined).Contains($"{canonical[..canonical.LastIndexOf('.')]}.smudge=");
-        await Assert.That(joined).Contains($"{canonical[..canonical.LastIndexOf('.')]}.process=");
-        await Assert.That(joined).Contains($"{canonical[..canonical.LastIndexOf('.')]}.required=false");
+        await Assert.That(overrides).Contains(new GitConfigOverride($"{prefix}.clean", ""));
+        await Assert.That(overrides).Contains(new GitConfigOverride($"{prefix}.smudge", ""));
+        await Assert.That(overrides).Contains(new GitConfigOverride($"{prefix}.process", ""));
+        await Assert.That(overrides).Contains(new GitConfigOverride($"{prefix}.required", "false"));
     }
+
+    /// <summary>The drivers an override set disables, read back from the keys it emits.</summary>
+    static HashSet<string> DisabledDriverNames(GitConfigOverride[] overrides) =>
+        overrides
+            .Where(static o => o.Key.StartsWith("filter.", StringComparison.Ordinal)
+                            && o.Key.EndsWith(".clean", StringComparison.Ordinal))
+            .Select(static o => o.Key["filter.".Length..^".clean".Length])
+            .ToHashSet(StringComparer.Ordinal);
 
     /// <summary>Driver names git reports for the repo's EFFECTIVE config, global scope included.</summary>
     static HashSet<string> EffectiveDriverNames(string repo) {
@@ -153,8 +159,8 @@ public class BranchFilterContainmentTests {
         var repo = NewRepo();
         Git(repo, "config", "filter.my.tool.smudge", "./tools/f");
 
-        await Assert.That(string.Join(' ', await WorktreeManager.BranchFilterOverridesAsync(repo)))
-            .Contains("filter.my.tool.smudge=");
+        await Assert.That(await WorktreeManager.BranchFilterOverridesAsync(repo))
+            .Contains(new GitConfigOverride("filter.my.tool.smudge", ""));
     }
 
     /// <summary>A newline inside a config VALUE must not hide a driver. A line-splitting inventory reads
@@ -165,27 +171,54 @@ public class BranchFilterContainmentTests {
         var repo = NewRepo();
         Git(repo, "config", "filter.sneaky.smudge", "cat\n./tools/f");
 
-        await Assert.That(string.Join(' ', await WorktreeManager.BranchFilterOverridesAsync(repo)))
-            .Contains("filter.sneaky.smudge=");
-    }
-
-    /// <summary>
-    /// `-c key=value` splits at the FIRST '='. A driver legally named `evil=x` would be written as key
-    /// `filter.evil`, leaving `filter.evil=x.smudge` live while the override looked applied. Refused rather
-    /// than mis-encoded; the env transport that would carry it safely is tracked separately.
-    /// </summary>
-    [Test]
-    public async Task A_driver_name_that_cannot_be_safely_overridden_is_refused() {
-        var repo = NewRepo();
-        Git(repo, "config", "filter.evil=x.smudge", "./tools/f");
-
-        var ex = await Assert.ThrowsAsync<BranchFilterInventoryException>(
-            async () => await WorktreeManager.BranchFilterOverridesAsync(repo));
-
-        await Assert.That(ex!.Message).Contains("evil=x");
+        await Assert.That(await WorktreeManager.BranchFilterOverridesAsync(repo))
+            .Contains(new GitConfigOverride("filter.sneaky.smudge", ""));
     }
 
     // ── end to end ──
+
+    /// <summary>
+    /// A driver named `evil=x` is CONTAINED, not refused. `-c key=value` splits at the first '=', so that
+    /// name arrived as key `filter.evil` with value `x.smudge=` — the real driver stayed live while the
+    /// override looked applied — and the guard refused such a name rather than mis-encode it. The env
+    /// transport keeps the key/value boundary explicit, so the name is expressible and the launch proceeds.
+    ///
+    /// <para>Measured before this was written: plain git runs a driver whose name contains '=' (the control
+    /// below), and `-c` really does fail to disable it. Git parses a `.gitattributes` attribute at its first
+    /// '=' too, so `filter=evil=x` selects this driver — a branch can reach it.</para>
+    /// </summary>
+    [Test]
+    public async Task An_equals_in_a_driver_name_is_contained_rather_than_refused() {
+        Skip.Unless(!OperatingSystem.IsWindows(), "POSIX filter script with a shebang");
+
+        var marker = Path.Combine(NewDir("eqmarker"), "fired");
+        var repo = NewRepo();
+        Directory.CreateDirectory(Path.Combine(repo, "tools"));
+        var script = Path.Combine(repo, "tools", "f");
+        File.WriteAllText(script, $"#!/bin/sh\nprintf fired > '{marker}'\ncat\n");
+        File.SetUnixFileMode(script, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        File.WriteAllText(Path.Combine(repo, "zz.txt"), "payload\n");   // sorts after tools/f — see above
+        File.WriteAllText(Path.Combine(repo, ".gitattributes"), "zz.txt filter=evil=x\n");
+        Git(repo, "add", "-A");
+        Git(repo, "commit", "-q", "-m", "branch selects a driver whose name contains '='");
+        Git(repo, "config", "filter.evil=x.smudge", "./tools/f");
+
+        // CONTROL — plain git honours the '='-named driver and runs branch code.
+        Git(repo, "worktree", "add", "-q", Path.Combine(NewDir("ctl"), "wt"),
+            "-b", "ctl-" + Guid.NewGuid().ToString("N")[..8]);
+        await Assert.That(File.Exists(marker))
+            .IsTrue()
+            .Because("the control must reproduce filter execution, or the assertion below is vacuous");
+
+        File.Delete(marker);
+
+        var info = await new WorktreeManager(new DaemonConfig(), NullLogger<WorktreeManager>.Instance)
+            .CreateAsync(repo);
+
+        await Assert.That(File.Exists(marker)).IsFalse();
+        // Contained, not refused: the worktree exists and the filtered path is materialised.
+        await Assert.That(File.Exists(Path.Combine(info.Path, "zz.txt"))).IsTrue();
+    }
 
     /// <summary>
     /// The real thing: a branch that ships its own filter executable, with the operator's config pointing at

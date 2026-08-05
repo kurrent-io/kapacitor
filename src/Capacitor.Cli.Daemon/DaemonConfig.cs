@@ -146,6 +146,22 @@ public class DaemonConfig {
     public string KiroPath { get; set; } = "kiro-cli";
 
     /// <summary>
+    /// Daemon-wide default model for Kiro ACP sessions, e.g. <c>"claude-haiku-4.5"</c>, resolved
+    /// against <c>session/new</c>'s <c>availableModels</c> at launch time by
+    /// <c>AcpModelResolver.Resolve</c> (Kiro's ids are bare, unlike Cursor's parameterized ones,
+    /// but the resolution path is shared) and applied via <c>session/set_model</c> —
+    /// probe-verified at effect level (<c>docs/probes/2026-08-05-kiro-model-override/</c>).
+    /// Overridable via <c>KCAP_KIRO_MODEL</c>, mirroring <see cref="CursorModel"/>.
+    ///
+    /// <para>Unlike <see cref="CursorModel"/> the default is NULL, deliberately: zero-configuration
+    /// Kiro hosting keeps the vendor's own default model, with nothing requested and nothing
+    /// reported — the behaviour Kiro hosting shipped with. A per-launch model override
+    /// (<c>RuntimeStartContext.Model</c>) takes precedence over this daemon-wide default — see
+    /// <c>AcpHostedAgentRuntimeFactory</c>.</para>
+    /// </summary>
+    public string? KiroModel { get; set; }
+
+    /// <summary>
     /// Whether THIS daemon may run Gemini as an unattended review-flow reviewer. **Default false, and
     /// enabling it is the operator's consent event.**
     ///

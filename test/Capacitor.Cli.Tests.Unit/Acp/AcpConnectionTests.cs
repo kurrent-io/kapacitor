@@ -580,15 +580,17 @@ public class AcpConnectionTests {
         using var        cts     = new CancellationTokenSource();
         var               runTask = harness.Connection.RunAsync(cts.Token);
 
-        _ = harness.Connection.RequestAsync("session/prompt", null, CancellationToken.None);
-        var frame = await harness.ReadFrameFromConnectionAsync();
-        var id    = JsonDocument.Parse(frame).RootElement.GetProperty("id").GetInt64();
+        var requestTask = harness.Connection.RequestAsync("session/prompt", null, CancellationToken.None);
+        var frame        = await harness.ReadFrameFromConnectionAsync();
+        var id           = JsonDocument.Parse(frame).RootElement.GetProperty("id").GetInt64();
 
         await Assert.That(logger.Entries).Contains(e =>
             e.Level == LogLevel.Debug && e.Message.Contains("ACP >>>") && e.Message.Contains("session/prompt"));
 
-        // Clean shutdown: still owe the pending request a response before disposing.
+        // Clean shutdown: answer the pending request and OBSERVE the task — discarded, it races
+        // the Cancel below and can fault as an unobserved-task exception at a later GC.
         await harness.WriteFrameToConnectionAsync($$$"""{"jsonrpc":"2.0","id":{{{id}}},"result":{}}""");
+        await requestTask.WaitAsync(HangGuard);
 
         cts.Cancel();
         await SwallowCancellation(runTask);

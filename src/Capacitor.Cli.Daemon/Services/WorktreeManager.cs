@@ -133,13 +133,14 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
             // --path-format=absolute needs git 2.31+; on older git this exits non-zero and we resolve
             // the (possibly relative) plain form against the checkout instead.
             var absolute = await RunGitCaptureResult(
-                repoPath, GitTimeout, sourceReadOnly: false, "rev-parse", "--path-format=absolute", "--git-common-dir");
+                repoPath, GitTimeout, sourceReadOnly: false, [],
+                "rev-parse", "--path-format=absolute", "--git-common-dir");
 
             if (absolute.ExitCode == 0 && absolute.Stdout.Trim() is { Length: > 0 } fromAbsolute)
                 return NormalizePathKey(fromAbsolute);
 
             var plain = await RunGitCaptureResult(
-                repoPath, GitTimeout, sourceReadOnly: false, "rev-parse", "--git-common-dir");
+                repoPath, GitTimeout, sourceReadOnly: false, [], "rev-parse", "--git-common-dir");
 
             if (plain.ExitCode == 0 && plain.Stdout.Trim() is { Length: > 0 } fromPlain)
                 return NormalizePathKey(Path.IsPathRooted(fromPlain) ? fromPlain : Path.Combine(repoPath, fromPlain));
@@ -233,6 +234,7 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
             // the snapshot had already been rooted wherever the source tree chose.
             Directory.CreateDirectory(worktreeRoot);
 
+            var noHooks = NoBranchHooks();
             if (!string.IsNullOrEmpty(baseRef)) {
                 // Fetch into a per-worktree ref instead of the shared FETCH_HEAD
                 // so concurrent review launches in the same source repo can't
@@ -243,14 +245,14 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
                 // it's the slow, network-bound half. But a plain fetch ends by running automatic
                 // maintenance, whose task list includes worktree-prune — which WOULD touch
                 // .git/worktrees, unguarded, while another launch is mid-add. Disable it for this call
-                // (both spellings, so the old gc.auto era is covered too). `-c` rather than
-                // --no-auto-maintenance: that flag needs a newer git, `-c` works everywhere.
+                // (both spellings, so the old gc.auto era is covered too). A config override rather than
+                // --no-auto-maintenance: that flag needs a newer git than the override transport does.
                 await RunGit(repoPath, FetchTimeout,
-                    "-c", "maintenance.auto=false", "-c", "gc.auto=0",
+                    [new("maintenance.auto", "false"), new("gc.auto", "0")],
                     "fetch", "origin", $"{baseRef}:{fetchedRef}");
                 await WithWorktreeMetadataGate(repoPath, () =>
-                    RunGit(repoPath, GitTimeout, [..NoBranchHooks(),
-                        "worktree", "add", "--no-checkout", "-B", branch, worktreePath, fetchedRef]));
+                    RunGit(repoPath, GitTimeout, noHooks,
+                        "worktree", "add", "--no-checkout", "-B", branch, worktreePath, fetchedRef));
                 var fetched = new WorktreeInfo(worktreePath, branch, repoPath, FetchedRef: fetchedRef);
                 await StripOrRollBackAsync(fetched);
 
@@ -258,8 +260,8 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
             }
 
             await WithWorktreeMetadataGate(repoPath, () =>
-                RunGit(repoPath, GitTimeout, [..NoBranchHooks(),
-                    "worktree", "add", "--no-checkout", worktreePath, "-b", branch]));
+                RunGit(repoPath, GitTimeout, noHooks,
+                    "worktree", "add", "--no-checkout", worktreePath, "-b", branch));
             var linked = new WorktreeInfo(worktreePath, branch, repoPath);
             await StripOrRollBackAsync(linked);
 
@@ -423,22 +425,21 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
         // BEFORE the initial commit, so the snapshot's own history never carries the hostile config
         // either — a later `git checkout` inside the tree would otherwise restore it.
         StripWorkspaceMcpConfig(worktreePath);
-        await RunGit(worktreePath, GitTimeout, [..NoBranchHooks(), "init"]);
+        var noHooks = NoBranchHooks();
+        await RunGit(worktreePath, GitTimeout, noHooks, "init");
         // Inventoried and logged here, not at the source: `add -A` in this worktree is where the standalone
         // path's filters resolve. Round 6 removed the source-level logging as dead, and this call was
         // applying overrides inline — silently disabling LFS against a README that promises the opposite.
         var standaloneOverrides = await FilterOverridesForAsync(worktreePath);
-        await RunGit(worktreePath, GitTimeout, [..NoBranchHooks(), ..standaloneOverrides, "add", "-A"]);
+        await RunGit(worktreePath, GitTimeout, [.. noHooks, .. standaloneOverrides], "add", "-A");
         // Identity supplied explicitly. This is the daemon's OWN bookkeeping commit, not the user's work,
         // so it must not depend on the host having git identity configured — a machine without a global
         // user.email fails with "Author identity unknown". Found while the broken copy was temporarily
         // repaired and this line became reachable for the first time; that repair was reverted then and has
         // landed now, so this is live rather than speculative.
-        await RunGit(worktreePath, GitTimeout, [
-            ..NoBranchHooks(),
-            "-c", "user.email=daemon@kcap.local", "-c", "user.name=kcap",
-            "commit", "-m", "Initial snapshot"
-        ]);
+        await RunGit(worktreePath, GitTimeout,
+            [.. noHooks, new("user.email", "daemon@kcap.local"), new("user.name", "kcap")],
+            "commit", "-m", "Initial snapshot");
 
         return new WorktreeInfo(worktreePath, "", repoPath, IsStandalone: true);
     }
@@ -478,7 +479,9 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
     /// </summary>
     internal const string NoHooksPath = "/dev/null";
 
-    static string[] NoBranchHooks() => ["-c", $"core.hooksPath={NoHooksPath}"];
+    /// <summary>The hook override. The transport carrying it is proved by the runner that hands it to git
+    /// (see <c>ProveConfigTransportIfCarryingAsync</c>), so nothing here has to remember to.</summary>
+    static GitConfigOverride[] NoBranchHooks() => [new("core.hooksPath", NoHooksPath)];
 
     /// <summary>
     /// Neutralizes the tree, and UNDOES the creation if that fails.
@@ -516,11 +519,12 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
     /// </summary>
     async Task CheckoutInTargetContextAsync(string worktreePath) {
         var overrides = await FilterOverridesForAsync(worktreePath);
+        var noHooks = NoBranchHooks();
 
         // `reset --hard HEAD`, not `checkout -- .`: --no-checkout leaves the INDEX unpopulated too, so a
         // pathspec matches nothing. This is the step that materialises the tree, and therefore the step
         // the overrides have to guard.
-        await RunGit(worktreePath, GitTimeout, [..NoBranchHooks(), ..overrides, "reset", "--hard", "HEAD"]);
+        await RunGit(worktreePath, GitTimeout, [.. noHooks, .. overrides], "reset", "--hard", "HEAD");
     }
 
     /// <summary>
@@ -532,7 +536,7 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
     /// an LFS host silently got pointer files. Two rounds, one class. Computing and logging together means
     /// a fourth path cannot repeat it.</para>
     /// </summary>
-    async Task<string[]> FilterOverridesForAsync(string gitContextPath) {
+    async Task<GitConfigOverride[]> FilterOverridesForAsync(string gitContextPath) {
         var overrides = await BranchFilterOverridesAsync(gitContextPath);
         LogDisabledFilters(overrides, gitContextPath);
 
@@ -542,10 +546,11 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
     /// <summary>Logs which filter drivers were disabled, so an operator whose LFS-tracked file checks out
     /// as pointer text can see why rather than guessing. Silent containment is how a deliberate trade turns
     /// into a bug report.</summary>
-    void LogDisabledFilters(string[] overrides, string repoPath) {
+    void LogDisabledFilters(GitConfigOverride[] overrides, string repoPath) {
         var drivers = overrides
-            .Where(static o => o.StartsWith("filter.", StringComparison.Ordinal) && o.EndsWith(".clean=", StringComparison.Ordinal))
-            .Select(static o => o["filter.".Length..^".clean=".Length])
+            .Where(static o => o.Key.StartsWith("filter.", StringComparison.Ordinal)
+                            && o.Key.EndsWith(".clean", StringComparison.Ordinal))
+            .Select(static o => o.Key["filter.".Length..^".clean".Length])
             .ToArray();
 
         if (drivers.Length > 0)
@@ -815,7 +820,9 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
             // Same guard as `worktree add`: this checkout materialises branch content, so a relative
             // core.hooksPath would run the branch's post-checkout here too. Missed when the guard was
             // added — it went on the worktree paths only.
-            await RunGit(destination, GitTimeout, [..NoBranchHooks(), ..await FilterOverridesForAsync(destination), "checkout", "--detach", "HEAD"]);
+            await RunGit(destination, GitTimeout,
+                [.. NoBranchHooks(), .. await FilterOverridesForAsync(destination)],
+                "checkout", "--detach", "HEAD");
             var clonedHead = (await RunGitCapture(destination, GitTimeout, false, "rev-parse", "HEAD")).Trim();
             if (!string.Equals(sourceHead, clonedHead, StringComparison.Ordinal)) throw new SourceChangedException();
             await RunGitBestEffort(destination, "remote", "remove", "origin");
@@ -1416,32 +1423,75 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
     }
 
     static Task RunGit(string cwd, TimeSpan timeout, params string[] args) =>
-        RunGit(cwd, timeout, sourceReadOnly: false, args);
+        RunGit(cwd, timeout, sourceReadOnly: false, [], args);
 
-    static async Task RunGit(string cwd, TimeSpan timeout, bool sourceReadOnly, params string[] args) {
-        var result = await RunGitCaptureResult(cwd, timeout, sourceReadOnly, args);
+    static Task RunGit(string cwd, TimeSpan timeout, bool sourceReadOnly, params string[] args) =>
+        RunGit(cwd, timeout, sourceReadOnly, [], args);
+
+    static Task RunGit(string cwd, TimeSpan timeout, GitConfigOverride[] config, params string[] args) =>
+        RunGit(cwd, timeout, sourceReadOnly: false, config, args);
+
+    static async Task RunGit(
+            string cwd, TimeSpan timeout, bool sourceReadOnly, GitConfigOverride[] config,
+            params string[] args) {
+        var result = await RunGitCaptureResult(cwd, timeout, sourceReadOnly, config, args);
         if (result.ExitCode != 0)
             throw new InvalidOperationException($"git {string.Join(' ', args)} failed: {result.Stderr}");
     }
 
     static async Task<string> RunGitCapture(string cwd, TimeSpan timeout, bool sourceReadOnly, params string[] args) {
-        var result = await RunGitCaptureResult(cwd, timeout, sourceReadOnly, args);
+        var result = await RunGitCaptureResult(cwd, timeout, sourceReadOnly, [], args);
         if (result.ExitCode != 0)
             throw new InvalidOperationException($"git {string.Join(' ', args)} failed: {result.Stderr}");
         return result.Stdout;
     }
 
     static async Task<bool> GitConfigBoolAsync(string cwd, string key) {
-        var result = await RunGitCaptureResult(cwd, GitTimeout, true, "config", "--bool", "--get", key);
+        var result = await RunGitCaptureResult(cwd, GitTimeout, true, [], "config", "--bool", "--get", key);
         if (result.ExitCode == 1) return false; // key is absent
         if (result.ExitCode != 0)
             throw new InvalidOperationException($"git config --bool --get {key} failed: {result.Stderr}");
         return string.Equals(result.Stdout.Trim(), "true", StringComparison.OrdinalIgnoreCase);
     }
 
-    static async Task<(int ExitCode, string Stdout, string Stderr)> RunGitCaptureResult(
-            string cwd, TimeSpan timeout, bool sourceReadOnly, params string[] args) {
-        var psi = NewGitPsi(cwd, args, sourceReadOnly);
+    internal static async Task<(int ExitCode, string Stdout, string Stderr)> RunGitCaptureResult(
+            string cwd, TimeSpan timeout, bool sourceReadOnly, GitConfigOverride[] config,
+            params string[] args) {
+        await ProveConfigTransportIfCarryingAsync(cwd, sourceReadOnly, config);
+
+        return await RunGitCaptureResultUnproven(cwd, timeout, sourceReadOnly, config, args);
+    }
+
+    /// <summary>
+    /// The proof gate, applied where the overrides are HANDED TO GIT rather than where they are composed.
+    ///
+    /// <para>An earlier revision proved the transport inside each producer of containment config instead.
+    /// Review found the hole that shape leaves: <c>ReadGitRelativeCwdAsync</c> passes
+    /// <c>core.quotePath=false</c> and is not a containment producer, so it carried an override past no
+    /// proof at all — a fourth call site would have had the same problem, and a fifth. Gating on "this run
+    /// carries overrides" cannot be forgotten by a new caller.</para>
+    ///
+    /// <para><b>Including <c>sourceReadOnly</c>'s own pair.</b> A revision of this gated only on
+    /// caller-supplied config, reasoning that losing that flag's suppressions costs a maintenance run.
+    /// Review corrected it: <c>core.fsmonitor</c> set to anything other than a boolean names a HOOK
+    /// PROGRAM, which git runs whenever a command refreshes the index, so silently dropping
+    /// <c>core.fsmonitor=false</c> re-exposes an execution surface — not a performance one. There is no
+    /// per-key classification here for the same reason there is no filter-driver exemption: the argument
+    /// for "this one is harmless to lose" is exactly what keeps turning out to be wrong. Every git run
+    /// carrying ANY override proves the transport first. The cost is that a git too old to honour the
+    /// transport cannot be used for these reads either — that git already cannot create a worktree.</para>
+    /// </summary>
+    static Task ProveConfigTransportIfCarryingAsync(
+            string cwd, bool sourceReadOnly, GitConfigOverride[] config) =>
+        sourceReadOnly || config.Length > 0 ? ProveConfigTransportAsync(cwd) : Task.CompletedTask;
+
+    /// <summary>Runs git WITHOUT proving the transport first. Only the probe itself may use this — it is
+    /// what the gate above is measuring, so routing it through the gate would deadlock on the
+    /// non-reentrant semaphore.</summary>
+    static async Task<(int ExitCode, string Stdout, string Stderr)> RunGitCaptureResultUnproven(
+            string cwd, TimeSpan timeout, bool sourceReadOnly, GitConfigOverride[] config,
+            params string[] args) {
+        var psi = NewGitPsi(cwd, args, sourceReadOnly, config);
         using var proc = Process.Start(psi)!;
         using var cts = new CancellationTokenSource(timeout);
 
@@ -1503,7 +1553,8 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
     /// (<c>GIT_TERMINAL_PROMPT=0</c>, <c>GCM_INTERACTIVE=Never</c>) so an
     /// unattended daemon can never block on a credential prompt.
     /// </summary>
-    static ProcessStartInfo NewGitPsi(string cwd, string[] args, bool sourceReadOnly = false) {
+    static ProcessStartInfo NewGitPsi(
+            string cwd, string[] args, bool sourceReadOnly = false, GitConfigOverride[]? config = null) {
         var psi = new ProcessStartInfo("git", args) {
             WorkingDirectory       = cwd,
             RedirectStandardOutput = true,
@@ -1522,12 +1573,16 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
         if (sourceReadOnly) {
             psi.Environment["GIT_OPTIONAL_LOCKS"] = "0";
             psi.Environment["GIT_CONFIG_NOSYSTEM"] = "1";
-            psi.Environment["GIT_CONFIG_COUNT"] = "2";
-            psi.Environment["GIT_CONFIG_KEY_0"] = "maintenance.auto";
-            psi.Environment["GIT_CONFIG_VALUE_0"] = "false";
-            psi.Environment["GIT_CONFIG_KEY_1"] = "core.fsmonitor";
-            psi.Environment["GIT_CONFIG_VALUE_1"] = "false";
         }
+
+        // Every override this process passes goes through ONE composition, so the indices and the count are
+        // allocated in a single place. An earlier revision wrote the sourceReadOnly pair at fixed indices
+        // 0 and 1 with a fixed count of 2, which both displaced any inherited entry and left no room for a
+        // caller's own overrides.
+        GitConfigOverride[] composed = sourceReadOnly
+            ? [.. SourceReadOnlyConfig, .. config ?? []]
+            : config ?? [];
+        ApplyConfigOverrides(psi.Environment, composed);
 
         return psi;
     }

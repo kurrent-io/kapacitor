@@ -41,11 +41,13 @@ public class AcpHostedAgentRuntimeModelSelectionTests {
 
         Task _fakeRunTask = Task.CompletedTask;
 
-        public Harness() {
+        public Harness(IAcpModelSelector? modelSelector = null) {
             Fake    = new FakeAcpAgent();
             Conn    = new AcpConnection(Fake.ClientWriteStream, Fake.ClientReadStream, NullLogger.Instance);
             Process = new FakeAcpProcess();
-            Runtime = new AcpHostedAgentRuntime(Conn, Process, NullLogger.Instance);
+            // null keeps the runtime's legacy ConfigOptionModelSelector default, preserving every
+            // existing test unchanged; the set_model composition test passes SetModelSelector.
+            Runtime = new AcpHostedAgentRuntime(Conn, Process, NullLogger.Instance, modelSelector: modelSelector);
         }
 
         public void StartFakeAgentLoop() => _fakeRunTask = Fake.RunAsync(Cts.Token);
@@ -79,6 +81,48 @@ public class AcpHostedAgentRuntimeModelSelectionTests {
             await Task.Delay(10);
 
         return fake.ReceivedCalls;
+    }
+
+    // The probe-measured Kiro shape (docs/probes/2026-08-05-kiro-model-override/): bare ids,
+    // modelId == name.
+    static readonly (string ModelId, string Name)[] KiroAvailableModels = [
+        ("auto", "auto"),
+        ("claude-haiku-4.5", "claude-haiku-4.5"),
+        ("deepseek-3.2", "deepseek-3.2"),
+    ];
+
+    /// <summary>The set_model composition case: the SAME runtime handshake, carrying
+    /// <see cref="SetModelSelector"/> the way the factory passes Kiro's descriptor selector,
+    /// sends <c>session/set_model</c> (never <c>session/set_config_option</c>) before the first
+    /// prompt and exposes the applied id as <see cref="AcpHostedAgentRuntime.ResolvedModel"/> —
+    /// the value registration reports as the live model.</summary>
+    [Test]
+    public async Task StartAsync_SetModelSelector_SendsSetModelBeforeThePrompt_AndExposesResolvedModel() {
+        await using var h = new Harness(modelSelector: SetModelSelector.Instance);
+        h.Fake.SetSessionNewResult(FakeAcpAgent.BuildSessionNewResult(
+            FakeAcpAgent.FixedSessionId, currentModelId: "minimax-m2.5", KiroAvailableModels));
+        h.StartFakeAgentLoop();
+
+        await h.Runtime.StartAsync(
+            "/abs/worktree", "do the thing", h.Cts.Token,
+            requestedModel: "claude-haiku-4.5"
+        ).WaitAsync(HangGuard);
+
+        var calls = await WaitForCallCountAsync(h.Fake, minCount: 4);
+        await Assert.That(calls.Count).IsGreaterThanOrEqualTo(4);
+
+        await Assert.That(calls[0].Method).IsEqualTo("initialize");
+        await Assert.That(calls[1].Method).IsEqualTo("session/new");
+
+        await Assert.That(calls[2].Method).IsEqualTo("session/set_model");
+        await Assert.That(calls[2].Params!.Value.GetProperty("sessionId").GetString()).IsEqualTo(FakeAcpAgent.FixedSessionId);
+        await Assert.That(calls[2].Params!.Value.GetProperty("modelId").GetString()).IsEqualTo("claude-haiku-4.5");
+        await Assert.That(h.Fake.ReceivedCalls.Any(c => c.Method == "session/set_config_option")).IsFalse();
+
+        // The model must be set BEFORE the turn starts, and the applied id is what registration
+        // will report as live.
+        await Assert.That(calls[3].Method).IsEqualTo("session/prompt");
+        await Assert.That(h.Runtime.ResolvedModel).IsEqualTo("claude-haiku-4.5");
     }
 
     [Test]

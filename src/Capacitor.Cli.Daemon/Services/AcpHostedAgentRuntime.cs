@@ -529,8 +529,10 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
     /// Performs the ACP handshake: starts the connection's read loop, then
     /// <c>initialize</c> → <c>session/new</c> (with the absolute <paramref name="cwd"/>) → an optional
     /// model-selection step — resolves <paramref name="requestedModel"/> against
-    /// <c>session/new</c>'s <c>availableModels</c> and, if it matches, sends
-    /// <c>session/set_config_option</c> and awaits the response BEFORE the first turn fires (see
+    /// <c>session/new</c>'s <c>availableModels</c> and, if it matches, sends the vendor's
+    /// model-selection RPC (<c>session/set_config_option</c> for Cursor/Copilot,
+    /// <c>session/set_model</c> for Kiro — the descriptor's selector decides) and awaits the
+    /// response BEFORE the first turn fires (see
     /// <see cref="IAcpModelSelector.TrySelectAsync"/>). If <paramref name="initialPrompt"/> is non-empty,
     /// <see cref="EnqueueTurn"/>s it onto the serialized prompt-turn worker (see
     /// <see cref="RunTurnWorkerAsync"/>) and returns as soon as the session is established — it
@@ -563,12 +565,16 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
             // Advertise NO client fs/terminal: cursor-agent does file/shell ops itself and never asks
             // the client to serve them (rationale: docs/ai-687-fs-terminal-capability-decision-design.md).
             // Any unadvertised request is declined -32601 by AcpConnection, never falsely acknowledged.
+            // Elicitation IS advertised (form mode only, never url) — the end-to-end multi-select
+            // lane shipped on both sides, so agents may now send elicitation/create; the bridge's
+            // gate pipeline still owns every per-frame accept/cancel decision.
             var initializeParams = JsonSerializer.SerializeToElement(
                 new InitializeParams(
                     ProtocolVersion: 1,
                     ClientCapabilities: new ClientCapabilities(
                         Fs: new FsCapabilities(ReadTextFile: false, WriteTextFile: false),
-                        Terminal: false)),
+                        Terminal: false,
+                        Elicitation: new ElicitationCapabilities(Form: new ElicitationFormCapabilities()))),
                 CapacitorJsonContext.Default.InitializeParams);
 
             var initializeResultElement = await connection.RequestAsync("initialize", initializeParams, ct).ConfigureAwait(false);
@@ -1667,12 +1673,16 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
     }
 
     async Task InitializeCandidateAsync(Incarnation candidate, CancellationToken ct) {
+        // Must advertise the SAME capability set as StartAsync's initialize — a reconnect
+        // candidate that silently dropped the elicitation advertisement would flip the agent
+        // back to never asking, mid-session.
         var initializeParams = JsonSerializer.SerializeToElement(
             new InitializeParams(
                 ProtocolVersion: 1,
                 ClientCapabilities: new ClientCapabilities(
                     Fs: new FsCapabilities(ReadTextFile: false, WriteTextFile: false),
-                    Terminal: false)),
+                    Terminal: false,
+                    Elicitation: new ElicitationCapabilities(Form: new ElicitationFormCapabilities()))),
             CapacitorJsonContext.Default.InitializeParams);
 
         var resultElement = await candidate.Connection.RequestAsync("initialize", initializeParams, ct).ConfigureAwait(false);
