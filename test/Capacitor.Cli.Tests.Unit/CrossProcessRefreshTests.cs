@@ -37,49 +37,11 @@ public class CrossProcessRefreshTests {
         // test and not yet reaped). On Windows that is a hard sharing violation which, thrown from
         // a Before hook, fails the test before it runs — so retry through the brief window the
         // holder needs to close.
-        ClearWithRetry("the legacy tokens file", () => File.Delete(LegacyPath), () => File.Exists(LegacyPath));
-        ClearWithRetry("the tokens directory", () => Directory.Delete(TokensDir, recursive: true), () => Directory.Exists(TokensDir));
-        var cfg = Capacitor.Cli.Core.Config.AppConfig.GetConfigPath();
-        ClearWithRetry("config.json", () => File.Delete(cfg), () => File.Exists(cfg));
-        // Token lookup now consults AppConfig.ResolvedProfile, so a value left behind by another
-        // test would redirect these reads to a different profile.
-        Capacitor.Cli.Core.Config.AppConfig.ResetResolvedStateForTesting();
+        SharedConfigDirCleanup.ClearTokenAndProfileState(LegacyPath, TokensDir);
     }
 
-    const int    ClearAttempts = 40;
-    const int    ClearDelayMs  = 25;
-
-    /// <summary>Delete with a bounded retry over a transient sharing violation. Deliberately does
-    /// NOT swallow a persistent one: these tests assert on token state, so running against
-    /// leftovers could pass for the wrong reason (a stale tokens directory already satisfies the
-    /// "a peer already refreshed it" assertions). A target still present after the budget is not
-    /// the transient holder this retry exists for, so surface it with a named cause.</summary>
-    static void ClearWithRetry(string what, Action delete, Func<bool> exists) {
-        Exception? last = null;
-
-        for (var attempt = 1; attempt <= ClearAttempts; attempt++) {
-            if (!exists()) return;
-
-            try {
-                delete();
-                return;
-            } catch (IOException ex) {
-                last = ex; // sharing violation — the holder should release shortly
-            } catch (UnauthorizedAccessException ex) {
-                last = ex; // how Windows reports a delete blocked by an open handle
-            }
-
-            if (attempt < ClearAttempts) Thread.Sleep(ClearDelayMs);
-        }
-
-        // Re-check: the holder may have released after our last failed attempt.
-        if (exists()) {
-            throw new InvalidOperationException(
-                $"Could not clear {what} in the shared KCAP_CONFIG_DIR within "                +
-                $"{ClearAttempts * ClearDelayMs}ms — something still holds it, so this test "    +
-                "would run against another test's state.", last);
-        }
-    }
+    // ClearWithRetry moved to SharedConfigDirCleanup — the identical exception recurred in
+    // another class using the same files, so the retry belongs to the shared resource.
 
     static StoredTokens Token(string accessToken, DateTimeOffset expiresAt) => new() {
         AccessToken    = accessToken,
