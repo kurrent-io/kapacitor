@@ -230,7 +230,7 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
         // containment and could reject a safe launch, since a source-only conditional include can define a
         // driver the target never sees.
         if (await IsGitRepoWithCommits(repoPath)) {
-            var noHooks = await NoBranchHooksAsync(repoPath);
+            var noHooks = NoBranchHooks();
             if (!string.IsNullOrEmpty(baseRef)) {
                 // Fetch into a per-worktree ref instead of the shared FETCH_HEAD
                 // so concurrent review launches in the same source repo can't
@@ -283,7 +283,7 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
         // BEFORE the initial commit, so the snapshot's own history never carries the hostile config
         // either — a later `git checkout` inside the tree would otherwise restore it.
         StripWorkspaceMcpConfig(worktreePath);
-        var noHooks = await NoBranchHooksAsync(worktreePath);
+        var noHooks = NoBranchHooks();
         await RunGit(worktreePath, GitTimeout, noHooks, "init");
         // Inventoried and logged here, not at the source: `add -A` in this worktree is where the standalone
         // path's filters resolve. Round 6 removed the source-level logging as dead, and this call was
@@ -338,15 +338,9 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
     /// </summary>
     internal const string NoHooksPath = "/dev/null";
 
-    /// <summary>The hook override, available only once the transport carrying it has been proved to reach
-    /// git. Handing out containment config and proving it applies are the same step on purpose: a caller
-    /// cannot obtain the override and forget the proof, the way each materialising path once had to remember
-    /// to log its own disabled drivers.</summary>
-    static async Task<GitConfigOverride[]> NoBranchHooksAsync(string gitContextPath) {
-        await ProveConfigTransportAsync(gitContextPath);
-
-        return [new("core.hooksPath", NoHooksPath)];
-    }
+    /// <summary>The hook override. The transport carrying it is proved by the runner that hands it to git
+    /// (see <c>ProveConfigTransportIfCarryingAsync</c>), so nothing here has to remember to.</summary>
+    static GitConfigOverride[] NoBranchHooks() => [new("core.hooksPath", NoHooksPath)];
 
     /// <summary>
     /// Neutralizes the tree, and UNDOES the creation if that fails.
@@ -384,7 +378,7 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
     /// </summary>
     async Task CheckoutInTargetContextAsync(string worktreePath) {
         var overrides = await FilterOverridesForAsync(worktreePath);
-        var noHooks = await NoBranchHooksAsync(worktreePath);
+        var noHooks = NoBranchHooks();
 
         // `reset --hard HEAD`, not `checkout -- .`: --no-checkout leaves the INDEX unpopulated too, so a
         // pathspec matches nothing. This is the step that materialises the tree, and therefore the step
@@ -686,7 +680,7 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
             // core.hooksPath would run the branch's post-checkout here too. Missed when the guard was
             // added — it went on the worktree paths only.
             await RunGit(destination, GitTimeout,
-                [.. await NoBranchHooksAsync(destination), .. await FilterOverridesForAsync(destination)],
+                [.. NoBranchHooks(), .. await FilterOverridesForAsync(destination)],
                 "checkout", "--detach", "HEAD");
             var clonedHead = (await RunGitCapture(destination, GitTimeout, false, "rev-parse", "HEAD")).Trim();
             if (!string.Equals(sourceHead, clonedHead, StringComparison.Ordinal)) throw new SourceChangedException();
@@ -1320,6 +1314,33 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
     }
 
     internal static async Task<(int ExitCode, string Stdout, string Stderr)> RunGitCaptureResult(
+            string cwd, TimeSpan timeout, bool sourceReadOnly, GitConfigOverride[] config,
+            params string[] args) {
+        await ProveConfigTransportIfCarryingAsync(cwd, config);
+
+        return await RunGitCaptureResultUnproven(cwd, timeout, sourceReadOnly, config, args);
+    }
+
+    /// <summary>
+    /// The proof gate, applied where the overrides are HANDED TO GIT rather than where they are composed.
+    ///
+    /// <para>An earlier revision proved the transport inside each producer of containment config instead.
+    /// Review found the hole that shape leaves: <c>ReadGitRelativeCwdAsync</c> passes
+    /// <c>core.quotePath=false</c> and is not a containment producer, so it carried an override past no
+    /// proof at all — a fourth call site would have had the same problem, and a fifth. Gating on "this run
+    /// carries config" cannot be forgotten by a new caller.</para>
+    ///
+    /// <para>Deliberately keyed on caller-supplied config, NOT on <c>sourceReadOnly</c>: that flag's own two
+    /// suppressions ride the same transport, but losing them costs a maintenance run, not containment, and
+    /// gating every plain read would turn an old git into a daemon that cannot read a repository at all.</para>
+    /// </summary>
+    static Task ProveConfigTransportIfCarryingAsync(string cwd, GitConfigOverride[] config) =>
+        config.Length > 0 ? ProveConfigTransportAsync(cwd) : Task.CompletedTask;
+
+    /// <summary>Runs git WITHOUT proving the transport first. Only the probe itself may use this — it is
+    /// what the gate above is measuring, so routing it through the gate would deadlock on the
+    /// non-reentrant semaphore.</summary>
+    static async Task<(int ExitCode, string Stdout, string Stderr)> RunGitCaptureResultUnproven(
             string cwd, TimeSpan timeout, bool sourceReadOnly, GitConfigOverride[] config,
             params string[] args) {
         var psi = NewGitPsi(cwd, args, sourceReadOnly, config);

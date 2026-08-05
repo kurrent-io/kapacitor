@@ -47,13 +47,9 @@ public partial class WorktreeManager {
     /// </summary>
     /// <exception cref="BranchFilterInventoryException">Enumeration failed, or a driver name cannot be
     /// safely expressed as an override.</exception>
-    /// <exception cref="GitConfigTransportException">The transport that would carry the overrides does not
-    /// reach git, so they would be silently dropped.</exception>
+    /// <exception cref="GitConfigTransportException">Thrown by the runner these overrides are passed to,
+    /// when the transport carrying them does not reach git and they would be silently dropped.</exception>
     internal static async Task<GitConfigOverride[]> BranchFilterOverridesAsync(string gitContextPath) {
-        // Before the inventory, not after: an override set that cannot be delivered is not containment, and
-        // the caller's next step is the command that materialises branch content.
-        await ProveConfigTransportAsync(gitContextPath);
-
         // Enumerate EVERY key and match the shape here, rather than asking git to match a regex.
         //
         // Measured: git's `--get-regexp` runs through the platform regex in the ambient locale, where `.`

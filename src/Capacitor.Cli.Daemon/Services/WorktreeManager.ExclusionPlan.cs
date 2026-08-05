@@ -229,6 +229,7 @@ public partial class WorktreeManager {
     static async Task<byte[]> RunGitCaptureBoundedAsync(
             string cwd, TimeSpan timeout, int maxBytes, CancellationToken ct, GitConfigOverride[] config,
             params string[] args) {
+        await ProveConfigTransportIfCarryingAsync(cwd, config);
         var psi = NewGitPsi(cwd, args, sourceReadOnly: true, config);
         using var process = Process.Start(psi)!;
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);

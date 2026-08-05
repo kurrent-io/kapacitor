@@ -45,6 +45,14 @@ public partial class WorktreeManager {
 
         var first = InheritedConfigCount(environment);
 
+        // An inherited count large enough to wrap the additions below would name entries at negative
+        // indices and write a negative total. Git rejects that count, so it is loud rather than silent —
+        // but the refusal belongs here, where the reason can be stated.
+        if (first > int.MaxValue - overrides.Count)
+            throw new GitConfigTransportException(
+                $"{ConfigCountVariable} is {first}, leaving no room to append {overrides.Count} more "
+              + "config overrides.");
+
         for (var i = 0; i < overrides.Count; i++) {
             var (key, value) = overrides[i];
 
@@ -95,26 +103,16 @@ public partial class WorktreeManager {
 
     /// <summary>
     /// Proves, by running git, that config overrides carried in the environment actually reach it — once per
-    /// process, before any containment override is handed out.
+    /// process, and awaited by every git run that carries any.
     ///
-    /// <para><b>Why a runtime proof and not a version check.</b> A git older than 2.31 does not know
-    /// <c>GIT_CONFIG_COUNT</c> and IGNORES it: every filter and hook override would be dropped and every
-    /// command would still succeed, so the guard would report containment it never had. That is strictly
-    /// worse than the mis-encoding this transport replaced, which at least only affected names containing
-    /// <c>=</c>. Parsing <c>git --version</c> would answer a narrower question — distributions ship suffixed
-    /// versions, and the property we need is not "which git" but "do these entries apply here", which also
-    /// covers an environment that cannot carry them at all.</para>
+    /// <para><b>Why a runtime proof and not a version check.</b> A git older than 2.31 IGNORES
+    /// <c>GIT_CONFIG_COUNT</c>: every override would be dropped and every command would still succeed, so
+    /// containment would be reported and never had. <c>git --version</c> answers a narrower question —
+    /// distributions ship suffixed versions, and the property needed is "do these entries apply here", which
+    /// also covers an environment that cannot carry them.</para>
     ///
-    /// <para>The probe asserts both value shapes the overrides use: an EMPTY value, which is how a filter
-    /// command is disabled and the one an environment block is least likely to carry, and a non-empty one at
-    /// a non-zero index, which fails if the count is miscomputed. Its key contains <c>=</c>, so the boundary
-    /// this transport exists for is measured rather than assumed. The key is unguessable per probe, so no
-    /// config a repository or branch can write could supply the record that would satisfy it in the
-    /// transport's place.</para>
-    ///
-    /// <para>Only success is remembered: a spawn that failed for an unrelated reason must not wedge the
-    /// daemon until restart. Whether the entries apply is a property of the git binary and the platform, not
-    /// of the repository, so one measurement holds for the process.</para>
+    /// <para>Only success is remembered, so an unrelated spawn failure cannot wedge the daemon until
+    /// restart; the property is one of the git binary and the platform, not of the repository.</para>
     /// </summary>
     /// <exception cref="GitConfigTransportException">The entries did not reach git.</exception>
     internal static async Task ProveConfigTransportAsync(string gitContextPath) {
@@ -135,10 +133,18 @@ public partial class WorktreeManager {
     /// The measurement itself, separate from the memoization above so it can be run on demand — a test of a
     /// cached proof would otherwise pass by returning early, testing nothing.
     ///
-    /// <para>Run in the caller's own git context rather than a directory of our own: this is a context the
-    /// caller is about to run git in regardless, so the probe cannot invent a failure the real command would
-    /// not have had — a repository git refuses to touch (dubious ownership, say) fails either way, and no
-    /// directory has to be created, permissioned or cleaned up to hold it.</para>
+    /// <para>The probe asserts both value shapes the overrides use: an EMPTY value, which is how a filter
+    /// command is disabled and the one an environment block is least likely to carry, and a non-empty one at
+    /// a NON-ZERO index, which fails if the count is miscomputed. Its key contains <c>=</c>, so the boundary
+    /// this transport exists for is measured rather than assumed, and it is unguessable per probe, so no
+    /// config a repository can write could satisfy the check in the transport's place.</para>
+    ///
+    /// <para>Run in the caller's own git context rather than a directory of our own: a context the caller is
+    /// about to run git in regardless, so the probe cannot invent a failure the real command would not have
+    /// had, and no directory has to be created, permissioned or cleaned up.</para>
+    ///
+    /// <para>Runs through the UNPROVEN runner, which is what stops the gate recursing into itself — the gate
+    /// is not reentrant and would deadlock on its own semaphore.</para>
     /// </summary>
     internal static async Task ProbeConfigTransportAsync(string gitContextPath) {
         var driver = $"kcap-transport-probe={Guid.NewGuid():N}";
@@ -147,7 +153,7 @@ public partial class WorktreeManager {
             new($"filter.{driver}.required", "false")
         ];
 
-        var listing = await RunGitCaptureResult(
+        var listing = await RunGitCaptureResultUnproven(
             gitContextPath, GitTimeout, sourceReadOnly: false, probe, "config", "--list", "-z");
 
         if (listing.ExitCode != 0)

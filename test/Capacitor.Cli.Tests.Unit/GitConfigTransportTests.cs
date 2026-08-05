@@ -110,6 +110,19 @@ public class GitConfigTransportTests {
             environment, [new GitConfigOverride("filter.x.smudge", "")]));
     }
 
+    /// <summary>An inherited count with no room left to append to would wrap the index arithmetic and name
+    /// entries at negative indices. Refused with a reason rather than left to git's own rejection of the
+    /// resulting count.</summary>
+    [Test]
+    public void An_inherited_count_with_no_room_to_append_is_refused() {
+        var environment = new Dictionary<string, string?> {
+            ["GIT_CONFIG_COUNT"] = int.MaxValue.ToString(System.Globalization.CultureInfo.InvariantCulture)
+        };
+
+        Assert.Throws<GitConfigTransportException>(() => WorktreeManager.ApplyConfigOverrides(
+            environment, [new GitConfigOverride("filter.x.smudge", "")]));
+    }
+
     /// <summary>An environment entry ends at its first NUL, so a NUL inside a key would hand git a PREFIX of
     /// the key we checked — the authorised name not being the used name. Unreachable from the filter
     /// inventory, whose records are NUL-separated, and refused here regardless.</summary>
