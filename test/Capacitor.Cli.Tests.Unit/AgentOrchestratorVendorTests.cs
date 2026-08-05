@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
@@ -23,8 +24,18 @@ namespace Capacitor.Cli.Tests.Unit;
 /// </summary>
 public partial class AgentOrchestratorVendorTests {
     static (string repoPath, Action cleanup) CreateGitRepo() {
-        var repoPath = Path.Combine(Path.GetTempPath(), "kcap-orch-" + Guid.NewGuid().ToString("N")[..8]);
-        Directory.CreateDirectory(repoPath);
+        // The path used to be Path.Combine(GetTempPath(), "kcap-orch-" + 8 hex chars of a GUID)
+        // followed by CreateDirectory. Two problems, both removed by using the platform's own
+        // unique-temp-dir call (which the rest of this file already uses):
+        //
+        //  * 32 bits of name is a real birthday risk across the dozens of tests using this helper,
+        //    and CreateDirectory is idempotent — so a collision silently SHARES a directory and
+        //    either test's cleanup() then Directory.Delete(..., recursive: true)'s the other's
+        //    repo out from under it. Probability alone never explained the observed failures, but
+        //    the truncation bought nothing, so the whole class goes rather than being argued about.
+        //  * CreateTempSubdirectory creates the directory atomically, so there is no window
+        //    between choosing a name and owning it.
+        var repoPath = Directory.CreateTempSubdirectory("kcap-orch-").FullName;
 
         Git(repoPath, "init", "-q");
         Git(repoPath, "config", "user.email", "test@example.com");
@@ -46,12 +57,104 @@ public partial class AgentOrchestratorVendorTests {
             RedirectStandardOutput = true,
             RedirectStandardError  = true
         };
-        using var proc = Process.Start(psi)!;
-        proc.WaitForExit();
 
-        if (proc.ExitCode != 0) {
-            throw new InvalidOperationException($"git {string.Join(' ', args)} failed: {proc.StandardError.ReadToEnd()}");
+        Process proc;
+
+        try {
+            proc = Process.Start(psi)!;
+        } catch (Win32Exception ex) {
+            // Self-diagnosing on purpose. On Unix this spawn fails with ENOENT / "No such file or
+            // directory" for TWO unrelated causes, and .NET interpolates the working directory into
+            // the message either way:
+            //
+            //   1. the working directory does not exist  (chdir fails in the forked child)
+            //   2. the executable was not found          (PATH resolution / execve fails)
+            //
+            // A CI log therefore cannot say which happened, which is exactly why the intermittent
+            // failures in this helper went two rounds without a root cause. Capture both facts at
+            // the moment of failure so the NEXT occurrence diagnoses itself instead of costing
+            // another investigation.
+            var cwdExists = Directory.Exists(cwd);
+            var onPath    = ResolveOnPath("git");
+
+            throw new InvalidOperationException(
+                $"Failed to start 'git {string.Join(' ', args)}'. " +
+                $"WorkingDirectory '{cwd}' exists: {cwdExists}. " +
+                $"'git' resolved on PATH: {onPath ?? "NOT FOUND"}. " +
+                $"PATH={Environment.GetEnvironmentVariable("PATH")}",
+                ex);
         }
+
+        using (proc) {
+            // Drain BOTH redirected streams before waiting. Redirecting a stream and never reading
+            // it risks the child blocking forever once the pipe buffer fills, which would turn a
+            // test failure into a hung run — the worst outcome, since a hang produces no report.
+            // These commands are quiet enough that it has not bitten, but the shape is the bug.
+            var stdout = proc.StandardOutput.ReadToEndAsync();
+            var stderr = proc.StandardError.ReadToEndAsync();
+
+            proc.WaitForExit();
+
+            var err = stderr.GetAwaiter().GetResult();
+            _       = stdout.GetAwaiter().GetResult();
+
+            if (proc.ExitCode != 0) {
+                throw new InvalidOperationException($"git {string.Join(' ', args)} failed: {err}");
+            }
+        }
+    }
+
+    /// <summary>
+    /// Guards the diagnostic itself. The intermittent failures this replaced were unresolvable
+    /// precisely because the message could not distinguish a missing working directory from a
+    /// missing executable, so the replacement message is now load-bearing and gets a test —
+    /// otherwise it is a diagnostic nobody has ever seen produce output.
+    ///
+    /// Uses a directory that was never created, so the spawn fails for a KNOWN reason and the
+    /// message can be checked against it. Cross-platform: Unix fails with ENOENT, Windows with
+    /// "the directory name is invalid", and both surface as Win32Exception.
+    /// </summary>
+    [Test]
+    public async Task Git_spawn_failure_reports_the_working_directory_and_PATH_resolution() {
+        var neverCreated = Path.Combine(
+            Path.GetTempPath(), "kcap-orch-never-created-" + Guid.NewGuid().ToString("N"));
+
+        await Assert.That(Directory.Exists(neverCreated)).IsFalse(); // precondition
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => Task.Run(() => Git(neverCreated, "init", "-q")));
+
+        // Names the ambiguity's first horn: the working directory.
+        await Assert.That(ex!.Message).Contains(neverCreated);
+        await Assert.That(ex.Message).Contains("exists: False");
+
+        // ...and its second horn: whether the executable resolved at all.
+        await Assert.That(ex.Message).Contains("resolved on PATH:");
+
+        // The original Win32Exception must be preserved, not swallowed for a prettier message.
+        await Assert.That(ex.InnerException).IsTypeOf<Win32Exception>();
+    }
+
+    /// <summary>Returns the resolved absolute path of <paramref name="exe"/> on PATH, or null.
+    /// Used only to make a failed spawn explain itself.</summary>
+    static string? ResolveOnPath(string exe) {
+        var path = Environment.GetEnvironmentVariable("PATH");
+
+        if (string.IsNullOrEmpty(path)) return null;
+
+        foreach (var dir in path.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries)) {
+            foreach (var candidate in OperatingSystem.IsWindows()
+                         ? new[] { exe + ".exe", exe + ".cmd", exe }
+                         : new[] { exe }) {
+                string full;
+
+                try { full = Path.Combine(dir, candidate); } catch { continue; }
+
+                if (File.Exists(full)) return full;
+            }
+        }
+
+        return null;
     }
 
     static AgentOrchestrator BuildOrchestrator(
