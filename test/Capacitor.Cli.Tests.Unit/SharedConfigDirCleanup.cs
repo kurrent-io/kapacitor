@@ -1,55 +1,33 @@
 namespace Capacitor.Cli.Tests.Unit;
 
 /// <summary>
-/// Clearing of the ONE config directory every path-based test in this assembly shares.
+/// Clearing of the ONE config directory every path-based test in this assembly shares:
+/// <c>RepoPathStoreGlobalSetup</c>'s <c>[Before(Assembly)]</c> hook points <c>KCAP_CONFIG_DIR</c> at a
+/// single temp dir for the whole process, and <c>PathHelpers.ConfigDir</c> is <c>static readonly</c>,
+/// captured once. So 12+ classes delete the same <c>config.json</c>, <c>tokens.json</c> and
+/// <c>tokens/</c>, and any of them can be the one whose hook runs while a handle is still open —
+/// which is why the retry belongs here rather than in whichever class is currently failing.
 ///
-/// <para><b>Why this is shared rather than per-class.</b> <c>RepoPathStoreGlobalSetup</c>'s
-/// <c>[Before(Assembly)]</c> hook points <c>KCAP_CONFIG_DIR</c> at a single temp directory for the
-/// whole process, and <c>PathHelpers.ConfigDir</c> is <c>static readonly</c> — captured once, on
-/// first touch. So every class that resets token/profile state is deleting the SAME
-/// <c>config.json</c>, <c>tokens.json</c> and <c>tokens/</c>, and any of them can be the one whose
-/// <c>[Before(Test)]</c> hook happens to run while a handle is still open.</para>
-///
-/// <para>That is why this lives here. The previous round of this fix hardened the single class that
-/// was failing at the time, and the identical exception resurfaced in the next class to touch the
-/// same files. Hardening the resource is what stops the sequence; hardening a class only moves it.
-/// A <c>NotInParallel</c> key cannot help either way: CI runs this suite with
-/// <c>--maximum-parallel-tests 1</c>, so there is no concurrency to serialise, and a lock at
-/// <c>[Before(Test)]</c> time therefore means a handle OUTLIVED its owning test — an undisposed
-/// stream awaiting finalization, or a child process (watcher/daemon) not yet reaped.</para>
-///
-/// <para><b>Windows-only by nature.</b> Windows refuses to delete a file with an open handle; Unix
-/// unlinks regardless, so the identical leak is invisible there. Intermittent for the same reason:
-/// whether the holder has released by the time the next hook runs is timing, not ordering.</para>
+/// <para>Two facts worth knowing before changing this. A <c>NotInParallel</c> key cannot help: CI
+/// runs this suite with <c>--maximum-parallel-tests 1</c>, so there is no concurrency to serialise,
+/// and a lock at hook time therefore means a handle OUTLIVED its owning test (an undisposed stream,
+/// or an unreaped child process). And it is Windows-only because Windows refuses to delete a file
+/// with an open handle while Unix unlinks regardless — hence also intermittent, since whether the
+/// holder has released is timing rather than ordering.</para>
 /// </summary>
 internal static class SharedConfigDirCleanup {
     const int Attempts = 40;
     const int DelayMs  = 25;
 
     /// <summary>
-    /// Delete with a bounded retry over a TRANSIENT sharing violation, then throw with a named
-    /// cause.
+    /// Delete with a bounded retry over a transient sharing violation, then throw with a named cause.
     ///
-    /// <para>Deliberately does not swallow a persistent one. These tests assert on token and profile
-    /// state, so running against leftovers can pass for the WRONG reason — a stale tokens directory
-    /// already satisfies "a peer already refreshed it". A false pass is worse than the flake,
-    /// because it hides a real regression instead of costing a rerun.</para>
+    /// <para>Never swallows a persistent one: these tests assert on token and profile state, and a
+    /// stale tokens directory already satisfies "a peer already refreshed it", so a swallowed lock
+    /// would be a false pass that hides a regression instead of costing a rerun.</para>
     ///
-    /// <para><b>The delete itself is the oracle</b> (review fix, HIGH). An earlier version guarded
-    /// with <c>File.Exists</c> / <c>Directory.Exists</c> and returned early when they reported
-    /// "absent" — but those return <c>false</c> for access and some I/O failures too, not only for
-    /// absence. So the very helper written to refuse false passes could report success over state
-    /// that was still present and merely unreadable. Absence is now established only by the delete
-    /// operation itself reporting it: a missing file makes <c>File.Delete</c> a no-op, and a missing
-    /// directory raises <c>DirectoryNotFoundException</c>.</para>
-    ///
-    /// <para><b>No GC pass</b> (review fix, MEDIUM). An earlier version ran
-    /// <c>GC.Collect(); GC.WaitForPendingFinalizers();</c> after the first failure, claiming it
-    /// discriminated an undisposed stream from a live holder. It does not: a child process can close
-    /// during the pause, so any apparent effect is confounded by the delay it adds; GC runs
-    /// arbitrary finalizers, not uniquely a leaked stream; and it can CONCEAL a genuine
-    /// undisposed-handle defect by making it pass. It has been removed rather than reworded — the
-    /// message it justified asserted something it could not establish.</para>
+    /// <para>The delete is the absence oracle — <c>Exists</c> probes report <c>false</c> for access
+    /// and some I/O failures too, not only for absence, so they cannot be trusted to mean "gone".</para>
     /// </summary>
     internal static void ClearWithRetry(string what, Action delete) {
         Exception? last = null;

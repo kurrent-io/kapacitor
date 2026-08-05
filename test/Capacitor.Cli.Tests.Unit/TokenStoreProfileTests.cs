@@ -22,12 +22,8 @@ public class TokenStoreProfileTests {
 
     [Before(Test)]
     public void Cleanup() {
-        // Bare File.Delete/Directory.Delete here is what made this hook fail on Windows: the shared
-        // KCAP_CONFIG_DIR artefacts can still be held when this runs, and Windows treats that as a
-        // hard sharing violation, which from a Before hook fails the test before it starts. The
-        // shared helper retries the transient window and then throws with a named cause rather than
-        // running against another test's state. See SharedConfigDirCleanup for why this belongs to
-        // the resource rather than to whichever class happens to be failing.
+        // Retries a transient Windows sharing violation rather than failing the test before it runs;
+        // see SharedConfigDirCleanup for why this is shared.
         SharedConfigDirCleanup.ClearTokenAndProfileState(LegacyPath, TokensDir);
     }
 
