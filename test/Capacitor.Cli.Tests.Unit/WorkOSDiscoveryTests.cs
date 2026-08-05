@@ -43,12 +43,12 @@ public class WorkOSDiscoveryTests {
         var orgless  = new WorkOSAuthResponse { User = new() { Id = "user_x", FirstName = "Ada" }, AccessToken = "acc",  RefreshToken = "rt" };
         var switched = new WorkOSAuthResponse { User = new() { Id = "user_x" }, OrganizationId = "org_a", AccessToken = "acc2", RefreshToken = "rt2" };
 
-        var exit = await WorkOSDiscovery.RunAsync(
+        var outcome = await WorkOSDiscovery.RunAsync(
             "https://auth.kcap.ai", proxyConfig, proxy, picker,
             orglessLogin: ()     => Task.FromResult<WorkOSAuthResponse?>(orgless),
             orgSwitch:    (_, _) => Task.FromResult<WorkOSAuthResponse?>(switched));
 
-        await Assert.That(exit).IsEqualTo(0);
+        await Assert.That(outcome.ExitCode).IsEqualTo(0);
 
         var stored = await TokenStore.LoadAsync("eventuous");
         await Assert.That(stored).IsNotNull();
@@ -62,13 +62,13 @@ public class WorkOSDiscoveryTests {
 
     [Test]
     public async Task RunAsync_errors_when_workos_not_configured() {
-        var exit = await WorkOSDiscovery.RunAsync(
+        var outcome = await WorkOSDiscovery.RunAsync(
             "https://auth.kcap.ai", new ProxyConfigResponse { WorkOSClientId = "" },
             Substitute.For<IAuthProxyClient>(), Substitute.For<ITenantPicker>(),
             ()     => Task.FromResult<WorkOSAuthResponse?>(null),
             (_, _) => Task.FromResult<WorkOSAuthResponse?>(null));
 
-        await Assert.That(exit).IsEqualTo(1);
+        await Assert.That(outcome.ExitCode).IsEqualTo(1);
     }
 
     [Test]
@@ -81,13 +81,13 @@ public class WorkOSDiscoveryTests {
              .Returns(Task.FromResult(new DiscoveryResult(tenants, DiscoveryError.None)));
 
         var switchCalled = false;
-        var exit = await WorkOSDiscovery.RunAsync(
+        var outcome = await WorkOSDiscovery.RunAsync(
             "https://auth.kcap.ai", new ProxyConfigResponse { WorkOSClientId = "client_d" },
             proxy, Substitute.For<ITenantPicker>(),
             ()     => Task.FromResult<WorkOSAuthResponse?>(new WorkOSAuthResponse { AccessToken = "acc", RefreshToken = "rt" }),
             (_, _) => { switchCalled = true; return Task.FromResult<WorkOSAuthResponse?>(null); });
 
-        await Assert.That(exit).IsEqualTo(1);
+        await Assert.That(outcome.ExitCode).IsEqualTo(1);
         await Assert.That(switchCalled).IsFalse(); // fail before the org-switch, not during it
     }
 
@@ -97,13 +97,13 @@ public class WorkOSDiscoveryTests {
         proxy.DiscoverWorkOSTenantsAsync(Arg.Any<string>(), Arg.Any<string>())
              .Returns(Task.FromResult(new DiscoveryResult([], DiscoveryError.None)));
 
-        var exit = await WorkOSDiscovery.RunAsync(
+        var outcome = await WorkOSDiscovery.RunAsync(
             "https://auth.kcap.ai", new ProxyConfigResponse { WorkOSClientId = "client_d" },
             proxy, Substitute.For<ITenantPicker>(),
             ()     => Task.FromResult<WorkOSAuthResponse?>(new WorkOSAuthResponse { AccessToken = "acc", RefreshToken = "rt" }),
             (_, _) => Task.FromResult<WorkOSAuthResponse?>(null));
 
-        await Assert.That(exit).IsEqualTo(1);
+        await Assert.That(outcome.ExitCode).IsEqualTo(1);
     }
 
     [Test]
@@ -122,13 +122,13 @@ public class WorkOSDiscoveryTests {
         var orgless  = new WorkOSAuthResponse { User = new() { Id = "user_x", FirstName = "Ada" }, AccessToken = "acc", RefreshToken = "rt" };
         var switched = new WorkOSAuthResponse { User = new() { Id = "user_x" }, OrganizationId = "org_new", AccessToken = "acc2", RefreshToken = "rt2" };
 
-        var exit = await WorkOSDiscovery.RunAsync(
+        var outcome = await WorkOSDiscovery.RunAsync(
             "https://auth.kcap.ai", proxyConfig, proxy, Substitute.For<ITenantPicker>(),
             orglessLogin: ()     => Task.FromResult<WorkOSAuthResponse?>(orgless),
             orgSwitch:    (_, _) => Task.FromResult<WorkOSAuthResponse?>(switched),
             provisioner:  provisioner);
 
-        await Assert.That(exit).IsEqualTo(0);
+        await Assert.That(outcome.ExitCode).IsEqualTo(0);
 
         var stored = await TokenStore.LoadAsync("acme");
         await Assert.That(stored).IsNotNull();
@@ -164,7 +164,7 @@ public class WorkOSDiscoveryTests {
                    });
 
         string? switchRefreshToken = null;
-        var exit = await WorkOSDiscovery.RunAsync(
+        var outcome = await WorkOSDiscovery.RunAsync(
             "https://auth.kcap.ai", proxyConfig, proxy, Substitute.For<ITenantPicker>(),
             orglessLogin:   ()      => Task.FromResult<WorkOSAuthResponse?>(orgless),
             orgSwitch:      (rt, _) => { switchRefreshToken = rt; return Task.FromResult<WorkOSAuthResponse?>(switched); },
@@ -172,8 +172,62 @@ public class WorkOSDiscoveryTests {
                 new WorkOSAuthResponse { AccessToken = JwtWithExp(DateTimeOffset.UtcNow.AddMinutes(5)), RefreshToken = "R1" }),
             provisioner:    provisioner);
 
-        await Assert.That(exit).IsEqualTo(0);
+        await Assert.That(outcome.ExitCode).IsEqualTo(0);
         await Assert.That(switchRefreshToken).IsEqualTo("R1"); // rotated token, not the consumed login-time R0
+    }
+
+    [Test]
+    public async Task RunAsync_hands_back_the_workspace_the_user_already_has_instead_of_provisioning() {
+        var proxy = Substitute.For<IAuthProxyClient>();
+        proxy.DiscoverWorkOSTenantsAsync(Arg.Any<string>(), Arg.Any<string>())
+             .Returns(Task.FromResult(new DiscoveryResult([], DiscoveryError.None)));
+
+        var provisioner = Substitute.For<ITenantProvisioner>();
+        provisioner.OfferCreateAsync(Arg.Any<WorkOSTokenSource>(), Arg.Any<CancellationToken>())
+                   .Returns(Task.FromResult(ProvisionOffer.ExistingWorkspace("kurrent")));
+
+        var switchCalled = false;
+        var outcome = await WorkOSDiscovery.RunAsync(
+            "https://auth.kcap.ai", new ProxyConfigResponse { WorkOSClientId = "client_d" },
+            proxy, Substitute.For<ITenantPicker>(),
+            ()     => Task.FromResult<WorkOSAuthResponse?>(new WorkOSAuthResponse { AccessToken = "acc", RefreshToken = "rt" }),
+            (_, _) => { switchCalled = true; return Task.FromResult<WorkOSAuthResponse?>(null); },
+            provisioner: provisioner);
+
+        // The input is handed back verbatim — resolving "kurrent" to a URL, and picking the auth
+        // provider from that server, both belong to the caller.
+        await Assert.That(outcome.RetargetServerInput).IsEqualTo("kurrent");
+
+        // Non-zero, so a caller that ignores RetargetServerInput fails loudly rather than
+        // claiming success after configuring nothing.
+        await Assert.That(outcome.ExitCode).IsNotEqualTo(0);
+
+        // Nothing WorkOS-shaped happened: no org-switch, no profile, no token.
+        await Assert.That(switchCalled).IsFalse();
+        await Assert.That(await TokenStore.LoadAsync("kurrent")).IsNull();
+    }
+
+    [Test]
+    public async Task RunAsync_treats_a_blank_existing_workspace_input_as_no_retarget() {
+        var proxy = Substitute.For<IAuthProxyClient>();
+        proxy.DiscoverWorkOSTenantsAsync(Arg.Any<string>(), Arg.Any<string>())
+             .Returns(Task.FromResult(new DiscoveryResult([], DiscoveryError.None)));
+
+        var provisioner = Substitute.For<ITenantProvisioner>();
+        provisioner.OfferCreateAsync(Arg.Any<WorkOSTokenSource>(), Arg.Any<CancellationToken>())
+                   .Returns(Task.FromResult(ProvisionOffer.ExistingWorkspace("   ")));
+
+        var outcome = await WorkOSDiscovery.RunAsync(
+            "https://auth.kcap.ai", new ProxyConfigResponse { WorkOSClientId = "client_d" },
+            proxy, Substitute.For<ITenantPicker>(),
+            ()     => Task.FromResult<WorkOSAuthResponse?>(new WorkOSAuthResponse { AccessToken = "acc", RefreshToken = "rt" }),
+            (_, _) => Task.FromResult<WorkOSAuthResponse?>(null),
+            provisioner: provisioner);
+
+        // Whitespace would resolve to "https://   .kcap.ai" downstream; refuse it here so the
+        // caller never probes a nonsense host.
+        await Assert.That(outcome.RetargetServerInput).IsNull();
+        await Assert.That(outcome.ExitCode).IsEqualTo(1);
     }
 
     [Test]
@@ -187,14 +241,14 @@ public class WorkOSDiscoveryTests {
                    .Returns(Task.FromResult(ProvisionOffer.Declined));
 
         var switchCalled = false;
-        var exit = await WorkOSDiscovery.RunAsync(
+        var outcome = await WorkOSDiscovery.RunAsync(
             "https://auth.kcap.ai", new ProxyConfigResponse { WorkOSClientId = "client_d" },
             proxy, Substitute.For<ITenantPicker>(),
             ()     => Task.FromResult<WorkOSAuthResponse?>(new WorkOSAuthResponse { AccessToken = "acc", RefreshToken = "rt" }),
             (_, _) => { switchCalled = true; return Task.FromResult<WorkOSAuthResponse?>(null); },
             provisioner: provisioner);
 
-        await Assert.That(exit).IsEqualTo(1);
+        await Assert.That(outcome.ExitCode).IsEqualTo(1);
         await Assert.That(switchCalled).IsFalse();
     }
 }

@@ -10,12 +10,34 @@ public sealed class SpectreTenantProvisioner(TenantProvisioningClient client, st
     const int PollIntervalMs = 4000;
     const int MaxPolls       = 150; // ~10 minutes (server budget is 15)
 
+    const string CreateChoice   = "Create a new workspace";
+    const string ExistingChoice = "I already have a workspace";
+    const string CancelChoice   = "Cancel";
+
     public async Task<ProvisionOffer> OfferCreateAsync(WorkOSTokenSource tokens, CancellationToken ct = default) {
         AnsiConsole.MarkupLine("  [yellow]No Capacitor tenant is linked to your account.[/]");
-        var create = AnsiConsole.Prompt(new ConfirmationPrompt("  Create one now?") { DefaultValue = true });
-        if (!create) {
+
+        // Three ways out, not two: discovery finding nothing does NOT mean the user has no
+        // workspace. It cannot see a workspace that authenticates with the GitHub App, so
+        // offering only "create one" sends an existing member off to make a second workspace.
+        var choice = AnsiConsole.Prompt(
+            new SelectionPrompt<string>()
+                .Title("  How would you like to continue?")
+                .AddChoices(CreateChoice, ExistingChoice, CancelChoice));
+
+        if (choice == CancelChoice) {
             AnsiConsole.MarkupLine("  [dim]No tenant created.[/]");
             return ProvisionOffer.Declined;
+        }
+
+        if (choice == ExistingChoice) {
+            var workspace = AnsiConsole.Prompt(
+                new TextPrompt<string>("  Workspace slug or URL:").Validate(v =>
+                    string.IsNullOrWhiteSpace(v)
+                        ? ValidationResult.Error("Enter a workspace slug (e.g. acme) or a full server URL")
+                        : ValidationResult.Success()));
+
+            return ProvisionOffer.ExistingWorkspace(workspace.Trim());
         }
 
         var orgName = AnsiConsole.Prompt(

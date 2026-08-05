@@ -102,30 +102,10 @@ public static class SetupCommand {
         bool    loginComplete = false; // WorkOS discovery authenticates inline; skip the Step-2 login.
 
         if (serverUrlArg is not null) {
-            var normalized = await AnsiConsole.Status().Spinner(Spinner.Known.Dots).StartAsync("Checking server…",
-                async _ => await ServerUrlNormalizer.NormalizeAsync(
-                    serverUrlArg, skipProbe: false, CancellationToken.None));
+            var resolved = await ResolveServerAndProviderAsync(serverUrlArg);
+            if (resolved is null) return 1;
 
-            if (!normalized.Reachable) {
-                AnsiConsole.MarkupLine($"  [red]✗[/] Cannot reach server: {Markup.Escape(normalized.Warning ?? serverUrlArg)}");
-                AnsiConsole.MarkupLine("  [dim]Check the URL is correct and the server is running.[/]");
-                return 1;
-            }
-
-            serverUrl = normalized.Url;
-            await Console.Out.WriteLineAsync($"  Server URL: {serverUrl}");
-
-            // Reachable, but with an informational warning (e.g. https→http downgrade).
-            if (normalized.Warning is not null)
-                AnsiConsole.MarkupLine($"  [yellow]![/] {Markup.Escape(normalized.Warning)}");
-
-            try {
-                provider = await HttpClientExtensions.DiscoverProviderAsync(serverUrl);
-                AnsiConsole.MarkupLine($"  [green]✓[/] Reachable · auth provider: [cyan]{Markup.Escape(provider)}[/]");
-            } catch (Exception ex) {
-                AnsiConsole.MarkupLine($"  [red]✗[/] Cannot reach server: {Markup.Escape(ex.Message)}");
-                return 1;
-            }
+            (serverUrl, provider) = resolved.Value;
         } else if (noPrompt) {
             await Console.Error.WriteLineAsync("  --server-url is required with --no-prompt");
             return 1;
@@ -770,6 +750,42 @@ public static class SetupCommand {
         new AntigravityImportSource(),
     };
 
+    /// <summary>
+    /// Normalizes a user-supplied server (a full URL, or a bare slug already expanded by
+    /// <see cref="ResolveTenantArg"/>), probes it, and reads the auth provider from the server's
+    /// own <c>/auth/config</c>. Returns null after printing the reason. Shared by
+    /// `kcap setup &lt;tenant&gt;` / --server-url and by the zero-tenant "I already have a
+    /// workspace" path, so provider selection has exactly one implementation.
+    /// </summary>
+    static async Task<(string ServerUrl, string Provider)?> ResolveServerAndProviderAsync(string serverArg) {
+        var normalized = await AnsiConsole.Status().Spinner(Spinner.Known.Dots).StartAsync("Checking server…",
+            async _ => await ServerUrlNormalizer.NormalizeAsync(
+                serverArg, skipProbe: false, CancellationToken.None));
+
+        if (!normalized.Reachable) {
+            AnsiConsole.MarkupLine($"  [red]✗[/] Cannot reach server: {Markup.Escape(normalized.Warning ?? serverArg)}");
+            AnsiConsole.MarkupLine("  [dim]Check the URL is correct and the server is running.[/]");
+            return null;
+        }
+
+        var serverUrl = normalized.Url;
+        await Console.Out.WriteLineAsync($"  Server URL: {serverUrl}");
+
+        // Reachable, but with an informational warning (e.g. https→http downgrade).
+        if (normalized.Warning is not null)
+            AnsiConsole.MarkupLine($"  [yellow]![/] {Markup.Escape(normalized.Warning)}");
+
+        try {
+            var provider = await HttpClientExtensions.DiscoverProviderAsync(serverUrl);
+            AnsiConsole.MarkupLine($"  [green]✓[/] Reachable · auth provider: [cyan]{Markup.Escape(provider)}[/]");
+
+            return (serverUrl, provider);
+        } catch (Exception ex) {
+            AnsiConsole.MarkupLine($"  [red]✗[/] Cannot reach server: {Markup.Escape(ex.Message)}");
+            return null;
+        }
+    }
+
     static async Task<(string ServerUrl, string? PreAuthToken, string Provider, bool LoginComplete)?> RunDiscoveryAsync(
             string[] args, bool forceDevice) {
         AnsiConsole.MarkupLine($"  Proxy: [dim]{Markup.Escape(AuthProxyEndpoint.Url)}[/]");
@@ -793,9 +809,22 @@ public static class SetupCommand {
                 ? null
                 : new SpectreTenantProvisioner(new TenantProvisioningClient(new HttpClient()), ProvisioningEndpoint.Url);
 
-            var exit = await WorkOSDiscovery.RunWithLiveAuthAsync(
+            var workosDiscovery = await WorkOSDiscovery.RunWithLiveAuthAsync(
                 AuthProxyEndpoint.Url, proxyConfig, proxyClient, new SpectreTenantPicker(), provisioner);
-            if (exit != 0) return null;
+
+            // Checked before ExitCode, which is deliberately non-zero on a re-target. The user has
+            // no WorkOS tenant but does belong to a workspace, so continue setup against that
+            // server: its own /auth/config picks the provider, and Step 2 logs in normally. This is
+            // the path a GitHub-App workspace takes — WorkOS discovery can never return one.
+            if (workosDiscovery.RetargetServerInput is { } target) {
+                var retargeted = await ResolveServerAndProviderAsync(ResolveTenantArg(target));
+
+                return retargeted is null
+                    ? null
+                    : (retargeted.Value.ServerUrl, null, retargeted.Value.Provider, false);
+            }
+
+            if (workosDiscovery.ExitCode != 0) return null;
 
             // WorkOSDiscovery saved + activated the picked profile; continue setup against it.
             var cfg    = await AppConfig.LoadProfileConfig();
