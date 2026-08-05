@@ -41,17 +41,36 @@ public partial class App : Application {
             desktop.MainWindow = BuildAndShowMainWindow(service, _shutdown.Token);
         } catch (Exception ex) {
             Console.Error.WriteLine($"kcap app failed to start: {ex}");
-
-            // Showing a window here is legal before Avalonia's main loop starts — it's exactly
-            // what StartWithClassicDesktopLifetime's own ShowMainWindow() does right after Start.
-            // Calling desktop.Shutdown(1) directly, as this catch used to, is what previously
-            // threw when startup faulted synchronously (before the main loop began) — so this
-            // shape resolves that pre-main-loop edge case rather than worsening it.
-            var errorWindow = BuildStartupErrorWindow(ex);
-            if (desktop.MainWindow is null) desktop.MainWindow = errorWindow;
-            errorWindow.Closed += (_, _) => desktop.Shutdown(1);
-            errorWindow.Show();
+            ShowStartupError(desktop, ex);
         }
+    }
+
+    // Split out of the catch so a test can drive it against a fake
+    // IClassicDesktopStyleApplicationLifetime (no real windowing/desktop lifetime needed) and
+    // assert the ShutdownMode pin, the MainWindow assignment, and the deferred Shutdown(1) all
+    // happen in the right order.
+    internal static void ShowStartupError(IClassicDesktopStyleApplicationLifetime desktop, Exception ex) {
+        // Decompiler-verified: the app never sets ShutdownMode elsewhere, so it defaults to
+        // OnLastWindowClose. Window.HandleClosed raises the CLR Closed event (our handler below,
+        // which calls Shutdown(1)) BEFORE the routed WindowClosedEvent that OnLastWindowClose
+        // listens for. So closing the error window used to run: our Shutdown(1) (sets
+        // _exitCode=1) -> THEN the routed event -> _windows hits 0 -> an OnLastWindowClose-driven
+        // TryShutdown() with its default exit code 0 -> App.OnShutdownRequested's deferred
+        // dance -> a second TryShutdown() whose DoShutdown unconditionally overwrites _exitCode
+        // with 0. Net effect: the most common startup failure exited 0. Pinning
+        // OnExplicitShutdown disarms that whole OnLastWindowClose branch, so our explicit
+        // Shutdown(1) below is the only shutdown and nothing overwrites its exit code.
+        desktop.ShutdownMode = ShutdownMode.OnExplicitShutdown;
+
+        // Showing a window here is legal before Avalonia's main loop starts — it's exactly what
+        // StartWithClassicDesktopLifetime's own ShowMainWindow() does right after Start. Calling
+        // desktop.Shutdown(1) directly, as this catch used to, is what previously threw when
+        // startup faulted synchronously (before the main loop began) — so this shape resolves
+        // that pre-main-loop edge case rather than worsening it.
+        var errorWindow = BuildStartupErrorWindow(ex);
+        if (desktop.MainWindow is null) desktop.MainWindow = errorWindow;
+        errorWindow.Closed += (_, _) => desktop.Shutdown(1);
+        errorWindow.Show();
     }
 
     // Last-resort UI for a startup failure: Console.Error above is invisible on a normal GUI

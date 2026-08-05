@@ -1,6 +1,7 @@
 using Avalonia.Controls;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
+using TUnit.Assertions.Enums;
 using AppUnderTest = Capacitor.App.App;
 
 namespace Capacitor.App.Tests.Unit;
@@ -65,5 +66,43 @@ public class AppStartupTests {
 
         await Assert.That(rendered).Contains("The app failed to start. Details:");
         await Assert.That(rendered).Contains("boom-marker");
+    }
+
+    /// Regression coverage for a P1 bug found in re-review: with the app's default ShutdownMode
+    /// (OnLastWindowClose, never set elsewhere), closing the error window used to exit 0 instead
+    /// of 1. Window.HandleClosed raises the CLR Closed event (our handler, calling Shutdown(1))
+    /// BEFORE the routed WindowClosedEvent that OnLastWindowClose listens for; that routed event
+    /// then drives an OnLastWindowClose TryShutdown() with its default exit code 0, which — via
+    /// App.OnShutdownRequested's deferred cancel-then-retry dance — unconditionally overwrites
+    /// the exit code back to 0. ShowStartupError now pins ShutdownMode to OnExplicitShutdown
+    /// before showing the window, which disarms that whole branch. This drives ShowStartupError
+    /// against a fake lifetime (no real desktop lifetime needed) and asserts: the mode is pinned
+    /// and MainWindow assigned with no Shutdown call yet, then closing the window produces
+    /// exactly one Shutdown call, with exit code 1.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task ShowStartupError_pins_explicit_shutdown_and_exits_with_code_1_on_close() {
+        var (modeAfterShow, mainWindowAssigned, callsBeforeClose, callsAfterClose) =
+            await AvaloniaSession.DispatchAsync(() => {
+                var (desktop, fake) = FakeClassicDesktopLifetime.Create();
+
+                AppUnderTest.ShowStartupError(desktop, new InvalidOperationException("boom"));
+                Dispatcher.UIThread.RunJobs();
+
+                var mode = fake.ShutdownMode;
+                var assigned = fake.MainWindow is not null;
+                var before = fake.ShutdownCalls.ToArray();
+
+                fake.MainWindow!.Close();
+                Dispatcher.UIThread.RunJobs();
+
+                var after = fake.ShutdownCalls.ToArray();
+                return (mode, assigned, before, after);
+            });
+
+        await Assert.That(modeAfterShow).IsEqualTo(ShutdownMode.OnExplicitShutdown);
+        await Assert.That(mainWindowAssigned).IsTrue();
+        await Assert.That(callsBeforeClose).IsEmpty();
+        await Assert.That(callsAfterClose).IsEquivalentTo([1], CollectionOrdering.Matching);
     }
 }
