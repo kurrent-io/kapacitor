@@ -31,12 +31,27 @@ internal enum KiroReviewerDecision {
 /// it. See <see cref="KiroReviewerVersionStore"/>.</para>
 /// </summary>
 internal static class KiroReviewerCapability {
+    /// <summary>Production entry point: reads the host platform, then defers to the pure overload.</summary>
     internal static KiroReviewerDecision Decide(
-            bool operatorEnabled, string? installedVersion, string? affirmedVersion) {
+            bool operatorEnabled, string? installedVersion, string? affirmedVersion) =>
+        Decide(!OperatingSystem.IsWindows(), operatorEnabled, installedVersion, affirmedVersion);
+
+    /// <summary>
+    /// The decision, with the platform passed IN rather than read from the ambient OS.
+    ///
+    /// <para>An earlier revision called <c>OperatingSystem.IsWindows()</c> inside this method while its
+    /// own summary claimed to be pure. It was not, and the cost was immediate: on the Windows CI leg
+    /// every non-platform arm short-circuited to <see cref="KiroReviewerDecision.UnsupportedPlatform"/>,
+    /// so a dozen tests asserting consent and version behaviour failed for a reason that had nothing to
+    /// do with what they were testing. Taking the platform as an argument makes every arm reachable
+    /// from any host — including the Windows arm itself, which was previously unassertable on POSIX.</para>
+    /// </summary>
+    internal static KiroReviewerDecision Decide(
+            bool posixHost, bool operatorEnabled, string? installedVersion, string? affirmedVersion) {
         // Windows has no 0700, so the transcript-bearing reviewer home cannot be made owner-only and
         // the disposal requirement cannot be met. Refuse rather than advertise a reviewer whose review
         // context is world-readable.
-        if (OperatingSystem.IsWindows()) return KiroReviewerDecision.UnsupportedPlatform;
+        if (!posixHost) return KiroReviewerDecision.UnsupportedPlatform;
 
         // Operator flag FIRST and short-circuiting. Evaluating the version probe alongside it would let
         // an installed-but-wedged vendor binary hang daemon startup on a feature the operator switched

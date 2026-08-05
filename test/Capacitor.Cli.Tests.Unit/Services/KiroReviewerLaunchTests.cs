@@ -61,6 +61,9 @@ public class KiroReviewerLaunchTests {
 
     [Test]
     public async Task AReviewLaunch_TrustsReadAndThink_AndNeverWriteOrShell() {
+        Skip.Unless(!OperatingSystem.IsWindows(),
+            "The Kiro unattended reviewer is POSIX-only: its isolated home holds review context and cannot be created owner-only on Windows.");
+
         var value = TrustValue(Psi(isReviewFlow: true, EnabledConfig(StateDir())));
 
         await Assert.That(value.Split(',')).Contains("fs_read");
@@ -76,6 +79,9 @@ public class KiroReviewerLaunchTests {
     /// </summary>
     [Test]
     public async Task AReviewLaunchWithAnAllowlist_TrustsThatServersTools() {
+        Skip.Unless(!OperatingSystem.IsWindows(),
+            "The Kiro unattended reviewer is POSIX-only: its isolated home holds review context and cannot be created owner-only on Windows.");
+
         var psi   = Psi(isReviewFlow: true, EnabledConfig(StateDir()), mcpAllowlist: ["kcap-review"]);
         var value = TrustValue(psi);
 
@@ -91,6 +97,9 @@ public class KiroReviewerLaunchTests {
     /// because a hosted Kiro the user drives should behave exactly as their own session does.</summary>
     [Test]
     public async Task AnInteractiveLaunch_HasNoTrustArgvAndNoIsolatedHome() {
+        Skip.Unless(!OperatingSystem.IsWindows(),
+            "The Kiro unattended reviewer is POSIX-only: its isolated home holds review context and cannot be created owner-only on Windows.");
+
         var psi = Psi(isReviewFlow: false, EnabledConfig(StateDir()));
 
         await Assert.That(psi.ArgumentList.Contains("--trust-tools")).IsFalse();
@@ -99,6 +108,9 @@ public class KiroReviewerLaunchTests {
 
     [Test]
     public async Task AReviewLaunch_SetsAnEmptyOwnerOnlyKiroHome() {
+        Skip.Unless(!OperatingSystem.IsWindows(),
+            "The Kiro unattended reviewer is POSIX-only: its isolated home holds review context and cannot be created owner-only on Windows.");
+
         var psi = Psi(isReviewFlow: true, EnabledConfig(StateDir()));
 
         await Assert.That(psi.Environment.ContainsKey("KIRO_HOME")).IsTrue();
@@ -114,6 +126,9 @@ public class KiroReviewerLaunchTests {
 
     [Test]
     public async Task ADisabledDaemon_RefusesAReviewLaunch() {
+        Skip.Unless(!OperatingSystem.IsWindows(),
+            "The Kiro unattended reviewer is POSIX-only: its isolated home holds review context and cannot be created owner-only on Windows.");
+
         var config = new DaemonConfig { StateDir = StateDir(), Name = "test-daemon" };
 
         await Assert.That(() => Psi(isReviewFlow: true, config))
@@ -127,6 +142,9 @@ public class KiroReviewerLaunchTests {
     /// </summary>
     [Test]
     public async Task AnUpgradedKiro_RefusesAReviewLaunchUntilAffirmed() {
+        Skip.Unless(!OperatingSystem.IsWindows(),
+            "The Kiro unattended reviewer is POSIX-only: its isolated home holds review context and cannot be created owner-only on Windows.");
+
         var config = EnabledConfig(StateDir());
 
         await Assert.That(() => AcpHostedAgentRuntimeFactory.BuildProcessStartInfo(
@@ -144,6 +162,9 @@ public class KiroReviewerLaunchTests {
     /// </summary>
     [Test]
     public async Task AnAliveButSilentPeer_HitsTheDeadlineAndIsReaped() {
+        Skip.Unless(!OperatingSystem.IsWindows(),
+            "The Kiro unattended reviewer is POSIX-only: its isolated home holds review context and cannot be created owner-only on Windows.");
+
         var config = EnabledConfig(StateDir());
         config.KiroReviewerLaunchTimeoutSeconds = 1;
 

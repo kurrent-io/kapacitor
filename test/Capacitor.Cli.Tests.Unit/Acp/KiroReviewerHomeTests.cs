@@ -90,7 +90,7 @@ public class KiroReviewerHomeTests {
     /// </summary>
     [Test]
     public async Task Delete_RemovesRealContentButDoesNotFollowALinkOut() {
-        if (OperatingSystem.IsWindows()) return;
+        Skip.Unless(!OperatingSystem.IsWindows(), "POSIX symlink and file-mode semantics.");
 
         var stateDir = TempStateDir();
         var outside  = TempStateDir();

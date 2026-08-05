@@ -8,14 +8,19 @@ namespace Capacitor.Cli.Tests.Unit.Acp;
 /// whether the installed kiro-cli is the build this daemon affirmed.
 /// </summary>
 public class KiroReviewerCapabilityTests {
+    /// <summary>Pinned, never read from the running host: these arms are about consent and versions,
+    /// and letting the CI leg decide the platform made every one of them fail on Windows for a reason
+    /// unrelated to what they assert.</summary>
+    const bool Posix = true;
+
     [Test]
     public async Task EnabledAndAffirmed_IsTheOnlyPermittedCombination() =>
-        await Assert.That(KiroReviewerCapability.Decide(true, "2.16.0", "2.16.0"))
+        await Assert.That(KiroReviewerCapability.Decide(Posix, true, "2.16.0", "2.16.0"))
             .IsEqualTo(KiroReviewerDecision.Allowed);
 
     [Test]
     public async Task DisabledByTheOperator_IsRefusedEvenOnAnAffirmedVersion() =>
-        await Assert.That(KiroReviewerCapability.Decide(false, "2.16.0", "2.16.0"))
+        await Assert.That(KiroReviewerCapability.Decide(Posix, false, "2.16.0", "2.16.0"))
             .IsEqualTo(KiroReviewerDecision.Disabled);
 
     /// <summary>
@@ -29,7 +34,7 @@ public class KiroReviewerCapabilityTests {
     [Arguments("3.0.0")]
     [Arguments("2.15.2")]
     public async Task AChangedVersion_IsRefusedInBothDirections(string installed) =>
-        await Assert.That(KiroReviewerCapability.Decide(true, installed, "2.16.0"))
+        await Assert.That(KiroReviewerCapability.Decide(Posix, true, installed, "2.16.0"))
             .IsEqualTo(KiroReviewerDecision.VersionUnaffirmed);
 
     /// <summary>
@@ -41,7 +46,7 @@ public class KiroReviewerCapabilityTests {
     [Arguments("")]
     [Arguments("   ")]
     public async Task NoAffirmationOnRecord_IsRefused(string? affirmed) =>
-        await Assert.That(KiroReviewerCapability.Decide(true, "2.16.0", affirmed))
+        await Assert.That(KiroReviewerCapability.Decide(Posix, true, "2.16.0", affirmed))
             .IsEqualTo(KiroReviewerDecision.VersionUnaffirmed);
 
     [Test]
@@ -49,13 +54,13 @@ public class KiroReviewerCapabilityTests {
     [Arguments("")]
     [Arguments("   ")]
     public async Task AnUnresolvedVersion_IsRefused(string? installed) =>
-        await Assert.That(KiroReviewerCapability.Decide(true, installed, "2.16.0"))
+        await Assert.That(KiroReviewerCapability.Decide(Posix, true, installed, "2.16.0"))
             .IsEqualTo(KiroReviewerDecision.VersionUnresolved);
 
     /// <summary>Surrounding whitespace is not a version change.</summary>
     [Test]
     public async Task VersionComparisonIgnoresSurroundingWhitespace() =>
-        await Assert.That(KiroReviewerCapability.Decide(true, " 2.16.0\n", "2.16.0"))
+        await Assert.That(KiroReviewerCapability.Decide(Posix, true, " 2.16.0\n", "2.16.0"))
             .IsEqualTo(KiroReviewerDecision.Allowed);
 
     [Test]
@@ -104,4 +109,25 @@ public class KiroReviewerCapabilityTests {
     [Arguments(null, false)]
     public async Task TheConsentFlagOnlyAcceptsAnExplicitAffirmative(string? value, bool expected) =>
         await Assert.That(DaemonRunner.ParseConsentFlag(value)).IsEqualTo(expected);
+
+    /// <summary>
+    /// The Windows arm, now assertable from any host. It refuses BEFORE the operator flag and before
+    /// any version comparison — a fully-consented, correctly-affirmed daemon is still refused, because
+    /// the reviewer home holds review context and cannot be created owner-only there.
+    /// </summary>
+    [Test]
+    public async Task AWindowsHost_IsRefusedEvenWhenEnabledAndAffirmed() =>
+        await Assert.That(KiroReviewerCapability.Decide(
+                posixHost: false, operatorEnabled: true,
+                installedVersion: "2.16.0", affirmedVersion: "2.16.0"))
+            .IsEqualTo(KiroReviewerDecision.UnsupportedPlatform);
+
+    [Test]
+    public async Task TheUnsupportedPlatformReason_SaysWhyRatherThanJustRefusing() {
+        var reason = KiroReviewerCapability.DenialReason(
+            KiroReviewerDecision.UnsupportedPlatform, null, null);
+
+        await Assert.That(reason).StartsWith("kiro_reviewer_unsupported_platform");
+        await Assert.That(reason).Contains("owner-only");
+    }
 }

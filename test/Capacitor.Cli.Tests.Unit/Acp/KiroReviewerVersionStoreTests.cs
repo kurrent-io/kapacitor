@@ -29,7 +29,7 @@ public class KiroReviewerVersionStoreTests {
 
     [Test]
     public async Task TheRecord_IsOwnerOnly() {
-        if (OperatingSystem.IsWindows()) return;
+        Skip.Unless(!OperatingSystem.IsWindows(), "POSIX file-mode semantics.");
 
         var dir = TempStateDir();
         new KiroReviewerVersionStore(dir).Affirm("2.16.0");
