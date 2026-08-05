@@ -267,7 +267,11 @@ repository cannot author content that matches one. **Aliasing (§5.2) and this p
 package** — remove the aliasing and this reverts to string classification. Fail-closed in every
 direction: no `@server/tool` token at all is a denial, and every token found must be admitted.
 
-### 3.3-bis The original reasoning, retained
+### 3.3-bis The original reasoning, retained as the record of what was falsified
+
+**Everything in this subsection describes the SUPERSEDED `Fail` decision.** It is kept because the
+half of it that rejects `AutoApprove` still holds and still constrains the replacement; the half that
+justifies `Fail` was disproved by measurement (§3.3).
 
 
 
@@ -744,8 +748,12 @@ an inert one.
 - [ ] A worktree carrying `.kiro/settings/mcp.json` has it removed before launch (AI-1632 regression)
 
 **Trust**
-- [ ] `flow-result` is callable with **zero** `session/request_permission` frames;
-      **control:** dropping the namespaced entry produces exactly one frame naming the tool
+- [ ] `flow-result` is callable without human routing. **NOT "zero frames"** — measured, Kiro raises
+      one intermittently for that very tool, which is why the policy admits it rather than reaping
+      (§3.3). **Control:** dropping the namespaced trust entry still produces a frame naming the tool
+- [ ] A permission frame naming a tool this launch did NOT inject reaps the reviewer;
+      **control:** the same frame naming an injected tool is approved without routing to a human
+- [ ] A frame whose title merely CONTAINS an injected tool id, alongside anything else, is refused
 - [ ] A review launched **with a non-empty `McpAllowlist`** completes AND **actually calls** one of
       that server's tools, with receipt asserted at the server, zero frames raised (§3.4). **A round
       that merely completes proves nothing here** — a reviewer that never touches an allowlisted tool
@@ -757,7 +765,7 @@ an inert one.
       identity used by one and the launch fails rather than silently producing a reviewer that
       cannot call its own channel
 - [ ] An injected server absent from `ReviewFlowUnattendedSafeTools` fails the launch
-- [ ] An `fs_write` or `execute_bash` attempt raises a frame and `Fail` ends the round;
+- [ ] An `fs_write` or `execute_bash` attempt raises a frame that is NOT admitted, and the round ends;
       **control:** the same request succeeds when that tool is trusted
 - [ ] A trust-list entry Kiro warns about fails the launch (`kiro_reviewer_trust_list_rejected`)
       rather than silently trusting nothing (§3.2)
@@ -804,7 +812,7 @@ an inert one.
       working reviewer from an inert one, so the three are asserted together in one test, never as
       independent green ticks
 - [ ] Same for `code-review`
-- [ ] **Zero** human-routed interactions across the round
+- [ ] **Zero** human-routed interactions across the round (frames may occur; none is routed)
 - [ ] Reviewer session captured and reaped; no orphan
 - [ ] A caller-supplied reviewer model is refused with a coded error, not ignored (§8)
 - [ ] The applied model is reported on the launch attempt, including the `KCAP_KIRO_MODEL` case (§8)

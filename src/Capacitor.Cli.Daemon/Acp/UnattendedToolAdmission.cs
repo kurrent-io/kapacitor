@@ -1,41 +1,38 @@
 using System.Text.Json;
-using System.Text.RegularExpressions;
 using Capacitor.Cli.Core.Acp;
 
 namespace Capacitor.Cli.Daemon.Acp;
 
 /// <summary>
-/// Decides whether ONE unattended permission frame names only tools this launch itself injected.
+/// Decides whether ONE unattended permission frame names exactly one tool this launch injected.
 ///
 /// <para><b>Why this exists.</b> The <c>Fail</c> policy assumes a correctly-configured reviewer emits
-/// no interaction frame at all. Measured against kiro-cli 2.16.0 that assumption is false: a frame
-/// appears intermittently for <c>@kcap-flow-result/submit_review_result</c> — a tool that IS in the
-/// launch's <c>--trust-tools</c> — so <c>Fail</c> reaps an unpredictable share of otherwise-clean
-/// rounds on the very call that delivers the result. <c>AutoApprove</c> is not the answer either: it
-/// does not inspect the tool, so it would approve exactly the request that scoping exists to reject.
-/// This is the third option — approve the launch's own tools, treat everything else as <c>Fail</c>
-/// does.</para>
+/// no interaction frame at all. Measured against kiro-cli 2.16.0 that is false: a frame appears
+/// intermittently for <c>@kcap-flow-result/submit_review_result</c> — a tool that IS in the launch's
+/// <c>--trust-tools</c> — so <c>Fail</c> reaps an unpredictable share of otherwise-clean rounds on
+/// the very call that delivers the result. <c>AutoApprove</c> is not the answer either: it does not
+/// inspect the tool, so it would approve exactly the request scoping exists to reject.</para>
 ///
-/// <para><b>Matching is on a DISPLAY STRING, and that needs justifying rather than hiding.</b> Kiro's
-/// permission frame carries no structured tool identity: the whole of <c>toolCall</c> is
-/// <c>{toolCallId, title}</c>, where title reads <c>"Running: @server/tool"</c>. Keying a security
-/// decision off presentation text would normally be indefensible — a spelling is not an identity.
-/// What makes it acceptable HERE, and only here, is that the admitted names are per-launch aliases
-/// carrying an unguessable GUID (<see cref="LaunchIdentity"/>). The reviewed repository cannot author
-/// content that matches one, because it cannot predict one. Remove the aliasing and this becomes
-/// string classification again, so the two are a package.</para>
+/// <para><b>The limitation, stated plainly because an earlier revision of this file got it wrong.</b>
+/// Kiro's frame carries NO structured tool identity: <c>toolCall</c> is <c>{toolCallId, title}</c>,
+/// and title is presentation text. That earlier revision scanned the title for an admitted
+/// <c>@server/tool</c> token and argued the per-launch unguessable alias made this safe, since the
+/// reviewed repository cannot predict one. <b>That argument is wrong.</b> The MODEL knows its own
+/// alias — it is in the tool list Kiro gave it — so prompt-injected repository content does not need
+/// to predict the alias, only to get the model to echo it. Under a substring scan,
+/// <c>"Running: execute_bash echo @alias/submit_review_result"</c> was admitted.</para>
 ///
-/// <para><b>Fail-closed in every direction.</b> A frame is admitted only when at least one
-/// <c>@server/tool</c> token is present AND every token found is admitted. No tokens (a bare shell
-/// string, an empty title, a shape we do not recognise) is a denial, not a pass — otherwise the
-/// easiest way past this gate would be to name no tool at all.</para>
+/// <para><b>So the match is on the COMPLETE title, never a substring.</b> After stripping the one
+/// measured presentation prefix, the remainder must equal an admitted id exactly. Surrounding text of
+/// any kind is a denial. This removes the false-accept class above; what it cannot remove is the
+/// residual that we are trusting Kiro's title to faithfully describe the call it is asking about,
+/// because the protocol gives us nothing else to key on. A vendor title-format change makes nothing
+/// match, which reaps — visibly broken, and the fail-closed direction.</para>
 /// </summary>
 internal static class UnattendedToolAdmission {
-    /// <summary>Every <c>@server/tool</c> occurrence, wherever it sits in the string. Deliberately not
-    /// anchored to a <c>"Running: "</c> prefix: that prefix is vendor presentation and would silently
-    /// stop matching if it changed, and an unanchored scan is the stricter reading anyway — it finds
-    /// tokens a prefix-anchored one would skip past.</summary>
-    static readonly Regex ToolToken = new(@"@([^\s/]+)/([^\s,;)\]]+)", RegexOptions.Compiled);
+    /// <summary>The one presentation prefix measured on kiro-cli 2.16.0. Stripped, never matched
+    /// loosely: everything after it must BE an admitted id.</summary>
+    const string TitlePrefix = "Running: ";
 
     /// <summary>The admitted <c>@server/tool</c> identities for a launch, built from the SAME injected
     /// spec list and identity the trust argv is built from. One derivation: a second would admit a set
@@ -45,8 +42,8 @@ internal static class UnattendedToolAdmission {
         KiroReviewerTrustList.NamespacedEntries(injected, identity).ToHashSet(StringComparer.Ordinal);
 
     /// <summary>
-    /// True when this frame names only admitted tools. <paramref name="toolCall"/> is the raw
-    /// <c>toolCall</c> object from the request.
+    /// True when this frame's title is EXACTLY one admitted tool, modulo the measured prefix.
+    /// <paramref name="toolCall"/> is the raw <c>toolCall</c> object from the request.
     /// </summary>
     internal static bool IsAdmitted(JsonElement toolCall, IReadOnlySet<string> admitted) {
         if (admitted.Count == 0) return false;
@@ -59,14 +56,12 @@ internal static class UnattendedToolAdmission {
 
         if (title is not { Length: > 0 }) return false;
 
-        var matches = ToolToken.Matches(title);
-        if (matches.Count == 0) return false;
+        // Ordinal throughout. A culture-aware comparison can equate strings that are different bytes,
+        // which is the wrong behaviour for an identity check.
+        var candidate = title.StartsWith(TitlePrefix, StringComparison.Ordinal)
+            ? title[TitlePrefix.Length..]
+            : title;
 
-        foreach (Match m in matches) {
-            if (!admitted.Contains($"@{m.Groups[1].Value}/{m.Groups[2].Value}"))
-                return false;
-        }
-
-        return true;
+        return admitted.Contains(candidate);
     }
 }

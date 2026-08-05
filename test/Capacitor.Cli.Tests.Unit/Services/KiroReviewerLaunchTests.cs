@@ -4,6 +4,7 @@ using Capacitor.Cli.Core.Acp;
 using Capacitor.Cli.Daemon;
 using Capacitor.Cli.Daemon.Acp;
 using Capacitor.Cli.Daemon.Services;
+using Capacitor.Cli.Tests.Unit.Acp;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Capacitor.Cli.Tests.Unit.Services;
@@ -227,5 +228,80 @@ public class KiroReviewerLaunchTests {
         }
 
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    }
+
+    /// <summary>
+    /// The end-to-end wiring of AllowlistedAutoApprove, through the REAL factory and the REAL runtime.
+    ///
+    /// <para>This exists because the unit tests either side of it cannot catch the production failure:
+    /// the admission predicate's own tests compare two helpers over a local fixture, and would pass
+    /// unchanged if the factory stopped supplying <c>admittedToolIds</c> altogether. The mutation that
+    /// survives them — <c>admittedToolIds: null</c> — is exactly the one this test kills, because a
+    /// null set admits nothing and the frame below would reap instead of being approved.</para>
+    ///
+    /// <para>The alias is read from what the launch ACTUALLY injected (the fake records
+    /// <c>session/new</c>), never reconstructed here: reconstructing it would be the second derivation
+    /// the whole design is built to avoid, and the test would then pass against a launch whose real
+    /// admitted set was something else.</para>
+    /// </summary>
+    [Test]
+    public async Task AReviewLaunch_ApprovesAPermissionFrameNamingItsOwnInjectedTool() {
+        Skip.Unless(!OperatingSystem.IsWindows(),
+            "The Kiro unattended reviewer is POSIX-only.");
+
+        var config = EnabledConfig(StateDir());
+        var agent  = new FakeAcpAgent();
+        var conn   = new CaptureServerConnection();
+
+        var factory = new AcpHostedAgentRuntimeFactory(
+            descriptor: AcpVendorDescriptors.Kiro,
+            config: config,
+            loggerFactory: NullLoggerFactory.Instance,
+            connection: conn,
+            connectionSource: _ => (agent.ClientWriteStream, agent.ClientReadStream, new AliveSilentProcess()),
+            resolveVendorVersion: _ => InstalledVersion);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        _ = agent.RunAsync(cts.Token);
+
+        var started = await factory.StartAsync(Ctx(isReviewFlow: true), cts.Token)
+                                   .WaitAsync(TimeSpan.FromSeconds(30));
+
+        // The wire name THIS launch injected, taken from the session/new it actually sent.
+        var sessionNew = agent.ReceivedCalls.First(c => c.Method == "session/new").Params!.Value;
+        var injected   = sessionNew.GetProperty("mcpServers")[0].GetProperty("name").GetString()!;
+
+        agent.EnqueuePermissionRequestDuringNextPrompt(
+            toolCallJson: $$"""{"toolCallId":"call-1","title":"Running: @{{injected}}/submit_review_result"}""",
+            optionsJson:  """[{"optionId":"allow-once","name":"Yes","kind":"allow_once"}]""");
+
+        await started.Runtime.SendUserInputAsync("review").WaitAsync(TimeSpan.FromSeconds(30));
+
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(20);
+        while (agent.LastServerRequestResponse is null && DateTime.UtcNow < deadline)
+            await Task.Delay(25, cts.Token);
+
+        // Approved locally: selected, never routed to a human, and the reviewer is still alive.
+        await Assert.That(agent.LastServerRequestResponse).IsNotNull();
+        await Assert.That(agent.LastServerRequestResponse!.Value
+                               .GetProperty("outcome").GetProperty("outcome").GetString())
+            .IsEqualTo("selected");
+        await Assert.That(conn.RequestAcpInteractionAsyncCalled).IsFalse();
+
+        await started.Runtime.DisposeAsync();
+    }
+
+    sealed class CaptureServerConnection() : ServerConnection(
+            new() { Name = "test", ServerUrl = "http://127.0.0.1:1" },
+            NullLoggerFactory.Instance,
+            NullLogger<ServerConnection>.Instance) {
+        public bool RequestAcpInteractionAsyncCalled { get; private set; }
+
+        public override Task<AcpInteractionDecision> RequestAcpInteractionAsync(
+                AcpInteractionRequest request, CancellationToken ct = default) {
+            RequestAcpInteractionAsyncCalled = true;
+
+            return Task.FromResult(new AcpInteractionDecision("cancel", null, null, null, null, null));
+        }
     }
 }

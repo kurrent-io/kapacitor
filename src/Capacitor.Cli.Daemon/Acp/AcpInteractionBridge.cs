@@ -37,6 +37,21 @@ internal sealed partial class AcpInteractionBridge(
     static readonly IReadOnlySet<string> EmptyAdmitted = new HashSet<string>(StringComparer.Ordinal);
 
     /// <summary>
+    /// A permission frame this bridge cannot even parse. Always answers <c>cancelled</c>; under
+    /// <see cref="AcpUnattendedInteractionPolicy.AllowlistedAutoApprove"/> it ALSO reaps, because a
+    /// frame we cannot read is a frame we cannot admit — and "not admitted reaps exactly as Fail
+    /// does" has to hold for the frames we understand least, not just the ones we understand.
+    /// </summary>
+    JsonElement? UnadmittableFrame(AcpRequest request, string why) {
+        if (unattendedPolicy == AcpUnattendedInteractionPolicy.AllowlistedAutoApprove) {
+            logger.LogWarning("ACP: reaping unattended reviewer — {Why} (agent {AgentId})", why, agentId);
+            unexpectedUnattendedInteraction?.Invoke(request.Method);
+        }
+
+        return CancelledResult();
+    }
+
+    /// <summary>
     /// Handles one inbound <see cref="AcpRequest"/>. Returns <see langword="null"/> for any method
     /// this bridge doesn't recognize (letting <see cref="AcpConnection.HandleServerRequestAsync"/>'s
     /// existing default-decline posture answer with a JSON-RPC "Method not found" error, unchanged
@@ -94,14 +109,14 @@ internal sealed partial class AcpInteractionBridge(
 
         try {
             if (request.Params is not { } p)
-                return CancelledResult();
+                return UnadmittableFrame(request, "session/request_permission had no params");
 
             parsed = p.Deserialize(CapacitorJsonContext.Default.SessionRequestPermissionParams)
                 ?? throw new JsonException("null params");
         } catch (JsonException ex) {
             logger.LogDebug(ex, "ACP: malformed session/request_permission params for agent {AgentId}", agentId);
 
-            return CancelledResult();
+            return UnadmittableFrame(request, "malformed session/request_permission params");
         }
 
         // Qodo daemon-review Q2: the request's OWN params are the sole source of truth for
@@ -110,7 +125,7 @@ internal sealed partial class AcpInteractionBridge(
         if (string.IsNullOrEmpty(parsed.SessionId)) {
             logger.LogDebug("ACP: session/request_permission params carried no sessionId for agent {AgentId}; cannot correlate, defaulting to cancelled", agentId);
 
-            return CancelledResult();
+            return UnadmittableFrame(request, "session/request_permission carried no sessionId");
         }
 
         // Qodo daemon-review Q1 (fail-safe hole): System.Text.Json does NOT enforce

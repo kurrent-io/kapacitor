@@ -795,8 +795,8 @@ export KCAP_KIRO_UNATTENDED_REVIEWER=1       # this DAEMON's environment — not
 **Everything in the Gemini warning above applies**, with one difference in each direction.
 
 *Tighter:* a Kiro reviewer runs with a **scoped** tool set — `fs_read`, `thinking`, and the tools of the MCP
-servers the launch itself injects. `fs_write` and `execute_bash` are not trusted, and a permission request for
-anything outside that set ends the round rather than being auto-approved. Gemini's `yolo` approval mode
+servers the launch itself injects. `fs_write` and `execute_bash` are not trusted, and a permission request that
+does not name exactly one of the injected tools ends the round rather than being auto-approved. Gemini's `yolo` approval mode
 excludes nothing, so on tool surface Kiro is the narrower of the two.
 
 > Kiro intermittently raises a permission prompt for a tool that *is* in its own trust list (an upstream
