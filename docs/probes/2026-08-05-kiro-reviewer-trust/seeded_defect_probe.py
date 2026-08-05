@@ -26,6 +26,7 @@ import asyncio
 import json
 import sys
 import tempfile
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -35,8 +36,23 @@ from acp_c0_probe import AcpClient  # noqa: E402
 HERE = Path(__file__).resolve().parent
 MCP_SERVER = HERE / "result_channel_server.py"
 
-RESULT_CHANNEL = "kcap-flow-result"
+# ALIASED, exactly as production injects it. Not the canonical id: the shipped admission rule
+# compares the frame's title to "@{aliased-wire-name}/{tool}", and a GUID-bearing name is precisely
+# the kind of thing a display title might truncate, wrap or reformat. Testing the canonical name
+# would prove the easy case and miss the one that ships.
+RESULT_CHANNEL = "kcap-flow-result-" + uuid.uuid4().hex
 RESULT_TOOL = "submit_review_result"
+
+# The SHIPPED rule, transcribed from UnattendedToolAdmission: strip one measured prefix, then the
+# remainder must EQUAL an admitted id.
+TITLE_PREFIX = "Running: "
+
+
+def is_admitted(title, admitted):
+    if not title:
+        return False
+    candidate = title[len(TITLE_PREFIX):] if title.startswith(TITLE_PREFIX) else title
+    return candidate in admitted
 
 # The production shape: fs_read + thinking + the namespaced result tools. Never fs_write, never
 # execute_bash.
@@ -93,7 +109,7 @@ class ResultCapturingClient(AcpClient):
         await super()._handle_server_request(obj)
 
 
-async def run_arm(label, code, model, outdir, ct_seconds=300):
+async def run_arm(label, code, model, outdir, trust=TRUST, ct_seconds=300):
     """One arm. Returns the result the reviewer submitted through the injected channel."""
     home = Path(tempfile.mkdtemp(prefix=f"kiro-seeded-home-{label}-"))
     work = Path(tempfile.mkdtemp(prefix=f"kiro-seeded-wt-{label}-"))
@@ -101,7 +117,7 @@ async def run_arm(label, code, model, outdir, ct_seconds=300):
 
     frames, phase = [], [label]
     client = ResultCapturingClient(
-        ["kiro-cli", "acp", "--trust-tools", TRUST],
+        ["kiro-cli", "acp", "--trust-tools", trust],
         str(work), frames, phase, label, str(outdir / f"stderr-{label}.txt"),
         extra_env={"KIRO_HOME": str(home), "PROBE_RESULT_LOG": str(log)})
 
@@ -155,12 +171,27 @@ async def main(args):
 
     a = ({"stop_reason": "skipped", "permission_frames": 0, "permission_details": [], "submitted": None}
          if args.arm == "B" else
-         await run_arm("A-defect-present", DEFECTIVE, args.model, outdir))
+         await run_arm("A-defect-present", DEFECTIVE, args.model, outdir,
+                       trust="fs_read,thinking" if args.provoke_frame else TRUST))
     b = ({"stop_reason": "skipped", "permission_frames": 0, "permission_details": [], "submitted": None}
          if args.arm == "A" else
-         await run_arm("B-defect-removed", FIXED, args.model, outdir))
+         await run_arm("B-defect-removed", FIXED, args.model, outdir,
+                       trust="fs_read,thinking" if args.provoke_frame else TRUST))
 
     findings_text = ((a["submitted"] or {}).get("findings") or "").lower()
+
+    # What the shipped policy would admit for this launch.
+    admitted = {f"@{RESULT_CHANNEL}/{RESULT_TOOL}", f"@{RESULT_CHANNEL}/send_flow_message"}
+
+    frames = [d for arm in (a, b) for d in arm["permission_details"]]
+    titles = [(d.get("toolCall") or {}).get("title") for d in frames]
+
+    # The criterion CHANGED with the policy. "Zero frames" was Fail's expectation and is exactly the
+    # premise the last run falsified; under AllowlistedAutoApprove a frame for the launch's own tool
+    # is expected and admitted. What must hold now is that every frame Kiro actually raises is one
+    # the shipped rule ADMITS -- if a real title has a shape the exact match rejects, the reviewer is
+    # reaped and the tightening broke the thing it was meant to fix.
+    unadmitted = [t for t in titles if not is_admitted(t, admitted)]
 
     verdict = {
         "started": now_iso(),
@@ -173,10 +204,16 @@ async def main(args):
             k in findings_text for k in ("len(items) - 1", "len(items)-1", "off-by-one",
                                          "last element", "last item", "final element")),
         "B_reported_clean": (b["submitted"] or {}).get("kind") == "clean",
-        "zero_permission_frames": a["permission_frames"] == 0 and b["permission_frames"] == 0,
+        "aliased_channel": RESULT_CHANNEL,
+        "permission_titles": titles,
+        "every_frame_is_admitted": len(unadmitted) == 0,
+        "unadmitted_titles": unadmitted,
+        # Recorded, not asserted: frames are intermittent, so seeing none means this run could not
+        # exercise admissibility -- not that admissibility is fine.
+        "frames_observed": len(frames),
     }
     verdict["PASS"] = all([verdict["A_reported_findings"], verdict["A_named_the_defect"],
-                           verdict["B_reported_clean"], verdict["zero_permission_frames"]])
+                           verdict["B_reported_clean"], verdict["every_frame_is_admitted"]])
 
     (outdir / "seeded-defect-summary.json").write_text(json.dumps(verdict, indent=2))
     print(json.dumps(verdict, indent=2))
@@ -186,5 +223,10 @@ if __name__ == "__main__":
     p = argparse.ArgumentParser()
     p.add_argument("--model", default="deepseek-3.2")
     p.add_argument("--arm", choices=["A", "B"], help="run ONE arm (each costs a request)")
+    # Frames are intermittent, so a run that sees none proves nothing about admissibility. Dropping
+    # the namespaced trust entry provokes one DETERMINISTICALLY (measured: 1 frame, every time) while
+    # leaving the title shape untouched -- and the title shape is the whole question.
+    p.add_argument("--provoke-frame", action="store_true",
+                   help="omit the namespaced trust entry to force a permission frame")
     p.add_argument("--outdir", default=str(HERE / "out-seeded"))
     asyncio.run(main(p.parse_args()))

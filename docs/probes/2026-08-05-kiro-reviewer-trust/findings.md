@@ -151,3 +151,46 @@ Option 2 preserves what this design was for; it is also the largest.
 
 Three requests bought the functional proof AND a blocking behavioural finding that no unit test
 would surface — every launch-shape assertion in this feature passes with this bug present.
+
+---
+
+# Verification of `AllowlistedAutoApprove` (2026-08-05, final)
+
+Three billable requests on `deepseek-3.2`, all with a **production-shaped aliased** result channel
+(`kcap-flow-result-<guid>`) rather than the canonical id — the alias is what the shipped admission
+rule compares against, and a GUID-bearing name is exactly what a display title might truncate or
+reformat.
+
+## The functional half still holds
+
+Seeded-defect differential re-run: planted off-by-one → `findings` naming it; defect removed →
+`clean`.
+
+## The admissibility question, and why the first run could not answer it
+
+The first two-arm run passed with **zero permission frames observed** — which makes "every frame is
+admitted" vacuously true. The frame is intermittent, so a run that sees none proves nothing about
+the rule. Recorded rather than glossed: `frames_observed` is in the summary for exactly this reason.
+
+Dropping the namespaced trust entry provokes a frame deterministically (measured: one, every time)
+without changing its title shape, so one further request settled it:
+
+```
+Running: @kcap-flow-result-9f848b5c57dd405e896a3c1b92b8e137/submit_review_result
+```
+
+**The shipped rule admits it.** The alias round-trips byte-intact through Kiro's title — no
+truncation, no reformatting, one `Running: ` prefix. That was the live risk in tightening from a
+substring scan to a complete-title match: a stricter rule that real titles fail would reap the
+reviewer on its own result call, which is worse than what it replaced. They do not fail.
+
+## What this does NOT establish
+
+One title shape, on one build (2.16.0), from one vendor code path. A future Kiro that decorates the
+title differently matches nothing and reaps — visibly broken, fail-closed, and the version
+affirmation is what makes a build change require a human look.
+
+## Files
+
+- `summary-policy-verify.json` — the two-arm differential (zero frames; admissibility unexercised).
+- `summary-policy-provoked-frame.json` — the provoked frame and the admissibility check.
