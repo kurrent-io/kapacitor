@@ -73,6 +73,12 @@ internal static class KiroReviewerHome {
     /// Deletes every home in THIS daemon's root whose epoch is not the current one — the crash and
     /// SIGKILL recovery. Safe by construction because the root is not shared.
     /// </summary>
+    /// <para><b>Known ordering, accepted:</b> this runs at daemon start, before the orphan-agent
+    /// reaper. A child that survived a previous incarnation and is still writing its transcript
+    /// would therefore have its home removed underneath it — an orphaned write, not a data leak,
+    /// and the reaper collects the process shortly after. Reordering boot to reap first is the
+    /// cleaner fix and is deliberately NOT done here: it changes daemon startup sequencing that this
+    /// feature does not own.</para>
     internal static void SweepStale(string stateDir, string currentEpoch, ILogger log) {
         var root = RootFor(stateDir);
         if (!Directory.Exists(root)) return;
