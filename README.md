@@ -1186,6 +1186,12 @@ kcap agent start claude -d                    # start without attaching; prints 
 
     Disabled drivers are logged per worktree so the effect is visible rather than mysterious.
 
+    Both the hook and the filter overrides are carried in git's environment (`GIT_CONFIG_COUNT` /
+    `GIT_CONFIG_KEY_n`) rather than on the command line, so a config key that legally contains `=` — a filter
+    driver named `evil=x` — stays intact instead of being cut at the `=` and left live. kcap measures at
+    launch that the git it found honours those variables and refuses to build the worktree if not, rather
+    than reporting containment it does not have: **creating an agent worktree needs git 2.31 or newer.**
+
 - **Detach** without stopping the agent with the prefix key **`Ctrl-Q` then `d`**. The agent keeps running in the daemon.
 - **Permissions:** for a registered agent, permission prompts appear in the web UI (the same dialog as hosted agents); with `--private`, prompts are answered natively in your terminal.
 

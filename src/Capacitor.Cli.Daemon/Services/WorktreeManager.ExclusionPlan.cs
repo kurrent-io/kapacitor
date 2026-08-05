@@ -77,8 +77,8 @@ public partial class WorktreeManager {
         // "one namespace" invariant this derivation exists to hold. So the work-tree top is captured and
         // required to be the source root before the prefix is trusted.
         var topRaw = await RunGitCaptureBoundedAsync(
-            sourceCwd, GitTimeout, MaxCwdPrefixCaptureBytes, ct,
-            "-c", "core.quotePath=false", "rev-parse", "--show-toplevel");
+            sourceCwd, GitTimeout, MaxCwdPrefixCaptureBytes, ct, NoQuotedPaths,
+            "rev-parse", "--show-toplevel");
         var top = ParseSingleLine(topRaw);
         if (top.Length == 0 ||
             !ResolveDeepestExisting(top).Equals(
@@ -86,8 +86,8 @@ public partial class WorktreeManager {
             throw new InvalidOperationException("borrowed_snapshot_cwd_foreign_repository");
 
         var raw = await RunGitCaptureBoundedAsync(
-            sourceCwd, GitTimeout, MaxCwdPrefixCaptureBytes, ct,
-            "-c", "core.quotePath=false", "rev-parse", "--show-prefix");
+            sourceCwd, GitTimeout, MaxCwdPrefixCaptureBytes, ct, NoQuotedPaths,
+            "rev-parse", "--show-prefix");
 
         return ParseGitRelativeCwd(raw);
     }
@@ -212,12 +212,17 @@ public partial class WorktreeManager {
         return true;
     }
 
+    /// <summary>Reports paths verbatim. Without it a non-ASCII component comes back C-quoted, and the
+    /// prefix would not match the manifest it filters.</summary>
+    static readonly GitConfigOverride[] NoQuotedPaths = [new("core.quotePath", "false")];
+
     /// <summary>Captures a git command's stdout, refusing rather than truncating past
     /// <paramref name="maxBytes"/>. Reads <c>BaseStream</c>, not the <c>StreamReader</c>, because
     /// <c>StandardOutputEncoding</c> alone does not disable the reader's BOM detection.</summary>
     static async Task<byte[]> RunGitCaptureBoundedAsync(
-            string cwd, TimeSpan timeout, int maxBytes, CancellationToken ct, params string[] args) {
-        var psi = NewGitPsi(cwd, args, sourceReadOnly: true);
+            string cwd, TimeSpan timeout, int maxBytes, CancellationToken ct, GitConfigOverride[] config,
+            params string[] args) {
+        var psi = NewGitPsi(cwd, args, sourceReadOnly: true, config);
         using var process = Process.Start(psi)!;
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeoutCts.CancelAfter(timeout);
