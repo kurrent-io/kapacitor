@@ -304,8 +304,10 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
 
             // Only after the child is gone: deleting under a live Kiro leaves it writing into an
             // unlinked path. The home is transcript-bearing, so this is disposal, not disk hygiene.
+            // No explicit delete here: runtime.DisposeAsync runs the ordered cleanup (await the
+            // reap, confirm exit, then delete), and deleting again afterwards would bypass exactly
+            // the exit-confirmed gate that ordering exists to enforce.
             await runtime.DisposeAsync().ConfigureAwait(false);
-            DeleteKiroReviewerHome(descriptor, config, ctx, _logger);
 
             throw new InvalidOperationException(
                 $"kiro_reviewer_launch_timeout: the reviewer did not complete its first prompt within "
@@ -319,8 +321,8 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
 
             // The runtime owns both the connection and the process; dispose on a failed handshake
             // so a half-started child process is never leaked.
+            // As above: disposal owns the exit-confirmed deletion.
             await runtime.DisposeAsync().ConfigureAwait(false);
-            DeleteKiroReviewerHome(descriptor, config, ctx, _logger);
 
             throw;
         }
@@ -359,7 +361,7 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
         KiroReviewerHome.Delete(
             Path.Combine(KiroReviewerHome.RootFor(stateDir),
                          KiroReviewerHome.NameFor(config.DaemonEpoch ?? "unpinned", ctx.AgentId)),
-            stateDir, NullLogger.Instance);
+            stateDir, log);
     }
 
     internal static AcpUnattendedInteractionPolicy ResolveUnattendedInteractionPolicy(

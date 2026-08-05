@@ -270,11 +270,21 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
 
             _reapClaimed = true;
 
-            // Started AND published inside the lock. Claiming, releasing, then publishing would leave
-            // exactly the gap this closes: a disposal taking the lock in between sees a claim with no
-            // task and concludes there is nothing to await. Safe to start here — the reap's first
-            // statement is an await, so it yields immediately and never takes this lock.
-            _reapTask = start();
+            // Started AND published inside the lock: claiming, releasing, then publishing leaves the
+            // gap this exists to close — a disposal taking the lock in between sees a claim with no
+            // task and concludes there is nothing to await.
+            //
+            // The callback runs SYNCHRONOUS work first (logging, _cts.Cancel()), so it can throw —
+            // notably when a dispatched notification races disposal past _cts.Dispose(). Unwinding
+            // out of here would release the lock with the slot claimed and no task published, which
+            // is precisely the prohibited state. So the claim is released on failure.
+            try {
+                _reapTask = start();
+            } catch {
+                _reapClaimed = false;
+                throw;
+            }
+
             return true;
         }
     }
@@ -1172,12 +1182,17 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
 
         var reduced = Reduce(updateElement.Clone());
 
-        // Only a RECOGNIZED update disarms the watchdog. Neither property existence nor surviving
-        // Reduce is enough: Reduce yields Unknown for {}, for a null sessionUpdate and for an
-        // unfamiliar discriminator, and all three mean the peer has said nothing meaningful. Anything
-        // weaker lets one junk frame plus a never-settled turn buy unbounded silence, which is
-        // precisely what this exists to catch.
-        if (reduced.Kind != AcpUpdateKind.Unknown)
+        // Only an update that carries actual TURN OUTPUT disarms the watchdog.
+        //
+        // "Recognized kind" is not the same predicate and was too weak: Reduce validates the
+        // discriminator, not its payload, so an empty agent_message_chunk or an id-less tool_call
+        // yields a known kind while saying nothing — one such frame plus a never-settled turn would
+        // buy the unbounded silence this exists to catch. The session-scoped kinds
+        // (available_commands, session_info, usage) are excluded for the same reason: a peer can emit
+        // them and still never begin the turn.
+        if (reduced.Kind is AcpUpdateKind.AgentMessageChunk or AcpUpdateKind.AgentThoughtChunk
+                         or AcpUpdateKind.ToolCall or AcpUpdateKind.ToolCallUpdate
+                         or AcpUpdateKind.Plan)
             Interlocked.Exchange(ref _sawFirstUpdate, 1);
         if (!_updates.Writer.TryWrite(reduced))
             _logger.LogDebug("ACP: dropped a session/update — updates channel already completed.");

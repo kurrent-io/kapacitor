@@ -60,7 +60,10 @@ public sealed class KiroReviewerVersionStore(string stateDir) {
         // Mode set BEFORE any content exists, as LaunchConsentStore does for the same reason: a chmod
         // after the write leaves a readable window, however brief.
         var options = new FileStreamOptions {
-            Mode = FileMode.Create, Access = FileAccess.Write, Share = FileShare.None
+            // ReadWrite, not None: sharing is BIDIRECTIONAL on Windows, so a writer that denies
+            // readers cannot open while a daemon holds the file for reading. Fixing only the reader
+            // left the affirm verb failing from the other side of the same race.
+            Mode = FileMode.Create, Access = FileAccess.Write, Share = FileShare.ReadWrite
         };
         if (!OperatingSystem.IsWindows())
             options.UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
