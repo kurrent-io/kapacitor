@@ -26,8 +26,9 @@ internal interface IAcpTranscriptSource {
     /// whichever the descriptor's selector sends — was sent and answered without error) — or
     /// <see langword="null"/> when no model was requested, resolution found no match in
     /// <c>session/new</c>'s <c>availableModels</c>, or the agent rejected the option. In every "null"
-    /// case Cursor's own default model applies, which is why this is nullable rather than falling
-    /// back to the requested-but-unconfirmed id.
+    /// case the vendor's own default model applies (Cursor's for a Cursor session, Kiro's for a
+    /// Kiro session, …), which is why this is nullable rather than falling back to the
+    /// requested-but-unconfirmed id.
     /// </summary>
     string? ResolvedModel { get; }
 

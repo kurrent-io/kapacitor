@@ -244,6 +244,37 @@ async def run(args):
     return summary
 
 
+REDACT_FIELDS = ("session_log_model_lines", "kiro_home_log_model_lines", "turn_log_model_lines")
+
+
+def redact(src, dst):
+    """Deterministically derive a committable summary from a raw run summary: drop the raw
+    client-log excerpt fields (trace lines can embed injected session context), rewrite this
+    user's home directory prefix to ~ in every string value, and record exactly what was done.
+    The checked-in kiro-*-summary.json files are produced by THIS step from out*/summary.json."""
+    home = str(Path.home())
+
+    def scrub(o):
+        if isinstance(o, dict):
+            return {k: scrub(v) for k, v in o.items()}
+        if isinstance(o, list):
+            return [scrub(v) for v in o]
+        if isinstance(o, str) and home in o:
+            return o.replace(home, "~")
+        return o
+
+    d = json.loads(Path(src).read_text())
+    dropped = [k for k in REDACT_FIELDS if d.pop(k, None) is not None]
+    d = scrub(d)
+    d["_redaction"] = {
+        "by": "probe.py --redact",
+        "dropped_fields": dropped,
+        "home_dir_rewritten_to": "~",
+    }
+    Path(dst).write_text(json.dumps(d, indent=2) + "\n")
+    print(f"redacted {src} -> {dst} (dropped: {dropped})")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--turn", action="store_true",
@@ -252,7 +283,12 @@ def main():
                     help="substring picking the target from availableModels (default: haiku)")
     ap.add_argument("--model", default=None, help="exact target modelId (overrides --prefer)")
     ap.add_argument("--outdir", default=str(Path(__file__).parent / "out"))
+    ap.add_argument("--redact", nargs=2, metavar=("SRC", "DST"),
+                    help="no probe run: derive a committable summary from a raw one, then exit")
     args = ap.parse_args()
+    if args.redact:
+        redact(*args.redact)
+        return
     asyncio.run(run(args))
 
 

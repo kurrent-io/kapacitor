@@ -75,7 +75,8 @@ internal enum AcpBorrowedReviewContainment {
 /// the field removes the dead state and the asymmetric guard together: there is exactly one thing
 /// to get right — which selector object the descriptor carries — not a boolean that also has to
 /// agree with it. This also drops any expectation that <c>ModelSelector</c> be
-/// <c>ReferenceEquals</c> to one of the two singletons below: the runtime only needs SOME
+/// <c>ReferenceEquals</c> to one of the selector singletons (<c>ConfigOptionModelSelector</c>,
+/// <c>SetModelSelector</c>, <c>NoOpModelSelector</c>): the runtime only needs SOME
 /// <see cref="IAcpModelSelector"/>, so a future vendor's own implementation, or a test double, is
 /// exactly as valid.
 ///

@@ -1,5 +1,5 @@
 {
-  "started": "2026-08-05T02:02:37.580770+00:00",
+  "started": "2026-08-05T02:52:57.812071+00:00",
   "argv": [
     "kiro-cli",
     "acp"
@@ -7,11 +7,11 @@
   "turn_requested": false,
   "notes": [
     "initialize ok",
-    "session/new ok; sessionId=5b4fb355-c146-457f-8e9b-23ea89d445c2 currentModelId=minimax-m2.5 availableModels=['auto', 'claude-sonnet-4.5', 'claude-sonnet-4', 'claude-haiku-4.5', 'deepseek-3.2', 'minimax-m2.5', 'minimax-m2.1', 'glm-5', 'qwen3-coder-next']",
+    "session/new ok; sessionId=a0e2eb6c-7386-4d70-97f2-ffebcb02b1c6 currentModelId=minimax-m2.5 availableModels=['auto', 'claude-sonnet-4.5', 'claude-sonnet-4', 'claude-haiku-4.5', 'deepseek-3.2', 'minimax-m2.5', 'minimax-m2.1', 'glm-5', 'qwen3-coder-next']",
     "target model: claude-haiku-4.5",
     "session/set_config_option -> {\"jsonrpc\": \"2.0\", \"error\": {\"code\": -32601, \"message\": \"Method not found\", \"data\": \"session/set_config_option\"}, \"id\": 3}",
-    "session/set_model (for the record) -> {\"jsonrpc\": \"2.0\", \"result\": {}, \"id\": 4}",
-    "sidecar after set: {\"conversation_id\": \"5b4fb355-c146-457f-8e9b-23ea89d445c2\", \"model_info\": null, \"context_usage_percentage\": null}"
+    "session/set_model -> {\"jsonrpc\": \"2.0\", \"result\": {}, \"id\": 4}",
+    "sidecar after set: {\"conversation_id\": \"a0e2eb6c-7386-4d70-97f2-ffebcb02b1c6\", \"model_info\": null, \"context_usage_percentage\": null}"
   ],
   "agent_capabilities": {
     "loadSession": true,
@@ -27,7 +27,7 @@
     "sessionCapabilities": {},
     "auth": {}
   },
-  "session_id": "5b4fb355-c146-457f-8e9b-23ea89d445c2",
+  "session_id": "a0e2eb6c-7386-4d70-97f2-ffebcb02b1c6",
   "session_new_models": {
     "currentModelId": "minimax-m2.5",
     "availableModels": [
@@ -94,14 +94,22 @@
     "result": {},
     "id": 4
   },
+  "applied_via": "set_model",
   "sidecar_after_set": {
-    "path": "~/.kiro/sessions/cli/5b4fb355-c146-457f-8e9b-23ea89d445c2.json",
+    "path": "~/.kiro/sessions/cli/a0e2eb6c-7386-4d70-97f2-ffebcb02b1c6.json",
     "rts_model_state": {
-      "conversation_id": "5b4fb355-c146-457f-8e9b-23ea89d445c2",
+      "conversation_id": "a0e2eb6c-7386-4d70-97f2-ffebcb02b1c6",
       "model_info": null,
       "context_usage_percentage": null
     }
   },
-  "ended": "2026-08-05T02:03:03.893005+00:00",
-  "_note": "raw client-log excerpt fields stripped before commit: kiro_home_log_model_lines, session_log_model_lines"
+  "ended": "2026-08-05T02:53:31.562249+00:00",
+  "_redaction": {
+    "by": "probe.py --redact",
+    "dropped_fields": [
+      "session_log_model_lines",
+      "kiro_home_log_model_lines"
+    ],
+    "home_dir_rewritten_to": "~"
+  }
 }

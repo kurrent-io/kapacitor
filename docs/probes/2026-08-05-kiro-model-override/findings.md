@@ -57,8 +57,11 @@ account default `minimax-m2.5`, so no identity confusion is possible, and the ch
    model its platform id, i.e. the runtime itself believes the turn's model is the requested one.)
 3. **Kiro's persisted session state:** `rts_model_state.model_info` flipped from `null` to
    `{"model_name": "deepseek-3.2", "model_id": "deepseek-3.2", "context_window_tokens": 164000,
-   "rate_multiplier": 0.25, "rate_unit": "Credit"}` — model-specific runtime parameters (DeepSeek's
-   164k context window, vs 200k observed for `auto`), not an echo of the requested string.
+   "rate_multiplier": 0.25, "rate_unit": "Credit"}` — model-specific runtime parameters that appear
+   nowhere in the request (164k is DeepSeek V3.2's actual context window), not an echo of the
+   requested string. (For contrast: a separate pre-existing local session's sidecar on model `auto`
+   shows `context_window_tokens: 200000` — observed outside this harness's committed runs, so
+   treat that comparator as anecdotal; the in-run evidence above stands without it.)
 
 ## Verdict
 
@@ -83,7 +86,12 @@ account default `minimax-m2.5`, so no identity confusion is possible, and the ch
 
 ## Files
 
-- `probe.py` — the harness (free phase by default; `--turn` spends exactly one prompt request).
-- `kiro-free-phase-summary.json` / `kiro-turn-summary.json` — captured summaries of the two runs,
-  with raw client-log excerpt fields stripped (they can embed injected session context; the
-  decisive lines are quoted above).
+- `probe.py` — the harness (free phase by default; `--turn` spends exactly one prompt request;
+  `--redact SRC DST` derives a committable summary from a raw `out*/summary.json`).
+- `kiro-free-phase-summary.json` / `kiro-turn-summary.json` — the two runs' summaries, derived by
+  `probe.py --redact` (drops the raw client-log excerpt fields — trace lines can embed injected
+  session context — and rewrites the home-directory prefix to `~`; each file's `_redaction` object
+  records exactly what was done; the decisive log lines are quoted above). The free-phase summary
+  is from a re-run with the final harness (the measurement reproduced identically — same
+  `-32601` for `set_config_option`, same `{}` success for `set_model`); the turn summary is the
+  original single-billable-request run.
