@@ -276,6 +276,11 @@ servers, so this is an assertion on an existing invariant rather than new policy
 The reviewer's callable MCP surface must be exactly what the launch injects — the
 `kcap-flow-result` channel plus any resolved allowlist servers.
 
+**What guarantees that, and how far the guarantee reaches.** §4.1 and §4.2 *prevent* the two known
+sources; §5 *detects* a prevention failure. Neither is absolute, and §5.3 states where detection
+stops. Read the sentence above as the design's intent and the property the tests assert — not as a
+claim that no Kiro build could ever violate it.
+
 ### 4.1 Global `~/.kiro/settings/mcp.json` → isolated `KIRO_HOME`
 
 `PluginCommand.InstallKiro` registers `kcap-review`, `kcap-sessions`, `kcap-flows` and
@@ -340,11 +345,19 @@ said it "verifies the property directly". That over-read it. **Containment is so
 matter, and the earlier framing made them look fatal when they are not.
 
 Gemini's reviewer is gated on a **certified-version set** because its containment *is* a
-version-fragile matcher (`--allowed-mcp-server-names`): there, the gate is the boundary. Kiro's
-boundary is two mechanisms that do not depend on a Kiro build's matching semantics — an environment
-variable and a file deletion we perform ourselves — so a version gate would buy a re-certification
-treadmill (2.12.1 → 2.15.2 → 2.16.0 inside a week during this issue's life) for a property it does
-not actually guard.
+version-fragile matcher (`--allowed-mcp-server-names`): there, the gate is the boundary.
+
+Kiro's boundary is sturdier but **not version-independent, and an earlier draft of this section
+over-claimed that it was.** AI-1632's file deletion genuinely is ours and cannot regress with a Kiro
+release. `KIRO_HOME` suppression is *not* ours: that Kiro honours the variable, and that it reads no
+other global configuration source, are both behaviours of the build. The accurate statement is that
+they are **coarser and more directly observable** than a matcher's semantics, not that they are
+immune.
+
+Which is what makes the tripwire worth having rather than redundant: the ordinary regression — Kiro
+stops honouring `KIRO_HOME`, or gains a second config source — is exactly the case it catches,
+because the operator's global servers then initialize and are reported as names outside the injected
+set. §5.3 covers the one shape that escapes.
 
 Kiro reports its own MCP outcomes (both observed in the probe):
 
@@ -366,6 +379,10 @@ arrival:
 
 * on arrival, if `serverName` is not in this launch's injected set → fail the round immediately with
   `kiro_reviewer_mcp_surface_unexpected`;
+* **and count, don't just test membership**: each injected wire name is expected **exactly once**, so
+  a *second* `server_initialized` for a name already seen fails with the same code. Membership alone
+  is not enough — a duplicate of an injected name is *inside* the set, so a set-membership rule
+  admits it. This is the rule §10's duplicate case asserts;
 * enforce from `session/new` until the session ends, so a late initialization is caught whenever it
   happens rather than only if it lands inside a window;
 * additionally require the result channel's own name to have arrived before a result is accepted —
@@ -379,8 +396,10 @@ A bare `serverName` string proves neither provenance nor uniqueness: an unintend
 
 **This is why §9 now adopts per-launch aliasing for Kiro** (reversing an earlier "no aliasing"
 decision). With `LaunchIdentity` supplying an unguessable per-launch wire name, the injected set is
-a set of names **no other source can hold**, so membership is an identity check rather than a
-string match, and a collision is impossible rather than merely unlikely. The machinery already
+a set of names **no other source can predict**, so membership is close to an identity check rather
+than a string match, and an independent source colliding with one is infeasible rather than merely
+unlikely. It is not proof of provenance — a reported string is still a string — which is why §5.1
+also counts occurrences rather than resting on the name alone. The machinery already
 exists and its own doc comment describes it as vendor-neutral by shape; Gemini reaches for it for a
 different reason (allowlist impersonation), Kiro for this one.
 
@@ -606,12 +625,17 @@ an inert one.
       against a **constructed fixture home** containing a known `settings/mcp.json` shows it present
       (§4.1 — not the operator's real `~/.kiro`, which makes the test depend on machine state and
       would silently certify suppression on a CI host that never had those servers)
-- [ ] The §5 tripwire fails the round when a server outside the injected set initializes;
+- [ ] The §5 tripwire fails the round when a server outside the injected set initializes,
+      **asserting `kiro_reviewer_mcp_surface_unexpected` specifically** — "the round failed" passes
+      for any unrelated fault and would keep passing with the tripwire removed;
       **control:** an ordinary launch, whose injected set is exactly what appears, passes
-- [ ] It fails on a **late** initialization arriving after the first prompt has begun — the sampling
+- [ ] Same code on a **late** initialization arriving after the first prompt has begun — the sampling
       gap §5.1 exists to close
-- [ ] It fails on a server initializing under a **duplicate** of an injected wire name (§5.2 —
-      unreachable once aliasing is on, so this asserts the aliasing, not the comparison)
+- [ ] It fails on a **second** `server_initialized` for a name already seen — the §5.1 **count** rule.
+      Note the earlier draft of this item was incoherent: it demanded failure for a duplicate while
+      §5.1 rejected only names *outside* the injected set (a duplicate is inside it) and §5.2 called
+      collisions impossible. Counting is what makes the assertion satisfiable; aliasing makes an
+      *independent* source's collision infeasible, which is a different claim
 - [ ] **Known-uncovered, asserted as such:** selective omission of `server_initialized` for extra
       servers is NOT detected (§5.3). Pin it with a test that documents the gap rather than
       pretending coverage — a fake peer that reports only the injected channel while starting
@@ -624,10 +648,13 @@ an inert one.
 **Trust**
 - [ ] `flow-result` is callable with **zero** `session/request_permission` frames;
       **control:** dropping the namespaced entry produces exactly one frame naming the tool
-- [ ] A review launched **with a non-empty `McpAllowlist`** completes: every injected allowlist
-      server's tools are in the trust list and none raises a frame (§3.4). **This is the case a
-      fixed trust list fails**, so it must be a distinct test, not a variant of the empty-allowlist
-      round
+- [ ] A review launched **with a non-empty `McpAllowlist`** completes AND **actually calls** one of
+      that server's tools, with receipt asserted at the server, zero frames raised (§3.4). **A round
+      that merely completes proves nothing here** — a reviewer that never touches an allowlisted tool
+      passes identically whether or not the tool was trusted, which is the vacuity the fixed-list
+      defect would hide behind. Assert the constructed argv too, so the trust entry is pinned even if
+      the model declines the call. **This is the case a fixed trust list fails**, so it is a distinct
+      test, never a variant of the empty-allowlist round
 - [ ] The trust list and the `session/new` specs are built from **one** `LaunchIdentity`: mutate the
       identity used by one and the launch fails rather than silently producing a reviewer that
       cannot call its own channel
@@ -656,6 +683,11 @@ an inert one.
       the round's outcome)
 - [ ] The injected result endpoint receives the accepted result (assert at the MCP server, as the
       probe did — a `clean` status alone does not prove the channel carried it)
+- [ ] **These two are plumbing checks, not the oracle.** Each is individually satisfiable by an inert
+      reviewer — a prompt can be sent to a model that ignores it, and a result can be delivered
+      without being derived from the input. Only the seeded-defect differential above distinguishes a
+      working reviewer from an inert one, so the three are asserted together in one test, never as
+      independent green ticks
 - [ ] Same for `code-review`
 - [ ] **Zero** human-routed interactions across the round
 - [ ] Reviewer session captured and reaped; no orphan
