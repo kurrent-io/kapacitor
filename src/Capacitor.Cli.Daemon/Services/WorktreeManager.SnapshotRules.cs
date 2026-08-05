@@ -166,26 +166,40 @@ public partial class WorktreeManager {
         else File.CreateSymbolicLink(destPath, target);
     }
 
-    /// <summary>Copies one non-directory, non-link entry.
+    /// <summary>Copies one non-directory, non-link entry without ever opening a special file.
     ///
-    /// <para><b>A special file here would block, and that is deliberately NOT worked around.</b> .NET
-    /// exposes no portable file-TYPE probe — a FIFO reports exactly the same <c>FileAttributes</c>
-    /// (<c>Normal</c>), the same <c>UnixFileMode</c> and the same zero length as an ordinary empty file
-    /// (measured, not assumed) — so one cannot be identified and skipped without per-platform
-    /// <c>stat</c> P/Invoke.</para>
+    /// <para><b>The hazard.</b> A FIFO, socket or device node cannot be told apart from an ordinary file by
+    /// any portable .NET API — measured, not assumed: a FIFO reports <c>FileAttributes.Normal</c>, the same
+    /// <c>UnixFileMode</c>, and length 0, exactly like an empty regular file. Opening one BLOCKS FOREVER
+    /// waiting for a writer (also measured). This branch copies a live directory tree rather than
+    /// git-tracked content, so a special file can sit here AT REST — a plain directory, an extracted
+    /// archive, or a commitless repository — with no concurrent writer involved. It is therefore inside the
+    /// stated adversary, not outside it.</para>
     ///
-    /// <para>A time-bounded copy was implemented and then REMOVED, because it was worse than the problem.
-    /// A blocking open cannot be cancelled, so the abandoned worker outlives the claim and the rollback: a
-    /// later writer can wake it after a new same-name snapshot exists, letting it write into that
-    /// SUCCESSOR's destination — the exact ownership violation the claim exists to prevent — and it parks a
-    /// thread-pool thread per occurrence, turning one stuck launch into process-wide exhaustion.</para>
+    /// <para><b>The fix, without a type probe.</b> <c>Length</c> is a <c>stat</c>: it never blocks, and
+    /// every special file reports zero. So a zero-length entry is NEVER opened — the destination is simply
+    /// created empty. That is byte-identical for an ordinary empty file, and a safe, non-blocking
+    /// degradation for a special one. Only entries with real content are opened, and an entry with content
+    /// is a regular file.</para>
     ///
-    /// <para>The residual is bounded by what can actually reach a source tree: <b>git cannot track a
-    /// special file</b> (verified — <c>git add -A</c> silently ignores a FIFO), so one cannot arrive by
-    /// clone, i.e. never through hostile content at rest. It takes a local writer on the workspace, which
-    /// is precisely the principal the documented guarantee already excludes.</para>
+    /// <para><b>A time-bounded copy was tried first and REMOVED.</b> A blocking open cannot be cancelled,
+    /// so the abandoned worker outlives the claim and the rollback: a later writer can wake it after a new
+    /// same-name snapshot exists, letting it write into that SUCCESSOR's destination — the very ownership
+    /// violation the claim exists to prevent — and it parks a thread-pool thread per occurrence, bounding
+    /// one request by unbounding the process. Do not reintroduce it.</para>
     /// </summary>
-    static void CopyRegularFile(string source, string dest) => File.Copy(source, dest);
+    static void CopyRegularFile(string source, string dest) {
+        if (new FileInfo(source).Length != 0) {
+            File.Copy(source, dest);
+
+            return;
+        }
+
+        File.WriteAllBytes(dest, []);
+
+        // Preserve the mode an empty regular file carried, so an empty executable stays executable.
+        if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(dest, File.GetUnixFileMode(source));
+    }
 
     static string CombineRelative(string relative, string name) =>
         relative.Length == 0 ? name : relative + "/" + name;

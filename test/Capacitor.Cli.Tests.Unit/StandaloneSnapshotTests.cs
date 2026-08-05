@@ -814,4 +814,64 @@ public class StandaloneSnapshotTests {
         }
     }
 
+
+    // ---- special files ---------------------------------------------------------------------------------
+
+    /// <summary>A FIFO in the source neither hangs the launch nor is opened.
+    ///
+    /// <para>Reachable AT REST, which is why it matters: this branch runs on non-git sources and copies the
+    /// live tree, so a FIFO can sit in a plain directory, an extracted archive, or a commitless repository
+    /// with no concurrent writer involved. <c>File.Copy</c> on one blocks forever waiting for a writer
+    /// (measured), and no portable API can tell it from an empty regular file — same attributes, same mode,
+    /// same zero length. The zero-length rule is what avoids opening it.</para>
+    ///
+    /// <para>The test has its own watchdog rather than relying on the suite's: a regression here HANGS, and
+    /// a hang reports as a timeout somewhere else entirely rather than as this assertion.</para></summary>
+    [Test]
+    public async Task A_fifo_in_the_source_neither_hangs_nor_is_opened() {
+        Skip.Unless(!OperatingSystem.IsWindows(), "POSIX FIFO semantics.");
+        var (root, source) = MakeNonGitSource();
+        try {
+            var fifo = Path.Combine(source, "pipe");
+            using (var mk = Process.Start(new ProcessStartInfo("mkfifo", fifo))!) {
+                mk.WaitForExit();
+                Skip.Unless(mk.ExitCode == 0, "mkfifo unavailable");
+            }
+            await Assert.That(IsPresent(fifo)).IsTrue().Because("fixture control: the FIFO exists");
+
+            var create = Task.Run(() => NewManager().CreateAsync(source));
+            var finished = await Task.WhenAny(create, Task.Delay(TimeSpan.FromSeconds(60))) == create;
+
+            await Assert.That(finished).IsTrue()
+                .Because("a special file must never block the copy — this is the regression that hangs");
+
+            var worktree = await create;
+            await Assert.That(CommittedPaths(worktree.Path)).Contains("README.md")
+                .Because("positive control — the snapshot really was built, not merely non-hanging");
+
+            var copied = Path.Combine(worktree.Path, "pipe");
+            await Assert.That(IsPresent(copied)).IsTrue();
+            await Assert.That(new FileInfo(copied).Length).IsEqualTo(0)
+                .Because("it degrades to an empty ordinary file — never opened, never materialised");
+        } finally {
+            Cleanup(root);
+        }
+    }
+
+    /// <summary>An ordinary EMPTY file still round-trips, so the zero-length rule cannot be satisfied by
+    /// dropping empty files instead of creating them.</summary>
+    [Test]
+    public async Task An_empty_regular_file_is_still_copied() {
+        var (root, source) = MakeNonGitSource();
+        try {
+            File.WriteAllText(Path.Combine(source, "empty.txt"), "");
+
+            var worktree = await NewManager().CreateAsync(source);
+
+            await Assert.That(IsPresent(Path.Combine(worktree.Path, "empty.txt"))).IsTrue();
+            await Assert.That(new FileInfo(Path.Combine(worktree.Path, "empty.txt")).Length).IsEqualTo(0);
+        } finally {
+            Cleanup(root);
+        }
+    }
 }
