@@ -72,8 +72,13 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
     /// </summary>
     public bool SupportsUnattended {
         get {
-            if (!descriptor.SupportsUnattended)      return false;
-            if (!AliasesResultChannel(descriptor))   return true;
+            if (!descriptor.SupportsUnattended) return false;
+
+            if (descriptor.Vendor == AcpVendorDescriptors.Kiro.Vendor)
+                return KiroReviewerDecisionFor(descriptor, config, _resolveVendorVersion)
+                    == KiroReviewerDecision.Allowed;
+
+            if (!UsesMcpNameAllowlistArgv(descriptor)) return true;
 
             // Operator flag FIRST, and short-circuit. Review's point: evaluating the version probe as an
             // argument meant an installed-but-wedged vendor binary could hang daemon STARTUP even though the
@@ -127,7 +132,7 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
         // way — was invoked for a disabled daemon or an uncertified vendor version and could spawn directly.
         // "Unbypassable" has to mean before any source, not before the default one. The builder keeps its own
         // check as defence in depth, since a direct builder call is its own path.
-        RequireGeminiReviewerCapability(descriptor, config, ctx.IsReviewFlow, _resolveVendorVersion);
+        RequireReviewerCapability(descriptor, config, ctx.IsReviewFlow, _resolveVendorVersion);
 
         // Fail closed BEFORE _connectionSource spawns a child (a later gate would leak one). Null for
         // a non-review launch; the built MCP list for a valid review flow.
@@ -350,7 +355,26 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
     /// under review. Every other vendor keeps the canonical id on the wire, so their behaviour is
     /// byte-identical to before the alias existed.</para>
     /// </summary>
-    static bool AliasesResultChannel(AcpVendorDescriptor descriptor) =>
+    /// <summary>Vendors whose injected MCP servers carry PER-LAUNCH wire names.
+    ///
+    /// <para>Two different reasons, deliberately served by one mechanism. Gemini needs unguessable
+    /// names because its MCP gate is an exact-name allowlist the reviewed repository could declare a
+    /// server under. Kiro needs them because its MCP surface tripwire compares reported server names
+    /// against the injected set, and a canonical public id is a string any other source could also
+    /// produce — aliasing is what makes that comparison close to an identity check rather than a
+    /// string match.</para></summary>
+    internal static bool AliasesResultChannel(AcpVendorDescriptor descriptor) =>
+        descriptor.Vendor == AcpVendorDescriptors.Gemini.Vendor
+     || descriptor.Vendor == AcpVendorDescriptors.Kiro.Vendor;
+
+    /// <summary>Vendors whose ARGV carries an exact-name MCP allowlist a review launch must widen to
+    /// exactly its injected set — Gemini alone.
+    ///
+    /// <para><b>Split out of <see cref="AliasesResultChannel"/> rather than reusing it.</b> That one
+    /// predicate used to gate four separate behaviours; Kiro aliases but has no such flag, so running
+    /// the placeholder substitution or the canonical-argv assertion for it would assert against
+    /// machinery it does not have, and route it through Gemini's capability gate.</para></summary>
+    internal static bool UsesMcpNameAllowlistArgv(AcpVendorDescriptor descriptor) =>
         descriptor.Vendor == AcpVendorDescriptors.Gemini.Vendor;
 
     /// <summary>
@@ -431,7 +455,7 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
 
         // Defence in depth: StartAsync gates before any connection source runs, but a direct builder call
         // (a test, a future caller, a refactor that inlines the spawn) is its own path to an argv.
-        RequireGeminiReviewerCapability(descriptor, config, ctx.IsReviewFlow, resolveGeminiVersion);
+        RequireReviewerCapability(descriptor, config, ctx.IsReviewFlow, resolveGeminiVersion);
 
         var argv = SubstituteUnmatchableNames([.. descriptor.Argv], identity);
 
@@ -456,7 +480,7 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
             // below) because only these two argv consumers need the list here — for every other vendor
             // session/new is the sole consumer and StartAsync builds it, so validating in the builder too
             // would change direct-builder behavior for vendors whose argv never carries MCP names.
-            if (AliasesResultChannel(descriptor)) {
+            if (UsesMcpNameAllowlistArgv(descriptor)) {
                 var reviewMcp = ValidateAndBuildReviewFlowMcp(ctx, descriptor, resolved)!;
                 reviewGate = string.Join(",", reviewMcp.Select(s => s.Name));
                 for (var i = 0; i < argv.Count; i++)
@@ -564,7 +588,7 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
         // local list — this is the vector the process receives, and nothing between here and Process.Start
         // touches it. Asserting the local list instead would certify something the OS never sees, which is
         // worse than no assertion because it looks like coverage.
-        if (AliasesResultChannel(descriptor) && psi.FileName != BorrowedReviewSandbox.SandboxExecPath)
+        if (UsesMcpNameAllowlistArgv(descriptor) && psi.FileName != BorrowedReviewSandbox.SandboxExecPath)
             AssertGeminiArgvIsCanonical(psi.ArgumentList, ctx.IsReviewFlow, identity, reviewGate);
 
         return psi;
@@ -650,10 +674,50 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
     /// boundary) and <see cref="BuildProcessStartInfo"/> (defence in depth for a direct builder call).
     /// No-op for every other vendor and for every interactive launch.</para>
     /// </summary>
-    static void RequireGeminiReviewerCapability(
+    /// <summary>This daemon's own reviewer state directory — the same
+    /// <c>{StateDir}/{name}</c> shape DaemonRunner uses for consent, so a reviewer home and a
+    /// consent decision live under one owner-only root per daemon. Per DAEMON, never shared: the
+    /// reviewer-home sweep's safety depends on every directory in its root belonging to this
+    /// daemon.</summary>
+    internal static string ReviewerStateDir(DaemonConfig config) =>
+        Path.Combine(config.StateDir ?? DaemonLockPaths.Directory, DaemonLockPaths.Sanitize(config.Name));
+
+    static KiroReviewerVersionStore KiroVersionStoreFor(DaemonConfig config) =>
+        new(ReviewerStateDir(config));
+
+    /// <summary>Null unless the operator has opted in — the flag is checked first precisely so a
+    /// disabled daemon never executes the vendor binary.</summary>
+    static string? InstalledKiroVersion(
+            AcpVendorDescriptor descriptor, DaemonConfig config, Func<string, string?>? resolveVersion) =>
+        config.KiroUnattendedReviewerEnabled
+            ? (resolveVersion ?? VendorVersionResolver.Resolve)(descriptor.ResolveBinaryPath(config))
+            : null;
+
+    internal static KiroReviewerDecision KiroReviewerDecisionFor(
+            AcpVendorDescriptor descriptor, DaemonConfig config, Func<string, string?>? resolveVersion) {
+        var enabled = config.KiroUnattendedReviewerEnabled;
+
+        return KiroReviewerCapability.Decide(
+            enabled,
+            InstalledKiroVersion(descriptor, config, resolveVersion),
+            enabled ? KiroVersionStoreFor(config).Affirmed : null);
+    }
+
+    static void RequireReviewerCapability(
             AcpVendorDescriptor descriptor, DaemonConfig config, bool isReviewFlow,
             Func<string, string?>? resolveVersion) {
-        if (!isReviewFlow || !AliasesResultChannel(descriptor)) return;
+        if (!isReviewFlow) return;
+
+        if (descriptor.Vendor == AcpVendorDescriptors.Kiro.Vendor) {
+            var kiro = KiroReviewerDecisionFor(descriptor, config, resolveVersion);
+            if (kiro != KiroReviewerDecision.Allowed)
+                throw new InvalidOperationException(KiroReviewerCapability.DenialReason(
+                    kiro, InstalledKiroVersion(descriptor, config, resolveVersion),
+                    KiroVersionStoreFor(config).Affirmed));
+            return;
+        }
+
+        if (!UsesMcpNameAllowlistArgv(descriptor)) return;
 
         // Operator consent is checked FIRST so a disabled daemon never interrogates the vendor binary at all.
         // Review's point: probing an installed-but-wedged vendor while the feature is switched off is a way

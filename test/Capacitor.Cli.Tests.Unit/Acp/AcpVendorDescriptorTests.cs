@@ -390,4 +390,29 @@ public class AcpVendorDescriptorTests {
         await Assert.That(AcpVendorDescriptors.Kiro.SupportsReconnectResume).IsFalse();
         await Assert.That(AcpVendorDescriptors.Gemini.SupportsReconnectResume).IsFalse();
     }
+
+    /// <summary>
+    /// Kiro aliases (its MCP tripwire compares launch-unique names) but carries NO exact-name MCP
+    /// allowlist argv. One predicate used to gate both, so turning aliasing on for Kiro without this
+    /// split would run Gemini's placeholder substitution and canonical-argv assertion against a vendor
+    /// that has neither, and route it through Gemini's capability gate.
+    /// </summary>
+    [Test]
+    public async Task Kiro_AliasesItsResultChannel_ButCarriesNoMcpNameAllowlistArgv() {
+        var kiro = AcpVendorDescriptors.Kiro;
+
+        await Assert.That(AcpHostedAgentRuntimeFactory.AliasesResultChannel(kiro)).IsTrue();
+        await Assert.That(AcpHostedAgentRuntimeFactory.UsesMcpNameAllowlistArgv(kiro)).IsFalse();
+        await Assert.That(kiro.Argv.Contains(AcpVendorDescriptors.UnmatchableMcpNamePlaceholder)).IsFalse();
+    }
+
+    /// <summary>The control: Gemini must keep BOTH, or the split silently disabled its clamp.</summary>
+    [Test]
+    public async Task Gemini_KeepsBothAliasingAndTheAllowlistArgv() {
+        var gemini = AcpVendorDescriptors.Gemini;
+
+        await Assert.That(AcpHostedAgentRuntimeFactory.AliasesResultChannel(gemini)).IsTrue();
+        await Assert.That(AcpHostedAgentRuntimeFactory.UsesMcpNameAllowlistArgv(gemini)).IsTrue();
+        await Assert.That(gemini.Argv.Contains(AcpVendorDescriptors.UnmatchableMcpNamePlaceholder)).IsTrue();
+    }
 }
