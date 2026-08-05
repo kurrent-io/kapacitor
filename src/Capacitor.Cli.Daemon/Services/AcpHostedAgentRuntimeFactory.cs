@@ -196,10 +196,15 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
             // actually sent rather than a re-derivation of it.
             mcpSurfaceMonitor: KiroMcpSurfaceMonitor.For(
                 descriptor, ctx.IsReviewFlow, reviewMcp, ctx.LaunchIdentity),
-            // The factory can only clean up launches that FAILED. A successful review's home would
-            // otherwise survive until a later daemon epoch swept it — and it holds review context, so
-            // that is undisposed data, not stale disk.
-            onDisposed: () => DeleteKiroReviewerHome(descriptor, config, ctx),
+            // NULL for every launch with nothing to clean up, rather than a lambda that no-ops
+            // internally: the runtime keys its ordered-teardown path (await the reap, confirm child
+            // exit) on this being non-null, so an always-supplied callback made every ACP launch of
+            // every vendor pay that wait. The factory can only clean up launches that FAILED, so a
+            // successful review's home needs this hook — it holds review context, and would
+            // otherwise survive until a later daemon epoch swept it.
+            onDisposed: ctx.IsReviewFlow && descriptor.Vendor == AcpVendorDescriptors.Kiro.Vendor
+                ? () => DeleteKiroReviewerHome(descriptor, config, ctx)
+                : null,
             // The second half of the launch bound. The deadline below covers spawn through the
             // handshake; StartAsync deliberately does NOT await the first turn, so a peer that
             // completes initialize and then wedges on the credential path would otherwise be

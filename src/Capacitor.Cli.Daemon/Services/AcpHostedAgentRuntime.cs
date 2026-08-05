@@ -247,9 +247,20 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
     /// successful review's home would otherwise sit on disk until a later daemon epoch swept it.</summary>
     readonly Action? _onDisposed;
 
-    /// <summary>The in-flight out-of-band reap, if one was started. Awaited by disposal so cleanup
-    /// never runs ahead of the termination it depends on.</summary>
-    volatile Task? _reapTask;
+    /// <summary>
+    /// The in-flight out-of-band reap, if one was started. Awaited by disposal so cleanup never runs
+    /// ahead of the termination it depends on.
+    ///
+    /// <para>Guarded by <see cref="_reapLock"/> rather than <c>volatile</c>: volatility publishes the
+    /// reference but cannot make "flip the single-shot guard" and "publish the task" atomic, so a
+    /// disposal landing between them would read null and skip the wait. Both reap paths — the
+    /// tripwire/watchdog violation and the forbidden-interaction frame — publish through it.</para>
+    /// </summary>
+    Task? _reapTask;
+    readonly object _reapLock = new();
+
+    void PublishReap(Task reap) { lock (_reapLock) _reapTask = reap; }
+    Task? TakeReap()            { lock (_reapLock) return _reapTask; }
 
     /// <summary>
     /// How long the FIRST turn may produce nothing at all before the child is reaped. Null disables
@@ -425,7 +436,7 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
         // TRACKED, not fire-and-forget. Disposal deletes the reviewer's transcript-bearing home, and
         // doing that while an in-flight reap has not yet confirmed the child is gone would leave a
         // live reviewer writing into a deleted path — and recreating it.
-        _reapTask = ReapUnexpectedInteractionAsync(violation);
+        PublishReap(ReapUnexpectedInteractionAsync(violation));
     }
 
     void HandleUnexpectedUnattendedInteraction(string method) {
@@ -436,7 +447,11 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
         // handling the offending request, and the child may wait for its response before exiting.
         // Reap out-of-band and cancel both runtime workers immediately.
         _cts.Cancel();
-        _ = ReapUnexpectedInteractionAsync(method);
+
+        // Published like the violation path's reap: this is the SAME termination, so disposal must
+        // wait on it too. Leaving one of the two untracked would reintroduce the race for whichever
+        // path fired.
+        PublishReap(ReapUnexpectedInteractionAsync(method));
     }
 
     async Task ReapUnexpectedInteractionAsync(string method) {
@@ -1134,12 +1149,14 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
             return;
         }
 
-        // AFTER the shape check, deliberately. Setting it on any session/update would let a peer
-        // send one malformed frame, never settle its turn, and disarm the watchdog for good — which
-        // is precisely the unbounded silence the watchdog exists to catch.
-        Interlocked.Exchange(ref _sawFirstUpdate, 1);
-
         var reduced = Reduce(updateElement.Clone());
+
+        // AFTER Reduce, deliberately — a property-existence check is not a shape check. An "update"
+        // holding a scalar, or a wrong-typed sessionUpdate, passes TryGetProperty and throws inside
+        // Reduce; AcpConnection catches that and carries on, so setting the flag any earlier let a
+        // peer send one malformed frame, never settle its turn, and disarm the watchdog for good.
+        // That is exactly the unbounded silence this exists to catch.
+        Interlocked.Exchange(ref _sawFirstUpdate, 1);
         if (!_updates.Writer.TryWrite(reduced))
             _logger.LogDebug("ACP: dropped a session/update — updates channel already completed.");
 
@@ -1474,13 +1491,16 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
                 await installed.Process.DisposeAsync().ConfigureAwait(false);
             }
         } finally {
+            // Set false only when the child's exit could not be confirmed — see below.
+            var cleanupSafe = true;
+
             // Ordered cleanup, and ONLY when there is cleanup to order against: every other launch
             // has nothing depending on the child being gone, and a blanket wait here would add
             // seconds to the disposal of every hosted agent.
             if (_onDisposed is not null) {
                 // Neither an in-flight out-of-band reap nor Process.DisposeAsync (which signals but
                 // does not wait) establishes on its own that the child has actually exited.
-                if (_reapTask is { } reap) {
+                if (TakeReap() is { } reap) {
                     try { await reap.ConfigureAwait(false); } catch { /* already logged by the reap */ }
                 }
 
@@ -1493,14 +1513,28 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
                                            .WaitAsync(TimeSpan.FromSeconds(5))
                                            .ConfigureAwait(false);
                 } catch (Exception ex) {
-                    // An exit we cannot confirm must not pin disposal. The deletion below is
-                    // best-effort and logged, so the worst case is a warning rather than a hang.
                     _logger.LogDebug(ex, "ACP: could not confirm child exit before post-dispose cleanup.");
+                }
+
+                // The wait RETURNING is not proof of exit — the interface permits returning normally
+                // on timeout, and the production implementation swallows errors once the underlying
+                // Process is disposed. So the observable is checked instead of inferred.
+                //
+                // Unconfirmed means SKIP the deletion, not force it: deleting under a live reviewer
+                // would leave it writing into an unlinked path and recreating the directory, which is
+                // worse than leaving it. The epoch-keyed startup sweep is the backstop — it collects
+                // any home this daemon's next incarnation finds.
+                if (!installed.Process.HasExited) {
+                    _logger.LogWarning(
+                        "ACP: child for agent {AgentId} did not confirm exit; leaving its reviewer home "
+                      + "for the startup sweep rather than deleting it under a live process.", _agentId);
+
+                    cleanupSafe = false;
                 }
             }
 
             try {
-                _onDisposed?.Invoke();
+                if (cleanupSafe) _onDisposed?.Invoke();
             } catch (Exception ex) {
                 _logger.LogWarning(ex, "ACP: post-dispose cleanup failed for agent {AgentId}.", _agentId);
             }
