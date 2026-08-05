@@ -167,10 +167,17 @@ public partial class AgentOrchestratorVendorTests {
 
             if (probe is null) return "NO — Process.Start returned null";
 
-            var version = probe.StandardOutput.ReadToEnd().Trim();
-            _           = probe.StandardError.ReadToEnd();
+            // Drained the same way as the main path above, not with a blocking ReadToEnd pair.
+            // `git --version` is far too small to fill a pipe, but the shape is the defect — and a
+            // helper that only runs on a FAILURE path is the worst place to leave a potential hang,
+            // since it would replace a diagnosable error with a run that produces no report at all.
+            var versionTask = probe.StandardOutput.ReadToEndAsync();
+            var errTask     = probe.StandardError.ReadToEndAsync();
 
             probe.WaitForExit();
+
+            var version = versionTask.GetAwaiter().GetResult().Trim();
+            _           = errTask.GetAwaiter().GetResult();
 
             return probe.ExitCode == 0
                 ? $"YES ({version})"
