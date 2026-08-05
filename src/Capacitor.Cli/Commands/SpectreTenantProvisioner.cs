@@ -15,11 +15,14 @@ public sealed class SpectreTenantProvisioner(TenantProvisioningClient client, st
     const string CancelChoice   = "Cancel";
 
     public async Task<ProvisionOffer> OfferCreateAsync(WorkOSTokenSource tokens, CancellationToken ct = default) {
-        AnsiConsole.MarkupLine("  [yellow]No Capacitor tenant is linked to your account.[/]");
+        // Says what was actually established, not more: single sign-on returned nothing. Claiming
+        // "no tenant is linked to your account" is the very falsehood this prompt exists to stop —
+        // a GitHub-App workspace IS linked to the user and simply cannot appear in this lane.
+        AnsiConsole.MarkupLine("  [yellow]Single sign-on found no Capacitor workspace for your account.[/]");
+        AnsiConsole.MarkupLine("  [dim]A workspace that signs in with the GitHub App won't appear here.[/]");
 
         // Three ways out, not two: discovery finding nothing does NOT mean the user has no
-        // workspace. It cannot see a workspace that authenticates with the GitHub App, so
-        // offering only "create one" sends an existing member off to make a second workspace.
+        // workspace, so offering only "create one" sends an existing member off to make a second.
         var choice = AnsiConsole.Prompt(
             new SelectionPrompt<string>()
                 .Title("  How would you like to continue?")

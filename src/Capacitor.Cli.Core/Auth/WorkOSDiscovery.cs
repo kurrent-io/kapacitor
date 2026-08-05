@@ -95,9 +95,10 @@ public static class WorkOSDiscovery {
 
             if (offer.Status == ProvisionOfferStatus.ExistingWorkspace) {
                 // The user belongs to a workspace already and would rather point at it. Hand the
-                // raw input back rather than resolving it here: only the caller knows how a bare
+                // input back unresolved (trimmed, nothing else): only the caller knows how a bare
                 // slug expands, and the target's own /auth/config — not this WorkOS lane — decides
                 // how to log in. Blank input would resolve to a nonsense host, so decline instead.
+                // Trimmed here as well as at the prompt because this interface is public.
                 var target = offer.ExistingWorkspaceInput?.Trim();
 
                 return string.IsNullOrEmpty(target) ? new(1) : new(1, target);

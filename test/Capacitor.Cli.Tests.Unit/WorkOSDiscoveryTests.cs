@@ -194,7 +194,7 @@ public class WorkOSDiscoveryTests {
             (_, _) => { switchCalled = true; return Task.FromResult<WorkOSAuthResponse?>(null); },
             provisioner: provisioner);
 
-        // The input is handed back verbatim — resolving "kurrent" to a URL, and picking the auth
+        // The input comes back unresolved — expanding "kurrent" to a URL, and picking the auth
         // provider from that server, both belong to the caller.
         await Assert.That(outcome.RetargetServerInput).IsEqualTo("kurrent");
 

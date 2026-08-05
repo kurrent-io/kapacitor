@@ -11,10 +11,11 @@ public sealed record ProvisionedTenant(
 public sealed record ProvisionOffer(
     ProvisionOfferStatus Status,
     ProvisionedTenant?   Tenant,
-    // ExistingWorkspace only: the slug or URL the user typed, verbatim. Resolving it stays the
-    // caller's job (a bare label expands to {slug}.kcap.ai), so provider selection happens
-    // exactly once, against the target server's own /auth/config — which is how this path
-    // reaches a GitHub-App tenant that WorkOS discovery structurally cannot return.
+    // ExistingWorkspace only: the slug or URL the user typed, unresolved — surrounding whitespace
+    // is removed, nothing else is interpreted. Resolving it stays the caller's job (a bare label
+    // expands to {slug}.kcap.ai), so provider selection happens exactly once, against the target
+    // server's own /auth/config — which is how this path reaches a GitHub-App tenant that WorkOS
+    // discovery structurally cannot return.
     string?              ExistingWorkspaceInput = null) {
     public static ProvisionOffer Created(ProvisionedTenant t) => new(ProvisionOfferStatus.Created, t);
     public static readonly ProvisionOffer Declined   = new(ProvisionOfferStatus.Declined,   null);
