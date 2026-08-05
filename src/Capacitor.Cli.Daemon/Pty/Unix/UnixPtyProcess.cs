@@ -231,7 +231,7 @@ public sealed class UnixPtyProcess : IPtyProcess {
             return;
         }
 
-        UnixPtyInterop.kill(Pid, UnixPtyInterop.SIGTERM);
+        SignalGroup(UnixPtyInterop.SIGTERM);
 
         var deadline = DateTime.UtcNow + (timeout ?? TimeSpan.FromSeconds(5));
 
@@ -243,9 +243,21 @@ public sealed class UnixPtyProcess : IPtyProcess {
         }
 
         if (!HasExited) {
-            UnixPtyInterop.kill(Pid, UnixPtyInterop.SIGKILL);
+            SignalGroup(UnixPtyInterop.SIGKILL);
             CheckExited();
         }
+    }
+
+    /// <summary>Signals the child's process GROUP, falling back to the pid alone (ProcessReaper's
+    /// pattern). The child is a forkpty session leader (pgid == pid), so helpers it spawned —
+    /// codex's code-mode host, MCP servers — are in the group; signalling only the leader orphans
+    /// them whenever the leader dies without forwarding (SIGKILL always, SIGTERM vendor-dependent).
+    /// Safe against pid reuse: callers only signal while <see cref="HasExited"/> is false, and the
+    /// leader is not reaped until <see cref="CheckExited"/>'s waitpid, so the pgid still names our
+    /// lineage. Once the leader is gone the group id proves nothing and is never signalled — a
+    /// descendant that outlived the group kill is the record/scan reap layers' job.</summary>
+    void SignalGroup(int sig) {
+        if (UnixPtyInterop.kill(-Pid, sig) != 0) UnixPtyInterop.kill(Pid, sig);
     }
 
     public async Task WaitForExitAsync(TimeSpan? timeout = null) {
