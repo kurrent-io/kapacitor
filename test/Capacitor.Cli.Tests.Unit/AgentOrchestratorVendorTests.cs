@@ -161,39 +161,53 @@ public partial class AgentOrchestratorVendorTests {
         // report at all — strictly worse than the error it is trying to explain.
         const int probeTimeoutMs = 10_000;
 
+        // Structured so that "NO" means exactly one thing: git could not be STARTED. A broad
+        // catch around the whole body reported NO for post-start failures too (stream reads, the
+        // wait, ExitCode, disposal) — conflating the two facts this probe exists to separate, which
+        // is the same defect as the earlier "NO — exited N" in a place easy to overlook.
+        //
+        // It must also NEVER throw: it is called from inside `catch (Win32Exception)` above, so an
+        // escaping exception would REPLACE the informative message with the probe's own.
+        Process? probe = null;
+
         try {
-            var psi = new ProcessStartInfo("git", "--version") {
-                WorkingDirectory       = Path.GetTempPath(), // known to exist; not the suspect dir
-                RedirectStandardOutput = true,
-                RedirectStandardError  = true
-            };
-
-            using var probe = Process.Start(psi);
-
-            // "NO" is reserved for genuinely NOT STARTABLE — Start threw, or handed back nothing.
-            if (probe is null) return "NO — Process.Start returned null";
-
-            // Past this point startability is PROVEN: Start returned a process. Whatever the child
-            // then does is a separate fact and must not be folded back into the startable verdict.
-            // Reporting NO for a nonzero `--version` exit would misclassify precisely the question
-            // this probe exists to answer.
-            var versionTask = probe.StandardOutput.ReadToEndAsync();
-            var errTask     = probe.StandardError.ReadToEndAsync();
-
-            if (!probe.WaitForExit(probeTimeoutMs)) {
-                try { probe.Kill(entireProcessTree: true); } catch { /* best effort */ }
-
-                return $"YES (startable; probe did not exit within {probeTimeoutMs}ms, killed)";
+            try {
+                probe = Process.Start(new ProcessStartInfo("git", "--version") {
+                    WorkingDirectory       = Path.GetTempPath(), // known to exist; not the suspect dir
+                    RedirectStandardOutput = true,
+                    RedirectStandardError  = true
+                });
+            } catch (Exception startEx) {
+                return $"NO — {startEx.GetType().Name}: {startEx.Message}";
             }
 
-            var version = versionTask.GetAwaiter().GetResult().Trim();
-            var err     = errTask.GetAwaiter().GetResult().Trim();
+            if (probe is null) return "NO — Process.Start returned null";
 
-            return probe.ExitCode == 0
-                ? $"YES ({version})"
-                : $"YES (startable; --version exited {probe.ExitCode}: {err})";
-        } catch (Exception probeEx) {
-            return $"NO — {probeEx.GetType().Name}: {probeEx.Message}";
+            // Past here startability is PROVEN. Everything below is a separate fact and must keep
+            // the YES, however it goes wrong.
+            try {
+                var versionTask = probe.StandardOutput.ReadToEndAsync();
+                var errTask     = probe.StandardError.ReadToEndAsync();
+
+                if (!probe.WaitForExit(probeTimeoutMs)) {
+                    try { probe.Kill(entireProcessTree: true); } catch { /* best effort */ }
+
+                    return $"YES (startable; probe did not exit within {probeTimeoutMs}ms, killed)";
+                }
+
+                var version = versionTask.GetAwaiter().GetResult().Trim();
+                var err     = errTask.GetAwaiter().GetResult().Trim();
+
+                return probe.ExitCode == 0
+                    ? $"YES ({version})"
+                    : $"YES (startable; --version exited {probe.ExitCode}: {err})";
+            } catch (Exception afterStartEx) {
+                return $"YES (startable; probe failed after starting — " +
+                       $"{afterStartEx.GetType().Name}: {afterStartEx.Message})";
+            }
+        } finally {
+            // Disposal must not be able to change the verdict or escape.
+            try { probe?.Dispose(); } catch { /* best effort */ }
         }
     }
 
