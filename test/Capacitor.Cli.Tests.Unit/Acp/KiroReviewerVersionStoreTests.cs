@@ -1,3 +1,4 @@
+using Capacitor.Cli.Core;
 using Capacitor.Cli.Daemon.Acp;
 
 namespace Capacitor.Cli.Tests.Unit.Acp;

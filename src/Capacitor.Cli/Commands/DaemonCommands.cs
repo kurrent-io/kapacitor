@@ -29,6 +29,7 @@ public static class DaemonCommands {
             "doctor"  => await DoctorAsync(remaining),
             "service" => await ServiceAsync(remaining),
             "consent" => await DaemonConsentCommand.HandleAsync(remaining),
+            "reviewer" => await DaemonReviewerCommand.HandleAsync(remaining),
             _         => PrintUsage()
         };
     }

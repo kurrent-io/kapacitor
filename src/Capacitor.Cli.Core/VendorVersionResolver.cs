@@ -1,8 +1,6 @@
 using System.Diagnostics;
-using Capacitor.Cli.Core;
-using Capacitor.Cli.Daemon.Services;
 
-namespace Capacitor.Cli.Daemon.Acp;
+namespace Capacitor.Cli.Core;
 
 /// <summary>
 /// A vendor binary's own reported version, or <see langword="null"/> when it cannot be determined —
@@ -14,10 +12,10 @@ namespace Capacitor.Cli.Daemon.Acp;
 /// the child once its buffer fills), and requiring the whole trimmed output to equal a version makes
 /// the gate fail closed the day a vendor adds an "update available" banner.</para>
 /// </summary>
-internal static class VendorVersionResolver {
-    internal static string? Resolve(string binaryPath) {
+public static class VendorVersionResolver {
+    public static string? Resolve(string binaryPath) {
         try {
-            var resolved = CliResolver.ResolveExecutable(binaryPath);
+            var resolved = CliExecutable.Resolve(binaryPath);
             if (resolved is null) return null;
 
             using var proc = Process.Start(new ProcessStartInfo(resolved, ["--version"]) {
@@ -66,7 +64,7 @@ internal static class VendorVersionResolver {
     /// certified-version check compares against an exact set, so anything that is not recognisably a version
     /// must read as UNKNOWN (and therefore denied) rather than as some near-miss string.
     /// </summary>
-    internal static string? ExtractVersionToken(string? output) {
+    public static string? ExtractVersionToken(string? output) {
         if (string.IsNullOrWhiteSpace(output)) return null;
 
         foreach (var raw in output.Split([' ', '\t', '\r', '\n'], StringSplitOptions.RemoveEmptyEntries)) {

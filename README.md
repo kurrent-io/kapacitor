@@ -746,10 +746,16 @@ A **hosted** Gemini agent needs nothing beyond the project setting above. Using 
 review-flow reviewer** is a separate, deliberately opt-in decision, because of what an unattended review
 grants:
 
-```jsonc
-// ~/.config/kcap/config.json  (this DAEMON's config — not a server setting)
-{ "GeminiUnattendedReviewerEnabled": true }
+```bash
+export KCAP_GEMINI_UNATTENDED_REVIEWER=1     # this DAEMON's environment — not a server setting
 ```
+
+Only an explicit `1`/`true`/`yes`/`on` enables it; anything else, a typo included, leaves it off. Enabling a
+reviewer is a consent decision, so a misspelling must not read as consent.
+
+> Earlier docs showed a `GeminiUnattendedReviewerEnabled` key in `~/.config/kcap/config.json`. Nothing read
+> it — the flag was reachable only from a test constructor, so the Gemini unattended reviewer could not
+> actually be turned on. The environment variable above is the working form.
 
 **Read this before setting it.** An unattended reviewer runs in a daemon-owned worktree with this daemon's
 own `HOME`, so repository content that steers the model into using its tools gets **code execution with your
@@ -779,6 +785,41 @@ Two further things it does *not* do:
   refused even with the flag on, with a coded error naming the version. An upgrade takes the reviewer offline
   rather than silently running on unverified semantics; re-certification is how it comes back.
 - it does not make Gemini a default reviewer. It is only ever reached by an explicit `vendor: "gemini"`.
+
+#### Unattended Kiro reviews
+
+```bash
+export KCAP_KIRO_UNATTENDED_REVIEWER=1       # this DAEMON's environment — not a server setting
+```
+
+**Everything in the Gemini warning above applies**, with one difference in each direction.
+
+*Tighter:* a Kiro reviewer runs with a **scoped** tool set — `fs_read`, `thinking`, and the tools of the MCP
+servers the launch itself injects. `fs_write` and `execute_bash` are not trusted, and the interaction policy
+is `Fail`, so an attempt to use them ends the round rather than being auto-approved. Gemini's `yolo` approval
+mode excludes nothing, so on tool surface Kiro is the narrower of the two.
+
+*Not tighter:* a trusted `fs_read` is **not path-scoped** — measured. It reads anything the daemon user can,
+so the credential, integrity-of-*reads*, and verdict bullets above hold in full. Support is therefore limited
+to a daemon whose operator and whose review requesters are in **one trust domain**.
+
+A review launch also runs with a daemon-owned, empty `KIRO_HOME`, so your global
+`~/.kiro/settings/mcp.json` servers — `kcap-flows` among them — do not reach the reviewer. Your own
+interactive Kiro sessions are unaffected, and the file is never modified.
+
+**Version affirmation.** That suppression depends on the installed build honouring `KIRO_HOME`, so a
+`kiro-cli` version change takes the reviewer offline until you acknowledge it:
+
+```bash
+kcap daemon reviewer affirm --vendor kiro
+```
+
+Enabling the reviewer affirms whatever is installed at that moment, so you only meet this after an upgrade.
+The command records the version and nothing else — it does not enable the reviewer. Unlike Gemini's
+maintainer-certified version set, no kcap release is needed to clear it.
+
+POSIX only: the isolated home holds the reviewer's own transcript, and therefore the review context, and
+cannot be created owner-only on Windows.
 
 #### Hosted Codex agents
 

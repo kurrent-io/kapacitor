@@ -1,4 +1,4 @@
-namespace Capacitor.Cli.Daemon.Acp;
+namespace Capacitor.Cli.Core;
 
 /// <summary>
 /// The <c>kiro-cli</c> version this daemon last ran an unattended reviewer under.
@@ -20,8 +20,8 @@ namespace Capacitor.Cli.Daemon.Acp;
 /// consent" failure the enable flag exists to avoid. The daemon writes it; only an explicit operator
 /// command changes it.</para>
 /// </summary>
-internal sealed class KiroReviewerVersionStore(string stateDir) {
-    internal const string FileName = "kiro-reviewer-affirmed-version";
+public sealed class KiroReviewerVersionStore(string stateDir) {
+    public const string FileName = "kiro-reviewer-affirmed-version";
 
     readonly string _path = Path.Combine(stateDir, FileName);
 
@@ -30,7 +30,7 @@ internal sealed class KiroReviewerVersionStore(string stateDir) {
     /// missing, unreadable, or a directory sitting at the pathname all read as "not affirmed", which
     /// is the fail-closed direction, and a daemon boot must not brick on this file.
     /// </summary>
-    internal string? Affirmed {
+    public string? Affirmed {
         get {
             try {
                 var text = File.ReadAllText(_path).Trim();
@@ -41,7 +41,7 @@ internal sealed class KiroReviewerVersionStore(string stateDir) {
         }
     }
 
-    internal void Affirm(string version) {
+    public void Affirm(string version) {
         Directory.CreateDirectory(stateDir);
 
         // Mode set BEFORE any content exists, as LaunchConsentStore does for the same reason: a chmod

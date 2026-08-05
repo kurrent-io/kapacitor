@@ -228,6 +228,25 @@ public static partial class DaemonRunner {
         // this early — the host's logging pipeline isn't built yet.
         var coverageStateDir = Path.Combine(
             config.StateDir ?? DaemonLockPaths.Directory, DaemonLockPaths.Sanitize(config.Name));
+        // Two things the Kiro unattended reviewer needs at boot, both cheap and both no-ops when the
+        // operator has not opted in.
+        if (config.KiroUnattendedReviewerEnabled) {
+            var kiroVersions = new KiroReviewerVersionStore(coverageStateDir);
+
+            // Seeded by the CONSENT event, not by a first refusal. Otherwise an operator who has just
+            // turned the reviewer on is immediately refused over an upgrade that never happened, which
+            // teaches people to clear the gate without reading it.
+            if (kiroVersions.Affirmed is null
+             && VendorVersionResolver.Resolve(config.KiroPath) is { Length: > 0 } installedKiro)
+                kiroVersions.Affirm(installedKiro);
+        }
+
+        // Recovers reviewer homes left by a SIGKILLed predecessor. Runs unconditionally: a daemon
+        // whose operator has since disabled the reviewer still owns whatever its last incarnation
+        // left behind, and those directories hold review context.
+        KiroReviewerHome.SweepStale(
+            coverageStateDir, config.DaemonEpoch ?? "unpinned", NullLogger.Instance);
+
         config.RecordlessSurvivorsImpossible = new CoverageJournal(coverageStateDir, NullLogger.Instance)
             .RecordBoot(daemonLock.InstanceId, daemonLock.PriorInstanceId,
                 priorLockReadFailed: daemonLock.PriorLockIndeterminate, thisEpochContained: OperatingSystem.IsWindows());
