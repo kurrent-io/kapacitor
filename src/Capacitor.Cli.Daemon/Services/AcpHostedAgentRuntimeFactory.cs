@@ -190,7 +190,11 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
             vendor: descriptor.Vendor,
             modelSelector: descriptor.ModelSelector,
             unattendedInteractionPolicy: unattendedInteractionPolicy,
-            reconnect: reconnect
+            reconnect: reconnect,
+            // Built from the SAME spec list session/new receives, so the expected set is what was
+            // actually sent rather than a re-derivation of it.
+            mcpSurfaceMonitor: KiroMcpSurfaceMonitor.For(
+                descriptor, ctx.IsReviewFlow, reviewMcp, ctx.LaunchIdentity)
         );
 
         // Review flow: the injected result channel + allowlist. Otherwise unchanged (null today).

@@ -236,6 +236,12 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
     int     _disposed;
     int     _unexpectedUnattendedInteractionSeen;
 
+    /// <summary>Present only for an unattended Kiro review launch. Judges every MCP-surface
+    /// notification on arrival; a violation reaps the reviewer through the same path a forbidden
+    /// interaction frame does, because both mean the same thing — the containment contract this
+    /// launch was admitted under no longer holds.</summary>
+    readonly KiroMcpSurfaceMonitor? _mcpSurfaceMonitor;
+
     /// <summary>Agent capabilities negotiated by <see cref="StartAsync"/>'s <c>initialize</c> call; null before that.</summary>
     AgentCapabilities? _negotiatedCapabilities;
 
@@ -295,8 +301,10 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
             string                                                                         vendor = "cursor",
             IAcpModelSelector?                                                             modelSelector = null,
             AcpUnattendedInteractionPolicy                                                  unattendedInteractionPolicy = AcpUnattendedInteractionPolicy.Disabled,
-            AcpReconnectSupport?                                                            reconnect = null
+            AcpReconnectSupport?                                                            reconnect = null,
+            KiroMcpSurfaceMonitor?                                                          mcpSurfaceMonitor = null
         ) {
+        _mcpSurfaceMonitor = mcpSurfaceMonitor;
         _reconnect     = reconnect;
         _logger        = logger;
         _timeProvider  = timeProvider ?? TimeProvider.System;
@@ -368,6 +376,19 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
         if (_interactionBridge is not null)
             incarnation.Connection.OnServerRequest =
                 (request, ct) => RouteServerRequestAsync(incarnation.Id, request, ct);
+    }
+
+    /// <summary>Reaps on a tripwire violation, reusing the forbidden-interaction path: same
+    /// out-of-band termination, same single-shot guard, and the same reason it must not await
+    /// termination on the read loop.</summary>
+    void HandleMcpSurfaceViolation(string violation) {
+        if (Interlocked.Exchange(ref _unexpectedUnattendedInteractionSeen, 1) != 0)
+            return;
+
+        _logger.LogError("ACP: reaping unattended reviewer — {Violation}", violation);
+
+        _cts.Cancel();
+        _ = ReapUnexpectedInteractionAsync(violation);
     }
 
     void HandleUnexpectedUnattendedInteraction(string method) {
@@ -1008,6 +1029,16 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
     }
 
     void HandleNotification(AcpNotification notification) {
+        // Before the session/update filter: the MCP-surface notifications are a different method, and
+        // enforcement runs for the WHOLE session rather than a window — a late server initialization
+        // is exactly the case a sampling scheme would miss.
+        if (_mcpSurfaceMonitor is { } monitor) {
+            monitor.Observe(notification);
+
+            if (monitor.Violation is { } violation)
+                HandleMcpSurfaceViolation(violation);
+        }
+
         if (notification.Method != "session/update")
             return;
 
