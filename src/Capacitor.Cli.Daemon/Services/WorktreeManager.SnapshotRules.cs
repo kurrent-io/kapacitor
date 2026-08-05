@@ -53,25 +53,33 @@ public partial class WorktreeManager {
         // the original exclusion wrong. Over-rejecting a pathological Unix filename is the safe direction.
         if (rawTarget[0] is '/' or '\\') return false;
 
+        // Admissible only under BOTH tokenizations. A single merged one is NOT conservative in both
+        // directions: treating `\` as a separator turns `..\..\x` into two levels up (safely
+        // over-rejecting), but it also splits `a\b\c` into three levels of DEPTH, which masks a following
+        // `../..` — and on Unix, where `a\b\c` is one directory name, that target really does escape. So
+        // `a\b\c/../../outside` must be judged with slash-only parsing too, and rejected because it is
+        // unsafe there.
+        return NeverEscapes(linkDirRelative, rawTarget, UnixSeparators)
+            && NeverEscapes(linkDirRelative, rawTarget, WindowsSeparators);
+    }
+
+    static readonly char[] UnixSeparators = ['/'];
+
+    static readonly char[] WindowsSeparators = ['/', '\\'];
+
+    /// <summary>Whether the depth below the root stays non-negative at every step of the link's own
+    /// directory followed by its raw target, under one given tokenization.</summary>
+    static bool NeverEscapes(string linkDirRelative, string rawTarget, char[] separators) {
         var depth = 0;
 
-        foreach (var part in SplitPathComponents(linkDirRelative)) {
-            if (part == "..") { if (--depth < 0) return false; }
-            else if (part != ".") depth++;
-        }
-
-        foreach (var part in SplitPathComponents(rawTarget)) {
-            if (part == "..") { if (--depth < 0) return false; }
-            else if (part != ".") depth++;
-        }
+        foreach (var segment in new[] { linkDirRelative, rawTarget })
+            foreach (var part in segment.Split(separators, StringSplitOptions.RemoveEmptyEntries)) {
+                if (part == "..") { if (--depth < 0) return false; }
+                else if (part != ".") depth++;
+            }
 
         return true;
     }
-
-    /// <summary>Splits on BOTH separators. A raw link target is authored by whoever wrote the source tree,
-    /// so it must not be parsed with one hardcoded separator.</summary>
-    static IEnumerable<string> SplitPathComponents(string path) =>
-        path.Split(['/', '\\'], StringSplitOptions.RemoveEmptyEntries);
 
     /// <summary>Copies <paramref name="source"/> into <paramref name="dest"/> without ever following a
     /// link and without descending into the destination.
@@ -103,9 +111,11 @@ public partial class WorktreeManager {
             // repository it names — committing outside the snapshot entirely.
             if (IsGitEntryName(name)) continue;
 
-            // Never copy this invocation's own bookkeeping. Only the exact name, so an unrelated user file
-            // that merely resembles a marker is preserved like any other content.
-            if (name == markerName || IsClaimName(name)) continue;
+            // Never copy this invocation's own marker. EXACT name only — the claim file is deliberately not
+            // matched by prefix here: it lives in the worktrees root, which the marker check below already
+            // excludes wholesale, so a prefix rule would buy nothing and would silently drop a legitimate
+            // source file that happened to be named `.kcap-claim-notes`.
+            if (name == markerName) continue;
 
             // Classify BEFORE touching it. File.Copy would materialise a link's target, and recursing
             // through a directory link would copy the target tree and can cycle without bound.
@@ -113,12 +123,12 @@ public partial class WorktreeManager {
             var destPath = Path.Combine(dest, name);
 
             if (attrs.HasFlag(FileAttributes.ReparsePoint)) {
-                RecreateLinkIfAdmissible(entry, destPath, relative, name);
+                RecreateLinkIfAdmissible(entry, destPath, relative, name, attrs);
                 continue;
             }
 
             if (!attrs.HasFlag(FileAttributes.Directory)) {
-                File.Copy(entry, destPath);
+                CopyRegularFile(entry, destPath);
                 continue;
             }
 
@@ -132,7 +142,8 @@ public partial class WorktreeManager {
         }
     }
 
-    void RecreateLinkIfAdmissible(string entry, string destPath, string relative, string name) {
+    void RecreateLinkIfAdmissible(
+            string entry, string destPath, string relative, string name, FileAttributes attrs) {
         // LinkTarget does not resolve, so a dangling link still reports its target — which is the case that
         // matters, since we judge the target rather than where it currently points.
         var target = new FileInfo(entry).LinkTarget ?? new DirectoryInfo(entry).LinkTarget;
@@ -146,7 +157,40 @@ public partial class WorktreeManager {
         // Recreated as a LINK carrying the same raw target — never resolved, never followed, so no
         // out-of-source bytes are ever written. A chain passing through a skipped link simply dangles
         // inside the snapshot rather than reaching out of it.
-        Directory.CreateSymbolicLink(destPath, target);
+        //
+        // The KIND is preserved from the source entry's own attributes rather than always creating a
+        // directory link. Windows records file-vs-directory in the reparse point itself, so a file symlink
+        // recreated as a directory link is wrong there — unusable, or a failure during creation. The
+        // attribute is read from the link, so a dangling link keeps whatever kind it was authored with.
+        if (attrs.HasFlag(FileAttributes.Directory)) Directory.CreateSymbolicLink(destPath, target);
+        else File.CreateSymbolicLink(destPath, target);
+    }
+
+    /// <summary>Timeout for copying one ordinary file. Overridable for tests only.</summary>
+    internal static TimeSpan CopyEntryTimeout = TimeSpan.FromSeconds(30);
+
+    /// <summary>Copies one non-directory, non-link entry, bounded in time.
+    ///
+    /// <para><b>Why bounded.</b> .NET exposes no portable file-TYPE probe: a FIFO reports exactly the same
+    /// <c>FileAttributes</c> (<c>Normal</c>), the same <c>UnixFileMode</c> and the same zero length as an
+    /// ordinary empty file — measured, not assumed. So a FIFO or device node placed in the source would
+    /// make <c>File.Copy</c> block forever waiting for a writer, wedging the launch. Since the entry cannot
+    /// be identified, the COPY is bounded instead: one that does not complete promptly fails the snapshot
+    /// closed and names the path, turning an indefinite hang by hostile content into an attributable
+    /// refusal.</para>
+    ///
+    /// <para>The abandoned copy's thread is not cancellable — a blocking open cannot be interrupted — so it
+    /// remains parked until a writer appears or the process exits. That is one parked thread per hostile
+    /// entry, and the launch aborts, which is strictly better than the whole daemon wedging.</para>
+    /// </summary>
+    static void CopyRegularFile(string source, string dest) {
+        var copy = Task.Run(() => File.Copy(source, dest));
+
+        if (!copy.Wait(CopyEntryTimeout))
+            throw new InvalidOperationException($"standalone_snapshot_unreadable_entry: {source}");
+
+        // Re-throw a genuine copy failure rather than letting the wait swallow it.
+        copy.GetAwaiter().GetResult();
     }
 
     static string CombineRelative(string relative, string name) =>

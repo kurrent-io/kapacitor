@@ -519,28 +519,47 @@ public class StandaloneSnapshotTests {
 
     // ---- 14: claim ownership --------------------------------------------------------------------------
 
-    /// <summary>Two concurrent calls for the same name: exactly one wins, and the winner's snapshot is
-    /// intact.</summary>
-    [Test]
+    /// <summary>Two callers genuinely overlapping in the window where BOTH still see the destination
+    /// absent: exactly one wins, the loser is refused by the CLAIM, and the winner's snapshot is intact.
+    ///
+    /// <para>The barrier is load-bearing. Without it the two calls can run sequentially, and the second is
+    /// then refused by the occupied-destination check instead — so the test passes with exactly the same
+    /// counts even if the claim were removed or made non-atomic, never exercising the property it
+    /// names.</para></summary>
+    [Test, NotInParallel]
     public async Task Concurrent_same_name_creates_yield_one_winner() {
         var (root, source) = MakeNonGitSource();
+        var arrived = 0;
+        var bothArrived = new TaskCompletionSource();
         try {
+            WorktreeManager.SnapshotPreClaimHook = async () => {
+                if (Interlocked.Increment(ref arrived) == 2) bothArrived.TrySetResult();
+                await bothArrived.Task.WaitAsync(TimeSpan.FromSeconds(30));
+            };
+
             var manager = NewManager();
             var a = Task.Run(() => manager.CreateAsync(source, "contended"));
             var b = Task.Run(() => manager.CreateAsync(source, "contended"));
 
-            var results = await Task.WhenAll(
-                a.ContinueWith(t => t.IsCompletedSuccessfully),
-                b.ContinueWith(t => t.IsCompletedSuccessfully));
+            var outcomes = await Task.WhenAll(
+                a.ContinueWith(t => t.IsCompletedSuccessfully ? null : Message(t)),
+                b.ContinueWith(t => t.IsCompletedSuccessfully ? null : Message(t)));
 
-            await Assert.That(results.Count(ok => ok)).IsEqualTo(1)
+            await Assert.That(outcomes.Count(m => m is null)).IsEqualTo(1)
                 .Because("the claim is atomic — exactly one caller may own the destination");
+            await Assert.That(outcomes.Single(m => m is not null)).Contains("standalone_snapshot_name_in_use")
+                .Because("the loser must be refused by the CLAIM, not by the occupied-destination check — "
+                       + "the latter would mean the two calls never actually overlapped");
             await Assert.That(CommittedPaths(Path.Combine(source, ".capacitor", "worktrees", "contended")))
                 .Contains("README.md").Because("the winner's snapshot must be intact");
         } finally {
+            WorktreeManager.SnapshotPreClaimHook = null;
+            bothArrived.TrySetResult();
             Cleanup(root);
         }
     }
+
+    static string Message(Task t) => t.Exception?.GetBaseException().Message ?? "<no exception>";
 
     /// <summary>The claim is still held while the loser of a FAILED call is rolling back.
     ///
@@ -693,6 +712,92 @@ public class StandaloneSnapshotTests {
                 .Because("the claimant's own partial tree is rolled back");
         } finally {
             WorktreeManager.SnapshotFailurePoint = null;
+            Cleanup(root);
+        }
+    }
+
+    // ---- link kind, claim lookalike, and special files ------------------------------------------------
+
+    /// <summary>An admissible FILE link is recreated as a link that resolves to file content.
+    ///
+    /// <para><b>This does NOT verify the link KIND, and cannot here.</b> Windows records file-vs-directory
+    /// in the reparse point itself, which is the whole reason the production code branches on the source
+    /// attributes — but POSIX symlinks carry no type, so <c>Directory.CreateSymbolicLink</c> and
+    /// <c>File.CreateSymbolicLink</c> are indistinguishable on this platform. Mutation-checked and
+    /// confirmed: forcing the directory API still passes this test. The Windows leg cannot cover it either,
+    /// because creating a symlink there needs Developer Mode or elevation, which CI does not have — hence
+    /// <see cref="SkipUnlessPosixSymlinks"/>. The kind branch is therefore reasoned, not verified; this test
+    /// guards the weaker property that an admissible file link survives and resolves.</para></summary>
+    [Test]
+    public async Task An_admissible_file_link_is_recreated_as_a_file_link() {
+        SkipUnlessPosixSymlinks();
+        var (root, source) = MakeNonGitSource();
+        try {
+            File.WriteAllText(Path.Combine(source, "target.txt"), "payload");
+            File.CreateSymbolicLink(Path.Combine(source, "alias.txt"), "target.txt");
+
+            var worktree = await NewManager().CreateAsync(source);
+            var alias = Path.Combine(worktree.Path, "alias.txt");
+
+            await Assert.That(IsLink(alias)).IsTrue();
+            await Assert.That(File.GetAttributes(alias).HasFlag(FileAttributes.Directory)).IsFalse()
+                .Because("a file link recreated as a directory link is wrong on Windows");
+            await Assert.That(File.ReadAllText(alias)).IsEqualTo("payload");
+        } finally {
+            Cleanup(root);
+        }
+    }
+
+    /// <summary>A source file that merely LOOKS like the daemon's claim bookkeeping is ordinary content and
+    /// must be copied.
+    ///
+    /// <para>The real claim lives in the worktrees root, which the marker already excludes wholesale, so a
+    /// prefix rule over the whole tree would buy nothing and silently drop this.</para></summary>
+    [Test]
+    public async Task A_source_file_named_like_a_claim_is_preserved() {
+        var (root, source) = MakeNonGitSource();
+        try {
+            var docs = Path.Combine(source, "docs");
+            Directory.CreateDirectory(docs);
+            File.WriteAllText(Path.Combine(docs, ".kcap-claim-notes"), "ordinary content");
+
+            var worktree = await NewManager().CreateAsync(source);
+
+            await Assert.That(File.ReadAllText(Path.Combine(worktree.Path, "docs", ".kcap-claim-notes")))
+                .IsEqualTo("ordinary content")
+                .Because("only the daemon's own bookkeeping directory is excluded, not a name prefix");
+        } finally {
+            Cleanup(root);
+        }
+    }
+
+    /// <summary>A FIFO in the source fails the snapshot closed instead of hanging the launch.
+    ///
+    /// <para>.NET reports a FIFO with exactly the same <c>FileAttributes</c>, <c>UnixFileMode</c> and zero
+    /// length as an ordinary empty file — measured — so it cannot be identified and skipped. The copy is
+    /// bounded instead, turning an indefinite block by hostile content into an attributable refusal. The
+    /// timeout is shortened here so the test does not wait for the production bound.</para></summary>
+    [Test, NotInParallel]
+    public async Task A_fifo_in_the_source_fails_closed_rather_than_hanging() {
+        Skip.Unless(!OperatingSystem.IsWindows(), "POSIX FIFO semantics.");
+        var (root, source) = MakeNonGitSource();
+        var original = WorktreeManager.CopyEntryTimeout;
+        try {
+            WorktreeManager.CopyEntryTimeout = TimeSpan.FromSeconds(2);
+
+            var fifo = Path.Combine(source, "pipe");
+            using (var mk = Process.Start(new ProcessStartInfo("mkfifo", fifo))!) {
+                mk.WaitForExit();
+                Skip.Unless(mk.ExitCode == 0, "mkfifo unavailable");
+            }
+
+            await Assert.That(IsPresent(fifo)).IsTrue().Because("fixture control: the FIFO exists");
+
+            await Assert.That(async () => await NewManager().CreateAsync(source))
+                .Throws<InvalidOperationException>()
+                .Because("an entry that cannot be copied promptly must refuse, not wedge the daemon");
+        } finally {
+            WorktreeManager.CopyEntryTimeout = original;
             Cleanup(root);
         }
     }

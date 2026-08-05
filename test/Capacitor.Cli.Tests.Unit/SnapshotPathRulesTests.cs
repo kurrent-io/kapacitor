@@ -64,4 +64,16 @@ public class SnapshotPathRulesTests {
     [Test]
     public async Task Backslash_separated_escapes_are_rejected() =>
         await Assert.That(WorktreeManager.IsAdmissibleLinkTarget("a", "..\\..\\outside")).IsFalse();
+
+    /// <summary>Admissibility is the INTERSECTION of both tokenizations, not one merged pass.
+    ///
+    /// <para>Treating <c>\</c> as a separator safely over-rejects <c>..\..\x</c>, but it also splits
+    /// <c>a\b\c</c> into three levels of DEPTH — which masks a following <c>../..</c>. On Unix
+    /// <c>a\b\c</c> is a single directory name, so that target really does leave the root. Judging it
+    /// under slash-only parsing as well is what rejects it.</para></summary>
+    [Test]
+    [Arguments("", "a\\b\\c/../../outside")]
+    [Arguments("", "a\\b/../../outside")]
+    public async Task Backslash_inflated_depth_does_not_mask_an_escape(string dir, string target) =>
+        await Assert.That(WorktreeManager.IsAdmissibleLinkTarget(dir, target)).IsFalse();
 }

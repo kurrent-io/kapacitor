@@ -303,6 +303,12 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
         // snapshot. There is no portable atomic directory claim, but FileMode.CreateNew on a FILE is atomic
         // everywhere, so the claim file supplies the exclusion the directory create cannot.
         var claimPath = Path.Combine(worktreeRoot, ClaimPrefix + name);
+
+        // Test barrier: lets two callers rendezvous in the window where BOTH still see the destination
+        // absent. Without it a concurrency test can pass by running the callers sequentially, where the
+        // second is refused by the occupied-destination check and the claim's atomicity is never exercised.
+        SnapshotPreClaimHook?.Invoke().GetAwaiter().GetResult();
+
         try {
             using (new FileStream(claimPath, FileMode.CreateNew, FileAccess.Write, FileShare.None)) { }
         } catch (IOException) {
@@ -344,8 +350,6 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
 
     internal const string ClaimPrefix = ".kcap-claim-";
 
-    static bool IsClaimName(string name) => name.StartsWith(ClaimPrefix, StringComparison.Ordinal);
-
     /// <summary>Refuses a destination-chain component that is a link, WITHOUT following it.</summary>
     static void RefuseIfLink(string path) {
         if (IsPresentEntry(path) && File.GetAttributes(path).HasFlag(FileAttributes.ReparsePoint))
@@ -376,6 +380,10 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
     /// <summary>Runs inside the claimant's rollback, after the tree is deleted and before the claim is
     /// released — the window a same-name caller must still be excluded from.</summary>
     internal static Func<Task>? SnapshotRollbackHook;
+
+    /// <summary>Runs immediately before the claim is attempted, while the destination is still absent.
+    /// Test-only, so two callers can be made to genuinely overlap.</summary>
+    internal static Func<Task>? SnapshotPreClaimHook;
 
     static void FailHereIfRequested(string point) {
         if (SnapshotFailurePoint != point) return;
