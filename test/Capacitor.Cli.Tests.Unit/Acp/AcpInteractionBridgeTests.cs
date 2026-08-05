@@ -1,4 +1,5 @@
 // test/Capacitor.Cli.Tests.Unit/Acp/AcpInteractionBridgeTests.cs
+using System.Diagnostics.Metrics;
 using System.Text.Json;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Acp;
@@ -227,16 +228,16 @@ public class AcpInteractionBridgeTests {
     }
 
     /// <summary>
-    /// Qodo daemon-review Q1: the same omitted-<c>options</c> fail-safe hole exists on the
-    /// <c>elicitation/create</c> path too (<see cref="ElicitationCreateParams.Options"/> is already
-    /// nullable there, and <see cref="HandleElicitationAsync"/> already null-coalesces it — this
-    /// test pins that existing defensive behavior stays correct after the shared normalization
-    /// helper is introduced for Q1).
+    /// A pre-stabilization draft frame (no <c>mode</c>) is deliberately NOT interpreted — the
+    /// stabilized mode variants each require <c>mode</c>, and "MUST NOT render an unknown mode as
+    /// a known elicitation mode" extends to a missing one. Cancelled in the stabilized response
+    /// shape without ever routing to a human.
     /// </summary>
     [Test]
-    public async Task ElicitationCreate_OptionsFieldOmitted_ReturnsCancelledResultNotThrow() {
+    public async Task ElicitationCreate_ModelessDraftFrame_CancelsAsMalformedRequest_WithoutRouting() {
+        var routed = 0;
         var bridge = new AcpInteractionBridge(
-            requestInteraction: (req, ct) => Task.FromResult(new AcpInteractionDecision("answered", null, null, null, null, null)),
+            requestInteraction: (req, ct) => { Interlocked.Increment(ref routed); return Task.FromResult(new AcpInteractionDecision("answered", null, null, null, null, null)); },
             agentId: AgentId,
             logger: NullLogger.Instance);
 
@@ -245,9 +246,8 @@ public class AcpInteractionBridgeTests {
 
         var result = await bridge.HandleAsync(request, CancellationToken.None);
 
-        await Assert.That(result).IsNotNull();
-        var outcome = result!.Value.GetProperty("outcome");
-        await Assert.That(outcome.GetProperty("outcome").GetString()).IsEqualTo("cancelled");
+        await Assert.That(result!.Value.GetRawText()).IsEqualTo("""{"action":"cancel"}""");
+        await Assert.That(routed).IsEqualTo(0);
     }
 
     /// <summary>
@@ -451,41 +451,34 @@ public class AcpInteractionBridgeTests {
     }
 
     [Test]
-    public async Task ElicitationCreate_NeverAdvertisedButHandledDefensivelyIfSent() {
+    public async Task ElicitationCreate_StabilizedSingleSelect_AnswersAcceptWithSelectedId() {
+        AcpInteractionRequest? captured = null;
         var bridge = new AcpInteractionBridge(
             requestInteraction: (req, ct) => {
-                // Spec-review Finding 6: resolution is by SelectedOptionId ("yes"), not by label —
-                // SelectedOptionLabel is passed too but is display-only from this point forward.
+                captured = req;
+                // Resolution is by SelectedOptionId ("yes"), not by label — labels are display-only.
                 return Task.FromResult(new AcpInteractionDecision("answered", "yes", "Yes", 0, null, null));
             },
             agentId: AgentId,
             logger: NullLogger.Instance);
 
-        var json = $$"""{"sessionId":"{{AcpSessionId}}","message":"Proceed?","options":[{"optionId":"yes","name":"Yes","kind":"allow_once"},{"optionId":"no","name":"No","kind":"reject_once"}]}""";
-        var request = new AcpRequest(1, "elicitation/create", JsonDocument.Parse(json).RootElement.Clone());
+        var result = await bridge.HandleAsync(
+            ElicitationRequest(FormParams("""{"type":"object","properties":{"proceed":{"type":"string","enum":["yes","no"]}}}""", "Proceed?")),
+            CancellationToken.None);
 
-        var result = await bridge.HandleAsync(request, CancellationToken.None);
-
-        await Assert.That(result).IsNotNull();
-        var outcome = result!.Value.GetProperty("outcome");
-        await Assert.That(outcome.GetProperty("outcome").GetString()).IsEqualTo("selected");
-        await Assert.That(outcome.GetProperty("optionId").GetString()).IsEqualTo("yes");
+        await Assert.That(captured!.Value.Kind).IsEqualTo("elicitation");
+        await Assert.That(captured.Value.IsMultiSelect).IsFalse();
+        await Assert.That(captured.Value.Options!.Select(o => o.OptionId).ToArray()).IsEquivalentTo(new[] { "yes", "no" });
+        await Assert.That(result!.Value.GetRawText()).IsEqualTo("""{"action":"accept","content":{"proceed":"yes"}}""");
     }
 
     /// <summary>
-    /// Spec-review Finding 1 (JSON-Schema elicitation): a schema-shaped <c>elicitation/create</c>
-    /// (<c>requestedSchema</c> present, no <c>options</c> at all) is forwarded to the server
-    /// verbatim via <see cref="AcpInteractionRequest.RequestedSchema"/> — this bridge does zero
-    /// schema validation/rendering of its own (no confirmed Cursor shape exists to render against;
-    /// the generic-card fallback lives server-side, Task A4/A6). This test also proves the request
-    /// never throws even though it has no options to offer a human — <see cref="MapPermissionDecision"/>'s
-    /// existing <c>options.Count == 0 → cancelled</c> branch (spec-review Finding 2) already handles
-    /// "no options were ever offered" safely, so a schema-only elicitation that somehow resolves
-    /// with an affirmative outcome still degrades to a well-formed <c>cancelled</c> result rather
-    /// than an unhandled exception or a bogus <c>selected</c> with no <c>optionId</c> to report.
+    /// A bare-string schema (no enum/oneOf) is the FreeText subset: forwarded with zero options
+    /// (the server's existing generic free-text card), <c>requestedSchema</c> forwarded verbatim
+    /// for audit, and an answered free text becomes a stabilized accept keyed by the property name.
     /// </summary>
     [Test]
-    public async Task ElicitationCreate_SchemaShaped_ForwardsRequestedSchemaVerbatim_NeverThrows() {
+    public async Task ElicitationCreate_FreeTextSchema_ForwardsSchemaVerbatim_AcceptsAnsweredText() {
         AcpInteractionRequest? captured = null;
         var bridge = new AcpInteractionBridge(
             requestInteraction: (req, ct) => {
@@ -496,44 +489,35 @@ public class AcpInteractionBridgeTests {
             agentId: AgentId,
             logger: NullLogger.Instance);
 
-        var json = $$$$$"""{"sessionId":"{{{{{AcpSessionId}}}}}","message":"Describe the config","requestedSchema":{"type":"object","properties":{"name":{"type":"string"}}}}""";
-        var request = new AcpRequest(1, "elicitation/create", JsonDocument.Parse(json).RootElement.Clone());
+        var result = await bridge.HandleAsync(
+            ElicitationRequest(FormParams("""{"type":"object","properties":{"name":{"type":"string"}}}""", "Describe the config")),
+            CancellationToken.None);
 
-        var result = await bridge.HandleAsync(request, CancellationToken.None);
-
-        await Assert.That(result).IsNotNull();
-        await Assert.That(captured).IsNotNull();
-        await Assert.That(captured!.Value.RequestedSchema).IsNotNull();
-        await Assert.That(captured.Value.RequestedSchema!.Value.GetProperty("type").GetString()).IsEqualTo("object");
-        await Assert.That(captured.Value.Options).IsEmpty(); // no flat options offered for a schema-shaped elicitation
-        // No options were offered, so even an "answered" decision safely degrades to cancelled
-        // (MapPermissionDecision's options.Count == 0 branch, spec-review Finding 2) — never throws.
-        var outcome = result!.Value.GetProperty("outcome");
-        await Assert.That(outcome.GetProperty("outcome").GetString()).IsEqualTo("cancelled");
+        await Assert.That(captured!.Value.RequestedSchema!.Value.GetProperty("type").GetString()).IsEqualTo("object");
+        await Assert.That(captured.Value.Options).IsEmpty();
+        await Assert.That(result!.Value.GetRawText()).IsEqualTo("""{"action":"accept","content":{"name":"free text answer"}}""");
     }
 
     /// <summary>
-    /// Spec-review Finding 1: a malformed <c>requestedSchema</c> value that still parses as valid
-    /// JSON (the whole <c>elicitation/create</c> params object is syntactically valid, so
-    /// <see cref="ElicitationCreateParams"/> deserializes successfully) never causes this bridge to
-    /// throw — it is forwarded to the server exactly as received, since schema hygiene/rejection is
-    /// entirely a server-side concern (Task A1's <c>CapAcpSchema</c>), not this bridge's.
+    /// A <c>requestedSchema</c> that is not a JSON object is unrenderable: cancelled in the
+    /// stabilized shape and NEVER routed to a human (the pre-stabilization lane used to forward
+    /// it verbatim and let the server render a generic card; the stabilized classifier owns the
+    /// decision daemon-side now).
     /// </summary>
     [Test]
-    public async Task ElicitationCreate_SchemaIsNotAnObject_StillForwardsWithoutThrowing() {
+    public async Task ElicitationCreate_SchemaIsNotAnObject_CancelsWithoutRouting() {
+        var routed = 0;
         var bridge = new AcpInteractionBridge(
-            requestInteraction: (req, ct) => Task.FromResult(new AcpInteractionDecision("cancel", null, null, null, null, null)),
+            requestInteraction: (req, ct) => { Interlocked.Increment(ref routed); return Task.FromResult(new AcpInteractionDecision("cancel", null, null, null, null, null)); },
             agentId: AgentId,
             logger: NullLogger.Instance);
 
-        var json = $$"""{"sessionId":"{{AcpSessionId}}","message":"Proceed?","requestedSchema":"not-an-object"}""";
-        var request = new AcpRequest(1, "elicitation/create", JsonDocument.Parse(json).RootElement.Clone());
+        var result = await bridge.HandleAsync(
+            ElicitationRequest(FormParams(""" "not-an-object" """.Trim(), "Proceed?")),
+            CancellationToken.None);
 
-        var result = await bridge.HandleAsync(request, CancellationToken.None);
-
-        await Assert.That(result).IsNotNull();
-        var outcome = result!.Value.GetProperty("outcome");
-        await Assert.That(outcome.GetProperty("outcome").GetString()).IsEqualTo("cancelled");
+        await Assert.That(result!.Value.GetRawText()).IsEqualTo("""{"action":"cancel"}""");
+        await Assert.That(routed).IsEqualTo(0);
     }
 
     // ── Payload-free "blocking request issued/resolved" lifecycle logging ──────────────────────
@@ -603,20 +587,21 @@ public class AcpInteractionBridgeTests {
     }
 
     [Test]
-    public async Task ElicitationCreate_Selected_LogsIssuedAndResolvedWithElicitationKind() {
+    public async Task ElicitationCreate_Accepted_LogsIssuedResolvedAndAnswered_NeverPromptText() {
         var logger = new CaptureLogger();
         var bridge = new AcpInteractionBridge(
             requestInteraction: (req, ct) => Task.FromResult(new AcpInteractionDecision("answered", "yes", "Yes", 0, null, null)),
             agentId: AgentId,
             logger: logger);
 
-        var json = $$"""{"sessionId":"{{AcpSessionId}}","message":"Proceed?","options":[{"optionId":"yes","name":"Yes","kind":"allow_once"},{"optionId":"no","name":"No","kind":"reject_once"}]}""";
-        var request = new AcpRequest(1, "elicitation/create", JsonDocument.Parse(json).RootElement.Clone());
-        await bridge.HandleAsync(request, CancellationToken.None);
+        await bridge.HandleAsync(
+            ElicitationRequest(FormParams("""{"type":"object","properties":{"proceed":{"type":"string","enum":["yes","no"]}}}""", "Proceed?")),
+            CancellationToken.None);
 
         var infoEntries = logger.Entries.Where(e => e.Level == LogLevel.Information).ToList();
         await Assert.That(infoEntries).Contains(e => e.Message.Contains("issued") && e.Message.Contains("elicitation"));
-        await Assert.That(infoEntries).Contains(e => e.Message.Contains("resolved") && e.Message.Contains("elicitation") && e.Message.Contains("selected"));
+        await Assert.That(infoEntries).Contains(e => e.Message.Contains("resolved") && e.Message.Contains("elicitation") && e.Message.Contains("accept"));
+        await Assert.That(infoEntries).Contains(e => e.Message.Contains("elicitation answered") && e.Message.Contains("SingleSelect"));
         await Assert.That(infoEntries).DoesNotContain(e => e.Message.Contains("Proceed?")); // never the prompt text
     }
 
@@ -654,6 +639,8 @@ public class AcpInteractionBridgeTests {
         await Assert.That(reaped).IsEquivalentTo([method]);
         if (method == "vendor/unknown_interaction")
             await Assert.That(result).IsNull();
+        else if (method == "elicitation/create")
+            await Assert.That(result!.Value.GetRawText()).IsEqualTo("""{"action":"cancel"}""");
         else
             await Assert.That(result!.Value.GetProperty("outcome").GetProperty("outcome").GetString()).IsEqualTo("cancelled");
     }
@@ -764,14 +751,14 @@ public class AcpInteractionBridgeTests {
     }
 
     [Test]
-    public async Task AutoApprove_Elicitation_DeclinedWithoutRoutingToHuman() {
+    public async Task AutoApprove_Elicitation_DeclinedWithoutRoutingToHuman_InStabilizedShape() {
         var (bridge, calls) = AutoApproveBridge();
 
-        var json    = $$"""{"sessionId":"{{AcpSessionId}}","message":"Proceed?","options":[{"optionId":"yes","name":"Yes","kind":"allow_once"}]}""";
-        var request = new AcpRequest(1, "elicitation/create", JsonDocument.Parse(json).RootElement.Clone());
-        var result  = await bridge.HandleAsync(request, CancellationToken.None);
+        var result = await bridge.HandleAsync(
+            ElicitationRequest(FormParams("""{"type":"object","properties":{"proceed":{"type":"string","enum":["yes"]}}}""", "Proceed?")),
+            CancellationToken.None);
 
-        await Assert.That(result!.Value.GetProperty("outcome").GetProperty("outcome").GetString()).IsEqualTo("cancelled");
+        await Assert.That(result!.Value.GetRawText()).IsEqualTo("""{"action":"cancel"}""");
         await Assert.That(calls()).IsEqualTo(0);
     }
 
@@ -795,5 +782,368 @@ public class AcpInteractionBridgeTests {
             && e.Message.Contains("allow_once"));
         // No path field is ever logged — the bridge has no trustworthy path (ToolCall is opaque).
         await Assert.That(infoEntries).DoesNotContain(e => e.Message.Contains("path"));
+    }
+
+    // ── Stabilized elicitation: shared helpers ──────────────────────────────────────────────────
+
+    static AcpRequest ElicitationRequest(string paramsJson) =>
+        new(1, "elicitation/create", JsonDocument.Parse(paramsJson).RootElement.Clone());
+
+    static string FormParams(string schemaJson, string message = "Pick") =>
+        $$"""{"sessionId":"{{AcpSessionId}}","message":"{{message}}","mode":"form","requestedSchema":{{schemaJson}}}""";
+
+    /// <summary>Bridge with a routed-call counter and a capture logger — the standard harness for
+    /// the pre-routing-cancel contract (cancel shape + not-routed + reason log, all three).</summary>
+    static (AcpInteractionBridge Bridge, Func<int> Routed, CaptureLogger Logger) GateBridge(AcpInteractionDecision decision) {
+        var routed = 0;
+        var logger = new CaptureLogger();
+        var bridge = new AcpInteractionBridge(
+            requestInteraction: (req, ct) => { Interlocked.Increment(ref routed); return Task.FromResult(decision); },
+            agentId: AgentId,
+            logger: logger);
+        return (bridge, () => Volatile.Read(ref routed), logger);
+    }
+
+    const string MultiSelectBoundedSchema = """{"type":"object","properties":{"areas":{"type":"array","minItems":1,"maxItems":2,"items":{"type":"string","enum":["x","y","z"]}}}}""";
+    const string MultiSelectMinTwoSchema  = """{"type":"object","properties":{"areas":{"type":"array","minItems":2,"items":{"type":"string","enum":["x","y","z"]}}}}""";
+
+    static AcpInteractionDecision MultiDecision(string[]? ids, string? scalar = null) =>
+        new("answered", scalar, null, null, null, null, SelectedOptionIds: ids);
+
+    // ── Stabilized elicitation: pre-routing gate matrix ─────────────────────────────────────────
+    //
+    // EVERY pre-routing cancel must (a) answer the exact content-free stabilized cancel shape,
+    // (b) never invoke the server delegate, and (c) log the snake_case reason. Frames are the
+    // SDK-verdict-checked fixtures (see test-fixtures/acp-elicitation/generate.mjs).
+
+    [Test]
+    [Arguments(ElicitationFixtures.Params_EmptyMessage, ElicitationFixtures.Reason_Params_EmptyMessage)]
+    [Arguments(ElicitationFixtures.Params_WhitespaceMessage, ElicitationFixtures.Reason_Params_WhitespaceMessage)]
+    [Arguments(ElicitationFixtures.Params_OverlongMessage, ElicitationFixtures.Reason_Params_OverlongMessage)]
+    [Arguments(ElicitationFixtures.Params_UrlMode, ElicitationFixtures.Reason_Params_UrlMode)]
+    [Arguments(ElicitationFixtures.Params_RequestScoped, ElicitationFixtures.Reason_Params_RequestScoped)]
+    [Arguments(ElicitationFixtures.Params_UnknownMode, ElicitationFixtures.Reason_Params_UnknownMode)]
+    [Arguments(ElicitationFixtures.Params_MissingMode, ElicitationFixtures.Reason_Params_MissingMode)]
+    [Arguments(ElicitationFixtures.Params_MissingMessage, ElicitationFixtures.Reason_Params_MissingMessage)]
+    [Arguments(ElicitationFixtures.Params_NullMessage, ElicitationFixtures.Reason_Params_NullMessage)]
+    [Arguments(ElicitationFixtures.Params_NonStringMessage, ElicitationFixtures.Reason_Params_NonStringMessage)]
+    [Arguments(ElicitationFixtures.Params_MissingRequestedSchema, ElicitationFixtures.Reason_Params_MissingRequestedSchema)]
+    [Arguments(ElicitationFixtures.Params_JsonNullRequestId, ElicitationFixtures.Reason_Params_JsonNullRequestId)]
+    public async Task ElicitationGate_Cancels_WithoutRouting_AndLogsReason(string paramsJson, string expectedReason) {
+        var (bridge, routed, logger) = GateBridge(new AcpInteractionDecision("answered", "x", null, null, null, null));
+
+        var result = await bridge.HandleAsync(ElicitationRequest(paramsJson), CancellationToken.None);
+
+        await Assert.That(result!.Value.GetRawText()).IsEqualTo("""{"action":"cancel"}""");
+        await Assert.That(routed()).IsEqualTo(0);
+        await Assert.That(logger.Entries).Contains(e =>
+            e.Message.Contains("cancelled before routing") && e.Message.Contains($"reason={expectedReason}"));
+    }
+
+    [Test]
+    public async Task ElicitationGate_MissingParams_CancelsAsMalformedRequest() {
+        var (bridge, routed, logger) = GateBridge(new AcpInteractionDecision("answered", "x", null, null, null, null));
+
+        var result = await bridge.HandleAsync(new AcpRequest(1, "elicitation/create", Params: null), CancellationToken.None);
+
+        await Assert.That(result!.Value.GetRawText()).IsEqualTo("""{"action":"cancel"}""");
+        await Assert.That(routed()).IsEqualTo(0);
+        await Assert.That(logger.Entries).Contains(e => e.Message.Contains("reason=malformed_request"));
+    }
+
+    /// <summary>Scope precedence: a frame carrying BOTH a usable sessionId and a requestId is
+    /// session-scoped and ROUTES (the request-scoped cancel only applies when no usable sessionId
+    /// exists).</summary>
+    [Test]
+    public async Task ElicitationGate_BothSessionAndRequestId_RoutesAsSessionScoped() {
+        AcpInteractionRequest? captured = null;
+        var bridge = new AcpInteractionBridge(
+            requestInteraction: (req, ct) => { captured = req; return Task.FromResult(new AcpInteractionDecision("answered", "a", null, null, null, null)); },
+            agentId: AgentId,
+            logger: NullLogger.Instance);
+
+        var result = await bridge.HandleAsync(
+            ElicitationRequest(ElicitationFixtures.Params_BothSessionAndRequestId), CancellationToken.None);
+
+        await Assert.That(captured!.Value.AcpSessionId).IsEqualTo("fc2e09cf-f4b0-4463-9dc1-bda11268896b");
+        await Assert.That(result!.Value.GetProperty("action").GetString()).IsEqualTo("accept");
+    }
+
+    /// <summary>An exactly-at-cap message routes — the cap is exclusive at 8 Ki code units.</summary>
+    [Test]
+    public async Task ElicitationGate_ExactCapMessage_Routes() {
+        var (bridge, routed, _) = GateBridge(new AcpInteractionDecision("answered", "a", null, null, null, null));
+
+        var result = await bridge.HandleAsync(
+            ElicitationRequest(ElicitationFixtures.Params_ExactCapMessage), CancellationToken.None);
+
+        await Assert.That(routed()).IsEqualTo(1);
+        await Assert.That(result!.Value.GetProperty("action").GetString()).IsEqualTo("accept");
+    }
+
+    // ── Stabilized elicitation: multi-select bounds + prompt composition ────────────────────────
+
+    /// <summary>The forwarded interaction carries the classifier's EFFECTIVE bounds and the
+    /// multi-select flag — the server renders from these, never from the raw schema.</summary>
+    [Test]
+    public async Task ElicitationMulti_ForwardsEffectiveBoundsAndMultiSelectFlag() {
+        AcpInteractionRequest? captured = null;
+        var bridge = new AcpInteractionBridge(
+            requestInteraction: (req, ct) => { captured = req; return Task.FromResult(MultiDecision(["x", "y"])); },
+            agentId: AgentId,
+            logger: NullLogger.Instance);
+
+        await bridge.HandleAsync(ElicitationRequest(FormParams(MultiSelectBoundedSchema)), CancellationToken.None);
+
+        await Assert.That(captured!.Value.IsMultiSelect).IsTrue();
+        await Assert.That(captured.Value.MinSelections).IsEqualTo(1);
+        await Assert.That(captured.Value.MaxSelections).IsEqualTo(2);
+        await Assert.That(captured.Value.Options!.Select(o => o.OptionId).ToArray()).IsEquivalentTo(new[] { "x", "y", "z" });
+    }
+
+    /// <summary>An accept carries ALL selected ids — not the first, not a subset.</summary>
+    [Test]
+    public async Task ElicitationMulti_Accept_CarriesAllSelectedIds() {
+        var (bridge, _, _) = GateBridge(MultiDecision(["x", "y"]));
+
+        var result = await bridge.HandleAsync(ElicitationRequest(FormParams(MultiSelectBoundedSchema)), CancellationToken.None);
+
+        await Assert.That(result!.Value.GetRawText()).IsEqualTo("""{"action":"accept","content":{"areas":["x","y"]}}""");
+    }
+
+    [Test]
+    public async Task ElicitationMulti_BelowMinimum_Cancels() {
+        var (bridge, _, _) = GateBridge(MultiDecision([]));
+        var result = await bridge.HandleAsync(ElicitationRequest(FormParams(MultiSelectBoundedSchema)), CancellationToken.None);
+        await Assert.That(result!.Value.GetRawText()).IsEqualTo("""{"action":"cancel"}""");
+    }
+
+    [Test]
+    public async Task ElicitationMulti_AboveMaximum_Cancels() {
+        var (bridge, _, _) = GateBridge(MultiDecision(["x", "y", "z"]));
+        var result = await bridge.HandleAsync(ElicitationRequest(FormParams(MultiSelectBoundedSchema)), CancellationToken.None);
+        await Assert.That(result!.Value.GetRawText()).IsEqualTo("""{"action":"cancel"}""");
+    }
+
+    /// <summary>Repeat ids collapse BEFORE the bounds check — ["x","x"] is one selection.</summary>
+    [Test]
+    public async Task ElicitationMulti_DuplicateIds_DedupThenBoundsCheck() {
+        var (bridge, _, _) = GateBridge(MultiDecision(["x", "x"]));
+        var result = await bridge.HandleAsync(ElicitationRequest(FormParams(MultiSelectBoundedSchema)), CancellationToken.None);
+        await Assert.That(result!.Value.GetRawText()).IsEqualTo("""{"action":"accept","content":{"areas":["x"]}}""");
+    }
+
+    [Test]
+    public async Task ElicitationMulti_UnknownSelectedId_Cancels() {
+        var (bridge, _, logger) = GateBridge(MultiDecision(["x", "not-offered"]));
+        var result = await bridge.HandleAsync(ElicitationRequest(FormParams(MultiSelectBoundedSchema)), CancellationToken.None);
+        await Assert.That(result!.Value.GetRawText()).IsEqualTo("""{"action":"cancel"}""");
+        // Post-routing defensive cancel: the answered log must NOT fire.
+        await Assert.That(logger.Entries).DoesNotContain(e => e.Message.Contains("elicitation answered"));
+    }
+
+    /// <summary>Old-server compatibility: a scalar-only decision wraps into a one-element accept —
+    /// but ONLY when the effective minimum admits it.</summary>
+    [Test]
+    public async Task ElicitationMulti_ScalarFallback_AcceptsWhenMinIsOne() {
+        var (bridge, _, _) = GateBridge(MultiDecision(ids: null, scalar: "x"));
+        var result = await bridge.HandleAsync(ElicitationRequest(FormParams(MultiSelectBoundedSchema)), CancellationToken.None);
+        await Assert.That(result!.Value.GetRawText()).IsEqualTo("""{"action":"accept","content":{"areas":["x"]}}""");
+    }
+
+    /// <summary>With an effective minimum above one, a scalar-only decision CANCELS rather than
+    /// emitting a below-minimum accept — the fallback obeys the same bounds check.</summary>
+    [Test]
+    public async Task ElicitationMulti_ScalarFallback_CancelsWhenMinAboveOne() {
+        var (bridge, _, _) = GateBridge(MultiDecision(ids: null, scalar: "x"));
+        var result = await bridge.HandleAsync(ElicitationRequest(FormParams(MultiSelectMinTwoSchema)), CancellationToken.None);
+        await Assert.That(result!.Value.GetRawText()).IsEqualTo("""{"action":"cancel"}""");
+    }
+
+    [Test]
+    public async Task ElicitationMulti_NullListAndNullScalar_Cancels() {
+        var (bridge, _, _) = GateBridge(MultiDecision(ids: null, scalar: null));
+        var result = await bridge.HandleAsync(ElicitationRequest(FormParams(MultiSelectBoundedSchema)), CancellationToken.None);
+        await Assert.That(result!.Value.GetRawText()).IsEqualTo("""{"action":"cancel"}""");
+    }
+
+    /// <summary>Prompt composition: message leads, then the property's title and description,
+    /// blank-line-joined, case-sensitive-distinct (a duplicate segment is dropped).</summary>
+    [Test]
+    public async Task ElicitationPrompt_ComposesMessageTitleDescription_DroppingDuplicates() {
+        AcpInteractionRequest? captured = null;
+        var bridge = new AcpInteractionBridge(
+            requestInteraction: (req, ct) => { captured = req; return Task.FromResult(new AcpInteractionDecision("answered", "a", null, null, null, null)); },
+            agentId: AgentId,
+            logger: NullLogger.Instance);
+
+        await bridge.HandleAsync(
+            ElicitationRequest(FormParams("""{"type":"object","properties":{"choice":{"type":"string","title":"The title","description":"The description","enum":["a","b"]}}}""")),
+            CancellationToken.None);
+        await Assert.That(captured!.Value.Prompt).IsEqualTo("Pick\n\nThe title\n\nThe description");
+
+        await bridge.HandleAsync(
+            ElicitationRequest(FormParams("""{"type":"object","properties":{"choice":{"type":"string","title":"Pick","enum":["a","b"]}}}""")),
+            CancellationToken.None);
+        await Assert.That(captured!.Value.Prompt).IsEqualTo("Pick"); // title == message → dropped
+    }
+
+    /// <summary>Large-but-renderable composition: the routed prompt equals the segment sum exactly
+    /// and sits under the loose bound (message cap + schema cap + separators).</summary>
+    [Test]
+    public async Task ElicitationPrompt_LargeRenderable_EqualsSegmentSum_WithinLooseBound() {
+        AcpInteractionRequest? captured = null;
+        var bridge = new AcpInteractionBridge(
+            requestInteraction: (req, ct) => { captured = req; return Task.FromResult(new AcpInteractionDecision("answered", "a", null, null, null, null)); },
+            agentId: AgentId,
+            logger: NullLogger.Instance);
+
+        var message = new string('m', AcpInteractionBridge.MaxElicitationMessageCodeUnits);
+        var title   = new string('t', 1000);
+        var desc    = new string('d', 1000);
+        var schema  = """{"type":"object","properties":{"choice":{"type":"string","title":"@TITLE@","description":"@DESC@","enum":["a","b"]}}}"""
+            .Replace("@TITLE@", title).Replace("@DESC@", desc);
+        var frame = """{"sessionId":"@SID@","message":"@MSG@","mode":"form","requestedSchema":@SCHEMA@}"""
+            .Replace("@SID@", AcpSessionId).Replace("@MSG@", message).Replace("@SCHEMA@", schema);
+
+        await bridge.HandleAsync(ElicitationRequest(frame), CancellationToken.None);
+
+        var prompt = captured!.Value.Prompt!;
+        await Assert.That(prompt.Length).IsEqualTo(message.Length + 2 + title.Length + 2 + desc.Length);
+        await Assert.That(prompt.Length <= AcpInteractionBridge.MaxElicitationMessageCodeUnits + 32 * 1024 + 4).IsTrue();
+    }
+
+    // ── Stabilized elicitation: single-select + free-text decision mapping ──────────────────────
+
+    [Test]
+    public async Task ElicitationSingle_NullSelectedId_Cancels() {
+        var (bridge, _, _) = GateBridge(new AcpInteractionDecision("answered", null, null, null, null, null));
+        var result = await bridge.HandleAsync(
+            ElicitationRequest(FormParams("""{"type":"object","properties":{"proceed":{"type":"string","enum":["yes","no"]}}}""")),
+            CancellationToken.None);
+        await Assert.That(result!.Value.GetRawText()).IsEqualTo("""{"action":"cancel"}""");
+    }
+
+    /// <summary>An offered empty-string id is a legitimate answer — null, not emptiness, is the gate.</summary>
+    [Test]
+    public async Task ElicitationSingle_OfferedEmptyStringId_Accepts() {
+        var (bridge, _, _) = GateBridge(new AcpInteractionDecision("answered", "", null, null, null, null));
+        var result = await bridge.HandleAsync(
+            ElicitationRequest(FormParams("""{"type":"object","properties":{"choice":{"type":"string","enum":["","real"]}}}""")),
+            CancellationToken.None);
+        await Assert.That(result!.Value.GetRawText()).IsEqualTo("""{"action":"accept","content":{"choice":""}}""");
+    }
+
+    [Test]
+    public async Task ElicitationSingle_NonAnsweredOutcome_Cancels() {
+        var (bridge, _, _) = GateBridge(new AcpInteractionDecision("cancel", "yes", null, null, null, null));
+        var result = await bridge.HandleAsync(
+            ElicitationRequest(FormParams("""{"type":"object","properties":{"proceed":{"type":"string","enum":["yes","no"]}}}""")),
+            CancellationToken.None);
+        await Assert.That(result!.Value.GetRawText()).IsEqualTo("""{"action":"cancel"}""");
+    }
+
+    [Test]
+    public async Task ElicitationFreeText_WhitespaceAnswer_Cancels() {
+        var (bridge, _, _) = GateBridge(new AcpInteractionDecision("answered", null, null, null, " \t ", null));
+        var result = await bridge.HandleAsync(
+            ElicitationRequest(FormParams("""{"type":"object","properties":{"name":{"type":"string"}}}""")),
+            CancellationToken.None);
+        await Assert.That(result!.Value.GetRawText()).IsEqualTo("""{"action":"cancel"}""");
+    }
+
+    // ── Stabilized elicitation: transport failures ──────────────────────────────────────────────
+
+    [Test]
+    public async Task ElicitationTransport_DelegateThrows_Cancels() {
+        var bridge = new AcpInteractionBridge(
+            requestInteraction: (req, ct) => throw new InvalidOperationException("boom"),
+            agentId: AgentId,
+            logger: NullLogger.Instance);
+        var result = await bridge.HandleAsync(
+            ElicitationRequest(FormParams("""{"type":"object","properties":{"proceed":{"type":"string","enum":["yes"]}}}""")),
+            CancellationToken.None);
+        await Assert.That(result!.Value.GetRawText()).IsEqualTo("""{"action":"cancel"}""");
+    }
+
+    [Test]
+    public async Task ElicitationTransport_OperationCanceled_Cancels() {
+        var bridge = new AcpInteractionBridge(
+            requestInteraction: (req, ct) => Task.FromCanceled<AcpInteractionDecision>(new CancellationToken(true)),
+            agentId: AgentId,
+            logger: NullLogger.Instance);
+        var result = await bridge.HandleAsync(
+            ElicitationRequest(FormParams("""{"type":"object","properties":{"proceed":{"type":"string","enum":["yes"]}}}""")),
+            CancellationToken.None);
+        await Assert.That(result!.Value.GetRawText()).IsEqualTo("""{"action":"cancel"}""");
+    }
+
+    // ── Stabilized elicitation: metric-path positive controls ───────────────────────────────────
+    //
+    // The reason LOG is asserted throughout the gate matrix; these pin the METRIC half of the
+    // cancel contract from the bridge path itself (the AcpMetricsTests listener test only proves
+    // the metric API works — it cannot detect a bridge branch that forgets to call it).
+    // Presence (not count) is asserted, so concurrent tests emitting the same reason can't break
+    // these; the reason tag filter keeps unrelated emissions out.
+
+    static (MeterListener Listener, Func<bool> Observed) ElicitationMetricListener(string reason) {
+        var observed = false;
+        var listener = new MeterListener();
+        listener.InstrumentPublished = (instrument, l) => {
+            if (instrument.Meter.Name == "Capacitor.Cli.Daemon.Acp" && instrument.Name == "acp.elicitation_unrenderable")
+                l.EnableMeasurementEvents(instrument);
+        };
+        listener.SetMeasurementEventCallback<long>((_, _, tags, _) => {
+            foreach (var tag in tags) {
+                if (tag.Key == "reason" && (tag.Value?.ToString()) == reason)
+                    observed = true;
+            }
+        });
+        listener.Start();
+        return (listener, () => Volatile.Read(ref observed));
+    }
+
+    [Test]
+    public async Task ElicitationGate_UrlMode_IncrementsReasonTaggedMetric() {
+        var (listener, observed) = ElicitationMetricListener("url_mode");
+        using var _ = listener;
+        var (bridge, _, _) = GateBridge(new AcpInteractionDecision("answered", "x", null, null, null, null));
+
+        await bridge.HandleAsync(ElicitationRequest(ElicitationFixtures.Params_UrlMode), CancellationToken.None);
+
+        await Assert.That(observed()).IsTrue();
+    }
+
+    [Test]
+    public async Task AutoApprove_Elicitation_IncrementsUnattendedDeclinedMetric() {
+        var (listener, observed) = ElicitationMetricListener("unattended_declined");
+        using var _ = listener;
+        var (bridge, calls) = AutoApproveBridge();
+
+        await bridge.HandleAsync(
+            ElicitationRequest(FormParams("""{"type":"object","properties":{"proceed":{"type":"string","enum":["yes"]}}}""", "Proceed?")),
+            CancellationToken.None);
+
+        await Assert.That(observed()).IsTrue();
+        await Assert.That(calls()).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task FailPolicy_Elicitation_IncrementsUnattendedForbiddenMetric() {
+        var (listener, observed) = ElicitationMetricListener("unattended_forbidden");
+        using var _ = listener;
+        var bridge = new AcpInteractionBridge(
+            requestInteraction: (req, ct) => throw new InvalidOperationException("must not be called"),
+            agentId: AgentId,
+            logger: NullLogger.Instance,
+            unattendedPolicy: AcpUnattendedInteractionPolicy.Fail,
+            unexpectedUnattendedInteraction: _ => { });
+
+        var result = await bridge.HandleAsync(
+            ElicitationRequest(FormParams("""{"type":"object","properties":{"proceed":{"type":"string","enum":["yes"]}}}""", "Proceed?")),
+            CancellationToken.None);
+
+        await Assert.That(result!.Value.GetRawText()).IsEqualTo("""{"action":"cancel"}""");
+        await Assert.That(observed()).IsTrue();
     }
 }

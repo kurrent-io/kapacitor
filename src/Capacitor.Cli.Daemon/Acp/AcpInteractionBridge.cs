@@ -59,9 +59,18 @@ internal sealed partial class AcpInteractionBridge(
             LogUnexpectedUnattendedInteraction(agentId, request.Method);
             unexpectedUnattendedInteraction?.Invoke(request.Method);
 
-            return request.Method is "session/request_permission" or "elicitation/create"
-                ? CancelledResult()
-                : null;
+            // Each method cancels in ITS OWN protocol's result shape — the stabilized
+            // elicitation response is a different object from the permission outcome. The
+            // elicitation arm still counts toward the reason-tagged metric (with its own stable
+            // reason) so every non-routed elicitation cancel is metric-visible; the Error-level
+            // reap log above is the audit trail, so no additional reason log is emitted.
+            if (request.Method == "elicitation/create") {
+                AcpMetrics.RecordElicitationUnrenderable("unattended_forbidden");
+
+                return ElicitationCancelResult();
+            }
+
+            return request.Method == "session/request_permission" ? CancelledResult() : null;
         }
 
         return request.Method switch {
@@ -184,45 +193,95 @@ internal sealed partial class AcpInteractionBridge(
         return mapped;
     }
 
+    /// <summary>
+    /// Handles agent→client <c>elicitation/create</c> per the STABILIZED ACP protocol
+    /// (agent-client-protocol #1779): a strict gate pipeline — parse → message → scope → mode →
+    /// classify — where EVERY pre-routing cancel goes through <see cref="ElicitationCancel"/>
+    /// (one reason log + one reason-tagged metric, and the server delegate is provably never
+    /// invoked), and only a <see cref="ElicitationSchemaClassifier"/>-renderable single-question
+    /// subset is routed to a human. The result is always the stabilized
+    /// <see cref="ElicitationResponse"/> shape (<c>accept</c>/<c>cancel</c>; <c>decline</c> is
+    /// representable but unreachable — no decline affordance exists), NEVER the permission path's
+    /// <c>{outcome}</c> shape: the two are different protocol objects, and sharing
+    /// <c>MapPermissionDecision</c> here is exactly how the obsolete result leaked in.
+    ///
+    /// The daemon still never advertises the <c>elicitation</c> client capability (see
+    /// <c>AcpHostedAgentRuntime.StartAsync</c>) — until the end-to-end multi-select work flips it,
+    /// this lane only ever answers unsolicited frames, now spec-correctly.
+    /// </summary>
     async Task<JsonElement?> HandleElicitationAsync(AcpRequest request, CancellationToken ct) {
-        // Unattended review-flow reviewer: there is no human to answer an elicitation, and a reviewer
-        // should proceed on its own assumptions (and state them in its findings) rather than block.
-        // Decline deterministically without routing anywhere.
+        // Unattended review-flow reviewer: there is no human to answer an elicitation, and a
+        // reviewer should proceed on its own assumptions (and state them in its findings) rather
+        // than block. Cancel deterministically without routing anywhere — dedicated log, no
+        // unrenderable-reason double-log.
         if (unattendedPolicy == AcpUnattendedInteractionPolicy.AutoApprove) {
             LogUnattendedElicitationDeclined(agentId);
+            // Metric-visible like every other non-routed cancel (its own stable reason); the
+            // dedicated unattended log above is the log trail — no reason-log double-fire.
+            AcpMetrics.RecordElicitationUnrenderable("unattended_declined");
 
-            return CancelledResult();
+            return ElicitationCancelResult();
         }
 
-        // Never advertised in `initialize` (see AcpHostedAgentRuntime.StartAsync's minimal
-        // ClientCapabilities, unchanged by this plan) — handled defensively in case a real agent
-        // sends it unprompted, per R3's open question on whether Cursor uses a vendor-specific
-        // elicitation shape at all.
+        // Gate 1: parse. Missing params or malformed JSON → cancel(malformed_request).
         ElicitationCreateParams parsed;
 
         try {
             if (request.Params is not { } p)
-                return CancelledResult();
+                return ElicitationCancel("malformed_request");
 
             parsed = p.Deserialize(CapacitorJsonContext.Default.ElicitationCreateParams)
                 ?? throw new JsonException("null params");
         } catch (JsonException ex) {
             logger.LogDebug(ex, "ACP: malformed elicitation/create params for agent {AgentId}", agentId);
 
-            return CancelledResult();
+            return ElicitationCancel("malformed_request");
         }
 
-        // Qodo daemon-review Q2 — same session-id-from-params contract as HandlePermissionAsync.
+        // Gate 2: message. Missing/JSON-null (protocol-invalid: the spec requires a string) is
+        // malformed; empty/whitespace and over-long are NAMED client subset limitations on
+        // protocol-valid frames — a blank question cannot lead a prompt, and the cap bounds the
+        // routed prompt/SignalR payload independent of the schema caps.
+        if (parsed.Message is null)
+            return ElicitationCancel("malformed_request");
+        if (string.IsNullOrWhiteSpace(parsed.Message))
+            return ElicitationCancel("blank_message_unsupported");
+        if (parsed.Message.Length > MaxElicitationMessageCodeUnits)
+            return ElicitationCancel("message_too_long");
+
+        // Gate 3: scope. The session-scoped check runs FIRST — a frame carrying BOTH a usable
+        // sessionId and a requestId is served as session-scoped (the spec's scope variants are an
+        // anyOf; we resolve the overlap toward the scope we can serve). Only a frame with no
+        // usable sessionId is evaluated as request-scoped; "present" for requestId means a
+        // non-Null/Undefined ValueKind (its wire type is otherwise uninterpreted — request-scoped
+        // frames are cancelled regardless).
         if (string.IsNullOrEmpty(parsed.SessionId)) {
-            logger.LogDebug("ACP: elicitation/create params carried no sessionId for agent {AgentId}; cannot correlate, defaulting to cancelled", agentId);
-
-            return CancelledResult();
+            return parsed.RequestId is { ValueKind: not (JsonValueKind.Null or JsonValueKind.Undefined) }
+                ? ElicitationCancel("request_scoped_unsupported")
+                : ElicitationCancel("session_uncorrelatable");
         }
 
-        // Qodo daemon-review Q1 — same null/omitted-array AND null-element normalization as
-        // HandlePermissionAsync above (this path was already null-coalescing the whole array, but
-        // not filtering individual null elements).
-        var options = parsed.Options?.Where(o => o is not null).ToArray() ?? [];
+        // Gate 4: mode, strict. The stabilized mode variants each REQUIRE `mode`; a mode-less
+        // frame is pre-stabilization traffic and is deliberately NOT interpreted ("MUST NOT
+        // render an unknown mode as a known elicitation mode"). No legacy-draft tolerance.
+        switch (parsed.Mode) {
+            case "form":
+                break;
+            case "url":
+                return ElicitationCancel("url_mode");
+            case null:
+                return ElicitationCancel("malformed_request");
+            default:
+                return ElicitationCancel("unknown_mode");
+        }
+
+        if (parsed.RequestedSchema is not { } requestedSchema)
+            return ElicitationCancel("malformed_schema");
+
+        // Gate 5: classify onto the single-question subset. Unrenderable → cancel with the
+        // classifier's reason; NEVER routed to a human.
+        if (!ElicitationSchemaClassifier.TryClassify(requestedSchema, out var classification, out var reason))
+            return ElicitationCancel(reason);
 
         var interactionRequest = new AcpInteractionRequest(
             AgentId: agentId,
@@ -231,18 +290,14 @@ internal sealed partial class AcpInteractionBridge(
             ToolName: null,
             ToolInput: null,
             ToolCallId: null,
-            Prompt: parsed.Message,
-            // Spec-review Finding 6: same OptionId carry-through as the permission path above.
-            Options: options.Select(o => new AcpInteractionOption(o.OptionId, o.Name, null, o.Kind)).ToArray(),
-            IsMultiSelect: false,
-            // Spec-review Finding 1: forward RequestedSchema verbatim — this bridge never validates,
-            // re-serializes, or renders it; the server (Task A1/A3) applies the actual 32KB/depth-8
-            // caps and decides the generic-card fallback. Forwarding an oversized/malformed schema
-            // here is safe: JsonElement.Deserialize already succeeded (it's syntactically valid JSON
-            // by the time we have a JsonElement at all — a genuinely malformed JSON payload for the
-            // whole params object was already caught by the JsonException handler above), and this
-            // bridge does zero further inspection of RequestedSchema's shape.
-            RequestedSchema: parsed.RequestedSchema
+            Prompt: ComposePrompt(parsed.Message, classification.Title, classification.Description),
+            Options: classification.Options,
+            IsMultiSelect: classification.Kind == ElicitationKind.MultiSelect,
+            // Forwarded verbatim for server-side audit (capped server-side); the daemon's own
+            // rendering decisions all come from the classification above.
+            RequestedSchema: parsed.RequestedSchema,
+            MinSelections: classification.MinSelections,
+            MaxSelections: classification.MaxSelections
         );
 
         AcpInteractionDecision decision;
@@ -253,22 +308,135 @@ internal sealed partial class AcpInteractionBridge(
         try {
             decision = await requestInteraction(interactionRequest, ct).ConfigureAwait(false);
         } catch (OperationCanceledException) {
-            // Spec-review Finding 3(b) — same disconnect handling as HandlePermissionAsync above.
             logger.LogDebug("ACP: elicitation/create cancelled (connection closing) for agent {AgentId}; defaulting to cancelled", agentId);
-            LogInteractionResolved(agentId, "elicitation", "cancelled");
+            LogInteractionResolved(agentId, "elicitation", "cancel");
 
-            return CancelledResult();
+            return ElicitationCancelResult();
         } catch (Exception ex) {
             logger.LogDebug(ex, "ACP: RequestAcpInteractionAsync threw for elicitation on agent {AgentId}; defaulting to cancelled", agentId);
-            LogInteractionResolved(agentId, "elicitation", "cancelled");
+            LogInteractionResolved(agentId, "elicitation", "cancel");
 
-            return CancelledResult();
+            return ElicitationCancelResult();
         }
 
-        var mapped = MapPermissionDecision(decision, options);
-        LogInteractionResolved(agentId, "elicitation", OutcomeLabel(mapped));
+        var mapped = BuildElicitationResponse(decision, classification);
+        LogInteractionResolved(agentId, "elicitation", mapped.GetProperty("action").GetString() ?? "cancel");
 
         return mapped;
+    }
+
+    /// <summary>Stabilized elicitation message cap (UTF-16 code units) — bounds the routed
+    /// prompt/SignalR payload, which the requestedSchema caps alone do not cover.</summary>
+    internal const int MaxElicitationMessageCodeUnits = 8 * 1024;
+
+    /// <summary>
+    /// The single pre-routing cancel path: one reason log + one reason-tagged metric per cancel,
+    /// structurally — no gate can forget either half or double-log. The unattended path
+    /// deliberately bypasses this (its own dedicated log, no unrenderable semantics).
+    /// </summary>
+    JsonElement? ElicitationCancel(string reason) {
+        LogElicitationUnrenderable(agentId, reason);
+        AcpMetrics.RecordElicitationUnrenderable(reason);
+
+        return ElicitationCancelResult();
+    }
+
+    /// <summary>Stabilized `{"action":"cancel"}` — content-free by construction (the member is
+    /// omitted, not null). The permission path's <see cref="CancelledResult"/> is untouched.
+    /// Internal (not private) so the ACP runtime's reconnect interaction router declines an
+    /// elicitation in THIS protocol's own shape — never the permission outcome.</summary>
+    internal static JsonElement? ElicitationCancelResult() =>
+        JsonSerializer.SerializeToElement(
+            new ElicitationResponse("cancel"),
+            CapacitorJsonContext.Default.ElicitationResponse);
+
+    /// <summary>
+    /// Prompt = the non-blank, case-sensitive-distinct members of [message, property title,
+    /// property description] in that order, joined with a blank line. Message is validated
+    /// non-blank before this runs, so the prompt is never empty and always leads with the
+    /// question; a title equal to the message (or a description equal to either) is dropped
+    /// rather than rendered twice.
+    /// </summary>
+    internal static string ComposePrompt(string message, string? title, string? description) {
+        var segments = new List<string>(3) { message };
+
+        if (!string.IsNullOrWhiteSpace(title) && !segments.Contains(title, StringComparer.Ordinal))
+            segments.Add(title);
+        if (!string.IsNullOrWhiteSpace(description) && !segments.Contains(description, StringComparer.Ordinal))
+            segments.Add(description);
+
+        return string.Join("\n\n", segments);
+    }
+
+    /// <summary>
+    /// Maps a server decision to the stabilized <see cref="ElicitationResponse"/>, failing CLOSED
+    /// on the checks this client actually guarantees: a supported classification kind, offered
+    /// option ids only, and the multi-select count bounds. (Free-text string constraints are a
+    /// documented non-goal — the agent validates its own schema.) Anything that would violate the
+    /// requested schema — an unknown id, a below-minimum or above-maximum selection count
+    /// (including the single-scalar fallback when the effective minimum exceeds one), a missing
+    /// answer on an affirmative outcome — cancels rather than emitting an invalid accept.
+    /// </summary>
+    JsonElement BuildElicitationResponse(AcpInteractionDecision decision, ElicitationClassification classification) {
+        if (!AffirmativeOutcomes.Contains(decision.Outcome))
+            return ElicitationCancelResult()!.Value;
+
+        var offered = new HashSet<string>(classification.Options.Select(o => o.OptionId), StringComparer.Ordinal);
+
+        Dictionary<string, JsonElement>? content = null;
+        var selectionCount = 0;
+
+        switch (classification.Kind) {
+            case ElicitationKind.SingleSelect: {
+                // Null — not emptiness — is the gate: an offered "" id is a legitimate answer.
+                if (decision.SelectedOptionId is not { } id || !offered.Contains(id))
+                    break;
+                content = new Dictionary<string, JsonElement> {
+                    [classification.PropertyName] = JsonSerializer.SerializeToElement(id, CapacitorJsonContext.Default.String)
+                };
+                selectionCount = 1;
+                break;
+            }
+            case ElicitationKind.MultiSelect: {
+                var candidate = decision.SelectedOptionIds
+                    ?? (decision.SelectedOptionId is { } scalar ? [scalar] : null);
+                if (candidate is null)
+                    break;
+
+                // Dedup (repeat ids collapse), then validate membership AND the effective count
+                // bounds — the scalar-wrap fallback above is subject to the SAME bounds check, so
+                // an effective minimum above one cancels a single-selection decision rather than
+                // emitting a below-minimum accept.
+                var ids = candidate.Distinct(StringComparer.Ordinal).ToArray();
+                if (ids.Length < classification.MinSelections || ids.Length > classification.MaxSelections
+                    || ids.Any(id => !offered.Contains(id)))
+                    break;
+
+                content = new Dictionary<string, JsonElement> {
+                    [classification.PropertyName] = JsonSerializer.SerializeToElement(ids, CapacitorJsonContext.Default.StringArray)
+                };
+                selectionCount = ids.Length;
+                break;
+            }
+            case ElicitationKind.FreeText: {
+                if (string.IsNullOrWhiteSpace(decision.FreeText))
+                    break;
+                content = new Dictionary<string, JsonElement> {
+                    [classification.PropertyName] = JsonSerializer.SerializeToElement(decision.FreeText, CapacitorJsonContext.Default.String)
+                };
+                selectionCount = 1;
+                break;
+            }
+        }
+
+        if (content is null)
+            return ElicitationCancelResult()!.Value;
+
+        LogElicitationAnswered(agentId, classification.Kind.ToString(), selectionCount);
+
+        return JsonSerializer.SerializeToElement(
+            new ElicitationResponse("accept", content),
+            CapacitorJsonContext.Default.ElicitationResponse);
     }
 
     [LoggerMessage(Level = LogLevel.Error, Message = "ACP: unattended reviewer {AgentId} emitted forbidden interaction request {Method}; terminating reviewer")]
@@ -434,4 +602,12 @@ internal sealed partial class AcpInteractionBridge(
 
     [LoggerMessage(Level = LogLevel.Information, Message = "ACP unattended review-flow: declined elicitation for agent {AgentId} (reviewers state assumptions in findings); returning cancelled")]
     partial void LogUnattendedElicitationDeclined(string agentId);
+
+    // Payload-free by construction (same rule as the interaction lifecycle logs above): the
+    // reason token and counts only — never option labels, free text, or schema content.
+    [LoggerMessage(Level = LogLevel.Information, Message = "ACP elicitation cancelled before routing: agentId={AgentId} reason={Reason}")]
+    partial void LogElicitationUnrenderable(string agentId, string reason);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "ACP elicitation answered: agentId={AgentId} kind={Kind} selections={SelectionCount}")]
+    partial void LogElicitationAnswered(string agentId, string kind, int selectionCount);
 }

@@ -1962,10 +1962,25 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
         }
     }
 
-    static JsonElement? DeclineFor(AcpRequest request) =>
-        request.Method is "session/request_permission" or "elicitation/create"
-            ? AcpInteractionBridge.CancelledResult()
-            : null; // unclaimed methods keep the connection's -32601 default-decline posture
+    /// <summary>Each method declines in ITS OWN protocol's result shape — the stabilized
+    /// elicitation response (`{"action":"cancel"}`) is a different object from the permission
+    /// outcome (the AI-1733 elicitation-lane contract, honored here too). An elicitation declined
+    /// by the router is an elicitation cancelled before routing to a human, so it carries the same
+    /// reason-tagged metric the bridge's own pre-routing cancels do.</summary>
+    JsonElement? DeclineFor(AcpRequest request) {
+        switch (request.Method) {
+            case "session/request_permission":
+                return AcpInteractionBridge.CancelledResult();
+            case "elicitation/create":
+                AcpMetrics.RecordElicitationUnrenderable("runtime_not_serving");
+                _logger.LogDebug(
+                    "ACP: elicitation declined by the reconnect router (uninstalled incarnation or non-running phase) for agent {AgentId}.",
+                    _agentId);
+                return AcpInteractionBridge.ElicitationCancelResult();
+            default:
+                return null; // unclaimed methods keep the connection's -32601 default-decline posture
+        }
+    }
 
     /// <summary>Step one of the three-step sweep (§5.4): mark every live entry cancelled — plain
     /// field writes, no token signalled, no callback can run. Caller holds the reconnect lock;

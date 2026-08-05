@@ -1134,10 +1134,11 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
         var prompt        = cmd.Prompt;
         var model         = cmd.Model;
         // A protocol-v3 explicit-reviewer-model launch pins the server-resolved LaunchModel VERBATIM.
-        // Compute the effective model ONCE here so every site that records/reports the model the
-        // process actually runs — the launch log, the runtime start context, and the registered
-        // AgentInstance the server sees via RegisterAgentAsync / AgentRunStarted / every reconnect
-        // re-registration — reads the same value. Null block ⇒ legacy path, cmd.Model unchanged.
+        // Compute the effective model ONCE here so every site that records/reports the model this
+        // launch REQUESTS — the launch log and the runtime start context — reads the same value.
+        // (What the server sees registered is registeredModel below: for an ACP runtime the
+        // handshake-confirmed model narrows this request; PTY runtimes register it as-is.)
+        // Null block ⇒ legacy path, cmd.Model unchanged.
         // Explicitly string?, not var: ModelSelectionLaunchPolicy below clears this when the selected
         // runtime cannot apply a model, and "no model reported" must be representable in the type.
         string? effectiveModel = cmd.ExplicitReviewerModel?.LaunchModel ?? model;
@@ -1454,8 +1455,10 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
                 Prompt: prompt,
                 // Task 8: for an explicit-model reviewer launch, launch with the server-pinned
                 // LaunchModel VERBATIM (the launcher passes ctx.Model straight to the argument list —
-                // never recanonicalized). effectiveModel (computed once above) resolves this — the
-                // registered AgentInstance below reads the SAME local so they can never diverge.
+                // never recanonicalized). effectiveModel (computed once above) resolves this. The
+                // registered AgentInstance below reads the same local for PTY runtimes; an ACP
+                // runtime instead registers the handshake-confirmed model (see registeredModel),
+                // which can only narrow this request, never substitute a different one.
                 Model: effectiveModel,
                 Effort: effort,
                 Tools: tools,
@@ -1542,7 +1545,19 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
                 LogBridgeDefeatingPosture(agentId, applied.Sandbox, applied.Approval);
             }
 
-            var agent = new AgentInstance(agentId, prompt, effectiveModel, effort, repoPath, cmd.Vendor, runtime, worktree, cts) {
+            // An ACP runtime confirms model application during its StartAsync handshake:
+            // Transcript.ResolvedModel is the id actually applied, or null when the request did not
+            // take (no availableModels match / the agent rejected the option — the vendor's default
+            // runs in every null case). Register the CONFIRMED value, never the request: agent.Model
+            // feeds AgentRegisteredAsync (live model chip + hosted_agent_started analytics),
+            // AgentRunStarted (agent_runs), every reconnect re-registration, and the local
+            // supervision status payload (SnapshotAgentsForStatus). Same requested-vs-running rule
+            // as ModelSelectionLaunchPolicy, applied per-request instead of per-capability. PTY
+            // runtimes have no confirmation seam (Transcript is null) and keep reporting
+            // effectiveModel.
+            var registeredModel = start.Transcript is { } confirmed ? confirmed.ResolvedModel : effectiveModel;
+
+            var agent = new AgentInstance(agentId, prompt, registeredModel, effort, repoPath, cmd.Vendor, runtime, worktree, cts) {
                 McpConfigPath       = mcpConfigPath,
                 CurrentCols         = HostedPtyCols,
                 CurrentRows         = HostedPtyRows,

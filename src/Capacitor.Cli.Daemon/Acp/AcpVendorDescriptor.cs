@@ -350,18 +350,19 @@ internal static class AcpVendorDescriptors {
     /// unguessable name — reduces the allowlist to nothing the repository can match, which blocks it. Repo-authored <i>hooks</i> were separately measured NOT to run on the ACP path (they do
     /// on the <c>--prompt</c> path — the two paths differ, and neither predicts the other).</para>
     ///
-    /// <para><b>Deny-all is the launch default; a review launch opens the gate to exactly ONE name —
-    /// the injected result channel's wire name</b> (replace, never append — the option is
-    /// comma-coerced, so appending would widen the gate rather than move it); an interactive launch
-    /// injects nothing and keeps the unguessable deny-all, which permits nothing and costs nothing.
-    /// <c>AcpVendorDescriptorTests</c> and <c>GeminiReviewerLaunchTests</c> assert both halves.
-    /// KNOWN LIMIT (#449): <c>AcpReviewFlowMcp.Build</c> puts any additional validated allowlist
-    /// servers in <c>session/new.mcpServers</c> under their canonical ids, which this single-name
-    /// gate does NOT admit. The built-in review definitions carry no MCP allowlist and do not
-    /// exercise the gap, but any catalog or dynamic definition with a non-empty <c>mcp:</c> list
-    /// targeting a Gemini reviewer reaches it today: its servers are injected and silently blocked.
-    /// A launch that needs those servers (or a future interactive caller populating
-    /// <c>RuntimeStartContext.McpServers</c>) must widen the gate in the same change.</para>
+    /// <para><b>Deny-all is the launch default; a review launch opens the gate to exactly the servers it
+    /// injects.</b> The factory replaces the substituted value with the comma-joined names of the built
+    /// <c>session/new</c> list — the result channel plus any resolved allowlist servers (replace, never
+    /// append — the option is comma-coerced, so a second option occurrence would widen the gate rather
+    /// than move it). Every one of those names is a per-launch alias, because a canonical id is a fixed
+    /// public literal the reviewed repository could declare its own server under and have it spawned as
+    /// the daemon user (the impersonation shape measured in spec §2.3/§2.6; multi-name admission
+    /// measured on 0.53.0 — both admitted servers reach <c>tools/call</c>, an injected name outside the
+    /// gate never spawns). An interactive launch injects nothing and keeps the unguessable deny-all,
+    /// which permits nothing and costs nothing; a future interactive caller populating
+    /// <c>RuntimeStartContext.McpServers</c> must widen the gate in the same change.
+    /// <c>AcpVendorDescriptorTests</c> and <c>GeminiReviewerLaunchTests</c> assert both halves, the
+    /// latter pinning gate == injected set.</para>
     ///
     /// <para><see cref="NoOpModelSelector"/> for the same reason as Kiro: <c>session/new</c> does return a
     /// <c>models</c> object, so <see cref="ConfigOptionModelSelector"/>'s read half would fit, but its

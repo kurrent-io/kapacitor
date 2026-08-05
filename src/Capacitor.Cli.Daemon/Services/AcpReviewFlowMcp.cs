@@ -31,8 +31,12 @@ internal static class AcpReviewFlowMcp {
 
         foreach (var id in allowlistServerIds) {
             // id is a validated canonical id, so Resolve is non-null. Allowlist servers get KCAP_URL only.
+            // Injected under the launch's wire name: for an aliasing vendor the canonical id is a fixed,
+            // public literal the reviewed repository could declare a server under, so admitting it in the
+            // vendor's name gate would be the same impersonation hole the result channel's alias closes.
             var descriptor = KcapMcpRegistry.Resolve(id)!;
-            servers.Add(new(descriptor.Id, ctx.CapacitorPath, descriptor.Args, [new("KCAP_URL", ctx.ServerUrl!)]));
+            servers.Add(new(WireName(ctx, descriptor.Id), ctx.CapacitorPath, descriptor.Args,
+                [new("KCAP_URL", ctx.ServerUrl!)]));
         }
 
         if (ctx.IsBorrowedSnapshot) {
@@ -40,11 +44,16 @@ internal static class AcpReviewFlowMcp {
                 throw new InvalidOperationException(
                     "Borrowed-snapshot review cannot inject kcap-review-context (missing capability URL).");
             servers.Add(new(
-                "kcap-review-context", ctx.CapacitorPath, ["mcp", "review"],
+                WireName(ctx, "kcap-review-context"), ctx.CapacitorPath, ["mcp", "review"],
                 [new("KCAP_REVIEW_CONTEXT_MODE", "1"),
                  new("KCAP_REVIEW_CONTEXT_URL", ctx.ReviewContextCapabilityUrl)]));
         }
 
         return servers;
     }
+
+    // Same fallback shape as channelName above: a context that never went through the factory (a direct
+    // test call) keeps canonical names, and every non-aliasing vendor's identity returns the input as-is.
+    static string WireName(RuntimeStartContext ctx, string canonicalId) =>
+        ctx.LaunchIdentity?.AllowlistWireName(canonicalId) ?? canonicalId;
 }

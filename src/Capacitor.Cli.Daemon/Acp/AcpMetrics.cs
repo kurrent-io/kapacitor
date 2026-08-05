@@ -18,6 +18,7 @@ internal static class AcpMetrics {
     public static readonly Counter<long> BlockingRequests = Meter.CreateCounter<long>("acp.blocking_requests");
     public static readonly Counter<long> Failures         = Meter.CreateCounter<long>("acp.failures");
     public static readonly Counter<long> Reconnects       = Meter.CreateCounter<long>("acp.reconnects");
+    public static readonly Counter<long> ElicitationUnrenderable = Meter.CreateCounter<long>("acp.elicitation_unrenderable");
 
     /// <summary><paramref name="outcome"/> is <c>"resumed"</c>, <c>"exhausted"</c>, or
     /// <c>"stopped"</c> — the reconnect incident's terminal disposition (reconnect spec §10).</summary>
@@ -31,4 +32,12 @@ internal static class AcpMetrics {
     /// <summary><paramref name="stage"/> is a short token, e.g. <c>"handshake"</c>.</summary>
     public static void RecordFailure(string stage) =>
         Failures.Add(1, new KeyValuePair<string, object?>("stage", stage));
+
+    /// <summary>
+    /// One count per elicitation cancelled BEFORE routing to a human (parse/gate/classifier
+    /// failures alike) — <paramref name="reason"/> is the same snake_case token the
+    /// "cancelled before routing" log carries, so the metric and the log always agree.
+    /// </summary>
+    public static void RecordElicitationUnrenderable(string reason) =>
+        ElicitationUnrenderable.Add(1, new KeyValuePair<string, object?>("reason", reason));
 }

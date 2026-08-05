@@ -1036,7 +1036,7 @@ public sealed record CurationApplyResponse {
 [JsonSerializable(typeof(Acp.PermissionOutcomeResult))]
 [JsonSerializable(typeof(Acp.PermissionOutcomeDto))]
 [JsonSerializable(typeof(Acp.ElicitationCreateParams))]
-[JsonSerializable(typeof(Acp.ElicitationCreateResult))]
+[JsonSerializable(typeof(Acp.ElicitationResponse))]
 [JsonSerializable(typeof(AcpInteractionRequest))]
 [JsonSerializable(typeof(AcpInteractionOption))]
 [JsonSerializable(typeof(AcpInteractionDecision))]
@@ -1117,7 +1117,12 @@ public readonly record struct AcpInteractionRequest(
         string?                Prompt,
         AcpInteractionOption[]? Options,
         bool                   IsMultiSelect,
-        JsonElement?           RequestedSchema = null
+        JsonElement?           RequestedSchema = null,
+        // Multi-select selection-count bounds (stabilized ACP elicitation `minItems`/`maxItems`,
+        // clamped daemon-side) — trailing additive nullables so every pre-existing construction
+        // site and JSON payload stays valid; null means "no bound advertised".
+        int?                   MinSelections = null,
+        int?                   MaxSelections = null
     );
 
 /// <summary>
@@ -1139,7 +1144,13 @@ public readonly record struct AcpInteractionDecision(
         string?      SelectedOptionLabel,
         int?         SelectedIndex,
         string?      FreeText,
-        JsonElement? UpdatedToolInput
+        JsonElement? UpdatedToolInput,
+        // Multi-select answers (stabilized ACP elicitation) — trailing additive nullables; the
+        // scalar SelectedOptionId/SelectedOptionLabel stay authoritative for single-select and
+        // mirror the FIRST selection when the lists are set, so an old daemon deserializing this
+        // record keeps working unchanged.
+        string[]?    SelectedOptionIds = null,
+        string[]?    SelectedOptionLabels = null
     );
 
 /// <summary>
