@@ -24,17 +24,10 @@ namespace Capacitor.Cli.Tests.Unit;
 /// </summary>
 public partial class AgentOrchestratorVendorTests {
     static (string repoPath, Action cleanup) CreateGitRepo() {
-        // The path used to be Path.Combine(GetTempPath(), "kcap-orch-" + 8 hex chars of a GUID)
-        // followed by CreateDirectory. Two problems, both removed by using the platform's own
-        // unique-temp-dir call (which the rest of this file already uses):
-        //
-        //  * 32 bits of name is a real birthday risk across the dozens of tests using this helper,
-        //    and CreateDirectory is idempotent — so a collision silently SHARES a directory and
-        //    either test's cleanup() then Directory.Delete(..., recursive: true)'s the other's
-        //    repo out from under it. Probability alone never explained the observed failures, but
-        //    the truncation bought nothing, so the whole class goes rather than being argued about.
-        //  * CreateTempSubdirectory creates the directory atomically, so there is no window
-        //    between choosing a name and owning it.
+        // Atomic and unique by OS guarantee. A hand-rolled "prefix + 8 hex chars of a GUID" path is
+        // 32 bits across 59 call sites, and since CreateDirectory is idempotent a collision silently
+        // SHARES a directory — after which either test's cleanup() recursively deletes the other's
+        // repo. Also closes the window between choosing a name and owning it.
         var repoPath = Directory.CreateTempSubdirectory("kcap-orch-").FullName;
 
         Git(repoPath, "init", "-q");
@@ -63,24 +56,20 @@ public partial class AgentOrchestratorVendorTests {
         try {
             proc = Process.Start(psi)!;
         } catch (Win32Exception ex) {
-            // Self-diagnosing on purpose. On Unix this spawn fails with ENOENT / "No such file or
-            // directory" for TWO unrelated causes, and .NET interpolates the working directory into
-            // the message either way:
-            //
-            //   1. the working directory does not exist  (chdir fails in the forked child)
-            //   2. the executable was not found          (PATH resolution / execve fails)
-            //
-            // A CI log therefore cannot say which happened, which is exactly why the intermittent
-            // failures in this helper went two rounds without a root cause. Capture both facts at
-            // the moment of failure so the NEXT occurrence diagnoses itself instead of costing
-            // another investigation.
+            // On Unix this spawn fails with the SAME ENOENT for two unrelated causes — (1) the
+            // working directory does not exist, (2) the executable was not found — and .NET
+            // interpolates the working directory into the message either way. A CI log therefore
+            // cannot say which happened. Capture both facts here so the next occurrence diagnoses
+            // itself.
             var cwdExists = Directory.Exists(cwd);
             var gitProbe  = ProbeGitStartable();
+            var resolved  = CliExecutable.Resolve("git");   // shared helper: PATHEXT + Unix exec bit
 
             throw new InvalidOperationException(
                 $"Failed to start 'git {string.Join(' ', args)}'. " +
                 $"WorkingDirectory '{cwd}' exists: {cwdExists}. " +
                 $"'git' startable from a known-good directory: {gitProbe}. " +
+                $"'git' resolves to: {resolved ?? "NOT FOUND"}. " +
                 $"PATH={Environment.GetEnvironmentVariable("PATH")}",
                 ex);
         }
@@ -135,25 +124,24 @@ public partial class AgentOrchestratorVendorTests {
         // the probe is broken, not the environment.
         await Assert.That(ex.Message).Contains("startable from a known-good directory: YES");
 
+        // The shared resolver's answer is part of the diagnostic too — assert it found something,
+        // not merely that the field is present, for the same reason as above.
+        await Assert.That(ex.Message).DoesNotContain("resolves to: NOT FOUND");
+
         // The original Win32Exception must be preserved, not swallowed for a prettier message.
         await Assert.That(ex.InnerException).IsTypeOf<Win32Exception>();
     }
 
     /// <summary>
     /// Answers "could this process start git at all?" by ASKING THE OS — spawning `git --version`
-    /// in a directory known to exist — rather than trying to re-implement executable resolution.
+    /// from a directory known to exist — rather than modelling executable resolution, which cannot
+    /// be done correctly here: `Process.Start` with UseShellExecute=false (forced by redirecting
+    /// streams) will not run a .cmd/.bat shim even though PATHEXT lists it, and a Unix execute bit
+    /// says nothing about EFFECTIVE permission or whether each PATH directory is traversable.
     ///
-    /// Review round 2 killed the previous approach, and the reason generalises: a hand-rolled PATH
-    /// walk cannot be right. Existence is not resolvability; `Process.Start` with
-    /// UseShellExecute=false (which redirecting streams forces) will not run a .cmd/.bat shim via
-    /// PATHEXT even though PATHEXT lists it; and a Unix execute bit says nothing about EFFECTIVE
-    /// permission for this user, nor whether every PATH directory is traversable. Each of those is
-    /// another rule to replicate, and a diagnostic that reports a false positive is worse than
-    /// none — misdirecting the next investigator is the exact failure this change exists to stop.
-    ///
-    /// The probe is authoritative because it uses the same mechanism that just failed. It also
-    /// splits the ENOENT ambiguity cleanly: startable means the fault was the working directory,
-    /// not startable means it was the executable.
+    /// Authoritative because it uses the same mechanism that just failed, and it splits the ENOENT
+    /// ambiguity: startable means the fault was the working directory, not startable means it was
+    /// the executable. `CliExecutable.Resolve` reports WHICH git alongside it.
     /// </summary>
     static string ProbeGitStartable() {
         // Bounded so the diagnostic can never become the problem. This runs on a FAILURE path in a
@@ -161,13 +149,10 @@ public partial class AgentOrchestratorVendorTests {
         // report at all — strictly worse than the error it is trying to explain.
         const int probeTimeoutMs = 10_000;
 
-        // Structured so that "NO" means exactly one thing: git could not be STARTED. A broad
-        // catch around the whole body reported NO for post-start failures too (stream reads, the
-        // wait, ExitCode, disposal) — conflating the two facts this probe exists to separate, which
-        // is the same defect as the earlier "NO — exited N" in a place easy to overlook.
-        //
-        // It must also NEVER throw: it is called from inside `catch (Win32Exception)` above, so an
-        // escaping exception would REPLACE the informative message with the probe's own.
+        // "NO" must mean exactly one thing: git could not be STARTED. Post-start failures (stream
+        // reads, the wait, ExitCode, disposal) keep the YES, or they conflate the two facts this
+        // probe exists to separate. It must also NEVER throw — it runs inside the
+        // `catch (Win32Exception)` above, so an escaping exception would REPLACE the message.
         Process? probe = null;
 
         try {
