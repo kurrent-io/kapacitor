@@ -34,44 +34,48 @@ internal static class SharedConfigDirCleanup {
     /// state, so running against leftovers can pass for the WRONG reason — a stale tokens directory
     /// already satisfies "a peer already refreshed it". A false pass is worse than the flake,
     /// because it hides a real regression instead of costing a rerun.</para>
+    ///
+    /// <para><b>The delete itself is the oracle</b> (review fix, HIGH). An earlier version guarded
+    /// with <c>File.Exists</c> / <c>Directory.Exists</c> and returned early when they reported
+    /// "absent" — but those return <c>false</c> for access and some I/O failures too, not only for
+    /// absence. So the very helper written to refuse false passes could report success over state
+    /// that was still present and merely unreadable. Absence is now established only by the delete
+    /// operation itself reporting it: a missing file makes <c>File.Delete</c> a no-op, and a missing
+    /// directory raises <c>DirectoryNotFoundException</c>.</para>
+    ///
+    /// <para><b>No GC pass</b> (review fix, MEDIUM). An earlier version ran
+    /// <c>GC.Collect(); GC.WaitForPendingFinalizers();</c> after the first failure, claiming it
+    /// discriminated an undisposed stream from a live holder. It does not: a child process can close
+    /// during the pause, so any apparent effect is confounded by the delay it adds; GC runs
+    /// arbitrary finalizers, not uniquely a leaked stream; and it can CONCEAL a genuine
+    /// undisposed-handle defect by making it pass. It has been removed rather than reworded — the
+    /// message it justified asserted something it could not establish.</para>
     /// </summary>
-    internal static void ClearWithRetry(string what, Action delete, Func<bool> exists) {
+    internal static void ClearWithRetry(string what, Action delete) {
         Exception? last = null;
 
         for (var attempt = 1; attempt <= Attempts; attempt++) {
-            if (!exists()) return;
-
             try {
                 delete();
 
                 return;
+            } catch (FileNotFoundException) {
+                return; // definitively absent — nothing to clear
+            } catch (DirectoryNotFoundException) {
+                return; // definitively absent — nothing to clear
             } catch (IOException ex) {
                 last = ex; // sharing violation — the holder should release shortly
             } catch (UnauthorizedAccessException ex) {
                 last = ex; // how Windows reports a delete blocked by an open handle
             }
 
-            if (attempt == 1) {
-                // Only an in-process undisposed stream can be released this way, so whether this
-                // helps discriminates the two candidate causes: if the retry budget stops being
-                // exhausted after this change, the holder was an unreferenced stream awaiting
-                // finalization; if failures continue, it is a live holder (a child process) and the
-                // owner is still running. Cheap, and it runs once rather than every attempt.
-                GC.Collect();
-                GC.WaitForPendingFinalizers();
-            }
-
             if (attempt < Attempts) Thread.Sleep(DelayMs);
         }
 
-        // Re-check: the holder may have released after the last failed attempt.
-        if (exists()) {
-            throw new InvalidOperationException(
-                $"Could not clear {what} in the shared KCAP_CONFIG_DIR within {Attempts * DelayMs}ms "  +
-                "(a GC + finalizer pass was attempted, so an unreferenced undisposed stream is ruled " +
-                "out) — something still holds it, so this test would run against another test's state.",
-                last);
-        }
+        throw new InvalidOperationException(
+            $"Could not clear {what} in the shared KCAP_CONFIG_DIR within {Attempts * DelayMs}ms — " +
+            "something still holds it, so this test would run against another test's state.",
+            last);
     }
 
     /// <summary>
@@ -79,12 +83,9 @@ internal static class SharedConfigDirCleanup {
     /// depend on each other. Callers add their own class-specific state afterwards.
     /// </summary>
     internal static void ClearTokenAndProfileState(string legacyTokensPath, string tokensDir) {
-        ClearWithRetry("the legacy tokens file", () => File.Delete(legacyTokensPath), () => File.Exists(legacyTokensPath));
-        ClearWithRetry("the tokens directory", () => Directory.Delete(tokensDir, recursive: true), () => Directory.Exists(tokensDir));
-
-        var cfg = Capacitor.Cli.Core.Config.AppConfig.GetConfigPath();
-
-        ClearWithRetry("config.json", () => File.Delete(cfg), () => File.Exists(cfg));
+        ClearWithRetry("the legacy tokens file", () => File.Delete(legacyTokensPath));
+        ClearWithRetry("the tokens directory", () => Directory.Delete(tokensDir, recursive: true));
+        ClearWithRetry("config.json", () => File.Delete(Capacitor.Cli.Core.Config.AppConfig.GetConfigPath()));
 
         // Token lookup consults AppConfig.ResolvedProfile, so a value left by another test would
         // redirect reads to a different profile.
