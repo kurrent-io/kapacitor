@@ -264,6 +264,12 @@ public sealed class UnixPtyProcess : IPtyProcess {
     /// group id proves nothing and is never signalled; a descendant that outlived the group kill
     /// is the record/scan reap layers' job.</summary>
     void SignalGroup(int sig) {
+        // Same guard as ProcessReaper.SignalGroup: kill(2) gives non-positive pids special
+        // meanings — kill(0) signals the CALLER's own group and kill(-1) broadcasts — so a
+        // zero/negative Pid must never reach either call (this repo has a recorded incident of
+        // exactly that SIGKILLing the test host's group).
+        if (Pid <= 0) return;
+
         lock (_reapSignalGate) {
             if (HasExited) return; // reaped since the caller's check — the ids may be recycled
 
