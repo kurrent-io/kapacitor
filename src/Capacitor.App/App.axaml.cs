@@ -1,6 +1,8 @@
 using Avalonia;
+using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Markup.Xaml;
+using Avalonia.Media;
 using Capacitor.App.Services;
 using Capacitor.App.ViewModels;
 using Capacitor.App.Views;
@@ -39,9 +41,35 @@ public partial class App : Application {
             desktop.MainWindow = BuildAndShowMainWindow(service, _shutdown.Token);
         } catch (Exception ex) {
             Console.Error.WriteLine($"kcap app failed to start: {ex}");
-            desktop.Shutdown(1);
+
+            // Showing a window here is legal before Avalonia's main loop starts — it's exactly
+            // what StartWithClassicDesktopLifetime's own ShowMainWindow() does right after Start.
+            // Calling desktop.Shutdown(1) directly, as this catch used to, is what previously
+            // threw when startup faulted synchronously (before the main loop began) — so this
+            // shape resolves that pre-main-loop edge case rather than worsening it.
+            var errorWindow = BuildStartupErrorWindow(ex);
+            if (desktop.MainWindow is null) desktop.MainWindow = errorWindow;
+            errorWindow.Closed += (_, _) => desktop.Shutdown(1);
+            errorWindow.Show();
         }
     }
+
+    // Last-resort UI for a startup failure: Console.Error above is invisible on a normal GUI
+    // launch (OutputType=WinExe has no console), so this window is the only channel that
+    // actually reaches the user. SelectableTextBlock (not TextBlock) keeps the stack trace
+    // copyable for a bug report.
+    internal static Window BuildStartupErrorWindow(Exception ex) =>
+        new() {
+            Title = "Kurrent Capacitor — startup failed",
+            Width = 640,
+            Height = 400,
+            Content = new ScrollViewer {
+                Content = new SelectableTextBlock {
+                    Text = $"The app failed to start. Details:\n{ex}",
+                    TextWrapping = TextWrapping.Wrap,
+                },
+            },
+        };
 
     // Split out of StartAsync so a test can drive "build VM+window, assign, and Show()" against
     // a fake service without needing a real daemon/profile (CreateDefaultAsync does real config

@@ -1,4 +1,6 @@
+using Avalonia.Controls;
 using Avalonia.Threading;
+using Avalonia.VisualTree;
 using AppUnderTest = Capacitor.App.App;
 
 namespace Capacitor.App.Tests.Unit;
@@ -31,5 +33,37 @@ public class AppStartupTests {
         });
 
         await Assert.That(isVisible).IsTrue();
+    }
+
+    /// Regression coverage for a P2 bug found in review: the startup catch used to write to
+    /// Console.Error and call desktop.Shutdown(1) directly — but App is OutputType=WinExe, so a
+    /// normal GUI launch has no console, and a startup failure (bad config, window construction
+    /// throw) made the app silently vanish with zero actionable error. BuildStartupErrorWindow
+    /// is the replacement: a plain, visible window with a copyable (SelectableTextBlock) lead
+    /// line plus the exception's full ToString(). This proves the rendered text actually carries
+    /// both, the same way MainWindowSmokeTests proves bound VM text actually reaches the screen.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task BuildStartupErrorWindow_renders_lead_line_and_exception_details() {
+        var rendered = await AvaloniaSession.DispatchAsync(() => {
+            var window = AppUnderTest.BuildStartupErrorWindow(new InvalidOperationException("boom-marker"));
+            window.Show();
+            Dispatcher.UIThread.RunJobs();
+
+            var texts = window.GetVisualDescendants()
+                .Select(v => v switch {
+                    SelectableTextBlock stb => stb.Text,
+                    TextBlock tb => tb.Text,
+                    _ => null,
+                })
+                .Where(t => t is not null);
+            var joined = string.Join('\n', texts);
+
+            window.Close();
+            return joined;
+        });
+
+        await Assert.That(rendered).Contains("The app failed to start. Details:");
+        await Assert.That(rendered).Contains("boom-marker");
     }
 }
