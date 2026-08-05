@@ -587,11 +587,8 @@ public class AcpConnectionTests {
         await Assert.That(logger.Entries).Contains(e =>
             e.Level == LogLevel.Debug && e.Message.Contains("ACP >>>") && e.Message.Contains("session/prompt"));
 
-        // Clean shutdown: still owe the pending request a response before disposing — and the
-        // task must be OBSERVED, not discarded. A discarded task races the Cancel below: if the
-        // read loop is cancelled before it parses the response frame, FaultAllPending faults the
-        // pending request and the abandoned task raises an unobserved-task exception at an
-        // arbitrary later GC, surfacing as a flake in whatever test happens to be running.
+        // Clean shutdown: answer the pending request and OBSERVE the task — discarded, it races
+        // the Cancel below and can fault as an unobserved-task exception at a later GC.
         await harness.WriteFrameToConnectionAsync($$$"""{"jsonrpc":"2.0","id":{{{id}}},"result":{}}""");
         await requestTask.WaitAsync(HangGuard);
 
