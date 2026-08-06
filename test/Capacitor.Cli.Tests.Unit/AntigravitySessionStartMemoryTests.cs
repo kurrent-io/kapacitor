@@ -128,4 +128,24 @@ public class AntigravitySessionStartMemoryTests {
 
         await Assert.That(await task).IsNull();
     }
+
+    [Test]
+    public async Task A_non_PreInvocation_event_writes_nothing_and_exits_zero() {
+        var sw   = new StringWriter();
+        var code = await AntigravityHookCommand.Handle(
+            "https://example.test", ["--antigravity", "Stop"], new StringReader("{}"), sw);
+
+        await Assert.That(code).IsEqualTo(0);
+        await Assert.That(sw.ToString()).IsEqualTo("");
+    }
+
+    [Test]
+    public async Task A_malformed_payload_writes_nothing_and_exits_zero() {
+        var sw   = new StringWriter();
+        var code = await AntigravityHookCommand.Handle(
+            "https://example.test", ["--antigravity", "PreInvocation"], new StringReader("{not json"), sw);
+
+        await Assert.That(code).IsEqualTo(0);
+        await Assert.That(sw.ToString()).IsEqualTo("");
+    }
 }

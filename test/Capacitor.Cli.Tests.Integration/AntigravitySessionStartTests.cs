@@ -78,7 +78,8 @@ public class AntigravitySessionStartTests : IDisposable {
             """;
 
         var exit = await AntigravityHookCommand.Handle(
-            _server.Url!, ["hook", "--antigravity", "PreInvocation"], new StringReader(payload));
+            _server.Url!, ["hook", "--antigravity", "PreInvocation"], new StringReader(payload),
+            new StringWriter());
 
         await Assert.That(exit).IsEqualTo(0);
 
@@ -123,7 +124,8 @@ public class AntigravitySessionStartTests : IDisposable {
             """;
 
         var exit = await AntigravityHookCommand.Handle(
-            _server.Url!, ["hook", "--antigravity", "PreInvocation"], new StringReader(payload));
+            _server.Url!, ["hook", "--antigravity", "PreInvocation"], new StringReader(payload),
+            new StringWriter());
         await Assert.That(exit).IsEqualTo(0);
 
         var requests = _server.FindLogEntries(

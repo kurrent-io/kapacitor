@@ -733,7 +733,7 @@ switch (command) {
             return await OpenCodeHookCommand.Handle(baseUrl!, args);
         }
         if (args.Contains("--antigravity")) {
-            return await AntigravityHookCommand.Handle(baseUrl!, args);
+            return await AntigravityHookCommand.Handle(baseUrl!, args, hookProcessStart);
         }
         Console.Error.WriteLine("kcap hook requires a vendor flag (for example --claude)");
         Console.Error.WriteLine("Supported vendors: --claude, --codex, --cursor, --copilot, --gemini, --kiro, --pi, --opencode, --antigravity");

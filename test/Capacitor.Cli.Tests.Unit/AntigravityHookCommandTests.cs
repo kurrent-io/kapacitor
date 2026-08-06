@@ -28,7 +28,7 @@ public class AntigravityHookCommandTests {
     public async Task Missing_event_exits_zero_without_touching_network() {
         // Control hooks must always exit 0 so Antigravity doesn't treat the hook as failed.
         var rc = await AntigravityHookCommand.Handle(
-            "http://127.0.0.1:0", ["hook", "--antigravity"], new StringReader(""));
+            "http://127.0.0.1:0", ["hook", "--antigravity"], new StringReader(""), new StringWriter());
         await Assert.That(rc).IsEqualTo(0);
     }
 
@@ -38,7 +38,8 @@ public class AntigravityHookCommandTests {
         // it fails open to a no-op.
         var rc = await AntigravityHookCommand.Handle(
             "http://127.0.0.1:0", ["hook", "--antigravity", "PreInvocation"],
-            new StringReader("""{"conversationId":123,"transcriptPath":{"nested":true}}"""));
+            new StringReader("""{"conversationId":123,"transcriptPath":{"nested":true}}"""),
+            new StringWriter());
         await Assert.That(rc).IsEqualTo(0);
     }
 
@@ -51,7 +52,7 @@ public class AntigravityHookCommandTests {
         // These must return 0 and never read stdin / hit the network.
         var rc = await AntigravityHookCommand.Handle(
             "http://127.0.0.1:0", ["hook", "--antigravity", ev],
-            new ThrowingReader());
+            new ThrowingReader(), new StringWriter());
         await Assert.That(rc).IsEqualTo(0);
     }
 
@@ -59,7 +60,7 @@ public class AntigravityHookCommandTests {
     public async Task PreInvocation_with_malformed_payload_fails_open() {
         var rc = await AntigravityHookCommand.Handle(
             "http://127.0.0.1:0", ["hook", "--antigravity", "PreInvocation"],
-            new StringReader("{ not json"));
+            new StringReader("{ not json"), new StringWriter());
         await Assert.That(rc).IsEqualTo(0);
     }
 
@@ -68,12 +69,12 @@ public class AntigravityHookCommandTests {
         // No conversationId → nothing to key on.
         await Assert.That(await AntigravityHookCommand.Handle(
             "http://127.0.0.1:0", ["hook", "--antigravity", "PreInvocation"],
-            new StringReader("""{"transcriptPath":"/t.jsonl"}"""))).IsEqualTo(0);
+            new StringReader("""{"transcriptPath":"/t.jsonl"}"""), new StringWriter())).IsEqualTo(0);
 
         // conversationId but no transcriptPath → nothing to tail.
         await Assert.That(await AntigravityHookCommand.Handle(
             "http://127.0.0.1:0", ["hook", "--antigravity", "PreInvocation"],
-            new StringReader("""{"conversationId":"abc"}"""))).IsEqualTo(0);
+            new StringReader("""{"conversationId":"abc"}"""), new StringWriter())).IsEqualTo(0);
     }
 
     // A reader that throws if read — proves the non-PreInvocation path short-circuits

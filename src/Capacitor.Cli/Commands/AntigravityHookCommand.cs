@@ -34,10 +34,21 @@ namespace Capacitor.Cli.Commands;
 /// same way, so a conversation captured live and later re-imported dedupes to one stream.
 /// </summary>
 static class AntigravityHookCommand {
-    public static Task<int> Handle(string baseUrl, string[] args) =>
-        Handle(baseUrl, args, Console.In);
+    public static Task<int> Handle(string baseUrl, string[] args, long processStart = 0) =>
+        Handle(baseUrl, args, Console.In, Console.Out, processStart);
 
-    internal static async Task<int> Handle(string baseUrl, string[] args, TextReader stdin) {
+    internal static Task<int> Handle(string baseUrl, string[] args, TextReader stdin, TextWriter stdout,
+            long processStart = 0,
+            Func<string?, CancellationToken, Task<HttpClient>>? memoryClientFactory = null,
+            Func<SessionStartMemoryLeaseStore>?                 memoryStoreFactory  = null) =>
+        HandleCore(baseUrl, args, stdin, stdout,
+            processStart == 0 ? System.Diagnostics.Stopwatch.GetTimestamp() : processStart,
+            memoryClientFactory, memoryStoreFactory);
+
+    static async Task<int> HandleCore(string baseUrl, string[] args, TextReader stdin, TextWriter stdout,
+            long processStart,
+            Func<string?, CancellationToken, Task<HttpClient>>? memoryClientFactory,
+            Func<SessionStartMemoryLeaseStore>?                 memoryStoreFactory) {
         var eventName = EventArg(args);
         if (string.IsNullOrWhiteSpace(eventName)) {
             // Control hooks must always exit 0 (a non-zero exit makes Antigravity treat the
@@ -85,7 +96,8 @@ static class AntigravityHookCommand {
         }
 
         return await HandleSessionStart(
-            baseUrl, sessionId, transcriptPath!, cwd, payload, activeProfile);
+            baseUrl, sessionId, transcriptPath!, cwd, payload, activeProfile,
+            stdout, processStart, memoryClientFactory, memoryStoreFactory);
     }
 
     /// <summary>
@@ -124,7 +136,11 @@ static class AntigravityHookCommand {
             string      transcriptPath,
             string?     cwd,
             JsonObject  payload,
-            Profile?    activeProfile
+            Profile?    activeProfile,
+            TextWriter  stdout,
+            long        processStart,
+            Func<string?, CancellationToken, Task<HttpClient>>? memoryClientFactory,
+            Func<SessionStartMemoryLeaseStore>?                 memoryStoreFactory
         ) {
         var forwarded = new JsonObject {
             ["hook_event_name"] = "sessionStart",
@@ -133,11 +149,15 @@ static class AntigravityHookCommand {
             ["started_at"]      = DateTimeOffset.UtcNow.ToString("O")
         };
 
+        string? scopeRoot = null;
         if (cwd is not null) {
             forwarded["cwd"] = cwd;
 
             // best-effort git-root discovery, fail-open (omitted when no repo is found).
-            if (GitRepository.FindRoot(cwd) is { } workspaceRoot) forwarded["workspace_root"] = workspaceRoot;
+            if (GitRepository.FindRoot(cwd) is { } workspaceRoot) {
+                forwarded["workspace_root"] = workspaceRoot;
+                scopeRoot = workspaceRoot;
+            }
         }
         if (Str(payload, "antigravityVersion") is { } version)
             forwarded["antigravity_version"] = version;
@@ -159,6 +179,14 @@ static class AntigravityHookCommand {
             return 0;
         }
 
+        // Start the memory fetch so it OVERLAPS the lifecycle POST. Never before it, and never
+        // awaited before it — the POST is what capture depends on.
+        var memoryTask = StartMemoryIndexTask(
+            baseUrl, sessionId, scopeRoot,
+            activeProfile?.DisableMemoryIndex is true,
+            HookBudget.Remaining(processStart, "hook"),
+            memoryClientFactory, memoryStoreFactory);
+
         // Task 6: spawn-before-post. Route through the shared spool-aware poster (which
         // replaced this dispatcher's former bespoke poster) — a lapse/outage durably spools the
         // payload for a later drain AND still proceeds to spawn the watcher, so capture never
@@ -167,6 +195,12 @@ static class AntigravityHookCommand {
         var outcome = await AgentHookPoster.PostOrSpoolAsync(
             baseUrl, "session-start/antigravity", enriched, "antigravity-hook",
             spool, sessionId, route: "session-start/antigravity");
+
+        // AwaitBounded already subtracts HookBudget.Safety — do NOT subtract it again. Written
+        // even when the watcher-spawn gate below returns early — a withheld watcher must not
+        // suppress injection.
+        WritePreInvocationOutput(
+            stdout, await SessionStartMemoryHookSupport.AwaitBounded(memoryTask, processStart, "hook"));
 
         // Fail-open: a non-zero exit would surface as a failed hook; skip the watcher
         // this firing and let the next PreInvocation retry.
