@@ -35,9 +35,10 @@ public sealed class TrayViewModel : ReactiveObject, IDisposable {
     public ReactiveCommand<bool, Unit> TogglePauseCommand { get; }
 
     // Both parameters are an agent id; RequestStop's label comes from the CURRENT MenuModel
-    // (spec §7 — "the tray label passed to RequestStop is the TrayAgentEntry.Label"), not a
-    // captured value, so it reflects whatever is rendered at click time. Fire-and-forget:
-    // AgentActionService never throws and tracks its own in-flight state (StopsInFlight below).
+    // (the TrayAgentEntry.Label for this id, consistent with spec §7's one code path for both
+    // the tray menu item and the main-window row button), not a captured value, so it reflects
+    // whatever is rendered at click time. Fire-and-forget: AgentActionService never throws and
+    // tracks its own in-flight state (StopsInFlight below).
     public ReactiveCommand<string, Unit> StopAgentCommand { get; }
     public ReactiveCommand<string, Unit> OpenInWebCommand  { get; }
 

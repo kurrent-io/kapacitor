@@ -420,6 +420,33 @@ public class TrayViewModelTests {
         });
     }
 
+    // Isolates the `connected` term from `hasCapability`: BuildPause derives both solely from the
+    // same AttachStatus, and a not-Connected AttachStatus carries null Capabilities by contract
+    // (see FakeDaemonClientService usage below), so Pause_disabled_when_not_connected alone cannot
+    // distinguish real code from a mutant that drops the `connected` check — hasCapability is
+    // false there too. Here capability/Verified/Checked are established while Connected (Enabled
+    // true), then ONLY connectivity is lost — the retained PauseState still reads
+    // (Verified, !Busy, Checked) — so a mutant that ignores `connected` would keep Pause enabled.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Pause_disabled_when_not_connected_despite_retained_capability() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            var service = new FakeDaemonClientService();
+            var pause = new FakePauseController();
+            var actions = NewActions(service);
+            using var vm = new TrayViewModel(service, pause, actions);
+
+            service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, ["consent/1"]));
+            service.SnapshotsSubject.OnNext(Snap());
+            pause.StateSubject.OnNext(new PauseState(Checked: true, Verified: true, Busy: false));
+            await Assert.That(vm.MenuModel.Pause.Enabled).IsTrue();
+
+            service.StatusSubject.OnNext(new AttachStatus(AttachState.Unreachable, "daemon_unreachable", null));
+
+            await Assert.That(vm.MenuModel.Pause.Enabled).IsFalse();
+        });
+    }
+
     [Test]
     [NotInParallel("AvaloniaSession")]
     public async Task Pause_disabled_when_busy() {

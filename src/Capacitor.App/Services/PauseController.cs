@@ -183,6 +183,8 @@ public sealed class PauseController : IPauseController, IDisposable {
 
     // Caller must hold _lock. Busy is toggle-running OR toggle-queued; a passive-only lane
     // occupancy never counts (spec §6 — the item stays enabled and a click queues).
+    // OnNext under _lock is deliberate, not incidental: it is what makes OnNext-after-Dispose
+    // impossible (Dispose also sets _disposed under _lock) — do not move it outside the lock.
     void PushLocked() => _state.OnNext(new PauseState(_checked, _verified, _lane == Lane.Toggle || _queuedDesired.HasValue));
 
     static bool HasPauseRuleAtZero(ConsentPolicyDto policy) =>

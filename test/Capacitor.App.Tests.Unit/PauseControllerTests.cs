@@ -287,6 +287,40 @@ public class PauseControllerTests {
         await Assert.That(states[^1]).IsEqualTo(new PauseState(true, true, false)); // the FIRST desired value won
     }
 
+    // Spec §12: the reverse of Toggle_during_passive_* — a passive refresh arriving while a
+    // TOGGLE owns the lane must be dropped like any other busy-lane request (RequestRefresh's
+    // Lane.Idle check does not distinguish Passive from Toggle occupancy). Passive_dropped_while_busy
+    // only proves passive-during-passive; this proves the toggle side.
+    [Test]
+    public async Task Passive_dropped_during_toggle() {
+        var ops = new ScriptedLocalControlOps();
+        var notifications = new List<string>();
+        using var controller = new PauseController(ops, notifications.Add, CancellationToken.None);
+        var states = new List<PauseState>();
+        using var sub = controller.State.Subscribe(states.Add);
+
+        var gate = ops.ArmGet(); // toggle's own Get, held
+        controller.RequestToggle(true);
+        await WaitUntilAsync(() => ops.GetCalls >= 1, what: "toggle Get to be issued");
+        await Assert.That(states[^1].Busy).IsTrue();
+        var statesBeforePassive = states.Count;
+
+        controller.RequestRefresh(); // lane owned by the toggle: dropped synchronously, no Get, no push
+        await Assert.That(ops.GetCalls).IsEqualTo(1);
+        await Assert.That(states.Count).IsEqualTo(statesBeforePassive);
+
+        ops.QueueGet(new ConsentPolicyDto("prompt", 30, [PauseRule])); // the toggle's OWN trailing refresh
+        gate.SetResult(new ConsentPolicyDto("prompt", 30, [PauseRule])); // already at desired: no Put
+
+        await WaitUntilAsync(() => states.Count > statesBeforePassive, what: "toggle to settle");
+
+        await Assert.That(ops.GetCalls).IsEqualTo(2); // exactly one extra Get: the toggle's own trailing refresh
+        await Assert.That(ops.PutCalls).IsEqualTo(0);
+        await Assert.That(states.Count).IsEqualTo(statesBeforePassive + 1); // no extra emission from the dropped passive
+        await Assert.That(states[^1]).IsEqualTo(new PauseState(true, true, false));
+        await Assert.That(notifications).IsEmpty();
+    }
+
     // ---- ack handling ----
 
     [Test]

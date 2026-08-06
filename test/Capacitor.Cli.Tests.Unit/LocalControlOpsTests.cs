@@ -298,6 +298,19 @@ public class LocalControlOpsTests {
         });
     }
 
+    [Test]
+    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
+    public async Task Put_error_frame() {
+        if (OperatingSystem.IsWindows()) return;
+
+        await WithOpsAsync([ErrorThen("not authorized")], async ops => {
+            var ex = await Assert.ThrowsAsync<LocalControlOpsException>(
+                async () => await ops.PutConsentPolicyAsync(new ConsentPolicyDto("allow", 45, []), CancellationToken.None));
+            await Assert.That(ex!.Reason).IsEqualTo("daemon_rejected");
+            await Assert.That(ex.Message).IsEqualTo("not authorized");
+        });
+    }
+
     // ---- shared transport classification (exercised via StopAgentAsync) ----
 
     [Test]
