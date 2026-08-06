@@ -1,3 +1,4 @@
+using System.Reactive;
 using System.Reactive.Disposables;
 using System.Reactive.Disposables.Fluent;
 using System.Reactive.Linq;
@@ -26,8 +27,16 @@ public sealed class TrayViewModel : ReactiveObject, IDisposable {
     readonly ObservableAsPropertyHelper<TrayMenuModel> _menuModel;
     public TrayMenuModel MenuModel => _menuModel.Value;
 
+    // Parameter is the desired checked value, frozen by the adapter at menu-rebuild time (spec
+    // §6) — the click handler never reads NativeMenuItem.IsChecked. Fire-and-forget by design:
+    // PauseController itself serializes (single-flight + one queued slot), so the command need
+    // not track in-flight state.
+    public ReactiveCommand<bool, Unit> TogglePauseCommand { get; }
+
     public TrayViewModel(IDaemonClientService service, IPauseController pause) {
         _pause = pause;
+
+        TogglePauseCommand = ReactiveCommand.Create<bool>(pause.RequestToggle);
 
         var snapshots = service.Snapshots
             .Select(s => (DaemonStatusDto?)s)

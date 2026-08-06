@@ -1,7 +1,9 @@
 using System.Reactive.Subjects;
+using System.Reactive.Threading.Tasks;
 using Capacitor.App.Services;
 using Capacitor.App.ViewModels;
 using Capacitor.Cli.Core.LocalIpc;
+using TUnit.Assertions.Enums;
 
 namespace Capacitor.App.Tests.Unit;
 
@@ -469,6 +471,22 @@ public class TrayViewModelTests {
             vm.RequestPauseRefresh();
 
             await Assert.That(pause.RefreshCount).IsEqualTo(1);
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    [Arguments(true)]
+    [Arguments(false)]
+    public async Task TogglePauseCommand_reaches_controller_with_parameter_value(bool desired) {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            var service = new FakeDaemonClientService();
+            var pause = new FakePauseController();
+            using var vm = new TrayViewModel(service, pause);
+
+            await vm.TogglePauseCommand.Execute(desired).ToTask();
+
+            await Assert.That(pause.ToggleRequests).IsEquivalentTo([desired], CollectionOrdering.Matching);
         });
     }
 }
