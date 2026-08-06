@@ -173,12 +173,17 @@ The pause rule is exactly `ConsentRuleDto("deny", null, null, null, null)` at in
   most one consent socket operation is in flight at any time, so results apply in start order
   and an older read can never overwrite a newer write's outcome (each op is a one-shot
   connection whose result cannot arrive after the op returns). A passive refresh requested
-  while the lane is busy is **dropped**, not queued — the in-flight operation's own trailing
-  refresh is strictly newer. The toggle item is disabled while a toggle operation runs; clicks
-  while disabled are ignored (no queueing — the user re-expresses intent against the refreshed
-  state). The item re-enables when the trailing refresh completes; if the Put's outcome is
-  ambiguous (transport failure or timeout after send) and the trailing refresh also fails, the
-  state is unverified as above.
+  while the lane is busy is **dropped**, not queued — a busy toggle ends in its own trailing
+  refresh, and a busy passive refresh IS the refresh. The inverse direction — a toggle clicked
+  while a passive refresh owns the lane, which is possible because the open menu is frozen and
+  cannot disable the item mid-display — uses the lane's **one-slot queue, reserved exclusively
+  for a user toggle**: the toggle is marked in-flight immediately (further clicks are ignored
+  per single-flight) and runs exactly once when the passive op completes (success or failure);
+  its own Get then reads the freshest state. A toggle while a toggle owns the lane is ignored
+  (clicks-while-disabled rule; the slot never holds more than one). The toggle item is disabled
+  while a toggle operation runs or is queued; it re-enables when the trailing refresh
+  completes. If the Put's outcome is ambiguous (transport failure or timeout after send) and
+  the trailing refresh also fails, the state is unverified as above.
 - **Pause:** `ConsentRulesGet` → if the pause rule is already at index 0, no-op (idempotent);
   otherwise insert it at index 0 → `ConsentRulesPut` with the full policy (`default` and
   `prompt_timeout_seconds` passed through unchanged).
@@ -188,7 +193,11 @@ The pause rule is exactly `ConsentRuleDto("deny", null, null, null, null)` at in
   lost (last-write-wins). Accepted — the daemon-side store is the single writer and the window is
   sub-second; noted, not mitigated.
 - **Failure:** a `ConsentAck` with `ok:false` (or transport failure) surfaces its error in the
-  banner (§11); the checkbox reverts on the follow-up refresh, so the menu never lies.
+  banner (§11) — neutral fallback copy ("the daemon rejected the change") when `error` is
+  null/empty. The checkmark then follows the conditional contract above: a **successful**
+  trailing refresh reconciles it with the daemon's actual state; a failed refresh preserves the
+  last-known display and disables the item as unverified — safe, and honest about being
+  unverified, rather than claimed-current.
 
 ## 7. Stop & open-in-web semantics
 
@@ -332,12 +341,17 @@ Headless (`Capacitor.App.Tests.Unit`, existing `AvaloniaSession` + immediate-sch
 - **Pause logic** against a scripted `ILocalControlOps`: exact Put payloads for pause/unpause
   (rule inserted/removed at index 0, default and timeout passed through), idempotent double-pause,
   detection strictness (wildcard deny at index ≠ 0 does not check the toggle), single-flight
-  (rapid double-click runs one operation, second click ignored), lane serialization (a passive
-  `Opening` refresh requested during a toggle is dropped and never applies — deterministic
-  ordering test, not timing-based), disconnect and shutdown-token cancellation mid-toggle,
-  ack-failure → banner + unverified-disabled until a successful refresh.
+  (rapid double-click runs one operation, second click ignored), lane serialization both ways —
+  deterministic ordering tests, not timing-based: a passive `Opening` refresh requested during a
+  toggle is dropped and never applies; and the mirror, hold the `Opening` refresh, click the
+  toggle, release the refresh → the user intent runs exactly once, after the passive, with no
+  overlap — disconnect and shutdown-token cancellation mid-toggle, ack-failure banners
+  (`ok:false` with error text; `ok:false, error:null` → the neutral fallback copy;
+  `ok:true, error!=null` → success, stderr warning, NO banner) + unverified-disabled until a
+  successful refresh.
 - **Stop command:** per-id in-flight gating, concurrent stops for different ids, completion into
-  a vanished row is a no-op, `failed`/`Error` → banner, no local cache mutation.
+  a vanished row is a no-op, `failed`/`Error` → banner, `skipped` → the "declined to stop"
+  banner, no local cache mutation.
 - **Agents grid:** row projection and sort order (`created_at` asc, id ordinal), presentation
   rules (`requester` null → `unknown`, repo last-segment + tooltip + `—`, `vendor (model)`),
   action disablement + dimming when not Connected, empty state, rows follow EditDiff removal.
@@ -356,8 +370,9 @@ Headless (`Capacitor.App.Tests.Unit`, existing `AvaloniaSession` + immediate-sch
 result vs exception per op, EOF → `unexpected_reply`, connect failure → `daemon_unreachable`,
 phase timeout → `timed_out`, and parseable-but-invalid payloads (§10 structural validation:
 null `rules`, null rule element, unknown `default`, missing/duplicated/malformed `StopAck` line,
-unknown `StopAck` status token) → `unexpected_reply`; `{}` as `ConsentAck` → the §6 failure path
-with neutral fallback copy. Plus one engine-level acceptance test alongside the existing
+unknown `StopAck` status token) → `unexpected_reply`; `{}` as `ConsentAck` → the op returns
+`ConsentAckDto(false, null)` (wire-shape assertion only — the resulting neutral banner is the
+app suite's assertion above, via the fake ops seam). Plus one engine-level acceptance test alongside the existing
 consent-engine tests (`test/Capacitor.Cli.Tests.Unit/Daemon/LaunchConsentEngineTests.cs`): a
 policy with the pause rule at index 0 still allows a `RequesterIsOwner` input (owner exemption,
 §6 semantics).
