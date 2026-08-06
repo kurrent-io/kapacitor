@@ -427,15 +427,26 @@ static class McpFlowsServer {
     }
 
     /// <summary>
-    /// How long the start/submit POST lane keeps transparently retrying a settlement-layer coded
-    /// 409, measured as ELAPSED time from the first attempt — including each request's own
-    /// duration, not just the sum of the backoff delays. That distinction is the whole point: a
-    /// settlement-aware server absorbs the wait by HOLDING the request open (up to a per-launch
-    /// admission wait on the order of a minute), so a delay-only budget would let worst-case
-    /// wall-clock blow past the MCP tool timeout the kcap plugin pins for its MCP servers
+    /// The no-progress window: how long the start/submit POST lane keeps transparently retrying a
+    /// settlement-layer coded 409 WITHOUT seeing the daemon's sequenced-lane watermark
+    /// (<c>last_processed_seq</c> on the 409 body) advance, measured as ELAPSED time — including
+    /// each request's own duration, not just the sum of the backoff delays. That distinction is the
+    /// whole point: a settlement-aware server absorbs the wait by HOLDING the request open (up to a
+    /// per-launch admission wait on the order of a minute), so a delay-only budget would let
+    /// worst-case wall-clock blow past the MCP tool timeout the kcap plugin pins for its MCP servers
     /// (MCP_TOOL_TIMEOUT, 10 minutes) and surface as a harness-level timeout instead of a clean
     /// tool result. Three minutes fits roughly two full server-side admission waits plus backoff
     /// while staying far under that ceiling. If the harness pin ever changes, re-derive this.
+    ///
+    /// <para>Liveness-supervision spec §5 (Task 14): every retryable 409 that carries a STRICTLY
+    /// higher <c>last_processed_seq</c> than the previous one seen resets this window from the
+    /// moment of that response — a daemon that is genuinely draining its sequenced lane keeps
+    /// buying itself more patience. A missing/null seq (an old server, or a new one whose daemon
+    /// has never reported) is "no evidence", never a signal to reset OR to warn about a stale
+    /// client — it just falls back to today's flat window. An equal or lower seq (frozen, restarted,
+    /// or regressed — e.g. a daemon reconnect resetting its watermark) is likewise never a reset:
+    /// treating that as progress would extend the wait on a lane that is not actually draining. See
+    /// <see cref="SettlementAbsoluteDeadline"/> for the hard ceiling this window is clipped to.</para>
     ///
     /// <para>A tool call spends AT MOST ONE such window in total, which is what keeps that
     /// derivation valid: the one caller that sends twice (the preference fallback) threads
@@ -445,6 +456,14 @@ static class McpFlowsServer {
     /// paid reviewer launched by a POST whose result nobody is still waiting for.</para>
     /// </summary>
     internal static readonly TimeSpan SettlementElapsedDeadline = TimeSpan.FromMinutes(3);
+
+    /// <summary>The hard absolute ceiling on the whole settlement-retry lane, measured from the
+    /// FIRST attempt — continuous daemon-lane progress can keep resetting
+    /// <see cref="SettlementElapsedDeadline"/>'s rolling window indefinitely, so this is what
+    /// actually bounds the call. Sized to the same ~10-minute MCP tool timeout as
+    /// <see cref="PollCap"/> (the round-polling lane's own absolute cap) with the same margin — do
+    /// not raise either without re-deriving both against that ceiling.</summary>
+    internal static readonly TimeSpan SettlementAbsoluteDeadline = TimeSpan.FromMinutes(8);
 
     static readonly HashSet<string> SettlementRetryableCodes =
         new(StringComparer.Ordinal) { "flow_settlement_busy", "reviewer_launch_incarnation_superseded" };
@@ -470,6 +489,26 @@ static class McpFlowsServer {
         }
 
         return false;
+    }
+
+    /// <summary>Parses the optional <c>last_processed_seq</c> field a settlement 409 body may carry
+    /// (Task 8 wire addition) — the daemon's sequenced-lane watermark at rejection time. A field
+    /// that is ABSENT (an old server that predates this addition) and one that is PRESENT but JSON
+    /// `null` (a new server whose daemon has simply never reported) both parse identically to
+    /// `null` here: <see cref="JsonObject"/>'s indexer returns null for a JSON null token exactly as
+    /// it does for a missing key, so there is no separate case to write. Callers must treat both the
+    /// same way — "no progress evidence", never as anything to warn about.</summary>
+    internal static long? TryParseLastProcessedSeq(string body) {
+        try {
+            if (JsonNode.Parse(body) is JsonObject node
+                    && node["last_processed_seq"] is JsonValue v
+                    && v.TryGetValue<long>(out var seq))
+                return seq;
+        } catch (JsonException) {
+            // not JSON — no evidence either
+        }
+
+        return null;
     }
 
     /// <summary>
@@ -527,13 +566,25 @@ static class McpFlowsServer {
             CancellationToken                                             callerToken = default,
             DateTimeOffset?                                               budgetStartedAt = null
         ) {
-        var startedAt = budgetStartedAt ?? clock.UtcNow;
-        var deadline  = startedAt + SettlementElapsedDeadline;
+        var startedAt         = budgetStartedAt ?? clock.UtcNow;
+        var absoluteDeadline  = startedAt + SettlementAbsoluteDeadline;
+        // The rolling no-progress deadline. Starts as the flat window from startedAt — identical to
+        // today's behavior — and is pushed out (never past absoluteDeadline; see EffectiveDeadline)
+        // only when a 409 carries a last_processed_seq STRICTLY greater than the one before it.
+        var noProgressDeadline = startedAt + SettlementElapsedDeadline;
+        // The most recently OBSERVED seq (whatever it was — a regression updates this too), so the
+        // comparison is always "vs. the previous 409", never "vs. the historical high". Null means
+        // no evidence has been seen yet — including the old-server case, where it never becomes
+        // non-null and the rolling window therefore never resets.
+        long? lastSeq = null;
 
         string? lastCode    = null;
         string? lastMessage = null;
 
+        DateTimeOffset EffectiveDeadline() => noProgressDeadline < absoluteDeadline ? noProgressDeadline : absoluteDeadline;
+
         for (var attempt = 1;; attempt++) {
+            var deadline  = EffectiveDeadline();
             var remaining = deadline - clock.UtcNow;
 
             if (remaining <= TimeSpan.Zero)
@@ -563,7 +614,22 @@ static class McpFlowsServer {
             lastMessage = message;
             response.Dispose();
 
-            var left = deadline - clock.UtcNow;
+            // Progress evidence: only a STRICT increase over the previously observed seq resets the
+            // rolling window — an equal value (proves the daemon lane is genuinely stalled, not just
+            // that the field is present) or a lower one (a restart/regression: the watermark itself
+            // moved backwards, most likely a daemon reconnect) both count as no progress and leave
+            // the window exactly where it was. A missing/null seq never updates lastSeq at all, so
+            // an old server (or a new one whose daemon has never reported) permanently reads as "no
+            // evidence" and the window stays the flat one from startedAt.
+            var seq = TryParseLastProcessedSeq(body);
+            if (seq.HasValue) {
+                if (lastSeq.HasValue && seq.Value > lastSeq.Value)
+                    noProgressDeadline = clock.UtcNow + SettlementElapsedDeadline;
+
+                lastSeq = seq;
+            }
+
+            var left = EffectiveDeadline() - clock.UtcNow;
 
             if (left <= TimeSpan.Zero)
                 return new SettlementSendResult.DeadlineExhausted(lastCode, lastMessage, attempt, clock.UtcNow - startedAt);
