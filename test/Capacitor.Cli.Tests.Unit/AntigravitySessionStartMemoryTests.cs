@@ -1,4 +1,5 @@
 using Capacitor.Cli.Commands;
+using Capacitor.Cli.SessionStartMemory;
 
 namespace Capacitor.Cli.Tests.Unit;
 
@@ -77,5 +78,54 @@ public class AntigravitySessionStartMemoryTests {
     [Test]
     public async Task an_empty_fragment_still_renders_the_envelope() {
         await Assert.That(Write("")).IsEqualTo("{\"injectSteps\":[{\"userMessage\":\"\"}]}\n");
+    }
+
+    [Test]
+    public async Task Lifecycle_is_a_repeating_top_level_callback() {
+        var lifecycle = AntigravityHookCommand.LifecycleFor("e80c33bfc10f4d2fb626b0043f488fc0");
+
+        await Assert.That(lifecycle.Harness).IsEqualTo(SessionStartHarness.Antigravity);
+        await Assert.That(lifecycle.IsTopLevel).IsTrue();
+        await Assert.That(lifecycle.ClassificationAuthoritative).IsTrue();
+        await Assert.That(lifecycle.Reason).IsEqualTo(SessionLifecycleReason.RepeatedTurnCallback);
+        await Assert.That(lifecycle.CallbackMayRepeat).IsTrue();
+        await Assert.That(lifecycle.LifecycleInstanceId).IsNull();
+
+        // PreInvocation repeats, so the policy MUST hand back a lease-guarded decision.
+        // EligibleOneShot here would re-inject on every turn.
+        await Assert.That(SessionStartMemoryLifecyclePolicy.Decide(lifecycle))
+            .IsEqualTo(SessionMemoryLifecycleDecision.EligibleWithLease);
+    }
+
+    [Test]
+    public async Task Fetch_is_skipped_when_disabled_or_unscoped_or_out_of_budget() {
+        // Each guard alone must suppress the fetch. A non-postable base url is checked
+        // BEFORE any client is built, because EnsureAbsolute calls Environment.Exit(2).
+        await Assert.That(await AntigravityHookCommand.StartMemoryIndexTask(
+            "https://example.test", "e80c33bfc10f4d2fb626b0043f488fc0", "/repo",
+            disabled: true, TimeSpan.FromSeconds(5), null, null)).IsNull();
+
+        await Assert.That(await AntigravityHookCommand.StartMemoryIndexTask(
+            "https://example.test", "e80c33bfc10f4d2fb626b0043f488fc0", scopeRoot: null,
+            disabled: false, TimeSpan.FromSeconds(5), null, null)).IsNull();
+
+        await Assert.That(await AntigravityHookCommand.StartMemoryIndexTask(
+            "https://example.test", "e80c33bfc10f4d2fb626b0043f488fc0", "/repo",
+            disabled: false, TimeSpan.Zero, null, null)).IsNull();
+
+        await Assert.That(await AntigravityHookCommand.StartMemoryIndexTask(
+            "", "e80c33bfc10f4d2fb626b0043f488fc0", "/repo",
+            disabled: false, TimeSpan.FromSeconds(5), null, null)).IsNull();
+    }
+
+    [Test]
+    public async Task A_throwing_store_factory_resolves_to_null_rather_than_faulting() {
+        var task = AntigravityHookCommand.StartMemoryIndexTask(
+            "https://example.test", "e80c33bfc10f4d2fb626b0043f488fc0", "/repo",
+            disabled: false, TimeSpan.FromSeconds(5),
+            memoryClientFactory: null,
+            memoryStoreFactory: () => throw new InvalidOperationException("boom"));
+
+        await Assert.That(await task).IsNull();
     }
 }

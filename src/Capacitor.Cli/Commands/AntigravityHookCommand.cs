@@ -189,6 +189,64 @@ static class AntigravityHookCommand {
     internal static bool SpawnGateForTest(HookPostOutcome o, string? baseUrl)
         => AgentHookPoster.ShouldSpawnAfter(o, baseUrl);
 
+    /// <summary>
+    /// The lifecycle this adapter reports. PreInvocation fires ONCE PER INVOCATION within a
+    /// conversation (its payload carries `invocationNum`), so this is a REPEATING callback and the
+    /// fenced lease is what makes injection once-per-conversation. Kiro's agentSpawn is the only
+    /// other harness with this shape; every other adapter is CallbackMayRepeat: false and copying
+    /// one would re-inject the index on every turn.
+    ///
+    /// <para>The lease key is derived from the harness token and the normalized session id only.
+    /// `invocationNum` must never reach it, directly or transitively — it is the one field that
+    /// varies between callbacks, so keying on it would mint a fresh lease per invocation.</para>
+    /// </summary>
+    internal static SessionMemoryLifecycle LifecycleFor(string sessionId) =>
+        new(SessionStartHarness.Antigravity, sessionId, LifecycleInstanceId: null,
+            IsTopLevel: true, ClassificationAuthoritative: true,
+            SessionLifecycleReason.RepeatedTurnCallback, CallbackMayRepeat: true);
+
+    /// <summary>
+    /// Starts the shared memory fetch so it overlaps the lifecycle POST. Returns a task that never
+    /// faults — every failure resolves to null, which the writer renders as zero bytes.
+    ///
+    /// <para><b>Scope safety:</b> with no scope root the fetch is skipped rather than letting the
+    /// shared resolver fall back to the hook PROCESS's cwd and inject an unrelated repository's
+    /// memories.</para>
+    ///
+    /// <para><c>CanAttempt</c> is checked BEFORE any client is constructed, because the client
+    /// factory's EnsureAbsolute calls Environment.Exit(2) on an unusable base url — which would kill
+    /// the hook before it can write its output.</para>
+    /// </summary>
+    internal static Task<string?> StartMemoryIndexTask(
+            string     baseUrl,
+            string     sessionId,
+            string?    scopeRoot,
+            bool       disabled,
+            TimeSpan   budget,
+            Func<string?, CancellationToken, Task<HttpClient>>? memoryClientFactory,
+            Func<SessionStartMemoryLeaseStore>?                 memoryStoreFactory) {
+        if (disabled || string.IsNullOrWhiteSpace(sessionId) || string.IsNullOrWhiteSpace(scopeRoot)
+         || budget <= TimeSpan.Zero
+         || !SessionStartMemoryHookSupport.CanAttempt(baseUrl))
+            return Task.FromResult<string?>(null);
+
+        try {
+            var store = memoryStoreFactory?.Invoke() ?? new SessionStartMemoryLeaseStore();
+            var provider = new SessionStartMemoryContextProvider(
+                new SessionStartMemoryScopeResolver(),
+                memoryClientFactory ?? SessionStartMemoryHookSupport.ClientFactory(baseUrl),
+                // Only clients we created are ours to dispose; an injected factory's client belongs
+                // to its caller and may be handed back again on the 401-refresh call.
+                disposeClients: memoryClientFactory is null);
+
+            return new SessionStartMemoryOrchestrator(store, provider).GetFragmentAsync(
+                LifecycleFor(sessionId),
+                new SessionStartMemoryContextRequest(baseUrl, scopeRoot, disabled, budget, CancellationToken.None));
+        } catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException) {
+            return Task.FromResult<string?>(null);
+        }
+    }
+
     /// <summary>The event name — the first positional token after <c>--antigravity</c>.</summary>
     internal static string? EventArg(string[] args) {
         var idx = Array.IndexOf(args, "--antigravity");
