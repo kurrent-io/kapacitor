@@ -39,13 +39,17 @@ public sealed class TrayViewModel : ReactiveObject, IDisposable {
         // Status, snapshots (seeded above), and pause.State are all replay-1, so CombineLatest
         // emits synchronously on subscribe — captured here as the OAPH's initial value so
         // MenuModel is never default(TrayMenuModel) (null) before RxSchedulers.MainThreadScheduler
-        // delivers the ObserveOn'd copy below.
-        TrayMenuModel seed = null!;
+        // delivers the ObserveOn'd copy below. The synchronous-emission assumption rests on
+        // IPauseController.State's documented replay-1 contract, which a future implementation
+        // could violate — defended below rather than left to surface as an unexplained NRE on
+        // first MenuModel access.
+        TrayMenuModel? seed = null;
         using (projected.Subscribe(v => seed = v)) { }
 
         _menuModel = projected
             .ObserveOn(RxSchedulers.MainThreadScheduler)
-            .ToProperty(this, x => x.MenuModel, seed)
+            .ToProperty(this, x => x.MenuModel, seed ?? throw new InvalidOperationException(
+                "IPauseController.State must replay a value on subscribe (contract in IPauseController)."))
             .DisposeWith(_disposables);
     }
 
