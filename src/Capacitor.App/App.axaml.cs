@@ -17,6 +17,11 @@ public partial class App : Application {
     DaemonClientService? _service; // concrete type: IAsyncDisposable is not on the interface
     bool _shutdownStarted;
     bool _shutdownConfirmed;
+    // 0 = normal shutdown. Set to 1 on a startup failure so the DEFERRED shutdown path (Cmd+Q /
+    // platform shutdown while the error window is showing — OnShutdownRequested ->
+    // DisposeAndShutdownAsync) still reports failure, instead of TryShutdown()'s platform
+    // default of 0 silently overwriting it.
+    int _exitCode;
 
     public override void Initialize() => AvaloniaXamlLoader.Load(this);
 
@@ -44,6 +49,7 @@ public partial class App : Application {
             await HandleStartupFailureAsync(desktop, ex, _service, _shutdown);
             _service = null; // already disposed above — never let a later OnShutdownRequested
                               // (e.g. Cmd+Q while the error window is up) dispose it a second time
+            _exitCode = 1;   // carried through DisposeAndShutdownAsync's deferred TryShutdown too
         }
     }
 
@@ -149,9 +155,29 @@ public partial class App : Application {
     }
 
     async Task DisposeAndShutdownAsync() {
-        if (_service is not null) await _service.DisposeAsync();
-        _shutdownConfirmed = true;
+        if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop) {
+            await DisposeAndConfirmShutdownAsync(_service, () => _shutdownConfirmed = true, desktop, _exitCode);
+        } else {
+            if (_service is not null) await _service.DisposeAsync();
+            _shutdownConfirmed = true;
+        }
+    }
 
-        if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop) desktop.TryShutdown();
+    // Split out of DisposeAndShutdownAsync so a test can drive the full deferred-shutdown pass —
+    // dispose, THEN mark confirmed, THEN shut down carrying an exit code — against a fake
+    // IClassicDesktopStyleApplicationLifetime and a real, disposal-observable DaemonClientService,
+    // without needing a live App instance. Regression coverage for a P2 bug found in re-review:
+    // TryShutdown() used to be called with no exit code (defaulting to 0), so Cmd+Q/platform
+    // shutdown while the startup-error window was still showing silently overwrote the
+    // startup-failure exit code with success. Ordering is preserved exactly from the original
+    // inline body: `markConfirmed` MUST run before `TryShutdown`, because TryShutdown can
+    // re-raise ShutdownRequested synchronously and OnShutdownRequested's early-return guard
+    // (`if (_shutdownConfirmed) return;`) depends on that happening first.
+    internal static async Task DisposeAndConfirmShutdownAsync(
+            DaemonClientService? service, Action markConfirmed, IClassicDesktopStyleApplicationLifetime desktop,
+            int exitCode) {
+        if (service is not null) await service.DisposeAsync();
+        markConfirmed();
+        desktop.TryShutdown(exitCode);
     }
 }

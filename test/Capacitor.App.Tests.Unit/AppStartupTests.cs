@@ -175,4 +175,52 @@ public class AppStartupTests {
         // a later OnShutdownRequested double-dispose) must be a safe no-op, not a throw.
         await service.DisposeAsync();
     }
+
+    /// Regression coverage for a P2 bug found in re-review: TryShutdown() in the DEFERRED
+    /// shutdown path (OnShutdownRequested -> DisposeAndShutdownAsync — e.g. Cmd+Q while the
+    /// startup-error window is still up) used to be called with no exit code, defaulting to 0 —
+    /// silently overwriting the startup failure with an apparent success. Drives the extracted
+    /// DisposeAndConfirmShutdownAsync directly: a real DaemonClientService (fakes, disposal
+    /// observable) and the same fake IClassicDesktopStyleApplicationLifetime used above, with
+    /// exitCode: 1 (what StartAsync's catch now sets on _exitCode before a later
+    /// OnShutdownRequested can reach this path). No Avalonia session needed — DispatchProxy and
+    /// DaemonClientService are both plain .NET, same as DaemonClientServiceTests.
+    [Test]
+    public async Task DisposeAndConfirmShutdownAsync_disposes_then_confirms_then_carries_the_exit_code() {
+        var runClient = new ForeverRunClient();
+        var service = new DaemonClientService("daemon-a", runClient.Run, new NullProcessRunner(), "kcap");
+        service.Start();
+        await WaitUntilAsync(() => runClient.LiveEnumerations >= 1);
+
+        var (desktop, fake) = FakeClassicDesktopLifetime.Create();
+        // Ordering pin: markConfirmed must observably run BEFORE TryShutdown is called — proven
+        // by checking fake.ShutdownCalls is still empty at the moment markConfirmed fires.
+        var confirmedBeforeShutdownCall = false;
+
+        await AppUnderTest.DisposeAndConfirmShutdownAsync(
+            service,
+            markConfirmed: () => confirmedBeforeShutdownCall = fake.ShutdownCalls.Count == 0,
+            desktop,
+            exitCode: 1);
+
+        await Assert.That(confirmedBeforeShutdownCall).IsTrue();
+        await Assert.That(fake.ShutdownCalls).IsEquivalentTo([1], CollectionOrdering.Matching);
+        await WaitUntilAsync(() => runClient.LiveEnumerations == 0, TimeSpan.FromSeconds(5));
+    }
+
+    /// Same seam, but the normal (non-failure) exit code: a plain Cmd+Q with no prior startup
+    /// failure must still carry 0 through — this fix must not change the happy path.
+    [Test]
+    public async Task DisposeAndConfirmShutdownAsync_normal_shutdown_carries_exit_code_zero() {
+        var runClient = new ForeverRunClient();
+        var service = new DaemonClientService("daemon-a", runClient.Run, new NullProcessRunner(), "kcap");
+        service.Start();
+        await WaitUntilAsync(() => runClient.LiveEnumerations >= 1);
+
+        var (desktop, fake) = FakeClassicDesktopLifetime.Create();
+
+        await AppUnderTest.DisposeAndConfirmShutdownAsync(service, markConfirmed: () => { }, desktop, exitCode: 0);
+
+        await Assert.That(fake.ShutdownCalls).IsEquivalentTo([0], CollectionOrdering.Matching);
+    }
 }
