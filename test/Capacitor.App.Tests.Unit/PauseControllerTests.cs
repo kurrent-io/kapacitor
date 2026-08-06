@@ -5,67 +5,11 @@ using TUnit.Assertions.Enums;
 namespace Capacitor.App.Tests.Unit;
 
 /// Plain TUnit tests — no Avalonia session, nothing touches Avalonia/Rx globals (the controller
-/// is scheduler-free). Every async settle is driven by ScriptedOps's per-call
+/// is scheduler-free). Every async settle is driven by ScriptedLocalControlOps's per-call
 /// TaskCompletionSource gates and WaitUntilAsync polling (DaemonClientServiceTests idiom) —
 /// never Task.Delay-based ordering.
 public class PauseControllerTests {
     static readonly ConsentRuleDto PauseRule = new("deny", null, null, null, null);
-
-    /// Fake ILocalControlOps whose Get/Put calls are gated by per-call TaskCompletionSources: a
-    /// test arms the NEXT call's outcome before triggering it, so hold/release is explicit and
-    /// deterministic rather than timing-based. GetCalls/PutCalls increment BEFORE the gate is
-    /// awaited, so they double as proof a call actually reached the ops layer (as opposed to
-    /// being dropped/ignored inside PauseController itself). Mirrors ExchangeAsync's real
-    /// already-cancelled-token short-circuit (spec §10) so a permanently cancelled shutdown
-    /// token behaves the same as the real LocalControlOps.
-    sealed class ScriptedOps : ILocalControlOps {
-        readonly Queue<TaskCompletionSource<ConsentPolicyDto>> _gets = new();
-        readonly Queue<TaskCompletionSource<ConsentAckDto>> _puts = new();
-
-        public int GetCalls;
-        public int PutCalls;
-        public readonly List<ConsentPolicyDto> PutPayloads = [];
-
-        public TaskCompletionSource<ConsentPolicyDto> ArmGet() {
-            var tcs = new TaskCompletionSource<ConsentPolicyDto>(TaskCreationOptions.RunContinuationsAsynchronously);
-            _gets.Enqueue(tcs);
-            return tcs;
-        }
-
-        public void QueueGet(ConsentPolicyDto policy) => ArmGet().SetResult(policy);
-        public void QueueGetFailure(string reason) => ArmGet().SetException(new LocalControlOpsException(reason, reason));
-        public void QueueGetUnmappedFailure(Exception ex) => ArmGet().SetException(ex);
-
-        public TaskCompletionSource<ConsentAckDto> ArmPut() {
-            var tcs = new TaskCompletionSource<ConsentAckDto>(TaskCreationOptions.RunContinuationsAsynchronously);
-            _puts.Enqueue(tcs);
-            return tcs;
-        }
-
-        public void QueueAck(bool ok, string? error) => ArmPut().SetResult(new ConsentAckDto(ok, error));
-
-        public Task<ConsentPolicyDto> GetConsentPolicyAsync(CancellationToken ct) {
-            Interlocked.Increment(ref GetCalls);
-            if (ct.IsCancellationRequested) return Task.FromCanceled<ConsentPolicyDto>(ct);
-            if (_gets.Count == 0) throw new InvalidOperationException("PauseControllerTests: unscripted Get call");
-            var tcs = _gets.Dequeue();
-            ct.Register(() => tcs.TrySetCanceled(ct));
-            return tcs.Task;
-        }
-
-        public Task<ConsentAckDto> PutConsentPolicyAsync(ConsentPolicyDto policy, CancellationToken ct) {
-            Interlocked.Increment(ref PutCalls);
-            PutPayloads.Add(policy);
-            if (ct.IsCancellationRequested) return Task.FromCanceled<ConsentAckDto>(ct);
-            if (_puts.Count == 0) throw new InvalidOperationException("PauseControllerTests: unscripted Put call");
-            var tcs = _puts.Dequeue();
-            ct.Register(() => tcs.TrySetCanceled(ct));
-            return tcs.Task;
-        }
-
-        public Task<StopAgentResult> StopAgentAsync(string agentId, bool force, CancellationToken ct) =>
-            throw new NotSupportedException("PauseController never calls StopAgentAsync");
-    }
 
     static async Task WaitUntilAsync(Func<bool> condition, TimeSpan? timeout = null, string what = "condition") {
         var deadline = DateTime.UtcNow + (timeout ?? TimeSpan.FromSeconds(5));
@@ -81,7 +25,7 @@ public class PauseControllerTests {
     [Arguments(true)]
     [Arguments(false)]
     public async Task First_refresh_sets_verified_checked(bool hasPauseRuleAtZero) {
-        var ops = new ScriptedOps();
+        var ops = new ScriptedLocalControlOps();
         var notifications = new List<string>();
         using var controller = new PauseController(ops, notifications.Add, CancellationToken.None);
         var states = new List<PauseState>();
@@ -103,7 +47,7 @@ public class PauseControllerTests {
     // would otherwise pass every other test in this file.
     [Test]
     public async Task Wildcard_deny_at_nonzero_index_is_not_paused() {
-        var ops = new ScriptedOps();
+        var ops = new ScriptedLocalControlOps();
         var notifications = new List<string>();
         using var controller = new PauseController(ops, notifications.Add, CancellationToken.None);
         var states = new List<PauseState>();
@@ -120,7 +64,7 @@ public class PauseControllerTests {
 
     [Test]
     public async Task Refresh_failure_marks_unverified() {
-        var ops = new ScriptedOps();
+        var ops = new ScriptedLocalControlOps();
         var notifications = new List<string>();
         using var controller = new PauseController(ops, notifications.Add, CancellationToken.None);
         var states = new List<PauseState>();
@@ -146,7 +90,7 @@ public class PauseControllerTests {
         // ArgumentOutOfRangeException, which LocalControlOps.ExchangeAsync does not classify —
         // any such exception must still release the lane, or every later RequestRefresh/
         // RequestToggle is silently dropped/ignored forever with no banner and no log line.
-        var ops = new ScriptedOps();
+        var ops = new ScriptedLocalControlOps();
         var notifications = new List<string>();
         using var controller = new PauseController(ops, notifications.Add, CancellationToken.None);
         var states = new List<PauseState>();
@@ -169,7 +113,7 @@ public class PauseControllerTests {
 
     [Test]
     public async Task Passive_dropped_while_busy() {
-        var ops = new ScriptedOps();
+        var ops = new ScriptedLocalControlOps();
         using var controller = new PauseController(ops, _ => { }, CancellationToken.None);
         var states = new List<PauseState>();
         using var sub = controller.State.Subscribe(states.Add);
@@ -190,7 +134,7 @@ public class PauseControllerTests {
 
     [Test]
     public async Task Toggle_pause_puts_rule_at_zero() {
-        var ops = new ScriptedOps();
+        var ops = new ScriptedLocalControlOps();
         var notifications = new List<string>();
         using var controller = new PauseController(ops, notifications.Add, CancellationToken.None);
         var states = new List<PauseState>();
@@ -216,7 +160,7 @@ public class PauseControllerTests {
 
     [Test]
     public async Task Toggle_unpause_removes_only_index_zero() {
-        var ops = new ScriptedOps();
+        var ops = new ScriptedLocalControlOps();
         var notifications = new List<string>();
         using var controller = new PauseController(ops, notifications.Add, CancellationToken.None);
         var states = new List<PauseState>();
@@ -240,7 +184,7 @@ public class PauseControllerTests {
 
     [Test]
     public async Task Toggle_idempotent_no_put() {
-        var ops = new ScriptedOps();
+        var ops = new ScriptedLocalControlOps();
         var notifications = new List<string>();
         using var controller = new PauseController(ops, notifications.Add, CancellationToken.None);
         var states = new List<PauseState>();
@@ -260,7 +204,7 @@ public class PauseControllerTests {
 
     [Test]
     public async Task Toggle_during_passive_queues_desired_idempotent_when_rule_already_present() {
-        var ops = new ScriptedOps();
+        var ops = new ScriptedLocalControlOps();
         var notifications = new List<string>();
         using var controller = new PauseController(ops, notifications.Add, CancellationToken.None);
         var states = new List<PauseState>();
@@ -288,7 +232,7 @@ public class PauseControllerTests {
 
     [Test]
     public async Task Toggle_during_passive_queues_desired_puts_when_rule_absent() {
-        var ops = new ScriptedOps();
+        var ops = new ScriptedLocalControlOps();
         var notifications = new List<string>();
         using var controller = new PauseController(ops, notifications.Add, CancellationToken.None);
         var states = new List<PauseState>();
@@ -316,7 +260,7 @@ public class PauseControllerTests {
 
     [Test]
     public async Task Toggle_during_toggle_ignored() {
-        var ops = new ScriptedOps();
+        var ops = new ScriptedLocalControlOps();
         var notifications = new List<string>();
         using var controller = new PauseController(ops, notifications.Add, CancellationToken.None);
         var states = new List<PauseState>();
@@ -350,7 +294,7 @@ public class PauseControllerTests {
     [Arguments(null, "The daemon rejected the change")]
     [Arguments("", "The daemon rejected the change")]
     public async Task Ack_error_notifies(string? ackError, string expectedNotification) {
-        var ops = new ScriptedOps();
+        var ops = new ScriptedLocalControlOps();
         var notifications = new List<string>();
         using var controller = new PauseController(ops, notifications.Add, CancellationToken.None);
         var states = new List<PauseState>();
@@ -370,7 +314,7 @@ public class PauseControllerTests {
 
     [Test]
     public async Task Ack_warning_success() {
-        var ops = new ScriptedOps();
+        var ops = new ScriptedLocalControlOps();
         var notifications = new List<string>();
         using var controller = new PauseController(ops, notifications.Add, CancellationToken.None);
         var states = new List<PauseState>();
@@ -391,7 +335,7 @@ public class PauseControllerTests {
 
     [Test]
     public async Task Trailing_refresh_reconciles() {
-        var ops = new ScriptedOps();
+        var ops = new ScriptedLocalControlOps();
         var notifications = new List<string>();
         using var controller = new PauseController(ops, notifications.Add, CancellationToken.None);
         var states = new List<PauseState>();
@@ -412,7 +356,7 @@ public class PauseControllerTests {
 
     [Test]
     public async Task Trailing_refresh_failure_unverified() {
-        var ops = new ScriptedOps();
+        var ops = new ScriptedLocalControlOps();
         var notifications = new List<string>();
         using var controller = new PauseController(ops, notifications.Add, CancellationToken.None);
         var states = new List<PauseState>();
@@ -442,7 +386,7 @@ public class PauseControllerTests {
     [Arguments("daemon_unreachable", "The daemon is not reachable")]
     [Arguments("unexpected_reply", "Couldn't update launch pause: unexpected_reply")]
     public async Task Get_or_put_failure_notifies_and_still_attempts_trailing_refresh(string reason, string expectedNotification) {
-        var ops = new ScriptedOps();
+        var ops = new ScriptedLocalControlOps();
         var notifications = new List<string>();
         using var controller = new PauseController(ops, notifications.Add, CancellationToken.None);
         var states = new List<PauseState>();
@@ -464,7 +408,7 @@ public class PauseControllerTests {
         // Spec §12 acceptance pin: "disconnect mid-toggle (→ daemon_unreachable banner +
         // unverified)" — the SAME disconnected daemon fails both the primary op and the
         // trailing refresh that follows it.
-        var ops = new ScriptedOps();
+        var ops = new ScriptedLocalControlOps();
         var notifications = new List<string>();
         using var controller = new PauseController(ops, notifications.Add, CancellationToken.None);
         var states = new List<PauseState>();
@@ -484,7 +428,7 @@ public class PauseControllerTests {
 
     [Test]
     public async Task Shutdown_cancellation_quiet() {
-        var ops = new ScriptedOps();
+        var ops = new ScriptedLocalControlOps();
         var notifications = new List<string>();
         var cts = new CancellationTokenSource();
         using var controller = new PauseController(ops, notifications.Add, cts.Token);

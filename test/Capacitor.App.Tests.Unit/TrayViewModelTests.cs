@@ -28,6 +28,13 @@ public class TrayViewModelTests {
     static DaemonStatusDto Snap(string connection = "connected", int active = 0, IReadOnlyList<AgentStatusDto>? agents = null) =>
         new(new DaemonInfoDto("daemon-a", "1.2.3", "http://localhost:9999", connection, 5, active), (agents ?? []).ToList());
 
+    // Real AgentActionService wired to the SAME service.SnapshotsSubject as the FakeDaemonClientService
+    // (production shares one snapshots stream between TrayViewModel and AgentActionService) —
+    // AgentActionService has no interface seam (spec-pinned concrete sealed class), so tests
+    // construct it for real against a scripted ILocalControlOps.
+    static AgentActionService NewActions(FakeDaemonClientService service, ScriptedLocalControlOps? ops = null) =>
+        new(ops ?? new ScriptedLocalControlOps(), new RecordingNotifier(), new RecordingOpener(), service.SnapshotsSubject, CancellationToken.None);
+
     // ---- §4 state matrix ----
 
     [Test]
@@ -39,7 +46,8 @@ public class TrayViewModelTests {
         await AvaloniaSession.WithImmediateRxScheduler(async () => {
             var service = new FakeDaemonClientService();
             var pause = new FakePauseController();
-            using var vm = new TrayViewModel(service, pause);
+            var actions = NewActions(service);
+            using var vm = new TrayViewModel(service, pause, actions);
 
             service.StatusSubject.OnNext(new AttachStatus(AttachState.Unreachable, reason, null));
 
@@ -54,7 +62,8 @@ public class TrayViewModelTests {
         await AvaloniaSession.WithImmediateRxScheduler(async () => {
             var service = new FakeDaemonClientService();
             var pause = new FakePauseController();
-            using var vm = new TrayViewModel(service, pause);
+            var actions = NewActions(service);
+            using var vm = new TrayViewModel(service, pause, actions);
 
             await Assert.That(vm.MenuModel.State).IsEqualTo(TrayState.Connecting);
             await Assert.That(vm.MenuModel.RunningCount).IsEqualTo(0);
@@ -75,7 +84,8 @@ public class TrayViewModelTests {
         await AvaloniaSession.WithImmediateRxScheduler(async () => {
             var service = new FakeDaemonClientService();
             var pause = new FakePauseController();
-            using var vm = new TrayViewModel(service, pause);
+            var actions = NewActions(service);
+            using var vm = new TrayViewModel(service, pause, actions);
 
             service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, []));
             service.SnapshotsSubject.OnNext(Snap(connection, active));
@@ -91,7 +101,8 @@ public class TrayViewModelTests {
         await AvaloniaSession.WithImmediateRxScheduler(async () => {
             var service = new FakeDaemonClientService();
             var pause = new FakePauseController();
-            using var vm = new TrayViewModel(service, pause);
+            var actions = NewActions(service);
+            using var vm = new TrayViewModel(service, pause, actions);
 
             service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, []));
             // No snapshot pushed — cannot happen per the client pin, but Project must stay total.
@@ -106,7 +117,8 @@ public class TrayViewModelTests {
         await AvaloniaSession.WithImmediateRxScheduler(async () => {
             var service = new FakeDaemonClientService();
             var pause = new FakePauseController();
-            using var vm = new TrayViewModel(service, pause);
+            var actions = NewActions(service);
+            using var vm = new TrayViewModel(service, pause, actions);
 
             service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, []));
             service.SnapshotsSubject.OnNext(Snap("connected", 3));
@@ -129,7 +141,8 @@ public class TrayViewModelTests {
         await AvaloniaSession.WithImmediateRxScheduler(async () => {
             var service = new FakeDaemonClientService();
             var pause = new FakePauseController();
-            using var vm = new TrayViewModel(service, pause);
+            var actions = NewActions(service);
+            using var vm = new TrayViewModel(service, pause, actions);
 
             service.StatusSubject.OnNext(new AttachStatus(AttachState.Unreachable, "daemon_unreachable", null));
 
@@ -143,7 +156,8 @@ public class TrayViewModelTests {
         await AvaloniaSession.WithImmediateRxScheduler(async () => {
             var service = new FakeDaemonClientService();
             var pause = new FakePauseController();
-            using var vm = new TrayViewModel(service, pause);
+            var actions = NewActions(service);
+            using var vm = new TrayViewModel(service, pause, actions);
 
             await Assert.That(vm.MenuModel.Header).IsEqualTo("daemon-a: connecting…");
         });
@@ -155,7 +169,8 @@ public class TrayViewModelTests {
         await AvaloniaSession.WithImmediateRxScheduler(async () => {
             var service = new FakeDaemonClientService();
             var pause = new FakePauseController();
-            using var vm = new TrayViewModel(service, pause);
+            var actions = NewActions(service);
+            using var vm = new TrayViewModel(service, pause, actions);
 
             service.StatusSubject.OnNext(new AttachStatus(AttachState.Unreachable, "daemon_incompatible", null));
 
@@ -170,7 +185,8 @@ public class TrayViewModelTests {
         await AvaloniaSession.WithImmediateRxScheduler(async () => {
             var service = new FakeDaemonClientService();
             var pause = new FakePauseController();
-            using var vm = new TrayViewModel(service, pause);
+            var actions = NewActions(service);
+            using var vm = new TrayViewModel(service, pause, actions);
 
             service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, []));
             service.SnapshotsSubject.OnNext(Snap("reconnecting"));
@@ -185,7 +201,8 @@ public class TrayViewModelTests {
         await AvaloniaSession.WithImmediateRxScheduler(async () => {
             var service = new FakeDaemonClientService();
             var pause = new FakePauseController();
-            using var vm = new TrayViewModel(service, pause);
+            var actions = NewActions(service);
+            using var vm = new TrayViewModel(service, pause, actions);
 
             service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, []));
             service.SnapshotsSubject.OnNext(Snap("disconnected"));
@@ -200,7 +217,8 @@ public class TrayViewModelTests {
         await AvaloniaSession.WithImmediateRxScheduler(async () => {
             var service = new FakeDaemonClientService();
             var pause = new FakePauseController();
-            using var vm = new TrayViewModel(service, pause);
+            var actions = NewActions(service);
+            using var vm = new TrayViewModel(service, pause, actions);
 
             service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, []));
             service.SnapshotsSubject.OnNext(Snap("connected", 0));
@@ -215,7 +233,8 @@ public class TrayViewModelTests {
         await AvaloniaSession.WithImmediateRxScheduler(async () => {
             var service = new FakeDaemonClientService();
             var pause = new FakePauseController();
-            using var vm = new TrayViewModel(service, pause);
+            var actions = NewActions(service);
+            using var vm = new TrayViewModel(service, pause, actions);
 
             service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, []));
             service.SnapshotsSubject.OnNext(Snap("connected", 4));
@@ -230,7 +249,8 @@ public class TrayViewModelTests {
         await AvaloniaSession.WithImmediateRxScheduler(async () => {
             var service = new FakeDaemonClientService();
             var pause = new FakePauseController();
-            using var vm = new TrayViewModel(service, pause);
+            var actions = NewActions(service);
+            using var vm = new TrayViewModel(service, pause, actions);
 
             service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, []));
             service.SnapshotsSubject.OnNext(Snap("weird"));
@@ -245,7 +265,8 @@ public class TrayViewModelTests {
         await AvaloniaSession.WithImmediateRxScheduler(async () => {
             var service = new FakeDaemonClientService();
             var pause = new FakePauseController();
-            using var vm = new TrayViewModel(service, pause);
+            var actions = NewActions(service);
+            using var vm = new TrayViewModel(service, pause, actions);
 
             service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, []));
             service.SnapshotsSubject.OnNext(Snap("connected", -1));
@@ -260,7 +281,8 @@ public class TrayViewModelTests {
         await AvaloniaSession.WithImmediateRxScheduler(async () => {
             var service = new FakeDaemonClientService();
             var pause = new FakePauseController();
-            using var vm = new TrayViewModel(service, pause);
+            var actions = NewActions(service);
+            using var vm = new TrayViewModel(service, pause, actions);
 
             service.StatusSubject.OnNext(new AttachStatus(AttachState.Unreachable, "future_reason", null));
 
@@ -276,7 +298,8 @@ public class TrayViewModelTests {
         await AvaloniaSession.WithImmediateRxScheduler(async () => {
             var service = new FakeDaemonClientService();
             var pause = new FakePauseController();
-            using var vm = new TrayViewModel(service, pause);
+            var actions = NewActions(service);
+            using var vm = new TrayViewModel(service, pause, actions);
 
             var t0 = new DateTime(2026, 8, 6, 10, 0, 0, DateTimeKind.Utc);
             var agents = new List<AgentStatusDto> {
@@ -302,7 +325,8 @@ public class TrayViewModelTests {
         await AvaloniaSession.WithImmediateRxScheduler(async () => {
             var service = new FakeDaemonClientService();
             var pause = new FakePauseController();
-            using var vm = new TrayViewModel(service, pause);
+            var actions = NewActions(service);
+            using var vm = new TrayViewModel(service, pause, actions);
 
             var t0 = new DateTime(2026, 8, 6, 10, 0, 0, DateTimeKind.Utc);
             var agents = new List<AgentStatusDto> {
@@ -325,7 +349,8 @@ public class TrayViewModelTests {
         await AvaloniaSession.WithImmediateRxScheduler(async () => {
             var service = new FakeDaemonClientService();
             var pause = new FakePauseController();
-            using var vm = new TrayViewModel(service, pause);
+            var actions = NewActions(service);
+            using var vm = new TrayViewModel(service, pause, actions);
 
             var agents = new List<AgentStatusDto> {
                 new("r", "review-flow", "codex", null, "Running", null, null, null, DateTime.UtcNow, null),
@@ -344,7 +369,8 @@ public class TrayViewModelTests {
         await AvaloniaSession.WithImmediateRxScheduler(async () => {
             var service = new FakeDaemonClientService();
             var pause = new FakePauseController();
-            using var vm = new TrayViewModel(service, pause);
+            var actions = NewActions(service);
+            using var vm = new TrayViewModel(service, pause, actions);
 
             var agents = new List<AgentStatusDto> {
                 new("a", "agent", "claude", null, "Running", null, null, null, DateTime.UtcNow, null),
@@ -367,7 +393,8 @@ public class TrayViewModelTests {
         await AvaloniaSession.WithImmediateRxScheduler(async () => {
             var service = new FakeDaemonClientService();
             var pause = new FakePauseController();
-            using var vm = new TrayViewModel(service, pause);
+            var actions = NewActions(service);
+            using var vm = new TrayViewModel(service, pause, actions);
 
             pause.StateSubject.OnNext(new PauseState(Checked: false, Verified: true, Busy: false));
             service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, [])); // no consent/1
@@ -383,7 +410,8 @@ public class TrayViewModelTests {
         await AvaloniaSession.WithImmediateRxScheduler(async () => {
             var service = new FakeDaemonClientService();
             var pause = new FakePauseController();
-            using var vm = new TrayViewModel(service, pause);
+            var actions = NewActions(service);
+            using var vm = new TrayViewModel(service, pause, actions);
 
             pause.StateSubject.OnNext(new PauseState(Checked: false, Verified: true, Busy: false));
             service.StatusSubject.OnNext(new AttachStatus(AttachState.Unreachable, "daemon_unreachable", null));
@@ -398,7 +426,8 @@ public class TrayViewModelTests {
         await AvaloniaSession.WithImmediateRxScheduler(async () => {
             var service = new FakeDaemonClientService();
             var pause = new FakePauseController();
-            using var vm = new TrayViewModel(service, pause);
+            var actions = NewActions(service);
+            using var vm = new TrayViewModel(service, pause, actions);
 
             service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, ["consent/1"]));
             service.SnapshotsSubject.OnNext(Snap());
@@ -414,7 +443,8 @@ public class TrayViewModelTests {
         await AvaloniaSession.WithImmediateRxScheduler(async () => {
             var service = new FakeDaemonClientService();
             var pause = new FakePauseController();
-            using var vm = new TrayViewModel(service, pause);
+            var actions = NewActions(service);
+            using var vm = new TrayViewModel(service, pause, actions);
 
             service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, ["consent/1"]));
             service.SnapshotsSubject.OnNext(Snap());
@@ -430,7 +460,8 @@ public class TrayViewModelTests {
         await AvaloniaSession.WithImmediateRxScheduler(async () => {
             var service = new FakeDaemonClientService();
             var pause = new FakePauseController();
-            using var vm = new TrayViewModel(service, pause);
+            var actions = NewActions(service);
+            using var vm = new TrayViewModel(service, pause, actions);
 
             service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, ["consent/1"]));
             service.SnapshotsSubject.OnNext(Snap());
@@ -447,7 +478,8 @@ public class TrayViewModelTests {
         await AvaloniaSession.WithImmediateRxScheduler(async () => {
             var service = new FakeDaemonClientService();
             var pause = new FakePauseController();
-            using var vm = new TrayViewModel(service, pause);
+            var actions = NewActions(service);
+            using var vm = new TrayViewModel(service, pause, actions);
 
             service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, ["consent/1"]));
             service.SnapshotsSubject.OnNext(Snap());
@@ -466,7 +498,8 @@ public class TrayViewModelTests {
         await AvaloniaSession.WithImmediateRxScheduler(async () => {
             var service = new FakeDaemonClientService();
             var pause = new FakePauseController();
-            using var vm = new TrayViewModel(service, pause);
+            var actions = NewActions(service);
+            using var vm = new TrayViewModel(service, pause, actions);
 
             vm.RequestPauseRefresh();
 
@@ -482,11 +515,96 @@ public class TrayViewModelTests {
         await AvaloniaSession.WithImmediateRxScheduler(async () => {
             var service = new FakeDaemonClientService();
             var pause = new FakePauseController();
-            using var vm = new TrayViewModel(service, pause);
+            var actions = NewActions(service);
+            using var vm = new TrayViewModel(service, pause, actions);
 
             await vm.TogglePauseCommand.Execute(desired).ToTask();
 
             await Assert.That(pause.ToggleRequests).IsEquivalentTo([desired], CollectionOrdering.Matching);
+        });
+    }
+
+    // ---- stop gating + open-in-web (spec §7) ----
+
+    static async Task WaitUntilAsync(Func<bool> condition, TimeSpan? timeout = null, string what = "condition") {
+        var deadline = DateTime.UtcNow + (timeout ?? TimeSpan.FromSeconds(5));
+        while (!condition()) {
+            if (DateTime.UtcNow > deadline) throw new TimeoutException($"Timed out waiting for: {what}");
+            await Task.Delay(10);
+        }
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Entry_StopEnabled_flips_while_stop_in_flight() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            var service = new FakeDaemonClientService();
+            var pause = new FakePauseController();
+            var ops = new ScriptedLocalControlOps();
+            var actions = new AgentActionService(ops, new RecordingNotifier(), new RecordingOpener(), service.SnapshotsSubject, CancellationToken.None);
+            using var vm = new TrayViewModel(service, pause, actions);
+
+            var agents = new List<AgentStatusDto> {
+                new("a", "agent", "claude", null, "Running", null, null, null, DateTime.UtcNow, null),
+            };
+            service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, []));
+            service.SnapshotsSubject.OnNext(Snap("connected", 1, agents));
+
+            await Assert.That(vm.MenuModel.Agents[0].StopEnabled).IsTrue();
+
+            var gate = ops.ArmStop();
+            actions.RequestStop("a", "agent · claude · —");
+
+            // Pushed synchronously by RequestStop before it returns (spec §7 in-flight gating).
+            await Assert.That(vm.MenuModel.Agents[0].StopEnabled).IsFalse();
+
+            gate.SetResult(new StopAgentResult(true, "stopped", null));
+            await WaitUntilAsync(() => vm.MenuModel.Agents[0].StopEnabled, what: "entry to re-enable after stop completes");
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task StopAgentCommand_reaches_service_with_entry_label() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            var service = new FakeDaemonClientService();
+            var pause = new FakePauseController();
+            var ops = new ScriptedLocalControlOps();
+            var notifier = new RecordingNotifier();
+            var actions = new AgentActionService(ops, notifier, new RecordingOpener(), service.SnapshotsSubject, CancellationToken.None);
+            using var vm = new TrayViewModel(service, pause, actions);
+
+            var agents = new List<AgentStatusDto> {
+                new("a", "agent", "claude", "/repos/kcap-cli", "Running", null, null, null, DateTime.UtcNow, null),
+            };
+            service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, []));
+            service.SnapshotsSubject.OnNext(Snap("connected", 1, agents));
+
+            ops.QueueStop(new StopAgentResult(false, "failed", null));
+            await vm.StopAgentCommand.Execute("a").ToTask();
+
+            await WaitUntilAsync(() => notifier.Notified.Count >= 1, what: "stop banner");
+            await Assert.That(notifier.Notified).IsEquivalentTo(["Couldn't stop agent · claude · kcap-cli"], CollectionOrdering.Matching);
+            await Assert.That(ops.StopPayloads).IsEquivalentTo([("a", false)], CollectionOrdering.Matching);
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task OpenInWebCommand_reaches_service() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            var service = new FakeDaemonClientService();
+            var pause = new FakePauseController();
+            var ops = new ScriptedLocalControlOps();
+            var opener = new RecordingOpener();
+            var actions = new AgentActionService(ops, new RecordingNotifier(), opener, service.SnapshotsSubject, CancellationToken.None);
+            using var vm = new TrayViewModel(service, pause, actions);
+
+            service.SnapshotsSubject.OnNext(FakeDaemonClientService.Snap(serverUrl: "https://x.kcap.ai"));
+
+            await vm.OpenInWebCommand.Execute("agent-1").ToTask();
+
+            await Assert.That(opener.Opened).IsEquivalentTo(["https://x.kcap.ai/agents/agent-1"], CollectionOrdering.Matching);
         });
     }
 }

@@ -8,9 +8,10 @@ using ReactiveUI;
 
 namespace Capacitor.App.ViewModels;
 
-/// Projects IDaemonClientService.Status/Snapshots + IPauseController.State into the tray's menu
-/// model (spec §4, §5). Constructor-scoped, not WhenActivated: the tray icon exists before any
-/// window is shown, so MenuModel must be live from construction, not gated on activation.
+/// Projects IDaemonClientService.Status/Snapshots + IPauseController.State +
+/// AgentActionService.StopsInFlight into the tray's menu model (spec §4, §5, §7). Constructor-
+/// scoped, not WhenActivated: the tray icon exists before any window is shown, so MenuModel must
+/// be live from construction, not gated on activation.
 public sealed class TrayViewModel : ReactiveObject, IDisposable {
     const string IncompatibleReason = "daemon_incompatible";
     const string UnreachableReason  = "daemon_unreachable";
@@ -33,17 +34,27 @@ public sealed class TrayViewModel : ReactiveObject, IDisposable {
     // not track in-flight state.
     public ReactiveCommand<bool, Unit> TogglePauseCommand { get; }
 
-    public TrayViewModel(IDaemonClientService service, IPauseController pause) {
+    // Both parameters are an agent id; RequestStop's label comes from the CURRENT MenuModel
+    // (spec §7 — "the tray label passed to RequestStop is the TrayAgentEntry.Label"), not a
+    // captured value, so it reflects whatever is rendered at click time. Fire-and-forget:
+    // AgentActionService never throws and tracks its own in-flight state (StopsInFlight below).
+    public ReactiveCommand<string, Unit> StopAgentCommand { get; }
+    public ReactiveCommand<string, Unit> OpenInWebCommand  { get; }
+
+    public TrayViewModel(IDaemonClientService service, IPauseController pause, AgentActionService actions) {
         _pause = pause;
 
         TogglePauseCommand = ReactiveCommand.Create<bool>(pause.RequestToggle);
+        StopAgentCommand = ReactiveCommand.Create<string>(id =>
+            actions.RequestStop(id, MenuModel.Agents.FirstOrDefault(a => a.Id == id)?.Label ?? id));
+        OpenInWebCommand = ReactiveCommand.Create<string>(actions.OpenInWeb);
 
         var snapshots = service.Snapshots
             .Select(s => (DaemonStatusDto?)s)
             .StartWith((DaemonStatusDto?)null);
 
-        var projected = service.Status.CombineLatest(snapshots, pause.State,
-            (status, snap, pauseState) => Build(service.DaemonName, status, snap, pauseState));
+        var projected = service.Status.CombineLatest(snapshots, pause.State, actions.StopsInFlight,
+            (status, snap, pauseState, inFlight) => Build(service.DaemonName, status, snap, pauseState, inFlight));
 
         // Status, snapshots (seeded above), and pause.State are all replay-1, so CombineLatest
         // emits synchronously on subscribe — captured here as the OAPH's initial value so
@@ -68,11 +79,13 @@ public sealed class TrayViewModel : ReactiveObject, IDisposable {
 
     public void Dispose() => _disposables.Dispose();
 
-    static TrayMenuModel Build(string daemonName, AttachStatus status, DaemonStatusDto? snap, PauseState pauseState) {
+    static TrayMenuModel Build(
+            string daemonName, AttachStatus status, DaemonStatusDto? snap, PauseState pauseState,
+            IReadOnlySet<string> stopsInFlight) {
         var (state, count) = Project(status, snap);
         return new TrayMenuModel(
             state, count, HeaderText(daemonName, status, snap, state, count),
-            BuildEntries(status, snap), BuildPause(status, pauseState));
+            BuildEntries(status, snap, stopsInFlight), BuildPause(status, pauseState));
     }
 
     /// Pure ten-row mapping (spec §4), precedence top-down.
@@ -135,14 +148,14 @@ public sealed class TrayViewModel : ReactiveObject, IDisposable {
 
     // Only while Connected (spec §5) — the daemon's own upstream link status (rows 5–6, 9) does
     // not hide the entries, since the snapshot Agents array is still the app's local truth.
-    static IReadOnlyList<TrayAgentEntry> BuildEntries(AttachStatus status, DaemonStatusDto? snap) {
+    static IReadOnlyList<TrayAgentEntry> BuildEntries(AttachStatus status, DaemonStatusDto? snap, IReadOnlySet<string> stopsInFlight) {
         if (status.State != AttachState.Connected || snap is null) return [];
 
         return snap.Agents
             .Where(a => a.Status is "Starting" or "Running")
             .OrderBy(a => a.CreatedAt)
             .ThenBy(a => a.Id, StringComparer.Ordinal)
-            .Select(a => new TrayAgentEntry(a.Id, Label(a), StopEnabled: true))
+            .Select(a => new TrayAgentEntry(a.Id, Label(a), StopEnabled: !stopsInFlight.Contains(a.Id)))
             .ToList();
     }
 
