@@ -1,0 +1,106 @@
+{
+  "vendor": "kiro",
+  "argv": [
+    "kiro-cli",
+    "acp"
+  ],
+  "started": "2026-08-04T18:36:21.228449+00:00",
+  "notes": [
+    "initialize ok; loadSession=True",
+    "session/new ok; sessionId=c837f6ab-c4d9-4230-8273-397f37b22139",
+    "turns A/B/C stopReasons: end_turn/end_turn/end_turn",
+    "SIGKILL fired after 3 live chunks of turn D",
+    "session/load ok=False err={\"code\": -32603, \"message\": \"Internal error\", \"data\": \"Failed to start session: Session is active in another process (PID 10572)\"}"
+  ],
+  "load_session_advertised": true,
+  "agent_capabilities": {
+    "loadSession": true,
+    "promptCapabilities": {
+      "image": true,
+      "audio": false,
+      "embeddedContext": false
+    },
+    "mcpCapabilities": {
+      "http": true,
+      "sse": false
+    },
+    "sessionCapabilities": {},
+    "auth": {}
+  },
+  "session_id": "c837f6ab-c4d9-4230-8273-397f37b22139",
+  "turn_a_stop": "end_turn",
+  "turn_b_stop": "end_turn",
+  "turn_c_stop": "end_turn",
+  "kill_fired_after_chunks": 3,
+  "turn_d_await_error": "TimeoutError()",
+  "turn_d_response_after_kill": false,
+  "load_response": {
+    "jsonrpc": "2.0",
+    "error": {
+      "code": -32603,
+      "message": "Internal error",
+      "data": "Failed to start session: Session is active in another process (PID 10572)"
+    },
+    "id": 2
+  },
+  "replay_load_ok": false,
+  "replay_load_error": {
+    "code": -32603,
+    "message": "Internal error",
+    "data": "Failed to start session: Session is active in another process (PID 10572)"
+  },
+  "ended": "2026-08-04T18:37:41.852744+00:00",
+  "interrupted_turn_replay_shape": "absent",
+  "live_analysis": {
+    "kinds": {
+      "agent_thought_chunk": 32,
+      "agent_message_chunk": 29,
+      "tool_call": 2,
+      "tool_call_update": 4
+    },
+    "keys_by_kind": {
+      "agent_thought_chunk": [
+        "content",
+        "sessionUpdate"
+      ],
+      "agent_message_chunk": [
+        "content",
+        "sessionUpdate"
+      ],
+      "tool_call": [
+        "_meta",
+        "kind",
+        "rawInput",
+        "sessionUpdate",
+        "title",
+        "toolCallId"
+      ],
+      "tool_call_update": [
+        "content",
+        "kind",
+        "rawInput",
+        "rawOutput",
+        "sessionUpdate",
+        "status",
+        "title",
+        "toolCallId"
+      ]
+    },
+    "msgid_values": {},
+    "tool_call_ids": [
+      "call_4b010d0c806742c683ddd505",
+      "call_ca020c67fb52462c882f89fc"
+    ]
+  },
+  "replay_analysis": {
+    "kinds": {},
+    "keys_by_kind": {},
+    "msgid_values": {},
+    "tool_call_ids": [],
+    "user_chunks": [],
+    "after_response_conversation": 0,
+    "trailer_kinds_after_response": []
+  },
+  "live_vs_replay_msgid_overlap": {},
+  "tool_call_id_overlap": 0
+}

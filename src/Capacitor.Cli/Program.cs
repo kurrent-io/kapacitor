@@ -17,6 +17,13 @@ if (args.Length < 1) {
 
 var command = args[0];
 
+// Daemon-only borrowed-review context mode. This exact invocation is dispatched before server URL
+// resolution and update checks so the sidecar reader has no backend, auth, Git, or config authority.
+if (args is ["mcp", "review"] &&
+    Environment.GetEnvironmentVariable(McpReviewContextServer.ModeEnvVar) == "1")
+    return await McpReviewContextServer.RunAsync(
+        Environment.GetEnvironmentVariable(McpReviewContextServer.UrlEnvVar));
+
 // Interactive commands block on synchronous Spectre.Console prompts. Install a
 // signal + parent-liveness safety net so an abandoned prompt (closed terminal,
 // killed launching agent, detached pseudo-console) can't orphan this process
@@ -776,8 +783,17 @@ async Task<int> HandleDiscoverLoginAsync(bool forceDevice) {
     var provider = OAuthLoginFlow.ChooseDiscoveryProvider(args, isInteractive: !HeadlessEnvironment.IsHeadless());
 
     if (provider == AuthProvider.WorkOS) {
-        return await WorkOSDiscovery.RunWithLiveAuthAsync(
+        var workosDiscovery = await WorkOSDiscovery.RunWithLiveAuthAsync(
             AuthProxyEndpoint.Url, proxyConfig, proxyClient, new SpectreTenantPicker());
+
+        // Unreachable today: this call site passes no provisioner, so discovery dead-ends before it
+        // can offer the choice. Kept because RunWithLiveAuthAsync is shared — if login ever gains a
+        // provisioner, point at the command that can configure a workspace instead of failing mutely.
+        if (workosDiscovery.RetargetServerInput is { } target) {
+            await Console.Error.WriteLineAsync($"Run `kcap setup {target}` to configure that workspace.");
+        }
+
+        return workosDiscovery.ExitCode;
     }
 
     if (string.IsNullOrEmpty(proxyConfig.GitHubClientId)) {

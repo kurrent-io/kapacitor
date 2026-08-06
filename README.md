@@ -96,7 +96,7 @@ kcap setup --server-url <url>   # explicit server (self-hosted, or a full URL)
 
 The setup wizard walks you through:
 
-1. **Server** — with no `--server-url`/`<tenant>`, kcap **discovers** your tenant: it signs you in with your organization's single sign-on (pass `--github` to use GitHub instead), then lets you choose from the tenants you belong to. A bare `<tenant>` slug expands to `https://<tenant>.kcap.ai`; a full URL is used as-is. If you sign in with your organization's single sign-on and don't yet have a Capacitor tenant, `kcap setup` offers to create one for you (name + workspace URL), provisions it, and continues once it's live.
+1. **Server** — with no `--server-url`/`<tenant>`, kcap **discovers** your tenant: it signs you in with your organization's single sign-on (pass `--github` to use GitHub instead), then lets you choose from the tenants you belong to. A bare `<tenant>` slug expands to `https://<tenant>.kcap.ai`; a full URL is used as-is. If you sign in with your organization's single sign-on and discovery finds no Capacitor tenant, `kcap setup` asks how to continue: create one for you (name + workspace URL, provisioned and waited for until it's live), point at a workspace you already belong to (enter its slug or URL — the same as `kcap setup <tenant>`), or cancel. That middle choice matters because SSO discovery only lists workspaces that use org SSO: a workspace whose members sign in with the GitHub App shows up here as "no tenant", so pick **I already have a workspace**, or re-run with `--github`.
 2. **Login** — authenticates via your tenant's configured sign-in method; discovery completes the sign-in inline
 3. **Default visibility** — choose how your sessions are visible to others
 4. **Coding-agent hooks** — detects Claude Code and Codex CLI on `PATH`, Cursor by user-dir presence (`~/.cursor/`), GitHub Copilot CLI by `~/.copilot/` or `copilot` on `PATH`, Google Gemini CLI by `~/.gemini/` or `gemini` on `PATH`, AWS Kiro CLI by `~/.kiro/` or `kiro`/`kiro-cli` on `PATH`, Pi by `~/.pi/` or `pi` on `PATH`, SST OpenCode by `~/.config/opencode/` (or `~/.local/share/opencode/`) or `opencode` on `PATH`, and Google Antigravity by `~/.gemini/antigravity/` or `antigravity` on `PATH`, lists what it found, then asks **one** yes/no prompt to install kcap for every detected agent (hooks — or, for Pi/OpenCode/Antigravity, the live-ingest plugin — plus skills, instructions, and MCP) — plus a single shared set of agent skills under `~/.agents/skills/`, installed once when any of Codex, Cursor, Copilot, Gemini, Pi, or OpenCode is detected (Claude gets its skills from the bundled plugin; AWS Kiro and Google Antigravity read their own skills dirs — `~/.kiro/skills` and `~/.gemini/skills` respectively — so each gets its own copy there instead of the shared tree) — all user-wide. For Codex it also offers to enable **sandbox network access** for kcap (see below) — Codex blocks sandbox network by default, so the kcap skills can't reach the server without it. Each agent's own config-relocation environment variable is honored when set: `CLAUDE_CONFIG_DIR` (Claude), `CODEX_HOME` (Codex), `GEMINI_CLI_HOME` (Gemini — names the parent of `.gemini`), `KIRO_HOME` (Kiro), `COPILOT_HOME` (Copilot), `OPENCODE_CONFIG_DIR` (OpenCode), and `PI_CODING_AGENT_DIR` (Pi). Cursor's hooks path is fixed at `~/.cursor/hooks.json` and is not relocated.
@@ -631,6 +631,17 @@ After discovery, the import surfaces a one-shot report of any transcript working
 
 The daemon connects to the Capacitor server and runs Claude Code, Codex, or Cursor agents in isolated git worktrees, controlled from the dashboard. Hosted Claude and Codex agents run on macOS, Linux, **and Windows**; hosted Cursor (`cursor` vendor) is macOS and Linux only — choose the vendor from the dashboard's launch dialog. At startup the daemon probes `daemon.claude_path`, `daemon.codex_path`, and the Cursor CLI (`cursor-agent`, overridable via `KCAP_CURSOR_PATH` — see [Daemon config settings](#daemon-config-settings)) and advertises only the vendors it can actually spawn, so the launch dialog hides whichever agent isn't installed on the selected daemon.
 
+> **Snapshotting a workspace that isn't a git repo:** when an agent targets a directory that is not a git
+> repository with commits, the daemon takes a *standalone snapshot* — it copies the directory rather than
+> creating a git worktree. Symlinks are recreated as links (never followed) and anything pointing outside
+> the workspace is skipped, so the snapshot cannot pull in credentials or other out-of-tree content.
+> **That guarantee assumes nothing else writes to the workspace while the agent is starting.** The check
+> that classifies an entry and the read that copies it are not a single atomic operation, so a separate
+> account or process that can swap a file for a symlink in between can still get the target's contents
+> copied in. In practice: don't point a hosted agent at a directory that any account or process other than
+> the daemon's own can write to during a launch. A normal single-user checkout is fine; a shared or
+> world-writable directory is not.
+
 > **Windows and hosted Codex:** needs Windows 10 1809 (build 17763) or newer — Windows 11 recommended — because that's the floor for Codex's own Windows sandbox. Older builds don't advertise the `codex` vendor at all. The sandbox *implementation* (`elevated`, which needs one-time admin-approved `winget` setup, vs `unelevated`) is whatever your `~/.codex/config.toml` `[windows] sandbox` says; the daemon inherits it rather than overriding it. Codex is found on `PATH` whether installed via `winget` (`codex.exe`) or npm (`codex.cmd`).
 
 ```bash
@@ -726,7 +737,7 @@ kcap daemon consent log -n 50                                    # tail consent-
 > **Two different gates, deliberately.** `daemon consent` authorises an individual launch and defaults to
 > *allow*; the Gemini reviewer flag below is a **capability** gate that defaults to *off* and asks a
 > different question — whether this daemon may run that vendor unattended **at all**. A per-launch deny is
-> not a substitute: the reviewer's containment rests on a vendor behaviour certified per version, so the
+> not a substitute: the reviewer's containment rests on a behaviour of the installed vendor build, so the
 > safe default has to be off rather than on-until-denied.
 
 #### Gemini as an unattended review-flow reviewer — off by default, and why
@@ -735,10 +746,16 @@ A **hosted** Gemini agent needs nothing beyond the project setting above. Using 
 review-flow reviewer** is a separate, deliberately opt-in decision, because of what an unattended review
 grants:
 
-```jsonc
-// ~/.config/kcap/config.json  (this DAEMON's config — not a server setting)
-{ "GeminiUnattendedReviewerEnabled": true }
+```bash
+export KCAP_GEMINI_UNATTENDED_REVIEWER=1     # this DAEMON's environment — not a server setting
 ```
+
+Only an explicit `1`/`true`/`yes`/`on` enables it; anything else, a typo included, leaves it off. Enabling a
+reviewer is a consent decision, so a misspelling must not read as consent.
+
+> Earlier docs showed a `GeminiUnattendedReviewerEnabled` key in `~/.config/kcap/config.json`. Nothing read
+> it — the flag was reachable only from a test constructor, so the Gemini unattended reviewer could not
+> actually be turned on. The environment variable above is the working form.
 
 **Read this before setting it.** An unattended reviewer runs in a daemon-owned worktree with this daemon's
 own `HOME`, so repository content that steers the model into using its tools gets **code execution with your
@@ -763,11 +780,83 @@ review is not necessarily you) and defaults off.
 
 Two further things it does *not* do:
 
-- it does not bypass the **certified-version** check. The reviewer's only containment is Gemini's exact-name
-  MCP allowlist, whose behaviour was verified against specific builds — so an uncertified `gemini` version is
-  refused even with the flag on, with a coded error naming the version. An upgrade takes the reviewer offline
-  rather than silently running on unverified semantics; re-certification is how it comes back.
+- it does not bypass the **build affirmation**. The reviewer's only containment is Gemini's exact-name MCP
+  allowlist, which is a behaviour of the installed build — so a `gemini` version other than the one this
+  daemon affirmed is refused even with the flag on, with a coded error naming both builds. Enabling the
+  reviewer affirms whatever is installed at that moment, so you only meet this after an upgrade; clear it
+  with `kcap daemon reviewer affirm --vendor gemini`. (This replaced a maintainer-curated *certified version
+  set*, which took the reviewer offline on every Gemini release until a new kcap shipped — a build one patch
+  ahead of the certified one made the feature unreachable.)
 - it does not make Gemini a default reviewer. It is only ever reached by an explicit `vendor: "gemini"`.
+
+#### Unattended Kiro reviews
+
+```bash
+export KCAP_KIRO_UNATTENDED_REVIEWER=1       # this DAEMON's environment — not a server setting
+```
+
+**Everything in the Gemini warning above applies**, with one difference in each direction.
+
+*Tighter:* a Kiro reviewer runs with a **scoped** tool set — `fs_read`, `thinking`, and the tools of the MCP
+servers the launch itself injects. `fs_write` and `execute_bash` are not trusted, and a permission request that
+does not name exactly one of the injected tools ends the round rather than being auto-approved. Gemini's `yolo` approval mode
+excludes nothing, so on tool surface Kiro is the narrower of the two.
+
+> Kiro intermittently raises a permission prompt for a tool that *is* in its own trust list (an upstream
+> trust-flag leak). The reviewer therefore approves prompts naming the tools this launch injected, and reaps
+> on anything else — rather than reaping on every prompt, which would kill an unpredictable share of clean
+> rounds on the call that delivers the result.
+
+*Not tighter:* a trusted `fs_read` is **not path-scoped** — measured. It reads anything the daemon user can,
+so the credential, integrity-of-*reads*, and verdict bullets above hold in full. Support is therefore limited
+to a daemon whose operator and whose review requesters are in **one trust domain**.
+
+A review launch also runs with a daemon-owned, empty `KIRO_HOME`, so your global
+`~/.kiro/settings/mcp.json` servers — `kcap-flows` among them — do not reach the reviewer. Your own
+interactive Kiro sessions are unaffected, and the file is never modified.
+
+**Version affirmation.** That suppression depends on the installed build honouring `KIRO_HOME`, so a
+`kiro-cli` version change takes the reviewer offline until you acknowledge it:
+
+```bash
+kcap daemon reviewer affirm --vendor kiro
+```
+
+Enabling the reviewer affirms whatever is installed at that moment, so you only meet this after an upgrade.
+The command records the version and nothing else — it does not enable the reviewer. No kcap release is
+needed to clear it; Gemini uses the same model and the same command (`--vendor gemini`).
+
+POSIX only: the isolated home holds the reviewer's own transcript, and therefore the review context, and
+cannot be created owner-only on Windows.
+
+#### If your daemon runs as a service
+
+Both flags above are read from the **daemon's own environment**, and a supervised daemon (`kcap daemon
+service install` — launchd, systemd, or a Windows scheduled task) inherits nothing from the shell you
+installed it from. Exporting a flag in your shell therefore does nothing for a service-installed daemon until
+the unit itself carries it, so export it *first* and then reinstall:
+
+```bash
+export KCAP_GEMINI_UNATTENDED_REVIEWER=1
+kcap daemon service install --name "$(whoami)"    # captures the flag into the unit
+```
+
+Install prints a `Consent:` line naming each reviewer flag it captured. That freeze is the point to notice:
+the unit outlives the shell, so the reviewer stays enabled for that service until you reinstall without the
+variable set — unsetting it in your shell later changes nothing.
+
+If a reviewer is still not offered, the daemon says why in its own log at startup — one line per vendor that
+is installed and unattended-capable but withheld, carrying the same text the launch path would have thrown
+(consent not set, version unresolved, version uncertified/unaffirmed). It logs at `Information`, not
+`Warning`: a daemon with Gemini or Kiro installed purely for interactive use and no opt-in is in a
+perfectly normal state, so this is a line to find when you go looking, not an alert.
+
+```bash
+grep -i "is NOT offering it" ~/.config/kcap/daemon-*.log
+```
+
+Without that line the only symptom is the server's `reviewer_vendor_unavailable`, which reports that no
+connected daemon advertises the vendor and cannot say why.
 
 #### Hosted Codex agents
 
@@ -1005,7 +1094,7 @@ KCAP_CURSOR_PATH=/opt/cursor/bin/cursor-agent kcap daemon
 KCAP_CURSOR_MODEL=claude-opus-4-8 kcap daemon
 ```
 
-`KCAP_COPILOT_PATH` overrides the `copilot` binary the daemon spawns for **GitHub Copilot hosted agents** (`copilot --acp --stdio`), mirroring `KCAP_CURSOR_PATH` — the daemon now hosts Claude, Codex, Cursor, Copilot, and Kiro. `KCAP_OPENCODE_PATH` and `KCAP_GEMINI_PATH` remain **reserved** plumbing for the not-yet-hosted OpenCode and Gemini vendors, so setting those two has no observable effect yet.
+`KCAP_COPILOT_PATH` overrides the `copilot` binary the daemon spawns for **GitHub Copilot hosted agents** (`copilot --acp --stdio`), mirroring `KCAP_CURSOR_PATH` — the daemon hosts Claude, Codex, Cursor, Copilot, Kiro, and Gemini. `KCAP_GEMINI_PATH` overrides the `gemini` binary the same way (`gemini --experimental-acp`), and applies to both hosted Gemini agents and the opt-in [unattended Gemini reviewer](#gemini-as-an-unattended-review-flow-reviewer--off-by-default-and-why) — whose build-affirmation check reads whichever binary it names. `KCAP_OPENCODE_PATH` remains **reserved** plumbing for the not-yet-hosted OpenCode vendor, so setting it has no observable effect yet.
 
 ```bash
 KCAP_COPILOT_PATH=/opt/copilot/bin/copilot kcap daemon
@@ -1021,17 +1110,27 @@ failing at launch.
 KCAP_KIRO_PATH=/opt/kiro/bin/kiro-cli kcap daemon
 ```
 
-Two limits are worth knowing before you pick Kiro:
+`KCAP_KIRO_MODEL` overrides the model a `kiro` hosted agent runs, mirroring `KCAP_CURSOR_MODEL` —
+with one deliberate difference: there is **no built-in default**, so with nothing set (and no
+per-launch model from the dashboard, which takes precedence) a Kiro hosted agent runs whatever
+Kiro's own default model is and kcap reports none. The value is matched against the models the Kiro
+account actually offers (Kiro's ids are bare names like `claude-haiku-4.5`); an unrecognized value
+falls back to Kiro's own default with none reported. Applied over ACP `session/set_model` —
+verified to take effect at the turn level, not just accepted — because Kiro does not implement the
+`session/set_config_option` call Cursor uses.
+
+```bash
+KCAP_KIRO_MODEL=claude-haiku-4.5 kcap daemon
+```
+
+One limit is worth knowing before you pick Kiro:
 
 - **Interactive hosting only.** Kiro cannot yet be selected as an unattended review-flow reviewer.
   Kiro inherits the MCP servers from your global `~/.kiro/settings/mcp.json` into every ACP session,
   which is exactly what you want for a session you are driving yourself, but means an unattended
   reviewer would be handed the flow-starting `kcap-flows` server. Containment for that is tracked
-  separately.
-- **No model override.** A Kiro hosted agent always runs Kiro's own default model. Kiro's ACP
-  model-selection call is unverified and fails silently, so rather than report a model it might not be
-  running, kcap ignores a requested model for `kiro` and reports none — there is deliberately no
-  `KCAP_KIRO_MODEL`. A *pinned reviewer* model is refused outright rather than silently substituted.
+  separately. (This also means a *pinned reviewer* model never reaches Kiro today — reviewer model
+  overrides remain gated on the vendors that advertise resolver support.)
 
 **Hosted Cursor agents run over ACP.** The `cursor` vendor is launched by the daemon as
 `cursor-agent acp` (Cursor's Agent Client Protocol server) in an isolated worktree, driven from the
@@ -1109,6 +1208,23 @@ Accepted values: `trace`, `debug`, `information` (default), `warning`, `error`, 
 KCAP_ACP_DEBUG_FRAMES=1 KCAP_DAEMON_LOG_LEVEL=debug kcap daemon
 ```
 
+#### ACP crash reconnect (`KCAP_ACP_RECONNECT`)
+
+When a hosted ACP agent's child process dies mid-session (a crash, an OOM kill — not a stop you
+asked for), the daemon transparently resumes the session where the vendor supports it: it relaunches
+the agent binary and restores the same session via ACP `session/load`, keeping the dashboard
+session, transcript, and agent slot intact. A note appears in the transcript ("Agent process
+restarted; the session was resumed"), and if a message was in flight at the crash it asks you to
+resend it rather than guessing. Resume is attempted only for vendors verified to support it across a
+crashed process (currently `cursor` and `copilot`; Kiro and Gemini refuse a crashed session's load,
+so their agents end as before), and a session that keeps crashing stops being resumed after 5
+recoveries. Set `KCAP_ACP_RECONNECT=0` to disable reconnect entirely — a child death then ends the
+session immediately, the pre-reconnect behavior:
+
+```bash
+KCAP_ACP_RECONNECT=0 kcap daemon
+```
+
 #### Diagnosing a hard death
 
 A daemon killed by an uncatchable `SIGKILL` (macOS **jetsam** / Linux **OOM**, `kill -9`, power loss) or a hard native crash can't log its own exit — the process is gone before any handler runs. Two things help tell those apart from a normal stop:
@@ -1141,6 +1257,13 @@ kcap agent start claude -d                    # start without attaching; prints 
     Kiro, which spawns it with no prompt and no model involvement — which would be branch-controlled code
     running as the daemon user. Removals are logged. If your repo legitimately ships one, it will not apply
     inside an agent worktree; configure it for the daemon instead.
+    Borrowed review snapshots keep those paths non-executable but do not hide the change from the reviewer:
+    kcap supplies a private, read-only review-context tool containing the committed/staged **Git index**
+    bytes. Unstaged and untracked MCP config is deliberately omitted and never read. The tool labels every
+    returned path and content value as untrusted branch-authored evidence. A config too large to ship in
+    full is declared to the reviewer by path, size and hash rather than failing the launch, so an oversized
+    file can neither hide from the review nor block it. If kcap cannot extract, bound, or deliver that
+    context safely, the borrowed reviewer fails closed instead of reporting a blind clean review.
   - **Git hooks are disabled for the creation commands** (`core.hooksPath=/dev/null`). With a relative
     `core.hooksPath` such as `.githooks`, the hook scripts are themselves branch content and git would run
     `post-checkout` during `worktree add`. This applies only to kcap's own creation commands; hooks in the
@@ -1161,6 +1284,12 @@ kcap agent start claude -d                    # start without attaching; prints 
       refuse to build if the source itself holds unsmudged LFS pointers.
 
     Disabled drivers are logged per worktree so the effect is visible rather than mysterious.
+
+    Both the hook and the filter overrides are carried in git's environment (`GIT_CONFIG_COUNT` /
+    `GIT_CONFIG_KEY_n`) rather than on the command line, so a config key that legally contains `=` — a filter
+    driver named `evil=x` — stays intact instead of being cut at the `=` and left live. kcap measures at
+    launch that the git it found honours those variables and refuses to build the worktree if not, rather
+    than reporting containment it does not have: **creating an agent worktree needs git 2.31 or newer.**
 
 - **Detach** without stopping the agent with the prefix key **`Ctrl-Q` then `d`**. The agent keeps running in the daemon.
 - **Permissions:** for a registered agent, permission prompts appear in the web UI (the same dialog as hosted agents); with `--private`, prompts are answered natively in your terminal.

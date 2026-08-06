@@ -1,0 +1,108 @@
+{
+  "started": "2026-08-05T13:43:35.683618+00:00",
+  "kiro_version": "kiro-cli 2.16.0",
+  "phases": {
+    "A_isolated_scoped_trust": {
+      "kiro_home": "<tmp>",
+      "trust_tools": "fs_read,thinking",
+      "trust_warnings": [],
+      "mcp_servers_initialized": [
+        {
+          "sessionId": "c703145c-a1b5-493d-887a-98870c53bb90",
+          "serverName": "kcap-flow-result"
+        },
+        {
+          "sessionId": "c703145c-a1b5-493d-887a-98870c53bb90",
+          "serverName": "kcap-flow-result"
+        }
+      ],
+      "session_new_ok": true,
+      "session_id": "c703145c-a1b5-493d-887a-98870c53bb90",
+      "available_models": [
+        "auto",
+        "claude-sonnet-4.5",
+        "claude-sonnet-4",
+        "claude-haiku-4.5",
+        "deepseek-3.2",
+        "minimax-m2.5",
+        "minimax-m2.1",
+        "glm-5",
+        "qwen3-coder-next"
+      ]
+    },
+    "B_real_home_control": {
+      "kiro_home": "(unset - real ~/.kiro)",
+      "mcp_servers_initialized": [
+        {
+          "sessionId": "374f52e9-c16d-45aa-a806-03771a9ebf2e",
+          "serverName": "kcap-flow-result"
+        },
+        {
+          "sessionId": "374f52e9-c16d-45aa-a806-03771a9ebf2e",
+          "serverName": "kcap-review"
+        },
+        {
+          "sessionId": "374f52e9-c16d-45aa-a806-03771a9ebf2e",
+          "serverName": "kcap-flows"
+        },
+        {
+          "sessionId": "374f52e9-c16d-45aa-a806-03771a9ebf2e",
+          "serverName": "kcap-memory"
+        },
+        {
+          "sessionId": "374f52e9-c16d-45aa-a806-03771a9ebf2e",
+          "serverName": "kcap-sessions"
+        }
+      ],
+      "session_new_ok": true
+    },
+    "C_turn": {
+      "model_requested": "deepseek-3.2",
+      "set_model_response": {
+        "jsonrpc": "2.0",
+        "result": {},
+        "id": 3
+      },
+      "stop_reason": "end_turn",
+      "permission_requests": [
+        {
+          "t": "2026-08-05T13:43:51.142723+00:00",
+          "params": {
+            "sessionId": "c703145c-a1b5-493d-887a-98870c53bb90",
+            "toolCall": {
+              "toolCallId": "tooluse_GzBUGmCj0fLCahJIGxf2uP",
+              "title": "Running: @kcap-flow-result/submit_review_result"
+            },
+            "options": [
+              {
+                "optionId": "allow_once",
+                "name": "Yes",
+                "kind": "allow_once"
+              },
+              {
+                "optionId": "allow_always",
+                "name": "Always",
+                "kind": "allow_always"
+              },
+              {
+                "optionId": "reject_once",
+                "name": "No",
+                "kind": "reject_once"
+              }
+            ]
+          }
+        }
+      ],
+      "mcp_server_methods": [
+        "initialize",
+        "notifications/initialized",
+        "tools/list",
+        "tools/call"
+      ],
+      "tools_call_reached_server": true,
+      "nonce_in_transcript": true
+    }
+  },
+  "finished": "2026-08-05T13:43:57.021268+00:00",
+  "_redaction": "home dir -> ~, temp paths -> <tmp>; frames/stderr/mcp logs not committed"
+}

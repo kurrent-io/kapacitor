@@ -145,13 +145,27 @@ public static partial class DaemonRunner {
         if (Environment.GetEnvironmentVariable("KCAP_KIRO_PATH") is { Length: > 0 } envKiroPath)
             config.KiroPath = envKiroPath;
 
+        if (Environment.GetEnvironmentVariable("KCAP_KIRO_MODEL") is { Length: > 0 } envKiroModel)
+            config.KiroModel = envKiroModel;
+
         if (Environment.GetEnvironmentVariable("KCAP_OPENCODE_PATH") is { Length: > 0 } envOpenCodePath)
             config.OpenCodePath = envOpenCodePath;
 
         if (Environment.GetEnvironmentVariable("KCAP_GEMINI_PATH") is { Length: > 0 } envGeminiPath)
             config.GeminiPath = envGeminiPath;
 
+        // The operator consent flags for the two unattended ACP reviewers. Both were previously
+        // reachable only from a test constructor, which made the shipped Gemini reviewer impossible
+        // to turn on in production; binding one and not the other would just move that hole.
+        config.GeminiUnattendedReviewerEnabled =
+            ParseConsentFlag(Environment.GetEnvironmentVariable("KCAP_GEMINI_UNATTENDED_REVIEWER"));
+
+        config.KiroUnattendedReviewerEnabled =
+            ParseConsentFlag(Environment.GetEnvironmentVariable("KCAP_KIRO_UNATTENDED_REVIEWER"));
+
         config.DebugFrames = ParseDebugFramesFlag(Environment.GetEnvironmentVariable("KCAP_ACP_DEBUG_FRAMES"));
+
+        config.AcpReconnectEnabled = ParseAcpReconnectFlag(Environment.GetEnvironmentVariable("KCAP_ACP_RECONNECT"));
 
         // Shared name resolution with the CLI supervisor — the CLI's
         // DaemonCommands and the daemon binary must agree on the name so
@@ -214,6 +228,28 @@ public static partial class DaemonRunner {
         // this early — the host's logging pipeline isn't built yet.
         var coverageStateDir = Path.Combine(
             config.StateDir ?? DaemonLockPaths.Directory, DaemonLockPaths.Sanitize(config.Name));
+        // Seed each gated reviewer's affirmation from the CONSENT event, not from a first refusal: an
+        // operator who has just turned a reviewer on should not be refused over an upgrade that never
+        // happened, which teaches people to clear the gate without reading it. Cheap, and a no-op for
+        // a vendor the operator has not opted into.
+        SeedReviewerAffirmation(
+            coverageStateDir, AcpVendorDescriptors.Kiro.Vendor,
+            config.KiroUnattendedReviewerEnabled, config.KiroPath);
+
+        SeedReviewerAffirmation(
+            coverageStateDir, AcpVendorDescriptors.Gemini.Vendor,
+            config.GeminiUnattendedReviewerEnabled, config.GeminiPath);
+
+        // Recovers reviewer homes left by a SIGKILLed predecessor. Runs unconditionally: a daemon
+        // whose operator has since disabled the reviewer still owns whatever its last incarnation
+        // left behind, and those directories hold review context.
+        // A real logger, not NullLogger: Delete warns precisely so a retained transcript-bearing home
+        // is never silent, and passing NullLogger would defeat the diagnostic this cleanup exists to
+        // emit. The host's logging is not built yet at this point, so this writes to stderr like the
+        // seeding block above.
+        KiroReviewerHome.SweepStale(
+            coverageStateDir, config.DaemonEpoch ?? "unpinned", new ConsoleErrorLogger());
+
         config.RecordlessSurvivorsImpossible = new CoverageJournal(coverageStateDir, NullLogger.Instance)
             .RecordBoot(daemonLock.InstanceId, daemonLock.PriorInstanceId,
                 priorLockReadFailed: daemonLock.PriorLockIndeterminate, thisEpochContained: OperatingSystem.IsWindows());
@@ -406,13 +442,25 @@ public static partial class DaemonRunner {
         // a review-flow vendor override on this list rather than SupportedVendors alone, so a vendor
         // that's merely installed but has no unattended launcher is never offered as an override
         // target.
-        config.UnattendedVendors = ComputeUnattendedVendors(runtimeFactories);
-        config.UnattendedVendorCapabilities = ComputeUnattendedVendorCapabilities(runtimeFactories, config);
+        //
+        // Classified ONCE and reused below: a gated reviewer's classification spawns the vendor binary
+        // to read its version, so recomputing per consumer would probe it three times per startup.
+        var unattendedStatuses = ClassifyUnattendedVendors(runtimeFactories);
+
+        config.UnattendedVendors = AdvertisedUnattendedVendors(unattendedStatuses);
+        config.UnattendedVendorCapabilities =
+            ComputeUnattendedVendorCapabilities(runtimeFactories, config, config.UnattendedVendors);
 
         // Which build of each unattended vendor was installed when this daemon started. Recorded at
         // startup (like the Cursor-unavailable warning below) rather than per launch, and reported
         // without any comparison against a validated-build record.
         LogUnattendedVendorIdentities(logger, config.UnattendedVendorCapabilities);
+
+        // The counterpart of the line above. A withheld vendor used to vanish from advertisement in
+        // silence: the refusal text existed, but only the launch path threw it — and advertisement is
+        // what stops that launch being attempted, so the explanation could never be produced.
+        foreach (var withheld in unattendedStatuses.Where(s => s.WithheldReason is not null))
+            LogUnattendedVendorWithheld(logger, withheld.Vendor, withheld.WithheldReason!);
 
         // IsAvailable()==false silently omits cursor from SupportedVendors above — correct
         // behavior (the launch dialog just won't offer Cursor), but gave operators no clue WHY. One
@@ -743,6 +791,29 @@ public static partial class DaemonRunner {
         value?.Trim() is { } v && (v == "1" || string.Equals(v, "true", StringComparison.OrdinalIgnoreCase));
 
     /// <summary>
+    /// Parses the <c>KCAP_ACP_RECONNECT</c> kill switch into
+    /// <see cref="DaemonConfig.AcpReconnectEnabled"/>. Opposite default polarity from
+    /// <see cref="ParseDebugFramesFlag"/>, deliberately: reconnect is ON unless explicitly
+    /// disabled — only <c>0</c>/<c>false</c> (case-insensitive) turn it off; anything else,
+    /// including unset/blank, leaves it on.
+    /// </summary>
+    internal static bool ParseAcpReconnectFlag(string? value) =>
+        value?.Trim() is not { } v || !(v == "0" || string.Equals(v, "false", StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>
+    /// Parses an unattended-reviewer consent flag. Fail-closed polarity, the opposite of
+    /// <see cref="ParseAcpReconnectFlag"/>: only an explicit <c>1</c>/<c>true</c>/<c>yes</c>/<c>on</c>
+    /// enables it, and unset, blank or unrecognised leaves it OFF. Enabling one of these is a
+    /// security consent event, so a typo must not be read as consent.
+    /// </summary>
+    internal static bool ParseConsentFlag(string? value) =>
+        value?.Trim() is { Length: > 0 } v
+     && (v == "1"
+      || string.Equals(v, "true", StringComparison.OrdinalIgnoreCase)
+      || string.Equals(v, "yes",  StringComparison.OrdinalIgnoreCase)
+      || string.Equals(v, "on",   StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>
     /// True when a "cursor" <see cref="IHostedAgentRuntimeFactory"/> is registered but
     /// reports itself unavailable — the signal for <see cref="RunAsync"/>'s one-time startup
     /// Warning. Pulled out as a pure predicate over the factory list (rather than inlined in
@@ -753,28 +824,83 @@ public static partial class DaemonRunner {
         factories.FirstOrDefault(f => f.Vendor == "cursor") is { } cursorFactory && !cursorFactory.IsAvailable();
 
     /// <summary>
+    /// Records the installed build as affirmed the first time a vendor's reviewer is enabled.
+    ///
+    /// <para>Keyed on the record's ABSENCE AS A FILE, not on "Affirmed is null". The store reports null
+    /// for a corrupt or unreadable record too, and seeding on that would (a) re-affirm whatever is
+    /// installed after the record was removed post-upgrade, silently clearing the gate, and (b) attempt
+    /// a write that a directory at the pathname makes throw — bricking a boot on a file that is
+    /// supposed to fail closed, never fatally.</para>
+    /// </summary>
+    internal static void SeedReviewerAffirmation(
+            string stateDir, string vendor, bool enabled, string binaryPath) {
+        if (!enabled) return;
+
+        try {
+            if (!ReviewerVersionStore.RecordExists(stateDir, vendor)
+             && VendorVersionResolver.Resolve(binaryPath) is { Length: > 0 } installed)
+                new ReviewerVersionStore(stateDir, vendor).Affirm(installed);
+        } catch (Exception ex) {
+            // The gate fails closed on its own if this never ran; a boot must not die for it.
+            Console.Error.WriteLine($"{vendor} reviewer version seeding skipped: {ex.Message}");
+        }
+    }
+
+    /// <summary>One installed vendor's unattended classification at daemon startup.</summary>
+    /// <param name="Vendor">The vendor token.</param>
+    /// <param name="Advertised">Whether it is offered as an unattended reviewer host.</param>
+    /// <param name="WithheldReason">Why it is not offered, when a daemon-local gate is what refuses
+    /// it. Null for an advertised vendor AND for one that never offered unattended hosting — only a
+    /// refusal an operator can act on is worth a Warning.</param>
+    internal readonly record struct UnattendedVendorStatus(
+        string Vendor, bool Advertised, string? WithheldReason);
+
+    /// <summary>
+    /// Classifies every INSTALLED factory's unattended support, asking each exactly once (see
+    /// <see cref="IHostedAgentRuntimeFactory.DescribeUnattendedSupport"/> — the gated reviewers spawn
+    /// their vendor binary to answer). Pure over the factory list, same reasoning as
+    /// <see cref="ShouldWarnCursorUnavailable"/>, so both the advertisement and its diagnostic are
+    /// testable without spinning up the whole DI host <see cref="RunAsync"/> builds.
+    /// </summary>
+    internal static IReadOnlyList<UnattendedVendorStatus> ClassifyUnattendedVendors(
+            IEnumerable<IHostedAgentRuntimeFactory> factories) =>
+        factories
+            .Where(f => f.IsAvailable())
+            .Select(f => {
+                var support = f.DescribeUnattendedSupport();
+
+                return new UnattendedVendorStatus(f.Vendor, support.Supported, support.WithheldReason);
+            })
+            .OrderBy(s => s.Vendor, StringComparer.Ordinal)
+            .ToArray();
+
+    /// <summary>The advertised subset of a <see cref="ClassifyUnattendedVendors"/> result.</summary>
+    internal static string[] AdvertisedUnattendedVendors(IEnumerable<UnattendedVendorStatus> statuses) =>
+        statuses.Where(s => s.Advertised).Select(s => s.Vendor).ToArray();
+
+    /// <summary>
     /// Vendor tokens this daemon can run fully unattended — a strict subset of
     /// <c>SupportedVendors</c> (installed) further filtered by
-    /// <see cref="IHostedAgentRuntimeFactory.SupportsUnattended"/>. Pulled out as a pure
-    /// function over the factory list (same reasoning as <see cref="ShouldWarnCursorUnavailable"/>)
-    /// so the reviewer-vendor-override capability advertisement is testable without spinning up
-    /// the whole DI host <see cref="RunAsync"/> builds.
+    /// <see cref="IHostedAgentRuntimeFactory.SupportsUnattended"/>. Kept as the convenience shape for
+    /// callers that need only the list, and expressed THROUGH
+    /// <see cref="ClassifyUnattendedVendors"/> so there is one rule rather than two that have to
+    /// agree. Prefer classifying once where the reasons are also wanted — this overload re-probes.
     /// </summary>
     internal static string[] ComputeUnattendedVendors(IEnumerable<IHostedAgentRuntimeFactory> factories) =>
-        factories
-            .Where(f => f.IsAvailable() && f.SupportsUnattended)
-            .Select(f => f.Vendor)
-            .OrderBy(v => v, StringComparer.Ordinal)
-            .ToArray();
+        AdvertisedUnattendedVendors(ClassifyUnattendedVendors(factories));
 
     internal const string ClaudeLauncherPolicyVersion = "claude-unattended-v1";
     internal const string CursorLauncherPolicyVersion = "cursor-unattended-v4";
     internal const string CodexLauncherPolicyVersion = "codex-unattended-v1";
     internal const string CopilotLauncherPolicyVersion = "copilot-unattended-v1";
 
+    /// <param name="advertised">The already-classified advertised vendors, when the caller has them.
+    /// Passing them avoids re-running a classification that spawns vendor binaries; omitting them
+    /// recomputes, which is what the tests and any other caller want.</param>
     internal static IReadOnlyList<UnattendedVendorCapability> ComputeUnattendedVendorCapabilities(
-            IEnumerable<IHostedAgentRuntimeFactory> factories, DaemonConfig config) {
-        var unattended = ComputeUnattendedVendors(factories);
+            IEnumerable<IHostedAgentRuntimeFactory> factories, DaemonConfig config,
+            IEnumerable<string>? advertised = null) {
+        var unattended = advertised?.ToArray() ?? ComputeUnattendedVendors(factories);
         var capabilities = new List<UnattendedVendorCapability>();
         foreach (var vendor in unattended) {
             var factory = factories.First(f => string.Equals(f.Vendor, vendor, StringComparison.Ordinal));
@@ -938,6 +1064,13 @@ public static partial class DaemonRunner {
 
     [LoggerMessage(Level = LogLevel.Information, Message = "Unattended vendor '{Vendor}': CLI version {CliVersion}, as observed by probing the configured binary at daemon startup. That is a startup observation, not the build a later reviewer runs — if the vendor updates while this daemon keeps running, launches pick up the new build and this line stays stale until the daemon restarts.")]
     static partial void LogUnattendedVendorIdentity(ILogger logger, string vendor, string cliVersion);
+
+    // Information, not Warning: a gated vendor installed with no opt-in is a NORMAL steady state (an
+    // operator may run Kiro or Gemini interactively only), so Warning would alert on a correct
+    // configuration at every restart. Default minimum level is Information, so it is logged either way.
+    // {Reason} ends the message because each reason is itself a sentence ending in a period.
+    [LoggerMessage(Level = LogLevel.Information, Message = "Vendor '{Vendor}' is installed and can host an unattended reviewer, but this daemon is NOT offering it, so a review flow requesting this vendor is refused by the server as an unadvertised reviewer — which does not say why. Restart the daemon after changing this. Reason: {Reason}")]
+    static partial void LogUnattendedVendorWithheld(ILogger logger, string vendor, string reason);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Cursor ACP runtime unavailable: cursor-agent CLI not found (looked for '{CursorPath}'). Cursor will not be offered as a hosted-agent vendor until this is fixed. Set KCAP_CURSOR_PATH to the cursor-agent executable, or install the Cursor CLI, then restart the daemon.")]
     static partial void LogCursorUnavailable(ILogger logger, string cursorPath);

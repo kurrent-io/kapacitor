@@ -32,4 +32,24 @@ public class DaemonDebugFramesFlagTests {
     public async Task ParseDebugFramesFlag_EverythingElse_ReturnsFalse(string? input) {
         await Assert.That(DaemonRunner.ParseDebugFramesFlag(input)).IsFalse();
     }
+
+    // KCAP_ACP_RECONNECT has the OPPOSITE default polarity: ON unless explicitly disabled.
+    [Test]
+    [Arguments("0")]
+    [Arguments("false")]
+    [Arguments("FALSE")]
+    [Arguments(" false ")]
+    public async Task ParseAcpReconnectFlag_OffValues_ReturnFalse(string input) {
+        await Assert.That(DaemonRunner.ParseAcpReconnectFlag(input)).IsFalse();
+    }
+
+    [Test]
+    [Arguments(null)]
+    [Arguments("")]
+    [Arguments("1")]
+    [Arguments("true")]
+    [Arguments("banana")]
+    public async Task ParseAcpReconnectFlag_EverythingElse_ReturnsTrue(string? input) {
+        await Assert.That(DaemonRunner.ParseAcpReconnectFlag(input)).IsTrue();
+    }
 }

@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
@@ -23,8 +24,11 @@ namespace Capacitor.Cli.Tests.Unit;
 /// </summary>
 public partial class AgentOrchestratorVendorTests {
     static (string repoPath, Action cleanup) CreateGitRepo() {
-        var repoPath = Path.Combine(Path.GetTempPath(), "kcap-orch-" + Guid.NewGuid().ToString("N")[..8]);
-        Directory.CreateDirectory(repoPath);
+        // Atomic and unique by OS guarantee. A hand-rolled "prefix + 8 hex chars of a GUID" path is
+        // 32 bits across 59 call sites, and since CreateDirectory is idempotent a collision silently
+        // SHARES a directory — after which either test's cleanup() recursively deletes the other's
+        // repo. Also closes the window between choosing a name and owning it.
+        var repoPath = Directory.CreateTempSubdirectory("kcap-orch-").FullName;
 
         Git(repoPath, "init", "-q");
         Git(repoPath, "config", "user.email", "test@example.com");
@@ -46,11 +50,149 @@ public partial class AgentOrchestratorVendorTests {
             RedirectStandardOutput = true,
             RedirectStandardError  = true
         };
-        using var proc = Process.Start(psi)!;
-        proc.WaitForExit();
 
-        if (proc.ExitCode != 0) {
-            throw new InvalidOperationException($"git {string.Join(' ', args)} failed: {proc.StandardError.ReadToEnd()}");
+        Process proc;
+
+        try {
+            proc = Process.Start(psi)!;
+        } catch (Win32Exception ex) {
+            // On Unix this spawn fails with the SAME ENOENT for two unrelated causes — (1) the
+            // working directory does not exist, (2) the executable was not found — and .NET
+            // interpolates the working directory into the message either way. A CI log therefore
+            // cannot say which happened. Capture both facts here so the next occurrence diagnoses
+            // itself.
+            var cwdExists = Directory.Exists(cwd);
+            var gitProbe  = ProbeGitStartable();
+            var resolved  = CliExecutable.Resolve("git");   // shared helper: PATHEXT + Unix exec bit
+
+            throw new InvalidOperationException(
+                $"Failed to start 'git {string.Join(' ', args)}'. " +
+                $"WorkingDirectory '{cwd}' exists: {cwdExists}. " +
+                $"'git' startable from a known-good directory: {gitProbe}. " +
+                $"'git' resolves to: {resolved ?? "NOT FOUND"}. " +
+                $"PATH={Environment.GetEnvironmentVariable("PATH")}",
+                ex);
+        }
+
+        using (proc) {
+            // Drain BOTH redirected streams before waiting. Redirecting a stream and never reading
+            // it risks the child blocking forever once the pipe buffer fills, which would turn a
+            // test failure into a hung run — the worst outcome, since a hang produces no report.
+            // These commands are quiet enough that it has not bitten, but the shape is the bug.
+            var stdout = proc.StandardOutput.ReadToEndAsync();
+            var stderr = proc.StandardError.ReadToEndAsync();
+
+            proc.WaitForExit();
+
+            var err = stderr.GetAwaiter().GetResult();
+            _       = stdout.GetAwaiter().GetResult();
+
+            if (proc.ExitCode != 0) {
+                throw new InvalidOperationException($"git {string.Join(' ', args)} failed: {err}");
+            }
+        }
+    }
+
+    /// <summary>
+    /// Guards the diagnostic itself. The intermittent failures this replaced were unresolvable
+    /// precisely because the message could not distinguish a missing working directory from a
+    /// missing executable, so the replacement message is now load-bearing and gets a test —
+    /// otherwise it is a diagnostic nobody has ever seen produce output.
+    ///
+    /// Uses a directory that was never created, so the spawn fails for a KNOWN reason and the
+    /// message can be checked against it. Cross-platform: Unix fails with ENOENT, Windows with
+    /// "the directory name is invalid", and both surface as Win32Exception.
+    /// </summary>
+    [Test]
+    public async Task Git_spawn_failure_reports_the_working_directory_and_PATH_resolution() {
+        var neverCreated = Path.Combine(
+            Path.GetTempPath(), "kcap-orch-never-created-" + Guid.NewGuid().ToString("N"));
+
+        await Assert.That(Directory.Exists(neverCreated)).IsFalse(); // precondition
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => Task.Run(() => Git(neverCreated, "init", "-q")));
+
+        // Names the ambiguity's first horn: the working directory.
+        await Assert.That(ex!.Message).Contains(neverCreated);
+        await Assert.That(ex.Message).Contains("exists: False");
+
+        // ...and its second horn, answered by actually starting git. Asserting only that the FIELD
+        // is present would pass while the probe reported NO for everything, leaving exactly the half
+        // of the ambiguity this exists to settle unverified. Every sibling test in this class spawns
+        // git successfully, so on any machine running this suite git IS startable — a NO here means
+        // the probe is broken, not the environment.
+        await Assert.That(ex.Message).Contains("startable from a known-good directory: YES");
+
+        // The shared resolver's answer is part of the diagnostic too — assert it found something,
+        // not merely that the field is present, for the same reason as above.
+        await Assert.That(ex.Message).DoesNotContain("resolves to: NOT FOUND");
+
+        // The original Win32Exception must be preserved, not swallowed for a prettier message.
+        await Assert.That(ex.InnerException).IsTypeOf<Win32Exception>();
+    }
+
+    /// <summary>
+    /// Answers "could this process start git at all?" by ASKING THE OS — spawning `git --version`
+    /// from a directory known to exist — rather than modelling executable resolution, which cannot
+    /// be done correctly here: `Process.Start` with UseShellExecute=false (forced by redirecting
+    /// streams) will not run a .cmd/.bat shim even though PATHEXT lists it, and a Unix execute bit
+    /// says nothing about EFFECTIVE permission or whether each PATH directory is traversable.
+    ///
+    /// Authoritative because it uses the same mechanism that just failed, and it splits the ENOENT
+    /// ambiguity: startable means the fault was the working directory, not startable means it was
+    /// the executable. `CliExecutable.Resolve` reports WHICH git alongside it.
+    /// </summary>
+    static string ProbeGitStartable() {
+        // Bounded so the diagnostic can never become the problem. This runs on a FAILURE path in a
+        // suite CI executes serially, so an unbounded wait would wedge the entire run and produce no
+        // report at all — strictly worse than the error it is trying to explain.
+        const int probeTimeoutMs = 10_000;
+
+        // "NO" must mean exactly one thing: git could not be STARTED. Post-start failures (stream
+        // reads, the wait, ExitCode, disposal) keep the YES, or they conflate the two facts this
+        // probe exists to separate. It must also NEVER throw — it runs inside the
+        // `catch (Win32Exception)` above, so an escaping exception would REPLACE the message.
+        Process? probe = null;
+
+        try {
+            try {
+                probe = Process.Start(new ProcessStartInfo("git", "--version") {
+                    WorkingDirectory       = Path.GetTempPath(), // known to exist; not the suspect dir
+                    RedirectStandardOutput = true,
+                    RedirectStandardError  = true
+                });
+            } catch (Exception startEx) {
+                return $"NO — {startEx.GetType().Name}: {startEx.Message}";
+            }
+
+            if (probe is null) return "NO — Process.Start returned null";
+
+            // Past here startability is PROVEN. Everything below is a separate fact and must keep
+            // the YES, however it goes wrong.
+            try {
+                var versionTask = probe.StandardOutput.ReadToEndAsync();
+                var errTask     = probe.StandardError.ReadToEndAsync();
+
+                if (!probe.WaitForExit(probeTimeoutMs)) {
+                    try { probe.Kill(entireProcessTree: true); } catch { /* best effort */ }
+
+                    return $"YES (startable; probe did not exit within {probeTimeoutMs}ms, killed)";
+                }
+
+                var version = versionTask.GetAwaiter().GetResult().Trim();
+                var err     = errTask.GetAwaiter().GetResult().Trim();
+
+                return probe.ExitCode == 0
+                    ? $"YES ({version})"
+                    : $"YES (startable; --version exited {probe.ExitCode}: {err})";
+            } catch (Exception afterStartEx) {
+                return $"YES (startable; probe failed after starting — " +
+                       $"{afterStartEx.GetType().Name}: {afterStartEx.Message})";
+            }
+        } finally {
+            // Disposal must not be able to change the verdict or escape.
+            try { probe?.Dispose(); } catch { /* best effort */ }
         }
     }
 
@@ -327,20 +469,27 @@ public partial class AgentOrchestratorVendorTests {
         await using var orch = BuildOrchestrator(
             server, ptyFactory, new Dictionary<string, IHostedAgentLauncher>(),
             extraRuntimeFactories: [codexSpy, claudeSpy], logger: logger);
-
-        await orch.HandleLaunchAgentForTest(new LaunchAgentCommand(
-            AgentId: agentId,
-            Prompt: "do a thing",
-            Model: "default",
-            Effort: null,
-            RepoPath: repoPath,
-            Tools: null,
-            AttachmentIds: null,
-            Vendor: vendor,
-            Kind: kind,
-            Borrowed: borrowed,
-            BorrowCwd: borrowed ? repoPath : null,
-            CodexPosture: posture));
+        var startsReviewerBridge = kind == LaunchKind.ReviewFlow && vendor == "codex";
+        if (startsReviewerBridge)
+            await orch.PermissionBridgeForTest.StartAsync(CancellationToken.None);
+        try {
+            await orch.HandleLaunchAgentForTest(new LaunchAgentCommand(
+                AgentId: agentId,
+                Prompt: "do a thing",
+                Model: "default",
+                Effort: null,
+                RepoPath: repoPath,
+                Tools: null,
+                AttachmentIds: null,
+                Vendor: vendor,
+                Kind: kind,
+                Borrowed: borrowed,
+                BorrowCwd: borrowed ? repoPath : null,
+                CodexPosture: posture));
+        } finally {
+            if (startsReviewerBridge)
+                await orch.PermissionBridgeForTest.DisposeAsync();
+        }
 
         return (server, codexSpy);
     }
@@ -396,7 +545,7 @@ public partial class AgentOrchestratorVendorTests {
     /// <summary>A snapshot-backed borrow maps to WorkLocation.OwnedWorktree, so `work` alone would
     /// wrongly qualify it as interactive and echo a posture the caller never chose. Guards the
     /// `!cmd.Borrowed` arm of the echo predicate.</summary>
-    [Test]
+    [Test, NotInParallel("LocalPermissionBridgeTests")]
     public async Task Snapshot_borrowed_launch_echoes_no_posture() {
         var (repoPath, cleanup) = CreateGitRepo();
 
@@ -413,32 +562,37 @@ public partial class AgentOrchestratorVendorTests {
             await using var orch = BuildOrchestrator(
                 server, ptyFactory, new Dictionary<string, IHostedAgentLauncher>(),
                 extraRuntimeFactories: [codexSpy]);
+            var bridge = orch.PermissionBridgeForTest;
+            await bridge.StartAsync(CancellationToken.None);
+            try {
+                await orch.HandleLaunchAgentForTest(new LaunchAgentCommand(
+                    AgentId: "agent-snapshot-borrow",
+                    Prompt: "hi",
+                    Model: "default",
+                    Effort: null,
+                    RepoPath: repoPath,
+                    Tools: null,
+                    AttachmentIds: null,
+                    Vendor: "codex",
+                    Kind: LaunchKind.Default,
+                    Borrowed: true,
+                    BorrowCwd: repoPath));
 
-            await orch.HandleLaunchAgentForTest(new LaunchAgentCommand(
-                AgentId: "agent-snapshot-borrow",
-                Prompt: "hi",
-                Model: "default",
-                Effort: null,
-                RepoPath: repoPath,
-                Tools: null,
-                AttachmentIds: null,
-                Vendor: "codex",
-                Kind: LaunchKind.Default,
-                Borrowed: true,
-                BorrowCwd: repoPath));
+                // The launch must actually REACH registration — otherwise an unrelated early failure
+                // would satisfy a "no non-null echo exists" assertion without ever exercising the
+                // predicate under test. Require exactly one registration, and require it to be null/null.
+                var registrations = server.AgentRegisteredPostures
+                    .Where(p => p.AgentId == "agent-snapshot-borrow")
+                    .ToList();
 
-            // The launch must actually REACH registration — otherwise an unrelated early failure
-            // would satisfy a "no non-null echo exists" assertion without ever exercising the
-            // predicate under test. Require exactly one registration, and require it to be null/null.
-            var registrations = server.AgentRegisteredPostures
-                .Where(p => p.AgentId == "agent-snapshot-borrow")
-                .ToList();
-
-            await Assert.That(registrations).Count().IsEqualTo(1);
-            await Assert.That(registrations[0].Sandbox).IsNull();
-            await Assert.That(registrations[0].Approval).IsNull();
-            // The runtime really started, so the snapshot-borrow path ran end to end.
-            await Assert.That(codexSpy.StartCalls).IsEqualTo(1);
+                await Assert.That(registrations).Count().IsEqualTo(1);
+                await Assert.That(registrations[0].Sandbox).IsNull();
+                await Assert.That(registrations[0].Approval).IsNull();
+                // The runtime really started, so the snapshot-borrow path ran end to end.
+                await Assert.That(codexSpy.StartCalls).IsEqualTo(1);
+            } finally {
+                await bridge.DisposeAsync();
+            }
         } finally {
             cleanup();
         }
@@ -458,7 +612,7 @@ public partial class AgentOrchestratorVendorTests {
         }
     }
 
-    [Test]
+    [Test, NotInParallel("LocalPermissionBridgeTests")]
     public async Task Review_flow_launch_echoes_no_posture() {
         // A reviewer's `never` is the containment invariant, not a selection — reporting it would
         // make every reviewer look like a user-chosen bridge-defeating launch.
@@ -1468,6 +1622,91 @@ public partial class AgentOrchestratorVendorTests {
         }
     }
 
+    /// <summary>
+    /// The request-level sibling of the capability-level test above: this vendor CAN select models,
+    /// but THIS request did not take (no availableModels match, or the agent rejected the config
+    /// option — the selector is best-effort and the vendor's default runs). The runtime's transcript
+    /// carries the confirmed outcome (<c>ResolvedModel == null</c>), and the registration must report
+    /// that — never the unresolved request the dashboard and analytics would otherwise claim is live.
+    /// </summary>
+    [Test]
+    public async Task Acp_launch_whose_requested_model_did_not_resolve_registers_no_model() {
+        var (repoPath, cleanup) = CreateGitRepo();
+
+        try {
+            var server        = new CaptureServerConnection();
+            var ptyFactory    = new SpyPtyProcessFactory();
+            var cursorFactory = new SpyAcpHostedAgentRuntimeFactory { ResolvedModel = null };
+
+            await using var orch = BuildOrchestrator(
+                server, ptyFactory, new Dictionary<string, IHostedAgentLauncher>(),
+                allowedRepoPath: repoPath, extraRuntimeFactories: [cursorFactory]);
+            orch.AcpFinalDrainBudget = TimeSpan.FromMilliseconds(200);
+
+            await orch.HandleLaunchAgentForTest(new LaunchAgentCommand(
+                AgentId: "agent-acp-unresolved",
+                Prompt: "do the thing",
+                Model: "claude-opus-4-8",
+                Effort: null,
+                RepoPath: repoPath,
+                Tools: null,
+                AttachmentIds: null,
+                Vendor: "cursor"));
+
+            // Not refused, and the REQUEST still reached the runtime (selection stays best-effort
+            // there) — this test is about what gets reported, not what gets attempted.
+            await Assert.That(server.LaunchFailedCalls).IsEmpty();
+            await Assert.That(cursorFactory.StartCalls).IsEqualTo(1);
+            await Assert.That(cursorFactory.LastContext!.Model).IsEqualTo("claude-opus-4-8");
+
+            await Assert.That(server.AgentRegisteredCalls).Contains(("agent-acp-unresolved", (string?)null));
+
+            await orch.HandleStopAgentForTest("agent-acp-unresolved");
+        } finally {
+            cleanup();
+        }
+    }
+
+    /// <summary>Paired positive: when the handshake CONFIRMS the applied model, the registration
+    /// reports the confirmed id — for ACP that is the vendor's own (possibly parameterized) form,
+    /// not necessarily the requested string. Proves the fix forwards the confirmation rather than
+    /// blanking every ACP launch's model.</summary>
+    [Test]
+    public async Task Acp_launch_whose_requested_model_resolved_registers_the_confirmed_id() {
+        var (repoPath, cleanup) = CreateGitRepo();
+
+        try {
+            var server        = new CaptureServerConnection();
+            var ptyFactory    = new SpyPtyProcessFactory();
+            var cursorFactory = new SpyAcpHostedAgentRuntimeFactory {
+                ResolvedModel = "claude-opus-4-8[thinking=true,context=200k]"
+            };
+
+            await using var orch = BuildOrchestrator(
+                server, ptyFactory, new Dictionary<string, IHostedAgentLauncher>(),
+                allowedRepoPath: repoPath, extraRuntimeFactories: [cursorFactory]);
+            orch.AcpFinalDrainBudget = TimeSpan.FromMilliseconds(200);
+
+            await orch.HandleLaunchAgentForTest(new LaunchAgentCommand(
+                AgentId: "agent-acp-resolved",
+                Prompt: "do the thing",
+                Model: "claude-opus-4-8",
+                Effort: null,
+                RepoPath: repoPath,
+                Tools: null,
+                AttachmentIds: null,
+                Vendor: "cursor"));
+
+            await Assert.That(server.LaunchFailedCalls).IsEmpty();
+            await Assert.That(server.AgentRegisteredCalls)
+                .Contains(("agent-acp-resolved", (string?)"claude-opus-4-8[thinking=true,context=200k]"));
+
+            await orch.HandleStopAgentForTest("agent-acp-resolved");
+        } finally {
+            cleanup();
+        }
+    }
+
     /// <summary>The other half of <see cref="ModelSelectionLaunchPolicy"/>: a PINNED reviewer model is
     /// different in kind from an interactive request. A review round's authority depends on which model
     /// produced it, so silently reviewing with the vendor default — even with truthful metadata — is
@@ -1812,6 +2051,7 @@ public partial class AgentOrchestratorVendorTests {
         public int     StartCalls  { get; private set; }
         public string? LastAgentId { get; private set; }
         public RuntimeStartContext? LastContext { get; private set; }
+        public Exception? StartThrow { get; init; }
 
         public FakeHostedAgentRuntime? LastRuntime { get; private set; }
 
@@ -1821,6 +2061,7 @@ public partial class AgentOrchestratorVendorTests {
             StartCalls++;
             LastAgentId = ctx.AgentId;
             LastContext = ctx;
+            if (StartThrow is not null) throw StartThrow;
 
             var runtime = new FakeHostedAgentRuntime(vendor, EmitsTerminalOutput);
             LastRuntime = runtime;

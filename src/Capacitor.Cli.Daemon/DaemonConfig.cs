@@ -146,6 +146,22 @@ public class DaemonConfig {
     public string KiroPath { get; set; } = "kiro-cli";
 
     /// <summary>
+    /// Daemon-wide default model for Kiro ACP sessions, e.g. <c>"claude-haiku-4.5"</c>, resolved
+    /// against <c>session/new</c>'s <c>availableModels</c> at launch time by
+    /// <c>AcpModelResolver.Resolve</c> (Kiro's ids are bare, unlike Cursor's parameterized ones,
+    /// but the resolution path is shared) and applied via <c>session/set_model</c> —
+    /// probe-verified at effect level (<c>docs/probes/2026-08-05-kiro-model-override/</c>).
+    /// Overridable via <c>KCAP_KIRO_MODEL</c>, mirroring <see cref="CursorModel"/>.
+    ///
+    /// <para>Unlike <see cref="CursorModel"/> the default is NULL, deliberately: zero-configuration
+    /// Kiro hosting keeps the vendor's own default model, with nothing requested and nothing
+    /// reported — the behaviour Kiro hosting shipped with. A per-launch model override
+    /// (<c>RuntimeStartContext.Model</c>) takes precedence over this daemon-wide default — see
+    /// <c>AcpHostedAgentRuntimeFactory</c>.</para>
+    /// </summary>
+    public string? KiroModel { get; set; }
+
+    /// <summary>
     /// Whether THIS daemon may run Gemini as an unattended review-flow reviewer. **Default false, and
     /// enabling it is the operator's consent event.**
     ///
@@ -156,17 +172,44 @@ public class DaemonConfig {
     /// who is not necessarily the person requesting the review, which is why the decision lives here in
     /// daemon-local configuration and not in the server's flow settings.</para>
     ///
-    /// <para>Enabling it does NOT bypass the certified-version check: the reviewer's only containment is the
-    /// vendor's exact-name MCP allowlist, whose semantics were certified against specific Gemini builds, so
-    /// an uncertified version is refused even when this is true. See
-    /// <c>GeminiReviewerCapability</c> and the Gemini reviewer design spec §2.9.</para>
+    /// <para>Enabling it does NOT bypass the build affirmation: the reviewer's only containment is the
+    /// vendor's exact-name MCP allowlist, which is a behaviour of the installed build, so a build other than
+    /// the affirmed one is refused even when this is true. Enabling seeds the affirmation from whatever is
+    /// installed, so that is only met after an upgrade. See <c>GeminiReviewerCapability</c>.</para>
+    ///
+    /// <para>Set via <c>KCAP_GEMINI_UNATTENDED_REVIEWER</c> in the DAEMON's environment, which for a
+    /// supervised daemon means the service unit — <c>ServiceEnvironment</c> carries it there, since a
+    /// unit inherits nothing from the installing shell.</para>
     /// </summary>
     public bool GeminiUnattendedReviewerEnabled { get; set; }
+
+    /// <summary>
+    /// Whether THIS daemon may run Kiro as an unattended review-flow reviewer. Off by default, and
+    /// turning it on is the operator's consent event — see <c>KiroReviewerCapability</c> for exactly
+    /// what is being consented to, which is broader than it looks: a trusted read tool is not
+    /// path-scoped, so a review can read every file this daemon user can read and return what it read
+    /// to whoever requested the review. Overridable via <c>KCAP_KIRO_UNATTENDED_REVIEWER</c>.
+    /// </summary>
+    public bool KiroUnattendedReviewerEnabled { get; set; }
+
+    /// <summary>
+    /// One absolute budget, in seconds, for a Kiro reviewer launch: spawn through the first prompt
+    /// completing. On expiry the child is terminated, its isolated home removed, and the launch fails
+    /// with a coded error.
+    ///
+    /// <para>Not a per-stage timeout — a fresh one per stage lets a slow sequence approach a multiple
+    /// of the budget. The failure it exists for is measured: an unauthenticated kiro-cli does not
+    /// error, it opens a browser prompt and stays alive indefinitely.</para>
+    /// </summary>
+    public int KiroReviewerLaunchTimeoutSeconds { get; set; } = 120;
 
     /// <summary>Reserved — see CopilotPath. Overridable via KCAP_OPENCODE_PATH.</summary>
     public string OpenCodePath { get; set; } = "opencode";
 
-    /// <summary>Reserved — see CopilotPath. Overridable via KCAP_GEMINI_PATH.</summary>
+    /// <summary>Path or bare command for Google Gemini CLI's ACP entry point, spawned as
+    /// <c>{GeminiPath} --experimental-acp …</c> by <c>AcpHostedAgentRuntimeFactory</c>. No longer
+    /// reserved: it drives interactive hosting AND the gated unattended reviewer, whose build-affirmation
+    /// probe reads whichever binary this names. Overridable via <c>KCAP_GEMINI_PATH</c>.</summary>
     public string GeminiPath { get; set; } = "gemini";
 
     /// <summary>
@@ -181,6 +224,17 @@ public class DaemonConfig {
     /// this is on, since the logged content may include sensitive payloads.
     /// </summary>
     public bool DebugFrames { get; set; }
+
+    /// <summary>
+    /// Kill switch for ACP hosted-agent crash reconnect/resume (<c>KCAP_ACP_RECONNECT</c>). Default
+    /// ON; set <c>0</c>/<c>false</c> to disable globally. When off — or for a vendor whose
+    /// descriptor is not probe-verified reconnect-capable, a launch that is a review flow, or a
+    /// session whose handshake didn't advertise <c>loadSession</c> — a child-process death keeps
+    /// today's behavior byte-for-byte: the read loop ends and the agent finalizes. Deliberately the
+    /// only knob: attempts, backoff, and the per-session resume cap are fixed constants
+    /// (reconnect spec §4).
+    /// </summary>
+    public bool AcpReconnectEnabled { get; set; } = true;
 
     /// <summary>
     /// Path to the kcap CLI binary. Used by the daemon to spawn auxiliary

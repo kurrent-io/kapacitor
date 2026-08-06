@@ -10,12 +10,37 @@ public sealed class SpectreTenantProvisioner(TenantProvisioningClient client, st
     const int PollIntervalMs = 4000;
     const int MaxPolls       = 150; // ~10 minutes (server budget is 15)
 
+    const string CreateChoice   = "Create a new workspace";
+    const string ExistingChoice = "I already have a workspace";
+    const string CancelChoice   = "Cancel";
+
     public async Task<ProvisionOffer> OfferCreateAsync(WorkOSTokenSource tokens, CancellationToken ct = default) {
-        AnsiConsole.MarkupLine("  [yellow]No Capacitor tenant is linked to your account.[/]");
-        var create = AnsiConsole.Prompt(new ConfirmationPrompt("  Create one now?") { DefaultValue = true });
-        if (!create) {
+        // Says what was actually established, not more: single sign-on returned nothing. Claiming
+        // "no tenant is linked to your account" is the very falsehood this prompt exists to stop —
+        // a GitHub-App workspace IS linked to the user and simply cannot appear in this lane.
+        AnsiConsole.MarkupLine("  [yellow]Single sign-on found no Capacitor workspace for your account.[/]");
+        AnsiConsole.MarkupLine("  [dim]A workspace that signs in with the GitHub App won't appear here.[/]");
+
+        // Three ways out, not two: discovery finding nothing does NOT mean the user has no
+        // workspace, so offering only "create one" sends an existing member off to make a second.
+        var choice = AnsiConsole.Prompt(
+            new SelectionPrompt<string>()
+                .Title("  How would you like to continue?")
+                .AddChoices(CreateChoice, ExistingChoice, CancelChoice));
+
+        if (choice == CancelChoice) {
             AnsiConsole.MarkupLine("  [dim]No tenant created.[/]");
             return ProvisionOffer.Declined;
+        }
+
+        if (choice == ExistingChoice) {
+            var workspace = AnsiConsole.Prompt(
+                new TextPrompt<string>("  Workspace slug or URL:").Validate(v =>
+                    string.IsNullOrWhiteSpace(v)
+                        ? ValidationResult.Error("Enter a workspace slug (e.g. acme) or a full server URL")
+                        : ValidationResult.Success()));
+
+            return ProvisionOffer.ExistingWorkspace(workspace.Trim());
         }
 
         var orgName = AnsiConsole.Prompt(

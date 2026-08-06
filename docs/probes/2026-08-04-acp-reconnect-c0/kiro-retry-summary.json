@@ -1,0 +1,139 @@
+{
+  "vendor": "kiro",
+  "argv": [
+    "kiro-cli",
+    "acp"
+  ],
+  "started": "2026-08-04T18:50:14.940492+00:00",
+  "notes": [
+    "initialize ok; loadSession=True",
+    "session/new ok; sessionId=d1cba58c-8137-49b7-8706-d7e8897b7f2d",
+    "turns A/B/C stopReasons: end_turn/end_turn/end_turn",
+    "SIGKILL fired after 4 live chunks of turn D",
+    "NOTE: turn D response arrived before/despite kill: {\"jsonrpc\": \"2.0\", \"result\": {\"stopReason\": \"end_turn\"}, \"id\": 6}",
+    "session/load ok=False err={\"code\": -32603, \"message\": \"Internal error\", \"data\": \"Failed to start session: Session is active in another process (PID 26121)\"}"
+  ],
+  "load_session_advertised": true,
+  "agent_capabilities": {
+    "loadSession": true,
+    "promptCapabilities": {
+      "image": true,
+      "audio": false,
+      "embeddedContext": false
+    },
+    "mcpCapabilities": {
+      "http": true,
+      "sse": false
+    },
+    "sessionCapabilities": {},
+    "auth": {}
+  },
+  "session_id": "d1cba58c-8137-49b7-8706-d7e8897b7f2d",
+  "turn_a_stop": "end_turn",
+  "turn_b_stop": "end_turn",
+  "turn_c_stop": "end_turn",
+  "kill_fired_after_chunks": 4,
+  "turn_d_response_after_kill": true,
+  "load_response": {
+    "jsonrpc": "2.0",
+    "error": {
+      "code": -32603,
+      "message": "Internal error",
+      "data": "Failed to start session: Session is active in another process (PID 26121)"
+    },
+    "id": 4
+  },
+  "load_attempts": [
+    {
+      "after_delay_s": 0,
+      "ok": false,
+      "err": {
+        "code": -32603,
+        "message": "Internal error",
+        "data": "Failed to start session: Session is active in another process (PID 26121)"
+      }
+    },
+    {
+      "after_delay_s": 15,
+      "ok": false,
+      "err": {
+        "code": -32603,
+        "message": "Internal error",
+        "data": "Failed to start session: Session is active in another process (PID 26121)"
+      }
+    },
+    {
+      "after_delay_s": 45,
+      "ok": false,
+      "err": {
+        "code": -32603,
+        "message": "Internal error",
+        "data": "Failed to start session: Session is active in another process (PID 26121)"
+      }
+    }
+  ],
+  "replay_load_ok": false,
+  "replay_load_error": {
+    "code": -32603,
+    "message": "Internal error",
+    "data": "Failed to start session: Session is active in another process (PID 26121)"
+  },
+  "ended": "2026-08-04T18:52:25.124804+00:00",
+  "interrupted_turn_replay_shape": "absent",
+  "live_analysis": {
+    "kinds": {
+      "agent_thought_chunk": 54,
+      "agent_message_chunk": 21,
+      "tool_call": 6,
+      "tool_call_update": 8
+    },
+    "keys_by_kind": {
+      "agent_thought_chunk": [
+        "content",
+        "sessionUpdate"
+      ],
+      "agent_message_chunk": [
+        "content",
+        "sessionUpdate"
+      ],
+      "tool_call": [
+        "_meta",
+        "kind",
+        "rawInput",
+        "sessionUpdate",
+        "title",
+        "toolCallId"
+      ],
+      "tool_call_update": [
+        "content",
+        "kind",
+        "rawInput",
+        "rawOutput",
+        "sessionUpdate",
+        "status",
+        "title",
+        "toolCallId"
+      ]
+    },
+    "msgid_values": {},
+    "tool_call_ids": [
+      "call_7c7bdc8527634baab4c08038",
+      "call_802389f3d1e046bea57a8c25",
+      "call_e0f18698bf4c4c299835152d",
+      "call_019588dddf5647b6ad7b31d6",
+      "call_8f34bf04809e48728f383ffd",
+      "call_d2d29f86af93410681599cd5"
+    ]
+  },
+  "replay_analysis": {
+    "kinds": {},
+    "keys_by_kind": {},
+    "msgid_values": {},
+    "tool_call_ids": [],
+    "user_chunks": [],
+    "after_response_conversation": 0,
+    "trailer_kinds_after_response": []
+  },
+  "live_vs_replay_msgid_overlap": {},
+  "tool_call_id_overlap": 0
+}

@@ -73,15 +73,25 @@ public class AcpVendorDescriptorTests {
         await Assert.That(descriptor.Vendor).IsEqualTo("kiro");
         await Assert.That(descriptor.Argv.SequenceEqual(["acp"])).IsTrue();
 
-        // Interactive hosting only. Kiro inherits the user's GLOBAL ~/.kiro/settings/mcp.json servers
-        // into every ACP session, so an unattended reviewer would be handed kcap-flows and could start
-        // nested review flows. Unattended stays off until its own issue lands the containment
-        // mechanism; the empty trust argv is enforced by the constructor when SupportsUnattended is
-        // false, and Disabled is the policy that pairs with it.
-        await Assert.That(descriptor.SupportsUnattended).IsFalse();
+        // Unattended review is ON. The containment that was missing is now source suppression: a
+        // review launch runs with a daemon-owned EMPTY KIRO_HOME (so the operator's global
+        // ~/.kiro/settings/mcp.json servers, kcap-flows among them, do not initialize), and
+        // branch-authored workspace config is removed at the worktree layer.
+        await Assert.That(descriptor.SupportsUnattended).IsTrue();
+
+        // The fixed trust argv stays EMPTY and the BUILDER carries it, because the value depends on
+        // what this launch injects: a review with an MCP allowlist gets servers whose tools a fixed
+        // list could not name, and under Fail their first call would end the round. The constructor
+        // rejects carrying both.
         await Assert.That(descriptor.UnattendedTrustArgv.IsEmpty).IsTrue();
+        await Assert.That(descriptor.UnattendedTrustArgvBuilder).IsNotNull();
+
+        // AllowlistedAutoApprove, measured rather than preferred. Fail's premise -- a scoped-trust
+        // reviewer raises no frame -- is false on kiro-cli 2.16.0: a live round raised one for the
+        // result tool that IS in this launch's trust list. AutoApprove is not the alternative, since
+        // it does not inspect the tool at all.
         await Assert.That(descriptor.UnattendedInteractionPolicy)
-            .IsEqualTo(AcpUnattendedInteractionPolicy.Disabled);
+            .IsEqualTo(AcpUnattendedInteractionPolicy.AllowlistedAutoApprove);
         await Assert.That(descriptor.SupportsBorrowedReviewFlow).IsFalse();
         await Assert.That(descriptor.BorrowedReviewContainment)
             .IsEqualTo(AcpBorrowedReviewContainment.None);
@@ -96,11 +106,14 @@ public class AcpVendorDescriptorTests {
         await Assert.That(descriptor.ReviewFlowMcpTransport)
             .IsEqualTo(AcpReviewFlowMcpTransport.SessionNew);
 
-        // NoOp, not ConfigOptionModelSelector. Kiro's session/new DOES return a models object, so the
-        // selector's read half would find its shape — but the write half
-        // (session/set_config_option taking effect) is unverified, and that selector fails SILENTLY.
-        // A live selector would risk a session reporting one model while running another.
-        await Assert.That(descriptor.ModelSelector).IsEqualTo(NoOpModelSelector.Instance);
+        // SetModelSelector, not ConfigOptionModelSelector: probe-measured (docs/probes/
+        // 2026-08-05-kiro-model-override/, kiro-cli 2.16.0) — session/set_config_option does not
+        // exist on Kiro (-32601 Method not found), while session/set_model succeeds AND takes
+        // effect: the very next turn's backend request carried the requested modelId, the reply
+        // self-identified as it, and Kiro's own session state persisted it with model-specific
+        // parameters. Not NoOp either — that deferral existed only while the write half was
+        // unverified.
+        await Assert.That(descriptor.ModelSelector).IsEqualTo(SetModelSelector.Instance);
     }
 
     [Test]
@@ -128,14 +141,18 @@ public class AcpVendorDescriptorTests {
             .IsEqualTo("kiro-cli");
     }
 
-    /// <summary>Model override is out of scope until <c>session/set_config_option</c> is verified on
-    /// Kiro, so no daemon-wide default model is offered either — for ANY config, including one whose
-    /// other vendor model fields are populated.</summary>
+    /// <summary>Zero-configuration behaviour is unchanged from the no-override era: with no
+    /// <c>KiroModel</c> configured the descriptor offers no daemon-wide default — Kiro runs its own
+    /// default model and none is reported — and ANOTHER vendor's model field must never leak in.
+    /// When <c>KiroModel</c> IS configured it is the daemon-wide default, resolved against
+    /// <c>session/new</c>'s <c>availableModels</c> at launch like Cursor's.</summary>
     [Test]
-    public async Task Kiro_ResolveDefaultModel_IsAlwaysNull() {
+    public async Task Kiro_ResolveDefaultModel_ReadsConfigKiroModel_NullByDefault() {
         await Assert.That(AcpVendorDescriptors.Kiro.ResolveDefaultModel(new DaemonConfig())).IsNull();
         await Assert.That(AcpVendorDescriptors.Kiro.ResolveDefaultModel(
             new DaemonConfig { CursorModel = "claude-opus-4-8" })).IsNull();
+        await Assert.That(AcpVendorDescriptors.Kiro.ResolveDefaultModel(
+            new DaemonConfig { KiroModel = "claude-haiku-4.5" })).IsEqualTo("claude-haiku-4.5");
     }
 
     [Test]
@@ -370,5 +387,42 @@ public class AcpVendorDescriptorTests {
             SupportsMcpServers:          false,
             SupportsBorrowedReviewFlow: true
         )).Throws<ArgumentException>();
+    }
+
+    /// <summary>Reconnect eligibility is a PROBE-VERIFIED per-vendor fact (the 2026-08-04 C0
+    /// re-probe, docs/probes/2026-08-04-acp-reconnect-c0/), never inferred from the advertised
+    /// loadSession capability — all four vendors advertise it, two measurably cannot honor it
+    /// across a crashed owner. Flipping Kiro or Gemini requires a passing probe re-run.</summary>
+    [Test]
+    public async Task Reconnect_resume_is_probe_verified_per_vendor() {
+        await Assert.That(AcpVendorDescriptors.Cursor.SupportsReconnectResume).IsTrue();
+        await Assert.That(AcpVendorDescriptors.Copilot.SupportsReconnectResume).IsTrue();
+        await Assert.That(AcpVendorDescriptors.Kiro.SupportsReconnectResume).IsFalse();
+        await Assert.That(AcpVendorDescriptors.Gemini.SupportsReconnectResume).IsFalse();
+    }
+
+    /// <summary>
+    /// Kiro aliases (its MCP tripwire compares launch-unique names) but carries NO exact-name MCP
+    /// allowlist argv. One predicate used to gate both, so turning aliasing on for Kiro without this
+    /// split would run Gemini's placeholder substitution and canonical-argv assertion against a vendor
+    /// that has neither, and route it through Gemini's capability gate.
+    /// </summary>
+    [Test]
+    public async Task Kiro_AliasesItsResultChannel_ButCarriesNoMcpNameAllowlistArgv() {
+        var kiro = AcpVendorDescriptors.Kiro;
+
+        await Assert.That(AcpHostedAgentRuntimeFactory.AliasesResultChannel(kiro)).IsTrue();
+        await Assert.That(AcpHostedAgentRuntimeFactory.UsesMcpNameAllowlistArgv(kiro)).IsFalse();
+        await Assert.That(kiro.Argv.Contains(AcpVendorDescriptors.UnmatchableMcpNamePlaceholder)).IsFalse();
+    }
+
+    /// <summary>The control: Gemini must keep BOTH, or the split silently disabled its clamp.</summary>
+    [Test]
+    public async Task Gemini_KeepsBothAliasingAndTheAllowlistArgv() {
+        var gemini = AcpVendorDescriptors.Gemini;
+
+        await Assert.That(AcpHostedAgentRuntimeFactory.AliasesResultChannel(gemini)).IsTrue();
+        await Assert.That(AcpHostedAgentRuntimeFactory.UsesMcpNameAllowlistArgv(gemini)).IsTrue();
+        await Assert.That(gemini.Argv.Contains(AcpVendorDescriptors.UnmatchableMcpNamePlaceholder)).IsTrue();
     }
 }

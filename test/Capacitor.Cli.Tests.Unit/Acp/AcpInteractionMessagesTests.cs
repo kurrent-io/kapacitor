@@ -71,35 +71,101 @@ public class AcpInteractionMessagesTests {
     }
 
     [Test]
-    public async Task ElicitationCreateParams_omits_optional_fields_when_null_and_round_trips_when_present() {
-        var minimal = new ElicitationCreateParams("sess-1", "Pick one");
-        var minimalJson = JsonSerializer.Serialize(minimal, CapacitorJsonContext.Default.ElicitationCreateParams);
-        await Assert.That(minimalJson).DoesNotContain(@"""options""");
-        await Assert.That(minimalJson).DoesNotContain(@"""requestedSchema""");
+    public async Task ElicitationCreateParams_parses_stabilized_form_frame_and_tolerates_unknown_members() {
+        // Stabilized wire shape: mode + requestedSchema; no draft-era "options" member exists.
+        var json = """{"sessionId":"sess-1","message":"Pick one","mode":"form","requestedSchema":{"type":"object","properties":{"choice":{"type":"string","enum":["a"]}}},"_meta":{"vendor":true},"novelMember":1}""";
+        var back = JsonSerializer.Deserialize(json, CapacitorJsonContext.Default.ElicitationCreateParams)!;
 
-        var schema = JsonDocument.Parse("""{"type":"string"}""").RootElement.Clone();
-        var full = new ElicitationCreateParams(
-            "sess-1", "Pick one",
-            Options: [new PermissionOptionDto("opt-a", "A", "allow_once")],
-            RequestedSchema: schema
-        );
-        var fullJson = JsonSerializer.Serialize(full, CapacitorJsonContext.Default.ElicitationCreateParams);
-        await Assert.That(fullJson).Contains(@"""requestedSchema""");
-        await Assert.That(fullJson).Contains(@"""options""");
-
-        var back = JsonSerializer.Deserialize(fullJson, CapacitorJsonContext.Default.ElicitationCreateParams)!;
+        await Assert.That(back.SessionId).IsEqualTo("sess-1");
         await Assert.That(back.Message).IsEqualTo("Pick one");
-        await Assert.That(back.Options![0].OptionId).IsEqualTo("opt-a");
-        await Assert.That(back.RequestedSchema!.Value.GetProperty("type").GetString()).IsEqualTo("string");
+        await Assert.That(back.Mode).IsEqualTo("form");
+        await Assert.That(back.RequestedSchema!.Value.GetProperty("type").GetString()).IsEqualTo("object");
+        await Assert.That(back.RequestId).IsNull();
+        await Assert.That(back.ElicitationId).IsNull();
+        await Assert.That(back.Url).IsNull();
     }
 
     [Test]
-    public async Task ElicitationCreateResult_round_trips() {
-        var src  = new ElicitationCreateResult(new PermissionOutcomeDto("cancelled"));
-        var json = JsonSerializer.Serialize(src, CapacitorJsonContext.Default.ElicitationCreateResult);
-        var back = JsonSerializer.Deserialize(json, CapacitorJsonContext.Default.ElicitationCreateResult)!;
+    public async Task ElicitationCreateParams_tolerates_json_null_message_and_request_id() {
+        // The wire can legally carry JSON null for nullable members and a request-scoped frame
+        // carries requestId — deserialization must not throw; the bridge owns the semantics.
+        var json = """{"requestId":null,"message":null,"mode":"form","requestedSchema":{"type":"object"}}""";
+        var back = JsonSerializer.Deserialize(json, CapacitorJsonContext.Default.ElicitationCreateParams)!;
 
-        await Assert.That(back.Outcome.Outcome).IsEqualTo("cancelled");
+        await Assert.That(back.Message).IsNull();
+        await Assert.That(back.SessionId).IsNull();
+        // JSON null deserializes into a Null-kind element (or null) — either way "not present".
+        await Assert.That(back.RequestId is null || back.RequestId.Value.ValueKind == JsonValueKind.Null).IsTrue();
+
+        var urlMode = """{"sessionId":"s","message":"Visit","mode":"url","elicitationId":"e1","url":"https://example.com/x"}""";
+        var urlBack = JsonSerializer.Deserialize(urlMode, CapacitorJsonContext.Default.ElicitationCreateParams)!;
+        await Assert.That(urlBack.Mode).IsEqualTo("url");
+        await Assert.That(urlBack.ElicitationId).IsEqualTo("e1");
+        await Assert.That(urlBack.Url).IsEqualTo("https://example.com/x");
+    }
+
+    [Test]
+    public async Task ElicitationResponse_serializes_stabilized_action_content_shape_exactly() {
+        var multi = new ElicitationResponse("accept", new Dictionary<string, JsonElement> {
+            ["areas"] = JsonDocument.Parse("""["a","b"]""").RootElement.Clone()
+        });
+        var multiJson = JsonSerializer.Serialize(multi, CapacitorJsonContext.Default.ElicitationResponse);
+        await Assert.That(multiJson).IsEqualTo("""{"action":"accept","content":{"areas":["a","b"]}}""");
+
+        var single = new ElicitationResponse("accept", new Dictionary<string, JsonElement> {
+            ["choice"] = JsonDocument.Parse(@"""a""").RootElement.Clone()
+        });
+        var singleJson = JsonSerializer.Serialize(single, CapacitorJsonContext.Default.ElicitationResponse);
+        await Assert.That(singleJson).IsEqualTo("""{"action":"accept","content":{"choice":"a"}}""");
+
+        // cancel carries NO content member at all — not a null one.
+        var cancel = new ElicitationResponse("cancel", null);
+        var cancelJson = JsonSerializer.Serialize(cancel, CapacitorJsonContext.Default.ElicitationResponse);
+        await Assert.That(cancelJson).IsEqualTo("""{"action":"cancel"}""");
+    }
+
+    [Test]
+    public async Task AcpInteractionDecision_round_trips_selection_lists_and_tolerates_their_absence() {
+        var withLists = new AcpInteractionDecision(
+            "answered", "a", "Alpha", null, null, null,
+            SelectedOptionIds: ["a", "b"], SelectedOptionLabels: ["Alpha", "Beta"]);
+        var json = JsonSerializer.Serialize(withLists, CapacitorJsonContext.Default.AcpInteractionDecision);
+        await Assert.That(json).Contains(@"""selected_option_ids"":[""a"",""b""]");
+        await Assert.That(json).Contains(@"""selected_option_labels"":[""Alpha"",""Beta""]");
+
+        var back = JsonSerializer.Deserialize(json, CapacitorJsonContext.Default.AcpInteractionDecision);
+        await Assert.That(back.SelectedOptionIds!).IsEquivalentTo(new[] { "a", "b" });
+        await Assert.That(back.SelectedOptionId).IsEqualTo("a");
+
+        // Old-server payload: no list members, plus an unknown future member — must not throw,
+        // lists come back null (scalar path stays authoritative).
+        var legacy = """{"outcome":"answered","selected_option_id":"a","selected_option_label":"Alpha","unknown_future_member":{"x":1}}""";
+        var legacyBack = JsonSerializer.Deserialize(legacy, CapacitorJsonContext.Default.AcpInteractionDecision);
+        await Assert.That(legacyBack.SelectedOptionIds).IsNull();
+        await Assert.That(legacyBack.SelectedOptionId).IsEqualTo("a");
+    }
+
+    [Test]
+    public async Task AcpInteractionRequest_round_trips_selection_bounds_and_tolerates_their_absence() {
+        var src = new AcpInteractionRequest(
+            AgentId: "agent-1", AcpSessionId: "acp-sess-1", Kind: "elicitation",
+            ToolName: null, ToolInput: null, ToolCallId: null, Prompt: "Pick",
+            Options: [new AcpInteractionOption("a", "Alpha", null)],
+            IsMultiSelect: true, RequestedSchema: null,
+            MinSelections: 1, MaxSelections: 2);
+
+        var json = JsonSerializer.Serialize(src, CapacitorJsonContext.Default.AcpInteractionRequest);
+        await Assert.That(json).Contains(@"""min_selections"":1");
+        await Assert.That(json).Contains(@"""max_selections"":2");
+
+        var back = JsonSerializer.Deserialize(json, CapacitorJsonContext.Default.AcpInteractionRequest);
+        await Assert.That(back.MinSelections).IsEqualTo(1);
+        await Assert.That(back.MaxSelections).IsEqualTo(2);
+
+        var legacy = """{"agent_id":"agent-1","acp_session_id":"s","kind":"elicitation","is_multi_select":false}""";
+        var legacyBack = JsonSerializer.Deserialize(legacy, CapacitorJsonContext.Default.AcpInteractionRequest);
+        await Assert.That(legacyBack.MinSelections).IsNull();
+        await Assert.That(legacyBack.MaxSelections).IsNull();
     }
 
     [Test]

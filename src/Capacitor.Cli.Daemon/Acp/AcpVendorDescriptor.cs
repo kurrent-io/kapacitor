@@ -21,7 +21,15 @@ internal enum AcpReviewFlowMcpTransport {
 internal enum AcpUnattendedInteractionPolicy {
     Disabled,
     AutoApprove,
-    Fail
+    Fail,
+
+    /// <summary>Approve a frame that names only tools THIS launch injected; treat every other frame
+    /// exactly as <see cref="Fail"/> does. The middle ground the other two cannot express:
+    /// <see cref="AutoApprove"/> does not inspect the tool, and <see cref="Fail"/> assumes a correctly
+    /// configured reviewer never raises a frame — measurably false on Kiro, which intermittently
+    /// prompts for a tool that is in its own trust list. See <see cref="UnattendedToolAdmission"/>.
+    /// </summary>
+    AllowlistedAutoApprove
 }
 
 /// <summary>The security boundary used to serve borrowed-checkout context without exposing the
@@ -75,7 +83,8 @@ internal enum AcpBorrowedReviewContainment {
 /// the field removes the dead state and the asymmetric guard together: there is exactly one thing
 /// to get right — which selector object the descriptor carries — not a boolean that also has to
 /// agree with it. This also drops any expectation that <c>ModelSelector</c> be
-/// <c>ReferenceEquals</c> to one of the two singletons below: the runtime only needs SOME
+/// <c>ReferenceEquals</c> to one of the selector singletons (<c>ConfigOptionModelSelector</c>,
+/// <c>SetModelSelector</c>, <c>NoOpModelSelector</c>): the runtime only needs SOME
 /// <see cref="IAcpModelSelector"/>, so a future vendor's own implementation, or a test double, is
 /// exactly as valid.
 ///
@@ -102,6 +111,16 @@ internal sealed record AcpVendorDescriptor {
     public Func<DaemonConfig, string?> ResolveDefaultModel   { get; }
     public ImmutableArray<string>      Argv                   { get; }
     public ImmutableArray<string>      UnattendedTrustArgv    { get; }
+
+    /// <summary>Builds this vendor's unattended trust argv from the launch's OWN injected MCP specs,
+    /// when a fixed <see cref="UnattendedTrustArgv"/> cannot express it. Mutually exclusive with it.
+    ///
+    /// <para>Null for every vendor whose trust argv is a constant. Present for Kiro, whose SCOPED
+    /// trust list has to name the per-launch wire name of everything <c>session/new</c> injects — a
+    /// fixed list would omit the review's allowlist servers, and under the <c>Fail</c> policy their
+    /// first tool call would end the round.</para></summary>
+    public Func<IReadOnlyList<Core.Acp.AcpMcpServerSpec>, LaunchIdentity, ImmutableArray<string>>?
+                                       UnattendedTrustArgvBuilder { get; }
     public bool                        SupportsUnattended     { get; }
     public AcpUnattendedInteractionPolicy UnattendedInteractionPolicy { get; }
     public IAcpModelSelector           ModelSelector          { get; }
@@ -109,6 +128,22 @@ internal sealed record AcpVendorDescriptor {
     public AcpReviewFlowMcpTransport   ReviewFlowMcpTransport { get; }
     public bool                        SupportsBorrowedReviewFlow { get; }
     public AcpBorrowedReviewContainment BorrowedReviewContainment { get; }
+
+    /// <summary>
+    /// Whether an INTERACTIVE hosted session of this vendor may attempt crash reconnect/resume
+    /// (relaunch → <c>initialize</c> → <c>session/load</c>, replay suppressed). This is a
+    /// PROBE-VERIFIED fact, never inferred from the vendor's advertised <c>loadSession</c>
+    /// capability — all four registered vendors advertise it, and two measurably cannot honor it
+    /// across a crashed owner (<c>docs/probes/2026-08-04-acp-reconnect-c0/</c>): Kiro refuses with a
+    /// durable stale-owner lock ("Session is active in another process", identical at 0/15/60s), and
+    /// Gemini never persists a crash-killed session ("No previous sessions found"). Flipping a
+    /// vendor to <see langword="true"/> requires a passing re-run of that probe, because the resume
+    /// path additionally relies on the vendor honoring the ACP session/load response-after-replay
+    /// barrier — a violation would duplicate transcript content. Runtime eligibility is conjunctive
+    /// with the handshake's actual <c>loadSession</c> advertisement, an interactive (non-review)
+    /// launch, and the <c>KCAP_ACP_RECONNECT</c> kill switch.
+    /// </summary>
+    public bool                        SupportsReconnectResume { get; }
 
     public AcpVendorDescriptor(
             string                      Vendor,
@@ -122,7 +157,10 @@ internal sealed record AcpVendorDescriptor {
             AcpReviewFlowMcpTransport   ReviewFlowMcpTransport = AcpReviewFlowMcpTransport.Default,
             bool                        SupportsBorrowedReviewFlow = false,
             AcpUnattendedInteractionPolicy UnattendedInteractionPolicy = AcpUnattendedInteractionPolicy.Disabled,
-            AcpBorrowedReviewContainment BorrowedReviewContainment = AcpBorrowedReviewContainment.None
+            AcpBorrowedReviewContainment BorrowedReviewContainment = AcpBorrowedReviewContainment.None,
+            bool                        SupportsReconnectResume = false,
+            Func<IReadOnlyList<Core.Acp.AcpMcpServerSpec>, LaunchIdentity, ImmutableArray<string>>?
+                                        UnattendedTrustArgvBuilder = null
         ) {
         var normalizedUnattendedTrustArgv = UnattendedTrustArgv.IsDefault ? ImmutableArray<string>.Empty : UnattendedTrustArgv;
 
@@ -130,6 +168,18 @@ internal sealed record AcpVendorDescriptor {
             throw new ArgumentException(
                 $"{nameof(UnattendedTrustArgv)} must be empty when {nameof(SupportsUnattended)} is false (vendor: {Vendor}).",
                 nameof(UnattendedTrustArgv));
+
+        if (!SupportsUnattended && UnattendedTrustArgvBuilder is not null)
+            throw new ArgumentException(
+                $"{nameof(UnattendedTrustArgvBuilder)} must be null when {nameof(SupportsUnattended)} is false (vendor: {Vendor}).",
+                nameof(UnattendedTrustArgvBuilder));
+
+        // Two sources for one argv is the ambiguity this rejects: a reader could not tell which wins,
+        // and the answer would live in the factory rather than here.
+        if (UnattendedTrustArgvBuilder is not null && !normalizedUnattendedTrustArgv.IsEmpty)
+            throw new ArgumentException(
+                $"{nameof(UnattendedTrustArgvBuilder)} and a non-empty {nameof(UnattendedTrustArgv)} are mutually exclusive (vendor: {Vendor}).",
+                nameof(UnattendedTrustArgvBuilder));
 
         if (SupportsBorrowedReviewFlow && !SupportsUnattended)
             throw new ArgumentException(
@@ -156,12 +206,14 @@ internal sealed record AcpVendorDescriptor {
         this.ResolveDefaultModel = ResolveDefaultModel;
         this.Argv                = Argv.IsDefault ? ImmutableArray<string>.Empty : Argv;
         this.UnattendedTrustArgv = normalizedUnattendedTrustArgv;
+        this.UnattendedTrustArgvBuilder = UnattendedTrustArgvBuilder;
         this.SupportsUnattended  = SupportsUnattended;
         this.UnattendedInteractionPolicy = UnattendedInteractionPolicy;
         this.ModelSelector       = ModelSelector;
         this.SupportsMcpServers  = SupportsMcpServers;
         this.SupportsBorrowedReviewFlow = SupportsBorrowedReviewFlow;
         this.BorrowedReviewContainment = BorrowedReviewContainment;
+        this.SupportsReconnectResume = SupportsReconnectResume;
         this.ReviewFlowMcpTransport = ReviewFlowMcpTransport switch {
             AcpReviewFlowMcpTransport.Default when SupportsMcpServers => AcpReviewFlowMcpTransport.SessionNew,
             AcpReviewFlowMcpTransport.Default                         => AcpReviewFlowMcpTransport.Unsupported,
@@ -192,13 +244,34 @@ internal static class AcpVendorDescriptors {
         SupportsMcpServers:  true,
         SupportsBorrowedReviewFlow: true,
         BorrowedReviewContainment: AcpBorrowedReviewContainment.IndependentSnapshot,
-        UnattendedInteractionPolicy: AcpUnattendedInteractionPolicy.Fail
+        UnattendedInteractionPolicy: AcpUnattendedInteractionPolicy.Fail,
+        // Probe-verified 2026-08-04 (docs/probes/2026-08-04-acp-reconnect-c0/): session/load works
+        // across a SIGKILLed owner, the response-after-replay barrier holds, and a loaded session
+        // prompts normally. Note the same probe found Cursor's replay REWRITES toolCallIds and
+        // drops the interrupted turn — both irrelevant to the suppress-the-replay resume, but they
+        // are why per-envelope replay matching stays impossible for this vendor.
+        SupportsReconnectResume: true
     );
 
     /// <summary>GitHub Copilot CLI as an ACP hosted agent (<c>copilot --acp --stdio</c>).
-    /// ACP itself advertises MCP over http/sse only, so interactive <c>session/new</c> stdio servers
-    /// stay disabled. Review flows preload their validated stdio servers through Copilot's
-    /// <c>--additional-mcp-config</c> process argument and clamp the visible tool surface.</summary>
+    ///
+    /// <para><b><see cref="AcpVendorDescriptor.SupportsMcpServers"/> is <c>false</c> on call-level
+    /// measurement, not on the <c>mcpCapabilities</c> advertisement</b> — the advertised
+    /// <c>{http, sse}</c> shape cannot decide this flag either way (Kiro and Gemini advertise exactly
+    /// the same shape and both honour stdio servers). Measured on macOS against Copilot CLI 1.0.78
+    /// (2026-08-04): a purpose-built stdio server passed in <c>session/new.mcpServers</c> is silently
+    /// ignored. <c>session/new</c> succeeds, but the server process is never spawned (its own log
+    /// stays empty), no tool-call frame ever references it, and the model reports the tool
+    /// unavailable — identical on the interactive argv and on the full unattended review argv, where
+    /// <c>--available-tools</c> additionally rejects the injected tool's flattened id as an unknown
+    /// tool name. The same server, same build, same driver preloaded through
+    /// <c>--additional-mcp-config</c> completes <c>initialize</c> → <c>tools/list</c> →
+    /// <c>tools/call</c> with the tool's nonce reaching the model and the turn ending
+    /// <c>end_turn</c> — so the negative is Copilot's <c>session/new</c> handling, not the probe.
+    /// Re-flip only on an equivalent call-level probe succeeding against a newer build.</para>
+    ///
+    /// <para>Review flows therefore preload their validated stdio servers through Copilot's
+    /// <c>--additional-mcp-config</c> process argument and clamp the visible tool surface.</para></summary>
     public static readonly AcpVendorDescriptor Copilot = new(
         Vendor:              "copilot",
         ResolveBinaryPath:   cfg => cfg.CopilotPath,
@@ -216,15 +289,29 @@ internal static class AcpVendorDescriptors {
         // reader who consulted it would get a containment token that no longer describes the launch.
         // If the platform special case were ever dropped, this default disables borrowed review
         // rather than silently permitting an unverified surface — the safe direction to fail.
-        UnattendedInteractionPolicy: AcpUnattendedInteractionPolicy.AutoApprove
+        UnattendedInteractionPolicy: AcpUnattendedInteractionPolicy.AutoApprove,
+        // Probe-verified 2026-08-04 (docs/probes/2026-08-04-acp-reconnect-c0/): session/load works
+        // across a SIGKILLed owner, the barrier holds, toolCallIds are stable, and — unlike
+        // Cursor — Copilot PERSISTS a mid-turn-killed prompt agent-side, which is why the
+        // interrupted-turn disposition keys on local send facts, never on replay content.
+        SupportsReconnectResume: true
     );
 
-    /// <summary>AWS Kiro CLI as an ACP hosted agent (<c>kiro-cli acp</c>). Interactive hosting only:
-    /// unattended review is deliberately withheld until its own issue lands the containment mechanism
-    /// (Kiro inherits the user's GLOBAL <c>~/.kiro/settings/mcp.json</c> servers into every ACP
-    /// session, so an unattended reviewer would be handed <c>kcap-flows</c> and could start nested
-    /// flows). Interactive hosting is unaffected by that inheritance — it is the desired behavior
-    /// there.
+    /// <summary>AWS Kiro CLI as an ACP hosted agent (<c>kiro-cli acp</c>). Hosted interactively and as
+    /// an unattended review-flow reviewer.
+    ///
+    /// <para><b>Unattended containment is SOURCE SUPPRESSION, not a tool clamp.</b> Kiro inherits the
+    /// operator's GLOBAL <c>~/.kiro/settings/mcp.json</c> servers into every ACP session, which would
+    /// hand a reviewer <c>kcap-flows</c> and let it start nested flows. A review launch therefore runs
+    /// with a daemon-owned, empty <c>KIRO_HOME</c> (measured: zero global servers initialize, while an
+    /// injected <c>session/new</c> server still starts), and branch-authored workspace config is
+    /// removed at the worktree layer. Interactive hosting keeps the inheritance — there it is the
+    /// desired behaviour.</para>
+    ///
+    /// <para><b>What is NOT contained, and is accepted.</b> A trusted <c>fs_read</c> is not
+    /// path-scoped, so an unattended reviewer can read anything the daemon user can. That is an
+    /// operator consent decision, gated by <c>KiroReviewerCapability</c>, not something the trust list
+    /// bounds.</para>
     ///
     /// <para><b><see cref="SupportsMcpServers"/> is <c>true</c> here while <see cref="Copilot"/> sets
     /// it <c>false</c>, and the reasoning is NOT contradictory.</b> Both vendors advertise the same
@@ -240,16 +327,15 @@ internal static class AcpVendorDescriptors {
     /// <c>tools/list</c>, refused by trust policy, mis-namespaced, or fail at invocation. Flipping
     /// Copilot's flag needs an equivalent call-level probe against Copilot, not this result.</para>
     ///
-    /// <para><see cref="NoOpModelSelector"/> is deliberate rather than inherited: Kiro's
-    /// <c>session/new</c> does return a <c>models</c> object, so the read half of
-    /// <see cref="ConfigOptionModelSelector"/> would find the shape it needs — but the write half
-    /// (<c>session/set_config_option</c> actually taking effect) is unverified on Kiro, and that
-    /// selector fails SILENTLY when it does not take. Carrying a live selector would risk a session
-    /// that reports the requested model while running another. <c>ResolveDefaultModel: null</c> alone
-    /// would not be enough, because <c>ResolveRequestedModel</c> prioritises a per-launch
-    /// <c>RuntimeStartContext.Model</c> and would reach a live selector anyway; the selector itself
-    /// has to be the no-op. Model override arrives with the follow-up that verifies the write
-    /// half.</para>
+    /// <para><see cref="SetModelSelector"/>, not <see cref="ConfigOptionModelSelector"/>: measured
+    /// (<c>docs/probes/2026-08-05-kiro-model-override/</c>, kiro-cli 2.16.0), Kiro answers
+    /// <c>session/set_config_option</c> with <c>-32601 Method not found</c> but honours
+    /// <c>session/set_model</c> at effect level — the evidence the earlier
+    /// <see cref="NoOpModelSelector"/> deferral was waiting for (detail on
+    /// <see cref="SetModelSelector"/> and in the probe record). <c>ResolveDefaultModel</c> reads
+    /// <c>DaemonConfig.KiroModel</c> (<c>KCAP_KIRO_MODEL</c>), default NULL: a zero-configuration
+    /// launch keeps Kiro's own default model with none reported; a per-launch
+    /// <c>RuntimeStartContext.Model</c> takes precedence as for Cursor.</para>
     ///
     /// <para><c>--agent-engine v1|v2|v3</c> (default <c>v2</c>) is deliberately NOT passed: pinning it
     /// diverges the hosted session from what the user gets interactively and buys an upgrade
@@ -257,12 +343,36 @@ internal static class AcpVendorDescriptors {
     public static readonly AcpVendorDescriptor Kiro = new(
         Vendor:              "kiro",
         ResolveBinaryPath:   cfg => cfg.KiroPath,
-        ResolveDefaultModel: _ => null,
+        ResolveDefaultModel: cfg => cfg.KiroModel,
         Argv:                ["acp"],
-        UnattendedTrustArgv: [],
-        SupportsUnattended:  false,
-        ModelSelector:       NoOpModelSelector.Instance,
-        SupportsMcpServers:  true
+        // Built PER LAUNCH from the same injected MCP specs and the same LaunchIdentity session/new
+        // gets: a fixed list would omit the review's allowlist servers, and under the Fail policy
+        // their first tool call would end the round. Never fs_write, never execute_bash.
+        UnattendedTrustArgv:        [],
+        UnattendedTrustArgvBuilder: KiroReviewerTrustList.BuildArgv,
+        SupportsUnattended:  true,
+        // AllowlistedAutoApprove, and the reason is measured rather than preferred.
+        //
+        // Fail was the original choice, on the premise that a scoped-trust reviewer emits no frame at
+        // all. That premise is FALSE on kiro-cli 2.16.0: a live seeded-defect round raised a
+        // session/request_permission for @kcap-flow-result/submit_review_result -- a tool that is in
+        // this launch's own --trust-tools -- while an identical arm raised none. Under Fail that
+        // intermittently reaps the reviewer on the very call that delivers its result.
+        //
+        // AutoApprove is not the alternative: it does not inspect the tool, so it would approve
+        // exactly the out-of-surface request the scoping exists to reject. This policy approves only
+        // the tools THIS launch injected and reaps anything else, which keeps the scoped posture --
+        // still no fs_write, still no execute_bash -- while surviving the vendor's prompt leak.
+        UnattendedInteractionPolicy: AcpUnattendedInteractionPolicy.AllowlistedAutoApprove,
+        ModelSelector:       SetModelSelector.Instance,
+        SupportsMcpServers:  true,
+        ReviewFlowMcpTransport: AcpReviewFlowMcpTransport.SessionNew,
+        // Measured INELIGIBLE 2026-08-04 (docs/probes/2026-08-04-acp-reconnect-c0/): Kiro advertises
+        // loadSession but refuses session/load after a SIGKILLed owner with a DURABLE stale-owner
+        // lock — "Failed to start session: Session is active in another process (PID <dead>)",
+        // byte-identical at 0s/+15s/+45s, so bounded-backoff retries cannot clear it. Flip only
+        // after a vendor fix AND a passing probe re-run.
+        SupportsReconnectResume: false
     );
 
     /// <summary>
@@ -282,7 +392,7 @@ internal static class AcpVendorDescriptors {
     internal const string UnmatchableMcpNamePlaceholder = "__kcap_unmatchable_mcp_name__";
 
     /// <summary>Google Gemini CLI as an ACP hosted agent (<c>gemini --experimental-acp</c>).
-    /// Interactive hosting only; the unattended reviewer is its own issue, as with Kiro.
+    /// Hosted interactively and as an unattended review-flow reviewer.
     ///
     /// <para><b><c>--skip-trust</c> is required, and is NOT a containment measure.</b> Gemini refuses a
     /// headless turn in an untrusted directory outright — <c>exit 55</c> before any model call — and a
@@ -300,18 +410,31 @@ internal static class AcpVendorDescriptors {
     /// unguessable name — reduces the allowlist to nothing the repository can match, which blocks it. Repo-authored <i>hooks</i> were separately measured NOT to run on the ACP path (they do
     /// on the <c>--prompt</c> path — the two paths differ, and neither predicts the other).</para>
     ///
-    /// <para><b>Denying everything is only correct while <see cref="AcpVendorDescriptor.SupportsMcpServers"/>
-    /// is false.</b> It permits nothing, so with nothing injected it costs nothing. The day the stdio
-    /// call-level probe flips that flag, this list must become the injected server names in the SAME
-    /// change, or hosted Gemini ships with MCP silently broken. <c>AcpVendorDescriptorTests</c> asserts
-    /// the coupling so the two cannot drift apart.</para>
+    /// <para><b>Deny-all is the launch default; a review launch opens the gate to exactly the servers it
+    /// injects.</b> The factory replaces the substituted value with the comma-joined names of the built
+    /// <c>session/new</c> list — the result channel plus any resolved allowlist servers (replace, never
+    /// append — the option is comma-coerced, so a second option occurrence would widen the gate rather
+    /// than move it). Every one of those names is a per-launch alias, because a canonical id is a fixed
+    /// public literal the reviewed repository could declare its own server under and have it spawned as
+    /// the daemon user (the impersonation shape measured in spec §2.3/§2.6; multi-name admission
+    /// measured on 0.53.0 — both admitted servers reach <c>tools/call</c>, an injected name outside the
+    /// gate never spawns). An interactive launch injects nothing and keeps the unguessable deny-all,
+    /// which permits nothing and costs nothing; a future interactive caller populating
+    /// <c>RuntimeStartContext.McpServers</c> must widen the gate in the same change.
+    /// <c>AcpVendorDescriptorTests</c> and <c>GeminiReviewerLaunchTests</c> assert both halves, the
+    /// latter pinning gate == injected set.</para>
     ///
-    /// <para><see cref="NoOpModelSelector"/> for the same reason as Kiro: <c>session/new</c> does return a
-    /// <c>models</c> object, so <see cref="ConfigOptionModelSelector"/>'s read half would fit, but its
-    /// write half is unverified on Gemini and that selector fails SILENTLY — a session that reports the
-    /// requested model while running another. <c>ResolveDefaultModel: null</c> alone is not enough,
-    /// because <c>ResolveRequestedModel</c> prioritises a per-launch model and would reach a live
-    /// selector anyway.</para>
+    /// <para><see cref="NoOpModelSelector"/> because Gemini's model-selection WRITE half is
+    /// unverified: <c>session/new</c> does return a <c>models</c> object, so a live selector's read
+    /// half would fit, but both wire selectors fail SILENTLY when the write does not take — a
+    /// session that reports the requested model while running another. <c>ResolveDefaultModel:
+    /// null</c> alone is not enough, because <c>ResolveRequestedModel</c> prioritises a per-launch
+    /// model and would reach a live selector anyway. Kiro's probe
+    /// (<c>docs/probes/2026-08-05-kiro-model-override/</c>) is the template for flipping this: it
+    /// found Kiro rejects <c>session/set_config_option</c> outright but honours
+    /// <c>session/set_model</c> at effect level — Gemini needs its own equivalent effect-level
+    /// measurement (which method, and does the turn actually run on it) before carrying
+    /// <see cref="SetModelSelector"/> or <see cref="ConfigOptionModelSelector"/>.</para>
     ///
     /// <para><c>--approval-mode</c> is deliberately not passed: interactive hosting should behave as the
     /// user's own session does, and pinning <c>plan</c> would silently make hosted Gemini read-only.
@@ -337,6 +460,13 @@ internal static class AcpVendorDescriptors {
         // Fail rather than AutoApprove: with --approval-mode yolo, Gemini emits NO interaction frame at all,
         // so receiving one means the launch contract regressed (a dropped flag, a vendor change) and the
         // honest response is to reap the reviewer rather than auto-approve whatever it asked for (§3.4).
-        UnattendedInteractionPolicy: AcpUnattendedInteractionPolicy.Fail
+        UnattendedInteractionPolicy: AcpUnattendedInteractionPolicy.Fail,
+        // Measured INELIGIBLE 2026-08-04 (docs/probes/2026-08-04-acp-reconnect-c0/): Gemini
+        // advertises loadSession but a crash-killed session is never persisted — session/load
+        // refuses with "No previous sessions found for this project", so there is nothing to
+        // resume. Gemini also self-re-execs (a sandbox wrapper spawns an inner process with
+        // identical argv), so "the spawned pid exited" and "the agent died" are different events;
+        // any future enablement must re-probe BOTH persistence and process-tree semantics.
+        SupportsReconnectResume: false
     );
 }

@@ -13,7 +13,20 @@ namespace Capacitor.Cli.Daemon.Services;
 /// </summary>
 public record WorktreeInfo(
         string Path, string Branch, string SourceRepo, bool IsStandalone = false,
-        string? FetchedRef = null, string? SnapshotRoot = null) {
+        string? FetchedRef = null, string? SnapshotRoot = null, string? ReviewContextRoot = null) {
+    internal BorrowedReviewContextGeneration? ReviewContextGeneration { get; init; }
+
+    /// <summary>The execution cwd as git spells it, relative to the work-tree top; empty at the root.
+    /// <para>Computed once at creation and carried, never recomputed. A per-round refresh has only a
+    /// TARGET-side execution path, so re-deriving would mean a filesystem-relative derivation — the exact
+    /// thing that lets the launch path and the exclusion classifier disagree. Null means "not a borrowed
+    /// snapshot"; a refresh that finds it null on one throws rather than falling back.</para>
+    /// <para>In-memory is sufficient today because the only refresh caller reads it off the
+    /// <c>AgentInstance</c> created at launch, and an <c>AgentInstance</c> does not survive a daemon
+    /// restart. If a durable agent registry is ever added, this must be part of what it persists.</para>
+    /// </summary>
+    public string? GitRelativeCwd { get; init; }
+
     /// <summary>A borrowed cwd (local in-place launch) the daemon does NOT own. Cleanup
     /// never removes it — the <see cref="AgentInstance.Work"/> guard enforces that.</summary>
     public static WorktreeInfo Borrowed(string cwd) => new(cwd, "", cwd, IsStandalone: false);
@@ -33,13 +46,11 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
     /// one that missed it, but the gap is real and is tracked separately (a borrowed reviewer cannot see a hostile config the change under review ADDS). Note it predates this change for
     /// the original two paths — folding the list in widened it from two files to eight rather than
     /// introducing it.</para></summary>
-    /// <para><b>Lazy, not a field initializer.</b> Static field initializers across PARTIAL FILES have no
-    /// useful ordering, and <c>WorkspaceMcpConfigPaths</c> lives in the other partial — as a field this read
-    /// it while still <c>default</c>, and spreading a default <c>ImmutableArray</c> threw inside the type
-    /// initializer, which would have broken every worktree creation at runtime.</para>
-    static string[]? _snapshotExcludedPaths;
-    internal static string[] SnapshotExcludedPaths =>
-        _snapshotExcludedPaths ??= [".capacitor", ".attached", .. WorkspaceMcpConfigPaths];
+    /// <para><b>Superseded by <see cref="SnapshotExclusionPlan"/>.</b> This was a static
+    /// <c>[".capacitor", ".attached", ..WorkspaceMcpConfigPaths]</c>, which is only complete when the
+    /// reviewer executes at the repository root. It is gone rather than kept alongside the plan: two lists
+    /// of the same thing is exactly how <c>.kiro/settings/mcp.json</c> survived into a launched snapshot in
+    /// the first place.</para>
     const int MaxSnapshotFiles = 50_000;
     const long MaxSnapshotBytes = 2L * 1024 * 1024 * 1024;
     static StringComparison FileSystemPathComparison =>
@@ -122,13 +133,14 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
             // --path-format=absolute needs git 2.31+; on older git this exits non-zero and we resolve
             // the (possibly relative) plain form against the checkout instead.
             var absolute = await RunGitCaptureResult(
-                repoPath, GitTimeout, sourceReadOnly: false, "rev-parse", "--path-format=absolute", "--git-common-dir");
+                repoPath, GitTimeout, sourceReadOnly: false, [],
+                "rev-parse", "--path-format=absolute", "--git-common-dir");
 
             if (absolute.ExitCode == 0 && absolute.Stdout.Trim() is { Length: > 0 } fromAbsolute)
                 return NormalizePathKey(fromAbsolute);
 
             var plain = await RunGitCaptureResult(
-                repoPath, GitTimeout, sourceReadOnly: false, "rev-parse", "--git-common-dir");
+                repoPath, GitTimeout, sourceReadOnly: false, [], "rev-parse", "--git-common-dir");
 
             if (plain.ExitCode == 0 && plain.Stdout.Trim() is { Length: > 0 } fromPlain)
                 return NormalizePathKey(Path.IsPathRooted(fromPlain) ? fromPlain : Path.Combine(repoPath, fromPlain));
@@ -210,14 +222,19 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
         var worktreePath = Path.Combine(worktreeRoot, name);
         var branch       = $"capacitor/{name}";
 
-        Directory.CreateDirectory(worktreeRoot);
-
         // No filter inventory here on purpose. `worktree add --no-checkout` materialises nothing, so no
         // filter can run during it, and the guarded reset re-inventories inside the TARGET — which is the
         // context that actually decides which drivers load. A source-context inventory would add no
         // containment and could reject a safe launch, since a source-only conditional include can define a
         // driver the target never sees.
         if (await IsGitRepoWithCommits(repoPath)) {
+            // Created HERE rather than in a shared prologue. The standalone branch below must validate the
+            // destination chain BEFORE anything is created — a pre-existing `.capacitor` or `worktrees`
+            // symlink is FOLLOWED by this call, so a check placed after the branch decision would run once
+            // the snapshot had already been rooted wherever the source tree chose.
+            Directory.CreateDirectory(worktreeRoot);
+
+            var noHooks = NoBranchHooks();
             if (!string.IsNullOrEmpty(baseRef)) {
                 // Fetch into a per-worktree ref instead of the shared FETCH_HEAD
                 // so concurrent review launches in the same source repo can't
@@ -228,14 +245,14 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
                 // it's the slow, network-bound half. But a plain fetch ends by running automatic
                 // maintenance, whose task list includes worktree-prune — which WOULD touch
                 // .git/worktrees, unguarded, while another launch is mid-add. Disable it for this call
-                // (both spellings, so the old gc.auto era is covered too). `-c` rather than
-                // --no-auto-maintenance: that flag needs a newer git, `-c` works everywhere.
+                // (both spellings, so the old gc.auto era is covered too). A config override rather than
+                // --no-auto-maintenance: that flag needs a newer git than the override transport does.
                 await RunGit(repoPath, FetchTimeout,
-                    "-c", "maintenance.auto=false", "-c", "gc.auto=0",
+                    [new("maintenance.auto", "false"), new("gc.auto", "0")],
                     "fetch", "origin", $"{baseRef}:{fetchedRef}");
                 await WithWorktreeMetadataGate(repoPath, () =>
-                    RunGit(repoPath, GitTimeout, [..NoBranchHooks(),
-                        "worktree", "add", "--no-checkout", "-B", branch, worktreePath, fetchedRef]));
+                    RunGit(repoPath, GitTimeout, noHooks,
+                        "worktree", "add", "--no-checkout", "-B", branch, worktreePath, fetchedRef));
                 var fetched = new WorktreeInfo(worktreePath, branch, repoPath, FetchedRef: fetchedRef);
                 await StripOrRollBackAsync(fetched);
 
@@ -243,8 +260,8 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
             }
 
             await WithWorktreeMetadataGate(repoPath, () =>
-                RunGit(repoPath, GitTimeout, [..NoBranchHooks(),
-                    "worktree", "add", "--no-checkout", worktreePath, "-b", branch]));
+                RunGit(repoPath, GitTimeout, noHooks,
+                    "worktree", "add", "--no-checkout", worktreePath, "-b", branch));
             var linked = new WorktreeInfo(worktreePath, branch, repoPath);
             await StripOrRollBackAsync(linked);
 
@@ -252,41 +269,177 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
         }
 
         // Standalone: copy files + git init.
-        // Wrapped because every step after the directory exists can throw — the MCP strip and the filter
-        // inventory are both fail-closed — and this branch returns no WorktreeInfo on the way out, so
-        // nothing downstream could clean up the partial tree. The linked paths gained rollback earlier for
-        // exactly this; review caught that the standalone one never did.
-        Directory.CreateDirectory(worktreePath);
+        return await CreateStandaloneAsync(repoPath, name, worktreeRoot, worktreePath);
+    }
+
+    /// <summary>Validates, claims, and builds a standalone snapshot.
+    ///
+    /// <para><b>Ordering is the entire point of this method.</b> Every check happens before any write, and
+    /// the claim's lifetime strictly encloses rollback. Getting either wrong reopens a race or an escape
+    /// that the checks themselves cannot detect.</para>
+    /// </summary>
+    async Task<WorktreeInfo> CreateStandaloneAsync(
+            string repoPath, string name, string worktreeRoot, string worktreePath) {
+        // `name` reaches Path.Combine, which DISCARDS the root for an absolute value and would place the
+        // destination anywhere; `../evil` would land it outside `worktrees`, where the marker cannot
+        // exclude it and the copy recurses into its own destination again. Defense-in-depth today — both
+        // real callers omit `name` — but this is a public method.
+        if (name.Length == 0 || name is "." or ".." ||
+            name != Path.GetFileName(name) || name.AsSpan().ContainsAny('/', '\\'))
+            throw new InvalidOperationException($"standalone_snapshot_invalid_name: {name}");
+
+        if (!IsAtOrUnder(ResolveDeepestExisting(worktreePath), ResolveDeepestExisting(repoPath)))
+            throw new InvalidOperationException("standalone_snapshot_destination_escape");
+
+        // No-follow, attribute-based, over the components WE introduce below the source root — not from the
+        // filesystem root, since a source legitimately reached through a system symlink (macOS /tmp) is
+        // normal and must not be refused.
+        RefuseIfLink(Path.Combine(repoPath, ".capacitor"));
+        RefuseIfLink(worktreeRoot);
+
+        Directory.CreateDirectory(worktreeRoot);
+
+        // Atomic claim. Directory.CreateDirectory is a NO-OP on an existing directory, so the freshness
+        // check below is check-then-create and cannot by itself exclude a concurrent SAME-PRINCIPAL caller
+        // — both racers would consider the directory theirs, and either rollback would delete the other's
+        // snapshot. There is no portable atomic directory claim, but FileMode.CreateNew on a FILE is atomic
+        // everywhere, so the claim file supplies the exclusion the directory create cannot.
+        var claimPath = Path.Combine(worktreeRoot, ClaimPrefix + name);
+
+        // Test barrier: lets two callers rendezvous in the window where BOTH still see the destination
+        // absent. Without it a concurrency test can pass by running the callers sequentially, where the
+        // second is refused by the occupied-destination check and the claim's atomicity is never exercised.
+        SnapshotPreClaimHook?.Invoke().GetAwaiter().GetResult();
+
         try {
-            return await BuildStandaloneSnapshotAsync(repoPath, worktreePath);
-        } catch {
-            try { DeleteTreeNoFollow(worktreePath); } catch { /* keep the original failure */ }
-            throw;
+            using (new FileStream(claimPath, FileMode.CreateNew, FileAccess.Write, FileShare.None)) { }
+        } catch (IOException) {
+            // Loser path: throws WITHOUT touching the destination. The rollback below is unconditional on
+            // worktreePath, so a loser falling through it would delete the WINNER's directory — a claim
+            // that made things strictly worse than no claim at all.
+            throw new InvalidOperationException($"standalone_snapshot_name_in_use: {name}");
+        }
+
+        // The claim is held until all success work is done, or until all rollback has finished, and is
+        // released LAST. Releasing it inside BuildStandaloneSnapshotAsync would reopen the very race it
+        // closes: that method's own unwinding completes BEFORE the catch below deletes the tree, so a new
+        // same-name call could claim, create, and then be deleted by this call's delayed rollback.
+        try {
+            // Test barrier: holds the winner after the claim FILE exists but before the destination does,
+            // so a second caller's acquisition is decided purely by the claim's existence. Without this the
+            // handle's own FileShare.None can do the excluding instead, and a weakened FileMode goes
+            // undetected.
+            SnapshotPostClaimHook?.Invoke().GetAwaiter().GetResult();
+
+            // Absent, not merely "not a link". An existing ordinary directory would be silently adopted:
+            // the snapshot would overlay a tree we never created, the rollback would then delete it
+            // wholesale, and any repository control data already sitting there escapes the source-side
+            // `.git` exclusion entirely — putting `git init`/`commit` back outside the snapshot.
+            if (IsPresentEntry(worktreePath))
+                throw new InvalidOperationException($"standalone_snapshot_destination_occupied: {name}");
+
+            Directory.CreateDirectory(worktreePath);
+
+            try {
+                return await BuildStandaloneSnapshotAsync(repoPath, worktreePath);
+            } catch {
+                // Only the successful claimant reaches here, so this delete is ownership-gated.
+                try { DeleteTreeNoFollow(worktreePath); } catch { /* keep the original failure */ }
+                // Test barrier, INSIDE the claim's protected region and after the delete: this is the exact
+                // window in which a same-name caller must still be excluded.
+                SnapshotRollbackHook?.Invoke().GetAwaiter().GetResult();
+                throw;
+            }
+        } finally {
+            // Best effort: a stale claim fails CLOSED, refusing that one name until an operator clears it.
+            try { File.Delete(claimPath); } catch { /* the refusal names the file */ }
         }
     }
 
+    internal const string ClaimPrefix = ".kcap-claim-";
+
+    /// <summary>Refuses a destination-chain component that is a link, WITHOUT following it.</summary>
+    static void RefuseIfLink(string path) {
+        if (IsPresentEntry(path) && File.GetAttributes(path).HasFlag(FileAttributes.ReparsePoint))
+            throw new InvalidOperationException($"standalone_snapshot_destination_link: {path}");
+    }
+
+    /// <summary>Whether an entry exists at this path, INCLUDING a dangling link.
+    ///
+    /// <para>Attribute-based rather than <c>Path.Exists</c>, which follows: a dangling link would report
+    /// absent and then be created through — the same trap <see cref="DeleteTreeNoFollow"/> documents.</para>
+    /// </summary>
+    static bool IsPresentEntry(string path) {
+        try {
+            _ = File.GetAttributes(path);
+
+            return true;
+        } catch (FileNotFoundException) {
+            return false;
+        } catch (DirectoryNotFoundException) {
+            return false;
+        }
+    }
+
+    /// <summary>Test-only injected failure point. The claim-ownership tests need a DETERMINISTIC rollback
+    /// window: a wall-clock race would be flaky and, worse, could pass by luck.</summary>
+    internal static string? SnapshotFailurePoint;
+
+    /// <summary>Runs inside the claimant's rollback, after the tree is deleted and before the claim is
+    /// released — the window a same-name caller must still be excluded from.</summary>
+    internal static Func<Task>? SnapshotRollbackHook;
+
+    /// <summary>Runs immediately before the claim is attempted, while the destination is still absent.
+    /// Test-only, so two callers can be made to genuinely overlap.</summary>
+    internal static Func<Task>? SnapshotPreClaimHook;
+
+    /// <summary>Runs after the claim file exists but before the destination is created. Test-only: lets a
+    /// second caller attempt acquisition at the one moment when only the claim's EXISTENCE can exclude it.
+    /// </summary>
+    internal static Func<Task>? SnapshotPostClaimHook;
+
+    static void FailHereIfRequested(string point) {
+        if (SnapshotFailurePoint != point) return;
+
+        throw new InvalidOperationException("injected_standalone_failure");
+    }
+
     async Task<WorktreeInfo> BuildStandaloneSnapshotAsync(string repoPath, string worktreePath) {
-        CopyDirectory(repoPath, worktreePath);
+        // Unique per invocation and created CreateNew, so a collision is detected rather than silently
+        // shared, a hostile source cannot plant one that suppresses real content, and a marker orphaned by
+        // a crash can never suppress anything on a later run.
+        var markerName = $".kcap-snapshot-exclude-{Guid.NewGuid():N}";
+        var markerPath = Path.Combine(Path.GetDirectoryName(worktreePath)!, markerName);
+
+        try {
+            // Fail-closed: without the marker the walk recurses into its own destination.
+            using (new FileStream(markerPath, FileMode.CreateNew, FileAccess.Write, FileShare.None)) { }
+
+            CopySnapshotTree(repoPath, worktreePath, markerName);
+            FailHereIfRequested(nameof(CopySnapshotTree));
+        } finally {
+            // Cleanup failure logs nothing and fails nothing: the snapshot is already built and correct.
+            try { File.Delete(markerPath); } catch { /* best effort */ }
+        }
+
         // BEFORE the initial commit, so the snapshot's own history never carries the hostile config
         // either — a later `git checkout` inside the tree would otherwise restore it.
         StripWorkspaceMcpConfig(worktreePath);
-        await RunGit(worktreePath, GitTimeout, [..NoBranchHooks(), "init"]);
+        var noHooks = NoBranchHooks();
+        await RunGit(worktreePath, GitTimeout, noHooks, "init");
         // Inventoried and logged here, not at the source: `add -A` in this worktree is where the standalone
         // path's filters resolve. Round 6 removed the source-level logging as dead, and this call was
         // applying overrides inline — silently disabling LFS against a README that promises the opposite.
         var standaloneOverrides = await FilterOverridesForAsync(worktreePath);
-        await RunGit(worktreePath, GitTimeout, [..NoBranchHooks(), ..standaloneOverrides, "add", "-A"]);
+        await RunGit(worktreePath, GitTimeout, [.. noHooks, .. standaloneOverrides], "add", "-A");
         // Identity supplied explicitly. This is the daemon's OWN bookkeeping commit, not the user's work,
         // so it must not depend on the host having git identity configured — a machine without a global
-        // user.email fails with "Author identity unknown". Found while CopyDirectory was temporarily
-        // repaired and this line became reachable for the first time; that repair was then reverted (see
-        // CopyDirectory), so the path still cannot get here — the fix is kept because it is correct and
-        // because the repair will land eventually.
-        await RunGit(worktreePath, GitTimeout, [
-            ..NoBranchHooks(),
-            "-c", "user.email=daemon@kcap.local", "-c", "user.name=kcap",
-            "commit", "-m", "Initial snapshot"
-        ]);
+        // user.email fails with "Author identity unknown". Found while the broken copy was temporarily
+        // repaired and this line became reachable for the first time; that repair was reverted then and has
+        // landed now, so this is live rather than speculative.
+        await RunGit(worktreePath, GitTimeout,
+            [.. noHooks, new("user.email", "daemon@kcap.local"), new("user.name", "kcap")],
+            "commit", "-m", "Initial snapshot");
 
         return new WorktreeInfo(worktreePath, "", repoPath, IsStandalone: true);
     }
@@ -326,7 +479,9 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
     /// </summary>
     internal const string NoHooksPath = "/dev/null";
 
-    static string[] NoBranchHooks() => ["-c", $"core.hooksPath={NoHooksPath}"];
+    /// <summary>The hook override. The transport carrying it is proved by the runner that hands it to git
+    /// (see <c>ProveConfigTransportIfCarryingAsync</c>), so nothing here has to remember to.</summary>
+    static GitConfigOverride[] NoBranchHooks() => [new("core.hooksPath", NoHooksPath)];
 
     /// <summary>
     /// Neutralizes the tree, and UNDOES the creation if that fails.
@@ -364,11 +519,12 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
     /// </summary>
     async Task CheckoutInTargetContextAsync(string worktreePath) {
         var overrides = await FilterOverridesForAsync(worktreePath);
+        var noHooks = NoBranchHooks();
 
         // `reset --hard HEAD`, not `checkout -- .`: --no-checkout leaves the INDEX unpopulated too, so a
         // pathspec matches nothing. This is the step that materialises the tree, and therefore the step
         // the overrides have to guard.
-        await RunGit(worktreePath, GitTimeout, [..NoBranchHooks(), ..overrides, "reset", "--hard", "HEAD"]);
+        await RunGit(worktreePath, GitTimeout, [.. noHooks, .. overrides], "reset", "--hard", "HEAD");
     }
 
     /// <summary>
@@ -380,7 +536,7 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
     /// an LFS host silently got pointer files. Two rounds, one class. Computing and logging together means
     /// a fourth path cannot repeat it.</para>
     /// </summary>
-    async Task<string[]> FilterOverridesForAsync(string gitContextPath) {
+    async Task<GitConfigOverride[]> FilterOverridesForAsync(string gitContextPath) {
         var overrides = await BranchFilterOverridesAsync(gitContextPath);
         LogDisabledFilters(overrides, gitContextPath);
 
@@ -390,10 +546,11 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
     /// <summary>Logs which filter drivers were disabled, so an operator whose LFS-tracked file checks out
     /// as pointer text can see why rather than guessing. Silent containment is how a deliberate trade turns
     /// into a bug report.</summary>
-    void LogDisabledFilters(string[] overrides, string repoPath) {
+    void LogDisabledFilters(GitConfigOverride[] overrides, string repoPath) {
         var drivers = overrides
-            .Where(static o => o.StartsWith("filter.", StringComparison.Ordinal) && o.EndsWith(".clean=", StringComparison.Ordinal))
-            .Select(static o => o["filter.".Length..^".clean=".Length])
+            .Where(static o => o.Key.StartsWith("filter.", StringComparison.Ordinal)
+                            && o.Key.EndsWith(".clean", StringComparison.Ordinal))
+            .Select(static o => o.Key["filter.".Length..^".clean".Length])
             .ToArray();
 
         if (drivers.Length > 0)
@@ -449,6 +606,9 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
             if (worktree.SnapshotRoot is not null)
                 DeleteTreeNoFollow(VendorStateRootFor(worktree.SnapshotRoot));
 
+            if (worktree.ReviewContextRoot is not null)
+                DeleteTreeNoFollow(worktree.ReviewContextRoot);
+
             DeleteTreeNoFollow(root);
 
             return;
@@ -484,103 +644,174 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
             string sourceRepoRoot, string requestedCwd, string? name, CancellationToken ct) {
         var source = Path.GetFullPath(sourceRepoRoot);
         var cwd = Path.GetFullPath(requestedCwd);
-        var relativeCwd = Path.GetRelativePath(source, cwd).Replace(Path.DirectorySeparatorChar, '/');
-        if (relativeCwd == ".." || relativeCwd.StartsWith("../", StringComparison.Ordinal))
+        // Containment check on the REQUESTED cwd, and nothing else. This value never locates a directory:
+        // the execution path below comes from the git-derived prefix, so that the launch and the exclusion
+        // classifier cannot be reading two different spellings of the same place.
+        // Path.IsPathRooted matters: GetRelativePath returns a ROOTED path across Windows volumes, which
+        // neither of the ".." tests catches.
+        var requestedRelative = Path.GetRelativePath(source, cwd).Replace(Path.DirectorySeparatorChar, '/');
+        if (Path.IsPathRooted(requestedRelative) || requestedRelative == ".." ||
+            requestedRelative.StartsWith("../", StringComparison.Ordinal))
             throw new InvalidOperationException("borrowed_snapshot_cwd_outside_source");
+        if (!Directory.Exists(cwd))
+            throw new InvalidOperationException("borrowed_snapshot_cwd_missing");
+        var gitRelativeCwd = await ReadGitRelativeCwdAsync(source, cwd, ct);
         var root = Path.GetFullPath(Path.Combine(config.WorktreeRoot, "borrowed-snapshots"));
         EnsureSeparateRoots(source, root);
-        Directory.CreateDirectory(root);
+        CreateOwnerOnlyDirectory(root);
 
         name ??= $"borrowed-{Guid.NewGuid():N}"[..25];
         var final = Path.Combine(root, name);
         var staging = final + ".preparing-" + Guid.NewGuid().ToString("N")[..8];
+        var reviewContextRoot = ReviewContextRootFor(final);
         var promoted = false;
         try {
-            await BuildIndependentSnapshotAsync(source, staging, SnapshotExcludedPaths, ct);
+            var reviewContextGeneration = await BuildIndependentSnapshotAsync(
+                source, staging, gitRelativeCwd, [], reviewContextRoot, ct)
+                ?? throw new InvalidOperationException("borrowed_snapshot_review_context_missing");
             Directory.Move(staging, final);
             promoted = true;
-            var executionPath = relativeCwd == "."
+            reviewContextGeneration = PublishReviewContextGeneration(
+                reviewContextGeneration, reviewContextRoot);
+            var executionPath = gitRelativeCwd.Length == 0
                 ? final
-                : ContainedPath(final, relativeCwd);
-            if (!Directory.Exists(executionPath))
-                throw new InvalidOperationException("borrowed_snapshot_cwd_missing");
+                : ContainedPath(final, gitRelativeCwd);
+            // Created rather than required to exist. Widening the exclusion to the cwd's own directory
+            // made a new case reachable: a cwd whose only content IS vendor config now yields no
+            // directory at all in the snapshot, and throwing here would refuse the launch for exactly
+            // the repositories this change exists to protect. An empty cwd is the truthful result —
+            // everything that was there was excluded. Safe to create: RemoveFilesOutsideManifest has
+            // already deleted every reparse point, so no component of this path can be a link.
+            Directory.CreateDirectory(executionPath);
             return new WorktreeInfo(final == executionPath ? final : executionPath, "", source,
-                IsStandalone: true, SnapshotRoot: final);
+                IsStandalone: true, SnapshotRoot: final, ReviewContextRoot: reviewContextRoot) {
+                ReviewContextGeneration = reviewContextGeneration,
+                GitRelativeCwd = gitRelativeCwd
+            };
         } catch {
             DeleteTreeNoFollow(staging);
             if (promoted) DeleteTreeNoFollow(final);
+            DeleteTreeNoFollow(reviewContextRoot);
             throw;
         }
     }
 
-    /// <summary>Rebuilds a borrowed snapshot from a pristine independent generation, then replaces
-    /// the live snapshot contents. The source repository is never used as the reviewer's cwd and
-    /// reviewer-created git metadata cannot survive into the next round.</summary>
+    /// <summary>Rebuilds <paramref name="targetWorktreePath"/> from a pristine independent generation,
+    /// then replaces the live contents — the source repository is never used as the reviewer's cwd, and
+    /// reviewer-created git metadata cannot survive into the next round. Vendor config is excluded along
+    /// the ancestor chain of <paramref name="sourceCwd"/>.
+    /// <para><b>Takes a SOURCE cwd, not a target execution path.</b> The overloads this replaces took only
+    /// a target-side path, which left no way to obtain the git-derived prefix except by re-deriving it from
+    /// the target filesystem — the derivation that lets the launch and the classifier disagree. They had no
+    /// production callers, so removing them is cheaper than preserving an unsafe inference. There is no
+    /// fallback: a caller that cannot supply a source cwd cannot use this.</para></summary>
     public async Task SyncFromSourceAsync(
-            string sourceRepoRoot, string targetWorktreePath,
+            string sourceRepoRoot, string sourceCwd, string targetWorktreePath,
             string[] excludePaths, CancellationToken ct) {
-        await SyncFromSourceAsync(
-            sourceRepoRoot, targetWorktreePath, targetWorktreePath, excludePaths, ct);
+        // The same admission checks CreateBorrowedSnapshotAsync applies to its requested cwd. The
+        // work-tree-top check inside ReadGitRelativeCwdAsync already refuses a foreign repository, so
+        // these are defence in depth — but they turn "git failed: ..." into a specific coded error, and
+        // this overload had no containment check of its own at all.
+        var source = Path.GetFullPath(sourceRepoRoot);
+        var cwd = Path.GetFullPath(sourceCwd);
+        var requestedRelative = Path.GetRelativePath(source, cwd).Replace(Path.DirectorySeparatorChar, '/');
+        if (Path.IsPathRooted(requestedRelative) || requestedRelative == ".." ||
+            requestedRelative.StartsWith("../", StringComparison.Ordinal))
+            throw new InvalidOperationException("borrowed_snapshot_cwd_outside_source");
+        if (!Directory.Exists(cwd))
+            throw new InvalidOperationException("borrowed_snapshot_cwd_missing");
+
+        var gitRelativeCwd = await ReadGitRelativeCwdAsync(source, cwd, ct);
+        _ = await SyncFromSourceCoreAsync(
+            sourceRepoRoot, targetWorktreePath, gitRelativeCwd,
+            excludePaths, reviewContextRoot: null, ct);
     }
 
-    public async Task SyncFromSourceAsync(
-            string sourceRepoRoot, string targetWorktreePath, string executionPath,
-            string[] excludePaths, CancellationToken ct) {
+    internal async Task<BorrowedReviewContextGeneration> SyncBorrowedSnapshotFromSourceAsync(
+            string sourceRepoRoot, string targetWorktreePath, string gitRelativeCwd,
+            string[] excludePaths, string reviewContextRoot, CancellationToken ct) =>
+        await SyncFromSourceCoreAsync(
+            sourceRepoRoot, targetWorktreePath, gitRelativeCwd,
+            excludePaths, reviewContextRoot, ct)
+        ?? throw new InvalidOperationException("borrowed_snapshot_review_context_missing");
+
+    async Task<BorrowedReviewContextGeneration?> SyncFromSourceCoreAsync(
+            string sourceRepoRoot, string targetWorktreePath, string gitRelativeCwd,
+            string[] excludePaths, string? reviewContextRoot, CancellationToken ct) {
         if (string.IsNullOrEmpty(sourceRepoRoot))
             throw new ArgumentException("Source repo root must not be empty.", nameof(sourceRepoRoot));
         if (string.IsNullOrEmpty(targetWorktreePath))
             throw new ArgumentException("Target worktree path must not be empty.", nameof(targetWorktreePath));
 
+        ArgumentNullException.ThrowIfNull(gitRelativeCwd);
         var source = Path.GetFullPath(sourceRepoRoot);
         var target = Path.GetFullPath(targetWorktreePath);
-        var execution = Path.GetFullPath(executionPath);
+        // Derived from the SAME prefix the exclusion plan is built from — never from the target
+        // filesystem. ContainedPath re-checks that it stays inside the target.
+        var execution = gitRelativeCwd.Length == 0 ? target : ContainedPath(target, gitRelativeCwd);
         if (string.Equals(source, target, StringComparison.Ordinal))
             throw new InvalidOperationException($"Source and target paths are the same: {source}");
         if (!Directory.Exists(source))
             throw new InvalidOperationException($"Source repo root does not exist: {source}");
-        if (!string.Equals(execution, target, FileSystemPathComparison) &&
-            !execution.StartsWith(target.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar,
-                FileSystemPathComparison))
-            throw new InvalidOperationException("borrowed_snapshot_execution_path_outside_target");
         if (!File.Exists(Path.Combine(source, ".git")) && !Directory.Exists(Path.Combine(source, ".git")))
             throw new InvalidOperationException($"Source path does not appear to be a git repo (no .git entry): {source}");
 
         var parent = Directory.GetParent(target)?.FullName
             ?? throw new InvalidOperationException("Snapshot target has no parent directory.");
         var staging = Path.Combine(parent, Path.GetFileName(target) + ".refresh-" + Guid.NewGuid().ToString("N")[..8]);
+        BorrowedReviewContextGeneration? generation = null;
         try {
-            var exclusions = SnapshotExcludedPaths.Concat(excludePaths).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
-            await BuildIndependentSnapshotAsync(source, staging, exclusions, ct);
+            generation = await BuildIndependentSnapshotAsync(
+                source, staging, gitRelativeCwd, excludePaths, reviewContextRoot, ct);
             ReplaceTreeContentsNoFollow(target, staging, execution);
+            if (generation is not null)
+                generation = PublishReviewContextGeneration(
+                    generation, reviewContextRoot!);
+            return generation;
+        } catch {
+            if (generation is not null) DeleteTreeNoFollow(generation.StoragePath);
+            throw;
         } finally {
             DeleteTreeNoFollow(staging);
         }
     }
 
-    async Task BuildIndependentSnapshotAsync(
-            string source, string destination, string[] exclusions, CancellationToken ct) {
+    async Task<BorrowedReviewContextGeneration?> BuildIndependentSnapshotAsync(
+            string source, string destination, string gitRelativeCwd, string[] excludePaths,
+            string? reviewContextRoot, CancellationToken ct) {
         for (var attempt = 0; attempt < 2; attempt++) {
+            BorrowedReviewContextGeneration? generation = null;
             try {
-                await BuildIndependentSnapshotOnceAsync(source, destination, exclusions, ct);
-                return;
+                // The plan is built INSIDE the attempt, because it depends on the destination's probed
+                // case sensitivity and each retry creates a fresh destination. A retry must not reuse the
+                // previous attempt's plan.
+                generation = await BuildIndependentSnapshotOnceAsync(
+                    source, destination, gitRelativeCwd, excludePaths, reviewContextRoot, ct);
+                return generation;
             } catch (SourceChangedException) when (attempt == 0) {
                 DeleteTreeNoFollow(destination);
+                if (generation is not null) DeleteTreeNoFollow(generation.StoragePath);
             } catch (SourceChangedException) {
                 DeleteTreeNoFollow(destination);
+                if (generation is not null) DeleteTreeNoFollow(generation.StoragePath);
                 throw new InvalidOperationException("borrowed_snapshot_source_changed");
             }
         }
         throw new InvalidOperationException("borrowed_snapshot_source_changed");
     }
 
-    async Task BuildIndependentSnapshotOnceAsync(
-            string source, string destination, string[] exclusions, CancellationToken ct) {
+    async Task<BorrowedReviewContextGeneration?> BuildIndependentSnapshotOnceAsync(
+            string source, string destination, string gitRelativeCwd, string[] excludePaths,
+            string? reviewContextRoot, CancellationToken ct) {
         var parent = Directory.GetParent(destination)?.FullName
             ?? throw new InvalidOperationException("Snapshot destination has no parent directory.");
         Directory.CreateDirectory(parent);
         var bundle = Path.Combine(parent, ".bundle-" + Guid.NewGuid().ToString("N") + ".git");
+        BorrowedReviewContextGeneration? generation = null;
         try {
             var sourceHead = (await RunGitCapture(source, GitTimeout, true, "rev-parse", "HEAD")).Trim();
+            var initialIndex = await RunGitCaptureBytes(source, GitTimeout, true, ct,
+                "ls-files", "--stage", "-z");
             await RunGit(source, GitTimeout, sourceReadOnly: true, "bundle", "create", bundle, "HEAD");
             if (await GitConfigBoolAsync(source, "core.sparseCheckout"))
                 throw new InvalidOperationException("borrowed_snapshot_sparse_checkout_unsupported");
@@ -589,55 +820,105 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
             // Same guard as `worktree add`: this checkout materialises branch content, so a relative
             // core.hooksPath would run the branch's post-checkout here too. Missed when the guard was
             // added — it went on the worktree paths only.
-            await RunGit(destination, GitTimeout, [..NoBranchHooks(), ..await FilterOverridesForAsync(destination), "checkout", "--detach", "HEAD"]);
+            await RunGit(destination, GitTimeout,
+                [.. NoBranchHooks(), .. await FilterOverridesForAsync(destination)],
+                "checkout", "--detach", "HEAD");
             var clonedHead = (await RunGitCapture(destination, GitTimeout, false, "rev-parse", "HEAD")).Trim();
             if (!string.Equals(sourceHead, clonedHead, StringComparison.Ordinal)) throw new SourceChangedException();
             await RunGitBestEffort(destination, "remote", "remove", "origin");
             await RunGitBestEffort(destination, "reflog", "expire", "--expire=now", "--all");
             var fetchHead = Path.Combine(destination, ".git", "FETCH_HEAD");
             if (File.Exists(fetchHead)) File.Delete(fetchHead);
+            // Probed on the ACTUAL destination, never on its parent or the configured worktree root: case
+            // behaviour can differ per directory, and a substituted probe would classify under the wrong
+            // semantics. Everything downstream reads this one result.
+            var caseSensitive = ProbeCaseSensitiveFileSystem(destination);
+            var plan = PlanSnapshotExclusions(gitRelativeCwd, caseSensitive, excludePaths);
 
-            var staged = await RunGitCapture(source, GitTimeout, true, "ls-files", "--stage", "-z");
-            if (staged.Split('\0', StringSplitOptions.RemoveEmptyEntries)
-                .Any(entry => entry.StartsWith("160000 ", StringComparison.Ordinal)))
+            if (reviewContextRoot is not null)
+                generation = await CreateReviewContextGenerationAsync(
+                    source, reviewContextRoot, sourceHead, initialIndex, caseSensitive, plan, ct);
+
+            if (SplitNulRecords(initialIndex)
+                .Any(entry => entry.Span.StartsWith("160000 "u8)))
                 throw new InvalidOperationException("borrowed_snapshot_submodules_unsupported");
 
-            var manifest = await ReadSourceManifestAsync(source, exclusions, ct);
-            await ApplyReservedIndexPolicyAsync(destination);
+            var manifest = await ReadSourceManifestAsync(source, plan, caseSensitive, ct);
+            await ApplyReservedIndexPolicyAsync(destination, plan, caseSensitive, ct);
             await CopyManifestAsync(source, destination, manifest, ct);
-            RemoveFilesOutsideManifest(destination, manifest.Keys, ct);
+            RemoveFilesOutsideManifest(destination, manifest.Keys, caseSensitive, ct);
             VerifyIndependentGit(destination, source);
             await VerifyDestinationManifestAsync(destination, manifest, ct);
 
             var finalHead = (await RunGitCapture(source, GitTimeout, true, "rev-parse", "HEAD")).Trim();
-            var finalManifest = await ReadSourceManifestAsync(source, exclusions, ct);
+            var finalIndex = await RunGitCaptureBytes(source, GitTimeout, true, ct,
+                "ls-files", "--stage", "-z");
+            var finalManifest = await ReadSourceManifestAsync(
+                source, plan, caseSensitive, ct);
             if (!string.Equals(sourceHead, finalHead, StringComparison.Ordinal) ||
+                !initialIndex.AsSpan().SequenceEqual(finalIndex) ||
                 !ManifestsEqual(manifest, finalManifest))
                 throw new SourceChangedException();
             LogSyncCompleted(source, destination, manifest.Count);
+            return generation;
+        } catch {
+            if (generation is not null) DeleteTreeNoFollow(generation.StoragePath);
+            throw;
         } finally {
             try { if (File.Exists(bundle)) File.Delete(bundle); } catch { /* startup sweep handles leftovers */ }
         }
     }
 
     static async Task<Dictionary<string, SnapshotFile>> ReadSourceManifestAsync(
-            string source, string[] exclusions, CancellationToken ct) {
-        var stdout = await RunGitCapture(source, GitTimeout, true, "ls-files", "-co", "--exclude-standard", "-z");
-        var result = new Dictionary<string, SnapshotFile>(StringComparer.OrdinalIgnoreCase);
+            string source, SnapshotExclusionPlan plan, bool caseSensitive, CancellationToken ct) {
+        var stdout = await RunGitCaptureBytes(source, GitTimeout, true, ct,
+            "ls-files", "-co", "--exclude-standard", "-z");
+        // A stage-only addition has no working-tree bytes to mirror. Skip those exact raw paths
+        // before decoding so an unrelated, absent non-UTF8 index entry cannot interfere with the
+        // review-context extractor's classify-before-decode guarantee.
+        var deleted = await RunGitCaptureBytes(source, GitTimeout, true, ct,
+            "ls-files", "--deleted", "-z");
+        var deletedPaths = SplitNulRecords(deleted)
+            .Select(static path => Convert.ToBase64String(path.Span))
+            .ToHashSet(StringComparer.Ordinal);
+        var comparison = caseSensitive
+            ? StringComparer.Ordinal
+            : StringComparer.OrdinalIgnoreCase;
+        var result = new Dictionary<string, SnapshotFile>(comparison);
         long total = 0;
-        foreach (var raw in stdout.Split('\0', StringSplitOptions.RemoveEmptyEntries)) {
+        foreach (var rawBytes in SplitNulRecords(stdout)) {
             ct.ThrowIfCancellationRequested();
+            if (deletedPaths.Contains(Convert.ToBase64String(rawBytes.Span))) continue;
+            // Vendor config is matched HERE, on the raw bytes, by the same classifier the review-context
+            // extractor uses — and before decoding, preserving that extractor's classify-before-decode
+            // guarantee. Routing it through IsUnderExcluded instead would be a second matcher with
+            // different case-folding semantics (OrdinalIgnoreCase there, ASCII-only here), which is how a
+            // path becomes excluded by one and invisible to the other.
+            if (ClassifyReservedPath(rawBytes.Span, plan.Reserved, caseSensitive).Kind
+                    != ReservedPathMatchKind.Unrelated)
+                continue;
+            string raw;
+            try { raw = StrictUtf8.GetString(rawBytes.Span); }
+            catch (DecoderFallbackException ex) {
+                throw new InvalidOperationException(
+                    "borrowed_snapshot_invalid_path_encoding", ex);
+            }
             var rel = NormalizeRelativePath(raw);
-            if (IsUnderExcluded(rel, exclusions)) {
-                if (rel.Equals(".attached", StringComparison.OrdinalIgnoreCase) ||
-                    rel.StartsWith(".attached/", StringComparison.OrdinalIgnoreCase) ||
-                    rel.Equals(".capacitor", StringComparison.OrdinalIgnoreCase) ||
-                    rel.StartsWith(".capacitor/", StringComparison.OrdinalIgnoreCase))
+            // Only .capacitor, .attached and caller-supplied excludes reach this — ASCII daemon constants.
+            if (IsUnderExcluded(rel, plan.SnapshotExclusions, caseSensitive)) {
+                var pathComparison = caseSensitive
+                    ? StringComparison.Ordinal
+                    : StringComparison.OrdinalIgnoreCase;
+                if (rel.Equals(".attached", pathComparison) ||
+                    rel.StartsWith(".attached/", pathComparison) ||
+                    rel.Equals(".capacitor", pathComparison) ||
+                    rel.StartsWith(".capacitor/", pathComparison))
                     throw new InvalidOperationException($"borrowed_snapshot_reserved_path: {rel}");
                 continue;
             }
             var path = ContainedPath(source, rel);
             if (!File.Exists(path)) continue; // tracked deletion
+            EnsureNoLinkedComponents(source, path, rel);
             var info = new FileInfo(path);
             if (info.LinkTarget is not null || info.Attributes.HasFlag(FileAttributes.ReparsePoint))
                 throw new InvalidOperationException($"borrowed_snapshot_symlink_unsupported: {rel}");
@@ -670,6 +951,7 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
             var sourcePath = ContainedPath(source, rel);
             var path = ContainedPath(destination, rel);
             EnsureParentDirectories(destination, path);
+            EnsureDestinationLeafNoFollow(path);
             if (Directory.Exists(path)) DeleteTreeNoFollow(path);
             await using (var input = OpenSequentialRead(sourcePath))
             await using (var output = new FileStream(path, new FileStreamOptions {
@@ -681,8 +963,12 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
         }
     }
 
-    static void RemoveFilesOutsideManifest(string destination, IEnumerable<string> accepted, CancellationToken ct) {
-        var keep = accepted.ToHashSet(StringComparer.OrdinalIgnoreCase);
+    static void RemoveFilesOutsideManifest(
+            string destination, IEnumerable<string> accepted, bool caseSensitive,
+            CancellationToken ct) {
+        var keep = accepted.ToHashSet(caseSensitive
+            ? StringComparer.Ordinal
+            : StringComparer.OrdinalIgnoreCase);
         foreach (var entry in Directory.EnumerateFileSystemEntries(destination)) {
             ct.ThrowIfCancellationRequested();
             if (Path.GetFileName(entry).Equals(".git", StringComparison.Ordinal)) continue;
@@ -759,19 +1045,131 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
         Directory.Delete(path);
     }
 
+    /// <summary>Refuses a snapshot root at or under the source checkout.
+    /// <para><b>Why it matters beyond tidiness.</b> Claude Code's workspace <c>.mcp.json</c> lookup walks
+    /// UPWARD and does not stop at the git root, so the snapshot's physical ancestors are reachable. If the
+    /// snapshot landed under the source, the source's own root config would be an ancestor of the
+    /// reviewer's cwd and would load — which no amount of excluding inside the snapshot prevents.</para>
+    /// <para><b>Lexical AND resolved.</b> The lexical comparison alone is defeated by a
+    /// <c>WorktreeRoot</c> configured as a symlink whose target is inside the source: the string test
+    /// passes and the snapshot lands there anyway.</para>
+    /// <para><b>Residual, accepted and stated.</b> Resolution handles symlinks and Windows junctions. It
+    /// does NOT close a Unix bind mount of a source subdirectory at an apparently external path, nor SUBST
+    /// or 8.3 aliases. <c>WorktreeRoot</c> is daemon OPERATOR configuration, so reaching those needs an
+    /// already-compromised host config rather than branch content — the same alias classes this file's
+    /// worktree-metadata gate already documents as defeating a different path-identity check.</para>
+    /// </summary>
     static void EnsureSeparateRoots(string source, string snapshotRoot) {
-        var prefix = source.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
-        if (snapshotRoot.Equals(source, FileSystemPathComparison) ||
-            snapshotRoot.StartsWith(prefix, FileSystemPathComparison))
+        if (IsAtOrUnder(snapshotRoot, source) ||
+            IsAtOrUnder(ResolveDeepestExisting(snapshotRoot), ResolveDeepestExisting(source)))
             throw new InvalidOperationException("borrowed_snapshot_root_inside_source");
     }
 
-    static string NormalizeRelativePath(string raw) {
-        var rel = raw.Replace('\\', '/').TrimStart('/').Normalize(NormalizationForm.FormC);
-        if (rel.Length == 0 || rel.Split('/').Any(p => p is "" or "." or "..") ||
-            rel.Split('/').Any(p => p.Equals(".git", StringComparison.OrdinalIgnoreCase)))
+    /// <summary>Ancestry over path STRINGS, with both operands normalised to NFC.
+    ///
+    /// <para><b>Why fold at all.</b> Case folding alone is not enough on a normalisation-insensitive
+    /// volume: a typical macOS filesystem treats <c>caf\u00e9</c> composed and decomposed as ONE directory,
+    /// while no <c>StringComparison</c> makes those two strings equal. A source spelled one way and a
+    /// configured snapshot root spelled the other would otherwise fail both the lexical and the resolved
+    /// check and still land the snapshot inside the source.</para>
+    ///
+    /// <para><b>Why unconditionally, and what it costs.</b> On a normalisation-SENSITIVE volume those are
+    /// genuinely distinct directories, so folding can refuse a layout that is actually fine. The refusal
+    /// needs an operator to have spelled the source and the worktree root with different normalisations of
+    /// the same name, on such a volume, and it fails closed with a specific coded error — so the cost is a
+    /// clear error in a vanishingly rare configuration, against a containment bypass in a common one.</para>
+    ///
+    /// <para>A probe was written to make this conditional and then REMOVED. Deciding by probe meant
+    /// creating a file inside the user's own checkout — which the source manifest reads as untracked
+    /// content — and deleting a second pathname the probe had not created; and its lookup used
+    /// <c>File.Exists</c>, which reports <c>false</c> for access and I/O errors as well as for absence, so
+    /// a failed probe read as "normalisation-sensitive" and silently reopened the bypass. Fail-open plus a
+    /// destructive cleanup is a worse trade than an over-refusal.</para>
+    ///
+    /// <para>True filesystem identity would settle it, but .NET exposes no portable device/inode pair, so
+    /// exotic aliases stay in the trusted-configuration residual documented on
+    /// <see cref="EnsureSeparateRoots"/>.</para></summary>
+    static bool IsAtOrUnder(string candidate, string root) {
+        candidate = candidate.Normalize(NormalizationForm.FormC);
+        root = root.Normalize(NormalizationForm.FormC);
+        var prefix = root.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+        return candidate.Equals(root, FileSystemPathComparison) ||
+               candidate.StartsWith(prefix, FileSystemPathComparison);
+    }
+
+    /// <summary>Resolves links along the whole existing prefix of <paramref name="path"/>, then appends
+    /// whatever does not exist yet literally.
+    /// <para>The snapshot root is created by the very call that checks it, so "resolve the final path" is
+    /// undefined. Appending the tail without re-resolving also means a component substituted after the
+    /// check cannot be followed by this function.</para>
+    /// <para><b>Every component, not just the deepest.</b> An earlier version tested <c>LinkTarget</c> on
+    /// the deepest existing component alone, so with <c>/alias -> /real</c> and an ordinary
+    /// <c>/alias/existing</c>, resolving <c>/alias/existing/new</c> returned the lexical path and the
+    /// containment check still missed a snapshot root reaching inside the source through the ancestor
+    /// link. Chains are followed with a bounded iteration count rather than trusted to terminate.</para>
+    /// </summary>
+    static string ResolveDeepestExisting(string path) {
+        const int maxLinkHops = 64;
+        var full = Path.GetFullPath(path);
+        var tail = new List<string>();
+        var current = full;
+
+        // Split off the components that do not exist yet; they are re-appended verbatim below.
+        while (!Path.Exists(current)) {
+            var parent = Path.GetDirectoryName(current);
+            if (string.IsNullOrEmpty(parent) || parent == current) return full;
+            tail.Add(Path.GetFileName(current));
+            current = parent;
+        }
+        tail.Reverse();
+
+        // Walk the existing prefix component by component, resolving each link as it is encountered so an
+        // ancestor link is followed rather than skipped.
+        var resolved = Path.GetPathRoot(current) ?? "";
+        var components = current[resolved.Length..]
+            .Split(Path.DirectorySeparatorChar, StringSplitOptions.RemoveEmptyEntries);
+        foreach (var component in components) {
+            resolved = Path.Combine(resolved, component);
+            // ResolveLinkTarget(returnFinalTarget: true) already follows a chain, so this loop is
+            // belt-and-braces for a target that is itself a link relative to a different parent. It fails
+            // CLOSED on exhaustion rather than continuing with a half-resolved path — silently carrying on
+            // is how a containment check ends up comparing something that is not the real location.
+            var hop = 0;
+            for (; hop < maxLinkHops; hop++) {
+                var target = new DirectoryInfo(resolved).LinkTarget is not null
+                        || new FileInfo(resolved).LinkTarget is not null
+                    ? new DirectoryInfo(resolved).ResolveLinkTarget(returnFinalTarget: true)?.FullName
+                      ?? new FileInfo(resolved).ResolveLinkTarget(returnFinalTarget: true)?.FullName
+                    : null;
+                if (target is null) break;
+                resolved = Path.GetFullPath(target);
+            }
+            if (hop == maxLinkHops)
+                throw new InvalidOperationException("borrowed_snapshot_path_link_chain_too_deep");
+        }
+
+        return tail.Count == 0 ? resolved : Path.Combine([resolved, .. tail]);
+    }
+
+    internal static string NormalizeRelativePath(string raw) {
+        if (raw.Length == 0 || raw.StartsWith('/') || raw.Contains('\\') ||
+            raw.Contains('\r') || raw.Contains('\n') ||
+            !raw.IsNormalized(NormalizationForm.FormC) ||
+            raw.Split('/').Any(p => p is "" or "." or "..") ||
+            raw.Split('/').Any(p => p.Equals(".git", StringComparison.OrdinalIgnoreCase)))
             throw new InvalidOperationException($"borrowed_snapshot_invalid_path: {raw}");
-        return rel;
+        return raw;
+    }
+
+    static void EnsureNoLinkedComponents(string root, string path, string rel) {
+        var current = Path.GetFullPath(root);
+        foreach (var component in rel.Split('/')) {
+            current = Path.Combine(current, component);
+            if (!Path.Exists(current)) return;
+            if (File.GetAttributes(current).HasFlag(FileAttributes.ReparsePoint))
+                throw new InvalidOperationException(
+                    $"borrowed_snapshot_symlink_unsupported: {rel}");
+        }
     }
 
     static string ContainedPath(string root, string rel) {
@@ -782,7 +1180,7 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
         return path;
     }
 
-    static void EnsureParentDirectories(string root, string path) {
+    internal static void EnsureParentDirectories(string root, string path) {
         var normalizedRoot = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar);
         var parent = Path.GetDirectoryName(path)
             ?? throw new InvalidOperationException($"borrowed_snapshot_parent_missing: {path}");
@@ -793,9 +1191,27 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
                 ?? throw new InvalidOperationException($"borrowed_snapshot_parent_outside_root: {path}");
         }
         while (stack.TryPop(out var dir)) {
-            if (File.Exists(dir)) File.Delete(dir);
-            Directory.CreateDirectory(dir);
+            if (Path.Exists(dir)) {
+                var attributes = File.GetAttributes(dir);
+                if (attributes.HasFlag(FileAttributes.ReparsePoint))
+                    throw new InvalidOperationException(
+                        $"borrowed_snapshot_destination_symlink_unsupported: {dir}");
+                if (!attributes.HasFlag(FileAttributes.Directory)) File.Delete(dir);
+            }
+            if (!Directory.Exists(dir)) Directory.CreateDirectory(dir);
+            var created = File.GetAttributes(dir);
+            if (created.HasFlag(FileAttributes.ReparsePoint) ||
+                !created.HasFlag(FileAttributes.Directory))
+                throw new InvalidOperationException(
+                    $"borrowed_snapshot_destination_symlink_unsupported: {dir}");
         }
+    }
+
+    internal static void EnsureDestinationLeafNoFollow(string path) {
+        if (!Path.Exists(path)) return;
+        if (File.GetAttributes(path).HasFlag(FileAttributes.ReparsePoint))
+            throw new InvalidOperationException(
+                $"borrowed_snapshot_destination_symlink_unsupported: {path}");
     }
 
     static async Task VerifyDestinationManifestAsync(
@@ -831,16 +1247,52 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
             pair.Value.Length == other.Length && pair.Value.Hash.AsSpan().SequenceEqual(other.Hash));
 
     /// <summary>Marks the excluded config paths <c>skip-worktree</c> so their absence from the snapshot is
-    /// not reported as a change.
-    /// <para>This iterated a hard-coded pair while the snapshot excluded the same pair. Now that the
-    /// exclusions fold in <see cref="WorkspaceMcpConfigPaths"/>, a tracked <c>.kiro/settings/mcp.json</c>
-    /// would show up as a DELETION inside the snapshot — polluting <c>git status</c> and diffs, and capable
-    /// of producing a review finding about a deletion kcap performed. Driven from the same list, so the two
-    /// cannot drift apart again.</para></summary>
-    static async Task ApplyReservedIndexPolicyAsync(string destination) {
-        foreach (var path in WorkspaceMcpConfigPaths)
-            try { await RunGit(destination, GitTimeout, "update-index", "--skip-worktree", "--", path); }
-            catch { /* absent from index */ }
+    /// not reported as a change — otherwise a tracked <c>src/.mcp.json</c> shows up as a DELETION in the
+    /// reviewer's <c>git status</c> and diff, and can produce a review finding about a deletion kcap
+    /// performed.
+    ///
+    /// <para><b>Reads the DESTINATION index, not the source's.</b> The destination is a fresh clone checked
+    /// out at <c>HEAD</c>, so a path staged-but-uncommitted in the source is in the SOURCE index and absent
+    /// here. Intersecting against the source listing would batch such a path and fail
+    /// <c>update-index</c> on a perfectly legitimate snapshot.</para>
+    ///
+    /// <para><b>Membership decides, so failure is real.</b> The previous version swallowed every error to
+    /// cover "absent from the index". With membership established from the listing, a failure means
+    /// something else went wrong and it propagates.</para>
+    ///
+    /// <para><b>Batched on stdin.</b> The expanded set is <c>paths × depth</c> entries and O(depth²)
+    /// aggregate bytes, so argv could exceed <c>ARG_MAX</c>; <c>--stdin</c> also makes the paths literal,
+    /// where an ancestor directory named <c>:foo</c> or <c>-foo</c> would otherwise be read as pathspec
+    /// syntax.</para>
+    ///
+    /// <para>The targets are the index's OWN spellings, taken from the listing, so they are guaranteed to
+    /// name entries git will accept — and the case decision is made once, by the shared classifier.</para>
+    /// </summary>
+    static async Task ApplyReservedIndexPolicyAsync(
+            string destination, SnapshotExclusionPlan plan, bool caseSensitive, CancellationToken ct) {
+        var indexListing = await RunGitCaptureBytes(destination, GitTimeout, false, ct, "ls-files", "-z");
+        var targets = new List<string>();
+        foreach (var record in SplitNulRecords(indexListing)) {
+            ct.ThrowIfCancellationRequested();
+            // Every non-Unrelated match, Exact AND Descendant — the same set ReadSourceManifestAsync
+            // excludes. An earlier version marked only Exact on the reasoning that a descendant of a
+            // config path is not an index entry, which is backwards: the reserved parent may not be an
+            // entry, but a repository CAN track `.codex/config.toml/child` (the config pathname as a
+            // directory), and each such child is a real index entry. Omitted from the snapshot and left
+            // unmarked, it reads as a deletion — and an ordinary git operation in the snapshot could
+            // restore it and rebuild a live vendor-config tree.
+            if (ClassifyReservedPath(record.Span, plan.Reserved, caseSensitive).Kind
+                    == ReservedPathMatchKind.Unrelated)
+                continue;
+            // A non-UTF8 index path cannot have matched an ASCII candidate, so this cannot throw for a
+            // path that reached here; the guard is for the impossible case rather than a silent skip.
+            targets.Add(StrictUtf8.GetString(record.Span));
+        }
+
+        if (targets.Count > 0)
+            await RunGitWithNulStdinAsync(
+                destination, GitTimeout, targets, ct, "update-index", "--skip-worktree", "-z", "--stdin");
+
         Directory.CreateDirectory(Path.Combine(destination, ".git", "info"));
         File.AppendAllText(Path.Combine(destination, ".git", "info", "exclude"), "\n.attached/\n");
     }
@@ -853,12 +1305,14 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
     sealed record SnapshotFile(long Length, byte[] Hash, UnixFileMode? Mode);
     sealed class SourceChangedException : Exception;
 
-    static bool IsUnderExcluded(string rel, string[] prefixes) {
-        rel = rel.Replace('\\', '/');
+    static bool IsUnderExcluded(string rel, string[] prefixes, bool caseSensitive) {
+        var comparison = caseSensitive
+            ? StringComparison.Ordinal
+            : StringComparison.OrdinalIgnoreCase;
         foreach (var prefix in prefixes) {
-            var normalized = prefix.Replace('\\', '/').TrimEnd('/');
-            if (rel.Equals(normalized, StringComparison.OrdinalIgnoreCase) ||
-                rel.StartsWith(normalized + "/", StringComparison.OrdinalIgnoreCase))
+            var normalized = prefix.TrimEnd('/');
+            if (rel.Equals(normalized, comparison) ||
+                rel.StartsWith(normalized + "/", comparison))
                 return true;
         }
         return false;
@@ -868,7 +1322,18 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
         // Legacy global root — clean up any leftover worktrees from before the per-repo change
         var worktreePaths = activeWorktreePaths as string[] ?? [..activeWorktreePaths ?? []];
         CleanupDirectory(config.WorktreeRoot, worktreePaths, "borrowed-snapshots");
-        CleanupDirectory(Path.Combine(config.WorktreeRoot, "borrowed-snapshots"), worktreePaths);
+        var borrowedSnapshotsRoot = Path.Combine(config.WorktreeRoot, "borrowed-snapshots");
+        // This name is a daemon-owned routing entry. Never enumerate through a pre-existing link:
+        // doing so would turn orphan cleanup into deletion of directories outside WorktreeRoot.
+        // Removing the link itself is safe and leaves its target untouched.
+        if (Path.Exists(borrowedSnapshotsRoot) &&
+            File.GetAttributes(borrowedSnapshotsRoot).HasFlag(FileAttributes.ReparsePoint)) {
+            LogCleaningUp(borrowedSnapshotsRoot);
+            try { DeleteTreeNoFollow(borrowedSnapshotsRoot); }
+            catch (Exception ex) { LogCleanupFailed(ex, borrowedSnapshotsRoot); }
+        } else {
+            CleanupDirectory(borrowedSnapshotsRoot, worktreePaths);
+        }
 
         // Per-repo roots — scan each allowed repo for .capacitor/worktrees/
         foreach (var repoPath in config.AllowedRepoPaths) {
@@ -905,6 +1370,9 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
             if (IsActive(fullDir, activePaths)) continue;
             if (fullDir.EndsWith(VendorStateSuffix, StringComparison.OrdinalIgnoreCase) &&
                 IsActive(fullDir[..^VendorStateSuffix.Length], activePaths))
+                continue;
+            if (fullDir.EndsWith(ReviewContextSuffix, StringComparison.OrdinalIgnoreCase) &&
+                IsActive(fullDir[..^ReviewContextSuffix.Length], activePaths))
                 continue;
 
             LogCleaningUp(dir);
@@ -955,32 +1423,75 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
     }
 
     static Task RunGit(string cwd, TimeSpan timeout, params string[] args) =>
-        RunGit(cwd, timeout, sourceReadOnly: false, args);
+        RunGit(cwd, timeout, sourceReadOnly: false, [], args);
 
-    static async Task RunGit(string cwd, TimeSpan timeout, bool sourceReadOnly, params string[] args) {
-        var result = await RunGitCaptureResult(cwd, timeout, sourceReadOnly, args);
+    static Task RunGit(string cwd, TimeSpan timeout, bool sourceReadOnly, params string[] args) =>
+        RunGit(cwd, timeout, sourceReadOnly, [], args);
+
+    static Task RunGit(string cwd, TimeSpan timeout, GitConfigOverride[] config, params string[] args) =>
+        RunGit(cwd, timeout, sourceReadOnly: false, config, args);
+
+    static async Task RunGit(
+            string cwd, TimeSpan timeout, bool sourceReadOnly, GitConfigOverride[] config,
+            params string[] args) {
+        var result = await RunGitCaptureResult(cwd, timeout, sourceReadOnly, config, args);
         if (result.ExitCode != 0)
             throw new InvalidOperationException($"git {string.Join(' ', args)} failed: {result.Stderr}");
     }
 
     static async Task<string> RunGitCapture(string cwd, TimeSpan timeout, bool sourceReadOnly, params string[] args) {
-        var result = await RunGitCaptureResult(cwd, timeout, sourceReadOnly, args);
+        var result = await RunGitCaptureResult(cwd, timeout, sourceReadOnly, [], args);
         if (result.ExitCode != 0)
             throw new InvalidOperationException($"git {string.Join(' ', args)} failed: {result.Stderr}");
         return result.Stdout;
     }
 
     static async Task<bool> GitConfigBoolAsync(string cwd, string key) {
-        var result = await RunGitCaptureResult(cwd, GitTimeout, true, "config", "--bool", "--get", key);
+        var result = await RunGitCaptureResult(cwd, GitTimeout, true, [], "config", "--bool", "--get", key);
         if (result.ExitCode == 1) return false; // key is absent
         if (result.ExitCode != 0)
             throw new InvalidOperationException($"git config --bool --get {key} failed: {result.Stderr}");
         return string.Equals(result.Stdout.Trim(), "true", StringComparison.OrdinalIgnoreCase);
     }
 
-    static async Task<(int ExitCode, string Stdout, string Stderr)> RunGitCaptureResult(
-            string cwd, TimeSpan timeout, bool sourceReadOnly, params string[] args) {
-        var psi = NewGitPsi(cwd, args, sourceReadOnly);
+    internal static async Task<(int ExitCode, string Stdout, string Stderr)> RunGitCaptureResult(
+            string cwd, TimeSpan timeout, bool sourceReadOnly, GitConfigOverride[] config,
+            params string[] args) {
+        await ProveConfigTransportIfCarryingAsync(cwd, sourceReadOnly, config);
+
+        return await RunGitCaptureResultUnproven(cwd, timeout, sourceReadOnly, config, args);
+    }
+
+    /// <summary>
+    /// The proof gate, applied where the overrides are HANDED TO GIT rather than where they are composed.
+    ///
+    /// <para>An earlier revision proved the transport inside each producer of containment config instead.
+    /// Review found the hole that shape leaves: <c>ReadGitRelativeCwdAsync</c> passes
+    /// <c>core.quotePath=false</c> and is not a containment producer, so it carried an override past no
+    /// proof at all — a fourth call site would have had the same problem, and a fifth. Gating on "this run
+    /// carries overrides" cannot be forgotten by a new caller.</para>
+    ///
+    /// <para><b>Including <c>sourceReadOnly</c>'s own pair.</b> A revision of this gated only on
+    /// caller-supplied config, reasoning that losing that flag's suppressions costs a maintenance run.
+    /// Review corrected it: <c>core.fsmonitor</c> set to anything other than a boolean names a HOOK
+    /// PROGRAM, which git runs whenever a command refreshes the index, so silently dropping
+    /// <c>core.fsmonitor=false</c> re-exposes an execution surface — not a performance one. There is no
+    /// per-key classification here for the same reason there is no filter-driver exemption: the argument
+    /// for "this one is harmless to lose" is exactly what keeps turning out to be wrong. Every git run
+    /// carrying ANY override proves the transport first. The cost is that a git too old to honour the
+    /// transport cannot be used for these reads either — that git already cannot create a worktree.</para>
+    /// </summary>
+    static Task ProveConfigTransportIfCarryingAsync(
+            string cwd, bool sourceReadOnly, GitConfigOverride[] config) =>
+        sourceReadOnly || config.Length > 0 ? ProveConfigTransportAsync(cwd) : Task.CompletedTask;
+
+    /// <summary>Runs git WITHOUT proving the transport first. Only the probe itself may use this — it is
+    /// what the gate above is measuring, so routing it through the gate would deadlock on the
+    /// non-reentrant semaphore.</summary>
+    static async Task<(int ExitCode, string Stdout, string Stderr)> RunGitCaptureResultUnproven(
+            string cwd, TimeSpan timeout, bool sourceReadOnly, GitConfigOverride[] config,
+            params string[] args) {
+        var psi = NewGitPsi(cwd, args, sourceReadOnly, config);
         using var proc = Process.Start(psi)!;
         using var cts = new CancellationTokenSource(timeout);
 
@@ -1042,7 +1553,8 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
     /// (<c>GIT_TERMINAL_PROMPT=0</c>, <c>GCM_INTERACTIVE=Never</c>) so an
     /// unattended daemon can never block on a credential prompt.
     /// </summary>
-    static ProcessStartInfo NewGitPsi(string cwd, string[] args, bool sourceReadOnly = false) {
+    static ProcessStartInfo NewGitPsi(
+            string cwd, string[] args, bool sourceReadOnly = false, GitConfigOverride[]? config = null) {
         var psi = new ProcessStartInfo("git", args) {
             WorkingDirectory       = cwd,
             RedirectStandardOutput = true,
@@ -1061,12 +1573,16 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
         if (sourceReadOnly) {
             psi.Environment["GIT_OPTIONAL_LOCKS"] = "0";
             psi.Environment["GIT_CONFIG_NOSYSTEM"] = "1";
-            psi.Environment["GIT_CONFIG_COUNT"] = "2";
-            psi.Environment["GIT_CONFIG_KEY_0"] = "maintenance.auto";
-            psi.Environment["GIT_CONFIG_VALUE_0"] = "false";
-            psi.Environment["GIT_CONFIG_KEY_1"] = "core.fsmonitor";
-            psi.Environment["GIT_CONFIG_VALUE_1"] = "false";
         }
+
+        // Every override this process passes goes through ONE composition, so the indices and the count are
+        // allocated in a single place. An earlier revision wrote the sourceReadOnly pair at fixed indices
+        // 0 and 1 with a fixed count of 2, which both displaced any inherited entry and left no room for a
+        // caller's own overrides.
+        GitConfigOverride[] composed = sourceReadOnly
+            ? [.. SourceReadOnlyConfig, .. config ?? []]
+            : config ?? [];
+        ApplyConfigOverrides(psi.Environment, composed);
 
         return psi;
     }
@@ -1080,35 +1596,4 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
     [LoggerMessage(Level = LogLevel.Warning, Message = "Failed to clean up {Path}")]
     partial void LogCleanupFailed(Exception ex, string path);
 
-    /// <summary>
-    /// NOTE: this is the ORIGINAL implementation, restored deliberately.
-    ///
-    /// <para>It is broken: the standalone path's destination is
-    /// <c>&lt;source&gt;/.capacitor/worktrees/&lt;name&gt;</c>, so this descends into the directory it is
-    /// writing and recurses until the path length blows up. Standalone snapshot creation has therefore
-    /// never completed for a non-git source.</para>
-    ///
-    /// <para><b>Why it is not fixed here.</b> Repairing the recursion made the path REACHABLE, which armed
-    /// a second, worse latent bug in the same method: <c>File.Copy</c> copies a symlink's target, so a
-    /// source containing a link to <c>~/.ssh</c> would materialise real credentials inside the agent's
-    /// worktree. Hardening that then raised further questions about case semantics and about preserving
-    /// legitimate internal links. None of it belongs in a change about MCP containment, and shipping a
-    /// half-hardened live path is worse than leaving an inert broken one. Repair is tracked on its own
-    /// issue, with the exfiltration vector and the case-identity problem written up.</para>
-    /// </summary>
-    static void CopyDirectory(string source, string dest) {
-        foreach (var file in Directory.GetFiles(source)) {
-            File.Copy(file, Path.Combine(dest, Path.GetFileName(file)));
-        }
-
-        foreach (var dir in Directory.GetDirectories(source)) {
-            if (Path.GetFileName(dir) == ".git") {
-                continue;
-            }
-
-            var destDir = Path.Combine(dest, Path.GetFileName(dir));
-            Directory.CreateDirectory(destDir);
-            CopyDirectory(dir, destDir);
-        }
-    }
 }

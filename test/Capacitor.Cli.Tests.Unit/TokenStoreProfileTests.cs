@@ -22,18 +22,9 @@ public class TokenStoreProfileTests {
 
     [Before(Test)]
     public void Cleanup() {
-        if (File.Exists(LegacyPath)) File.Delete(LegacyPath);
-        if (Directory.Exists(TokensDir)) Directory.Delete(TokensDir, recursive: true);
-
-        // Reset the shared profile config so the active profile resolves to "default".
-        // A config.json left in the shared KCAP_CONFIG_DIR by another test would make
-        // LoadAsync() resolve a different (file-less) profile, turning the legacy-fallback
-        // assertions order-dependent.
-        var cfg = Capacitor.Cli.Core.Config.AppConfig.GetConfigPath();
-        if (File.Exists(cfg)) File.Delete(cfg);
-        // Token lookup now consults AppConfig.ResolvedProfile, so a value left behind by another
-        // test would redirect these reads to a different profile.
-        Capacitor.Cli.Core.Config.AppConfig.ResetResolvedStateForTesting();
+        // Retries a transient Windows sharing violation rather than failing the test before it runs;
+        // see SharedConfigDirCleanup for why this is shared.
+        SharedConfigDirCleanup.ClearTokenAndProfileState(LegacyPath, TokensDir);
     }
 
     [Test]

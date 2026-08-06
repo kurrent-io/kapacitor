@@ -27,15 +27,39 @@ namespace Capacitor.Cli.Commands;
 ///   SessionEnd   → kill watcher + capped inline drain (mirror of the Copilot /
 ///                  Claude pre-drain cap), then POST /hooks/session-end/gemini.
 ///   Notification → best-effort forward to the Claude-shaped /hooks/notification.
-/// Gemini treats hook stdout as a JSON decision channel, and selects the text to
-/// parse as <c>stdout.trim() || stderr.trim()</c> — so an EMPTY stdout makes it
-/// parse this process's STDERR (where kcap writes failed-POST and auth-lapse
-/// diagnostics) as the hook's result.
+/// KCAP'S STDERR IS PART OF GEMINI'S HOOK CONTRACT. Gemini treats hook stdout as a
+/// JSON decision channel and selects the text to parse as
+/// <c>stdout.trim() || stderr.trim()</c> — in a <c>child.on("close")</c> handler
+/// that never looks at the event name. So an EMPTY stdout on ANY event makes it
+/// parse this process's STDERR as the hook's result, and kcap writes failed-POST,
+/// unusable-URL and auth diagnostics there on every event.
 ///
-/// Because of that, a recognised SessionStart writes exactly one JSON object on
-/// every returning path: the memory envelope when there is one, else an explicit
-/// <c>{"continue":true}</c>. SessionEnd/Notification still emit nothing, which
-/// leaves them exposed to the same stderr fallback — tracked separately.
+/// Hence the invariant, enforced structurally by <see cref="Handle"/>'s
+/// <c>finally</c> rather than by each path remembering: a RECOGNISED hook firing
+/// makes exactly one write ATTEMPT — the memory envelope on SessionStart when there
+/// is one, else an explicit <c>{"continue":true}</c>. Only input with no parseable
+/// <c>hook_event_name</c> stays silent. Do not add a returning path that skips it,
+/// and do not "harmonise" the empty-fragment write away to match the other memory
+/// adapters: those harnesses have no such fallback.
+///
+/// ATTEMPT, not "exactly one object reaches stdout": a throwing writer still consumes
+/// the claim. See <see cref="HookResultWriter"/> for the two residues that leaves and
+/// why neither is worth retrying.
+///
+/// The second half of the contract is the EXIT CODE, which is easy to miss because
+/// nothing on this path mentions it. Gemini's plain-text fallback (what a stderr
+/// string degrades to) is not unconditionally benign: it maps exit 0 and 1 to
+/// <c>decision: "allow"</c> but ANY other code to <c>decision: "deny"</c>, which
+/// <c>isBlockingDecision()</c> honours — that is a BLOCKED session, not junk
+/// context. kcap stays out of that band only because <c>hook</c> is one of
+/// <c>CrashReporter.FailOpenCommands</c>, which is what turns
+/// <c>HttpClientExtensions.EnsureAbsolute</c>'s <c>Environment.Exit(2)</c> into a
+/// throw and makes Program.cs's top-level catch return 0. That set is load-bearing
+/// here; <c>GeminiHookOutputContractTests</c> pins it.
+///
+/// Behaviour above is measured on <c>gemini 0.53.0</c> — a version-specific
+/// observation, not a guarantee. The mitigation does not depend on it: emitting a
+/// valid non-blocking object is correct under any of these selection rules.
 /// </remarks>
 static class GeminiHookCommand {
     // Mirror of CopilotHookCommand.PreHookDrainCap: the drain must
@@ -49,7 +73,8 @@ static class GeminiHookCommand {
     /// <summary>Gemini's explicit allow-with-no-context result. A literal rather than a serializer call
     /// ON PURPOSE: this is the payload every failure path degrades to, so producing it must itself be
     /// incapable of failing. Serializing it would add a throw path to the one value that exists to
-    /// guarantee we never emit zero bytes.
+    /// remove one. That is a guarantee about RENDERING, not delivery: whether the bytes reach stdout is
+    /// <see cref="HookResultWriter"/>'s business, and it deliberately cannot promise that either.
     ///
     /// <para>Carries no <c>hookSpecificOutput</c> key, so Gemini's <c>getAdditionalContext()</c>
     /// short-circuits on its own <c>"additionalContext" in …</c> guard and contributes nothing; and no
@@ -60,20 +85,13 @@ static class GeminiHookCommand {
     /// Renders the SessionStart hook result. With a fragment this is the memory envelope; without one it
     /// is <see cref="AllowPayload"/> — NOT zero bytes.
     ///
-    /// <para>Emitting on the empty path is deliberate and diverges from the other memory adapters. Gemini
-    /// parses <c>stdout.trim() || stderr.trim()</c>, so silent stdout makes it read kcap's STDERR
-    /// diagnostics as the hook's output; a payload wins the <c>||</c> and shadows them. Do not
-    /// "harmonise" this back to the other adapters' shape.</para>
-    ///
-    /// <para>Two separate try blocks on purpose: rendering completes before any byte is written, and a
-    /// write that throws mid-payload must not alter the command's exit code. A truncated payload is safe
-    /// on Gemini's side — a JSON parse failure degrades to plain text and never synthesises a blocking
-    /// decision, which requires an explicit <c>decision: "block"|"deny"</c>.</para>
+    /// <para>Pure, and separate from the write, so the rendering cannot fail a caller mid-payload:
+    /// rendering completes before any byte is written. A render throw OR an empty render degrades to the
+    /// allow object rather than to silence — silence is what re-exposes stderr.</para>
     /// </summary>
-    internal static void WriteSessionStartOutput(TextWriter writer, string? fragment) {
+    internal static string RenderSessionStartPayload(string? fragment) {
         // Start from the payload that cannot fail, and only upgrade to the memory envelope when
-        // rendering genuinely succeeds. Structured this way so that a render throw OR an empty render
-        // degrades to the allow object rather than to silence — silence is what re-exposes stderr.
+        // rendering genuinely succeeds.
         var payload = AllowPayload;
 
         if (fragment is not null) {
@@ -85,10 +103,51 @@ static class GeminiHookCommand {
             }
         }
 
-        // Separate try: a write throwing mid-payload must not alter the command's exit code. A truncated
-        // payload is safe on Gemini's side — a parse failure degrades to plain text, never a block.
-        try { writer.Write(payload); }
-        catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException) { }
+        return payload;
+    }
+
+    /// <summary>
+    /// Write-once stdout sink that makes the emit invariant STRUCTURAL rather than a discipline every
+    /// early return has to remember — which is exactly the discipline that failed for every event but
+    /// SessionStart. <see cref="Handle"/> guarantees the write from a <c>finally</c>; a path that has a
+    /// real payload claims the single write first, and the backstop then no-ops.
+    ///
+    /// <para>Deliberately not thread-safe: a hook invocation writes its result from one flow, and a lock
+    /// would add a failure mode to the one component whose whole job is that bytes get written.</para>
+    /// </summary>
+    internal sealed class HookResultWriter(TextWriter writer) {
+        bool _written;
+
+        /// <summary>Writes <paramref name="payload"/> unless something has already been written. The
+        /// claim is recorded BEFORE the attempt, so a throwing write cannot let the backstop append a
+        /// second object onto a partial one.
+        ///
+        /// <para>THE CANONICAL NOTE ON WHY THE INVARIANT IS AN "ATTEMPT" — referenced from the class
+        /// remarks and the tests rather than repeated, since restating it is how the claim drifted twice.
+        /// A throwing writer leaves one of two residues, and they are NOT the same failure:</para>
+        ///
+        /// <para>• <b>Throw before any byte → stdout empty.</b> `"" || stderr` selects stderr, so this
+        /// is the original bug, unfixed for this one case.</para>
+        ///
+        /// <para>• <b>Throw mid-payload → stdout truncated.</b> A non-empty stdout is truthy, so it stays
+        /// selected and stderr is NOT reached. The truncated JSON fails to parse and degrades to plain
+        /// text — junk context from our own payload, and an allow at the exit codes this command
+        /// returns.</para>
+        ///
+        /// <para>Retrying fixes neither: nothing here can tell the two apart, and appending a second
+        /// object behind a partial one just guarantees the truncated case's invalid-but-selected stdout.
+        /// A stdout we cannot write to has no recovery from inside this process.</para></summary>
+        internal void Write(string payload) {
+            if (_written) return;
+
+            _written = true;
+
+            try { writer.Write(payload); }
+            catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException) { }
+        }
+
+        /// <summary>The backstop: an explicit allow, carrying no context and no decision.</summary>
+        internal void EnsureWritten() => Write(AllowPayload);
     }
 
     /// <summary>The exact <see cref="SessionMemoryLifecycle"/> this adapter hands the orchestrator.
@@ -159,33 +218,47 @@ static class GeminiHookCommand {
         if (node is null) return 0;
 
         var eventName = TryGetString(node, "hook_event_name");
+
+        // The ONE path that stays silent, and the reason the invariant below says "recognised": with no
+        // parseable hook_event_name we cannot know Gemini invoked us as a hook at all, so there is no
+        // result to attribute and nothing that would read it.
         if (string.IsNullOrEmpty(eventName)) return 0;
 
+        // Invariant: a RECOGNISED hook firing makes exactly one write ATTEMPT, on every returning path.
+        // Held by the finally rather than by each path remembering — the per-path version held for
+        // SessionStart alone and left every other event handing Gemini kcap's stderr as the hook result.
+        // `eventName` is deliberately not filtered to the events we route: Gemini's close handler never
+        // consults it either.
+        var result = new HookResultWriter(Console.Out);
+
+        try {
+            return await DispatchAsync(baseUrl, node, eventName, result, ps,
+                                       memoryClientFactory, memoryStoreFactory);
+        } finally {
+            result.EnsureWritten();
+        }
+    }
+
+    static async Task<int> DispatchAsync(
+            string    baseUrl,
+            JsonNode  node,
+            string    eventName,
+            HookResultWriter result,
+            long      ps,
+            Func<string?, CancellationToken, Task<HttpClient>>? memoryClientFactory,
+            Func<SessionStartMemoryLeaseStore>?                 memoryStoreFactory) {
         // Gemini session ids are dashed UUIDs; keep the dashless form for the
         // server (AgentSession-{dashless} convention shared by every vendor).
-        // Recognised from HERE, not after session-id validation. Gemini fired a SessionStart and WILL
-        // read our stdout whatever we make of the rest of the payload, so a bad session id must still
-        // emit — otherwise this path re-exposes the stdout||stderr fallback.
-        var isSessionStart = eventName == "SessionStart";
-
         var dashedSessionId = TryGetString(node, "session_id");
-        if (string.IsNullOrEmpty(dashedSessionId) || !Guid.TryParse(dashedSessionId, out _)) {
-            if (isSessionStart) WriteSessionStartOutput(Console.Out, fragment: null);
-            return 0;
-        }
+        if (string.IsNullOrEmpty(dashedSessionId) || !Guid.TryParse(dashedSessionId, out _)) return 0;
 
         var sessionId = dashedSessionId.Replace("-", "");
 
         // Mirror the Claude/Codex/Copilot disabled-session fast path: `kcap
-        // disable` must stop every POST and watcher restart for the session.
-        // Invariant: a RECOGNISED SessionStart writes exactly one JSON object on every returning path,
-        // including the suppression fast paths below — an exception-riddled invariant is not an
-        // invariant, and these paths are not stderr-free (Program.cs drains the spool before dispatch).
-        // Only genuinely unrecognisable input stays silent: unparseable stdin and a missing/blank
-        // hook_event_name, where we cannot know a SessionStart occurred at all.
+        // disable` must stop every POST and watcher restart for the session. Suppression is not
+        // silence — these paths are not stderr-free (Program.cs drains the spool before dispatch).
         if (DisabledSessions.IsDisabled(sessionId)) {
             if (eventName == "SessionEnd") DisabledSessions.RemoveMarker(sessionId);
-            if (isSessionStart) WriteSessionStartOutput(Console.Out, fragment: null);
             return 0;
         }
 
@@ -197,14 +270,11 @@ static class GeminiHookCommand {
         var activeProfile = await AppConfig.GetActiveProfileAsync();
 
         if (activeProfile?.ExcludedPaths is { Length: > 0 } excludedPaths
-         && PathExclusion.IsExcluded(cwd, excludedPaths)) {
-            if (isSessionStart) WriteSessionStartOutput(Console.Out, fragment: null);
-            return 0;
-        }
+         && PathExclusion.IsExcluded(cwd, excludedPaths)) return 0;
 
         return eventName switch {
             "SessionStart" => await HandleSessionStart(baseUrl, node, sessionId, cwd, activeProfile, spool,
-                                                       ps, memoryClientFactory, memoryStoreFactory),
+                                                       result, ps, memoryClientFactory, memoryStoreFactory),
             "SessionEnd"   => await HandleSessionEnd(baseUrl, node, sessionId, cwd),
             "Notification" => await HandleNotification(baseUrl, node, sessionId, cwd),
             _              => 0   // unknown / unsubscribed — fail-open like the other dispatchers
@@ -218,6 +288,7 @@ static class GeminiHookCommand {
             string?   cwd,
             Profile?  activeProfile,
             HookSpool spool,
+            HookResultWriter result,
             long      processStart,
             Func<string?, CancellationToken, Task<HttpClient>>? memoryClientFactory = null,
             Func<SessionStartMemoryLeaseStore>?                 memoryStoreFactory  = null
@@ -260,7 +331,6 @@ static class GeminiHookCommand {
         if (activeProfile?.ExcludedRepos is { Length: > 0 } excludedRepos
          && await RepoExclusion.IsExcludedAsync(enriched, excludedRepos)) {
             DisabledSessions.Mark(sessionId);
-            WriteSessionStartOutput(Console.Out, fragment: null);
             return 0;
         }
 
@@ -284,13 +354,12 @@ static class GeminiHookCommand {
             baseUrl, "session-start/gemini", enriched, "gemini-hook",
             spool, sessionId, route: "session-start/gemini");
 
-        // Write the hook result BEFORE any return, including the failed-POST return below. The Codex
-        // adapter shipped a defect where an early `return 1` skipped the stdout handshake entirely; do
-        // not reintroduce it. The memory index is independent of lifecycle capture — a server rejecting
-        // the POST has not invalidated an index already fetched — and Gemini parses hook stdout
-        // unconditionally, with the exit code only setting its own `success` flag.
-        WriteSessionStartOutput(Console.Out,
-            await SessionStartMemoryHookSupport.AwaitBounded(memoryTask, processStart, "session-start"));
+        // Claim the single write HERE, before the failed-POST return below, so the memory envelope is
+        // what lands rather than the backstop's bare allow. The memory index is independent of lifecycle
+        // capture — a server rejecting the POST has not invalidated an index already fetched — and Gemini
+        // parses hook stdout unconditionally, with the exit code only setting its own `success` flag.
+        result.Write(RenderSessionStartPayload(
+            await SessionStartMemoryHookSupport.AwaitBounded(memoryTask, processStart, "session-start")));
 
         if (!AgentHookPoster.ShouldSpawnAfter(outcome, baseUrl)) return outcome == HookPostOutcome.Failed ? 1 : 0;
 

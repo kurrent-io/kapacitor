@@ -3,6 +3,15 @@ using Capacitor.Cli.Core.Config;
 namespace Capacitor.Cli.Core.Auth;
 
 /// <summary>
+/// Outcome of a discovery run. <see cref="RetargetServerInput"/> is the slug or URL the user
+/// asked to use instead of creating a tenant, and is non-null only when they chose "I already
+/// have a workspace". <see cref="ExitCode"/> is deliberately non-zero in that case: a caller
+/// that does not implement re-targeting then fails visibly, instead of reporting success while
+/// having configured nothing.
+/// </summary>
+public sealed record WorkOSDiscoveryOutcome(int ExitCode, string? RetargetServerInput = null);
+
+/// <summary>
 /// WorkOS tenant discovery: authenticate org-less against the proxy's shared AuthKit app,
 /// list the user's tenants via the proxy, let them pick, then org-switch into the chosen org
 /// and save an org-scoped profile. The two browser/HTTP effects (org-less login, org-switch)
@@ -18,7 +27,7 @@ public static class WorkOSDiscovery {
     /// sites (`kcap login --discover` and `kcap setup`) use this; tests call <see cref="RunAsync"/>
     /// directly with fakes.
     /// </summary>
-    public static Task<int> RunWithLiveAuthAsync(
+    public static Task<WorkOSDiscoveryOutcome> RunWithLiveAuthAsync(
             string proxyUrl, ProxyConfigResponse proxyConfig, IAuthProxyClient proxy, ITenantPicker picker,
             ITenantProvisioner? provisioner = null) {
         var clientId = proxyConfig.WorkOSClientId ?? "";
@@ -36,7 +45,7 @@ public static class WorkOSDiscovery {
             provisioner: provisioner);
     }
 
-    public static async Task<int> RunAsync(
+    public static async Task<WorkOSDiscoveryOutcome> RunAsync(
             string                                          proxyUrl,
             ProxyConfigResponse                             proxyConfig,
             IAuthProxyClient                                proxy,
@@ -48,14 +57,14 @@ public static class WorkOSDiscovery {
         if (string.IsNullOrEmpty(proxyConfig.WorkOSClientId)) {
             await Console.Error.WriteLineAsync("This server isn't configured for WorkOS sign-in.");
 
-            return 1;
+            return new(1);
         }
 
         var auth = await orglessLogin();
         if (auth is null || string.IsNullOrEmpty(auth.RefreshToken)) {
             await Console.Error.WriteLineAsync("WorkOS sign-in failed.");
 
-            return 1;
+            return new(1);
         }
 
         var result = await proxy.DiscoverWorkOSTenantsAsync(proxyUrl, auth.AccessToken);
@@ -67,14 +76,14 @@ public static class WorkOSDiscovery {
                 _                               => "Tenant discovery failed."
             });
 
-            return 1;
+            return new(1);
         }
 
         if (result.Tenants.Length == 0) {
             if (provisioner is null) {
                 await Console.Error.WriteLineAsync("No Capacitor tenants are linked to your account. Ask your admin to invite you.");
 
-                return 1;
+                return new(1);
             }
 
             // Provisioning + polling can run for minutes, outliving WorkOS's ~5-minute access-token
@@ -83,10 +92,22 @@ public static class WorkOSDiscovery {
                 auth.AccessToken, auth.RefreshToken,
                 orglessRefresh ?? ((_, _) => Task.FromResult<WorkOSAuthResponse?>(null)));
             var offer = await provisioner.OfferCreateAsync(tokens);
+
+            if (offer.Status == ProvisionOfferStatus.ExistingWorkspace) {
+                // The user belongs to a workspace already and would rather point at it. Hand the
+                // input back unresolved (trimmed, nothing else): only the caller knows how a bare
+                // slug expands, and the target's own /auth/config — not this WorkOS lane — decides
+                // how to log in. Blank input would resolve to a nonsense host, so decline instead.
+                // Trimmed here as well as at the prompt because this interface is public.
+                var target = offer.ExistingWorkspaceInput?.Trim();
+
+                return string.IsNullOrEmpty(target) ? new(1) : new(1, target);
+            }
+
             if (offer.Status != ProvisionOfferStatus.Created || offer.Tenant is null) {
                 // Declined / InProgress / Failed — the provisioner already printed the
                 // outcome-appropriate message; don't stack the legacy dead-end on top.
-                return 1;
+                return new(1);
             }
 
             var created = new DiscoveredTenant {
@@ -99,17 +120,17 @@ public static class WorkOSDiscovery {
             // Polling may have rotated the org-less refresh token; the org-switch must use the
             // current one (WorkOS invalidates the old on refresh) or the final switch would 401.
             var authForSwitch = auth with { RefreshToken = tokens.CurrentRefreshToken ?? auth.RefreshToken };
-            return await SwitchAndSaveAsync(created, [created], authForSwitch, proxyConfig.WorkOSClientId!, orgSwitch);
+            return new(await SwitchAndSaveAsync(created, [created], authForSwitch, proxyConfig.WorkOSClientId!, orgSwitch));
         }
 
         var picked = result.Tenants.Length == 1 ? result.Tenants[0] : picker.Pick(result.Tenants);
         if (picked is null) {
             await Console.Error.WriteLineAsync("No tenant selected.");
 
-            return 1;
+            return new(1);
         }
 
-        return await SwitchAndSaveAsync(picked, result.Tenants, auth, proxyConfig.WorkOSClientId!, orgSwitch);
+        return new(await SwitchAndSaveAsync(picked, result.Tenants, auth, proxyConfig.WorkOSClientId!, orgSwitch));
     }
 
     // Org-switch into the chosen tenant, persist its profile + org-bound tokens.

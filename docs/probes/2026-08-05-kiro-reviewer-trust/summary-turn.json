@@ -1,0 +1,80 @@
+{
+  "started": "2026-08-05T13:42:29.474224+00:00",
+  "kiro_version": "kiro-cli 2.16.0",
+  "phases": {
+    "A_isolated_scoped_trust": {
+      "kiro_home": "<tmp>",
+      "trust_tools": "fs_read,thinking,@kcap-flow-result/submit_review_result",
+      "trust_warnings": [],
+      "mcp_servers_initialized": [
+        {
+          "sessionId": "66ff8234-00b0-4b01-86a2-3b62033f853d",
+          "serverName": "kcap-flow-result"
+        },
+        {
+          "sessionId": "66ff8234-00b0-4b01-86a2-3b62033f853d",
+          "serverName": "kcap-flow-result"
+        }
+      ],
+      "session_new_ok": true,
+      "session_id": "66ff8234-00b0-4b01-86a2-3b62033f853d",
+      "available_models": [
+        "auto",
+        "claude-sonnet-4.5",
+        "claude-sonnet-4",
+        "claude-haiku-4.5",
+        "deepseek-3.2",
+        "minimax-m2.5",
+        "minimax-m2.1",
+        "glm-5",
+        "qwen3-coder-next"
+      ]
+    },
+    "B_real_home_control": {
+      "kiro_home": "(unset - real ~/.kiro)",
+      "mcp_servers_initialized": [
+        {
+          "sessionId": "a74b711a-a8f2-4b51-93c1-5c26a897bd75",
+          "serverName": "kcap-flow-result"
+        },
+        {
+          "sessionId": "a74b711a-a8f2-4b51-93c1-5c26a897bd75",
+          "serverName": "kcap-sessions"
+        },
+        {
+          "sessionId": "a74b711a-a8f2-4b51-93c1-5c26a897bd75",
+          "serverName": "kcap-review"
+        },
+        {
+          "sessionId": "a74b711a-a8f2-4b51-93c1-5c26a897bd75",
+          "serverName": "kcap-flows"
+        },
+        {
+          "sessionId": "a74b711a-a8f2-4b51-93c1-5c26a897bd75",
+          "serverName": "kcap-memory"
+        }
+      ],
+      "session_new_ok": true
+    },
+    "C_turn": {
+      "model_requested": "deepseek-3.2",
+      "set_model_response": {
+        "jsonrpc": "2.0",
+        "result": {},
+        "id": 3
+      },
+      "stop_reason": "end_turn",
+      "permission_requests": [],
+      "mcp_server_methods": [
+        "initialize",
+        "notifications/initialized",
+        "tools/list",
+        "tools/call"
+      ],
+      "tools_call_reached_server": true,
+      "nonce_in_transcript": true
+    }
+  },
+  "finished": "2026-08-05T13:42:46.830493+00:00",
+  "_redaction": "home dir -> ~, temp paths -> <tmp>; frames/stderr/mcp logs not committed"
+}

@@ -15,6 +15,20 @@ static class ServiceEnvironment {
         ["PATH", "KCAP_CONFIG_DIR", "KCAP_PROFILE", "KCAP_URL", "KCAP_CLAUDE_PATH", "KCAP_CODEX_PATH"];
 
     /// <summary>
+    /// Operator consent for the two gated unattended reviewers. Carried on every platform: these are
+    /// booleans, not secret-capable, so <see cref="GoogleSecretCapableKeys"/>'s exclusion does not apply.
+    ///
+    /// <para>Required because the daemon reads them from its own environment and nowhere else — no
+    /// profile or config-file binding — so without this a supervised install silently dropped them and
+    /// the reviewer could not be turned on at all.</para>
+    ///
+    /// <para>Capture carries an EXISTING opt-in; it cannot create one. It does freeze it, which is what
+    /// <see cref="CarriedConsentFlags"/> reports.</para>
+    /// </summary>
+    internal static readonly string[] ReviewerConsentKeys =
+        ["KCAP_GEMINI_UNATTENDED_REVIEWER", "KCAP_KIRO_UNATTENDED_REVIEWER"];
+
+    /// <summary>
     /// Gemini's project/backend selection, carried on every platform because none of it is
     /// secret-capable: project ids, a region, and two backend-selection booleans.
     ///
@@ -90,11 +104,19 @@ static class ServiceEnvironment {
             string? profileName, IReadOnlyDictionary<string, string> source, bool isWindows = false) {
         var env = new Dictionary<string, string>(StringComparer.Ordinal);
         string[] keys = isWindows
-            ? [.. Keys, .. GoogleConfigKeys]
-            : [.. Keys, TokenCommandKey, .. GoogleConfigKeys, .. GoogleSecretCapableKeys];
+            ? [.. Keys, .. ReviewerConsentKeys, .. GoogleConfigKeys]
+            : [.. Keys, .. ReviewerConsentKeys, TokenCommandKey, .. GoogleConfigKeys, .. GoogleSecretCapableKeys];
         foreach (var key in keys)
             if (source.TryGetValue(key, out var v) && !string.IsNullOrEmpty(v)) env[key] = v;
         if (!string.IsNullOrEmpty(profileName)) env["KCAP_PROFILE"] = profileName; // explicit pin wins
         return env;
     }
+
+    /// <summary>
+    /// Which consent flags a built environment carries, for the install path to report. Reads the BUILT
+    /// environment, not the ambient one, so it cannot claim a capture that an empty value or a platform
+    /// exclusion dropped on the way in.
+    /// </summary>
+    internal static IReadOnlyList<string> CarriedConsentFlags(IReadOnlyDictionary<string, string> env) =>
+        [.. ReviewerConsentKeys.Where(env.ContainsKey)];
 }

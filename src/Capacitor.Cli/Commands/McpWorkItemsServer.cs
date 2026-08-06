@@ -354,7 +354,9 @@ static class McpWorkItemsServer {
 
             if (string.IsNullOrWhiteSpace(value)) throw new ArgumentException($"'{key}' must not contain blank entries.");
 
-            result.Add(value);
+            // Cast to JsonNode so the non-generic Add(JsonNode?) overload is chosen —
+            // the generic Add<T>(T) trips IL2026/IL3050 under AOT (see CLAUDE.md).
+            result.Add((JsonNode?)JsonValue.Create(value));
         }
 
         return result;

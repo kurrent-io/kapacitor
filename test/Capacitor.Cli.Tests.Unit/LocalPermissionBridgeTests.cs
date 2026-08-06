@@ -1069,6 +1069,75 @@ public class LocalPermissionBridgeTests {
         } finally { await bridge.DisposeAsync(); }
     }
 
+    [Test, NotInParallel(nameof(LocalPermissionBridgeTests))]
+    public async Task Reviewer_context_get_returns_bound_immutable_generation_only() {
+        var (bridge, _) = CreateBridge();
+        try {
+            await bridge.StartAsync(CancellationToken.None);
+            var first = ReviewGeneration("first");
+            var reviewerUrl = bridge.RegisterReviewerToken(["kcap-review"], first);
+
+            using var client = CreateClient();
+            using var response = await client.GetAsync(
+                $"{reviewerUrl}/review-context/workspace-mcp-configs");
+
+            await Assert.That((int)response.StatusCode).IsEqualTo(200);
+            await Assert.That(await response.Content.ReadAsByteArrayAsync())
+                .IsEquivalentTo(first.JsonUtf8);
+        } finally { await bridge.DisposeAsync(); }
+    }
+
+    [Test, NotInParallel(nameof(LocalPermissionBridgeTests))]
+    public async Task Shared_revoked_and_non_exact_routes_cannot_read_reviewer_context() {
+        var (bridge, _) = CreateBridge();
+        try {
+            await bridge.StartAsync(CancellationToken.None);
+            var reviewerUrl = bridge.RegisterReviewerToken(["kcap-review"], ReviewGeneration("one"));
+            using var client = CreateClient();
+
+            using var shared = await client.GetAsync(
+                $"{bridge.BaseUrl}/review-context/workspace-mcp-configs");
+            using var query = await client.GetAsync(
+                $"{reviewerUrl}/review-context/workspace-mcp-configs?path=.mcp.json");
+            using var extra = await client.GetAsync(
+                $"{reviewerUrl}/review-context/workspace-mcp-configs/extra");
+            using var post = await client.PostAsync(
+                $"{reviewerUrl}/review-context/workspace-mcp-configs", JsonContent.Create(new { }));
+            bridge.RevokeReviewerToken(reviewerUrl);
+            using var revoked = await client.GetAsync(
+                $"{reviewerUrl}/review-context/workspace-mcp-configs");
+
+            await Assert.That((int)shared.StatusCode).IsEqualTo(404);
+            await Assert.That((int)query.StatusCode).IsEqualTo(404);
+            await Assert.That((int)extra.StatusCode).IsEqualTo(404);
+            await Assert.That((int)post.StatusCode).IsEqualTo(404);
+            await Assert.That((int)revoked.StatusCode).IsEqualTo(404);
+        } finally { await bridge.DisposeAsync(); }
+    }
+
+    [Test, NotInParallel(nameof(LocalPermissionBridgeTests))]
+    public async Task Publishing_reviewer_context_atomically_replaces_the_generation() {
+        var (bridge, _) = CreateBridge();
+        try {
+            await bridge.StartAsync(CancellationToken.None);
+            var first = ReviewGeneration("first");
+            var second = ReviewGeneration("second");
+            var reviewerUrl = bridge.RegisterReviewerToken(["kcap-review"], first);
+
+            var retired = bridge.PublishReviewerContext(reviewerUrl, second);
+
+            await Assert.That(retired).IsSameReferenceAs(first);
+            using var client = CreateClient();
+            using var response = await client.GetAsync(
+                $"{reviewerUrl}/review-context/workspace-mcp-configs");
+            await Assert.That(await response.Content.ReadAsByteArrayAsync())
+                .IsEquivalentTo(second.JsonUtf8);
+        } finally { await bridge.DisposeAsync(); }
+    }
+
+    static BorrowedReviewContextGeneration ReviewGeneration(string value) =>
+        new(value, Path.Combine(Path.GetTempPath(), value), Encoding.UTF8.GetBytes($"{{\"value\":\"{value}\"}}"));
+
     /// <summary>A second bridge retries when its first probed port is already claimed in-process.</summary>
     [Test, NotInParallel(nameof(LocalPermissionBridgeTests))]
     public async Task StartAsync_FirstPortAlreadyClaimed_RetriesAndRecovers() {

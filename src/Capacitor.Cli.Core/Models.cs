@@ -1021,6 +1021,7 @@ public sealed record CurationApplyResponse {
 [JsonSerializable(typeof(Acp.InitializeResult))]
 [JsonSerializable(typeof(Acp.AgentCapabilities))]
 [JsonSerializable(typeof(Acp.SessionNewParams))]
+[JsonSerializable(typeof(Acp.SessionLoadParams))]
 [JsonSerializable(typeof(Acp.AcpMcpServerSpec))]
 [JsonSerializable(typeof(Acp.AcpMcpServerEnvVar))]
 [JsonSerializable(typeof(Acp.AcpMcpServerSpec[]))]
@@ -1028,6 +1029,7 @@ public sealed record CurationApplyResponse {
 [JsonSerializable(typeof(Acp.PromptContentBlock))]
 [JsonSerializable(typeof(Acp.SessionCancelParams))]
 [JsonSerializable(typeof(Acp.SetConfigOptionParams))]
+[JsonSerializable(typeof(Acp.SetModelParams))]
 [JsonSerializable(typeof(Acp.SessionModelsInfo))]
 [JsonSerializable(typeof(Acp.AvailableModelDto))]
 [JsonSerializable(typeof(Acp.SessionRequestPermissionParams))]
@@ -1035,7 +1037,7 @@ public sealed record CurationApplyResponse {
 [JsonSerializable(typeof(Acp.PermissionOutcomeResult))]
 [JsonSerializable(typeof(Acp.PermissionOutcomeDto))]
 [JsonSerializable(typeof(Acp.ElicitationCreateParams))]
-[JsonSerializable(typeof(Acp.ElicitationCreateResult))]
+[JsonSerializable(typeof(Acp.ElicitationResponse))]
 [JsonSerializable(typeof(AcpInteractionRequest))]
 [JsonSerializable(typeof(AcpInteractionOption))]
 [JsonSerializable(typeof(AcpInteractionDecision))]
@@ -1116,7 +1118,12 @@ public readonly record struct AcpInteractionRequest(
         string?                Prompt,
         AcpInteractionOption[]? Options,
         bool                   IsMultiSelect,
-        JsonElement?           RequestedSchema = null
+        JsonElement?           RequestedSchema = null,
+        // Multi-select selection-count bounds (stabilized ACP elicitation `minItems`/`maxItems`,
+        // clamped daemon-side) — trailing additive nullables so every pre-existing construction
+        // site and JSON payload stays valid; null means "no bound advertised".
+        int?                   MinSelections = null,
+        int?                   MaxSelections = null
     );
 
 /// <summary>
@@ -1138,7 +1145,13 @@ public readonly record struct AcpInteractionDecision(
         string?      SelectedOptionLabel,
         int?         SelectedIndex,
         string?      FreeText,
-        JsonElement? UpdatedToolInput
+        JsonElement? UpdatedToolInput,
+        // Multi-select answers (stabilized ACP elicitation) — trailing additive nullables; the
+        // scalar SelectedOptionId/SelectedOptionLabel stay authoritative for single-select and
+        // mirror the FIRST selection when the lists are set, so an old daemon deserializing this
+        // record keeps working unchanged.
+        string[]?    SelectedOptionIds = null,
+        string[]?    SelectedOptionLabels = null
     );
 
 /// <summary>
@@ -1167,6 +1180,13 @@ public static class AcpEventKind {
     public const string SessionTitle       = "session_title";
     public const string SessionEnded       = "session_ended";
     public const string Usage              = "usage";
+
+    /// <summary>Daemon-synthesized informational note rendered as system-attributed text (never as
+    /// user or assistant speech) — today emitted only by the ACP reconnect path after a successful
+    /// resume. Additive: a server that predates this kind skips it while still advancing its ack
+    /// cursor (verified against <c>CapacitorHub.AcpSessionEvents</c>'s unrecognised-Kind branch), so
+    /// a newer daemon degrades to log-only rather than wedging the forwarder.</summary>
+    public const string SystemNote         = "system_note";
 }
 
 /// <summary>

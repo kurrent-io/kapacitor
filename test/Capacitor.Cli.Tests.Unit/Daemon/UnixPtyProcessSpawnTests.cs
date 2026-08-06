@@ -45,4 +45,60 @@ public class UnixPtyProcessSpawnTests {
             await proc.DisposeAsync();
         }
     }
+
+    /// <summary>Terminate must take down the leader's whole process group, not just the leader —
+    /// the shape a codex reviewer takes with its code-mode-host helper (kcap-cli#469). The shell
+    /// leader backgrounds a long sleep (same group, since the leader is a forkpty session leader),
+    /// reports its pid over the PTY, and waits. A leader-only kill leaves the sleep orphaned and
+    /// running, which is exactly the mutation this test exists to fail on.</summary>
+    [Test]
+    public async Task Terminate_kills_the_leaders_whole_process_group() {
+        if (!OperatingSystem.IsLinux() && !OperatingSystem.IsMacOS()) return;
+
+        using var spawner = new UnixSpawnerThread();
+        var       factory = new UnixPtyProcessFactory(spawner);
+        // The helper IGNORES SIGHUP (trap '' HUP survives the exec): a plain background sleep dies
+        // to the controlling terminal's leader-exit SIGHUP even under a leader-only kill, which let
+        // exactly that mutation pass this test — a helper that shrugs off HUP is also the shape
+        // that leaks in production. Only a signal to the GROUP reaches it.
+        var proc = factory.Spawn(
+            "/bin/sh", ["-c", "(trap '' HUP; exec sleep 300) & echo \"CHILD:$!:DONE\"; wait"],
+            Directory.GetCurrentDirectory());
+        try {
+            var childPid = await ReadReportedChildPidAsync(proc);
+            await Assert.That(childPid).IsGreaterThan(0);
+            // Positive control: the helper is alive before the terminate, so the "dead after"
+            // assertion below cannot pass vacuously on a pid that never existed.
+            await Assert.That(UnixPtyInterop.kill(childPid, 0)).IsEqualTo(0);
+
+            await proc.TerminateAsync(TimeSpan.FromSeconds(5));
+            await Assert.That(proc.HasExited).IsTrue();
+
+            // The orphaned helper is reparented to init, which reaps it once it dies — poll
+            // briefly for ESRCH rather than racing the reap.
+            var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(5);
+            while (UnixPtyInterop.kill(childPid, 0) == 0 && DateTime.UtcNow < deadline)
+                await Task.Delay(50);
+
+            await Assert.That(UnixPtyInterop.kill(childPid, 0)).IsNotEqualTo(0);
+        } finally {
+            await proc.DisposeAsync();
+        }
+    }
+
+    /// <summary>Reads PTY output until the leader reports its backgrounded child as
+    /// <c>CHILD:{pid}:DONE</c>. The trailing marker matters: without it a chunk boundary could
+    /// split the digits and a prefix of the pid would parse as a (wrong, possibly live) pid.</summary>
+    static async Task<int> ReadReportedChildPidAsync(Capacitor.Cli.Daemon.Pty.IPtyProcess proc) {
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var buffer = new System.Text.StringBuilder();
+
+        await foreach (var chunk in proc.ReadOutputAsync(cts.Token)) {
+            buffer.Append(System.Text.Encoding.UTF8.GetString(chunk));
+            var match = System.Text.RegularExpressions.Regex.Match(buffer.ToString(), @"CHILD:(\d+):DONE");
+            if (match.Success) return int.Parse(match.Groups[1].Value);
+        }
+
+        return -1;
+    }
 }

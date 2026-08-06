@@ -580,15 +580,17 @@ public class AcpConnectionTests {
         using var        cts     = new CancellationTokenSource();
         var               runTask = harness.Connection.RunAsync(cts.Token);
 
-        _ = harness.Connection.RequestAsync("session/prompt", null, CancellationToken.None);
-        var frame = await harness.ReadFrameFromConnectionAsync();
-        var id    = JsonDocument.Parse(frame).RootElement.GetProperty("id").GetInt64();
+        var requestTask = harness.Connection.RequestAsync("session/prompt", null, CancellationToken.None);
+        var frame        = await harness.ReadFrameFromConnectionAsync();
+        var id           = JsonDocument.Parse(frame).RootElement.GetProperty("id").GetInt64();
 
         await Assert.That(logger.Entries).Contains(e =>
             e.Level == LogLevel.Debug && e.Message.Contains("ACP >>>") && e.Message.Contains("session/prompt"));
 
-        // Clean shutdown: still owe the pending request a response before disposing.
+        // Clean shutdown: answer the pending request and OBSERVE the task — discarded, it races
+        // the Cancel below and can fault as an unobserved-task exception at a later GC.
         await harness.WriteFrameToConnectionAsync($$$"""{"jsonrpc":"2.0","id":{{{id}}},"result":{}}""");
+        await requestTask.WaitAsync(HangGuard);
 
         cts.Cancel();
         await SwallowCancellation(runTask);
@@ -640,5 +642,74 @@ public class AcpConnectionTests {
 
         cts.Cancel();
         await SwallowCancellation(runTask);
+    }
+
+    /// <summary>A stream whose writes always fail — models a broken pipe (child dead) so the
+    /// write-side reconnect trigger is directly assertable.</summary>
+    sealed class ThrowingWriteStream : Stream {
+        public override bool CanRead => false;
+        public override bool CanSeek => false;
+        public override bool CanWrite => true;
+        public override long Length => 0;
+        public override long Position { get => 0; set { } }
+        public override void Flush() { }
+        public override int Read(byte[] buffer, int offset, int count) => 0;
+        public override long Seek(long offset, SeekOrigin origin) => 0;
+        public override void SetLength(long value) { }
+        public override void Write(byte[] buffer, int offset, int count) => throw new IOException("broken pipe");
+        public override Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken ct) => throw new IOException("broken pipe");
+        public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken ct = default) => throw new IOException("broken pipe");
+    }
+
+    /// <summary>A stream that throws OperationCanceledException from writes while the CALLER's
+    /// token is not cancelled — a dying transport wearing the wrong exception type. The latch must
+    /// still trip: only caller-requested cancellation is a local (non-transport) outcome.</summary>
+    sealed class CancellationThrowingWriteStream : Stream {
+        public override bool CanRead => false;
+        public override bool CanSeek => false;
+        public override bool CanWrite => true;
+        public override long Length => 0;
+        public override long Position { get => 0; set { } }
+        public override void Flush() { }
+        public override int Read(byte[] buffer, int offset, int count) => 0;
+        public override long Seek(long offset, SeekOrigin origin) => 0;
+        public override void SetLength(long value) { }
+        public override void Write(byte[] buffer, int offset, int count) => throw new OperationCanceledException("transport died");
+        public override Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken ct) => throw new OperationCanceledException("transport died");
+        public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken ct = default) => throw new OperationCanceledException("transport died");
+    }
+
+    [Test]
+    public async Task Uncancelled_operation_cancelled_write_failure_still_sets_the_latch() {
+        await using var connection = new AcpConnection(
+            new CancellationThrowingWriteStream(), new MemoryStream(), NullLogger.Instance);
+
+        await Assert.That(async () => await connection.NotifyAsync("session/cancel", null))
+            .Throws<OperationCanceledException>();
+
+        await Assert.That(connection.TransportEnded).IsTrue();
+    }
+
+    [Test]
+    public async Task Stream_write_failure_sets_transport_ended_latch_and_fires_pre_fault_hook_before_throwing() {
+        var hookFired = false;
+        var latchAtHookTime = false;
+
+        await using var connection = new AcpConnection(
+            new ThrowingWriteStream(), new MemoryStream(), NullLogger.Instance);
+
+        connection.BeforeFaultingPending = () => {
+            hookFired       = true;
+            latchAtHookTime = connection.TransportEnded;
+        };
+
+        await Assert.That(async () => await connection.NotifyAsync("session/cancel", null))
+            .Throws<IOException>();
+
+        await Assert.That(hookFired).IsTrue();
+        // The latch is set strictly BEFORE the hook is invoked (reconnect spec §5.2) — the commit
+        // liveness check depends on that ordering.
+        await Assert.That(latchAtHookTime).IsTrue();
+        await Assert.That(connection.TransportEnded).IsTrue();
     }
 }

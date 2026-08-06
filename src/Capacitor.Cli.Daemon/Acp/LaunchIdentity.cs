@@ -38,17 +38,34 @@ internal sealed record LaunchIdentity {
     /// interactive launch admits no repository-authored server.</summary>
     public string UnmatchableMcpName { get; }
 
+    readonly bool _aliases;
+    readonly Guid _allowlistSuffix;
+
     // Private: a caller can ask for a fresh identity but cannot construct an arbitrary one. This is the
     // seam where a fixed or reused name would otherwise slip in, and every argv-equality test in the suite
     // would still pass while the containment was gone.
-    private LaunchIdentity(string canonicalId, string wireName, string unmatchableName) {
+    private LaunchIdentity(string canonicalId, string wireName, string unmatchableName, bool aliases, Guid allowlistSuffix) {
         ResultChannelCanonicalId = canonicalId;
         ResultChannelWireName    = wireName;
         UnmatchableMcpName       = unmatchableName;
+        _aliases                 = aliases;
+        _allowlistSuffix         = allowlistSuffix;
     }
 
     /// <summary>
-    /// The ONLY production entry point. Two INDEPENDENT v4 GUIDs, and no launch context in scope — so the
+    /// The name an injected NON-result-channel review server (an allowlist server, or the borrowed-snapshot
+    /// review-context server) carries on the wire. For an aliasing vendor this is the canonical id plus the
+    /// launch's allowlist suffix — the vendor's MCP gate is an exact-name allowlist that must admit these
+    /// servers, and admitting the CANONICAL id would let the repository being worked in declare a server of
+    /// that fixed, public name and have it spawned as the daemon user (the same impersonation shape measured
+    /// for the result channel; see the Gemini reviewer design spec §2.3/§2.6). For every other vendor this
+    /// returns the input unchanged, keeping their wire behaviour byte-identical.
+    /// </summary>
+    public string AllowlistWireName(string canonicalId) =>
+        _aliases ? $"{canonicalId}-{_allowlistSuffix:N}" : canonicalId;
+
+    /// <summary>
+    /// The ONLY production entry point. Three INDEPENDENT v4 GUIDs, and no launch context in scope — so the
     /// names cannot be derived from a session id, an agent id, a worktree path or the clock even by
     /// accident, because none of those values is reachable from here.
     /// </summary>
@@ -56,29 +73,32 @@ internal sealed record LaunchIdentity {
     /// also admit our own channel, so the channel's name has to be unguessable too (Gemini today). False
     /// keeps the canonical id on the wire, which is what every other vendor has always sent.</param>
     public static LaunchIdentity ForLaunch(bool aliasResultChannel) =>
-        FromGuids(Guid.NewGuid(), Guid.NewGuid(), aliasResultChannel);
+        FromGuids(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), aliasResultChannel);
 
     /// <summary>
     /// Test seam. Takes concrete <see cref="Guid"/> VALUES rather than a factory delegate: a delegate would
     /// close over its caller's scope, which is how an earlier revision of this design left
     /// derivation-from-launch-context legal while its tests still passed. A value cannot close over anything.
     /// </summary>
-    internal static LaunchIdentity FromGuids(Guid resultChannel, Guid unmatchable, bool aliasResultChannel) {
+    internal static LaunchIdentity FromGuids(Guid resultChannel, Guid unmatchable, Guid allowlistSuffix, bool aliasResultChannel) {
         // No fallback, predictable or otherwise. The security property is that these strings are unguessable
         // at the instant the repository's own MCP declarations are read, so a degraded name is worse than no
         // agent at all. Independence is asserted rather than assumed: the wire name is visible to the agent
         // (it is in its own process argv), so a shared GUID would make the unmatchable name derivable from it.
-        if (resultChannel == Guid.Empty || unmatchable == Guid.Empty || resultChannel == unmatchable)
+        if (resultChannel == Guid.Empty || unmatchable == Guid.Empty || allowlistSuffix == Guid.Empty
+         || resultChannel == unmatchable || resultChannel == allowlistSuffix || unmatchable == allowlistSuffix)
             throw new InvalidOperationException(
                 "Refusing to build a launch identity: a generated name would be predictable or reused. A "
-              + "vendor's MCP allowlist is an exact-name gate, so either name being guessable lets the "
-              + "repository being worked in impersonate the agent's result channel.");
+              + "vendor's MCP allowlist is an exact-name gate, so any of these names being guessable lets "
+              + "the repository being worked in impersonate an injected review server.");
 
         return new(
             KcapMcpRegistry.ReservedResultChannelId,
             aliasResultChannel
                 ? $"{KcapMcpRegistry.ReservedResultChannelId}-{resultChannel:N}"
                 : KcapMcpRegistry.ReservedResultChannelId,
-            $"kcap-deny-{unmatchable:N}");
+            $"kcap-deny-{unmatchable:N}",
+            aliasResultChannel,
+            allowlistSuffix);
     }
 }

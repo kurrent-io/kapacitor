@@ -23,7 +23,7 @@ namespace Capacitor.Cli.Daemon.Services;
 /// ACP runtime does not support until a follow-up adds a terminal capability.
 ///
 /// Also owns a serialized, single-flight prompt-turn worker (<see cref="RunTurnWorkerAsync"/>/
-/// <see cref="ProcessTurnAsync"/>) and a chunk aggregator (<see cref="AggregateUpdate"/>) that
+/// <see cref="ProcessAdmittedTurnAsync"/>) and a chunk aggregator (<see cref="AggregateUpdate"/>) that
 /// together turn the raw <c>session/update</c> stream into an ORDERED, per-turn-aggregated
 /// <see cref="AcpEventEnvelope"/> transcript, exposed via <see cref="IAcpTranscriptSource"/> for the
 /// orchestrator to bind and forward. Prompt turns (the initial launch prompt, and every
@@ -33,12 +33,103 @@ namespace Capacitor.Cli.Daemon.Services;
 /// a concurrently-fired one. See <see cref="_aggregationLock"/>'s remarks for the thread-safety
 /// mechanism between the worker's turn-end flush and the connection read-loop's kind-transition
 /// flush.
+///
+/// For an eligible launch (constructed with an <see cref="AcpReconnectSupport"/>) the runtime also
+/// owns crash reconnect/resume: a child-process death is absorbed rather than finalized — the
+/// corpse is retired, a fresh child is spawned through the factory's pure spawn closure,
+/// <c>session/load</c> restores the same session with its entire replay suppressed (the daemon-side
+/// transcript is authoritative — skip-whole-replay), and the send gate reopens after a transcript
+/// <c>system_note</c>. The full protocol — incarnation identity, the two-transition send-admission
+/// section, corpse retirement, the activation latch, incident chaining, and the interaction
+/// router — is the design spec at
+/// <c>docs/superpowers/specs/2026-08-04-ai1325-acp-reconnect-resume-design.md</c>; the region
+/// comments below reference its section numbers.
 /// </summary>
 internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpTranscriptSource {
     static readonly AcpMcpServerSpec[] NoMcpServers = [];
 
-    readonly AcpConnection _connection;
-    readonly IAcpProcess   _process;
+    /// <summary>
+    /// One spawned connection/process pair — the original launch or a reconnect candidate — with
+    /// its unique, never-reused incarnation id (reconnect spec §5.1). The runtime serves exactly
+    /// one INSTALLED incarnation at a time (<see cref="_installed"/>); crash signals are stamped
+    /// with their source incarnation's id and are live only while that id is installed, which is
+    /// what makes a disposed candidate's delayed callback structurally inert.
+    /// </summary>
+    sealed class Incarnation {
+        public required long                    Id         { get; init; }
+        public required AcpConnection           Connection { get; init; }
+        public required IAcpProcess             Process    { get; init; }
+        public required CancellationTokenSource LoopCts    { get; init; }
+        public Task LoopTask { get; set; } = Task.CompletedTask;
+    }
+
+    /// <summary>Runtime lifecycle phase, mutated only under <see cref="_reconnectLock"/>.</summary>
+    enum RuntimePhase { Running, Reconnecting, Terminal }
+
+    /// <summary>The §5.3 in-flight registration: the one turn past pre-gate admission, its
+    /// write-state advanced by the write path (`not-started` → `entered` → `written`).</summary>
+    sealed class InFlightTurn(PendingTurn turn, long incarnationId) {
+        public const int NotStarted = 0, Entered = 1, Written = 2;
+
+        public PendingTurn Turn          { get; } = turn;
+        public long        IncarnationId { get; } = incarnationId;
+        public int         WriteState;
+    }
+
+    /// <summary>A registered pending interaction (reconnect spec §5.4): the sweep's bookkeeping
+    /// signal (<see cref="CancelledSignal"/>, completed BEFORE the token — no foreign code) is what
+    /// the router races against the bridge, so a blocked cancellation callback can never strand the
+    /// response or the entry's removal; <see cref="Cts"/> is signalled last, as the best-effort
+    /// tail that runs foreign callbacks.</summary>
+    sealed class PendingInteraction(long incarnationId) {
+        public long IncarnationId { get; } = incarnationId;
+        public bool Cancelled; // mutated under the reconnect lock only
+        public readonly CancellationTokenSource    Cts             = new();
+        public readonly TaskCompletionSource       CancelledSignal = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    }
+
+    readonly object _reconnectLock = new();
+    readonly AcpReconnectSupport? _reconnect;
+    readonly List<PendingInteraction> _pendingInteractions = [];
+
+    Incarnation  _installed;
+    int          _phase = (int)RuntimePhase.Running;
+
+    /// <summary>The runtime phase with acquire semantics — the backing field is written only under
+    /// <see cref="_reconnectLock"/>, but several readers (`HasExited`/`ExitCode`, the graceful-stop
+    /// catch filter) run lock-free, and a plain enum field gives them no visibility guarantee
+    /// (Qodo review #2). Backed by an int because <c>volatile</c>/<see cref="Volatile.Read(ref int)"/>
+    /// don't apply to enum fields. Reads under the lock use this too — uniform and harmless.</summary>
+    RuntimePhase Phase => (RuntimePhase)Volatile.Read(ref _phase);
+    volatile bool _suppressNotifications;
+    bool         _intentionalStop;
+    long         _nextIncarnationId;
+    long         _lastHandledCrashIncarnation = -1;
+    long         _crashedAgainIncarnation     = -1;
+    int          _suppressedUpdates;
+    int          _resumeCount;
+    bool         _incidentResendSentence;
+    InFlightTurn? _inFlight;
+    PendingTurn?  _heldTurn;
+    bool          _heldTurnSkipEnvelope;
+    CancellationTokenSource? _ownerCts;
+    Task          _ownerTask = Task.CompletedTask;
+
+    /// <summary>Completed when the send gate is OPEN (phase Running). Entering reconnect swaps in a
+    /// fresh, uncompleted instance; the atomic reopen (or the terminal path) completes it.</summary>
+    TaskCompletionSource _gateOpen = CompletedGate();
+
+    /// <summary>Completed when the runtime is logically terminal — the re-keyed signal
+    /// <see cref="ReadOutputAsync"/> waits on instead of "this process exited" (spec §5.4), so the
+    /// orchestrator's finalize trigger never fires for a crash reconnect will absorb.</summary>
+    readonly TaskCompletionSource _runtimeTerminal = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    static TaskCompletionSource CompletedGate() {
+        var tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        tcs.TrySetResult();
+        return tcs;
+    }
+
     readonly ILogger       _logger;
     readonly TimeProvider  _timeProvider;
     readonly string        _agentId;
@@ -97,7 +188,7 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
     /// FIFO queue of pending prompt-turn texts. Public entry points (<see cref="StartAsync"/>'s
     /// initial prompt, <see cref="SendUserInputAsync"/>) call <see cref="EnqueueTurn"/> and return
     /// immediately; the single <see cref="RunTurnWorkerAsync"/> worker task drains this strictly in
-    /// order, one turn fully at a time (see <see cref="ProcessTurnAsync"/>). SingleReader: only the
+    /// order, one turn fully at a time (see <see cref="ProcessAdmittedTurnAsync"/>). SingleReader: only the
     /// worker reads; SingleWriter=false since both StartAsync and (potentially concurrent)
     /// SendUserInputAsync calls enqueue.
     ///
@@ -114,7 +205,7 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
     /// every write to <see cref="_transcript"/> (via <see cref="EmitEnvelope"/>). Two call sites can
     /// mutate/flush the run: the connection's read loop (synchronously, via
     /// <see cref="HandleNotification"/> → <see cref="AggregateUpdate"/>, on a kind transition) and the
-    /// turn worker (via <see cref="ProcessTurnAsync"/>'s turn-end flush, which runs as the
+    /// turn worker (via <see cref="ProcessAdmittedTurnAsync"/>'s turn-end flush, which runs as the
     /// continuation of an awaited <c>session/prompt</c> response and so is NOT guaranteed to run on
     /// the read-loop's own thread — <see cref="AcpConnection.RequestAsync"/>'s
     /// <c>TaskCompletionSource</c> is created with <c>RunContinuationsAsynchronously</c> specifically
@@ -136,13 +227,98 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
     AcpUpdateKind?  _openRunKind;
     StringBuilder?  _openRunText;
 
-    Task    _connectionRunTask = Task.CompletedTask;
     Task    _turnWorkerTask    = Task.CompletedTask;
     string? _sessionId;
     string? _cwd;
     string? _resolvedModel;
+    string? _requestedModel;
+    AcpMcpServerSpec[] _mcpServersForResume = NoMcpServers;
     int     _disposed;
-    int     _unexpectedUnattendedInteractionSeen;
+
+    /// <summary>Present only for an unattended Kiro review launch. Judges every MCP-surface
+    /// notification on arrival; a violation reaps the reviewer through the same path a forbidden
+    /// interaction frame does, because both mean the same thing — the containment contract this
+    /// launch was admitted under no longer holds.</summary>
+    readonly KiroMcpSurfaceMonitor? _mcpSurfaceMonitor;
+
+    /// <summary>Runs once the child is gone. Carries the Kiro reviewer's isolated-home deletion: the
+    /// home is transcript-bearing, and the FACTORY can only clean up launches that FAILED — a
+    /// successful review's home would otherwise sit on disk until a later daemon epoch swept it.</summary>
+    readonly Action? _onDisposed;
+
+    /// <summary>
+    /// The in-flight out-of-band reap, if one was started. Awaited by disposal so cleanup never runs
+    /// ahead of the termination it depends on.
+    ///
+    /// <para>Guarded by <see cref="_reapLock"/> rather than <c>volatile</c>: volatility publishes the
+    /// reference but cannot make "flip the single-shot guard" and "publish the task" atomic, so a
+    /// disposal landing between them would read null and skip the wait. Both reap paths — the
+    /// tripwire/watchdog violation and the forbidden-interaction frame — publish through it.</para>
+    /// </summary>
+    Task? _reapTask;
+    readonly object _reapLock = new();
+
+    /// <summary>
+    /// Claims the single reap slot. The claim and the later publication happen under ONE lock, and
+    /// <see cref="TakeReap"/> waits on that same lock — so a disposal can no longer land in the gap
+    /// between "the guard flipped" and "the task exists" and conclude there is nothing to await.
+    /// An interlocked flag alone cannot express that, because the two steps are not one operation.
+    /// </summary>
+    bool TryStartReap(Func<Task> start) {
+        lock (_reapLock) {
+            if (_reapClaimed) return false;
+
+            _reapClaimed = true;
+
+            // Started AND published inside the lock: claiming, releasing, then publishing leaves the
+            // gap this exists to close — a disposal taking the lock in between sees a claim with no
+            // task and concludes there is nothing to await.
+            //
+            // The callback runs SYNCHRONOUS work first (logging, _cts.Cancel()), so it can throw —
+            // notably when a dispatched notification races disposal past _cts.Dispose(). Unwinding
+            // out of here would release the lock with the slot claimed and no task published, which
+            // is precisely the prohibited state. So the claim is released on failure.
+            try {
+                _reapTask = start();
+            } catch {
+                _reapClaimed = false;
+                throw;
+            }
+
+            return true;
+        }
+    }
+
+    /// <summary>The in-flight reap, or null when none was ever claimed. A claim with no task yet
+    /// published cannot be observed: the claimant publishes before releasing the caller.</summary>
+    Task? TakeReap() { lock (_reapLock) return _reapTask; }
+
+    bool _reapClaimed;
+
+    /// <summary>
+    /// How long the FIRST turn may produce nothing at all before the child is reaped. Null disables
+    /// it, which is every launch but an unattended Kiro review.
+    ///
+    /// <para><b>Why first OUTPUT and not turn completion.</b> The obvious reading of "bound the first
+    /// prompt" is to time the turn — but a real review turn legitimately runs for minutes, which is
+    /// exactly why <see cref="StartAsync"/> enqueues it without awaiting. Bounding completion would
+    /// kill good reviews. The failure actually being defended against is a peer that is ALIVE and
+    /// SILENT: a kiro-cli whose credential expired sits on an interactive browser prompt and emits
+    /// nothing, ever. Time-to-first-update separates those two: once the model starts streaming, the
+    /// turn may take as long as it likes.</para>
+    /// </summary>
+    readonly TimeSpan? _firstOutputDeadline;
+
+    /// <summary>The <c>@server/tool</c> identities this launch injected — the set
+    /// <see cref="AcpUnattendedInteractionPolicy.AllowlistedAutoApprove"/> approves. Null for every
+    /// other policy.</summary>
+    readonly IReadOnlySet<string>? _admittedToolIds;
+
+    int _sawFirstUpdate;
+
+    /// <summary>Completes when the first turn ends, however it ends — the other way to disarm the
+    /// first-output watchdog.</summary>
+    readonly TaskCompletionSource _firstTurnSettled = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     /// <summary>Agent capabilities negotiated by <see cref="StartAsync"/>'s <c>initialize</c> call; null before that.</summary>
     AgentCapabilities? _negotiatedCapabilities;
@@ -183,7 +359,7 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
     /// <c>_sessionId ?? ""</c>, which was correct ONLY because a permission/elicitation request can
     /// normally arrive no earlier than a <c>session/prompt</c> turn, by which point
     /// <see cref="StartAsync"/>'s <c>session/new</c> has already resolved <see cref="_sessionId"/> —
-    /// but <see cref="AcpConnection"/>'s read loop is started (via <see cref="RunConnectionLoopAsync"/>)
+    /// but <see cref="AcpConnection"/>'s read loop is started (via <see cref="RunIncarnationLoopAsync"/>)
     /// BEFORE that handshake completes, so a server request arriving out of turn (a buggy or
     /// malicious agent) would have forwarded an <see cref="AcpInteractionRequest"/> with
     /// <c>AcpSessionId == ""</c>, silently breaking server-side correlation instead of failing loud
@@ -202,10 +378,18 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
             bool                                                                           debugFrames = false,
             string                                                                         vendor = "cursor",
             IAcpModelSelector?                                                             modelSelector = null,
-            AcpUnattendedInteractionPolicy                                                  unattendedInteractionPolicy = AcpUnattendedInteractionPolicy.Disabled
+            AcpUnattendedInteractionPolicy                                                  unattendedInteractionPolicy = AcpUnattendedInteractionPolicy.Disabled,
+            AcpReconnectSupport?                                                            reconnect = null,
+            KiroMcpSurfaceMonitor?                                                          mcpSurfaceMonitor = null,
+            Action?                                                                         onDisposed = null,
+            TimeSpan?                                                                       firstOutputDeadline = null,
+            IReadOnlySet<string>?                                                           admittedToolIds = null
         ) {
-        _connection    = connection;
-        _process       = process;
+        _admittedToolIds = admittedToolIds;
+        _firstOutputDeadline = firstOutputDeadline;
+        _mcpSurfaceMonitor = mcpSurfaceMonitor;
+        _onDisposed        = onDisposed;
+        _reconnect     = reconnect;
         _logger        = logger;
         _timeProvider  = timeProvider ?? TimeProvider.System;
         _agentId       = agentId;
@@ -231,40 +415,98 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
         _pendingTurns = Channel.CreateBounded<PendingTurn>(
             new BoundedChannelOptions(_pendingTurnsCapacity) { SingleReader = true, SingleWriter = false, FullMode = BoundedChannelFullMode.DropWrite });
 
-        _connection.OnNotification += HandleNotification;
-
         if (requestInteraction is not null) {
             _interactionBridge = new AcpInteractionBridge(
                 requestInteraction,
                 agentId,
                 logger,
                 unattendedInteractionPolicy,
-                HandleUnexpectedUnattendedInteraction);
-            _connection.OnServerRequest = (request, ct) => _interactionBridge.HandleAsync(request, ct);
+                HandleUnexpectedUnattendedInteraction,
+                admittedToolIds);
         }
+
+        // The original launch's incarnation. Every later candidate goes through the same wiring
+        // (WireIncarnation), so hook stamping, notification routing, and the interaction router are
+        // identical for the original child and a resume candidate. The id comes from the SAME
+        // monotonic allocator candidates use (code-review r1: a hand-assigned literal here plus a
+        // seeded counter is a reuse bug waiting for a refactor — one allocator, no drift).
+        _installed = new Incarnation {
+            Id         = Interlocked.Increment(ref _nextIncarnationId),
+            Connection = connection,
+            Process    = process,
+            LoopCts    = CancellationTokenSource.CreateLinkedTokenSource(_cts.Token)
+        };
+        WireIncarnation(_installed);
+
+        // The process-exit watcher starts at CONSTRUCTION, not StartAsync: the re-keyed
+        // ReadOutputAsync waits on the logical-terminal signal, and a child that exits before (or
+        // without) StartAsync must still drive it — the pre-reconnect implementation awaited the
+        // process directly and had this property implicitly.
+        _ = WatchProcessExitAsync(_installed);
+    }
+
+    /// <summary>
+    /// Wires one spawned incarnation exactly once, at spawn (reconnect spec §6.2 steps 2–4):
+    /// notifications into the (suppression-aware) shared handler, the transport-ended pre-fault
+    /// hook stamped with THIS incarnation's id — safe arbitrarily early because an uninstalled
+    /// stamp is structurally inert (§5.1), and required arbitrarily early so a death at any
+    /// instant after commit is reportable with no wiring gap — and the state-derived interaction
+    /// router (never the bridge directly; the router declines while this incarnation is
+    /// uninstalled or the runtime is not `Running`).
+    /// </summary>
+    void WireIncarnation(Incarnation incarnation) {
+        incarnation.Connection.OnNotification += HandleNotification;
+        incarnation.Connection.BeforeFaultingPending = () => HandleTransportEnded(incarnation.Id);
+
+        if (_interactionBridge is not null)
+            incarnation.Connection.OnServerRequest =
+                (request, ct) => RouteServerRequestAsync(incarnation.Id, request, ct);
+    }
+
+    /// <summary>Reaps on a tripwire violation, reusing the forbidden-interaction path: same
+    /// out-of-band termination, same single-shot guard, and the same reason it must not await
+    /// termination on the read loop.</summary>
+    void HandleMcpSurfaceViolation(string violation) {
+        // TRACKED, not fire-and-forget. Disposal deletes the reviewer's transcript-bearing home, and
+        // doing that while an in-flight reap has not confirmed the child is gone would leave a live
+        // reviewer writing into a deleted path — and recreating it.
+        if (!TryStartReap(() => {
+                _logger.LogError("ACP: reaping unattended reviewer — {Violation}", violation);
+                _cts.Cancel();
+
+                return ReapUnexpectedInteractionAsync(violation);
+            }))
+            return;
     }
 
     void HandleUnexpectedUnattendedInteraction(string method) {
-        if (Interlocked.Exchange(ref _unexpectedUnattendedInteractionSeen, 1) != 0)
-            return;
-
         // Do not await process termination on AcpConnection's read loop: that loop is currently
         // handling the offending request, and the child may wait for its response before exiting.
         // Reap out-of-band and cancel both runtime workers immediately.
-        _cts.Cancel();
-        _ = ReapUnexpectedInteractionAsync(method);
+        // Same channel as the violation path: this is the SAME termination, so disposal must wait on
+        // it too. Leaving either untracked would reintroduce the race for whichever path fired.
+        if (!TryStartReap(() => {
+                _cts.Cancel();
+
+                return ReapUnexpectedInteractionAsync(method);
+            }))
+            return;
     }
 
     async Task ReapUnexpectedInteractionAsync(string method) {
         try {
-            await _process.TerminateAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false);
+            await _installed.Process.TerminateAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false);
         } catch (Exception ex) {
             _logger.LogDebug(ex, "ACP: failed to reap unattended reviewer after forbidden {Method} interaction.", method);
         }
     }
 
     public string Vendor              => _vendor;
-    public int    Pid                 => _process.Pid;
+
+    /// <summary>The CURRENT (installed) child's pid — changes at a reconnect commit, so consumers
+    /// reading it live (registry displays, spawn logs) track the serving incarnation. The durable
+    /// PID record is updated separately, at candidate spawn (reconnect spec §6.2 step 1).</summary>
+    public int    Pid                 => _installed.Process.Pid;
 
     // Vendor-aware handshake/auth diagnostic labels. `_vendor` is the vendor KEY (e.g. "cursor"),
     // not the binary name — so Cursor keeps its exact prior strings (binary "cursor-agent" +
@@ -322,8 +564,17 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
       + "service unit, not your shell profile), then re-run `kcap daemon service install` and restart "
       + "the daemon";
 
-    public bool   HasExited           => _process.HasExited;
-    public int?   ExitCode            => _process.ExitCode;
+    /// <summary>LOGICAL liveness (reconnect spec §5.4): while `Reconnecting` the agent is alive by
+    /// contract — a dead child mid-swap must not read as agent death to the orchestrator — so this
+    /// reports <see langword="false"/> until the runtime is Running (current process's view) or
+    /// Terminal (<see langword="true"/>).</summary>
+    public bool   HasExited           => Phase switch {
+        RuntimePhase.Reconnecting => false,
+        RuntimePhase.Terminal     => true,
+        _                         => _installed.Process.HasExited
+    };
+
+    public int?   ExitCode            => Phase == RuntimePhase.Reconnecting ? null : _installed.Process.ExitCode;
     public bool   EmitsTerminalOutput => false;
 
     /// <summary>The ACP <c>sessionId</c> once <see cref="StartAsync"/>'s <c>session/new</c> has resolved; null before that.</summary>
@@ -356,13 +607,32 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
 
     /// <summary>
     /// Agent capabilities negotiated by <see cref="StartAsync"/>'s <c>initialize</c> call; null
-    /// before <see cref="StartAsync"/> resolves. Captured for a later reconnect path (gated on
-    /// <see cref="AgentCapabilities.LoadSession"/>) — this workstream only captures and exposes it.
+    /// before <see cref="StartAsync"/> resolves. The reconnect path's eligibility gate reads
+    /// <see cref="AgentCapabilities.LoadSession"/> off this (<see cref="EligibleForReconnectLocked"/>).
     /// </summary>
     public AgentCapabilities? NegotiatedCapabilities => _negotiatedCapabilities;
 
     /// <summary>Convenience projection of <see cref="NegotiatedCapabilities"/>'s <c>loadSession</c> flag — false before <see cref="StartAsync"/> resolves, or if the agent didn't advertise it.</summary>
     public bool SupportsLoadSession => _negotiatedCapabilities?.LoadSession ?? false;
+
+    /// <summary>Non-null exactly when this launch may attempt reconnect (reconnect spec §4). The
+    /// orchestrator wires the PID-record callbacks onto it after agent registration — the record
+    /// store and the agent's identity fields are orchestrator-owned, so the runtime can only carry
+    /// the seam.</summary>
+    internal AcpReconnectSupport? ReconnectSupport => _reconnect;
+
+    /// <summary>Test-only: invoked by the reconnect owner immediately after a successful commit,
+    /// before the settlement wait — the instant a successor death is a CHAINED crash (§5.2).
+    /// Never set in production.</summary>
+    internal Action? TestHookAfterCommit { get; set; }
+
+    /// <summary>Test-only observable for the §5.2 chained-crash marker, so a test injecting a
+    /// post-commit successor death can wait for the signal to be OBSERVED before letting the owner
+    /// proceed — pinning the chained arm deterministically instead of racing the EOF propagation
+    /// (both interleavings are legal in production; the test wants exactly one).</summary>
+    internal bool ChainedCrashPendingForTest {
+        get { lock (_reconnectLock) return _crashedAgainIncarnation != -1; }
+    }
 
     /// <inheritdoc cref="IAcpTranscriptSource.Envelopes"/>
     public ChannelReader<AcpEventEnvelope> Envelopes => _transcript.Reader;
@@ -371,8 +641,10 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
     /// Performs the ACP handshake: starts the connection's read loop, then
     /// <c>initialize</c> → <c>session/new</c> (with the absolute <paramref name="cwd"/>) → an optional
     /// model-selection step — resolves <paramref name="requestedModel"/> against
-    /// <c>session/new</c>'s <c>availableModels</c> and, if it matches, sends
-    /// <c>session/set_config_option</c> and awaits the response BEFORE the first turn fires (see
+    /// <c>session/new</c>'s <c>availableModels</c> and, if it matches, sends the vendor's
+    /// model-selection RPC (<c>session/set_config_option</c> for Cursor/Copilot,
+    /// <c>session/set_model</c> for Kiro — the descriptor's selector decides) and awaits the
+    /// response BEFORE the first turn fires (see
     /// <see cref="IAcpModelSelector.TrySelectAsync"/>). If <paramref name="initialPrompt"/> is non-empty,
     /// <see cref="EnqueueTurn"/>s it onto the serialized prompt-turn worker (see
     /// <see cref="RunTurnWorkerAsync"/>) and returns as soon as the session is established — it
@@ -388,10 +660,16 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
     public async Task StartAsync(
             string cwd, string? initialPrompt, CancellationToken ct, string? requestedModel = null,
             IReadOnlyList<AcpMcpServerSpec>? mcpServers = null) {
-        _cwd = cwd;
+        _cwd            = cwd;
+        _requestedModel = requestedModel;
+        // Captured for session/load: a resume must hand the agent the SAME server list the
+        // original launch carried (reconnect spec §6.2 step 6).
+        _mcpServersForResume = mcpServers?.ToArray() ?? NoMcpServers;
 
-        _connectionRunTask = RunConnectionLoopAsync(_cts.Token);
-        _turnWorkerTask    = RunTurnWorkerAsync(_cts.Token);
+        var connection = _installed.Connection;
+
+        _installed.LoopTask = RunIncarnationLoopAsync(_installed);
+        _turnWorkerTask     = RunTurnWorkerAsync(_cts.Token);
 
         JsonElement sessionNewResult;
 
@@ -399,15 +677,19 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
             // Advertise NO client fs/terminal: cursor-agent does file/shell ops itself and never asks
             // the client to serve them (rationale: docs/ai-687-fs-terminal-capability-decision-design.md).
             // Any unadvertised request is declined -32601 by AcpConnection, never falsely acknowledged.
+            // Elicitation IS advertised (form mode only, never url) — the end-to-end multi-select
+            // lane shipped on both sides, so agents may now send elicitation/create; the bridge's
+            // gate pipeline still owns every per-frame accept/cancel decision.
             var initializeParams = JsonSerializer.SerializeToElement(
                 new InitializeParams(
                     ProtocolVersion: 1,
                     ClientCapabilities: new ClientCapabilities(
                         Fs: new FsCapabilities(ReadTextFile: false, WriteTextFile: false),
-                        Terminal: false)),
+                        Terminal: false,
+                        Elicitation: new ElicitationCapabilities(Form: new ElicitationFormCapabilities()))),
                 CapacitorJsonContext.Default.InitializeParams);
 
-            var initializeResultElement = await _connection.RequestAsync("initialize", initializeParams, ct).ConfigureAwait(false);
+            var initializeResultElement = await connection.RequestAsync("initialize", initializeParams, ct).ConfigureAwait(false);
 
             // Defensive: a malformed initialize response (wrong-typed protocolVersion, etc.) must not
             // surface as a raw JsonException. We distinguish a parse failure from a real version
@@ -435,15 +717,14 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
             _negotiatedProtocolVersion = initializeResult.ProtocolVersion;
 
             // Missing agentCapabilities defensively means "advertises nothing" (loadSession=false),
-            // not a throw — captured for a later reconnect path (only exposed here; nothing acts on
-            // it yet).
+            // not a throw — the reconnect eligibility gate reads loadSession off this.
             _negotiatedCapabilities = initializeResult.AgentCapabilities ?? new AgentCapabilities(LoadSession: false);
 
             var sessionNewParams = JsonSerializer.SerializeToElement(
                 new SessionNewParams(Cwd: cwd, McpServers: mcpServers?.ToArray() ?? NoMcpServers),
                 CapacitorJsonContext.Default.SessionNewParams);
 
-            sessionNewResult = await _connection.RequestAsync("session/new", sessionNewParams, ct).ConfigureAwait(false);
+            sessionNewResult = await connection.RequestAsync("session/new", sessionNewParams, ct).ConfigureAwait(false);
 
             if (!sessionNewResult.TryGetProperty("sessionId", out var sessionIdElement) || sessionIdElement.GetString() is not { Length: > 0 } sessionId)
                 throw new InvalidOperationException("ACP session/new response did not contain a sessionId.");
@@ -475,7 +756,7 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
         // fatal for a resolution failure — see IAcpModelSelector's cancellation-contract remarks
         // for why a canceled ct is the one exception to that (it propagates, aborting StartAsync).
         _resolvedModel = await _modelSelector
-            .TrySelectAsync(_connection, _sessionId!, sessionNewResult, requestedModel, _logger, ct)
+            .TrySelectAsync(connection, _sessionId!, sessionNewResult, requestedModel, _logger, ct)
             .ConfigureAwait(false);
 
         // Handshake is now fully complete (initialize + session/new + best-effort model selection) —
@@ -488,8 +769,37 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
         // awaiting it: a real ACP turn can run arbitrarily long, and blocking StartAsync on it would
         // delay agent registration/stoppability for the whole turn. Completion is
         // observed via the Updates/Envelopes channels, not this method's return.
-        if (!string.IsNullOrEmpty(initialPrompt))
+        if (!string.IsNullOrEmpty(initialPrompt)) {
             _ = EnqueueTurn(initialPrompt, acknowledgeWrite: false);
+            ArmFirstOutputWatchdog();
+        }
+    }
+
+    /// <summary>
+    /// Reaps a first turn that produces NO output at all within the deadline. Fire-and-forget by
+    /// design: StartAsync must not block on the turn (see <see cref="_firstOutputDeadline"/>), so the
+    /// bound cannot be a cancellation token threaded through it.
+    /// </summary>
+    void ArmFirstOutputWatchdog() {
+        if (_firstOutputDeadline is not { } deadline) return;
+
+
+        _ = Task.Run(async () => {
+            try {
+                await Task.Delay(deadline, _timeProvider, _cts.Token).ConfigureAwait(false);
+            } catch (OperationCanceledException) {
+                return;   // disposed, reaped, or already finished — nothing to police
+            }
+
+            if (Volatile.Read(ref _sawFirstUpdate) != 0) return;
+
+            HandleMcpSurfaceViolation(
+                $"kiro_reviewer_first_output_timeout: the reviewer produced no output within "
+              + $"{deadline.TotalSeconds:0}s of its first prompt. A kiro-cli whose credential has "
+              + "expired stays alive on an interactive browser prompt rather than failing, which is "
+              + "the shape this bound exists for — check that the daemon user's kiro-cli is still "
+              + "authenticated.");
+        });
     }
 
     /// <summary>
@@ -528,17 +838,73 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
 
     /// <summary>
     /// The single, long-running prompt-turn worker. Drains <see cref="_pendingTurns"/> strictly FIFO,
-    /// processing exactly one turn (<see cref="ProcessTurnAsync"/>) fully to completion before
+    /// processing exactly one turn (<see cref="ProcessAdmittedTurnAsync"/>) fully to completion before
     /// starting the next — this single-flight serialization is what makes "the aggregation buffer
     /// unambiguously belongs to the active turn" true. Cancellable: <c>ChannelReader.ReadAllAsync(ct)</c> observes
-    /// <paramref name="ct"/> both between turns and (via <see cref="ProcessTurnAsync"/>'s own use of
+    /// <paramref name="ct"/> both between turns and (via <see cref="ProcessAdmittedTurnAsync"/>'s own use of
     /// <paramref name="ct"/> in <see cref="SendPromptAsync"/>) inside an in-flight turn, so a turn
     /// whose <c>stopReason</c> never arrives cannot pin <see cref="DisposeAsync"/>.
     /// </summary>
     async Task RunTurnWorkerAsync(CancellationToken ct) {
         try {
-            await foreach (var turn in _pendingTurns.Reader.ReadAllAsync(ct).ConfigureAwait(false))
-                await ProcessTurnAsync(turn, ct).ConfigureAwait(false);
+            while (true) {
+                PendingTurn turn;
+                var skipEnvelope = false;
+
+                // The held-turn slot outranks the queue (reconnect spec §6.4 ordering: held turn
+                // first, then queued turns). At most one turn can be held: the worker is
+                // single-flight, so only one turn is ever past dequeue.
+                if (_heldTurn is { } held) {
+                    turn                  = held;
+                    skipEnvelope          = _heldTurnSkipEnvelope;
+                    _heldTurn             = null;
+                    _heldTurnSkipEnvelope = false;
+                } else {
+                    if (!await _pendingTurns.Reader.WaitToReadAsync(ct).ConfigureAwait(false))
+                        break; // channel completed — shutdown
+
+                    if (!_pendingTurns.Reader.TryRead(out turn!))
+                        continue;
+                }
+
+                // Pre-gate admission (reconnect spec §5.3): the park-or-register decision and —
+                // when admitted — the UserMessage envelope emission share ONE critical section
+                // under the reconnect lock (the aggregation lock nests inside, §5.1), so a crash
+                // snapshot can never observe a registered turn with indeterminate envelope state,
+                // and a turn dequeued after the gate closed parks instead of being sent at a dead
+                // incarnation. Parking holds no gate.
+                Task? reopen   = null;
+                var   terminal = false;
+
+                lock (_reconnectLock) {
+                    if (Phase == RuntimePhase.Terminal) {
+                        terminal = true;
+                    } else if (Phase == RuntimePhase.Reconnecting) {
+                        _heldTurn             = turn;
+                        _heldTurnSkipEnvelope = skipEnvelope;
+                        reopen                = _gateOpen.Task;
+                    } else {
+                        _inFlight = new InFlightTurn(turn, _installed.Id);
+                        if (!skipEnvelope)
+                            EmitEnvelope(AcpEventTranslator.BuildUserMessage(seq: 0, NowIso(), turn.Text));
+                    }
+                }
+
+                if (terminal) {
+                    // The session is over; the turn can never be delivered. Fault its ack honestly
+                    // rather than leaving a caller awaiting a write that will never happen.
+                    turn.Written?.TrySetException(new InvalidOperationException(
+                        "ACP session ended while this input was pending delivery."));
+                    break;
+                }
+
+                if (reopen is not null) {
+                    await reopen.WaitAsync(ct).ConfigureAwait(false);
+                    continue; // re-picks the held turn (or observes Terminal) next iteration
+                }
+
+                await ProcessAdmittedTurnAsync(turn, ct).ConfigureAwait(false);
+            }
         } catch (OperationCanceledException) {
             // normal shutdown — see this method's remarks.
         } catch (Exception ex) {
@@ -547,46 +913,115 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
     }
 
     /// <summary>
-    /// Processes exactly one serialized prompt turn: (a) emits this turn's <c>UserMessage</c>
-    /// envelope (written directly, not through the aggregation lock — it happens-before any update
-    /// for this turn can possibly arrive, since it is written before <c>session/prompt</c> is even
-    /// sent); (b) sends <c>session/prompt</c> and awaits its <c>stopReason</c> response (reusing
-    /// <see cref="SendPromptAsync"/>); (c) performs this turn's end-of-turn flush of the aggregation
-    /// buffer in a <c>finally</c> — this runs whether the turn completed normally, faulted (logged,
-    /// non-fatal), or was cancelled (a courtesy flush of whatever partial text had accumulated; see
-    /// <see cref="_aggregationLock"/>'s remarks on why
+    /// Processes exactly one ADMITTED prompt turn (its <c>UserMessage</c> envelope was already
+    /// emitted inside the pre-gate admission critical section — reconnect spec §5.3): (a) performs
+    /// the write-entry transition (or parks on refusal); (b) sends <c>session/prompt</c> and awaits
+    /// its <c>stopReason</c> response (reusing <see cref="SendPromptAsync"/>); (c) performs this
+    /// turn's end-of-turn flush of the aggregation buffer in a <c>finally</c> — this runs whether
+    /// the turn completed normally, faulted (logged, non-fatal), or was cancelled (a courtesy flush
+    /// of whatever partial text had accumulated; see <see cref="_aggregationLock"/>'s remarks on why
     /// this can never hang <see cref="DisposeAsync"/> — flushing is a pure in-memory operation, never
     /// I/O). A cancellation still propagates out of this method (the <c>when</c> filter below only
     /// catches non-cancellation faults) so <see cref="RunTurnWorkerAsync"/>'s loop stops promptly.
     /// </summary>
-    async Task ProcessTurnAsync(PendingTurn turn, CancellationToken ct) {
+    async Task ProcessAdmittedTurnAsync(PendingTurn turn, CancellationToken ct) {
         await _turnExecutionGate.WaitAsync(ct).ConfigureAwait(false);
         try {
-            EmitEnvelope(AcpEventTranslator.BuildUserMessage(seq: 0, NowIso(), turn.Text));
+            // Write entry (reconnect spec §5.3, `TryEnterWrite`): re-check `Reconnecting` and
+            // advance `not-started → entered` atomically, INSIDE the turn-execution gate,
+            // immediately before the send. A refusal parks the turn with its envelope already in
+            // the transcript (skip-user-envelope) and NEVER faults the ack — the failed write
+            // entry is what guarantees this turn's bytes never reached any incarnation, the race
+            // an installed-id check alone cannot close because no swap has happened yet. The park
+            // path returns through this method's finally, releasing the gate BEFORE the worker
+            // awaits reopen, which is what keeps the owner's settlement wait deadlock-free.
+            AcpConnection connection;
+
+            lock (_reconnectLock) {
+                if (Phase != RuntimePhase.Running || _inFlight is not { } inFlight || !ReferenceEquals(inFlight.Turn, turn)) {
+                    _heldTurn             = turn;
+                    _heldTurnSkipEnvelope = true;
+                    _inFlight             = null;
+                    return;
+                }
+
+                inFlight.WriteState = InFlightTurn.Entered;
+                connection          = _installed.Connection;
+            }
 
             try {
-                await SendPromptAsync(turn.Text, turn.Written, ct).ConfigureAwait(false);
+                await SendPromptAsync(connection, turn, ct).ConfigureAwait(false);
             } catch (Exception ex) when (ex is not OperationCanceledException) {
+                // Only reachable once write entry succeeded: faulting the ack is correct for
+                // `entered` and a structural no-op for `written` (the TCS already resolved at
+                // onWritten; TrySetException against a resolved TCS does nothing — normative per
+                // reconnect spec §5.3).
                 turn.Written?.TrySetException(ex);
                 _logger.LogDebug(ex, "ACP: session/prompt turn faulted; flushing this turn's partial buffer.");
             } finally {
+                // C4 inverted (reconnect spec §5.4): the flush is KEPT on the crash path — under
+                // skip-whole-replay nothing is ever re-emitted from replay, so the flushed partial
+                // run cannot be duplicated; it is the only copy of what the agent said before dying.
                 FlushOpenRun();
+
+                // However this turn ended — stopReason, fault, cancellation — it is settled, which
+                // disarms the first-output watchdog. Without this a turn that legitimately produced
+                // no session/update at all would leave the timer armed to reap a healthy reviewer.
+                // Disarms the first-output watchdog SYNCHRONOUSLY, here, rather than through a
+                // continuation on _firstTurnSettled: continuations run asynchronously, so the
+                // watchdog could read zero after the turn settled but before the continuation ran,
+                // and reap a healthy reviewer whose zero-update turn finished near the deadline.
+                Interlocked.Exchange(ref _sawFirstUpdate, 1);
+                _firstTurnSettled.TrySetResult();
+
+                lock (_reconnectLock) {
+                    if (_inFlight is { } f && ReferenceEquals(f.Turn, turn))
+                        _inFlight = null;
+                }
             }
         } finally {
             _turnExecutionGate.Release();
         }
     }
 
-    async Task RunConnectionLoopAsync(CancellationToken ct) {
+    /// <summary>
+    /// One incarnation's connection read loop — used for the original launch AND for every
+    /// reconnect candidate (the owner starts a candidate's loop through this same method, which is
+    /// what lets the candidate's <c>initialize</c>/<c>session/load</c> responses resolve at all).
+    /// The `finally` routes through <see cref="HandleTransportEnded"/>, whose incarnation-stamped,
+    /// state-dispatched logic decides between absorbing the end into a reconnect incident and the
+    /// terminal path — a candidate's loop ending is inert here (uninstalled stamp), and completing
+    /// <see cref="_updates"/> is centralized in the terminal dispositions rather than done
+    /// unconditionally, so a crash that reconnect will absorb never signals terminal to the
+    /// orchestrator (reconnect spec §5.4).
+    /// </summary>
+    async Task RunIncarnationLoopAsync(Incarnation incarnation) {
         try {
-            await _connection.RunAsync(ct).ConfigureAwait(false);
+            await incarnation.Connection.RunAsync(incarnation.LoopCts.Token).ConfigureAwait(false);
         } catch (OperationCanceledException) {
             // normal shutdown
         } catch (Exception ex) {
             _logger.LogDebug(ex, "ACP connection read loop ended unexpectedly.");
         } finally {
-            _updates.Writer.TryComplete();
+            HandleTransportEnded(incarnation.Id);
         }
+    }
+
+    /// <summary>
+    /// Belt-and-braces transport-death watcher: a child whose PROCESS exits while something else
+    /// (e.g. a self-re-exec'd inner process — the measured Gemini shape) holds its stdout pipe open
+    /// never EOFs the read loop, so process exit must independently drive the same
+    /// incarnation-stamped path. Idempotent with the read-loop trigger by construction
+    /// (<see cref="HandleTransportEnded"/>'s duplicate-signal arm).
+    /// </summary>
+    async Task WatchProcessExitAsync(Incarnation incarnation) {
+        try {
+            await incarnation.Process.WaitForExitAsync().ConfigureAwait(false);
+        } catch {
+            // WaitForExitAsync swallows its own faults; this is pure defense.
+        }
+
+        HandleTransportEnded(incarnation.Id);
     }
 
     /// <summary>
@@ -603,12 +1038,17 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
     /// signals it uses for PTY runtimes.
     /// </summary>
     public async IAsyncEnumerable<byte[]> ReadOutputAsync([EnumeratorCancellation] CancellationToken ct = default) {
-        var exitTask = _process.WaitForExitAsync(); // completes on process exit (AcpChildProcess swallows faults)
-        var ctTcs    = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        // Re-keyed from "this process exited" to "the runtime went logically terminal" (reconnect
+        // spec §5.4): the orchestrator treats this enumerable ending as the finalize trigger, so it
+        // must NOT fire for a crash that reconnect will absorb. _runtimeTerminal completes on an
+        // ineligible crash (same moment the process-exit wait used to fire, via
+        // HandleTransportEnded), on reconnect exhaustion, and on intentional stop/dispose — never
+        // during an incident being absorbed.
+        var ctTcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
         await using var reg = ct.Register(() => ctTcs.TrySetResult());
 
-        await Task.WhenAny(exitTask, ctTcs.Task).ConfigureAwait(false);
+        await Task.WhenAny(_runtimeTerminal.Task, ctTcs.Task).ConfigureAwait(false);
 
         yield break;
     }
@@ -638,15 +1078,24 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
         _turnExecutionGate.Release();
     }
 
-    async Task SendPromptAsync(string text, TaskCompletionSource? written, CancellationToken ct) {
+    async Task SendPromptAsync(AcpConnection connection, PendingTurn turn, CancellationToken ct) {
         var promptParams = JsonSerializer.SerializeToElement(
             new SessionPromptParams(
                 SessionId: _sessionId!,
-                Prompt: [new PromptContentBlock(Type: "text", Text: text)]),
+                Prompt: [new PromptContentBlock(Type: "text", Text: turn.Text)]),
             CapacitorJsonContext.Default.SessionPromptParams);
 
-        await _connection.RequestAsync(
-            "session/prompt", promptParams, ct, () => written?.TrySetResult()).ConfigureAwait(false);
+        await connection.RequestAsync(
+            "session/prompt", promptParams, ct, () => {
+                turn.Written?.TrySetResult();
+
+                // Advance the §5.3 write-state to `written` — from here on, a crash's disposition
+                // for this turn is "surfaced, ack already resolved", never a re-send.
+                lock (_reconnectLock) {
+                    if (_inFlight is { } inFlight && ReferenceEquals(inFlight.Turn, turn))
+                        inFlight.WriteState = InFlightTurn.Written;
+                }
+            }).ConfigureAwait(false);
     }
 
     sealed record PendingTurn(string Text, TaskCompletionSource? Written);
@@ -674,15 +1123,65 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
             new SessionCancelParams(SessionId: sessionId),
             CapacitorJsonContext.Default.SessionCancelParams);
 
-        await _connection.NotifyAsync("session/cancel", cancelParams).ConfigureAwait(false);
+        try {
+            await _installed.Connection.NotifyAsync("session/cancel", cancelParams).ConfigureAwait(false);
+        } catch (Exception ex) when (Phase != RuntimePhase.Running) {
+            // A graceful-stop notify against a dead or mid-swap connection is expected while
+            // reconnecting/terminal — swallow and log (reconnect spec §9); the hard stop path
+            // (TerminateAsync) is what actually ends the incident.
+            _logger.LogDebug(ex, "ACP: session/cancel against a non-running connection; ignoring.");
+        }
     }
 
-    public Task WaitForExitAsync(TimeSpan? timeout = null) => _process.WaitForExitAsync(timeout);
-    public Task TerminateAsync(TimeSpan?   timeout = null) => _process.TerminateAsync(timeout);
+    public Task WaitForExitAsync(TimeSpan? timeout = null) => _installed.Process.WaitForExitAsync(timeout);
+
+    /// <summary>
+    /// The hard stop: marks intentional stop FIRST (under the reconnect lock — from here on every
+    /// crash signal is a no-op, no swap and no held-turn delivery can happen, and an in-flight
+    /// reconnect owner's next checkpoint unwinds it), sweeps pending interactions, then terminates
+    /// the current child. C7's lock-scope rule holds: the lock guards only the flag flips and the
+    /// owner-CTS cancellation; the process termination and the interaction tokens run outside it.
+    /// </summary>
+    public Task TerminateAsync(TimeSpan? timeout = null) {
+        IAcpProcess current;
+        List<PendingInteraction>? swept;
+
+        lock (_reconnectLock) {
+            _intentionalStop = true;
+            _ownerCts?.Cancel();
+            swept   = MarkPendingInteractionsCancelledLocked();
+            current = _installed.Process;
+        }
+
+        ScheduleInteractionSweep(swept);
+
+        return current.TerminateAsync(timeout);
+    }
 
     void HandleNotification(AcpNotification notification) {
+        // Before the session/update filter: the MCP-surface notifications are a different method, and
+        // enforcement runs for the WHOLE session rather than a window — a late server initialization
+        // is exactly the case a sampling scheme would miss.
+        if (_mcpSurfaceMonitor is { } monitor) {
+            monitor.Observe(notification);
+
+            if (monitor.Violation is { } violation)
+                HandleMcpSurfaceViolation(violation);
+        }
+
         if (notification.Method != "session/update")
             return;
+
+        // Notification suppression (reconnect spec §5.4): while an incident is in flight, every
+        // session/update — the dying connection's last gasps and the candidate's entire replay —
+        // is dropped before it can reach _updates or aggregation. A volatile read, never a lock:
+        // this runs synchronously on a connection read loop, which must never contend with
+        // admission (§5.1). Scope is deliberately notifications-only — the turn worker's flush
+        // path and the owner's own emissions are not suppressed.
+        if (_suppressNotifications) {
+            Interlocked.Increment(ref _suppressedUpdates);
+            return;
+        }
 
         if (notification.Params is not { } @params || !@params.TryGetProperty("update", out var updateElement)) {
             _logger.LogDebug("ACP: session/update notification missing 'update' object; skipping.");
@@ -690,6 +1189,19 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
         }
 
         var reduced = Reduce(updateElement.Clone());
+
+        // Only an update that carries actual TURN OUTPUT disarms the watchdog.
+        //
+        // "Recognized kind" is not the same predicate and was too weak: Reduce validates the
+        // discriminator, not its payload, so an empty agent_message_chunk or an id-less tool_call
+        // yields a known kind while saying nothing — one such frame plus a never-settled turn would
+        // buy the unbounded silence this exists to catch. The session-scoped kinds
+        // (available_commands, session_info, usage) are excluded for the same reason: a peer can emit
+        // them and still never begin the turn.
+        if (reduced.Kind is AcpUpdateKind.AgentMessageChunk or AcpUpdateKind.AgentThoughtChunk
+                         or AcpUpdateKind.ToolCall or AcpUpdateKind.ToolCallUpdate
+                         or AcpUpdateKind.Plan)
+            Interlocked.Exchange(ref _sawFirstUpdate, 1);
         if (!_updates.Writer.TryWrite(reduced))
             _logger.LogDebug("ACP: dropped a session/update — updates channel already completed.");
 
@@ -868,7 +1380,7 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
 
     /// <summary>
     /// Turn-end / session-end flush entry point: flushes the open aggregation run, if any.
-    /// Called by <see cref="ProcessTurnAsync"/> on its turn's <c>stopReason</c>/fault/cancellation,
+    /// Called by <see cref="ProcessAdmittedTurnAsync"/> on its turn's <c>stopReason</c>/fault/cancellation,
     /// and defensively by <see cref="DisposeAsync"/> as a session-end safety net. Idempotent — a
     /// second call with no open run is a no-op.
     /// </summary>
@@ -950,15 +1462,42 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
         if (_sessionId is { Length: > 0 } endedSessionId)
             LogSessionEnded(_agentId, endedSessionId);
 
-        _connection.OnNotification -= HandleNotification;
+        // Intentional stop is marked FIRST (reconnect spec §9): a concurrent crash cannot
+        // resurrect a disposing runtime, an in-flight owner's next checkpoint unwinds, and the
+        // send gate opens into the terminal path so a parked worker never waits on a gate nobody
+        // will reopen.
+        Incarnation installed;
+        List<PendingInteraction>? swept;
+
+        lock (_reconnectLock) {
+            _intentionalStop = true;
+            _phase           = (int)RuntimePhase.Terminal;
+            _ownerCts?.Cancel();
+            swept     = MarkPendingInteractionsCancelledLocked();
+            installed = _installed;
+            _gateOpen.TrySetResult();
+        }
+
+        ScheduleInteractionSweep(swept);
+        _runtimeTerminal.TrySetResult();
+
+        installed.Connection.OnNotification -= HandleNotification;
 
         await _cts.CancelAsync().ConfigureAwait(false);
         _updates.Writer.TryComplete();
         _pendingTurns.Writer.TryComplete();
 
+        // Best-effort, bounded: the owner's own finally disposes any candidate it still holds; a
+        // stuck owner must never hang dispose.
+        try {
+            await _ownerTask.WaitAsync(TimeSpan.FromSeconds(3)).ConfigureAwait(false);
+        } catch {
+            // Best-effort.
+        }
+
         // The turn worker's in-flight SendPromptAsync await is keyed off _cts.Token via
         // AcpConnection.RequestAsync's own cancellation registration, so cancelling _cts above
-        // already unblocks it — ProcessTurnAsync's own `finally` still runs a courtesy flush of that
+        // already unblocks it — ProcessAdmittedTurnAsync's own `finally` still runs a courtesy flush of that
         // turn's partial buffer (see FlushOpenRun) before the worker loop observes the cancellation
         // and returns. This is just a bounded wait for that to actually happen.
         try {
@@ -968,22 +1507,761 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
         }
 
         // Session-end flush: a belt-and-suspenders flush of any still-open aggregation run. In the
-        // normal shutdown path ProcessTurnAsync's own finally already flushed the active turn's
+        // normal shutdown path ProcessAdmittedTurnAsync's own finally already flushed the active turn's
         // buffer above, making this a no-op — it only matters for the (currently unreachable in
         // practice) case where the worker task itself never ran a turn to begin with.
         FlushOpenRun();
         _transcript.Writer.TryComplete();
 
         try {
-            await _connectionRunTask.ConfigureAwait(false);
+            await installed.LoopTask.ConfigureAwait(false);
         } catch (OperationCanceledException) {
             // expected shutdown path
         }
 
         _cts.Dispose();
 
-        await _connection.DisposeAsync().ConfigureAwait(false);
-        await _process.DisposeAsync().ConfigureAwait(false);
+        // In a finally, because _disposed is latched at the top: if connection or process disposal
+        // faults, a retry returns immediately and the callback would never run at all. For the Kiro
+        // reviewer that callback deletes the transcript-bearing home, so skipping it on a faulted
+        // teardown is precisely the leak this hook exists to close.
+        // Set false only when the child's exit could not be confirmed — see below.
+        var cleanupSafe = true;
+
+        // BEFORE disposing anything, when the child is still observable. AcpChildProcess.HasExited
+        // reports true as soon as the underlying Process is disposed, so asking afterwards mistakes
+        // "no longer observable" for "confirmed exited" — the opposite of what this gate is for.
+        if (_onDisposed is not null) {
+            if (TakeReap() is { } reap) {
+                try { await reap.ConfigureAwait(false); } catch { /* already logged by the reap */ }
+            }
+
+            try {
+                // Bounded HERE with WaitAsync rather than by trusting the timeout argument: the
+                // interface takes one but does not oblige an implementation to honour it, and the
+                // test doubles return a task completing only on an explicit exit signal — so relying
+                // on the parameter hung every suite that disposes a fake.
+                await installed.Process.WaitForExitAsync(TimeSpan.FromSeconds(5))
+                                       .WaitAsync(TimeSpan.FromSeconds(5))
+                                       .ConfigureAwait(false);
+            } catch (Exception ex) {
+                _logger.LogDebug(ex, "ACP: could not confirm child exit before post-dispose cleanup.");
+            }
+
+            // Unconfirmed means SKIP the deletion, not force it: deleting under a live reviewer would
+            // leave it writing into an unlinked path and recreating the directory, which is worse
+            // than leaving it. The epoch-keyed startup sweep collects it on the next boot.
+            if (!installed.Process.HasExited) {
+                _logger.LogWarning(
+                    "ACP: child for agent {AgentId} did not confirm exit; leaving its reviewer home "
+                  + "for the startup sweep rather than deleting it under a live process.", _agentId);
+
+                cleanupSafe = false;
+            }
+        }
+
+        try {
+            // NESTED, not sequential in one try: a faulting Connection.DisposeAsync would otherwise
+            // skip Process.DisposeAsync entirely.
+            try {
+                await installed.Connection.DisposeAsync().ConfigureAwait(false);
+            } finally {
+                await installed.Process.DisposeAsync().ConfigureAwait(false);
+            }
+        } finally {
+            try {
+                if (cleanupSafe) _onDisposed?.Invoke();
+            } catch (Exception ex) {
+                _logger.LogWarning(ex, "ACP: post-dispose cleanup failed for agent {AgentId}.", _agentId);
+            }
+        }
+    }
+
+    // ── Reconnect/resume (skip-whole-replay — docs/superpowers/specs/2026-08-04-ai1325-acp-reconnect-resume-design.md) ──
+
+    /// <summary>Whether a crash on the INSTALLED incarnation may open a reconnect incident. Caller
+    /// holds the reconnect lock. Conjunctive with the construction-time gate (probe-verified
+    /// vendor, interactive launch, kill switch — those decide whether <see cref="_reconnect"/> is
+    /// non-null at all): the handshake must actually have advertised <c>loadSession</c>, and the
+    /// session must be under its counted-resume cap.</summary>
+    bool EligibleForReconnectLocked() =>
+        _reconnect is not null
+     && SupportsLoadSession
+     && _sessionId is { Length: > 0 }
+     && _resumeCount < _reconnect.MaxResumesPerSession;
+
+    /// <summary>
+    /// The single crash entry point (reconnect spec §5.2) — invoked by the connection's pre-fault
+    /// hook (stamped via closure), the process-exit watcher, and the read-loop wrapper's finally;
+    /// synchronous and non-blocking (takes only the reconnect lock). Four-arm dispatch: stale
+    /// stamp / intentional stop → no-op; Running + eligible → open the incident (close the gate,
+    /// start suppression, snapshot the in-flight registration, schedule the owner); Running +
+    /// ineligible → today's terminal path; already Reconnecting → duplicate-signal idempotence via
+    /// <see cref="_lastHandledCrashIncarnation"/>, or the id-qualified chained-crash marker for a
+    /// committed successor's death.
+    /// </summary>
+    void HandleTransportEnded(long incarnationId) {
+        var  scheduleOwner = false;
+        var  terminal      = false;
+        List<PendingInteraction>? swept = null;
+
+        lock (_reconnectLock) {
+            if (Phase == RuntimePhase.Terminal) {
+                // Terminal already has an owner — HandleTransportEnded's own ineligible arm,
+                // TerminalizeIncidentAsync, or DisposeAsync — and THAT owner completes the signals
+                // after its cleanup settles. Completing here would defeat the retire-first,
+                // signal-afterward ordering: the terminal path's own connection disposal re-enters
+                // this method mid-retirement (code-review r3). Inert.
+                return;
+            } else if (incarnationId != _installed.Id) {
+                // A candidate's or disposed incarnation's signal — structurally inert (§5.1), and
+                // deliberately checked BEFORE any stop handling (code-review r2): a delayed stale
+                // callback arriving after a stop of the healthy successor must not become a
+                // premature finalize trigger while that successor's own termination is still in
+                // flight.
+                return;
+            } else if (Phase == RuntimePhase.Reconnecting) {
+                // While an incident is in flight, its atomically-published owner is the sole
+                // terminal authority — including under intentional stop (code-review r3: the
+                // corpse's SECOND signal still carries the installed stamp here, and a stop arm
+                // ahead of this one signalled finalize while the owner still held a candidate).
+                // Stop cancels the owner's token; the owner's finally terminalizes and completes
+                // the signals after ITS cleanup.
+                if (incarnationId == _lastHandledCrashIncarnation)
+                    return; // duplicate signal for the crash already being handled (r4 B1)
+
+                if (_intentionalStop)
+                    return; // the owner's unwind owns completion
+
+                // A committed successor died during the settlement/note/reopen window: chain it
+                // into the SAME incident — never a second owner, never a discarded crash (r3 B1).
+                _crashedAgainIncarnation = incarnationId;
+                LogCrashedAgain(_agentId, incarnationId);
+                return;
+            } else {
+                // Phase == Running: no owner exists, so this arm owns the disposition.
+                if (_intentionalStop) {
+                    // The INSTALLED child's transport ended under an intentional stop: fire the
+                    // terminal signals (code-review r1: TerminateAsync from Running otherwise left
+                    // ReadOutputAsync waiting forever — the finalize trigger the old process-exit
+                    // wait used to fire). Only valid in Running — in Reconnecting the owner
+                    // completes (above), and its cleanup must not be overtaken.
+                    terminal = true;
+                }
+                else {
+                _lastHandledCrashIncarnation = incarnationId;
+
+                if (!EligibleForReconnectLocked()) {
+                    _phase = (int)RuntimePhase.Terminal;
+                    _gateOpen.TrySetResult();
+                    swept    = MarkPendingInteractionsCancelledLocked();
+                    terminal = true;
+                } else {
+                    _phase                 = (int)RuntimePhase.Reconnecting;
+                    // Counter reset BEFORE the volatile flag publishes (code-review r1 minor): a
+                    // notification that observes the flag can only increment a counter that has
+                    // already been zeroed for this incident.
+                    _suppressedUpdates     = 0;
+                    _suppressNotifications = true;
+                    _gateOpen              = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                    // The C8 snapshot (§5.3/§7): entered/written ⇒ the surfaced cases ⇒ the note's
+                    // resend sentence. A not-started registration will park at write entry and be
+                    // delivered automatically — no sentence.
+                    _incidentResendSentence = _inFlight is { WriteState: >= InFlightTurn.Entered };
+                    _ownerCts              = CancellationTokenSource.CreateLinkedTokenSource(_cts.Token);
+                    swept                  = MarkPendingInteractionsCancelledLocked();
+                    // Owner PUBLICATION happens inside the lock (code-review r1: publishing after
+                    // release let DisposeAsync snapshot a stale completed _ownerTask in the gap and
+                    // return while the new owner still ran). Task.Run only schedules — the hook
+                    // stays non-blocking.
+                    _ownerTask    = Task.Run(RunReconnectOwnerAsync);
+                    scheduleOwner = true;
+                }
+                }
+            }
+        }
+
+        ScheduleInteractionSweep(swept);
+
+        if (terminal) {
+            // Today's behavior, byte-for-byte in effect: the transport is gone and no reconnect
+            // will absorb it, so the re-keyed terminal signal fires here — the same moment the old
+            // process-exit wait used to. TryComplete/TrySetResult are idempotent against the
+            // dispose/terminalize paths.
+            _updates.Writer.TryComplete();
+            _runtimeTerminal.TrySetResult();
+            return;
+        }
+
+        if (scheduleOwner)
+            LogReconnectStarted(_agentId, _vendor, incarnationId);
+    }
+
+    /// <summary>
+    /// The reconnect owner — exactly one per incident (chained successor crashes fold back into
+    /// this same loop, reconnect spec §5.2/§6.4). Up to 3 candidate spawns at t=0/+1s/+4s; a
+    /// `session/load` refusal, protocol downgrade, withdrawn `loadSession`, unconfirmed corpse
+    /// retirement, or settlement timeout is terminal for the incident without further attempts.
+    /// Every step runs under the owner's stop-cancellable token and re-checks the chained-crash
+    /// marker at each checkpoint.
+    /// </summary>
+    async Task RunReconnectOwnerAsync() {
+        var support = _reconnect!;
+        var ownerCt = _ownerCts!.Token;
+        var reason  = "exhausted";
+        var resumed = false;
+        Incarnation? candidate = null;
+        // The PID-callback bundle each candidate actually RECORDED with (code-review r3): cleanup
+        // must clear through the same generation that recorded, and clear nothing when the record
+        // never happened — re-reading support.PidCallbacks at cleanup time could observe a
+        // newly-wired real bundle and delete the ORIGINAL agent's record for a candidate that
+        // recorded nothing under the throwing placeholder.
+        AcpPidRecordCallbacks? recordedWith = null;
+
+        try {
+            var attempts = 0;
+
+            while (true) {
+                ownerCt.ThrowIfCancellationRequested();
+                ConsumeChainMarker();
+
+                // Step 0 (§6.1): retire the corpse — confirmed exit is a precondition for every
+                // candidate handshake; an unconfirmed old tree is terminal, never shrugged past.
+                if (!await RetireInstalledAsync(support).ConfigureAwait(false))
+                    throw new AcpReconnectTerminalException("retirement_unconfirmed",
+                        "old ACP child's process tree could not be confirmed exited");
+
+                if (attempts >= 1 + support.AttemptDelays.Count)
+                    break; // exhausted
+
+                if (attempts > 0)
+                    await Task.Delay(support.AttemptDelays[attempts - 1], support.TimeProvider, ownerCt).ConfigureAwait(false);
+
+                attempts++;
+                ownerCt.ThrowIfCancellationRequested();
+
+                try {
+                    candidate = SpawnCandidate(support);
+
+                    // §6.2 step 1: the durable PID record precedes ANY handshake — a spawned child
+                    // the daemon cannot durably record must not proceed (leak containment: if the
+                    // daemon dies mid-attempt, restart reclamation kills the recorded candidate).
+                    // A throw here lands in the attempt-failure catch below, which disposes the
+                    // candidate WITHOUT clearing (recordedWith stays null — nothing was recorded).
+                    // The bundle is snapshotted once and carried: Record and any later Clear must
+                    // be the same generation (code-review r3).
+                    var attemptPidCallbacks = support.PidCallbacks;
+                    attemptPidCallbacks.Record(candidate.Process.Pid);
+                    recordedWith = attemptPidCallbacks;
+
+                    await InitializeCandidateAsync(candidate, ownerCt).ConfigureAwait(false);
+                    await LoadSessionAsync(candidate, ownerCt).ConfigureAwait(false);
+                    await ReapplyModelAsync(candidate, ownerCt).ConfigureAwait(false);
+
+                    ownerCt.ThrowIfCancellationRequested();
+
+                    if (!TryCommit(candidate)) {
+                        await DisposeCandidateAsync(candidate, recordedWith).ConfigureAwait(false);
+                        candidate = null;
+                        continue; // attempt failed (candidate died pre-install)
+                    }
+
+                    candidate = null; // installed — ownership transferred to the runtime
+
+                    // Deterministic seam for the chained-crash tests: fires at the exact
+                    // post-commit, pre-settlement instant a successor death takes the §5.2
+                    // chained arm. Production never sets it.
+                    TestHookAfterCommit?.Invoke();
+
+                    // Settlement (§6.4): the faulted incident turn — including its retained
+                    // partial flush — must complete before the note, so transcript order is
+                    // deterministic: partial flush → note → held turn → queued turns. Bounded via
+                    // a cancelled WAIT (never an abandoned one — a timed-out-but-still-pending
+                    // semaphore wait would later acquire a permit nobody releases and deadlock the
+                    // worker); a pathological hang goes terminal rather than waiting forever.
+                    using (var settleTimeout = new CancellationTokenSource(support.SettlementWait, support.TimeProvider))
+                    using (var settle = CancellationTokenSource.CreateLinkedTokenSource(ownerCt, settleTimeout.Token)) {
+                        try {
+                            await _turnExecutionGate.WaitAsync(settle.Token).ConfigureAwait(false);
+                            _turnExecutionGate.Release();
+                        } catch (OperationCanceledException) when (settleTimeout.IsCancellationRequested && !ownerCt.IsCancellationRequested) {
+                            throw new AcpReconnectTerminalException("settlement_timeout",
+                                "the interrupted turn never settled after reconnect commit");
+                        }
+                    }
+
+                    if (ChainMarkerSet())
+                        continue; // the just-committed successor already died — loop retires it
+
+                    EmitSystemNote();
+
+                    if (TryReopen()) {
+                        resumed = true;
+                        return;
+                    }
+
+                    // Reopen refused: either a chained crash (loop continues, retiring the dead
+                    // successor) or stop (the throw below unwinds via the cancellation check).
+                    ownerCt.ThrowIfCancellationRequested();
+                } catch (AcpReconnectTerminalException) {
+                    throw;
+                } catch (OperationCanceledException) {
+                    throw;
+                } catch (Exception ex) {
+                    LogAttemptFailed(ex, _agentId, attempts);
+
+                    if (candidate is not null) {
+                        await DisposeCandidateAsync(candidate, recordedWith).ConfigureAwait(false);
+                        candidate = null;
+                    }
+                }
+            }
+        } catch (OperationCanceledException) {
+            reason = "stopped";
+        } catch (AcpReconnectTerminalException ex) {
+            reason = ex.Reason;
+        } catch (Exception ex) {
+            _logger.LogWarning(ex, "ACP reconnect owner ended unexpectedly for agent {AgentId}.", _agentId);
+            reason = "owner_fault";
+        } finally {
+            if (!resumed)
+                await TerminalizeIncidentAsync(reason, candidate, recordedWith, support).ConfigureAwait(false);
+        }
+    }
+
+    bool ChainMarkerSet() {
+        lock (_reconnectLock) return _crashedAgainIncarnation != -1;
+    }
+
+    /// <summary>Records a chained successor crash as handled (spec §5.2): the marker's id becomes
+    /// <see cref="_lastHandledCrashIncarnation"/>, so that dead successor's duplicate signals
+    /// no-op from here on, and the marker clears for the next successor.</summary>
+    void ConsumeChainMarker() {
+        lock (_reconnectLock) {
+            if (_crashedAgainIncarnation == -1)
+                return;
+
+            _lastHandledCrashIncarnation = _crashedAgainIncarnation;
+            _crashedAgainIncarnation     = -1;
+        }
+    }
+
+    /// <summary>
+    /// Step 0 (§6.1): retire the installed corpse — cancel its read loop, dispose its connection,
+    /// terminate its process TREE, and CONFIRM exit within the bounded wait. Idempotent (a second
+    /// entry finds the work done); runs entirely outside the reconnect lock. Returns false when
+    /// exit cannot be confirmed — terminal for the incident, because `session/load` must never race
+    /// a possibly-live prior owner (the measured Kiro-lock failure mode).
+    /// </summary>
+    async Task<bool> RetireInstalledAsync(AcpReconnectSupport support) {
+        Incarnation corpse;
+        lock (_reconnectLock) corpse = _installed;
+
+        try { corpse.LoopCts.Cancel(); } catch (ObjectDisposedException) { /* already retired */ }
+
+        try {
+            await corpse.Connection.DisposeAsync().ConfigureAwait(false);
+        } catch (Exception ex) {
+            _logger.LogDebug(ex, "ACP reconnect: disposing the old connection failed; continuing retirement.");
+        }
+
+        await corpse.Process.TerminateAsync(support.RetirementWait).ConfigureAwait(false);
+
+        var confirmed = corpse.Process.HasExited;
+        LogCorpseRetired(_agentId, corpse.Id, confirmed);
+        return confirmed;
+    }
+
+    /// <summary>
+    /// §6.2 steps 2–4: invoke the pure spawn closure, assign the next never-reused incarnation id,
+    /// and wire the candidate exactly like the original launch (hook stamped with its own id —
+    /// inert until installed; suppressed notifications; the state-derived interaction router). The
+    /// candidate's read loop starts here so its handshake responses can resolve. The durable PID
+    /// record (step 1) is written by the OWNER immediately after this returns, so its failure path
+    /// flows through the same attempt-failure disposal as every other candidate fault.
+    /// </summary>
+    Incarnation SpawnCandidate(AcpReconnectSupport support) {
+        var (input, output, process) = support.Spawn();
+        var connection = new AcpConnection(input, output, _logger, _debugFrames);
+
+        var candidate = new Incarnation {
+            Id         = Interlocked.Increment(ref _nextIncarnationId),
+            Connection = connection,
+            Process    = process,
+            LoopCts    = CancellationTokenSource.CreateLinkedTokenSource(_cts.Token)
+        };
+
+        WireIncarnation(candidate);
+        candidate.LoopTask = RunIncarnationLoopAsync(candidate);
+        _ = WatchProcessExitAsync(candidate);
+
+        return candidate;
+    }
+
+    async Task InitializeCandidateAsync(Incarnation candidate, CancellationToken ct) {
+        // Must advertise the SAME capability set as StartAsync's initialize — a reconnect
+        // candidate that silently dropped the elicitation advertisement would flip the agent
+        // back to never asking, mid-session.
+        var initializeParams = JsonSerializer.SerializeToElement(
+            new InitializeParams(
+                ProtocolVersion: 1,
+                ClientCapabilities: new ClientCapabilities(
+                    Fs: new FsCapabilities(ReadTextFile: false, WriteTextFile: false),
+                    Terminal: false,
+                    Elicitation: new ElicitationCapabilities(Form: new ElicitationFormCapabilities()))),
+            CapacitorJsonContext.Default.InitializeParams);
+
+        var resultElement = await candidate.Connection.RequestAsync("initialize", initializeParams, ct).ConfigureAwait(false);
+
+        InitializeResult? result;
+        try {
+            result = JsonSerializer.Deserialize(resultElement.GetRawText(), CapacitorJsonContext.Default.InitializeResult);
+        } catch (JsonException) {
+            result = null;
+        }
+
+        if (result is null || result.ProtocolVersion != 1)
+            throw new AcpReconnectTerminalException("protocol_mismatch",
+                "reconnect candidate negotiated an unsupported ACP protocol version");
+
+        if (result.AgentCapabilities is not { LoadSession: true })
+            throw new AcpReconnectTerminalException("load_session_withdrawn",
+                "reconnect candidate no longer advertises loadSession");
+    }
+
+    async Task LoadSessionAsync(Incarnation candidate, CancellationToken ct) {
+        var loadParams = JsonSerializer.SerializeToElement(
+            new SessionLoadParams(SessionId: _sessionId!, Cwd: _cwd!, McpServers: _mcpServersForResume),
+            CapacitorJsonContext.Default.SessionLoadParams);
+
+        try {
+            _lastLoadResult = await candidate.Connection.RequestAsync("session/load", loadParams, ct).ConfigureAwait(false);
+        } catch (AcpRpcException ex) {
+            // A JSON-RPC refusal is terminal for the incident (§6): both measured refusal classes
+            // (Kiro's durable stale-owner lock, Gemini's unpersisted session) do not clear with
+            // retries — a session the vendor refuses to load will not become loadable seconds later.
+            throw new AcpReconnectTerminalException("load_refused",
+                SanitizeForForward($"session/load refused: {ex.Message}"));
+        }
+
+        AcpMetrics.SessionsLoaded.Add(1);
+    }
+
+    /// <summary>The most recent successful `session/load` RESPONSE — the model re-application's
+    /// resolution source (it carries the same modes/models shape as `session/new`). Owner-only.</summary>
+    JsonElement _lastLoadResult;
+
+    /// <summary>Best-effort model re-application (§6.2 step 7): the load RESPONSE carries the same
+    /// modes/models shape as `session/new` (probe-verified for Cursor), so the vendor's own
+    /// selector resolves against it; failure falls back to the loaded session's current model,
+    /// exactly like launch. A no-op for `NoOpModelSelector` vendors or when no model was
+    /// requested.</summary>
+    async Task ReapplyModelAsync(Incarnation candidate, CancellationToken ct) =>
+        _resolvedModel = await _modelSelector
+            .TrySelectAsync(candidate.Connection, _sessionId!, _lastLoadResult, _requestedModel, _logger, ct)
+            .ConfigureAwait(false) ?? _resolvedModel;
+
+    /// <summary>
+    /// Commit (§6.3), under the reconnect lock: stop re-check, candidate liveness via the
+    /// TRANSPORT-ENDED LATCH (set strictly before any hook fires, so a death whose only hook
+    /// invocation was discarded as uninstalled is still visible here — r4 B2) plus process exit,
+    /// then swap, unwire the corpse's notifications, and install the candidate's id. Returns false
+    /// when the liveness check fails (the attempt fails normally). A death after the install fires
+    /// the candidate's already-wired hook with the installed stamp and takes the chained-crash arm.
+    /// </summary>
+    bool TryCommit(Incarnation candidate) {
+        lock (_reconnectLock) {
+            if (_intentionalStop || Phase == RuntimePhase.Terminal)
+                throw new OperationCanceledException("stop during reconnect commit");
+
+            if (candidate.Connection.TransportEnded || candidate.Process.HasExited)
+                return false;
+
+            var corpse = _installed;
+            corpse.Connection.OnNotification -= HandleNotification;
+
+            _installed = candidate;
+            return true;
+        }
+    }
+
+    /// <summary>The §8 surfacing envelope — emitted after commit and settlement, before reopen,
+    /// while the worker is still parked, so it deterministically precedes every resumed envelope.
+    /// The resend sentence appears exactly for the incident's surfaced cases (a turn whose
+    /// write-state reached `entered`/`written` at snapshot time).</summary>
+    void EmitSystemNote() {
+        var text = _incidentResendSentence
+            ? "Agent process restarted; the session was resumed. Your last message may not have been processed — resend it if the agent doesn't continue."
+            : "Agent process restarted; the session was resumed.";
+
+        EmitEnvelope(new AcpEventEnvelope(
+            Seq: 0,
+            Kind: AcpEventKind.SystemNote,
+            Text: text,
+            TimestampIso: NowIso()));
+    }
+
+    /// <summary>
+    /// The atomic reopen transition (§6.4, r4 B3): ONE lock-linearized operation that re-checks
+    /// stop and the chained-crash marker and — only if clean — sets Running, ends suppression,
+    /// counts the resume (the success linearization point: cap + metric + log increment here and
+    /// only here), and opens the gate before releasing the lock. A crash callback serializing
+    /// before this sets the marker and the reopen is refused; one serializing after observes
+    /// Running and opens a fresh incident. No marker can be stranded across the reopen.
+    /// </summary>
+    bool TryReopen() {
+        int suppressed;
+
+        lock (_reconnectLock) {
+            if (_intentionalStop || Phase == RuntimePhase.Terminal)
+                throw new OperationCanceledException("stop during reconnect reopen");
+
+            if (_crashedAgainIncarnation != -1)
+                return false;
+
+            _phase                 = (int)RuntimePhase.Running;
+            _suppressNotifications = false;
+            _resumeCount++;
+            suppressed = _suppressedUpdates;
+            _gateOpen.TrySetResult();
+        }
+
+        AcpMetrics.RecordReconnect("resumed");
+        LogResumed(_agentId, _installed.Id, _resumeCount, suppressed);
+        return true;
+    }
+
+    async Task DisposeCandidateAsync(Incarnation candidate, AcpPidRecordCallbacks? recordedWith) {
+        try { candidate.LoopCts.Cancel(); } catch (ObjectDisposedException) { }
+
+        // Each cleanup step is INDEPENDENTLY best-effort (code-review r2): a throwing connection
+        // disposal must never suppress process-tree retirement — that ordering would leave an
+        // untracked live child right before its PID record is cleared.
+        try {
+            await candidate.Connection.DisposeAsync().ConfigureAwait(false);
+        } catch (Exception ex) {
+            _logger.LogDebug(ex, "ACP reconnect: candidate connection disposal failed (best-effort).");
+        }
+
+        try {
+            await candidate.Process.TerminateAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false);
+        } catch (Exception ex) {
+            _logger.LogDebug(ex, "ACP reconnect: candidate process termination failed (best-effort).");
+        }
+
+        try {
+            await candidate.Process.DisposeAsync().ConfigureAwait(false);
+        } catch (Exception ex) {
+            _logger.LogDebug(ex, "ACP reconnect: candidate process disposal failed (best-effort).");
+        }
+
+        // Clear ONLY through the generation that recorded, and only when a record actually
+        // happened (code-review r3 — a null recordedWith means the Record threw or never ran, so
+        // there is nothing of ours to delete and the original agent's record must survive).
+        try {
+            recordedWith?.Clear();
+        } catch (Exception ex) {
+            _logger.LogDebug(ex, "ACP reconnect: clearing the candidate PID record failed (best-effort).");
+        }
+    }
+
+    /// <summary>
+    /// The incident's terminal path (§6.4): gate opens INTO terminal (the parked worker observes
+    /// Terminal and exits, faulting a held turn's ack honestly), any leftover candidate is
+    /// disposed and its record cleared, and the re-keyed terminal signal finally fires so the
+    /// orchestrator finalizes exactly as an ineligible crash does today — once.
+    /// </summary>
+    async Task TerminalizeIncidentAsync(
+            string reason, Incarnation? leftoverCandidate, AcpPidRecordCallbacks? recordedWith,
+            AcpReconnectSupport support) {
+        List<PendingInteraction>? swept;
+        Incarnation installed;
+
+        lock (_reconnectLock) {
+            _phase                 = (int)RuntimePhase.Terminal;
+            _suppressNotifications = false;
+            swept                  = MarkPendingInteractionsCancelledLocked();
+            installed              = _installed;
+            _gateOpen.TrySetResult();
+        }
+
+        ScheduleInteractionSweep(swept);
+
+        if (leftoverCandidate is not null) {
+            await DisposeCandidateAsync(leftoverCandidate, recordedWith).ConfigureAwait(false);
+            recordedWith = null; // its clear (if any) just ran — the installed block below must not double-clear
+        }
+
+        // A successor that COMMITTED and then went terminal (settlement timeout, chained-crash
+        // exhaustion) is the INSTALLED incarnation, not a leftover candidate. Run the FULL
+        // retirement on it — loop cancel, connection disposal, tree termination with a bounded
+        // confirm, and the PID-record clear — on the incident's own authority (code-review r1+r2),
+        // BEFORE the terminal signals fire, so finalize never overlaps a still-live successor this
+        // path knew about. Idempotent for the already-retired-original case (a corpse is already
+        // dead and disposed), and the orchestrator's finalize->dispose remains the backstop for
+        // anything a refusing process leaves behind (logged loudly below, never silently).
+        try { installed.LoopCts.Cancel(); } catch (ObjectDisposedException) { }
+
+        try {
+            await installed.Connection.DisposeAsync().ConfigureAwait(false);
+        } catch (Exception ex) {
+            _logger.LogDebug(ex, "ACP reconnect: terminal-path connection disposal failed (best-effort).");
+        }
+
+        // Independent best-effort blocks (code-review r3 — same rule as DisposeCandidateAsync): a
+        // throwing termination must not suppress process disposal, and neither may suppress the
+        // record clear.
+        try {
+            await installed.Process.TerminateAsync(support.RetirementWait).ConfigureAwait(false);
+            if (!installed.Process.HasExited)
+                _logger.LogWarning(
+                    "ACP reconnect: installed child (pid {Pid}) did not confirm exit during terminal-path retirement; the finalize path's dispose is the backstop.",
+                    installed.Process.Pid);
+        } catch (Exception ex) {
+            _logger.LogDebug(ex, "ACP reconnect: terminal-path termination of the installed child failed (best-effort).");
+        }
+
+        try {
+            await installed.Process.DisposeAsync().ConfigureAwait(false);
+        } catch (Exception ex) {
+            _logger.LogDebug(ex, "ACP reconnect: terminal-path process disposal failed (best-effort).");
+        }
+
+        try {
+            recordedWith?.Clear();
+        } catch (Exception ex) {
+            _logger.LogDebug(ex, "ACP reconnect: terminal-path PID-record clear failed (best-effort).");
+        }
+
+        AcpMetrics.RecordReconnect(reason == "stopped" ? "stopped" : "exhausted");
+        LogGaveUp(_agentId, reason);
+
+        _updates.Writer.TryComplete();
+        _runtimeTerminal.TrySetResult();
+    }
+
+    // ── Pending-interaction registry + state-derived router (§5.4) ──────────────────────────────
+
+    /// <summary>
+    /// The state-derived interaction router — one per incarnation, installed at spawn, never
+    /// swapped. Phase one, under the reconnect lock: (installed ∧ Running) or immediate decline,
+    /// and — when admitted — atomic registration in the pending registry. Phase two, outside the
+    /// lock: a lock-acquired may-start re-check (a filter, not an atomicity claim — the
+    /// post-check/pre-invoke window's contract is surfaced-then-cancelled), then the real bridge
+    /// under the entry's token, RACED against the sweep's bookkeeping signal so a blocked foreign
+    /// cancellation callback can never strand the response or the entry's removal (r5–r8).
+    /// Exactly one response per request is the connection layer's own guarantee; the entry's claim
+    /// decides real-vs-cancelled.
+    /// </summary>
+    async Task<JsonElement?> RouteServerRequestAsync(long incarnationId, AcpRequest request, CancellationToken ct) {
+        PendingInteraction entry;
+
+        lock (_reconnectLock) {
+            if (_intentionalStop || Phase != RuntimePhase.Running || incarnationId != _installed.Id)
+                return DeclineFor(request);
+
+            entry = new PendingInteraction(incarnationId);
+            _pendingInteractions.Add(entry);
+        }
+
+        try {
+            lock (_reconnectLock) {
+                if (entry.Cancelled)
+                    return DeclineFor(request); // swept between registration and start — never invoke the bridge
+            }
+
+            // NOT `using`: the linked source must outlive this method when the sweep wins the race,
+            // because the sweep's best-effort token tail is what cancels the abandoned in-flight
+            // bridge call (and with it the server-side card) — disposing here would sever that
+            // propagation path. Disposal rides the bridge task's own settlement instead.
+            var linked     = CancellationTokenSource.CreateLinkedTokenSource(ct, entry.Cts.Token);
+            var bridgeTask = _interactionBridge!.HandleAsync(request, linked.Token);
+            _ = bridgeTask.ContinueWith(
+                t => { _ = t.Exception; linked.Dispose(); },
+                CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+
+            var winner = await Task.WhenAny(bridgeTask, entry.CancelledSignal.Task).ConfigureAwait(false);
+
+            bool claimedByBridge;
+            lock (_reconnectLock) claimedByBridge = !entry.Cancelled && ReferenceEquals(winner, bridgeTask);
+
+            if (!claimedByBridge)
+                return DeclineFor(request); // the sweep owns the outcome (terminal-claim rule, §5.4)
+
+            return await bridgeTask.ConfigureAwait(false);
+        } finally {
+            // Terminal bookkeeping is claim-winner-independent and callback-independent (r8 I1):
+            // the entry leaves the registry here, always. The entry's own CTS is deliberately NOT
+            // disposed — the sweep's tail may still need to signal it, and a per-interaction CTS
+            // left to the GC is the documented cost of never severing that path.
+            lock (_reconnectLock) _pendingInteractions.Remove(entry);
+        }
+    }
+
+    /// <summary>Each method declines in ITS OWN protocol's result shape — the stabilized
+    /// elicitation response (`{"action":"cancel"}`) is a different object from the permission
+    /// outcome (the stabilized elicitation-lane contract of #453, honored here too). An
+    /// elicitation declined
+    /// by the router is an elicitation cancelled before routing to a human, so it carries the same
+    /// reason-tagged metric the bridge's own pre-routing cancels do.</summary>
+    JsonElement? DeclineFor(AcpRequest request) {
+        switch (request.Method) {
+            case "session/request_permission":
+                return AcpInteractionBridge.CancelledResult();
+            case "elicitation/create":
+                AcpMetrics.RecordElicitationUnrenderable("runtime_not_serving");
+                _logger.LogDebug(
+                    "ACP: elicitation declined by the reconnect router (uninstalled incarnation or non-running phase) for agent {AgentId}.",
+                    _agentId);
+                return AcpInteractionBridge.ElicitationCancelResult();
+            default:
+                return null; // unclaimed methods keep the connection's -32601 default-decline posture
+        }
+    }
+
+    /// <summary>Step one of the three-step sweep (§5.4): mark every live entry cancelled — plain
+    /// field writes, no token signalled, no callback can run. Caller holds the reconnect lock;
+    /// returns the marked set for the off-stack step two, or null when there was nothing to
+    /// sweep.</summary>
+    List<PendingInteraction>? MarkPendingInteractionsCancelledLocked() {
+        if (_pendingInteractions.Count == 0)
+            return null;
+
+        var marked = new List<PendingInteraction>(_pendingInteractions.Count);
+
+        foreach (var entry in _pendingInteractions) {
+            if (entry.Cancelled)
+                continue;
+
+            entry.Cancelled = true;
+            marked.Add(entry);
+        }
+
+        return marked.Count == 0 ? null : marked;
+    }
+
+    /// <summary>Steps two of the sweep, dispatched as separately supervised fire-and-forget work
+    /// (never awaited by the owner or the pre-fault hook — r6 B1/r7 I2): per entry, the
+    /// BOOKKEEPING signal first (a TCS completion with async continuations — no foreign code; this
+    /// is what resolves the router's race and thus the response + entry removal), then the token —
+    /// the one step that executes foreign callbacks — as a best-effort tail a blocked callback can
+    /// strand without consequence (r8 I1).</summary>
+    void ScheduleInteractionSweep(List<PendingInteraction>? marked) {
+        if (marked is null)
+            return;
+
+        _ = Task.Run(() => {
+            foreach (var entry in marked)
+                entry.CancelledSignal.TrySetResult();
+
+            foreach (var entry in marked) {
+                try {
+                    entry.Cts.Cancel();
+                } catch (Exception ex) {
+                    _logger.LogDebug(ex, "ACP: pending-interaction token cancellation threw (best-effort tail).");
+                }
+            }
+        });
     }
 
     // ── LoggerMessage source-generated methods ──────────────────────────────────────────────────
@@ -998,4 +2276,22 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
 
     [LoggerMessage(Level = LogLevel.Information, Message = "ACP hosted agent session ended: agentId={AgentId} acpSessionId={AcpSessionId}")]
     partial void LogSessionEnded(string agentId, string acpSessionId);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "ACP reconnect started: agentId={AgentId} vendor={Vendor} crashedIncarnation={Incarnation}")]
+    partial void LogReconnectStarted(string agentId, string vendor, long incarnation);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "ACP reconnect: corpse retired: agentId={AgentId} incarnation={Incarnation} exitConfirmed={Confirmed}")]
+    partial void LogCorpseRetired(string agentId, long incarnation, bool confirmed);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "ACP reconnect: committed successor crashed before reopen (chained): agentId={AgentId} incarnation={Incarnation}")]
+    partial void LogCrashedAgain(string agentId, long incarnation);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "ACP reconnect: session resumed: agentId={AgentId} incarnation={Incarnation} resumeCount={ResumeCount} suppressedReplayUpdates={Suppressed}")]
+    partial void LogResumed(string agentId, long incarnation, int resumeCount, int suppressed);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "ACP reconnect: giving up ({Reason}): agentId={AgentId} — finalizing the session")]
+    partial void LogGaveUp(string agentId, string reason);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "ACP reconnect: attempt {Attempt} failed for agentId={AgentId}")]
+    partial void LogAttemptFailed(Exception ex, string agentId, int attempt);
 }

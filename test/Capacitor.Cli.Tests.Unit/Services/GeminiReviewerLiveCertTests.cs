@@ -10,9 +10,11 @@ namespace Capacitor.Cli.Tests.Unit.Services;
 /// are the the Gemini reviewer work design probes promoted to tests, so a Gemini upgrade that invalidates one of them fails
 /// here instead of silently reopening a repository-impersonation hole.
 ///
-/// <para><b>This is what <c>GeminiReviewerCapability.CertifiedVersions</c> means.</b> Adding a version to that
-/// set asserts that this file passed against that build. If it has not been run, leave the version out — an
-/// absent version disables the reviewer, which is the safe direction.</para>
+/// <para><b>What this certifies, now that the gate is an operator affirmation.</b> It no longer backs a
+/// maintainer-curated version list — that shape took the reviewer offline on every vendor release and was
+/// replaced. It certifies the MECHANISM: that the per-launch MCP allowlist is an exclusive gate the reviewed
+/// repository cannot widen. Run it against a new build before recommending that build, and treat a failure
+/// here as a reason to stop shipping the reviewer for it, not merely as a version to leave off a list.</para>
 ///
 /// <para><b>Gated</b> behind <c>KCAP_GEMINI_REVIEWER_CERT=1</c>: CI has no <c>gemini</c> binary and no Google
 /// account, and each case spends a real model turn. Requires <c>gemini</c> on PATH, logged in, and
@@ -33,7 +35,8 @@ public class GeminiReviewerLiveCertTests {
         Skip.Unless(on,
             $"Gated live certification of the Gemini reviewer's MCP containment — set {GateEnvVar}=1 to run "
           + "(spends real gemini turns; needs `gemini` on PATH, logged in, and GOOGLE_CLOUD_PROJECT set). "
-          + "This is what CertifiedVersions asserts, so re-run it before adding a version there.");
+          + "Certifies the allowlist MECHANISM against the installed build — re-run it on a new gemini "
+          + "before recommending that build to operators.");
 
         return Environment.GetEnvironmentVariable("GOOGLE_CLOUD_PROJECT") ?? "";
     }

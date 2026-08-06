@@ -52,9 +52,13 @@ public partial class AgentOrchestratorVendorTests {
     [Test]
     public async Task Borrowed_Cursor_review_flow_runs_in_owned_dirty_snapshot_and_refreshes_between_rounds() {
         var (cwd, cleanup) = CreateGitRepo();
+        LocalPermissionBridge? bridge = null;
         try {
             File.WriteAllText(Path.Combine(cwd, "README.md"), "dirty-one");
             File.WriteAllText(Path.Combine(cwd, "untracked.txt"), "untracked-one");
+            var firstContext = "{\"mcpServers\":{\"first\":{}}}";
+            File.WriteAllText(Path.Combine(cwd, ".mcp.json"), firstContext);
+            Git(cwd, "add", ".mcp.json");
             var server = new CaptureServerConnection();
             var factory = new SpyHostedAgentRuntimeFactory("cursor") {
                 SupportsUnattended = true,
@@ -65,6 +69,8 @@ public partial class AgentOrchestratorVendorTests {
                 server, new SpyPtyProcessFactory(),
                 new Dictionary<string, IHostedAgentLauncher>(),
                 extraRuntimeFactories: [factory]);
+            bridge = orch.PermissionBridgeForTest;
+            await bridge.StartAsync(CancellationToken.None);
             var cmd = new LaunchAgentCommand(
                 "agent-cursor-snapshot", "review", "default", null, cwd, null, null,
                 Vendor: "cursor", Kind: LaunchKind.ReviewFlow, Borrowed: true, BorrowCwd: cwd);
@@ -78,20 +84,174 @@ public partial class AgentOrchestratorVendorTests {
                 .IsEqualTo("dirty-one");
             await Assert.That(File.ReadAllText(Path.Combine(ctx.Worktree.Path, "untracked.txt")))
                 .IsEqualTo("untracked-one");
+            await Assert.That(File.Exists(Path.Combine(ctx.Worktree.Path, ".mcp.json"))).IsFalse();
+            await Assert.That(ctx.ReviewContextCapabilityUrl).IsNotNull();
+            await Assert.That(bridge.ReviewerTokenCountForTest).IsEqualTo(1);
             await Assert.That(orch.GetAgentForTest(cmd.AgentId)!.BorrowedSnapshotSource)
                 .IsEqualTo(BorrowAuthorizer.Canonicalize(cwd));
 
+            using var client = new HttpClient();
+            var firstManifest = await client.GetStringAsync(ctx.ReviewContextCapabilityUrl!);
+            await Assert.That(firstManifest)
+                .Contains(Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(firstContext)));
+            var retiredGenerationPath = ctx.Worktree.ReviewContextGeneration!.StoragePath;
+
             File.WriteAllText(Path.Combine(cwd, "README.md"), "dirty-two");
+            var secondContext = "{\"mcpServers\":{\"second\":{}}}";
+            File.WriteAllText(Path.Combine(cwd, ".mcp.json"), secondContext);
+            Git(cwd, "add", ".mcp.json");
             await orch.HandleSendInputForTest(new SendInputCommand(cmd.AgentId, "next", null));
             await Assert.That(File.ReadAllText(Path.Combine(ctx.Worktree.Path, "README.md")))
                 .IsEqualTo("dirty-two");
+            var secondManifest = await client.GetStringAsync(ctx.ReviewContextCapabilityUrl!);
+            await Assert.That(secondManifest)
+                .Contains(Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(secondContext)));
+            await Assert.That(secondManifest).DoesNotContain(
+                Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(firstContext)));
+            await Assert.That(Directory.Exists(retiredGenerationPath)).IsFalse();
 
+            var sidecarRoot = ctx.Worktree.ReviewContextRoot!;
             await orch.HandleStopAgentForTest(cmd.AgentId);
             for (var i = 0; i < 100 && Directory.Exists(ctx.Worktree.Path); i++)
                 await Task.Delay(20);
             await Assert.That(Directory.Exists(cwd)).IsTrue();
             await Assert.That(Directory.Exists(ctx.Worktree.Path)).IsFalse();
+            await Assert.That(Directory.Exists(sidecarRoot)).IsFalse();
+            await Assert.That(bridge.ReviewerTokenCountForTest).IsEqualTo(0);
         } finally {
+            if (bridge is not null) await bridge.DisposeAsync();
+            cleanup();
+        }
+    }
+
+    [Test, NotInParallel("LocalPermissionBridgeTests")]
+    public async Task Non_review_independent_snapshot_gets_context_grant_and_refreshes() {
+        var (cwd, cleanup) = CreateGitRepo();
+        LocalPermissionBridge? bridge = null;
+        try {
+            var firstContext = "{\"mcpServers\":{\"first\":{}}}";
+            File.WriteAllText(Path.Combine(cwd, ".mcp.json"), firstContext);
+            Git(cwd, "add", ".mcp.json");
+            var server = new CaptureServerConnection();
+            var factory = new SpyHostedAgentRuntimeFactory("cursor") {
+                SupportsBorrowedReviewFlow = true,
+                BorrowedReviewRequiresIndependentSnapshot = true
+            };
+            await using var orch = BuildOrchestrator(
+                server, new SpyPtyProcessFactory(),
+                new Dictionary<string, IHostedAgentLauncher>(),
+                extraRuntimeFactories: [factory]);
+            bridge = orch.PermissionBridgeForTest;
+            await bridge.StartAsync(CancellationToken.None);
+            var command = new LaunchAgentCommand(
+                "agent-cursor-non-review-snapshot", "work", "default", null, cwd, null, null,
+                Vendor: "cursor", Kind: LaunchKind.Default, Borrowed: true, BorrowCwd: cwd);
+
+            await orch.HandleLaunchAgentForTest(command);
+
+            var context = factory.LastContext!;
+            var runtime = factory.LastRuntime!;
+            await Assert.That(server.LaunchFailedCalls).IsEmpty();
+            await Assert.That(context.ReviewContextCapabilityUrl).IsNotNull();
+            await Assert.That(bridge.ReviewerTokenCountForTest).IsEqualTo(1);
+
+            var secondContext = "{\"mcpServers\":{\"second\":{}}}";
+            File.WriteAllText(Path.Combine(cwd, ".mcp.json"), secondContext);
+            Git(cwd, "add", ".mcp.json");
+            await orch.HandleSendInputForTest(new SendInputCommand(command.AgentId, "next", null));
+
+            await Assert.That(runtime.HasExited).IsFalse();
+            using var client = new HttpClient();
+            var manifest = await client.GetStringAsync(context.ReviewContextCapabilityUrl!);
+            await Assert.That(manifest).Contains(Convert.ToBase64String(
+                System.Text.Encoding.UTF8.GetBytes(secondContext)));
+
+            await orch.HandleStopAgentForTest(command.AgentId);
+            for (var i = 0; i < 100 && bridge.ReviewerTokenCountForTest != 0; i++)
+                await Task.Delay(20);
+            await Assert.That(bridge.ReviewerTokenCountForTest).IsEqualTo(0);
+        } finally {
+            if (bridge is not null) await bridge.DisposeAsync();
+            cleanup();
+        }
+    }
+
+    [Test, NotInParallel("LocalPermissionBridgeTests")]
+    public async Task Snapshot_launch_failure_revokes_context_grant_and_removes_sidecar() {
+        var (cwd, cleanup) = CreateGitRepo();
+        LocalPermissionBridge? bridge = null;
+        try {
+            var server = new CaptureServerConnection();
+            var factory = new SpyHostedAgentRuntimeFactory("cursor") {
+                SupportsUnattended = true,
+                SupportsBorrowedReviewFlow = true,
+                BorrowedReviewRequiresIndependentSnapshot = true,
+                StartThrow = new InvalidOperationException("synthetic launch failure")
+            };
+            await using var orch = BuildOrchestrator(
+                server, new SpyPtyProcessFactory(),
+                new Dictionary<string, IHostedAgentLauncher>(),
+                extraRuntimeFactories: [factory]);
+            bridge = orch.PermissionBridgeForTest;
+            await bridge.StartAsync(CancellationToken.None);
+
+            await orch.HandleLaunchAgentForTest(new LaunchAgentCommand(
+                "agent-context-fail", "review", "default", null, cwd, null, null,
+                Vendor: "cursor", Kind: LaunchKind.ReviewFlow,
+                Borrowed: true, BorrowCwd: cwd));
+
+            var context = factory.LastContext!;
+            await Assert.That(server.LaunchFailedCalls.Count).IsEqualTo(1);
+            await Assert.That(orch.GetAgentForTest("agent-context-fail")).IsNull();
+            await Assert.That(bridge.ReviewerTokenCountForTest).IsEqualTo(0);
+            await Assert.That(Directory.Exists(context.Worktree.SnapshotRoot!)).IsFalse();
+            await Assert.That(Directory.Exists(context.Worktree.ReviewContextRoot!)).IsFalse();
+        } finally {
+            if (bridge is not null) await bridge.DisposeAsync();
+            cleanup();
+        }
+    }
+
+    [Test, NotInParallel("LocalPermissionBridgeTests")]
+    public async Task Snapshot_refresh_context_failure_terminates_reviewer_and_cleans_capability() {
+        var (cwd, cleanup) = CreateGitRepo();
+        LocalPermissionBridge? bridge = null;
+        try {
+            var server = new CaptureServerConnection();
+            var factory = new SpyHostedAgentRuntimeFactory("cursor") {
+                SupportsUnattended = true,
+                SupportsBorrowedReviewFlow = true,
+                BorrowedReviewRequiresIndependentSnapshot = true
+            };
+            await using var orch = BuildOrchestrator(
+                server, new SpyPtyProcessFactory(),
+                new Dictionary<string, IHostedAgentLauncher>(),
+                extraRuntimeFactories: [factory]);
+            bridge = orch.PermissionBridgeForTest;
+            await bridge.StartAsync(CancellationToken.None);
+            var command = new LaunchAgentCommand(
+                "agent-context-refresh-fail", "review", "default", null, cwd, null, null,
+                Vendor: "cursor", Kind: LaunchKind.ReviewFlow,
+                Borrowed: true, BorrowCwd: cwd);
+            await orch.HandleLaunchAgentForTest(command);
+            var context = factory.LastContext!;
+            var runtime = factory.LastRuntime!;
+
+            Directory.CreateDirectory(Path.Combine(cwd, ".mcp.json"));
+            File.WriteAllText(Path.Combine(cwd, ".mcp.json", "child"), "unsafe");
+            Git(cwd, "add", ".mcp.json/child");
+            await orch.HandleSendInputForTest(new SendInputCommand(command.AgentId, "next", null));
+
+            await Assert.That(runtime.HasExited).IsTrue();
+            for (var i = 0; i < 100 &&
+                    (Directory.Exists(context.Worktree.SnapshotRoot!) ||
+                     bridge.ReviewerTokenCountForTest != 0); i++)
+                await Task.Delay(20);
+            await Assert.That(bridge.ReviewerTokenCountForTest).IsEqualTo(0);
+            await Assert.That(Directory.Exists(context.Worktree.SnapshotRoot!)).IsFalse();
+            await Assert.That(Directory.Exists(context.Worktree.ReviewContextRoot!)).IsFalse();
+        } finally {
+            if (bridge is not null) await bridge.DisposeAsync();
             cleanup();
         }
     }
@@ -110,6 +270,7 @@ public partial class AgentOrchestratorVendorTests {
     public async Task Borrowed_snapshot_is_built_from_the_requester_checkout_not_the_registered_repo() {
         var (daemonRepo, cleanupDaemon) = CreateGitRepo();
         var (requesterRepo, cleanupRequester) = CreateGitRepo();
+        LocalPermissionBridge? bridge = null;
         try {
             // The daemon-registered checkout is a decoy: everything in it is distinguishable from
             // the requester's, so any content leaking from it is caught by value, not by absence.
@@ -141,6 +302,8 @@ public partial class AgentOrchestratorVendorTests {
                 server, new SpyPtyProcessFactory(),
                 new Dictionary<string, IHostedAgentLauncher>(),
                 extraRuntimeFactories: [factory]);
+            bridge = orch.PermissionBridgeForTest;
+            await bridge.StartAsync(CancellationToken.None);
 
             var baseline = ContentBaseline(canonicalRequester);
             var gitState = GitState(canonicalRequester);
@@ -228,6 +391,7 @@ public partial class AgentOrchestratorVendorTests {
             // Baseline check 4 of 4 — after stop.
             await AssertBaselineUnchanged(canonicalRequester, refreshedBaseline, refreshedGitState, "after stop");
         } finally {
+            if (bridge is not null) await bridge.DisposeAsync();
             cleanupRequester();
             cleanupDaemon();
         }
@@ -253,6 +417,7 @@ public partial class AgentOrchestratorVendorTests {
     public async Task Borrowed_Copilot_review_snapshots_the_requester_checkout_and_refreshes_between_rounds() {
         var (daemonRepo, cleanupDaemon)       = CreateGitRepo();
         var (requesterRepo, cleanupRequester) = CreateGitRepo();
+        LocalPermissionBridge? bridge = null;
         try {
             // The registered checkout is a decoy: its content is distinguishable, so a leak is caught
             // by value rather than by absence.
@@ -282,6 +447,8 @@ public partial class AgentOrchestratorVendorTests {
                 server, new SpyPtyProcessFactory(),
                 new Dictionary<string, IHostedAgentLauncher>(),
                 extraRuntimeFactories: [factory]);
+            bridge = orch.PermissionBridgeForTest;
+            await bridge.StartAsync(CancellationToken.None);
 
             var baseline = ContentBaseline(canonicalRequester);
             var gitState = GitState(canonicalRequester);
@@ -354,6 +521,7 @@ public partial class AgentOrchestratorVendorTests {
 
             await AssertBaselineUnchanged(canonicalRequester, refreshedBaseline, refreshedGitState, "after stop");
         } finally {
+            if (bridge is not null) await bridge.DisposeAsync();
             cleanupRequester();
             cleanupDaemon();
         }

@@ -53,6 +53,7 @@ public sealed class FakeAcpAgent : IAsyncDisposable {
 
     JsonElement _sessionNewResult = ProbeConfirmedSessionNewResult;
     bool        _failNextSetConfigOption;
+    bool        _failNextSetModel;
 
     JsonElement                  _initializeResult = ProbeConfirmedInitializeResult;
     (int Code, string Message)? _failNextInitialize;
@@ -177,6 +178,14 @@ public sealed class FakeAcpAgent : IAsyncDisposable {
     public void FailNextSetConfigOption() => _failNextSetConfigOption = true;
 
     /// <summary>
+    /// Arranges the NEXT <c>session/set_model</c> request to be answered with a JSON-RPC error
+    /// instead of a success result — models a real agent rejecting the resolved model id,
+    /// exercising <see cref="Capacitor.Cli.Daemon.Acp.SetModelSelector"/>'s non-fatal "log a
+    /// warning and continue with the vendor's default model" handling.
+    /// </summary>
+    public void FailNextSetModel() => _failNextSetModel = true;
+
+    /// <summary>
     /// Overrides the <c>initialize</c> response this fake returns for every subsequent
     /// <c>initialize</c> request (default: <see cref="ProbeConfirmedInitializeResult"/>, protocol
     /// version 1 with <c>loadSession: true</c>) — protocol-negotiation tests use this to
@@ -184,6 +193,45 @@ public sealed class FakeAcpAgent : IAsyncDisposable {
     /// <see cref="BuildInitializeResult"/> is the easiest way to build a well-formed override.
     /// </summary>
     public void SetInitializeResult(JsonElement result) => _initializeResult = result;
+
+    // ── Reconnect/resume support (session/load + crash simulation) ──────────────────────────────
+
+    readonly List<JsonElement> _loadReplayUpdates = [];
+    (int Code, string Message)? _failSessionLoad;
+
+    /// <summary>When set, one conversation update is written AFTER the <c>session/load</c>
+    /// response — the deliberately barrier-violating variant (reconnect spec §11.13): the ACP spec
+    /// says the response comes only after all replayed entries, so this models a vendor breaking
+    /// that MUST.</summary>
+    public bool EmitConversationUpdateAfterLoadResponse { get; set; }
+
+    /// <summary>When set, the <c>initialize</c> RESPONSE is held until the gate completes (the
+    /// request is still recorded immediately) — used to park a reconnect candidate mid-handshake so
+    /// a test can crash it there.</summary>
+    public TaskCompletionSource? HoldInitializeResponse { get; set; }
+
+    /// <summary>Scripts the <c>session/update</c> notifications replayed by the NEXT (and every
+    /// later) <c>session/load</c>, in order, before the response — models the coalesced history
+    /// replay both capable vendors produce.</summary>
+    public void SetSessionLoadReplay(IReadOnlyList<JsonElement> updateNotifications) {
+        _loadReplayUpdates.Clear();
+        _loadReplayUpdates.AddRange(updateNotifications);
+    }
+
+    /// <summary>Makes every <c>session/load</c> fail with a JSON-RPC error — persistent, not
+    /// one-shot, modeling the two measured refusal classes (Kiro's durable stale-owner lock,
+    /// Gemini's unpersisted session), which do not clear with retries.</summary>
+    public void FailSessionLoad(int code, string message) => _failSessionLoad = (code, message);
+
+    /// <summary>
+    /// Simulates the agent process crashing: completes the fake's outbound pipe, so the connection
+    /// under test reads EOF and its loop ends — the primary crash signal. Bytes the connection
+    /// writes afterwards buffer into a pipe nobody will ever read, exactly the
+    /// written-but-never-read ambiguity a real dead child produces. The paired
+    /// <c>FakeAcpProcess</c>'s exit must be signalled separately by the test, mirroring reality:
+    /// pipe teardown and process exit are distinct events.
+    /// </summary>
+    public void SimulateCrash() => _toClient.Writer.Complete();
 
     /// <summary>
     /// Arranges the NEXT <c>initialize</c> request to be answered with a JSON-RPC error instead of
@@ -272,6 +320,12 @@ public sealed class FakeAcpAgent : IAsyncDisposable {
     /// resolution failure.
     /// </summary>
     public TaskCompletionSource? HoldSetConfigOptionResponse { get; set; }
+
+    /// <summary>When set, a <c>session/set_model</c> request's RESPONSE is held back until the gate
+    /// completes — mirrors <see cref="HoldSetConfigOptionResponse"/> exactly (the call is still
+    /// recorded immediately), proving a <c>ct</c> canceled while THIS RPC is in flight propagates
+    /// <see cref="OperationCanceledException"/> out of the selector.</summary>
+    public TaskCompletionSource? HoldSetModelResponse { get; set; }
 
     /// <summary>
     /// The fake's read loop: parses newline-delimited JSON-RPC frames arriving from the connection
@@ -367,6 +421,9 @@ public sealed class FakeAcpAgent : IAsyncDisposable {
 
         switch (method) {
             case "initialize":
+                if (HoldInitializeResponse is { } initGate)
+                    await initGate.Task.ConfigureAwait(false);
+
                 if (_failNextInitialize is { } failInit) {
                     _failNextInitialize = null;
                     await WriteErrorResponseAsync(id, failInit.Code, failInit.Message, ct).ConfigureAwait(false);
@@ -379,8 +436,31 @@ public sealed class FakeAcpAgent : IAsyncDisposable {
                 await WriteResponseAsync(id, _sessionNewResult, ct).ConfigureAwait(false);
                 break;
 
+            case "session/load":
+                if (_failSessionLoad is { } failLoad) {
+                    await WriteErrorResponseAsync(id, failLoad.Code, failLoad.Message, ct).ConfigureAwait(false);
+                    break;
+                }
+
+                // Replay first, then the response — the ACP MUST this fixture models (and the
+                // reconnect suppression window's far edge). The response reuses the session/new
+                // shape: the probe confirmed a real load returns the same modes/models structure.
+                foreach (var update in _loadReplayUpdates)
+                    await WriteRawFrameAsync(update, ct).ConfigureAwait(false);
+
+                await WriteResponseAsync(id, _sessionNewResult, ct).ConfigureAwait(false);
+
+                if (EmitConversationUpdateAfterLoadResponse)
+                    await WriteRawFrameAsync(
+                        DefaultAgentMessageChunkUpdate(FixedSessionId, "late-after-barrier"), ct).ConfigureAwait(false);
+                break;
+
             case "session/set_config_option":
                 await HandleSetConfigOptionAsync(id, paramsElement, ct).ConfigureAwait(false);
+                break;
+
+            case "session/set_model":
+                await HandleSetModelAsync(id, ct).ConfigureAwait(false);
                 break;
 
             case "session/prompt":
@@ -451,6 +531,28 @@ public sealed class FakeAcpAgent : IAsyncDisposable {
         }
 
         var result = JsonDocument.Parse(stream.ToArray()).RootElement.Clone();
+        await WriteResponseAsync(id, result, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Answers a <c>session/set_model</c> request — either the scripted JSON-RPC error (see
+    /// <see cref="FailNextSetModel"/>) or the probe-confirmed success shape: an EMPTY object
+    /// (<c>docs/probes/2026-08-05-kiro-model-override/</c> measured Kiro answering
+    /// <c>{"result":{}}</c>), unlike <c>session/set_config_option</c>'s configOptions echo. The
+    /// request itself is already captured in <see cref="ReceivedCalls"/> by
+    /// <c>DispatchLineAsync</c> before this runs.
+    /// </summary>
+    async Task HandleSetModelAsync(JsonElement id, CancellationToken ct) {
+        if (_failNextSetModel) {
+            _failNextSetModel = false;
+            await WriteErrorResponseAsync(id, -32602, "Invalid params: unknown model", ct).ConfigureAwait(false);
+            return;
+        }
+
+        if (HoldSetModelResponse is { } gate)
+            await gate.Task.ConfigureAwait(false);
+
+        var result = JsonDocument.Parse("{}").RootElement.Clone();
         await WriteResponseAsync(id, result, ct).ConfigureAwait(false);
     }
 

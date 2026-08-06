@@ -60,7 +60,8 @@ public class WorkspaceMcpNeutralizationTests {
     public async Task Every_hosted_vendors_workspace_file_is_covered() {
         foreach (var expected in new[] {
                      ".mcp.json", ".cursor/mcp.json", ".gemini/settings.json", ".kiro/settings/mcp.json",
-                     ".vscode/mcp.json", ".github/copilot/mcp.json", ".copilot/mcp.json",
+                     ".vscode/mcp.json", ".github/mcp.json", ".github/copilot/mcp.json",
+                     ".copilot/mcp.json", ".copilot/mcp-config.json",
                      ".codex/config.toml" })
             await Assert.That(WorktreeManager.WorkspaceMcpConfigPaths).Contains(expected);
     }
@@ -362,14 +363,30 @@ public class WorkspaceMcpNeutralizationTests {
     /// </summary>
     [Test]
     public async Task Borrowed_snapshots_exclude_every_workspace_mcp_config_path() {
-        var excluded = WorktreeManager.SnapshotExcludedPaths;
+        var plan = WorktreeManager.PlanSnapshotExclusions("", caseSensitive: true);
 
         foreach (var path in WorktreeManager.WorkspaceMcpConfigPaths)
-            await Assert.That(excluded).Contains(path);
+            await Assert.That(plan.VendorConfigPaths).Contains(path);
 
-        // The pre-existing entries must survive the fold-in.
-        await Assert.That(excluded).Contains(".capacitor");
-        await Assert.That(excluded).Contains(".attached");
+        // At the repository root the expansion must be EXACTLY the canonical list — the overwhelmingly
+        // common launch shape, and the no-regression claim for it.
+        await Assert.That(plan.VendorConfigPaths.Length)
+            .IsEqualTo(WorktreeManager.WorkspaceMcpConfigPaths.Length);
+
+        // The pre-existing entries must survive. They live in SnapshotExclusions, not VendorConfigPaths:
+        // vendor paths go exclusively through the shared byte classifier, these two do not.
+        await Assert.That(plan.SnapshotExclusions).Contains(".capacitor");
+        await Assert.That(plan.SnapshotExclusions).Contains(".attached");
+    }
+
+    /// <summary>The two most recently added paths, called out separately from the membership sweep above
+    /// because each is a distinct defect: <c>.github/mcp.json</c> is a Copilot discovery path the list
+    /// simply never had (it carried <c>.github/copilot/mcp.json</c>, a different file), and it was
+    /// unprotected at the root of every borrowed snapshot regardless of cwd scope.</summary>
+    [Test]
+    public async Task Canonical_list_covers_the_copilot_paths_that_were_missing() {
+        await Assert.That(WorktreeManager.WorkspaceMcpConfigPaths).Contains(".github/mcp.json");
+        await Assert.That(WorktreeManager.WorkspaceMcpConfigPaths).Contains(".copilot/mcp-config.json");
     }
 
     /// <summary>Windows needs Developer Mode or elevation to create a symlink, so these assert POSIX
@@ -378,6 +395,58 @@ public class WorkspaceMcpNeutralizationTests {
     static void SkipUnlessPosixSymlinks() =>
         Skip.Unless(!OperatingSystem.IsWindows(),
             "POSIX symlink semantics — Windows symlink creation needs Developer Mode or elevation.");
+
+    /// <summary>The standalone end-to-end case: a NON-GIT source carrying a workspace MCP config yields a
+    /// snapshot with that config stripped, and absent from the initial commit too.
+    ///
+    /// <para>Removed while the standalone copy was broken, because the branch could not complete at all.
+    /// Restored now that it can. This is the only test that exercises the strip through the real standalone
+    /// creation path rather than against a hand-built directory.</para>
+    ///
+    /// <para>The source is asserted NON-GIT first. Without that, a fixture that accidentally produced a
+    /// repo with commits would send this down the linked-worktree branch, and the test would pass while
+    /// proving nothing about standalone at all.</para></summary>
+    [Test]
+    public async Task Standalone_snapshot_of_a_non_git_source_strips_workspace_mcp_config() {
+        var root   = Path.Combine(Path.GetTempPath(), "kcap-standalone-mcp-" + Guid.NewGuid().ToString("N")[..8]);
+        var source = Path.Combine(root, "proj");
+        try {
+            Directory.CreateDirectory(source);
+            File.WriteAllText(Path.Combine(source, "README.md"), "hello");
+            File.WriteAllText(Path.Combine(source, ".mcp.json"),
+                """{"mcpServers":{"evil":{"command":"/bin/sh"}}}""");
+
+            await Assert.That(Directory.Exists(Path.Combine(source, ".git"))).IsFalse()
+                .Because("fixture precondition: a git repo here would take the LINKED branch instead");
+
+            var worktree = await Manager().CreateAsync(source);
+
+            await Assert.That(worktree.IsStandalone).IsTrue()
+                .Because("this test is meaningless unless the standalone branch actually ran");
+            await Assert.That(File.Exists(Path.Combine(worktree.Path, ".mcp.json"))).IsFalse()
+                .Because("the branch-authored config must not reach the agent's worktree");
+
+            var committed = GitCapture(worktree.Path, "ls-tree", "-r", "--name-only", "HEAD");
+            await Assert.That(committed).Contains("README.md")
+                .Because("positive control — the snapshot really did commit the source");
+            await Assert.That(committed).DoesNotContain(".mcp.json")
+                .Because("stripping before the commit is the point: a later checkout would restore it");
+        } finally {
+            try { Directory.Delete(root, true); } catch { }
+        }
+    }
+
+    static string GitCapture(string cwd, params string[] args) {
+        var psi = new ProcessStartInfo("git") {
+            WorkingDirectory = cwd, RedirectStandardError = true, RedirectStandardOutput = true
+        };
+        foreach (var a in args) psi.ArgumentList.Add(a);
+        using var p = Process.Start(psi)!;
+        var stdout = p.StandardOutput.ReadToEnd();
+        p.WaitForExit();
+
+        return stdout;
+    }
 
     /// <summary>Fixture git. Exit codes are CHECKED: an ignored failure here silently changes which
     /// creation path <see cref="WorktreeManager.CreateAsync"/> selects (a repo that failed to commit is
