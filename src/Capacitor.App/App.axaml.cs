@@ -158,7 +158,8 @@ public partial class App : Application {
 
     async Task DisposeAndShutdownAsync() {
         if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop) {
-            await DisposeAndConfirmShutdownAsync(_service, () => _shutdownConfirmed = true, desktop, _exitCode);
+            await DisposeAndConfirmShutdownAsync(
+                _service is null ? null : _service.DisposeAsync, () => _shutdownConfirmed = true, desktop, _exitCode);
         } else {
             if (_service is not null) await _service.DisposeAsync();
             _shutdownConfirmed = true;
@@ -167,19 +168,29 @@ public partial class App : Application {
 
     // Split out of DisposeAndShutdownAsync so a test can drive the full deferred-shutdown pass —
     // dispose, THEN mark confirmed, THEN shut down carrying an exit code — against a fake
-    // IClassicDesktopStyleApplicationLifetime and a real, disposal-observable DaemonClientService,
-    // without needing a live App instance. Regression coverage for a P2 bug found in re-review:
-    // TryShutdown() used to be called with no exit code (defaulting to 0), so Cmd+Q/platform
-    // shutdown while the startup-error window was still showing silently overwrote the
-    // startup-failure exit code with success. Ordering is preserved exactly from the original
-    // inline body: `markConfirmed` MUST run before `TryShutdown`, because TryShutdown can
-    // re-raise ShutdownRequested synchronously and OnShutdownRequested's early-return guard
-    // (`if (_shutdownConfirmed) return;`) depends on that happening first.
+    // IClassicDesktopStyleApplicationLifetime, without needing a live App instance.
+    // `disposeAsync` is a delegate (not the concrete DaemonClientService) so a test can inject a
+    // throwing disposal without depending on how DaemonClientService itself might fail.
+    // Regression coverage for a P2 bug found in re-review: TryShutdown() used to be called with
+    // no exit code (defaulting to 0), so Cmd+Q/platform shutdown while the startup-error window
+    // was still showing silently overwrote the startup-failure exit code with success. Ordering
+    // is preserved exactly from the original inline body: `markConfirmed` MUST run before
+    // `TryShutdown`, because TryShutdown can re-raise ShutdownRequested synchronously and
+    // OnShutdownRequested's early-return guard (`if (_shutdownConfirmed) return;`) depends on
+    // that happening first.
     internal static async Task DisposeAndConfirmShutdownAsync(
-            DaemonClientService? service, Action markConfirmed, IClassicDesktopStyleApplicationLifetime desktop,
+            Func<ValueTask>? disposeAsync, Action markConfirmed, IClassicDesktopStyleApplicationLifetime desktop,
             int exitCode) {
-        if (service is not null) await service.DisposeAsync();
-        markConfirmed();
-        desktop.TryShutdown(exitCode);
+        // A throwing disposeAsync must never skip markConfirmed/TryShutdown — otherwise
+        // _shutdownConfirmed is never set while _shutdownStarted stays true, and every later
+        // quit is cancelled forever.
+        try {
+            if (disposeAsync is not null) await disposeAsync();
+        } catch (Exception ex) {
+            Console.Error.WriteLine($"kcap app failed to dispose the daemon client service during shutdown: {ex}");
+        } finally {
+            markConfirmed();
+            desktop.TryShutdown(exitCode);
+        }
     }
 }

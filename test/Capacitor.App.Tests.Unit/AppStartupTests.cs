@@ -198,7 +198,7 @@ public class AppStartupTests {
         var confirmedBeforeShutdownCall = false;
 
         await AppUnderTest.DisposeAndConfirmShutdownAsync(
-            service,
+            service.DisposeAsync,
             markConfirmed: () => confirmedBeforeShutdownCall = fake.ShutdownCalls.Count == 0,
             desktop,
             exitCode: 1);
@@ -219,8 +219,28 @@ public class AppStartupTests {
 
         var (desktop, fake) = FakeClassicDesktopLifetime.Create();
 
-        await AppUnderTest.DisposeAndConfirmShutdownAsync(service, markConfirmed: () => { }, desktop, exitCode: 0);
+        await AppUnderTest.DisposeAndConfirmShutdownAsync(service.DisposeAsync, markConfirmed: () => { }, desktop, exitCode: 0);
 
         await Assert.That(fake.ShutdownCalls).IsEquivalentTo([0], CollectionOrdering.Matching);
+    }
+
+    /// Regression coverage for a Qodo review finding: DisposeAndConfirmShutdownAsync used to call
+    /// disposeAsync() with no surrounding try/catch/finally, so a throw left markConfirmed and
+    /// TryShutdown never called — _shutdownConfirmed stuck false while _shutdownStarted stayed
+    /// true, cancelling every later quit forever. Drives a disposeAsync delegate that throws and
+    /// asserts confirm still happens and TryShutdown still carries the exit code.
+    [Test]
+    public async Task DisposeAndConfirmShutdownAsync_confirms_and_shuts_down_when_dispose_throws() {
+        var (desktop, fake) = FakeClassicDesktopLifetime.Create();
+        var confirmed = false;
+
+        await AppUnderTest.DisposeAndConfirmShutdownAsync(
+            disposeAsync: () => throw new InvalidOperationException("dispose-boom"),
+            markConfirmed: () => confirmed = true,
+            desktop,
+            exitCode: 1);
+
+        await Assert.That(confirmed).IsTrue();
+        await Assert.That(fake.ShutdownCalls).IsEquivalentTo([1], CollectionOrdering.Matching);
     }
 }

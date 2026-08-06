@@ -102,12 +102,8 @@ public sealed class DaemonClientService : IDaemonClientService, IAsyncDisposable
         } catch (OperationCanceledException) {
             // Expected on restart/shutdown — the enumeration simply ends, no fabricated event.
         } catch (Exception) {
-            // Contain a faulted pump (e.g. a downstream Apply()/Rx observer throwing) exactly
-            // like a cancellation: end THIS enumeration only. Letting this escape would fault
-            // the `_loop` task forever, bricking every later RestartLoopAsync/DisposeAsync at
-            // their `await _loop`. No logger is wired into this service — containment here is
-            // deliberate over a rethrow; AwaitLoopQuietly below is defense-in-depth for the same
-            // property in case a future edit reintroduces an escaping path.
+            // Contain all faults: a faulted `_loop` would wedge every later RestartLoopAsync/
+            // DisposeAsync at their `await _loop`.
         }
     }
 
@@ -174,7 +170,9 @@ public sealed class DaemonClientService : IDaemonClientService, IAsyncDisposable
 
     /// Production IProcessRunner: wraps System.Diagnostics.Process with stderr capture and a
     /// ct-linked wait. `ct` abandons the WAIT only — a detached `daemon start -d` keeps running.
-    sealed class ProcessRunner : IProcessRunner {
+    /// Internal (not private): lets ProcessRunnerTests drive a REAL child process, since
+    /// IProcessRunner itself is only a seam for DaemonClientService's own consumers.
+    internal sealed class ProcessRunner : IProcessRunner {
         public async Task<(int ExitCode, string Stderr)> RunAsync(string fileName, string[] args, CancellationToken ct) {
             var psi = new ProcessStartInfo(fileName) {
                 RedirectStandardOutput = true,
@@ -184,12 +182,27 @@ public sealed class DaemonClientService : IDaemonClientService, IAsyncDisposable
             foreach (var a in args) psi.ArgumentList.Add(a);
 
             using var process = Process.Start(psi) ?? throw new InvalidOperationException($"Failed to start '{fileName}'.");
-            var stderrTask = process.StandardError.ReadToEndAsync(ct);
-            _ = process.StandardOutput.ReadToEndAsync(ct); // drain so the child never blocks on a full stdout pipe
+            // CancellationToken.None on both drains: `ct` abandons the WAIT below (class doc),
+            // never the pipes — a drain tied to `ct` would stop reading on cancellation and let
+            // a detached child block on a full pipe buffer.
+            var stdoutTask = process.StandardOutput.ReadToEndAsync(CancellationToken.None);
+            var stderrTask = process.StandardError.ReadToEndAsync(CancellationToken.None);
 
-            await process.WaitForExitAsync(ct).ConfigureAwait(false);
-            var stderr = await stderrTask.ConfigureAwait(false);
-            return (process.ExitCode, stderr);
+            try {
+                await process.WaitForExitAsync(ct).ConfigureAwait(false);
+            } catch (OperationCanceledException) {
+                // The drains outlive this method on the abandoned-wait path — observe them so a
+                // later fault surfaces nowhere instead of as an unobserved task exception.
+                Observe(stdoutTask);
+                Observe(stderrTask);
+                throw;
+            }
+
+            await Task.WhenAll(stdoutTask, stderrTask).ConfigureAwait(false);
+            return (process.ExitCode, stderrTask.Result);
         }
+
+        static void Observe(Task task) => task.ContinueWith(t => _ = t.Exception, CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
     }
 }

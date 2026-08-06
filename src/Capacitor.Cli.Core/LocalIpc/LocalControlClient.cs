@@ -117,14 +117,8 @@ public sealed class LocalControlClient(string daemonName, TimeProvider? time = n
 
             var sub = cycle.Stream!;
             string streakReason;
-            // `sub` is held live across every yield below (Connected, then each Status). A
-            // consumer that leaves the enumeration WITHOUT cancelling — break, Take(n), an
-            // exception thrown from its own await-foreach body, or an explicit
-            // DisposeAsync() — disposes this iterator while it's suspended at one of those
-            // yields; only code inside an ENCLOSING try/finally still runs on that path (a
-            // statement after the loop, like the old `await DisposeQuietly(sub);`, would be
-            // skipped entirely). The close must therefore live in a finally wrapping every
-            // yield that can observe `sub`, not after them.
+            // finally: enumerator disposal (break/Take(n)/DisposeAsync while suspended at a
+            // yield below) must still release `sub` — code placed after the loop never runs.
             try {
                 yield return new LocalControlEvent.Connected(cycle.Capabilities, cycle.FirstSnapshot!);
 
@@ -160,7 +154,9 @@ public sealed class LocalControlClient(string daemonName, TimeProvider? time = n
             IReadOnlyList<string> caps;
             await using (var hello = await DialAsync(ct)) {
                 await FrameCodec.WriteAsync(hello, new LocalFrame(FrameType.Hello), ct);
-                var reply = await FrameCodec.ReadAsync(hello, ct).WaitAsync(HelloReplyTimeout, _time, ct);
+                using var helloTimeoutCts = new CancellationTokenSource(HelloReplyTimeout, _time);
+                using var helloLinkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct, helloTimeoutCts.Token);
+                var reply = await FrameCodec.ReadAsync(hello, helloLinkedCts.Token);
                 if (reply is null) return CycleOutcome.Failed(Incompat);            // hello-then-EOF heuristic
                 if (reply.Type != FrameType.HelloReply) return CycleOutcome.Failed(Incompat); // Error/unexpected type
                 var dto = JsonSerializer.Deserialize(reply.Text, HelloIpcJsonContext.Default.HelloReplyDto);
@@ -186,22 +182,29 @@ public sealed class LocalControlClient(string daemonName, TimeProvider? time = n
         }
     }
 
+    // Linked-CTS timeout (not WaitAsync): WaitAsync abandons ConnectAsync/ReadAsync on expiry
+    // rather than cancelling it, leaving the operation running against a stream we're about to
+    // dispose. Passing the linked token INTO the operation actually cancels it at the deadline
+    // while staying TimeProvider-driven for tests.
     async Task<NetworkStream> DialAsync(CancellationToken ct) {
         var sock = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
         try {
-            await sock.ConnectAsync(new UnixDomainSocketEndPoint(LocalSocketPaths.Socket(daemonName)), ct)
-                .AsTask().WaitAsync(ConnectTimeout, _time, ct);
+            using var timeoutCts = new CancellationTokenSource(ConnectTimeout, _time);
+            using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct, timeoutCts.Token);
+            await sock.ConnectAsync(new UnixDomainSocketEndPoint(LocalSocketPaths.Socket(daemonName)), linkedCts.Token);
             return new NetworkStream(sock, ownsSocket: true);
         } catch { sock.Dispose(); throw; }
     }
 
     /// One frame → validated snapshot, or a classified failure reason. Timeout applies only
     /// to the first snapshot; the established stream is legitimately quiet (no idle timeout).
+    /// See <see cref="DialAsync"/> for why the timeout is a linked token, not WaitAsync.
     async Task<(DaemonStatusDto? Snapshot, string? Reason)> ReadSnapshotAsync(
             NetworkStream s, TimeSpan? timeout, CancellationToken ct) {
+        using var timeoutCts = timeout is { } t ? new CancellationTokenSource(t, _time) : null;
+        using var linkedCts = timeoutCts is null ? null : CancellationTokenSource.CreateLinkedTokenSource(ct, timeoutCts.Token);
         try {
-            var read = FrameCodec.ReadAsync(s, ct);
-            var frame = timeout is { } t ? await read.WaitAsync(t, _time, ct) : await read;
+            var frame = await FrameCodec.ReadAsync(s, linkedCts?.Token ?? ct);
             if (frame is null) return (null, Unreach);                            // clean EOF
             if (frame.Type != FrameType.DaemonStatus) return (null, Incompat);     // Error/unexpected type
             var dto = JsonSerializer.Deserialize(frame.Text, StatusIpcJsonContext.Default.DaemonStatusDto);
