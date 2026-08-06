@@ -41,9 +41,15 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
         // real binary. Tests pin a value so the OPERATOR-FLAG half of the gate is assertable on a host with
         // no gemini installed — otherwise a disabled-daemon test passes for the wrong reason (unknown
         // version) and would keep passing if advertisement stopped honouring the flag.
-        Func<string, string?>? resolveVendorVersion = null
+        Func<string, string?>? resolveVendorVersion = null,
+        // Test seam ONLY, for Task 13's per-stage ACP launch handshake cap. Production passes null,
+        // which threads TimeProvider.System into the runtime this factory produces — the same
+        // monotonic clock every other daemon-local timing decision uses. Tests pin a FakeTimeProvider
+        // so a 90s per-stage cap fires deterministically without a real 90-second wait.
+        TimeProvider? timeProvider = null
     ) : IHostedAgentRuntimeFactory {
     readonly Func<string, string?>? _resolveVendorVersion = resolveVendorVersion;
+    readonly TimeProvider _timeProvider = timeProvider ?? TimeProvider.System;
 
     readonly Func<RuntimeStartContext, (Stream Input, Stream Output, IAcpProcess Process)> _connectionSource =
         connectionSource ?? (ctx => StartRealProcess(descriptor, config, ctx, loggerFactory));
@@ -185,6 +191,10 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
             runtimeLogger,
             agentId: ctx.AgentId,
             requestInteraction: connection.RequestAcpInteractionAsync,
+            // Task 13: the same clock every other daemon-local timing decision uses — production
+            // TimeProvider.System, or a test's FakeTimeProvider — so the handshake's per-stage caps
+            // (RunHandshakeStageAsync) are driven by the SAME clock a test controls.
+            timeProvider: _timeProvider,
             debugFrames: config.DebugFrames,
             vendor: descriptor.Vendor,
             modelSelector: descriptor.ModelSelector,
@@ -219,6 +229,13 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
                 ? UnattendedToolAdmission.AdmittedFor(reviewMcp, id)
                 : null
         );
+
+        // Liveness-supervision spec §0/§1 (Task 13): wired here, BEFORE StartAsync is called below —
+        // not after, as AgentOrchestrator used to do once this method had already returned. The
+        // handshake's SetLaunchStage stamps (inside AcpHostedAgentRuntime.StartAsync) are no-ops
+        // against a null clock, so assigning it any later would silently defeat every stage stamp
+        // for the whole launch.
+        runtime.ActivityClock = ctx.ActivityClock;
 
         // Review flow: the injected result channel + allowlist. Otherwise unchanged (null today).
         var mcpServers = ctx.IsReviewFlow

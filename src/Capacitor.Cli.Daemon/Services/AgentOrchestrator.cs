@@ -1580,7 +1580,12 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
                 DaemonEpoch: _daemonEpoch,
                 IsBorrowedSnapshot: snapshotBorrow,
                 ReviewContextCapabilityUrl: reviewContextCapabilityUrl,
-                CodexPosture: cmd.CodexPosture
+                CodexPosture: cmd.CodexPosture,
+                // Task 13: handed to the factory so an ACP factory can wire it onto its runtime
+                // BEFORE calling StartAsync — see RuntimeStartContext.ActivityClock's remarks for
+                // why assigning it any later (as this method used to, after runtimeFactory.StartAsync
+                // had already returned) silently defeats every handshake stage stamp.
+                ActivityClock: activityClock
             );
 
             HostedRuntimeStart start;
@@ -1623,13 +1628,15 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             mcpConfigPath = start.McpConfigPath;
             var runtime = start.Runtime;
 
-            // Liveness-supervision spec §1: hand the ACP runtime the SAME clock the AgentInstance
-            // below will own, assigned as early as possible (before any envelope/turn activity can
-            // occur) — mirrors the existing post-construction assignment pattern for
-            // AcpReconnectSupport.PidCallbacks a little further down. A null ActivityClock on the
-            // runtime (any construction that bypasses this launch path, e.g. a unit test) is a
-            // no-op for every source that reads it.
-            if (runtime is AcpHostedAgentRuntime acpRuntime) acpRuntime.ActivityClock = activityClock;
+            // Liveness-supervision spec §1/Task 13: the ACP runtime already carries the SAME clock
+            // the AgentInstance below will own — AcpHostedAgentRuntimeFactory.StartAsync wires it
+            // onto the runtime BEFORE calling the runtime's own StartAsync (which is where the
+            // handshake's SetLaunchStage stamps fire), not here after runtimeFactory.StartAsync has
+            // already returned. Assigning it only here, post-hoc, was the pre-Task-13 gap: it made
+            // ActivityClock null for the ENTIRE handshake, silently defeating every stage stamp. No
+            // assignment needed for a runtime whose factory doesn't participate (every non-ACP
+            // runtime, and any test construction that bypasses the factory) — those simply never see
+            // a stage-stamping caller.
 
             LogAgentSpawned(agentId, runtime.Pid, worktree.Path, runtimeFactory.Vendor);
 
@@ -1707,6 +1714,12 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
                 SetAgentStatus(agent, "Running");
                 agent.HasReceivedOutput = true;
                 if (!agent.IsPrivate) _ = _server.AgentStatusChangedAsync(agent.Id, "Running", agent.SessionId);
+
+                // Task 13: LaunchStage is a Starting-only concept (BuildLiveAgents already gates its
+                // wire presence on Status=="Starting") — cleared here too, at the exact instant this
+                // agent leaves Starting, so the clock's own state doesn't keep naming a handshake
+                // stage for an agent that is now Running.
+                agent.ActivityClock.ClearLaunchStage();
             }
 
             // Bind + start live transcript forwarding for any runtime that exposes an ACP
