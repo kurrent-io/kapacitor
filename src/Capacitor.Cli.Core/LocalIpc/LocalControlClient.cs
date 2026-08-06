@@ -56,6 +56,10 @@ public sealed class LocalControlClient(string daemonName, TimeProvider? time = n
     internal TimeSpan HelloReplyTimeout    { get; set; } = TimeSpan.FromSeconds(5);
     internal TimeSpan FirstSnapshotTimeout { get; set; } = TimeSpan.FromSeconds(10);
 
+    /// Test seam: runs after RunCycleAsync returns a SUCCESSFUL outcome but before the ct
+    /// checkpoint below, so a test can cancel exactly at that boundary deterministically.
+    internal Action? OnCycleSucceededForTest { get; set; }
+
     const string Unreach = "daemon_unreachable";
     const string Incompat = "daemon_incompatible";
 
@@ -97,6 +101,15 @@ public sealed class LocalControlClient(string daemonName, TimeProvider? time = n
                 continue;
             }
 
+            OnCycleSucceededForTest?.Invoke();
+            // Shared cancellation checkpoint (mirrors the failed-cycle one above): a cycle that
+            // succeeded only because cancellation raced ahead of the caller noticing must never
+            // surface Connected — the enumeration is being torn down, not handed a live stream.
+            if (ct.IsCancellationRequested) {
+                await DisposeQuietly(cycle.Stream);
+                yield break;
+            }
+
             // The cycle SUCCEEDED only because the first VALID snapshot arrived — reset the
             // backoff schedule and yield Connected carrying that very snapshot (§4.1/§4.3).
             lastReason = null;
@@ -124,6 +137,11 @@ public sealed class LocalControlClient(string daemonName, TimeProvider? time = n
             } finally {
                 await DisposeQuietly(sub);
             }
+
+            // Cancellation can land DURING that disposal (the finally above suspends on an
+            // async await), so re-check here too — the same "never surface data after
+            // cancellation won the race" rule as every other checkpoint in this method.
+            if (ct.IsCancellationRequested) yield break;
 
             if (streakReason != lastReason) {
                 lastReason = streakReason;

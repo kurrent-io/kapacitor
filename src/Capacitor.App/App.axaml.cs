@@ -41,8 +41,35 @@ public partial class App : Application {
             desktop.MainWindow = BuildAndShowMainWindow(service, _shutdown.Token);
         } catch (Exception ex) {
             Console.Error.WriteLine($"kcap app failed to start: {ex}");
-            ShowStartupError(desktop, ex);
+            await HandleStartupFailureAsync(desktop, ex, _service, _shutdown);
+            _service = null; // already disposed above — never let a later OnShutdownRequested
+                              // (e.g. Cmd+Q while the error window is up) dispose it a second time
         }
+    }
+
+    // Split out of the catch so a test can drive "dispose-then-show-error" against a real
+    // DaemonClientService (constructed with fakes, disposal observable) and the same fake
+    // IClassicDesktopStyleApplicationLifetime AppStartupTests already uses for ShowStartupError.
+    // Ordering matters: dispose WHILE WE STILL CAN. `service` may already be live (Start()
+    // called, socket/IPC pump running) if the failure happened later in StartAsync (e.g.
+    // BuildAndShowMainWindow throwing) — and the error window's own close handler force-shuts-
+    // down via desktop.Shutdown(1), which bypasses OnShutdownRequested/DisposeAndShutdownAsync
+    // entirely, so nothing else would ever run this cleanup.
+    internal static async Task HandleStartupFailureAsync(
+            IClassicDesktopStyleApplicationLifetime desktop, Exception ex, DaemonClientService? service,
+            CancellationTokenSource shutdown) {
+        if (service is not null) {
+            shutdown.Cancel();
+            try {
+                await service.DisposeAsync();
+            } catch (Exception disposeEx) {
+                // The ORIGINAL startup exception (ex, already captured and about to be shown
+                // below) must never be masked by a secondary dispose failure — append it to the
+                // same Console.Error channel instead of letting it propagate.
+                Console.Error.WriteLine($"kcap app failed to dispose the daemon client service during startup-failure cleanup: {disposeEx}");
+            }
+        }
+        ShowStartupError(desktop, ex);
     }
 
     // Split out of the catch so a test can drive it against a fake

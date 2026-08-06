@@ -84,6 +84,10 @@ public sealed class DaemonClientService : IDaemonClientService, IAsyncDisposable
 
             _loopCts?.Cancel();
             await AwaitLoopQuietly(_loop); // AWAIT the old enumeration's end before starting a new one
+            // Cancel does NOT unregister a linked source's registration from its parent
+            // (_lifetime.Token) — only Dispose does. Without this, every restart/start-kick
+            // over the app's lifetime leaks one registration on _lifetime.Token.
+            _loopCts?.Dispose();
 
             _loopCts = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
             _loop    = Task.Run(() => PumpAsync(_loopCts.Token));
@@ -156,6 +160,9 @@ public sealed class DaemonClientService : IDaemonClientService, IAsyncDisposable
         try {
             _loopCts?.Cancel();
             await AwaitLoopQuietly(_loop);
+            _loopCts?.Dispose(); // the final one — RestartLoopAsync only disposes the PREVIOUS CTS on each restart
+            _loopCts = null;     // DisposeAsync must stay idempotent: a second call's `_loopCts?.Cancel()`
+                                 // above would otherwise throw ObjectDisposedException instead of no-op'ing
         } finally {
             _restartGate.Release();
         }

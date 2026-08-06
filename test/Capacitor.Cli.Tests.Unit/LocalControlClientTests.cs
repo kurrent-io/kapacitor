@@ -388,6 +388,43 @@ public class LocalControlClientTests {
         }
     }
 
+    [Test] // pins the completion-checkpoint fix: cancellation landing exactly between
+           // RunCycleAsync succeeding and Connected being yielded must end the enumeration with
+           // NO Connected ever surfacing, and must still close the stream it was handed
+    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
+    public async Task Cancellation_landing_exactly_at_cycle_success_never_yields_connected() {
+        if (OperatingSystem.IsWindows()) return;
+
+        var sockDir = Directory.CreateTempSubdirectory("kcap-lcc-");
+        DaemonLockPaths.OverrideDirectoryForTesting(sockDir.FullName);
+        try {
+            var name = "lcc-" + Guid.NewGuid().ToString("N")[..6];
+            var closed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            await using var server = new ScriptedServer(LocalSocketPaths.Socket(name),
+                HelloThen(GoodHello("status/1")), SubscribePushThenObserveClose(closed, ValidStatusJson("m", "a1")));
+            var client = new LocalControlClient(name) { RetryDelays = [TimeSpan.FromMilliseconds(1)] };
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+            // Fires after RunCycleAsync has already returned success (the first valid snapshot
+            // was read) but before RunAsync's ct checkpoint/yield — exactly the race the fix
+            // closes.
+            client.OnCycleSucceededForTest = () => cts.Cancel();
+
+            var events = new List<LocalControlEvent>();
+            await foreach (var e in client.RunAsync(cts.Token)) events.Add(e);
+
+            await Assert.That(events.Count).IsEqualTo(1);
+            await Assert.That(events[0]).IsTypeOf<LocalControlEvent.Connecting>();
+            await Assert.That(events.OfType<LocalControlEvent.Connected>().Any()).IsFalse();
+
+            // The stream handed back by the successful cycle must still be disposed on this
+            // path — the server's blocked read observes the close.
+            await closed.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        } finally {
+            DaemonLockPaths.OverrideDirectoryForTesting(null);
+            try { Directory.Delete(sockDir.FullName, true); } catch { }
+        }
+    }
+
     [Test] // clean cancellation mid-backoff-wait, no fabricated events
     [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task Cancellation_ends_the_enumeration_cleanly() {

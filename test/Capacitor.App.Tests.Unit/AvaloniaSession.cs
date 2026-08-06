@@ -44,6 +44,15 @@ internal static class AvaloniaSession {
     public static Task DispatchAsync(Action body) =>
         Session.Value.Dispatch(() => { body(); return true; }, CancellationToken.None);
 
+    /// Async-body variant: HeadlessUnitTestSession.Dispatch's Func&lt;Task&lt;T&gt;&gt; overload
+    /// runs `body` on the UI thread and, if it doesn't complete synchronously, pumps a
+    /// DispatcherFrame until it does — so an `await` inside `body` that captures the ambient
+    /// SynchronizationContext (e.g. `await someService.DisposeAsync()`, no ConfigureAwait) posts
+    /// its continuation back onto this same pumped loop instead of deadlocking, unlike a raw
+    /// `.GetAwaiter().GetResult()` block on the UI thread.
+    public static Task<T> DispatchAsync<T>(Func<Task<T>> body) =>
+        Session.Value.Dispatch(body, CancellationToken.None);
+
     /// Pins RxSchedulers.MainThreadScheduler to an immediate System.Reactive IScheduler for
     /// the body and RESTORES the prior scheduler in finally (it is process-global). This is
     /// also the flavor pin: it only compiles if the scheduler IS a System.Reactive IScheduler

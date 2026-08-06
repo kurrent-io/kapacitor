@@ -1,6 +1,9 @@
+using System.Runtime.CompilerServices;
 using Avalonia.Controls;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
+using Capacitor.App.Services;
+using Capacitor.Cli.Core.LocalIpc;
 using TUnit.Assertions.Enums;
 using AppUnderTest = Capacitor.App.App;
 
@@ -104,5 +107,72 @@ public class AppStartupTests {
         await Assert.That(mainWindowAssigned).IsTrue();
         await Assert.That(callsBeforeClose).IsEmpty();
         await Assert.That(callsAfterClose).IsEquivalentTo([1], CollectionOrdering.Matching);
+    }
+
+    sealed class NullProcessRunner : IProcessRunner {
+        public Task<(int ExitCode, string Stderr)> RunAsync(string fileName, string[] args, CancellationToken ct) =>
+            Task.FromResult((0, ""));
+    }
+
+    /// Minimal stand-in for LocalControlClient.RunAsync: yields Connecting once, then sits
+    /// forever until its ct is cancelled (RestartLoopAsync/DisposeAsync's normal teardown path)
+    /// — enough to prove a DaemonClientService actually has a LIVE loop to dispose.
+    sealed class ForeverRunClient {
+        public int LiveEnumerations;
+
+        public async IAsyncEnumerable<LocalControlEvent> Run([EnumeratorCancellation] CancellationToken ct) {
+            Interlocked.Increment(ref LiveEnumerations);
+            try {
+                yield return new LocalControlEvent.Connecting();
+                await Task.Delay(Timeout.Infinite, ct);
+            } finally {
+                Interlocked.Decrement(ref LiveEnumerations);
+            }
+        }
+    }
+
+    static async Task WaitUntilAsync(Func<bool> condition, TimeSpan? timeout = null) {
+        var deadline = DateTime.UtcNow + (timeout ?? TimeSpan.FromSeconds(5));
+        while (!condition()) {
+            if (DateTime.UtcNow > deadline) throw new TimeoutException("condition not met in time");
+            await Task.Delay(10);
+        }
+    }
+
+    /// Regression coverage for a P2 bug found in review: a startup failure that happened AFTER
+    /// service.Start()/_service assignment (e.g. BuildAndShowMainWindow throwing) used to go
+    /// straight to ShowStartupError, abandoning the live IPC pump/socket — closing the error
+    /// window force-shuts-down via desktop.Shutdown(1), which bypasses OnShutdownRequested and
+    /// its async DisposeAsync entirely, so nothing else would ever clean it up. Drives the
+    /// extracted HandleStartupFailureAsync against a REAL DaemonClientService (constructed with
+    /// fakes, so disposal is directly observable) and asserts: the shutdown token is cancelled,
+    /// the service's loop actually ends (proving DisposeAsync ran, not just was called), and the
+    /// error window is still shown afterward exactly as ShowStartupError already guarantees.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task HandleStartupFailureAsync_disposes_the_live_service_before_showing_the_error_window() {
+        var runClient = new ForeverRunClient();
+        var service = new DaemonClientService("daemon-a", runClient.Run, new NullProcessRunner(), "kcap");
+        service.Start();
+        await WaitUntilAsync(() => runClient.LiveEnumerations >= 1);
+
+        var shutdown = new CancellationTokenSource();
+
+        var (modeAfterShow, mainWindowAssigned) = await AvaloniaSession.DispatchAsync(async () => {
+            var (desktop, fake) = FakeClassicDesktopLifetime.Create();
+            await AppUnderTest.HandleStartupFailureAsync(
+                desktop, new InvalidOperationException("boom"), service, shutdown);
+            Dispatcher.UIThread.RunJobs();
+            return (fake.ShutdownMode, fake.MainWindow is not null);
+        });
+
+        await Assert.That(shutdown.IsCancellationRequested).IsTrue();
+        await Assert.That(modeAfterShow).IsEqualTo(ShutdownMode.OnExplicitShutdown);
+        await Assert.That(mainWindowAssigned).IsTrue();
+        await WaitUntilAsync(() => runClient.LiveEnumerations == 0, TimeSpan.FromSeconds(5));
+
+        // A second DisposeAsync (mirroring the real catch path's `_service = null` guard against
+        // a later OnShutdownRequested double-dispose) must be a safe no-op, not a throw.
+        await service.DisposeAsync();
     }
 }
