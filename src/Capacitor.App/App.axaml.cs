@@ -45,11 +45,13 @@ public partial class App : Application {
             _service = service;
             desktop.MainWindow = BuildAndShowMainWindow(service, _shutdown.Token);
         } catch (Exception ex) {
+            // BEFORE any await: a shutdown request can arrive while cleanup below is still
+            // awaiting (or if the helper itself throws), and the deferred path reads this.
+            _exitCode = 1;
             Console.Error.WriteLine($"kcap app failed to start: {ex}");
             await HandleStartupFailureAsync(desktop, ex, _service, _shutdown);
             _service = null; // already disposed above — never let a later OnShutdownRequested
                               // (e.g. Cmd+Q while the error window is up) dispose it a second time
-            _exitCode = 1;   // carried through DisposeAndShutdownAsync's deferred TryShutdown too
         }
     }
 
