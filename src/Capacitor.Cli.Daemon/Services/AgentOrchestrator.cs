@@ -37,6 +37,16 @@ internal record AgentInstance(
     public bool                 HasReceivedOutput { get; set; }
     public TerminalOutputBuffer OutputBuffer      { get; } = new();
 
+    /// <summary>Liveness-supervision spec §0/§1: the monotonic per-agent activity clock fed by this
+    /// agent's PTY output chunks, ACP transcript envelopes, ACP turn transitions, and reviewer
+    /// permission-bridge hits. One instance per launch — a relaunch (new agent id) gets a fresh one,
+    /// never inheriting the predecessor's idle window (see the clock's own remarks). Defaults to a
+    /// real-time instance so every existing test construction (none of which know about liveness)
+    /// keeps compiling unchanged; production launches (HandleLaunchAgentCore) construct one
+    /// explicitly so it can also be handed to the ACP runtime and the permission-bridge reviewer
+    /// grant before this record exists.</summary>
+    public AgentActivityClock ActivityClock { get; init; } = new(TimeProvider.System);
+
     /// <summary>Phase B (D2): the launch kind + (for a ReviewFlow launch) the flow identity,
     /// captured from <see cref="LaunchAgentCommand"/> at construction. Reported in
     /// <c>LiveAgents</c>/<c>DaemonStatusReport</c> so a restarted server can associate a surviving
@@ -1289,6 +1299,12 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
         // method scope so the failure catch can revoke it when no AgentInstance was created to carry it.
         string? reviewerToken = null;
 
+        // Liveness-supervision spec §0/§1: created here (before the reviewer-token mint below, which
+        // needs it, and before the AgentInstance that will own it) rather than left to the record's
+        // own default, so the SAME instance is threaded into the permission-bridge grant, the ACP
+        // runtime, and the AgentInstance — one clock per launch, never three.
+        var activityClock = new AgentActivityClock(TimeProvider.System);
+
         try {
             if (EffectiveCount >= _config.MaxConcurrentAgents) {
                 await _server.LaunchFailedAsync(agentId, $"At max capacity ({_config.MaxConcurrentAgents} agents)");
@@ -1436,7 +1452,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
                           "borrowed_snapshot_review_context_missing")
                     : null;
                 var reviewerUrl = _permissionBridge.RegisterReviewerToken(
-                    reviewerServers, reviewGeneration);
+                    reviewerServers, reviewGeneration, activityClock);
                 reviewerToken = reviewerUrl; // the URL doubles as the revoke handle
                 if (codexReviewer) {
                     daemonBridgeUrl = reviewerUrl;
@@ -1519,6 +1535,14 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             mcpConfigPath = start.McpConfigPath;
             var runtime = start.Runtime;
 
+            // Liveness-supervision spec §1: hand the ACP runtime the SAME clock the AgentInstance
+            // below will own, assigned as early as possible (before any envelope/turn activity can
+            // occur) — mirrors the existing post-construction assignment pattern for
+            // AcpReconnectSupport.PidCallbacks a little further down. A null ActivityClock on the
+            // runtime (any construction that bypasses this launch path, e.g. a unit test) is a
+            // no-op for every source that reads it.
+            if (runtime is AcpHostedAgentRuntime acpRuntime) acpRuntime.ActivityClock = activityClock;
+
             LogAgentSpawned(agentId, runtime.Pid, worktree.Path, runtimeFactory.Vendor);
 
             var cts = new CancellationTokenSource();
@@ -1558,6 +1582,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             var registeredModel = start.Transcript is { } confirmed ? confirmed.ResolvedModel : effectiveModel;
 
             var agent = new AgentInstance(agentId, prompt, registeredModel, effort, repoPath, cmd.Vendor, runtime, worktree, cts) {
+                ActivityClock       = activityClock,
                 McpConfigPath       = mcpConfigPath,
                 CurrentCols         = HostedPtyCols,
                 CurrentRows         = HostedPtyRows,
@@ -1853,6 +1878,9 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             await foreach (var data in agent.Runtime.ReadOutputAsync(agent.ReadCts.Token)) {
                 agent.LastOutputAt      = DateTime.UtcNow;
                 agent.HasReceivedOutput = true;
+                // Liveness-supervision spec §1: PTY output IS the activity signal for a PTY-hosted
+                // agent (no separate turn-gate concept applies), so every chunk advances the clock.
+                agent.ActivityClock.Advance();
 
                 if (agent.Status == "Starting") {
                     SetAgentStatus(agent, "Running");

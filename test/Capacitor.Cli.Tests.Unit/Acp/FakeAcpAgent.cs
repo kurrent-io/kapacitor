@@ -875,7 +875,10 @@ public sealed class FakeAcpAgent : IAsyncDisposable {
         await WriteLineAsync(Encoding.UTF8.GetString(stream.ToArray()), ct).ConfigureAwait(false);
     }
 
-    async Task WriteRawFrameAsync(JsonElement frame, CancellationToken ct) =>
+    /// <summary>Sends a raw frame (e.g. an unsolicited <c>session/update</c> notification) directly,
+    /// bypassing every scripted dispatch path — <c>internal</c> (not <c>private</c>) so a test can
+    /// drive a notification with no accompanying turn/prompt at all.</summary>
+    internal async Task WriteRawFrameAsync(JsonElement frame, CancellationToken ct) =>
         await WriteLineAsync(frame.GetRawText(), ct).ConfigureAwait(false);
 
     async Task WriteLineAsync(string json, CancellationToken ct) {

@@ -211,7 +211,12 @@ internal sealed partial class LocalPermissionBridge(
     /// </summary>
     public string RegisterReviewerToken(
             IReadOnlyList<string> allowlistServers,
-            BorrowedReviewContextGeneration? reviewContext = null) {
+            BorrowedReviewContextGeneration? reviewContext = null,
+            // Liveness-supervision spec §1: the launch's per-agent activity clock, so a tool-call hit
+            // on this token can advance it. Optional/trailing so every pre-existing call site (~20 in
+            // LocalPermissionBridgeTests, none of which know about liveness) keeps compiling
+            // unchanged; the production orchestrator call site always supplies one.
+            AgentActivityClock? activityClock = null) {
         if (_listener is null || _sharedToken is null)
             throw new InvalidOperationException("LocalPermissionBridge not started");
 
@@ -221,7 +226,7 @@ internal sealed partial class LocalPermissionBridge(
                 token = NewToken();   // CSPRNG collisions are negligible; never silently reuse one
 
             _listener.Prefixes.Add($"http://127.0.0.1:{_port}/{token}/");
-            _reviewerTokens[token] = new ReviewerGrant([.. allowlistServers], reviewContext);
+            _reviewerTokens[token] = new ReviewerGrant([.. allowlistServers], reviewContext, activityClock);
 
             return $"http://127.0.0.1:{_port}/{token}";
         }
@@ -431,6 +436,13 @@ internal sealed partial class LocalPermissionBridge(
             PermissionDecision decision;
 
             if (isReviewer) {
+                // Liveness-supervision spec §1: every tool-call POST that reaches a live reviewer
+                // token is activity — advance regardless of the eventual allow/deny/reserved-channel
+                // outcome decided below, and regardless of the well-formed-tool-name check right
+                // after (a malformed request from a live reviewer process is still evidence the
+                // process is alive).
+                reviewerGrant!.ActivityClock?.Advance();
+
                 // Unattended participant: a well-formed tool name is required to classify.
                 if (string.IsNullOrWhiteSpace(toolName)) {
                     context.Response.StatusCode = 400;
@@ -572,7 +584,8 @@ internal sealed partial class LocalPermissionBridge(
 
     sealed record ReviewerGrant(
         string[] AllowlistServers,
-        BorrowedReviewContextGeneration? ReviewContext);
+        BorrowedReviewContextGeneration? ReviewContext,
+        AgentActivityClock? ActivityClock = null);
 
     static string BuildHookResponseJson(PermissionDecision decision, string vendor) =>
         vendor switch {

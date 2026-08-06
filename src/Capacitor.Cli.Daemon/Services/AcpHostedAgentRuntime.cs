@@ -130,6 +130,14 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
         return tcs;
     }
 
+    /// <summary>Liveness-supervision spec §0/§1: the per-agent activity clock, assigned by
+    /// <see cref="AgentOrchestrator"/> right after this runtime is obtained — before any envelope or
+    /// turn activity can occur, and before the owning <c>AgentInstance</c> even exists. Null for every
+    /// construction that bypasses that launch path (unit tests, the resume-candidate constructor
+    /// paths that build a runtime directly) — every call site below is a no-op guard, never a throw,
+    /// so a test that doesn't care about liveness keeps passing unchanged.</summary>
+    internal AgentActivityClock? ActivityClock { get; set; }
+
     readonly ILogger       _logger;
     readonly TimeProvider  _timeProvider;
     readonly string        _agentId;
@@ -949,6 +957,11 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
                 connection          = _installed.Connection;
             }
 
+            // Liveness-supervision spec §0/§1: the turn gate is genuinely held from here — a parked
+            // (not-yet-entered) turn above never reaches this line, so TurnInFlight never flips true
+            // for a turn that isn't really in flight yet.
+            ActivityClock?.SetTurnInFlight(true);
+
             try {
                 await SendPromptAsync(connection, turn, ct).ConfigureAwait(false);
             } catch (Exception ex) when (ex is not OperationCanceledException) {
@@ -973,6 +986,11 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
                 // and reap a healthy reviewer whose zero-update turn finished near the deadline.
                 Interlocked.Exchange(ref _sawFirstUpdate, 1);
                 _firstTurnSettled.TrySetResult();
+
+                // Liveness-supervision spec §0/§1: the turn ends here regardless of how it ended
+                // (stopReason, fault, or cancellation) — this finally always runs for a turn that
+                // reached the entered state above, so the true/false pair is exactly bracketed.
+                ActivityClock?.SetTurnInFlight(false);
 
                 lock (_reconnectLock) {
                     if (_inFlight is { } f && ReferenceEquals(f.Turn, turn))
@@ -1425,6 +1443,21 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
     /// write and a drop-and-evict write under this FullMode — it cannot distinguish the two.
     /// </summary>
     void EmitEnvelope(AcpEventEnvelope envelope) {
+        // Liveness-supervision spec §1: advance BEFORE the channel write below, never after — a
+        // reader blocked on Envelopes.ReadAsync can wake and run the instant TryWrite makes the item
+        // visible, on another thread, with no ordering relationship to whatever this thread does
+        // next. Sequencing Advance() first (same-thread, so it is guaranteed complete before the
+        // write that unblocks the reader) makes "the envelope was observed" a sound proof that the
+        // clock already moved; the reverse order is a genuine race a fast reader can win, observing
+        // the envelope before the seq bump (caught by ActivityClockTurnAndEnvelopeWiringTests under
+        // load — see that test's remarks). Every emitted envelope (assistant text, tool calls, plans,
+        // session-info/usage metadata) is activity, independent of whether a turn is currently
+        // admitted — session_info_update/usage_update reach here with no turn in flight at all (see
+        // AggregateUpdate's standalone-emit case). Advance even on the dropped-because-completed path
+        // below: the content was genuinely produced, and by the time the channel is completed nothing
+        // downstream is reading idle state for this agent anyway.
+        ActivityClock?.Advance();
+
         lock (_aggregationLock) {
             if (_transcript.Reader.Count >= _transcriptCapacity) {
                 var dropped = Interlocked.Increment(ref _droppedTranscriptEnvelopes);
