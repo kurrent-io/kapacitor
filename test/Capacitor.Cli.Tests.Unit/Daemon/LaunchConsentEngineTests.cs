@@ -112,6 +112,17 @@ internal class LaunchConsentEngineTests {
         await Assert.That(d.Source).IsEqualTo("default");
     }
 
+    [Test] // tray pause rule (design spec §6): the wildcard deny it inserts at rules[0] must
+           // still let an owner-originated launch through — the engine's owner exemption
+           // precedes rules and default alike.
+    public async Task Pause_rule_at_index_zero_still_allows_the_owner() {
+        var policy = new LaunchConsentPolicy(LaunchConsentDefault.Allow, 45,
+            [new LaunchConsentRule("deny", null, null, null, null)]);
+        var d = LaunchConsentEngine.Evaluate(policy, Input(owner: true));
+        await Assert.That(d.Verdict).IsEqualTo(LaunchConsentVerdict.Allow);
+        await Assert.That(d.Source).IsEqualTo("owner");
+    }
+
     [Test]
     public async Task KindToken_maps_all_launch_kinds() {
         await Assert.That(LaunchConsentEngine.KindToken(LaunchKind.Default)).IsEqualTo("agent");
