@@ -454,13 +454,28 @@ public static partial class DaemonRunner {
         // a review-flow vendor override on this list rather than SupportedVendors alone, so a vendor
         // that's merely installed but has no unattended launcher is never offered as an override
         // target.
-        config.UnattendedVendors = ComputeUnattendedVendors(runtimeFactories);
-        config.UnattendedVendorCapabilities = ComputeUnattendedVendorCapabilities(runtimeFactories, config);
+        //
+        // Classified ONCE and reused below, because a gated reviewer's classification spawns the
+        // vendor binary to read its version: recomputing it for the capability list and again for the
+        // diagnostic would probe an installed-but-slow vendor three times per startup.
+        var unattendedStatuses = ClassifyUnattendedVendors(runtimeFactories);
+
+        config.UnattendedVendors = AdvertisedUnattendedVendors(unattendedStatuses);
+        config.UnattendedVendorCapabilities =
+            ComputeUnattendedVendorCapabilities(runtimeFactories, config, config.UnattendedVendors);
 
         // Which build of each unattended vendor was installed when this daemon started. Recorded at
         // startup (like the Cursor-unavailable warning below) rather than per launch, and reported
         // without any comparison against a validated-build record.
         LogUnattendedVendorIdentities(logger, config.UnattendedVendorCapabilities);
+
+        // The counterpart of the line above, and the one that was missing: a vendor this daemon COULD
+        // host unattended but is refusing was dropped from the advertisement in silence. The refusal
+        // text existed all along, but only the launch path threw it — and advertisement is exactly
+        // what stops that launch from being attempted, so the explanation could never be produced.
+        // An operator's only remaining route was to read the daemon source.
+        foreach (var withheld in unattendedStatuses.Where(s => s.WithheldReason is not null))
+            LogUnattendedVendorWithheld(logger, withheld.Vendor, withheld.WithheldReason!);
 
         // IsAvailable()==false silently omits cursor from SupportedVendors above — correct
         // behavior (the launch dialog just won't offer Cursor), but gave operators no clue WHY. One
@@ -823,29 +838,61 @@ public static partial class DaemonRunner {
     internal static bool ShouldWarnCursorUnavailable(IEnumerable<IHostedAgentRuntimeFactory> factories) =>
         factories.FirstOrDefault(f => f.Vendor == "cursor") is { } cursorFactory && !cursorFactory.IsAvailable();
 
+    /// <summary>One installed vendor's unattended classification at daemon startup.</summary>
+    /// <param name="Vendor">The vendor token.</param>
+    /// <param name="Advertised">Whether it is offered as an unattended reviewer host.</param>
+    /// <param name="WithheldReason">Why it is not offered, when a daemon-local gate is what refuses
+    /// it. Null for an advertised vendor AND for one that never offered unattended hosting — only a
+    /// refusal an operator can act on is worth a Warning.</param>
+    internal readonly record struct UnattendedVendorStatus(
+        string Vendor, bool Advertised, string? WithheldReason);
+
+    /// <summary>
+    /// Classifies every INSTALLED factory's unattended support, asking each exactly once (see
+    /// <see cref="IHostedAgentRuntimeFactory.DescribeUnattendedSupport"/> — the gated reviewers spawn
+    /// their vendor binary to answer). Pure over the factory list, same reasoning as
+    /// <see cref="ShouldWarnCursorUnavailable"/>, so both the advertisement and its diagnostic are
+    /// testable without spinning up the whole DI host <see cref="RunAsync"/> builds.
+    /// </summary>
+    internal static IReadOnlyList<UnattendedVendorStatus> ClassifyUnattendedVendors(
+            IEnumerable<IHostedAgentRuntimeFactory> factories) =>
+        factories
+            .Where(f => f.IsAvailable())
+            .Select(f => {
+                var support = f.DescribeUnattendedSupport();
+
+                return new UnattendedVendorStatus(f.Vendor, support.Supported, support.WithheldReason);
+            })
+            .OrderBy(s => s.Vendor, StringComparer.Ordinal)
+            .ToArray();
+
+    /// <summary>The advertised subset of a <see cref="ClassifyUnattendedVendors"/> result.</summary>
+    internal static string[] AdvertisedUnattendedVendors(IEnumerable<UnattendedVendorStatus> statuses) =>
+        statuses.Where(s => s.Advertised).Select(s => s.Vendor).ToArray();
+
     /// <summary>
     /// Vendor tokens this daemon can run fully unattended — a strict subset of
     /// <c>SupportedVendors</c> (installed) further filtered by
-    /// <see cref="IHostedAgentRuntimeFactory.SupportsUnattended"/>. Pulled out as a pure
-    /// function over the factory list (same reasoning as <see cref="ShouldWarnCursorUnavailable"/>)
-    /// so the reviewer-vendor-override capability advertisement is testable without spinning up
-    /// the whole DI host <see cref="RunAsync"/> builds.
+    /// <see cref="IHostedAgentRuntimeFactory.SupportsUnattended"/>. Kept as the convenience shape for
+    /// callers that need only the list, and expressed THROUGH
+    /// <see cref="ClassifyUnattendedVendors"/> so there is one rule rather than two that have to
+    /// agree. Prefer classifying once where the reasons are also wanted — this overload re-probes.
     /// </summary>
     internal static string[] ComputeUnattendedVendors(IEnumerable<IHostedAgentRuntimeFactory> factories) =>
-        factories
-            .Where(f => f.IsAvailable() && f.SupportsUnattended)
-            .Select(f => f.Vendor)
-            .OrderBy(v => v, StringComparer.Ordinal)
-            .ToArray();
+        AdvertisedUnattendedVendors(ClassifyUnattendedVendors(factories));
 
     internal const string ClaudeLauncherPolicyVersion = "claude-unattended-v1";
     internal const string CursorLauncherPolicyVersion = "cursor-unattended-v4";
     internal const string CodexLauncherPolicyVersion = "codex-unattended-v1";
     internal const string CopilotLauncherPolicyVersion = "copilot-unattended-v1";
 
+    /// <param name="advertised">The already-classified advertised vendors, when the caller has them.
+    /// Passing them avoids re-running a classification that spawns vendor binaries; omitting them
+    /// recomputes, which is what the tests and any other caller want.</param>
     internal static IReadOnlyList<UnattendedVendorCapability> ComputeUnattendedVendorCapabilities(
-            IEnumerable<IHostedAgentRuntimeFactory> factories, DaemonConfig config) {
-        var unattended = ComputeUnattendedVendors(factories);
+            IEnumerable<IHostedAgentRuntimeFactory> factories, DaemonConfig config,
+            IEnumerable<string>? advertised = null) {
+        var unattended = advertised?.ToArray() ?? ComputeUnattendedVendors(factories);
         var capabilities = new List<UnattendedVendorCapability>();
         foreach (var vendor in unattended) {
             var factory = factories.First(f => string.Equals(f.Vendor, vendor, StringComparison.Ordinal));
@@ -1009,6 +1056,9 @@ public static partial class DaemonRunner {
 
     [LoggerMessage(Level = LogLevel.Information, Message = "Unattended vendor '{Vendor}': CLI version {CliVersion}, as observed by probing the configured binary at daemon startup. That is a startup observation, not the build a later reviewer runs — if the vendor updates while this daemon keeps running, launches pick up the new build and this line stays stale until the daemon restarts.")]
     static partial void LogUnattendedVendorIdentity(ILogger logger, string vendor, string cliVersion);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Vendor '{Vendor}' is installed and can host an unattended reviewer, but this daemon is NOT offering it: {Reason} Until that is resolved, a review flow requesting this vendor is refused by the server as an unadvertised reviewer, which does not say why. Restart the daemon after changing it.")]
+    static partial void LogUnattendedVendorWithheld(ILogger logger, string vendor, string reason);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Cursor ACP runtime unavailable: cursor-agent CLI not found (looked for '{CursorPath}'). Cursor will not be offered as a hosted-agent vendor until this is fixed. Set KCAP_CURSOR_PATH to the cursor-agent executable, or install the Cursor CLI, then restart the daemon.")]
     static partial void LogCursorUnavailable(ILogger logger, string cursorPath);

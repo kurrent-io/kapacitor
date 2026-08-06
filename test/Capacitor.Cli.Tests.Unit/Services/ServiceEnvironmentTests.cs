@@ -152,4 +152,63 @@ public class ServiceEnvironmentTests {
         await Assert.That(env.ContainsKey("GOOGLE_CLOUD_PROJECT")).IsFalse();
         await Assert.That(env.ContainsKey("GOOGLE_CLOUD_LOCATION")).IsFalse();
     }
+
+    // ── unattended-reviewer consent flags ─────────────────────────────────────
+    //
+    // These have no config-file or profile binding: the daemon reads them from its own environment and
+    // nowhere else. A unit that drops them is therefore a reviewer that cannot be turned on at all for a
+    // supervised daemon, silently — which is the failure this whole group exists to pin.
+
+    static Dictionary<string, string> ConsentSource() => new() {
+        ["PATH"]                            = "/usr/bin",
+        ["KCAP_GEMINI_UNATTENDED_REVIEWER"] = "1",
+        ["KCAP_KIRO_UNATTENDED_REVIEWER"]   = "true",
+    };
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Build_carries_both_reviewer_consent_flags_on_every_platform(bool isWindows) {
+        var env = ServiceEnvironment.Build(profileName: null, source: ConsentSource(), isWindows: isWindows);
+
+        await Assert.That(env["KCAP_GEMINI_UNATTENDED_REVIEWER"]).IsEqualTo("1")
+            .Because("a supervised daemon inherits nothing from the installing shell");
+        await Assert.That(env["KCAP_KIRO_UNATTENDED_REVIEWER"]).IsEqualTo("true")
+            .Because("binding one reviewer's consent and not the other just moves the hole");
+    }
+
+    /// <summary>A flag the installing environment never set must not appear — capture carries an
+    /// existing opt-in into the unit, it never manufactures one.</summary>
+    [Test]
+    public async Task Build_never_invents_a_consent_flag() {
+        var env = ServiceEnvironment.Build(
+            profileName: null,
+            source: new Dictionary<string, string> { ["PATH"] = "/usr/bin" },
+            isWindows: false);
+
+        foreach (var key in ServiceEnvironment.ReviewerConsentKeys)
+            await Assert.That(env.ContainsKey(key)).IsFalse();
+    }
+
+    [Test]
+    public async Task CarriedConsentFlags_names_what_the_unit_actually_got() {
+        var env = ServiceEnvironment.Build(profileName: null, source: ConsentSource(), isWindows: false);
+
+        await Assert.That(ServiceEnvironment.CarriedConsentFlags(env))
+            .IsEquivalentTo(new[] { "KCAP_GEMINI_UNATTENDED_REVIEWER", "KCAP_KIRO_UNATTENDED_REVIEWER" });
+    }
+
+    /// <summary>Reads the BUILT environment, not the ambient one — so the install notice cannot claim a
+    /// capture that an empty value (or a future platform exclusion) dropped on the way in.</summary>
+    [Test]
+    public async Task CarriedConsentFlags_reports_nothing_when_the_flag_was_blank() {
+        var env = ServiceEnvironment.Build(
+            profileName: null,
+            source: new Dictionary<string, string> {
+                ["PATH"] = "/usr/bin", ["KCAP_GEMINI_UNATTENDED_REVIEWER"] = "",
+            },
+            isWindows: false);
+
+        await Assert.That(ServiceEnvironment.CarriedConsentFlags(env)).IsEmpty();
+    }
 }

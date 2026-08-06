@@ -14,6 +14,16 @@ namespace Capacitor.Cli.Daemon.Services;
 /// interactive CLIs (Claude, Codex); <see cref="AcpHostedAgentRuntimeFactory"/> spawns
 /// <c>cursor-agent acp</c> and speaks ACP JSON-RPC for Cursor.
 /// </summary>
+/// <summary>
+/// A runtime's unattended-hosting advertisement: whether it is offered, and — when a daemon-local
+/// gate is what withholds it — the operator-actionable reason.
+/// </summary>
+/// <param name="Supported">What <see cref="IHostedAgentRuntimeFactory.SupportsUnattended"/> reports.</param>
+/// <param name="WithheldReason">Non-null only when the vendor CAN host unattended agents and this
+/// daemon is refusing to offer it. Null both when the vendor is offered and when it never claimed
+/// unattended support in the first place.</param>
+internal readonly record struct UnattendedSupport(bool Supported, string? WithheldReason);
+
 internal interface IHostedAgentRuntimeFactory {
     /// <summary>Vendor token this factory handles ("claude", "codex", "cursor").</summary>
     string Vendor { get; }
@@ -29,6 +39,19 @@ internal interface IHostedAgentRuntimeFactory {
     /// The orchestrator refuses an unattended launch for a vendor that returns <c>false</c>.
     /// </summary>
     bool SupportsUnattended { get; }
+
+    /// <summary>
+    /// <see cref="SupportsUnattended"/> together with the reason it is withheld, resolved in ONE
+    /// evaluation. Both facts come from a single call deliberately: for the gated reviewers the
+    /// decision spawns the vendor binary to read its version, so asking for the flag and then asking
+    /// for the reason would probe an installed-but-slow binary twice per daemon startup.
+    ///
+    /// <para><see cref="UnattendedSupport.WithheldReason"/> is populated ONLY for a vendor that could
+    /// host an unattended agent but is being refused by THIS daemon's configuration — never for a
+    /// vendor that simply does not offer unattended hosting, which is a design fact and not something
+    /// an operator can act on. That asymmetry is what makes the reason safe to log as a Warning.</para>
+    /// </summary>
+    UnattendedSupport DescribeUnattendedSupport() => new(SupportsUnattended, null);
 
     /// <summary>Whether this runtime has a certified containment strategy for review flows that
     /// request the caller's current checkout contents.</summary>

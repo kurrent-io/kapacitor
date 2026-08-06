@@ -950,6 +950,15 @@ public static class DaemonCommands {
 
         await Console.Out.WriteLineAsync($"Service '{id}' installed ({manager.Describe()}).");
         await Console.Out.WriteLineAsync("  Auto-restarts on crash/SIGKILL; starts at login.");
+
+        // Freezing an unattended-reviewer consent flag into a unit is worth saying out loud. The unit
+        // outlives the shell it was captured from, so an operator who later unsets the variable would
+        // otherwise have no indication the service kept consenting on their behalf.
+        foreach (var flag in ServiceEnvironment.CarriedConsentFlags(env))
+            await Console.Out.WriteLineAsync(
+                $"  Consent:   {flag}={env[flag]} captured into the unit — the unattended reviewer it "
+              + "enables stays on for this service until you reinstall without it.");
+
         await Console.Out.WriteLineAsync($"  Log:       {logPath}");
         await Console.Out.WriteLineAsync($"  Stop:      kcap daemon service stop --name {id}");
         await Console.Out.WriteLineAsync($"  Remove:    kcap daemon service uninstall --name {id}");

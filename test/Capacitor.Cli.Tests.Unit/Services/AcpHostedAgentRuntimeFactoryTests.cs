@@ -2142,6 +2142,116 @@ public class AcpHostedAgentRuntimeFactoryTests {
         await Assert.That(factory.SupportsUnattended).IsFalse();
     }
 
+    /// <summary>
+    /// A withheld reviewer says WHY, at the one moment an operator can see it.
+    ///
+    /// <para>Advertisement is what stops a launch from being attempted, and the launch path is what threw the
+    /// explanation — so a vendor dropped from advertisement could never produce the text that explains it.
+    /// The only remaining route to the answer was reading the daemon source, which is how this issue was
+    /// actually diagnosed.</para>
+    /// </summary>
+    [Test]
+    public async Task Gemini_ADisabledDaemon_ExplainsWhyItIsWithheld() {
+        var certified = GeminiReviewerCapability.CertifiedVersions.First();
+
+        IHostedAgentRuntimeFactory disabled = new AcpHostedAgentRuntimeFactory(
+            AcpVendorDescriptors.Gemini, new DaemonConfig(), NullLoggerFactory.Instance,
+            new CaptureServerConnection(), resolveVendorVersion: _ => certified);
+
+        var support = disabled.DescribeUnattendedSupport();
+
+        await Assert.That(support.Supported).IsFalse();
+        // The operator's actual next action has to be IN the text — a reason that only says "disabled"
+        // leaves them exactly where the coded server error already did.
+        await Assert.That(support.WithheldReason).IsNotNull();
+        await Assert.That(support.WithheldReason!).Contains("GeminiUnattendedReviewerEnabled");
+        await Assert.That(support.WithheldReason!).StartsWith("gemini_unattended_reviewer_disabled");
+    }
+
+    /// <summary>The uncertified-version arm reports the version it rejected, not a generic refusal —
+    /// otherwise an operator cannot tell a consent problem from an upgrade problem.</summary>
+    [Test]
+    public async Task Gemini_AnUncertifiedVersion_IsNamedInTheWithheldReason() {
+        IHostedAgentRuntimeFactory factory = new AcpHostedAgentRuntimeFactory(
+            AcpVendorDescriptors.Gemini, new DaemonConfig { GeminiUnattendedReviewerEnabled = true },
+            NullLoggerFactory.Instance, new CaptureServerConnection(),
+            resolveVendorVersion: _ => "99.99.99");
+
+        var support = factory.DescribeUnattendedSupport();
+
+        await Assert.That(support.Supported).IsFalse();
+        await Assert.That(support.WithheldReason!).Contains("99.99.99");
+        await Assert.That(support.WithheldReason!).StartsWith("gemini_unattended_reviewer_version_uncertified");
+    }
+
+    /// <summary>An ADVERTISED vendor withholds nothing — the negative control for the two above, without
+    /// which a reason that was always populated would pass them both.</summary>
+    [Test]
+    public async Task AnAdvertisedVendor_CarriesNoWithheldReason() {
+        var certified = GeminiReviewerCapability.CertifiedVersions.First();
+
+        IHostedAgentRuntimeFactory gemini = new AcpHostedAgentRuntimeFactory(
+            AcpVendorDescriptors.Gemini, new DaemonConfig { GeminiUnattendedReviewerEnabled = true },
+            NullLoggerFactory.Instance, new CaptureServerConnection(),
+            resolveVendorVersion: _ => certified);
+
+        var support = gemini.DescribeUnattendedSupport();
+
+        await Assert.That(support.Supported).IsTrue();
+        await Assert.That(support.WithheldReason).IsNull();
+    }
+
+    /// <summary>
+    /// A vendor that never OFFERED unattended hosting withholds nothing either.
+    ///
+    /// <para>The distinction is what makes the reason safe to log as a Warning: "this daemon is refusing
+    /// something you could have" is actionable, "this vendor does not do that" is a design fact, and
+    /// warning on the second would train operators to ignore the first.</para>
+    /// </summary>
+    [Test]
+    public async Task AVendorThatNeverOfferedUnattendedHosting_IsNotReportedAsWithheld() {
+        // Built explicitly rather than cloned from a shipped descriptor: SupportsUnattended carries
+        // construction-time invariants that must be re-run against this argv pairing.
+        var neverUnattended = new AcpVendorDescriptor(
+            Vendor:              "probe-vendor",
+            ResolveBinaryPath:   _ => "probe-vendor",
+            ResolveDefaultModel: _ => null,
+            Argv:                ["acp"],
+            UnattendedTrustArgv: [],
+            SupportsUnattended:  false,
+            ModelSelector:       NoOpModelSelector.Instance,
+            SupportsMcpServers:  true);
+
+        IHostedAgentRuntimeFactory factory = new AcpHostedAgentRuntimeFactory(
+            neverUnattended, new DaemonConfig(), NullLoggerFactory.Instance, new CaptureServerConnection());
+
+        var support = factory.DescribeUnattendedSupport();
+
+        await Assert.That(support.Supported).IsFalse();
+        await Assert.That(support.WithheldReason).IsNull();
+    }
+
+    /// <summary>
+    /// One call, one version probe.
+    ///
+    /// <para>The flag and the reason come from a single method precisely so startup does not spawn the
+    /// vendor binary once to decide and again to explain. `--version` on a cold Node start is not free, and
+    /// the resolver is bounded at 10s per attempt — a duplicated probe is a duplicated stall on every boot.</para>
+    /// </summary>
+    [Test]
+    public async Task DescribeUnattendedSupport_ProbesTheVendorBinaryExactlyOnce() {
+        var probes = 0;
+
+        IHostedAgentRuntimeFactory factory = new AcpHostedAgentRuntimeFactory(
+            AcpVendorDescriptors.Gemini, new DaemonConfig { GeminiUnattendedReviewerEnabled = true },
+            NullLoggerFactory.Instance, new CaptureServerConnection(),
+            resolveVendorVersion: _ => { probes++; return "99.99.99"; });
+
+        _ = factory.DescribeUnattendedSupport();
+
+        await Assert.That(probes).IsEqualTo(1);
+    }
+
     /// <summary>Other vendors' advertisement is unaffected — the gate is Gemini-scoped.</summary>
     [Test]
     public async Task OtherVendorsAdvertisement_IsUnaffectedByTheGeminiGate() {

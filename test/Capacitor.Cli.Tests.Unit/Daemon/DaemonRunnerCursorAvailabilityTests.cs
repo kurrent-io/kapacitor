@@ -128,6 +128,119 @@ public class DaemonRunnerCursorAvailabilityTests {
         await Assert.That(DaemonRunner.ComputeUnattendedVendors([])).IsEmpty();
     }
 
+    // === Withheld-vendor startup diagnostic ===
+    //
+    // A vendor this daemon could host unattended but is refusing used to leave advertisement in silence:
+    // the refusal text existed, but only the launch path threw it, and advertisement is exactly what stops
+    // the launch from being attempted. Classification carries the reason out so startup can log it.
+
+    /// <summary>Counts <see cref="IHostedAgentRuntimeFactory.DescribeUnattendedSupport"/> calls, because
+    /// answering it spawns the vendor binary for the gated reviewers.</summary>
+    sealed class WithholdingRuntimeFactory(string vendor, string? withheldReason, bool isAvailable = true)
+            : IHostedAgentRuntimeFactory {
+        public int Describes { get; private set; }
+
+        public string Vendor             { get; } = vendor;
+        public bool   SupportsUnattended => DescribeUnattendedSupport().Supported;
+
+        public UnattendedSupport DescribeUnattendedSupport() {
+            Describes++;
+
+            return new(withheldReason is null, withheldReason);
+        }
+
+        public bool IsAvailable() => isAvailable;
+
+        public Task<HostedRuntimeStart> StartAsync(RuntimeStartContext ctx, CancellationToken ct) =>
+            throw new NotSupportedException("not exercised by this test");
+    }
+
+    [Test]
+    public async Task ClassifyUnattendedVendors_CarriesTheReasonAVendorIsWithheld() {
+        IHostedAgentRuntimeFactory[] factories = [
+            new WithholdingRuntimeFactory("gemini", "gemini_unattended_reviewer_disabled: …"),
+            new WithholdingRuntimeFactory("cursor", withheldReason: null),
+        ];
+
+        var statuses = DaemonRunner.ClassifyUnattendedVendors(factories);
+
+        var gemini = statuses.Single(s => s.Vendor == "gemini");
+        await Assert.That(gemini.Advertised).IsFalse();
+        await Assert.That(gemini.WithheldReason).IsEqualTo("gemini_unattended_reviewer_disabled: …");
+
+        var cursor = statuses.Single(s => s.Vendor == "cursor");
+        await Assert.That(cursor.Advertised).IsTrue();
+        await Assert.That(cursor.WithheldReason).IsNull()
+            .Because("an advertised vendor is withholding nothing, so it must not produce a warning");
+    }
+
+    /// <summary>A vendor that simply does not offer unattended hosting is not "withheld" — nothing an
+    /// operator can act on, and warning about it would train them to ignore the ones that are.</summary>
+    [Test]
+    public async Task ClassifyUnattendedVendors_DoesNotReportADeclinedVendorAsWithheld() {
+        // The default interface implementation's shape: Supported=false, no reason.
+        IHostedAgentRuntimeFactory[] factories = [
+            new FakeRuntimeFactory("cursor", isAvailable: true, supportsUnattended: false),
+        ];
+
+        var statuses = DaemonRunner.ClassifyUnattendedVendors(factories);
+
+        await Assert.That(statuses.Single().Advertised).IsFalse();
+        await Assert.That(statuses.Single().WithheldReason).IsNull();
+    }
+
+    /// <summary>An UNINSTALLED vendor is not classified at all: it is already covered by its own
+    /// not-found diagnostic, and asking would spawn a binary that is not there.</summary>
+    [Test]
+    public async Task ClassifyUnattendedVendors_SkipsAnUnavailableVendorEntirely() {
+        var absent = new WithholdingRuntimeFactory("gemini", "would explain a refusal", isAvailable: false);
+
+        var statuses = DaemonRunner.ClassifyUnattendedVendors([absent]);
+
+        await Assert.That(statuses).IsEmpty();
+        await Assert.That(absent.Describes).IsEqualTo(0);
+    }
+
+    /// <summary>
+    /// One classification, one probe per vendor.
+    ///
+    /// <para>Startup needs the advertised list, the capability list AND the diagnostic. Deriving all three
+    /// from one classification is what keeps a gated reviewer's `--version` spawn — bounded at 10s per
+    /// attempt — from happening three times on every boot.</para>
+    /// </summary>
+    [Test]
+    public async Task ClassifyUnattendedVendors_AsksEachFactoryExactlyOnce() {
+        var gemini = new WithholdingRuntimeFactory("gemini", "refused");
+        var cursor = new WithholdingRuntimeFactory("cursor", withheldReason: null);
+
+        var statuses = DaemonRunner.ClassifyUnattendedVendors([gemini, cursor]);
+
+        // Derive both downstream products from that one classification, as RunAsync does.
+        var advertised = DaemonRunner.AdvertisedUnattendedVendors(statuses);
+        _ = DaemonRunner.ComputeUnattendedVendorCapabilities(
+            [gemini, cursor], new DaemonConfig(), advertised);
+
+        await Assert.That(advertised).IsEquivalentTo(["cursor"]);
+        await Assert.That(gemini.Describes).IsEqualTo(1);
+        await Assert.That(cursor.Describes).IsEqualTo(1);
+    }
+
+    /// <summary>The advertised subset matches what the list-only helper computes, so the two shapes cannot
+    /// disagree about which vendors are offered.</summary>
+    [Test]
+    public async Task AdvertisedUnattendedVendors_AgreesWithComputeUnattendedVendors() {
+        IHostedAgentRuntimeFactory[] factories = [
+            new WithholdingRuntimeFactory("gemini", "refused"),
+            new WithholdingRuntimeFactory("cursor", withheldReason: null),
+            new WithholdingRuntimeFactory("claude", withheldReason: null),
+        ];
+
+        await Assert.That(DaemonRunner.AdvertisedUnattendedVendors(
+                DaemonRunner.ClassifyUnattendedVendors(factories)))
+            .IsEquivalentTo(DaemonRunner.ComputeUnattendedVendors(factories),
+                TUnit.Assertions.Enums.CollectionOrdering.Matching);
+    }
+
     [Test]
     public async Task ComputeUnattendedVendorCapabilities_AdvertisesClaudePolicyFacts() {
         IHostedAgentRuntimeFactory[] factories = [

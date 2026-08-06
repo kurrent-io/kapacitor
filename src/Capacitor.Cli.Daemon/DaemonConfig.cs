@@ -176,6 +176,10 @@ public class DaemonConfig {
     /// vendor's exact-name MCP allowlist, whose semantics were certified against specific Gemini builds, so
     /// an uncertified version is refused even when this is true. See
     /// <c>GeminiReviewerCapability</c> and the Gemini reviewer design spec §2.9.</para>
+    ///
+    /// <para>Set via <c>KCAP_GEMINI_UNATTENDED_REVIEWER</c> in the DAEMON's environment, which for a
+    /// supervised daemon means the service unit — <c>ServiceEnvironment</c> carries it there, since a
+    /// unit inherits nothing from the installing shell.</para>
     /// </summary>
     public bool GeminiUnattendedReviewerEnabled { get; set; }
 
@@ -202,7 +206,10 @@ public class DaemonConfig {
     /// <summary>Reserved — see CopilotPath. Overridable via KCAP_OPENCODE_PATH.</summary>
     public string OpenCodePath { get; set; } = "opencode";
 
-    /// <summary>Reserved — see CopilotPath. Overridable via KCAP_GEMINI_PATH.</summary>
+    /// <summary>Path or bare command for Google Gemini CLI's ACP entry point, spawned as
+    /// <c>{GeminiPath} --experimental-acp …</c> by <c>AcpHostedAgentRuntimeFactory</c>. No longer
+    /// reserved: it drives interactive hosting AND the gated unattended reviewer, whose certified-version
+    /// probe reads whichever binary this names. Overridable via <c>KCAP_GEMINI_PATH</c>.</summary>
     public string GeminiPath { get; set; } = "gemini";
 
     /// <summary>

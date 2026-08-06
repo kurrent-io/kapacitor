@@ -826,6 +826,33 @@ maintainer-certified version set, no kcap release is needed to clear it.
 POSIX only: the isolated home holds the reviewer's own transcript, and therefore the review context, and
 cannot be created owner-only on Windows.
 
+#### If your daemon runs as a service
+
+Both flags above are read from the **daemon's own environment**, and a supervised daemon (`kcap daemon
+service install` — launchd, systemd, or a Windows scheduled task) inherits nothing from the shell you
+installed it from. Exporting a flag in your shell therefore does nothing for a service-installed daemon until
+the unit itself carries it, so export it *first* and then reinstall:
+
+```bash
+export KCAP_GEMINI_UNATTENDED_REVIEWER=1
+kcap daemon service install --name "$(whoami)"    # captures the flag into the unit
+```
+
+Install prints a `Consent:` line naming each reviewer flag it captured. That freeze is the point to notice:
+the unit outlives the shell, so the reviewer stays enabled for that service until you reinstall without the
+variable set — unsetting it in your shell later changes nothing.
+
+If a reviewer is still not offered, the daemon says why in its own log at startup — one warning per vendor
+that is installed and unattended-capable but withheld, carrying the same text the launch path would have
+thrown (consent not set, version unresolved, version uncertified/unaffirmed):
+
+```bash
+grep -i "is NOT offering it" ~/.config/kcap/daemon-*.log
+```
+
+Without that line the only symptom is the server's `reviewer_vendor_unavailable`, which reports that no
+connected daemon advertises the vendor and cannot say why.
+
 #### Hosted Codex agents
 
 Hosted Codex agents require the Codex hook surface — if you said yes during `kcap setup`, you already have it. Otherwise install it manually:
@@ -1062,7 +1089,7 @@ KCAP_CURSOR_PATH=/opt/cursor/bin/cursor-agent kcap daemon
 KCAP_CURSOR_MODEL=claude-opus-4-8 kcap daemon
 ```
 
-`KCAP_COPILOT_PATH` overrides the `copilot` binary the daemon spawns for **GitHub Copilot hosted agents** (`copilot --acp --stdio`), mirroring `KCAP_CURSOR_PATH` — the daemon now hosts Claude, Codex, Cursor, Copilot, and Kiro. `KCAP_OPENCODE_PATH` and `KCAP_GEMINI_PATH` remain **reserved** plumbing for the not-yet-hosted OpenCode and Gemini vendors, so setting those two has no observable effect yet.
+`KCAP_COPILOT_PATH` overrides the `copilot` binary the daemon spawns for **GitHub Copilot hosted agents** (`copilot --acp --stdio`), mirroring `KCAP_CURSOR_PATH` — the daemon hosts Claude, Codex, Cursor, Copilot, Kiro, and Gemini. `KCAP_GEMINI_PATH` overrides the `gemini` binary the same way (`gemini --experimental-acp`), and applies to both hosted Gemini agents and the opt-in [unattended Gemini reviewer](#gemini-as-an-unattended-review-flow-reviewer--off-by-default-and-why) — whose certified-version check reads whichever binary it names. `KCAP_OPENCODE_PATH` remains **reserved** plumbing for the not-yet-hosted OpenCode vendor, so setting it has no observable effect yet.
 
 ```bash
 KCAP_COPILOT_PATH=/opt/copilot/bin/copilot kcap daemon
