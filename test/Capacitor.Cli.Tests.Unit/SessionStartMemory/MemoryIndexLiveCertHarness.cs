@@ -106,7 +106,7 @@ internal static class MemoryIndexLiveCertHarness {
     ///
     /// <para><b>Why a subprocess and not an in-process HttpClient.</b> This assembly redirects
     /// <c>KCAP_CONFIG_DIR</c> to a throwaway directory for its whole lifetime
-    /// (<c>RepoPathStoreTests</c>'s <c>[Before(Assembly)]</c> hook), so in-process credential
+    /// (<c>RepoPathStoreGlobalSetup</c>'s <c>[ModuleInitializer]</c>), so in-process credential
     /// resolution reads an EMPTY config: every authenticated call 401s with "Not authenticated" even
     /// though `kcap whoami` succeeds in a shell a second earlier. A real `kcap` child reads the real
     /// config, so routing the memory lifecycle through the CLI is the only way a cert in this assembly
@@ -151,8 +151,8 @@ internal static class MemoryIndexLiveCertHarness {
         psi.ArgumentList.Add("mcp");
         psi.ArgumentList.Add("memory");
 
-        // The child MUST NOT inherit this assembly's redirected KCAP_CONFIG_DIR (RepoPathStoreTests
-        // [Before(Assembly)]), or `kcap` reads the same empty throwaway config the in-process path did
+        // The child MUST NOT inherit this assembly's redirected KCAP_CONFIG_DIR (RepoPathStoreGlobalSetup's
+        // [ModuleInitializer]), or `kcap` reads the same empty throwaway config the in-process path did
         // and answers "Not logged in" — the 401 in a different costume. Removing it lets the child
         // resolve the real config, which is the whole point of going out-of-process.
         psi.Environment.Remove("KCAP_CONFIG_DIR");

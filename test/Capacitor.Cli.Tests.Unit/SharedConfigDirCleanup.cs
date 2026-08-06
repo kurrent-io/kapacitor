@@ -2,7 +2,7 @@ namespace Capacitor.Cli.Tests.Unit;
 
 /// <summary>
 /// Clearing of the ONE config directory every path-based test in this assembly shares:
-/// <c>RepoPathStoreGlobalSetup</c>'s <c>[Before(Assembly)]</c> hook points <c>KCAP_CONFIG_DIR</c> at a
+/// <c>RepoPathStoreGlobalSetup</c>'s <c>[ModuleInitializer]</c> points <c>KCAP_CONFIG_DIR</c> at a
 /// single temp dir for the whole process, and <c>PathHelpers.ConfigDir</c> is <c>static readonly</c>,
 /// captured once. So 12+ classes delete the same <c>config.json</c>, <c>tokens.json</c> and
 /// <c>tokens/</c>, and any of them can be the one whose hook runs while a handle is still open —

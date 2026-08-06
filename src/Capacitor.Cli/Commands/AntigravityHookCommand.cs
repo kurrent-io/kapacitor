@@ -149,15 +149,11 @@ static class AntigravityHookCommand {
             ["started_at"]      = DateTimeOffset.UtcNow.ToString("O")
         };
 
-        string? scopeRoot = null;
         if (cwd is not null) {
             forwarded["cwd"] = cwd;
 
             // best-effort git-root discovery, fail-open (omitted when no repo is found).
-            if (GitRepository.FindRoot(cwd) is { } workspaceRoot) {
-                forwarded["workspace_root"] = workspaceRoot;
-                scopeRoot = workspaceRoot;
-            }
+            if (GitRepository.FindRoot(cwd) is { } workspaceRoot) forwarded["workspace_root"] = workspaceRoot;
         }
         if (Str(payload, "antigravityVersion") is { } version)
             forwarded["antigravity_version"] = version;
@@ -179,28 +175,57 @@ static class AntigravityHookCommand {
             return 0;
         }
 
+        // Scope root: the git root discovered from the payload cwd (stamped onto `forwarded` above,
+        // if found) is preferred; the payload cwd is the fallback. Read back from `enriched` (not a
+        // local captured above) so the fallback matches exactly what the server received. Never a
+        // process-cwd fallback — see StartMemoryIndexTask's scope-safety note.
+        var scopeRoot = AsString(JsonNode.Parse(enriched)?["workspace_root"]) ?? cwd;
+
         // Start the memory fetch so it OVERLAPS the lifecycle POST. Never before it, and never
         // awaited before it — the POST is what capture depends on.
         var memoryTask = StartMemoryIndexTask(
             baseUrl, sessionId, scopeRoot,
             activeProfile?.DisableMemoryIndex is true,
-            HookBudget.Remaining(processStart, "hook"),
+            HookBudget.Remaining(processStart, "session-start"),
             memoryClientFactory, memoryStoreFactory);
 
         // Task 6: spawn-before-post. Route through the shared spool-aware poster (which
         // replaced this dispatcher's former bespoke poster) — a lapse/outage durably spools the
         // payload for a later drain AND still proceeds to spawn the watcher, so capture never
         // depends on lifecycle-POST delivery. Only a permanent Failed withholds the watcher.
-        var spool   = new HookSpool(PathHelpers.ConfigPath("spool"));
-        var outcome = await AgentHookPoster.PostOrSpoolAsync(
+        //
+        // Started but NOT awaited yet, so the POST cannot stand between a fetched fragment and
+        // stdout: PostOrSpoolAsync retries for ~30s, far beyond this hook's 5s ceiling. A slow or
+        // unreachable server must never leave the once-per-conversation lease committed while the
+        // fragment it paid for is still stuck behind the POST — the vendor kills the hook at its own
+        // timeout, and that firing never retries.
+        var spool    = new HookSpool(PathHelpers.ConfigPath("spool"));
+        var postTask = AgentHookPoster.PostOrSpoolAsync(
             baseUrl, "session-start/antigravity", enriched, "antigravity-hook",
             spool, sessionId, route: "session-start/antigravity");
 
-        // AwaitBounded already subtracts HookBudget.Safety — do NOT subtract it again. Written
-        // even when the watcher-spawn gate below returns early — a withheld watcher must not
-        // suppress injection.
+        // The fragment reaches stdout as soon as the bounded fetch resolves — before the POST is
+        // awaited and before the watcher branch — so neither a slow POST nor a later
+        // EnsureWatcherRunning stall can strand an already-committed injection. AwaitBounded already
+        // subtracts HookBudget.Safety — do NOT subtract it again. Written even when the watcher-spawn
+        // gate below returns early — a withheld watcher must not suppress injection.
         WritePreInvocationOutput(
-            stdout, await SessionStartMemoryHookSupport.AwaitBounded(memoryTask, processStart, "hook"));
+            stdout, await SessionStartMemoryHookSupport.AwaitBounded(memoryTask, processStart, "session-start"));
+        await stdout.FlushAsync();
+
+        // BOUNDED by what remains of the ceiling — the POST retries for ~30s, far past this hook's 5s
+        // budget. On a lapse we stop waiting and spool durably instead, so a later drain pass replays
+        // it; double delivery is harmless (the server's deterministic lifecycle event id collapses
+        // both onto one SessionStarted).
+        HookPostOutcome outcome;
+
+        try {
+            outcome = await postTask.WaitAsync(HookBudget.Remaining(processStart, "session-start"));
+        } catch (TimeoutException) {
+            outcome = spool.Append(sessionId, "session-start/antigravity", enriched)
+                ? HookPostOutcome.Spooled
+                : HookPostOutcome.Skipped;
+        }
 
         // Fail-open: a non-zero exit would surface as a failed hook; skip the watcher
         // this firing and let the next PreInvocation retry.
@@ -209,11 +234,19 @@ static class AntigravityHookCommand {
         // Watcher key = the dashless session id (kcap watch strips dashes too, so the pid
         // file + the spawned watcher's stream all agree). The dashed conversation id lives on
         // in transcriptPath, from which the watcher derives the sibling gen_metadata db.
-        await WatcherManager.EnsureWatcherRunning(
-            baseUrl, sessionId, transcriptPath,
-            agentId: null, sessionIdOverride: null, cwd: cwd,
-            skipTitle: false, vendor: "antigravity"
-        );
+        //
+        // Bounded for the same reason as the POST, and this is the LAST step between the committed
+        // injection and the zero exit — a stall here would discard an already-written fragment. The
+        // stale-watcher path can wait up to 5s for a graceful kill.
+        try {
+            await WatcherManager.EnsureWatcherRunning(
+                baseUrl, sessionId, transcriptPath,
+                agentId: null, sessionIdOverride: null, cwd: cwd,
+                skipTitle: false, vendor: "antigravity"
+            ).WaitAsync(HookBudget.Remaining(processStart, "session-start"));
+        } catch (TimeoutException) {
+            // Budget exhausted. The next PreInvocation ensures the watcher.
+        }
 
         return 0;
     }
@@ -243,9 +276,9 @@ static class AntigravityHookCommand {
     /// Starts the shared memory fetch so it overlaps the lifecycle POST. Returns a task that never
     /// faults — every failure resolves to null, which the writer renders as zero bytes.
     ///
-    /// <para><b>Scope safety:</b> with no scope root the fetch is skipped rather than letting the
-    /// shared resolver fall back to the hook PROCESS's cwd and inject an unrelated repository's
-    /// memories.</para>
+    /// <para><b>Scope safety:</b> git root preferred, payload cwd as fallback; with neither, injection
+    /// is skipped rather than letting the shared resolver fall back to the hook PROCESS's cwd and
+    /// inject an unrelated repository's memories.</para>
     ///
     /// <para><c>CanAttempt</c> is checked BEFORE any client is constructed, because the client
     /// factory's EnsureAbsolute calls Environment.Exit(2) on an unusable base url — which would kill

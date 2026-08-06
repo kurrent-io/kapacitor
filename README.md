@@ -212,8 +212,8 @@ Once set up, Capacitor runs silently in the background. Every Claude Code (and C
 
 The SessionStart memory foundation is deliberately separate from harness activation. Every row uses
 the same typed fetch/render, lifecycle, fenced lease, and golden output contracts. Claude, Cursor,
-Codex, Copilot and Kiro are wired; each remaining adapter is activated and live-certified by its own
-AI-1456 child issue.
+Codex, Copilot, Gemini, Kiro, and Antigravity are wired; each remaining adapter is activated and
+live-certified by its own AI-1456 child issue.
 
 | Harness | Shared foundation | Hook/extension wired | Live receipt | Upstream status |
 |---------|-------------------|----------------------|--------------|-----------------|
@@ -222,7 +222,7 @@ AI-1456 child issue.
 | Cursor CLI (`cursor-agent`) | yes | yes | manual, recorded live-cert gate (needs `cursor-agent` + a reachable server + a memory in scope; not run in CI) | available — **supported** |
 | Cursor IDE (Agent Window) | yes | yes (same adapter — `sessionStart`'s `additional_context`) | **upstream-degraded**: the hook emits the correct JSON, but whether the IDE's Agent Window actually surfaces it to the model is not guaranteed — a known Cursor IDE limitation, not a `kcap` defect | hook output correct; model receipt not guaranteed |
 | GitHub Copilot CLI | yes | yes (`sessionStart`'s top-level `additionalContext`; silent when there is nothing to inject) | **certified** — gated live cert, `copilot 1.0.75` | available |
-| Gemini CLI | yes | no | pending | available |
+| Gemini CLI | yes | yes (`sessionStart`'s top-level `additionalContext`; falls back to the plain `{"continue":true}` allow payload when there is nothing to inject) | pending | available |
 | Kiro CLI | yes | yes (`agentSpawn` raw stdout — no envelope; Kiro appends hook stdout to agent context verbatim) | **certified** — gated live cert, `kiro-cli 2.12.1`. The once-per-session dedupe is unit-covered only: a resumed `kiro-cli` invocation carries a different hook session id, so it cannot certify it | available — injects **once per session** despite `agentSpawn` firing every prompt |
 | Pi | yes | no | pending | extension bridge required |
 | OpenCode | yes | no | pending | extension bridge required |

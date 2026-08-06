@@ -8,7 +8,7 @@ namespace Capacitor.Cli.Tests.Unit;
 /// MachineIdTests.cs for that one).
 ///
 /// PathHelpers.ConfigDir is static readonly — captured once at class-load time from
-/// KCAP_CONFIG_DIR. RepoPathStoreGlobalSetup.[Before(Assembly)] sets that env var to a shared
+/// KCAP_CONFIG_DIR. RepoPathStoreGlobalSetup's [ModuleInitializer] sets that env var to a shared
 /// temp dir before PathHelpers is first touched, so all path-based tests in this process share
 /// that same base dir. [NotInParallel] plus per-test cleanup of machine.json keeps these tests
 /// from racing each other or RepoPathStoreTests/TokenStoreProfileTests over shared files.
