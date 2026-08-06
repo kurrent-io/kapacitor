@@ -842,9 +842,11 @@ Install prints a `Consent:` line naming each reviewer flag it captured. That fre
 the unit outlives the shell, so the reviewer stays enabled for that service until you reinstall without the
 variable set — unsetting it in your shell later changes nothing.
 
-If a reviewer is still not offered, the daemon says why in its own log at startup — one warning per vendor
-that is installed and unattended-capable but withheld, carrying the same text the launch path would have
-thrown (consent not set, version unresolved, version uncertified/unaffirmed):
+If a reviewer is still not offered, the daemon says why in its own log at startup — one line per vendor that
+is installed and unattended-capable but withheld, carrying the same text the launch path would have thrown
+(consent not set, version unresolved, version uncertified/unaffirmed). It logs at `Information`, not
+`Warning`: a daemon with Gemini or Kiro installed purely for interactive use and no opt-in is in a
+perfectly normal state, so this is a line to find when you go looking, not an alert.
 
 ```bash
 grep -i "is NOT offering it" ~/.config/kcap/daemon-*.log

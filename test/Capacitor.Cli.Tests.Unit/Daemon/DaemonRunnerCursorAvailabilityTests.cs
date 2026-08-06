@@ -225,20 +225,27 @@ public class DaemonRunnerCursorAvailabilityTests {
         await Assert.That(cursor.Describes).IsEqualTo(1);
     }
 
-    /// <summary>The advertised subset matches what the list-only helper computes, so the two shapes cannot
-    /// disagree about which vendors are offered.</summary>
+    /// <summary>
+    /// The subset filter, exercised on its own inputs rather than against the composition it is part of.
+    ///
+    /// <para>Review's point, and it was right: comparing <c>AdvertisedUnattendedVendors(Classify(x))</c>
+    /// to <c>ComputeUnattendedVendors(x)</c> is now comparing a composition to its own definition, so it
+    /// could never fail for either function independently. Feeding statuses directly tests the one thing
+    /// this helper does — keep the advertised, drop the rest, preserve order.</para>
+    /// </summary>
     [Test]
-    public async Task AdvertisedUnattendedVendors_AgreesWithComputeUnattendedVendors() {
-        IHostedAgentRuntimeFactory[] factories = [
-            new WithholdingRuntimeFactory("gemini", "refused"),
-            new WithholdingRuntimeFactory("cursor", withheldReason: null),
-            new WithholdingRuntimeFactory("claude", withheldReason: null),
+    public async Task AdvertisedUnattendedVendors_KeepsOnlyTheAdvertisedOnesInOrder() {
+        DaemonRunner.UnattendedVendorStatus[] statuses = [
+            new("claude", Advertised: true,  WithheldReason: null),
+            new("gemini", Advertised: false, WithheldReason: "refused"),
+            // Advertised is the only thing consulted — a reason on an advertised row (which the
+            // classifier never produces) must not remove it, or the filter is reading the wrong field.
+            new("kiro",   Advertised: true,  WithheldReason: "ignored"),
+            new("zed",    Advertised: false, WithheldReason: null),
         ];
 
-        await Assert.That(DaemonRunner.AdvertisedUnattendedVendors(
-                DaemonRunner.ClassifyUnattendedVendors(factories)))
-            .IsEquivalentTo(DaemonRunner.ComputeUnattendedVendors(factories),
-                TUnit.Assertions.Enums.CollectionOrdering.Matching);
+        await Assert.That(DaemonRunner.AdvertisedUnattendedVendors(statuses))
+            .IsEquivalentTo(["claude", "kiro"], TUnit.Assertions.Enums.CollectionOrdering.Matching);
     }
 
     [Test]
