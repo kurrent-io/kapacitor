@@ -226,7 +226,7 @@ live-certified by its own AI-1456 child issue.
 | Kiro CLI | yes | yes (`agentSpawn` raw stdout — no envelope; Kiro appends hook stdout to agent context verbatim) | **certified** — gated live cert, `kiro-cli 2.12.1`. The once-per-session dedupe is unit-covered only: a resumed `kiro-cli` invocation carries a different hook session id, so it cannot certify it | available — injects **once per session** despite `agentSpawn` firing every prompt |
 | Pi | yes | no | pending | extension bridge required |
 | OpenCode | yes | no | pending | extension bridge required |
-| Antigravity | yes | yes (`PreInvocation` → `{"injectSteps":[{"userMessage":…}]}`; zero bytes when there is no index) | pending — gated live cert exists (`KCAP_ANTIGRAVITY_MEMORY_LIVE=1` + `KCAP_URL`, drives a real `agy` turn) but has not yet been run | available — injects **once per conversation** despite `PreInvocation` firing every invocation |
+| Antigravity | yes | yes (`PreInvocation` → `{"injectSteps":[{"userMessage":…}]}`; zero bytes when there is no index) | pending — **IDE only**. The gated cert (`KCAP_ANTIGRAVITY_MEMORY_LIVE=1` + `KCAP_URL`) was run against `agy` 1.1.10 and the model did **not** receive the index: the CLI's print mode fires the hook but ignores the returned `injectSteps`. Our side is verified (hook fires; a correct 516–2518 byte payload is emitted; run completes well inside the hook budget), so the cert is retained as the regression test for when upstream honours it. Certification therefore needs the **manual IDE procedure** | available on the **IDE**; on the **CLI** the hook fires and captures, but the injection is not surfaced to the model (`agy` 1.1.10). Injects **once per conversation** despite `PreInvocation` firing every invocation |
 
 ## CLI commands
 
