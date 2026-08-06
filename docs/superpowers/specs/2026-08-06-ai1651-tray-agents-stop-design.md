@@ -33,6 +33,13 @@ pause-new-launches toggle.
    rule IS the state: the default is untouched, restore is correct by construction, the toggle
    survives app restarts, and `kcap daemon consent show` tells the truth. This is a deliberate
    deviation from the issue's letter.
+   **Owner exemption:** `LaunchConsentEngine.Evaluate` admits an owner-originated launch
+   (verdict Allow, source `owner`) before consulting rules or the default — owner-always-allowed
+   is a consent-engine invariant (umbrella §10 matrix). Pause therefore stops **non-owner**
+   server-driven launches only. The issue's default-flip wording has the identical property (the
+   owner check precedes the default too), so the rule mechanism changes nothing here; §6 pins the
+   behavior and its acceptance test. Local-socket launches (`kcap agent start`) never consult the
+   gate at all.
 4. **VM-owned tray state, thin native adapter.** `TrayViewModel` projects everything
    decision-shaped (state, menu model, commands) from `IDaemonClientService`; a dumb
    `TrayIconManager` renders it into `TrayIcon`/`NativeMenu`. All logic is headless-testable; only
@@ -76,9 +83,11 @@ Non-goals (explicitly out):
 | 6 | `Connected`, `daemon.connection == "connected"`, `active_agents == 0` | **Idle** |
 | 7 | `Connected`, `daemon.connection == "connected"`, `active_agents > 0` | **Running(n)**, n = `active_agents` |
 | 8 | `Connected`, any other `connection` value (future daemon) | **Attention** (conservative) |
+| 9 | `Unreachable`, any other reason (future client — today the client pins exactly two) | **Attention** (conservative) |
 
-`AttachStatus` precedence is absolute: a retained stale snapshot never produces Idle/Running while
-the client is Connecting or Unreachable. `n` is `active_agents` — the display count derived
+The projection is total: rows 8–9 make every reachable input map to a state, and §5 gives those
+fallback rows a neutral header. `AttachStatus` precedence is absolute: a retained stale snapshot
+never produces Idle/Running while the client is Connecting or Unreachable. `n` is `active_agents` — the display count derived
 server-side from the same array (never treated as launch capacity). Between `Connected` and the
 first snapshot there is no gap: the AI-1650 client only reports Connected together with a valid
 first snapshot.
@@ -94,7 +103,8 @@ to the menu header line — a one-line change in the renderer, not a redesign.
 ## 5. Tray menu & adapter
 
 The menu is projected from a plain menu model (`TrayViewModel`) and rebuilt by `TrayIconManager`
-whenever the model changes (`NativeMenu` has no ItemsSource; full rebuild is cheap at these sizes).
+at menu-display time (`NativeMenu` has no ItemsSource; full rebuild is cheap at these sizes — see
+the rebuild cadence below).
 
 ```
 {daemonName}: connected — 2 agents running      (disabled header line)
@@ -114,30 +124,52 @@ Quit
   Connecting → `connecting…`; Attention/skew → the existing neutral copy ("app and daemon are
   incompatible — make sure both are up to date", no daemon-name prefix); Attention/server-link →
   `reconnecting to server` / `disconnected from server`; Idle → `connected — no agents`;
-  Running → `connected — {n} agent(s) running`.
+  Running → `connected — {n} agent(s) running`; any other Attention case (§4 rows 8–9) →
+  `needs attention` (neutral fallback).
 - **Agent entries** appear only while `Connected`; they are the agents whose `status` is
   `Starting` or `Running` (same predicate as `active_agents`), labeled
   `{kind} · {vendor} · {repo last path segment}` (`—` when `repo_path` null), ordered `created_at`
   asc, id ordinal tiebreak (the wire order pin). Requester stays in the main window.
 - **Stop** sends `StopV2 force:false` for that id; the entry's Stop item disables while in flight.
-- **Open in web** opens `{ServerUrl trimmed of trailing /}/agents/{id}` in the default browser
-  (`Process.Start` with `UseShellExecute` — via an injected opener seam for tests).
-- **Pause new launches** — §6. Disabled (unchecked) when the connected daemon's capabilities lack
-  `consent/1`, and while not `Connected`.
+- **Open in web** opens `{ServerUrl trimmed of trailing /}/agents/{Uri.EscapeDataString(id)}` in
+  the default browser (`Process.Start` with `UseShellExecute` — via an injected opener seam for
+  tests). An opener exception surfaces in the banner (§11).
+- **Pause new launches** — §6. Disabled when the connected daemon's capabilities lack
+  `consent/1`, while not `Connected`, while a toggle operation is in flight, and while the state
+  is unverified (§6); the checkmark always shows the last successfully fetched state.
 - **Open Kurrent Capacitor** shows/creates the main window (§9). **Quit** calls
   `desktop.TryShutdown()`, entering the existing deferred shutdown pass.
-- On menu open (`NativeMenu` opening event), the VM refreshes the pause state (§6). Menu content
-  otherwise tracks the push stream — no polling.
+- **Rebuild cadence.** `NativeMenu.NeedsUpdate` — the synchronous pre-display hook (Avalonia's
+  docs forbid mutating the menu from `Opening`) — is the ONLY place the adapter rebuilds menu
+  items, from the cached menu model. Model changes (snapshots, op completions, §6 refresh
+  results) update the cache and set a dirty flag consumed at the next `NeedsUpdate`; a change
+  arriving while the menu is open becomes visible at the next open, never mid-display. The tray
+  **icon** (glyph + count) is not part of the menu and updates immediately on model change.
+  `Opening` fire-and-forgets the §6 pause-state refresh — it starts async work only and never
+  touches the menu. The adapter's open/dirty tracking is a small testable state machine; manual
+  macOS acceptance includes updates arriving while the menu is open.
 
 ## 6. Pause-launches toggle
 
 The pause rule is exactly `ConsentRuleDto("deny", null, null, null, null)` at index 0.
 
+- **Semantics:** pause stops non-owner server-driven launches (§2 decision 3 — the engine's
+  owner exemption precedes rules and default alike). Acceptance test: a policy with the pause
+  rule at index 0 still allows a `RequesterIsOwner` input (engine-level, alongside the existing
+  consent-engine tests).
 - **Displayed state:** checked iff the latest fetched policy has an all-wildcard deny rule at
   index 0. An all-wildcard deny at any other index, or narrower deny rules, do not check the
-  toggle — `kcap daemon consent show` is the full truth. State is refreshed via `ConsentRulesGet`
-  on menu open and after every toggle write; a refresh failure keeps the last-known state and logs
-  (no banner for a passive refresh).
+  toggle — `kcap daemon consent show` is the full truth. The refresh (`ConsentRulesGet`) is
+  kicked fire-and-forget from the menu's `Opening` event and after every toggle write; its result
+  lands in the cached model, so it becomes visible at the next menu open (§5 rebuild cadence).
+  Accepted staleness: the checkmark can be one open behind a CLI-side edit. A refresh failure
+  keeps the last-known checkmark but marks the state **unverified**, which disables the item
+  (§5) until a later refresh succeeds; passive refresh failures log to stderr, no banner.
+- **Single-flight:** one toggle operation (Get → modify → Put → refresh Get) runs at a time; the
+  item is disabled while it runs, and clicks while disabled are ignored (no queueing — the user
+  re-expresses intent against the refreshed state). The item re-enables when the trailing
+  refresh completes; if the Put's outcome is ambiguous (transport failure or timeout after send)
+  and the trailing refresh also fails, the state is unverified as above.
 - **Pause:** `ConsentRulesGet` → if the pause rule is already at index 0, no-op (idempotent);
   otherwise insert it at index 0 → `ConsentRulesPut` with the full policy (`default` and
   `prompt_timeout_seconds` passed through unchanged).
@@ -160,10 +192,15 @@ One code path for both surfaces (tray menu item, main-window row button):
   `Error` frame (protected agent, unknown id) → banner with the daemon's text verbatim (it is
   display-quality and already names the `--force` escape hatch); transport failure → §10
   classification into the banner.
+- **Observable sequence** (pinned to the daemon's actual behavior — there is no `Stopping`
+  status): `StopAgentCoreAsync` sets the agent's status to `Completed` **before** the graceful
+  wait, so the next snapshot already shows `Completed` — the agent leaves the Starting/Running
+  predicate, the tray entry disappears, and the count drops **before** `StopAck` lands. The main
+  grid's row shows `Completed` until the agent leaves the snapshot entirely, then disappears. The
+  app never fakes a status; everything visible comes from snapshots.
 - In-flight gating is per agent id (a second Stop for the same id no-ops while one is pending;
-  different ids run concurrently). The row/menu item re-enables on reply; the visible status
-  transition (`Stopping`, then row removal) comes exclusively from daemon snapshots — the app
-  never fakes a status.
+  different ids run concurrently). Gating is keyed by id, so the tray entry or grid row
+  vanishing mid-flight is harmless; the pending op just completes into a no-longer-rendered row.
 - Open-in-web from a row uses the same link builder as the tray.
 
 ## 8. Main window Agents area
@@ -174,7 +211,8 @@ sorted `created_at` asc, id ordinal tiebreak.
 
 - **Columns:** Kind · Vendor · Repo · Requester · Status · Uptime · actions (Stop, Open in web).
   Status (verbatim daemon string, opaque display text) is an addition beyond the issue's minimum
-  list — it is how Stopping becomes visible.
+  list — it is how the daemon's actual stop sequence becomes visible (`Completed` at stop
+  initiation, §7; there is no `Stopping` status).
 - **Presentation rules:** `requester` null → `unknown` (the DTO doc assigns this to presentation);
   `repo_path` → last path segment, full path as tooltip, `—` when null; `model` appended to the
   vendor cell as `vendor (model)` when non-null.
@@ -238,6 +276,13 @@ public sealed record StopAgentResult(bool Ok, string Status, string? Error);
   `daemon_rejected` with the frame text; EOF, undecodable frame, or unexpected frame type →
   `unexpected_reply`; phase timeout → `timed_out`. The app maps reasons to banner copy; reasons
   are stable identifiers, not user copy.
+- **Structural validation** (STJ source-gen does not enforce non-nullable members — the daemon's
+  own receive path guards for exactly this, `LaunchConsentIpc.HandleRulesPutAsync`; the ops
+  mirror it): a `ConsentRules` reply must have a non-null root, non-null `default` ∈
+  `allow|deny|prompt`, `prompt_timeout_seconds ≥ 1`, non-null `rules`, and every rule element
+  non-null with non-null `action` ∈ `allow|deny`. A `ConsentAck` reply must have a non-null
+  root. A `StopAck` must contain a line for the requested id. Malformed JSON or any violation →
+  `unexpected_reply` — parseable-but-invalid payloads never escape as success.
 - Scripted-server unit tests in `Capacitor.Cli.Tests.Unit` alongside the `LocalControlClient`
   harness (macOS sockaddr limit + Windows guard + NotInParallel conventions apply).
 
@@ -252,23 +297,37 @@ public sealed record StopAgentResult(bool Ok, string Status, string? Error);
   A missed banner while the window is hidden is an accepted limitation of this slice — the tray
   state self-corrects from snapshots, and real notifications are AI-1652's job.
 - Menu truthfulness over optimism: no optimistic checkbox flips, no locally-faked agent status;
-  the push stream and the refresh-on-open are the sources of truth.
+  the push stream and the refresh-on-open are the sources of truth, and a pause state that
+  cannot be verified disables the item rather than guessing (§6).
 
 ## 12. Testing
 
 Headless (`Capacitor.App.Tests.Unit`, existing `AvaloniaSession` + immediate-scheduler swap):
 
-- **Tray state matrix:** all eight mapping rows of §4, including skew, server-link-lost,
-  unknown-connection-value, and stale-snapshot-while-unreachable.
+- **Tray state matrix:** all nine mapping rows of §4, including skew, server-link-lost,
+  unknown-connection-value, unknown-unreachable-reason, and stale-snapshot-while-unreachable.
 - **Menu model:** entry projection (filter to Starting/Running, label format, ordering), header
-  copy per state, agent section hidden when not Connected, pause item enablement (capability
-  gating + disconnected).
+  copy per state including the neutral fallback, agent section hidden when not Connected, pause
+  item enablement (capability gating + disconnected + in-flight + unverified).
+- **Adapter state machine:** rebuild only on `NeedsUpdate` from the cached model; a model change
+  while open sets dirty and is consumed at the next `NeedsUpdate`; `Opening` kicks the refresh
+  without touching menu structure.
 - **Pause logic** against a scripted `ILocalControlOps`: exact Put payloads for pause/unpause
   (rule inserted/removed at index 0, default and timeout passed through), idempotent double-pause,
-  detection strictness (wildcard deny at index ≠ 0 does not check the toggle), ack-failure →
-  banner + state revert on refresh.
-- **Stop command:** per-id in-flight gating, concurrent stops for different ids, `failed`/`Error`
-  → banner, no local cache mutation.
+  detection strictness (wildcard deny at index ≠ 0 does not check the toggle), single-flight
+  (rapid double-click runs one operation, second click ignored), disconnect and shutdown-token
+  cancellation mid-toggle, ack-failure → banner + unverified-disabled until a successful refresh.
+- **Consent-engine acceptance:** a policy with the pause rule at index 0 still allows a
+  `RequesterIsOwner` input (owner exemption, §6 semantics).
+- **Stop command:** per-id in-flight gating, concurrent stops for different ids, completion into
+  a vanished row is a no-op, `failed`/`Error` → banner, no local cache mutation.
+- **Agents grid:** row projection and sort order (`created_at` asc, id ordinal), presentation
+  rules (`requester` null → `unknown`, repo last-segment + tooltip + `—`, `vendor (model)`),
+  action disablement + dimming when not Connected, empty state, rows follow EditDiff removal.
+- **Deep links:** exact URI (trailing-slash trim + `Uri.EscapeDataString(id)`), opener invoked
+  through the seam, opener exception → banner.
+- **AppNotifier/banner:** latest-wins single slot, auto-dismiss expiry via `TimeProvider`,
+  stderr mirroring.
 - **Uptime formatting:** boundary cases via `TimeProvider`.
 - **Lifecycle** (fake `IClassicDesktopStyleApplicationLifetime` via the existing DispatchProxy
   harness): close-hides vs quit-closes ordering (`QuitInProgress` set on first deferred pass),
@@ -278,7 +337,9 @@ Headless (`Capacitor.App.Tests.Unit`, existing `AvaloniaSession` + immediate-sch
 
 `Capacitor.Cli.Tests.Unit`: `LocalControlOps` scripted-server tests — success, `Error`-frame
 result vs exception per op, EOF → `unexpected_reply`, connect failure → `daemon_unreachable`,
-phase timeout → `timed_out`.
+phase timeout → `timed_out`, and parseable-but-invalid payloads (§10 structural validation:
+null `rules`, null rule element, unknown `default`, missing `StopAck` line) →
+`unexpected_reply`.
 
 Manual (macOS, per the issue): tray icon rendering across the five states + count overlay,
 light/dark menu bar, menu interaction, deep links, real stop against a live daemon.
@@ -286,9 +347,10 @@ light/dark menu bar, menu interaction, deep links, real stop against a live daem
 ## 13. Risks & notes
 
 - **Avalonia tray variance on macOS** — the acknowledged risk; the pinned fallback (§4) bounds it.
-- **Menu rebuild cadence** — full `NativeMenu` rebuild per model change is O(agents) and rare
-  (snapshot-driven); if a platform quirk surfaces (flicker, focus), rebuilding only on
-  menu-open + snapshot-arrival is the noted fallback.
+- **Menu staleness while open** — the `NeedsUpdate`-only rebuild cadence (§5) means content is
+  frozen while the menu is displayed and the pause checkmark can be one open behind a CLI-side
+  edit; both are accepted (native menus are static while open anyway) and covered by manual
+  macOS acceptance.
 - **Last-write-wins on consent policy** (§6) — accepted for a sub-second window against a
   single-writer store.
 - **The `attention` state will gain consent-pending input in AI-1652**; the mapping table's
