@@ -52,8 +52,8 @@ public class AntigravitySessionStartTests : IDisposable {
         // Antigravity conversation ids are dashed UUIDs; the CLI must canonicalize to the
         // dashless form for session_id + the watcher key + disable (matching `kcap watch`),
         // so everything resolves to ONE stream.
-        const string convId  = "ag-test-sess-0001";
-        const string dashless = "agtestsess0001";
+        const string convId  = "e80c33bf-c10f-4d2f-b626-b0043f488fc0";
+        const string dashless = "e80c33bfc10f4d2fb626b0043f488fc0";
         NeutralizeWatcherSpawn(dashless);
 
         await AppConfig.SaveProfileConfig(new ProfileConfig {
