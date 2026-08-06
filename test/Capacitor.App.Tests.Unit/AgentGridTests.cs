@@ -212,6 +212,50 @@ public class AgentGridTests {
         await Assert.That(row.Uptime).IsEqualTo("10s");
     }
 
+    // ---- Disposal (fix-round 1: rows must not stay subscribed to shared sources forever) ----
+
+    [Test]
+    public async Task Dispose_stops_the_row_from_reacting_to_further_ticks() {
+        var time = new MutableTimeProvider { Now = new DateTimeOffset(2026, 8, 6, 10, 0, 0, TimeSpan.Zero) };
+        var createdAt = new DateTime(2026, 8, 6, 10, 0, 0, DateTimeKind.Utc);
+        var ticker = new Subject<long>();
+        var row = NewRow(Dto(createdAt: createdAt), time: time, ticker: ticker);
+
+        await Assert.That(row.IsDisposed).IsFalse();
+        await Assert.That(row.Uptime).IsEqualTo("0s");
+
+        row.Dispose();
+        await Assert.That(row.IsDisposed).IsTrue();
+
+        // The OAPH's subscription to the ticker is torn down by Dispose — a tick that would have
+        // advanced Uptime to "1m" must now be a no-op on this (discarded) instance.
+        time.Now = time.Now.AddSeconds(65);
+        ticker.OnNext(1);
+        await Assert.That(row.Uptime).IsEqualTo("0s");
+    }
+
+    [Test]
+    public async Task Dispose_stops_the_row_from_reacting_to_further_stopsInFlight_changes() {
+        var connected = new BehaviorSubject<bool>(true);
+        var stopsInFlight = new BehaviorSubject<IReadOnlySet<string>>(new HashSet<string>());
+        var row = NewRow(Dto(id: "a"), connected: connected, stopsInFlight: stopsInFlight);
+
+        await Assert.That(row.ActionsEnabled).IsTrue();
+
+        row.Dispose();
+        stopsInFlight.OnNext(new HashSet<string> { "a" });
+
+        await Assert.That(row.ActionsEnabled).IsTrue(); // frozen at its last value, not recomputed
+    }
+
+    [Test]
+    public async Task Dispose_is_idempotent() {
+        var row = NewRow(Dto());
+        row.Dispose();
+        row.Dispose(); // must not throw a second time
+        await Assert.That(row.IsDisposed).IsTrue();
+    }
+
     // ---- Stop/OpenInWeb delegation (spec §7 — same code path as the tray) ----
 
     static async Task WaitUntilAsync(Func<bool> condition, TimeSpan? timeout = null, string what = "condition") {
@@ -304,6 +348,61 @@ public class AgentGridTests {
 
         await Assert.That(beforeCount).IsEqualTo(2);
         await Assert.That(afterIds).IsEquivalentTo(["b"], CollectionOrdering.Matching);
+    }
+
+    /// Fix-round 1: DisposeMany() (MainWindowViewModel.cs, between Transform and ObserveOn) must
+    /// dispose the OLD row the instant Transform replaces it with a fresh revision — a Status
+    /// transition is the realistic trigger (AgentStatusDto is a record; EditDiff only emits an
+    /// Update for a genuinely different value, never a structurally-identical re-add).
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Replacing_an_agents_dto_disposes_the_old_row_instance() {
+        var (sameInstance, oldDisposed, newDisposed, newStatus, agentsCountAfter) = await AvaloniaSession.DispatchAsync(() => {
+            var service = new FakeDaemonClientService();
+            var (actions, notifier) = NewActions(service);
+            var vm = new MainWindowViewModel(service, actions, notifier, CancellationToken.None);
+            using var activation = vm.Activator.Activate();
+
+            var t0 = DateTime.UtcNow;
+            service.Agents.AddOrUpdate(Dto(id: "a", createdAt: t0, status: "Starting"));
+            Dispatcher.UIThread.RunJobs();
+            var before = vm.Agents[0];
+
+            service.Agents.AddOrUpdate(Dto(id: "a", createdAt: t0, status: "Running")); // Transform re-invokes
+            Dispatcher.UIThread.RunJobs();
+            var after = vm.Agents[0];
+
+            return (ReferenceEquals(before, after), before.IsDisposed, after.IsDisposed, after.StatusText, vm.Agents.Count);
+        });
+
+        await Assert.That(sameInstance).IsFalse(); // Transform really did recreate it
+        await Assert.That(oldDisposed).IsTrue();
+        await Assert.That(agentsCountAfter).IsEqualTo(1);
+        await Assert.That(newStatus).IsEqualTo("Running");
+        await Assert.That(newDisposed).IsFalse();
+    }
+
+    /// Fix-round 1: disposing the pipeline's own Subscribe() (window deactivation) must dispose
+    /// whatever rows are still live at that point, not just ones DynamicData individually removes
+    /// or replaces — DisposeMany's teardown-time cleanup, verified end to end through the VM.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Deactivating_the_window_disposes_the_still_live_rows() {
+        var row = await AvaloniaSession.DispatchAsync(() => {
+            var service = new FakeDaemonClientService();
+            var (actions, notifier) = NewActions(service);
+            var vm = new MainWindowViewModel(service, actions, notifier, CancellationToken.None);
+            var activation = vm.Activator.Activate();
+
+            service.Agents.AddOrUpdate(Dto(id: "a"));
+            Dispatcher.UIThread.RunJobs();
+            var liveRow = vm.Agents[0];
+
+            activation.Dispose(); // window close
+            return liveRow;
+        });
+
+        await Assert.That(row.IsDisposed).IsTrue();
     }
 
     [Test]

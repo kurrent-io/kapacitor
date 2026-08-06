@@ -191,15 +191,21 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
                 .ToProperty(this, x => x.GridEnabled, initialValue: false)
                 .DisposeWith(disposables);
 
-            // Connect -> Transform to row VMs -> ObserveOn BEFORE the operator that mutates the
-            // bound collection (SortAndBind counts as "Bind" here — DynamicData requires
-            // marshaling onto the UI thread before that mutation, not after) -> SortAndBind
-            // (spec §8: CreatedAt asc, Id ordinal tiebreak). Rows are recreated on every dto
-            // revision (AgentRowViewModel's own doc comment); EditDiff removals flow through as
-            // Remove changes, which is how a stopped agent's row disappears (spec §7 — no local
-            // removal on stop, only the next snapshot's absence).
+            // Connect -> Transform to row VMs -> DisposeMany (disposes a row the instant Transform
+            // replaces or removes it — AgentRowViewModel's OAPHs otherwise stay subscribed to the
+            // shared ticker/stopsInFlight forever, since Transform recreates a row on every dto
+            // revision rather than updating one in place) -> ObserveOn BEFORE the operator that
+            // mutates the bound collection (SortAndBind counts as "Bind" here — DynamicData
+            // requires marshaling onto the UI thread before that mutation, not after) ->
+            // SortAndBind (spec §8: CreatedAt asc, Id ordinal tiebreak). EditDiff removals flow
+            // through as Remove changes, which is how a stopped agent's row disappears (spec §7 —
+            // no local removal on stop, only the next snapshot's absence) and DisposeMany's Remove
+            // path is what cleans up its subscriptions. Disposing this Subscribe() (window
+            // deactivation) also disposes whatever rows are still live at that point — DisposeMany
+            // disposes its full current set on teardown, not just on per-item Remove/Update.
             service.Agents.Connect()
                 .Transform(dto => new AgentRowViewModel(dto, actions, _ticker, _time, connected, stopsInFlight))
+                .DisposeMany()
                 .ObserveOn(RxSchedulers.MainThreadScheduler)
                 .SortAndBind(out _agents, RowComparer)
                 .Subscribe()

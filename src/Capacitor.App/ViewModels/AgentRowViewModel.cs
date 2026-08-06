@@ -1,4 +1,5 @@
 using System.Reactive;
+using System.Reactive.Disposables;
 using System.Reactive.Linq;
 using Capacitor.App.Services;
 using Capacitor.Cli.Core.LocalIpc;
@@ -12,7 +13,15 @@ namespace Capacitor.App.ViewModels;
 /// there is no "update in place" path to wire. Ticker/connected/stopsInFlight are pre-scheduled
 /// by the caller (MainWindowViewModel) onto RxSchedulers.MainThreadScheduler — this class stays
 /// scheduler-agnostic so a test can drive it with plain Subjects with no Avalonia session.
-public sealed class AgentRowViewModel : ReactiveObject {
+///
+/// IDisposable: the OAPHs below subscribe eagerly to the CALLER-owned ticker/stopsInFlight
+/// observables, which live for the whole window activation — without disposal, a row recreated by
+/// Transform on every dto revision (chiefly a Status transition) would stay subscribed forever,
+/// doing a per-second recompute for an instance nothing renders anymore. MainWindowViewModel's
+/// pipeline pairs this with DynamicData's DisposeMany() so every replaced or removed row is
+/// disposed automatically, and disposing the pipeline's own subscription (window deactivation)
+/// disposes whatever rows are still live at that point.
+public sealed class AgentRowViewModel : ReactiveObject, IDisposable {
     public string Id { get; }
     public string Kind { get; }
     public string VendorDisplay { get; }
@@ -34,6 +43,12 @@ public sealed class AgentRowViewModel : ReactiveObject {
     public ReactiveCommand<Unit, Unit> StopCommand { get; }
     public ReactiveCommand<Unit, Unit> OpenInWebCommand { get; }
 
+    readonly CompositeDisposable _disposables = new();
+
+    // Test-visible proof that Dispose actually ran (DisposeMany's job) — not part of the pinned
+    // presentation surface, so it stays out of the constructor doc and the brief's interface list.
+    public bool IsDisposed { get; private set; }
+
     public AgentRowViewModel(
             AgentStatusDto dto, AgentActionService actions, IObservable<long> ticker, TimeProvider time,
             IObservable<bool> connected, IObservable<IReadOnlySet<string>> stopsInFlight) {
@@ -52,10 +67,12 @@ public sealed class AgentRowViewModel : ReactiveObject {
         _uptime = ticker
             .Select(_ => UptimeFormat.Format(time.GetUtcNow().UtcDateTime - createdAtUtc))
             .ToProperty(this, x => x.Uptime, initialUptime);
+        _disposables.Add(_uptime);
 
         _actionsEnabled = connected
             .CombineLatest(stopsInFlight, (isConnected, inFlight) => isConnected && !inFlight.Contains(Id))
             .ToProperty(this, x => x.ActionsEnabled, initialValue: false);
+        _disposables.Add(_actionsEnabled);
 
         // Mirrors TrayViewModel's tray-entry label shape (kind · vendor · repo leaf) — spec §7
         // doesn't pin the grid row's label text, so this stays consistent with the tray's for the
@@ -63,5 +80,16 @@ public sealed class AgentRowViewModel : ReactiveObject {
         var label = $"{dto.Kind} · {dto.Vendor} · {RepoLeaf}";
         StopCommand = ReactiveCommand.Create(() => actions.RequestStop(Id, label));
         OpenInWebCommand = ReactiveCommand.Create(() => actions.OpenInWeb(Id));
+        _disposables.Add(StopCommand);
+        _disposables.Add(OpenInWebCommand);
+    }
+
+    // Called by DynamicData's DisposeMany() (MainWindowViewModel's pipeline) when this row is
+    // replaced by a fresh revision or removed, and on pipeline teardown for whatever rows are
+    // still live — never called directly by presentation code.
+    public void Dispose() {
+        if (IsDisposed) return;
+        IsDisposed = true;
+        _disposables.Dispose();
     }
 }
