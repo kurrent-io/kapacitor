@@ -15,23 +15,15 @@ static class ServiceEnvironment {
         ["PATH", "KCAP_CONFIG_DIR", "KCAP_PROFILE", "KCAP_URL", "KCAP_CLAUDE_PATH", "KCAP_CODEX_PATH"];
 
     /// <summary>
-    /// The operator consent flags for the two gated unattended reviewers, carried on every platform.
+    /// Operator consent for the two gated unattended reviewers. Carried on every platform: these are
+    /// booleans, not secret-capable, so <see cref="GoogleSecretCapableKeys"/>'s exclusion does not apply.
     ///
-    /// <para><b>Why they have to be here.</b> A supervised daemon inherits nothing from the installing
-    /// shell, and these flags have no profile or config-file binding — the daemon reads them from its
-    /// own environment and nowhere else. Without this, exporting one and reinstalling the service
-    /// produced a unit that silently did not carry it, so the reviewer stayed off with no error and no
-    /// log line: the same "shipped but unreachable" shape as having no binding at all, just moved from
-    /// the daemon to the unit. That is what a supervised install is FOR, so it is not an edge case.</para>
+    /// <para>Required because the daemon reads them from its own environment and nowhere else — no
+    /// profile or config-file binding — so without this a supervised install silently dropped them and
+    /// the reviewer could not be turned on at all.</para>
     ///
-    /// <para>Nothing here is secret-capable — each is a boolean an operator typed — so
-    /// <see cref="GoogleSecretCapableKeys"/>'s platform exclusion does not apply.</para>
-    ///
-    /// <para><b>Capturing consent is not granting it.</b> These carry an EXISTING opt-in into the unit;
-    /// they never create one, so a unit can only end up with a flag the installing environment already
-    /// had. It is still a value frozen at install time rather than re-read per boot, which is why
-    /// <see cref="CarriedConsentFlags"/> exists: the install path reports what it captured, so freezing
-    /// a consent decision is something the operator watches happen rather than discovers later.</para>
+    /// <para>Capture carries an EXISTING opt-in; it cannot create one. It does freeze it, which is what
+    /// <see cref="CarriedConsentFlags"/> reports.</para>
     /// </summary>
     internal static readonly string[] ReviewerConsentKeys =
         ["KCAP_GEMINI_UNATTENDED_REVIEWER", "KCAP_KIRO_UNATTENDED_REVIEWER"];
@@ -121,11 +113,9 @@ static class ServiceEnvironment {
     }
 
     /// <summary>
-    /// The reviewer consent flags a built environment actually carries, for the install path to report.
-    ///
-    /// <para>Reads the BUILT environment rather than the ambient one, so it can only ever name a value
-    /// that really was written into the unit — a message derived from the process environment could
-    /// claim a capture that a platform exclusion or an empty value had dropped.</para>
+    /// Which consent flags a built environment carries, for the install path to report. Reads the BUILT
+    /// environment, not the ambient one, so it cannot claim a capture that an empty value or a platform
+    /// exclusion dropped on the way in.
     /// </summary>
     internal static IReadOnlyList<string> CarriedConsentFlags(IReadOnlyDictionary<string, string> env) =>
         [.. ReviewerConsentKeys.Where(env.ContainsKey)];

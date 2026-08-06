@@ -75,13 +75,11 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
 
     /// <summary>
     /// The advertisement decision and its reason from ONE pass over the gate ladder — see
-    /// <see cref="IHostedAgentRuntimeFactory.DescribeUnattendedSupport"/> for why both facts come from
-    /// a single call.
+    /// <see cref="IHostedAgentRuntimeFactory.DescribeUnattendedSupport"/>.
     ///
-    /// <para>A vendor whose descriptor never claimed unattended support reports
-    /// <c>(false, null)</c>: nothing is being withheld, so there is nothing for an operator to fix. A
-    /// gated reviewer this daemon refuses reports the SAME text
-    /// <see cref="RequireReviewerCapability"/> throws at launch, because it is the same call.</para>
+    /// <para>A descriptor that never claimed unattended support reports <c>(false, null)</c> — nothing
+    /// withheld, nothing to fix. A refused reviewer reports the same text
+    /// <see cref="RequireReviewerCapability"/> throws, because it is the same call.</para>
     /// </summary>
     public UnattendedSupport DescribeUnattendedSupport() {
         if (!descriptor.SupportsUnattended) return new(false, null);
@@ -817,19 +815,15 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
     }
 
     /// <summary>
-    /// Why this daemon refuses to host <paramref name="descriptor"/>'s vendor as an unattended
-    /// reviewer, or null when it does not refuse. The ONE place the gate ladder is written.
+    /// Why this daemon refuses <paramref name="descriptor"/>'s vendor as an unattended reviewer, or
+    /// null when it does not. The ONE place the gate ladder is written — advertisement
+    /// (<see cref="DescribeUnattendedSupport"/>), the launch boundary
+    /// (<see cref="RequireReviewerCapability"/>) and the startup diagnostic all read it. They were two
+    /// separately maintained ladders, which is how a vendor could be dropped from advertisement and
+    /// thereby never reach the launch path that held the explanation.
     ///
-    /// <para>Advertisement (<see cref="DescribeUnattendedSupport"/>), the launch boundary
-    /// (<see cref="RequireReviewerCapability"/>) and the daemon's startup diagnostic all read this,
-    /// so they cannot drift into disagreeing about whether — or why — a reviewer is unavailable. That
-    /// mattered: the advertisement copy and the launch copy were separately maintained ladders, and a
-    /// vendor dropped from advertisement could therefore never produce the launch-path text that
-    /// explains it, since advertisement is what stops the launch from being attempted at all.</para>
-    ///
-    /// <para>Deliberately NOT cached. Advertisement is computed once at startup, but the launch
-    /// boundary must see the vendor as it is at spawn time — a build swapped under a long-running
-    /// daemon has to be re-judged, not read from a startup snapshot.</para>
+    /// <para>Deliberately NOT cached: the launch boundary must re-judge a build swapped under a
+    /// long-running daemon rather than read a startup snapshot.</para>
     /// </summary>
     internal static string? ReviewerRefusal(
             AcpVendorDescriptor descriptor, DaemonConfig config, Func<string, string?>? resolveVersion) {

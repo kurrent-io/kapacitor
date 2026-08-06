@@ -455,9 +455,8 @@ public static partial class DaemonRunner {
         // that's merely installed but has no unattended launcher is never offered as an override
         // target.
         //
-        // Classified ONCE and reused below, because a gated reviewer's classification spawns the
-        // vendor binary to read its version: recomputing it for the capability list and again for the
-        // diagnostic would probe an installed-but-slow vendor three times per startup.
+        // Classified ONCE and reused below: a gated reviewer's classification spawns the vendor binary
+        // to read its version, so recomputing per consumer would probe it three times per startup.
         var unattendedStatuses = ClassifyUnattendedVendors(runtimeFactories);
 
         config.UnattendedVendors = AdvertisedUnattendedVendors(unattendedStatuses);
@@ -469,11 +468,9 @@ public static partial class DaemonRunner {
         // without any comparison against a validated-build record.
         LogUnattendedVendorIdentities(logger, config.UnattendedVendorCapabilities);
 
-        // The counterpart of the line above, and the one that was missing: a vendor this daemon COULD
-        // host unattended but is refusing was dropped from the advertisement in silence. The refusal
-        // text existed all along, but only the launch path threw it — and advertisement is exactly
-        // what stops that launch from being attempted, so the explanation could never be produced.
-        // An operator's only remaining route was to read the daemon source.
+        // The counterpart of the line above. A withheld vendor used to vanish from advertisement in
+        // silence: the refusal text existed, but only the launch path threw it — and advertisement is
+        // what stops that launch being attempted, so the explanation could never be produced.
         foreach (var withheld in unattendedStatuses.Where(s => s.WithheldReason is not null))
             LogUnattendedVendorWithheld(logger, withheld.Vendor, withheld.WithheldReason!);
 
@@ -1057,17 +1054,10 @@ public static partial class DaemonRunner {
     [LoggerMessage(Level = LogLevel.Information, Message = "Unattended vendor '{Vendor}': CLI version {CliVersion}, as observed by probing the configured binary at daemon startup. That is a startup observation, not the build a later reviewer runs — if the vendor updates while this daemon keeps running, launches pick up the new build and this line stays stale until the daemon restarts.")]
     static partial void LogUnattendedVendorIdentity(ILogger logger, string vendor, string cliVersion);
 
-    // Information, deliberately, and at the same level as the identity line above: a daemon with a
-    // gated vendor installed and no opt-in is in a perfectly NORMAL steady state — an operator may
-    // have installed Kiro or Gemini for interactive use and never intend to run either unattended.
-    // At Warning this would fire on every restart, forever, for that entirely correct configuration,
-    // and in most stacks Warning is what reaches an alerting pipeline. The line exists to be findable
-    // by someone asking "why is my reviewer not offered", not to assert that anything is wrong; the
-    // daemon's default minimum level is Information, so it is in the log either way.
-    //
-    // {Reason} ends the message because every reason string is itself a full sentence ending in a
-    // period — interpolating it mid-sentence rendered "…acceptable. Until that is resolved…", which
-    // reads like a truncation artifact.
+    // Information, not Warning: a gated vendor installed with no opt-in is a NORMAL steady state (an
+    // operator may run Kiro or Gemini interactively only), so Warning would alert on a correct
+    // configuration at every restart. Default minimum level is Information, so it is logged either way.
+    // {Reason} ends the message because each reason is itself a sentence ending in a period.
     [LoggerMessage(Level = LogLevel.Information, Message = "Vendor '{Vendor}' is installed and can host an unattended reviewer, but this daemon is NOT offering it, so a review flow requesting this vendor is refused by the server as an unadvertised reviewer — which does not say why. Restart the daemon after changing this. Reason: {Reason}")]
     static partial void LogUnattendedVendorWithheld(ILogger logger, string vendor, string reason);
 

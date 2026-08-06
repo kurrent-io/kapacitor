@@ -41,15 +41,12 @@ internal interface IHostedAgentRuntimeFactory {
     bool SupportsUnattended { get; }
 
     /// <summary>
-    /// <see cref="SupportsUnattended"/> together with the reason it is withheld, resolved in ONE
-    /// evaluation. Both facts come from a single call deliberately: for the gated reviewers the
-    /// decision spawns the vendor binary to read its version, so asking for the flag and then asking
-    /// for the reason would probe an installed-but-slow binary twice per daemon startup.
+    /// <see cref="SupportsUnattended"/> and the reason it is withheld, in ONE evaluation — the gated
+    /// reviewers spawn their vendor binary to decide, so two calls would probe it twice per startup.
     ///
-    /// <para><see cref="UnattendedSupport.WithheldReason"/> is populated ONLY for a vendor that could
-    /// host an unattended agent but is being refused by THIS daemon's configuration — never for a
-    /// vendor that simply does not offer unattended hosting, which is a design fact and not something
-    /// an operator can act on. That asymmetry is what makes the reason safe to log as a Warning.</para>
+    /// <para><see cref="UnattendedSupport.WithheldReason"/> is populated ONLY for a vendor THIS daemon's
+    /// configuration is refusing, never for one that simply does not offer unattended hosting. That
+    /// asymmetry is what makes the reason worth surfacing to an operator.</para>
     /// </summary>
     UnattendedSupport DescribeUnattendedSupport() => new(SupportsUnattended, null);
 
