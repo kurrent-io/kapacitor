@@ -5,15 +5,18 @@ using Microsoft.Extensions.Time.Testing;
 namespace Capacitor.Cli.Tests.Unit;
 
 /// <summary>
-/// Task 12 (unified reviewer reaping, liveness-supervision spec §0/§1):
 /// <see cref="AgentOrchestrator.FindReviewersToReap"/>'s full decision table.
 ///
-/// <para>Three coexisting rule sets fire from this one method — the server-sent-bound inactivity
-/// rule, the server-sent-bound <c>turn_wedged</c> rule, and the no-bound dual legacy fallback — so
-/// every test here pins WHICH rule fired (the reason string), never merely "the agent is gone",
-/// per the two-guards-one-input trap: an agent absent from <c>FindReviewersToReap</c>'s result could
-/// be healthy under every rule, and an agent present in it could have been flagged by the wrong one.
-/// </para>
+/// <para>Three rules coexist in this one method — the 6h absolute TTL, the 60m <c>turn_wedged</c>
+/// ceiling, and the 2h idle backstop — so every test here pins WHICH rule fired (the reason string),
+/// never merely "the agent is gone", per the two-guards-one-input trap: an agent absent from
+/// <c>FindReviewersToReap</c>'s result could be healthy under every rule, and an agent present in it
+/// could have been flagged by the wrong one.</para>
+///
+/// <para>The server-sent <see cref="AgentInstance.InactivityBoundSeconds"/> is deliberately NOT a
+/// rule here (it is round-scoped and the server owns it). Several tests below therefore seed a bound
+/// specifically to prove it does nothing — they are the regression fence for the
+/// reviewer-reaped-between-rounds defect.</para>
 ///
 /// Partial of <see cref="AgentOrchestratorVendorTests"/> to reuse its <c>BuildOrchestrator</c>/
 /// <c>SeedAgentForTest</c>/<c>CaptureServerConnection</c>/<c>SpyPtyProcessFactory</c> test doubles —
@@ -21,45 +24,76 @@ namespace Capacitor.Cli.Tests.Unit;
 /// </summary>
 public partial class AgentOrchestratorVendorTests {
     /// <summary>
-    /// A server-sent bound must be used INSTEAD OF the daemon's env-configured legacy knobs, not
-    /// alongside them. Proven by setting the legacy knobs to values that would NEVER reap (10h, far
-    /// past any test duration) while the server-sent bound is a tight 60s and the agent has been idle
-    /// 5 minutes — only a build that actually branches on <see cref="AgentInstance.InactivityBoundSeconds"/>
-    /// reaps this agent; a build that fell through to the legacy rules (ignoring the bound) would leave
-    /// it alive under the 10h knobs.
+    /// THE regression this fix exists for: a reviewer that has finished round 1 and is waiting while
+    /// the driver spends half an hour addressing its findings emits nothing, so <c>IdleForMs</c>
+    /// climbs far past the server-sent (round-scoped) 10-minute bound — and must NOT be reaped, because
+    /// the daemon's own backstop is 2h/6h and neither is close. Any build that applies
+    /// <see cref="AgentInstance.InactivityBoundSeconds"/> as a lifetime idle rule kills this reviewer
+    /// mid-flow and lands round 2 on the heal path.
+    ///
+    /// <para>Mutation anchor: reinstating <c>if (a.InactivityBoundSeconds is { } b &amp;&amp; b > 0 ...)</c>
+    /// before the legacy rules fails exactly this test (and its sibling below), while every other test
+    /// in the file still passes — so the anchor is specific to the removed rule.</para>
     /// </summary>
     [Test]
-    public async Task Server_sent_bound_is_honored_over_the_env_configured_legacy_values() {
+    public async Task Reviewer_idle_30m_between_rounds_is_not_reaped_despite_a_server_sent_bound() {
         await using var orch = BuildOrchestrator(
-            new CaptureServerConnection(), new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>(),
-            configure: c => {
-                c.ReviewerMaxLifetime = TimeSpan.FromHours(10);
-                c.ReviewerIdleTimeout = TimeSpan.FromHours(10);
-            });
+            new CaptureServerConnection(), new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>());
+        // defaults: 6h lifetime / 2h idle / 60m wedge ceiling
 
         var time  = new FakeTimeProvider();
         var clock = new AgentActivityClock(time);
-        time.Advance(TimeSpan.FromMinutes(5)); // idle 5m — past a 60s bound, nowhere near the 10h knobs
+        // No turn is held — between rounds the reviewer has settled its last turn. Idle 30m: 3x the
+        // server's bound, but well under BOTH daemon backstops.
+        time.Advance(TimeSpan.FromMinutes(30));
 
-        orch.SeedAgentForTest("bound-reviewer", LaunchKind.ReviewFlow, status: "Running",
-            activityClock: clock, inactivityBoundSeconds: 60);
+        orch.SeedAgentForTest("between-rounds", LaunchKind.ReviewFlow, status: "Running",
+            activityClock: clock, inactivityBoundSeconds: 600);
+
+        await Assert.That(orch.FindReviewersToReap().Select(r => r.Id)).DoesNotContain("between-rounds");
+    }
+
+    /// <summary>The other half of the ownership split: a bound being present must not DISABLE the legacy
+    /// backstop either (the pre-fix code returned early on any bound, so a bound-carrying reviewer was
+    /// never TTL- or idle-checked at all). Both legacy rules fire here on bound-carrying agents, and each
+    /// reason is asserted individually so the two remain independently load-bearing.</summary>
+    [Test]
+    public async Task Legacy_ttl_and_idle_still_fire_for_a_bound_carrying_reviewer() {
+        await using var orch = BuildOrchestrator(
+            new CaptureServerConnection(), new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>());
+        // defaults: 6h lifetime / 2h idle
+
+        var activeTime  = new FakeTimeProvider();
+        var activeClock = new AgentActivityClock(activeTime);
+        activeTime.Advance(TimeSpan.FromHours(6) + TimeSpan.FromMinutes(1));
+        activeClock.Advance(); // genuinely active at the moment of the check — idle ~0, only the TTL can fire
+        orch.SeedAgentForTest("bound-active-old", LaunchKind.ReviewFlow, status: "Running",
+            activityClock: activeClock, inactivityBoundSeconds: 600);
+
+        var idleTime  = new FakeTimeProvider();
+        var idleClock = new AgentActivityClock(idleTime);
+        idleTime.Advance(TimeSpan.FromHours(2) + TimeSpan.FromMinutes(1)); // under 6h TTL, past 2h idle
+        orch.SeedAgentForTest("bound-idle-young", LaunchKind.ReviewFlow, status: "Running",
+            activityClock: idleClock, inactivityBoundSeconds: 600);
 
         var reap = orch.FindReviewersToReap();
 
-        await Assert.That(reap).Contains(("bound-reviewer", "reviewer_inactivity_bound_exceeded"));
+        await Assert.That(reap).Contains(("bound-active-old", "reviewer_ttl_expired"));
+        await Assert.That(reap).Contains(("bound-idle-young", "reviewer_idle_expired"));
     }
 
-    /// <summary>A held turn suppresses the plain inactivity rule outright — idle well past the bound,
-    /// but <c>TurnInFlight</c> true and nowhere near the wedge ceiling, must not reap.</summary>
+    /// <summary>A held turn suppresses the plain idle rule outright — idle 5m with <c>TurnInFlight</c>
+    /// true and nowhere near the wedge ceiling must not reap. (Also inert against the removed bound
+    /// rule: 5m is past the seeded 60s bound.)</summary>
     [Test]
-    public async Task TurnInFlight_defers_the_inactivity_reap() {
+    public async Task TurnInFlight_defers_the_idle_reap() {
         await using var orch = BuildOrchestrator(
             new CaptureServerConnection(), new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>());
 
         var time  = new FakeTimeProvider();
         var clock = new AgentActivityClock(time);
         clock.SetTurnInFlight(true);
-        time.Advance(TimeSpan.FromMinutes(5)); // well past the 60s bound, nowhere near the 60m wedge ceiling
+        time.Advance(TimeSpan.FromMinutes(5)); // nowhere near the 60m wedge ceiling or the 2h idle rule
 
         orch.SeedAgentForTest("wedge-safe", LaunchKind.ReviewFlow, status: "Running",
             activityClock: clock, inactivityBoundSeconds: 60);
@@ -68,8 +102,9 @@ public partial class AgentOrchestratorVendorTests {
     }
 
     /// <summary>A turn held with the seq genuinely frozen (no Advance() at all since it started) past
-    /// the daemon-local wedge ceiling is reaped as <c>turn_wedged</c> — independent of the server-sent
-    /// bound, which a held turn always suppresses.</summary>
+    /// the daemon-local wedge ceiling is reaped as <c>turn_wedged</c>. 61m is past the 60m ceiling but
+    /// well under the 6h TTL, so the reason pins the wedge rule specifically. The seeded bound is
+    /// irrelevant to it — the wedge is a genuine daemon-local wedge detector, not a round-scoped rule.</summary>
     [Test]
     public async Task Turn_wedged_fires_when_the_seq_stays_frozen_past_the_ceiling() {
         await using var orch = BuildOrchestrator(
@@ -113,7 +148,10 @@ public partial class AgentOrchestratorVendorTests {
     /// <summary>No server-sent bound (old server, or a launch predating the field): BOTH legacy rules
     /// apply, not just one — an ACTIVE agent (idle ~0, i.e. genuinely working) still dies at the 6h
     /// absolute TTL, and a separate agent under the TTL but idle past 2h dies on the idle rule. Each
-    /// reason is asserted individually so the two rules are pinned as independently load-bearing.</summary>
+    /// reason is asserted individually so the two rules are pinned as independently load-bearing.
+    /// The bound-carrying twin of this test is
+    /// <see cref="Legacy_ttl_and_idle_still_fire_for_a_bound_carrying_reviewer"/> — together they pin
+    /// that the presence or absence of a bound changes nothing.</summary>
     [Test]
     public async Task No_bound_launch_retains_both_legacy_rules_ttl_and_idle() {
         await using var orch = BuildOrchestrator(
@@ -165,10 +203,10 @@ public partial class AgentOrchestratorVendorTests {
         await Assert.That(orch.FindReviewersToReap().Select(r => r.Id)).DoesNotContain("acp-reviewer");
     }
 
-    /// <summary>Non-flow hosted agents are never touched by any of the three rule sets, however
-    /// extreme their clock — the <c>LaunchKind.ReviewFlow</c> gate excludes them before any bound/TTL/
-    /// idle/wedge comparison runs. Mutation-checked: removing the Kind guard makes this fail (the
-    /// interactive agent, seeded with a clock that would trip EVERY rule, gets reaped).</summary>
+    /// <summary>Non-flow hosted agents are never touched by any rule, however extreme their clock —
+    /// the <c>LaunchKind.ReviewFlow</c> gate excludes them before any TTL/idle/wedge comparison runs.
+    /// Mutation-checked: removing the Kind guard makes this fail (the interactive agent, seeded with a
+    /// clock that would trip EVERY rule, gets reaped).</summary>
     [Test]
     public async Task Non_flow_hosted_agents_are_unaffected_regardless_of_clock_state() {
         await using var orch = BuildOrchestrator(
@@ -183,7 +221,8 @@ public partial class AgentOrchestratorVendorTests {
             activityClock: clock, inactivityBoundSeconds: 60);
 
         // A genuine ReviewFlow agent under the identical extreme clock IS reaped, proving the guard
-        // discriminates on Kind rather than the whole method being a no-op in this test.
+        // discriminates on Kind rather than the whole method being a no-op in this test. At 99h the
+        // absolute TTL is the first rule that matches, so that — not the wedge — is the reason.
         var time2  = new FakeTimeProvider();
         var clock2 = new AgentActivityClock(time2);
         clock2.SetTurnInFlight(true);
@@ -194,7 +233,7 @@ public partial class AgentOrchestratorVendorTests {
         var reap = orch.FindReviewersToReap();
 
         await Assert.That(reap.Select(r => r.Id)).DoesNotContain("interactive-extreme");
-        await Assert.That(reap).Contains(("reviewer-extreme", "turn_wedged"));
+        await Assert.That(reap).Contains(("reviewer-extreme", "reviewer_ttl_expired"));
     }
 
     /// <summary>End-to-end launch-path proof (as opposed to every test above, which injects the field

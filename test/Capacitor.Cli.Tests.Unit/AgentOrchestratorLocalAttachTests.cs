@@ -732,6 +732,71 @@ public partial class AgentOrchestratorVendorTests {
     /// Read and write go to separate underlying streams, so a test can preload client input
     /// while the daemon's frames are captured/discarded independently (a MemoryStream can't
     /// do both at once — it has a single position).
+    /// <summary>A read side that never yields and never hits EOF until the token is cancelled, so an
+    /// attach loop PARKS instead of tearing the agent down. That is what makes the spawned agent
+    /// observable while it is still live, rather than racing its cleanup.</summary>
+    sealed class ParkedReadStream : Stream {
+        public override ValueTask<int> ReadAsync(Memory<byte> b, CancellationToken ct = default) =>
+            new(Task.Delay(Timeout.Infinite, ct).ContinueWith(_ => 0, TaskContinuationOptions.ExecuteSynchronously));
+
+        public override int  Read(byte[] b, int o, int c) => throw new NotSupportedException();
+        public override void Write(byte[] b, int o, int c) { }
+        public override void Flush() { }
+        public override bool CanRead  => true;
+        public override bool CanWrite => true;
+        public override bool CanSeek  => false;
+        public override long Length   => throw new NotSupportedException();
+        public override long Position { get => 0; set { } }
+        public override long Seek(long o, SeekOrigin s) => throw new NotSupportedException();
+        public override void SetLength(long v) => throw new NotSupportedException();
+    }
+
+    /// <summary>Every launch path must build its activity clock through the orchestrator's
+    /// <c>CreateActivityClock()</c>, which is what wires the stage-advance status-report hook. The
+    /// local-spawn path used to construct its <c>AgentInstance</c> without one, taking the record's
+    /// hookless default: inert today (a local spawn is PTY-only, and nothing PTY stamps a launch
+    /// stage), but silently arming the exact "feature is wired everywhere except here" failure the
+    /// moment this path gains an ACP runtime — which is how the ACP handshake stamps went no-op once
+    /// already. Asserting the HOOK (not merely that some clock exists) is the load-bearing part:
+    /// the default clock is non-null too.</summary>
+    [Test]
+    public async Task Local_spawn_builds_its_activity_clock_through_the_shared_factory() {
+        var dir = Directory.CreateTempSubdirectory("kcap-clockwire-");
+        using var cts = new CancellationTokenSource();
+
+        try {
+            var launchers = new Dictionary<string, IHostedAgentLauncher> { ["claude"] = new SpyHostedAgentLauncher("claude", "spy-claude") };
+            // A PTY that emits one chunk and then blocks keeps the agent LIVE (a Noop PTY exits at
+            // once and the agent is finalized and unpublished before it can be observed).
+            await using var orch = BuildOrchestrator(
+                new TripwireServerConnection(), new FixedPtyProcessFactory(new OneChunkThenBlockPtyProcess()), launchers);
+
+            using var client = new DuplexTestStream(new ParkedReadStream(), new MemoryStream());
+            var spawn = FrameCodec.Spawn("claude", WorkLocation.BorrowedCwd, isPrivate: false, dir.FullName, [], 80, 24);
+
+            var spawnTask = orch.HandleLocalSpawnAsync(spawn, client, cts.Token);
+
+            // Bounded: a build that never publishes simply fails the assertion below, fast.
+            var deadline = DateTime.UtcNow.AddSeconds(5);
+            while (orch.BuildLiveAgents().Count == 0 && DateTime.UtcNow < deadline) await Task.Delay(10);
+
+            var live = orch.BuildLiveAgents();
+            await Assert.That(live.Count).IsEqualTo(1);
+
+            var agent = orch.GetAgentForTest(live[0].Id);
+            await Assert.That(agent).IsNotNull();
+            // A bool, not the delegate itself: TUnit's Assert.That(Action) overload is the delegate/Throws
+            // form and does NOT assert on the value, so `Assert.That(hook).IsNotNull()` would be a
+            // silent false negative here.
+            await Assert.That(agent!.ActivityClock.OnLaunchStageChanged is not null).IsTrue();
+
+            await cts.CancelAsync();
+            try { await spawnTask.WaitAsync(TimeSpan.FromSeconds(10)); } catch (OperationCanceledException) { }
+        } finally {
+            try { dir.Delete(recursive: true); } catch { /* best-effort */ }
+        }
+    }
+
     sealed class DuplexTestStream(Stream readSide, Stream writeSide) : Stream {
         /// <summary>The daemon's write side, for tests that need to inspect frames it sent.</summary>
         public Stream WrittenStream => writeSide;

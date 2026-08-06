@@ -2226,6 +2226,25 @@ public partial class AgentOrchestratorVendorTests {
             return Task.CompletedTask;
         }
 
+        /// <summary>Every <see cref="DaemonStatusReport"/> the orchestrator sent, in order — the
+        /// out-of-cycle launch-stage reports as well as any periodic tick. Lets a launch-path test
+        /// inspect what the WIRE carried at each point, which is the only way to observe the
+        /// handshake window (no AgentInstance exists during it).</summary>
+        readonly Lock                     _statusReportGate = new();
+        readonly List<DaemonStatusReport> _statusReports    = [];
+
+        public IReadOnlyList<DaemonStatusReport> StatusReports {
+            get { lock (_statusReportGate) return [.. _statusReports]; }
+        }
+
+        public int StatusReportCount { get { lock (_statusReportGate) return _statusReports.Count; } }
+
+        public override Task DaemonStatusReportAsync(DaemonStatusReport report) {
+            lock (_statusReportGate) _statusReports.Add(report);
+
+            return Task.CompletedTask;
+        }
+
         /// <summary>Number of times to fail AgentRegisteredAsync before succeeding (drives
         /// the bounded per-agent re-registration retry test).</summary>
         public int AgentRegisteredFailTimes { get; init; }

@@ -330,7 +330,7 @@ static class McpFlowsServer {
                             isError: true);
                     }
 
-                    var (retryPayload, retryIsError) = await ResolveRoundResultAsync(client, apiRoot, retryBody, toolName, wasDynamicStart, clock, backoff);
+                    var (retryPayload, retryIsError) = await ResolveRoundResultAsync(client, apiRoot, retryBody, toolName, wasDynamicStart, clock, backoff, settlementStartedAt);
 
                     return BuildToolResult(id, $"{PreferenceAppliedPrefix(preference)}\n{retryPayload}", retryIsError);
                 }
@@ -338,7 +338,7 @@ static class McpFlowsServer {
                 if (!postResponse.IsSuccessStatusCode)
                     return BuildToolResult(id, FormatFlowStartError((int)postResponse.StatusCode, postBody, wasDynamicStart), isError: true);
 
-                var (payload, isError) = await ResolveRoundResultAsync(client, apiRoot, postBody, toolName, wasDynamicStart, clock, backoff);
+                var (payload, isError) = await ResolveRoundResultAsync(client, apiRoot, postBody, toolName, wasDynamicStart, clock, backoff, settlementStartedAt);
                 return BuildToolResult(id, payload, isError);
             }
 
@@ -463,19 +463,40 @@ static class McpFlowsServer {
     /// <para>A tool call spends AT MOST ONE such window in total, which is what keeps that
     /// derivation valid: the one caller that sends twice (the preference fallback) threads
     /// <c>budgetStartedAt</c> so both sends share this budget rather than opening a second. The
-    /// worst case therefore stays this deadline plus <see cref="PollCap"/> — a second independent
-    /// window would push it past the harness pin, and precisely in the shape that matters, with a
-    /// paid reviewer launched by a POST whose result nobody is still waiting for.</para>
+    /// settlement lane and the round-poll lane that follows it likewise share ONE
+    /// <see cref="ToolCallBudget"/> — a second independent window would push the call past the
+    /// harness pin, and precisely in the shape that matters, with a paid reviewer launched by a POST
+    /// whose result nobody is still waiting for.</para>
     /// </summary>
     internal static readonly TimeSpan SettlementElapsedDeadline = TimeSpan.FromMinutes(3);
 
     /// <summary>The hard absolute ceiling on the whole settlement-retry lane, measured from the
     /// FIRST attempt — continuous daemon-lane progress can keep resetting
     /// <see cref="SettlementElapsedDeadline"/>'s rolling window indefinitely, so this is what
-    /// actually bounds the call. Sized to the same ~10-minute MCP tool timeout as
-    /// <see cref="PollCap"/> (the round-polling lane's own absolute cap) with the same margin — do
-    /// not raise either without re-deriving both against that ceiling.</summary>
+    /// actually bounds that lane. It bounds the settlement lane ALONE; the end-to-end bound on a tool
+    /// call is <see cref="ToolCallBudget"/>, which this must stay under.</summary>
     internal static readonly TimeSpan SettlementAbsoluteDeadline = TimeSpan.FromMinutes(8);
+
+    /// <summary>The ONE end-to-end budget for a single <c>HandleToolCallAsync</c> that both sends and
+    /// then polls, anchored at the moment of the first POST attempt.
+    ///
+    /// <para>The settlement lane (<see cref="SettlementAbsoluteDeadline"/>, 8m) and the round-poll lane
+    /// (<see cref="PollCap"/>, 8m) run SEQUENTIALLY within one tool call: the retry loop returns a
+    /// response, then <c>ResolveRoundResultAsync</c> starts polling. Bounding each lane separately
+    /// therefore bounded the call at 8m + 8m = 16m, against the ~10-minute MCP tool timeout the kcap
+    /// plugin pins (MCP_TOOL_TIMEOUT) — so a call that burned real settlement time could be killed by
+    /// the harness mid-poll, with the reviewer already launched and paid for. Threading the settlement
+    /// anchor into the poll lane makes the two lanes SHARE this budget instead: whatever settlement
+    /// spends, the poll no longer has.</para>
+    ///
+    /// <para>Applied as a CLIP on top of <see cref="PollCap"/>, never a replacement — the poll lane
+    /// still gets at most <c>PollCap</c>, and additionally may not run past this anchor + budget. A
+    /// call whose settlement lane returned immediately (the overwhelming majority, and every existing
+    /// fixture) is therefore bounded by <c>PollCap</c> exactly as before; only a call that genuinely
+    /// burned settlement time sees a shortened poll. 9m leaves the same margin under the harness pin
+    /// the individual lanes were each sized for. If that pin changes, re-derive this ONE value.</para>
+    /// </summary>
+    internal static readonly TimeSpan ToolCallBudget = TimeSpan.FromMinutes(9);
 
     static readonly HashSet<string> SettlementRetryableCodes =
         new(StringComparer.Ordinal) { "flow_settlement_busy", "reviewer_launch_incarnation_superseded" };
@@ -1239,8 +1260,13 @@ static class McpFlowsServer {
     /// Otherwise poll GET /api/flows/{id} until the started round is terminal.
     /// <paramref name="toolName"/> is the tool that initiated the round (one of
     /// start_review_flow/submit_review_round/start_flow/send_to_participant) — threaded through
-    /// so the graceful-cap timeout message can point back at the matching status tool.</summary>
-    static async Task<PollResult> ResolveRoundResultAsync(HttpClient client, string apiRoot, string postBody, string toolName, bool wasDynamicStart, FlowRetryClock clock, SettlementBackoff backoff) {
+    /// so the graceful-cap timeout message can point back at the matching status tool.
+    /// <paramref name="toolCallStartedAt"/> is this tool call's single budget anchor (the instant
+    /// before its first POST) — threaded through to <see cref="PollUntilTerminalAsync"/> so the poll
+    /// lane shares <see cref="ToolCallBudget"/> with the settlement lane that preceded it instead of
+    /// starting a fresh 8 minutes. Null only from a call site with no settlement lane in front of
+    /// it, which then falls back to <see cref="PollCap"/> alone.</summary>
+    static async Task<PollResult> ResolveRoundResultAsync(HttpClient client, string apiRoot, string postBody, string toolName, bool wasDynamicStart, FlowRetryClock clock, SettlementBackoff backoff, DateTimeOffset? toolCallStartedAt = null) {
         if (TryFormatRoundlessStart(postBody, out var roundlessPendingIds) is { } roundless) {
             if (roundlessPendingIds.Count > 0 &&
                 JsonNode.Parse(postBody)?.AsObject()?["flow_run_id"]?.GetValue<string>() is { } roundlessRunId)
@@ -1265,7 +1291,7 @@ static class McpFlowsServer {
             return new(formatted, false);
         }
 
-        return await PollUntilTerminalAsync(client, apiRoot, flowRunId, roundNum.Value, toolName, wasDynamicStart, clock, backoff);
+        return await PollUntilTerminalAsync(client, apiRoot, flowRunId, roundNum.Value, toolName, wasDynamicStart, clock, backoff, toolCallStartedAt);
     }
 
     /// <summary>Tool family that started the round determines which status tool the graceful-cap
@@ -1275,10 +1301,18 @@ static class McpFlowsServer {
     static string StatusToolNameFor(string toolName) =>
         toolName is "start_review_flow" or "submit_review_round" ? "get_review_flow_status" : "get_flow_status";
 
-    static async Task<PollResult> PollUntilTerminalAsync(HttpClient client, string apiRoot, string flowRunId, int roundNumber, string toolName, bool wasDynamicStart, FlowRetryClock clock, SettlementBackoff backoff) {
+    static async Task<PollResult> PollUntilTerminalAsync(HttpClient client, string apiRoot, string flowRunId, int roundNumber, string toolName, bool wasDynamicStart, FlowRetryClock clock, SettlementBackoff backoff, DateTimeOffset? toolCallStartedAt = null) {
         var url                   = $"{apiRoot}/api/flows/{Uri.EscapeDataString(flowRunId)}";
         var pollStartedAt         = clock.UtcNow;
-        var deadline              = pollStartedAt + PollCap;
+        // The poll lane's own cap, CLIPPED to whatever is left of the tool call's single shared
+        // ToolCallBudget (anchored before the settlement lane's first POST). Whatever the settlement
+        // retry spent, the poll no longer has — see ToolCallBudget for why the two lanes must not each
+        // hold an independent 8m. Absent an anchor there was no settlement lane to share with, so
+        // PollCap stands alone.
+        var pollLaneDeadline      = pollStartedAt + PollCap;
+        var deadline              = toolCallStartedAt is { } anchor && anchor + ToolCallBudget < pollLaneDeadline
+            ? anchor + ToolCallBudget
+            : pollLaneDeadline;
         // Fix #3: anchor the 404 grace window to poll start, not to first-seen-404.
         var notFoundGraceDeadline = pollStartedAt + NotFoundGrace;
         var consecutiveTransient  = 0;
@@ -1377,7 +1411,9 @@ static class McpFlowsServer {
             await clock.DelayAsync(PollInterval);
         }
 
-        // Genuine 8-min cap: round still legitimately running.
+        // Graceful cap reached — PollCap, or the shared ToolCallBudget if the settlement lane ate into
+        // it (including the degenerate case where it left nothing, so the loop above never ran a single
+        // GET). Either way the round is still legitimately running and this is not an error.
         var statusToolName = StatusToolNameFor(toolName);
         return new(
             $"Flow still running for flow_run_id {flowRunId} (round {roundNumber}). " +

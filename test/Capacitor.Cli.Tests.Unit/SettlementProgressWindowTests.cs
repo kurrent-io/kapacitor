@@ -162,7 +162,14 @@ public class SettlementProgressWindowTests {
     /// <summary>Old-server / never-reported compat: a 409 body that never carries
     /// <c>last_processed_seq</c> at all is "no progress evidence" — the retry falls back to
     /// EXACTLY today's flat 3-minute budget, and the coded rejection surfaced is the plain
-    /// flow_settlement_busy body with nothing that could read as an upgrade demand.</summary>
+    /// flow_settlement_busy body.
+    ///
+    /// <para>The backwards-compatibility half is asserted against the RENDERED user-facing text
+    /// (<see cref="McpFlowsServer.FormatSettlementDeadlineError"/>) — the string an agent or user
+    /// actually reads — not against <c>LastCode</c>, which is a fixed literal this fixture plants and
+    /// therefore could never have carried an upgrade demand no matter what the production code did.
+    /// Hard requirement: no path may tell a user their CLI/daemon is out of date. Mutation-checked by
+    /// appending an upgrade sentence to that formatter, which fails exactly these two lines.</para></summary>
     [Test]
     public async Task Missing_seq_field_falls_back_to_the_flat_3m_budget() {
         var clock   = Clock();
@@ -173,8 +180,15 @@ public class SettlementProgressWindowTests {
         await Assert.That(exhausted.Elapsed).IsEqualTo(McpFlowsServer.SettlementElapsedDeadline);
         await Assert.That(exhausted.LastCode).IsEqualTo("flow_settlement_busy");
         await Assert.That(exhausted.LastMessage).IsEqualTo("holding");
-        await Assert.That(exhausted.LastCode).DoesNotContain("upgrade");
-        await Assert.That(exhausted.LastCode).DoesNotContain("outdated");
+
+        var rendered = McpFlowsServer.FormatSettlementDeadlineError(exhausted);
+
+        // Non-vacuity guard: the rendered text really is the exhaustion message (so the two
+        // DoesNotContain assertions below are running against real production output, not "").
+        await Assert.That(rendered).Contains("flow_settlement_busy");
+        await Assert.That(rendered).Contains("This is retryable");
+        await Assert.That(rendered).DoesNotContain("upgrade");
+        await Assert.That(rendered).DoesNotContain("outdated");
     }
 
     /// <summary>Parser unit coverage for <see cref="McpFlowsServer.TryParseLastProcessedSeq"/>
