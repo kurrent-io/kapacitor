@@ -41,12 +41,16 @@ public sealed class TrayMenuBuilder(TrayViewModel vm) {
     // value computed HERE, at rebuild time, from the model's last-known Checked — the click
     // handler must never read NativeMenuItem.IsChecked, because Avalonia's native click path
     // (TrayIcon/NativeMenuItem.RaiseClicked, decompiler-verified) never mutates it.
+    //
+    // IsEnabled MUST be assigned last: NativeMenuItem.OnPropertyChanged reacts to the Command
+    // assignment by recomputing IsEnabled from Command.CanExecute(CommandParameter) (decompiler-
+    // verified), which would silently overwrite an earlier IsEnabled = pause.Enabled with true.
     NativeMenuItem BuildPauseItem(TrayPauseItem pause) =>
         new("Pause new launches") {
             ToggleType = MenuItemToggleType.CheckBox,
             IsChecked = pause.Checked,
-            IsEnabled = pause.Enabled,
             Command = vm.TogglePauseCommand,
             CommandParameter = !pause.Checked,
+            IsEnabled = pause.Enabled,
         };
 }

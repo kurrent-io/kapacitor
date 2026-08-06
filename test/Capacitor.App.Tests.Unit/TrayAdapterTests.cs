@@ -224,12 +224,20 @@ public class TrayAdapterTests {
         });
     }
 
+    // Regression coverage (review Critical 1): NativeMenuItem.OnPropertyChanged recomputes
+    // IsEnabled from Command.CanExecute(CommandParameter) whenever Command is (re)assigned
+    // (decompiler-verified) — so IsEnabled must be the LAST property set in BuildPauseItem's
+    // initializer, or an explicit Enabled: false silently comes back as IsEnabled == true. Covers
+    // Enabled: false for BOTH Checked states, not just the Enabled: true cases that let this slip
+    // originally.
     [Test]
     [NotInParallel("AvaloniaSession")]
-    [Arguments(false, true)]  // unchecked now -> desired (frozen parameter) is true
-    [Arguments(true, false)]  // checked now -> desired (frozen parameter) is false
-    public async Task Rebuild_pause_item_freezes_the_desired_value_from_the_current_checked_state(
-            bool checkedNow, bool expectedDesired) {
+    [Arguments(false, true, true)]    // unchecked, enabled -> desired true
+    [Arguments(true, false, true)]    // checked, enabled -> desired false
+    [Arguments(false, true, false)]   // unchecked, DISABLED -> desired true, IsEnabled must stay false
+    [Arguments(true, false, false)]   // checked, DISABLED -> desired false, IsEnabled must stay false
+    public async Task Rebuild_pause_item_freezes_desired_value_and_preserves_enablement(
+            bool checkedNow, bool expectedDesired, bool enabledNow) {
         await AvaloniaSession.WithImmediateRxScheduler(async () => {
             var (toggleType, isChecked, isEnabled, parameter, commandMatches) = await AvaloniaSession.DispatchAsync(() => {
                 var service = new FakeDaemonClientService();
@@ -238,7 +246,7 @@ public class TrayAdapterTests {
                 var builder = new TrayMenuBuilder(vm);
                 var menu = new NativeMenu();
 
-                builder.Rebuild(menu, Model(pause: new TrayPauseItem(Enabled: true, Checked: checkedNow)));
+                builder.Rebuild(menu, Model(pause: new TrayPauseItem(Enabled: enabledNow, Checked: checkedNow)));
 
                 var pauseItem = menu.Items.OfType<NativeMenuItem>().First(i => i.Header == "Pause new launches");
                 return (pauseItem.ToggleType, pauseItem.IsChecked, pauseItem.IsEnabled, (bool)pauseItem.CommandParameter!,
@@ -247,7 +255,7 @@ public class TrayAdapterTests {
 
             await Assert.That(toggleType).IsEqualTo(MenuItemToggleType.CheckBox);
             await Assert.That(isChecked).IsEqualTo(checkedNow);
-            await Assert.That(isEnabled).IsTrue();
+            await Assert.That(isEnabled).IsEqualTo(enabledNow);
             await Assert.That(parameter).IsEqualTo(expectedDesired);
             await Assert.That(commandMatches).IsTrue();
         });
