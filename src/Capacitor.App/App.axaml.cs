@@ -68,6 +68,11 @@ public partial class App : Application {
             var actions = new AgentActionService(ops, notifier, new ShellUrlOpener(), service.Snapshots, _shutdown.Token);
 
             _coordinator = new MainWindowCoordinator(() => BuildAndShowMainWindow(service, actions, notifier, _shutdown.Token));
+            // A shutdown that started before this continuation resumed already ran its first
+            // pass against a null coordinator, so a window built now must never be
+            // close-protected (BeginShutdownPass's rule 1 is the general defense; this is the
+            // by-construction one, and it is why the window below cannot even briefly intercept).
+            _coordinator.QuitInProgress = _shutdownStarted;
             _coordinator.ShowMainWindow();
             desktop.MainWindow = _coordinator.Window;
 
@@ -133,15 +138,16 @@ public partial class App : Application {
         // app (spec §9) — kept because it is what makes THIS path's exit code correct on its own
         // terms, and because the reasoning below is the record of the P1 bug it fixed. It was
         // decompiler-verified against the mode this path used to run under, OnLastWindowClose
-        // (the framework default, which the app then set nowhere): Window.HandleClosed raises the CLR Closed event (our handler below,
-        // which calls Shutdown(1)) BEFORE the routed WindowClosedEvent that OnLastWindowClose
-        // listens for. So closing the error window used to run: our Shutdown(1) (sets
-        // _exitCode=1) -> THEN the routed event -> _windows hits 0 -> an OnLastWindowClose-driven
-        // TryShutdown() with its default exit code 0 -> App.OnShutdownRequested's deferred
-        // dance -> a second TryShutdown() whose DoShutdown unconditionally overwrites _exitCode
-        // with 0. Net effect: the most common startup failure exited 0. Pinning
-        // OnExplicitShutdown disarms that whole OnLastWindowClose branch, so our explicit
-        // Shutdown(1) below is the only shutdown and nothing overwrites its exit code.
+        // (the framework default, which the app then set nowhere): Window.HandleClosed raises
+        // the CLR Closed event (our handler below, which calls Shutdown(1)) BEFORE the routed
+        // WindowClosedEvent that OnLastWindowClose listens for. So closing the error window used
+        // to run: our Shutdown(1) (sets _exitCode=1) -> THEN the routed event -> _windows hits 0
+        // -> an OnLastWindowClose-driven TryShutdown() with its default exit code 0 ->
+        // App.OnShutdownRequested's deferred dance -> a second TryShutdown() whose DoShutdown
+        // unconditionally overwrites _exitCode with 0. Net effect: the most common startup
+        // failure exited 0. Pinning OnExplicitShutdown disarms that whole OnLastWindowClose
+        // branch, so our explicit Shutdown(1) below is the only shutdown and nothing overwrites
+        // its exit code.
         desktop.ShutdownMode = ShutdownMode.OnExplicitShutdown;
 
         // Showing a window here is legal before Avalonia's main loop starts — it's exactly what
@@ -197,18 +203,32 @@ public partial class App : Application {
     // Once that completes, TryShutdown() re-raises this same event; the SECOND pass is let
     // through. This never blocks the UI thread on the async disposal.
     void OnShutdownRequested(object? sender, ShutdownRequestedEventArgs e) {
-        if (_shutdownConfirmed) return;
-
-        // Before the deferral, so it is already true when the SECOND pass closes the windows for
-        // real: otherwise MainWindow's hide-on-close interception (spec §9) would cancel that
-        // close and the app could never quit.
-        if (_coordinator is not null) _coordinator.QuitInProgress = true;
+        if (!BeginShutdownPass(_coordinator, _shutdownConfirmed)) return;
 
         e.Cancel = true;
         _shutdown.Cancel();
         if (_shutdownStarted) return; // e.g. a rapid double Cmd+Q — disposal is already in flight
         _shutdownStarted = true;
         _ = DisposeAndShutdownAsync();
+    }
+
+    // Split out of OnShutdownRequested so a test can drive BOTH passes (the event itself needs a
+    // live App and a real lifetime, over a composition that needs a real daemon). Two rules, in
+    // this order:
+    //
+    // 1. QuitInProgress is flagged on EVERY pass — including the confirmed one, which is why this
+    //    runs before the guard below. A coordinator that only comes into existence BETWEEN the
+    //    passes (quit or an OS logout arriving while CreateDefaultAsync is still in flight, with
+    //    StartAsync's continuation then building the window during the deferred disposal's await)
+    //    would otherwise still have hide-on-close armed when the second pass closes the windows:
+    //    the window cancels its own close, DoShutdown aborts with windows still open, and every
+    //    later quit early-returns on _shutdownConfirmed — an app that can only be force-quit.
+    //    Setting it again on a pass that already set it is a no-op.
+    // 2. The confirmed (second) pass is let through untouched — no e.Cancel — which is what the
+    //    caller's early return preserves.
+    internal static bool BeginShutdownPass(MainWindowCoordinator? coordinator, bool shutdownConfirmed) {
+        if (coordinator is not null) coordinator.QuitInProgress = true;
+        return !shutdownConfirmed;
     }
 
     async Task DisposeAndShutdownAsync() {

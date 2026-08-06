@@ -428,6 +428,53 @@ public class AppStartupTests {
         await Assert.That(builds).IsEqualTo(2);
     }
 
+    /// Regression coverage for an Important finding in review: QuitInProgress used to be set
+    /// AFTER OnShutdownRequested's `_shutdownConfirmed` guard, so a coordinator that came into
+    /// existence BETWEEN the two passes was never flagged. Shape: a quit (or an OS logout) lands
+    /// while CreateDefaultAsync is still in flight — pass 1 sees a null coordinator — and
+    /// StartAsync's continuation then builds the window during the deferred disposal's await.
+    /// Pass 2 closed the windows with hide-on-close still armed: the window cancelled its own
+    /// close, and (decompiler-verified) DoShutdown aborts once a close is cancelled with windows
+    /// still open, after which every later quit early-returns on _shutdownConfirmed — an app that
+    /// can only be force-quit, over an already-disposed service. Drives the real pass logic in
+    /// the real order, with the deferred pass in between.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Shutdown_racing_the_startup_composition_still_tears_the_window_down() {
+        var (pass1Defers, pass2Defers, flagged, tornDown, shutdownCalls) = await AvaloniaSession.DispatchAsync(async () => {
+            var (desktop, fake) = FakeClassicDesktopLifetime.Create();
+
+            // Pass 1: nothing is composed yet, so there is no coordinator to flag.
+            var deferred = AppUnderTest.BeginShutdownPass(coordinator: null, shutdownConfirmed: false);
+
+            // StartAsync's continuation resumes DURING the deferred disposal's await and builds
+            // the window. Its own `QuitInProgress = _shutdownStarted` belt-and-braces is
+            // deliberately NOT applied here: this test pins the guard-ordering half of the fix,
+            // so the coordinator arrives unflagged and only pass 2 can save the shutdown.
+            var (coordinator, _) = NewCoordinator();
+            coordinator.ShowMainWindow();
+            var window = coordinator.Window!;
+
+            // The deferred pass completes: dispose, confirm, TryShutdown(exitCode).
+            var confirmed = false;
+            await AppUnderTest.DisposeUiThenConfirmShutdownAsync(
+                [], disposeAsync: null, markConfirmed: () => confirmed = true, desktop, exitCode: 1);
+
+            // TryShutdown re-raises the event (pass 2), and DoShutdown then closes every window.
+            var deferredAgain = AppUnderTest.BeginShutdownPass(coordinator, confirmed);
+            window.Close();
+            Dispatcher.UIThread.RunJobs();
+
+            return (deferred, deferredAgain, coordinator.QuitInProgress, coordinator.Window is null, fake.ShutdownCalls.ToArray());
+        });
+
+        await Assert.That(pass1Defers).IsTrue();
+        await Assert.That(pass2Defers).IsFalse();  // the confirmed pass is let through untouched
+        await Assert.That(flagged).IsTrue();       // ...but it still flagged the late coordinator
+        await Assert.That(tornDown).IsTrue();      // Closed fired ⇒ the close was NOT cancelled
+        await Assert.That(shutdownCalls).IsEquivalentTo([1], CollectionOrdering.Matching);
+    }
+
     /// Spec §9: on a startup failure the error window is the only surface. Tray creation is
     /// structurally the LAST step of StartAsync's success path, so the failure path cannot have
     /// created one — this pins the other half of that claim, that the failure path itself never
