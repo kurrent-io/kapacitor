@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using Capacitor.Cli.Core.Config;
 
 namespace Capacitor.Cli.Tests.Unit;
@@ -5,10 +6,15 @@ namespace Capacitor.Cli.Tests.Unit;
 /// <summary>
 /// Assembly-level setup/teardown for RepoPathStore tests.
 ///
-/// PathHelpers.ConfigDir is static readonly — captured once at class-load time from
-/// KCAP_CONFIG_DIR. We must set that env var here, before any test code triggers
-/// the PathHelpers static initializer, so RepoPathStore.StorePath resolves to a
-/// temp directory instead of ~/.config/kcap/repos.json.
+/// PathHelpers.ConfigDir is static readonly — captured once per process from
+/// KCAP_CONFIG_DIR. We must set that env var from a <see cref="ModuleInitializerAttribute"/>
+/// method, not a TUnit <c>[Before(Assembly)]</c> hook: the runtime guarantees a module
+/// initializer runs before ANY type in the module is touched, including before TUnit's
+/// own discovery/bootstrap code runs, which can itself trigger the PathHelpers static
+/// initializer ahead of any assembly hook. Because the field is static readonly, a read
+/// that races ahead of an assembly hook captures the developer's real ~/.config/kcap for
+/// the rest of the process's lifetime — this already happened in production. Do not
+/// "simplify" this back to [Before(Assembly)].
 /// </summary>
 public class RepoPathStoreGlobalSetup {
     internal static readonly string SharedConfigDir = Path.Combine(
@@ -16,8 +22,8 @@ public class RepoPathStoreGlobalSetup {
         "kcap-repopathstore-tests-" + Guid.NewGuid().ToString("N")[..8]
     );
 
-    [Before(Assembly)]
-    public static void SetConfigDir() {
+    [ModuleInitializer]
+    internal static void SetConfigDir() {
         Directory.CreateDirectory(SharedConfigDir);
         Environment.SetEnvironmentVariable("KCAP_CONFIG_DIR", SharedConfigDir);
     }

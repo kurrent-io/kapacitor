@@ -1,3 +1,5 @@
+using System.Runtime.CompilerServices;
+
 namespace Capacitor.Cli.Tests.Integration;
 
 /// <summary>
@@ -12,6 +14,17 @@ namespace Capacitor.Cli.Tests.Integration;
 /// covering <c>/tmp/test</c> or a CI repo path) would then make the test
 /// silently emit nothing and pass for the wrong reason.
 ///
+/// The env var is set from a <see cref="ModuleInitializerAttribute"/> method,
+/// not a TUnit <c>[Before(Assembly)]</c> hook. The runtime guarantees a module
+/// initializer runs before ANY type in the module is touched — including
+/// before TUnit's own test discovery/bootstrap code runs, which can itself
+/// trigger <c>PathHelpers</c>' static initializer ahead of any assembly hook.
+/// Because that field is <c>static readonly</c>, it is captured exactly once
+/// per process: if anything reads it before this env var is set, the process
+/// is permanently pinned to the developer's real <c>~/.config/kcap</c> for
+/// its whole lifetime, and no later hook can undo it. This already happened
+/// in production — do not "simplify" this back to <c>[Before(Assembly)]</c>.
+///
 /// Subprocess-based tests (see <see cref="McpSessionsServerTests"/>) set
 /// <c>KCAP_CONFIG_DIR</c> on the child process explicitly and are not
 /// affected by this parent-process value; this setup just makes the
@@ -23,8 +36,8 @@ public class IntegrationGlobalSetup {
         "kcap-integration-tests-" + Guid.NewGuid().ToString("N")[..8]
     );
 
-    [Before(Assembly)]
-    public static void SetConfigDir() {
+    [ModuleInitializer]
+    internal static void SetConfigDir() {
         Directory.CreateDirectory(SharedConfigDir);
         Environment.SetEnvironmentVariable("KCAP_CONFIG_DIR", SharedConfigDir);
     }
