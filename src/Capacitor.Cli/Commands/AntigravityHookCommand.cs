@@ -2,6 +2,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Config;
+using Capacitor.Cli.SessionStartMemory;
 
 namespace Capacitor.Cli.Commands;
 
@@ -85,6 +86,36 @@ static class AntigravityHookCommand {
 
         return await HandleSessionStart(
             baseUrl, sessionId, transcriptPath!, cwd, payload, activeProfile);
+    }
+
+    /// <summary>
+    /// Writes the team-memory fragment in Antigravity's PreInvocation shape:
+    /// <c>{"injectSteps":[{"userMessage":"…"}]}</c>. <c>userMessage</c> rather than
+    /// <c>ephemeralMessage</c> because the vendor's own embedded hook contract documents the latter as
+    /// transient, and the index is meant to persist for the conversation.
+    ///
+    /// <para><b>A null fragment writes ZERO BYTES.</b> This hook emitted nothing at all before the
+    /// memory index existed, so rendering the adapter's <c>{}</c> on the no-fragment path would change
+    /// the wire behaviour of EVERY invocation for EVERY user — including the IDE-only majority, whose
+    /// product was never probed — to buy nothing. Mirrors Copilot and Kiro. Do not "simplify" this by
+    /// rendering the null case: the shared adapter's own null rendering is <c>{}</c>, which is exactly
+    /// what must not reach stdout here.</para>
+    ///
+    /// <para>Serialized before the first byte so a renderer fault degrades to silence rather than a
+    /// partial document.</para>
+    /// </summary>
+    internal static void WritePreInvocationOutput(TextWriter writer, string? fragment) {
+        if (fragment is null) return;
+
+        string payload;
+
+        try {
+            payload = SessionStartMemoryOutputAdapters.Render(SessionStartHarness.Antigravity, fragment);
+        } catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException) {
+            return;
+        }
+
+        writer.Write(payload);
     }
 
     static async Task<int> HandleSessionStart(
