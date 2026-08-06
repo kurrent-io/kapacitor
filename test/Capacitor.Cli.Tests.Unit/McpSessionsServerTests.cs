@@ -320,6 +320,99 @@ public class McpSessionsServerTests {
         await Assert.That(ex!.Message).Contains("session_id");
     }
 
+    static string Body(params string[] sessionIds) {
+        var hits = string.Join(",", sessionIds.Select(id => $"{{\"session_id\":\"{id}\",\"title\":\"t\"}}"));
+        return $"{{\"hits\":[{hits}]}}";
+    }
+
+    [Test]
+    public async Task ShouldWiden_true_when_cwd_pinned_and_thin() {
+        var widen = McpSessionsServer.ShouldWiden(
+            new JsonObject { ["query"] = "x" }, cwdRepoHash: "abc1234567890def",
+            firstBody: Body("s1", "s2"), out var limit);
+
+        await Assert.That(widen).IsTrue();
+        await Assert.That(limit).IsEqualTo(10);
+    }
+
+    [Test]
+    public async Task ShouldWiden_false_when_repo_explicit() {
+        var widen = McpSessionsServer.ShouldWiden(
+            new JsonObject { ["query"] = "x", ["repo"] = "kurrent-io/kcap-server" },
+            cwdRepoHash: "abc1234567890def", firstBody: Body(), out _);
+
+        await Assert.That(widen).IsFalse();
+    }
+
+    [Test]
+    public async Task ShouldWiden_false_when_repo_all() {
+        var widen = McpSessionsServer.ShouldWiden(
+            new JsonObject { ["query"] = "x", ["repo"] = "all" },
+            cwdRepoHash: "abc1234567890def", firstBody: Body(), out _);
+
+        await Assert.That(widen).IsFalse();
+    }
+
+    [Test]
+    public async Task ShouldWiden_false_when_results_fill_the_limit() {
+        var widen = McpSessionsServer.ShouldWiden(
+            new JsonObject { ["query"] = "x", ["limit"] = 2 },
+            cwdRepoHash: "abc1234567890def", firstBody: Body("s1", "s2"), out var limit);
+
+        await Assert.That(widen).IsFalse();
+        await Assert.That(limit).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task ShouldWiden_false_when_paginating() {
+        var widen = McpSessionsServer.ShouldWiden(
+            new JsonObject { ["query"] = "x", ["offset"] = 10 },
+            cwdRepoHash: "abc1234567890def", firstBody: Body(), out _);
+
+        await Assert.That(widen).IsFalse();
+    }
+
+    [Test]
+    public async Task ShouldWiden_false_on_author_short_circuits() {
+        var disamb = "{\"hits\":[],\"disambiguation\":[{\"git_hub_id\":1}]}";
+        var noAuth = "{\"hits\":[],\"no_author_match\":true}";
+
+        await Assert.That(McpSessionsServer.ShouldWiden(new JsonObject { ["query"] = "x" }, "abc1234567890def", disamb, out _)).IsFalse();
+        await Assert.That(McpSessionsServer.ShouldWiden(new JsonObject { ["query"] = "x" }, "abc1234567890def", noAuth, out _)).IsFalse();
+    }
+
+    [Test]
+    public async Task ShouldWiden_false_when_no_cwd_hash() {
+        var widen = McpSessionsServer.ShouldWiden(new JsonObject { ["query"] = "x" }, cwdRepoHash: null, firstBody: Body(), out _);
+
+        await Assert.That(widen).IsFalse();
+    }
+
+    [Test]
+    public async Task MergeWidenedBody_dedupes_keeps_cwd_first_caps_and_flags() {
+        var merged = McpSessionsServer.MergeWidenedBody(
+            firstBody: Body("s1", "s2"),
+            widenedBody: Body("s2", "s3", "s4"),
+            limit: 3);
+
+        var root = JsonNode.Parse(merged)!.AsObject();
+        var ids  = root["hits"]!.AsArray().Select(h => h!["session_id"]!.GetValue<string>()).ToList();
+
+        await Assert.That(ids.Count).IsEqualTo(3);
+        await Assert.That(ids[0]).IsEqualTo("s1");
+        await Assert.That(ids[1]).IsEqualTo("s2");
+        await Assert.That(ids[2]).IsEqualTo("s3");
+        await Assert.That(root["widened_to_all_repos"]!.GetValue<bool>()).IsTrue();
+    }
+
+    [Test]
+    public async Task MergeWidenedBody_malformed_widened_body_returns_first_unchanged() {
+        var first  = Body("s1");
+        var merged = McpSessionsServer.MergeWidenedBody(first, "not json", limit: 10);
+
+        await Assert.That(merged).IsEqualTo(first);
+    }
+
     // BuildTranscriptUrl is private; reach it via the public test entry point HandleToolCallForTests
     // would round-trip through HTTP, so instead we use reflection for narrow per-builder coverage.
     static string InvokeBuildTranscriptUrl(string baseUrl, JsonObject args) {

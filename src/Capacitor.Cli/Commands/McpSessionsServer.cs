@@ -262,6 +262,79 @@ static class McpSessionsServer {
         return qs.Count == 0 ? url : url + "?" + string.Join("&", qs);
     }
 
+    /// <summary>
+    /// AI-1769 auto-widen, decision half: the implicit cwd-repo pin is the #1 cause
+    /// of "agent can't find it, human can". Widen ONLY when the pin was implicit
+    /// (no explicit repo arg), a cwd repo actually resolved, the caller isn't
+    /// paginating, the response isn't an author short-circuit (disambiguation /
+    /// no-match — widening can't fix those), and the pinned search came back thin.
+    /// </summary>
+    internal static bool ShouldWiden(JsonObject? args, string? cwdRepoHash, string firstBody, out int limit) {
+        limit = 10;
+        if (TryReadInt(args, "limit", out var requested)) limit = requested;
+
+        string? explicitRepo = args?["repo"] switch {
+            null                                          => null,
+            JsonValue v when v.TryGetValue(out string? s) => s,
+            _                                             => null
+        };
+
+        if (!string.IsNullOrWhiteSpace(explicitRepo)) return false;
+        if (cwdRepoHash is null) return false;
+        if (TryReadInt(args, "offset", out var offset) && offset > 0) return false;
+
+        try {
+            if (JsonNode.Parse(firstBody) is not JsonObject root) return false;
+            if (root["disambiguation"] is JsonArray { Count: > 0 }) return false;
+            if (root["no_author_match"]?.GetValue<bool>() is true) return false;
+            if (root["too_many_author_matches"]?.GetValue<bool>() is true) return false;
+
+            var hits = root["hits"] as JsonArray;
+
+            return (hits?.Count ?? 0) < limit;
+        } catch {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// AI-1769 auto-widen, merge half: cwd-repo hits first, widened hits appended
+    /// (deduped by session_id), capped at the requested limit, with a top-level
+    /// widened_to_all_repos marker so the agent knows the scope grew. Falls back to
+    /// the first body untouched on any parse failure — widening is best-effort and
+    /// must never cost the caller a successful result.
+    /// </summary>
+    internal static string MergeWidenedBody(string firstBody, string widenedBody, int limit) {
+        try {
+            if (JsonNode.Parse(firstBody) is not JsonObject first) return firstBody;
+            if (JsonNode.Parse(widenedBody) is not JsonObject widened) return firstBody;
+
+            var firstHits   = first["hits"] as JsonArray ?? [];
+            var widenedHits = widened["hits"] as JsonArray ?? [];
+            var seen        = new HashSet<string>(StringComparer.Ordinal);
+            var merged      = new JsonArray();
+
+            foreach (var hit in firstHits) {
+                if (merged.Count >= limit) break;
+                if (hit?["session_id"]?.GetValue<string>() is not { } sid || !seen.Add(sid)) continue;
+                merged.Add(hit.DeepClone());
+            }
+
+            foreach (var hit in widenedHits) {
+                if (merged.Count >= limit) break;
+                if (hit?["session_id"]?.GetValue<string>() is not { } sid || !seen.Add(sid)) continue;
+                merged.Add(hit.DeepClone());
+            }
+
+            first["hits"]                 = merged;
+            first["widened_to_all_repos"] = true;
+
+            return first.ToJsonString();
+        } catch {
+            return firstBody;
+        }
+    }
+
     static string BuildSummaryUrl(string baseUrl, JsonObject? args) {
         var id = args?["session_id"]?.GetValue<string>()
          ?? throw new ArgumentException("Missing required argument: session_id");
