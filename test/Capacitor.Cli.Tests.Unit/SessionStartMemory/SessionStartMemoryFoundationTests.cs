@@ -539,6 +539,76 @@ public class SessionStartMemoryFoundationTests {
         } finally { Directory.Delete(root, recursive: true); }
     }
 
+    // Exactly what AntigravityHookCommand.LifecycleFor builds: PreInvocation fires once per
+    // INVOCATION within a conversation, so the callback repeats like Kiro's agentSpawn and the
+    // lease is the only thing preventing re-injection every turn.
+    static SessionMemoryLifecycle AntigravityLifecycle(string sessionId) =>
+        new(SessionStartHarness.Antigravity, sessionId, LifecycleInstanceId: null,
+            IsTopLevel: true, ClassificationAuthoritative: true,
+            SessionLifecycleReason.RepeatedTurnCallback, CallbackMayRepeat: true);
+
+    static SessionStartMemoryContextRequest AntigravityRequest(double seconds = 1) =>
+        new("https://example.test", null, false, TimeSpan.FromSeconds(seconds), CancellationToken.None);
+
+    // THE Antigravity acceptance criterion, mirroring Kiro's: without the lease the index would be
+    // re-injected — and re-charged — on every invocation within the same conversation.
+    [Test]
+    public async Task Antigravity_repeated_pre_invocation_injects_once_and_does_not_refetch() {
+        var root = TempDir();
+        try {
+            var fetches = 0;
+            var provider = new SessionStartMemoryContextProvider(new FixedScopeResolver(null, null),
+                (_, _) => {
+                    Interlocked.Increment(ref fetches);
+                    return Task.FromResult(new HttpClient(new StaticHandler(HttpStatusCode.OK, OneMemoryJson)));
+                });
+            var orchestrator = new SessionStartMemoryOrchestrator(new SessionStartMemoryLeaseStore(root), provider);
+
+            // A real GUID — Antigravity is on the fail-closed identity arm, which normalizes any
+            // non-GUID id to null and would short-circuit before the lease is ever consulted,
+            // making this whole test pass vacuously without proving anything.
+            const string sessionId = "e80c33bfc10f4d2fb626b0043f488fc0";
+
+            var first  = await orchestrator.GetFragmentAsync(AntigravityLifecycle(sessionId), AntigravityRequest());
+            var second = await orchestrator.GetFragmentAsync(AntigravityLifecycle(sessionId), AntigravityRequest());
+
+            await Assert.That(first).Contains("- s: d");
+            await Assert.That(second).IsNull();
+            // The lease must prevent the WORK, not merely the output. One fetch, not two.
+            await Assert.That(fetches).IsEqualTo(1);
+        } finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [Test]
+    public async Task Antigravity_distinct_conversations_each_inject_once() {
+        var root = TempDir();
+        try {
+            var provider = new SessionStartMemoryContextProvider(new FixedScopeResolver(null, null),
+                (_, _) => Task.FromResult(new HttpClient(new StaticHandler(HttpStatusCode.OK, OneMemoryJson))));
+            var orchestrator = new SessionStartMemoryOrchestrator(new SessionStartMemoryLeaseStore(root), provider);
+
+            var a = await orchestrator.GetFragmentAsync(
+                AntigravityLifecycle("e80c33bfc10f4d2fb626b0043f488fc0"), AntigravityRequest());
+            var b = await orchestrator.GetFragmentAsync(
+                AntigravityLifecycle("5450cb7feaf841189dec0ebd0018f024"), AntigravityRequest());
+
+            await Assert.That(a).Contains("- s: d");
+            await Assert.That(b).Contains("- s: d");
+        } finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [Test]
+    public async Task Antigravity_identity_is_fail_closed_on_a_non_guid() {
+        // Guard for the fixture trap: a non-GUID id normalizes to null, so any assertion built on
+        // such an id would pass without the code under test ever running.
+        await Assert.That(
+            SessionStartMemoryIdentity.NormalizeSessionId(
+                SessionStartHarness.Antigravity, "ag-test-sess-0001")).IsNull();
+        await Assert.That(
+            SessionStartMemoryIdentity.NormalizeSessionId(
+                SessionStartHarness.Antigravity, "e80c33bfc10f4d2fb626b0043f488fc0")).IsNotNull();
+    }
+
     [Test]
     public async Task Disabled_request_does_not_fetch_or_write_a_lease_record() {
         var root = TempDir();
