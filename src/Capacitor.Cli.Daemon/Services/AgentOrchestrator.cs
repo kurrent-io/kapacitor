@@ -999,6 +999,17 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
         catch (Exception ex) { _logger.LogDebug(ex, "DaemonStatusReport send failed — ignoring"); }
     }
 
+    /// <summary>Liveness-supervision spec §1: the immediate out-of-cycle report fired on every
+    /// GENUINE <see cref="AgentActivityClock.LaunchStage"/> transition — wired via
+    /// <see cref="AgentActivityClock.OnLaunchStageChanged"/> at clock construction time
+    /// (<see cref="CreateActivityClock"/>). At most 4 per launch (one per handshake stage), so there
+    /// is no cadence concern this adds on top of the unchanged 60s periodic loop. Shares
+    /// <see cref="SendDaemonStatusReportOnceAsync"/>'s build+send+swallow behavior — a failed send
+    /// here must never fail a launch, exactly like a periodic-loop tick failure never touches the
+    /// agent loops. Returns the Task (rather than being <c>void</c>) so a test can await it
+    /// deterministically; the clock callback itself fires it fire-and-forget (<c>_ = ...</c>).</summary>
+    internal Task SendStatusReportNowAsync() => SendDaemonStatusReportOnceAsync();
+
     async Task RunDaemonStatusReportLoopAsync(CancellationToken ct) {
         using var timer = new PeriodicTimer(TimeSpan.FromSeconds(60));
         while (await timer.WaitForNextTickAsync(ct)) {
@@ -1010,11 +1021,31 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
 
     /// <summary>Phase B (D2): one <see cref="LiveAgentInfo"/> per currently-live (Starting or
     /// Running), non-private agent, carrying its kind + flow identity. Mirrors the
-    /// <see cref="ServerConnection.GetLiveAgentIds"/> filter (private-local agents excluded).</summary>
+    /// <see cref="ServerConnection.GetLiveAgentIds"/> filter (private-local agents excluded).
+    ///
+    /// Liveness-supervision spec §0/§2 (task 11): also carries this agent's activity attestation off
+    /// its own <see cref="AgentActivityClock"/> — <c>ActivitySeq</c>/<c>IdleForMs</c>/<c>TurnInFlight</c>
+    /// unconditionally (a live agent, Starting or Running, is always capability-complete), and
+    /// <c>LaunchStage</c> ONLY while <c>Status == "Starting"</c> (the clock clears its own stage on
+    /// <c>ClearLaunchStage</c>, but the explicit status gate here is the contractual guarantee, not
+    /// an accident of when that happens to run).</summary>
     internal IReadOnlyList<LiveAgentInfo> BuildLiveAgents() =>
         [.. _agents.Values
             .Where(a => a.Status is "Starting" or "Running" && !a.IsPrivate)
-            .Select(a => new LiveAgentInfo(a.Id, a.Kind.ToString(), a.CreatedAt, a.FlowRunId, a.FlowRole))];
+            .Select(a => new LiveAgentInfo(
+                a.Id, a.Kind.ToString(), a.CreatedAt, a.FlowRunId, a.FlowRole,
+                ActivitySeq:  a.ActivityClock.ActivitySeq,
+                IdleForMs:    a.ActivityClock.IdleForMs,
+                TurnInFlight: a.ActivityClock.TurnInFlight,
+                LaunchStage:  a.Status == "Starting" ? a.ActivityClock.LaunchStage : null))];
+
+    /// <summary>Liveness-supervision spec §0/§1: one activity clock per launch, wired so a genuine
+    /// <see cref="AgentActivityClock.SetLaunchStage"/> transition fires
+    /// <see cref="SendStatusReportNowAsync"/> fire-and-forget. Shared by production launches
+    /// (<c>HandleLaunchAgentCore</c>) and <see cref="SeedAgentForTest"/> so a test exercises the
+    /// EXACT SAME wiring a real launch gets — never a special-cased test-only hookup.</summary>
+    AgentActivityClock CreateActivityClock() =>
+        new(TimeProvider.System) { OnLaunchStageChanged = () => _ = SendStatusReportNowAsync() };
 
     /// <summary>Phase B: test-only seam — insert a minimal <see cref="AgentInstance"/> (Noop
     /// PTY runtime, no real process/worktree) so unit tests can exercise <see cref="BuildLiveAgents"/>
@@ -1032,7 +1063,8 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             new CancellationTokenSource()) {
             Kind = kind, FlowRunId = flowRunId, FlowRole = flowRole, IsPrivate = isPrivate,
             CreatedAt = createdAt ?? DateTime.UtcNow, StartIdentity = startIdentity,
-            RequesterUserId = requester
+            RequesterUserId = requester,
+            ActivityClock = CreateActivityClock()
         };
         agent.Status = status;
         if (lastOutputAt is { } lo) agent.LastOutputAt = lo;
@@ -1302,8 +1334,10 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
         // Liveness-supervision spec §0/§1: created here (before the reviewer-token mint below, which
         // needs it, and before the AgentInstance that will own it) rather than left to the record's
         // own default, so the SAME instance is threaded into the permission-bridge grant, the ACP
-        // runtime, and the AgentInstance — one clock per launch, never three.
-        var activityClock = new AgentActivityClock(TimeProvider.System);
+        // runtime, and the AgentInstance — one clock per launch, never three. CreateActivityClock
+        // also wires the out-of-cycle status-report hook (spec §1) on every genuine LaunchStage
+        // transition (Task 13 wires the handshake stage stamps that call SetLaunchStage).
+        var activityClock = CreateActivityClock();
 
         try {
             if (EffectiveCount >= _config.MaxConcurrentAgents) {

@@ -48,6 +48,16 @@ internal sealed class AgentActivityClock(TimeProvider time) {
         get { lock (_gate) return _launchStage; }
     }
 
+    /// <summary>Fired synchronously, OUTSIDE <see cref="_gate"/>, exactly once per GENUINE
+    /// <see cref="SetLaunchStage"/> transition — never on a same-value re-set, and never from
+    /// <see cref="Advance"/>/<see cref="SetTurnInFlight"/>/<see cref="ClearLaunchStage"/>. This is the
+    /// daemon's hook for the immediate out-of-cycle status report (design §1): at most 4 per launch
+    /// (one per handshake stage), so there is no cadence concern. Settable post-construction because
+    /// the clock is built (and this callback wired, by <c>AgentOrchestrator.CreateActivityClock</c>)
+    /// before the <c>AgentInstance</c>/ACP runtime that will eventually call <see cref="SetLaunchStage"/>
+    /// exists.</summary>
+    public Action? OnLaunchStageChanged { get; set; }
+
     /// <summary>
     /// Monotonic elapsed time since the last <see cref="Advance"/>, computed NOW (i.e. at report-
     /// creation time, whenever a caller reads this) — never a value stamped once and reused. This is
@@ -86,10 +96,17 @@ internal sealed class AgentActivityClock(TimeProvider time) {
     /// (an out-of-cycle report on every stage change keeps the worst evidence gap inside the rolling
     /// deadline).</summary>
     public void SetLaunchStage(string stage) {
+        bool changed;
         lock (_gate) {
+            changed = _launchStage != stage;
             _launchStage = stage;
             AdvanceLocked();
         }
+        // Invoked outside the lock: OnLaunchStageChanged fires an out-of-cycle status-report send
+        // (design §1), and that send itself reads this same clock's properties (each independently
+        // lock-guarded) — holding _gate across the callback would just be needless contention, and
+        // risks deadlock if a future callback ever read back into this instance.
+        if (changed) OnLaunchStageChanged?.Invoke();
     }
 
     /// <summary>Clears the stage stamp once the agent reaches Running — its absence from then on is
