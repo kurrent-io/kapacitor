@@ -1,6 +1,8 @@
 using System.Diagnostics;
 using System.Text.Json.Nodes;
 using Capacitor.Cli.Commands;
+using Capacitor.Cli.Core;
+using WireMock.Matchers;
 using WireMock.RequestBuilders;
 using WireMock.ResponseBuilders;
 using WireMock.Server;
@@ -101,6 +103,41 @@ public class McpSessionsServerTests : IDisposable {
         _spawnedProcesses.Add(process);
 
         return process;
+    }
+
+    /// <summary>
+    /// Initializes <paramref name="dir"/> as a git repo with an <c>origin</c> remote pointing at
+    /// <c>https://github.com/{owner}/{repoName}.git</c>. The MCP server resolves its implicit
+    /// cwd-repo pin (<c>McpSessionsServer.ResolveCwdRepoHashAsync</c>) via
+    /// <c>RepositoryDetection.DetectRepositoryAsync</c>, which reads <c>git branch --show-current</c>
+    /// / <c>git remote get-url origin</c> from the CHILD PROCESS's working directory — a bare temp
+    /// dir (as used by every other test in this file, deliberately, to stay independent of ambient
+    /// git state) never resolves an owner/repo pair, so the auto-widen tests need a real repo here.
+    /// <c>git branch --show-current</c> prints the initial branch name even with zero commits, since
+    /// it reads the symbolic HEAD ref rather than requiring history.
+    /// </summary>
+    static void InitCwdAsGitRepo(string dir, string owner, string repoName) {
+        RunGit(dir, "init -q -b main");
+        RunGit(dir, $"remote add origin https://github.com/{owner}/{repoName}.git");
+    }
+
+    static void RunGit(string dir, string arguments) {
+        var psi = new ProcessStartInfo("git", arguments) {
+            WorkingDirectory       = dir,
+            RedirectStandardOutput = true,
+            RedirectStandardError  = true,
+            UseShellExecute        = false,
+            CreateNoWindow         = true
+        };
+
+        using var process = Process.Start(psi) ?? throw new InvalidOperationException("Failed to start git");
+
+        var stderr = process.StandardError.ReadToEnd();
+        process.WaitForExit(5000);
+
+        if (process.ExitCode != 0) {
+            throw new InvalidOperationException($"'git {arguments}' failed with exit code {process.ExitCode}: {stderr}");
+        }
     }
 
     /// <summary>
@@ -440,6 +477,141 @@ public class McpSessionsServerTests : IDisposable {
 
             var content = result?["content"]?[0]?["text"]?.GetValue<string>();
             await Assert.That(content).IsEqualTo(McpSessionsServer.NotLoggedInMessage);
+        } finally {
+            await ShutdownAsync(proc);
+        }
+    }
+
+    /// <summary>
+    /// AI-1769 auto-widen, happy path: an implicit cwd pin (no explicit `repo` arg, a real
+    /// git repo under the spawned process's cwd) that comes back thinner than the default
+    /// limit (10) triggers a second widen request, and the two bodies merge cwd-first with
+    /// `session_id` dedup, capped at the limit, and `widened_to_all_repos: true`.
+    ///
+    /// The widened request carries NO `repo` query param at all — `BuildSearchUrl` treats the
+    /// `"all"` sentinel as "omit the repo filter entirely" (see
+    /// <see cref="Search_sessions_calls_server_and_passes_through_response"/>'s own
+    /// `rawUrl.Contains("repo=")` assertion), so the widen stub below matches on the PARAM'S
+    /// ABSENCE via <see cref="MatchBehaviour.RejectOnMatch"/>, not a literal `repo=all` value.
+    /// </summary>
+    [Test]
+    public async Task Search_sessions_thin_result_auto_widens_to_all_repos() {
+        const string owner    = "acme";
+        const string repoName = "widget";
+        var          repoHash = RepoHashHelper.ComputeRepoHash(owner, repoName);
+
+        InitCwdAsGitRepo(_cwdDir, owner, repoName);
+
+        const string firstBody   = """{"hits":[{"session_id":"s1","title":"A"},{"session_id":"s2","title":"B"}]}""";
+        const string widenedBody = """{"hits":[{"session_id":"s1","title":"A"},{"session_id":"s3","title":"C"}]}""";
+
+        _server.Given(Request.Create().WithPath("/api/sessions/search").WithParam("repo", repoHash).UsingGet())
+            .RespondWith(
+                Response.Create()
+                    .WithStatusCode(200)
+                    .WithHeader("Content-Type", "application/json")
+                    .WithBody(firstBody)
+            );
+
+        _server.Given(Request.Create().WithPath("/api/sessions/search").WithParam("repo", MatchBehaviour.RejectOnMatch).UsingGet())
+            .RespondWith(
+                Response.Create()
+                    .WithStatusCode(200)
+                    .WithHeader("Content-Type", "application/json")
+                    .WithBody(widenedBody)
+            );
+
+        using var proc = SpawnMcpServer();
+        try {
+            var args     = new JsonObject { ["query"] = "batch" }; // no `repo` — implicit cwd pin
+            var response = await SendRequest(proc, ToolsCallRequest(10, "search_sessions", args), TimeSpan.FromSeconds(30));
+
+            var result = response["result"]?.AsObject();
+            await Assert.That(result).IsNotNull();
+            await Assert.That(result!["isError"]?.GetValue<bool>()).IsNotEqualTo(true);
+
+            var text = result["content"]?[0]?["text"]?.GetValue<string>();
+            await Assert.That(text).IsNotNull();
+
+            var merged = JsonNode.Parse(text!)?.AsObject();
+            await Assert.That(merged).IsNotNull();
+            await Assert.That(merged!["widened_to_all_repos"]?.GetValue<bool>()).IsTrue();
+
+            var hits = merged["hits"]?.AsArray();
+            await Assert.That(hits).IsNotNull();
+            await Assert.That(hits!.Count).IsEqualTo(3);
+            await Assert.That(hits[0]?["session_id"]?.GetValue<string>()).IsEqualTo("s1");
+            await Assert.That(hits[1]?["session_id"]?.GetValue<string>()).IsEqualTo("s2");
+            await Assert.That(hits[2]?["session_id"]?.GetValue<string>()).IsEqualTo("s3");
+
+            var pinnedHits  = _server.FindLogEntries(Request.Create().WithPath("/api/sessions/search").WithParam("repo", repoHash).UsingGet());
+            var widenedHits = _server.FindLogEntries(Request.Create().WithPath("/api/sessions/search").WithParam("repo", MatchBehaviour.RejectOnMatch).UsingGet());
+            await Assert.That(pinnedHits.Count).IsEqualTo(1);
+            await Assert.That(widenedHits.Count).IsEqualTo(1);
+        } finally {
+            await ShutdownAsync(proc);
+        }
+    }
+
+    /// <summary>
+    /// AI-1769 F1 regression: a failed widen must never cost the caller the successful first
+    /// result. The spec's failure shape is a THROWN exception on the widen call (an
+    /// HttpRequestException, or a TaskCanceledException from the slower all-repos query
+    /// tripping the client timeout) — before the fix, the former was caught and turned into
+    /// an error tool result and the latter escaped to the outer dispatcher catch-all as
+    /// "internal error", both destroying the already-successful first body.
+    ///
+    /// Coverage limitation: this WireMock-based integration harness cannot force the .NET
+    /// HttpClient to THROW on the widen call. WireMock.Net 1.7.0's fault injection
+    /// (EMPTY_RESPONSE / MALFORMED_RESPONSE_CHUNK) was verified experimentally (a standalone
+    /// WireMockServer + HttpClient probe) to still complete with a 200 response rather than
+    /// raise a client-side exception, and there is no way to route only the second (`repo=all`)
+    /// request to an unreachable endpoint — both requests share one fixed `baseUrl` set at
+    /// process spawn. So this test exercises the reachable failure shape instead: an HTTP
+    /// error status (500) on the widen call. That path was already handled before this fix
+    /// via `if (second.IsSuccessStatusCode)`; what's new here is the surrounding try/catch,
+    /// which cannot be independently proven to fire without a thrown exception. The assertion
+    /// below (first body returned untouched, isError false) holds under both the old and new
+    /// code for this specific failure shape — see the design doc / PR description for why the
+    /// thrown-exception shape couldn't be exercised end-to-end.
+    /// </summary>
+    [Test]
+    public async Task Search_sessions_widen_failure_returns_first_body_untouched() {
+        const string owner    = "acme";
+        const string repoName = "widget-fail";
+        var          repoHash = RepoHashHelper.ComputeRepoHash(owner, repoName);
+
+        InitCwdAsGitRepo(_cwdDir, owner, repoName);
+
+        const string firstBody = """{"hits":[{"session_id":"s1","title":"A"}]}""";
+
+        _server.Given(Request.Create().WithPath("/api/sessions/search").WithParam("repo", repoHash).UsingGet())
+            .RespondWith(
+                Response.Create()
+                    .WithStatusCode(200)
+                    .WithHeader("Content-Type", "application/json")
+                    .WithBody(firstBody)
+            );
+
+        // Widened request carries no `repo` param at all (see the happy-path test above).
+        _server.Given(Request.Create().WithPath("/api/sessions/search").WithParam("repo", MatchBehaviour.RejectOnMatch).UsingGet())
+            .RespondWith(Response.Create().WithStatusCode(500).WithBody("boom"));
+
+        using var proc = SpawnMcpServer();
+        try {
+            var args     = new JsonObject { ["query"] = "batch" }; // no `repo` — implicit cwd pin
+            var response = await SendRequest(proc, ToolsCallRequest(11, "search_sessions", args), TimeSpan.FromSeconds(30));
+
+            var result = response["result"]?.AsObject();
+            await Assert.That(result).IsNotNull();
+            // Must NOT be an error — the widen failure is swallowed, first body wins.
+            await Assert.That(result!["isError"]?.GetValue<bool>()).IsNotEqualTo(true);
+
+            var text = result["content"]?[0]?["text"]?.GetValue<string>();
+            await Assert.That(text).IsEqualTo(firstBody);
+
+            var widenedHits = _server.FindLogEntries(Request.Create().WithPath("/api/sessions/search").WithParam("repo", MatchBehaviour.RejectOnMatch).UsingGet());
+            await Assert.That(widenedHits.Count).IsEqualTo(1); // the widen call did happen and did fail
         } finally {
             await ShutdownAsync(proc);
         }

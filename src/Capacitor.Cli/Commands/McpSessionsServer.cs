@@ -201,14 +201,23 @@ static class McpSessionsServer {
             }
 
             if (ShouldWiden(arguments, cwdRepoHash, body, out var limit)) {
-                var widenedArgs = arguments?.DeepClone().AsObject() ?? new JsonObject();
-                widenedArgs["repo"] = "all";
+                // Widening is best-effort and must NEVER turn a working search into a failure —
+                // a thrown failure on this path (including a slower all-repos query tripping the
+                // HttpClient timeout as TaskCanceledException, which would otherwise escape to the
+                // outer dispatcher catch-all as "internal error") must not cost the caller the
+                // already-successful first result. Swallow everything here, not just HTTP errors.
+                try {
+                    var widenedArgs = arguments?.DeepClone().AsObject() ?? new JsonObject();
+                    widenedArgs["repo"] = "all";
 
-                using var second = await SendWithRefreshRetryAsync(client, baseUrl, c => c.GetAsync(BuildSearchUrl(baseUrl, widenedArgs, cwdRepoHash)));
+                    using var second = await SendWithRefreshRetryAsync(client, baseUrl, c => c.GetAsync(BuildSearchUrl(baseUrl, widenedArgs, cwdRepoHash)));
 
-                if (second.IsSuccessStatusCode) {
-                    var widenedBody = await second.Content.ReadAsStringAsync();
-                    body = MergeWidenedBody(body, widenedBody, limit);
+                    if (second.IsSuccessStatusCode) {
+                        var widenedBody = await second.Content.ReadAsStringAsync();
+                        body = MergeWidenedBody(body, widenedBody, limit);
+                    }
+                } catch {
+                    // fall through — return the first (successful) body untouched.
                 }
             }
 
