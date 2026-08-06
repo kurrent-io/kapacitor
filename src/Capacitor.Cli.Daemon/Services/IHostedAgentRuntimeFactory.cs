@@ -7,14 +7,6 @@ using Capacitor.Cli.Core.LocalIpc;
 namespace Capacitor.Cli.Daemon.Services;
 
 /// <summary>
-/// Runtime-selection seam: one implementation per vendor family, chosen by
-/// <see cref="AgentOrchestrator.HandleLaunchAgent"/> via <c>cmd.Vendor</c> instead of the orchestrator
-/// itself building the vendor-specific runtime inline. <see cref="PtyHostedAgentRuntimeFactory"/>
-/// wraps an <see cref="IHostedAgentLauncher"/> + <see cref="Pty.IPtyProcessFactory"/> for the
-/// interactive CLIs (Claude, Codex); <see cref="AcpHostedAgentRuntimeFactory"/> spawns
-/// <c>cursor-agent acp</c> and speaks ACP JSON-RPC for Cursor.
-/// </summary>
-/// <summary>
 /// A runtime's unattended-hosting advertisement: whether it is offered, and — when a daemon-local
 /// gate is what withholds it — the operator-actionable reason.
 /// </summary>
@@ -24,6 +16,14 @@ namespace Capacitor.Cli.Daemon.Services;
 /// unattended support in the first place.</param>
 internal readonly record struct UnattendedSupport(bool Supported, string? WithheldReason);
 
+/// <summary>
+/// Runtime-selection seam: one implementation per vendor family, chosen by
+/// <see cref="AgentOrchestrator.HandleLaunchAgent"/> via <c>cmd.Vendor</c> instead of the orchestrator
+/// itself building the vendor-specific runtime inline. <see cref="PtyHostedAgentRuntimeFactory"/>
+/// wraps an <see cref="IHostedAgentLauncher"/> + <see cref="Pty.IPtyProcessFactory"/> for the
+/// interactive CLIs (Claude, Codex); <see cref="AcpHostedAgentRuntimeFactory"/> spawns
+/// <c>cursor-agent acp</c> and speaks ACP JSON-RPC for Cursor.
+/// </summary>
 internal interface IHostedAgentRuntimeFactory {
     /// <summary>Vendor token this factory handles ("claude", "codex", "cursor").</summary>
     string Vendor { get; }
