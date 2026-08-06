@@ -205,9 +205,9 @@ public static class DaemonCommands {
             psi.ArgumentList.Add(arg);
         }
 
-        // Windows: clear HANDLE_FLAG_INHERIT on our own std handles so the child
-        // doesn't inherit a capturing parent's pipe handles. No-op on Unix.
-        ProcessHelpers.PreventInheritedStdHandles();
+        // Stop the child from inheriting a capturing parent's pipe handles — std
+        // handles on Windows, any fd >= 3 on Unix.
+        ProcessHelpers.PreventInheritedHandles();
 
         var process = new Process { StartInfo = psi };
         process.Start();

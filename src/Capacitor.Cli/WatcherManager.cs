@@ -144,10 +144,11 @@ static class WatcherManager {
                 Environment            = { ["KCAP_URL"] = baseUrl }
             };
 
-            // Stop the watcher from inheriting the coding agent's std handles on Windows;
-            // otherwise it holds the agent's hook-stdout pipe open for its whole lifetime,
-            // hanging synchronous subagent hooks and orphaning the watcher.
-            ProcessHelpers.PreventInheritedStdHandles();
+            // Stop the watcher from inheriting the coding agent's pipe descriptors —
+            // std handles on Windows, any fd >= 3 on Unix; otherwise it holds the
+            // agent's hook-stdout pipe open for its whole lifetime, hanging synchronous
+            // subagent hooks and orphaning the watcher.
+            ProcessHelpers.PreventInheritedHandles();
 
             var process = StartProcess(psi);
 
@@ -438,9 +439,9 @@ static class WatcherManager {
                 psi.ArgumentList.Add("--codex");
             }
 
-            // Don't let this detached child inherit the agent's std handles on Windows
+            // Don't let this detached child inherit the agent's pipe descriptors —
             // same pipe-leak hazard as the watcher spawn above.
-            ProcessHelpers.PreventInheritedStdHandles();
+            ProcessHelpers.PreventInheritedHandles();
 
             var process = StartProcess(psi);
 
@@ -496,9 +497,9 @@ static class WatcherManager {
             psi.ArgumentList.Add(sessionId);
             psi.ArgumentList.Add(transcriptPath);
 
-            // Don't let this detached child inherit the agent's std handles on
-            // Windows — same pipe-leak hazard as the spawns above.
-            ProcessHelpers.PreventInheritedStdHandles();
+            // Don't let this detached child inherit the agent's pipe descriptors —
+            // same pipe-leak hazard as the spawns above.
+            ProcessHelpers.PreventInheritedHandles();
 
             var process = StartProcess(psi);
 
