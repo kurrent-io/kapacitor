@@ -41,13 +41,23 @@ public sealed class TrayViewModel : ReactiveObject, IDisposable {
     public ReactiveCommand<string, Unit> StopAgentCommand { get; }
     public ReactiveCommand<string, Unit> OpenInWebCommand  { get; }
 
-    public TrayViewModel(IDaemonClientService service, IPauseController pause, AgentActionService actions) {
+    // Injected delegates (spec §5, §9): the tray adapter wires these to real menu items, but the
+    // VM owns the commands so tests can assert delegation without a live window/desktop lifetime.
+    // No-op defaults so this VM stays constructible before Task 7 supplies the real callbacks.
+    public ReactiveCommand<Unit, Unit> OpenMainWindowCommand { get; }
+    public ReactiveCommand<Unit, Unit> QuitCommand { get; }
+
+    public TrayViewModel(
+            IDaemonClientService service, IPauseController pause, AgentActionService actions,
+            Action? openMainWindow = null, Action? quit = null) {
         _pause = pause;
 
         TogglePauseCommand = ReactiveCommand.Create<bool>(pause.RequestToggle);
         StopAgentCommand = ReactiveCommand.Create<string>(id =>
             actions.RequestStop(id, MenuModel.Agents.FirstOrDefault(a => a.Id == id)?.Label ?? id));
         OpenInWebCommand = ReactiveCommand.Create<string>(actions.OpenInWeb);
+        OpenMainWindowCommand = ReactiveCommand.Create(openMainWindow ?? (() => { }));
+        QuitCommand = ReactiveCommand.Create(quit ?? (() => { }));
 
         var snapshots = service.Snapshots
             .Select(s => (DaemonStatusDto?)s)

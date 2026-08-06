@@ -607,4 +607,52 @@ public class TrayViewModelTests {
             await Assert.That(opener.Opened).IsEquivalentTo(["https://x.kcap.ai/agents/agent-1"], CollectionOrdering.Matching);
         });
     }
+
+    // ---- OpenMainWindowCommand / QuitCommand delegation (Task 6 adds the injected delegates; Task 7 supplies the real callbacks) ----
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task OpenMainWindowCommand_invokes_the_injected_delegate() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            var service = new FakeDaemonClientService();
+            var pause = new FakePauseController();
+            var actions = NewActions(service);
+            var calls = 0;
+            using var vm = new TrayViewModel(service, pause, actions, openMainWindow: () => calls++);
+
+            await vm.OpenMainWindowCommand.Execute().ToTask();
+
+            await Assert.That(calls).IsEqualTo(1);
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task QuitCommand_invokes_the_injected_delegate() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            var service = new FakeDaemonClientService();
+            var pause = new FakePauseController();
+            var actions = NewActions(service);
+            var calls = 0;
+            using var vm = new TrayViewModel(service, pause, actions, quit: () => calls++);
+
+            await vm.QuitCommand.Execute().ToTask();
+
+            await Assert.That(calls).IsEqualTo(1);
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task OpenMainWindowCommand_and_QuitCommand_default_to_a_no_op_without_throwing() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            var service = new FakeDaemonClientService();
+            var pause = new FakePauseController();
+            var actions = NewActions(service);
+            using var vm = new TrayViewModel(service, pause, actions); // no delegates injected
+
+            await vm.OpenMainWindowCommand.Execute().ToTask();
+            await vm.QuitCommand.Execute().ToTask();
+        });
+    }
 }
