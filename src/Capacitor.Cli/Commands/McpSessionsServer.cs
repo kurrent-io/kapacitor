@@ -273,13 +273,21 @@ static class McpSessionsServer {
         limit = 10;
         if (TryReadInt(args, "limit", out var requested)) limit = requested;
 
-        string? explicitRepo = args?["repo"] switch {
-            null                                          => null,
-            JsonValue v when v.TryGetValue(out string? s) => s,
-            _                                             => null
-        };
+        // Three-way repo check: absent (null) → proceed; string (blank or not) → if non-blank return false; else proceed; anything else → return false
+        if (args?["repo"] is not null) {
+            if (args["repo"] is JsonValue repoValue && repoValue.TryGetValue(out string? repoStr)) {
+                // It's a JsonValue holding a string
+                if (!string.IsNullOrWhiteSpace(repoStr)) {
+                    // Explicit, non-blank repo → don't widen
+                    return false;
+                }
+                // else: blank/whitespace repo → treat as absent, proceed
+            } else {
+                // Present but not a string JsonValue (object, array, or non-string) → attempted explicit repo but invalid → don't widen
+                return false;
+            }
+        }
 
-        if (!string.IsNullOrWhiteSpace(explicitRepo)) return false;
         if (cwdRepoHash is null) return false;
         if (TryReadInt(args, "offset", out var offset) && offset > 0) return false;
 

@@ -389,6 +389,15 @@ public class McpSessionsServerTests {
     }
 
     [Test]
+    public async Task ShouldWiden_false_when_repo_is_non_string() {
+        var widen = McpSessionsServer.ShouldWiden(
+            new JsonObject { ["query"] = "x", ["repo"] = 5 },
+            cwdRepoHash: "abc1234567890def", firstBody: Body(), out _);
+
+        await Assert.That(widen).IsFalse();
+    }
+
+    [Test]
     public async Task MergeWidenedBody_dedupes_keeps_cwd_first_caps_and_flags() {
         var merged = McpSessionsServer.MergeWidenedBody(
             firstBody: Body("s1", "s2"),
