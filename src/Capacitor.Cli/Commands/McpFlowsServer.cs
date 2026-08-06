@@ -342,6 +342,18 @@ static class McpFlowsServer {
                 return BuildToolResult(id, payload, isError);
             }
 
+            // §6 of the liveness design: an optional `wait: true` on the two status tools blocks
+            // (bounded, repeated GETs — never a long-poll) until the round is terminal or the
+            // shared PollCap elapses, instead of the single GET below. Absent or false NEVER
+            // reaches this branch — the untouched single-GET path beneath it is the whole
+            // backwards-compat contract for every existing caller that never sends the argument.
+            if (toolName is "get_review_flow_status" or "get_flow_status" && ParseWaitArg(arguments)) {
+                var waitFlowRunId = arguments?["flow_run_id"]?.GetValue<string>()
+                    ?? throw new ArgumentException("Missing required argument: flow_run_id");
+                var waitResult = await PollStatusUntilTerminalAsync(client, apiRoot, waitFlowRunId, toolName, clock, backoff);
+                return BuildToolResult(id, waitResult.Payload, waitResult.IsError);
+            }
+
             using var httpResponse = toolName switch {
                 "get_review_flow_status" or "get_flow_status" => await SendWithRefreshRetryAsync(client, apiRoot, (c, ct) => c.GetAsync(BuildFlowUrl(apiRoot, arguments), ct)),
                 "close_review_flow"      or "close_flow"      => await SendWithRefreshRetryAsync(client, apiRoot, (c, ct) => c.PostAsync(BuildFlowUrl(apiRoot, arguments) + "/close", null, ct)),
@@ -1374,6 +1386,104 @@ static class McpFlowsServer {
         );
     }
 
+    /// <summary>§6 of the liveness design: implements `wait: true` on get_review_flow_status /
+    /// get_flow_status — repeated bounded GETs against the SAME endpoint the plain (wait
+    /// absent/false) call hits, sharing that lane's per-attempt timeout (<see cref="PerGetTimeout"/>),
+    /// poll cadence (<see cref="PollInterval"/>), transient-failure budget
+    /// (<see cref="MaxTransientRetries"/>), and settlement-409 backoff schedule with
+    /// <see cref="PollUntilTerminalAsync"/> — until the run is terminal (closed/failed) or the
+    /// CURRENT round reaches a terminal <see cref="TerminalRoundStatuses"/> value, or
+    /// <see cref="PollCap"/> (8m) elapses, whichever comes first.
+    /// <para>Deliberately does NOT reuse <see cref="PollUntilTerminalAsync"/> outright: this is a bare
+    /// status question with no specific round number pinned by a just-submitted POST (a status wait
+    /// has none), and — more importantly — it must render through <see cref="FormatStatusResponse"/>,
+    /// the SAME envelope shape a plain wait:false call already renders, never
+    /// <see cref="FormatPolledRoundResult"/>'s round-submission shape. Reusing that method would make
+    /// the tool's response shape depend on whether wait was set, which is exactly the kind of silent
+    /// behavior drift the brief warns against.</para></summary>
+    static async Task<PollResult> PollStatusUntilTerminalAsync(
+            HttpClient client, string apiRoot, string flowRunId, string toolName, FlowRetryClock clock, SettlementBackoff backoff) {
+        var url                   = $"{apiRoot}/api/flows/{Uri.EscapeDataString(flowRunId)}";
+        var pollStartedAt         = clock.UtcNow;
+        var deadline              = pollStartedAt + PollCap;
+        var consecutiveTransient  = 0;
+        var lastTransientError    = (string?)null;
+        var settlementRetriesUsed = 0;
+
+        while (clock.UtcNow < deadline) {
+            using var getCts = clock.CreateTimeoutSource(PerGetTimeout);
+            HttpResponseMessage resp;
+            try {
+                resp = await SendWithRefreshRetryAsync(client, apiRoot, (c, ct) => c.GetAsync(url, ct), getCts.Token);
+            } catch (Exception ex) when (ex is HttpRequestException or OperationCanceledException) {
+                consecutiveTransient++;
+                lastTransientError = ex.Message;
+                if (consecutiveTransient > MaxTransientRetries)
+                    return new($"Error: poll failed after {MaxTransientRetries} consecutive network errors: {lastTransientError}", true);
+                await clock.DelayAsync(PollInterval); continue;
+            }
+
+            using (resp) {
+                if (resp.StatusCode == HttpStatusCode.Unauthorized)
+                    return new("Not logged in. Run 'kcap login' on the host shell.", true);
+
+                var statusCode = (int)resp.StatusCode;
+                if (statusCode is >= 400 and < 500) {
+                    var errBody = await resp.Content.ReadAsStringAsync();
+
+                    // Same settlement-layer coded 409s the round-submission poll lane retries
+                    // transparently — this GET hits the identical endpoint, so the server-side
+                    // backstop that can surface them there can surface them here too.
+                    if (TryParseCodedError(errBody, out var code, out _) &&
+                            SettlementRetryableCodes.Contains(code!)) {
+                        settlementRetriesUsed++;
+                        await clock.DelayAsync(backoff.Delay(settlementRetriesUsed, deadline - clock.UtcNow));
+                        continue;
+                    }
+
+                    // Every other coded/uncoded 4xx (including 404) fails immediately — exactly
+                    // what the plain wait:false status call already does for the same response.
+                    return new(FormatFlowStartError(statusCode, errBody, wasDynamicStart: false), true);
+                }
+
+                if (!resp.IsSuccessStatusCode) {
+                    consecutiveTransient++;
+                    lastTransientError = $"HTTP {statusCode}";
+                    if (consecutiveTransient > MaxTransientRetries)
+                        return new($"Error: poll failed after {MaxTransientRetries} consecutive server errors: {lastTransientError}", true);
+                    await clock.DelayAsync(PollInterval); continue;
+                }
+
+                consecutiveTransient  = 0;
+                lastTransientError    = null;
+                settlementRetriesUsed = 0;
+
+                var body        = await resp.Content.ReadAsStringAsync();
+                var node        = JsonNode.Parse(body)?.AsObject();
+                var runStatus   = node?["status"]?.GetValue<string>();
+                var roundStatus = node?["round_status"]?.GetValue<string>();
+
+                var runTerminal   = runStatus is "closed" or "failed";
+                var roundTerminal = roundStatus is not null && TerminalRoundStatuses.Contains(roundStatus);
+
+                if (runTerminal || roundTerminal) {
+                    var formatted = FormatStatusResponse(body, out var pendingIds);
+                    await AckRenderedMessagesAsync(client, apiRoot, flowRunId, pendingIds, clock);
+                    return new(formatted, false);
+                }
+            }
+            await clock.DelayAsync(PollInterval);
+        }
+
+        // Genuine 8-min cap: the same benign text the round-submission poll lane returns, minus the
+        // round number (a bare status wait has none pinned) — callers already treat this string as
+        // benign, non-error "try the status tool again" guidance, per the backwards-compat design.
+        return new(
+            $"Flow still running for flow_run_id {flowRunId}. Call {toolName} to retrieve the result when ready.",
+            false
+        );
+    }
+
     /// <summary>Formats the terminal GET /api/flows/{id} response into the same envelope+text as FormatRoundResponse.</summary>
     internal static string FormatPolledRoundResult(JsonObject node, string flowRunId) =>
         FormatPolledRoundResult(node, flowRunId, out _);
@@ -1768,6 +1878,20 @@ static class McpFlowsServer {
             _                                                 => throw new ArgumentException("Invalid argument: async must be a boolean")
         };
 
+    /// <summary>
+    /// Parses the optional "wait" argument on get_review_flow_status/get_flow_status (§6 of the
+    /// liveness design). A missing key and an explicit JSON null both default to false — the
+    /// single-GET behavior every existing caller already gets, unchanged. A JSON boolean is used
+    /// as-is; anything else throws ArgumentException, turned into a clean tool error by
+    /// HandleToolCallAsync's catch, mirroring ParseAsyncArg's contract.
+    /// </summary>
+    static bool ParseWaitArg(JsonObject? arguments) =>
+        arguments?["wait"] switch {
+            null                                              => false,
+            JsonValue v when v.TryGetValue<bool>(out var b) => b,
+            _                                                 => throw new ArgumentException("Invalid argument: wait must be a boolean")
+        };
+
     static string BuildInitializeResponse(JsonNode id, JsonObject request) =>
         ToResponse<McpInitResult>(
             id,
@@ -1841,11 +1965,14 @@ static class McpFlowsServer {
         new(
             "get_review_flow_status",
             "Get the current status of a review flow: running, waiting, completed, or failed. Also surfaces the last result kind and result text. " +
+            "Long rounds are normal — a reviewer round can legitimately run well past a single check. " +
+            "Optional wait: true blocks (bounded, internally retried GETs — never a raw long-poll) until the round is terminal or roughly 8 minutes pass, instead of returning the current snapshot immediately; on the 8-minute cap it returns the same benign still-running text as an unset/false wait, so re-enter with wait: true again rather than treating that as an error. " +
             "Responses may carry pending_messages — out-of-band notes from participants. React to each message_id ONCE, when first shown: a message normally never reappears, but a failed delivery acknowledgment redelivers it on a later call — never react to the same message_id twice.",
             new(
                 "object",
                 new() {
-                    ["flow_run_id"] = new("string", "Flow run ID returned by start_review_flow.")
+                    ["flow_run_id"] = new("string", "Flow run ID returned by start_review_flow."),
+                    ["wait"]        = new("boolean", "Optional, defaults to false. When true, block until the round is terminal or roughly 8 minutes elapse, instead of returning immediately.")
                 },
                 ["flow_run_id"]
             )
@@ -1906,11 +2033,14 @@ static class McpFlowsServer {
         new(
             "get_flow_status",
             "Get the current status of a flow run: running, waiting, completed, or failed. Also surfaces the last result kind and result text. " +
+            "Long rounds are normal — a participant round can legitimately run well past a single check. " +
+            "Optional wait: true blocks (bounded, internally retried GETs — never a raw long-poll) until the round is terminal or roughly 8 minutes pass, instead of returning the current snapshot immediately; on the 8-minute cap it returns the same benign still-running text as an unset/false wait, so re-enter with wait: true again rather than treating that as an error. " +
             "Responses may carry pending_messages — out-of-band notes from participants. React to each message_id ONCE, when first shown: a message normally never reappears, but a failed delivery acknowledgment redelivers it on a later call — never react to the same message_id twice.",
             new(
                 "object",
                 new() {
-                    ["flow_run_id"] = new("string", "Flow run ID returned by start_flow.")
+                    ["flow_run_id"] = new("string", "Flow run ID returned by start_flow."),
+                    ["wait"]        = new("boolean", "Optional, defaults to false. When true, block until the round is terminal or roughly 8 minutes elapse, instead of returning immediately.")
                 },
                 ["flow_run_id"]
             )

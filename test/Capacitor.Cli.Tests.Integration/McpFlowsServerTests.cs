@@ -358,7 +358,10 @@ public class McpFlowsServerTests : IDisposable {
     /// <summary>
     /// Pins the four review-tool schemas byte-stably: definition_id/participant/message must
     /// NEVER leak into these schemas — old clients (and old skills) depend on the exact
-    /// property/required sets that shipped before the generic tools were added (D-b).
+    /// property/required sets that shipped before the generic tools were added (D-b). The one
+    /// deliberate exception is `get_review_flow_status`'s additive, optional `wait` (the
+    /// liveness-supervision status-wait argument) — pinned explicitly below rather than silently
+    /// allowed, so a future accidental property change still fails loudly.
     /// </summary>
     [Test]
     public async Task Review_tool_schemas_are_unchanged() {
@@ -384,7 +387,11 @@ public class McpFlowsServerTests : IDisposable {
 
             await AssertSchema(
                 byName["get_review_flow_status"],
-                properties: ["flow_run_id"],
+                // Liveness-supervision status wait: additive optional `wait` — blocks until the
+                // round is terminal instead of a single snapshot GET. Backwards-compatible by
+                // construction (optional, not in `required`), so pinning it here is deliberate, not a
+                // relaxation of the byte-stable contract this test otherwise enforces.
+                properties: ["flow_run_id", "wait"],
                 required:   ["flow_run_id"]
             );
 

@@ -17,6 +17,10 @@ Use the `kcap mcp flows` MCP tools (`start_review_flow`, `submit_review_round`, 
 
 These four tools are aliases of the generic flow tools (`start_flow`, `send_to_participant`, `get_flow_status`, `close_flow`) — see the `agent-flows` skill for non-review flows.
 
+## Long rounds are normal
+
+`round_timeout` is an **inactivity** bound, not a wall-clock cap: a round only fails for taking too long if the reviewer goes genuinely quiet for that whole stretch — an actively-working reviewer can legitimately run a round for a long time. If a status check (or a `submit_review_round`/`start_review_flow` call) returns the benign "Flow still running" text, that is an expected outcome on a long round, not a problem — re-enter the wait with `get_review_flow_status(flow_run_id, wait: true)`, which blocks (via bounded, internally-retried checks — never a raw long-poll) until the round finishes or roughly 8 minutes pass, then call it again if it's still running. A round result of **`unclear` now genuinely means the reviewer went dead or silent** (no activity for the whole inactivity bound, or it crashed/was stopped) — it is no longer a symptom of a merely slow reviewer, so treat it as a liveness problem (see the `participant_unreachable` and `participant_died`/`participant_stopped` entries below), not as "the review is taking a while."
+
 ## Role-surface safety gate
 
 Classify the session before any flow action:
@@ -143,8 +147,8 @@ After applying the role-surface safety gate, if `start_review_flow` / `submit_re
 - **`reviewer_vendor_unresolvable`** — returned from `submit_review_round` on a legacy in-flight run whose pinned definition lost its vendor and has no recorded assignment; close the flow and start a new one.
 - **`client_upgrade_required`, `flow_client_protocol_required`, or `flow_client_protocol_unsupported`** — update kcap; reserved review aliases fail closed on stale clients.
 - **`reserved_review_alias_shape`** — an admin changed a reserved alias to an invalid participant shape; restore exactly one participant named `reviewer`.
-- **`400` starting `participant_unavailable:`** — the reviewer agent died and automatic relaunch is not available yet. Close this flow and start a new one, carrying your context forward; re-submitting will keep failing.
-- **A round result of `unclear` whose text is exactly `participant_died` or `participant_stopped`** — the reviewer agent crashed or was stopped mid-round. The run stays open but has no live reviewer: close the flow and start a new one.
+- **`409` containing `participant_unreachable`** — the reviewer's liveness is ambiguous right now: either its daemon disconnected/is restarting, or the server positively spotted a possibly-live prior agent and is refusing to relaunch until its absence is proven (never launching a duplicate reviewer beside a possibly-live one). This is retryable — **do not close the flow.** Submit the round again shortly with `submit_review_round`; the server relaunches the reviewer automatically once absence is proven (via the daemon reconnecting/reporting, or the agent's death being confirmed). If it keeps failing across many retries, that points at the daemon itself needing attention, not at the flow needing to be restarted — ask the user to check daemon status, or stop the reviewer (dashboard/API) to force a fresh relaunch.
+- **A round result of `unclear` whose text is exactly `participant_died` or `participant_stopped`** — the reviewer crashed or was stopped mid-round. The run stays open: submit another round with `submit_review_round` and it relaunches automatically — the fresh reviewer has **no memory of prior rounds**, so restate any context it needs in your updated context; its earlier spend still counts against the run budget. No need to close and restart the flow.
 
 ## Workflow
 
@@ -171,7 +175,7 @@ if findings:
 |---|---|---|---|
 | `start_review_flow` | `kind` (`spec-review`\|`code-review`), `target_kind` (what is being reviewed: `spec`, `code`, `pr`, `branch`, `file`, etc.), `target_ref` (a path, branch name, or PR URL/number that identifies the target), `target_title` (short human-readable title, e.g. spec name or PR title), `context` (background context: what to focus on, constraints, definition of done) | `vendor` (explicit reviewer vendor; omit to use the definition's authored vendor, or your saved `flows.reviewer_vendor` preference if it declares none), `model` (explicit reviewer model override — REQUIRES `vendor`; only pass it when the user named a model), `instructions`, `mode` (`context-only` — optional) | Once, at the start of a review task. |
 | `submit_review_round` | `flow_run_id`, `context` | `instructions` | After addressing findings. Pass the same `flow_run_id` and the updated context. |
-| `get_review_flow_status` | `flow_run_id` | — | Poll or check the current status of a flow (running, waiting, completed, failed). |
+| `get_review_flow_status` | `flow_run_id` | `wait` (`true`/`false`, defaults to `false`) — when `true`, blocks until the round is terminal or roughly 8 minutes pass, instead of returning the current snapshot immediately | Poll or check the current status of a flow (running, waiting, completed, failed). Use `wait: true` to ride out a long round instead of polling repeatedly yourself. |
 | `close_review_flow` | `flow_run_id` | — | Only after the reviewer returns `clean`. |
 
 ## Example (code review)

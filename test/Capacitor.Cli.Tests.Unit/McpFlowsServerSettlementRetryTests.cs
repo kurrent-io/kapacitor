@@ -13,6 +13,16 @@ namespace Capacitor.Cli.Tests.Unit;
 /// wiring into the start path (HandleToolCallAsync), and the poll path (PollUntilTerminalAsync,
 /// reached indirectly through HandleToolCallAsync).
 /// </summary>
+/// <remarks>
+/// None of the 409 bodies below carry <c>last_processed_seq</c> — that is deliberate, not an
+/// oversight. <c>SendWithSettlementRetryAsync</c> treats that field as progress evidence and
+/// RESETS its rolling no-progress window whenever it advances (see
+/// <c>SettlementProgressWindowTests.cs</c>); every fixed-elapsed-deadline assertion in this file
+/// (e.g. the flat <c>SettlementElapsedDeadline</c>/<c>PollCap</c> exhaustion timings) relies on
+/// that window never resetting. Adding <c>last_processed_seq</c> to any 409 fixture here — even
+/// "for realism" — would silently start resetting the window and change these tests' pinned
+/// timing assumptions without any test failing to flag it.
+/// </remarks>
 public class McpFlowsServerSettlementRetryTests {
     // Every wait in both retry lanes runs on the injected clock, so these tests are instant and
     // the requested schedule is directly assertable (VirtualFlowRetryClock.Delays).
