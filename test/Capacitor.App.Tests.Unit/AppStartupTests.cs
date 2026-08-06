@@ -1,8 +1,11 @@
 using System.Runtime.CompilerServices;
+using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
 using Capacitor.App.Services;
+using Capacitor.App.ViewModels;
+using Capacitor.App.Views;
 using Capacitor.Cli.Core.LocalIpc;
 using TUnit.Assertions.Enums;
 using AppUnderTest = Capacitor.App.App;
@@ -28,7 +31,8 @@ public class AppStartupTests {
     public async Task BuildAndShowMainWindow_leaves_the_window_visible() {
         var isVisible = await AvaloniaSession.DispatchAsync(() => {
             var service = new FakeDaemonClientService();
-            var window = AppUnderTest.BuildAndShowMainWindow(service, CancellationToken.None);
+            var (actions, notifier) = NewActions(service);
+            var window = AppUnderTest.BuildAndShowMainWindow(service, actions, notifier, CancellationToken.None);
             Dispatcher.UIThread.RunJobs(); // flush the deferred Loaded post (diagnostic parity with the smoke test)
 
             var visible = window.IsVisible;
@@ -37,6 +41,13 @@ public class AppStartupTests {
         });
 
         await Assert.That(isVisible).IsTrue();
+    }
+
+    /// The service composition StartAsync builds once and shares between the window, the tray and
+    /// the pause controller (spec §7 one code path, §11 one banner/stderr channel).
+    static (AgentActionService Actions, IAppNotifier Notifier) NewActions(FakeDaemonClientService service) {
+        var notifier = new AppNotifier();
+        return (new AgentActionService(new ScriptedLocalControlOps(), notifier, new RecordingOpener(), service.SnapshotsSubject, CancellationToken.None), notifier);
     }
 
     /// Regression coverage for a P2 bug found in review: the startup catch used to write to
@@ -161,7 +172,7 @@ public class AppStartupTests {
         var (modeAfterShow, mainWindowAssigned) = await AvaloniaSession.DispatchAsync(async () => {
             var (desktop, fake) = FakeClassicDesktopLifetime.Create();
             await AppUnderTest.HandleStartupFailureAsync(
-                desktop, new InvalidOperationException("boom"), service, shutdown);
+                desktop, new InvalidOperationException("boom"), service, shutdown, []);
             Dispatcher.UIThread.RunJobs();
             return (fake.ShutdownMode, fake.MainWindow is not null);
         });
@@ -242,5 +253,240 @@ public class AppStartupTests {
 
         await Assert.That(confirmed).IsTrue();
         await Assert.That(fake.ShutdownCalls).IsEquivalentTo([1], CollectionOrdering.Matching);
+    }
+
+    sealed class RecordingDisposable(Action onDispose) : IDisposable {
+        public void Dispose() => onDispose();
+    }
+
+    /// Ordering pin for spec §9's "quit never strands a menu-bar icon": the UI-thread-owned
+    /// disposables run, in the order given (tray icon first), BEFORE the service dispose /
+    /// markConfirmed / TryShutdown pass. Driven through a recording list rather than the real
+    /// App fields, which no test can populate (StartAsync's composition needs a real daemon).
+    [Test]
+    public async Task DisposeUiThenConfirmShutdownAsync_disposes_ui_services_before_the_confirm_pass() {
+        var (desktop, fake) = FakeClassicDesktopLifetime.Create();
+        var order = new List<string>();
+
+        await AppUnderTest.DisposeUiThenConfirmShutdownAsync(
+            [new RecordingDisposable(() => order.Add("tray")),
+             new RecordingDisposable(() => order.Add("trayVm")),
+             new RecordingDisposable(() => order.Add("pause"))],
+            disposeAsync: () => { order.Add("service"); return ValueTask.CompletedTask; },
+            markConfirmed: () => order.Add("confirm"),
+            desktop,
+            exitCode: 0);
+
+        await Assert.That(order).IsEquivalentTo(["tray", "trayVm", "pause", "service", "confirm"], CollectionOrdering.Matching);
+        await Assert.That(fake.ShutdownCalls).IsEquivalentTo([0], CollectionOrdering.Matching);
+    }
+
+    /// Same class of bug DisposeAndConfirmShutdownAsync's throwing-dispose test pins, one step
+    /// earlier: a throwing UI dispose must not skip the remaining disposables, markConfirmed or
+    /// TryShutdown — otherwise _shutdownConfirmed stays false while _shutdownStarted stays true
+    /// and every later quit is cancelled forever. Nulls are tolerated: App passes its
+    /// possibly-unassigned tray/VM/pause fields straight through.
+    [Test]
+    public async Task DisposeUiThenConfirmShutdownAsync_continues_when_a_ui_dispose_throws() {
+        var (desktop, fake) = FakeClassicDesktopLifetime.Create();
+        var order = new List<string>();
+
+        await AppUnderTest.DisposeUiThenConfirmShutdownAsync(
+            [new RecordingDisposable(() => throw new InvalidOperationException("tray-boom")),
+             null,
+             new RecordingDisposable(() => order.Add("pause"))],
+            disposeAsync: null,
+            markConfirmed: () => order.Add("confirm"),
+            desktop,
+            exitCode: 1);
+
+        await Assert.That(order).IsEquivalentTo(["pause", "confirm"], CollectionOrdering.Matching);
+        await Assert.That(fake.ShutdownCalls).IsEquivalentTo([1], CollectionOrdering.Matching);
+    }
+
+    // ---- MainWindowCoordinator: hide-to-tray lifecycle (spec §9) ----
+    //
+    // Real headless MainWindows with no DataContext: these pin window lifecycle, not bindings
+    // (MainWindowSmokeTests owns the bound-text coverage), and the coordinator's Closing
+    // interception is installed on the window itself, so it is live without a ViewModel.
+
+    static (MainWindowCoordinator Coordinator, Func<int> Builds) NewCoordinator() {
+        var builds = 0;
+        var coordinator = new MainWindowCoordinator(() => {
+            builds++;
+            var window = new MainWindow();
+            window.Show(); // the production factory (App.BuildAndShowMainWindow) shows too
+            return window;
+        });
+        return (coordinator, () => builds);
+    }
+
+    /// Closing the window while no quit is in progress cancels the close and hides instead — the
+    /// window instance survives (Closed never fires), which is what lets ShowMainWindow re-show
+    /// it: Avalonia refuses to Show() a window that was really closed.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Close_hides_window() {
+        var (visibleAfterClose, stillTracked, builds) = await AvaloniaSession.DispatchAsync(() => {
+            var (coordinator, buildCount) = NewCoordinator();
+            coordinator.ShowMainWindow();
+            var window = coordinator.Window!;
+
+            window.Close();
+            Dispatcher.UIThread.RunJobs();
+
+            var result = (window.IsVisible, ReferenceEquals(coordinator.Window, window), buildCount());
+            coordinator.QuitInProgress = true; // let the fixture window actually go away
+            window.Close();
+            Dispatcher.UIThread.RunJobs();
+            return result;
+        });
+
+        await Assert.That(visibleAfterClose).IsFalse();
+        await Assert.That(stillTracked).IsTrue();
+        await Assert.That(builds).IsEqualTo(1);
+    }
+
+    /// The mirror: with QuitInProgress set (App.OnShutdownRequested's first, deferring pass), the
+    /// close is NOT intercepted, so the second pass's real window teardown completes.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Quit_lets_close_through() {
+        var (interceptRequested, visibleAfterClose, stillTracked) = await AvaloniaSession.DispatchAsync(() => {
+            var (coordinator, _) = NewCoordinator();
+            coordinator.ShowMainWindow();
+            var window = coordinator.Window!;
+
+            coordinator.QuitInProgress = true;
+            var intercept = coordinator.OnWindowClosing();
+            window.Close();
+            Dispatcher.UIThread.RunJobs();
+
+            return (intercept, window.IsVisible, coordinator.Window is not null);
+        });
+
+        await Assert.That(interceptRequested).IsFalse();
+        await Assert.That(visibleAfterClose).IsFalse();
+        await Assert.That(stillTracked).IsFalse();
+    }
+
+    /// Tray "Open Kurrent Capacitor" on a hidden window re-shows THAT window (no rebuild).
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task ShowMainWindow_reshows_same_instance() {
+        var (same, visible, builds) = await AvaloniaSession.DispatchAsync(() => {
+            var (coordinator, buildCount) = NewCoordinator();
+            coordinator.ShowMainWindow();
+            var window = coordinator.Window!;
+            window.Close(); // hidden
+            Dispatcher.UIThread.RunJobs();
+
+            coordinator.ShowMainWindow();
+            Dispatcher.UIThread.RunJobs();
+
+            var result = (ReferenceEquals(coordinator.Window, window), window.IsVisible, buildCount());
+            coordinator.QuitInProgress = true;
+            window.Close();
+            Dispatcher.UIThread.RunJobs();
+            return result;
+        });
+
+        await Assert.That(same).IsTrue();
+        await Assert.That(visible).IsTrue();
+        await Assert.That(builds).IsEqualTo(1);
+    }
+
+    /// After a REAL close (quit path only) the tracked window is gone, so a later ShowMainWindow
+    /// must build a fresh one from the factory — Avalonia throws on Show() of a closed window,
+    /// and no view state is lost (everything displayed comes from the live service, spec §9).
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task ShowMainWindow_builds_fresh_after_real_close() {
+        var (different, visible, builds) = await AvaloniaSession.DispatchAsync(() => {
+            var (coordinator, buildCount) = NewCoordinator();
+            coordinator.ShowMainWindow();
+            var window = coordinator.Window!;
+
+            coordinator.QuitInProgress = true;
+            window.Close();
+            Dispatcher.UIThread.RunJobs();
+
+            coordinator.QuitInProgress = false;
+            coordinator.ShowMainWindow();
+            Dispatcher.UIThread.RunJobs();
+
+            var fresh = coordinator.Window!;
+            var result = (!ReferenceEquals(fresh, window), fresh.IsVisible, buildCount());
+            coordinator.QuitInProgress = true;
+            fresh.Close();
+            Dispatcher.UIThread.RunJobs();
+            return result;
+        });
+
+        await Assert.That(different).IsTrue();
+        await Assert.That(visible).IsTrue();
+        await Assert.That(builds).IsEqualTo(2);
+    }
+
+    /// Spec §9: on a startup failure the error window is the only surface. Tray creation is
+    /// structurally the LAST step of StartAsync's success path, so the failure path cannot have
+    /// created one — this pins the other half of that claim, that the failure path itself never
+    /// registers a tray icon on the Application.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Startup_failure_creates_no_tray() {
+        var (trayIcons, errorWindowShown) = await AvaloniaSession.DispatchAsync(async () => {
+            var (desktop, fake) = FakeClassicDesktopLifetime.Create();
+
+            await AppUnderTest.HandleStartupFailureAsync(
+                desktop, new InvalidOperationException("boom"), service: null, new CancellationTokenSource(), []);
+            Dispatcher.UIThread.RunJobs();
+
+            var result = (TrayIcon.GetIcons(Application.Current!)?.Count ?? 0, fake.MainWindow is not null);
+            fake.MainWindow?.Close();
+            Dispatcher.UIThread.RunJobs();
+            return result;
+        });
+
+        await Assert.That(trayIcons).IsEqualTo(0);
+        await Assert.That(errorWindowShown).IsTrue();
+    }
+
+    /// A failure LATER in the success path (e.g. the tray's own construction throwing) leaves the
+    /// services built before it live — and the error window's own desktop.Shutdown(1) bypasses
+    /// OnShutdownRequested/DisposeAndShutdownAsync entirely, so this is their only cleanup. Same
+    /// "dispose WHILE WE STILL CAN" rule the service disposal above already follows: proven here
+    /// by a real TrayIconManager (its icon must be deregistered) and by a spy that records
+    /// whether the error window was still unshown at the moment it was disposed.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Startup_failure_disposes_the_ui_services_created_before_it() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            var (trayIcons, disposedBeforeErrorWindow, errorWindowShown) = await AvaloniaSession.DispatchAsync(async () => {
+                var (desktop, fake) = FakeClassicDesktopLifetime.Create();
+                var daemon = new FakeDaemonClientService();
+                var (actions, _) = NewActions(daemon);
+                var trayVm = new TrayViewModel(daemon, new FakePauseController(), actions);
+                var app = Application.Current!;
+                var tray = new TrayIconManager(app, trayVm);
+
+                var beforeErrorWindow = false;
+                var spy = new RecordingDisposable(() => beforeErrorWindow = fake.MainWindow is null);
+
+                await AppUnderTest.HandleStartupFailureAsync(
+                    desktop, new InvalidOperationException("boom"), service: null, new CancellationTokenSource(),
+                    [tray, trayVm, spy]);
+                Dispatcher.UIThread.RunJobs();
+
+                var result = (TrayIcon.GetIcons(app)?.Count ?? 0, beforeErrorWindow, fake.MainWindow is not null);
+                fake.MainWindow?.Close();
+                Dispatcher.UIThread.RunJobs();
+                return result;
+            });
+
+            await Assert.That(trayIcons).IsEqualTo(0);
+            await Assert.That(disposedBeforeErrorWindow).IsTrue();
+            await Assert.That(errorWindowShown).IsTrue();
+        });
     }
 }
