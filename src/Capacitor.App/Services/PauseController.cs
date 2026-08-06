@@ -81,6 +81,13 @@ public sealed class PauseController : IPauseController, IDisposable {
         } catch (LocalControlOpsException) {
             Console.Error.WriteLine("kcap: launch-pause refresh failed");
             FinishPassive(success: false, checkedValue: false);
+        } catch (Exception ex) {
+            // Never leak the lane: an unmapped exception (e.g. ArgumentOutOfRangeException from
+            // an over-long UnixDomainSocketEndPoint path — LocalControlOps.ExchangeAsync does not
+            // classify every socket-construction failure) must still release it, or every later
+            // RequestRefresh/RequestToggle is silently dropped/ignored forever.
+            Console.Error.WriteLine($"kcap: launch-pause refresh failed unexpectedly: {ex.Message}");
+            FinishPassive(success: false, checkedValue: false);
         }
     }
 
@@ -104,6 +111,11 @@ public sealed class PauseController : IPauseController, IDisposable {
             return; // cancelled: no trailing refresh, no push
         } catch (LocalControlOpsException ex) {
             _notify(MapReason(ex)); // still attempt the trailing refresh below — it alone decides Verified
+        } catch (Exception ex) {
+            // Never leak the lane (see RunPassiveAsync) — no mapped copy exists for an unmapped
+            // exception, so this logs only, same as the OCE-quiet path's spirit but still
+            // reaching the trailing refresh below (unlike OCE, which is a deliberate shutdown).
+            Console.Error.WriteLine($"kcap: launch-pause toggle failed unexpectedly: {ex.Message}");
         }
 
         await RunTrailingRefreshAsync().ConfigureAwait(false);
@@ -117,6 +129,9 @@ public sealed class PauseController : IPauseController, IDisposable {
             ResetQuietly();
         } catch (LocalControlOpsException) {
             Console.Error.WriteLine("kcap: launch-pause trailing refresh failed");
+            CompleteToggle(success: false, checkedValue: false);
+        } catch (Exception ex) {
+            Console.Error.WriteLine($"kcap: launch-pause trailing refresh failed unexpectedly: {ex.Message}");
             CompleteToggle(success: false, checkedValue: false);
         }
     }

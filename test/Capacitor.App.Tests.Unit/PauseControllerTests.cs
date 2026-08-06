@@ -34,6 +34,7 @@ public class PauseControllerTests {
 
         public void QueueGet(ConsentPolicyDto policy) => ArmGet().SetResult(policy);
         public void QueueGetFailure(string reason) => ArmGet().SetException(new LocalControlOpsException(reason, reason));
+        public void QueueGetUnmappedFailure(Exception ex) => ArmGet().SetException(ex);
 
         public TaskCompletionSource<ConsentAckDto> ArmPut() {
             var tcs = new TaskCompletionSource<ConsentAckDto>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -97,6 +98,26 @@ public class PauseControllerTests {
         await Assert.That(notifications).IsEmpty();
     }
 
+    // Spec §6/§12 "detection strictness": an all-wildcard deny at an index OTHER than 0 must not
+    // check the toggle — pins HasPauseRuleAtZero against a Rules.Any(...)-shaped regression that
+    // would otherwise pass every other test in this file.
+    [Test]
+    public async Task Wildcard_deny_at_nonzero_index_is_not_paused() {
+        var ops = new ScriptedOps();
+        var notifications = new List<string>();
+        using var controller = new PauseController(ops, notifications.Add, CancellationToken.None);
+        var states = new List<PauseState>();
+        using var sub = controller.State.Subscribe(states.Add);
+
+        var narrower = new ConsentRuleDto("deny", "someone", null, null, null);
+        ops.QueueGet(new ConsentPolicyDto("prompt", 30, [narrower, PauseRule]));
+
+        controller.RequestRefresh();
+        await WaitUntilAsync(() => states.Count >= 2, what: "refresh to settle");
+
+        await Assert.That(states[^1]).IsEqualTo(new PauseState(false, true, false));
+    }
+
     [Test]
     public async Task Refresh_failure_marks_unverified() {
         var ops = new ScriptedOps();
@@ -117,6 +138,33 @@ public class PauseControllerTests {
         // Checked is RETAINED from the last successful refresh; only Verified flips.
         await Assert.That(states[^1]).IsEqualTo(new PauseState(true, false, false));
         await Assert.That(notifications).IsEmpty(); // passive failures never notify — stderr only
+    }
+
+    [Test]
+    public async Task Unmapped_exception_still_releases_the_lane() {
+        // Reachable in production: an over-long UnixDomainSocketEndPoint path throws
+        // ArgumentOutOfRangeException, which LocalControlOps.ExchangeAsync does not classify —
+        // any such exception must still release the lane, or every later RequestRefresh/
+        // RequestToggle is silently dropped/ignored forever with no banner and no log line.
+        var ops = new ScriptedOps();
+        var notifications = new List<string>();
+        using var controller = new PauseController(ops, notifications.Add, CancellationToken.None);
+        var states = new List<PauseState>();
+        using var sub = controller.State.Subscribe(states.Add);
+
+        ops.QueueGetUnmappedFailure(new InvalidOperationException("boom"));
+        controller.RequestRefresh();
+        await WaitUntilAsync(() => states.Count >= 2, what: "refresh to settle after an unmapped exception");
+
+        await Assert.That(states[^1]).IsEqualTo(new PauseState(false, false, false)); // unverified; no mapped copy exists
+        await Assert.That(notifications).IsEmpty(); // unmapped exceptions log to stderr only, never notify
+
+        // The lane-freed proof: a subsequent refresh is ACCEPTED (issues a Get), not dropped.
+        ops.QueueGet(new ConsentPolicyDto("prompt", 30, [PauseRule]));
+        controller.RequestRefresh();
+        await WaitUntilAsync(() => ops.GetCalls >= 2, what: "lane to accept a subsequent refresh");
+        await WaitUntilAsync(() => states.Count >= 3, what: "subsequent refresh to settle");
+        await Assert.That(states[^1]).IsEqualTo(new PauseState(true, true, false));
     }
 
     [Test]
