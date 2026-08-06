@@ -4,8 +4,8 @@ using Capacitor.Cli.Core.Config;
 namespace Capacitor.Cli.Commands;
 
 /// <summary>
-/// <c>kcap daemon reviewer affirm --vendor kiro</c> — the operator's explicit acknowledgement that
-/// the installed vendor build may host an unattended reviewer on this daemon.
+/// <c>kcap daemon reviewer affirm --vendor &lt;kiro|gemini&gt;</c> — the operator's explicit
+/// acknowledgement that the installed vendor build may host an unattended reviewer on this daemon.
 ///
 /// <para><b>Why a command and not a config key.</b> The record it writes is what makes a vendor
 /// upgrade fail closed. A value the operator could set from a shell profile would be re-affirmed by
@@ -26,14 +26,14 @@ public static class DaemonReviewerCommand {
         if (args.Length == 0 || args[0] != "affirm")
             return Task.FromResult(Usage());
 
-        var vendor = ValueOf(args, "--vendor");
+        var requested = ValueOf(args, "--vendor");
 
-        if (!string.Equals(vendor, "kiro", StringComparison.OrdinalIgnoreCase)) {
+        if (AffirmableReviewer.Resolve(requested) is not { } reviewer) {
             Console.Error.WriteLine(
-                vendor is null
-                    ? "kcap daemon reviewer affirm requires --vendor."
-                    : $"Unknown reviewer vendor '{vendor}'. Only 'kiro' uses a version affirmation today "
-                    + "(Gemini's reviewer is gated on a maintainer-certified version set instead).");
+                requested is null
+                    ? $"kcap daemon reviewer affirm requires --vendor ({AffirmableReviewer.VendorList})."
+                    : $"Unknown reviewer vendor '{requested}'. Affirmable reviewers: "
+                    + $"{AffirmableReviewer.VendorList}.");
 
             return Task.FromResult(1);
         }
@@ -44,35 +44,57 @@ public static class DaemonReviewerCommand {
         // root is the only one a running daemon can be using.
         var stateDir = Path.Combine(DaemonLockPaths.Directory, DaemonLockPaths.Sanitize(name));
 
-        var binary   = Environment.GetEnvironmentVariable("KCAP_KIRO_PATH") is { Length: > 0 } configured
+        var binary   = Environment.GetEnvironmentVariable(reviewer.PathEnvVar) is { Length: > 0 } configured
             ? configured
-            : "kiro-cli";
+            : reviewer.DefaultBinary;
 
         var installed = VendorVersionResolver.Resolve(binary);
 
         if (installed is null) {
             Console.Error.WriteLine(
                 $"Could not determine the installed version of '{binary}'. A build that cannot be "
-              + "identified is not affirmable — check that kiro-cli is on PATH (or set KCAP_KIRO_PATH) "
-              + "and that `kiro-cli --version` succeeds.");
+              + $"identified is not affirmable — check that {reviewer.DefaultBinary} is on PATH (or set "
+              + $"{reviewer.PathEnvVar}) and that `{reviewer.DefaultBinary} --version` succeeds.");
 
             return Task.FromResult(1);
         }
 
-        var store    = new KiroReviewerVersionStore(stateDir);
+        var store    = new ReviewerVersionStore(stateDir, reviewer.Vendor);
         var previous = store.Affirmed;
         store.Affirm(installed);
 
         Console.WriteLine(
             previous is null
-                ? $"Affirmed kiro-cli {installed} for daemon '{name}' (no previous affirmation)."
+                ? $"Affirmed {reviewer.DefaultBinary} {installed} for daemon '{name}' (no previous affirmation)."
                 : previous == installed
-                    ? $"kiro-cli {installed} was already affirmed for daemon '{name}'."
-                    : $"Affirmed kiro-cli {installed} for daemon '{name}' (was {previous}).");
+                    ? $"{reviewer.DefaultBinary} {installed} was already affirmed for daemon '{name}'."
+                    : $"Affirmed {reviewer.DefaultBinary} {installed} for daemon '{name}' (was {previous}).");
 
         Console.WriteLine("Restart the daemon for a running instance to pick this up.");
 
         return Task.FromResult(0);
+    }
+
+    /// <summary>
+    /// A reviewer whose build an operator can affirm. Both gated reviewers use the same model, so the
+    /// verb is a table rather than a per-vendor branch — a third one is a row here, not a new arm.
+    /// </summary>
+    /// <param name="Vendor">Canonical vendor token, and the key the daemon's store is written under.</param>
+    /// <param name="DefaultBinary">Binary probed when the path env var is unset.</param>
+    /// <param name="PathEnvVar">Env var the daemon itself honours for this vendor's binary — read here
+    /// so the verb affirms the build the DAEMON would launch, not whatever happens to be first on PATH.</param>
+    /// <param name="EnableEnvVar">The consent flag, named in usage text because affirming is not enabling.</param>
+    internal sealed record AffirmableReviewer(
+            string Vendor, string DefaultBinary, string PathEnvVar, string EnableEnvVar) {
+        internal static readonly AffirmableReviewer[] All = [
+            new("kiro",   "kiro-cli", "KCAP_KIRO_PATH",   "KCAP_KIRO_UNATTENDED_REVIEWER"),
+            new("gemini", "gemini",   "KCAP_GEMINI_PATH", "KCAP_GEMINI_UNATTENDED_REVIEWER")
+        ];
+
+        internal static string VendorList => string.Join(" | ", All.Select(r => r.Vendor));
+
+        internal static AffirmableReviewer? Resolve(string? vendor) =>
+            All.FirstOrDefault(r => string.Equals(r.Vendor, vendor, StringComparison.OrdinalIgnoreCase));
     }
 
     static string? ValueOf(string[] args, string flag) {
@@ -82,12 +104,13 @@ public static class DaemonReviewerCommand {
     }
 
     static int Usage() {
-        Console.Error.WriteLine("""
-            Usage: kcap daemon reviewer affirm --vendor kiro [--name <daemon>]
+        Console.Error.WriteLine($"""
+            Usage: kcap daemon reviewer affirm --vendor <{AffirmableReviewer.VendorList}> [--name <daemon>]
 
-              Records the installed kiro-cli version as reviewed by you, clearing the fail-closed
-              gate that a version change raises. Does NOT enable the unattended reviewer — set
-              KCAP_KIRO_UNATTENDED_REVIEWER for that, and read what it grants first.
+              Records the installed vendor version as reviewed by you, clearing the fail-closed gate
+              that a version change raises. Does NOT enable the unattended reviewer — set
+              {string.Join(" / ", AffirmableReviewer.All.Select(r => r.EnableEnvVar))}
+              for that, and read what it grants first.
             """);
 
         return 1;

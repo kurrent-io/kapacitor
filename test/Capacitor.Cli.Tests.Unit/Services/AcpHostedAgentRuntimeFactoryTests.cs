@@ -2075,18 +2075,18 @@ public class AcpHostedAgentRuntimeFactoryTests {
         var fake = new FakeAcpAgent();
         var factory = new AcpHostedAgentRuntimeFactory(
             descriptor: AcpVendorDescriptors.Gemini,
-            config: new DaemonConfig { GeminiUnattendedReviewerEnabled = true },
+            config: GeminiEnabledConfig(),
             loggerFactory: NullLoggerFactory.Instance,
             connection: new CaptureServerConnection(),
             connectionSource: ctx => {
                 seen = ctx.LaunchIdentity;
                 return (fake.ClientWriteStream, fake.ClientReadStream, new FakeAcpProcess());
             },
-            // PINNED. Since the capability gate moved ahead of the connection source, StartAsync resolves a
-            // version before this seam is reached — so without pinning, this test depends on whether a
-            // certified gemini happens to be installed: green on a dev machine, red on CI where the gate
-            // refuses as version-unresolved and `seen` stays null. Review caught exactly that.
-            resolveVendorVersion: _ => GeminiReviewerCapability.CertifiedVersions.First());
+            // PINNED, and paired with an affirmed build in the config. Since the capability gate moved ahead
+            // of the connection source, StartAsync resolves a version before this seam is reached — so
+            // without both halves this test depends on which gemini happens to be installed: green on a dev
+            // machine, red on CI where the gate refuses as version-unresolved and `seen` stays null.
+            resolveVendorVersion: _ => GeminiBuild);
 
         var ctx = ReviewContext() with { Vendor = "gemini", LaunchIdentity = attacker };
 
@@ -2102,6 +2102,29 @@ public class AcpHostedAgentRuntimeFactoryTests {
         await Assert.That(seen.UnmatchableMcpName).IsNotEqualTo(attacker.UnmatchableMcpName);
     }
 
+
+    // ── Gemini reviewer gate helpers ──────────────────────────────────────────
+    //
+    // The gate is (operator flag) AND (installed build == affirmed build), so a test that wants an
+    // ADVERTISED Gemini needs a state dir carrying an affirmation — exactly as enabling the reviewer
+    // seeds one in production. Pinning the resolver alone is not enough any more.
+
+    const string GeminiBuild = "0.54.0";
+
+    static DaemonConfig GeminiEnabledConfig(string? affirmed = GeminiBuild) {
+        var config = new DaemonConfig {
+            GeminiUnattendedReviewerEnabled = true,
+            StateDir = Path.Combine(Path.GetTempPath(), "kcap-gemini-gate-" + Guid.NewGuid().ToString("N")),
+            Name     = "test-daemon"
+        };
+
+        if (affirmed is not null)
+            AcpHostedAgentRuntimeFactory.VersionStoreFor(config, AcpVendorDescriptors.Gemini.Vendor)
+                .Affirm(affirmed);
+
+        return config;
+    }
+
     /// <summary>
     /// Advertisement respects the operator's capability gate, so a daemon that never opted in is not selected
     /// as a Gemini reviewer host at all. The optimisation arm — the boundary is the pre-spawn check in
@@ -2109,35 +2132,45 @@ public class AcpHostedAgentRuntimeFactoryTests {
     /// </summary>
     [Test]
     public async Task Gemini_ADisabledDaemon_DoesNotAdvertiseUnattendedSupport() {
-        // The version resolver is PINNED to a certified value so the only thing that can make this false is
-        // the operator flag. Review caught the earlier version leaving it unpinned: on a host with no gemini
-        // the version is unknown, so the test passed for that reason and would have kept passing if
-        // advertisement stopped honouring the flag entirely.
-        var certified = GeminiReviewerCapability.CertifiedVersions.First();
-
+        // The version resolver is PINNED and the enabled config carries a MATCHING affirmation, so the only
+        // thing that can make this false is the operator flag. Review caught the earlier version leaving it
+        // unpinned: on a host with no gemini the version is unknown, so the test passed for that reason and
+        // would have kept passing if advertisement stopped honouring the flag entirely.
         IHostedAgentRuntimeFactory disabled = new AcpHostedAgentRuntimeFactory(
             AcpVendorDescriptors.Gemini, new DaemonConfig(), NullLoggerFactory.Instance,
-            new CaptureServerConnection(), resolveVendorVersion: _ => certified);
+            new CaptureServerConnection(), resolveVendorVersion: _ => GeminiBuild);
 
         await Assert.That(disabled.SupportsUnattended).IsFalse();
 
         IHostedAgentRuntimeFactory enabled = new AcpHostedAgentRuntimeFactory(
-            AcpVendorDescriptors.Gemini, new DaemonConfig { GeminiUnattendedReviewerEnabled = true },
+            AcpVendorDescriptors.Gemini, GeminiEnabledConfig(),
             NullLoggerFactory.Instance, new CaptureServerConnection(),
-            resolveVendorVersion: _ => certified);
+            resolveVendorVersion: _ => GeminiBuild);
 
         await Assert.That(enabled.SupportsUnattended).IsTrue()
             .Because("the positive control: without it, an advertisement that always said false would pass");
     }
 
-    /// <summary>An enabled daemon on an UNCERTIFIED build still does not advertise — the two halves of the
-    /// gate are independent, and this is the half a version bump would break.</summary>
+    /// <summary>An enabled daemon whose installed build is NOT the affirmed one still does not advertise —
+    /// the two halves of the gate are independent, and this is the half a vendor upgrade trips.</summary>
     [Test]
-    public async Task Gemini_AnEnabledDaemonOnAnUncertifiedVersion_DoesNotAdvertise() {
+    public async Task Gemini_AnEnabledDaemonOnAnUnaffirmedBuild_DoesNotAdvertise() {
         IHostedAgentRuntimeFactory factory = new AcpHostedAgentRuntimeFactory(
-            AcpVendorDescriptors.Gemini, new DaemonConfig { GeminiUnattendedReviewerEnabled = true },
+            AcpVendorDescriptors.Gemini, GeminiEnabledConfig(affirmed: "0.53.0"),
             NullLoggerFactory.Instance, new CaptureServerConnection(),
-            resolveVendorVersion: _ => "99.99.99");
+            resolveVendorVersion: _ => GeminiBuild);
+
+        await Assert.That(factory.SupportsUnattended).IsFalse();
+    }
+
+    /// <summary>And an enabled daemon that has affirmed NOTHING does not advertise either — a never-recorded
+    /// build is refused rather than accepted, which is the fail-closed direction.</summary>
+    [Test]
+    public async Task Gemini_AnEnabledDaemonWithNoAffirmation_DoesNotAdvertise() {
+        IHostedAgentRuntimeFactory factory = new AcpHostedAgentRuntimeFactory(
+            AcpVendorDescriptors.Gemini, GeminiEnabledConfig(affirmed: null),
+            NullLoggerFactory.Instance, new CaptureServerConnection(),
+            resolveVendorVersion: _ => GeminiBuild);
 
         await Assert.That(factory.SupportsUnattended).IsFalse();
     }
@@ -2152,11 +2185,9 @@ public class AcpHostedAgentRuntimeFactoryTests {
     /// </summary>
     [Test]
     public async Task Gemini_ADisabledDaemon_ExplainsWhyItIsWithheld() {
-        var certified = GeminiReviewerCapability.CertifiedVersions.First();
-
         IHostedAgentRuntimeFactory disabled = new AcpHostedAgentRuntimeFactory(
             AcpVendorDescriptors.Gemini, new DaemonConfig(), NullLoggerFactory.Instance,
-            new CaptureServerConnection(), resolveVendorVersion: _ => certified);
+            new CaptureServerConnection(), resolveVendorVersion: _ => GeminiBuild);
 
         var support = disabled.DescribeUnattendedSupport();
 
@@ -2164,36 +2195,37 @@ public class AcpHostedAgentRuntimeFactoryTests {
         // The operator's actual next action has to be IN the text — a reason that only says "disabled"
         // leaves them exactly where the coded server error already did.
         await Assert.That(support.WithheldReason).IsNotNull();
-        await Assert.That(support.WithheldReason!).Contains("GeminiUnattendedReviewerEnabled");
+        await Assert.That(support.WithheldReason!).Contains("KCAP_GEMINI_UNATTENDED_REVIEWER=1");
         await Assert.That(support.WithheldReason!).StartsWith("gemini_unattended_reviewer_disabled");
     }
 
-    /// <summary>The uncertified-version arm reports the version it rejected, not a generic refusal —
-    /// otherwise an operator cannot tell a consent problem from an upgrade problem.</summary>
+    /// <summary>The unaffirmed-build arm names BOTH builds and the command that clears it, not a generic
+    /// refusal — otherwise an operator cannot tell a consent problem from an upgrade problem, nor what to
+    /// do about the upgrade.</summary>
     [Test]
-    public async Task Gemini_AnUncertifiedVersion_IsNamedInTheWithheldReason() {
+    public async Task Gemini_AnUnaffirmedBuild_IsNamedInTheWithheldReason() {
         IHostedAgentRuntimeFactory factory = new AcpHostedAgentRuntimeFactory(
-            AcpVendorDescriptors.Gemini, new DaemonConfig { GeminiUnattendedReviewerEnabled = true },
+            AcpVendorDescriptors.Gemini, GeminiEnabledConfig(affirmed: "0.53.0"),
             NullLoggerFactory.Instance, new CaptureServerConnection(),
-            resolveVendorVersion: _ => "99.99.99");
+            resolveVendorVersion: _ => GeminiBuild);
 
         var support = factory.DescribeUnattendedSupport();
 
         await Assert.That(support.Supported).IsFalse();
-        await Assert.That(support.WithheldReason!).Contains("99.99.99");
-        await Assert.That(support.WithheldReason!).StartsWith("gemini_unattended_reviewer_version_uncertified");
+        await Assert.That(support.WithheldReason!).Contains(GeminiBuild);
+        await Assert.That(support.WithheldReason!).Contains("0.53.0");
+        await Assert.That(support.WithheldReason!).Contains("kcap daemon reviewer affirm --vendor gemini");
+        await Assert.That(support.WithheldReason!).StartsWith("gemini_reviewer_version_unaffirmed");
     }
 
     /// <summary>An ADVERTISED vendor withholds nothing — the negative control for the two above, without
     /// which a reason that was always populated would pass them both.</summary>
     [Test]
     public async Task AnAdvertisedVendor_CarriesNoWithheldReason() {
-        var certified = GeminiReviewerCapability.CertifiedVersions.First();
-
         IHostedAgentRuntimeFactory gemini = new AcpHostedAgentRuntimeFactory(
-            AcpVendorDescriptors.Gemini, new DaemonConfig { GeminiUnattendedReviewerEnabled = true },
+            AcpVendorDescriptors.Gemini, GeminiEnabledConfig(),
             NullLoggerFactory.Instance, new CaptureServerConnection(),
-            resolveVendorVersion: _ => certified);
+            resolveVendorVersion: _ => GeminiBuild);
 
         var support = gemini.DescribeUnattendedSupport();
 
@@ -2243,9 +2275,9 @@ public class AcpHostedAgentRuntimeFactoryTests {
         var probes = 0;
 
         IHostedAgentRuntimeFactory factory = new AcpHostedAgentRuntimeFactory(
-            AcpVendorDescriptors.Gemini, new DaemonConfig { GeminiUnattendedReviewerEnabled = true },
+            AcpVendorDescriptors.Gemini, GeminiEnabledConfig(affirmed: "0.53.0"),
             NullLoggerFactory.Instance, new CaptureServerConnection(),
-            resolveVendorVersion: _ => { probes++; return "99.99.99"; });
+            resolveVendorVersion: _ => { probes++; return GeminiBuild; });
 
         _ = factory.DescribeUnattendedSupport();
 
@@ -2282,7 +2314,7 @@ public class AcpHostedAgentRuntimeFactoryTests {
                 Interlocked.Increment(ref reached);
                 return (fake.ClientWriteStream, fake.ClientReadStream, new FakeAcpProcess());
             },
-            resolveVendorVersion: _ => GeminiReviewerCapability.CertifiedVersions.First());
+            resolveVendorVersion: _ => GeminiBuild);
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
 
@@ -2302,14 +2334,14 @@ public class AcpHostedAgentRuntimeFactoryTests {
         var fake    = new FakeAcpAgent();
         var factory = new AcpHostedAgentRuntimeFactory(
             descriptor: AcpVendorDescriptors.Gemini,
-            config: new DaemonConfig { GeminiUnattendedReviewerEnabled = true },
+            config: GeminiEnabledConfig(),
             loggerFactory: NullLoggerFactory.Instance,
             connection: new CaptureServerConnection(),
             connectionSource: _ => {
                 Interlocked.Increment(ref reached);
                 return (fake.ClientWriteStream, fake.ClientReadStream, new FakeAcpProcess());
             },
-            resolveVendorVersion: _ => GeminiReviewerCapability.CertifiedVersions.First());
+            resolveVendorVersion: _ => GeminiBuild);
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
         try { await factory.StartAsync(ReviewContext() with { Vendor = "gemini" }, cts.Token); }
@@ -2336,14 +2368,14 @@ public class AcpHostedAgentRuntimeFactoryTests {
 
         var factory = new AcpHostedAgentRuntimeFactory(
             descriptor: AcpVendorDescriptors.Gemini,
-            config: new DaemonConfig { GeminiUnattendedReviewerEnabled = true },
+            config: GeminiEnabledConfig(),
             loggerFactory: NullLoggerFactory.Instance,
             connection: new CaptureServerConnection(),
             connectionSource: ctx => {
                 atSeam = ctx;
                 return (fake.ClientWriteStream, fake.ClientReadStream, new FakeAcpProcess());
             },
-            resolveVendorVersion: _ => GeminiReviewerCapability.CertifiedVersions.First());
+            resolveVendorVersion: _ => GeminiBuild);
 
         // fake.RunAsync is what serves the handshake — without it StartAsync waits on `initialize` and the
         // token cancels before session/new is ever sent.

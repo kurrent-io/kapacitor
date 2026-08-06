@@ -172,10 +172,10 @@ public class DaemonConfig {
     /// who is not necessarily the person requesting the review, which is why the decision lives here in
     /// daemon-local configuration and not in the server's flow settings.</para>
     ///
-    /// <para>Enabling it does NOT bypass the certified-version check: the reviewer's only containment is the
-    /// vendor's exact-name MCP allowlist, whose semantics were certified against specific Gemini builds, so
-    /// an uncertified version is refused even when this is true. See
-    /// <c>GeminiReviewerCapability</c> and the Gemini reviewer design spec §2.9.</para>
+    /// <para>Enabling it does NOT bypass the build affirmation: the reviewer's only containment is the
+    /// vendor's exact-name MCP allowlist, which is a behaviour of the installed build, so a build other than
+    /// the affirmed one is refused even when this is true. Enabling seeds the affirmation from whatever is
+    /// installed, so that is only met after an upgrade. See <c>GeminiReviewerCapability</c>.</para>
     ///
     /// <para>Set via <c>KCAP_GEMINI_UNATTENDED_REVIEWER</c> in the DAEMON's environment, which for a
     /// supervised daemon means the service unit — <c>ServiceEnvironment</c> carries it there, since a
@@ -208,7 +208,7 @@ public class DaemonConfig {
 
     /// <summary>Path or bare command for Google Gemini CLI's ACP entry point, spawned as
     /// <c>{GeminiPath} --experimental-acp …</c> by <c>AcpHostedAgentRuntimeFactory</c>. No longer
-    /// reserved: it drives interactive hosting AND the gated unattended reviewer, whose certified-version
+    /// reserved: it drives interactive hosting AND the gated unattended reviewer, whose build-affirmation
     /// probe reads whichever binary this names. Overridable via <c>KCAP_GEMINI_PATH</c>.</summary>
     public string GeminiPath { get; set; } = "gemini";
 

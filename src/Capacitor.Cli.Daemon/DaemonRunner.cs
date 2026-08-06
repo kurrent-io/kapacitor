@@ -228,29 +228,17 @@ public static partial class DaemonRunner {
         // this early — the host's logging pipeline isn't built yet.
         var coverageStateDir = Path.Combine(
             config.StateDir ?? DaemonLockPaths.Directory, DaemonLockPaths.Sanitize(config.Name));
-        // Two things the Kiro unattended reviewer needs at boot, both cheap and both no-ops when the
-        // operator has not opted in.
-        if (config.KiroUnattendedReviewerEnabled) {
-            // Seeded by the CONSENT event, not by a first refusal: an operator who has just turned the
-            // reviewer on should not be refused over an upgrade that never happened, which teaches
-            // people to clear the gate without reading it.
-            //
-            // Keyed on the record's ABSENCE AS A FILE, not on "Affirmed is null". The store reports
-            // null for a corrupt or unreadable record too, and seeding on that would (a) re-affirm
-            // whatever is installed after the record was removed post-upgrade, silently clearing the
-            // gate, and (b) attempt a write that a directory at the pathname makes throw — bricking a
-            // boot on a file that is supposed to fail closed, never fatally.
-            try {
-                var kiroVersions = new KiroReviewerVersionStore(coverageStateDir);
+        // Seed each gated reviewer's affirmation from the CONSENT event, not from a first refusal: an
+        // operator who has just turned a reviewer on should not be refused over an upgrade that never
+        // happened, which teaches people to clear the gate without reading it. Cheap, and a no-op for
+        // a vendor the operator has not opted into.
+        SeedReviewerAffirmation(
+            coverageStateDir, AcpVendorDescriptors.Kiro.Vendor,
+            config.KiroUnattendedReviewerEnabled, config.KiroPath);
 
-                if (!KiroReviewerVersionStore.RecordExists(coverageStateDir)
-                 && VendorVersionResolver.Resolve(config.KiroPath) is { Length: > 0 } installedKiro)
-                    kiroVersions.Affirm(installedKiro);
-            } catch (Exception ex) {
-                // The gate fails closed on its own if this never ran; a boot must not die for it.
-                Console.Error.WriteLine($"Kiro reviewer version seeding skipped: {ex.Message}");
-            }
-        }
+        SeedReviewerAffirmation(
+            coverageStateDir, AcpVendorDescriptors.Gemini.Vendor,
+            config.GeminiUnattendedReviewerEnabled, config.GeminiPath);
 
         // Recovers reviewer homes left by a SIGKILLed predecessor. Runs unconditionally: a daemon
         // whose operator has since disabled the reviewer still owns whatever its last incarnation
@@ -834,6 +822,29 @@ public static partial class DaemonRunner {
     /// </summary>
     internal static bool ShouldWarnCursorUnavailable(IEnumerable<IHostedAgentRuntimeFactory> factories) =>
         factories.FirstOrDefault(f => f.Vendor == "cursor") is { } cursorFactory && !cursorFactory.IsAvailable();
+
+    /// <summary>
+    /// Records the installed build as affirmed the first time a vendor's reviewer is enabled.
+    ///
+    /// <para>Keyed on the record's ABSENCE AS A FILE, not on "Affirmed is null". The store reports null
+    /// for a corrupt or unreadable record too, and seeding on that would (a) re-affirm whatever is
+    /// installed after the record was removed post-upgrade, silently clearing the gate, and (b) attempt
+    /// a write that a directory at the pathname makes throw — bricking a boot on a file that is
+    /// supposed to fail closed, never fatally.</para>
+    /// </summary>
+    internal static void SeedReviewerAffirmation(
+            string stateDir, string vendor, bool enabled, string binaryPath) {
+        if (!enabled) return;
+
+        try {
+            if (!ReviewerVersionStore.RecordExists(stateDir, vendor)
+             && VendorVersionResolver.Resolve(binaryPath) is { Length: > 0 } installed)
+                new ReviewerVersionStore(stateDir, vendor).Affirm(installed);
+        } catch (Exception ex) {
+            // The gate fails closed on its own if this never ran; a boot must not die for it.
+            Console.Error.WriteLine($"{vendor} reviewer version seeding skipped: {ex.Message}");
+        }
+    }
 
     /// <summary>One installed vendor's unattended classification at daemon startup.</summary>
     /// <param name="Vendor">The vendor token.</param>

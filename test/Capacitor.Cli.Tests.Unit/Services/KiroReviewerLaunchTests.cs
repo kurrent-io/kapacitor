@@ -33,7 +33,7 @@ public class KiroReviewerLaunchTests {
 
         // Seeded exactly as enabling the reviewer does in production: without it every launch is
         // refused over an upgrade that never happened.
-        new KiroReviewerVersionStore(AcpHostedAgentRuntimeFactory.ReviewerStateDir(config))
+        AcpHostedAgentRuntimeFactory.VersionStoreFor(config, AcpVendorDescriptors.Kiro.Vendor)
             .Affirm(InstalledVersion);
 
         return config;

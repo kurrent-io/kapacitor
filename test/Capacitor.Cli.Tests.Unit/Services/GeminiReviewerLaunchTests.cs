@@ -24,9 +24,28 @@ public class GeminiReviewerLaunchTests {
         LaunchIdentity.FromGuids(ChannelGuid, DenyGuid, AllowlistGuid, aliasResultChannel: true);
 
     /// <summary>A daemon that has opted in, on a certified vendor build — the only combination that launches.</summary>
-    static DaemonConfig EnabledConfig => new() { GeminiUnattendedReviewerEnabled = true };
+    /// <summary>Enabled AND carrying an affirmation for the build these launches report, seeded exactly
+    /// as enabling the reviewer does in production. Without the affirmation every launch is refused over
+    /// an upgrade that never happened.</summary>
+    static DaemonConfig EnabledConfig {
+        get {
+            var config = new DaemonConfig {
+                GeminiUnattendedReviewerEnabled = true,
+                StateDir = Path.Combine(Path.GetTempPath(), "kcap-gemini-launch-" + Guid.NewGuid().ToString("N")),
+                Name     = "test-daemon"
+            };
 
-    static string CertifiedVersion => GeminiReviewerCapability.CertifiedVersions.First();
+            AcpHostedAgentRuntimeFactory.VersionStoreFor(config, AcpVendorDescriptors.Gemini.Vendor)
+                .Affirm(CertifiedVersion);
+
+            return config;
+        }
+    }
+
+    /// <summary>The build these launches run against. Under the affirmation model any build works
+    /// provided the daemon has affirmed it, so this is just a fixed value the config below affirms —
+    /// it is no longer coupled to a maintainer-curated list.</summary>
+    const string CertifiedVersion = "0.54.0";
 
     static RuntimeStartContext Ctx(bool isReviewFlow, string[]? mcpAllowlist = null) => new RuntimeStartContext(
         AgentId: "agent-1", Vendor: "gemini", SourceRepoPath: "/repo",
@@ -242,17 +261,27 @@ public class GeminiReviewerLaunchTests {
         await Assert.That(ex!.Message).Contains("gemini_unattended_reviewer_disabled");
     }
 
-    /// <summary>An uncertified vendor build is refused even when the operator has opted in: the reviewer's
-    /// only containment is that version's MCP-allowlist semantics.</summary>
+    /// <summary>A build other than the affirmed one — or one that cannot be identified at all — is refused
+    /// even when the operator has opted in: the reviewer's only containment is that build's MCP-allowlist
+    /// semantics, so an unaffirmed build is refused rather than assumed compatible.</summary>
     [Test]
-    [Arguments("0.54.0")]
+    [Arguments("0.55.0")]
     [Arguments("0.53.1")]
     [Arguments("")]
-    public async Task AnUncertifiedOrUnresolvableVersion_RefusesAReviewLaunch(string version) {
+    public async Task AnUnaffirmedOrUnresolvableBuild_RefusesAReviewLaunch(string version) {
         var ex = Assert.Throws<InvalidOperationException>(
             () => Build(isReviewFlow: true, version: version));
 
-        await Assert.That(ex!.Message).Contains("gemini_unattended_reviewer_version");
+        await Assert.That(ex!.Message).Contains("gemini_reviewer_version");
+    }
+
+    /// <summary>The positive control the case above needs: the SAME wiring permits the launch once the
+    /// installed build is the affirmed one. Without it, a gate that refused everything would pass.</summary>
+    [Test]
+    public async Task TheAffirmedBuild_PermitsAReviewLaunch() {
+        var argv = Build(isReviewFlow: true, version: CertifiedVersion);
+
+        await Assert.That(argv).Contains("--experimental-acp");
     }
 
     /// <summary>

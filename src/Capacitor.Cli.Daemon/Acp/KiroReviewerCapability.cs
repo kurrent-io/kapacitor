@@ -1,3 +1,5 @@
+using Capacitor.Cli.Core;
+
 namespace Capacitor.Cli.Daemon.Acp;
 
 internal enum KiroReviewerDecision {
@@ -26,9 +28,10 @@ internal enum KiroReviewerDecision {
 /// suppression — an empty per-launch <see cref="KiroReviewerHome"/> plus the worktree layer's removal
 /// of branch-authored config. The second is ours; the first is not, because Kiro honouring
 /// <c>KIRO_HOME</c> and reading no other global config source are behaviours of the build. A
-/// maintainer-curated certified set (the Gemini shape) would take the reviewer offline on every
-/// vendor release, so this fails closed when the installed version CHANGES and the operator clears
-/// it. See <see cref="KiroReviewerVersionStore"/>.</para>
+/// maintainer-curated certified set would take the reviewer offline on every vendor release, so this
+/// fails closed when the installed version CHANGES and the operator clears it. Gemini now uses the
+/// same model; the shared comparison lives in <see cref="Core.ReviewerVersionAffirmations"/> and the
+/// record in <see cref="Core.ReviewerVersionStore"/>.</para>
 /// </summary>
 internal static class KiroReviewerCapability {
     /// <summary>Production entry point: reads the host platform, then defers to the pure overload.</summary>
@@ -58,15 +61,12 @@ internal static class KiroReviewerCapability {
         // off — the same trap the Gemini gate documents.
         if (!operatorEnabled) return KiroReviewerDecision.Disabled;
 
-        if (installedVersion is not { Length: > 0 } installed || installed.Trim().Length == 0)
-            return KiroReviewerDecision.VersionUnresolved;
-
-        if (affirmedVersion is not { Length: > 0 } affirmed || affirmed.Trim().Length == 0)
-            return KiroReviewerDecision.VersionUnaffirmed;
-
-        return string.Equals(installed.Trim(), affirmed.Trim(), StringComparison.Ordinal)
-            ? KiroReviewerDecision.Allowed
-            : KiroReviewerDecision.VersionUnaffirmed;
+        // The version half is shared with the other gated reviewers — see ReviewerVersionAffirmations.
+        return ReviewerVersionAffirmations.Decide(installedVersion, affirmedVersion) switch {
+            ReviewerVersionAffirmation.Unresolved => KiroReviewerDecision.VersionUnresolved,
+            ReviewerVersionAffirmation.Unaffirmed => KiroReviewerDecision.VersionUnaffirmed,
+            _                                     => KiroReviewerDecision.Allowed
+        };
     }
 
     /// <summary>
@@ -103,6 +103,5 @@ internal static class KiroReviewerCapability {
               + "`kcap daemon reviewer affirm --vendor kiro`."
         };
 
-    static string Describe(string? version) =>
-        version is { Length: > 0 } v && v.Trim().Length > 0 ? v.Trim() : "<none>";
+    static string Describe(string? version) => ReviewerVersionAffirmations.Describe(version);
 }

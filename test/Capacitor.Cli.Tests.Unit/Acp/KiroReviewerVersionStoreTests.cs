@@ -9,6 +9,11 @@ namespace Capacitor.Cli.Tests.Unit.Acp;
 /// not brick on a corrupt file.
 /// </summary>
 public class KiroReviewerVersionStoreTests {
+    // The store is vendor-keyed; these cases exercise it through the Kiro key, whose ON-DISK filename
+    // is deliberately unchanged from when this type was Kiro-only — a rename would have silently
+    // discarded every existing affirmation and taken shipped reviewers offline on upgrade.
+    const string Kiro = "kiro";
+
     static string TempStateDir() {
         var dir = Path.Combine(Path.GetTempPath(), "kcap-kiro-ver-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(dir);
@@ -17,14 +22,14 @@ public class KiroReviewerVersionStoreTests {
 
     [Test]
     public async Task AnAbsentRecord_ReadsNull() =>
-        await Assert.That(new KiroReviewerVersionStore(TempStateDir()).Affirmed).IsNull();
+        await Assert.That(new ReviewerVersionStore(TempStateDir(), Kiro).Affirmed).IsNull();
 
     [Test]
     public async Task AffirmThenRead_RoundTrips() {
         var dir = TempStateDir();
-        new KiroReviewerVersionStore(dir).Affirm("2.16.0");
+        new ReviewerVersionStore(dir, Kiro).Affirm("2.16.0");
 
-        await Assert.That(new KiroReviewerVersionStore(dir).Affirmed).IsEqualTo("2.16.0");
+        await Assert.That(new ReviewerVersionStore(dir, Kiro).Affirmed).IsEqualTo("2.16.0");
     }
 
     [Test]
@@ -32,9 +37,9 @@ public class KiroReviewerVersionStoreTests {
         Skip.Unless(!OperatingSystem.IsWindows(), "POSIX file-mode semantics.");
 
         var dir = TempStateDir();
-        new KiroReviewerVersionStore(dir).Affirm("2.16.0");
+        new ReviewerVersionStore(dir, Kiro).Affirm("2.16.0");
 
-        await Assert.That(File.GetUnixFileMode(Path.Combine(dir, KiroReviewerVersionStore.FileName)))
+        await Assert.That(File.GetUnixFileMode(Path.Combine(dir, ReviewerVersionStore.FileNameFor(Kiro))))
             .IsEqualTo(UnixFileMode.UserRead | UnixFileMode.UserWrite);
     }
 
@@ -42,24 +47,24 @@ public class KiroReviewerVersionStoreTests {
     [Test]
     public async Task AnUnreadableRecord_ReadsNullRatherThanThrowing() {
         var dir = TempStateDir();
-        Directory.CreateDirectory(Path.Combine(dir, KiroReviewerVersionStore.FileName));
+        Directory.CreateDirectory(Path.Combine(dir, ReviewerVersionStore.FileNameFor(Kiro)));
 
-        await Assert.That(new KiroReviewerVersionStore(dir).Affirmed).IsNull();
+        await Assert.That(new ReviewerVersionStore(dir, Kiro).Affirmed).IsNull();
     }
 
     /// <summary>A whitespace-only record is not an affirmation — it must not read as one.</summary>
     [Test]
     public async Task AWhitespaceOnlyRecord_ReadsNull() {
         var dir = TempStateDir();
-        await File.WriteAllTextAsync(Path.Combine(dir, KiroReviewerVersionStore.FileName), "   \n");
+        await File.WriteAllTextAsync(Path.Combine(dir, ReviewerVersionStore.FileNameFor(Kiro)), "   \n");
 
-        await Assert.That(new KiroReviewerVersionStore(dir).Affirmed).IsNull();
+        await Assert.That(new ReviewerVersionStore(dir, Kiro).Affirmed).IsNull();
     }
 
     [Test]
     public async Task Affirm_OverwritesRatherThanAppending() {
         var dir = TempStateDir();
-        var store = new KiroReviewerVersionStore(dir);
+        var store = new ReviewerVersionStore(dir, Kiro);
         store.Affirm("2.16.0");
         store.Affirm("2.17.0");
 
@@ -74,13 +79,13 @@ public class KiroReviewerVersionStoreTests {
     [Test]
     public async Task RecordExists_IsTrueForACorruptRecordThatAffirmsNothing() {
         var dir = TempStateDir();
-        Directory.CreateDirectory(Path.Combine(dir, KiroReviewerVersionStore.FileName));
+        Directory.CreateDirectory(Path.Combine(dir, ReviewerVersionStore.FileNameFor(Kiro)));
 
-        await Assert.That(KiroReviewerVersionStore.RecordExists(dir)).IsTrue();
-        await Assert.That(new KiroReviewerVersionStore(dir).Affirmed).IsNull();
+        await Assert.That(ReviewerVersionStore.RecordExists(dir, Kiro)).IsTrue();
+        await Assert.That(new ReviewerVersionStore(dir, Kiro).Affirmed).IsNull();
     }
 
     [Test]
     public async Task RecordExists_IsFalseWhenNothingHasEverBeenWritten() =>
-        await Assert.That(KiroReviewerVersionStore.RecordExists(TempStateDir())).IsFalse();
+        await Assert.That(ReviewerVersionStore.RecordExists(TempStateDir(), Kiro)).IsFalse();
 }

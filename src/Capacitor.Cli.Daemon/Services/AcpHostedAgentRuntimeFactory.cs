@@ -793,25 +793,32 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
     internal static string ReviewerStateDir(DaemonConfig config) =>
         Path.Combine(config.StateDir ?? DaemonLockPaths.Directory, DaemonLockPaths.Sanitize(config.Name));
 
-    static KiroReviewerVersionStore KiroVersionStoreFor(DaemonConfig config) =>
-        new(ReviewerStateDir(config));
+    internal static ReviewerVersionStore VersionStoreFor(DaemonConfig config, string vendor) =>
+        new(ReviewerStateDir(config), vendor);
 
-    /// <summary>Null unless the operator has opted in — the flag is checked first precisely so a
-    /// disabled daemon never executes the vendor binary.</summary>
-    static string? InstalledKiroVersion(
-            AcpVendorDescriptor descriptor, DaemonConfig config, Func<string, string?>? resolveVersion) =>
-        config.KiroUnattendedReviewerEnabled
-            ? (resolveVersion ?? VendorVersionResolver.Resolve)(descriptor.ResolveBinaryPath(config))
-            : null;
+    /// <summary>The three inputs a gated reviewer's decision needs, resolved ONCE.</summary>
+    /// <param name="Enabled">The operator's consent flag for this vendor.</param>
+    /// <param name="Installed">The installed build, or null when unresolved — never probed for a
+    /// disabled daemon, which is why the flag is read first.</param>
+    /// <param name="Affirmed">The build this daemon recorded as accepted.</param>
+    readonly record struct ReviewerGateInputs(bool Enabled, string? Installed, string? Affirmed);
 
-    internal static KiroReviewerDecision KiroReviewerDecisionFor(
-            AcpVendorDescriptor descriptor, DaemonConfig config, Func<string, string?>? resolveVersion) {
-        var enabled = config.KiroUnattendedReviewerEnabled;
+    /// <summary>
+    /// Resolves the gate's inputs with AT MOST ONE version probe, and none at all when the operator
+    /// has not opted in — an installed-but-wedged binary must not stall a feature that is switched off.
+    ///
+    /// <para>Probing once matters on the refusal path too: the decision and the explanation both need
+    /// the installed version, and resolving it per consumer spawned the vendor binary twice to produce
+    /// one refusal.</para>
+    /// </summary>
+    static ReviewerGateInputs GateInputsFor(
+            AcpVendorDescriptor descriptor, DaemonConfig config, bool enabled,
+            Func<string, string?>? resolveVersion) {
+        if (!enabled) return new(false, null, null);
 
-        return KiroReviewerCapability.Decide(
-            enabled,
-            InstalledKiroVersion(descriptor, config, resolveVersion),
-            enabled ? KiroVersionStoreFor(config).Affirmed : null);
+        var installed = (resolveVersion ?? VendorVersionResolver.Resolve)(descriptor.ResolveBinaryPath(config));
+
+        return new(true, installed, VersionStoreFor(config, descriptor.Vendor).Affirmed);
     }
 
     /// <summary>
@@ -828,28 +835,22 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
     internal static string? ReviewerRefusal(
             AcpVendorDescriptor descriptor, DaemonConfig config, Func<string, string?>? resolveVersion) {
         if (descriptor.Vendor == AcpVendorDescriptors.Kiro.Vendor) {
-            var kiro = KiroReviewerDecisionFor(descriptor, config, resolveVersion);
+            var g    = GateInputsFor(descriptor, config, config.KiroUnattendedReviewerEnabled, resolveVersion);
+            var kiro = KiroReviewerCapability.Decide(g.Enabled, g.Installed, g.Affirmed);
 
             return kiro == KiroReviewerDecision.Allowed
                 ? null
-                : KiroReviewerCapability.DenialReason(
-                    kiro, InstalledKiroVersion(descriptor, config, resolveVersion),
-                    KiroVersionStoreFor(config).Affirmed);
+                : KiroReviewerCapability.DenialReason(kiro, g.Installed, g.Affirmed);
         }
 
         if (!UsesMcpNameAllowlistArgv(descriptor)) return null;
 
-        // Operator consent is checked FIRST so a disabled daemon never interrogates the vendor binary at all.
-        // Review's point: probing an installed-but-wedged vendor while the feature is switched off is a way
-        // to hang on a code path the operator opted out of.
-        if (!config.GeminiUnattendedReviewerEnabled)
-            return GeminiReviewerCapability.DenialReason(false, null);
+        var gemini = GateInputsFor(descriptor, config, config.GeminiUnattendedReviewerEnabled, resolveVersion);
+        var decision = GeminiReviewerCapability.Decide(gemini.Enabled, gemini.Installed, gemini.Affirmed);
 
-        var version = (resolveVersion ?? VendorVersionResolver.Resolve)(descriptor.ResolveBinaryPath(config));
-
-        return GeminiReviewerCapability.IsEnabled(true, version)
+        return decision == GeminiReviewerDecision.Allowed
             ? null
-            : GeminiReviewerCapability.DenialReason(true, version);
+            : GeminiReviewerCapability.DenialReason(decision, gemini.Installed, gemini.Affirmed);
     }
 
     static void RequireReviewerCapability(
