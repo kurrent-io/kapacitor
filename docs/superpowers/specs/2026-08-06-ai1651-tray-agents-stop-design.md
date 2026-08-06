@@ -183,11 +183,15 @@ The pause rule is exactly `ConsentRuleDto("deny", null, null, null, null)` at in
   cannot disable the item mid-display — uses the lane's **one-slot queue, reserved exclusively
   for a user toggle**: the toggle is marked in-flight immediately (further clicks are ignored
   per single-flight) and runs exactly once when the passive op completes (success or failure).
-  The slot stores the **desired checked value captured from the displayed item at click time**,
-  not a generic inversion: the queued operation applies pause/unpause toward that desired state
-  against its own fresh Get, which may make it an idempotent no-op (the pause rule appeared or
-  vanished externally while the passive read was held) — it never produces the opposite of what
-  the user selected. A toggle while a toggle owns the lane is ignored
+  The slot stores a **desired checked value**, not a generic inversion — and the adapter pins
+  how it is captured: Avalonia's native click path (`RaiseClicked`) never mutates
+  `NativeMenuItem.IsChecked`, so reading the item inside the handler yields the pre-click value.
+  The adapter therefore computes `desired = !displayedChecked` **at menu-rebuild time** and
+  freezes it into the item's command parameter; the click handler dispatches that frozen value
+  and never reads `IsChecked`. The queued operation applies pause/unpause toward the desired
+  state against its own fresh Get, which may make it an idempotent no-op (the pause rule
+  appeared or vanished externally while the passive read was held) — it never produces the
+  opposite of what the user selected. A toggle while a toggle owns the lane is ignored
   (clicks-while-disabled rule; the slot never holds more than one). The toggle item is disabled
   while a toggle operation runs or is queued; it re-enables when the trailing refresh
   completes. If the Put's outcome is ambiguous (transport failure or timeout after send) and
@@ -298,13 +302,15 @@ public sealed record StopAgentResult(bool Ok, string Status, string? Error);
 - **Timeouts** (phase pattern from `LocalControlClient`: `CancellationTokenSource(timeout, time)`
   linked to the caller's token; internal seams for tests): connect 5s; reply 10s for consent ops;
   reply 40s for stop (the ack lands only after the graceful-stop sequence).
-- **Failure classification** (thrown as `LocalControlOpsException(Reason, Message)`):
-  connect/socket-missing failures AND post-connect transport failures (IOException /
-  SocketException / reset during write or read) → `daemon_unreachable` (the same mapping
-  `LocalControlClient` uses); a decodable `Error` frame is not an exception (it is a result,
-  see above) except for consent ops, where it becomes `daemon_rejected` with the frame text;
-  EOF, undecodable frame, or unexpected frame type → `unexpected_reply`; phase timeout →
-  `timed_out`. **Caller-token cancellation is checked before classifying** (the
+- **Failure classification** (thrown as `LocalControlOpsException(Reason, Message)`), with
+  pinned precedence because `EndOfStreamException` derives from `IOException`: clean EOF
+  (`FrameCodec.ReadAsync` returns null) and `EndOfStreamException` (truncated header/payload) →
+  `unexpected_reply`, checked **before** the transport branch; any other post-connect
+  IOException / SocketException / reset during write or read → `daemon_unreachable` (the same
+  mapping `LocalControlClient` uses), as are connect/socket-missing failures; a decodable
+  `Error` frame is not an exception (it is a result, see above) except for consent ops, where it
+  becomes `daemon_rejected` with the frame text; undecodable frame or unexpected frame type →
+  `unexpected_reply`; phase timeout → `timed_out`. **Caller-token cancellation is checked before classifying** (the
   `LocalControlClient` pattern): it propagates as `OperationCanceledException`, never as
   `timed_out` or a transport reason, and app commands absorb it quietly — no banner, no error
   log, lane and in-flight/queued-slot state cleaned up. The app maps reasons to banner copy;
@@ -351,7 +357,9 @@ Headless (`Capacitor.App.Tests.Unit`, existing `AvaloniaSession` + immediate-sch
   item enablement (capability gating + disconnected + in-flight + unverified).
 - **Adapter state machine:** rebuild only on `NeedsUpdate` from the cached model; a model change
   while open sets dirty and is consumed at the next `NeedsUpdate`; `Opening` kicks the refresh
-  without touching menu structure.
+  without touching menu structure; the pause item's frozen command parameter — an unchecked
+  native item dispatches desired `true`, a checked item dispatches desired `false` (§6 capture
+  rule; the handler never reads `IsChecked`).
 - **Pause logic** against a scripted `ILocalControlOps`: exact Put payloads for pause/unpause
   (rule inserted/removed at index 0, default and timeout passed through), idempotent double-pause,
   detection strictness (wildcard deny at index ≠ 0 does not check the toggle), single-flight
@@ -363,10 +371,13 @@ Headless (`Capacitor.App.Tests.Unit`, existing `AvaloniaSession` + immediate-sch
   (asserting the resulting Put, or the idempotent no-op when the desired state already holds —
   never an inversion) — disconnect mid-toggle (→ `daemon_unreachable` banner + unverified) and
   shutdown-token cancellation mid-toggle (→ absorbed quietly: no banner, no unverified marking,
-  lane and queued-slot state cleaned up), ack-failure banners
-  (`ok:false` with error text; `ok:false, error:null` → the neutral fallback copy;
-  `ok:true, error!=null` → success, stderr warning, NO banner) + unverified-disabled until a
-  successful refresh.
+  lane and queued-slot state cleaned up), and the ack branches as separate deterministic cases
+  pinning **both sides** of the conditional trailing-refresh contract: `ok:false` (error text or
+  the `error:null` neutral fallback copy) + **successful** trailing Get → banner AND reconciled
+  checkmark, verified/enabled; `ok:false` or ambiguous transport failure + **failed** trailing
+  Get → banner, last-known checkmark, unverified/disabled until a later successful `Opening`
+  refresh re-enables it; `ok:true, error!=null` → success, stderr warning, NO banner,
+  verified/enabled after its successful trailing refresh.
 - **Stop command:** per-id in-flight gating, concurrent stops for different ids, completion into
   a vanished row is a no-op, `failed`/`Error` → banner, `skipped` → the "declined to stop"
   banner, no local cache mutation.
@@ -385,10 +396,11 @@ Headless (`Capacitor.App.Tests.Unit`, existing `AvaloniaSession` + immediate-sch
   (bitmap output is manual verification).
 
 `Capacitor.Cli.Tests.Unit`: `LocalControlOps` scripted-server tests — success, `Error`-frame
-result vs exception per op, EOF → `unexpected_reply`, connect failure AND post-connect
-reset/transport failure → `daemon_unreachable`, phase timeout → `timed_out`, caller-token
-cancellation → `OperationCanceledException` (never `timed_out`), and parseable-but-invalid
-payloads (§10 structural validation:
+result vs exception per op, clean EOF AND truncated header/payload (`EndOfStreamException`) →
+`unexpected_reply` (precedence over the IOException transport branch), connect failure AND
+post-connect reset/transport failure → `daemon_unreachable`, phase timeout → `timed_out`,
+caller-token cancellation → `OperationCanceledException` (never `timed_out`), and
+parseable-but-invalid payloads (§10 structural validation:
 null `rules`, null rule element, unknown `default`, missing/duplicated/malformed `StopAck` line,
 unknown `StopAck` status token) → `unexpected_reply`; `{}` as `ConsentAck` → the op returns
 `ConsentAckDto(false, null)` (wire-shape assertion only — the resulting neutral banner is the
