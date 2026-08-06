@@ -421,12 +421,12 @@ public class TrayViewModelTests {
     }
 
     // Isolates the `connected` term from `hasCapability`: BuildPause derives both solely from the
-    // same AttachStatus, and a not-Connected AttachStatus carries null Capabilities by contract
-    // (see FakeDaemonClientService usage below), so Pause_disabled_when_not_connected alone cannot
-    // distinguish real code from a mutant that drops the `connected` check — hasCapability is
-    // false there too. Here capability/Verified/Checked are established while Connected (Enabled
-    // true), then ONLY connectivity is lost — the retained PauseState still reads
-    // (Verified, !Busy, Checked) — so a mutant that ignores `connected` would keep Pause enabled.
+    // same AttachStatus, and Pause_disabled_when_not_connected's not-Connected status carries null
+    // Capabilities (the real, contract-abiding shape — AttachStatus.cs pins capabilities null on
+    // every non-connected state), so hasCapability is false there for the same reason connected is
+    // — a mutant that drops the `connected &&` term from the enabled formula still passes. To kill
+    // that mutant, capability must stay true while connected is false, which is unreachable through
+    // the service contract, hence the deliberate contract violation below.
     [Test]
     [NotInParallel("AvaloniaSession")]
     public async Task Pause_disabled_when_not_connected_despite_retained_capability() {
@@ -441,7 +441,10 @@ public class TrayViewModelTests {
             pause.StateSubject.OnNext(new PauseState(Checked: true, Verified: true, Busy: false));
             await Assert.That(vm.MenuModel.Pause.Enabled).IsTrue();
 
-            service.StatusSubject.OnNext(new AttachStatus(AttachState.Unreachable, "daemon_unreachable", null));
+            // Deliberately violates the real AttachStatus contract (capabilities are never non-null
+            // when not Connected) so hasCapability alone cannot explain disablement — this isolates
+            // and kills a mutant that drops the `connected &&` term in BuildPause.
+            service.StatusSubject.OnNext(new AttachStatus(AttachState.Unreachable, "daemon_unreachable", ["consent/1"]));
 
             await Assert.That(vm.MenuModel.Pause.Enabled).IsFalse();
         });
