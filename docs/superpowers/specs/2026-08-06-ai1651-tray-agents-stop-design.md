@@ -29,7 +29,8 @@ pause-new-launches toggle.
    restarts and races with CLI edits. Instead, pause inserts `{action: "deny"}` with all four
    matchers null (a wildcard — `LaunchConsentRule` doc: null field = wildcard) at `rules[0]`;
    unpause removes exactly that rule. Rules are evaluated first-match-wins before the default
-   (`LaunchConsentEngine.Evaluate`), so this denies every server-driven launch while it exists. The
+   (`LaunchConsentEngine.Evaluate`), so this denies every **non-owner** server-driven launch while
+   it exists (owner exemption below). The
    rule IS the state: the default is untouched, restore is correct by construction, the toggle
    survives app restarts, and `kcap daemon consent show` tells the truth. This is a deliberate
    deviation from the issue's letter.
@@ -146,8 +147,9 @@ Quit
   arriving while the menu is open becomes visible at the next open, never mid-display. The tray
   **icon** (glyph + count) is not part of the menu and updates immediately on model change.
   `Opening` fire-and-forgets the §6 pause-state refresh — it starts async work only and never
-  touches the menu. The adapter's open/dirty tracking is a small testable state machine; manual
-  macOS acceptance includes updates arriving while the menu is open.
+  touches the menu, and it is subject to §6's serialization (dropped while a consent op is in
+  flight). The adapter's open/dirty tracking is a small testable state machine; manual macOS
+  acceptance includes updates arriving while the menu is open.
 
 ## 6. Pause-launches toggle
 
@@ -159,17 +161,24 @@ The pause rule is exactly `ConsentRuleDto("deny", null, null, null, null)` at in
   consent-engine tests).
 - **Displayed state:** checked iff the latest fetched policy has an all-wildcard deny rule at
   index 0. An all-wildcard deny at any other index, or narrower deny rules, do not check the
-  toggle — `kcap daemon consent show` is the full truth. The refresh (`ConsentRulesGet`) is
-  kicked fire-and-forget from the menu's `Opening` event and after every toggle write; its result
-  lands in the cached model, so it becomes visible at the next menu open (§5 rebuild cadence).
-  Accepted staleness: the checkmark can be one open behind a CLI-side edit. A refresh failure
-  keeps the last-known checkmark but marks the state **unverified**, which disables the item
-  (§5) until a later refresh succeeds; passive refresh failures log to stderr, no banner.
-- **Single-flight:** one toggle operation (Get → modify → Put → refresh Get) runs at a time; the
-  item is disabled while it runs, and clicks while disabled are ignored (no queueing — the user
-  re-expresses intent against the refreshed state). The item re-enables when the trailing
-  refresh completes; if the Put's outcome is ambiguous (transport failure or timeout after send)
-  and the trailing refresh also fails, the state is unverified as above.
+  toggle — `kcap daemon consent show` is the full truth. A passive refresh (`ConsentRulesGet`)
+  is kicked fire-and-forget from the menu's `Opening` event and as the trailing step of every
+  toggle; its result lands in the cached model, so it becomes visible at the next menu open
+  (§5 rebuild cadence). Accepted staleness: the checkmark can be one open behind a CLI-side
+  edit. A refresh failure keeps the last-known checkmark but marks the state **unverified**,
+  which disables the item (§5) until a later refresh succeeds; passive refresh failures log to
+  stderr, no banner.
+- **Serialization (one lane for ALL consent-policy operations):** passive refreshes and toggle
+  operations (Get → modify → Put → trailing refresh Get) share a single single-flight lane — at
+  most one consent socket operation is in flight at any time, so results apply in start order
+  and an older read can never overwrite a newer write's outcome (each op is a one-shot
+  connection whose result cannot arrive after the op returns). A passive refresh requested
+  while the lane is busy is **dropped**, not queued — the in-flight operation's own trailing
+  refresh is strictly newer. The toggle item is disabled while a toggle operation runs; clicks
+  while disabled are ignored (no queueing — the user re-expresses intent against the refreshed
+  state). The item re-enables when the trailing refresh completes; if the Put's outcome is
+  ambiguous (transport failure or timeout after send) and the trailing refresh also fails, the
+  state is unverified as above.
 - **Pause:** `ConsentRulesGet` → if the pause rule is already at index 0, no-op (idempotent);
   otherwise insert it at index 0 → `ConsentRulesPut` with the full policy (`default` and
   `prompt_timeout_seconds` passed through unchanged).
@@ -189,9 +198,11 @@ One code path for both surfaces (tray menu item, main-window row button):
   the daemon acks only after the stop completes — graceful wait plus terminate can take ~25s.
 - Reply handling: `StopAck` line `{id}\tstopped` → success, no banner (the agent's disappearance
   from the next snapshot is the confirmation); `{id}\tfailed` → banner "Couldn't stop {label}";
-  `Error` frame (protected agent, unknown id) → banner with the daemon's text verbatim (it is
-  display-quality and already names the `--force` escape hatch); transport failure → §10
-  classification into the banner.
+  `{id}\tskipped` → banner "The daemon declined to stop {label}" (not expected on the per-id
+  path today — protection refusals are `Error` frames — but `skipped` is StopAck vocabulary, so
+  it gets defined presentation rather than `unexpected_reply`); `Error` frame (protected agent,
+  unknown id) → banner with the daemon's text verbatim (it is display-quality and already names
+  the `--force` escape hatch); transport failure → §10 classification into the banner.
 - **Observable sequence** (pinned to the daemon's actual behavior — there is no `Stopping`
   status): `StopAgentCoreAsync` sets the agent's status to `Completed` **before** the graceful
   wait, so the next snapshot already shows `Completed` — the agent leaves the Starting/Running
@@ -281,8 +292,14 @@ public sealed record StopAgentResult(bool Ok, string Status, string? Error);
   mirror it): a `ConsentRules` reply must have a non-null root, non-null `default` ∈
   `allow|deny|prompt`, `prompt_timeout_seconds ≥ 1`, non-null `rules`, and every rule element
   non-null with non-null `action` ∈ `allow|deny`. A `ConsentAck` reply must have a non-null
-  root. A `StopAck` must contain a line for the requested id. Malformed JSON or any violation →
-  `unexpected_reply` — parseable-but-invalid payloads never escape as success.
+  root; note `{}` decodes as `ok:false, error:null` (STJ default bool), which is handled by §6's
+  failure path with neutral fallback copy — an `ok:false` with a null/empty `error` banners "the
+  daemon rejected the change" rather than an empty message, and `ok:true` with a non-null
+  `error` (the DTO's partial-failure warning) is treated as success and logged to stderr. A
+  `StopAck` must contain **exactly one** line for the requested id, with exactly two
+  tab-separated fields and a status ∈ `stopped|failed|skipped`; a missing, duplicated, or
+  malformed line or an unknown status token → `unexpected_reply`. Malformed JSON or any
+  violation above → `unexpected_reply` — parseable-but-invalid payloads never escape as success.
 - Scripted-server unit tests in `Capacitor.Cli.Tests.Unit` alongside the `LocalControlClient`
   harness (macOS sockaddr limit + Windows guard + NotInParallel conventions apply).
 
@@ -315,10 +332,10 @@ Headless (`Capacitor.App.Tests.Unit`, existing `AvaloniaSession` + immediate-sch
 - **Pause logic** against a scripted `ILocalControlOps`: exact Put payloads for pause/unpause
   (rule inserted/removed at index 0, default and timeout passed through), idempotent double-pause,
   detection strictness (wildcard deny at index ≠ 0 does not check the toggle), single-flight
-  (rapid double-click runs one operation, second click ignored), disconnect and shutdown-token
-  cancellation mid-toggle, ack-failure → banner + unverified-disabled until a successful refresh.
-- **Consent-engine acceptance:** a policy with the pause rule at index 0 still allows a
-  `RequesterIsOwner` input (owner exemption, §6 semantics).
+  (rapid double-click runs one operation, second click ignored), lane serialization (a passive
+  `Opening` refresh requested during a toggle is dropped and never applies — deterministic
+  ordering test, not timing-based), disconnect and shutdown-token cancellation mid-toggle,
+  ack-failure → banner + unverified-disabled until a successful refresh.
 - **Stop command:** per-id in-flight gating, concurrent stops for different ids, completion into
   a vanished row is a no-op, `failed`/`Error` → banner, no local cache mutation.
 - **Agents grid:** row projection and sort order (`created_at` asc, id ordinal), presentation
@@ -338,8 +355,12 @@ Headless (`Capacitor.App.Tests.Unit`, existing `AvaloniaSession` + immediate-sch
 `Capacitor.Cli.Tests.Unit`: `LocalControlOps` scripted-server tests — success, `Error`-frame
 result vs exception per op, EOF → `unexpected_reply`, connect failure → `daemon_unreachable`,
 phase timeout → `timed_out`, and parseable-but-invalid payloads (§10 structural validation:
-null `rules`, null rule element, unknown `default`, missing `StopAck` line) →
-`unexpected_reply`.
+null `rules`, null rule element, unknown `default`, missing/duplicated/malformed `StopAck` line,
+unknown `StopAck` status token) → `unexpected_reply`; `{}` as `ConsentAck` → the §6 failure path
+with neutral fallback copy. Plus one engine-level acceptance test alongside the existing
+consent-engine tests (`test/Capacitor.Cli.Tests.Unit/Daemon/LaunchConsentEngineTests.cs`): a
+policy with the pause rule at index 0 still allows a `RequesterIsOwner` input (owner exemption,
+§6 semantics).
 
 Manual (macOS, per the issue): tray icon rendering across the five states + count overlay,
 light/dark menu bar, menu interaction, deep links, real stop against a live daemon.
