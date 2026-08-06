@@ -159,12 +159,7 @@ public sealed class TrayViewModel : ReactiveObject, IDisposable {
             .ToList();
     }
 
-    static string Label(AgentStatusDto agent) {
-        var repoLeaf = agent.RepoPath is null
-            ? "—"
-            : Path.GetFileName(Path.TrimEndingDirectorySeparator(agent.RepoPath));
-        return $"{agent.Kind} · {agent.Vendor} · {repoLeaf}";
-    }
+    static string Label(AgentStatusDto agent) => $"{agent.Kind} · {agent.Vendor} · {RepoLabel.Leaf(agent.RepoPath)}";
 
     static TrayPauseItem BuildPause(AttachStatus status, PauseState pauseState) {
         var connected = status.State == AttachState.Connected;

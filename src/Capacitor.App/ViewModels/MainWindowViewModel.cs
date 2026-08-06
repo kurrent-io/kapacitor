@@ -1,8 +1,11 @@
+using System.Collections.ObjectModel;
 using System.Reactive;
 using System.Reactive.Disposables;
 using System.Reactive.Disposables.Fluent;
 using System.Reactive.Linq;
 using Capacitor.App.Services;
+using Capacitor.Cli.Core.LocalIpc;
+using DynamicData;
 using ReactiveUI;
 
 namespace Capacitor.App.ViewModels;
@@ -58,6 +61,31 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
     ObservableAsPropertyHelper<string?>? _reason;
     public string? Reason => _reason?.Value;
 
+    static readonly ReadOnlyObservableCollection<AgentRowViewModel> NoAgents = new(new ObservableCollection<AgentRowViewModel>());
+    static readonly IComparer<AgentRowViewModel> RowComparer = Comparer<AgentRowViewModel>.Create((a, b) => {
+        var byCreated = a.CreatedAt.CompareTo(b.CreatedAt);
+        return byCreated != 0 ? byCreated : string.CompareOrdinal(a.Id, b.Id);
+    });
+
+    // Spec §8: rows persist across disconnects (the underlying SourceCache is retained by the
+    // service) — GridEnabled below is what disables actions and dims the XAML, never a local
+    // removal of rows.
+    ReadOnlyObservableCollection<AgentRowViewModel> _agents = NoAgents;
+    public ReadOnlyObservableCollection<AgentRowViewModel> Agents => _agents;
+
+    ObservableAsPropertyHelper<bool>? _gridEnabled;
+    public bool GridEnabled => _gridEnabled?.Value ?? false;
+
+    // Banner-clear delay as an internal seam (spec §11): under
+    // AvaloniaSession.WithImmediateRxScheduler, an Observable.Timer with a non-zero due time
+    // blocks the calling thread for the real duration (ImmediateScheduler sleeps synchronously
+    // rather than actually firing "immediately") — a test exercising auto-expiry sets this to
+    // TimeSpan.Zero, which skips that sleep entirely instead of stalling for 6 real seconds.
+    internal TimeSpan BannerLifetime = TimeSpan.FromSeconds(6);
+
+    ObservableAsPropertyHelper<string?>? _banner;
+    public string? Banner => _banner?.Value;
+
     string? _startMessage;
     // Start-daemon failure text. Cleared on every new start attempt AND on any transition to
     // Connected (spec §5); set only when a start attempt actually fails.
@@ -69,13 +97,28 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
     public ReactiveCommand<Unit, Unit> StartDaemonCommand { get; }
     public ReactiveCommand<Unit, Unit> RetryCommand { get; }
 
+    // ONE shared ticker for every row (spec §8) — created here, once, so all rows tick in lockstep
+    // instead of drifting against each other. StartWith(0L) gives every row an immediate first
+    // value on subscribe, independent of the real 1s period. The scheduler is captured NOW (Rx
+    // operators take a scheduler by value, not a live reference to RxSchedulers.MainThreadScheduler),
+    // which is exactly what lets a test construct this VM inside
+    // AvaloniaSession.WithImmediateRxScheduler WITHOUT ever subscribing a row to it — subscribing
+    // this particular ticker under an immediate scheduler would block/spin forever, since Interval
+    // never completes (see BannerLifetime's comment for the same scheduler gotcha, bounded there
+    // because Timer fires once).
+    readonly IObservable<long> _ticker = Observable.Interval(TimeSpan.FromSeconds(1), RxSchedulers.MainThreadScheduler).StartWith(0L);
+    readonly TimeProvider _time;
+
     /// <param name="shutdownToken">
     /// Abandons StartDaemonAsync's WAIT (never the spawned daemon) on app shutdown. MUST be a
     /// token linked to the app lifetime — never CancellationToken.None (Task 4 carry-note: an
     /// unbounded wait would survive app exit).
     /// </param>
-    public MainWindowViewModel(IDaemonClientService service, CancellationToken shutdownToken) {
+    public MainWindowViewModel(
+            IDaemonClientService service, AgentActionService actions, IAppNotifier notifier,
+            CancellationToken shutdownToken, TimeProvider? time = null) {
         _service = service;
+        _time = time ?? TimeProvider.System;
 
         // ReactiveCommand's own CanExecute observable already ANDs the supplied canExecute with
         // "not currently executing" (confirmed against the installed ReactiveUI 23.2.28 API
@@ -102,6 +145,12 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
         this.WhenActivated(disposables => {
             var status    = service.Status.ObserveOn(RxSchedulers.MainThreadScheduler);
             var snapshots = service.Snapshots.ObserveOn(RxSchedulers.MainThreadScheduler);
+            var connected = status.Select(s => s.State == AttachState.Connected);
+            // Pre-scheduled here (not inside AgentRowViewModel) so every row's ActionsEnabled
+            // OAPH only ever observes on the UI thread — StopsInFlight is a plain BehaviorSubject
+            // that AgentActionService pushes to from a background Task.Run, same class of bug the
+            // canStart/canRetry comment above documents.
+            var stopsInFlight = actions.StopsInFlight.ObserveOn(RxSchedulers.MainThreadScheduler);
 
             _daemonName = snapshots.Select(s => s.Daemon.Name)
                 .ToProperty(this, x => x.DaemonName, "")
@@ -136,6 +185,37 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
 
             status.Where(s => s.State == AttachState.Connected)
                 .Subscribe(_ => StartMessage = null)
+                .DisposeWith(disposables);
+
+            _gridEnabled = connected
+                .ToProperty(this, x => x.GridEnabled, initialValue: false)
+                .DisposeWith(disposables);
+
+            // Connect -> Transform to row VMs -> ObserveOn BEFORE the operator that mutates the
+            // bound collection (SortAndBind counts as "Bind" here — DynamicData requires
+            // marshaling onto the UI thread before that mutation, not after) -> SortAndBind
+            // (spec §8: CreatedAt asc, Id ordinal tiebreak). Rows are recreated on every dto
+            // revision (AgentRowViewModel's own doc comment); EditDiff removals flow through as
+            // Remove changes, which is how a stopped agent's row disappears (spec §7 — no local
+            // removal on stop, only the next snapshot's absence).
+            service.Agents.Connect()
+                .Transform(dto => new AgentRowViewModel(dto, actions, _ticker, _time, connected, stopsInFlight))
+                .ObserveOn(RxSchedulers.MainThreadScheduler)
+                .SortAndBind(out _agents, RowComparer)
+                .Subscribe()
+                .DisposeWith(disposables);
+
+            // Latest-wins single slot (spec §11): each message starts a fresh inner sequence
+            // (StartWith delivers it synchronously, then Timer(BannerLifetime) clears it) and
+            // Switch() cancels whatever inner sequence was still pending, so a new message both
+            // replaces the text and restarts the clear window.
+            _banner = notifier.Messages
+                .ObserveOn(RxSchedulers.MainThreadScheduler)
+                .Select(message => Observable.Timer(BannerLifetime, RxSchedulers.MainThreadScheduler)
+                    .Select(_ => (string?)null)
+                    .StartWith(message))
+                .Switch()
+                .ToProperty(this, x => x.Banner, (string?)null)
                 .DisposeWith(disposables);
         });
     }

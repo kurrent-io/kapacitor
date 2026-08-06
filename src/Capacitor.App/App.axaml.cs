@@ -6,6 +6,7 @@ using Avalonia.Media;
 using Capacitor.App.Services;
 using Capacitor.App.ViewModels;
 using Capacitor.App.Views;
+using Capacitor.Cli.Core.LocalIpc;
 
 namespace Capacitor.App;
 
@@ -135,7 +136,13 @@ public partial class App : Application {
     // already-visible window is a no-op, so this stays correct even if a future edit changes the
     // timing such that ShowMainWindow() DOES still see a non-null MainWindow.
     internal static MainWindow BuildAndShowMainWindow(IDaemonClientService service, CancellationToken shutdownToken) {
-        var window = new MainWindow { DataContext = new MainWindowViewModel(service, shutdownToken) };
+        // Real implementations, constructed inline: full DI composition is a later task (spec
+        // §7, §11) — this just needs to keep the app wired end to end for THIS slice.
+        var notifier = new AppNotifier();
+        var ops = new LocalControlOps(service.DaemonName);
+        var actions = new AgentActionService(ops, notifier, new ShellUrlOpener(), service.Snapshots, shutdownToken);
+
+        var window = new MainWindow { DataContext = new MainWindowViewModel(service, actions, notifier, shutdownToken) };
         window.Show();
         return window;
     }
