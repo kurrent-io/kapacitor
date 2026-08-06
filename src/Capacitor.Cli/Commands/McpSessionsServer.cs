@@ -141,9 +141,12 @@ static class McpSessionsServer {
             return BuildErrorResponse(id, -32602, "Missing params.name");
         }
 
+        if (toolName == "search_sessions") {
+            return await HandleSearchSessionsAsync(id, arguments, client, baseUrl, cwdRepoHash);
+        }
+
         try {
             using var httpResponse = toolName switch {
-                "search_sessions"        => await SendWithRefreshRetryAsync(client, baseUrl, c => c.GetAsync(BuildSearchUrl(baseUrl, arguments, cwdRepoHash))),
                 "get_session_summary"    => await SendWithRefreshRetryAsync(client, baseUrl, c => c.GetAsync(BuildSummaryUrl(baseUrl, arguments))),
                 "get_session_transcript" => await SendWithRefreshRetryAsync(client, baseUrl, c => c.GetAsync(BuildTranscriptUrl(baseUrl, arguments))),
                 "get_turn"               => await SendWithRefreshRetryAsync(client, baseUrl, c => c.GetAsync(BuildTurnDetailUrl(baseUrl, arguments))),
@@ -165,6 +168,51 @@ static class McpSessionsServer {
             var payload = toolName == "get_session_summary" ? ProjectRecapToSummary(body) : body;
 
             return BuildToolResult(id, payload);
+        } catch (ArgumentException ex) {
+            return BuildToolResult(id, $"Error: {ex.Message}", isError: true);
+        } catch (HttpRequestException ex) {
+            return BuildToolResult(id, $"Error: {ex.Message}", isError: true);
+        }
+    }
+
+    /// <summary>
+    /// AI-1769: search with auto-widen. The cwd-pinned search runs first; when it
+    /// comes back thin (see ShouldWiden) a second repo:"all" request runs and the
+    /// bodies merge cwd-first. The widened call is best-effort — its failure
+    /// returns the first (successful) body untouched.
+    /// </summary>
+    static async Task<string> HandleSearchSessionsAsync(
+            JsonNode    id,
+            JsonObject? arguments,
+            HttpClient  client,
+            string      baseUrl,
+            string?     cwdRepoHash
+        ) {
+        try {
+            using var first = await SendWithRefreshRetryAsync(client, baseUrl, c => c.GetAsync(BuildSearchUrl(baseUrl, arguments, cwdRepoHash)));
+            var       body  = await first.Content.ReadAsStringAsync();
+
+            if (first.StatusCode == HttpStatusCode.Unauthorized) {
+                return BuildToolResult(id, NotLoggedInMessage, isError: true);
+            }
+
+            if (!first.IsSuccessStatusCode) {
+                return BuildToolResult(id, $"Error: HTTP {(int)first.StatusCode} — {body}", isError: true);
+            }
+
+            if (ShouldWiden(arguments, cwdRepoHash, body, out var limit)) {
+                var widenedArgs = arguments?.DeepClone().AsObject() ?? new JsonObject();
+                widenedArgs["repo"] = "all";
+
+                using var second = await SendWithRefreshRetryAsync(client, baseUrl, c => c.GetAsync(BuildSearchUrl(baseUrl, widenedArgs, cwdRepoHash)));
+
+                if (second.IsSuccessStatusCode) {
+                    var widenedBody = await second.Content.ReadAsStringAsync();
+                    body = MergeWidenedBody(body, widenedBody, limit);
+                }
+            }
+
+            return BuildToolResult(id, body);
         } catch (ArgumentException ex) {
             return BuildToolResult(id, $"Error: {ex.Message}", isError: true);
         } catch (HttpRequestException ex) {
@@ -590,14 +638,14 @@ static class McpSessionsServer {
     static McpTool[] BuildToolsList() => [
         new(
             "search_sessions",
-            "Search past Kurrent Capacitor sessions in the current repo (or across all visible repos with repo: \"all\") by free-text question and/or author name. Returns ranked hits with session_id, title, owner, snippet, and (for transcript hits) hit_event_index + agent_id for drilling into the exact moment with get_session_transcript. For 'have we done this before / why did we / who decided X / when did we work on Y' questions, search here before grepping the code or git log — it searches the reasoning across past sessions, not just the code.",
+            "Search past Kurrent Capacitor sessions by free-text question and/or author name. Searches the current repo first and AUTOMATICALLY widens to all visible repos when results are thin (response then carries widened_to_all_repos: true); every hit includes its repo, so check it before assuming a hit is from this repo. Pass repo: \"all\" to search everywhere explicitly, or repo: \"<owner>/<name>\" to pin another repo (explicit repo never widens). Returns ranked hits with session_id, title, owner, snippet, and (for transcript hits) hit_event_index + agent_id for drilling into the exact moment with get_session_transcript. For 'have we done this before / why did we / who decided X / when did we work on Y' questions, search here before grepping the code or git log — it searches the reasoning across past sessions, not just the code.",
             new(
                 "object",
                 new() {
                     ["query"] = new("string", "Free-text FTS query. Empty allowed when author is set."),
                     ["author"] = new("string", "Optional: GitHub username or display name. Fuzzy match."),
                     ["author_github_id"] = new("integer", "Optional: explicit GitHub numeric id. Takes precedence over `author`."),
-                    ["repo"] = new("string", "Optional: \"all\" for cross-repo, \"<owner>/<name>\", or a 16-hex repo hash. Defaults to the current repo (resolved from cwd at server startup)."),
+                    ["repo"] = new("string", "Optional: \"all\" for cross-repo, \"<owner>/<name>\", or a 16-hex repo hash. Defaults to the current repo (resolved from cwd at server startup) with automatic widening to all repos when results are thin."),
                     ["limit"] = new("integer", "Default 10, max 50."),
                     ["offset"] = new("integer", "Default 0, max 500.")
                 },
