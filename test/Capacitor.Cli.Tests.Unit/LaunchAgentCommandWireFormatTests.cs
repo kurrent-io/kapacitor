@@ -262,6 +262,34 @@ public class LaunchAgentCommandWireFormatTests {
         await Assert.That(back.RequesterUserId).IsEqualTo("user_x");
         await Assert.That(back.RequesterIsOwner).IsEqualTo(true);
     }
+
+    [Test]
+    public async Task InactivityBoundSeconds_roundtrips_and_defaults_null_when_absent() {
+        // Task 12 / liveness-supervision spec §3 decision 6: an old server never sends this field —
+        // the daemon must default to null (⇒ FindReviewersToReap's no-bound legacy path), never fail
+        // to bind the command.
+        var legacyJson = """{"agent_id":"a1","model":"m","repo_path":"/r","vendor":"claude"}""";
+        var legacy = JsonSerializer.Deserialize(legacyJson, CapacitorJsonContext.Default.LaunchAgentCommand);
+        await Assert.That(legacy.InactivityBoundSeconds).IsNull();
+
+        // A new server sends it snake_case and it round-trips.
+        var cmd = new LaunchAgentCommand(
+            AgentId: "a1",
+            Prompt: null,
+            Model: "m",
+            Effort: null,
+            RepoPath: "/r",
+            Tools: null,
+            AttachmentIds: null,
+            Vendor: "claude",
+            Kind: LaunchKind.ReviewFlow,
+            InactivityBoundSeconds: 180
+        );
+        var json = JsonSerializer.Serialize(cmd, ServerWireOptions);
+        await Assert.That(json).Contains("\"inactivity_bound_seconds\":180");
+        var back = JsonSerializer.Deserialize(json, CapacitorJsonContext.Default.LaunchAgentCommand);
+        await Assert.That(back.InactivityBoundSeconds).IsEqualTo(180);
+    }
 }
 
 /// <summary>

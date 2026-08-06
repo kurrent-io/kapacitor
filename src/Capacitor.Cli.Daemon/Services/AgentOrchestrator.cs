@@ -55,6 +55,13 @@ internal record AgentInstance(
     public string?              FlowRunId         { get; init; }
     public string?              FlowRole          { get; init; }
 
+    /// <summary>Liveness-supervision spec §3/decision 6: the server-sent per-run inactivity bound
+    /// (<see cref="LaunchAgentCommand.InactivityBoundSeconds"/>), captured verbatim at launch. Null
+    /// for a non-review-flow launch, a local spawn, and a launch from a server predating this field —
+    /// <see cref="AgentOrchestrator.FindReviewersToReap"/> treats null as "use the daemon's own
+    /// legacy lifetime+idle backstop", never as "no bound at all".</summary>
+    public int?                 InactivityBoundSeconds { get; init; }
+
     /// <summary>Who asked for this launch (server-stamped requester user id). Null for old
     /// servers and local spawns — the supervision payload renders null as unknown.</summary>
     public string?              RequesterUserId   { get; init; }
@@ -636,21 +643,61 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     /// fixed time. Production uses the real UTC clock.</summary>
     internal Func<DateTime> ClockUtc { get; set; } = () => DateTime.UtcNow;
 
-    /// <summary>Phase B (D3): the ReviewFlow agents the heartbeat should reap now — past
-    /// <see cref="DaemonConfig.ReviewerMaxLifetime"/> (reason <c>reviewer_ttl_expired</c>) or
-    /// <see cref="DaemonConfig.ReviewerIdleTimeout"/> (reason <c>reviewer_idle_expired</c>). Only
-    /// Running ReviewFlow agents; a <see cref="TimeSpan.Zero"/> bound disables it; interactive agents
-    /// are never returned. Pure (no side effects) so the heartbeat and tests share one decision.</summary>
+    /// <summary>Task 12 (unified reviewer reaping, liveness-supervision spec §0/§1): the ReviewFlow
+    /// agents the heartbeat should reap now. Only Running ReviewFlow agents; interactive agents are
+    /// never returned. Pure (no side effects) so the heartbeat and tests share one decision. Every
+    /// duration compared here comes from <see cref="AgentActivityClock"/>'s monotonic accessors
+    /// (<see cref="AgentActivityClock.IdleForMs"/>/<see cref="AgentActivityClock.AgeMs"/>) — never a
+    /// <see cref="DateTime"/> delta — so a wall-clock jump can never reap a healthy reviewer.
+    ///
+    /// <para><b>Server-sent bound present</b> (<see cref="AgentInstance.InactivityBoundSeconds"/>):
+    /// reap when <c>IdleForMs</c> exceeds the bound AND no turn is held (reason
+    /// <c>reviewer_inactivity_bound_exceeded</c>); a held turn suppresses that rule (a long tool run
+    /// is legitimate) UNLESS the seq has been frozen (no <c>Advance()</c>, i.e. <c>IdleForMs</c> keeps
+    /// climbing) past <see cref="DaemonConfig.ReviewerTurnWedgeCeiling"/> — reason
+    /// <c>turn_wedged</c>. The wedge ceiling is a DAEMON-LOCAL safety net, independently defaulted
+    /// from the server's own <c>Flows:TurnWedgeCeilingSeconds</c> (both default 60m; never sent on
+    /// the wire — see decision 6 in the liveness-supervision spec). An envelope arriving mid-turn
+    /// calls <c>Advance()</c> too, which resets <c>IdleForMs</c> to ~0 and re-arms the wedge check —
+    /// so a genuinely-progressing held turn is never wedge-reaped, only a truly frozen one.</para>
+    ///
+    /// <para><b>No server-sent bound</b> (old server, or a launch this field predates): retains BOTH
+    /// legacy backstop rules exactly, per the spec's backwards-compatibility section —
+    /// <see cref="DaemonConfig.ReviewerMaxLifetime"/> (reason <c>reviewer_ttl_expired</c>, an absolute
+    /// cap regardless of activity) AND <see cref="DaemonConfig.ReviewerIdleTimeout"/> (reason
+    /// <c>reviewer_idle_expired</c>). Idle is now measured off the unified activity clock instead of
+    /// the PTY-only <see cref="AgentInstance.LastOutputAt"/> — the ACP fix: an ACP reviewer's
+    /// transcript/turn traffic keeps <c>IdleForMs</c> low even though <c>LastOutputAt</c> (which only
+    /// PTY output chunks ever advance) would otherwise sit frozen at launch time, silently degenerating
+    /// "2h idle" into a hard 2h cap for every non-PTY vendor. A <see cref="TimeSpan.Zero"/> bound
+    /// disables its rule, same as before.</para></summary>
     internal IReadOnlyList<(string Id, string Reason)> FindReviewersToReap() {
-        var now    = ClockUtc();
         var result = new List<(string, string)>();
 
         foreach (var a in _agents.Values) {
             if (a.Kind != LaunchKind.ReviewFlow || a.Status != "Running") continue;
 
-            if (_config.ReviewerMaxLifetime > TimeSpan.Zero && now - a.CreatedAt > _config.ReviewerMaxLifetime)
+            var clock = a.ActivityClock;
+
+            if (a.InactivityBoundSeconds is { } boundSeconds && boundSeconds > 0) {
+                if (clock.TurnInFlight) {
+                    if (_config.ReviewerTurnWedgeCeiling > TimeSpan.Zero
+                     && clock.IdleForMs > (ulong) _config.ReviewerTurnWedgeCeiling.TotalMilliseconds) {
+                        result.Add((a.Id, "turn_wedged"));
+                    }
+
+                    continue; // a held turn suppresses the plain inactivity rule outright
+                }
+
+                if (clock.IdleForMs > (ulong) TimeSpan.FromSeconds(boundSeconds).TotalMilliseconds)
+                    result.Add((a.Id, "reviewer_inactivity_bound_exceeded"));
+
+                continue;
+            }
+
+            if (_config.ReviewerMaxLifetime > TimeSpan.Zero && clock.AgeMs > (ulong) _config.ReviewerMaxLifetime.TotalMilliseconds)
                 result.Add((a.Id, "reviewer_ttl_expired"));
-            else if (_config.ReviewerIdleTimeout > TimeSpan.Zero && now - a.LastOutputAt > _config.ReviewerIdleTimeout)
+            else if (_config.ReviewerIdleTimeout > TimeSpan.Zero && clock.IdleForMs > (ulong) _config.ReviewerIdleTimeout.TotalMilliseconds)
                 result.Add((a.Id, "reviewer_idle_expired"));
         }
 
@@ -1055,7 +1102,13 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             string? flowRunId = null, string? flowRole = null,
             DateTime? createdAt = null, DateTime? lastOutputAt = null, bool isPrivate = false,
             IPtyProcess? pty = null, string? startIdentity = null, string? requester = null,
-            string? model = "default") {
+            string? model = "default", int? inactivityBoundSeconds = null,
+            // Task 12 (unified reviewer reaping): a test that needs to control the agent's monotonic
+            // age/idle (rather than the wall-clock CreatedAt/LastOutputAt above, which the new
+            // FindReviewersToReap no longer reads) constructs its own AgentActivityClock over a
+            // FakeTimeProvider and passes it here — the SAME wiring CreateActivityClock() gives a
+            // real launch, just with a controllable time source.
+            AgentActivityClock? activityClock = null) {
         var agent = new AgentInstance(
             id, null, model, null, "/repo", "codex",
             new PtyHostedAgentRuntime("codex", pty ?? NoopPtyProcess.Instance),
@@ -1064,7 +1117,8 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             Kind = kind, FlowRunId = flowRunId, FlowRole = flowRole, IsPrivate = isPrivate,
             CreatedAt = createdAt ?? DateTime.UtcNow, StartIdentity = startIdentity,
             RequesterUserId = requester,
-            ActivityClock = CreateActivityClock()
+            InactivityBoundSeconds = inactivityBoundSeconds,
+            ActivityClock = activityClock ?? CreateActivityClock()
         };
         agent.Status = status;
         if (lastOutputAt is { } lo) agent.LastOutputAt = lo;
@@ -1628,7 +1682,8 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
                 Kind                = cmd.Kind,       // Phase B (D2): flow identity + kind for LiveAgents/status report
                 FlowRunId           = cmd.FlowRunId,
                 FlowRole            = cmd.FlowRole,
-                RequesterUserId     = cmd.RequesterUserId
+                RequesterUserId     = cmd.RequesterUserId,
+                InactivityBoundSeconds = cmd.InactivityBoundSeconds
             };
             PublishAgent(agent);
 
@@ -3092,9 +3147,14 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
 
             foreach (var (id, reason) in FindReviewersToReap()) {
                 if (_agents.TryGetValue(id, out var reviewer)) {
+                    // Task 12: age/idle logged off the SAME unified monotonic clock FindReviewersToReap
+                    // decided from — CreatedAt/LastOutputAt (PTY-only) would misreport an ACP reviewer's
+                    // idle time as frozen since launch.
                     _logger.LogInformation(
                         "Reaping review-flow reviewer {AgentId} ({Reason}); age {AgeHours:F1}h, idle {IdleHours:F1}h",
-                        id, reason, (ClockUtc() - reviewer.CreatedAt).TotalHours, (ClockUtc() - reviewer.LastOutputAt).TotalHours);
+                        id, reason,
+                        TimeSpan.FromMilliseconds(reviewer.ActivityClock.AgeMs).TotalHours,
+                        TimeSpan.FromMilliseconds(reviewer.ActivityClock.IdleForMs).TotalHours);
                     reviewer.PendingEndReason = reason;
                     _ = HandleStopAgent(id);
                 }

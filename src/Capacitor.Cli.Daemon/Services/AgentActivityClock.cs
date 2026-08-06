@@ -23,6 +23,11 @@ namespace Capacitor.Cli.Daemon.Services;
 internal sealed class AgentActivityClock(TimeProvider time) {
     readonly Lock _gate = new();
 
+    // Captured once, at construction, on the SAME monotonic axis as _lastAdvanceTimestamp below —
+    // never re-read or reset. This is the TTL counterpart to IdleForMs (added for unified reviewer
+    // reaping, liveness-supervision spec §1): a per-agent age measurement immune to the wall-clock
+    // jump that a plain `DateTime.UtcNow - AgentInstance.CreatedAt` delta would be exposed to.
+    readonly long _spawnTimestamp       = time.GetTimestamp();
     long    _lastAdvanceTimestamp = time.GetTimestamp();
     ulong   _activitySeq = 1;
     bool    _turnInFlight;
@@ -68,6 +73,25 @@ internal sealed class AgentActivityClock(TimeProvider time) {
         get {
             lock (_gate) {
                 var elapsed = time.GetElapsedTime(_lastAdvanceTimestamp);
+
+                return elapsed <= TimeSpan.Zero ? 0UL : (ulong) elapsed.TotalMilliseconds;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Monotonic elapsed time since THIS clock (i.e. this agent) was constructed — never reset by
+    /// <see cref="Advance"/>/<see cref="SetTurnInFlight"/>/<see cref="SetLaunchStage"/>, unlike
+    /// <see cref="IdleForMs"/>. Added for unified reviewer reaping (liveness-supervision spec §1) so
+    /// the no-server-bound legacy absolute-lifetime backstop
+    /// (<see cref="Capacitor.Cli.Daemon.DaemonConfig.ReviewerMaxLifetime"/>) is measured off the same
+    /// monotonic clock domain as everything else here — a wall-clock jump (NTP correction, DST, a
+    /// debugger-paused process resuming) must never make a healthy agent look older than it is.
+    /// </summary>
+    public ulong AgeMs {
+        get {
+            lock (_gate) {
+                var elapsed = time.GetElapsedTime(_spawnTimestamp);
 
                 return elapsed <= TimeSpan.Zero ? 0UL : (ulong) elapsed.TotalMilliseconds;
             }

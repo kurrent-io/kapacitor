@@ -1326,7 +1326,12 @@ public readonly record struct LaunchAgentCommand(
         // fields above — old daemons ignore them, old servers never set them (null ⇒ unknown ⇒
         // the consent engine falls through rules to the configured default).
         string?           RequesterUserId       = null,
-        bool?             RequesterIsOwner      = null
+        bool?             RequesterIsOwner      = null,
+        // Review-flow liveness-supervision spec §3/decision 6: the per-agent inactivity bound
+        // (EffectiveInactivityBound.Resolve, seconds) the daemon enforces alongside the server's own
+        // ParticipantActivityMonitor — one number, one source of truth (the flow definition). Null for
+        // every non-review-flow launch and for a launch predating this field; an old daemon ignores it.
+        int?              InactivityBoundSeconds = null
     );
 
 /// <summary>Caller-selected Codex launch posture. Valid ONLY for interactive, daemon-owned-worktree
