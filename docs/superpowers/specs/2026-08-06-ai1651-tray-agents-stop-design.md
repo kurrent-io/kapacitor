@@ -81,13 +81,14 @@ Non-goals (explicitly out):
 | 3 | `Connecting` | **Connecting** |
 | 4 | `Connected`, `daemon.connection == "connecting"` | **Connecting** |
 | 5 | `Connected`, `daemon.connection` ∈ `reconnecting`, `disconnected` | **Attention** |
-| 6 | `Connected`, `daemon.connection == "connected"`, `active_agents == 0` | **Idle** |
-| 7 | `Connected`, `daemon.connection == "connected"`, `active_agents > 0` | **Running(n)**, n = `active_agents` |
-| 8 | `Connected`, any other `connection` value (future daemon) | **Attention** (conservative) |
-| 9 | `Unreachable`, any other reason (future client — today the client pins exactly two) | **Attention** (conservative) |
+| 6 | `Connected`, `daemon.connection == "connected"`, `active_agents < 0` (malformed count — `DaemonStatusValidator` does not reject it, and this slice deliberately leaves that pinned validator untouched) | **Attention** (conservative) |
+| 7 | `Connected`, `daemon.connection == "connected"`, `active_agents == 0` | **Idle** |
+| 8 | `Connected`, `daemon.connection == "connected"`, `active_agents > 0` | **Running(n)**, n = `active_agents` |
+| 9 | `Connected`, any other `connection` value (future daemon) | **Attention** (conservative) |
+| 10 | `Unreachable`, any other reason (future client — today the client pins exactly two) | **Attention** (conservative) |
 
-The projection is total: rows 8–9 make every reachable input map to a state, and §5 gives those
-fallback rows a neutral header. `AttachStatus` precedence is absolute: a retained stale snapshot
+The projection is total: rows 6 and 9–10 make every input the client can deliver map to a state,
+and §5 gives those fallback rows a neutral header. `AttachStatus` precedence is absolute: a retained stale snapshot
 never produces Idle/Running while the client is Connecting or Unreachable. `n` is `active_agents` — the display count derived
 server-side from the same array (never treated as launch capacity). Between `Connected` and the
 first snapshot there is no gap: the AI-1650 client only reports Connected together with a valid
@@ -125,7 +126,7 @@ Quit
   Connecting → `connecting…`; Attention/skew → the existing neutral copy ("app and daemon are
   incompatible — make sure both are up to date", no daemon-name prefix); Attention/server-link →
   `reconnecting to server` / `disconnected from server`; Idle → `connected — no agents`;
-  Running → `connected — {n} agent(s) running`; any other Attention case (§4 rows 8–9) →
+  Running → `connected — {n} agent(s) running`; any other Attention case (§4 rows 6 and 9–10) →
   `needs attention` (neutral fallback).
 - **Agent entries** appear only while `Connected`; they are the agents whose `status` is
   `Starting` or `Running` (same predicate as `active_agents`), labeled
@@ -164,8 +165,11 @@ The pause rule is exactly `ConsentRuleDto("deny", null, null, null, null)` at in
   toggle — `kcap daemon consent show` is the full truth. A passive refresh (`ConsentRulesGet`)
   is kicked fire-and-forget from the menu's `Opening` event and as the trailing step of every
   toggle; its result lands in the cached model, so it becomes visible at the next menu open
-  (§5 rebuild cadence). Accepted staleness: the checkmark can be one open behind a CLI-side
-  edit. A refresh failure keeps the last-known checkmark but marks the state **unverified**,
+  (§5 rebuild cadence). Accepted staleness: the checkmark reflects the policy as of the most
+  recent **completed** refresh; a CLI-side edit becomes visible on the open after the next
+  successfully started-and-completed refresh — usually one open behind, but more under rapid
+  reopen or a busy lane (drops, §Serialization). A refresh failure keeps the last-known
+  checkmark but marks the state **unverified**,
   which disables the item (§5) until a later refresh succeeds; passive refresh failures log to
   stderr, no banner.
 - **Serialization (one lane for ALL consent-policy operations):** passive refreshes and toggle
@@ -178,8 +182,12 @@ The pause rule is exactly `ConsentRuleDto("deny", null, null, null, null)` at in
   while a passive refresh owns the lane, which is possible because the open menu is frozen and
   cannot disable the item mid-display — uses the lane's **one-slot queue, reserved exclusively
   for a user toggle**: the toggle is marked in-flight immediately (further clicks are ignored
-  per single-flight) and runs exactly once when the passive op completes (success or failure);
-  its own Get then reads the freshest state. A toggle while a toggle owns the lane is ignored
+  per single-flight) and runs exactly once when the passive op completes (success or failure).
+  The slot stores the **desired checked value captured from the displayed item at click time**,
+  not a generic inversion: the queued operation applies pause/unpause toward that desired state
+  against its own fresh Get, which may make it an idempotent no-op (the pause rule appeared or
+  vanished externally while the passive read was held) — it never produces the opposite of what
+  the user selected. A toggle while a toggle owns the lane is ignored
   (clicks-while-disabled rule; the slot never holds more than one). The toggle item is disabled
   while a toggle operation runs or is queued; it re-enables when the trailing refresh
   completes. If the Put's outcome is ambiguous (transport failure or timeout after send) and
@@ -291,11 +299,16 @@ public sealed record StopAgentResult(bool Ok, string Status, string? Error);
   linked to the caller's token; internal seams for tests): connect 5s; reply 10s for consent ops;
   reply 40s for stop (the ack lands only after the graceful-stop sequence).
 - **Failure classification** (thrown as `LocalControlOpsException(Reason, Message)`):
-  connect/socket-missing failures → `daemon_unreachable`; a decodable `Error` frame is not an
-  exception (it is a result, see above) except for consent ops, where it becomes
-  `daemon_rejected` with the frame text; EOF, undecodable frame, or unexpected frame type →
-  `unexpected_reply`; phase timeout → `timed_out`. The app maps reasons to banner copy; reasons
-  are stable identifiers, not user copy.
+  connect/socket-missing failures AND post-connect transport failures (IOException /
+  SocketException / reset during write or read) → `daemon_unreachable` (the same mapping
+  `LocalControlClient` uses); a decodable `Error` frame is not an exception (it is a result,
+  see above) except for consent ops, where it becomes `daemon_rejected` with the frame text;
+  EOF, undecodable frame, or unexpected frame type → `unexpected_reply`; phase timeout →
+  `timed_out`. **Caller-token cancellation is checked before classifying** (the
+  `LocalControlClient` pattern): it propagates as `OperationCanceledException`, never as
+  `timed_out` or a transport reason, and app commands absorb it quietly — no banner, no error
+  log, lane and in-flight/queued-slot state cleaned up. The app maps reasons to banner copy;
+  reasons are stable identifiers, not user copy.
 - **Structural validation** (STJ source-gen does not enforce non-nullable members — the daemon's
   own receive path guards for exactly this, `LaunchConsentIpc.HandleRulesPutAsync`; the ops
   mirror it): a `ConsentRules` reply must have a non-null root, non-null `default` ∈
@@ -330,8 +343,9 @@ public sealed record StopAgentResult(bool Ok, string Status, string? Error);
 
 Headless (`Capacitor.App.Tests.Unit`, existing `AvaloniaSession` + immediate-scheduler swap):
 
-- **Tray state matrix:** all nine mapping rows of §4, including skew, server-link-lost,
-  unknown-connection-value, unknown-unreachable-reason, and stale-snapshot-while-unreachable.
+- **Tray state matrix:** all ten mapping rows of §4, including skew, server-link-lost,
+  negative-`active_agents`, unknown-connection-value, unknown-unreachable-reason, and
+  stale-snapshot-while-unreachable.
 - **Menu model:** entry projection (filter to Starting/Running, label format, ordering), header
   copy per state including the neutral fallback, agent section hidden when not Connected, pause
   item enablement (capability gating + disconnected + in-flight + unverified).
@@ -344,8 +358,12 @@ Headless (`Capacitor.App.Tests.Unit`, existing `AvaloniaSession` + immediate-sch
   (rapid double-click runs one operation, second click ignored), lane serialization both ways —
   deterministic ordering tests, not timing-based: a passive `Opening` refresh requested during a
   toggle is dropped and never applies; and the mirror, hold the `Opening` refresh, click the
-  toggle, release the refresh → the user intent runs exactly once, after the passive, with no
-  overlap — disconnect and shutdown-token cancellation mid-toggle, ack-failure banners
+  toggle, release the refresh **returning a changed policy** → the queued intent runs exactly
+  once, after the passive, applying the captured desired state against its own fresh Get
+  (asserting the resulting Put, or the idempotent no-op when the desired state already holds —
+  never an inversion) — disconnect mid-toggle (→ `daemon_unreachable` banner + unverified) and
+  shutdown-token cancellation mid-toggle (→ absorbed quietly: no banner, no unverified marking,
+  lane and queued-slot state cleaned up), ack-failure banners
   (`ok:false` with error text; `ok:false, error:null` → the neutral fallback copy;
   `ok:true, error!=null` → success, stderr warning, NO banner) + unverified-disabled until a
   successful refresh.
@@ -367,8 +385,10 @@ Headless (`Capacitor.App.Tests.Unit`, existing `AvaloniaSession` + immediate-sch
   (bitmap output is manual verification).
 
 `Capacitor.Cli.Tests.Unit`: `LocalControlOps` scripted-server tests — success, `Error`-frame
-result vs exception per op, EOF → `unexpected_reply`, connect failure → `daemon_unreachable`,
-phase timeout → `timed_out`, and parseable-but-invalid payloads (§10 structural validation:
+result vs exception per op, EOF → `unexpected_reply`, connect failure AND post-connect
+reset/transport failure → `daemon_unreachable`, phase timeout → `timed_out`, caller-token
+cancellation → `OperationCanceledException` (never `timed_out`), and parseable-but-invalid
+payloads (§10 structural validation:
 null `rules`, null rule element, unknown `default`, missing/duplicated/malformed `StopAck` line,
 unknown `StopAck` status token) → `unexpected_reply`; `{}` as `ConsentAck` → the op returns
 `ConsentAckDto(false, null)` (wire-shape assertion only — the resulting neutral banner is the
@@ -384,9 +404,9 @@ light/dark menu bar, menu interaction, deep links, real stop against a live daem
 
 - **Avalonia tray variance on macOS** — the acknowledged risk; the pinned fallback (§4) bounds it.
 - **Menu staleness while open** — the `NeedsUpdate`-only rebuild cadence (§5) means content is
-  frozen while the menu is displayed and the pause checkmark can be one open behind a CLI-side
-  edit; both are accepted (native menus are static while open anyway) and covered by manual
-  macOS acceptance.
+  frozen while the menu is displayed and the pause checkmark can trail a CLI-side edit by one
+  open (or more, under rapid reopen/busy-lane drops — §6's stated bound); both are accepted
+  (native menus are static while open anyway) and covered by manual macOS acceptance.
 - **Last-write-wins on consent policy** (§6) — accepted for a sub-second window against a
   single-writer store.
 - **The `attention` state will gain consent-pending input in AI-1652**; the mapping table's
