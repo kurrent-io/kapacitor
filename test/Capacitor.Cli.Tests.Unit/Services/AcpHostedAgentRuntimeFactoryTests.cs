@@ -2151,12 +2151,17 @@ public class AcpHostedAgentRuntimeFactoryTests {
             .Because("the positive control: without it, an advertisement that always said false would pass");
     }
 
-    /// <summary>An enabled daemon whose installed build is NOT the affirmed one still does not advertise —
-    /// the two halves of the gate are independent, and this is the half a vendor upgrade trips.</summary>
+    /// <summary>An enabled daemon whose installed build is BELOW the recorded minimum still does not
+    /// advertise — the two halves of the gate are independent.
+    ///
+    /// <para>The version this test uses is now HIGHER than the installed build, not lower. It previously
+    /// recorded <c>0.53.0</c> against an installed <c>0.54.0</c> and asserted no advertisement, i.e. that
+    /// a vendor UPGRADE trips the gate. That is the behaviour the minimum deliberately removes, so the
+    /// arm being pinned here is a downgrade instead.</para></summary>
     [Test]
-    public async Task Gemini_AnEnabledDaemonOnAnUnaffirmedBuild_DoesNotAdvertise() {
+    public async Task Gemini_AnEnabledDaemonBelowTheMinimum_DoesNotAdvertise() {
         IHostedAgentRuntimeFactory factory = new AcpHostedAgentRuntimeFactory(
-            AcpVendorDescriptors.Gemini, GeminiEnabledConfig(affirmed: "0.53.0"),
+            AcpVendorDescriptors.Gemini, GeminiEnabledConfig(affirmed: "0.55.0"),
             NullLoggerFactory.Instance, new CaptureServerConnection(),
             resolveVendorVersion: _ => GeminiBuild);
 
@@ -2199,11 +2204,11 @@ public class AcpHostedAgentRuntimeFactoryTests {
         await Assert.That(support.WithheldReason!).StartsWith("gemini_unattended_reviewer_disabled");
     }
 
-    /// <summary>The unaffirmed-build arm names BOTH builds and the command that clears it, not a generic
-    /// refusal — otherwise an operator cannot tell a consent problem from an upgrade problem, nor what to
-    /// do about the upgrade.</summary>
+    /// <summary>A build NEWER than the recorded minimum is advertised, withholding nothing. This
+    /// previously asserted the opposite — an upgrade past the recorded version used to withhold the
+    /// vendor until an operator re-affirmed, which is the treadmill the minimum removes.</summary>
     [Test]
-    public async Task Gemini_AnUnaffirmedBuild_IsNamedInTheWithheldReason() {
+    public async Task Gemini_ABuildNewerThanTheMinimum_IsAdvertised() {
         IHostedAgentRuntimeFactory factory = new AcpHostedAgentRuntimeFactory(
             AcpVendorDescriptors.Gemini, GeminiEnabledConfig(affirmed: "0.53.0"),
             NullLoggerFactory.Instance, new CaptureServerConnection(),
@@ -2211,11 +2216,28 @@ public class AcpHostedAgentRuntimeFactoryTests {
 
         var support = factory.DescribeUnattendedSupport();
 
+        await Assert.That(support.Supported).IsTrue();
+        await Assert.That(support.WithheldReason).IsNull();
+    }
+
+    /// <summary>The below-minimum arm names BOTH versions and the command that moves the minimum, not a
+    /// generic refusal — otherwise an operator cannot tell a consent problem from a version problem, nor
+    /// what to do about it. This is also the control for the test above: without a refusing direction,
+    /// deleting the version check entirely would still pass.</summary>
+    [Test]
+    public async Task Gemini_ABuildOlderThanTheMinimum_IsNamedInTheWithheldReason() {
+        IHostedAgentRuntimeFactory factory = new AcpHostedAgentRuntimeFactory(
+            AcpVendorDescriptors.Gemini, GeminiEnabledConfig(affirmed: "0.55.0"),
+            NullLoggerFactory.Instance, new CaptureServerConnection(),
+            resolveVendorVersion: _ => GeminiBuild);
+
+        var support = factory.DescribeUnattendedSupport();
+
         await Assert.That(support.Supported).IsFalse();
         await Assert.That(support.WithheldReason!).Contains(GeminiBuild);
-        await Assert.That(support.WithheldReason!).Contains("0.53.0");
+        await Assert.That(support.WithheldReason!).Contains("0.55.0");
         await Assert.That(support.WithheldReason!).Contains("kcap daemon reviewer affirm --vendor gemini");
-        await Assert.That(support.WithheldReason!).StartsWith("gemini_reviewer_version_unaffirmed");
+        await Assert.That(support.WithheldReason!).StartsWith("gemini_reviewer_version_below_minimum");
     }
 
     /// <summary>An ADVERTISED vendor withholds nothing — the negative control for the two above, without

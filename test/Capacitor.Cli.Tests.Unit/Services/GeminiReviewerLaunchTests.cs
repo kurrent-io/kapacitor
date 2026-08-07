@@ -261,14 +261,17 @@ public class GeminiReviewerLaunchTests {
         await Assert.That(ex!.Message).Contains("gemini_unattended_reviewer_disabled");
     }
 
-    /// <summary>A build other than the affirmed one — or one that cannot be identified at all — is refused
-    /// even when the operator has opted in: the reviewer's only containment is that build's MCP-allowlist
-    /// semantics, so an unaffirmed build is refused rather than assumed compatible.</summary>
+    /// <summary>A build OLDER than the recorded minimum — or one that cannot be identified at all — is
+    /// refused even when the operator has opted in: the reviewer's only containment is that build's
+    /// MCP-allowlist semantics, so a build we cannot vouch for is refused rather than assumed compatible.
+    ///
+    /// <para>`0.55.0` was in this list until the recorded version became a MINIMUM; a build newer than
+    /// the minimum is now admitted, and <see cref="ANewerBuildThanTheMinimum_LaunchesUnchanged"/> pins
+    /// that direction instead.</para></summary>
     [Test]
-    [Arguments("0.55.0")]
     [Arguments("0.53.1")]
     [Arguments("")]
-    public async Task AnUnaffirmedOrUnresolvableBuild_RefusesAReviewLaunch(string version) {
+    public async Task ABuildBelowTheMinimumOrUnresolvable_RefusesAReviewLaunch(string version) {
         var ex = Assert.Throws<InvalidOperationException>(
             () => Build(isReviewFlow: true, version: version));
 
@@ -280,6 +283,20 @@ public class GeminiReviewerLaunchTests {
     [Test]
     public async Task TheAffirmedBuild_PermitsAReviewLaunch() {
         var argv = Build(isReviewFlow: true, version: CertifiedVersion);
+
+        await Assert.That(argv).Contains("--experimental-acp");
+    }
+
+    /// <summary>
+    /// The direction the minimum exists to allow: a build NEWER than the recorded one launches with no
+    /// operator action. `0.55.0` used to be an argument to the refusal case above — a vendor patch
+    /// release took the reviewer offline until someone re-affirmed, which is the treadmill removed here.
+    /// </summary>
+    [Test]
+    [Arguments("0.55.0")]
+    [Arguments("1.0.0")]
+    public async Task ANewerBuildThanTheMinimum_LaunchesUnchanged(string version) {
+        var argv = Build(isReviewFlow: true, version: version);
 
         await Assert.That(argv).Contains("--experimental-acp");
     }

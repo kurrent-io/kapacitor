@@ -152,8 +152,32 @@ public class KiroReviewerLaunchTests {
     /// The gate must fire on an upgrade. Asserted with the operator flag ON, so this cannot pass for
     /// the wrong reason (a disabled daemon refuses everything).
     /// </summary>
+    /// <summary>
+    /// An UPGRADED kiro-cli launches, with no operator action. This test used to assert the opposite,
+    /// and inverting it is the point of the change: the recorded version is a minimum, so a routine
+    /// vendor release no longer takes the reviewer offline.
+    /// </summary>
     [Test]
-    public async Task AnUpgradedKiro_RefusesAReviewLaunchUntilAffirmed() {
+    public async Task AnUpgradedKiro_LaunchesWithoutAnyOperatorAction() {
+        Skip.Unless(!OperatingSystem.IsWindows(),
+            "The Kiro unattended reviewer is POSIX-only: its isolated home holds review context and cannot be created owner-only on Windows.");
+
+        var config = EnabledConfig(StateDir());
+
+        var psi = AcpHostedAgentRuntimeFactory.BuildProcessStartInfo(
+            AcpVendorDescriptors.Kiro, config, Ctx(isReviewFlow: true),
+            resolveGeminiVersion: _ => "2.17.0");
+
+        await Assert.That(psi).IsNotNull();
+    }
+
+    /// <summary>
+    /// …and the other direction still refuses, which is what keeps "minimum" meaningful rather than
+    /// "no gate at all". Without this control the test above would also pass if the version check had
+    /// simply been deleted.
+    /// </summary>
+    [Test]
+    public async Task AKiroOlderThanTheRecordedMinimum_StillRefusesAReviewLaunch() {
         Skip.Unless(!OperatingSystem.IsWindows(),
             "The Kiro unattended reviewer is POSIX-only: its isolated home holds review context and cannot be created owner-only on Windows.");
 
@@ -161,9 +185,9 @@ public class KiroReviewerLaunchTests {
 
         await Assert.That(() => AcpHostedAgentRuntimeFactory.BuildProcessStartInfo(
                 AcpVendorDescriptors.Kiro, config, Ctx(isReviewFlow: true),
-                resolveGeminiVersion: _ => "2.17.0"))
+                resolveGeminiVersion: _ => "2.15.0"))
             .Throws<InvalidOperationException>()
-            .WithMessageContaining("kiro_reviewer_version_unaffirmed");
+            .WithMessageContaining("kiro_reviewer_version_below_minimum");
     }
 
     /// <summary>
