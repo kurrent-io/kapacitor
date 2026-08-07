@@ -102,14 +102,66 @@ public class AntigravityRuntimeLifecycleTests {
 
     [Test]
     public async Task Terminate_during_a_long_turn_completes_rather_than_deadlocking() {
-        await using var rt = FakeRuntime(turn: FakeTurn.NeverEnds);
+        var spawned = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var rt = FakeRuntime(turn: FakeTurn.NeverEnds, onSpawn: _ => spawned.TrySetResult());
         _ = rt.SendUserInputAsync("hello");
+
+        // Structural, not timing-based: proves the NeverEnds turn has genuinely spawned (and so is
+        // genuinely holding _turnGate inside its read loop) before TerminateAsync races it — the
+        // mutation check pins that TerminateAsync would deadlock here if it took the gate itself.
+        await spawned.Task.WaitAsync(HangGuard);
 
         // If TerminateAsync took the turn gate, this would hang forever: the turn holds the
         // gate, Terminal could never be entered, and the park would never resolve.
         await rt.TerminateAsync(TimeSpan.FromSeconds(5)).WaitAsync(TimeSpan.FromSeconds(10));
 
         await Assert.That(rt.HasExited).IsTrue();
+    }
+
+    [Test]
+    public async Task Terminate_racing_a_still_running_spawn_reaps_the_process_it_never_got_to_track() {
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        FakeAgyTurnProcess? spawnedProcess = null;
+
+        Func<string, string?, CancellationToken, Task<IAgyTurnProcess>> spawn = async (_, _, _) => {
+            entered.TrySetResult();
+
+            // Deliberately ignores the passed-in token: TerminateAsync (below) cancels _ownerCts
+            // before this returns, and the spawn must still SUCCEED afterward — otherwise
+            // SpawnTurnProcessAsync's own "stop/dispose raced the spawn" branch would fire instead,
+            // and this test would exercise a different path than the one under test.
+            await release.Task.ConfigureAwait(false);
+
+            var process = new FakeAgyTurnProcess(FakeTurn.Normal, FixedConversationId);
+            spawnedProcess = process;
+            return process;
+        };
+
+        await using var rt = new AntigravityHostedAgentRuntime(spawnTurn: spawn, logger: NullLogger.Instance);
+
+        await rt.SendUserInputAsync("hello").WaitAsync(HangGuard);
+
+        // The worker is now parked INSIDE _spawnTurn — before ProcessTurnAsync has any process to
+        // publish to _current at all.
+        await entered.Task.WaitAsync(HangGuard);
+
+        // Guaranteed to win the "publish vs. capture" race under _stateLock: ProcessTurnAsync's
+        // publish literally cannot run until the spawn call above returns, which it hasn't yet.
+        await rt.TerminateAsync(TimeSpan.FromSeconds(5)).WaitAsync(HangGuard);
+
+        // NOW let the spawn actually complete — the process is only handed back to ProcessTurnAsync
+        // once the runtime is ALREADY Terminal, exercising its atomic already-Terminal check.
+        release.TrySetResult();
+
+        var deadline = DateTime.UtcNow + HangGuard;
+        while (spawnedProcess is not { DisposeCalls: >= 1 } && DateTime.UtcNow < deadline)
+            await Task.Delay(10);
+
+        await Assert.That(spawnedProcess).IsNotNull();
+        // Reaped (never orphaned) AND disposed (never leaked) despite never being tracked in _current.
+        await Assert.That(spawnedProcess!.TerminateCalls).IsEqualTo(1);
+        await Assert.That(spawnedProcess.DisposeCalls).IsEqualTo(1);
     }
 
     [Test]
@@ -238,5 +290,26 @@ public class AntigravityRuntimeLifecycleTests {
 
         await Assert.That(spawned).IsNotNull();
         await Assert.That(spawned!.DisposeCalls).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task A_turn_that_settles_without_a_conversation_id_faults_the_barrier_instead_of_hanging() {
+        // A turn can settle cleanly (→ Idle, healthy — no EnterTerminal call at all) having never seen
+        // a non-empty conversation_id on its init line. A first cut of rule (e) only faulted the
+        // barrier from EnterTerminal, so a factory correctly awaiting WaitForConversationIdAsync would
+        // hang forever here even though the runtime itself is perfectly healthy.
+        await using var rt = FakeRuntime(turn: FakeTurn.NormalWithoutConversationId);
+
+        await rt.SendUserInputAsync("hello").WaitAsync(HangGuard);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => rt.WaitForConversationIdAsync(CancellationToken.None).WaitAsync(HangGuard));
+
+        // Confirms this genuinely is the "healthy but never resolved an id" case, not a disguised
+        // Terminal transition — HasExited must still read the between-turns-alive value. The barrier
+        // fault (awaited above) runs slightly BEFORE the phase settles to Idle, so give the worker a
+        // moment to finish that transition (matches this file's existing "let it settle" convention).
+        await Task.Delay(100);
+        await Assert.That(rt.HasExited).IsFalse();
     }
 }

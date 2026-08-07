@@ -32,6 +32,14 @@ internal enum FakeTurn {
     /// bespoke spawn closure rather than <see cref="AntigravityRuntimeFakes.FakeRuntime"/> (which uses
     /// one fixed <see cref="FakeTurn"/> for every spawn).</summary>
     ChangedConversationId,
+
+    /// <summary>Emits <c>init</c> with an EMPTY <c>conversation_id</c> (never the fixed one), then a
+    /// <c>result</c> with <c>status: SUCCESS</c> — a turn that settles cleanly to Idle, healthy, WITHOUT
+    /// the runtime ever resolving a conversation id. Exercises the second
+    /// <c>WaitForConversationIdAsync</c> fault call site (the clean-success tail of
+    /// <c>ProcessTurnAsync</c>, not <c>EnterTerminal</c>) — a review caught a first cut of rule (e)
+    /// missing exactly this path.</summary>
+    NormalWithoutConversationId,
 }
 
 /// <summary><see cref="IAgyTurnProcess"/> fake for ONE turn. A fresh instance is handed out by
@@ -45,14 +53,17 @@ internal sealed class FakeAgyTurnProcess(FakeTurn turn, string conversationId) :
     public int  DisposeCalls   { get; private set; }
 
     public async IAsyncEnumerable<string> ReadLinesAsync([EnumeratorCancellation] CancellationToken ct) {
-        var effectiveId = turn == FakeTurn.ChangedConversationId
-            ? AntigravityRuntimeFakes.ChangedConversationId
-            : conversationId;
+        var effectiveId = turn switch {
+            FakeTurn.ChangedConversationId       => AntigravityRuntimeFakes.ChangedConversationId,
+            FakeTurn.NormalWithoutConversationId => "",
+            _                                    => conversationId,
+        };
 
         yield return $$$"""{"event":"init","conversation_id":"{{{effectiveId}}}","init":{"cwd":"/w"}}""";
 
         switch (turn) {
             case FakeTurn.Normal:
+            case FakeTurn.NormalWithoutConversationId:
                 yield return $$$"""{"event":"result","result":{"conversation_id":"{{{effectiveId}}}","status":"SUCCESS"}}""";
                 HasExited = true;
                 ExitCode  = 0;

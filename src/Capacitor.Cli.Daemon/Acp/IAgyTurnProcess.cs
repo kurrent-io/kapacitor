@@ -16,6 +16,22 @@ namespace Capacitor.Cli.Daemon.Acp;
 ///
 /// Exists so <c>AntigravityHostedAgentRuntime</c> is testable without spawning a real process; a
 /// later task's factory implements this over <see cref="System.Diagnostics.Process"/>.
+///
+/// <para><b>Two contracts a real implementation must honor — <c>AntigravityHostedAgentRuntime</c> is
+/// built against them, not just against the happy path:</b></para>
+/// <para>1. <see cref="IAsyncDisposable.DisposeAsync"/> MUST be idempotent. Both
+/// <c>AntigravityHostedAgentRuntime.ProcessTurnAsync</c> (in its own <c>finally</c>) and the runtime's
+/// <c>DisposeAsync</c> can each independently reach a disposal call on the SAME instance across
+/// different exit/race paths — a second call must be a safe no-op, never throw.</para>
+/// <para>2. <see cref="TerminateAsync"/> MUST be safe to call AFTER <see cref="IAsyncDisposable.DisposeAsync"/>
+/// has already run. <c>AntigravityHostedAgentRuntime.TerminateAsync</c> can call
+/// <c>current.TerminateAsync</c> on an instance the turn worker's own <c>finally</c> may have disposed
+/// microseconds earlier (a real interleaving, not a hypothetical one — see the class doc's rule (d) and
+/// the Terminate-races-spawn scenario its lock-ordering fix covers) — this must degrade gracefully
+/// (a no-op, or a caught/logged failure internally), never throw an exception the runtime doesn't
+/// already catch. Both callers DO catch and log any exception from either method today, so a violation
+/// degrades to log noise rather than an unhandled fault — but a real implementation should not rely on
+/// that safety net.</para>
 /// </summary>
 internal interface IAgyTurnProcess : IAsyncDisposable {
     /// <summary>OS process id of this turn's <c>agy -p</c> child.</summary>
@@ -44,6 +60,8 @@ internal interface IAgyTurnProcess : IAsyncDisposable {
     /// <summary>Wait up to <paramref name="timeout"/> for this turn's process to exit (returns silently on timeout).</summary>
     Task WaitForExitAsync(TimeSpan? timeout = null);
 
-    /// <summary>Terminate this turn's process (SIGTERM then SIGKILL) within <paramref name="timeout"/>.</summary>
+    /// <summary>Terminate this turn's process (SIGTERM then SIGKILL) within <paramref name="timeout"/>.
+    /// Must be safe to call even after <see cref="IAsyncDisposable.DisposeAsync"/> has already run —
+    /// see this interface's class doc.</summary>
     Task TerminateAsync(TimeSpan? timeout = null);
 }

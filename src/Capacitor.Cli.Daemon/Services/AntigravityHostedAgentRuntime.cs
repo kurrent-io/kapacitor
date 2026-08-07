@@ -75,7 +75,20 @@ namespace Capacitor.Cli.Daemon.Services;
 /// reads <see cref="AcpSessionId"/> unconditionally and synchronously the moment a launch returns — WILL
 /// bind the transcript to <c>""</c>: a silent, permanent correlation break, not a flaky race. <b>Any
 /// factory for this runtime MUST <see langword="await"/> <see cref="WaitForConversationIdAsync"/> after
-/// sending the initial prompt and BEFORE returning control to the orchestrator.</b></para>
+/// sending the initial prompt and BEFORE returning control to the orchestrator.</b> The barrier itself is
+/// what guarantees this never hangs — it resolves on EVERY path a turn can end on, not just the obvious
+/// ones: <see cref="EnterTerminal"/> faults it for every route to <see cref="RuntimePhase.Terminal"/>
+/// (spawn/auth failure, either deadline, EOF-without-a-result, an explicit stop), and the clean-success
+/// tail of <see cref="ProcessTurnAsync"/> ALSO faults it (via
+/// <see cref="FaultConversationIdBarrierIfUnresolved"/>) for the one path that does NOT call
+/// <see cref="EnterTerminal"/> at all — a turn that settles to <see cref="RuntimePhase.Idle"/> having
+/// never seen a non-empty <c>conversation_id</c> on an <c>init</c> event (a malformed or missing
+/// <c>init</c> whose transcript nonetheless reaches a terminal <c>result</c>). A first cut of this fix
+/// missed exactly that second path — the SAME failure mode the barrier exists to prevent, reopened
+/// through a different door, because a healthy-looking Idle transition is easy to assume can't need
+/// fault handling. As belt-and-braces ONLY (never the primary defense, which is the barrier's own total
+/// resolution above), a factory MAY additionally pass its own launch-deadline token into
+/// <see cref="WaitForConversationIdAsync"/>.</para>
 ///
 /// <para><b>Not this class's job (yet).</b> No ACP-style reconnect/resume — a dead turn child is either a
 /// clean end-of-turn (→ <see cref="RuntimePhase.Idle"/>) or a lost reviewer (→ <see cref="RuntimePhase.Terminal"/>),
@@ -539,6 +552,15 @@ internal sealed class AntigravityHostedAgentRuntime : IHostedAgentRuntime, IAcpT
             // Not yet Terminal — this only records what Terminal WOULD report if entered right now (see
             // _terminalExitCode's remarks). RunTurnWorkerAsync flips the phase itself, back in its caller.
             lock (_stateLock) _terminalExitCode = success ? 0 : 1;
+
+            // Rule (e), second call site: this turn settled cleanly (→ Idle, no EnterTerminal call at
+            // all) WITHOUT ever resolving a conversation id — e.g. a transcript whose `init` line was
+            // missing or carried an empty conversation_id, yet still reached a terminal `result`. A
+            // no-op once an id already resolved (from this turn's own init, or an earlier turn's).
+            // Without this, a factory correctly following rule (e) would hang forever awaiting
+            // WaitForConversationIdAsync on a runtime that is otherwise perfectly healthy.
+            FaultConversationIdBarrierIfUnresolved(
+                "Antigravity: this turn ended without the runtime ever resolving a conversation id from an `init` event.");
         } finally {
             // Every exit path above — clean success, conversation-id mismatch, deadline, EOF-without-
             // result, the already-Terminal race, even ownerCt cancellation — lands here. A turn's
@@ -656,8 +678,8 @@ internal sealed class AntigravityHostedAgentRuntime : IHostedAgentRuntime, IAcpT
 
         // Rule (e): unblock a factory parked in WaitForConversationIdAsync when a conversation id is
         // never going to arrive (e.g. turn 1's spawn itself failed) — never hang that caller forever.
-        _conversationIdResolved.TrySetException(new InvalidOperationException(
-            "Antigravity runtime went terminal before establishing a conversation id."));
+        FaultConversationIdBarrierIfUnresolved(
+            "Antigravity runtime went terminal before establishing a conversation id.");
 
         _pendingTurns.Writer.TryComplete();
         while (_pendingTurns.Reader.TryRead(out var dropped))
@@ -667,6 +689,38 @@ internal sealed class AntigravityHostedAgentRuntime : IHostedAgentRuntime, IAcpT
         _transcript.Writer.TryComplete();
 
         return true;
+    }
+
+    /// <summary>
+    /// Faults <see cref="_conversationIdResolved"/> if — and only if — nothing has resolved it yet
+    /// (<c>TrySetException</c> is a no-op against an already-successfully-completed task, so this can
+    /// never clobber a real id that was already established). Two call sites use this, not one:
+    /// <see cref="EnterTerminal"/> covers "the runtime went terminal before an id ever arrived", and
+    /// the clean-success tail of <see cref="ProcessTurnAsync"/> covers the MORE subtle case rule (e)'s
+    /// first cut missed — a turn can settle to <see cref="RuntimePhase.Idle"/> (no <see cref="EnterTerminal"/>
+    /// call at all) having never seen an <c>init</c> event with a non-empty <c>conversation_id</c> (a
+    /// malformed/missing <c>init</c> whose transcript nonetheless carries a terminal <c>result</c>) —
+    /// without this second call site, a caller correctly following rule (e) and awaiting
+    /// <see cref="WaitForConversationIdAsync"/> would hang forever on a HEALTHY (non-terminal) runtime.
+    ///
+    /// <para>Immediately "observes" a fault it actually caused via a synchronous, exception-swallowing
+    /// continuation — otherwise an unobserved faulted <see cref="Task"/> (e.g. a caller that never calls
+    /// <see cref="WaitForConversationIdAsync"/> at all, which every non-factory caller of this runtime
+    /// legitimately never does) risks <see cref="TaskScheduler.UnobservedTaskException"/> once the GC
+    /// finalizes it — benign under default .NET, but noisy or fatal under a host that escalates it. This
+    /// is purely about silencing that observability warning; a REAL caller of
+    /// <see cref="WaitForConversationIdAsync"/> still observes and can act on the actual exception via
+    /// its own <see langword="await"/>.</para>
+    /// </summary>
+    void FaultConversationIdBarrierIfUnresolved(string message) {
+        if (!_conversationIdResolved.TrySetException(new InvalidOperationException(message)))
+            return;
+
+        _conversationIdResolved.Task.ContinueWith(
+            static t => _ = t.Exception,
+            CancellationToken.None,
+            TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
     }
 
     public Task SendSpecialKeyAsync(string key) {
