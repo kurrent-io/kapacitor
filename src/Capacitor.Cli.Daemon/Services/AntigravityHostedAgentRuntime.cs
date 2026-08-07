@@ -8,6 +8,32 @@ using Microsoft.Extensions.Logging;
 namespace Capacitor.Cli.Daemon.Services;
 
 /// <summary>
+/// The per-turn durable PID-record callbacks — the exec-per-turn analogue of
+/// <c>AcpPidRecordCallbacks</c>, published as ONE immutable bundle for the same reason: two
+/// independently-settable callbacks have a partial-wiring window in which a real recorder is
+/// installed but the clearer is not, and a turn could then persist a record nothing would clear.
+///
+/// <para><b>Cadence: record on turn spawn, clear on CONFIRMED turn exit.</b> Every round of a review
+/// is a different child with a different pid, so a one-shot record taken at launch names turn 1's pid
+/// and nothing after it — a daemon SIGKILL during round 2 would leave a child reapable by neither the
+/// record pass nor the env-marker pass (which is Linux-only, and this reviewer is POSIX-meaning-macOS
+/// in practice).</para>
+///
+/// <para><b><see cref="Record"/> MUST throw on failure</b>, and the runtime treats a throw as the turn
+/// failing: a spawned child the daemon cannot durably record is reaped and the runtime goes terminal
+/// rather than running untracked. <see cref="Clear"/> runs only once the turn's child is OBSERVED
+/// exited — an unconfirmed survivor keeps its record, because the record is the only thing that can
+/// still reap it.</para>
+///
+/// <para>Left <see langword="null"/> on <see cref="AntigravityHostedAgentRuntime.PidCallbacks"/> the
+/// runtime records nothing. That is the deliberate pre-wiring state, not a fail-open hole: turn 1
+/// spawns INSIDE the factory's <c>StartAsync</c>, before the orchestrator can wire anything, and the
+/// orchestrator's own one-shot record covers exactly that turn immediately after the launch
+/// returns.</para>
+/// </summary>
+internal sealed record AgyPidRecordCallbacks(Action<int> Record, Action Clear);
+
+/// <summary>
 /// <see cref="IHostedAgentRuntime"/> for Antigravity's CLI (<c>agy</c>) as an unattended review-flow
 /// reviewer.
 ///
@@ -229,6 +255,12 @@ internal sealed class AntigravityHostedAgentRuntime : IHostedAgentRuntime, IAcpT
     /// turn AND on entry to <see cref="RuntimePhase.Terminal"/>.</para>
     /// </summary>
     internal AgentActivityClock? ActivityClock { get; set; }
+
+    /// <summary>The per-turn durable PID-record seam — see <see cref="AgyPidRecordCallbacks"/> for the
+    /// cadence and the fail-closed contract. Assigned by the orchestrator immediately after
+    /// registration, which is why turn 1 (spawned inside the factory's launch) is deliberately not
+    /// covered here.</summary>
+    internal AgyPidRecordCallbacks? PidCallbacks { get; set; }
 
     /// <summary>The ACP-equivalent conversation id — resolved from turn 1's <c>init</c> event and never
     /// changed again. See <see cref="AcpSessionId"/> and
@@ -514,6 +546,35 @@ internal sealed class AntigravityHostedAgentRuntime : IHostedAgentRuntime, IAcpT
         if (firstTurn) ActivityClock?.SetLaunchStage("spawned");
 
         try {
+            // The durable PID record precedes anything else this turn does with its child, and
+            // precedes the _current publish so a refusal leaves nothing published to reconcile. Same
+            // fail-closed contract the ACP reconnect seam applies per candidate, applied here per TURN
+            // because every round spawns a differently-pid'd child (see AgyPidRecordCallbacks). A
+            // throw is the record store refusing: the child is reaped and the runtime goes terminal
+            // rather than running untracked — never swallowed.
+            if (PidCallbacks is { } pids) {
+                try {
+                    pids.Record(process.Pid);
+                } catch (Exception ex) {
+                    _logger.LogWarning(
+                        ex, "Antigravity: could not durably record this turn's child (agentId={AgentId}, "
+                          + "pid={Pid}); failing the turn rather than running it untracked.",
+                        _agentId, process.Pid);
+
+                    turn.Written?.TrySetException(ex);
+
+                    try {
+                        await process.TerminateAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                    } catch (Exception terminateEx) {
+                        _logger.LogDebug(
+                            terminateEx, "Antigravity: failed to terminate a turn whose PID record was refused.");
+                    }
+
+                    EnterTerminal(exitCode: 1);
+                    return;
+                }
+            }
+
             // Publish _current and check for an already-Terminal runtime as ONE atomic operation under
             // _stateLock — the SAME lock TerminateAsync captures _current under. This closes a real
             // orphan-child race: TerminateAsync's capture and this publish can interleave in either
@@ -645,6 +706,17 @@ internal sealed class AntigravityHostedAgentRuntime : IHostedAgentRuntime, IAcpT
             // disposed process object reports HasExited true, so the same read afterwards would
             // manufacture a confirmation. DisposeAsync's cleanup gate is the consumer.
             _turnExitConfirmed = process.HasExited;
+
+            // Cleared on CONFIRMED exit only, off that same single read: an unconfirmed survivor keeps
+            // its record, because the record is the only thing that can still reap it. Never allowed
+            // to fault the turn — a record we failed to delete is stale bookkeeping, not a live child.
+            if (_turnExitConfirmed && PidCallbacks is { } recorded) {
+                try {
+                    recorded.Clear();
+                } catch (Exception ex) {
+                    _logger.LogDebug(ex, "Antigravity: failed to clear a completed turn's PID record.");
+                }
+            }
 
             try {
                 await process.DisposeAsync().ConfigureAwait(false);

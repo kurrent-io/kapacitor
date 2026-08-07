@@ -1793,6 +1793,19 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
                     Clear:  () => DeletePidRecord(agent.Id));
             }
 
+            // The same seam at the exec-per-turn cadence: agy runs each round as its own short-lived
+            // child, so the one-shot record above names turn 1's pid and nothing after it. Recording
+            // per turn (and clearing on a confirmed turn exit) is what keeps the fail-closed contract
+            // true for round 2 onward — the env-marker fallback cannot cover them, since
+            // ComputeStartupReapComplete gates that scan on Linux and this reviewer is POSIX-only,
+            // meaning macOS in practice. Wired here, after registration, for the same reason the ACP
+            // branch is.
+            if (runtime is AntigravityHostedAgentRuntime antigravity) {
+                antigravity.PidCallbacks = new AgyPidRecordCallbacks(
+                    Record: pid => PersistPidRecordOrThrow(agent, pid, null),
+                    Clear:  () => DeletePidRecord(agent.Id));
+            }
+
             // Start reading output
             _ = ReadAgentOutputAsync(agent);
 

@@ -45,8 +45,11 @@ internal enum FakeTurn {
 /// <summary><see cref="IAgyTurnProcess"/> fake for ONE turn. A fresh instance is handed out by
 /// the injected spawner for every turn, mirroring agy's real exec-per-turn shape — this is never
 /// reused across turns.</summary>
-internal sealed class FakeAgyTurnProcess(FakeTurn turn, string conversationId) : IAgyTurnProcess {
-    public int  Pid            { get; } = 4242;
+/// <param name="pid">Defaulted so every existing caller is unchanged; a test that needs to tell one
+/// turn's child from the next (the per-turn PID record) passes a distinct value.</param>
+internal sealed class FakeAgyTurnProcess(FakeTurn turn, string conversationId, int pid = 4242)
+        : IAgyTurnProcess {
+    public int  Pid            { get; } = pid;
     public bool HasExited      { get; private set; }
     public int? ExitCode       { get; private set; }
     public int  TerminateCalls { get; private set; }

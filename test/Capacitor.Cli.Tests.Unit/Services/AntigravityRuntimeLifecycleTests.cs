@@ -293,6 +293,81 @@ public class AntigravityRuntimeLifecycleTests {
         await Assert.That(spawned!.DisposeCalls).IsEqualTo(1);
     }
 
+    // ── the per-turn durable PID record ───────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Exec-per-turn means every ROUND of a review is a different child with a different pid, so the
+    /// one-shot record the orchestrator takes at launch names turn 1's and nothing after it. A daemon
+    /// SIGKILL during round 2 would then leave a child reapable by neither the record pass nor the
+    /// env-marker pass (which is gated on Linux, while this reviewer is POSIX-meaning-macOS in
+    /// practice). Both directions are asserted: a record per spawn, DISTINCT per turn, and a clear on
+    /// each confirmed exit — a record that is written but never cleared names a dead pid for the rest
+    /// of the session.
+    /// </summary>
+    [Test]
+    public async Task Each_turn_records_its_own_child_pid_and_clears_it_on_confirmed_exit() {
+        var recorded = new List<int>();
+        var cleared  = 0;
+        var spawns   = 0;
+
+        Func<string, string?, CancellationToken, Task<IAgyTurnProcess>> spawn = (_, _, _) =>
+            Task.FromResult<IAgyTurnProcess>(new FakeAgyTurnProcess(
+                FakeTurn.Normal, FixedConversationId, pid: 5000 + Interlocked.Increment(ref spawns)));
+
+        await using var rt = new AntigravityHostedAgentRuntime(spawnTurn: spawn, logger: NullLogger.Instance);
+        rt.PidCallbacks = new AgyPidRecordCallbacks(
+            Record: pid => { lock (recorded) recorded.Add(pid); },
+            Clear:  () => Interlocked.Increment(ref cleared));
+
+        // The write ack resolves once the turn's process has genuinely spawned, which is strictly
+        // after the record — so two acks mean two records were attempted, with no polling for the
+        // record half at all.
+        await rt.SendUserInputAndWaitForWriteAsync("round 1").WaitAsync(HangGuard);
+        await rt.SendUserInputAndWaitForWriteAsync("round 2").WaitAsync(HangGuard);
+
+        var deadline = DateTime.UtcNow + HangGuard;
+        while (Volatile.Read(ref cleared) < 2 && DateTime.UtcNow < deadline) await Task.Delay(10);
+
+        int[] snapshot;
+        lock (recorded) snapshot = [.. recorded];
+
+        // Distinct, not merely two: a runtime that re-recorded turn 1's pid would satisfy a count.
+        await Assert.That(snapshot).IsEquivalentTo(new[] { 5001, 5002 });
+        await Assert.That(cleared).IsEqualTo(2);
+    }
+
+    /// <summary>
+    /// The fail-closed half of the contract: the record write throws by design, and a spawned child
+    /// the daemon cannot durably record must not proceed. The turn fails, the child is reaped rather
+    /// than left running untracked, and the runtime goes terminal — never swallowed into a turn that
+    /// looks healthy.
+    /// </summary>
+    [Test]
+    public async Task A_turn_whose_pid_record_is_refused_reaps_its_child_and_goes_terminal() {
+        var process = new FakeAgyTurnProcess(FakeTurn.Normal, FixedConversationId);
+
+        await using var rt = new AntigravityHostedAgentRuntime(
+            spawnTurn: (_, _, _) => Task.FromResult<IAgyTurnProcess>(process),
+            logger: NullLogger.Instance);
+
+        rt.PidCallbacks = new AgyPidRecordCallbacks(
+            Record: _ => throw new InvalidOperationException("pid record store is unavailable"),
+            Clear:  () => { });
+
+        var read = Task.Run(async () => { await foreach (var _ in rt.ReadOutputAsync()) { } });
+
+        await rt.SendUserInputAsync("hello").WaitAsync(HangGuard);
+
+        // Completes only if Terminal was entered — the turn was not quietly skipped.
+        await read.WaitAsync(HangGuard);
+
+        await Assert.That(rt.HasExited).IsTrue();
+        await Assert.That(rt.ExitCode).IsNotEqualTo(0);
+
+        // The untracked child was reaped, not abandoned.
+        await Assert.That(process.TerminateCalls).IsEqualTo(1);
+    }
+
     // ── the disposal callback's confirmed-exit gate ───────────────────────────────────────────────
 
     /// <summary>

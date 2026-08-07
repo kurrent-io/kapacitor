@@ -1,7 +1,9 @@
 // test/Capacitor.Cli.Tests.Unit/AntigravityReviewerReapingTests.cs
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Daemon.Acp;
 using Capacitor.Cli.Daemon.Services;
 using Capacitor.Cli.Tests.Unit.Services;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Time.Testing;
 using static Capacitor.Cli.Tests.Unit.Services.AntigravityRuntimeFakes;
 
@@ -110,5 +112,84 @@ public partial class AgentOrchestratorVendorTests {
 
         await Assert.That(reap.Select(r => r.Id)).DoesNotContain("agy-mid-turn");
         await Assert.That(reap).Contains(("agy-settled", "reviewer_idle_expired"));
+    }
+
+    /// <summary>
+    /// The launch path must WIRE the exec-per-turn PID-record seam, and wire it to THIS agent's
+    /// durable record. Without it the runtime only ever gets the one-shot record of turn 1's pid taken
+    /// immediately after the launch, and every later round spawns a differently-pid'd child that never
+    /// enters the record at all.
+    ///
+    /// <para>Both directions are driven through the wired bundle rather than through a second round,
+    /// because a round's own record and the launch's one-shot record name the same live pid and would
+    /// be indistinguishable. Clearing first and then recording makes each assertion unambiguous. The
+    /// runtime's own per-turn CADENCE — a record per spawn, a clear per confirmed exit — is pinned
+    /// separately by <c>AntigravityRuntimeLifecycleTests</c>.</para>
+    /// </summary>
+    [Test]
+    public async Task An_antigravity_launch_wires_the_per_turn_pid_record_seam_to_this_agents_record() {
+        var (repoPath, cleanup) = CreateGitRepo();
+
+        try {
+            var factory = new AntigravityRuntimeSpyFactory();
+
+            await using var orch = BuildOrchestrator(
+                new CaptureServerConnection(), new SpyPtyProcessFactory(),
+                new Dictionary<string, IHostedAgentLauncher>(),
+                allowedRepoPath: repoPath, extraRuntimeFactories: [factory]);
+
+            await orch.HandleLaunchAgentForTest(new LaunchAgentCommand(
+                AgentId: "agy-pid-1", Prompt: "review this", Model: "auto", Effort: null,
+                RepoPath: repoPath, Tools: null, AttachmentIds: null, Vendor: "antigravity"));
+
+            var runtime = factory.LastRuntime;
+
+            await Assert.That(runtime).IsNotNull();
+            await Assert.That(runtime!.PidCallbacks).IsNotNull();
+
+            // The launch's own one-shot record exists — the baseline both assertions move away from.
+            await Assert.That(orch.PidRecordsForTest().Any(r => r.AgentId == "agy-pid-1")).IsTrue();
+
+            runtime.PidCallbacks!.Clear();
+            await Assert.That(orch.PidRecordsForTest().Any(r => r.AgentId == "agy-pid-1")).IsFalse();
+
+            // A live, capturable pid: PersistPidRecordOrThrow's legacy arm records only a process it
+            // can identify, so a fabricated pid would make this pass for the wrong reason.
+            runtime.PidCallbacks.Record(Environment.ProcessId);
+
+            await Assert.That(orch.PidRecordsForTest()
+                .Any(r => r.AgentId == "agy-pid-1" && r.Pid == Environment.ProcessId)).IsTrue();
+        } finally {
+            cleanup();
+        }
+    }
+
+    /// <summary>Returns the REAL exec-per-turn runtime (the type the orchestrator's wiring branch
+    /// matches on) over a fake turn child that stays alive, so the launch sees a live, capturable pid
+    /// exactly as a real first turn would. Mirrors the real factory's one load-bearing ordering: the
+    /// conversation id is resolved before control returns.</summary>
+    sealed class AntigravityRuntimeSpyFactory : IHostedAgentRuntimeFactory {
+        public string Vendor             => "antigravity";
+        public bool   SupportsUnattended => true;
+
+        public AntigravityHostedAgentRuntime? LastRuntime { get; private set; }
+
+        public bool IsAvailable() => true;
+
+        public async Task<HostedRuntimeStart> StartAsync(RuntimeStartContext ctx, CancellationToken ct) {
+            var runtime = new AntigravityHostedAgentRuntime(
+                spawnTurn: (_, _, _) => Task.FromResult<IAgyTurnProcess>(new FakeAgyTurnProcess(
+                    FakeTurn.NeverEnds, AntigravityRuntimeFakes.FixedConversationId,
+                    pid: Environment.ProcessId)),
+                logger: NullLogger.Instance,
+                agentId: ctx.AgentId);
+
+            LastRuntime = runtime;
+
+            await runtime.SendUserInputAsync(ctx.Prompt ?? "").ConfigureAwait(false);
+            await runtime.WaitForConversationIdAsync(ct).ConfigureAwait(false);
+
+            return new HostedRuntimeStart(runtime, McpConfigPath: null, Transcript: runtime);
+        }
     }
 }
