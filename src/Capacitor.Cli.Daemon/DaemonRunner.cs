@@ -154,6 +154,9 @@ public static partial class DaemonRunner {
         if (Environment.GetEnvironmentVariable("KCAP_OPENCODE_PATH") is { Length: > 0 } envOpenCodePath)
             config.OpenCodePath = envOpenCodePath;
 
+        if (Environment.GetEnvironmentVariable("KCAP_OPENCODE_MODEL") is { Length: > 0 } envOpenCodeModel)
+            config.OpenCodeModel = envOpenCodeModel;
+
         if (Environment.GetEnvironmentVariable("KCAP_GEMINI_PATH") is { Length: > 0 } envGeminiPath)
             config.GeminiPath = envGeminiPath;
 
@@ -172,6 +175,9 @@ public static partial class DaemonRunner {
 
         config.KiroUnattendedReviewerEnabled =
             ParseConsentFlag(Environment.GetEnvironmentVariable("KCAP_KIRO_UNATTENDED_REVIEWER"));
+
+        config.OpenCodeUnattendedReviewerEnabled =
+            ParseConsentFlag(Environment.GetEnvironmentVariable("KCAP_OPENCODE_UNATTENDED_REVIEWER"));
 
         config.DebugFrames = ParseDebugFramesFlag(Environment.GetEnvironmentVariable("KCAP_ACP_DEBUG_FRAMES"));
 
@@ -254,6 +260,10 @@ public static partial class DaemonRunner {
             coverageStateDir, AntigravityVendor,
             config.AntigravityUnattendedReviewerEnabled, config.AntigravityPath);
 
+        SeedReviewerAffirmation(
+            coverageStateDir, AcpVendorDescriptors.OpenCode.Vendor,
+            config.OpenCodeUnattendedReviewerEnabled, config.OpenCodePath);
+
         // Recovers reviewer homes left by a SIGKILLed predecessor. Runs unconditionally: a daemon
         // whose operator has since disabled the reviewer still owns whatever its last incarnation
         // left behind, and those directories hold review context.
@@ -262,6 +272,11 @@ public static partial class DaemonRunner {
         // emit. The host's logging is not built yet at this point, so this writes to stderr like the
         // seeding block above.
         KiroReviewerHome.SweepStale(
+            coverageStateDir, config.DaemonEpoch ?? "unpinned", new ConsoleErrorLogger());
+
+        // Same contract for OpenCode's isolated config dir: unconditional, because a daemon whose
+        // operator has since disabled the reviewer still owns what its last incarnation left behind.
+        OpenCodeReviewerConfigDir.SweepStale(
             coverageStateDir, config.DaemonEpoch ?? "unpinned", new ConsoleErrorLogger());
 
         // The Antigravity reviewer disposes its own home on the normal path (the runtime's onDisposed
@@ -398,6 +413,14 @@ public static partial class DaemonRunner {
         builder.Services.AddSingleton<IHostedAgentRuntimeFactory>(sp =>
             new AcpHostedAgentRuntimeFactory(
                 AcpVendorDescriptors.Gemini,
+                sp.GetRequiredService<DaemonConfig>(),
+                sp.GetRequiredService<ILoggerFactory>(),
+                sp.GetRequiredService<ServerConnection>()
+            )
+        );
+        builder.Services.AddSingleton<IHostedAgentRuntimeFactory>(sp =>
+            new AcpHostedAgentRuntimeFactory(
+                AcpVendorDescriptors.OpenCode,
                 sp.GetRequiredService<DaemonConfig>(),
                 sp.GetRequiredService<ILoggerFactory>(),
                 sp.GetRequiredService<ServerConnection>()

@@ -375,6 +375,92 @@ internal static class AcpVendorDescriptors {
         SupportsReconnectResume: false
     );
 
+    /// <summary>SST OpenCode as an ACP hosted agent (<c>opencode acp</c>). Hosted interactively and as a
+    /// gated unattended review-flow reviewer.
+    ///
+    /// <para><b>Every claim here is measured against <c>opencode</c> 1.18.9</b>
+    /// (<c>docs/probes/2026-08-07-opencode-acp/</c>). <c>opencode acp</c> speaks ACP protocolVersion 1
+    /// over stdio and advertises <c>loadSession</c> plus <c>sessionCapabilities {close, fork, list,
+    /// resume}</c>.</para>
+    ///
+    /// <para><b><see cref="SupportsMcpServers"/> is <c>true</c> on a CALL-level probe</b>, not on the
+    /// advertisement — OpenCode advertises the same <c>mcpCapabilities {http, sse}</c> shape Kiro,
+    /// Gemini and Copilot all advertise, and those three do not agree with each other, so the
+    /// advertisement decides nothing. A purpose-built stdio server passed in
+    /// <c>session/new.mcpServers</c> was driven spawn → <c>initialize</c> →
+    /// <c>notifications/initialized</c> → <c>tools/list</c> → <c>tools/call</c>, with the tool's nonce
+    /// reaching the model and the turn ending <c>end_turn</c>. That is the Kiro result, not the
+    /// Copilot one, so no <c>--additional-mcp-config</c>-style preload is needed.</para>
+    ///
+    /// <para><b><see cref="ConfigOptionModelSelector"/>, and the READ half is a different shape from
+    /// every other vendor's.</b> OpenCode returns NO <c>models</c> object; its selectable models are
+    /// <c>session/new</c>'s <c>configOptions[id=="model"].options[]</c> (see
+    /// <see cref="Core.Acp.AcpSessionModelList"/>, which reads both shapes). The write half is
+    /// <c>session/set_config_option {configId:"model", value:"provider/model"}</c>, which answers with
+    /// the full updated option list — and, because an echoed success is exactly the silent-failure
+    /// mode that keeps <see cref="Gemini"/> on <see cref="NoOpModelSelector"/>, it was additionally
+    /// verified at EFFECT level: with <c>currentValue</c> moved to
+    /// <c>opencode/deepseek-v4-flash-free</c> the model self-identified as that id and never named the
+    /// previous one. <c>session/set_model</c> also exists here (it answers <c>{}</c>, so not
+    /// <c>-32601</c>) but is redundant — only the config-option surface has a matching read half.</para>
+    ///
+    /// <para><b><c>ResolveDefaultModel</c> reads <c>DaemonConfig.OpenCodeModel</c></b>
+    /// (<c>KCAP_OPENCODE_MODEL</c>), default NULL: a zero-configuration launch keeps OpenCode's own
+    /// default with none reported, exactly as for Kiro.</para>
+    ///
+    /// <para><b><c>Argv</c> is bare <c>["acp"]</c>, and the launch controls live in the ENVIRONMENT</b>
+    /// — see <see cref="OpenCodeLaunchEnvironment"/>. <c>opencode acp</c> does not accept the global
+    /// <c>--auto</c>/config flags, so there is no argv to put them in; that is why this descriptor's
+    /// <see cref="UnattendedTrustArgv"/> is EMPTY even though it supports unattended launches, and the
+    /// reason the usual reviewer-onboarding instinct (add a trust flag) has nothing to reach for here.
+    /// The one setting every hosted launch needs is <c>OPENCODE_PURE=1</c>, which suppresses kcap's OWN
+    /// live-ingest plugin inside the hosted child: OpenCode is the single vendor where two capture paths
+    /// can be live simultaneously, and without it a daemon-hosted session is double-ingested. A review
+    /// launch adds three more (isolated config dir, project-config suppression, and the scoped
+    /// permission table). All of it is on <see cref="OpenCodeLaunchEnvironment"/>.</para>
+    ///
+    /// <para><b><see cref="AcpUnattendedInteractionPolicy.Fail"/> rather than
+    /// <see cref="AcpUnattendedInteractionPolicy.AutoApprove"/>, and the reason is the MECHANISM.</b> A
+    /// denied tool is absent from the model's surface rather than refused when called, so on the shipped
+    /// permission table a correctly-configured reviewer raises no interaction frame at all — measured
+    /// across every arm, including one where the reviewer actively tried to shell out and reported
+    /// having no such tool. Receiving a frame therefore means the launch contract regressed (a dropped
+    /// variable, a vendor change), and the honest response is to reap the reviewer rather than approve
+    /// whatever it asked for. Note this is NOT Kiro's situation: Kiro needed
+    /// <see cref="AcpUnattendedInteractionPolicy.AllowlistedAutoApprove"/> because it was measured to
+    /// prompt intermittently for a tool in its own trust list. If OpenCode is ever observed doing that,
+    /// this is the flag to revisit — with a measurement, not a preference.</para>
+    ///
+    /// <para><b>Unattended is GATED</b> — <c>SupportsUnattended</c> being true here only makes the
+    /// vendor eligible; <see cref="OpenCodeReviewerCapability"/> decides per daemon, and refuses unless
+    /// the operator has consented AND the installed build meets this daemon's recorded minimum. The
+    /// consent event is what it is because the reviewer's read tools are not path-scoped.</para>
+    ///
+    /// <para><b><see cref="SupportsReconnectResume"/> is <c>false</c> as UNPROBED</b>, which is a
+    /// different claim from <see cref="Kiro"/>'s and <see cref="Gemini"/>'s — both of those are
+    /// measured-INELIGIBLE. OpenCode advertises <c>loadSession</c> and a <c>resume</c> session
+    /// capability, and nothing here has measured <c>session/load</c> across a SIGKILLed owner or the
+    /// response-after-replay barrier. Flipping it requires a passing run of
+    /// <c>docs/probes/2026-08-04-acp-reconnect-c0/</c>, not the advertisement.</para></summary>
+    public static readonly AcpVendorDescriptor OpenCode = new(
+        Vendor:              "opencode",
+        ResolveBinaryPath:   cfg => cfg.OpenCodePath,
+        ResolveDefaultModel: cfg => cfg.OpenCodeModel,
+        Argv:                ["acp"],
+        // Empty, and not an oversight: OpenCode's trust vector is OPENCODE_PERMISSION, an env variable.
+        // `opencode acp` accepts none of the global flags, so there is no argv form of it at all.
+        UnattendedTrustArgv: [],
+        SupportsUnattended:  true,
+        UnattendedInteractionPolicy: AcpUnattendedInteractionPolicy.Fail,
+        ModelSelector:       ConfigOptionModelSelector.Instance,
+        SupportsMcpServers:  true,
+        ReviewFlowMcpTransport: AcpReviewFlowMcpTransport.SessionNew,
+        // Borrowed review is deliberately NOT declared: nothing here has established a containment
+        // boundary for a reviewer running in the caller's live checkout. The default fails closed to an
+        // owned worktree, which is the safe direction.
+        SupportsReconnectResume: false
+    );
+
     /// <summary>
     /// A placeholder the FACTORY replaces, per launch, with an unguessable name — so an MCP allowlist can
     /// deny everything without the deny-all value being a literal the repository can match.

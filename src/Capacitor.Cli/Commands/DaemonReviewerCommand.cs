@@ -113,7 +113,8 @@ public static class DaemonReviewerCommand {
         internal static readonly AffirmableReviewer[] All = [
             new("kiro",        "kiro-cli", "KCAP_KIRO_PATH",        "KCAP_KIRO_UNATTENDED_REVIEWER"),
             new("gemini",      "gemini",   "KCAP_GEMINI_PATH",      "KCAP_GEMINI_UNATTENDED_REVIEWER"),
-            new("antigravity", "agy",      "KCAP_ANTIGRAVITY_PATH", "KCAP_ANTIGRAVITY_UNATTENDED_REVIEWER")
+            new("antigravity", "agy",      "KCAP_ANTIGRAVITY_PATH", "KCAP_ANTIGRAVITY_UNATTENDED_REVIEWER"),
+            new("opencode",    "opencode", "KCAP_OPENCODE_PATH",    "KCAP_OPENCODE_UNATTENDED_REVIEWER")
         ];
 
         internal static string VendorList => string.Join(" | ", All.Select(r => r.Vendor));

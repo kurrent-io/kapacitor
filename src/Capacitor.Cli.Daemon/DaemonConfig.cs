@@ -252,8 +252,51 @@ public class DaemonConfig {
     /// unbounded, and with ReadOutputAsync parked by design nothing else would ever complete.</summary>
     public int AntigravityReviewerTurnTimeoutSeconds { get; set; } = 600;
 
-    /// <summary>Reserved — see CopilotPath. Overridable via KCAP_OPENCODE_PATH.</summary>
+    /// <summary>Path or bare command for SST OpenCode's ACP entry point, spawned as
+    /// <c>{OpenCodePath} acp</c> by <c>AcpHostedAgentRuntimeFactory</c>. No longer reserved: it drives
+    /// interactive hosting, and availability is <c>CliResolver.Exists(OpenCodePath)</c>. Overridable
+    /// via <c>KCAP_OPENCODE_PATH</c>.</summary>
     public string OpenCodePath { get; set; } = "opencode";
+
+    /// <summary>
+    /// Optional daemon-wide default model for hosted OpenCode agents, resolved against
+    /// <c>session/new</c>'s selectable-model list at launch time by <c>AcpModelResolver.Resolve</c>
+    /// and applied via <c>session/set_config_option</c> — probe-verified at effect level
+    /// (<c>docs/probes/2026-08-07-opencode-acp/</c> §2: the model self-identified as the requested id).
+    /// Overridable via <c>KCAP_OPENCODE_MODEL</c>, mirroring <see cref="KiroModel"/>.
+    ///
+    /// <para>Ids are <c>provider/model</c> (e.g. <c>opencode/big-pickle</c>), and OpenCode publishes
+    /// its list as <c>configOptions</c> rather than a <c>models</c> object — see
+    /// <c>AcpSessionModelList</c>. A display label ("DeepSeek V4 Flash Free") also resolves, via the
+    /// resolver's name arm.</para>
+    ///
+    /// <para>Like <see cref="KiroModel"/> and unlike <see cref="CursorModel"/> the default is NULL,
+    /// deliberately: a zero-configuration launch keeps OpenCode's own configured default and reports
+    /// no model. A per-launch <c>RuntimeStartContext.Model</c> takes precedence over this
+    /// daemon-wide default.</para>
+    /// </summary>
+    public string? OpenCodeModel { get; set; }
+
+    /// <summary>
+    /// Whether THIS daemon may run OpenCode as an unattended review-flow reviewer. Off by default, and
+    /// turning it on is the operator's consent event — see <c>OpenCodeReviewerCapability</c> for exactly
+    /// what is being consented to. The reviewer gets no shell and no write tools, but its read tools are
+    /// not path-scoped, so a review can read every file this daemon user can read and return what it
+    /// read to whoever requested the review. Overridable via
+    /// <c>KCAP_OPENCODE_UNATTENDED_REVIEWER</c>.
+    /// </summary>
+    public bool OpenCodeUnattendedReviewerEnabled { get; set; }
+
+    /// <summary>
+    /// One absolute budget, in seconds, for an OpenCode reviewer launch: spawn through the first prompt
+    /// completing. On expiry the child is terminated, its isolated config dir removed, and the launch
+    /// fails with a coded error.
+    ///
+    /// <para>Not a per-stage timeout — a fresh one per stage lets a slow sequence approach a multiple of
+    /// the budget. The failure it exists for is the same one Kiro's budget covers: an unauthenticated
+    /// vendor CLI that does not error but waits on an interactive login.</para>
+    /// </summary>
+    public int OpenCodeReviewerLaunchTimeoutSeconds { get; set; } = 120;
 
     /// <summary>Path or bare command for Google Gemini CLI's ACP entry point, spawned as
     /// <c>{GeminiPath} --experimental-acp …</c> by <c>AcpHostedAgentRuntimeFactory</c>. No longer

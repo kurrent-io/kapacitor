@@ -15,8 +15,9 @@ namespace Capacitor.Cli.Daemon.Acp;
 /// <see cref="OperationCanceledException"/> when <paramref name="ct"/> is canceled, and every
 /// implementation of this method MUST let that propagate uncaught, aborting <c>StartAsync</c>
 /// entirely (no runtime is ever handed back to a caller who already canceled the launch). Only a
-/// best-effort RESOLUTION failure — no requested model, an unparsable/missing <c>session/new</c>
-/// <c>models</c> object, no match in <c>availableModels</c>, or a well-formed JSON-RPC ERROR
+/// best-effort RESOLUTION failure — no requested model, a <c>session/new</c> result publishing no
+/// selectable-model list in either shape <see cref="AcpSessionModelList"/> reads, no match within
+/// that list, or a well-formed JSON-RPC ERROR
 /// response to whatever RPC this selector sends — returns <see langword="null"/> and lets
 /// <c>StartAsync</c> continue to the first prompt with the vendor's own default model.
 /// <see cref="ConfigOptionModelSelector.TrySelectAsync"/>'s <c>catch (Exception ex) when (ex is not
@@ -57,38 +58,31 @@ internal interface IAcpModelSelector {
 }
 
 /// <summary>
-/// The resolution half both wire selectors share: parse <c>session/new</c>'s
-/// <c>models.availableModels</c> and resolve the requested string to an exact <c>modelId</c> via
-/// <see cref="AcpModelResolver"/>. Pure and synchronous — the cancellation contract above concerns
-/// only the wire write, which each selector keeps for itself; the <see cref="JsonException"/>
-/// catch here is the narrow concrete-type shape the interface remarks require (structurally unable
-/// to swallow an <see cref="OperationCanceledException"/>).
+/// The resolution half both wire selectors share: read <c>session/new</c>'s selectable-model list
+/// and resolve the requested string to an exact wire value via <see cref="AcpModelResolver"/>. Pure
+/// and synchronous — the cancellation contract above concerns only the wire write, which each
+/// selector keeps for itself.
+///
+/// <para>The list comes from <see cref="AcpSessionModelList.Extract"/>, which reads BOTH published
+/// shapes (<c>models.availableModels</c> and OpenCode's <c>configOptions</c>) and is total: a shape
+/// it cannot read contributes nothing rather than throwing, so this method structurally cannot
+/// swallow an <see cref="OperationCanceledException"/> either — there is no longer a
+/// <c>catch</c> here at all.</para>
 /// </summary>
 file static class SessionModelResolution {
-    /// <summary>Null when nothing was requested, the <c>models</c> object is missing/unparsable, or
+    /// <summary>Null when nothing was requested, no model list was published in either shape, or
     /// nothing matched (the no-match case logs the Warning both selectors share).</summary>
     public static string? ResolveOrNull(
             JsonElement sessionNewResult, string? requestedModel, ILogger logger) {
         if (string.IsNullOrWhiteSpace(requestedModel))
             return null;
 
-        AvailableModelDto[]? availableModels = null;
-
-        if (sessionNewResult.TryGetProperty("models", out var modelsElement)) {
-            try {
-                availableModels = JsonSerializer
-                    .Deserialize(modelsElement.GetRawText(), CapacitorJsonContext.Default.SessionModelsInfo)
-                    ?.AvailableModels;
-            } catch (JsonException ex) {
-                logger.LogDebug(ex, "ACP: failed to parse session/new 'models' object; skipping model selection.");
-                return null;
-            }
-        }
+        var availableModels = AcpSessionModelList.Extract(sessionNewResult);
 
         var resolvedModelId = AcpModelResolver.Resolve(requestedModel, availableModels);
         if (resolvedModelId is null) {
             logger.LogWarning(
-                "ACP: requested model '{RequestedModel}' was not found in session/new's availableModels; continuing with the vendor's default model.",
+                "ACP: requested model '{RequestedModel}' was not found in session/new's selectable-model list; continuing with the vendor's default model.",
                 requestedModel);
         }
 

@@ -24,12 +24,16 @@ static class ServiceEnvironment {
     ///
     /// <para>Capture carries an EXISTING opt-in; it cannot create one. It does freeze it, which is what
     /// <see cref="CarriedConsentFlags"/> reports.</para>
+    ///
+    /// <para><b>DERIVED from the affirmable-reviewer registry, not listed again here.</b> Every gated
+    /// reviewer has both a consent flag and a build affirmation, so these were two hand-maintained lists
+    /// of the same set with nothing making them agree — and the failure mode is silent in the worst
+    /// direction: a vendor present in one and missing here means a supervised install drops its consent
+    /// flag, and the reviewer simply cannot be enabled, with the refusal text pointing at a variable the
+    /// unit never received. Deriving removes the drift class instead of testing for it.</para>
     /// </summary>
-    internal static readonly string[] ReviewerConsentKeys = [
-        "KCAP_GEMINI_UNATTENDED_REVIEWER",
-        "KCAP_KIRO_UNATTENDED_REVIEWER",
-        "KCAP_ANTIGRAVITY_UNATTENDED_REVIEWER"
-    ];
+    internal static readonly string[] ReviewerConsentKeys =
+        [.. Commands.DaemonReviewerCommand.AffirmableReviewer.All.Select(r => r.EnableEnvVar)];
 
     /// <summary>
     /// Gemini's project/backend selection, carried on every platform because none of it is
