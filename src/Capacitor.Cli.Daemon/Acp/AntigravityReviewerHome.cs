@@ -77,6 +77,19 @@ internal static class AntigravityReviewerHome {
         if (Path.Exists(home)) Delete(home, stateDir, log ?? NullLogger.Instance);
 
         CreateOwnerOnly(home);
+
+        // Delete is best-effort by design (an undeletable home must not fail a round), so a partial
+        // failure could leave the previous launch's brain/conversations content in place, and
+        // CreateOwnerOnly would happily accept the surviving directory — it does not check
+        // emptiness. A silently inherited conversation is the worst outcome this class can produce
+        // (the reviewer would resume someone else's review with no signal), so freshness is
+        // verified here, before anything is written, rather than assumed from "Delete ran".
+        if (Directory.EnumerateFileSystemEntries(home).Any())
+            throw new InvalidOperationException(
+                $"antigravity_reviewer_home_not_empty: '{home}' still holds content from a previous "
+              + "launch that could not be removed. Refusing rather than handing a reviewer another "
+              + "review's conversation state.");
+
         WriteMcpConfig(home, injected);
 
         // The kcap plugin dir is what lets agy's OWN capture hooks fire (job 1) — its absence is
@@ -100,7 +113,24 @@ internal static class AntigravityReviewerHome {
     /// rule <c>ClaudeLauncher.BuildReviewFlowMcpConfig</c> and <c>ReviewLaunchBuilder</c> follow.</summary>
     static void WriteMcpConfig(string home, IReadOnlyList<AcpMcpServerSpec> injected) {
         var path = AntigravityPaths.McpConfigJson(home);
-        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+
+        // AntigravityPaths.McpConfigJson → GeminiPaths.Root honors THIS PROCESS's own
+        // GEMINI_CLI_HOME when set, falling back to `home` only when it is not — so on a daemon
+        // that happens to run with GEMINI_CLI_HOME set, the resolved path would escape `home`
+        // entirely, writing the reviewer's result channel outside the isolated home job 3 exists
+        // to guarantee (and potentially into the operator's own Gemini tree). Not something to fix
+        // in AntigravityPaths (that fallback is correct for its other, non-isolated callers) — this
+        // class's whole purpose is isolation, so it is verified here rather than assumed.
+        var homeFull = Path.TrimEndingDirectorySeparator(Path.GetFullPath(home));
+        var pathFull = Path.GetFullPath(path);
+
+        if (!pathFull.StartsWith(homeFull + Path.DirectorySeparatorChar, StringComparison.Ordinal))
+            throw new InvalidOperationException(
+                $"antigravity_reviewer_home_escaped_root: mcp_config.json resolved to '{pathFull}', "
+              + $"outside the isolated home '{homeFull}' (likely GEMINI_CLI_HOME set in the daemon's "
+              + "own environment). Refusing to write a reviewer's result channel outside its isolated home.");
+
+        Directory.CreateDirectory(Path.GetDirectoryName(pathFull)!);
 
         var mcpServers = new JsonObject();
 
@@ -119,7 +149,7 @@ internal static class AntigravityReviewerHome {
         }
 
         var root = new JsonObject { ["mcpServers"] = mcpServers };
-        File.WriteAllText(path, root.ToJsonString());
+        File.WriteAllText(pathFull, root.ToJsonString());
     }
 
     /// <summary>

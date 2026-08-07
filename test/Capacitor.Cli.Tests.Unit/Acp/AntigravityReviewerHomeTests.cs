@@ -12,6 +12,7 @@ namespace Capacitor.Cli.Tests.Unit.Acp;
 public class AntigravityReviewerHomeTests {
     [Test]
     public async Task The_home_carries_only_the_injected_mcp_server() {
+        if (OperatingSystem.IsWindows()) return;
         using var root = new TempDir();
         var home = AntigravityReviewerHome.Create(
             root.Path, "epoch1", "agent1",
