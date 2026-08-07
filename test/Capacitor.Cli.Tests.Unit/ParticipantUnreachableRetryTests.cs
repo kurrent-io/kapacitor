@@ -263,6 +263,54 @@ public class ParticipantUnreachableRetryTests {
         await Assert.That(server.LogEntries.Count()).IsEqualTo(1);
     }
 
+    [Test]
+    public async Task ExtraRetryableCode_requires_the_response_actually_be_409() {
+        // The server only ever raises participant_unreachable as 409. A different status carrying
+        // the same coded envelope (a misbehaving proxy, or any future non-409 reuse of the code)
+        // must NOT be treated as the retryable case — it must surface on the first attempt, exactly
+        // like an unrelated coded error would.
+        using var server = WireMockServer.Start();
+        server.Given(Request.Create().WithPath("/rounds").UsingPost())
+              .RespondWith(Response.Create().WithStatusCode(400).WithBody(ParticipantUnreachableBody));
+        using var client = new HttpClient();
+
+        var clock = Clock();
+        using var response = (await McpFlowsServer.SendWithSettlementRetryAsync(
+            client, "https://flows.example.test", (c, ct) => c.PostAsync($"{server.Url}/rounds", null, ct),
+            clock, SettlementBackoff.Seeded(11), extraRetryableCode: McpFlowsServer.ParticipantUnreachableCode)
+            as McpFlowsServer.SettlementSendResult.Response)!.Value;
+
+        // The real status is surfaced untouched, and exactly one attempt was made — no retry budget
+        // was burned on a status the server never actually uses for this code.
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.BadRequest);
+        await Assert.That(server.LogEntries.Count()).IsEqualTo(1);
+        await Assert.That(clock.Delays).IsEmpty();
+    }
+
+    [Test]
+    public async Task Non_409_participant_unreachable_surfaces_immediately_end_to_end() {
+        const string flowRunId = "flow-wrong-status";
+
+        using var server = WireMockServer.Start();
+        server.Given(Request.Create().WithPath($"/api/flows/{flowRunId}/rounds").UsingPost())
+              .RespondWith(Response.Create().WithStatusCode(400).WithBody(ParticipantUnreachableBody));
+        using var client = new HttpClient();
+
+        var clock = Clock();
+        var response = await McpFlowsServer.HandleToolCallAsync(
+            JsonNode.Parse("1")!, ToolCallRequest("submit_review_round", SubmitArguments(flowRunId)),
+            client, server.Url!, cwd: "/tmp/cwd", repoRoot: null, repoInfo: null,
+            clock: clock, backoff: SettlementBackoff.Seeded(11));
+
+        var result = JsonNode.Parse(response)!.AsObject();
+        await Assert.That(result["result"]!["isError"]!.GetValue<bool>()).IsTrue();
+        var text = result["result"]!["content"]![0]!["text"]!.GetValue<string>();
+        await Assert.That(text).Contains("participant_unreachable");
+
+        var attempts = server.LogEntries.Count(e => e.RequestMessage.Path == $"/api/flows/{flowRunId}/rounds");
+        await Assert.That(attempts).IsEqualTo(1);
+    }
+
     // === FormatSettlementDeadlineError: code-aware cause text ===
 
     [Test]
