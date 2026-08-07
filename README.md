@@ -874,7 +874,15 @@ supported setup:
 gcloud auth application-default login
 export GOOGLE_CLOUD_PROJECT=<your-project>
 export AGY_ADC_AUTH=1                           # selects ADC; without it agy still demands an OAuth login
+export GOOGLE_APPLICATION_CREDENTIALS="$HOME/.config/gcloud/application_default_credentials.json"
 ```
+
+All three are required. The credential path looks redundant — ADC has a well-known default location, and
+that is exactly where `gcloud auth application-default login` just wrote it — but a reviewer launch
+redirects `HOME` to a per-launch state directory, so the default location is not visible to the child.
+Without the explicit path `agy` reports `authentication required. Run 'agy' to log in.` even with the
+other two set correctly. The daemon does not fill this in for you: it never reads a credential location
+of its own accord, only forwards what you exported.
 
 **Minimum version.** Containment here depends on the installed build honouring `HOME` and reading no other
 global config source, so the daemon records a minimum `agy` version at the first startup that finds `agy`

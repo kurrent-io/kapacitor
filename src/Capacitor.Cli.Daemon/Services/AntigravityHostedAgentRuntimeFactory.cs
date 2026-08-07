@@ -403,6 +403,21 @@ internal sealed partial class AntigravityHostedAgentRuntimeFactory(
     /// <b>non-retryable and names the ADC remedy</b> — a generic launch failure would send an operator
     /// looking at the daemon, the flow or the network, when the actual fix is three environment
     /// variables.
+    ///
+    /// <para><b>GOOGLE_APPLICATION_CREDENTIALS is one of the three, and naming it is load-bearing.</b>
+    /// ADC's default location is <c>$HOME/.config/gcloud/application_default_credentials.json</c>, and
+    /// this launch redirects <c>HOME</c> to a per-launch state directory — so the credential
+    /// <c>gcloud auth application-default login</c> just wrote is invisible to the child, and neither
+    /// <c>AGY_ADC_AUTH</c> nor <c>GOOGLE_CLOUD_PROJECT</c> carries a path that would find it. An earlier
+    /// revision of this message named only those two; measured, an operator following it exactly still
+    /// gets <c>authentication required. Run 'agy' to log in.</c> The remedy text has to be sufficient on
+    /// its own — a remedy that leaves the operator where they started reads as a broken feature.</para>
+    ///
+    /// <para>The daemon deliberately does NOT synthesize the path from its own <c>HOME</c>. Per the
+    /// borrowed-review auth design it never goes <i>looking</i> for a credential — it forwards what the
+    /// operator exported and nothing else — and reading a well-known credential location is exactly
+    /// that. <c>ServiceEnvironment</c> already carries this key into a supervised unit off-Windows, so
+    /// the export survives a service install without the daemon ever reading the file.</para>
     /// </summary>
     static InvalidOperationException DescribeLaunchFailure(
             Exception cause, IAgyTurnProcess? firstTurn, CancellationToken callerToken, CancellationToken launchToken) {
@@ -410,9 +425,13 @@ internal sealed partial class AntigravityHostedAgentRuntimeFactory(
             return new InvalidOperationException(
                 "antigravity_reviewer_auth_unavailable: agy could not authenticate, and a daemon-hosted "
               + "agy has no way to complete an interactive login (its stdin is closed). Give the "
-              + "daemon durable credentials: `gcloud auth application-default login`, then "
-              + "GOOGLE_CLOUD_PROJECT=<project> and AGY_ADC_AUTH=1 in the daemon's environment. A "
-              + "supervised daemon installed before this shipped must be reinstalled to capture them.",
+              + "daemon durable credentials: `gcloud auth application-default login`, then set ALL THREE "
+              + "of GOOGLE_CLOUD_PROJECT=<project>, AGY_ADC_AUTH=1 and "
+              + "GOOGLE_APPLICATION_CREDENTIALS=<absolute path to "
+              + "application_default_credentials.json> in the daemon's environment. The path is required "
+              + "even though ADC has a default location: a reviewer launch redirects HOME, so the "
+              + "default location is not visible to it. A supervised daemon installed before these were "
+              + "exported must be reinstalled to capture them.",
                 cause);
 
         if (launchToken.IsCancellationRequested && !callerToken.IsCancellationRequested)

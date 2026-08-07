@@ -1110,7 +1110,19 @@ public class AntigravityReviewerLaunchTests {
             factory.StartAsync(Ctx(), CancellationToken.None).WaitAsync(HangGuard));
 
         await Assert.That(ex!.Message).StartsWith("antigravity_reviewer_auth_unavailable");
+
+        // ALL THREE, and the third is the one that regressed: an earlier revision named only the
+        // switch and the project, and an operator following it exactly still got
+        // `authentication required` — because ADC's default location is under the HOME this launch
+        // redirects, and neither of those two carries a path. A remedy that leaves the operator
+        // where they started is worse than no remedy, so the message is pinned, not just its code.
         await Assert.That(ex.Message).Contains("AGY_ADC_AUTH");
+        await Assert.That(ex.Message).Contains("GOOGLE_CLOUD_PROJECT");
+        await Assert.That(ex.Message).Contains("GOOGLE_APPLICATION_CREDENTIALS");
+
+        // And it must say WHY the path is needed despite ADC having a default — without that an
+        // operator reasonably deletes it as redundant.
+        await Assert.That(ex.Message).Contains("HOME");
     }
 
     /// <summary>
