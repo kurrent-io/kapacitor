@@ -83,12 +83,27 @@ public class OpenCodeSessionStartMemoryTests {
         await Assert.That(OpenCodeHookCommand.MemoryContractOf(args)).IsEqualTo(expected);
     }
 
-    /// <summary>The generated plugin must actually DECLARE the contract, or a new binary paired with
-    /// it fetches nothing and the feature is silently inert.</summary>
+    /// <summary>
+    /// The generated plugin must DECLARE the contract, or a new binary paired with it fetches nothing
+    /// and the feature is silently inert.
+    ///
+    /// <para>The lifecycle arguments are asserted alongside it because the flag was ADDED to an existing
+    /// array: dropping `--session` or `--file` while adding it would break CAPTURE — the watcher spawn
+    /// and the lifecycle POST — which no memory test would notice, and which is a far worse regression
+    /// than losing the index. (Verified live too: with no contract flag the hook writes zero bytes and
+    /// still spawns the watcher.)</para>
+    /// </summary>
     [Test]
-    public async Task the_plugin_declares_the_memory_contract() {
-        await Assert.That(OpenCodeExtensionInstaller.ExtensionContent)
-            .Contains("\"--memory-contract\", \"1\"");
+    public async Task the_plugin_declares_the_memory_contract_without_dropping_the_lifecycle_args() {
+        var content = OpenCodeExtensionInstaller.ExtensionContent;
+
+        await Assert.That(content).Contains("\"--memory-contract\", \"1\"");
+
+        // The pre-existing vector capture depends on.
+        await Assert.That(content).Contains("\"hook\", \"--opencode\", \"--event\", \"session-start\"");
+        await Assert.That(content).Contains("\"--session\", sid");
+        await Assert.That(content).Contains("\"--file\", file(sid)");
+        await Assert.That(content).Contains("args.push(\"--cwd\", String(cwd))");
     }
 
     /// <summary>
