@@ -241,6 +241,56 @@ public class WorktreeManagerTests {
         }
     }
 
+    /// <summary>
+    /// A superproject with a submodule must snapshot. The snapshot lane refused any index carrying a
+    /// gitlink, which made borrowed review impossible on every repo that uses one — kcap-server pins
+    /// its CLI that way, so our own primary repo could not be reviewed by any snapshot vendor.
+    ///
+    /// <para>The submodule arrives as PLAIN CONTENT: the reviewer sees the files in the developer's
+    /// checkout, which is what "borrowed" means, and gains no git identity for them. Its .git must not
+    /// be copied — it is a gitlink file pointing into the superproject's .git/modules, so carrying it
+    /// would leave a dangling reference into a directory the snapshot deliberately does not have.</para>
+    /// </summary>
+    [Test]
+    public async Task BorrowedSnapshot_CarriesSubmoduleFilesAsPlainContentWithoutItsGit() {
+        var (_, sub)   = MakeUpstreamWithSideRef("refs/pull/91/head", out _);
+        var (_, super) = MakeUpstreamWithSideRef("refs/pull/92/head", out _);
+        var root = Path.Combine(Path.GetTempPath(), "kcap-borrowed-sub-" + Guid.NewGuid().ToString("N")[..8]);
+        try {
+            File.WriteAllText(Path.Combine(sub, "lib.txt"), "sub-tracked");
+            Git(sub, "add", "lib.txt");
+            Git(sub, "commit", "-m", "sub content");
+
+            Git(super, "-c", "protocol.file.allow=always", "submodule", "add", sub, "vendored");
+            Git(super, "commit", "-m", "add submodule");
+
+            // Dirty + untracked inside the submodule: the whole point of borrowing is that the
+            // reviewer sees the developer's actual working tree, not the pinned commit.
+            File.WriteAllText(Path.Combine(super, "vendored", "lib.txt"), "sub-dirty");
+            File.WriteAllText(Path.Combine(super, "vendored", "scratch.txt"), "sub-untracked");
+
+            var manager = new WorktreeManager(
+                new DaemonConfig { WorktreeRoot = root }, NullLogger<WorktreeManager>.Instance);
+            var snapshot = await manager.CreateBorrowedSnapshotAsync(super, "review", CancellationToken.None);
+
+            try {
+                await Assert.That(File.ReadAllText(Path.Combine(snapshot.Path, "vendored", "lib.txt")))
+                    .IsEqualTo("sub-dirty");
+                await Assert.That(File.ReadAllText(Path.Combine(snapshot.Path, "vendored", "scratch.txt")))
+                    .IsEqualTo("sub-untracked");
+                // No git identity for the submodule inside the snapshot, in either shape.
+                await Assert.That(File.Exists(Path.Combine(snapshot.Path, "vendored", ".git"))).IsFalse();
+                await Assert.That(Directory.Exists(Path.Combine(snapshot.Path, "vendored", ".git"))).IsFalse();
+                // The superproject's own snapshot .git is still the independent one.
+                await Assert.That(Directory.Exists(Path.Combine(snapshot.Path, ".git"))).IsTrue();
+            } finally {
+                await WorktreeManager.RemoveAsync(snapshot);
+            }
+        } finally {
+            try { Directory.Delete(root, true); } catch { /* best-effort */ }
+        }
+    }
+
     [Test]
     public async Task BorrowedSnapshot_IsIndependent_CopiesDirtyContext_AndRefreshesPristinely() {
         var (upstream, clone) = MakeUpstreamWithSideRef("refs/pull/88/head", out _);
