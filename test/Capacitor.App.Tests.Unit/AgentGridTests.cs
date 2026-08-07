@@ -417,6 +417,46 @@ public class AgentGridTests {
         await Assert.That(row.IsDisposed).IsTrue();
     }
 
+    /// Regression coverage for the frozen-Uptime bug: rows are constructed inside DynamicData's
+    /// Transform, which runs on whatever thread mutates the SourceCache — in production
+    /// DaemonClientService's socket pump thread, never the UI thread. Subscribing the shared ticker
+    /// from there used to bind its DispatcherTimer to a per-thread dispatcher nothing pumps, so the
+    /// Interval produced no value at all and Uptime stayed at its seed forever. This drives the VM's
+    /// REAL ticker (real 1s Interval on the real AvaloniaScheduler) from a background thread — the
+    /// row-level uptime tests inject a Subject and are blind to the whole hazard.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Ticker_subscribed_off_the_ui_thread_still_ticks_on_the_dispatcher() {
+        var (ticks, everyTickOnUiThread) = await AvaloniaSession.DispatchAsync(async () => {
+            var service = new FakeDaemonClientService();
+            var (actions, notifier) = NewActions(service);
+            var vm = new MainWindowViewModel(service, actions, notifier, CancellationToken.None);
+
+            var count = 0;
+            var onUiThread = true;
+            IDisposable? subscription = null;
+            await Task.Run(() => subscription = vm.Ticker.Subscribe(_ => {
+                onUiThread &= Dispatcher.UIThread.CheckAccess();
+                Interlocked.Increment(ref count);
+            }));
+
+            // Baseline excludes anything the ticker delivers SYNCHRONOUSLY on subscribe (a
+            // StartWith-style seed), so the wait below can only be satisfied by a genuine periodic
+            // tick — the exact thing the broken version never produced.
+            var seedOnSubscribe = Volatile.Read(ref count);
+
+            // DispatchAsync's async overload pumps a DispatcherFrame around this body, which is
+            // what lets the dispatcher's own timers run while we wait.
+            await WaitUntilAsync(() => Volatile.Read(ref count) > seedOnSubscribe, what: "a periodic ticker tick");
+            subscription!.Dispose();
+
+            return (Volatile.Read(ref count) - seedOnSubscribe, onUiThread);
+        });
+
+        await Assert.That(ticks).IsGreaterThan(0);
+        await Assert.That(everyTickOnUiThread).IsTrue();
+    }
+
     /// Regression coverage for a P1 bug found in review: SortAndBind(out _agents, ...) replaced
     /// the Agents COLLECTION INSTANCE on every WhenActivated run, but Agents was a plain get-only
     /// property with no change notification — after a hide-to-tray/reopen cycle (deactivate then
