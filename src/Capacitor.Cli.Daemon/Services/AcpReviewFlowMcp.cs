@@ -24,13 +24,9 @@ internal static class AcpReviewFlowMcp {
         var channelName = ctx.LaunchIdentity?.ResultChannelWireName
                        ?? KcapMcpRegistry.ReservedResultChannelId;
 
-        // A borrowed launch reports through a daemon-minted loopback capability, NOT through
-        // KCAP_URL. The two are mutually exclusive on purpose. KCAP_URL is what sends the channel to
-        // HttpClientExtensions.CreateAuthenticatedClientAsync, which loads the token store out of
-        // HOME — and a borrowed launch's HOME is the per-launch state dir, so that load cannot
-        // succeed. Passing both would leave the broken path reachable as a silent fallback; the
-        // observable was a generic "internal error handling the request" with the real reason on
-        // stderr, after the reviewer had already done all its work.
+        // A borrowed launch delivers through a daemon capability, never KCAP_URL — that variable
+        // routes the channel at the token store, which its redirected HOME cannot reach. Mutually
+        // exclusive on purpose: passing both leaves the broken path reachable as a silent fallback.
         if (ctx.IsBorrowedSnapshot && string.IsNullOrWhiteSpace(ctx.FlowResultCapabilityUrl))
             throw new InvalidOperationException(
                 "Borrowed-snapshot review cannot inject kcap-flow-result (missing result capability URL).");

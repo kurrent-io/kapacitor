@@ -1244,6 +1244,64 @@ public class LocalPermissionBridgeTests {
         }
     }
 
+    /// <summary>
+    /// The submit body is attacker-controlled: the POSTing process is a sandboxed vendor child. An
+    /// unbounded ReadToEndAsync would let it exhaust the daemon's memory, so the bridge caps the read
+    /// itself rather than trusting Content-Length — which a chunked or lying client need not honour.
+    /// The forwarder must never run for a rejected body.
+    /// </summary>
+    [Test]
+    public async Task Oversized_submit_body_is_rejected_without_reaching_the_forwarder() {
+        var (bridge, _) = CreateBridge();
+        await bridge.StartAsync(CancellationToken.None);
+
+        try {
+            var forwarded = 0;
+            var reviewerUrl = bridge.RegisterReviewerToken([],
+                submitForwarder: (_, _, _) => {
+                    forwarded++;
+                    return Task.FromResult((200, "{}"));
+                });
+
+            using var client = CreateClient();
+            var oversized = new string('x', LocalPermissionBridge.MaxSubmitBodyBytes + 1024);
+            var response = await client.PostAsync($"{reviewerUrl}/flow-result",
+                new StringContent(oversized, Encoding.UTF8, "application/json"));
+
+            await Assert.That((int)response.StatusCode).IsEqualTo(413);
+            await Assert.That(forwarded).IsEqualTo(0);
+        } finally {
+            await bridge.StopAsync(CancellationToken.None);
+        }
+    }
+
+    /// <summary>A body just under the cap still goes through, so the guard cannot pass by rejecting
+    /// everything — the failure mode a bare size check invites.</summary>
+    [Test]
+    public async Task Submit_body_just_under_the_cap_still_reaches_the_forwarder() {
+        var (bridge, _) = CreateBridge();
+        await bridge.StartAsync(CancellationToken.None);
+
+        try {
+            string? forwarded = null;
+            var reviewerUrl = bridge.RegisterReviewerToken([],
+                submitForwarder: (_, body, _) => {
+                    forwarded = body;
+                    return Task.FromResult((200, "{}"));
+                });
+
+            using var client = CreateClient();
+            var payload = new string('y', LocalPermissionBridge.MaxSubmitBodyBytes - 1024);
+            var response = await client.PostAsync($"{reviewerUrl}/flow-result",
+                new StringContent(payload, Encoding.UTF8, "application/json"));
+
+            await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.OK);
+            await Assert.That(forwarded).IsEqualTo(payload);
+        } finally {
+            await bridge.StopAsync(CancellationToken.None);
+        }
+    }
+
     /// <summary>A grant minted without a forwarder (every non-borrowed reviewer) must not expose a
     /// submit path at all — not a 500, not an empty 200. Pins that the capability is scoped to the
     /// launches that actually need it rather than opening on every reviewer token.</summary>

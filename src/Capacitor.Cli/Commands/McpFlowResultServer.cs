@@ -21,17 +21,13 @@ namespace Capacitor.Cli.Commands;
 static class McpFlowResultServer {
     internal const string AgentIdEnvVar = "KCAP_FLOW_AGENT_ID";
 
-    /// <summary>The daemon-minted loopback capability a BORROWED reviewer delivers through. That
-    /// launch's sandbox redirects HOME to a per-launch state dir, so this process has no token store
-    /// and cannot authenticate for itself; the daemon runs unsandboxed, holds the real credential,
-    /// and forwards. Present only for a borrowed snapshot — every other launch keeps KCAP_URL and the
-    /// authenticated-client path, and the two are mutually exclusive by construction.</summary>
+    /// <summary>Daemon-minted loopback capability a BORROWED reviewer delivers through: its sandbox
+    /// redirects HOME, so this process has no token store to authenticate with. Mutually exclusive
+    /// with KCAP_URL.</summary>
     internal const string CapabilityUrlEnvVar = "KCAP_FLOW_CAPABILITY_URL";
 
-    /// <summary>Leaf paths appended to the capability BASE. The base carries the whole grant, and
-    /// both tools ride it, so the daemon publishes one value and this server appends — deriving a
-    /// sibling endpoint by rewriting the tail of a leaf URL would be fragile string surgery on a
-    /// security boundary.</summary>
+    /// <summary>Leaves appended to the capability BASE. Both tools ride one grant, so the daemon
+    /// publishes the base rather than a leaf whose sibling would need string surgery to derive.</summary>
     const string CapabilitySubmitLeaf  = "/flow-result";
     const string CapabilityMessageLeaf = "/flow-message";
 
@@ -193,10 +189,8 @@ static class McpFlowResultServer {
             string               agentId,
             JsonObject?          arguments,
             Func<TimeSpan, Task> delay,
-            // Absolute delivery URL for a borrowed reviewer (see CapabilityUrlEnvVar). When set it
-            // REPLACES the apiRoot-composed path entirely: the capability is a daemon loopback
-            // endpoint, not a kcap API root, so composing under it would produce a 404 no caller
-            // could diagnose.
+            // Absolute delivery URL for a borrowed reviewer; REPLACES the apiRoot-composed path,
+            // since the capability is a daemon loopback endpoint and not a kcap API root.
             string?              submitUrlOverride = null
         ) {
         var roundToken = arguments?["round_token"]?.GetValue<string>();
