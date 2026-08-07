@@ -456,16 +456,69 @@ public partial class AgentOrchestratorVendorTests {
         await Assert.That(ids).DoesNotContain("priv-1");
     }
 
+    /// <summary>
+    /// A runtime that emits no terminal output has nothing for a terminal to attach TO — its stdout
+    /// is protocol traffic (agy's NDJSON, ACP's JSON-RPC), never bytes to paint. Attaching anyway
+    /// gave the user a blank screen that never repaints and only admits the problem if they type
+    /// (the raw-input refusal below), which reads exactly like the daemon hanging. The refusal has to
+    /// be named, immediate, and identify the vendor, so it points at the dashboard rather than at
+    /// `kcap daemon logs`.
+    ///
+    /// <para>Enforced on the DAEMON side, not in the CLI: `kcap agent attach` sends a full agent id
+    /// verbatim without ever fetching the agent table, and that table's row format is column-count
+    /// validated, so the client genuinely cannot know the vendor without a wire change. The daemon
+    /// holds the runtime and can simply ask it.</para>
+    /// </summary>
     [Test]
-    public async Task Attach_to_an_ACP_runtime_gets_an_error_frame_and_detaches_instead_of_crashing() {
+    [Arguments("antigravity")]
+    [Arguments("cursor")]
+    public async Task Attach_to_a_runtime_with_no_terminal_is_refused_by_name(string vendor) {
         var server = new CaptureServerConnection();
         await using var orch = BuildOrchestrator(server, new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>());
 
-        // A cursor/ACP-backed agent: SendRawInputAsync throws NotSupportedException, exactly like
-        // the real AcpHostedAgentRuntime (local attach is a PTY-only surface).
-        var runtime = new NoRawInputRuntime("cursor");
+        var runtime = new NoRawInputRuntime(vendor);
         var agent = new AgentInstance(
-            "acp-1", null, "", null, "/r", "cursor",
+            "hosted-1", null, "", null, "/r", vendor,
+            runtime, new WorktreeInfo("/r", "", "/r", IsStandalone: true), new CancellationTokenSource()
+        );
+        orch.RegisterAgentForTest(agent);
+
+        // A client that sends nothing and never closes: if the handler attached instead of refusing,
+        // it would sit in its read loop until the token fires rather than returning promptly — which
+        // is the hang this refusal exists to prevent, and is what the bounded wait below detects.
+        using var client = new DuplexTestStream(new NeverEndingStream(), new MemoryStream());
+        using var cts    = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+
+        await orch.HandleLocalAttachAsync("hosted-1", client, cts.Token).WaitAsync(TimeSpan.FromSeconds(5));
+
+        client.WrittenStream.Position = 0;
+        var frames = new List<LocalFrame>();
+        while (await FrameCodec.ReadAsync(client.WrittenStream, default) is { } f) frames.Add(f);
+
+        // Refused BEFORE attaching — never a blank Attached screen the user has to guess about.
+        await Assert.That(frames.Any(f => f.Type is FrameType.Attached or FrameType.AttachedReadOnly)).IsFalse();
+
+        var error = frames.SingleOrDefault(f => f.Type == FrameType.Error);
+        await Assert.That(error).IsNotNull();
+        await Assert.That(error!.Text).Contains(vendor);
+        await Assert.That(error.Text).Contains("no terminal to attach to");
+        await Assert.That(error.Text).Contains("dashboard");
+
+        // The agent itself is untouched — a refused attach must not stop or dispose the runtime.
+        await Assert.That(runtime.Disposed).IsFalse();
+    }
+
+    [Test]
+    public async Task Attach_to_a_terminal_runtime_that_rejects_raw_input_gets_an_error_frame_instead_of_crashing() {
+        var server = new CaptureServerConnection();
+        await using var orch = BuildOrchestrator(server, new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>());
+
+        // Claims a terminal (so the refusal above does not apply) but throws NotSupportedException on
+        // raw input — the defence-in-depth path, still reachable for any runtime whose two answers
+        // disagree.
+        var runtime = new NoRawInputRuntime("claude", emitsTerminalOutput: true);
+        var agent = new AgentInstance(
+            "pty-1", null, "", null, "/r", "claude",
             runtime, new WorktreeInfo("/r", "", "/r", IsStandalone: true), new CancellationTokenSource()
         );
         orch.RegisterAgentForTest(agent);
@@ -480,7 +533,7 @@ public partial class AgentOrchestratorVendorTests {
         // Must complete (not throw) within a bounded time — the bug this guards against was an
         // unhandled NotSupportedException escaping the read loop and crashing the attach handler.
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-        await orch.HandleLocalAttachAsync("acp-1", client, cts.Token);
+        await orch.HandleLocalAttachAsync("pty-1", client, cts.Token);
 
         // Replay the frames the client received off the write side of the duplex stream.
         client.WrittenStream.Position = 0;
@@ -497,16 +550,40 @@ public partial class AgentOrchestratorVendorTests {
         await Assert.That(runtime.Disposed).IsFalse();
     }
 
+    /// <summary>A read side that never yields a byte and never EOFs — an attached client that is
+    /// simply sitting there. Any handler that attaches instead of refusing stays parked in its read
+    /// loop on this, which is what turns "refused promptly" into an assertable difference rather than
+    /// a frame-content-only one.</summary>
+    sealed class NeverEndingStream : Stream {
+        public override bool CanRead  => true;
+        public override bool CanWrite => false;
+        public override bool CanSeek  => false;
+
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken ct = default) {
+            await Task.Delay(Timeout.Infinite, ct);
+            return 0;
+        }
+
+        public override int  Read(byte[] b, int o, int c) { Task.Delay(Timeout.Infinite).Wait(); return 0; }
+        public override void Write(byte[] b, int o, int c) => throw new NotSupportedException();
+        public override void Flush()                       { }
+        public override long Length                        => throw new NotSupportedException();
+        public override long Position { get => 0; set { } }
+        public override long Seek(long o, SeekOrigin s)    => throw new NotSupportedException();
+        public override void SetLength(long v)             => throw new NotSupportedException();
+    }
+
     /// <summary>Minimal <see cref="IHostedAgentRuntime"/> double mirroring AcpHostedAgentRuntime's
-    /// contract: no raw-input surface (throws NotSupportedException), never emits terminal output.</summary>
-    sealed class NoRawInputRuntime(string vendor) : IHostedAgentRuntime {
+    /// contract: no raw-input surface (throws NotSupportedException), and — unless a test says
+    /// otherwise — no terminal output either.</summary>
+    sealed class NoRawInputRuntime(string vendor, bool emitsTerminalOutput = false) : IHostedAgentRuntime {
         public bool Disposed { get; private set; }
 
         public string Vendor              => vendor;
         public int    Pid                 => 4242;
         public bool   HasExited           => false;
         public int?   ExitCode            => null;
-        public bool   EmitsTerminalOutput => false;
+        public bool   EmitsTerminalOutput => emitsTerminalOutput;
 
 #pragma warning disable CS1998
         public async IAsyncEnumerable<byte[]> ReadOutputAsync([EnumeratorCancellation] CancellationToken ct = default) {
@@ -523,6 +600,66 @@ public partial class AgentOrchestratorVendorTests {
         public Task TerminateAsync(TimeSpan?    timeout = null) => Task.CompletedTask;
 
         public ValueTask DisposeAsync() { Disposed = true; return default; }
+    }
+
+    /// <summary>
+    /// Reachability, not just handler behaviour: the refusal above is only worth anything if an
+    /// actual <c>kcap agent attach</c> reaches it. This drives the real Unix socket and the real
+    /// <see cref="LocalControlServer"/> frame routing with the same <see cref="FrameType.Attach"/>
+    /// frame the CLI sends, and asserts the client gets ONE Error frame and the connection closes —
+    /// which is exactly the shape <c>LocalAgentClient</c>'s Error branch prints and exits 1 on
+    /// (shared with every other daemon refusal, e.g. the review-agent stop protection).
+    /// </summary>
+    [Test]
+    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
+    public async Task Attach_over_the_real_socket_refuses_a_hosted_agent_with_no_terminal() {
+        if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
+
+        var sockDir = Directory.CreateTempSubdirectory("kcap-sock-");
+        DaemonLockPaths.OverrideDirectoryForTesting(sockDir.FullName);
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+
+        LocalControlServer? listener = null;
+        AgentOrchestrator?  orch     = null;
+
+        try {
+            var server = new CaptureServerConnection();
+            orch = BuildOrchestrator(server, new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>());
+            orch.RegisterAgentForTest(new AgentInstance(
+                "agy-xyz", null, "", null, "/tmp/repo", "antigravity",
+                new NoRawInputRuntime("antigravity"), new WorktreeInfo("/tmp/repo", "", "/tmp/repo"), new CancellationTokenSource()
+            ) {
+                Work = WorkLocation.OwnedWorktree, Status = "Running"
+            });
+
+            var config = new DaemonConfig { Name = "test", ServerUrl = "http://127.0.0.1:1" };
+            listener = new LocalControlServer(config, orch, TestCoordinator(), TestConsentIpc(), TestStatusIpc(config, orch, server), NullLogger<LocalControlServer>.Instance);
+            await listener.StartAsync(cts.Token);
+
+            var sockPath = LocalSocketPaths.Socket("test");
+            var deadline = DateTime.UtcNow.AddSeconds(5);
+            while (!File.Exists(sockPath) && DateTime.UtcNow < deadline) await Task.Delay(20, cts.Token);
+            await Assert.That(File.Exists(sockPath)).IsTrue();
+
+            using var sock = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
+            await sock.ConnectAsync(new UnixDomainSocketEndPoint(sockPath), cts.Token);
+            await using var stream = new NetworkStream(sock, ownsSocket: false);
+
+            await FrameCodec.WriteAsync(stream, new LocalFrame(FrameType.Attach) { Text = "agy-xyz" }, cts.Token);
+
+            // Bounded: an unrefused attach would hold this connection open with no reply at all,
+            // which is the hang the refusal replaces.
+            var resp = await FrameCodec.ReadAsync(stream, cts.Token).WaitAsync(TimeSpan.FromSeconds(5), cts.Token);
+
+            await Assert.That(resp!.Type).IsEqualTo(FrameType.Error);
+            await Assert.That(resp.Text).Contains("antigravity");
+            await Assert.That(resp.Text).Contains("no terminal to attach to");
+        } finally {
+            if (orch is not null) await orch.DisposeAsync();
+            if (listener is not null) { await listener.StopAsync(CancellationToken.None); listener.Dispose(); }
+            DaemonLockPaths.OverrideDirectoryForTesting(null);
+            try { Directory.Delete(sockDir.FullName, true); } catch { /* best-effort */ }
+        }
     }
 
     [Test]

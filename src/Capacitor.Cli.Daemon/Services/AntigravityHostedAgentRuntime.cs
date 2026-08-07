@@ -314,7 +314,7 @@ internal sealed class AntigravityHostedAgentRuntime : IHostedAgentRuntime, IAcpT
     readonly Channel<AcpEventEnvelope> _transcript;
     readonly Channel<PendingTurn>      _pendingTurns;
     readonly int                       _pendingTurnsCapacity;
-    int                                _droppedPendingTurns;
+    int                                _rejectedPendingTurns;
 
     Task _turnWorkerTask = Task.CompletedTask;
 
@@ -354,9 +354,16 @@ internal sealed class AntigravityHostedAgentRuntime : IHostedAgentRuntime, IAcpT
         // NOT SingleReader: EnterTerminal's drain (rule below) and the worker's own dequeue loop can
         // both call TryRead around a Terminate race, so this channel must tolerate two readers even
         // though exactly one of them ever "wins" any given item.
+        //
+        // FullMode.Wait, paired with TryWrite (never WriteAsync), is what makes an over-cap send
+        // REJECTABLE: under DropWrite — which this used to use — TryWrite returns TRUE and discards
+        // the item, so EnqueueTurn's full-queue branch was unreachable and a user's message vanished
+        // with not even a log line. Wait mode is only "waiting" for a caller that awaits WriteAsync;
+        // TryWrite under it returns false immediately, which is the non-blocking rejection this
+        // runtime wants (see EnqueueTurn on why blocking here would stall the whole command lane).
         _pendingTurns = Channel.CreateBounded<PendingTurn>(
             new BoundedChannelOptions(_pendingTurnsCapacity)
-                { SingleReader = false, SingleWriter = false, FullMode = BoundedChannelFullMode.DropWrite });
+                { SingleReader = false, SingleWriter = false, FullMode = BoundedChannelFullMode.Wait });
 
         _turnWorkerTask = RunTurnWorkerAsync();
     }
@@ -431,36 +438,66 @@ internal sealed class AntigravityHostedAgentRuntime : IHostedAgentRuntime, IAcpT
 
     /// <summary>
     /// Enqueues the turn and returns immediately — never blocks on, or observes, the turn's
-    /// completion. A dropped enqueue never throws when no acknowledgement was requested: the channel's
-    /// own atomicity (<see cref="ChannelWriter{T}.TryWrite"/> against a completed or full bounded
-    /// channel) is what makes "terminal" and "full" collapse into one non-racy check, but the two are
-    /// still logged (and faulted, for an acknowledging caller) distinctly below — a full queue is an
-    /// operational signal worth a warning and a running count, matching
-    /// <c>AcpHostedAgentRuntime.EnqueueTurn</c>'s same distinction for its own pending-turns queue.
+    /// completion. The channel's own atomicity (<see cref="ChannelWriter{T}.TryWrite"/> against a
+    /// completed or full bounded channel) is what makes "terminal" and "full" collapse into one
+    /// non-racy check, but the two are answered very differently below.
+    ///
+    /// <para><b>A full queue is REJECTED, for every caller, not just an acknowledging one.</b> The
+    /// two alternatives are each wrong in their own way. Blocking until space frees would stall the
+    /// daemon's serial command lane behind a reviewer whose turn is stuck — and a stuck turn is the
+    /// only way this queue ever fills — so one wedged agent would stop launches and stops for every
+    /// other one. Dropping silently (what this used to do for a caller that asked for no write ack,
+    /// i.e. every server-driven <c>SendInput</c>) loses a message the user has already sent, with
+    /// nothing anywhere to say so. So the send task faults, AND a <c>system_note</c> goes onto the
+    /// transcript: the fault reaches the daemon log through the orchestrator's handler, and the note
+    /// is the only surface the person who typed the message actually sees. One note per rejected
+    /// message — each is a separately lost message, and summarising them is the silent drop again in
+    /// miniature.</para>
+    ///
+    /// <para>A TERMINAL runtime is deliberately NOT symmetric: it still only logs (and faults an
+    /// acknowledging caller, as before). The transcript channel is completed on entry to
+    /// <see cref="RuntimePhase.Terminal"/>, so no note could be delivered anyway, and the agent's
+    /// session ending is itself the user-visible signal — a thrown error for input that raced a
+    /// normal end-of-session would be noise, not news.</para>
     /// </summary>
     Task EnqueueTurn(string text, bool acknowledgeWrite) {
         var written = acknowledgeWrite
             ? new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously)
             : null;
 
-        if (!_pendingTurns.Writer.TryWrite(new PendingTurn(text, written))) {
-            if (Phase == RuntimePhase.Terminal) {
-                _logger.LogDebug("Antigravity: dropped a prompt turn — the runtime is terminal.");
-                written?.TrySetException(new InvalidOperationException(
-                    "Antigravity runtime is terminal; this input was dropped."));
-            } else {
-                // The only other reason TryWrite can fail on this bounded, not-yet-completed channel.
-                var dropped = Interlocked.Increment(ref _droppedPendingTurns);
-                _logger.LogWarning(
-                    "Antigravity: pending-turns queue full (capacity={Capacity}) — dropping this input; "
-                  + "{DroppedCount} dropped this session so far (the turn worker is likely stuck on a "
-                  + "stalled turn).", _pendingTurnsCapacity, dropped);
-                written?.TrySetException(new InvalidOperationException(
-                    "Antigravity pending-turns queue is full; this input was dropped."));
-            }
+        if (_pendingTurns.Writer.TryWrite(new PendingTurn(text, written)))
+            return written?.Task ?? Task.CompletedTask;
+
+        if (Phase == RuntimePhase.Terminal) {
+            _logger.LogDebug("Antigravity: dropped a prompt turn — the runtime is terminal.");
+            written?.TrySetException(new InvalidOperationException(
+                "Antigravity runtime is terminal; this input was dropped."));
+
+            return written?.Task ?? Task.CompletedTask;
         }
 
-        return written?.Task ?? Task.CompletedTask;
+        // The only other reason TryWrite can fail on this bounded, not-yet-completed channel.
+        var rejected = Interlocked.Increment(ref _rejectedPendingTurns);
+        _logger.LogWarning(
+            "Antigravity: pending-turns queue full (capacity={Capacity}) — rejecting this input; "
+          + "{RejectedCount} rejected this session so far (the turn worker is likely stuck on a "
+          + "stalled turn).", _pendingTurnsCapacity, rejected);
+
+        EmitEnvelope(new AcpEventEnvelope(
+            Kind: AcpEventKind.SystemNote,
+            Text: $"Your message was not delivered — this agent's input queue is full "
+                + $"({_pendingTurnsCapacity} waiting) while it works through an earlier message. "
+                + "Send it again once it catches up."));
+
+        var failure = new InvalidOperationException(
+            $"Antigravity pending-turns queue is full (capacity {_pendingTurnsCapacity}); this input "
+          + "was not queued.");
+
+        written?.TrySetException(failure);
+
+        // The acknowledging caller awaits `written`; everyone else awaits this. Never both — an
+        // unawaited faulted Task is what TaskScheduler.UnobservedTaskException is for.
+        return written?.Task ?? Task.FromException(failure);
     }
 
     /// <summary>

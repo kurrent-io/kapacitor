@@ -1,4 +1,5 @@
 // test/Capacitor.Cli.Tests.Unit/Services/AntigravityRuntimeLifecycleTests.cs
+using Capacitor.Cli.Core;
 using Capacitor.Cli.Daemon.Acp;
 using Capacitor.Cli.Daemon.Services;
 using Microsoft.Extensions.Logging;
@@ -254,8 +255,70 @@ public class AntigravityRuntimeLifecycleTests {
         await Assert.That(prompts).Contains("do the review");
     }
 
+    // ── the bounded input queue ───────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// A turn is one process, so input that arrives mid-turn cannot steer the running turn. It must
+    /// become the NEXT turn — in order, and as a separate turn per message: concatenating two of a
+    /// user's messages into one prompt changes their meaning, and a turn's prompt is its process's
+    /// argument, so a coalesced pair is unrecoverable rather than merely untidy.
+    ///
+    /// <para>Deterministic by construction rather than by delay: turn 1 is a
+    /// <see cref="GatedTurnProcess"/> that has emitted its <c>init</c> (so
+    /// <c>WaitForConversationIdAsync</c> proves it is genuinely mid-turn, holding the gate) and does
+    /// not finish until this test releases it — so the two later sends are guaranteed to be enqueued
+    /// while a turn is in flight, which is the whole point.</para>
+    /// </summary>
     [Test]
-    public async Task A_full_queue_rejects_further_input_without_spawning() {
+    public async Task Input_sent_during_a_turn_becomes_the_next_turn_in_order() {
+        var prompts = new List<string>();
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var spawns  = 0;
+
+        Func<string, string?, CancellationToken, Task<IAgyTurnProcess>> spawn = (prompt, _, _) => {
+            lock (prompts) prompts.Add(prompt);
+
+            // Only turn 1 is held open; later turns run to completion normally.
+            return Task.FromResult<IAgyTurnProcess>(Interlocked.Increment(ref spawns) == 1
+                ? new GatedTurnProcess(release.Task, FixedConversationId)
+                : new FakeAgyTurnProcess(FakeTurn.Normal, FixedConversationId));
+        };
+
+        await using var rt = new AntigravityHostedAgentRuntime(spawnTurn: spawn, logger: NullLogger.Instance);
+
+        await rt.SendUserInputAsync("first").WaitAsync(HangGuard);
+
+        // Turn 1 has read its own init line — it is genuinely executing and holding the turn gate.
+        await rt.WaitForConversationIdAsync(CancellationToken.None).WaitAsync(HangGuard);
+
+        await rt.SendUserInputAsync("second").WaitAsync(HangGuard);
+        await rt.SendUserInputAsync("third").WaitAsync(HangGuard);
+
+        release.TrySetResult();
+
+        var deadline = DateTime.UtcNow + HangGuard;
+        while (Volatile.Read(ref spawns) < 3 && DateTime.UtcNow < deadline) await Task.Delay(10);
+
+        string[] snapshot;
+        lock (prompts) snapshot = [.. prompts];
+
+        // Joined rather than compared element-wise so ONE assertion pins both halves: a reordered
+        // queue and a coalesced pair (which would arrive as a single prompt containing all three
+        // texts) each produce a different string.
+        await Assert.That(string.Join("|", snapshot)).IsEqualTo("first|second|third");
+    }
+
+    /// <summary>
+    /// Over-cap input is <b>rejected visibly</b>, never silently discarded. The two alternatives are
+    /// both wrong in their own way: blocking the caller would stall the daemon's command lane behind
+    /// a stalled reviewer's turn (the queue is only ever full BECAUSE a turn is stuck), and dropping
+    /// silently loses a message the user has already sent with nothing to tell them so. Both send
+    /// entry points reject — the acknowledging one (used for borrowed launches) and the plain one
+    /// (every server-driven <c>SendInput</c>), since a caller that never asked for a write ack is
+    /// exactly the caller that would otherwise never learn.
+    /// </summary>
+    [Test]
+    public async Task An_over_cap_enqueue_is_rejected_visibly_rather_than_dropped() {
         var spawns = 0;
         await using var rt = FakeRuntime(turn: FakeTurn.NeverEnds, onSpawn: _ => spawns++, queueCap: 1);
 
@@ -264,15 +327,97 @@ public class AntigravityRuntimeLifecycleTests {
         await rt.SendUserInputAsync("one").WaitAsync(HangGuard);
 
         var deadline = DateTime.UtcNow + HangGuard;
-        while (spawns < 1 && DateTime.UtcNow < deadline) await Task.Delay(10);
+        while (Volatile.Read(ref spawns) < 1 && DateTime.UtcNow < deadline) await Task.Delay(10);
         await Assert.That(spawns).IsEqualTo(1);
 
         await rt.SendUserInputAsync("two").WaitAsync(HangGuard);
-        await rt.SendUserInputAsync("three").WaitAsync(HangGuard);
+
+        var rejected = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => rt.SendUserInputAsync("three").WaitAsync(HangGuard));
+        await Assert.That(rejected!.Message).Contains("queue is full");
+
+        // The acknowledging entry point rejects identically — same queue, same answer.
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => rt.SendUserInputAndWaitForWriteAsync("four").WaitAsync(HangGuard));
+
         await Task.Delay(100);
 
-        // Only turn 1 ever spawned — turn 2 sits in the (capacity-1) queue and turn 3 was dropped.
+        // Only turn 1 ever spawned — turn 2 sits in the (capacity-1) queue, and neither rejected
+        // message became a turn.
         await Assert.That(spawns).IsEqualTo(1);
+    }
+
+    /// <summary>
+    /// The rejection reaches the HUMAN, not just the daemon log: a faulted send task is observed by
+    /// the orchestrator's own handler, which logs it and returns — the user's dashboard would show
+    /// nothing at all. A <c>system_note</c> envelope on the runtime's own transcript is the one
+    /// surface the person who typed the message actually sees.
+    ///
+    /// <para>One note PER rejected message, deliberately not one per full-queue episode: each
+    /// rejected message is a separately lost message, and telling the user about the first while
+    /// swallowing the rest is the silent drop this whole rule exists to prevent. The transcript
+    /// channel is DropOldest-bounded, so a pathological sender cannot grow memory here.</para>
+    /// </summary>
+    [Test]
+    public async Task A_rejected_over_cap_enqueue_tells_the_user_on_the_transcript() {
+        await using var rt = FakeRuntime(turn: FakeTurn.NeverEnds, queueCap: 1);
+
+        await rt.SendUserInputAsync("one").WaitAsync(HangGuard);
+
+        // Turn 1 is genuinely executing (its init has been read), so the queue state below is real.
+        await rt.WaitForConversationIdAsync(CancellationToken.None).WaitAsync(HangGuard);
+
+        await rt.SendUserInputAsync("two").WaitAsync(HangGuard);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => rt.SendUserInputAsync("three").WaitAsync(HangGuard));
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => rt.SendUserInputAsync("four").WaitAsync(HangGuard));
+
+        var envelopes = new List<AcpEventEnvelope>();
+        while (rt.Envelopes.TryRead(out var env)) envelopes.Add(env);
+
+        var notes = envelopes.Where(e => e.Kind == AcpEventKind.SystemNote).ToList();
+
+        // Two rejected messages, two notes — never one summary note for both.
+        await Assert.That(notes.Count).IsEqualTo(2);
+        await Assert.That(notes[0].Text).IsNotNull();
+        await Assert.That(notes[0].Text!).Contains("not delivered");
+
+        // The turn that DID get queued is not announced as lost — a note per rejection, not per send.
+        await Assert.That(envelopes.Any(e => e.Kind == AcpEventKind.SessionStarted)).IsTrue();
+    }
+
+    /// <summary>A turn child that emits its <c>init</c> and then holds the turn open until the test
+    /// releases it, ending cleanly with a terminal <c>result</c>. The structural stand-in for "a turn
+    /// is genuinely in flight" — unlike <see cref="FakeTurn.NeverEnds"/>, it can also be let go, so a
+    /// test can observe what the queue does with the turns that piled up behind it.</summary>
+    sealed class GatedTurnProcess(Task gate, string conversationId) : IAgyTurnProcess {
+        public int  Pid       => 4251;
+        public bool HasExited { get; private set; }
+        public int? ExitCode  { get; private set; }
+
+        public async IAsyncEnumerable<string> ReadLinesAsync(
+                [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct) {
+            yield return $$$"""{"event":"init","conversation_id":"{{{conversationId}}}","init":{"cwd":"/w"}}""";
+
+            await gate.WaitAsync(ct).ConfigureAwait(false);
+
+            yield return $$$"""{"event":"result","result":{"conversation_id":"{{{conversationId}}}","status":"SUCCESS"}}""";
+
+            HasExited = true;
+            ExitCode  = 0;
+        }
+
+        public Task WaitForExitAsync(TimeSpan? timeout = null) => Task.CompletedTask;
+
+        public Task TerminateAsync(TimeSpan? timeout = null) {
+            HasExited = true;
+            ExitCode ??= -1;
+            return Task.CompletedTask;
+        }
+
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 
     [Test]

@@ -233,6 +233,18 @@ internal partial class AgentOrchestrator {
         if (!_agents.TryGetValue(agentId, out var agent))
             return FrameCodec.WriteAsync(stream, LocalFrame.Error($"no such agent {agentId}"), ct);
 
+        // A runtime that emits no terminal output has nothing for a terminal to attach TO: its
+        // stdout is protocol traffic (agy's NDJSON, ACP's JSON-RPC), and its output buffer is
+        // therefore always empty. Attaching anyway painted a blank screen that never repaints and
+        // only admitted the problem if the user typed (AttachClientLoopAsync's raw-input refusal) —
+        // indistinguishable from a wedged daemon. Refuse by name instead, and say where the agent
+        // actually lives. Decided here rather than in the CLI: `kcap agent attach` sends a full id
+        // verbatim without fetching the agent table, so the client cannot know the vendor.
+        if (!agent.Runtime.EmitsTerminalOutput)
+            return FrameCodec.WriteAsync(stream, LocalFrame.Error(
+                $"{agentId} is a hosted {agent.Runtime.Vendor} agent — it has no terminal to attach to. "
+              + "Drive it from the dashboard."), ct);
+
         // A review or flow agent is addressed through the flow protocol, never by typing at it,
         // so the daemon — not the client — decides this attach carries no input.
         return AttachClientLoopAsync(agent, stream, ct, readOnly: agent.Kind != LaunchKind.Default);
