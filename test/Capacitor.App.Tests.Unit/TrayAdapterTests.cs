@@ -290,16 +290,19 @@ public class TrayAdapterTests {
 
     // ---- TrayIconManager wiring (spec §5) ----
     //
-    // NativeMenu.NeedsUpdate/Opening can only be RAISED through
-    // INativeMenuExporterEventsImplBridge, and decompiling Avalonia.Controls's REFERENCE assembly
-    // (the one the compiler binds against, not the runtime one) shows its three Raise* members are
-    // `internal` there — external code cannot cast-and-call them, by design (only Avalonia's own
-    // native exporters may raise them). The headless platform's CreateTrayIcon() also returns null
-    // (decompiler-verified, AvaloniaHeadlessPlatform.HeadlessWindowingPlatform), so there is no
-    // exporter to drive them even indirectly. The NeedsUpdate-only rebuild and the Opening
-    // fire-and-forget are therefore proven at the TrayMenuSync/TrayMenuBuilder unit level above
-    // (pure, real event-independent) plus manual macOS acceptance (spec §12); what's left testable
-    // here is TrayIconManager's own construction/disposal behavior.
+    // NativeMenu.NeedsUpdate can only be RAISED through INativeMenuExporterEventsImplBridge, and
+    // decompiling Avalonia.Controls's REFERENCE assembly (the one the compiler binds against, not
+    // the runtime one) shows its Raise* members are `internal` there — external code cannot
+    // cast-and-call them, by design (only Avalonia's own native exporters may raise them). The
+    // headless platform's CreateTrayIcon() also returns null (decompiler-verified,
+    // AvaloniaHeadlessPlatform.HeadlessWindowingPlatform), so there is no exporter to drive it even
+    // indirectly. The NeedsUpdate-only rebuild and its pause-state refresh kick (moved here from
+    // NativeMenu.Opening, which macOS status-item menus never raise — found in manual acceptance)
+    // are therefore proven at the TrayMenuSync/TrayMenuBuilder unit level above (pure, real
+    // event-independent) plus manual macOS acceptance (spec §12); what's left testable here is
+    // TrayIconManager's own construction/disposal behavior. The edge-triggered on-Connected kick
+    // (spec §6) is covered directly on TrayViewModel in TrayViewModelTests, without needing a real
+    // NativeMenu event at all.
 
     [Test]
     [NotInParallel("AvaloniaSession")]

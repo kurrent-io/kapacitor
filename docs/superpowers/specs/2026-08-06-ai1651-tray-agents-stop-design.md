@@ -147,10 +147,13 @@ Quit
   results) update the cache and set a dirty flag consumed at the next `NeedsUpdate`; a change
   arriving while the menu is open becomes visible at the next open, never mid-display. The tray
   **icon** (glyph + count) is not part of the menu and updates immediately on model change.
-  `Opening` fire-and-forgets the §6 pause-state refresh — it starts async work only and never
-  touches the menu, and it is subject to §6's serialization (dropped while a consent op is in
-  flight). The adapter's open/dirty tracking is a small testable state machine; manual macOS
-  acceptance includes updates arriving while the menu is open.
+  `NeedsUpdate` also fire-and-forgets the §6 pause-state refresh, kicked immediately before the
+  rebuild it triggers (macOS status-item menus never raise `Opening` at all — found in manual
+  acceptance — so `NeedsUpdate` is the only pre-display hook that reliably fires) — the refresh
+  starts async work only and never touches the menu itself, and it is subject to §6's
+  serialization (dropped while a consent op is in flight). The adapter's open/dirty tracking is a
+  small testable state machine; manual macOS acceptance includes updates arriving while the menu
+  is open.
 
 ## 6. Pause-launches toggle
 
@@ -163,9 +166,12 @@ The pause rule is exactly `ConsentRuleDto("deny", null, null, null, null)` at in
 - **Displayed state:** checked iff the latest fetched policy has an all-wildcard deny rule at
   index 0. An all-wildcard deny at any other index, or narrower deny rules, do not check the
   toggle — `kcap daemon consent show` is the full truth. A passive refresh (`ConsentRulesGet`)
-  is kicked fire-and-forget from the menu's `Opening` event and as the trailing step of every
-  toggle; its result lands in the cached model, so it becomes visible at the next menu open
-  (§5 rebuild cadence). Accepted staleness: the checkmark reflects the policy as of the most
+  is kicked fire-and-forget from the menu's `NeedsUpdate` event (macOS status-item menus never
+  raise `Opening`, so `NeedsUpdate` — the pre-display hook that does fire — is the kick site
+  instead), as the trailing step of every toggle, and once more, edge-triggered, on the VM's own
+  attach-state transition into `Connected` (so the toggle is usually verified before the first
+  menu open rather than the second); its result lands in the cached model, so it becomes visible
+  at the next menu open (§5 rebuild cadence). Accepted staleness: the checkmark reflects the policy as of the most
   recent **completed** refresh; a CLI-side edit becomes visible on the open after the next
   successfully started-and-completed refresh — usually one open behind, but more under rapid
   reopen or a busy lane (drops, §Serialization). A refresh failure keeps the last-known

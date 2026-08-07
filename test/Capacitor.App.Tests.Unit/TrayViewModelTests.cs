@@ -557,6 +557,40 @@ public class TrayViewModelTests {
         });
     }
 
+    // Fix-round 2: macOS status-item menus never raise NativeMenu.Opening (manual acceptance), so
+    // the adapter's refresh kick moved to NeedsUpdate — but that alone means the toggle is only
+    // ever verified starting at the SECOND menu open. This edge-triggered kick on the
+    // Connecting -> Connected transition covers the gap: verified before the FIRST open too.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task RequestPauseRefresh_kicks_once_on_the_edge_into_Connected() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            var service = new FakeDaemonClientService();
+            var pause = new FakePauseController();
+            var actions = NewActions(service);
+            using var vm = new TrayViewModel(service, pause, actions);
+
+            // Connecting -> Connected(with capability): exactly one refresh from the edge.
+            service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, ["consent/1"]));
+            await Assert.That(pause.RefreshCount).IsEqualTo(1);
+
+            // A snapshot update while still Connected is not a state transition — no extra refresh.
+            service.SnapshotsSubject.OnNext(Snap("connected", 1));
+            await Assert.That(pause.RefreshCount).IsEqualTo(1);
+
+            // Another Connected push with no actual state change (DistinctUntilChanged) — none.
+            service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, ["consent/1"]));
+            await Assert.That(pause.RefreshCount).IsEqualTo(1);
+
+            // Disconnect, then reconnect: one more refresh from the new edge.
+            service.StatusSubject.OnNext(new AttachStatus(AttachState.Unreachable, "daemon_unreachable", null));
+            await Assert.That(pause.RefreshCount).IsEqualTo(1);
+
+            service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, ["consent/1"]));
+            await Assert.That(pause.RefreshCount).IsEqualTo(2);
+        });
+    }
+
     [Test]
     [NotInParallel("AvaloniaSession")]
     [Arguments(true)]

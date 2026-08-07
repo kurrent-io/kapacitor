@@ -69,7 +69,8 @@
         <ScrollViewer Grid.Row="1" Margin="0,8,0,0"
                       VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto">
             <StackPanel x:Name="AgentsGrid" Opacity="{Binding GridEnabled, Converter={x:Static views:GridEnabledOpacityConverter.Instance}}">
-                <Grid ColumnDefinitions="80,140,140,100,90,70,150" Margin="0,0,0,4">
+                <Grid x:Name="AgentsGridHeader" ColumnDefinitions="80,140,140,100,90,70,150" Margin="0,0,0,4"
+                      IsVisible="{Binding Agents.Count, Converter={x:Static views:HeaderRowVisibleConverter.Instance}}">
                     <TextBlock Grid.Column="0" Text="Kind" FontWeight="Bold" Opacity="0.7" />
                     <TextBlock Grid.Column="1" Text="Vendor" FontWeight="Bold" Opacity="0.7" />
                     <TextBlock Grid.Column="2" Text="Repo" FontWeight="Bold" Opacity="0.7" />

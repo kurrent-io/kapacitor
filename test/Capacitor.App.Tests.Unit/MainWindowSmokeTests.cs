@@ -5,6 +5,8 @@ using Avalonia.VisualTree;
 using Capacitor.App.Services;
 using Capacitor.App.ViewModels;
 using Capacitor.App.Views;
+using Capacitor.Cli.Core.LocalIpc;
+using DynamicData;
 using static Capacitor.App.Tests.Unit.FakeDaemonClientService;
 
 namespace Capacitor.App.Tests.Unit;
@@ -210,6 +212,43 @@ public class MainWindowSmokeTests {
 
         await Assert.That(rendered).Contains("No agents running");
         await Assert.That(emptyStateVisible).IsTrue();
+    }
+
+    /// Fix-round 2: the column-header row (Kind/Vendor/Repo/...) rendered even with zero agents
+    /// and read as noise above "No agents running". Hidden while the Agents collection is empty,
+    /// visible as soon as a row exists — the "Agents" section title and the empty-state line both
+    /// stay either way (spec §8, Converters.cs HeaderRowVisibleConverter doc comment).
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Agents_grid_header_hidden_when_empty_and_visible_once_a_row_exists() {
+        var (headerVisibleEmpty, headerVisibleWithRow) = await AvaloniaSession.DispatchAsync(() => {
+            var service = new FakeDaemonClientService();
+            service.SnapshotsSubject.OnNext(Snap(connection: "connected"));
+            service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, null));
+
+            var (actions, notifier) = NewActions(service);
+            var vm = new MainWindowViewModel(service, actions, notifier, CancellationToken.None);
+            var window = new MainWindow { DataContext = vm };
+            window.Show();
+            Dispatcher.UIThread.RunJobs();
+
+            Grid Header() => window.GetVisualDescendants().OfType<Grid>().First(g => g.Name == "AgentsGridHeader");
+
+            var emptyVisible = Header().IsVisible;
+
+            service.Agents.AddOrUpdate(new AgentStatusDto(
+                "a", "agent", "claude", "/repos/kcap-cli", "Running", null, null, null, DateTime.UtcNow, null));
+            Dispatcher.UIThread.RunJobs();
+            var withRowVisible = Header().IsVisible;
+
+            window.Close();
+            Dispatcher.UIThread.RunJobs();
+
+            return (emptyVisible, withRowVisible);
+        });
+
+        await Assert.That(headerVisibleEmpty).IsFalse();
+        await Assert.That(headerVisibleWithRow).IsTrue();
     }
 
     /// StartMessageText/ReasonText must not reserve dead space when there is nothing to say

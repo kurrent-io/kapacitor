@@ -82,10 +82,23 @@ public sealed class TrayViewModel : ReactiveObject, IDisposable {
             .ToProperty(this, x => x.MenuModel, seed ?? throw new InvalidOperationException(
                 "IPauseController.State must replay a value on subscribe (contract in IPauseController)."))
             .DisposeWith(_disposables);
+
+        // Edge-triggered passive refresh (spec §6): fired once on the attach-state transition
+        // INTO Connected, not on every snapshot/state emission that follows — so the toggle is
+        // usually verified before the FIRST menu open instead of waiting for the adapter's
+        // NeedsUpdate kick on the second. DistinctUntilChanged means a later Connected push with
+        // no real state change (or a snapshot-only update) is a no-op here; the §6 lane drops a
+        // redundant refresh while busy, so this can never race the NeedsUpdate-triggered one.
+        service.Status
+            .Select(s => s.State)
+            .DistinctUntilChanged()
+            .Where(state => state == AttachState.Connected)
+            .Subscribe(_ => pause.RequestRefresh())
+            .DisposeWith(_disposables);
     }
 
-    /// Adapter's Opening hook (spec §5) — trivially delegating; the drop-while-busy rule lives in
-    /// the IPauseController implementation (spec §6).
+    /// Adapter's NeedsUpdate hook (spec §5) — trivially delegating; the drop-while-busy rule lives
+    /// in the IPauseController implementation (spec §6).
     public void RequestPauseRefresh() => _pause.RequestRefresh();
 
     public void Dispose() => _disposables.Dispose();
