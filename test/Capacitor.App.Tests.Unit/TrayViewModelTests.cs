@@ -379,7 +379,7 @@ public class TrayViewModelTests {
             service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, []));
             service.SnapshotsSubject.OnNext(Snap("connected", 1, agents));
 
-            await Assert.That(vm.MenuModel.Agents[0].Label).IsEqualTo("agent · claude · kcap-server · hazy-sleeping-plum");
+            await Assert.That(vm.MenuModel.Agents[0].Label).IsEqualTo("agent · claude · kcap-server");
         });
     }
 

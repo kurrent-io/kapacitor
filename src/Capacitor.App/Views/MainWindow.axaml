@@ -79,12 +79,12 @@
                     <ItemsControl.ItemTemplate>
                         <DataTemplate x:DataType="vm:AgentRowViewModel">
                             <Grid ColumnDefinitions="80,140,140,100,90,70,150" Margin="0,2">
-                                <TextBlock Grid.Column="0" Text="{Binding Kind}" />
-                                <TextBlock Grid.Column="1" Text="{Binding VendorDisplay}" />
-                                <TextBlock Grid.Column="2" Text="{Binding RepoLeaf}" ToolTip.Tip="{Binding RepoFull}" />
-                                <TextBlock Grid.Column="3" Text="{Binding Requester}" />
-                                <TextBlock Grid.Column="4" Text="{Binding StatusText}" />
-                                <TextBlock Grid.Column="5" Text="{Binding Uptime}" />
+                                <TextBlock Grid.Column="0" Text="{Binding Kind}" TextTrimming="CharacterEllipsis" />
+                                <TextBlock Grid.Column="1" Text="{Binding VendorDisplay}" TextTrimming="CharacterEllipsis" />
+                                <TextBlock Grid.Column="2" Text="{Binding RepoLeaf}" ToolTip.Tip="{Binding RepoFull}" TextTrimming="CharacterEllipsis" />
+                                <TextBlock Grid.Column="3" Text="{Binding Requester}" TextTrimming="CharacterEllipsis" />
+                                <TextBlock Grid.Column="4" Text="{Binding StatusText}" TextTrimming="CharacterEllipsis" />
+                                <TextBlock Grid.Column="5" Text="{Binding Uptime}" TextTrimming="CharacterEllipsis" />
                                 <StackPanel Grid.Column="6" Orientation="Horizontal" Spacing="4">
                                     <Button Content="Stop" Command="{Binding StopCommand}" IsEnabled="{Binding ActionsEnabled}" Padding="8,2" FontSize="12" />
                                     <Button Content="Open in web" Command="{Binding OpenInWebCommand}" IsEnabled="{Binding ActionsEnabled}" Padding="8,2" FontSize="12" />
