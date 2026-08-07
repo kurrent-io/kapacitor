@@ -217,7 +217,8 @@ static class McpFlowResultServer {
             using var response = await SendWithRefreshRetryAsync(
                 client,
                 apiRoot,
-                c => c.PostAsync(url, JsonContent.Create(body, McpJsonContext.Default.SubmitReviewerResultDto))
+                c => c.PostAsync(url, JsonContent.Create(body, McpJsonContext.Default.SubmitReviewerResultDto)),
+                allowRefresh: submitUrlOverride is null
             );
             var responseBody = await response.Content.ReadAsStringAsync();
 
@@ -293,7 +294,8 @@ static class McpFlowResultServer {
             using var response = await SendWithRefreshRetryAsync(
                 client,
                 apiRoot,
-                c => c.PostAsync(url, JsonContent.Create(body, McpJsonContext.Default.SendFlowMessageDto))
+                c => c.PostAsync(url, JsonContent.Create(body, McpJsonContext.Default.SendFlowMessageDto)),
+                allowRefresh: messageUrlOverride is null
             );
 
             if (response.IsSuccessStatusCode)
@@ -344,10 +346,17 @@ static class McpFlowResultServer {
     /// <see cref="TokenStore.GetValidTokensAsync"/> for a fresh token, update the client's
     /// <c>Authorization</c> header, and retry the same request once.
     /// </summary>
-    static async Task<HttpResponseMessage> SendWithRefreshRetryAsync(HttpClient client, string baseUrl, Func<HttpClient, Task<HttpResponseMessage>> send) {
+    /// <param name="allowRefresh">False on the borrowed-reviewer capability path. That process has
+    /// no token store — its HOME is a per-launch state dir — so a 401 must be surfaced as-is rather
+    /// than sent into TokenStore, which is the very read this delivery path exists to avoid. A 401
+    /// there means the DAEMON's credential was rejected upstream, and this process could not heal
+    /// that even if it could read a token: it is not the authenticating party.</param>
+    static async Task<HttpResponseMessage> SendWithRefreshRetryAsync(
+            HttpClient client, string baseUrl, Func<HttpClient, Task<HttpResponseMessage>> send,
+            bool allowRefresh = true) {
         var response = await send(client);
 
-        if (response.StatusCode != HttpStatusCode.Unauthorized) return response;
+        if (!allowRefresh || response.StatusCode != HttpStatusCode.Unauthorized) return response;
 
         // Force a refresh against the token this client actually sent: the 401 proves the server
         // rejected it even though it may still look unexpired locally, which a plain load would
