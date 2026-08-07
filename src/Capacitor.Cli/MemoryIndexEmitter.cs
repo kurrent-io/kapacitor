@@ -24,6 +24,18 @@ namespace Capacitor.Cli;
 /// </para>
 /// </summary>
 static class MemoryIndexEmitter {
+    /// <summary>
+    /// The stable leading marker on every fragment this emitter produces. Named because a CONSUMER
+    /// needs to recognise an already-injected fragment: OpenCode's plugin appends into a system-prompt
+    /// array it does not own, so "have I already put mine in here?" has to be answerable from the text
+    /// itself. An invisible HTML comment, so it costs nothing a reader would notice.
+    ///
+    /// <para>Versioned (<c>:v1</c>) deliberately: a future fragment shape can change the marker and a
+    /// consumer keyed on the old one simply stops recognising it, which fails toward a duplicate rather
+    /// than toward silently matching a different format.</para>
+    /// </summary>
+    internal const string FragmentMarker = "<!-- kcap-memory-index:v1 -->";
+
     static readonly HashSet<string> Kinds = new(StringComparer.Ordinal) { "preference", "feedback", "project", "reference" };
 
     public static string? BuildFragment(IEnumerable<SessionStartMemoryEntry> entries) {
@@ -47,7 +59,7 @@ static class MemoryIndexEmitter {
         }
         if (org.Count == 0 && team.Count == 0 && user.Count == 0) return null;
 
-        var prefix = "<!-- kcap-memory-index:v1 -->\n## Team memory\n" +
+        var prefix = FragmentMarker + "\n## Team memory\n" +
             "Durable memories for this repo/context. Call `get_memory <slug>` for the full content of any entry, or `search_memories` to find more.";
         var sb = new StringBuilder(prefix);
         var currentBytes = Encoding.UTF8.GetByteCount(prefix);

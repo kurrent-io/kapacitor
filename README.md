@@ -225,7 +225,7 @@ live-certified by its own AI-1456 child issue.
 | Gemini CLI | yes | yes (`sessionStart`'s top-level `additionalContext`; falls back to the plain `{"continue":true}` allow payload when there is nothing to inject) | pending | available |
 | Kiro CLI | yes | yes (`agentSpawn` raw stdout — no envelope; Kiro appends hook stdout to agent context verbatim) | **certified** — gated live cert, `kiro-cli 2.12.1`. The once-per-session dedupe is unit-covered only: a resumed `kiro-cli` invocation carries a different hook session id, so it cannot certify it | available — injects **once per session** despite `agentSpawn` firing every prompt |
 | Pi | yes | no | pending | extension bridge required |
-| OpenCode | yes | no | pending | extension bridge required |
+| OpenCode | yes | yes (plugin `experimental.chat.system.transform` — the fragment is appended as a new system entry, never replacing one; the CLI writes it raw on the start hook's stdout and zero bytes when there is nothing to inject) | **certified** — gated live cert, `opencode 1.18.9`, positive case plus negative control. Injection rides an **experimental** OpenCode API, so this cert is the only thing that would notice an upstream change silently ceasing delivery — it already earned that: it caught a start/first-request race no unit test could see, where a one-turn session got no index at all. Needs the plugin AND the `kcap` on `PATH` to be the same build | available; transform contract measured on `opencode` 1.18.9. Appends on **every request** (OpenCode rebuilds the system array per request), while the fetch stays **once per session** behind the durable lease |
 | Antigravity | yes | yes (`PreInvocation` → `{"injectSteps":[{"userMessage":…}]}`; zero bytes when there is no index) | pending — **IDE only**. The gated cert (`KCAP_ANTIGRAVITY_MEMORY_LIVE=1` + `KCAP_URL`) was run against `agy` 1.1.10 and the model did **not** receive the index: the CLI's print mode fires the hook but ignores the returned `injectSteps`. Our side is verified (hook fires; a correct 516–2518 byte payload is emitted; run completes well inside the hook budget), so the cert is retained as the regression test for when upstream honours it. Certification therefore needs the **manual IDE procedure** | available on the **IDE**; on the **CLI** the hook fires and captures, but the injection is not surfaced to the model (`agy` 1.1.10). Injects **once per conversation** despite `PreInvocation` firing every invocation |
 
 ## CLI commands
@@ -1158,7 +1158,7 @@ KCAP_CURSOR_PATH=/opt/cursor/bin/cursor-agent kcap daemon
 KCAP_CURSOR_MODEL=claude-opus-4-8 kcap daemon
 ```
 
-`KCAP_COPILOT_PATH` overrides the `copilot` binary the daemon spawns for **GitHub Copilot hosted agents** (`copilot --acp --stdio`), mirroring `KCAP_CURSOR_PATH` — the daemon hosts Claude, Codex, Cursor, Copilot, Kiro, and Gemini. `KCAP_GEMINI_PATH` overrides the `gemini` binary the same way (`gemini --experimental-acp`), and applies to both hosted Gemini agents and the opt-in [unattended Gemini reviewer](#gemini-as-an-unattended-review-flow-reviewer--off-by-default-and-why) — whose build-affirmation check reads whichever binary it names. `KCAP_OPENCODE_PATH` remains **reserved** plumbing for the not-yet-hosted OpenCode vendor, so setting it has no observable effect yet.
+`KCAP_COPILOT_PATH` overrides the `copilot` binary the daemon spawns for **GitHub Copilot hosted agents** (`copilot --acp --stdio`), mirroring `KCAP_CURSOR_PATH` — the daemon hosts Claude, Codex, Cursor, Copilot, Kiro, Gemini, OpenCode and Antigravity. `KCAP_GEMINI_PATH` overrides the `gemini` binary the same way (`gemini --experimental-acp`), and applies to both hosted Gemini agents and the opt-in [unattended Gemini reviewer](#gemini-as-an-unattended-review-flow-reviewer--off-by-default-and-why) — whose build-affirmation check reads whichever binary it names. `KCAP_OPENCODE_PATH` overrides the `opencode` binary the daemon spawns for **OpenCode hosted agents** (`opencode acp`) — no longer reserved; see [Hosted OpenCode agents](#hosted-opencode-agents) below.
 
 ```bash
 KCAP_COPILOT_PATH=/opt/copilot/bin/copilot kcap daemon
@@ -1195,6 +1195,73 @@ One limit is worth knowing before you pick Kiro:
   reviewer would be handed the flow-starting `kcap-flows` server. Containment for that is tracked
   separately. (This also means a *pinned reviewer* model never reaches Kiro today — reviewer model
   overrides remain gated on the vendors that advertise resolver support.)
+
+### Hosted OpenCode agents
+
+`KCAP_OPENCODE_MODEL` overrides the model an `opencode` hosted agent runs, mirroring
+`KCAP_KIRO_MODEL` — including the same deliberate absence of a built-in default: with nothing set
+(and no per-launch model from the dashboard, which takes precedence) the agent runs whatever
+OpenCode's own configured default is and kcap reports none. The value is matched against the models
+your OpenCode account actually offers, whose ids are `provider/model`; a display label works too, so
+`opencode/deepseek-v4-flash-free`, the `opencode/deepseek` prefix and `DeepSeek V4 Flash Free` all
+resolve to the same model. An unrecognized value falls back to OpenCode's own default with none
+reported.
+
+```bash
+KCAP_OPENCODE_MODEL=opencode/big-pickle kcap daemon
+```
+
+Two things are worth knowing before you pick OpenCode:
+
+- **Your OpenCode plugins do not load in a hosted agent.** The daemon spawns the child with
+  `OPENCODE_PURE=1`. This is not a preference: OpenCode is the one vendor where kcap has *two* capture
+  paths, and kcap's own live-ingest plugin (`~/.config/opencode/plugins/kcap.ts`) loads inside the
+  hosted child too — where it would start a second, independent recording of the very session the
+  daemon is already recording, so the run would show up twice. Suppressing external plugins in the
+  hosted child is what keeps a daemon-hosted session to exactly one recording. Sessions you start
+  yourself are untouched: the plugin keeps its whole job there.
+- **Unattended review is off by default** — see below.
+
+#### OpenCode as an unattended review-flow reviewer — off by default, and why
+
+`start_review_flow(vendor="opencode")` works only on a daemon whose operator has explicitly enabled
+it:
+
+```bash
+KCAP_OPENCODE_UNATTENDED_REVIEWER=1 kcap daemon
+```
+
+The reviewer's tool surface is deliberately narrow. It gets `read`, `grep`, `glob` and `list` plus
+the one MCP channel it reports results through — **no shell, no write, no edit, no network** — and
+that is enforced by OpenCode's own permission table rather than by asking the model nicely.
+
+What you are consenting to is the part that narrow surface does *not* cover: **those read tools are
+not path-scoped.** They are whole-filesystem read primitives running as the daemon user, so a review
+can read any file that user can read — its own credentials included — and a reviewer's findings text
+goes back to whoever requested the review. Enable it only on a daemon whose operator and review
+requesters are in one trust domain.
+
+Two further things the launch does, which are worth knowing because they change what the reviewer
+sees:
+
+- **The reviewed branch's own configuration is ignored** (`OPENCODE_DISABLE_PROJECT_CONFIG`). A
+  contributor-authored `opencode.json` / `.opencode/` and the repo's `AGENTS.md`/`CLAUDE.md` are
+  inputs *from the thing being reviewed into the reviewer judging it*, so they are suppressed. The
+  cost is that the reviewer does not see your repo's guidance documents.
+- **Your global MCP servers are absent** (an empty per-launch `OPENCODE_CONFIG_DIR`). Otherwise a
+  reviewer would inherit `kcap-flows` and could start review flows of its own.
+
+Enabling it does **not** bypass the build check. The containment above is behaviour of the installed
+`opencode` build, so the daemon records a **minimum** version and refuses anything older. Enabling
+seeds that minimum from whatever is installed, so a later upgrade needs no action from you; to move
+the floor to the currently-installed build (after a bad release, say), run:
+
+```bash
+kcap daemon reviewer affirm --vendor opencode
+```
+
+POSIX only: the containment is an *empty* config directory, which cannot be made owner-only on
+Windows.
 
 **Hosted Cursor agents run over ACP.** The `cursor` vendor is launched by the daemon as
 `cursor-agent acp` (Cursor's Agent Client Protocol server) in an isolated worktree, driven from the

@@ -1,6 +1,7 @@
 using System.Text.Json.Nodes;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Config;
+using Capacitor.Cli.SessionStartMemory;
 
 namespace Capacitor.Cli.Commands;
 
@@ -19,10 +20,25 @@ namespace Capacitor.Cli.Commands;
 /// lifecycle id collapses the repeats and <see cref="WatcherManager.EnsureWatcherRunning"/>
 /// is a no-op once live.
 ///
+/// <para><b>stdout is a DATA channel on session-start</b>, carrying the team-memory fragment (raw
+/// text, no envelope) for the plugin to append to the model's system prompt. Diagnostics go to stderr.
+/// Every other event keeps writing nothing at all.</para>
+///
 /// Fail-open throughout — a kcap/server problem must never disrupt the OpenCode session.
 /// </summary>
 static class OpenCodeHookCommand {
-    public static async Task<int> Handle(string baseUrl, string[] args) {
+    public static Task<int> Handle(string baseUrl, string[] args) =>
+        Handle(baseUrl, args, Console.Out);
+
+    /// <param name="stdout">Injected so the fragment the plugin consumes is assertable without
+    /// capturing the process's real console — which is also the only way to test the no-fragment path,
+    /// since "wrote nothing" is indistinguishable from "was never called" on a shared writer.</param>
+    internal static async Task<int> Handle(string baseUrl, string[] args, TextWriter stdout,
+            long processStart = 0,
+            Func<string?, CancellationToken, Task<HttpClient>>? memoryClientFactory = null,
+            Func<SessionStartMemoryLeaseStore>?                 memoryStoreFactory  = null) {
+        if (processStart == 0) processStart = System.Diagnostics.Stopwatch.GetTimestamp();
+
         var eventName = GetArg(args, "--event");
         if (string.IsNullOrWhiteSpace(eventName)) {
             Console.Error.WriteLine(
@@ -60,7 +76,8 @@ static class OpenCodeHookCommand {
 
         // session-start is the only actionable event; the watcher owns session-end.
         return eventName == "session-start"
-            ? await HandleSessionStart(baseUrl, sessionId, sessionIdRaw, file, cwd, args, activeProfile, spool)
+            ? await HandleSessionStart(baseUrl, sessionId, sessionIdRaw, file, cwd, args, activeProfile, spool,
+                                       stdout, processStart, memoryClientFactory, memoryStoreFactory)
             : 0;
     }
 
@@ -72,7 +89,11 @@ static class OpenCodeHookCommand {
             string?   cwd,
             string[]  args,
             Profile?  activeProfile,
-            HookSpool spool
+            HookSpool spool,
+            TextWriter stdout,
+            long      processStart,
+            Func<string?, CancellationToken, Task<HttpClient>>? memoryClientFactory,
+            Func<SessionStartMemoryLeaseStore>?                 memoryStoreFactory
         ) {
         var forwarded = new JsonObject {
             ["hook_event_name"] = "sessionStart",
@@ -110,6 +131,19 @@ static class OpenCodeHookCommand {
             return 0;
         }
 
+        // Scope root: the git root stamped onto `forwarded` above when one was found, else the payload
+        // cwd. Read back from `enriched` so the fallback matches exactly what the server received.
+        // Never a process-cwd fallback — see StartMemoryIndexTask's scope-safety note.
+        var scopeRoot = ScopeRootFrom(enriched, cwd);
+
+        // Start the memory fetch so it OVERLAPS the lifecycle POST. Never before it, and never awaited
+        // before it — the POST is what capture depends on.
+        var memoryTask = StartMemoryIndexTask(
+            baseUrl, sessionId, scopeRoot,
+            activeProfile?.DisableMemoryIndex is true,
+            HookBudget.Remaining(processStart, "session-start"),
+            memoryClientFactory, memoryStoreFactory);
+
         // Spawn-before-post: capture must start on Posted OR Spooled (auth lapse /
         // outage) — a doomed/delayed lifecycle POST must never withhold the watcher. On a real
         // failure PostOrSpoolAsync already logged to stderr; a lapse or transient outage instead
@@ -118,6 +152,12 @@ static class OpenCodeHookCommand {
         var outcome = await AgentHookPoster.PostOrSpoolAsync(
             baseUrl, "session-start/opencode", enriched, "opencode-hook",
             spool, sessionId, route: "session-start/opencode");
+
+        // BEFORE the watcher gate below, and before any early return: a withheld watcher must not
+        // suppress an injection whose once-per-session lease has already been spent. The plugin reads
+        // stdout regardless of what the watcher did.
+        await WriteMemoryFragment(
+            stdout, await SessionStartMemoryHookSupport.AwaitBounded(memoryTask, processStart, "session-start"));
 
         if (!AgentHookPoster.ShouldSpawnAfter(outcome, baseUrl)) return 0;
 
@@ -128,6 +168,103 @@ static class OpenCodeHookCommand {
         );
 
         return 0;
+    }
+
+    /// <summary>
+    /// Writes the team-memory fragment as OpenCode's plugin consumes it: raw text, no envelope.
+    ///
+    /// <para><b>A null fragment writes ZERO BYTES.</b> This hook emitted nothing at all before the
+    /// memory index existed, and the plugin treats any non-empty stdout as a fragment — so emitting a
+    /// placeholder would have it append an empty system entry to every request.</para>
+    /// </summary>
+    internal static async Task WriteMemoryFragment(TextWriter stdout, string? fragment) {
+        var payload = RenderMemoryOutput(fragment);
+        if (payload.Length == 0) return;
+
+        await stdout.WriteAsync(payload);
+        await stdout.FlushAsync();
+    }
+
+    /// <summary>The exact bytes stdout receives. Pure, so the zero-bytes rule is assertable without a
+    /// writer — "wrote nothing" and "was never called" are otherwise indistinguishable.</summary>
+    internal static string RenderMemoryOutput(string? fragment) =>
+        fragment is null
+            ? ""
+            : SessionStartMemoryOutputAdapters.Render(SessionStartHarness.OpenCode, fragment);
+
+    /// <summary>
+    /// The lifecycle this harness reports. <c>CallbackMayRepeat</c> is true because the plugin's start
+    /// path is per-PROCESS: it dedupes within one <c>opencode</c> run, but a restart or a resumed
+    /// session fires it again for the same session id, and the durable lease is what makes the second
+    /// firing a no-op rather than a second injection.
+    ///
+    /// <para><c>IsTopLevel</c>/<c>ClassificationAuthoritative</c> are true because the plugin only ever
+    /// invokes this command for a session it has PROVEN top-level — its classifier defers on an
+    /// ambiguous parentage rather than guessing, so a child session never reaches here at all. That is a
+    /// property of the plugin's existing fail-closed classification, not an assumption made here.</para>
+    /// </summary>
+    internal static SessionMemoryLifecycle LifecycleFor(string sessionId) =>
+        new(SessionStartHarness.OpenCode, sessionId, LifecycleInstanceId: null,
+            IsTopLevel: true, ClassificationAuthoritative: true,
+            SessionLifecycleReason.RepeatedTurnCallback, CallbackMayRepeat: true);
+
+    /// <summary>
+    /// Starts the shared memory fetch so it overlaps the lifecycle POST. Returns a task that never
+    /// faults — every failure resolves to null, which the writer renders as zero bytes.
+    ///
+    /// <para><b>Scope safety:</b> git root preferred, payload cwd as fallback; with neither, injection
+    /// is skipped rather than letting the shared resolver fall back to the hook PROCESS's cwd — which
+    /// for OpenCode is wherever the plugin's shell-out inherited, and would inject an unrelated
+    /// repository's memories.</para>
+    ///
+    /// <para><c>CanAttempt</c> is checked BEFORE any client is constructed, because the client factory's
+    /// <c>EnsureAbsolute</c> calls <c>Environment.Exit(2)</c> on an unusable base url — which would kill
+    /// the hook before it writes its output, and this hook's stdout is a data channel.</para>
+    /// </summary>
+    internal static Task<string?> StartMemoryIndexTask(
+            string     baseUrl,
+            string     sessionId,
+            string?    scopeRoot,
+            bool       disabled,
+            TimeSpan   budget,
+            Func<string?, CancellationToken, Task<HttpClient>>? memoryClientFactory,
+            Func<SessionStartMemoryLeaseStore>?                 memoryStoreFactory) {
+        if (disabled || string.IsNullOrWhiteSpace(sessionId) || string.IsNullOrWhiteSpace(scopeRoot)
+         || budget <= TimeSpan.Zero
+         || !SessionStartMemoryHookSupport.CanAttempt(baseUrl))
+            return Task.FromResult<string?>(null);
+
+        try {
+            var store = memoryStoreFactory?.Invoke() ?? new SessionStartMemoryLeaseStore();
+            var provider = new SessionStartMemoryContextProvider(
+                new SessionStartMemoryScopeResolver(),
+                memoryClientFactory ?? SessionStartMemoryHookSupport.ClientFactory(baseUrl),
+                // Only clients we created are ours to dispose; an injected factory's client belongs to
+                // its caller and may be handed back again on the 401-refresh call.
+                disposeClients: memoryClientFactory is null);
+
+            return new SessionStartMemoryOrchestrator(store, provider).GetFragmentAsync(
+                LifecycleFor(sessionId),
+                new SessionStartMemoryContextRequest(baseUrl, scopeRoot, disabled, budget, CancellationToken.None));
+        } catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException) {
+            return Task.FromResult<string?>(null);
+        }
+    }
+
+    /// <summary>Total by construction: <c>GetValue&lt;string&gt;</c> THROWS on a non-string node, and this
+    /// runs on a fail-open hook path whose only job is to find a scope root.</summary>
+    static string? AsString(JsonNode? node) =>
+        node is JsonValue v && v.TryGetValue<string>(out var s) ? s : null;
+
+    /// <summary>The scope root, or null when neither a git root nor a payload cwd is available. Parsing
+    /// is guarded because a malformed enrichment result must degrade to "no injection", never to an
+    /// exception on the lifecycle path.</summary>
+    static string? ScopeRootFrom(string enriched, string? cwd) {
+        try {
+            return AsString(JsonNode.Parse(enriched)?["workspace_root"]) ?? cwd;
+        } catch {
+            return cwd;
+        }
     }
 
     static string? GetArg(string[] args, string flag) {
