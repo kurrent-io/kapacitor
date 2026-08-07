@@ -176,7 +176,7 @@ static class McpSessionsServer {
     }
 
     /// <summary>
-    /// AI-1769: search with auto-widen. The cwd-pinned search runs first; when it
+    /// Search with auto-widen. The cwd-pinned search runs first; when it
     /// comes back thin (see ShouldWiden) a second repo:"all" request runs and the
     /// bodies merge cwd-first. The widened call is best-effort — its failure
     /// returns the first (successful) body untouched.
@@ -210,13 +210,19 @@ static class McpSessionsServer {
                     var widenedArgs = arguments?.DeepClone().AsObject() ?? new JsonObject();
                     widenedArgs["repo"] = "all";
 
-                    using var second = await SendWithRefreshRetryAsync(client, baseUrl, c => c.GetAsync(BuildSearchUrl(baseUrl, widenedArgs, cwdRepoHash)));
+                    // The stdio loop is serial — a stalled widen would withhold the already-ready
+                    // first body and block every subsequent MCP request, so bound it well below the
+                    // shared HttpClient's default 100s timeout.
+                    using var widenCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+                    var       url      = BuildSearchUrl(baseUrl, widenedArgs, cwdRepoHash);
+                    using var second   = await SendWithRefreshRetryAsync(client, baseUrl, c => c.GetAsync(url, widenCts.Token));
 
                     if (second.IsSuccessStatusCode) {
-                        var widenedBody = await second.Content.ReadAsStringAsync();
+                        var widenedBody = await second.Content.ReadAsStringAsync(widenCts.Token);
                         body = MergeWidenedBody(body, widenedBody, limit);
                     }
-                } catch {
+                } catch (Exception ex) {
+                    await Console.Error.WriteLineAsync($"kcap mcp sessions: auto-widen failed ({ex.GetType().Name}: {ex.Message}); returning the pinned-repo result.");
                     // fall through — return the first (successful) body untouched.
                 }
             }
@@ -320,7 +326,7 @@ static class McpSessionsServer {
     }
 
     /// <summary>
-    /// AI-1769 auto-widen, decision half: the implicit cwd-repo pin is the #1 cause
+    /// Auto-widen, decision half: the implicit cwd-repo pin is the #1 cause
     /// of "agent can't find it, human can". Widen ONLY when the pin was implicit
     /// (no explicit repo arg), a cwd repo actually resolved, the caller isn't
     /// paginating, the response isn't an author short-circuit (disambiguation /
@@ -363,7 +369,7 @@ static class McpSessionsServer {
     }
 
     /// <summary>
-    /// AI-1769 auto-widen, merge half: cwd-repo hits first, widened hits appended
+    /// Auto-widen, merge half: cwd-repo hits first, widened hits appended
     /// (deduped by session_id), capped at the requested limit, with a top-level
     /// widened_to_all_repos marker so the agent knows the scope grew. Falls back to
     /// the first body untouched on any parse failure — widening is best-effort and
@@ -374,8 +380,8 @@ static class McpSessionsServer {
             if (JsonNode.Parse(firstBody) is not JsonObject first) return firstBody;
             if (JsonNode.Parse(widenedBody) is not JsonObject widened) return firstBody;
 
-            var firstHits   = first["hits"] as JsonArray ?? [];
-            var widenedHits = widened["hits"] as JsonArray ?? [];
+            var firstHits   = first["hits"] as JsonArray ?? new JsonArray();
+            var widenedHits = widened["hits"] as JsonArray ?? new JsonArray();
             var seen        = new HashSet<string>(StringComparer.Ordinal);
             var merged      = new JsonArray();
 

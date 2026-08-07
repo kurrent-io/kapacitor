@@ -107,14 +107,9 @@ public class McpSessionsServerTests : IDisposable {
 
     /// <summary>
     /// Initializes <paramref name="dir"/> as a git repo with an <c>origin</c> remote pointing at
-    /// <c>https://github.com/{owner}/{repoName}.git</c>. The MCP server resolves its implicit
-    /// cwd-repo pin (<c>McpSessionsServer.ResolveCwdRepoHashAsync</c>) via
-    /// <c>RepositoryDetection.DetectRepositoryAsync</c>, which reads <c>git branch --show-current</c>
-    /// / <c>git remote get-url origin</c> from the CHILD PROCESS's working directory — a bare temp
-    /// dir (as used by every other test in this file, deliberately, to stay independent of ambient
-    /// git state) never resolves an owner/repo pair, so the auto-widen tests need a real repo here.
-    /// <c>git branch --show-current</c> prints the initial branch name even with zero commits, since
-    /// it reads the symbolic HEAD ref rather than requiring history.
+    /// <c>https://github.com/{owner}/{repoName}.git</c>, so the MCP server's implicit cwd-repo pin
+    /// resolves — unlike the bare temp dirs every other test in this file uses. No commit is
+    /// needed: <c>git branch --show-current</c> reads the symbolic HEAD ref and works at zero commits.
     /// </summary>
     static void InitCwdAsGitRepo(string dir, string owner, string repoName) {
         RunGit(dir, "init -q -b main");
@@ -122,9 +117,12 @@ public class McpSessionsServerTests : IDisposable {
     }
 
     static void RunGit(string dir, string arguments) {
+        // Stdout isn't read anywhere below, so it's left inherited rather than redirected —
+        // redirecting without reading risks a full-pipe deadlock if git ever writes enough to
+        // stdout to fill the OS pipe buffer before this process reads stderr and waits.
         var psi = new ProcessStartInfo("git", arguments) {
             WorkingDirectory       = dir,
-            RedirectStandardOutput = true,
+            RedirectStandardOutput = false,
             RedirectStandardError  = true,
             UseShellExecute        = false,
             CreateNoWindow         = true
@@ -483,7 +481,7 @@ public class McpSessionsServerTests : IDisposable {
     }
 
     /// <summary>
-    /// AI-1769 auto-widen, happy path: an implicit cwd pin (no explicit `repo` arg, a real
+    /// Auto-widen, happy path: an implicit cwd pin (no explicit `repo` arg, a real
     /// git repo under the spawned process's cwd) that comes back thinner than the default
     /// limit (10) triggers a second widen request, and the two bodies merge cwd-first with
     /// `session_id` dedup, capped at the limit, and `widened_to_all_repos: true`.
@@ -554,26 +552,11 @@ public class McpSessionsServerTests : IDisposable {
     }
 
     /// <summary>
-    /// AI-1769 F1 regression: a failed widen must never cost the caller the successful first
-    /// result. The spec's failure shape is a THROWN exception on the widen call (an
-    /// HttpRequestException, or a TaskCanceledException from the slower all-repos query
-    /// tripping the client timeout) — before the fix, the former was caught and turned into
-    /// an error tool result and the latter escaped to the outer dispatcher catch-all as
-    /// "internal error", both destroying the already-successful first body.
-    ///
-    /// Coverage limitation: this WireMock-based integration harness cannot force the .NET
-    /// HttpClient to THROW on the widen call. WireMock.Net 1.7.0's fault injection
-    /// (EMPTY_RESPONSE / MALFORMED_RESPONSE_CHUNK) was verified experimentally (a standalone
-    /// WireMockServer + HttpClient probe) to still complete with a 200 response rather than
-    /// raise a client-side exception, and there is no way to route only the second (`repo=all`)
-    /// request to an unreachable endpoint — both requests share one fixed `baseUrl` set at
-    /// process spawn. So this test exercises the reachable failure shape instead: an HTTP
-    /// error status (500) on the widen call. That path was already handled before this fix
-    /// via `if (second.IsSuccessStatusCode)`; what's new here is the surrounding try/catch,
-    /// which cannot be independently proven to fire without a thrown exception. The assertion
-    /// below (first body returned untouched, isError false) holds under both the old and new
-    /// code for this specific failure shape — see the design doc / PR description for why the
-    /// thrown-exception shape couldn't be exercised end-to-end.
+    /// Regression guard: a failed widen must never cost the caller the successful first result.
+    /// Coverage limitation: this WireMock-based harness cannot force HttpClient to THROW on the
+    /// widen call (WireMock.Net 1.7.0 fault injection still completes a 200), so this test
+    /// exercises the HTTP-500 shape of the same contract; the thrown-exception shape is covered
+    /// by the catch-all by inspection.
     /// </summary>
     [Test]
     public async Task Search_sessions_widen_failure_returns_first_body_untouched() {
