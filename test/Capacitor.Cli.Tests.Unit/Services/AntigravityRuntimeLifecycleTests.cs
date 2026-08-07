@@ -4,6 +4,7 @@ using Capacitor.Cli.Daemon.Acp;
 using Capacitor.Cli.Daemon.Services;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Time.Testing;
 using static Capacitor.Cli.Tests.Unit.Services.AntigravityRuntimeFakes;
 
 namespace Capacitor.Cli.Tests.Unit.Services;
@@ -379,13 +380,65 @@ public class AntigravityRuntimeLifecycleTests {
 
         var notes = envelopes.Where(e => e.Kind == AcpEventKind.SystemNote).ToList();
 
-        // Two rejected messages, two notes — never one summary note for both.
+        // Two rejected messages, two notes — never one summary note for both, and never a note for the
+        // turn that WAS queued (three sends, two of them rejected, would otherwise read as three).
         await Assert.That(notes.Count).IsEqualTo(2);
         await Assert.That(notes[0].Text).IsNotNull();
         await Assert.That(notes[0].Text!).Contains("not delivered");
+    }
 
-        // The turn that DID get queued is not announced as lost — a note per rejection, not per send.
-        await Assert.That(envelopes.Any(e => e.Kind == AcpEventKind.SessionStarted)).IsTrue();
+    /// <summary>
+    /// <b>A REJECTED input must not refresh the liveness attestation.</b> The rejection note goes onto
+    /// the transcript through the same emit path as agent output, whose contract is to advance the
+    /// activity clock ("the content was genuinely produced"). That justification does not hold for a
+    /// note the DAEMON authored about input it refused: the queue is full only because a turn is
+    /// wedged, so every retry against a stuck agent would reset <c>IdleForMs</c> and bump
+    /// <c>ActivitySeq</c> — the user's attempts to unstick it keeping the supervisor from ever seeing
+    /// it as idle. Bounded for a reviewer (its TTL arm fires regardless), unbounded for a hosted agent.
+    ///
+    /// <para>Both attestation fields are asserted, because they fail independently: <c>ActivitySeq</c>
+    /// is what a server compares between reports, <c>IdleForMs</c> is what a reaper thresholds on.</para>
+    /// </summary>
+    [Test]
+    public async Task A_rejected_enqueue_does_not_advance_the_activity_clock() {
+        var time  = new FakeTimeProvider();
+        var clock = new AgentActivityClock(time);
+
+        await using var rt = FakeRuntime(turn: FakeTurn.NeverEnds, queueCap: 1);
+
+        rt.ActivityClock = clock;
+
+        await rt.SendUserInputAsync("one").WaitAsync(HangGuard);
+
+        // Turn 1 is genuinely executing (its init has been read), so the queue state below is real —
+        // and the launch's own stamps have already landed before the readings are taken.
+        await rt.WaitForConversationIdAsync(CancellationToken.None).WaitAsync(HangGuard);
+
+        await rt.SendUserInputAsync("two").WaitAsync(HangGuard);
+
+        // Non-zero idleness to lose: without this the "unchanged" assertion below would hold trivially
+        // at 0 whether or not the clock advanced.
+        time.Advance(TimeSpan.FromSeconds(7));
+
+        var seqBefore  = clock.ActivitySeq;
+        var idleBefore = clock.IdleForMs;
+
+        await Assert.That(idleBefore).IsEqualTo(7000UL);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => rt.SendUserInputAsync("three").WaitAsync(HangGuard));
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => rt.SendUserInputAsync("four").WaitAsync(HangGuard));
+
+        // The notes DID reach the transcript — this is about the clock, not about suppressing them.
+        var notes = 0;
+        while (rt.Envelopes.TryRead(out var env))
+            if (env.Kind == AcpEventKind.SystemNote) notes++;
+
+        await Assert.That(notes).IsEqualTo(2);
+
+        await Assert.That(clock.ActivitySeq).IsEqualTo(seqBefore);
+        await Assert.That(clock.IdleForMs).IsEqualTo(idleBefore);
     }
 
     /// <summary>A turn child that emits its <c>init</c> and then holds the turn open until the test

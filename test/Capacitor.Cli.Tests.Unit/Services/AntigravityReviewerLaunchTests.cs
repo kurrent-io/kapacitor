@@ -65,15 +65,19 @@ public class AntigravityReviewerLaunchTests {
     /// <param name="mcpServers">The literal per-launch MCP server list. No production caller populates
     /// it today (see the field's own comment on <see cref="RuntimeStartContext"/>); a test passes one
     /// to pin which arm forwards it.</param>
+    /// <param name="isReview">The PR-review launch kind (<c>LaunchKind.Review</c>) — a THIRD shape,
+    /// distinct from both arms above and refused outright; see the test that pins it.</param>
     static RuntimeStartContext Ctx(
             bool isReviewFlow = true, AgentActivityClock? clock = null, string? model = null,
             string? serverUrl = "http://kcap.test", string capacitorPath = "/usr/local/bin/kcap",
-            string[]? mcpAllowlist = null, IReadOnlyList<AcpMcpServerSpec>? mcpServers = null) => new(
+            string[]? mcpAllowlist = null, IReadOnlyList<AcpMcpServerSpec>? mcpServers = null,
+            bool isReview = false) => new(
         AgentId: "agent-1", Vendor: "antigravity", SourceRepoPath: "/repo",
         Worktree: new WorktreeInfo(Path: "/abs/wt", Branch: "b", SourceRepo: "/repo"),
         Prompt: "review this",
         Model: model, Effort: null, Tools: null,
-        IsReview: false, IsReviewFlow: isReviewFlow, Review: null,
+        IsReview: isReview, IsReviewFlow: isReviewFlow,
+        Review: isReview ? new ReviewLaunchInfo("owner", "repo", 42) : null,
         Cols: 80, Rows: 24,
         ServerUrl: serverUrl, DaemonBridgeUrl: null, CapacitorPath: capacitorPath,
         McpAllowlist: mcpAllowlist,
@@ -799,6 +803,54 @@ public class AntigravityReviewerLaunchTests {
         await Assert.That(config).Contains("\"agent-1\"");
         await Assert.That(config).Contains("\"KCAP_URL\"");
         await Assert.That(config).DoesNotContain("caller-supplied");
+    }
+
+    /// <summary>
+    /// <b>The THIRD launch shape is refused, not silently degraded.</b> Everything hosted here keys off
+    /// <c>!ctx.IsReviewFlow</c>, which is true for <c>LaunchKind.Default</c> AND
+    /// <c>LaunchKind.Review</c> — so a PR-review launch would otherwise take the hosted arm and run
+    /// with <c>--dangerously-skip-permissions</c>, an EMPTY MCP surface (no <c>kcap mcp review</c>
+    /// tools) and no review system prompt: only <c>PtyHostedAgentRuntimeFactory</c> builds
+    /// <c>LauncherContext.ReviewLaunch</c>, so nothing on this path can supply them. A PR-review agent
+    /// with none of its review tools and no error is worse than no PR-review agent.
+    ///
+    /// <para>Refused BEFORE the containment ladder deliberately: no amount of installing, affirming or
+    /// consenting can make this shape work, so the operator should read that rather than "install
+    /// agy". The shipped UI cannot request it today (the server's
+    /// <c>AgentStoreDataService.RequestLaunchReviewAgentAsync</c> hard-codes Claude, and
+    /// <c>ReviewPrDialog</c> has no vendor picker) — but the hub's <c>RequestLaunchAgent</c> takes
+    /// <c>vendor</c> and <c>kind</c> as independent client-supplied arguments and rejects only
+    /// Codex+Review, so this is a wire-reachable shape, not merely a latent one.</para>
+    /// </summary>
+    [Test]
+    public async Task A_pr_review_launch_is_refused_rather_than_taking_the_hosted_arm() {
+        var spy = new SpyTurnSource();
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            Factory(EnabledConfig(), spy.SpawnAsync)
+                .StartAsync(Ctx(isReviewFlow: false, isReview: true), CancellationToken.None));
+
+        await Assert.That(ex!.Message).StartsWith("antigravity_pr_review_unsupported");
+
+        // Refused, not merely reported: nothing was spawned.
+        await Assert.That(spy.Spawns.Count).IsEqualTo(0);
+    }
+
+    /// <summary>The negative control for the refusal above: an ordinary hosted launch shares its
+    /// <c>!IsReviewFlow</c> arm, so a guard written against the wrong predicate would refuse every
+    /// interactive agent — and this vendor's whole hosted lane with it.</summary>
+    [Test]
+    public async Task An_ordinary_hosted_launch_is_not_refused_as_a_pr_review() {
+        Skip.Unless(!OperatingSystem.IsWindows(), "POSIX-only: the per-launch home cannot be owner-only on Windows.");
+
+        var spy = new SpyTurnSource();
+
+        var start = await Factory(EnabledConfig(), spy.SpawnAsync)
+            .StartAsync(Ctx(isReviewFlow: false), CancellationToken.None).WaitAsync(HangGuard);
+
+        await using var runtime = start.Runtime;
+
+        await Assert.That(spy.Spawns.Count).IsGreaterThan(0);
     }
 
     /// <summary>A review whose result-channel inputs are incomplete must STILL fail closed with the

@@ -452,7 +452,9 @@ internal sealed class AntigravityHostedAgentRuntime : IHostedAgentRuntime, IAcpT
     /// transcript: the fault reaches the daemon log through the orchestrator's handler, and the note
     /// is the only surface the person who typed the message actually sees. One note per rejected
     /// message — each is a separately lost message, and summarising them is the silent drop again in
-    /// miniature.</para>
+    /// miniature. That note goes out through <see cref="EmitDaemonNotice"/>, NOT
+    /// <see cref="EmitEnvelope"/>: a refusal must not refresh the liveness attestation of the very
+    /// agent whose wedged turn caused it.</para>
     ///
     /// <para>A TERMINAL runtime is deliberately NOT symmetric: it still only logs (and faults an
     /// acknowledging caller, as before). The transcript channel is completed on entry to
@@ -483,7 +485,7 @@ internal sealed class AntigravityHostedAgentRuntime : IHostedAgentRuntime, IAcpT
           + "{RejectedCount} rejected this session so far (the turn worker is likely stuck on a "
           + "stalled turn).", _pendingTurnsCapacity, rejected);
 
-        EmitEnvelope(new AcpEventEnvelope(
+        EmitDaemonNotice(new AcpEventEnvelope(
             Kind: AcpEventKind.SystemNote,
             Text: $"Your message was not delivered — this agent's input queue is full "
                 + $"({_pendingTurnsCapacity} waiting) while it works through an earlier message. "
@@ -877,14 +879,30 @@ internal sealed class AntigravityHostedAgentRuntime : IHostedAgentRuntime, IAcpT
         return true;
     }
 
-    void EmitEnvelope(AcpEventEnvelope env) {
+    /// <summary>An envelope the AGENT produced. Advances the activity clock — that is what makes this
+    /// runtime's output the liveness signal a supervisor reads.</summary>
+    void EmitEnvelope(AcpEventEnvelope env) => Write(env, agentActivity: true);
+
+    /// <summary>
+    /// An envelope the DAEMON authored ABOUT the agent — today, the full-queue rejection note. Reaches
+    /// the transcript identically, but does NOT advance the activity clock.
+    ///
+    /// <para>The clock's contract is "the content was genuinely produced" by the agent, and a refusal
+    /// is the opposite: the queue is full only because a turn is wedged, so counting the notice as
+    /// activity would let every user retry against a stuck agent reset <c>IdleForMs</c> and bump
+    /// <c>ActivitySeq</c> — the attempts to unstick it are what keep it from ever being reported idle.
+    /// A reviewer is bounded by its TTL arm regardless; a hosted agent is not bounded at all.</para>
+    /// </summary>
+    void EmitDaemonNotice(AcpEventEnvelope env) => Write(env, agentActivity: false);
+
+    void Write(AcpEventEnvelope env, bool agentActivity) {
         // Advance BEFORE the channel write, never after: a reader blocked on Envelopes.ReadAsync can
         // wake the instant TryWrite makes the item visible, on another thread, with no ordering
         // relationship to what this one does next — so the reverse order is a race a fast reader wins,
         // observing an envelope whose activity the clock has not yet recorded. Same reasoning
         // AcpHostedAgentRuntime.EmitEnvelope documents. Advanced even on the dropped-because-completed
         // path below: the content was genuinely produced.
-        ActivityClock?.Advance();
+        if (agentActivity) ActivityClock?.Advance();
 
         if (!_transcript.Writer.TryWrite(env))
             _logger.LogDebug("Antigravity: dropped a transcript envelope — the transcript channel is already completed.");

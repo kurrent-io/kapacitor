@@ -20,6 +20,10 @@ namespace Capacitor.Cli.Commands;
 /// <para>Deliberately does NOT enable the reviewer. Affirming a build and consenting to unattended
 /// review are separate decisions, and collapsing them would let an upgrade acknowledgement silently
 /// turn the feature on.</para>
+///
+/// <para>The converse does not hold uniformly either: <c>antigravity</c>'s floor is seeded WITHOUT a
+/// consent event, because it also gates hosted <c>agy</c> launches. That leaves one window this verb
+/// is the remedy for — see the per-vendor exception on <see cref="ReviewerVersionStore"/>.</para>
 /// </summary>
 public static class DaemonReviewerCommand {
     public static Task<int> HandleAsync(string[] args) {

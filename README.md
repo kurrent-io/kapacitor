@@ -877,6 +877,12 @@ action from you** — which matters more here than for the other reviewers, sinc
 (observed going 1.1.8 → 1.1.10 mid-session). A build older than the recorded minimum, or one whose
 `agy --version` cannot be read, is withheld with a coded reason naming both versions.
 
+Because this vendor's minimum is recorded when `agy` first resolves rather than when you enable the
+reviewer, there is one window worth knowing about: install `agy`, run a daemon with the reviewer *off*,
+then upgrade `agy` and only afterwards turn the reviewer on — and the recorded minimum is still the older
+build you started with, so a later *downgrade* back to it would be admitted. Run the command below once
+after enabling the reviewer if you want the minimum to be the build you actually reviewed with.
+
 ```bash
 kcap daemon reviewer affirm --vendor antigravity
 ```
@@ -888,7 +894,11 @@ enable the reviewer. No kcap release is ever needed.
 
 Like Gemini and Kiro, this never makes Antigravity a default reviewer — it is only ever reached by an
 explicit `vendor: "antigravity"`. Borrowed (in-place) review is not offered; a borrowed request falls back
-to a daemon-owned worktree.
+to a daemon-owned worktree. **PR review (`kcap review <pr>` / the dashboard's Review PR action) is not
+supported on this vendor either** — that agent needs the `kcap mcp review` tool surface, which only the
+PTY-backed vendors are given, so an Antigravity PR-review launch is refused with
+`antigravity_pr_review_unsupported` rather than started without its review tools. Use Claude for a PR
+review.
 
 #### Hosted Antigravity agents run without permission prompts
 

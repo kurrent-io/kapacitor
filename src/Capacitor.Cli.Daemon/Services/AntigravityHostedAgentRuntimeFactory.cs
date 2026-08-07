@@ -28,13 +28,18 @@ internal interface IAgyTurnDiagnostics {
 /// review-flow reviewer and an interactive hosted agent — over the exec-per-turn
 /// <see cref="AntigravityHostedAgentRuntime"/>.
 ///
-/// <para><b>The two launch shapes differ in exactly two things:</b> one argument
+/// <para><b>The two launch shapes it SERVES differ in exactly two things:</b> one argument
 /// (<c>--dangerously-skip-permissions</c>, hosted only; see <see cref="BuildTurnPsi"/>) and the
 /// injected MCP surface (the <c>kcap-flow-result</c> channel plus the flow definition's allowlist,
 /// review only; see <see cref="BuildReviewFlowMcp"/>). In particular the per-launch isolated
 /// <c>HOME</c> is NOT reviewer-only: this runtime is itself the transcript source, so a launch under
 /// the operator's own home is captured a second time by the hook lane — isolation removes a duplicate
 /// rather than removing capture.</para>
+///
+/// <para><b>The context carries a THIRD, which this factory refuses.</b> <c>LaunchKind.Review</c> (a
+/// PR review, <c>ctx.IsReview</c>) is neither of the above and shares the hosted arm's
+/// <c>!IsReviewFlow</c> predicate, so it is rejected at the top of <see cref="StartAsync"/> with
+/// <c>antigravity_pr_review_unsupported</c> rather than served degraded — see the guard for why.</para>
 ///
 /// <para><b>What this factory owns that the runtime deliberately does not:</b> the argv and
 /// environment of every turn child, the per-launch isolated <c>HOME</c> (and its removal), the
@@ -210,6 +215,21 @@ internal sealed partial class AntigravityHostedAgentRuntimeFactory(
         new(ReviewerStateDir(config), DaemonRunner.AntigravityVendor);
 
     public async Task<HostedRuntimeStart> StartAsync(RuntimeStartContext ctx, CancellationToken ct) {
+        // A THIRD launch shape. Everything hosted below keys off !ctx.IsReviewFlow, which is true for
+        // LaunchKind.Default AND LaunchKind.Review — so without this a PR-review launch takes the
+        // hosted arm and runs with --dangerously-skip-permissions, an EMPTY MCP surface and no review
+        // system prompt, because only PtyHostedAgentRuntimeFactory builds LauncherContext.ReviewLaunch
+        // (the `kcap mcp review` config and that prompt). A PR-review agent silently missing every
+        // review tool is worse than none; refuse it.
+        //
+        // FIRST, ahead of the containment ladder: no install, affirmation or consent can make this
+        // shape work, so an operator should read that rather than a remedy that would not help.
+        if (ctx.IsReview)
+            throw new InvalidOperationException(
+                "antigravity_pr_review_unsupported: this runtime hosts interactive agents and "
+              + "review-flow reviewers only. A PR review needs the `kcap mcp review` tool surface and "
+              + "review prompt, which only the PTY launchers build — launch the PR review with Claude.");
+
         // ONE ladder, told which shape of launch it is judging. Every arm but consent applies to both
         // — they protect the per-launch isolated home below, which a hosted launch relies on exactly
         // as a review does. Defence in depth for a review (the orchestrator's unattended gate runs
@@ -430,11 +450,27 @@ internal sealed partial class AntigravityHostedAgentRuntimeFactory(
     /// worktree is not:</b> measured on agy 1.1.10, with it an absolute <c>view_file</c> of a path
     /// OUTSIDE the workspace succeeds, and without it the same read is refused with a typed
     /// <c>tool_info.error</c>. Nothing here should be read as the daemon-owned worktree confining what
-    /// a hosted agent can see. The precedent is Claude, which passes <c>--permission-mode
-    /// bypassPermissions</c> — one axis, already shipped, and grouped with this concept by
-    /// <see cref="IHostedAgentLauncher"/>'s own doc. Codex is NOT the analogue: its posture is two
-    /// independent axes, so a no-prompt Codex still sits on a sandbox value, whereas this vendor has
-    /// one axis with nothing underneath it.</para>
+    /// a hosted agent can see.</para>
+    ///
+    /// <para><b>What Claude is, and is NOT, a precedent for.</b> It is the precedent for a SINGLE-AXIS
+    /// no-prompt posture existing at all: <c>--permission-mode bypassPermissions</c> is one flag with
+    /// nothing underneath it, already shipped, and grouped with this concept by
+    /// <see cref="IHostedAgentLauncher"/>'s own doc. Codex is not that analogue — its posture is two
+    /// independent axes (<c>Sandbox</c> × <c>Approval</c>), so a no-prompt Codex still sits on a
+    /// sandbox value, whereas this vendor and Claude each have one axis and no floor beneath it.
+    ///
+    /// <b>It is explicitly NOT a precedent for WHICH launch kind gets that posture — Claude's split
+    /// runs the other way.</b> <c>ClaudeLauncher.BuildArgs</c> adds the flag only inside its
+    /// <c>ctx.IsReviewFlow</c> branch (and not for a borrowed workspace), and
+    /// <c>ClaudeLauncher.DisablesApprovalPrompts</c> is
+    /// <c>ctx.IsReviewFlow &amp;&amp; ctx.Work == WorkLocation.OwnedWorktree</c> — its own comment
+    /// states that interactive launches always prompt. So Claude widens its REVIEWER and prompts on
+    /// its interactive agent, the mirror image of the split here, and for its own reason: a Claude
+    /// reviewer's writes are confined to a daemon-owned throwaway worktree, whereas an interactive
+    /// Claude has a human present to answer a dialog. This runtime has neither property — a hosted
+    /// <c>agy</c> turn is exec-per-turn with no dialog anyone could answer, and a soft-denied tool
+    /// still exits 0, so the agent merely looks broken. Do NOT "align with the precedent" by moving
+    /// this flag onto the reviewer arm; that is the exact direction the split exists to prevent.</para>
     ///
     /// <para><b>What is deliberately absent.</b> No <c>--dangerously-skip-permissions</c> for a
     /// reviewer: it runs in a daemon-OWNED worktree and needs only to read it, which agy's headless

@@ -238,27 +238,7 @@ public static partial class DaemonRunner {
         // this early — the host's logging pipeline isn't built yet.
         var coverageStateDir = Path.Combine(
             config.StateDir ?? DaemonLockPaths.Directory, DaemonLockPaths.Sanitize(config.Name));
-        // Seed each gated reviewer's affirmation from the CONSENT event, not from a first refusal: an
-        // operator who has just turned a reviewer on should not be refused over an upgrade that never
-        // happened, which teaches people to clear the gate without reading it. Cheap, and a no-op for
-        // a vendor the operator has not opted into.
-        SeedReviewerAffirmation(
-            coverageStateDir, AcpVendorDescriptors.Kiro.Vendor,
-            config.KiroUnattendedReviewerEnabled, config.KiroPath);
-
-        SeedReviewerAffirmation(
-            coverageStateDir, AcpVendorDescriptors.Gemini.Vendor,
-            config.GeminiUnattendedReviewerEnabled, config.GeminiPath);
-
-        // Antigravity is the one vendor whose floor is NOT reviewer-only: it gates hosted agy launches
-        // too (the isolated HOME they rely on is the containment it protects), and those ship on by
-        // default with no consent flag. Seeding from the consent event would therefore leave every
-        // consent-less daemon refusing hosted launches as version_no_minimum forever — the reviewer
-        // gate removed from the front of the ladder and reinstated behind it. Installing agy IS the
-        // event here; the resolver's null-for-a-missing-binary answer is what keeps this a no-op
-        // otherwise, at the cost of one bounded `agy --version` on the first boot that finds no
-        // record, never again.
-        SeedVersionFloor(coverageStateDir, AntigravityVendor, config.AntigravityPath);
+        SeedReviewerFloors(coverageStateDir, config);
 
         // Recovers reviewer homes left by a SIGKILLed predecessor. Runs unconditionally: a daemon
         // whose operator has since disabled the reviewer still owns whatever its last incarnation
@@ -861,6 +841,43 @@ public static partial class DaemonRunner {
     /// </summary>
     internal static bool ShouldWarnCursorUnavailable(IEnumerable<IHostedAgentRuntimeFactory> factories) =>
         factories.FirstOrDefault(f => f.Vendor == "cursor") is { } cursorFactory && !cursorFactory.IsAvailable();
+
+    /// <summary>
+    /// Every gated vendor's version floor, seeded in one place — the whole block <see cref="RunAsync"/>
+    /// runs before anything else touches a reviewer record.
+    ///
+    /// <para><b>The asymmetry between the three is the point, and it is why this is a method rather
+    /// than three lines inline.</b> Nothing invokes <see cref="RunAsync"/> from a test — it builds and
+    /// runs the entire DI host — so seeding stated only there is asserted by nothing, and a test that
+    /// calls <see cref="SeedVersionFloor"/> by hand pins the directory shape while leaving the
+    /// CONDITION each vendor is seeded under unpinned. Driving this method instead makes the
+    /// difference between the vendors the thing under test.</para>
+    ///
+    /// <para>Kiro and Gemini seed from the CONSENT event, not from a first refusal: an operator who
+    /// has just turned a reviewer on should not be refused over an upgrade that never happened, which
+    /// teaches people to clear the gate without reading it. Cheap, and a no-op for a vendor the
+    /// operator has not opted into.</para>
+    ///
+    /// <para>Antigravity is the one vendor whose floor is NOT reviewer-only: it gates hosted
+    /// <c>agy</c> launches too (the isolated <c>HOME</c> they rely on is the containment it protects),
+    /// and those ship on by default with no consent flag. Seeding from the consent event would
+    /// therefore leave every consent-less daemon refusing hosted launches as
+    /// <c>version_no_minimum</c> forever — the reviewer gate removed from the front of the ladder and
+    /// reinstated behind it. Installing <c>agy</c> IS the event here; the resolver's
+    /// null-for-a-missing-binary answer is what keeps this a no-op otherwise, at the cost of one
+    /// bounded <c>agy --version</c> on the first boot that finds no record, never again.</para>
+    /// </summary>
+    internal static void SeedReviewerFloors(string stateDir, DaemonConfig config) {
+        SeedReviewerAffirmation(
+            stateDir, AcpVendorDescriptors.Kiro.Vendor,
+            config.KiroUnattendedReviewerEnabled, config.KiroPath);
+
+        SeedReviewerAffirmation(
+            stateDir, AcpVendorDescriptors.Gemini.Vendor,
+            config.GeminiUnattendedReviewerEnabled, config.GeminiPath);
+
+        SeedVersionFloor(stateDir, AntigravityVendor, config.AntigravityPath);
+    }
 
     /// <summary>
     /// Records the installed build as affirmed the first time a vendor's reviewer is enabled.
