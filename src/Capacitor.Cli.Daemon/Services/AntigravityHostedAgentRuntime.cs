@@ -986,11 +986,14 @@ internal sealed class AntigravityHostedAgentRuntime : IHostedAgentRuntime, IAcpT
         // Asked BEFORE the handle is disposed, for the same reason ProcessTurnAsync's own capture is:
         // a disposed process object reports HasExited true, so asking afterwards mistakes "no longer
         // observable" for "confirmed exited" — the opposite of what the gate below is for.
-        var inFlightConfirmed = _current is not { } inFlight || inFlight.HasExited;
+        // ONE read of the volatile field, not two: the second could observe a different value and
+        // judge a process this method never disposed.
+        var inFlight          = _current;
+        var inFlightConfirmed = inFlight is null || inFlight.HasExited;
 
-        if (_current is { } current) {
+        if (inFlight is not null) {
             try {
-                await current.DisposeAsync().ConfigureAwait(false);
+                await inFlight.DisposeAsync().ConfigureAwait(false);
             } catch {
                 // Best-effort.
             }
