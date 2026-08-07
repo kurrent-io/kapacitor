@@ -241,20 +241,12 @@ public class WorktreeManagerTests {
         }
     }
 
-    /// <summary>
-    /// A superproject with a submodule must snapshot. The snapshot lane refused any index carrying a
-    /// gitlink, which made borrowed review impossible on every repo that uses one — kcap-server pins
-    /// its CLI that way, so our own primary repo could not be reviewed by any snapshot vendor.
-    ///
-    /// <para>The submodule arrives as PLAIN CONTENT: the reviewer sees the files in the developer's
-    /// checkout, which is what "borrowed" means, and gains no git identity for them. Its .git must not
-    /// be copied — it is a gitlink file pointing into the superproject's .git/modules, so carrying it
-    /// would leave a dangling reference into a directory the snapshot deliberately does not have.</para>
-    /// </summary>
+    /// <summary>The submodule arrives as plain content — dirty and untracked files included, so this
+    /// cannot pass against a pinned-commit checkout — and with no .git of its own.</summary>
     [Test]
     public async Task BorrowedSnapshot_CarriesSubmoduleFilesAsPlainContentWithoutItsGit() {
-        var (_, sub)   = MakeUpstreamWithSideRef("refs/pull/91/head", out _);
-        var (_, super) = MakeUpstreamWithSideRef("refs/pull/92/head", out _);
+        var (subUpstream, sub)     = MakeUpstreamWithSideRef("refs/pull/91/head", out _);
+        var (superUpstream, super) = MakeUpstreamWithSideRef("refs/pull/92/head", out _);
         var root = Path.Combine(Path.GetTempPath(), "kcap-borrowed-sub-" + Guid.NewGuid().ToString("N")[..8]);
         try {
             File.WriteAllText(Path.Combine(sub, "lib.txt"), "sub-tracked");
@@ -287,7 +279,8 @@ public class WorktreeManagerTests {
                 await WorktreeManager.RemoveAsync(snapshot);
             }
         } finally {
-            try { Directory.Delete(root, true); } catch { /* best-effort */ }
+            foreach (var dir in new[] { root, sub, super, subUpstream, superUpstream })
+                try { Directory.Delete(dir, true); } catch { /* best-effort */ }
         }
     }
 

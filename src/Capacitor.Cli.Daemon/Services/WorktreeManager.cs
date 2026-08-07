@@ -839,11 +839,9 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
                 generation = await CreateReviewContextGenerationAsync(
                     source, reviewContextRoot, sourceHead, initialIndex, caseSensitive, plan, ct);
 
-            // Submodules are snapshotted as PLAIN CONTENT. Borrowing means the reviewer sees the
-            // developer's working tree, and for a submodule that is the checked-out files — not the
-            // pinned commit, which a fresh clone would give instead. Their .git is never copied: it
-            // is a gitlink file into the superproject's .git/modules, which this snapshot does not
-            // have, so carrying it would leave a dangling reference.
+            // Submodules snapshot as plain content: borrowing shows the developer's checked-out
+            // files, not the pinned commit. Their .git is never copied — it is a gitlink into the
+            // superproject's .git/modules, which this snapshot does not have.
             var submodulePrefixes = ReadSubmodulePrefixes(initialIndex);
 
             var manifest = await ReadSourceManifestAsync(source, plan, caseSensitive, submodulePrefixes, ct);
@@ -945,7 +943,10 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
             // checked BEFORE git is invoked here.
             EnsureNoLinkedComponents(source, subDir, subRel);
 
-            if (!Directory.Exists(subDir)) continue;   // uninitialized submodule: nothing checked out
+            // Gate on the submodule's OWN git, not on the directory: `git submodule` leaves an empty
+            // directory for an uninitialized one, so Directory.Exists is true there and `git -C`
+            // would fail and abort the entire snapshot — the opposite of skipping it.
+            if (!Path.Exists(Path.Combine(subDir, ".git"))) continue;
 
             // Nested submodules are NOT walked. Failing is deliberate: a silently incomplete snapshot
             // is invisible to the reviewer, who would report on source it never saw.
@@ -960,8 +961,6 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
         // A stage-only addition has no working-tree bytes to mirror. Skip those exact raw paths
         // before decoding so an unrelated, absent non-UTF8 index entry cannot interfere with the
         // review-context extractor's classify-before-decode guarantee.
-        var deleted = await RunGitCaptureBytes(source, GitTimeout, true, ct,
-            "ls-files", "--deleted", "-z");
         var deletedPaths = deletedRecords
             .Select(static path => Convert.ToBase64String(path))
             .ToHashSet(StringComparer.Ordinal);
