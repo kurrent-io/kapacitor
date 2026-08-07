@@ -34,10 +34,12 @@ public sealed class TrayViewModel : ReactiveObject, IDisposable {
     // not track in-flight state.
     public ReactiveCommand<bool, Unit> TogglePauseCommand { get; }
 
-    // Both parameters are an agent id; RequestStop's label comes from the CURRENT MenuModel
-    // (the TrayAgentEntry.Label for this id, consistent with spec §7's one code path for both
-    // the tray menu item and the main-window row button), not a captured value, so it reflects
-    // whatever is rendered at click time. Fire-and-forget: AgentActionService never throws and
+    // The parameter is an agent id; RequestStop's label/kind come from the CURRENT MenuModel
+    // (the TrayAgentEntry for this id, consistent with spec §7's one code path for both the tray
+    // menu item and the main-window row button), not a captured value, so they reflect whatever
+    // is rendered at click time. A missing entry (defensive only — cannot happen from a live
+    // menu) falls back to a kind that IsProtectedKind treats as protected, fail-safe rather than
+    // silently allowing an unforced stop. Fire-and-forget: AgentActionService never throws and
     // tracks its own in-flight state (StopsInFlight below).
     public ReactiveCommand<string, Unit> StopAgentCommand { get; }
     public ReactiveCommand<string, Unit> OpenInWebCommand  { get; }
@@ -54,8 +56,10 @@ public sealed class TrayViewModel : ReactiveObject, IDisposable {
         _pause = pause;
 
         TogglePauseCommand = ReactiveCommand.Create<bool>(pause.RequestToggle);
-        StopAgentCommand = ReactiveCommand.Create<string>(id =>
-            actions.RequestStop(id, MenuModel.Agents.FirstOrDefault(a => a.Id == id)?.Label ?? id));
+        StopAgentCommand = ReactiveCommand.Create<string>(id => {
+            var entry = MenuModel.Agents.FirstOrDefault(a => a.Id == id);
+            actions.RequestStop(id, entry?.Label ?? id, entry?.Kind ?? "");
+        });
         OpenInWebCommand = ReactiveCommand.Create<string>(actions.OpenInWeb);
         OpenMainWindowCommand = ReactiveCommand.Create(openMainWindow ?? (() => { }));
         QuitCommand = ReactiveCommand.Create(quit ?? (() => { }));
@@ -179,7 +183,7 @@ public sealed class TrayViewModel : ReactiveObject, IDisposable {
             .Where(a => a.Status is "Starting" or "Running")
             .OrderBy(a => a.CreatedAt)
             .ThenBy(a => a.Id, StringComparer.Ordinal)
-            .Select(a => new TrayAgentEntry(a.Id, Label(a), StopEnabled: !stopsInFlight.Contains(a.Id)))
+            .Select(a => new TrayAgentEntry(a.Id, Label(a), a.Kind, StopEnabled: !stopsInFlight.Contains(a.Id)))
             .ToList();
     }
 

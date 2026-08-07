@@ -40,12 +40,6 @@
                            IsVisible="{Binding Reason, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
             </StackPanel>
 
-            <Border x:Name="BannerBorder"
-                    IsVisible="{Binding Banner, Converter={x:Static ObjectConverters.IsNotNull}}"
-                    Background="#33FFB300" CornerRadius="4" Padding="8">
-                <TextBlock x:Name="BannerText" Text="{Binding Banner}" TextWrapping="Wrap" />
-            </Border>
-
             <StackPanel Spacing="8">
                 <Border Height="1" Background="{DynamicResource SystemControlForegroundBaseHighBrush}" Opacity="0.7" />
                 <TextBlock Text="Agents" FontSize="14" FontWeight="Bold" />

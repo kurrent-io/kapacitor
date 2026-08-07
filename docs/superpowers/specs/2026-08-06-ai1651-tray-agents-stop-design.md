@@ -45,16 +45,26 @@ pause-new-launches toggle.
    decision-shaped (state, menu model, commands) from `IDaemonClientService`; a dumb
    `TrayIconManager` renders it into `TrayIcon`/`NativeMenu`. All logic is headless-testable; only
    the adapter needs the manual macOS verification the issue budgets.
-5. **Stop is graceful-only in the app this slice** (`StopV2 force:false`). The daemon refuses to
-   stop a protected review/flow participant without force, replying an `Error` frame whose text is
-   display-quality; the app surfaces that text verbatim and does not offer a force path (CLI
-   escape hatch: `kcap agent stop --force <id>`). A confirm-then-force UX is deferred.
+5. **Stop is graceful for a plain agent, confirm-then-force for a protected kind** (owner-approved
+   revision — the original plan below was graceful-only, with a confirm-then-force UX deferred;
+   repo-owner feedback moved it into this slice instead). Protected = the agent's wire `Kind`
+   (KindText vocabulary `agent`/`review`/`review-flow`) is anything other than exactly `"agent"` —
+   mirroring the daemon's own `Kind != LaunchKind.Default` check and the CLI's `IsProtectedKind`,
+   and failing safe (protected) on a kind this build doesn't recognise. A plain agent's Stop click
+   sends `StopV2 force:false` exactly as before — no dialog. A protected kind's Stop click first
+   opens a small dialog (title **"Stop review participant?"**, body **"{label} is a review
+   participant. Stopping it will strand its flow. Stop anyway?"**, buttons **[Stop anyway]**
+   (destructive default) / **[Cancel]**) — owned by the main window when it is visible, shown
+   standalone and `Activate()`d when it is hidden, since a tray-initiated stop must still surface
+   the prompt. Cancel is a quiet no-op (in-flight clears, no daemon call, no toast); Stop anyway
+   sends `StopV2 force:true`. The CLI escape hatch (`kcap agent stop --force <id>`) still exists
+   but is no longer the app's only path past a protection refusal.
 
 ## 3. Scope & non-goals
 
 In scope: tray icon + native menu, tray state machine, pause toggle, per-agent Stop and
 open-in-web (tray + main window), main-window Agents grid, hide-to-tray lifecycle, `Capacitor.Cli.Core`
-one-shot IPC ops, transient error banner, headless VM tests + scripted-server ops tests.
+one-shot IPC ops, transient error toast, headless VM tests + scripted-server ops tests.
 
 Non-goals (explicitly out):
 
@@ -62,7 +72,6 @@ Non-goals (explicitly out):
   (The tray state enum leaves room; this slice does not subscribe to `ConsentSubscribe`.)
 - Onboarding, distribution, dock-icon hiding (`LSUIElement` is an app-bundle concern) — AI-1653.
 - Settings surfaces — AI-1654.
-- Force-stop UX in the app (decision 5).
 - Migrating the CLI's `AgentCommand` onto the new Core ops — it keeps its own socket code.
 - `ClientHelloDto` self-identification for the app's subscribe connection — remains a ledgered
   nicety (AI-1657 cross-cutting).
@@ -136,10 +145,13 @@ Quit
   `Starting` or `Running` (same predicate as `active_agents`), labeled
   `{kind} · {vendor} · {repo last path segment}` (`—` when `repo_path` null), ordered `created_at`
   asc, id ordinal tiebreak (the wire order pin). Requester stays in the main window.
-- **Stop** sends `StopV2 force:false` for that id; the entry's Stop item disables while in flight.
+- **Stop** is one menu item regardless of kind — no visual change here (§7 decision 5): a plain
+  agent sends `StopV2 force:false` immediately; a protected kind opens the confirm-then-force
+  dialog first. The entry's Stop item disables while in flight either way, including while its
+  dialog is open.
 - **Open in web** opens `{ServerUrl trimmed of trailing /}/agents/{Uri.EscapeDataString(id)}` in
   the default browser (`Process.Start` with `UseShellExecute` — via an injected opener seam for
-  tests). An opener exception surfaces in the banner (§11).
+  tests). An opener exception surfaces as a toast (§11).
 - **Pause new launches** — §6. Disabled when the connected daemon's capabilities lack
   `consent/1`, while not `Connected`, while a toggle operation is in flight, and while the state
   is unverified (§6); the checkmark always shows the last successfully fetched state.
@@ -181,7 +193,7 @@ The pause rule is exactly `ConsentRuleDto("deny", null, null, null, null)` at in
   reopen or a busy lane (drops, §Serialization). A refresh failure keeps the last-known
   checkmark but marks the state **unverified**,
   which disables the item (§5) until a later refresh succeeds; passive refresh failures log to
-  stderr, no banner.
+  stderr, no toast.
 - **Serialization (one lane for ALL consent-policy operations):** passive refreshes and toggle
   operations (Get → modify → Put → trailing refresh Get) share a single single-flight lane — at
   most one consent socket operation is in flight at any time, so results apply in start order
@@ -215,7 +227,7 @@ The pause rule is exactly `ConsentRuleDto("deny", null, null, null, null)` at in
   lost (last-write-wins). Accepted — the daemon-side store is the single writer and the window is
   sub-second; noted, not mitigated.
 - **Failure:** a `ConsentAck` with `ok:false` (or transport failure) surfaces its error in the
-  banner (§11) — neutral fallback copy ("the daemon rejected the change") when `error` is
+  toast (§11) — neutral fallback copy ("the daemon rejected the change") when `error` is
   null/empty. The checkmark then follows the conditional contract above: a **successful**
   trailing refresh reconciles it with the daemon's actual state; a failed refresh preserves the
   last-known display and disables the item as unverified — safe, and honest about being
@@ -225,24 +237,34 @@ The pause rule is exactly `ConsentRuleDto("deny", null, null, null, null)` at in
 
 One code path for both surfaces (tray menu item, main-window row button):
 
-- Send `StopV2(force:false, id)` via `LocalControlOps` (§10). Reply timeout is long (§10) because
-  the daemon acks only after the stop completes — graceful wait plus terminate can take ~25s.
-- Reply handling: `StopAck` line `{id}\tstopped` → success, no banner (the agent's disappearance
-  from the next snapshot is the confirmation); `{id}\tfailed` → banner "Couldn't stop {label}";
-  `{id}\tskipped` → banner "The daemon declined to stop {label}" (not expected on the per-id
+- **Protected-kind gate (decision 5):** before sending anything, `AgentActionService` checks the
+  agent's `Kind`. A plain agent (`Kind == "agent"`) proceeds straight to `StopV2(force:false,
+  id)`. A protected kind awaits the confirm-then-force dialog first: Cancel resolves to a quiet
+  no-op (in-flight clears, no daemon call, no toast); Stop anyway proceeds to `StopV2(force:true,
+  id)`.
+- Send `StopV2(force, id)` via `LocalControlOps` (§10). Reply timeout is long (§10) because the
+  daemon acks only after the stop completes — graceful wait plus terminate can take ~25s.
+- Reply handling: `StopAck` line `{id}\tstopped` → success, no toast (the agent's disappearance
+  from the next snapshot is the confirmation); `{id}\tfailed` → toast "Couldn't stop {label}";
+  `{id}\tskipped` → toast "The daemon declined to stop {label}" (not expected on the per-id
   path today — protection refusals are `Error` frames — but `skipped` is StopAck vocabulary, so
-  it gets defined presentation rather than `unexpected_reply`); `Error` frame (protected agent,
-  unknown id) → banner with the daemon's text verbatim (it is display-quality and already names
-  the `--force` escape hatch); transport failure → §10 classification into the banner.
+  it gets defined presentation rather than `unexpected_reply`); `Error` frame (unknown id, stale
+  agent — a legitimate protected-kind refusal should no longer reach this path now that force
+  follows confirmation) → a generic toast "Couldn't stop {label}", **never** the daemon's text
+  verbatim — it may name a raw id or CLI-speak the app can't act on ("Pass --force to stop it
+  anyway") — the full text goes to stderr only (§11); transport failure → §10 classification into
+  the toast.
 - **Observable sequence** (pinned to the daemon's actual behavior — there is no `Stopping`
   status): `StopAgentCoreAsync` sets the agent's status to `Completed` **before** the graceful
   wait, so the next snapshot already shows `Completed` — the agent leaves the Starting/Running
   predicate, the tray entry disappears, and the count drops **before** `StopAck` lands. The main
   grid's row shows `Completed` until the agent leaves the snapshot entirely, then disappears. The
   app never fakes a status; everything visible comes from snapshots.
-- In-flight gating is per agent id (a second Stop for the same id no-ops while one is pending;
-  different ids run concurrently). Gating is keyed by id, so the tray entry or grid row
-  vanishing mid-flight is harmless; the pending op just completes into a no-longer-rendered row.
+- In-flight gating is per agent id (a second Stop for the same id no-ops while one is pending —
+  including while a protected kind's confirm dialog is still open, since the id has been
+  in-flight since the very first click; different ids run concurrently). Gating is keyed by id,
+  so the tray entry or grid row vanishing mid-flight is harmless; the pending op just completes
+  into a no-longer-rendered row.
 - Open-in-web from a row uses the same link builder as the tray.
 
 ## 8. Main window Agents area
@@ -322,8 +344,8 @@ public sealed record StopAgentResult(bool Ok, string Status, string? Error);
   becomes `daemon_rejected` with the frame text; undecodable frame or unexpected frame type →
   `unexpected_reply`; phase timeout → `timed_out`. **Caller-token cancellation is checked before classifying** (the
   `LocalControlClient` pattern): it propagates as `OperationCanceledException`, never as
-  `timed_out` or a transport reason, and app commands absorb it quietly — no banner, no error
-  log, lane and in-flight/queued-slot state cleaned up. The app maps reasons to banner copy;
+  `timed_out` or a transport reason, and app commands absorb it quietly — no toast, no error
+  log, lane and in-flight/queued-slot state cleaned up. The app maps reasons to toast copy;
   reasons are stable identifiers, not user copy.
 - **Structural validation** (STJ source-gen does not enforce non-nullable members — the daemon's
   own receive path guards for exactly this, `LaunchConsentIpc.HandleRulesPutAsync`; the ops
@@ -331,8 +353,8 @@ public sealed record StopAgentResult(bool Ok, string Status, string? Error);
   `allow|deny|prompt`, `prompt_timeout_seconds ≥ 1`, non-null `rules`, and every rule element
   non-null with non-null `action` ∈ `allow|deny`. A `ConsentAck` reply must have a non-null
   root; note `{}` decodes as `ok:false, error:null` (STJ default bool), which is handled by §6's
-  failure path with neutral fallback copy — an `ok:false` with a null/empty `error` banners "the
-  daemon rejected the change" rather than an empty message, and `ok:true` with a non-null
+  failure path with neutral fallback copy — an `ok:false` with a null/empty `error` shows the toast
+  "the daemon rejected the change" rather than an empty message, and `ok:true` with a non-null
   `error` (the DTO's partial-failure warning) is treated as success and logged to stderr. A
   `StopAck` must contain **exactly one** line for the requested id, with exactly two
   tab-separated fields and a status ∈ `stopped|failed|skipped`; a missing, duplicated, or
@@ -344,13 +366,21 @@ public sealed record StopAgentResult(bool Ok, string Status, string? Error);
 ## 11. Error surfacing
 
 - A minimal `AppNotifier` (replay-0 subject behind an interface) carries one-line failure
-  messages; `MainWindowViewModel` renders the latest as a transient banner (auto-dismiss ~6s via
-  `TimeProvider`, latest-wins single slot). Sources: stop failures (§7), pause toggle failures
-  (§6), unexpected op failures (§10 reasons mapped to neutral copy, e.g. `daemon_unreachable` →
-  "The daemon is not reachable").
-- Every banner message is also written to stderr (the only channel when the window is hidden).
-  A missed banner while the window is hidden is an accepted limitation of this slice — the tray
-  state self-corrects from snapshots, and real notifications are AI-1652's job.
+  messages — unchanged. `MainWindow` hosts an Avalonia `WindowNotificationManager` (constructed
+  on window open, top-right, ~4s expiry) and shows each message as a `Notification` (title
+  "Kurrent Capacitor", `NotificationType.Warning`). This replaced an inline banner `Border` that
+  pushed the Agents grid down and back up on every message (a layout jump) with an overlay that
+  never participates in the window's layout at all; the manager also stacks multiple toasts
+  instead of the banner's latest-wins single slot. Sources: stop failures (§7), pause toggle
+  failures (§6), unexpected op failures (§10 reasons mapped to neutral copy, e.g.
+  `daemon_unreachable` → "The daemon is not reachable").
+- Every notified message is also written to stderr — AppNotifier's mirroring is unchanged, and it
+  is the only channel that survives a hidden window. It is also the **only** place a stop's full
+  daemon `Error` text ever appears: a raw agent id or CLI-speak like "Pass --force to stop it
+  anyway" is never put in front of the user (§7) — the toast always carries generic copy instead.
+  A toast fired before the window has loaded, or while it is hidden, is invisible to the user —
+  an accepted limitation of this slice, unchanged from the banner it replaces — the tray state
+  self-corrects from snapshots, and richer notifications are AI-1652's job.
 - Menu truthfulness over optimism: no optimistic checkbox flips, no locally-faked agent status;
   the push stream and the refresh-on-open are the sources of truth, and a pause state that
   cannot be verified disables the item rather than guessing (§6).
@@ -379,25 +409,38 @@ Headless (`Capacitor.App.Tests.Unit`, existing `AvaloniaSession` + immediate-sch
   toggle, release the refresh **returning a changed policy** → the queued intent runs exactly
   once, after the passive, applying the captured desired state against its own fresh Get
   (asserting the resulting Put, or the idempotent no-op when the desired state already holds —
-  never an inversion) — disconnect mid-toggle (→ `daemon_unreachable` banner + unverified) and
-  shutdown-token cancellation mid-toggle (→ absorbed quietly: no banner, no unverified marking,
+  never an inversion) — disconnect mid-toggle (→ `daemon_unreachable` toast + unverified) and
+  shutdown-token cancellation mid-toggle (→ absorbed quietly: no toast, no unverified marking,
   lane and queued-slot state cleaned up), and the ack branches as separate deterministic cases
   pinning **both sides** of the conditional trailing-refresh contract: `ok:false` (error text or
-  the `error:null` neutral fallback copy) + **successful** trailing Get → banner AND reconciled
+  the `error:null` neutral fallback copy) + **successful** trailing Get → toast AND reconciled
   checkmark, verified/enabled; `ok:false` or ambiguous transport failure + **failed** trailing
-  Get → banner, last-known checkmark, unverified/disabled until a later successful `Opening`
-  refresh re-enables it; `ok:true, error!=null` → success, stderr warning, NO banner,
+  Get → toast, last-known checkmark, unverified/disabled until a later successful `Opening`
+  refresh re-enables it; `ok:true, error!=null` → success, stderr warning, NO toast,
   verified/enabled after its successful trailing refresh.
-- **Stop command:** per-id in-flight gating, concurrent stops for different ids, completion into
-  a vanished row is a no-op, `failed`/`Error` → banner, `skipped` → the "declined to stop"
-  banner, no local cache mutation.
+- **Stop command:** per-id in-flight gating (including while a protected kind's confirm dialog is
+  open — a second click during the dialog no-ops), concurrent stops for different ids, completion
+  into a vanished row is a no-op, `failed`/`Error` → toast, `skipped` → the "declined to stop"
+  toast, no local cache mutation. Confirm-then-force (decision 5), driven through a TCS-gated
+  fake confirm seam: protected + confirm-true → `force:true` on the ops fake; protected +
+  confirm-false → the ops fake is never called, in-flight clears, no toast; non-protected →
+  `force:false` and the confirm seam is never invoked (asserted by a fake that throws if called);
+  an unrecognised kind token is treated as protected; an `Error` result's toast carries the
+  generic copy with the daemon's text asserted **absent** from it.
 - **Agents grid:** row projection and sort order (`created_at` asc, id ordinal), presentation
   rules (`requester` null → `unknown`, repo last-segment + tooltip + `—`, `vendor (model)`),
   action disablement + dimming when not Connected, empty state, rows follow EditDiff removal.
 - **Deep links:** exact URI (trailing-slash trim + `Uri.EscapeDataString(id)`), opener invoked
-  through the seam, opener exception → banner.
-- **AppNotifier/banner:** latest-wins single slot, auto-dismiss expiry via `TimeProvider`,
-  stderr mirroring.
+  through the seam, opener exception → toast.
+- **AppNotifier:** stderr mirroring, unchanged (its own replay-0/Messages contract is untouched
+  by the toast-overlay move). **Toast overlay:** one headless smoke test drives the real
+  production wiring end to end — a real `MainWindow` with `Notifier` assigned exactly as
+  `App.BuildAndShowMainWindow` does, a message fired through the notifier, rendered text
+  asserted — proof `WindowNotificationManager` is actually constructible and installable under
+  the headless session (verified: it is), not just that `AppNotifier` pushed a value. The
+  confirm-then-force dialog (a plain code-built `Window`, no ViewModel, no bindings) is UI glue
+  in the same category as the tray adapter's native menu/icon — covered by manual acceptance, not
+  a headless test.
 - **Uptime formatting:** boundary cases via `TimeProvider`.
 - **Lifecycle** (fake `IClassicDesktopStyleApplicationLifetime` via the existing DispatchProxy
   harness): close-hides vs quit-closes ordering (`QuitInProgress` set on first deferred pass),
@@ -413,14 +456,16 @@ caller-token cancellation → `OperationCanceledException` (never `timed_out`), 
 parseable-but-invalid payloads (§10 structural validation:
 null `rules`, null rule element, unknown `default`, missing/duplicated/malformed `StopAck` line,
 unknown `StopAck` status token) → `unexpected_reply`; `{}` as `ConsentAck` → the op returns
-`ConsentAckDto(false, null)` (wire-shape assertion only — the resulting neutral banner is the
+`ConsentAckDto(false, null)` (wire-shape assertion only — the resulting neutral toast is the
 app suite's assertion above, via the fake ops seam). Plus one engine-level acceptance test alongside the existing
 consent-engine tests (`test/Capacitor.Cli.Tests.Unit/Daemon/LaunchConsentEngineTests.cs`): a
 policy with the pause rule at index 0 still allows a `RequesterIsOwner` input (owner exemption,
 §6 semantics).
 
 Manual (macOS, per the issue): tray icon rendering across the five states + count overlay,
-light/dark menu bar, menu interaction, deep links, real stop against a live daemon.
+light/dark menu bar, menu interaction, deep links, real stop against a live daemon, the
+confirm-then-force dialog for a protected kind (owned-vs-standalone, destructive-default styling),
+and toast stacking/positioning against a live window.
 
 ## 13. Risks & notes
 

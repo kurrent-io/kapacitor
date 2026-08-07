@@ -1,4 +1,8 @@
+using System.Reactive.Linq;
+using Avalonia.Controls.Notifications;
+using Capacitor.App.Services;
 using Capacitor.App.ViewModels;
+using ReactiveUI;
 using ReactiveUI.Avalonia;
 
 namespace Capacitor.App.Views;
@@ -13,10 +17,47 @@ public partial class MainWindow : ReactiveWindow<MainWindowViewModel> {
     /// close.
     public Func<bool>? CloseInterceptor { get; set; }
 
+    WindowNotificationManager? _notifications;
+    IDisposable? _notifierSubscription;
+    IAppNotifier? _notifier;
+
+    /// Assigned by App.BuildAndShowMainWindow (spec §11) — the SAME IAppNotifier instance
+    /// AgentActionService pushes into, so the toast overlay and stderr mirroring are always in
+    /// sync. Replaces the inline Banner/BannerLifetime this window used to bind: AppNotifier
+    /// itself and its stderr mirroring are unchanged, only the presentation moved from a
+    /// layout-shifting Border to a WindowNotificationManager overlay. Left null on a
+    /// plainly-constructed window (tests that don't exercise toasts) — the setter tolerates that.
+    public IAppNotifier? Notifier {
+        get => _notifier;
+        set {
+            _notifier = value;
+            _notifierSubscription?.Dispose();
+            _notifierSubscription = value?.Messages
+                .ObserveOn(RxSchedulers.MainThreadScheduler)
+                .Subscribe(ShowToast);
+        }
+    }
+
     public MainWindow() {
         InitializeComponent();
         Closing += (_, e) => {
             if (CloseInterceptor?.Invoke() == true) e.Cancel = true;
         };
+
+        // Built on Loaded (window open), not here in the constructor: WindowNotificationManager
+        // self-installs into the TopLevel's AdornerLayer once its template is applied, and Loaded
+        // is when that is guaranteed. A hide-to-tray/reopen cycle (MainWindowCoordinator.Hide())
+        // only toggles OS-level visibility — it never detaches this window from the visual tree —
+        // so Loaded fires once per window instance and this null-guard is defensive only.
+        Loaded += (_, _) => _notifications ??= new WindowNotificationManager(this) {
+            Position = NotificationPosition.TopRight,
+        };
     }
+
+    // A toast fired before Loaded, or while the window is hidden (Hide() suspends rendering
+    // entirely), is invisible to the user — stderr (AppNotifier's own mirroring, unchanged) is
+    // the only channel that survives either case. Accepted limitation, unchanged from the inline
+    // banner it replaces (spec §11).
+    void ShowToast(string message) =>
+        _notifications?.Show(new Notification("Kurrent Capacitor", message, NotificationType.Warning, TimeSpan.FromSeconds(4)));
 }

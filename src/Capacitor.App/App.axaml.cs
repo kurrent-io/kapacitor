@@ -1,8 +1,10 @@
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
+using Avalonia.Layout;
 using Avalonia.Markup.Xaml;
 using Avalonia.Media;
+using Avalonia.Threading;
 using Capacitor.App.Services;
 using Capacitor.App.ViewModels;
 using Capacitor.App.Views;
@@ -61,11 +63,14 @@ public partial class App : Application {
 
             // One LocalControlOps and one AppNotifier for the whole app: the tray menu and the
             // window rows share a single stop/open-in-web code path (spec §7) and a single
-            // banner/stderr channel (spec §11).
+            // toast/stderr channel (spec §11).
             var ops = new LocalControlOps(service.DaemonName);
             var notifier = new AppNotifier();
             _pause = new PauseController(ops, notifier.Notify, _shutdown.Token);
-            var actions = new AgentActionService(ops, notifier, new ShellUrlOpener(), service.Snapshots, _shutdown.Token);
+            // ConfirmForceStopAsync reads _coordinator at INVOCATION time (a captured field, not
+            // a captured value) — safe even though _coordinator is still null right here, because
+            // nothing can trigger a protected-kind stop before ShowMainWindow below assigns it.
+            var actions = new AgentActionService(ops, notifier, new ShellUrlOpener(), service.Snapshots, _shutdown.Token, ConfirmForceStopAsync);
 
             _coordinator = new MainWindowCoordinator(() => BuildAndShowMainWindow(service, actions, notifier, _shutdown.Token));
             // A shutdown that started before this continuation resumed already ran its first
@@ -192,8 +197,83 @@ public partial class App : Application {
     internal static MainWindow BuildAndShowMainWindow(
             IDaemonClientService service, AgentActionService actions, IAppNotifier notifier,
             CancellationToken shutdownToken) {
-        var window = new MainWindow { DataContext = new MainWindowViewModel(service, actions, notifier, shutdownToken) };
+        // Notifier is set on the WINDOW (spec §11 toast overlay), not the ViewModel — the toast
+        // is a View-level concern (WindowNotificationManager lives on MainWindow) independent of
+        // the VM's WhenActivated-scoped projections.
+        var window = new MainWindow { DataContext = new MainWindowViewModel(service, actions, shutdownToken), Notifier = notifier };
         window.Show();
+        return window;
+    }
+
+    // Composed here (not inside AgentActionService, spec decision 5): the service only awaits the
+    // seam; every UI concern — the dialog itself, choosing an owner, marshaling onto the UI
+    // thread — lives at this composition root, same as ShellUrlOpener/LocalControlOps above.
+    Task<bool> ConfirmForceStopAsync(string label) =>
+        Dispatcher.UIThread.InvokeAsync(() => ShowConfirmForceStopDialogAsync(label));
+
+    // Runs ON the UI thread (guaranteed by the InvokeAsync call above — never call this directly
+    // from a background thread). Owner = the main window only while it's actually VISIBLE
+    // (IsVisible, decompile-verified: Window.Show()/Hide() toggle exactly this) — a hide-to-tray
+    // stop must still surface the prompt, so it shows standalone and pulls itself forward instead
+    // of silently attaching to a window nobody can see.
+    Task<bool> ShowConfirmForceStopDialogAsync(string label) {
+        var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var dialog = BuildConfirmForceStopWindow(label, tcs);
+
+        if (_coordinator?.Window is { IsVisible: true } owner) {
+            dialog.Show(owner);
+        } else {
+            dialog.Show();
+            dialog.Activate();
+        }
+
+        return tcs.Task;
+    }
+
+    // Plain code-built Window (same style as BuildStartupErrorWindow above) rather than a XAML
+    // view — this dialog has no ViewModel, no data binding, and exists only to resolve `tcs`.
+    // "Stop anyway" is IsDefault (Enter-triggered, styled as the destructive default per spec);
+    // "Cancel" is IsCancel (Esc-triggered). Closing via the titlebar/Esc without clicking either
+    // button also resolves false — TrySetResult is idempotent, so whichever path runs first wins
+    // and the other is a no-op.
+    internal static Window BuildConfirmForceStopWindow(string label, TaskCompletionSource<bool> tcs) {
+        var cancelButton = new Button { Content = "Cancel", IsCancel = true };
+        var stopButton = new Button {
+            Content = "Stop anyway",
+            IsDefault = true,
+            Background = new SolidColorBrush(Color.Parse("#D32F2F")),
+            Foreground = Brushes.White,
+        };
+
+        var window = new Window {
+            Title = "Stop review participant?",
+            Icon = ProductIcon.WindowIcon,
+            Width = 420,
+            SizeToContent = SizeToContent.Height,
+            CanResize = false,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Content = new StackPanel {
+                Margin = new Thickness(20),
+                Spacing = 16,
+                Children = {
+                    new TextBlock {
+                        Text = $"{label} is a review participant. Stopping it will strand its flow. Stop anyway?",
+                        TextWrapping = TextWrapping.Wrap,
+                    },
+                    new StackPanel {
+                        Orientation = Orientation.Horizontal,
+                        Spacing = 8,
+                        HorizontalAlignment = HorizontalAlignment.Right,
+                        Children = { cancelButton, stopButton },
+                    },
+                },
+            },
+        };
+
+        stopButton.Click += (_, _) => { tcs.TrySetResult(true); window.Close(); };
+        cancelButton.Click += (_, _) => { tcs.TrySetResult(false); window.Close(); };
+        window.Closed += (_, _) => tcs.TrySetResult(false);
+
         return window;
     }
 

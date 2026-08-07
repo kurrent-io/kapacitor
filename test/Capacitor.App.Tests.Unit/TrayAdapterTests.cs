@@ -15,7 +15,7 @@ namespace Capacitor.App.Tests.Unit;
 /// RxSchedulers.MainThreadScheduler) — the same pattern as TrayViewModelTests.
 public class TrayAdapterTests {
     static AgentActionService NewActions(FakeDaemonClientService service) =>
-        new(new ScriptedLocalControlOps(), new RecordingNotifier(), new RecordingOpener(), service.SnapshotsSubject, CancellationToken.None);
+        new(new ScriptedLocalControlOps(), new RecordingNotifier(), new RecordingOpener(), service.SnapshotsSubject, CancellationToken.None, NeverConfirm.Confirm);
 
     static TrayMenuModel Model(
             TrayState state = TrayState.Idle, int count = 0, string header = "hdr",
@@ -190,8 +190,8 @@ public class TrayAdapterTests {
                 var menu = new NativeMenu();
 
                 var agents = new List<TrayAgentEntry> {
-                    new("a1", "agent · claude · repo-one", StopEnabled: true),
-                    new("a2", "review-flow · codex · —", StopEnabled: false),
+                    new("a1", "agent · claude · repo-one", "agent", StopEnabled: true),
+                    new("a2", "review-flow · codex · —", "review-flow", StopEnabled: false),
                 };
                 builder.Rebuild(menu, Model(agents: agents));
 

@@ -33,7 +33,7 @@ public class TrayViewModelTests {
     // AgentActionService has no interface seam (spec-pinned concrete sealed class), so tests
     // construct it for real against a scripted ILocalControlOps.
     static AgentActionService NewActions(FakeDaemonClientService service, ScriptedLocalControlOps? ops = null) =>
-        new(ops ?? new ScriptedLocalControlOps(), new RecordingNotifier(), new RecordingOpener(), service.SnapshotsSubject, CancellationToken.None);
+        new(ops ?? new ScriptedLocalControlOps(), new RecordingNotifier(), new RecordingOpener(), service.SnapshotsSubject, CancellationToken.None, NeverConfirm.Confirm);
 
     // ---- §4 state matrix ----
 
@@ -625,7 +625,7 @@ public class TrayViewModelTests {
             var service = new FakeDaemonClientService();
             var pause = new FakePauseController();
             var ops = new ScriptedLocalControlOps();
-            var actions = new AgentActionService(ops, new RecordingNotifier(), new RecordingOpener(), service.SnapshotsSubject, CancellationToken.None);
+            var actions = new AgentActionService(ops, new RecordingNotifier(), new RecordingOpener(), service.SnapshotsSubject, CancellationToken.None, NeverConfirm.Confirm);
             using var vm = new TrayViewModel(service, pause, actions);
 
             var agents = new List<AgentStatusDto> {
@@ -637,7 +637,7 @@ public class TrayViewModelTests {
             await Assert.That(vm.MenuModel.Agents[0].StopEnabled).IsTrue();
 
             var gate = ops.ArmStop();
-            actions.RequestStop("a", "agent · claude · —");
+            actions.RequestStop("a", "agent · claude · —", "agent");
 
             // Pushed synchronously by RequestStop before it returns (spec §7 in-flight gating).
             await Assert.That(vm.MenuModel.Agents[0].StopEnabled).IsFalse();
@@ -655,7 +655,7 @@ public class TrayViewModelTests {
             var pause = new FakePauseController();
             var ops = new ScriptedLocalControlOps();
             var notifier = new RecordingNotifier();
-            var actions = new AgentActionService(ops, notifier, new RecordingOpener(), service.SnapshotsSubject, CancellationToken.None);
+            var actions = new AgentActionService(ops, notifier, new RecordingOpener(), service.SnapshotsSubject, CancellationToken.None, NeverConfirm.Confirm);
             using var vm = new TrayViewModel(service, pause, actions);
 
             var agents = new List<AgentStatusDto> {
@@ -673,6 +673,36 @@ public class TrayViewModelTests {
         });
     }
 
+    // Proves TrayAgentEntry.Kind is actually threaded from the snapshot through to
+    // AgentActionService.RequestStop (decision 5) — a protected kind clicked from the tray goes
+    // through the confirm seam and, once confirmed, stops with force:true.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task StopAgentCommand_for_a_protected_kind_entry_goes_through_confirm_with_force() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            var service = new FakeDaemonClientService();
+            var pause = new FakePauseController();
+            var ops = new ScriptedLocalControlOps();
+            var confirmer = new RecordingConfirmer();
+            var actions = new AgentActionService(ops, new RecordingNotifier(), new RecordingOpener(), service.SnapshotsSubject, CancellationToken.None, confirmer.Confirm);
+            using var vm = new TrayViewModel(service, pause, actions);
+
+            var agents = new List<AgentStatusDto> {
+                new("a", "review-flow", "codex", "/repos/kcap-cli", "Running", null, null, null, DateTime.UtcNow, null),
+            };
+            service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, []));
+            service.SnapshotsSubject.OnNext(Snap("connected", 1, agents));
+
+            confirmer.Queue(true);
+            ops.QueueStop(new StopAgentResult(true, "stopped", null));
+            await vm.StopAgentCommand.Execute("a").ToTask();
+
+            await WaitUntilAsync(() => ops.StopCalls >= 1, what: "stop issued after confirm");
+            await Assert.That(confirmer.Prompted).IsEquivalentTo(["review-flow · codex · kcap-cli"], CollectionOrdering.Matching);
+            await Assert.That(ops.StopPayloads).IsEquivalentTo([("a", true)], CollectionOrdering.Matching);
+        });
+    }
+
     [Test]
     [NotInParallel("AvaloniaSession")]
     public async Task OpenInWebCommand_reaches_service() {
@@ -681,7 +711,7 @@ public class TrayViewModelTests {
             var pause = new FakePauseController();
             var ops = new ScriptedLocalControlOps();
             var opener = new RecordingOpener();
-            var actions = new AgentActionService(ops, new RecordingNotifier(), opener, service.SnapshotsSubject, CancellationToken.None);
+            var actions = new AgentActionService(ops, new RecordingNotifier(), opener, service.SnapshotsSubject, CancellationToken.None, NeverConfirm.Confirm);
             using var vm = new TrayViewModel(service, pause, actions);
 
             service.SnapshotsSubject.OnNext(FakeDaemonClientService.Snap(serverUrl: "https://x.kcap.ai"));

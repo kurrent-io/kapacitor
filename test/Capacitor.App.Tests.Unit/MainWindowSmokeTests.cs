@@ -17,12 +17,12 @@ namespace Capacitor.App.Tests.Unit;
 /// that the VM's properties hold the right values (MainWindowViewModelTests already covers
 /// that in isolation).
 public class MainWindowSmokeTests {
-    // Real AppNotifier (not RecordingNotifier) — none of these tests exercise the banner, so the
-    // production notifier is fine; it must be the SAME instance passed to both AgentActionService
-    // and MainWindowViewModel, mirroring how App.axaml.cs wires the two together.
+    // Real AppNotifier (not RecordingNotifier) — the production notifier is fine here; most of
+    // these tests don't exercise the toast overlay at all (window.Notifier is left unset), and
+    // the one that does (below) needs a real IObservable<string> to subscribe through.
     static (AgentActionService Actions, IAppNotifier Notifier) NewActions(FakeDaemonClientService service) {
         var notifier = new AppNotifier();
-        var actions = new AgentActionService(new ScriptedLocalControlOps(), notifier, new RecordingOpener(), service.SnapshotsSubject, CancellationToken.None);
+        var actions = new AgentActionService(new ScriptedLocalControlOps(), notifier, new RecordingOpener(), service.SnapshotsSubject, CancellationToken.None, NeverConfirm.Confirm);
         return (actions, notifier);
     }
 
@@ -37,8 +37,8 @@ public class MainWindowSmokeTests {
                     connection: "connected", active: 1, max: 5));
                 service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, null));
 
-                var (actions, notifier) = NewActions(service);
-                var vm = new MainWindowViewModel(service, actions, notifier, CancellationToken.None);
+                var (actions, _) = NewActions(service);
+                var vm = new MainWindowViewModel(service, actions, CancellationToken.None);
                 var window = new MainWindow { DataContext = vm };
                 window.Show();
                 // Control.Loaded is POSTED at DispatcherPriority.Loaded (Avalonia defers it, it
@@ -83,8 +83,8 @@ public class MainWindowSmokeTests {
     public async Task Status_transition_from_a_background_thread_does_not_throw_and_converges() {
         var (thrown, startEnabledAfter) = await AvaloniaSession.DispatchAsync(() => {
             var service = new FakeDaemonClientService();
-            var (actions, notifier) = NewActions(service);
-            var vm = new MainWindowViewModel(service, actions, notifier, CancellationToken.None);
+            var (actions, _) = NewActions(service);
+            var vm = new MainWindowViewModel(service, actions, CancellationToken.None);
             var window = new MainWindow { DataContext = vm };
             window.Show();
             Dispatcher.UIThread.RunJobs();
@@ -138,8 +138,8 @@ public class MainWindowSmokeTests {
             service.StatusSubject.OnNext(new AttachStatus(AttachState.Unreachable, "daemon_unreachable", null));
 
             var shutdown = new CancellationTokenSource();
-            var (actions, notifier) = NewActions(service);
-            var vm = new MainWindowViewModel(service, actions, notifier, shutdown.Token);
+            var (actions, _) = NewActions(service);
+            var vm = new MainWindowViewModel(service, actions, shutdown.Token);
             var window = new MainWindow { DataContext = vm };
             window.Show();
             Dispatcher.UIThread.RunJobs();
@@ -194,8 +194,8 @@ public class MainWindowSmokeTests {
             service.SnapshotsSubject.OnNext(Snap(connection: "connected"));
             service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, null));
 
-            var (actions, notifier) = NewActions(service);
-            var vm = new MainWindowViewModel(service, actions, notifier, CancellationToken.None);
+            var (actions, _) = NewActions(service);
+            var vm = new MainWindowViewModel(service, actions, CancellationToken.None);
             var window = new MainWindow { DataContext = vm };
             window.Show();
             Dispatcher.UIThread.RunJobs();
@@ -226,8 +226,8 @@ public class MainWindowSmokeTests {
             service.SnapshotsSubject.OnNext(Snap(connection: "connected"));
             service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, null));
 
-            var (actions, notifier) = NewActions(service);
-            var vm = new MainWindowViewModel(service, actions, notifier, CancellationToken.None);
+            var (actions, _) = NewActions(service);
+            var vm = new MainWindowViewModel(service, actions, CancellationToken.None);
             var window = new MainWindow { DataContext = vm };
             window.Show();
             Dispatcher.UIThread.RunJobs();
@@ -260,8 +260,8 @@ public class MainWindowSmokeTests {
         var (reasonInitially, startMessageInitially, reasonWhileUnreachable, startMessageAfterFailure) =
             await AvaloniaSession.DispatchAsync(async () => {
                 var service = new FakeDaemonClientService();
-                var (actions, notifier) = NewActions(service);
-                var vm = new MainWindowViewModel(service, actions, notifier, CancellationToken.None);
+                var (actions, _) = NewActions(service);
+                var vm = new MainWindowViewModel(service, actions, CancellationToken.None);
                 var window = new MainWindow { DataContext = vm };
                 window.Show();
                 Dispatcher.UIThread.RunJobs();
@@ -291,5 +291,36 @@ public class MainWindowSmokeTests {
         await Assert.That(startMessageInitially).IsFalse();
         await Assert.That(reasonWhileUnreachable).IsTrue();
         await Assert.That(startMessageAfterFailure).IsTrue();
+    }
+
+    // ---- Toast overlay (spec §11: WindowNotificationManager replaces the inline banner) ----
+    //
+    // Proves the real production wiring end to end: MainWindow.Notifier assigned exactly as
+    // App.BuildAndShowMainWindow does, a WindowNotificationManager actually constructible and
+    // installable under the headless session, and the fired message rendered as visible text.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Toast_renders_the_notifier_message() {
+        var rendered = await AvaloniaSession.DispatchAsync(() => {
+            var service = new FakeDaemonClientService();
+            var (actions, notifier) = NewActions(service);
+            var vm = new MainWindowViewModel(service, actions, CancellationToken.None);
+            var window = new MainWindow { DataContext = vm, Notifier = notifier };
+            window.Show();
+            Dispatcher.UIThread.RunJobs();
+
+            notifier.Notify("Couldn't stop agent-a");
+            Dispatcher.UIThread.RunJobs();
+
+            var texts = string.Join('\n', window.GetVisualDescendants().OfType<TextBlock>().Select(t => t.Text ?? ""));
+
+            window.Close();
+            Dispatcher.UIThread.RunJobs();
+
+            return texts;
+        });
+
+        await Assert.That(rendered).Contains("Kurrent Capacitor");
+        await Assert.That(rendered).Contains("Couldn't stop agent-a");
     }
 }

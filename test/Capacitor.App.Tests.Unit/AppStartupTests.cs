@@ -47,7 +47,7 @@ public class AppStartupTests {
     /// the pause controller (spec §7 one code path, §11 one banner/stderr channel).
     static (AgentActionService Actions, IAppNotifier Notifier) NewActions(FakeDaemonClientService service) {
         var notifier = new AppNotifier();
-        return (new AgentActionService(new ScriptedLocalControlOps(), notifier, new RecordingOpener(), service.SnapshotsSubject, CancellationToken.None), notifier);
+        return (new AgentActionService(new ScriptedLocalControlOps(), notifier, new RecordingOpener(), service.SnapshotsSubject, CancellationToken.None, NeverConfirm.Confirm), notifier);
     }
 
     /// Regression coverage for a P2 bug found in review: the startup catch used to write to

@@ -111,16 +111,6 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
     ObservableAsPropertyHelper<bool>? _gridEnabled;
     public bool GridEnabled => _gridEnabled?.Value ?? false;
 
-    // Banner-clear delay as an internal seam (spec §11): under
-    // AvaloniaSession.WithImmediateRxScheduler, an Observable.Timer with a non-zero due time
-    // blocks the calling thread for the real duration (ImmediateScheduler sleeps synchronously
-    // rather than actually firing "immediately") — a test exercising auto-expiry sets this to
-    // TimeSpan.Zero, which skips that sleep entirely instead of stalling for 6 real seconds.
-    internal TimeSpan BannerLifetime = TimeSpan.FromSeconds(6);
-
-    ObservableAsPropertyHelper<string?>? _banner;
-    public string? Banner => _banner?.Value;
-
     string? _startMessage;
     // Start-daemon failure text. Cleared on every new start attempt AND on any transition to
     // Connected (spec §5); set only when a start attempt actually fails.
@@ -162,8 +152,7 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
     // RxSchedulers.MainThreadScheduler) and RefCount defers the connection until a row subscribes —
     // which is what lets a test construct this VM inside AvaloniaSession.WithImmediateRxScheduler
     // WITHOUT ever subscribing a row: subscribing an Interval under an immediate scheduler would
-    // block/spin forever, since Interval never completes (see BannerLifetime's comment for the same
-    // scheduler gotcha, bounded there because Timer fires once).
+    // block/spin forever, since Interval never completes.
     readonly IObservable<long> _ticker = Observable
         .Interval(TimeSpan.FromSeconds(1), RxSchedulers.MainThreadScheduler)
         .SubscribeOn(RxSchedulers.MainThreadScheduler)
@@ -183,7 +172,7 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
     /// unbounded wait would survive app exit).
     /// </param>
     public MainWindowViewModel(
-            IDaemonClientService service, AgentActionService actions, IAppNotifier notifier,
+            IDaemonClientService service, AgentActionService actions,
             CancellationToken shutdownToken, TimeProvider? time = null) {
         _service = service;
         _time = time ?? TimeProvider.System;
@@ -315,19 +304,6 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
                 .ObserveOn(RxSchedulers.MainThreadScheduler)
                 .SortAndBind(_agentsSource, RowComparer)
                 .Subscribe()
-                .DisposeWith(disposables);
-
-            // Latest-wins single slot (spec §11): each message starts a fresh inner sequence
-            // (StartWith delivers it synchronously, then Timer(BannerLifetime) clears it) and
-            // Switch() cancels whatever inner sequence was still pending, so a new message both
-            // replaces the text and restarts the clear window.
-            _banner = notifier.Messages
-                .ObserveOn(RxSchedulers.MainThreadScheduler)
-                .Select(message => Observable.Timer(BannerLifetime, RxSchedulers.MainThreadScheduler)
-                    .Select(_ => (string?)null)
-                    .StartWith(message))
-                .Switch()
-                .ToProperty(this, x => x.Banner, (string?)null)
                 .DisposeWith(disposables);
         });
     }

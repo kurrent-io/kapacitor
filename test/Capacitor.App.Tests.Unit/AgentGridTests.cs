@@ -22,7 +22,7 @@ sealed class MutableTimeProvider : TimeProvider {
 /// Covers UptimeFormat (spec §8 boundary table), AgentRowViewModel's presentation projection and
 /// ActionsEnabled/Uptime OAPHs in isolation (plain Subjects, no Avalonia session needed — the row
 /// itself is scheduler-agnostic, see its class doc comment), and the full MainWindowViewModel
-/// pipeline (sort order, EditDiff removal, GridEnabled, banner) driven through
+/// pipeline (sort order, EditDiff removal, GridEnabled) driven through
 /// AvaloniaSession.DispatchAsync with the REAL dispatcher scheduler.
 ///
 /// The full-pipeline tests deliberately do NOT use AvaloniaSession.WithImmediateRxScheduler:
@@ -32,8 +32,8 @@ sealed class MutableTimeProvider : TimeProvider {
 /// SLEEPING for the real due time rather than truly firing "immediately" — verified against the
 /// installed System.Reactive 6.1.0 before writing this comment). Any test that populates
 /// service.Agents and exercises the resulting rows must run under the real (non-blocking)
-/// AvaloniaScheduler instead. The banner's Observable.Timer has the identical hazard, bounded by
-/// the BannerLifetime seam (TimeSpan.Zero under an immediate scheduler skips the sleep entirely).
+/// AvaloniaScheduler instead. (The toast overlay this VM used to drive via a Banner property now
+/// lives entirely in the View — see MainWindow.axaml.cs and AppNotifierTests.)
 public class AgentGridTests {
     // ---- UptimeFormat (spec §8) ----
 
@@ -63,7 +63,7 @@ public class AgentGridTests {
             TimeProvider? time = null, IObservable<bool>? connected = null,
             IObservable<IReadOnlySet<string>>? stopsInFlight = null) =>
         new(dto,
-            actions ?? new AgentActionService(new ScriptedLocalControlOps(), new RecordingNotifier(), new RecordingOpener(), new ReplaySubject<DaemonStatusDto>(1), CancellationToken.None),
+            actions ?? new AgentActionService(new ScriptedLocalControlOps(), new RecordingNotifier(), new RecordingOpener(), new ReplaySubject<DaemonStatusDto>(1), CancellationToken.None, NeverConfirm.Confirm),
             ticker ?? new Subject<long>(),
             time ?? TimeProvider.System,
             connected ?? new BehaviorSubject<bool>(true),
@@ -282,7 +282,7 @@ public class AgentGridTests {
     public async Task StopCommand_requests_stop_with_kind_vendor_repo_label() {
         var ops = new ScriptedLocalControlOps();
         var notifier = new RecordingNotifier();
-        var actions = new AgentActionService(ops, notifier, new RecordingOpener(), new ReplaySubject<DaemonStatusDto>(1), CancellationToken.None);
+        var actions = new AgentActionService(ops, notifier, new RecordingOpener(), new ReplaySubject<DaemonStatusDto>(1), CancellationToken.None, NeverConfirm.Confirm);
         var row = NewRow(Dto(id: "a", kind: "agent", vendor: "claude", repoPath: "/repos/kcap-cli"), actions: actions);
 
         ops.QueueStop(new StopAgentResult(false, "failed", null));
@@ -298,7 +298,7 @@ public class AgentGridTests {
         var opener = new RecordingOpener();
         var snapshots = new ReplaySubject<DaemonStatusDto>(1);
         snapshots.OnNext(Snap(serverUrl: "https://x.kcap.ai"));
-        var actions = new AgentActionService(new ScriptedLocalControlOps(), new RecordingNotifier(), opener, snapshots, CancellationToken.None);
+        var actions = new AgentActionService(new ScriptedLocalControlOps(), new RecordingNotifier(), opener, snapshots, CancellationToken.None, NeverConfirm.Confirm);
         var row = NewRow(Dto(id: "a"), actions: actions);
 
         row.OpenInWebCommand.Execute().Subscribe();
@@ -310,7 +310,7 @@ public class AgentGridTests {
 
     static (AgentActionService Actions, IAppNotifier Notifier) NewActions(FakeDaemonClientService service, ScriptedLocalControlOps? ops = null) {
         var notifier = new AppNotifier();
-        var actions = new AgentActionService(ops ?? new ScriptedLocalControlOps(), notifier, new RecordingOpener(), service.SnapshotsSubject, CancellationToken.None);
+        var actions = new AgentActionService(ops ?? new ScriptedLocalControlOps(), notifier, new RecordingOpener(), service.SnapshotsSubject, CancellationToken.None, NeverConfirm.Confirm);
         return (actions, notifier);
     }
 
@@ -319,8 +319,8 @@ public class AgentGridTests {
     public async Task Agents_sort_by_created_at_then_id_ordinal() {
         var ids = await AvaloniaSession.DispatchAsync(() => {
             var service = new FakeDaemonClientService();
-            var (actions, notifier) = NewActions(service);
-            var vm = new MainWindowViewModel(service, actions, notifier, CancellationToken.None);
+            var (actions, _) = NewActions(service);
+            var vm = new MainWindowViewModel(service, actions, CancellationToken.None);
             using var activation = vm.Activator.Activate();
 
             var t0 = new DateTime(2026, 8, 6, 10, 0, 0, DateTimeKind.Utc);
@@ -340,8 +340,8 @@ public class AgentGridTests {
     public async Task Row_disappears_when_the_agent_leaves_the_snapshot_via_EditDiff() {
         var (beforeCount, afterIds) = await AvaloniaSession.DispatchAsync(() => {
             var service = new FakeDaemonClientService();
-            var (actions, notifier) = NewActions(service);
-            var vm = new MainWindowViewModel(service, actions, notifier, CancellationToken.None);
+            var (actions, _) = NewActions(service);
+            var vm = new MainWindowViewModel(service, actions, CancellationToken.None);
             using var activation = vm.Activator.Activate();
 
             var t0 = DateTime.UtcNow;
@@ -371,8 +371,8 @@ public class AgentGridTests {
     public async Task Replacing_an_agents_dto_disposes_the_old_row_instance() {
         var (sameInstance, oldDisposed, newDisposed, newStatus, agentsCountAfter) = await AvaloniaSession.DispatchAsync(() => {
             var service = new FakeDaemonClientService();
-            var (actions, notifier) = NewActions(service);
-            var vm = new MainWindowViewModel(service, actions, notifier, CancellationToken.None);
+            var (actions, _) = NewActions(service);
+            var vm = new MainWindowViewModel(service, actions, CancellationToken.None);
             using var activation = vm.Activator.Activate();
 
             var t0 = DateTime.UtcNow;
@@ -402,8 +402,8 @@ public class AgentGridTests {
     public async Task Deactivating_the_window_disposes_the_still_live_rows() {
         var row = await AvaloniaSession.DispatchAsync(() => {
             var service = new FakeDaemonClientService();
-            var (actions, notifier) = NewActions(service);
-            var vm = new MainWindowViewModel(service, actions, notifier, CancellationToken.None);
+            var (actions, _) = NewActions(service);
+            var vm = new MainWindowViewModel(service, actions, CancellationToken.None);
             var activation = vm.Activator.Activate();
 
             service.Agents.AddOrUpdate(Dto(id: "a"));
@@ -429,8 +429,8 @@ public class AgentGridTests {
     public async Task Ticker_subscribed_off_the_ui_thread_still_ticks_on_the_dispatcher() {
         var (ticks, everyTickOnUiThread) = await AvaloniaSession.DispatchAsync(async () => {
             var service = new FakeDaemonClientService();
-            var (actions, notifier) = NewActions(service);
-            var vm = new MainWindowViewModel(service, actions, notifier, CancellationToken.None);
+            var (actions, _) = NewActions(service);
+            var vm = new MainWindowViewModel(service, actions, CancellationToken.None);
 
             var count = 0;
             var onUiThread = true;
@@ -469,8 +469,8 @@ public class AgentGridTests {
     public async Task Agents_reference_survives_deactivate_reactivate_and_keeps_updating() {
         var (sameReference, idsAfterReactivation) = await AvaloniaSession.DispatchAsync(() => {
             var service = new FakeDaemonClientService();
-            var (actions, notifier) = NewActions(service);
-            var vm = new MainWindowViewModel(service, actions, notifier, CancellationToken.None);
+            var (actions, _) = NewActions(service);
+            var vm = new MainWindowViewModel(service, actions, CancellationToken.None);
 
             var activation1 = vm.Activator.Activate();
             service.Agents.AddOrUpdate(Dto(id: "a"));
@@ -504,8 +504,8 @@ public class AgentGridTests {
     public async Task GridEnabled_reflects_attach_state() {
         var (whileConnected, whileUnreachable) = await AvaloniaSession.DispatchAsync(() => {
             var service = new FakeDaemonClientService();
-            var (actions, notifier) = NewActions(service);
-            var vm = new MainWindowViewModel(service, actions, notifier, CancellationToken.None);
+            var (actions, _) = NewActions(service);
+            var vm = new MainWindowViewModel(service, actions, CancellationToken.None);
             using var activation = vm.Activator.Activate();
 
             service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, null));
@@ -528,8 +528,8 @@ public class AgentGridTests {
     public async Task Rows_persist_and_ActionsEnabled_turns_false_when_disconnected() {
         var (idsWhileConnected, idsWhileDisconnected, actionsEnabledWhileDisconnected) = await AvaloniaSession.DispatchAsync(() => {
             var service = new FakeDaemonClientService();
-            var (actions, notifier) = NewActions(service);
-            var vm = new MainWindowViewModel(service, actions, notifier, CancellationToken.None);
+            var (actions, _) = NewActions(service);
+            var vm = new MainWindowViewModel(service, actions, CancellationToken.None);
             using var activation = vm.Activator.Activate();
 
             service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, null));
@@ -560,8 +560,8 @@ public class AgentGridTests {
 
         var (beforeStop, whileInFlight) = await AvaloniaSession.DispatchAsync(() => {
             var service = new FakeDaemonClientService();
-            var (actions, notifier) = NewActions(service, ops);
-            var vm = new MainWindowViewModel(service, actions, notifier, CancellationToken.None);
+            var (actions, _) = NewActions(service, ops);
+            var vm = new MainWindowViewModel(service, actions, CancellationToken.None);
             using var activation = vm.Activator.Activate();
 
             service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, null));
@@ -569,7 +569,7 @@ public class AgentGridTests {
             Dispatcher.UIThread.RunJobs();
             var before = vm.Agents[0].ActionsEnabled;
 
-            actions.RequestStop("a", "agent-a"); // pushes StopsInFlight synchronously (AgentActionService contract)
+            actions.RequestStop("a", "agent-a", "agent"); // pushes StopsInFlight synchronously (AgentActionService contract)
             Dispatcher.UIThread.RunJobs(); // crosses the row's ObserveOn'd stopsInFlight
             var inFlight = vm.Agents[0].ActionsEnabled;
 
@@ -580,62 +580,5 @@ public class AgentGridTests {
 
         await Assert.That(beforeStop).IsTrue();
         await Assert.That(whileInFlight).IsFalse();
-    }
-
-    // ---- Banner (spec §11) ----
-
-    [Test]
-    [NotInParallel("AvaloniaSession")]
-    public async Task Banner_latest_message_wins_and_replaces_the_pending_one() {
-        var (first, second) = await AvaloniaSession.DispatchAsync(() => {
-            var service = new FakeDaemonClientService();
-            var (actions, notifier) = NewActions(service);
-            var vm = new MainWindowViewModel(service, actions, notifier, CancellationToken.None);
-            using var activation = vm.Activator.Activate();
-
-            // Default BannerLifetime (6s): safe here because the REAL AvaloniaScheduler's
-            // Schedule with a due time posts a dispatcher timer instead of blocking — Notify()
-            // returns immediately either way, and this test never waits for that timer to fire.
-            notifier.Notify("first");
-            Dispatcher.UIThread.RunJobs();
-            var f = vm.Banner;
-
-            notifier.Notify("second");
-            Dispatcher.UIThread.RunJobs();
-            var s = vm.Banner;
-
-            return (f, s);
-        });
-
-        await Assert.That(first).IsEqualTo("first");
-        await Assert.That(second).IsEqualTo("second");
-    }
-
-    [Test]
-    [NotInParallel("AvaloniaSession")]
-    public async Task Banner_auto_clears_after_the_lifetime_elapses() {
-        await AvaloniaSession.WithImmediateRxScheduler(async () => {
-            var service = new FakeDaemonClientService();
-            var (actions, notifier) = NewActions(service);
-            var vm = new MainWindowViewModel(service, actions, notifier, CancellationToken.None);
-            using var activation = vm.Activator.Activate();
-
-            // TimeSpan.Zero (spec §11 seam): under the immediate scheduler this skips the
-            // relative-time sleep entirely rather than blocking the test for 6 real seconds.
-            vm.BannerLifetime = TimeSpan.Zero;
-
-            // Plain INotifyPropertyChanged (not WhenAnyValue) — this headless test harness never
-            // calls RxAppBuilder.BuildApp(), which WhenAnyValue's ObservableForProperty requires
-            // but the app's own UseReactiveUI()/AvaloniaScheduler wiring does not.
-            var seen = new List<string?>();
-            vm.PropertyChanged += (_, e) => {
-                if (e.PropertyName == nameof(MainWindowViewModel.Banner)) seen.Add(vm.Banner);
-            };
-
-            notifier.Notify("boom");
-
-            await Assert.That(seen.Contains("boom")).IsTrue();
-            await Assert.That(vm.Banner).IsNull();
-        });
     }
 }

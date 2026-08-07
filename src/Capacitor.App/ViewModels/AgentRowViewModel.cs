@@ -78,7 +78,7 @@ public sealed class AgentRowViewModel : ReactiveObject, IDisposable {
         // doesn't pin the grid row's label text, so this stays consistent with the tray's for the
         // same agent rather than inventing a second format.
         var label = $"{dto.Kind} · {dto.Vendor} · {RepoLeaf}";
-        StopCommand = ReactiveCommand.Create(() => actions.RequestStop(Id, label));
+        StopCommand = ReactiveCommand.Create(() => actions.RequestStop(Id, label, Kind));
         OpenInWebCommand = ReactiveCommand.Create(() => actions.OpenInWeb(Id));
         _disposables.Add(StopCommand);
         _disposables.Add(OpenInWebCommand);

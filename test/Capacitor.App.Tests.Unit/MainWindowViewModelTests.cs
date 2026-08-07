@@ -12,12 +12,12 @@ namespace Capacitor.App.Tests.Unit;
 /// RxSchedulers.MainThreadScheduler), so every test runs inside
 /// AvaloniaSession.WithImmediateRxScheduler and carries [NotInParallel("AvaloniaSession")].
 public class MainWindowViewModelTests {
-    // Real AppNotifier (not RecordingNotifier) — none of these tests exercise the banner, so the
-    // production notifier is fine; it must be the SAME instance passed to both AgentActionService
-    // and MainWindowViewModel, mirroring how App.axaml.cs wires the two together.
+    // Real AppNotifier (not RecordingNotifier) — none of these tests exercise notifications, and
+    // the toast overlay is a View concern MainWindowViewModel no longer touches (spec §11); the
+    // production notifier is fine here, kept only because AgentActionService requires one.
     static (AgentActionService Actions, IAppNotifier Notifier) NewActions(FakeDaemonClientService service) {
         var notifier = new AppNotifier();
-        var actions = new AgentActionService(new ScriptedLocalControlOps(), notifier, new RecordingOpener(), service.SnapshotsSubject, CancellationToken.None);
+        var actions = new AgentActionService(new ScriptedLocalControlOps(), notifier, new RecordingOpener(), service.SnapshotsSubject, CancellationToken.None, NeverConfirm.Confirm);
         return (actions, notifier);
     }
 
@@ -26,8 +26,8 @@ public class MainWindowViewModelTests {
     public async Task Projections_follow_the_snapshot() {
         await AvaloniaSession.WithImmediateRxScheduler(async () => {
             var service = new FakeDaemonClientService();
-            var (actions, notifier) = NewActions(service);
-            var vm = new MainWindowViewModel(service, actions, notifier, CancellationToken.None);
+            var (actions, _) = NewActions(service);
+            var vm = new MainWindowViewModel(service, actions, CancellationToken.None);
             using var activation = vm.Activator.Activate();
 
             service.SnapshotsSubject.OnNext(Snap(daemon: "daemon-a", version: "1.2.3", serverUrl: "http://localhost:9999", connection: "connected"));
@@ -94,8 +94,8 @@ public class MainWindowViewModelTests {
     public async Task Start_and_retry_visibility_track_the_command_state_matrix() {
         await AvaloniaSession.WithImmediateRxScheduler(async () => {
             var service = new FakeDaemonClientService();
-            var (actions, notifier) = NewActions(service);
-            var vm = new MainWindowViewModel(service, actions, notifier, CancellationToken.None);
+            var (actions, _) = NewActions(service);
+            var vm = new MainWindowViewModel(service, actions, CancellationToken.None);
 
             foreach (var reason in new[] { "daemon_unreachable", "daemon_incompatible" }) {
                 service.StatusSubject.OnNext(new AttachStatus(AttachState.Connecting, null, null));
@@ -118,8 +118,8 @@ public class MainWindowViewModelTests {
     public async Task StartVisible_stays_true_while_a_start_is_in_flight_unlike_CanExecute() {
         await AvaloniaSession.WithImmediateRxScheduler(async () => {
             var service = new FakeDaemonClientService();
-            var (actions, notifier) = NewActions(service);
-            var vm = new MainWindowViewModel(service, actions, notifier, CancellationToken.None);
+            var (actions, _) = NewActions(service);
+            var vm = new MainWindowViewModel(service, actions, CancellationToken.None);
 
             service.StatusSubject.OnNext(new AttachStatus(AttachState.Unreachable, "daemon_unreachable", null));
 
@@ -146,8 +146,8 @@ public class MainWindowViewModelTests {
     public async Task Agent_count_renders_only_while_connected() {
         await AvaloniaSession.WithImmediateRxScheduler(async () => {
             var service = new FakeDaemonClientService();
-            var (actions, notifier) = NewActions(service);
-            var vm = new MainWindowViewModel(service, actions, notifier, CancellationToken.None);
+            var (actions, _) = NewActions(service);
+            var vm = new MainWindowViewModel(service, actions, CancellationToken.None);
             using var activation = vm.Activator.Activate();
 
             service.SnapshotsSubject.OnNext(Snap(active: 2, max: 5));
@@ -166,8 +166,8 @@ public class MainWindowViewModelTests {
     public async Task Command_enablement_matrix() {
         await AvaloniaSession.WithImmediateRxScheduler(async () => {
             var service = new FakeDaemonClientService();
-            var (actions, notifier) = NewActions(service);
-            var vm = new MainWindowViewModel(service, actions, notifier, CancellationToken.None);
+            var (actions, _) = NewActions(service);
+            var vm = new MainWindowViewModel(service, actions, CancellationToken.None);
 
             var startCanExecute = false;
             var retryCanExecute = false;
@@ -214,8 +214,8 @@ public class MainWindowViewModelTests {
     public async Task Incompatible_renders_neutral_skew_message() {
         await AvaloniaSession.WithImmediateRxScheduler(async () => {
             var service = new FakeDaemonClientService();
-            var (actions, notifier) = NewActions(service);
-            var vm = new MainWindowViewModel(service, actions, notifier, CancellationToken.None);
+            var (actions, _) = NewActions(service);
+            var vm = new MainWindowViewModel(service, actions, CancellationToken.None);
             using var activation = vm.Activator.Activate();
 
             var startCanExecute = false;
@@ -237,8 +237,8 @@ public class MainWindowViewModelTests {
     public async Task Start_message_lifecycle() {
         await AvaloniaSession.WithImmediateRxScheduler(async () => {
             var service = new FakeDaemonClientService();
-            var (actions, notifier) = NewActions(service);
-            var vm = new MainWindowViewModel(service, actions, notifier, CancellationToken.None);
+            var (actions, _) = NewActions(service);
+            var vm = new MainWindowViewModel(service, actions, CancellationToken.None);
             using var activation = vm.Activator.Activate();
 
             service.StatusSubject.OnNext(new AttachStatus(AttachState.Unreachable, "daemon_unreachable", null));
@@ -276,8 +276,8 @@ public class MainWindowViewModelTests {
     public async Task Deactivation_disposes_subscriptions() {
         await AvaloniaSession.WithImmediateRxScheduler(async () => {
             var service = new FakeDaemonClientService();
-            var (actions, notifier) = NewActions(service);
-            var vm = new MainWindowViewModel(service, actions, notifier, CancellationToken.None);
+            var (actions, _) = NewActions(service);
+            var vm = new MainWindowViewModel(service, actions, CancellationToken.None);
 
             var activation = vm.Activator.Activate();
             service.SnapshotsSubject.OnNext(Snap(daemon: "daemon-a", active: 1, max: 5));

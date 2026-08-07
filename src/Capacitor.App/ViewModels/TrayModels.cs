@@ -18,7 +18,10 @@ public static class RepoLabel {
     }
 }
 
-public sealed record TrayAgentEntry(string Id, string Label, bool StopEnabled); // StopEnabled: false while AgentActionService.StopsInFlight contains Id
+// StopEnabled: false while AgentActionService.StopsInFlight contains Id. Kind is the wire
+// KindText spelling (agent|review|review-flow) — carried through so the Stop click handler can
+// pass it to AgentActionService.RequestStop, which decides protected-ness (decision 5).
+public sealed record TrayAgentEntry(string Id, string Label, string Kind, bool StopEnabled);
 public sealed record TrayPauseItem(bool Enabled, bool Checked);
 public sealed record TrayMenuModel(
     TrayState State, int RunningCount, string Header,
