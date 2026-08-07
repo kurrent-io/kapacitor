@@ -121,7 +121,14 @@ internal static class KiroReviewerCapability {
               + "numbers, so neither can be said to be newer. Record the installed build as the "
               + "minimum with `kcap daemon reviewer affirm --vendor kiro`.",
 
-            _ =>
+            // Exhaustive, like Decide's switch: a discard would print the below-minimum text for a
+            // future arm meaning something else, sending an operator to the wrong fix. Allowed throws
+            // because asking for the denial reason of a permitted decision is a caller bug.
+            KiroReviewerDecision.Allowed =>
+                throw new ArgumentOutOfRangeException(
+                    nameof(decision), decision, "Allowed is not a denial and has no reason."),
+
+            KiroReviewerDecision.VersionBelowMinimum =>
                 $"kiro_reviewer_version_below_minimum: kiro-cli {Describe(installedVersion)} is "
               + $"installed but this daemon's recorded minimum is {Describe(minimumVersion)}. The "
               + "reviewer's containment depends on the build honouring KIRO_HOME and reading no other "

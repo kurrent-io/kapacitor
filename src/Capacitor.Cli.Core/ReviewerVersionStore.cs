@@ -171,8 +171,17 @@ public static class ReviewerVersionAffirmations {
     /// gate's scope — widening what parses here would widen what the certification gate admits, so it
     /// cannot be done as a side effect of a reviewer change.</para>
     /// </summary>
+    /// <para><b>Byte-identical to the normalization <c>CliVersionAllowed</c> applied before it moved
+    /// here — deliberately, and do not "tidy" a <c>.Trim()</c> back in.</b> An earlier revision added
+    /// one, on the reasoning that trimming is harmless. It is not: <see cref="Version.TryParse"/>
+    /// already tolerates surrounding whitespace, so the trim changes nothing on its own — but it lets
+    /// <c>TrimStart('v','V')</c> reach a <c>v</c> it could not otherwise see, so <c>" v1.2.3"</c> flips
+    /// from REFUSED to allowed (measured). For the certification gate that is a silent widening of what
+    /// it admits, made as a side effect of a reviewer change. Every caller here already passes trimmed
+    /// input anyway (<see cref="Normalize"/>'s output, <see cref="ReviewerVersionStore.Affirmed"/>, and
+    /// <see cref="VendorVersionResolver"/>'s token), so the trim bought nothing and cost that.</para>
     public static Version? TryParseVersion(string? version) =>
-        Version.TryParse((version ?? "").Trim().TrimStart('v', 'V').Split('-', '+')[0], out var parsed)
+        Version.TryParse((version ?? "").TrimStart('v', 'V').Split('-', '+')[0], out var parsed)
             ? parsed
             : null;
 

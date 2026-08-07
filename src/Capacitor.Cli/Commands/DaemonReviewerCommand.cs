@@ -67,20 +67,32 @@ public static class DaemonReviewerCommand {
         // while an older build is installed deliberately re-admits that build and everything above
         // it. Say which direction it moved rather than a neutral "(was X)": lowering a floor is a
         // security-relevant act and should not read identically to raising one.
-        var lowered = previous is not null
-                   && ReviewerVersionAffirmations.TryParseVersion(installed) is { } now
-                   && ReviewerVersionAffirmations.TryParseVersion(previous) is { } before
-                   && now < before;
+        // Three-way, not two: when either side does not order as a version there is no direction to
+        // report, and claiming "Raised" would be a statement we did not compute — the same
+        // across-domains mistake the Incomparable arm exists to avoid in the gate itself.
+        var direction =
+            ReviewerVersionAffirmations.TryParseVersion(installed) is { } now
+         && ReviewerVersionAffirmations.TryParseVersion(previous) is { } before
+                ? now < before ? "lowered" : "raised"
+                : "unknown";
 
         Console.WriteLine(
             previous is null
                 ? $"Recorded {reviewer.DefaultBinary} {installed} as the minimum for daemon '{name}' (none was set)."
                 : previous == installed
                     ? $"{reviewer.DefaultBinary} {installed} is already the minimum for daemon '{name}'."
-                    : lowered
-                        ? $"LOWERED the minimum for daemon '{name}' to {reviewer.DefaultBinary} {installed} "
-                        + $"(was {previous}) — builds from {installed} up are now admitted again."
-                        : $"Raised the minimum for daemon '{name}' to {reviewer.DefaultBinary} {installed} (was {previous}).");
+                    : direction switch {
+                        "lowered" =>
+                            $"LOWERED the minimum for daemon '{name}' to {reviewer.DefaultBinary} {installed} "
+                          + $"(was {previous}) — builds from {installed} up are now admitted again.",
+                        "raised" =>
+                            $"Raised the minimum for daemon '{name}' to {reviewer.DefaultBinary} {installed} "
+                          + $"(was {previous}).",
+                        _ =>
+                            $"Set the minimum for daemon '{name}' to {reviewer.DefaultBinary} {installed} "
+                          + $"(was {previous}); the two do not order as version numbers, so this may have "
+                          + "raised or lowered it."
+                    });
 
         Console.WriteLine("Restart the daemon for a running instance to pick this up.");
 

@@ -113,7 +113,15 @@ internal static class GeminiReviewerCapability {
               + "numbers, so neither can be said to be newer. Record the installed build as the "
               + "minimum with `kcap daemon reviewer affirm --vendor gemini`.",
 
-            _ =>
+            // Exhaustive, like Decide's switch and for a weaker but real version of the same reason: a
+            // discard here would print the below-minimum text for a future arm that means something
+            // else, telling an operator to fix the wrong thing. Allowed throws rather than returning a
+            // string, because asking for the denial reason of a permitted decision is a caller bug.
+            GeminiReviewerDecision.Allowed =>
+                throw new ArgumentOutOfRangeException(
+                    nameof(decision), decision, "Allowed is not a denial and has no reason."),
+
+            GeminiReviewerDecision.VersionBelowMinimum =>
                 $"gemini_reviewer_version_below_minimum: gemini {Describe(installedVersion)} is "
               + $"installed but this daemon's recorded minimum is {Describe(minimumVersion)}. The "
               + "reviewer's containment rests on the build's MCP-allowlist semantics — an exclusive "

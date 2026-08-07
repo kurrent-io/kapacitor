@@ -179,6 +179,34 @@ public class ReviewerVersionAffirmationsTests {
         await Assert.That(ReviewerVersionAffirmations.TryParseVersion(raw) is not null).IsEqualTo(orders);
     }
 
+    /// <summary>
+    /// Pins that extracting this helper did not WIDEN what the Claude certification gate admits.
+    ///
+    /// <para>Review flagged the risk and it was real, though by a subtler route than "trimming changes
+    /// parsing": <c>Version.TryParse</c> already tolerates surrounding whitespace, so a trim looks
+    /// harmless — but it lets <c>TrimStart('v','V')</c> reach a <c>v</c> that leading whitespace was
+    /// hiding, flipping <c>" v1.2.3"</c> from refused to allowed. That is a security gate for a
+    /// different vendor being loosened as a side effect of a reviewer change, which this PR's own spec
+    /// forbids. The normalization is therefore byte-identical to what <c>CliVersionAllowed</c> did
+    /// before, and this test is what keeps it that way.</para>
+    /// </summary>
+    [Test]
+    [Arguments(" v1.2.3")]
+    [Arguments("\tv1.2.3\n")]
+    public async Task LeadingWhitespaceBeforeAVPrefix_StillDoesNotOrder(string raw) {
+        await Assert.That(ReviewerVersionAffirmations.TryParseVersion(raw)).IsNull()
+            .Because("trimming here would silently widen what the certification gate admits");
+    }
+
+    /// <summary>The cases that DO order are unchanged, so the guard above is not over-tightening.</summary>
+    [Test]
+    [Arguments("v1.2.3")]
+    [Arguments("1.2.3 ")]
+    [Arguments(" 1.2.3")]
+    public async Task TheOrderableCasesAreUnaffectedByThatGuard(string raw) {
+        await Assert.That(ReviewerVersionAffirmations.TryParseVersion(raw)).IsNotNull();
+    }
+
     [Test]
     [Arguments(null, "<none>")]
     [Arguments("", "<none>")]
