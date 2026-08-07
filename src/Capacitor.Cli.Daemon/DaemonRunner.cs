@@ -954,6 +954,7 @@ public static partial class DaemonRunner {
     internal const string CodexLauncherPolicyVersion = "codex-unattended-v1";
     internal const string CopilotLauncherPolicyVersion = "copilot-unattended-v1";
     internal const string AntigravityLauncherPolicyVersion = "antigravity-unattended-v1";
+    internal const string OpenCodeLauncherPolicyVersion = "opencode-unattended-v1";
 
     /// <summary>The one vendor token this daemon knows agy by. Never <c>agy</c> — that is a binary
     /// name, and the server routes on the vendor.</summary>
@@ -977,6 +978,13 @@ public static partial class DaemonRunner {
                 // Named rather than left to the generic arm, which advertises CliVersion: null — there
                 // is a real configured path here to probe, and the floor is stated in that version.
                 AntigravityVendor => (config.AntigravityPath, AntigravityLauncherPolicyVersion),
+                // Named for the same reason as Antigravity above, and found the same way: a live dev
+                // daemon logged "Unattended vendor 'opencode': CLI version unknown" while the gate had
+                // just admitted it on a resolved version, because the gate probes
+                // descriptor.ResolveBinaryPath and this map did not know the vendor. Two answers about
+                // one build, and the WRONG one is what reaches the server and the operator's log — the
+                // first place anyone looks when a reviewer misbehaves.
+                "opencode" => (config.OpenCodePath, OpenCodeLauncherPolicyVersion),
                 _         => ("", $"{vendor}-unattended-v1")
             };
             // Trust-by-default: a vendor's borrowed-review capability is a property of its FACTORY,

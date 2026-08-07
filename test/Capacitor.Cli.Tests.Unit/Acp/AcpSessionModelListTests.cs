@@ -146,6 +146,32 @@ public class AcpSessionModelListTests {
     }
 
     /// <summary>
+    /// A <c>models</c> entry with no <c>modelId</c> must be dropped, not passed on.
+    ///
+    /// <para><c>AvailableModelDto.ModelId</c> is non-nullable in C# but nothing stops an agent omitting
+    /// it, and <see cref="AcpModelResolver.Resolve"/>'s prefix arm then calls <c>StartsWith</c> on null
+    /// and throws past a caller whose only guard is <c>JsonException</c> — turning a malformed vendor
+    /// response into a failed LAUNCH, for a feature that is never supposed to be a launch precondition.
+    /// The <c>configOptions</c> path always filtered; this one did not, which is what review caught.</para>
+    /// </summary>
+    [Test]
+    public async Task AModelsEntryWithNoModelId_IsDroppedRatherThanCrashingTheResolver() {
+        var element = Result("""
+            { "sessionId": "s",
+              "models": { "availableModels": [ { "name": "no id here" },
+                                               { "modelId": "   ", "name": "blank" },
+                                               { "modelId": "good-id", "name": "fine" } ] } }
+            """);
+
+        var models = AcpSessionModelList.Extract(element);
+
+        await Assert.That(models.Select(m => m.ModelId)).IsEquivalentTo(new[] { "good-id" });
+        // The assertion that would have thrown before the filter.
+        await Assert.That(AcpModelResolver.Resolve("good", models)).IsEqualTo("good-id");
+        await Assert.That(AcpModelResolver.Resolve("nothing-matches", models)).IsNull();
+    }
+
+    /// <summary>
     /// End to end with the resolver, on the real shape: an exact id, a bare prefix, and a display
     /// label all reach the exact wire value `session/set_config_option` requires.
     /// </summary>

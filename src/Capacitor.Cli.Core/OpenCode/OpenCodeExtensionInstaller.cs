@@ -80,6 +80,14 @@ public static class OpenCodeExtensionInstaller {
           // while the start is genuinely still running — a shorter bound would silently give up on a
           // slow-but-healthy fetch and lose the one injection that session's lease paid for.
           const MEMORY_WAIT_MS = 10000
+          // Cold-start attempts per session from the TRANSFORM path, and why it is bounded: a session
+          // whose classification keeps failing never reaches start(), so `started` never records it and
+          // the transform would re-trigger classify on EVERY model request, forever. The event path is
+          // unaffected (session.idle retries there as designed) — this bounds only the request-path
+          // healing, which exists for a plugin loaded mid-session and has no business retrying
+          // indefinitely. Found by review tracing the `!started.has(sid)` guard.
+          const MEMORY_COLD_START_ATTEMPTS = 3
+          const coldStarts = new Map<string, number>()
 
           function rememberMemory(sid: string, fragment: string) {
             if (!fragment) return
@@ -405,7 +413,14 @@ public static class OpenCodeExtensionInstaller {
                     // belongs nowhere near the critical path of a model request — and inject from the
                     // next request on. ensureStarted's classify fails closed, so ambiguous parentage
                     // defers rather than injecting into a possible child.
-                    void ensureStarted(sid)
+                    //
+                    // Bounded, because a session that never classifies would otherwise re-probe on
+                    // every single request for the life of the process.
+                    const attempts = coldStarts.get(sid) ?? 0
+                    if (attempts < MEMORY_COLD_START_ATTEMPTS) {
+                      coldStarts.set(sid, attempts + 1)
+                      void ensureStarted(sid)
+                    }
                   }
                 }
 
@@ -428,6 +443,7 @@ public static class OpenCodeExtensionInstaller {
                   // Drop this session's cached fragment promptly rather than waiting for the bounded
                   // map to evict it. The bound is the guarantee; this is the tidy path.
                   memory.delete(sid)
+                  coldStarts.delete(sid)
                   return
                 }
                 if (type === "session.created") {

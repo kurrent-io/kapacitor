@@ -44,14 +44,30 @@ public static class AcpSessionModelList {
         return FromConfigOptions(sessionNewResult);
     }
 
+    /// <summary>
+    /// The <c>models.availableModels</c> shape, with junk entries dropped.
+    ///
+    /// <para><b>The filter is not cosmetic.</b> <see cref="AvailableModelDto.ModelId"/> is a
+    /// non-nullable <c>string</c> in C#, but nothing stops an agent answering
+    /// <c>{"availableModels":[{"name":"x"}]}</c> — deserialization then leaves it null, and
+    /// <see cref="AcpModelResolver.Resolve"/>'s prefix arm calls <c>ModelId.StartsWith</c> on it and
+    /// throws a <see cref="NullReferenceException"/> straight through a caller whose only guard is
+    /// <see cref="JsonException"/>. That would turn a malformed vendor response into a failed LAUNCH,
+    /// for a feature documented as never being a launch precondition. Found by review, which noticed
+    /// this path did not filter while the <c>configOptions</c> path did.</para>
+    /// </summary>
     static IReadOnlyList<AvailableModelDto> FromModelsObject(JsonElement result) {
         if (!result.TryGetProperty("models", out var models))
             return [];
 
         try {
-            return JsonSerializer
+            var available = JsonSerializer
                 .Deserialize(models.GetRawText(), CapacitorJsonContext.Default.SessionModelsInfo)
-                ?.AvailableModels ?? [];
+                ?.AvailableModels;
+
+            return available is null
+                ? []
+                : [.. available.Where(m => m is not null && !string.IsNullOrWhiteSpace(m.ModelId))];
         } catch (JsonException) {
             return [];
         }

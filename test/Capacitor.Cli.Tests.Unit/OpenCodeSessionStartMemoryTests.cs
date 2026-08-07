@@ -195,6 +195,23 @@ public class OpenCodeSessionStartMemoryTests {
     }
 
     /// <summary>
+    /// The request-path healing must be BOUNDED. A session whose classification keeps failing never
+    /// reaches <c>start()</c>, so <c>started</c> never records it and the transform would re-trigger
+    /// <c>classify</c> on every model request for the life of the process. Found by review tracing the
+    /// <c>!started.has(sid)</c> guard; the event path's own retry (session.idle) is unaffected.
+    /// </summary>
+    [Test]
+    public async Task the_plugin_bounds_request_path_cold_start_retries() {
+        var content = OpenCodeExtensionInstaller.ExtensionContent;
+
+        await Assert.That(content).Contains("MEMORY_COLD_START_ATTEMPTS");
+        await Assert.That(content).Contains("attempts < MEMORY_COLD_START_ATTEMPTS");
+        await Assert.That(content).Contains("coldStarts.set(sid, attempts + 1)");
+        // Cleared with the session, so a long-lived process does not accumulate counters.
+        await Assert.That(content).Contains("coldStarts.delete(sid)");
+    }
+
+    /// <summary>
     /// stdout became a DATA channel, so the start path must actually READ it. `.quiet()` alone would
     /// discard the fragment while every other test still passed.
     /// </summary>

@@ -302,4 +302,50 @@ public class OpenCodeReviewerLaunchTests {
             .Throws<InvalidOperationException>()
             .WithMessageContaining("opencode_reviewer_permission_unnamed_server");
     }
+
+    /// <summary>
+    /// The name is interpolated into a GLOB, so a metacharacter would widen the entry past that server.
+    /// Unreachable today (every injected name is a per-launch alias this daemon generated) — the guard
+    /// exists so the day a name starts coming from elsewhere is a refusal rather than a wider surface.
+    /// </summary>
+    [Test]
+    [Arguments("kcap-*")]
+    [Arguments("kcap-?")]
+    [Arguments("kcap-[a-z]")]
+    [Arguments("kcap!")]
+    public async Task AGlobInAnInjectedServerName_IsRefused(string name) {
+        var spec = new AcpMcpServerSpec(Name: name, Command: "kcap", Args: [], Env: []);
+
+        await Assert.That(() => OpenCodeReviewerPermissions.Build([spec]))
+            .Throws<InvalidOperationException>()
+            .WithMessageContaining("opencode_reviewer_permission_glob_in_server_name");
+    }
+
+    /// <summary>
+    /// Every forbidden tool carries its OWN <c>deny</c> key, not just wildcard coverage.
+    ///
+    /// <para>The measured evidence is that <c>OPENCODE_PERMISSION</c> beats an operator config saying
+    /// <c>"*": "ask"</c>. It does NOT establish that a wildcard from the env beats a SPECIFIC key from a
+    /// file — OpenCode merges per key and resolves specific-before-wildcard, so an operator's
+    /// <c>bash: "allow"</c> could survive a bare <c>"*": "deny"</c>. Naming each tool makes the merge
+    /// order irrelevant. Regression target: dropping these keys back to wildcard-only coverage.</para>
+    /// </summary>
+    [Test]
+    [Arguments("bash")]
+    [Arguments("write")]
+    [Arguments("edit")]
+    [Arguments("patch")]
+    [Arguments("webfetch")]
+    [Arguments("websearch")]
+    [Arguments("task")]
+    [Arguments("skill")]
+    [Arguments("todowrite")]
+    public async Task EachForbiddenTool_IsDeniedByItsOwnKeyNotOnlyByTheWildcard(string tool) {
+        SkipOnWindows();
+
+        var permission = Permission(Psi(isReviewFlow: true));
+
+        await Assert.That(permission.TryGetProperty(tool, out var rule)).IsTrue();
+        await Assert.That(rule.GetString()).IsEqualTo("deny");
+    }
 }

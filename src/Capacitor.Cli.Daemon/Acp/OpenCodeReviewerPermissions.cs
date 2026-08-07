@@ -75,12 +75,33 @@ internal static class OpenCodeReviewerPermissions {
     /// <c>JsonValue.Create</c> — the latter lower to a generic <c>Add&lt;T&gt;</c> that trips
     /// NativeAOT (IL3050), the same rule <see cref="AntigravityReviewerHome"/> follows.</para>
     /// </summary>
+    /// <summary>Glob metacharacters. A server name carrying one would widen its own
+    /// <c>{name}_*</c> entry beyond that server.</summary>
+    static readonly char[] GlobMetacharacters = ['*', '?', '[', ']', '!'];
+
     internal static string Build(IReadOnlyList<AcpMcpServerSpec> injected) {
         var permission = new JsonObject {
             // FIRST, and the reason the rest of this document is an allowlist rather than a
             // blocklist: a blocklist would admit every tool a future OpenCode release adds.
             ["*"] = (JsonNode?)"deny"
         };
+
+        // EXPLICIT per-tool denies on top of the wildcard, which is belt-and-braces about a merge rule
+        // this code should not have to be right about.
+        //
+        // What was measured is that OPENCODE_PERMISSION overrides an operator config saying
+        // `"*": "ask"`. What was NOT measured — a review of this change caught the gap — is whether a
+        // wildcard from the ENV beats a SPECIFIC key from a file, e.g. an operator config carrying
+        // `bash: "allow"`. OpenCode merges the two per key and then resolves patterns
+        // specific-before-wildcard, so on that reading a file's `bash: "allow"` would survive our
+        // `"*": "deny"` — and the only thing standing between that and a reviewer with a shell would be
+        // the assumption that the isolated config dir stops the operator's file loading at all.
+        //
+        // Naming each forbidden tool makes the question moot: the env now carries a specific key for
+        // each, so it wins per key on any merge order, whether or not any file config loaded. It also
+        // makes ForbiddenTools load-bearing rather than a list only tests read.
+        foreach (var tool in ForbiddenTools)
+            permission[tool] = (JsonNode?)"deny";
 
         foreach (var tool in ReadTools)
             permission[tool] = (JsonNode?)"allow";
@@ -91,6 +112,17 @@ internal static class OpenCodeReviewerPermissions {
                     "opencode_reviewer_permission_unnamed_server: an injected MCP server has no wire "
                   + "name, so its flattened tool names cannot be admitted. Refusing rather than "
                   + "launching a reviewer that cannot reach its own result channel.");
+
+            // The name is interpolated into a GLOB, so a metacharacter in it would widen the entry past
+            // this server. Today every injected name is a per-launch alias this daemon generated, so
+            // this is unreachable — which is exactly why it is a cheap guard rather than a design
+            // change: it stops the day a name starts coming from somewhere else, instead of that day
+            // silently granting a wider surface.
+            if (server.Name.IndexOfAny(GlobMetacharacters) >= 0)
+                throw new InvalidOperationException(
+                    $"opencode_reviewer_permission_glob_in_server_name: injected MCP server "
+                  + $"'{server.Name}' contains a glob metacharacter, so admitting it would widen the "
+                  + "reviewer's tool surface beyond that server. Refusing the launch.");
 
             permission[$"{server.Name}_*"] = (JsonNode?)"allow";
         }
