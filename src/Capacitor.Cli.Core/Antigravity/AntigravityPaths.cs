@@ -41,6 +41,20 @@ public static class AntigravityPaths {
     public static string McpConfigJson(string? home = null, string? geminiCliHome = null)
         => Path.Combine(GuiConfigRoot(home, geminiCliHome), "mcp_config.json");
 
+    /// <summary>The <c>agy</c> CLI's OWN config root: <c>&lt;gemini-root&gt;/antigravity-cli</c>. The GUI
+    /// does NOT read it (see this type's header), so it is the wrong place for capture hooks and the
+    /// right place for anything scoped to a CLI invocation.</summary>
+    public static string CliConfigRoot(string? home = null, string? geminiCliHome = null)
+        => Path.Combine(GeminiPaths.Root(home, geminiCliHome), "antigravity-cli");
+
+    /// <summary>The <c>agy</c> CLI's settings file: <c>&lt;cli-config&gt;/settings.json</c>. A DIFFERENT
+    /// file from both <see cref="McpConfigJson"/> (Antigravity's MCP server list) and the Gemini CLI's
+    /// <c>~/.gemini/settings.json</c>. Holds the CLI's own preferences plus the <c>permissions.allow</c>
+    /// rules headless (<c>agy -p</c>) runs are evaluated against — headless cannot prompt, so a tool
+    /// with no matching allow-rule is auto-denied.</summary>
+    public static string CliSettingsJson(string? home = null, string? geminiCliHome = null)
+        => Path.Combine(CliConfigRoot(home, geminiCliHome), "settings.json");
+
     /// <summary>Global steering/context file the IDE loads: <c>&lt;gemini-root&gt;/GEMINI.md</c> —
     /// SHARED with the Gemini CLI (both hardcode <c>~/.gemini/GEMINI.md</c>), so kcap's single
     /// marker-delimited block serves both. Honors <c>GEMINI_CLI_HOME</c> via <see cref="GeminiPaths.Root"/>.</summary>

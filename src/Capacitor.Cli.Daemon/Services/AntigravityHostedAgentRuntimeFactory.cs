@@ -275,8 +275,12 @@ internal sealed partial class AntigravityHostedAgentRuntimeFactory(
         // its own watcher session, while this runtime is already the transcript source. An inherited
         // HOME would duplicate capture, not add it.
         var stateDir = ReviewerStateDir(config);
+        // The grant is review-only for the same reason the result channel is: a hosted launch already
+        // runs with --dangerously-skip-permissions, so an allow-rule for it would be dead config, and
+        // its injected servers are a caller's rather than a review definition's.
         var home     = AntigravityReviewerHome.Create(
-            stateDir, config.DaemonEpoch ?? "unpinned", ctx.AgentId, injected, _logger);
+            stateDir, config.DaemonEpoch ?? "unpinned", ctx.AgentId, injected,
+            grantInjectedMcpTools: ctx.IsReviewFlow, _logger);
 
         // Created here rather than left to agy: TMPDIR must exist before the child writes into it, and
         // it is inside the home precisely so it is removed with it.

@@ -915,6 +915,68 @@ public class AntigravityReviewerLaunchTests {
         await Assert.That(config).Contains("\"kcap-flow-result\"");
     }
 
+    // ── the launch's permissions.allow ─────────────────────────────────────────────────────────────
+    //
+    // Injecting the result channel is only half of a working reviewer. `agy -p` auto-denies every tool
+    // confirmation it raises, and the channel IS an MCP tool — so a launch that injects it and grants
+    // nothing produces a reviewer that reads its context, reasons, and can never report. Measured: the
+    // conversation stops at PLANNER_RESPONSE with no TOOL_CALL and the round hangs to the flow's
+    // timeout. The mcp_config assertions above all pass in exactly that state.
+
+    /// <summary>Reads the settings.json the launch actually wrote, from the home the child was handed.
+    /// Literal path, for the same reason <see cref="McpConfigOf"/> uses one.</summary>
+    static async Task<string?> SettingsOf(SpyTurnSource spy) {
+        var path = Path.Combine(spy.Spawns[0].Environment["HOME"]!, ".gemini", "antigravity-cli", "settings.json");
+
+        return File.Exists(path) ? await WatchCommand.ReadAllTextSharedAsync(path) : null;
+    }
+
+    /// <summary>The delivery half of a review launch, asserted at the launch boundary rather than only
+    /// on the home builder — the grant has to reach the same HOME the child is spawned under, and
+    /// nothing else in this file would notice if it did not.</summary>
+    [Test]
+    public async Task A_review_launch_grants_its_own_result_channel() {
+        Skip.Unless(!OperatingSystem.IsWindows(), "POSIX-only: the per-launch home cannot be owner-only on Windows.");
+
+        var spy = new SpyTurnSource();
+
+        var start = await Factory(EnabledConfig(), spy.SpawnAsync)
+            .StartAsync(Ctx(isReviewFlow: true), CancellationToken.None).WaitAsync(HangGuard);
+
+        await using var runtime = start.Runtime;
+
+        var settings = await SettingsOf(spy);
+
+        await Assert.That(settings).IsNotNull();
+        await Assert.That(settings!).Contains("mcp(kcap-flow-result/submit_review_result)");
+
+        // Never the blunt instrument: a wildcard would satisfy the assertion above while granting
+        // whatever the channel serves next, and --dangerously-skip-permissions stays off this arm.
+        await Assert.That(settings).DoesNotContain("*");
+        await Assert.That(spy.Spawns[0].ArgumentList).DoesNotContain("--dangerously-skip-permissions");
+    }
+
+    /// <summary>The other half of the split: a hosted launch already runs with
+    /// <c>--dangerously-skip-permissions</c>, so a grant would be dead config — and its injected
+    /// servers are a caller's, which the reviewer classifier refuses outright.</summary>
+    [Test]
+    public async Task A_hosted_launch_is_granted_nothing_and_is_not_refused_for_a_caller_supplied_server() {
+        Skip.Unless(!OperatingSystem.IsWindows(), "POSIX-only: the per-launch home cannot be owner-only on Windows.");
+
+        var spy = new SpyTurnSource();
+
+        var start = await Factory(EnabledConfig(), spy.SpawnAsync)
+            .StartAsync(Ctx(isReviewFlow: false,
+                            mcpServers: [new AcpMcpServerSpec("caller-supplied", "/bin/echo", ["hi"], null)]),
+                        CancellationToken.None)
+            .WaitAsync(HangGuard);
+
+        await using var runtime = start.Runtime;
+
+        await Assert.That(await SettingsOf(spy)).IsNull();
+        await Assert.That(spy.Spawns[0].ArgumentList).Contains("--dangerously-skip-permissions");
+    }
+
     /// <summary>The hosted arm forwards <c>ctx.McpServers</c> verbatim, mirroring
     /// <c>AcpHostedAgentRuntimeFactory</c>'s hosted arm. <b>No production caller populates that field
     /// today</b>, so this pins a contract rather than a live path — the point being that a hosted agy

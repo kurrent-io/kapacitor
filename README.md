@@ -858,6 +858,13 @@ the kcap capture plugin inside it do not reach the reviewer, and your interactiv
 unaffected. POSIX only, for the same reason as Kiro: that home holds the reviewer's own transcript, and
 therefore the review context, and cannot be created owner-only on Windows.
 
+That home also carries a small `settings.json` holding `permissions.allow` rules for exactly the MCP tools
+the launch injected — the `kcap-flow-result` submit channel, plus any read-only servers the flow definition
+allowlisted — named one `server/tool` pair at a time, never a wildcard. `agy -p` has no human to approve a
+tool confirmation and auto-denies every one it raises, so without those rules a reviewer reads its context,
+reasons, and can never deliver its result. The grant admits those named tools and nothing else;
+`--dangerously-skip-permissions`, which *is* the read boundary, stays off this arm.
+
 **Give the daemon durable credentials.** An unattended reviewer's stdin is closed, so it cannot complete an
 interactive login — an unauthenticated `agy` fails the launch with a coded
 `antigravity_reviewer_auth_unavailable` rather than hanging. Application Default Credentials are the
@@ -914,7 +921,8 @@ read absolute paths outside its worktree, so a daemon-owned worktree does not co
 sees. A hosted agent runs on your own machine, under your own daemon, at your own request; if you would
 rather it asked first, restrict the vendor with [`kcap daemon consent`](#launch-consent-kcap-daemon-consent).
 **Review-flow reviewers never get the flag** — they read an owned worktree and nothing else, so the
-soft-deny is the posture they want.
+soft-deny is the posture they want; the one thing they must still be able to call, their own result
+channel, is admitted by name instead (above).
 
 Hosted launches otherwise take the same route as the reviewer above — the per-launch isolated `HOME`
 included, so your own `~/.gemini` config and the kcap capture plugin inside it never reach a hosted agent,

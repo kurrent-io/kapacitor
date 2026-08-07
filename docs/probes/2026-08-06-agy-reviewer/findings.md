@@ -166,6 +166,51 @@ Three consequences for anything built on this:
    instruction in the same prompt never runs. A test that waits for a post-denial summary will
    **hang**, not fail — bound every wait.
 
+### 3.1 The same auto-deny applies to MCP, and it silently broke every round
+
+**Binary:** `agy --version` → `1.1.13`. **Date:** 2026-08-07.
+
+The table above was read as being about *reads*. It is about **every** tool kind, and the reviewer's
+own **result channel is an MCP tool** — so the one call a round depends on was the one call print
+mode refused. Observed on a live review: the conversation stopped at `PLANNER_RESPONSE` with no
+`TOOL_CALL`, and agy's log inside the per-launch home read
+
+```
+Print mode: soft-denying tool confirmation "McpTool" at step 2
+Tool confirmation for conversation … step 2 (type=*Step_McpTool approved=false)
+permission check failed for mcp "kcap-flow-result/submit_review_result": user denied permission for mcp
+```
+
+The round then hung until the flow timed out. Every containment assertion in the suite passed in
+that state — a pure containment suite is perfectly consistent with a reviewer that never works.
+
+**Measured fix.** A fresh, isolated `HOME` with one stub stdio MCP server named `kcap-flow-result`
+serving `submit_review_result`, launched exactly as §1, differing only in
+`{HOME}/.gemini/antigravity-cli/settings.json` — a **different** file from the
+`{HOME}/.gemini/config/mcp_config.json` that carries the server list:
+
+| `settings.json` | `tools/call` reached the server? | stderr |
+|---|---|---|
+| absent | **no** — the server logged `tools/list` and nothing after | the §3 auto-deny notice, with `"mcp"` as the permission name |
+| `{"permissions":{"allow":["mcp(kcap-flow-result/send_flow_message)","mcp(kcap-flow-result/submit_review_result)"]}}` | **yes** | empty |
+
+The second row is byte-for-byte what `AntigravityReviewerHome.WriteSettings` produces — no `gcp`,
+`model` or `trustedWorkspaces` key is needed for the grant to take effect.
+
+Three notes for anyone changing this:
+
+1. **The exact `server/tool` pair works.** No wildcard is required, so `mcp(kcap-flow-result/*)`
+   would be a widening nothing buys. The rule form is agy's own: its binary ships
+   `mcp(chrome_devtools/evaluate_script)`, `mcp(chrome-devtools/*)` and `mcp(*)`.
+2. **The rule string is the identity agy logs on the denial**, verbatim —
+   `kcap-flow-result/submit_review_result`. Unlike the `view_file`/`read_file` disagreement in §3,
+   the MCP kind names the same thing on both sides.
+3. **The binary ships a string that contradicts this, and it is not the MCP path:** *"the %s tool(s)
+   required approval that headless mode cannot prompt for, so they were auto-denied. Settings
+   allow-rules do not apply; re-run with --dangerously-skip-permissions to auto-approve all tools."*
+   The measurement above supersedes it for MCP — the allow-rule demonstrably applies. Do not act on
+   that string without re-measuring.
+
 ---
 
 ## 4. Two falsified premises
