@@ -24,8 +24,15 @@ internal interface IAgyTurnDiagnostics {
 }
 
 /// <summary>
-/// <see cref="IHostedAgentRuntimeFactory"/> for Antigravity's CLI (<c>agy</c>) as an unattended
-/// review-flow reviewer, over the exec-per-turn <see cref="AntigravityHostedAgentRuntime"/>.
+/// <see cref="IHostedAgentRuntimeFactory"/> for Antigravity's CLI (<c>agy</c>) — both an unattended
+/// review-flow reviewer and an interactive hosted agent — over the exec-per-turn
+/// <see cref="AntigravityHostedAgentRuntime"/>.
+///
+/// <para><b>The two launch shapes differ in exactly one argument</b>
+/// (<c>--dangerously-skip-permissions</c>, hosted only; see <see cref="BuildTurnPsi"/>) and in nothing
+/// else. In particular the per-launch isolated <c>HOME</c> is NOT reviewer-only: this runtime is
+/// itself the transcript source, so a launch under the operator's own home is captured a second time
+/// by the hook lane — isolation removes a duplicate rather than removing capture.</para>
 ///
 /// <para><b>What this factory owns that the runtime deliberately does not:</b> the argv and
 /// environment of every turn child, the per-launch isolated <c>HOME</c> (and its removal), the
@@ -171,20 +178,13 @@ internal sealed partial class AntigravityHostedAgentRuntimeFactory(
         new(ReviewerStateDir(config), DaemonRunner.AntigravityVendor);
 
     public async Task<HostedRuntimeStart> StartAsync(RuntimeStartContext ctx, CancellationToken ct) {
-        // An interactive launch is refused rather than silently accepted. This runtime parses agy's
-        // NDJSON from stdout once per turn, and an inherited HOME lets agy's own kcap capture hooks
-        // fire — which spawns a watcher that can hold a write end of that stdout open after agy exits,
-        // so every turn would block forever with no visible cause. The isolated home below is what
-        // makes that unreachable, and it is a reviewer-only construct today.
-        if (!ctx.IsReviewFlow)
-            throw new InvalidOperationException(
-                "antigravity_interactive_launch_unsupported: the Antigravity runtime hosts unattended "
-              + "review-flow reviewers only. An interactive launch would run under the operator's own "
-              + "HOME, where agy's capture hooks fire and can hold this runtime's stdout open after the "
-              + "turn exits.");
-
-        // Defence in depth: the orchestrator's unattended gate runs first, but an explicit
-        // `vendor: "antigravity"` request can reach a factory without consulting advertisement.
+        // Applied to EVERY launch, interactive included — not just to review flows. Defence in depth
+        // for a review (the orchestrator's unattended gate runs first, but an explicit
+        // `vendor: "antigravity"` request can reach a factory without consulting advertisement), and
+        // the only gate at all for an interactive launch, whose vendor is advertised on binary
+        // presence alone. The build minimum in particular is not reviewer-specific: it exists because
+        // containment here is the per-launch isolated home below, which a hosted launch relies on
+        // exactly as a review does.
         if (ReviewerRefusal() is { } refusal) throw new InvalidOperationException(refusal);
 
         if (ctx.Work != WorkLocation.OwnedWorktree)
@@ -214,9 +214,14 @@ internal sealed partial class AntigravityHostedAgentRuntimeFactory(
 
         LogLaunching(ctx.AgentId, ctx.Worktree.Path);
 
-        // Created BEFORE any child exists, and owner-only from its first instant — the reviewer's own
+        // Created BEFORE any child exists, and owner-only from its first instant — the agent's own
         // conversation state lands in it. Its ABSENCE of a kcap plugin directory is what keeps capture
-        // single-lane; the injected mcp_config.json is the reviewer's whole MCP surface.
+        // single-lane; the injected mcp_config.json is the agent's whole MCP surface.
+        //
+        // Kept for interactive launches too, and for the capture reason rather than a stdout one:
+        // measured, a run under the operator's real HOME is recorded a SECOND time by the hook lane as
+        // its own watcher session, while this runtime is already the transcript source. An inherited
+        // HOME would duplicate capture, not add it.
         var stateDir = ReviewerStateDir(config);
         var home     = AntigravityReviewerHome.Create(
             stateDir, config.DaemonEpoch ?? "unpinned", ctx.AgentId, injected, _logger);
@@ -361,12 +366,25 @@ internal sealed partial class AntigravityHostedAgentRuntimeFactory(
     /// spawn path and the launch tests both go through it, so an assertion here certifies the vector
     /// the OS actually receives rather than a re-derivation of it.
     ///
-    /// <para><b>What is deliberately absent.</b> No <c>--dangerously-skip-permissions</c>: the
-    /// reviewer runs in a daemon-OWNED worktree and needs only to read it, which agy's headless
+    /// <para><b>The one asymmetry between a hosted agent and a reviewer</b> is
+    /// <c>--dangerously-skip-permissions</c>, added on the hosted arm only. A hosted agent exists to DO
+    /// work, and without it agy's shell and out-of-workspace operations soft-deny while the run still
+    /// exits 0 — so the agent merely looks broken. <b>That flag is also the read boundary, and the
+    /// worktree is not:</b> measured on agy 1.1.10, with it an absolute <c>view_file</c> of a path
+    /// OUTSIDE the workspace succeeds, and without it the same read is refused with a typed
+    /// <c>tool_info.error</c>. Nothing here should be read as the daemon-owned worktree confining what
+    /// a hosted agent can see. The precedent is Claude, which passes <c>--permission-mode
+    /// bypassPermissions</c> — one axis, already shipped, and grouped with this concept by
+    /// <see cref="IHostedAgentLauncher"/>'s own doc. Codex is NOT the analogue: its posture is two
+    /// independent axes, so a no-prompt Codex still sits on a sandbox value, whereas this vendor has
+    /// one axis with nothing underneath it.</para>
+    ///
+    /// <para><b>What is deliberately absent.</b> No <c>--dangerously-skip-permissions</c> for a
+    /// reviewer: it runs in a daemon-OWNED worktree and needs only to read it, which agy's headless
     /// defaults already permit — its soft-deny of shell and out-of-workspace operations IS the desired
     /// unattended posture, and widening it would grant a reviewer shell access it has no reason to
-    /// hold. No <c>--sandbox</c>: a vendor-side terminal restriction overlapping what containment
-    /// already provides, and unprobed.</para>
+    /// hold. No <c>--sandbox</c> on either arm: a vendor-side terminal restriction overlapping what
+    /// containment already provides, and unprobed.</para>
     ///
     /// <para><c>--print-timeout</c> is passed on EVERY invocation rather than relying on agy's own
     /// <c>5m0s</c> default — a vendor change would otherwise silently move a bound we did not
@@ -377,9 +395,15 @@ internal sealed partial class AntigravityHostedAgentRuntimeFactory(
         var argv = new List<string> {
             "-p", prompt,
             "--output-format", "stream-json",
-            "--disable-slash-commands",
-            "--print-timeout", $"{Math.Max(1, config.AntigravityReviewerTurnTimeoutSeconds)}s"
+            "--disable-slash-commands"
         };
+
+        // Hosted only, never a reviewer — see this method's doc for what the flag does and does not
+        // bound. Passed unconditionally on that arm: no caller input selects it.
+        if (!ctx.IsReviewFlow) argv.Add("--dangerously-skip-permissions");
+
+        argv.Add("--print-timeout");
+        argv.Add($"{Math.Max(1, config.AntigravityReviewerTurnTimeoutSeconds)}s");
 
         // Absent on turn 1 (there is nothing to resume yet) and present on every turn after it — this
         // is what makes a multi-round review land as ONE conversation rather than one per round.

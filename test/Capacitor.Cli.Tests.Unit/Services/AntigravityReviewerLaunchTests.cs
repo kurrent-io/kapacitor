@@ -67,9 +67,11 @@ public class AntigravityReviewerLaunchTests {
         DaemonId: "daemon-1", DaemonEpoch: "epoch-1",
         ActivityClock: clock);
 
-    static ProcessStartInfo BuildPsi(DaemonConfig config, string? conversationId = null) =>
+    static ProcessStartInfo BuildPsi(
+            DaemonConfig config, string? conversationId = null, bool isReviewFlow = true) =>
         AntigravityHostedAgentRuntimeFactory.BuildTurnPsi(
-            config, Ctx(), prompt: "<PROMPT>", conversationId: conversationId, home: HomePath);
+            config, Ctx(isReviewFlow: isReviewFlow), prompt: "<PROMPT>",
+            conversationId: conversationId, home: HomePath);
 
     // ── argv ──────────────────────────────────────────────────────────────────────────────────────
 
@@ -97,6 +99,43 @@ public class AntigravityReviewerLaunchTests {
         // reviewer never needs.
         await Assert.That(psi.ArgumentList).DoesNotContain("--dangerously-skip-permissions");
         await Assert.That(psi.ArgumentList).DoesNotContain("--sandbox");
+    }
+
+    /// <summary>
+    /// The hosted/reviewer asymmetry, pinned in ONE test so the two directions cannot drift apart —
+    /// and as WHOLE vectors, because the interesting regression is a flag appearing on the arm that
+    /// must not have it, which every substring check would pass.
+    ///
+    /// <para><b>What the flag actually buys, measured on agy 1.1.10:</b> with it, an absolute
+    /// out-of-workspace <c>view_file</c> succeeds; without it the same read is refused with a typed
+    /// <c>tool_info.error</c>. So the flag IS the read boundary — the daemon-owned worktree is not one
+    /// — and a hosted agent launched without it soft-denies shell and out-of-workspace work and merely
+    /// looks broken. A reviewer only reads its own worktree, so the soft-deny is the posture it
+    /// wants.</para>
+    ///
+    /// <para>Pure builder, so both arms run on every host — no process, no filesystem.</para>
+    /// </summary>
+    [Test]
+    public async Task A_hosted_launch_widens_permissions_but_a_reviewer_launch_does_not() {
+        var config = EnabledConfig();
+
+        var hosted   = BuildPsi(config, isReviewFlow: false);
+        var reviewer = BuildPsi(config, isReviewFlow: true);
+
+        await Assert.That(string.Join(" ", hosted.ArgumentList)).IsEqualTo(string.Join(" ", [
+            "-p", "<PROMPT>",
+            "--output-format", "stream-json",
+            "--disable-slash-commands",
+            "--dangerously-skip-permissions",
+            "--print-timeout", "600s"
+        ]));
+
+        await Assert.That(string.Join(" ", reviewer.ArgumentList)).IsEqualTo(string.Join(" ", [
+            "-p", "<PROMPT>",
+            "--output-format", "stream-json",
+            "--disable-slash-commands",
+            "--print-timeout", "600s"
+        ]));
     }
 
     [Test]
@@ -461,18 +500,56 @@ public class AntigravityReviewerLaunchTests {
     }
 
     /// <summary>
-    /// An interactive launch is refused, not silently accepted. This runtime parses agy's NDJSON from
-    /// stdout once per turn, and an inherited HOME lets agy's own kcap capture hooks fire — which
-    /// spawns a watcher that can hold a write end of that stdout open after agy exits, so every turn
-    /// would block forever. A coded refusal is the honest shape until the interactive lane is built.
+    /// An interactive (hosted) launch runs — it is not refused — and it runs under the SAME per-launch
+    /// isolated home the reviewer gets, with the widened permission flag the reviewer never gets.
+    ///
+    /// <para>Both halves are measured facts rather than preferences. The refusal this replaces claimed
+    /// an inherited HOME would let agy's capture hooks spawn a watcher that holds the turn's stdout
+    /// open; four piped runs under a real HOME, on a kcap predating the descriptor fix, all reached
+    /// EOF in 6–16s, so the wedge does not reproduce. What those runs DID show is that each was also
+    /// recorded by the hook lane as its own watcher session — and this runtime is already the
+    /// transcript source, so an inherited HOME would not add capture, it would DUPLICATE it. Isolation
+    /// is the fix here, not a cost, which is why the hosted arm keeps it.</para>
     /// </summary>
     [Test]
-    public async Task An_interactive_launch_is_refused_rather_than_hanging_on_an_inherited_home() {
+    public async Task An_interactive_launch_is_hosted_under_the_isolated_home_with_permissions_widened() {
+        Skip.Unless(!OperatingSystem.IsWindows(), "POSIX-only: the per-launch home cannot be owner-only on Windows.");
+
+        var config = EnabledConfig();
+        var spy    = new SpyTurnSource();
+
+        var start = await Factory(config, spy.SpawnAsync)
+            .StartAsync(Ctx(isReviewFlow: false), CancellationToken.None).WaitAsync(HangGuard);
+
+        await using var runtime = start.Runtime;
+
+        // The launch completed and bound a conversation — the same contract a review launch owes.
+        await Assert.That(start.Transcript).IsNotNull();
+        await Assert.That(start.Transcript!.AcpSessionId).IsEqualTo(FixedConversationId);
+
+        // Positive containment assertion, not an inequality against the ambient HOME: the child's home
+        // is one this daemon created under its OWN state root, and is therefore removed with it.
+        await Assert.That(spy.Spawns[0].Environment["HOME"]!)
+            .StartsWith(AntigravityHostedAgentRuntimeFactory.ReviewerStateDir(config));
+
+        // The widened argv reaches the real spawn path, not merely the pure builder.
+        await Assert.That(spy.Spawns[0].ArgumentList).Contains("--dangerously-skip-permissions");
+    }
+
+    /// <summary>Lifting the interactive refusal did NOT lift the vendor ladder: consent, platform and
+    /// the recorded build minimum still gate every launch from this factory. Deliberate — the isolated
+    /// home a hosted launch depends on is the same containment the version floor exists to protect —
+    /// and pinned here so the coupling cannot be dropped silently.</summary>
+    [Test]
+    public async Task A_consent_withheld_daemon_refuses_an_interactive_launch_too() {
+        var config = EnabledConfig();
+        config.AntigravityUnattendedReviewerEnabled = false;
+
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            Factory(EnabledConfig(), new SpyTurnSource().SpawnAsync)
+            Factory(config, new SpyTurnSource().SpawnAsync)
                 .StartAsync(Ctx(isReviewFlow: false), CancellationToken.None));
 
-        await Assert.That(ex!.Message).StartsWith("antigravity_interactive_launch_unsupported");
+        await Assert.That(ex!.Message).StartsWith("antigravity_unattended_reviewer_disabled");
     }
 
     /// <summary>Defence in depth: the orchestrator's unattended gate runs first, but an explicit

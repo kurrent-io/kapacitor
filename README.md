@@ -888,6 +888,27 @@ Like Gemini and Kiro, this never makes Antigravity a default reviewer — it is 
 explicit `vendor: "antigravity"`. Borrowed (in-place) review is not offered; a borrowed request falls back
 to a daemon-owned worktree.
 
+#### Hosted Antigravity agents run without permission prompts
+
+The same `agy` binary also backs **hosted** Antigravity agents launched from the dashboard, and there the
+posture is the opposite of the reviewer's: the daemon passes `--dangerously-skip-permissions` on every
+hosted launch, unconditionally. `agy` soft-denies shell and out-of-workspace operations in headless mode
+while still exiting 0, so without it a hosted agent quietly fails to do the work you asked for. This is the
+same posture hosted Claude agents already carry (`--permission-mode bypassPermissions`).
+
+**Measured on `agy` 1.1.10, that flag is the read boundary — the worktree is not.** With it, the agent can
+read absolute paths outside its worktree, so a daemon-owned worktree does not confine what a hosted agent
+sees. A hosted agent runs on your own machine, under your own daemon, at your own request; if you would
+rather it asked first, restrict the vendor with [`kcap daemon consent`](#launch-consent-kcap-daemon-consent).
+**Review-flow reviewers never get the flag** — they read an owned worktree and nothing else, so the
+soft-deny is the posture they want.
+
+Hosted launches otherwise take the same route as the reviewer above — the per-launch isolated `HOME`
+included, so your own `~/.gemini` config and the kcap capture plugin inside it never reach a hosted agent,
+and its transcript is recorded once rather than twice. They are gated by the same daemon switches for the
+same reason: `KCAP_ANTIGRAVITY_UNATTENDED_REVIEWER=1` and a recorded minimum `agy` version are required for
+a hosted launch too, because the containment those protect is the isolated home both shapes rely on.
+
 #### If your daemon runs as a service
 
 All three consent flags above are read from the **daemon's own environment**, and a supervised daemon (`kcap daemon
