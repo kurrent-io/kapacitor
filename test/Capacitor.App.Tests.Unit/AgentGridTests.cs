@@ -96,6 +96,18 @@ public class AgentGridTests {
     }
 
     [Test]
+    public async Task RepoLeaf_worktree_path_shows_repo_dir_and_leaf() {
+        var row = NewRow(Dto(repoPath: "/Users/alexey/dev/kcap-server/.claude/worktrees/hazy-sleeping-plum"));
+        await Assert.That(row.RepoLeaf).IsEqualTo("kcap-server · hazy-sleeping-plum");
+    }
+
+    [Test]
+    public async Task RepoLeaf_worktree_path_tolerates_trailing_slash() {
+        var row = NewRow(Dto(repoPath: "/Users/alexey/dev/kcap-server/.claude/worktrees/hazy-sleeping-plum/"));
+        await Assert.That(row.RepoLeaf).IsEqualTo("kcap-server · hazy-sleeping-plum");
+    }
+
+    [Test]
     public async Task Requester_null_renders_unknown() {
         var row = NewRow(Dto(requester: null));
         await Assert.That(row.Requester).IsEqualTo("unknown");

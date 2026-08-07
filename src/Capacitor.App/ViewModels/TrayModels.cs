@@ -3,10 +3,19 @@ namespace Capacitor.App.ViewModels;
 public enum TrayState { Stopped, Connecting, Attention, Idle, Running }
 
 /// Last path segment of a repo path, shared by the tray entry label (spec §5) and the main-window
-/// grid's Repo cell (spec §8) — one helper, not duplicated presentation logic.
+/// grid's Repo cell (spec §8) — one helper, not duplicated presentation logic. When the path ends
+/// in exactly "&lt;repoDir&gt;/.claude/worktrees/&lt;leaf&gt;" (either separator flavor, case-sensitive),
+/// the generated worktree name alone is meaningless, so this returns "{repoDir} · {leaf}" instead.
 public static class RepoLabel {
-    public static string Leaf(string? repoPath) =>
-        repoPath is null ? "—" : Path.GetFileName(Path.TrimEndingDirectorySeparator(repoPath));
+    public static string Leaf(string? repoPath) {
+        if (repoPath is null) return "—";
+
+        var segments = repoPath.Replace('\\', '/').TrimEnd('/').Split('/');
+        if (segments.Length >= 4 && segments[^3] == ".claude" && segments[^2] == "worktrees" && segments[^4].Length > 0)
+            return $"{segments[^4]} · {segments[^1]}";
+
+        return Path.GetFileName(Path.TrimEndingDirectorySeparator(repoPath));
+    }
 }
 
 public sealed record TrayAgentEntry(string Id, string Label, bool StopEnabled); // StopEnabled: false while AgentActionService.StopsInFlight contains Id

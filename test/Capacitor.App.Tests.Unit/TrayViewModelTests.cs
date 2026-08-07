@@ -365,6 +365,26 @@ public class TrayViewModelTests {
 
     [Test]
     [NotInParallel("AvaloniaSession")]
+    public async Task Entries_label_is_worktree_aware_for_claude_worktree_repo_path() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            var service = new FakeDaemonClientService();
+            var pause = new FakePauseController();
+            var actions = NewActions(service);
+            using var vm = new TrayViewModel(service, pause, actions);
+
+            var agents = new List<AgentStatusDto> {
+                new("a", "agent", "claude", "/Users/alexey/dev/kcap-server/.claude/worktrees/hazy-sleeping-plum", "Running", null, null, null, DateTime.UtcNow, null),
+            };
+
+            service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, []));
+            service.SnapshotsSubject.OnNext(Snap("connected", 1, agents));
+
+            await Assert.That(vm.MenuModel.Agents[0].Label).IsEqualTo("agent · claude · kcap-server · hazy-sleeping-plum");
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
     public async Task Entries_empty_when_not_connected_despite_retained_snapshot() {
         await AvaloniaSession.WithImmediateRxScheduler(async () => {
             var service = new FakeDaemonClientService();
