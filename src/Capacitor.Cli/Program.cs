@@ -275,6 +275,8 @@ switch (command) {
         return await PluginCommand.HandleAsync(args);
     case "profile":
         return await ProfileCommand.HandleAsync(args);
+    case "machine":
+        return await MachineCommand.HandleAsync(args);
     case "use":
         return await UseCommand.HandleAsync(args);
     case "status":

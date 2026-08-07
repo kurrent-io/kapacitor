@@ -1055,6 +1055,13 @@ public sealed record CurationApplyResponse {
 // source-gen LaunchKind JsonTypeInfo defaults to numeric and silently drops the
 // invocation — the daemon receives "kind": "review" / "default" and the
 // LaunchAgent handler never fires (DEV-1665).
+// Machine credentials. Registered here because the AOT CLI has no reflection fallback:
+// an unregistered type throws at runtime, not at build.
+[JsonSerializable(typeof(Capacitor.Cli.Core.Commands.CreateMachineApplicationRequest))]
+[JsonSerializable(typeof(Capacitor.Cli.Core.Commands.CreateMachineApplicationResponse))]
+[JsonSerializable(typeof(Capacitor.Cli.Core.Commands.RegisterMachineRequest))]
+[JsonSerializable(typeof(Capacitor.Cli.Core.Commands.RegisterMachineResponse))]
+[JsonSerializable(typeof(Capacitor.Cli.Core.Commands.MachineSummary[]))]
 [JsonSourceGenerationOptions(
     PropertyNamingPolicy = JsonKnownNamingPolicy.SnakeCaseLower,
     UseStringEnumConverter = true
