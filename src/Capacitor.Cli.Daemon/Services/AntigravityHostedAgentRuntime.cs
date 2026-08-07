@@ -479,17 +479,36 @@ internal sealed class AntigravityHostedAgentRuntime : IHostedAgentRuntime, IAcpT
         }
 
         // The only other reason TryWrite can fail on this bounded, not-yet-completed channel.
+        //
+        // The LOG line below is the reliable record of a rejection; the transcript note under it is
+        // best-effort. The Terminal check above ran under the lock and released it, so a
+        // TerminateAsync landing in the gap completes the transcript writer and the note is dropped
+        // (Write logs that at Debug). Deliberately not closed by holding the lock across the emit —
+        // that would put a channel write under _stateLock, and "no await/no foreign call under the
+        // state lock" is one of this class's four standing invariants. A rejection racing teardown
+        // is also the case where the note matters least: the agent is going away, and the user is
+        // about to be told that instead.
         var rejected = Interlocked.Increment(ref _rejectedPendingTurns);
         _logger.LogWarning(
             "Antigravity: pending-turns queue full (capacity={Capacity}) — rejecting this input; "
           + "{RejectedCount} rejected this session so far (the turn worker is likely stuck on a "
           + "stalled turn).", _pendingTurnsCapacity, rejected);
 
-        EmitDaemonNotice(new AcpEventEnvelope(
+        var noticed = EmitDaemonNotice(new AcpEventEnvelope(
             Kind: AcpEventKind.SystemNote,
             Text: $"Your message was not delivered — this agent's input queue is full "
                 + $"({_pendingTurnsCapacity} waiting) while it works through an earlier message. "
                 + "Send it again once it catches up."));
+
+        // Escalated HERE rather than inside Write, because the drop only matters at this one call
+        // site: this note is the sole feedback the person who typed the message receives (the faulted
+        // send reaches the daemon's log, never their screen). Everywhere else a teardown-time drop is
+        // routine. Without this, the authoritative record would say "rejected" while staying silent
+        // about the user having been told nothing.
+        if (!noticed)
+            _logger.LogWarning(
+                "Antigravity: the queue-full notice for this input never reached the transcript (the "
+              + "channel had already completed), so the sender received no feedback at all.");
 
         var failure = new InvalidOperationException(
             $"Antigravity pending-turns queue is full (capacity {_pendingTurnsCapacity}); this input "
@@ -893,9 +912,12 @@ internal sealed class AntigravityHostedAgentRuntime : IHostedAgentRuntime, IAcpT
     /// <c>ActivitySeq</c> — the attempts to unstick it are what keep it from ever being reported idle.
     /// A reviewer is bounded by its TTL arm regardless; a hosted agent is not bounded at all.</para>
     /// </summary>
-    void EmitDaemonNotice(AcpEventEnvelope env) => Write(env, agentActivity: false);
+    /// <summary>Returns whether the notice actually reached the transcript, so a caller whose notice
+    /// is a user's ONLY feedback can say so when it did not. Ordinary agent output does not need
+    /// this — it is one of many envelopes, and losing one at teardown is unremarkable.</summary>
+    bool EmitDaemonNotice(AcpEventEnvelope env) => Write(env, agentActivity: false);
 
-    void Write(AcpEventEnvelope env, bool agentActivity) {
+    bool Write(AcpEventEnvelope env, bool agentActivity) {
         // Advance BEFORE the channel write, never after: a reader blocked on Envelopes.ReadAsync can
         // wake the instant TryWrite makes the item visible, on another thread, with no ordering
         // relationship to what this one does next — so the reverse order is a race a fast reader wins,
@@ -904,8 +926,14 @@ internal sealed class AntigravityHostedAgentRuntime : IHostedAgentRuntime, IAcpT
         // path below: the content was genuinely produced.
         if (agentActivity) ActivityClock?.Advance();
 
-        if (!_transcript.Writer.TryWrite(env))
-            _logger.LogDebug("Antigravity: dropped a transcript envelope — the transcript channel is already completed.");
+        // Debug, not Warning, and deliberately: an envelope arriving after the channel closed is the
+        // ORDINARY shape of teardown — the turn worker is still draining agy's last lines while
+        // TerminateAsync completes the writer — so warning here would fire on every clean stop. A
+        // caller for whom the drop is actually meaningful escalates it itself, off this return value.
+        if (_transcript.Writer.TryWrite(env)) return true;
+
+        _logger.LogDebug("Antigravity: dropped a transcript envelope — the transcript channel is already completed.");
+        return false;
     }
 
     /// <summary>
