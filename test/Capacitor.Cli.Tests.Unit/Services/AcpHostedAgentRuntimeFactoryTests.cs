@@ -987,7 +987,11 @@ public class AcpHostedAgentRuntimeFactoryTests {
             ServerUrl    = "http://kcap.test",
             McpAllowlist = allowlist,
             ReviewContextCapabilityUrl =
-                "http://127.0.0.1:1234/0123456789abcdef0123456789abcdef/review-context/workspace-mcp-configs"
+                "http://127.0.0.1:1234/0123456789abcdef0123456789abcdef/review-context/workspace-mcp-configs",
+            // A borrowed launch must carry a delivery capability or AcpReviewFlowMcp.Build
+            // refuses it. Set on the shared helper so every borrowed fixture below stays constructable.
+            FlowResultCapabilityUrl =
+                "http://127.0.0.1:1234/0123456789abcdef0123456789abcdef/flow-result"
         };
 
     /// <summary>A factory whose connectionSource INCREMENTS a counter (never throws — a throw would

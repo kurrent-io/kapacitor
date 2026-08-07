@@ -170,6 +170,12 @@ internal sealed record RuntimeStartContext(
         // Exact loopback GET capability for the immutable Git-index review-context generation.
         // Present only for borrowed-snapshot review flows; never a backend or filesystem URL.
         string?            ReviewContextCapabilityUrl = null,
+        // Exact loopback POST capability the result channel submits through, so a borrowed
+        // reviewer can report without a credential inside the sandbox. Required — not merely
+        // permitted — for a borrowed snapshot: that launch's HOME is a per-launch state dir, so the
+        // channel's own token store is unreachable and the ambient-credential path cannot work.
+        // The daemon holds the authenticated connection and forwards; nothing here is a backend URL.
+        string?            FlowResultCapabilityUrl = null,
         // Caller-selected Codex sandbox/approval posture, carried verbatim from
         // LaunchAgentCommand.CodexPosture through to LauncherContext.CodexPosture. Non-null only for
         // an interactive daemon-owned-worktree Codex launch that passed the orchestrator's guard.
