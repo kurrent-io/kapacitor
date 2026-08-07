@@ -304,21 +304,48 @@ public class OpenCodeReviewerLaunchTests {
     }
 
     /// <summary>
-    /// The name is interpolated into a GLOB, so a metacharacter would widen the entry past that server.
-    /// Unreachable today (every injected name is a per-launch alias this daemon generated) — the guard
-    /// exists so the day a name starts coming from elsewhere is a refusal rather than a wider surface.
+    /// The name is interpolated into a GLOB, so anything a glob engine reads as syntax would widen the
+    /// entry past that server. Unreachable today (every injected name is a per-launch alias this daemon
+    /// generated) — the guard exists so the day a name starts coming from elsewhere is a refusal rather
+    /// than a wider surface.
+    ///
+    /// <para>The arguments deliberately range past the obvious <c>* ? [ ]</c> into extglob, brace, pipe
+    /// and backslash syntax: an earlier revision enumerated metacharacters and review pointed out the
+    /// list could not be exhaustive for an engine we do not control. The implementation is now a
+    /// character ALLOWLIST, which is total by construction, and these cases pin that.</para>
     /// </summary>
     [Test]
     [Arguments("kcap-*")]
     [Arguments("kcap-?")]
     [Arguments("kcap-[a-z]")]
     [Arguments("kcap!")]
-    public async Task AGlobInAnInjectedServerName_IsRefused(string name) {
+    [Arguments("kcap-?(a|b)")]
+    [Arguments("kcap-{a,b}")]
+    [Arguments("kcap|other")]
+    [Arguments("kcap\\other")]
+    [Arguments("kcap other")]
+    [Arguments("kcap/other")]
+    public async Task AnUnsafeCharacterInAnInjectedServerName_IsRefused(string name) {
         var spec = new AcpMcpServerSpec(Name: name, Command: "kcap", Args: [], Env: []);
 
         await Assert.That(() => OpenCodeReviewerPermissions.Build([spec]))
             .Throws<InvalidOperationException>()
-            .WithMessageContaining("opencode_reviewer_permission_glob_in_server_name");
+            .WithMessageContaining("opencode_reviewer_permission_unsafe_server_name");
+    }
+
+    /// <summary>The allowlist must still admit the shapes a real per-launch alias takes, or it would
+    /// refuse every actual launch — a guard that blocks the legitimate case is worse than none.</summary>
+    [Test]
+    [Arguments("kcap-flow-result")]
+    [Arguments("kcap-flow-result-a1b2c3d4")]
+    [Arguments("kcap_sessions")]
+    [Arguments("kcap.review.v2")]
+    public async Task AnOrdinaryInjectedServerName_IsAdmitted(string name) {
+        var spec = new AcpMcpServerSpec(Name: name, Command: "kcap", Args: [], Env: []);
+
+        var permission = JsonDocument.Parse(OpenCodeReviewerPermissions.Build([spec])).RootElement;
+
+        await Assert.That(permission.GetProperty($"{name}_*").GetString()).IsEqualTo("allow");
     }
 
     /// <summary>

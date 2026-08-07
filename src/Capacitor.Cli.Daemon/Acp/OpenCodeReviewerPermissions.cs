@@ -75,9 +75,20 @@ internal static class OpenCodeReviewerPermissions {
     /// <c>JsonValue.Create</c> — the latter lower to a generic <c>Add&lt;T&gt;</c> that trips
     /// NativeAOT (IL3050), the same rule <see cref="AntigravityReviewerHome"/> follows.</para>
     /// </summary>
-    /// <summary>Glob metacharacters. A server name carrying one would widen its own
-    /// <c>{name}_*</c> entry beyond that server.</summary>
-    static readonly char[] GlobMetacharacters = ['*', '?', '[', ']', '!'];
+    /// <summary>
+    /// The characters an injected server name may contain, as an ALLOWLIST.
+    ///
+    /// <para><b>Deliberately not a list of glob metacharacters.</b> That is what this was first, and
+    /// review pointed out the obvious problem: <c>* ? [ ] !</c> is not exhaustive for whatever glob
+    /// engine OpenCode uses — extglobs (<c>?()</c>, <c>*()</c>, <c>!()</c>), braces, pipes, parens and
+    /// backslash are all plausible and were all absent. Enumerating another engine's syntax is a
+    /// losing game, and the error message claimed totality the list did not have. A conservative
+    /// allowlist is total by construction: no character outside it can mean anything to any engine.
+    /// The house rule this follows is the one about escaping — admit only what is verifiable, else
+    /// refuse.</para>
+    /// </summary>
+    static bool IsAdmissibleServerNameChar(char c) =>
+        char.IsAsciiLetterOrDigit(c) || c is '-' or '_' or '.';
 
     internal static string Build(IReadOnlyList<AcpMcpServerSpec> injected) {
         var permission = new JsonObject {
@@ -113,16 +124,17 @@ internal static class OpenCodeReviewerPermissions {
                   + "name, so its flattened tool names cannot be admitted. Refusing rather than "
                   + "launching a reviewer that cannot reach its own result channel.");
 
-            // The name is interpolated into a GLOB, so a metacharacter in it would widen the entry past
-            // this server. Today every injected name is a per-launch alias this daemon generated, so
-            // this is unreachable — which is exactly why it is a cheap guard rather than a design
-            // change: it stops the day a name starts coming from somewhere else, instead of that day
-            // silently granting a wider surface.
-            if (server.Name.IndexOfAny(GlobMetacharacters) >= 0)
+            // The name is interpolated into a GLOB, so anything in it that a glob engine reads as
+            // syntax would widen the entry past this server. Today every injected name is a per-launch
+            // alias this daemon generated, so this is unreachable — which is exactly why it is a cheap
+            // refusal rather than a design change: it stops the day a name starts coming from somewhere
+            // else, instead of that day silently granting a wider surface.
+            if (!server.Name.All(IsAdmissibleServerNameChar))
                 throw new InvalidOperationException(
-                    $"opencode_reviewer_permission_glob_in_server_name: injected MCP server "
-                  + $"'{server.Name}' contains a glob metacharacter, so admitting it would widen the "
-                  + "reviewer's tool surface beyond that server. Refusing the launch.");
+                    $"opencode_reviewer_permission_unsafe_server_name: injected MCP server "
+                  + $"'{server.Name}' contains a character outside [A-Za-z0-9._-], so interpolating it "
+                  + "into a permission glob could widen the reviewer's tool surface beyond that server. "
+                  + "Refusing the launch.");
 
             permission[$"{server.Name}_*"] = (JsonNode?)"allow";
         }
