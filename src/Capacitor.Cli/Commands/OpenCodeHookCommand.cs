@@ -138,11 +138,19 @@ static class OpenCodeHookCommand {
 
         // Start the memory fetch so it OVERLAPS the lifecycle POST. Never before it, and never awaited
         // before it — the POST is what capture depends on.
-        var memoryTask = StartMemoryIndexTask(
-            baseUrl, sessionId, scopeRoot,
-            activeProfile?.DisableMemoryIndex is true,
-            HookBudget.Remaining(processStart, "session-start"),
-            memoryClientFactory, memoryStoreFactory);
+        //
+        // Gated on the caller DECLARING it can consume a fragment. Without that, a new binary paired
+        // with an already-installed older plugin would fetch the index and spend the session's
+        // once-only lease on output that plugin discards — it captures stdout only since the version
+        // that added this flag. The lease is what makes injection once-per-session, so spending it for
+        // a caller that cannot deliver is the one thing worth negotiating about.
+        var memoryTask = MemoryContractOf(args) >= 1
+            ? StartMemoryIndexTask(
+                baseUrl, sessionId, scopeRoot,
+                activeProfile?.DisableMemoryIndex is true,
+                HookBudget.Remaining(processStart, "session-start"),
+                memoryClientFactory, memoryStoreFactory)
+            : Task.FromResult<string?>(null);
 
         // Spawn-before-post: capture must start on Posted OR Spooled (auth lapse /
         // outage) — a doomed/delayed lifecycle POST must never withhold the watcher. On a real
@@ -266,6 +274,20 @@ static class OpenCodeHookCommand {
             return cwd;
         }
     }
+
+    /// <summary>
+    /// The memory-delivery contract version the CALLER declares, or 0 when it declares none.
+    ///
+    /// <para>Absence means 0 — an older plugin, which discards this command's stdout — so no fetch
+    /// happens and no lease is spent. An unparseable value is also 0: a caller that cannot state a
+    /// version it understands is not one to hand a fragment to.</para>
+    ///
+    /// <para>The reverse pairing (new plugin, older binary) needs nothing: this command has always
+    /// ignored unrecognised arguments, so the flag is inert there and the plugin simply receives no
+    /// fragment — fail-open in the direction that matters.</para>
+    /// </summary>
+    internal static int MemoryContractOf(string[] args) =>
+        int.TryParse(GetArg(args, "--memory-contract"), out var version) ? version : 0;
 
     static string? GetArg(string[] args, string flag) {
         var idx = Array.IndexOf(args, flag);

@@ -91,6 +91,12 @@ public static class OpenCodeExtensionInstaller {
 
           function rememberMemory(sid: string, fragment: string) {
             if (!fragment) return
+            // VALIDATE before trusting: only stdout that actually opens with the marker is a memory
+            // fragment. Without this, any future line some other code path prints on this command's
+            // stdout would be appended to the model's system prompt verbatim, which is both a
+            // correctness and a content problem — stdout is a data channel here, and a data channel
+            // needs a shape.
+            if (!fragment.startsWith(MEMORY_MARKER)) return
             // A repeated start returning nothing must not erase a fragment already cached.
             if (memory.has(sid)) return
             // Cheap bound: drop the oldest insertion (Map preserves insertion order).
@@ -163,7 +169,12 @@ public static class OpenCodeExtensionInstaller {
             if (started.has(sid)) return
             started.add(sid)
             try { mkdirSync(dir, { recursive: true }); appendFileSync(file(sid), "") } catch {}
-            const args = ["hook", "--opencode", "--event", "session-start", "--session", sid, "--file", file(sid)]
+            // --memory-contract declares that THIS plugin captures and delivers the command's stdout.
+            // A binary that understands it only then fetches the index and spends the session's
+            // once-only injection lease; an older plugin, which discards stdout, sends no flag and the
+            // binary spends nothing on output nobody will deliver.
+            const args = ["hook", "--opencode", "--event", "session-start", "--session", sid,
+                          "--file", file(sid), "--memory-contract", "1"]
             const cwd = info?.directory ?? directory
             if (cwd) args.push("--cwd", String(cwd))
             if (info?.version) args.push("--version", String(info.version))

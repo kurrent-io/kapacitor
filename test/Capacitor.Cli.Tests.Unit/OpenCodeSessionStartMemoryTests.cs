@@ -67,6 +67,64 @@ public class OpenCodeSessionStartMemoryTests {
     }
 
     /// <summary>
+    /// The cross-runtime negotiation the epic specifies. Absence means contract 0, so a NEW binary
+    /// paired with an already-installed OLDER plugin fetches nothing and spends no lease — that plugin
+    /// discards this command's stdout, and the lease is what makes injection once-per-session, so
+    /// spending it for a caller that cannot deliver is the thing worth negotiating about.
+    /// </summary>
+    [Test]
+    [Arguments(new[] { "--event", "session-start" }, 0)]                                    // older plugin
+    [Arguments(new[] { "--event", "session-start", "--memory-contract", "1" }, 1)]
+    [Arguments(new[] { "--event", "session-start", "--memory-contract", "2" }, 2)]          // a future one
+    [Arguments(new[] { "--event", "session-start", "--memory-contract", "abc" }, 0)]        // unparseable
+    [Arguments(new[] { "--event", "session-start", "--memory-contract" }, 0)]               // no value
+    public async Task the_memory_contract_version_defaults_to_zero_when_undeclared(
+            string[] args, int expected) {
+        await Assert.That(OpenCodeHookCommand.MemoryContractOf(args)).IsEqualTo(expected);
+    }
+
+    /// <summary>The generated plugin must actually DECLARE the contract, or a new binary paired with
+    /// it fetches nothing and the feature is silently inert.</summary>
+    [Test]
+    public async Task the_plugin_declares_the_memory_contract() {
+        await Assert.That(OpenCodeExtensionInstaller.ExtensionContent)
+            .Contains("\"--memory-contract\", \"1\"");
+    }
+
+    /// <summary>
+    /// stdout is a data channel, so it needs a shape. Only output opening with the marker is treated as
+    /// a fragment — otherwise any line some future code path prints there would be appended to the
+    /// model's system prompt verbatim.
+    /// </summary>
+    [Test]
+    public async Task the_plugin_validates_the_marker_before_trusting_stdout() {
+        await Assert.That(OpenCodeExtensionInstaller.ExtensionContent)
+            .Contains("if (!fragment.startsWith(MEMORY_MARKER)) return");
+    }
+
+    /// <summary>
+    /// The marker is deliberately NOT stripped before injection, which is a documented deviation from
+    /// the epic's cross-runtime contract text. It is the only way to recognise an already-appended
+    /// fragment in a system array this plugin does not own — the guard that keeps injection correct if a
+    /// future OpenCode retains transformed entries instead of rebuilding them — and it is an invisible
+    /// HTML comment, so leaving it in costs a reader nothing. Pinned so the deviation is deliberate
+    /// rather than forgotten.
+    /// </summary>
+    [Test]
+    public async Task the_marker_is_retained_in_the_injected_fragment() {
+        // The CLI does not strip it on the way out...
+        await Assert.That(Render("F")).IsEqualTo("F\n");
+        await Assert.That(MemoryIndexEmitter.FragmentMarker).StartsWith("<!--");
+
+        // ...and the plugin pushes the fragment as-is rather than a substring of it.
+        await Assert.That(OpenCodeExtensionInstaller.ExtensionContent).Contains("system.push(fragment)");
+        await Assert.That(OpenCodeExtensionInstaller.ExtensionContent)
+            .DoesNotContain("fragment.replace(MEMORY_MARKER");
+        await Assert.That(OpenCodeExtensionInstaller.ExtensionContent)
+            .DoesNotContain("fragment.slice(MEMORY_MARKER.length)");
+    }
+
+    /// <summary>
     /// The two halves' shared literal. The CLI emits this marker at the head of every fragment and the
     /// plugin recognises an already-appended fragment by it; they live in different languages, so
     /// nothing but this assertion makes them agree.

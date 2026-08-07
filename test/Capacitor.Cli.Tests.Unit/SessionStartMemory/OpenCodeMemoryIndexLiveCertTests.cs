@@ -25,6 +25,15 @@ namespace Capacitor.Cli.Tests.Unit.SessionStartMemory;
 /// generator with NO <c>sessionID</c>. A future build that breaks any of those is what this cert is
 /// for — if it fails, re-read that contract before assuming a kcap defect.</para>
 ///
+/// <para><b>Known flakiness, and which kind it is.</b> The positive case asks the model to echo 32
+/// RANDOM hex characters, and a small free model mistranscribes them often enough to fail the run —
+/// observed twice while certifying, both times with the fragment demonstrably delivered (the readiness
+/// probe confirmed the index carried the nonce, and an isolated turn on a patterned nonce reproduced it
+/// exactly). That is a model-capability flake, not a delivery defect, which is why the assertion puts
+/// the model's own answer in the failure message: <c>NONE</c> means go read the transform, a near-miss
+/// of the nonce means point <see cref="ModelEnvVar"/> at a more capable model. Do NOT weaken the
+/// assertion to a fuzzy match — an exact echo is the whole proof.</para>
+///
 /// <para>Both tests are <c>[NotInParallel]</c>: the negative control mutates the REAL process-global
 /// <c>disable_memory_index</c> config. <c>[NotInParallel]</c> only prevents concurrency — it restores
 /// nothing — so every test snapshots before creating anything and restores in a <c>finally</c>,
@@ -97,6 +106,50 @@ public class OpenCodeMemoryIndexLiveCertTests {
     }
 
     /// <summary>
+    /// Waits until the memory index actually CARRIES the nonce, by running the same
+    /// <c>kcap hook --opencode … --memory-contract 1</c> the plugin runs, against throwaway session ids.
+    ///
+    /// <para><b>Why this is a precondition and not a weakening.</b> A memory saved a moment ago is not
+    /// instantly in <c>GET /api/memories/index</c>, and the cert's save→run sequence is tight enough to
+    /// lose that window: observed as an intermittent positive-case failure where the model answered
+    /// <c>NONE</c> while injection was demonstrably working. Left unguarded, the cert reports a
+    /// propagation race as a delivery defect — the most expensive kind of false failure, because the
+    /// honest response to it looks like debugging code that is correct.</para>
+    ///
+    /// <para>The assertion itself is untouched: the pass condition is still that the MODEL reproduced
+    /// the nonce. This only establishes that there was something to reproduce. It deliberately probes
+    /// through the CLI path the plugin uses rather than a bespoke HTTP call, so a "ready" verdict means
+    /// ready <i>for the mechanism under test</i> — and it costs no model tokens.</para>
+    ///
+    /// <para>Each probe burns a throwaway session's injection lease, which is why the ids are random and
+    /// never the cert's own.</para>
+    /// </summary>
+    static async Task<bool> WaitForNonceInIndexAsync(string nonce, string cwd) {
+        var kcap = MemoryIndexLiveCertHarness.ResolveOnPath("kcap");
+        var transcript = Path.Combine(cwd, "kcap-cert-readiness.jsonl");
+
+        for (var attempt = 1; attempt <= 10; attempt++) {
+            var sessionId = "sesready" + Guid.NewGuid().ToString("N")[..12];
+
+            var (_, stdout, _) = await MemoryIndexLiveCertHarness.RunProcessAsync(
+                kcap,
+                ["hook", "--opencode", "--event", "session-start",
+                 "--session", sessionId, "--file", transcript, "--cwd", cwd,
+                 "--memory-contract", "1"],
+                cwd);
+
+            if (stdout.Contains(nonce, StringComparison.Ordinal)) {
+                Console.WriteLine($"[cert] index carried the nonce after {attempt} readiness probe(s)");
+                return true;
+            }
+
+            await Task.Delay(TimeSpan.FromSeconds(2));
+        }
+
+        return false;
+    }
+
+    /// <summary>
     /// The model's own words, and ONLY those: the concatenated <c>text</c> of every <c>type: "text"</c>
     /// event in OpenCode's NDJSON stream.
     ///
@@ -145,13 +198,35 @@ public class OpenCodeMemoryIndexLiveCertTests {
             // installed binary.
             await MemoryIndexLiveCertHarness.RecordCertEnvironmentAsync(VendorLabel, "opencode", ["--version"]);
 
+            // Establish that there IS something for the model to reproduce before spending a turn.
+            // Without this the cert intermittently reports an index-propagation race as a delivery
+            // defect — observed, and the most expensive kind of false failure.
+            await Assert.That(await WaitForNonceInIndexAsync(nonce, worktree.FullName))
+                .IsTrue()
+                .Because("the nonce memory never became visible in GET /api/memories/index, so a model "
+                       + "turn could not prove anything either way — this is a save/propagation "
+                       + "problem, NOT evidence about the system transform");
+
             var (exitCode, stdout, _) =
                 await RunOpenCodeAsync(worktree.FullName, MemoryIndexLiveCertHarness.PositivePrompt);
 
             LogInjectionEvidence(nonce, stdout);
 
             await Assert.That(exitCode).IsEqualTo(0);
-            await Assert.That(ExtractModelText(stdout)).Contains(nonce);
+
+            var said = ExtractModelText(stdout);
+
+            // The model's own words go in the failure message, because the two ways this can fail look
+            // identical from the assertion alone and lead to opposite responses. "NONE" means the
+            // fragment did not reach the model — a real delivery defect, go read the transform. A
+            // near-miss of the nonce means the fragment DID reach it and a weak model mistranscribed 32
+            // random hex characters — nothing to fix in kcap; point the model override at something more
+            // capable. Diagnosing the second as the first is an expensive mistake.
+            await Assert.That(said).Contains(nonce)
+                .Because($"the model was asked to echo the injected nonce and answered: '{said}'. "
+                       + "'NONE' (or no mention) means the fragment never reached the model; a near-miss "
+                       + "of the nonce means it did, and the model mistranscribed it — see "
+                       + $"{ModelEnvVar}");
         } finally {
             TryDelete(worktree);
             await MemoryIndexLiveCertHarness.ArchiveMemoryAsync(VendorLabel, memoryId);

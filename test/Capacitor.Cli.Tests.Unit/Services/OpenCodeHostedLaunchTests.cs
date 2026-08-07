@@ -107,9 +107,25 @@ public class OpenCodeHostedLaunchTests {
     /// and this is the launch boundary, which an explicit <c>vendor: "opencode"</c> request reaches
     /// without consulting advertisement. The gate's own arms live in
     /// <c>OpenCodeReviewerCapabilityTests</c>; this asserts the factory actually consults it.
+    ///
+    /// <para><b>The refusal CODE is platform-dependent, and asserting the consent one unconditionally
+    /// fails on Windows for a reason unrelated to what this tests.</b> The gate checks the platform
+    /// FIRST and short-circuits, so a Windows host answers `unsupported_platform` before consent is
+    /// ever consulted — which is correct behaviour and exactly the trap
+    /// <c>KiroReviewerCapability.Decide</c> documents having been caught by. Found on the Windows CI
+    /// leg after this passed locally on macOS. Both platforms still assert the factory refuses with a
+    /// coded reason; only the consent-specific code is POSIX-scoped.</para>
     /// </summary>
     [Test]
     public async Task AReviewFlowLaunch_IsRefusedOnADaemonThatHasNotConsented() {
+        await Assert.That(() => Psi(isReviewFlow: true))
+            .Throws<InvalidOperationException>()
+            .WithMessageContaining("opencode_");
+
+        Skip.Unless(!OperatingSystem.IsWindows(),
+            "The consent arm is unreachable on Windows: the gate refuses on platform first, before "
+          + "consent is consulted.");
+
         await Assert.That(() => Psi(isReviewFlow: true))
             .Throws<InvalidOperationException>()
             .WithMessageContaining("opencode_unattended_reviewer_disabled");
