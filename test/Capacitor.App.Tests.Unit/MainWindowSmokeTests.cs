@@ -211,4 +211,46 @@ public class MainWindowSmokeTests {
         await Assert.That(rendered).Contains("No agents running");
         await Assert.That(emptyStateVisible).IsTrue();
     }
+
+    /// StartMessageText/ReasonText must not reserve dead space when there is nothing to say
+    /// (spec: "collapse when empty"): both start out empty (Connecting, no failed attempt yet),
+    /// then Reason appears on Unreachable and StartMessage appears once a start attempt fails.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task StartMessage_and_reason_text_collapse_when_empty_and_appear_once_set() {
+        var (reasonInitially, startMessageInitially, reasonWhileUnreachable, startMessageAfterFailure) =
+            await AvaloniaSession.DispatchAsync(async () => {
+                var service = new FakeDaemonClientService();
+                var (actions, notifier) = NewActions(service);
+                var vm = new MainWindowViewModel(service, actions, notifier, CancellationToken.None);
+                var window = new MainWindow { DataContext = vm };
+                window.Show();
+                Dispatcher.UIThread.RunJobs();
+
+                TextBlock Find(string name) =>
+                    window.GetVisualDescendants().OfType<TextBlock>().First(t => t.Name == name);
+
+                var reasonInit = Find("ReasonText").IsVisible;
+                var startMessageInit = Find("StartMessageText").IsVisible;
+
+                service.StatusSubject.OnNext(new AttachStatus(AttachState.Unreachable, "daemon_unreachable", null));
+                Dispatcher.UIThread.RunJobs();
+                var reasonUnreachable = Find("ReasonText").IsVisible;
+
+                service.StartBehavior = _ => Task.FromResult(new StartDaemonResult(false, "boom: could not bind socket"));
+                await vm.StartDaemonCommand.Execute().ToTask();
+                Dispatcher.UIThread.RunJobs();
+                var startMessageAfter = Find("StartMessageText").IsVisible;
+
+                window.Close();
+                Dispatcher.UIThread.RunJobs();
+
+                return (reasonInit, startMessageInit, reasonUnreachable, startMessageAfter);
+            });
+
+        await Assert.That(reasonInitially).IsFalse();
+        await Assert.That(startMessageInitially).IsFalse();
+        await Assert.That(reasonWhileUnreachable).IsTrue();
+        await Assert.That(startMessageAfterFailure).IsTrue();
+    }
 }

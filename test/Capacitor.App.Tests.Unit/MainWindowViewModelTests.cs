@@ -1,4 +1,5 @@
 using System.Reactive.Threading.Tasks;
+using Avalonia.Media;
 using Capacitor.App.Services;
 using Capacitor.App.ViewModels;
 using static Capacitor.App.Tests.Unit.FakeDaemonClientService;
@@ -30,11 +31,113 @@ public class MainWindowViewModelTests {
             using var activation = vm.Activator.Activate();
 
             service.SnapshotsSubject.OnNext(Snap(daemon: "daemon-a", version: "1.2.3", serverUrl: "http://localhost:9999", connection: "connected"));
+            service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, null));
 
             await Assert.That(vm.DaemonName).IsEqualTo("daemon-a");
             await Assert.That(vm.DaemonVersion).IsEqualTo("1.2.3");
             await Assert.That(vm.ServerUrl).IsEqualTo("http://localhost:9999");
-            await Assert.That(vm.ConnectionText).IsEqualTo("connected");
+            await Assert.That(vm.ConnectionText).IsEqualTo("connected"); // raw wire value, unchanged
+            await Assert.That(vm.ConnectionDisplay).IsEqualTo("Connected"); // new presentation projection
+        });
+    }
+
+    // ---- VersionDisplay (spec: SEMVER only, everything from the first '+' is build metadata) ----
+
+    [Test]
+    [Arguments("1.2.3+abc", "1.2.3")]
+    [Arguments("1.2.3", "1.2.3")]
+    [Arguments("1.2.3+a.b+c", "1.2.3")] // only the FIRST '+' matters
+    [Arguments("", "")]
+    [Arguments(null, "")]
+    public async Task VersionDisplay_strips_build_metadata(string? raw, string expected) {
+        await Assert.That(MainWindowViewModel.StripBuildMetadata(raw)).IsEqualTo(expected);
+    }
+
+    // ---- ConnectionDisplay / StatusDotBrush (local attach State first, daemon Connection only
+    // once Connected — see MainWindowViewModel.ConnectionDisplayFor's doc comment) ----
+
+    [Test]
+    [Arguments(AttachState.Connecting, null, "connected", "Connecting…")]
+    [Arguments(AttachState.Unreachable, "daemon_unreachable", "connected", "Unreachable")]
+    [Arguments(AttachState.Unreachable, "daemon_incompatible", "connected", "Incompatible")]
+    [Arguments(AttachState.Connected, null, "connected", "Connected")]
+    [Arguments(AttachState.Connected, null, "connecting", "Connecting…")]
+    [Arguments(AttachState.Connected, null, "reconnecting", "Reconnecting…")]
+    [Arguments(AttachState.Connected, null, "disconnected", "Disconnected")]
+    public async Task ConnectionDisplayFor_maps_state_and_daemon_connection_to_one_capitalized_word(
+            AttachState state, string? reason, string daemonConnection, string expected) {
+        var status = new AttachStatus(state, reason, null);
+        await Assert.That(MainWindowViewModel.ConnectionDisplayFor(status, daemonConnection)).IsEqualTo(expected);
+    }
+
+    [Test]
+    [Arguments(AttachState.Connecting, null, "connected", "#FFB300")]
+    [Arguments(AttachState.Unreachable, "daemon_unreachable", "connected", "#9E9E9E")]
+    [Arguments(AttachState.Unreachable, "daemon_incompatible", "connected", "#E53935")]
+    [Arguments(AttachState.Connected, null, "connected", "#4CAF50")]
+    [Arguments(AttachState.Connected, null, "connecting", "#FFB300")]
+    [Arguments(AttachState.Connected, null, "reconnecting", "#FFB300")]
+    [Arguments(AttachState.Connected, null, "disconnected", "#E53935")]
+    public async Task StatusDotFor_maps_to_the_matching_bucket_color(
+            AttachState state, string? reason, string daemonConnection, string expectedHex) {
+        var status = new AttachStatus(state, reason, null);
+        var brush = (SolidColorBrush)MainWindowViewModel.StatusDotFor(status, daemonConnection);
+        await Assert.That(brush.Color).IsEqualTo(Color.Parse(expectedHex));
+    }
+
+    // ---- Start/Retry visibility (spec: shows ONLY when the action is meaningful, tracking the
+    // SAME state predicate as canStart/canRetry — but, unlike CanExecute, never hidden just
+    // because a start is in flight) ----
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Start_and_retry_visibility_track_the_command_state_matrix() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            var service = new FakeDaemonClientService();
+            var (actions, notifier) = NewActions(service);
+            var vm = new MainWindowViewModel(service, actions, notifier, CancellationToken.None);
+
+            foreach (var reason in new[] { "daemon_unreachable", "daemon_incompatible" }) {
+                service.StatusSubject.OnNext(new AttachStatus(AttachState.Connecting, null, null));
+                await Assert.That(vm.StartVisible).IsFalse();
+                await Assert.That(vm.RetryVisible).IsTrue();
+
+                service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, null));
+                await Assert.That(vm.StartVisible).IsFalse();
+                await Assert.That(vm.RetryVisible).IsFalse();
+
+                service.StatusSubject.OnNext(new AttachStatus(AttachState.Unreachable, reason, null));
+                await Assert.That(vm.StartVisible).IsEqualTo(reason == "daemon_unreachable");
+                await Assert.That(vm.RetryVisible).IsTrue();
+            }
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task StartVisible_stays_true_while_a_start_is_in_flight_unlike_CanExecute() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            var service = new FakeDaemonClientService();
+            var (actions, notifier) = NewActions(service);
+            var vm = new MainWindowViewModel(service, actions, notifier, CancellationToken.None);
+
+            service.StatusSubject.OnNext(new AttachStatus(AttachState.Unreachable, "daemon_unreachable", null));
+
+            var startCanExecute = false;
+            using var subStart = vm.StartDaemonCommand.CanExecute.Subscribe(v => startCanExecute = v);
+
+            var gate = new TaskCompletionSource();
+            service.StartBehavior = async _ => {
+                await gate.Task;
+                return new StartDaemonResult(true, null);
+            };
+
+            var execute = vm.StartDaemonCommand.Execute().ToTask();
+            await Assert.That(startCanExecute).IsFalse(); // command disabled while in flight...
+            await Assert.That(vm.StartVisible).IsTrue();  // ...but the button itself stays visible
+
+            gate.SetResult();
+            await execute;
         });
     }
 

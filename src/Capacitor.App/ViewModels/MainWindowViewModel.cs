@@ -3,6 +3,7 @@ using System.Reactive;
 using System.Reactive.Disposables;
 using System.Reactive.Disposables.Fluent;
 using System.Reactive.Linq;
+using Avalonia.Media;
 using Capacitor.App.Services;
 using Capacitor.Cli.Core.LocalIpc;
 using DynamicData;
@@ -18,7 +19,9 @@ namespace Capacitor.App.ViewModels;
 /// CONSTRUCTOR, not inside WhenActivated — commands must exist (and be assertable via
 /// CanExecute) independent of window activation; service.Status/service.Snapshots are the
 /// service's own long-lived subjects, not resources the VM needs to scope to a window's
-/// lifetime.
+/// lifetime. StartVisible/RetryVisible mirror that same constructor scoping (spec: presentation
+/// visibility must track the identical state predicate the command's own canExecute uses,
+/// independent of activation too).
 public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel {
     const string IncompatibleReason = "daemon_incompatible";
     const string UnreachableReason  = "daemon_unreachable";
@@ -27,6 +30,20 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
     // an unexpected frame can equally mean the APP is the older side — so the UI must not
     // prescribe an upgrade direction.
     const string SkewMessage = "app and daemon are incompatible — make sure both are up to date";
+
+    // Status-dot palette (presentation only) — hex-only constants (plain strings, not Brush
+    // instances). A Brush is an AvaloniaObject with UI-thread affinity enforced the moment the
+    // renderer references it; caching one as a shared `static readonly` field would tie its
+    // affinity to whichever thread happens to trigger this type's static initializer FIRST
+    // (e.g. a plain unit test calling a static helper off the UI thread) and then poison every
+    // later render that reuses the same cached instance. DotBrush below constructs a fresh
+    // instance per call instead — cheap, and always on whatever thread the caller is on.
+    const string ConnectedHex   = "#4CAF50";
+    const string InProgressHex  = "#FFB300";
+    const string DisruptedHex   = "#E53935";
+    const string UnavailableHex = "#9E9E9E";
+
+    static IBrush DotBrush(string hex) => new SolidColorBrush(Color.Parse(hex));
 
     readonly IDaemonClientService _service;
 
@@ -38,6 +55,12 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
     ObservableAsPropertyHelper<string>? _daemonVersion;
     public string DaemonVersion => _daemonVersion?.Value ?? "";
 
+    // SEMVER-only projection of DaemonVersion (everything from the first '+' is build metadata —
+    // never meaningful to a human glancing at the status line); the untruncated value still lives
+    // on DaemonVersion for the version TextBlock's ToolTip.Tip.
+    ObservableAsPropertyHelper<string>? _versionDisplay;
+    public string VersionDisplay => _versionDisplay?.Value ?? "";
+
     ObservableAsPropertyHelper<string>? _serverUrl;
     public string ServerUrl => _serverUrl?.Value ?? "";
 
@@ -46,6 +69,17 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
     // are this app's local attach status to the daemon.
     ObservableAsPropertyHelper<string>? _connectionText;
     public string ConnectionText => _connectionText?.Value ?? "";
+
+    // Single-word presentation of the OVERALL connection situation (local attach State first,
+    // falling back to the daemon's own upstream Connection only once State is Connected — see
+    // ConnectionDisplayFor). Capitalized, in-progress words get a trailing ellipsis ("Connecting…").
+    ObservableAsPropertyHelper<string>? _connectionDisplay;
+    public string ConnectionDisplay => _connectionDisplay?.Value ?? "";
+
+    // Status-dot color for ConnectionDisplay's same bucket — kept as a single source of truth so
+    // the dot and the word can never disagree.
+    ObservableAsPropertyHelper<IBrush>? _statusDotBrush;
+    public IBrush StatusDotBrush => _statusDotBrush?.Value ?? DotBrush(UnavailableHex);
 
     // "n of m agents" only while Connected (spec §1.5: active_agents is a display count, never
     // a free-slots/launch-capacity claim) — "—" otherwise, even though the last-known snapshot
@@ -102,6 +136,17 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
     public ReactiveCommand<Unit, Unit> StartDaemonCommand { get; }
     public ReactiveCommand<Unit, Unit> RetryCommand { get; }
 
+    // Button IsVisible projections (spec: "shows ONLY when its action is meaningful"). Deliberately
+    // NOT ReactiveCommand.CanExecute — that ANDs in "not currently executing", which would hide the
+    // button mid-attempt instead of just disabling it. These track the exact same state predicate
+    // (canStart/canRetry below) the commands' own canExecute pipelines use, ctor-scoped for the
+    // same reason those pipelines are (see class doc comment).
+    readonly ObservableAsPropertyHelper<bool> _startVisible;
+    public bool StartVisible => _startVisible.Value;
+
+    readonly ObservableAsPropertyHelper<bool> _retryVisible;
+    public bool RetryVisible => _retryVisible.Value;
+
     // ONE shared ticker for every row (spec §8) — created here, once, so all rows tick in lockstep
     // instead of drifting against each other. StartWith(0L) gives every row an immediate first
     // value on subscribe, independent of the real 1s period. The scheduler is captured NOW (Rx
@@ -148,6 +193,14 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
         StartDaemonCommand = ReactiveCommand.CreateFromTask(() => RunStartAsync(shutdownToken), canStart);
         RetryCommand        = ReactiveCommand.CreateFromTask(service.RestartLoopAsync, canRetry);
 
+        // Independent subscriptions to the SAME canStart/canRetry state predicates the commands
+        // above were built from (service.Status is hot/multicast, so a second subscriber replays
+        // the current value same as the first) — visibility that never disagrees with why a button
+        // is enabled, without inheriting CanExecute's "not currently executing" hide-while-running
+        // behavior. Ctor-scoped for the same reason as the commands themselves.
+        _startVisible = canStart.ToProperty(this, x => x.StartVisible, initialValue: false);
+        _retryVisible = canRetry.ToProperty(this, x => x.RetryVisible, initialValue: false);
+
         this.WhenActivated(disposables => {
             var status    = service.Status.ObserveOn(RxSchedulers.MainThreadScheduler);
             var snapshots = service.Snapshots.ObserveOn(RxSchedulers.MainThreadScheduler);
@@ -166,12 +219,31 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
                 .ToProperty(this, x => x.DaemonVersion, "")
                 .DisposeWith(disposables);
 
+            _versionDisplay = snapshots.Select(s => StripBuildMetadata(s.Daemon.Version))
+                .ToProperty(this, x => x.VersionDisplay, "")
+                .DisposeWith(disposables);
+
             _serverUrl = snapshots.Select(s => s.Daemon.ServerUrl)
                 .ToProperty(this, x => x.ServerUrl, "")
                 .DisposeWith(disposables);
 
             _connectionText = snapshots.Select(s => s.Daemon.Connection)
                 .ToProperty(this, x => x.ConnectionText, "")
+                .DisposeWith(disposables);
+
+            // Seeded with "" so this fires even before the FIRST snapshot ever arrives (a daemon
+            // never previously connected has nothing in Snapshots yet) — ConnectionDisplayFor/
+            // StatusDotFor only read the daemon-connection word once status.State is Connected,
+            // where DaemonClientService's ordering guarantee (snapshot applied before the Connected
+            // transition, see its own comment) means a real value is always already there by then.
+            var daemonConnection = snapshots.Select(s => s.Daemon.Connection).StartWith("");
+
+            _connectionDisplay = status.CombineLatest(daemonConnection, ConnectionDisplayFor)
+                .ToProperty(this, x => x.ConnectionDisplay, "")
+                .DisposeWith(disposables);
+
+            _statusDotBrush = status.CombineLatest(daemonConnection, StatusDotFor)
+                .ToProperty(this, x => x.StatusDotBrush, DotBrush(UnavailableHex))
                 .DisposeWith(disposables);
 
             _agentCountText = status.CombineLatest(snapshots, (st, snap) => (st, snap))
@@ -247,6 +319,44 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
         AttachState.Unreachable => status.Reason,
         _ => null,
     };
+
+    // SEMVER-only: everything from the first '+' is build metadata (e.g. "1.2.3+a1b2c3"), never
+    // meaningful on a compact status line. Null/empty-safe — returns the input unchanged.
+    internal static string StripBuildMetadata(string? version) {
+        if (string.IsNullOrEmpty(version)) return version ?? "";
+        var plus = version.IndexOf('+');
+        return plus < 0 ? version : version[..plus];
+    }
+
+    static string Capitalize(string word) => word.Length == 0 ? word : char.ToUpperInvariant(word[0]) + word[1..];
+
+    // Single word for the merged status line. Local attach State is checked FIRST — the daemon's
+    // own upstream Connection word is only meaningful once State is Connected (see the
+    // daemonConnection seam comment above); an Unreachable/Connecting attach state always wins
+    // regardless of whatever Connection word a stale retained snapshot might carry.
+    internal static string ConnectionDisplayFor(AttachStatus status, string daemonConnection) {
+        if (status.State == AttachState.Connecting) return "Connecting…";
+        if (status.State == AttachState.Unreachable)
+            return status.Reason == IncompatibleReason ? "Incompatible" : "Unreachable";
+
+        var word = Capitalize(daemonConnection);
+        return daemonConnection is "connecting" or "reconnecting" ? word + "…" : word;
+    }
+
+    // Same bucketing as ConnectionDisplayFor, kept as a parallel switch (not derived from the text)
+    // so a future wording tweak there can never silently detune the dot's color.
+    internal static IBrush StatusDotFor(AttachStatus status, string daemonConnection) {
+        if (status.State == AttachState.Connecting) return DotBrush(InProgressHex);
+        if (status.State == AttachState.Unreachable)
+            return status.Reason == IncompatibleReason ? DotBrush(DisruptedHex) : DotBrush(UnavailableHex);
+
+        return daemonConnection switch {
+            "connected" => DotBrush(ConnectedHex),
+            "connecting" or "reconnecting" => DotBrush(InProgressHex),
+            "disconnected" => DotBrush(DisruptedHex),
+            _ => DotBrush(UnavailableHex),
+        };
+    }
 
     async Task RunStartAsync(CancellationToken ct) {
         StartMessage = null; // clear on every new attempt

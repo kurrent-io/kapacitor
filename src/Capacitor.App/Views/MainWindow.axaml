@@ -8,44 +8,56 @@
                      x:DataType="vm:MainWindowViewModel"
                      Title="Kurrent Capacitor Desktop"
                      Width="840" Height="480">
-    <Grid Margin="24" RowDefinitions="Auto,*">
-        <StackPanel Grid.Row="0" Spacing="12">
-            <TextBlock Text="Kurrent Capacitor Desktop" FontSize="18" FontWeight="Bold" />
+    <Grid Margin="20" RowDefinitions="Auto,*">
+        <StackPanel Grid.Row="0" Spacing="20">
+            <StackPanel Spacing="8">
+                <StackPanel Orientation="Horizontal" Spacing="6">
+                    <TextBlock x:Name="DaemonIdentityText" Text="{Binding DaemonName}" FontWeight="Bold" />
+                    <TextBlock Text="·" />
+                    <TextBlock x:Name="DaemonVersionText" Text="{Binding VersionDisplay}" ToolTip.Tip="{Binding DaemonVersion}" />
+                </StackPanel>
 
-            <StackPanel Orientation="Horizontal" Spacing="6">
-                <TextBlock x:Name="DaemonIdentityText" Text="{Binding DaemonName}" />
-                <TextBlock Text="/" />
-                <TextBlock x:Name="DaemonVersionText" Text="{Binding DaemonVersion}" />
+                <TextBlock x:Name="ServerUrlText" Text="{Binding ServerUrl}" Opacity="0.7" />
+
+                <StackPanel Orientation="Horizontal" Spacing="6">
+                    <Ellipse Width="8" Height="8" Fill="{Binding StatusDotBrush}" VerticalAlignment="Center" />
+                    <TextBlock x:Name="ConnectionText" Text="{Binding ConnectionDisplay}" VerticalAlignment="Center" />
+                    <TextBlock x:Name="AgentCountText" Text="{Binding AgentCountText, StringFormat='· {0}'}"
+                               IsVisible="{Binding GridEnabled}" VerticalAlignment="Center" />
+                </StackPanel>
             </StackPanel>
 
-            <TextBlock x:Name="ServerUrlText" Text="{Binding ServerUrl}" />
-            <TextBlock x:Name="ConnectionText" Text="{Binding ConnectionText}" />
-            <TextBlock x:Name="AgentCountText" Text="{Binding AgentCountText}" />
+            <StackPanel Spacing="8">
+                <StackPanel Orientation="Horizontal" Spacing="8">
+                    <Button x:Name="StartButton" Content="Start daemon" Command="{Binding StartDaemonCommand}" IsVisible="{Binding StartVisible}" />
+                    <Button x:Name="RetryButton" Content="Retry" Command="{Binding RetryCommand}" IsVisible="{Binding RetryVisible}" />
+                </StackPanel>
 
-            <StackPanel Orientation="Horizontal" Spacing="8">
-                <Button x:Name="StartButton" Content="Start daemon" Command="{Binding StartDaemonCommand}" />
-                <Button x:Name="RetryButton" Content="Retry" Command="{Binding RetryCommand}" />
+                <TextBlock x:Name="StartMessageText" Text="{Binding StartMessage}"
+                           IsVisible="{Binding StartMessage, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+                <TextBlock x:Name="ReasonText" Text="{Binding Reason}"
+                           IsVisible="{Binding Reason, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
             </StackPanel>
-
-            <TextBlock x:Name="StartMessageText" Text="{Binding StartMessage}" />
-            <TextBlock x:Name="ReasonText" Text="{Binding Reason}" />
 
             <Border x:Name="BannerBorder"
                     IsVisible="{Binding Banner, Converter={x:Static ObjectConverters.IsNotNull}}"
-                    Background="#FFF3CD" BorderBrush="#FFECB5" BorderThickness="1" CornerRadius="4" Padding="8">
+                    Background="#33FFB300" CornerRadius="4" Padding="8">
                 <TextBlock x:Name="BannerText" Text="{Binding Banner}" TextWrapping="Wrap" />
             </Border>
 
-            <TextBlock Text="Agents" FontSize="14" FontWeight="Bold" />
+            <StackPanel Spacing="8">
+                <Separator />
+                <TextBlock Text="Agents" FontSize="14" FontWeight="Bold" />
 
-            <TextBlock x:Name="EmptyStateText" Text="No agents running">
-                <TextBlock.IsVisible>
-                    <MultiBinding Converter="{x:Static views:EmptyStateVisibleConverter.Instance}">
-                        <Binding Path="GridEnabled" />
-                        <Binding Path="Agents.Count" />
-                    </MultiBinding>
-                </TextBlock.IsVisible>
-            </TextBlock>
+                <TextBlock x:Name="EmptyStateText" Text="No agents running">
+                    <TextBlock.IsVisible>
+                        <MultiBinding Converter="{x:Static views:EmptyStateVisibleConverter.Instance}">
+                            <Binding Path="GridEnabled" />
+                            <Binding Path="Agents.Count" />
+                        </MultiBinding>
+                    </TextBlock.IsVisible>
+                </TextBlock>
+            </StackPanel>
         </StackPanel>
 
         <!-- Row "*" (bounded height, unlike a StackPanel child which Avalonia always measures
@@ -54,17 +66,17 @@
              content area — so both scrollbars are Auto: horizontal reaches the Actions column
              when the window is narrower than the grid, vertical reaches every row when there are
              more than fit the window's height. -->
-        <ScrollViewer Grid.Row="1" Margin="0,12,0,0"
+        <ScrollViewer Grid.Row="1" Margin="0,8,0,0"
                       VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto">
             <StackPanel x:Name="AgentsGrid" Opacity="{Binding GridEnabled, Converter={x:Static views:GridEnabledOpacityConverter.Instance}}">
                 <Grid ColumnDefinitions="80,140,140,100,90,70,150" Margin="0,0,0,4">
-                    <TextBlock Grid.Column="0" Text="Kind" FontWeight="Bold" />
-                    <TextBlock Grid.Column="1" Text="Vendor" FontWeight="Bold" />
-                    <TextBlock Grid.Column="2" Text="Repo" FontWeight="Bold" />
-                    <TextBlock Grid.Column="3" Text="Requester" FontWeight="Bold" />
-                    <TextBlock Grid.Column="4" Text="Status" FontWeight="Bold" />
-                    <TextBlock Grid.Column="5" Text="Uptime" FontWeight="Bold" />
-                    <TextBlock Grid.Column="6" Text="Actions" FontWeight="Bold" />
+                    <TextBlock Grid.Column="0" Text="Kind" FontWeight="Bold" Opacity="0.7" />
+                    <TextBlock Grid.Column="1" Text="Vendor" FontWeight="Bold" Opacity="0.7" />
+                    <TextBlock Grid.Column="2" Text="Repo" FontWeight="Bold" Opacity="0.7" />
+                    <TextBlock Grid.Column="3" Text="Requester" FontWeight="Bold" Opacity="0.7" />
+                    <TextBlock Grid.Column="4" Text="Status" FontWeight="Bold" Opacity="0.7" />
+                    <TextBlock Grid.Column="5" Text="Uptime" FontWeight="Bold" Opacity="0.7" />
+                    <TextBlock Grid.Column="6" Text="Actions" FontWeight="Bold" Opacity="0.7" />
                 </Grid>
 
                 <ItemsControl x:Name="AgentsItems" ItemsSource="{Binding Agents}">
@@ -78,8 +90,8 @@
                                 <TextBlock Grid.Column="4" Text="{Binding StatusText}" />
                                 <TextBlock Grid.Column="5" Text="{Binding Uptime}" />
                                 <StackPanel Grid.Column="6" Orientation="Horizontal" Spacing="4">
-                                    <Button Content="Stop" Command="{Binding StopCommand}" IsEnabled="{Binding ActionsEnabled}" />
-                                    <Button Content="Open in web" Command="{Binding OpenInWebCommand}" IsEnabled="{Binding ActionsEnabled}" />
+                                    <Button Content="Stop" Command="{Binding StopCommand}" IsEnabled="{Binding ActionsEnabled}" Padding="8,2" FontSize="12" />
+                                    <Button Content="Open in web" Command="{Binding OpenInWebCommand}" IsEnabled="{Binding ActionsEnabled}" Padding="8,2" FontSize="12" />
                                 </StackPanel>
                             </Grid>
                         </DataTemplate>
