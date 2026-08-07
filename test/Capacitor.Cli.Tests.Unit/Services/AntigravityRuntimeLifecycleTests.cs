@@ -1,6 +1,7 @@
 // test/Capacitor.Cli.Tests.Unit/Services/AntigravityRuntimeLifecycleTests.cs
 using Capacitor.Cli.Daemon.Acp;
 using Capacitor.Cli.Daemon.Services;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using static Capacitor.Cli.Tests.Unit.Services.AntigravityRuntimeFakes;
 
@@ -290,6 +291,160 @@ public class AntigravityRuntimeLifecycleTests {
 
         await Assert.That(spawned).IsNotNull();
         await Assert.That(spawned!.DisposeCalls).IsEqualTo(1);
+    }
+
+    // ── the disposal callback's confirmed-exit gate ───────────────────────────────────────────────
+
+    /// <summary>
+    /// The callback removes the per-launch <c>HOME</c>, which holds the reviewer's own conversation
+    /// JSONL — the caller's diff, source excerpts and findings. Every bound on the disposal path
+    /// (<c>TerminateAsync</c>'s timeout, the turn worker's join, the process handle's own disposal) is
+    /// best-effort and swallowed, so "nothing of ours can still be writing" has to be MEASURED rather
+    /// than asserted: a <c>WaitAsync</c> that timed out is otherwise indistinguishable from one that
+    /// succeeded. <c>Kill(entireProcessTree: true)</c> is not atomic against a grandchild forked
+    /// between tree enumeration and signal — and agy's children include its MCP stdio servers — so a
+    /// survivor is a real shape.
+    ///
+    /// <para>Unconfirmed means SKIP the deletion, not force it: deleting under a live reviewer would
+    /// leave it writing into an unlinked path and recreating the directory, which is worse than
+    /// leaving it. The epoch-keyed startup sweep collects it on the next boot. The skip must be
+    /// LOGGED — a retained transcript-bearing home must never be silent.</para>
+    /// </summary>
+    [Test]
+    public async Task Dispose_skips_the_teardown_callback_when_a_turn_child_never_confirmed_exit() {
+        var invoked = 0;
+        var logger  = new CaptureLogger();
+        var process = new UnconfirmedExitTurnProcess();
+
+        await using (var rt = new AntigravityHostedAgentRuntime(
+                spawnTurn: (_, _, _) => Task.FromResult<IAgyTurnProcess>(process),
+                logger: logger,
+                agentId: "agy-survivor",
+                onDisposed: () => Interlocked.Increment(ref invoked))) {
+            await rt.SendUserInputAsync("hello").WaitAsync(HangGuard);
+
+            // The turn genuinely spawned a child, so "unconfirmed" is a fact about a real process
+            // rather than a runtime that never started one.
+            await rt.WaitForConversationIdAsync(CancellationToken.None).WaitAsync(HangGuard);
+        }
+
+        await Assert.That(invoked).IsEqualTo(0);
+        await Assert.That(logger.Entries).Contains(e =>
+            e.Level == LogLevel.Warning && e.Message.Contains("agy-survivor"));
+    }
+
+    /// <summary>The positive control for the gate above — without it a callback that never ran at all
+    /// would satisfy the skip test.</summary>
+    [Test]
+    public async Task Dispose_runs_the_teardown_callback_once_the_turn_child_confirmed_exit() {
+        var invoked = 0;
+
+        await using (var rt = new AntigravityHostedAgentRuntime(
+                spawnTurn: (_, _, _) => Task.FromResult<IAgyTurnProcess>(
+                    new FakeAgyTurnProcess(FakeTurn.Normal, FixedConversationId)),
+                logger: NullLogger.Instance,
+                agentId: "agy-clean",
+                onDisposed: () => Interlocked.Increment(ref invoked))) {
+            await rt.SendUserInputAsync("hello").WaitAsync(HangGuard);
+            await rt.WaitForConversationIdAsync(CancellationToken.None).WaitAsync(HangGuard);
+            await rt.WaitForTurnIdleAsync(CancellationToken.None).WaitAsync(HangGuard);
+
+            await Assert.That(rt.AcpSessionId).IsEqualTo(FixedConversationId);
+        }
+
+        await Assert.That(invoked).IsEqualTo(1);
+    }
+
+    /// <summary>A turn child that honours cancellation — so the turn worker unwinds normally — but
+    /// never reports itself exited, and whose terminate does not make it so. The measured shape is a
+    /// grandchild that outlived a non-atomic process-tree kill; the runtime cannot tell that apart
+    /// from a child that simply has not died yet, and must not.</summary>
+    sealed class UnconfirmedExitTurnProcess : IAgyTurnProcess {
+        public int  Pid       => 4249;
+        public bool HasExited => false;
+        public int? ExitCode  => null;
+
+        public async IAsyncEnumerable<string> ReadLinesAsync(
+                [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct) {
+            yield return $$$"""{"event":"init","conversation_id":"{{{FixedConversationId}}}","init":{"cwd":"/w"}}""";
+
+            await Task.Delay(Timeout.Infinite, ct).ConfigureAwait(false);
+        }
+
+        public Task WaitForExitAsync(TimeSpan? timeout = null) => Task.CompletedTask;
+        public Task TerminateAsync(TimeSpan? timeout = null)   => Task.CompletedTask;
+        public ValueTask DisposeAsync()                        => ValueTask.CompletedTask;
+    }
+
+    /// <summary>Records every log call — mirrors the pattern the ACP suites already use.</summary>
+    sealed class CaptureLogger : ILogger {
+        public readonly List<(LogLevel Level, string Message)> Entries = [];
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool         IsEnabled(LogLevel logLevel)                            => true;
+
+        public void Log<TState>(
+                LogLevel level, EventId id, TState state, Exception? ex,
+                Func<TState, Exception?, string> formatter) {
+            lock (Entries) Entries.Add((level, formatter(state, ex)));
+        }
+    }
+
+    /// <summary>
+    /// An <see cref="OperationCanceledException"/> that is NOT the owner's shutdown must still reach
+    /// <c>EnterTerminal</c>. <c>ProcessTurnAsync</c> individually catches every
+    /// <see cref="IAgyTurnProcess"/> call except its bounded exit-confirmation wait, and that method's
+    /// contract ("returns silently on timeout") does not FORBID an implementation propagating its own
+    /// internal cancellation — this runtime is built against the interface, not against
+    /// <c>AgyTurnProcess</c>. A turn worker that read such an exception as "normal shutdown" would exit
+    /// its loop without entering Terminal: <c>_terminalTcs</c> never completes,
+    /// <see cref="AntigravityHostedAgentRuntime.ReadOutputAsync"/> parks forever, and the
+    /// orchestrator's <c>FinalizeAgentRunAsync</c> never fires — rule (a)'s hang, reached through the
+    /// one door rule (a) does not cover.
+    /// </summary>
+    [Test]
+    public async Task An_unexpected_cancellation_from_a_turn_drives_terminal_rather_than_parking_the_reader() {
+        Func<string, string?, CancellationToken, Task<IAgyTurnProcess>> spawn = (_, _, _) =>
+            Task.FromResult<IAgyTurnProcess>(new ThrowingWaitForExitTurnProcess());
+
+        await using var rt = new AntigravityHostedAgentRuntime(spawnTurn: spawn, logger: NullLogger.Instance);
+        var read = Task.Run(async () => { await foreach (var _ in rt.ReadOutputAsync()) { } });
+
+        await rt.SendUserInputAsync("hello").WaitAsync(HangGuard);
+
+        // The whole assertion: this completes only if Terminal was entered. A swallowed cancellation
+        // leaves it parked forever.
+        await read.WaitAsync(HangGuard);
+
+        await Assert.That(rt.HasExited).IsTrue();
+        await Assert.That(rt.ExitCode).IsNotEqualTo(0);
+    }
+
+    /// <summary>A turn child whose bounded exit-confirmation wait PROPAGATES a cancellation instead of
+    /// returning silently — the shape the test above exists for. Everything else about it is an
+    /// ordinary clean turn, so the only thing under test is what the worker does with that
+    /// exception.</summary>
+    sealed class ThrowingWaitForExitTurnProcess : IAgyTurnProcess {
+        public int  Pid       => 4246;
+        public bool HasExited { get; private set; }
+        public int? ExitCode  { get; private set; }
+
+#pragma warning disable CS1998 // no await on the happy path — the lines are already in hand
+        public async IAsyncEnumerable<string> ReadLinesAsync(
+                [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct) {
+            yield return $$$"""{"event":"init","conversation_id":"{{{FixedConversationId}}}","init":{"cwd":"/w"}}""";
+            yield return $$$"""{"event":"result","result":{"conversation_id":"{{{FixedConversationId}}}","status":"SUCCESS"}}""";
+
+            HasExited = true;
+            ExitCode  = 0;
+        }
+#pragma warning restore CS1998
+
+        public Task WaitForExitAsync(TimeSpan? timeout = null) =>
+            throw new OperationCanceledException("this implementation propagates its own internal timeout");
+
+        public Task TerminateAsync(TimeSpan? timeout = null) => Task.CompletedTask;
+        public ValueTask DisposeAsync()                      => ValueTask.CompletedTask;
     }
 
     [Test]

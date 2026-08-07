@@ -190,15 +190,29 @@ internal sealed class AntigravityHostedAgentRuntime : IHostedAgentRuntime, IAcpT
     readonly string? _model;
 
     /// <summary>
-    /// Best-effort teardown callback, invoked exactly once at the very END of <see cref="DisposeAsync"/>
-    /// — after the turn worker is joined and this runtime's last process handle is disposed, which is
-    /// the only point at which "no agy child of ours is still writing" is a fact rather than a hope.
-    /// The factory uses it to remove the per-launch <c>HOME</c>, whose content is the reviewer's own
-    /// conversation JSONL (the caller's diff, source excerpts and findings) — disposal, not disk
-    /// hygiene, and not something the daemon-epoch sweep should be left to do at the next boot.
+    /// Best-effort teardown callback, invoked at most once at the very END of <see cref="DisposeAsync"/>
+    /// — and only when every bound on that path actually SETTLED rather than merely expired (see
+    /// <see cref="DisposeAsync"/>'s gate and <see cref="_turnExitConfirmed"/>). The factory uses it to
+    /// remove the per-launch <c>HOME</c>, whose content is the reviewer's own conversation JSONL (the
+    /// caller's diff, source excerpts and findings) — disposal, not disk hygiene, and not something
+    /// the daemon-epoch sweep should be left to do at the next boot.
     /// Never throws: a home we cannot delete must not turn a completed review into a failed dispose.
     /// </summary>
     readonly Action? _onDisposed;
+
+    /// <summary>
+    /// Whether the LAST turn's child was OBSERVED exited while it was still observable — read inside
+    /// <see cref="ProcessTurnAsync"/>'s outer <c>finally</c>, immediately before this runtime lets go
+    /// of that process handle, because a disposed process object reports
+    /// <see cref="IAgyTurnProcess.HasExited"/> <see langword="true"/> and asking afterwards would
+    /// mistake "no longer observable" for "confirmed exited".
+    ///
+    /// <para>Starts <see langword="true"/> — a runtime that never spawned a turn has no child to
+    /// confirm — and is cleared the instant one exists. <see cref="DisposeAsync"/>'s cleanup gate is
+    /// its only consumer; declared <see langword="volatile"/> because the turn worker writes it and
+    /// the disposing caller reads it.</para>
+    /// </summary>
+    volatile bool _turnExitConfirmed = true;
 
     /// <summary>
     /// Liveness-supervision: the per-launch activity clock, assigned by the factory BEFORE the first
@@ -455,9 +469,18 @@ internal sealed class AntigravityHostedAgentRuntime : IHostedAgentRuntime, IAcpT
                     firstTurn = false;
                 }
             }
-        } catch (OperationCanceledException) {
+        } catch (OperationCanceledException) when (ownerCt.IsCancellationRequested) {
             // Normal shutdown (TerminateAsync/DisposeAsync cancelled _ownerCts) — Terminal was already
-            // entered by whoever cancelled it.
+            // entered by whoever cancelled it. FILTERED on the owner token deliberately: an unfiltered
+            // catch here makes "we asked for this" and "something cancelled that we did not expect"
+            // indistinguishable, and the second one must reach EnterTerminal below. ProcessTurnAsync
+            // individually catches every IAgyTurnProcess call EXCEPT its bounded exit-confirmation
+            // wait, whose contract ("returns silently on timeout") does not forbid an implementation
+            // propagating its own internal cancellation — and this runtime is built against the
+            // interface, not against AgyTurnProcess. Swallowing that would exit this loop without
+            // entering Terminal: _terminalTcs never completes, ReadOutputAsync parks forever and
+            // FinalizeAgentRunAsync never fires — rule (a)'s hang through a door rule (a) does not
+            // cover.
         } catch (Exception ex) {
             _logger.LogDebug(ex, "Antigravity: turn worker ended unexpectedly (agentId={AgentId}).", _agentId);
             EnterTerminal(exitCode: 1);
@@ -478,6 +501,11 @@ internal sealed class AntigravityHostedAgentRuntime : IHostedAgentRuntime, IAcpT
     async Task ProcessTurnAsync(PendingTurn turn, bool firstTurn, CancellationToken ownerCt) {
         var process = await SpawnTurnProcessAsync(turn, firstTurn, ownerCt).ConfigureAwait(false);
         if (process is null) return; // spawn failed/cancelled — SpawnTurnProcessAsync already handled it.
+
+        // A child exists from here on, so DisposeAsync may no longer assume there is nothing to
+        // confirm. Re-established (from what the process itself reports) in this method's outer
+        // finally, while it is still observable.
+        _turnExitConfirmed = false;
 
         // The first of two launch-handshake stamps (the second is `session_created`, when this turn's
         // `init` resolves the conversation id). Turn 1 only: LaunchStage is Starting-only and the
@@ -612,6 +640,12 @@ internal sealed class AntigravityHostedAgentRuntime : IHostedAgentRuntime, IAcpT
             // result, the already-Terminal race, even ownerCt cancellation — lands here. A turn's
             // process is never reused, so it is always disposed exactly once, right here, regardless of
             // how the turn ended.
+
+            // Asked BEFORE that disposal, which is the only point this is a truthful question: a
+            // disposed process object reports HasExited true, so the same read afterwards would
+            // manufacture a confirmation. DisposeAsync's cleanup gate is the consumer.
+            _turnExitConfirmed = process.HasExited;
+
             try {
                 await process.DisposeAsync().ConfigureAwait(false);
             } catch (Exception ex) {
@@ -860,11 +894,27 @@ internal sealed class AntigravityHostedAgentRuntime : IHostedAgentRuntime, IAcpT
 
         await TerminateAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
 
+        // Whether the worker actually JOINED, not merely that we waited for it. Every bound on this
+        // path is best-effort and swallowed, so a WaitAsync that timed out is otherwise
+        // indistinguishable from one that succeeded — and the cleanup gate below must not read the
+        // two the same way.
+        var workerJoined = true;
+
         try {
             await _turnWorkerTask.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
-        } catch {
-            // Best-effort — a stuck turn worker must never hang dispose.
+        } catch (Exception ex) {
+            // Best-effort — a stuck turn worker must never hang dispose. It is NOT evidence of
+            // quiescence, which is what `workerJoined` records.
+            workerJoined = false;
+            _logger.LogDebug(
+                ex, "Antigravity: the turn worker did not join within the dispose budget (agentId={AgentId}).",
+                _agentId);
         }
+
+        // Asked BEFORE the handle is disposed, for the same reason ProcessTurnAsync's own capture is:
+        // a disposed process object reports HasExited true, so asking afterwards mistakes "no longer
+        // observable" for "confirmed exited" — the opposite of what the gate below is for.
+        var inFlightConfirmed = _current is not { } inFlight || inFlight.HasExited;
 
         if (_current is { } current) {
             try {
@@ -877,10 +927,31 @@ internal sealed class AntigravityHostedAgentRuntime : IHostedAgentRuntime, IAcpT
         _ownerCts.Dispose();
         _turnGate.Dispose();
 
-        // LAST, and only here: the turn worker is joined and this runtime holds no process handle, so
-        // nothing of ours can still be writing into whatever the callback is about to remove.
+        if (_onDisposed is null) return;
+
+        // LAST, and gated on MEASURED quiescence rather than an assumption of it. The callback removes
+        // the per-launch HOME, which holds the reviewer's own conversation JSONL — the caller's diff,
+        // source excerpts and findings. Kill(entireProcessTree: true) is not atomic against a
+        // grandchild forked between tree enumeration and signal, and agy's children include its MCP
+        // stdio servers, so a survivor past these budgets is a real shape rather than a hypothetical.
+        //
+        // Unconfirmed means SKIP the deletion, not force it: deleting under a live reviewer would
+        // leave it writing into an unlinked path and recreating the directory, which is worse than
+        // leaving it. The epoch-keyed startup sweep collects it on the next boot. Never silent — a
+        // retained transcript-bearing home is exactly what an operator has to be able to find.
+        if (!workerJoined || !inFlightConfirmed || !_turnExitConfirmed) {
+            _logger.LogWarning(
+                "Antigravity: could not confirm this reviewer's turn children exited (agentId={AgentId}, "
+              + "workerJoined={WorkerJoined}, inFlightChildExited={InFlightConfirmed}, "
+              + "lastTurnExitConfirmed={TurnExitConfirmed}); leaving its reviewer home for the startup "
+              + "sweep rather than deleting it under a live process.",
+                _agentId, workerJoined, inFlightConfirmed, _turnExitConfirmed);
+
+            return;
+        }
+
         try {
-            _onDisposed?.Invoke();
+            _onDisposed();
         } catch (Exception ex) {
             _logger.LogWarning(ex, "Antigravity: the runtime's disposal callback failed (agentId={AgentId}).", _agentId);
         }

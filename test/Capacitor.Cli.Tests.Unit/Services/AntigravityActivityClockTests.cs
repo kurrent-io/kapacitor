@@ -1,4 +1,5 @@
 // test/Capacitor.Cli.Tests.Unit/Services/AntigravityActivityClockTests.cs
+using Capacitor.Cli.Daemon.Acp;
 using Capacitor.Cli.Daemon.Services;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Time.Testing;
@@ -65,27 +66,58 @@ public class AntigravityActivityClockTests {
 
     /// <summary>
     /// A turn that dies mid-flight (EOF with no terminal <c>result</c>) drives the runtime terminal —
-    /// and must still clear the flag. Leaving it held would make the resulting agent permanently
-    /// exempt from the idle rule, which is the leak shape this direction exists to prevent.
+    /// and <c>EnterTerminal</c> must clear the flag ITSELF. Leaving it held would make the resulting
+    /// agent permanently exempt from the idle rule, which is the leak shape this direction exists to
+    /// prevent.
+    ///
+    /// <para><b>Why the child's disposal is held open.</b> The turn worker's own <c>finally</c> also
+    /// clears the flag, so a test that lets the worker unwind cannot tell the two clears apart: with
+    /// <c>EnterTerminal</c>'s clear deleted, the assertion passes or fails purely on whether the
+    /// worker's continuation happened to be scheduled yet. Measured across six runs of exactly that
+    /// mutant, this test failed 1, 1, 0, 2, 2, 1 times — a real regression with a one-in-six chance of
+    /// surviving CI. Parking the worker inside <c>IAgyTurnProcess.DisposeAsync</c> — which
+    /// <c>ProcessTurnAsync</c>'s outer <c>finally</c> awaits, strictly BEFORE the worker's own
+    /// <c>finally</c> can run — makes <c>EnterTerminal</c> the only thing that could possibly have
+    /// cleared the flag at the moment of the assertion.</para>
     /// </summary>
     [Test]
     public async Task A_turn_that_dies_mid_flight_still_releases_the_turn_gate_flag() {
-        var (rt, clock, _) = Wired(FakeTurn.EofWithoutResult);
-        await using var _r = rt;
+        var time    = new FakeTimeProvider();
+        var clock   = new AgentActivityClock(time);
+        var process = new HeldDisposalTurnProcess();
+
+        await using var rt = new AntigravityHostedAgentRuntime(
+            spawnTurn: (_, _, _) => Task.FromResult<IAgyTurnProcess>(process),
+            logger: NullLogger.Instance);
+        rt.ActivityClock = clock;
 
         await rt.SendUserInputAsync("hello").WaitAsync(HangGuard);
         await rt.WaitForExitAsync(HangGuard);
 
+        // Proves Terminal was genuinely entered — WaitForExitAsync returns silently on timeout, so
+        // without this the clock assertion below could be read off a turn that never finished.
         await Assert.That(rt.HasExited).IsTrue();
+
         await Assert.That(clock.TurnInFlight).IsFalse();
+
+        process.ReleaseDisposal();
     }
 
-    /// <summary>A stop landing while a turn is genuinely in flight must clear it too — this is the
-    /// path where the turn worker may still be unwinding when the caller observes the clock.</summary>
+    /// <summary>A stop landing while a turn is genuinely in flight must clear it too — and, again,
+    /// <c>EnterTerminal</c> must be the one that does it, because the worker's own <c>finally</c> runs
+    /// only once the turn actually unwinds (and never at all, for a child that ignores cancellation).
+    /// The wedged child below is exactly that case: it is provably still inside its read loop when the
+    /// assertion runs, so the worker's <c>finally</c> cannot have contributed.</summary>
     [Test]
     public async Task Terminating_a_running_turn_releases_the_turn_gate_flag() {
-        var (rt, clock, _) = Wired(FakeTurn.NeverEnds);
-        await using var _r = rt;
+        var time    = new FakeTimeProvider();
+        var clock   = new AgentActivityClock(time);
+        var process = new WedgedTurnProcess();
+
+        await using var rt = new AntigravityHostedAgentRuntime(
+            spawnTurn: (_, _, _) => Task.FromResult<IAgyTurnProcess>(process),
+            logger: NullLogger.Instance);
+        rt.ActivityClock = clock;
 
         _ = rt.SendUserInputAsync("hello");
         await rt.WaitForConversationIdAsync(CancellationToken.None).WaitAsync(HangGuard);
@@ -94,6 +126,74 @@ public class AntigravityActivityClockTests {
         await rt.TerminateAsync(TimeSpan.FromSeconds(2)).WaitAsync(HangGuard);
 
         await Assert.That(clock.TurnInFlight).IsFalse();
+
+        // Only now — the turn worker unwinds, so disposal does not have to wait it out.
+        process.Release();
+    }
+
+    /// <summary>A turn child that emits <c>init</c> (so the turn is provably in flight) and then never
+    /// returns from its read loop, IGNORING cancellation. A real one is a child that does not die on
+    /// SIGTERM; here it is what keeps the turn worker's <c>finally</c> structurally out of the
+    /// picture.</summary>
+    sealed class WedgedTurnProcess : IAgyTurnProcess {
+        readonly TaskCompletionSource _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public int  Pid       => 4247;
+        public bool HasExited { get; private set; }
+        public int? ExitCode  { get; private set; }
+
+        public void Release() => _release.TrySetResult();
+
+        public async IAsyncEnumerable<string> ReadLinesAsync(
+                [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct) {
+            yield return AntigravityFakeLines.Init;
+
+            // Deliberately NOT ct: a child that honours cancellation lets the worker's own finally run,
+            // which is the ambiguity this fake exists to remove.
+            await _release.Task.ConfigureAwait(false);
+
+            HasExited = true;
+            ExitCode  = 0;
+        }
+
+        public Task WaitForExitAsync(TimeSpan? timeout = null) => Task.CompletedTask;
+        public Task TerminateAsync(TimeSpan? timeout = null)   => Task.CompletedTask;
+        public ValueTask DisposeAsync()                        => ValueTask.CompletedTask;
+    }
+
+    /// <summary>A turn child that dies mid-turn (<c>init</c>, then EOF with no terminal
+    /// <c>result</c>) and then holds its own disposal open. <c>ProcessTurnAsync</c>'s outer
+    /// <c>finally</c> awaits that disposal, so the worker is parked between <c>EnterTerminal</c> and
+    /// its own <c>finally</c> for as long as the test wants.</summary>
+    sealed class HeldDisposalTurnProcess : IAgyTurnProcess {
+        readonly TaskCompletionSource _disposal = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public int  Pid       => 4248;
+        public bool HasExited { get; private set; }
+        public int? ExitCode  { get; private set; }
+
+        public void ReleaseDisposal() => _disposal.TrySetResult();
+
+#pragma warning disable CS1998 // an async iterator whose lines are already in hand still needs the modifier
+        public async IAsyncEnumerable<string> ReadLinesAsync(
+                [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct) {
+            yield return AntigravityFakeLines.Init;
+
+            // No `result` line — the child exits having said nothing more.
+            HasExited = true;
+            ExitCode  = 1;
+        }
+#pragma warning restore CS1998
+
+        public Task WaitForExitAsync(TimeSpan? timeout = null) => Task.CompletedTask;
+        public Task TerminateAsync(TimeSpan? timeout = null)   => Task.CompletedTask;
+
+        public async ValueTask DisposeAsync() => await _disposal.Task.ConfigureAwait(false);
+    }
+
+    static class AntigravityFakeLines {
+        public const string Init =
+            $$$"""{"event":"init","conversation_id":"{{{FixedConversationId}}}","init":{"cwd":"/w"}}""";
     }
 
     /// <summary>Every forwarded envelope is activity. Without this a reviewer streaming a long answer
