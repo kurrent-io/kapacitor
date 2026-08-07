@@ -157,7 +157,14 @@ public static partial class DaemonRunner {
         if (Environment.GetEnvironmentVariable("KCAP_GEMINI_PATH") is { Length: > 0 } envGeminiPath)
             config.GeminiPath = envGeminiPath;
 
-        // The operator consent flags for the two unattended ACP reviewers. Both were previously
+        if (Environment.GetEnvironmentVariable("KCAP_ANTIGRAVITY_PATH") is { Length: > 0 } agyPath)
+            config.AntigravityPath = agyPath;
+        if (Environment.GetEnvironmentVariable("KCAP_ANTIGRAVITY_MODEL") is { Length: > 0 } agyModel)
+            config.AntigravityModel = agyModel;
+        if (Environment.GetEnvironmentVariable("KCAP_ANTIGRAVITY_UNATTENDED_REVIEWER") is { } agyConsent)
+            config.AntigravityUnattendedReviewerEnabled = ParseConsentFlag(agyConsent);
+
+        // The operator consent flags for the unattended ACP/CLI reviewers. Both were previously
         // reachable only from a test constructor, which made the shipped Gemini reviewer impossible
         // to turn on in production; binding one and not the other would just move that hole.
         config.GeminiUnattendedReviewerEnabled =

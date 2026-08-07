@@ -211,4 +211,27 @@ public class ServiceEnvironmentTests {
 
         await Assert.That(ServiceEnvironment.CarriedConsentFlags(env)).IsEmpty();
     }
+
+    [Test]
+    public async Task Agy_adc_auth_is_carried_as_a_non_secret_config_key() {
+        var env = ServiceEnvironment.Build("prof", new Dictionary<string, string> {
+            ["PATH"]                  = "/usr/bin",
+            ["AGY_ADC_AUTH"]          = "1",
+            ["GOOGLE_CLOUD_PROJECT"]  = "proj"
+        });
+
+        // AGY_ADC_AUTH is a boolean switch, not a credential, so it belongs in the
+        // always-carried config list beside GOOGLE_GENAI_USE_VERTEXAI — not in the
+        // secret-capable list that is withheld on Windows.
+        await Assert.That(env["AGY_ADC_AUTH"]).IsEqualTo("1");
+    }
+
+    [Test]
+    public async Task Agy_adc_auth_is_carried_on_windows_too() {
+        var env = ServiceEnvironment.Build("prof",
+            new Dictionary<string, string> { ["PATH"] = "/usr/bin", ["AGY_ADC_AUTH"] = "1" },
+            isWindows: true);
+
+        await Assert.That(env["AGY_ADC_AUTH"]).IsEqualTo("1");
+    }
 }

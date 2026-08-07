@@ -45,7 +45,11 @@ static class ServiceEnvironment {
     /// </summary>
     static readonly string[] GoogleConfigKeys = [
         "GOOGLE_CLOUD_PROJECT", "GOOGLE_CLOUD_PROJECT_ID", "GOOGLE_CLOUD_LOCATION",
-        "GOOGLE_GENAI_USE_VERTEXAI", "GOOGLE_GENAI_USE_GCA"
+        "GOOGLE_GENAI_USE_VERTEXAI", "GOOGLE_GENAI_USE_GCA",
+        // Antigravity CLI's ADC switch. A boolean, not a credential — it selects the auth
+        // MODE, and without it agy demands an interactive OAuth login even with ADC and a
+        // project present. Belongs here rather than in the secret-capable list.
+        "AGY_ADC_AUTH"
     ];
 
     /// <summary>

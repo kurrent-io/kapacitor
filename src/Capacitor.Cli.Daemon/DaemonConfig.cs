@@ -218,6 +218,34 @@ public class DaemonConfig {
     /// </summary>
     public int KiroReviewerLaunchTimeoutSeconds { get; set; } = 120;
 
+    /// <summary>
+    /// Path or bare command for the Antigravity CLI, spawned per turn by
+    /// <c>AntigravityHostedAgentRuntimeFactory</c>. Overridable via <c>KCAP_ANTIGRAVITY_PATH</c>.
+    ///
+    /// <para><b>The default is <c>agy</c></b> — the name a standard install puts on PATH. Because
+    /// availability is <c>CliResolver.Exists(AntigravityPath)</c>, a wrong default would mean the
+    /// vendor is never advertised on a correct install: a silent no-op, not a visible failure.</para>
+    /// </summary>
+    public string AntigravityPath { get; set; } = "agy";
+
+    /// <summary>Daemon-wide default model for Antigravity reviewer launches, passed as
+    /// <c>--model</c>. Null leaves agy on its own default. An unknown slug makes agy hard-fail,
+    /// which is a clean audit signal rather than a silent downgrade.</summary>
+    public string? AntigravityModel { get; set; }
+
+    /// <summary>Operator consent for unattended Antigravity reviews. Fail-closed: only an
+    /// explicit affirmative enables it.</summary>
+    public bool AntigravityUnattendedReviewerEnabled { get; set; }
+
+    /// <summary>Absolute ceiling on the FIRST turn — spawn, NDJSON handshake and auth. An
+    /// unauthenticated agy can sit on an interactive OAuth wait, so this is what turns that into a
+    /// bounded, coded failure.</summary>
+    public int AntigravityReviewerLaunchTimeoutSeconds { get; set; } = 120;
+
+    /// <summary>Ceiling on every SUBSEQUENT turn. Bounding only the launch would leave turn 2+
+    /// unbounded, and with ReadOutputAsync parked by design nothing else would ever complete.</summary>
+    public int AntigravityReviewerTurnTimeoutSeconds { get; set; } = 600;
+
     /// <summary>Reserved — see CopilotPath. Overridable via KCAP_OPENCODE_PATH.</summary>
     public string OpenCodePath { get; set; } = "opencode";
 
