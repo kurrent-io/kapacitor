@@ -207,10 +207,14 @@ public static class MachineCommand {
         try {
             using var client = await HttpClientExtensions.CreateAuthenticatedClientAsync();
 
-            using var response = await client.PostAsJsonAsync(
+            // *WithRetryAsync rather than the raw verbs, matching every other command here. Two things
+            // come with it that the raw call does not have: a bounded retry, and EnsureAbsolute — the
+            // guard that turns a relative or scheme-less URL into an actionable message instead of the
+            // opaque InvalidOperationException that hid this file's worst bug until review.
+            using var response = await client.PostWithRetryAsync(
                 $"{baseUrl}/api/admin/machines",
-                new RegisterMachineRequest(clientId, name, role),
-                CapacitorJsonContext.Default.RegisterMachineRequest);
+                JsonContent.Create(new RegisterMachineRequest(clientId, name, role),
+                    CapacitorJsonContext.Default.RegisterMachineRequest));
 
             if (response.StatusCode is HttpStatusCode.NotFound) {
                 // The application EXISTS in WorkOS and is unregistered here. Saying "try again" alone
@@ -302,7 +306,7 @@ public static class MachineCommand {
         try {
             using var client = await HttpClientExtensions.CreateAuthenticatedClientAsync();
 
-            using var response = await client.GetAsync($"{baseUrl}/api/admin/machines");
+            using var response = await client.GetWithRetryAsync($"{baseUrl}/api/admin/machines");
 
             if (response.StatusCode is HttpStatusCode.NotFound) {
                 await Console.Error.WriteLineAsync("This server does not have machine credentials enabled.");
@@ -362,7 +366,9 @@ public static class MachineCommand {
         try {
             using var client = await HttpClientExtensions.CreateAuthenticatedClientAsync();
 
-            using var response = await client.PostAsync($"{baseUrl}/api/admin/machines/{Uri.EscapeDataString(serviceId)}/revoke", null);
+            using var response = await client.PostWithRetryAsync(
+                $"{baseUrl}/api/admin/machines/{Uri.EscapeDataString(serviceId)}/revoke",
+                new StringContent(""));
 
             if (response.StatusCode is HttpStatusCode.NotFound) {
                 await Console.Error.WriteLineAsync($"No machine '{serviceId}'. Run `kcap machine list`.");
