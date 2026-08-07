@@ -36,7 +36,7 @@ internal static class AcpReviewFlowMcp {
                 "Borrowed-snapshot review cannot inject kcap-flow-result (missing result capability URL).");
 
         var resultEnv = ctx.IsBorrowedSnapshot
-            ? new AcpMcpServerEnvVar[] { new("KCAP_FLOW_RESULT_URL", ctx.FlowResultCapabilityUrl!),
+            ? new AcpMcpServerEnvVar[] { new("KCAP_FLOW_CAPABILITY_URL", ctx.FlowResultCapabilityUrl!),
                                          new("KCAP_FLOW_AGENT_ID", ctx.AgentId) }
             : [new("KCAP_URL", ctx.ServerUrl!), new("KCAP_FLOW_AGENT_ID", ctx.AgentId)];
 

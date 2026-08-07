@@ -92,7 +92,7 @@ public partial class AgentOrchestratorVendorTests {
             // token count below stays at 1.
             await Assert.That(ctx.FlowResultCapabilityUrl).IsNotNull();
             await Assert.That(ctx.FlowResultCapabilityUrl!)
-                .StartsWith(ctx.ReviewContextCapabilityUrl!.Split("/review-context")[0]);
+                .IsEqualTo(ctx.ReviewContextCapabilityUrl!.Split("/review-context")[0]);
             await Assert.That(bridge.ReviewerTokenCountForTest).IsEqualTo(1);
             await Assert.That(orch.GetAgentForTest(cmd.AgentId)!.BorrowedSnapshotSource)
                 .IsEqualTo(BorrowAuthorizer.Canonicalize(cwd));

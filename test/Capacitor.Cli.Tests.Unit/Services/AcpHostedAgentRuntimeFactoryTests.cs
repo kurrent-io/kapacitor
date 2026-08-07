@@ -991,7 +991,7 @@ public class AcpHostedAgentRuntimeFactoryTests {
             // A borrowed launch must carry a delivery capability or AcpReviewFlowMcp.Build
             // refuses it. Set on the shared helper so every borrowed fixture below stays constructable.
             FlowResultCapabilityUrl =
-                "http://127.0.0.1:1234/0123456789abcdef0123456789abcdef/flow-result"
+                "http://127.0.0.1:1234/0123456789abcdef0123456789abcdef"
         };
 
     /// <summary>A factory whose connectionSource INCREMENTS a counter (never throws — a throw would

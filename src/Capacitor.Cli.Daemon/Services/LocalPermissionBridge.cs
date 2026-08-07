@@ -214,7 +214,17 @@ internal sealed partial class LocalPermissionBridge(
             BorrowedReviewContextGeneration? reviewContext = null,
             // The launch's activity clock, so a tool-call hit on this token advances it. Optional and
             // trailing so pre-existing call sites keep compiling; production always supplies one.
-            AgentActivityClock? activityClock = null) {
+            AgentActivityClock? activityClock = null,
+            // Forwards a borrowed reviewer's result submission to the server using the DAEMON's
+            // credential. Supplied only for a borrowed snapshot, whose sandbox redirects HOME and so
+            // leaves the result channel with no token store of its own; every other reviewer keeps
+            // authenticating for itself and passes null, which withholds the capability entirely
+            // rather than exposing an endpoint that would 500.
+            //
+            // It hangs off the GRANT rather than the bridge so it is revoked in the same operation
+            // that revokes the token — a submit path outliving its reviewer would let a lingering
+            // child report into a flow whose participant the server has already reaped.
+            Func<string, string, CancellationToken, Task<(int Status, string Body)>>? submitForwarder = null) {
         if (_listener is null || _sharedToken is null)
             throw new InvalidOperationException("LocalPermissionBridge not started");
 
@@ -224,7 +234,8 @@ internal sealed partial class LocalPermissionBridge(
                 token = NewToken();   // CSPRNG collisions are negligible; never silently reuse one
 
             _listener.Prefixes.Add($"http://127.0.0.1:{_port}/{token}/");
-            _reviewerTokens[token] = new ReviewerGrant([.. allowlistServers], reviewContext, activityClock);
+            _reviewerTokens[token] = new ReviewerGrant(
+                [.. allowlistServers], reviewContext, activityClock, submitForwarder);
 
             return $"http://127.0.0.1:{_port}/{token}";
         }
@@ -333,6 +344,59 @@ internal sealed partial class LocalPermissionBridge(
                 context.Response.StatusCode = 404;
                 context.Response.Close();
                 return;
+            }
+
+            // The borrowed reviewer's result-delivery capability, routed before the permission-request
+            // parser for the same reasons as review-context above: one exact method/path, no query or
+            // caller-selected path segment, and reachable only on a live grant that was minted WITH a
+            // forwarder. A grant without one (every non-borrowed reviewer, which authenticates for
+            // itself) falls through to 404 rather than exposing an endpoint that could only fail.
+            if (context.Request.HttpMethod == "POST" && rawUrl is not null) {
+                var trimmedRaw = rawUrl.TrimStart('/');
+                var slash      = trimmedRaw.IndexOf('/');
+                if (slash > 0) {
+                    var submitToken = trimmedRaw[..slash];
+                    // The API path is chosen HERE, from a fixed table, never echoed from the request.
+                    // The caller is a sandboxed vendor child; letting it name the upstream path would
+                    // turn an authenticated daemon proxy into an open relay onto the kcap API.
+                    var apiPath = rawUrl switch {
+                        _ when rawUrl.Equals($"/{submitToken}/flow-result", StringComparison.Ordinal)
+                            => "/api/flows/reviewer/result",
+                        _ when rawUrl.Equals($"/{submitToken}/flow-message", StringComparison.Ordinal)
+                            => "/api/flows/participant/message",
+                        _   => null
+                    };
+                    if (apiPath is not null) {
+                        if (!_reviewerTokens.TryGetValue(submitToken, out var submitGrant) ||
+                            submitGrant.SubmitForwarder is not { } forward) {
+                            context.Response.StatusCode = 404;
+                            context.Response.Close();
+
+                            return;
+                        }
+
+                        // The clock advances on a submit for the same reason it advances on a tool
+                        // call: a reviewer mid-delivery is demonstrably alive, and letting the wedge
+                        // detector reap it here would discard the very result it spent the round
+                        // producing.
+                        submitGrant.ActivityClock?.Advance();
+
+                        string submitBody;
+                        using (var submitReader = new StreamReader(
+                                context.Request.InputStream, Encoding.UTF8, leaveOpen: false))
+                            submitBody = await submitReader.ReadToEndAsync(ct);
+
+                        var (status, responseBody) = await forward(apiPath, submitBody, ct);
+                        var payload = Encoding.UTF8.GetBytes(responseBody);
+                        context.Response.ContentType     = "application/json";
+                        context.Response.StatusCode      = status;
+                        context.Response.ContentLength64 = payload.LongLength;
+                        await context.Response.OutputStream.WriteAsync(payload, ct);
+                        context.Response.Close();
+
+                        return;
+                    }
+                }
             }
 
             // Require token + vendor + endpoint match. The HttpListener prefix already routed us
@@ -580,7 +644,8 @@ internal sealed partial class LocalPermissionBridge(
     sealed record ReviewerGrant(
         string[] AllowlistServers,
         BorrowedReviewContextGeneration? ReviewContext,
-        AgentActivityClock? ActivityClock = null);
+        AgentActivityClock? ActivityClock = null,
+        Func<string, string, CancellationToken, Task<(int Status, string Body)>>? SubmitForwarder = null);
 
     static string BuildHookResponseJson(PermissionDecision decision, string vendor) =>
         vendor switch {

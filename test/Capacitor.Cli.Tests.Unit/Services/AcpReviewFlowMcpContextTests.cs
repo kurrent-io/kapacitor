@@ -12,7 +12,7 @@ public class AcpReviewFlowMcpContextTests {
             // A borrowed launch now requires BOTH capabilities, so this must be present to
             // reach the context assertions at all.
             FlowResultCapabilityUrl =
-                "http://127.0.0.1:1234/0123456789abcdef0123456789abcdef/flow-result"
+                "http://127.0.0.1:1234/0123456789abcdef0123456789abcdef"
         }, ["kcap-review"]);
 
         var context = servers.Single(server => server.Name == "kcap-review-context");
@@ -34,14 +34,14 @@ public class AcpReviewFlowMcpContextTests {
             ReviewContextCapabilityUrl =
                 "http://127.0.0.1:1234/0123456789abcdef0123456789abcdef/review-context/workspace-mcp-configs",
             FlowResultCapabilityUrl =
-                "http://127.0.0.1:1234/0123456789abcdef0123456789abcdef/flow-result"
+                "http://127.0.0.1:1234/0123456789abcdef0123456789abcdef"
         }, []);
 
         var channel = servers.Single(server => server.Name == "kcap-flow-result");
         await Assert.That(channel.Env.Select(pair => pair.Name))
-            .IsEquivalentTo(["KCAP_FLOW_RESULT_URL", "KCAP_FLOW_AGENT_ID"]);
-        await Assert.That(channel.Env.Single(pair => pair.Name == "KCAP_FLOW_RESULT_URL").Value)
-            .IsEqualTo("http://127.0.0.1:1234/0123456789abcdef0123456789abcdef/flow-result");
+            .IsEquivalentTo(["KCAP_FLOW_CAPABILITY_URL", "KCAP_FLOW_AGENT_ID"]);
+        await Assert.That(channel.Env.Single(pair => pair.Name == "KCAP_FLOW_CAPABILITY_URL").Value)
+            .IsEqualTo("http://127.0.0.1:1234/0123456789abcdef0123456789abcdef");
     }
 
     /// <summary>The non-borrowed launch keeps the ambient-credential path: its HOME is the real one,
@@ -87,7 +87,7 @@ public class AcpReviewFlowMcpContextTests {
                 // Supplied so the result-capability guard passes and this test still
                 // exercises the CONTEXT guard it was written for, rather than the new one.
                 FlowResultCapabilityUrl =
-                    "http://127.0.0.1:1234/0123456789abcdef0123456789abcdef/flow-result"
+                    "http://127.0.0.1:1234/0123456789abcdef0123456789abcdef"
             }, []));
         await Assert.That(ex.Message).Contains("missing capability URL");
     }

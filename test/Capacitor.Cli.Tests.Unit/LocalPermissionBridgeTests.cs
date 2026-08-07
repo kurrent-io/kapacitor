@@ -1200,6 +1200,70 @@ public class LocalPermissionBridgeTests {
         await Assert.That(LocalPermissionBridge.IsAddressInUse(new HttpListenerException(errorCode)))
             .IsEqualTo(expected);
     }
+
+    /// <summary>
+    /// The borrowed reviewer's delivery path. Its sandbox redirects HOME to a per-launch state dir,
+    /// so the result channel cannot load a token store — it POSTs here instead and the daemon, which
+    /// runs unsandboxed and holds the real credential, forwards. The forwarder lives on the GRANT so
+    /// revoking the reviewer closes the submit path in the same operation that closes the read path.
+    /// </summary>
+    [Test]
+    public async Task Reviewer_flow_result_capability_forwards_the_body_then_dies_with_the_token() {
+        var (bridge, _) = CreateBridge();
+        await bridge.StartAsync(CancellationToken.None);
+
+        try {
+            string? forwardedPath = null;
+            string? forwarded     = null;
+            var reviewerUrl = bridge.RegisterReviewerToken([],
+                submitForwarder: (apiPath, body, _) => {
+                    forwardedPath = apiPath;
+                    forwarded     = body;
+                    return Task.FromResult((200, "{\"status\":\"accepted\"}"));
+                });
+
+            using var client = CreateClient();
+            var response = await client.PostAsync($"{reviewerUrl}/flow-result",
+                new StringContent("{\"kind\":\"clean\"}", Encoding.UTF8, "application/json"));
+
+            await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.OK);
+            await Assert.That(forwarded).IsEqualTo("{\"kind\":\"clean\"}");
+            // The upstream path is the bridge's own constant, not anything the caller supplied.
+            await Assert.That(forwardedPath).IsEqualTo("/api/flows/reviewer/result");
+            await Assert.That(await response.Content.ReadAsStringAsync())
+                .IsEqualTo("{\"status\":\"accepted\"}");
+
+            // Fail-safe on revoke: a live submit path outliving the reviewer would let a lingering
+            // child process report into a flow whose participant the server already reaped.
+            bridge.RevokeReviewerToken(reviewerUrl);
+            var afterRevoke = await client.PostAsync($"{reviewerUrl}/flow-result",
+                new StringContent("{\"kind\":\"clean\"}", Encoding.UTF8, "application/json"));
+            await Assert.That(afterRevoke.StatusCode).IsEqualTo(HttpStatusCode.NotFound);
+        } finally {
+            await bridge.StopAsync(CancellationToken.None);
+        }
+    }
+
+    /// <summary>A grant minted without a forwarder (every non-borrowed reviewer) must not expose a
+    /// submit path at all — not a 500, not an empty 200. Pins that the capability is scoped to the
+    /// launches that actually need it rather than opening on every reviewer token.</summary>
+    [Test]
+    public async Task Reviewer_without_a_submit_forwarder_has_no_flow_result_capability() {
+        var (bridge, _) = CreateBridge();
+        await bridge.StartAsync(CancellationToken.None);
+
+        try {
+            var reviewerUrl = bridge.RegisterReviewerToken(["kcap-review"]);
+
+            using var client = CreateClient();
+            var response = await client.PostAsync($"{reviewerUrl}/flow-result",
+                new StringContent("{\"kind\":\"clean\"}", Encoding.UTF8, "application/json"));
+
+            await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.NotFound);
+        } finally {
+            await bridge.StopAsync(CancellationToken.None);
+        }
+    }
 }
 
 sealed class CapturingLogger : ILogger<LocalPermissionBridge> {

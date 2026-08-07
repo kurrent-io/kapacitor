@@ -229,6 +229,26 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     // registered singleton when one exists) keep compiling unchanged.
     readonly DaemonStatusNotifier _statusNotifier;
 
+    /// <summary>
+    /// Relays a borrowed reviewer's flow submission to the server under the DAEMON's credential.
+    ///
+    /// <para>The daemon runs unsandboxed with the real HOME, so its token store resolves; the
+    /// reviewer's does not. <paramref name="apiPath"/> comes from the bridge's own fixed route table,
+    /// never from the request, so a sandboxed child cannot steer this at an arbitrary API path.</para>
+    ///
+    /// <para>The client is per-call, matching <see cref="EvalRunner"/>: a submission happens once per
+    /// round, and a cached client would pin a token across a rotation.</para>
+    /// </summary>
+    async Task<(int Status, string Body)> ForwardFlowSubmissionAsync(
+            string apiPath, string body, CancellationToken ct) {
+        using var http = await HttpClientExtensions.CreateAuthenticatedClientAsync(_config.ServerUrl, ct);
+        using var content  = new StringContent(body, Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync(
+            $"{_config.ServerUrl.TrimEnd('/')}{apiPath}", content, ct);
+
+        return ((int)response.StatusCode, await response.Content.ReadAsStringAsync(ct));
+    }
+
     /// <summary>Test seam: exposes which notifier this orchestrator actually pulses into, so a DI
     /// wiring test can pin that the registered singleton — not a private fallback nobody
     /// subscribes to — is the one every agent mutation reaches (see DaemonStatusWiringTests).</summary>
@@ -1586,7 +1606,12 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
                           "borrowed_snapshot_review_context_missing")
                     : null;
                 var reviewerUrl = _permissionBridge.RegisterReviewerToken(
-                    reviewerServers, reviewGeneration, activityClock);
+                    reviewerServers, reviewGeneration, activityClock,
+                    // Only a borrowed snapshot gets a submit forwarder. Its sandbox redirects HOME,
+                    // so its result channel has no token store; every other reviewer authenticates
+                    // for itself and must NOT be handed a daemon-credentialed relay it has no need
+                    // for. Withholding it also keeps the endpoint 404 rather than merely unused.
+                    snapshotBorrow ? ForwardFlowSubmissionAsync : null);
                 reviewerToken = reviewerUrl; // the URL doubles as the revoke handle
                 if (codexReviewer) {
                     daemonBridgeUrl = reviewerUrl;
@@ -1598,7 +1623,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
                     // Both capabilities hang off the SAME reviewer grant, so revoking that one token
                     // closes the read path and the submit path together. A separately-minted token
                     // could outlive the first and leave a live submit path after the reviewer is gone.
-                    flowResultCapabilityUrl = reviewerUrl + "/flow-result";
+                    flowResultCapabilityUrl = reviewerUrl;
                 }
             }
 

@@ -21,6 +21,20 @@ namespace Capacitor.Cli.Commands;
 static class McpFlowResultServer {
     internal const string AgentIdEnvVar = "KCAP_FLOW_AGENT_ID";
 
+    /// <summary>The daemon-minted loopback capability a BORROWED reviewer delivers through. That
+    /// launch's sandbox redirects HOME to a per-launch state dir, so this process has no token store
+    /// and cannot authenticate for itself; the daemon runs unsandboxed, holds the real credential,
+    /// and forwards. Present only for a borrowed snapshot — every other launch keeps KCAP_URL and the
+    /// authenticated-client path, and the two are mutually exclusive by construction.</summary>
+    internal const string CapabilityUrlEnvVar = "KCAP_FLOW_CAPABILITY_URL";
+
+    /// <summary>Leaf paths appended to the capability BASE. The base carries the whole grant, and
+    /// both tools ride it, so the daemon publishes one value and this server appends — deriving a
+    /// sibling endpoint by rewriting the tail of a leaf URL would be fragile string surgery on a
+    /// security boundary.</summary>
+    const string CapabilitySubmitLeaf  = "/flow-result";
+    const string CapabilityMessageLeaf = "/flow-message";
+
     const int MaxAttempts = 5;
     static readonly TimeSpan RetryDelay = TimeSpan.FromSeconds(3);
 
@@ -42,7 +56,11 @@ static class McpFlowResultServer {
 
         // Validate the server_url shape once, locally (pure string check — no network, token,
         // or stderr). Used to fail gracefully instead of hard-exiting mid-request (below).
-        var urlOk = HttpClientExtensions.IsAcceptableUrl(baseUrl);
+        // A borrowed reviewer delivers through the daemon capability and never authenticates; every
+        // other launch keeps the token-store path. Mutually exclusive, decided once here.
+        var capabilityBase = Environment.GetEnvironmentVariable(CapabilityUrlEnvVar)?.TrimEnd('/');
+        var borrowed       = !string.IsNullOrWhiteSpace(capabilityBase);
+        var urlOk = HttpClientExtensions.IsAcceptableUrl(borrowed ? capabilityBase! : baseUrl);
 
         // The authenticated client is created on the first tools/call, not at startup — mirrors
         // McpFlowsServer/McpReviewServer: keeps startup local-only (no GET /auth/config, token
@@ -94,11 +112,20 @@ static class McpFlowResultServer {
                 if (toolName is not ("submit_review_result" or "send_flow_message"))
                     return BuildToolResult(callId, $"Error: Unknown tool: {toolName}", isError: true);
 
-                client ??= await HttpClientExtensions.CreateAuthenticatedClientAsync(baseUrl, autoRetryUnauthorized: false);
+                // The borrowed path deliberately does NOT create an authenticated client: the token
+                // store lives under a HOME this process cannot reach, so attempting it is what
+                // produced the original silent failure.
+                client ??= borrowed
+                    ? new HttpClient()
+                    : await HttpClientExtensions.CreateAuthenticatedClientAsync(baseUrl, autoRetryUnauthorized: false);
 
                 var (text, isError) = toolName switch {
-                    "submit_review_result" => await SubmitCoreAsync(client, apiRoot, agentId, arguments, delay: Task.Delay),
-                    "send_flow_message"    => await SendMessageCoreAsync(client, apiRoot, agentId, arguments, delay: Task.Delay),
+                    "submit_review_result" => await SubmitCoreAsync(
+                        client, apiRoot, agentId, arguments, delay: Task.Delay,
+                        submitUrlOverride: borrowed ? capabilityBase + CapabilitySubmitLeaf : null),
+                    "send_flow_message"    => await SendMessageCoreAsync(
+                        client, apiRoot, agentId, arguments, delay: Task.Delay,
+                        messageUrlOverride: borrowed ? capabilityBase + CapabilityMessageLeaf : null),
                     _                      => ($"Error: Unknown tool: {toolName}", true)
                 };
 
@@ -165,7 +192,12 @@ static class McpFlowResultServer {
             string               apiRoot,
             string               agentId,
             JsonObject?          arguments,
-            Func<TimeSpan, Task> delay
+            Func<TimeSpan, Task> delay,
+            // Absolute delivery URL for a borrowed reviewer (see CapabilityUrlEnvVar). When set it
+            // REPLACES the apiRoot-composed path entirely: the capability is a daemon loopback
+            // endpoint, not a kcap API root, so composing under it would produce a 404 no caller
+            // could diagnose.
+            string?              submitUrlOverride = null
         ) {
         var roundToken = arguments?["round_token"]?.GetValue<string>();
         var kind       = arguments?["kind"]?.GetValue<string>();
@@ -179,7 +211,7 @@ static class McpFlowResultServer {
             return ("Error: findings text is required when kind is \"findings\".", true);
 
         var body = new SubmitReviewerResultDto(agentId, roundToken, kind, kind == "findings" ? findings : null);
-        var url  = $"{apiRoot.TrimEnd('/')}/api/flows/reviewer/result";
+        var url  = submitUrlOverride ?? $"{apiRoot.TrimEnd('/')}/api/flows/reviewer/result";
 
         for (var attempt = 1; attempt <= MaxAttempts; attempt++) {
             using var response = await SendWithRefreshRetryAsync(
@@ -242,7 +274,9 @@ static class McpFlowResultServer {
             string               agentId,
             JsonObject?          arguments,
             Func<TimeSpan, Task> delay,
-            string?              messageId = null
+            string?              messageId = null,
+            // Same contract as SubmitCoreAsync's submitUrlOverride.
+            string?              messageUrlOverride = null
         ) {
         // Type-safe extraction: a non-string `text` (number/object/array) must yield this clean
         // validation error, not throw into the dispatch guard's generic "internal error"
@@ -253,7 +287,7 @@ static class McpFlowResultServer {
             return ("Error: text must be a non-empty string.", true);
 
         var body = new SendFlowMessageDto(agentId, messageId ?? Guid.NewGuid().ToString("N"), text);
-        var url  = $"{apiRoot.TrimEnd('/')}/api/flows/participant/message";
+        var url  = messageUrlOverride ?? $"{apiRoot.TrimEnd('/')}/api/flows/participant/message";
 
         for (var attempt = 1; attempt <= MaxAttempts; attempt++) {
             using var response = await SendWithRefreshRetryAsync(
