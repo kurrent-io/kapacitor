@@ -158,12 +158,31 @@ public class AntigravityReviewerLaunchTests {
     /// the installed <c>agy</c>'s version, so an unseamed test would resolve <see langword="null"/> on
     /// any host without the binary (CI) and refuse as <c>version_unresolved</c> — passing or failing
     /// for a reason unrelated to what it asserts. Defaults to the shipped floor.</param>
+    /// <param name="posixHost">Pinned rather than inherited from the runner, so every arm of the
+    /// ladder is reachable from any host. Defaulting this to the ambient OS is what reddened the
+    /// Windows CI leg: the platform arm short-circuits ahead of the binary and floor arms, so
+    /// <c>A_missing_binary_…</c> and <c>A_below_floor_…</c> both refused on platform and failed for a
+    /// reason unrelated to what they assert. Tests that genuinely touch the POSIX-only reviewer HOME
+    /// still need their own <c>Skip.Unless</c> — this seam decides the gate, not the filesystem.</param>
     static AntigravityHostedAgentRuntimeFactory Factory(
             DaemonConfig config,
             Func<ProcessStartInfo, CancellationToken, Task<IAgyTurnProcess>>? turnSource = null,
             bool binaryExists = true,
-            string? version = "1.1.10") =>
-        new(config, NullLoggerFactory.Instance, turnSource, _ => binaryExists, _ => version);
+            string? version = "1.1.10",
+            bool posixHost = true) =>
+        new(config, NullLoggerFactory.Instance, turnSource, _ => binaryExists, _ => version, posixHost);
+
+    /// <summary>The platform arm itself — assertable from POSIX only because the seam above exists,
+    /// which is the point of having it. The reviewer's per-launch home holds review context and
+    /// cannot be created owner-only on Windows, so the vendor is withheld rather than advertised with
+    /// a world-readable home.</summary>
+    [Test]
+    public async Task A_windows_host_is_withheld_as_an_unsupported_platform() {
+        var support = Factory(EnabledConfig(), posixHost: false).DescribeUnattendedSupport();
+
+        await Assert.That(support.Supported).IsFalse();
+        await Assert.That(support.WithheldReason!).Contains("antigravity_reviewer_unsupported_platform");
+    }
 
     [Test]
     public async Task A_consent_withheld_daemon_reports_an_operator_actionable_reason() {

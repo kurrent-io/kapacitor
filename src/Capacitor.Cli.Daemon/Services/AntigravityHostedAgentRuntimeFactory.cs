@@ -54,12 +54,27 @@ internal interface IAgyTurnDiagnostics {
 /// <param name="resolveVersion">Test seam ONLY, for the minimum-version half of the gate. Production
 /// passes null, which spawns the configured binary to read its own reported version — the same
 /// resolver the affirmation-gated reviewers use.</param>
+/// <param name="posixHost">Test seam ONLY, for the platform half of the gate. Production passes null,
+/// which reads the ambient OS.
+///
+/// <para><b>This exists because reading the ambient OS here made two arms unreachable on one
+/// platform, and it is the second time this repository has paid for that.</b>
+/// <see cref="Acp.AntigravityReviewerCapability.Decide"/> already takes the platform as a parameter,
+/// and its own comment records why: an earlier Kiro revision called
+/// <c>OperatingSystem.IsWindows()</c> inside a method claiming to be pure, and on the Windows CI leg
+/// a dozen consent and version tests short-circuited to <c>UnsupportedPlatform</c> — failing for a
+/// reason that had nothing to do with what they asserted. Collapsing this factory's ladder onto that
+/// decision reintroduced the ambient read one layer up, and CI caught exactly two tests
+/// (binary-missing, below-floor) refusing on platform before reaching the arm under test. Taking the
+/// platform as an argument makes every arm reachable from any host — including the Windows arm
+/// itself, which is otherwise unassertable on POSIX.</para></param>
 internal sealed partial class AntigravityHostedAgentRuntimeFactory(
         DaemonConfig                                                     config,
         ILoggerFactory                                                   loggerFactory,
         Func<ProcessStartInfo, CancellationToken, Task<IAgyTurnProcess>>? turnSource = null,
         Func<string, bool>?                                              binaryExists = null,
-        Func<string, string?>?                                           resolveVersion = null
+        Func<string, string?>?                                           resolveVersion = null,
+        bool?                                                            posixHost = null
     ) : IHostedAgentRuntimeFactory {
     readonly ILogger _logger = loggerFactory.CreateLogger<AntigravityHostedAgentRuntimeFactory>();
 
@@ -70,6 +85,8 @@ internal sealed partial class AntigravityHostedAgentRuntimeFactory(
     readonly Func<string, bool> _binaryExists = binaryExists ?? CliResolver.Exists;
 
     readonly Func<string, string?> _resolveVersion = resolveVersion ?? VendorVersionResolver.Resolve;
+
+    readonly bool _posixHost = posixHost ?? !OperatingSystem.IsWindows();
 
     /// <summary>The vendor token, never <c>agy</c>: the server routes on this exact string and the
     /// capture side already knows <c>antigravity</c>. <c>agy</c> is only ever a binary name.</summary>
@@ -107,7 +124,7 @@ internal sealed partial class AntigravityHostedAgentRuntimeFactory(
     /// <para>Deliberately not cached: a long-running daemon must re-judge a binary installed (or
     /// removed) under it rather than read a startup snapshot.</para></summary>
     internal string? ReviewerRefusal() {
-        var posixHost = !OperatingSystem.IsWindows();
+        var posixHost = _posixHost;
 
         // Consent and platform decided WITHOUT a probe. Decide short-circuits both before it looks at
         // a version, but C# evaluates its arguments first — so an inline probe here would spawn agy
