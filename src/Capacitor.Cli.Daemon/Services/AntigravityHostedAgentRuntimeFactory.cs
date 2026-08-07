@@ -51,9 +51,10 @@ internal interface IAgyTurnDiagnostics {
 /// passes null, which resolves the real binary through <c>PATH</c>. A test pins it so the CONSENT
 /// half is assertable on a host that happens to have (or not have) <c>agy</c> installed — otherwise
 /// the tests pass for the wrong reason on one machine and fail on another.</param>
-/// <param name="resolveVersion">Test seam ONLY, for the minimum-version half of the gate. Production
-/// passes null, which spawns the configured binary to read its own reported version — the same
-/// resolver the affirmation-gated reviewers use.</param>
+/// <param name="resolveVersion">Test seam ONLY, for the installed-version half of the gate.
+/// Production passes null, which spawns the configured binary to read its own reported version — the
+/// same resolver every other gated reviewer uses. The MINIMUM it is compared against is never seamed:
+/// it is a real record on disk, so a test moves it by writing one.</param>
 /// <param name="posixHost">Test seam ONLY, for the platform half of the gate. Production passes null,
 /// which reads the ambient OS.
 ///
@@ -65,7 +66,7 @@ internal interface IAgyTurnDiagnostics {
 /// a dozen consent and version tests short-circuited to <c>UnsupportedPlatform</c> — failing for a
 /// reason that had nothing to do with what they asserted. Collapsing this factory's ladder onto that
 /// decision reintroduced the ambient read one layer up, and CI caught exactly two tests
-/// (binary-missing, below-floor) refusing on platform before reaching the arm under test. Taking the
+/// (binary-missing, below-minimum) refusing on platform before reaching the arm under test. Taking the
 /// platform as an argument makes every arm reachable from any host — including the Windows arm
 /// itself, which is otherwise unassertable on POSIX.</para></param>
 internal sealed partial class AntigravityHostedAgentRuntimeFactory(
@@ -113,7 +114,7 @@ internal sealed partial class AntigravityHostedAgentRuntimeFactory(
     /// <summary>Why this daemon refuses an unattended Antigravity reviewer, or null when it does not.
     /// The ONE place the ladder is written — advertisement and the launch boundary both read it, so a
     /// vendor cannot be dropped from advertisement and thereby never reach the path that holds the
-    /// explanation, and the FLOOR cannot be enforced at only one of the two (an explicit
+    /// explanation, and the recorded MINIMUM cannot be enforced at only one of the two (an explicit
     /// <c>vendor: "antigravity"</c> request reaches a launch without consulting advertisement).
     ///
     /// <para>Every verdict and every text comes from <see cref="AntigravityReviewerCapability"/>; the
@@ -122,23 +123,26 @@ internal sealed partial class AntigravityHostedAgentRuntimeFactory(
     /// than that its version could not be read.</para>
     ///
     /// <para>Deliberately not cached: a long-running daemon must re-judge a binary installed (or
-    /// removed) under it rather than read a startup snapshot.</para></summary>
+    /// removed) under it rather than read a startup snapshot — and, since the minimum is a record on
+    /// disk rather than configuration, an affirmation taken while this daemon runs is picked up on the
+    /// next decision.</para></summary>
     internal string? ReviewerRefusal() {
         var posixHost = _posixHost;
 
-        // Consent and platform decided WITHOUT a probe. Decide short-circuits both before it looks at
-        // a version, but C# evaluates its arguments first — so an inline probe here would spawn agy
-        // for a daemon that switched the reviewer off, which is exactly what the consent arm's
-        // short-circuit exists to prevent. A null version can only yield those two arms or
-        // VersionUnresolved, so anything else is already a refusal that needs no probe, and the
-        // ORDER between consent and platform stays owned by Decide rather than restated here.
+        // Consent and platform decided with NO probe and NO filesystem read. Decide short-circuits
+        // both before it looks at a version, but C# evaluates arguments first — so reading the record
+        // or probing agy inline here would do both for a daemon that switched the reviewer off, which
+        // is exactly what the consent arm's short-circuit exists to prevent. A null installed version
+        // can only yield those two arms or VersionUnresolved (the shared comparison checks the
+        // installed side first), so that verdict is precisely "consent and platform passed", and the
+        // ORDER between them stays owned by Decide rather than restated here.
         var beforeProbe = AntigravityReviewerCapability.Decide(
             posixHost, config.AntigravityUnattendedReviewerEnabled,
-            installedVersion: null, config.AntigravityMinimumCliVersion);
+            installedVersion: null, minimumVersion: null);
 
         if (beforeProbe != AntigravityReviewerDecision.VersionUnresolved)
             return AntigravityReviewerCapability.DenialReason(
-                beforeProbe, null, config.AntigravityMinimumCliVersion, config.AntigravityPath);
+                beforeProbe, null, null, config.AntigravityPath);
 
         if (!IsAvailable())
             return $"antigravity_reviewer_binary_missing: '{config.AntigravityPath}' does not resolve to "
@@ -148,16 +152,23 @@ internal sealed partial class AntigravityHostedAgentRuntimeFactory(
         // ONCE: the verdict and its explanation both need the version, and resolving it per consumer
         // spawns the vendor binary twice to produce one refusal.
         var installed = _resolveVersion(config.AntigravityPath);
+        var minimum   = VersionStoreFor(config).Affirmed;
 
         var decision = AntigravityReviewerCapability.Decide(
-            posixHost, config.AntigravityUnattendedReviewerEnabled, installed,
-            config.AntigravityMinimumCliVersion);
+            posixHost, config.AntigravityUnattendedReviewerEnabled, installed, minimum);
 
         return decision == AntigravityReviewerDecision.Allowed
             ? null
             : AntigravityReviewerCapability.DenialReason(
-                decision, installed, config.AntigravityMinimumCliVersion, config.AntigravityPath);
+                decision, installed, minimum, config.AntigravityPath);
     }
+
+    /// <summary>The daemon-owned record of the oldest <c>agy</c> build this daemon will run — the same
+    /// shared store Kiro and Gemini use, keyed by vendor, under this daemon's own state root. Read
+    /// through here rather than constructed at each site so the seeding path in <c>DaemonRunner</c>,
+    /// the <c>affirm</c> verb and this gate cannot end up pointing at different files.</summary>
+    internal static ReviewerVersionStore VersionStoreFor(DaemonConfig config) =>
+        new(ReviewerStateDir(config), DaemonRunner.AntigravityVendor);
 
     public async Task<HostedRuntimeStart> StartAsync(RuntimeStartContext ctx, CancellationToken ct) {
         // An interactive launch is refused rather than silently accepted. This runtime parses agy's

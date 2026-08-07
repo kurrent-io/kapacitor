@@ -29,14 +29,31 @@ public class AntigravityReviewerLaunchTests {
         return dir;
     }
 
-    static DaemonConfig EnabledConfig(string? model = null, string? stateDir = null) => new() {
-        AntigravityPath                      = "agy",
-        AntigravityModel                     = model,
-        AntigravityUnattendedReviewerEnabled = true,
-        Name                                 = "test-daemon",
-        DaemonEpoch                          = "epoch-1",
-        StateDir                             = stateDir ?? TempStateDir()
-    };
+    /// <summary>The minimum this daemon has on record — the same value the seeded record and the
+    /// version seam default to, so the "meets it exactly" case is the baseline every other arm moves
+    /// away from.</summary>
+    const string RecordedMinimum = "1.1.10";
+
+    /// <param name="minimum">The recorded minimum, seeded exactly as enabling the reviewer does in
+    /// production (<c>DaemonRunner</c> seeds from the consent event). Null records NOTHING, which is
+    /// how the no-minimum arm is reached — the gate is not configuration, so there is no value to pass
+    /// for "unset".</param>
+    static DaemonConfig EnabledConfig(
+            string? model = null, string? stateDir = null, string? minimum = RecordedMinimum) {
+        var config = new DaemonConfig {
+            AntigravityPath                      = "agy",
+            AntigravityModel                     = model,
+            AntigravityUnattendedReviewerEnabled = true,
+            Name                                 = "test-daemon",
+            DaemonEpoch                          = "epoch-1",
+            StateDir                             = stateDir ?? TempStateDir()
+        };
+
+        if (minimum is not null)
+            AntigravityHostedAgentRuntimeFactory.VersionStoreFor(config).Affirm(minimum);
+
+        return config;
+    }
 
     static RuntimeStartContext Ctx(
             bool isReviewFlow = true, AgentActivityClock? clock = null, string? model = null) => new(
@@ -224,15 +241,16 @@ public class AntigravityReviewerLaunchTests {
         await Assert.That(support.WithheldReason).IsNull();
     }
 
-    // ── the minimum-version floor, at the ONE ladder that owns it ─────────────────────────────────
+    // ── the recorded minimum, at the ONE ladder that owns it ──────────────────────────────────────
 
-    /// <summary>The floor lives in the factory's own gate ladder, so advertisement and the launch
-    /// boundary cannot disagree about it. A build that meets it is advertised with nothing
+    /// <summary>The minimum reaches advertisement THROUGH the factory's own gate ladder, so
+    /// advertisement and the launch boundary cannot disagree about it. A build that meets it — or any
+    /// later one, since the record is a minimum and not an exact match — is advertised with nothing
     /// withheld.</summary>
     [Test]
     [Arguments("1.1.10")]
     [Arguments("2.5.0")]
-    public async Task A_floor_meeting_build_is_advertised(string installed) {
+    public async Task A_minimum_meeting_build_is_advertised(string installed) {
         Skip.Unless(!OperatingSystem.IsWindows(), "POSIX-only: the per-launch home cannot be owner-only on Windows.");
 
         var support = Factory(EnabledConfig(), version: installed).DescribeUnattendedSupport();
@@ -242,7 +260,7 @@ public class AntigravityReviewerLaunchTests {
     }
 
     [Test]
-    public async Task A_below_floor_build_is_withheld_with_a_reason_naming_both_versions() {
+    public async Task A_below_minimum_build_is_withheld_with_a_reason_naming_both_versions() {
         Skip.Unless(!OperatingSystem.IsWindows(), "POSIX-only: the per-launch home cannot be owner-only on Windows.");
 
         var support = Factory(EnabledConfig(), version: "1.1.8").DescribeUnattendedSupport();
@@ -250,7 +268,38 @@ public class AntigravityReviewerLaunchTests {
         await Assert.That(support.Supported).IsFalse();
         await Assert.That(support.WithheldReason!).StartsWith("antigravity_reviewer_version_below_minimum");
         await Assert.That(support.WithheldReason!).Contains("1.1.8");
-        await Assert.That(support.WithheldReason!).Contains("1.1.10");
+        await Assert.That(support.WithheldReason!).Contains(RecordedMinimum);
+    }
+
+    /// <summary>An absent record must not read as permission. This is the control for the seeding
+    /// path: without it, a daemon that never seeded and a working gate look identical from here.
+    /// </summary>
+    [Test]
+    public async Task A_daemon_with_no_recorded_minimum_is_withheld() {
+        Skip.Unless(!OperatingSystem.IsWindows(), "POSIX-only: the per-launch home cannot be owner-only on Windows.");
+
+        var support = Factory(EnabledConfig(minimum: null)).DescribeUnattendedSupport();
+
+        await Assert.That(support.Supported).IsFalse();
+        await Assert.That(support.WithheldReason!).StartsWith("antigravity_reviewer_version_no_minimum");
+    }
+
+    /// <summary>The record is read per decision, never snapshotted at construction: `kcap daemon
+    /// reviewer affirm` runs in a DIFFERENT process while this daemon is live, and a cached read would
+    /// leave the operator's affirmation inert until a restart the verb does not require of them.
+    /// </summary>
+    [Test]
+    public async Task An_affirmation_taken_under_a_running_daemon_is_picked_up() {
+        Skip.Unless(!OperatingSystem.IsWindows(), "POSIX-only: the per-launch home cannot be owner-only on Windows.");
+
+        var config  = EnabledConfig(minimum: "9.9.9");
+        var factory = Factory(config, version: "1.1.10");
+
+        await Assert.That(factory.DescribeUnattendedSupport().Supported).IsFalse();
+
+        AntigravityHostedAgentRuntimeFactory.VersionStoreFor(config).Affirm("1.1.10");
+
+        await Assert.That(factory.DescribeUnattendedSupport().Supported).IsTrue();
     }
 
     /// <summary>A probe that could not identify the build refuses under its OWN arm — the operator's
@@ -442,13 +491,13 @@ public class AntigravityReviewerLaunchTests {
     }
 
     /// <summary>
-    /// The same defence in depth for the FLOOR, which is the gap a floor applied only at
+    /// The same defence in depth for the recorded MINIMUM, which is the gap a check applied only at
     /// advertisement leaves: advertisement is what stops a launch being attempted, but an explicit
     /// <c>vendor: "antigravity"</c> request reaches this factory without consulting it, so a
-    /// below-floor build could be launched. One ladder, read at both seams, closes it.
+    /// below-minimum build could be launched. One ladder, read at both seams, closes it.
     /// </summary>
     [Test]
-    public async Task A_below_floor_build_is_refused_at_the_launch_boundary_too() {
+    public async Task A_below_minimum_build_is_refused_at_the_launch_boundary_too() {
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
             Factory(EnabledConfig(), new SpyTurnSource().SpawnAsync, version: "1.1.8")
                 .StartAsync(Ctx(), CancellationToken.None));

@@ -234,20 +234,14 @@ public class DaemonConfig {
     public string? AntigravityModel { get; set; }
 
     /// <summary>Operator consent for unattended Antigravity reviews. Fail-closed: only an
-    /// explicit affirmative enables it.</summary>
-    public bool AntigravityUnattendedReviewerEnabled { get; set; }
-
-    /// <summary>
-    /// Lowest <c>agy</c> build this daemon will host as an unattended reviewer — a FLOOR, not an
-    /// affirmation: anything at or above it is accepted without a per-release acknowledgement, because
-    /// agy auto-updates itself and a build-exact gate would take the reviewer offline on a cadence the
-    /// operator does not control. Overridable via <c>KCAP_ANTIGRAVITY_MIN_CLI_VERSION</c> so an
-    /// operator hitting a false negative can move it without waiting for a release.
+    /// explicit affirmative enables it. Overridable via
+    /// <c>KCAP_ANTIGRAVITY_UNATTENDED_REVIEWER</c>.
     ///
-    /// <para>The default is the build every measured behaviour behind this reviewer was established
-    /// on. A value that is not a version fails CLOSED (see <c>AntigravityReviewerCapability</c>).</para>
-    /// </summary>
-    public string AntigravityMinimumCliVersion { get; set; } = "1.1.10";
+    /// <para>The minimum <c>agy</c> build is deliberately NOT config: it is a daemon-owned record
+    /// (<c>ReviewerVersionStore</c>, moved by <c>kcap daemon reviewer affirm --vendor antigravity</c>),
+    /// exactly as for Kiro and Gemini. A floor an operator could set from a shell profile would be
+    /// re-affirmed by their dotfiles rather than by them.</para></summary>
+    public bool AntigravityUnattendedReviewerEnabled { get; set; }
 
     /// <summary>Absolute ceiling on the FIRST turn — spawn, NDJSON handshake and auth. An
     /// unauthenticated agy can sit on an interactive OAuth wait, so this is what turns that into a

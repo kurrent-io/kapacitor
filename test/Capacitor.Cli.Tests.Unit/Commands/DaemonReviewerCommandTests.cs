@@ -3,57 +3,54 @@ using Capacitor.Cli.Commands;
 namespace Capacitor.Cli.Tests.Unit.Commands;
 
 /// <summary>
-/// <c>kcap daemon reviewer affirm --vendor …</c> for a vendor that HAS an unattended reviewer but no
-/// affirmation gate. Antigravity takes a minimum version FLOOR instead, so there is nothing to record
-/// — and the two failure modes worth avoiding are succeeding at a no-op (the operator believes a gate
-/// was cleared) and reporting it as an unknown vendor (the operator believes they typed it wrong).
+/// <c>kcap daemon reviewer affirm --vendor …</c> is a TABLE, not a per-vendor branch: every gated
+/// reviewer records its minimum through the same store, and adding one is a row. These pin that
+/// Antigravity is genuinely in that table — reachable, and reachable everywhere the table is read,
+/// since a row the usage text and the unknown-vendor message do not derive from would leave the verb
+/// working while telling operators it does not.
 /// </summary>
 public class DaemonReviewerCommandTests {
     [Test]
-    public async Task Antigravity_is_recognised_as_a_reviewer_with_no_affirmation_gate() =>
-        await Assert.That(DaemonReviewerCommand.NonAffirmableReviewer.Resolve("antigravity")).IsNotNull();
+    [Arguments("kiro")]
+    [Arguments("gemini")]
+    [Arguments("antigravity")]
+    public async Task EveryGatedReviewerIsAffirmable(string vendor) =>
+        await Assert.That(DaemonReviewerCommand.AffirmableReviewer.Resolve(vendor)).IsNotNull();
 
     [Test]
     [Arguments("ANTIGRAVITY")]
     [Arguments("Antigravity")]
     public async Task TheVendorMatchIsCaseInsensitive(string spelling) =>
-        await Assert.That(DaemonReviewerCommand.NonAffirmableReviewer.Resolve(spelling)).IsNotNull();
+        await Assert.That(DaemonReviewerCommand.AffirmableReviewer.Resolve(spelling)).IsNotNull();
 
-    /// <summary>No vendor may sit in both tables: one would silently win by ordering, and which one it
-    /// is depends on the order of two checks nothing keeps in step.</summary>
+    /// <summary>The row carries the binary and the two variables the DAEMON itself reads — the verb
+    /// affirms the build the daemon would launch, not whatever is first on PATH, so a wrong path
+    /// variable here records a version nothing will ever be compared against.</summary>
     [Test]
-    public async Task NoVendorIsBothAffirmableAndNonAffirmable() {
-        foreach (var nonAffirmable in DaemonReviewerCommand.NonAffirmableReviewer.All)
-            await Assert.That(DaemonReviewerCommand.AffirmableReviewer.Resolve(nonAffirmable.Vendor)).IsNull();
+    public async Task TheAntigravityRowNamesTheDaemonsOwnBinaryAndVariables() {
+        var reviewer = DaemonReviewerCommand.AffirmableReviewer.Resolve("antigravity")!;
+
+        await Assert.That(reviewer.DefaultBinary).IsEqualTo("agy");
+        await Assert.That(reviewer.PathEnvVar).IsEqualTo("KCAP_ANTIGRAVITY_PATH");
+        await Assert.That(reviewer.EnableEnvVar).IsEqualTo("KCAP_ANTIGRAVITY_UNATTENDED_REVIEWER");
     }
 
+    /// <summary>Both operator-facing lists derive from the table rather than restating it. Asserted on
+    /// the vendor the table gained last, because a hand-maintained copy is what would drop it.</summary>
     [Test]
-    [Arguments("kiro")]
-    [Arguments("gemini")]
-    public async Task TheAffirmableReviewersAreUnaffected(string vendor) =>
-        await Assert.That(DaemonReviewerCommand.NonAffirmableReviewer.Resolve(vendor)).IsNull();
-
-    /// <summary>The explanation has to redirect the operator, not just refuse: it names the mechanism
-    /// that replaced affirmation and both variables that drive it.</summary>
-    [Test]
-    public async Task TheExplanationNamesTheFloorAndTheVariablesThatDriveIt() {
-        var explanation = DaemonReviewerCommand.NonAffirmableReviewer.Resolve("antigravity")!.Explanation;
-
-        await Assert.That(explanation).StartsWith("antigravity_reviewer_not_affirmable");
-        await Assert.That(explanation).Contains("MINIMUM VERSION");
-        await Assert.That(explanation).Contains("KCAP_ANTIGRAVITY_UNATTENDED_REVIEWER");
-        await Assert.That(explanation).Contains("KCAP_ANTIGRAVITY_MIN_CLI_VERSION");
+    public async Task TheVendorListOfferedToOperatorsCoversTheWholeTable() {
+        foreach (var reviewer in DaemonReviewerCommand.AffirmableReviewer.All)
+            await Assert.That(DaemonReviewerCommand.AffirmableReviewer.VendorList).Contains(reviewer.Vendor);
     }
 
     /// <summary>
-    /// Refused, never silently successful — and refused with ITS OWN explanation. The exit code alone
-    /// proves nothing here: the unknown-vendor branch below it also returns 1, so a wiring mistake that
-    /// dropped this arm entirely would look identical while telling the operator they typed the vendor
-    /// wrong. Captures stderr for that reason.
+    /// An unrecognised vendor is refused as a typo and NAMES the alternatives, so an operator who
+    /// misspells one is not left guessing. Captures stderr because the exit code alone proves nothing
+    /// — every failure arm of this verb returns 1.
     /// </summary>
     [Test]
     [NotInParallel]
-    public async Task Affirming_antigravity_refuses_with_its_own_explanation_not_as_an_unknown_vendor() {
+    public async Task AnUnknownVendorIsRefusedAndOffersTheAffirmableOnes() {
         var original = Console.Error;
         var captured = new StringWriter();
         int exitCode;
@@ -61,13 +58,13 @@ public class DaemonReviewerCommandTests {
         Console.SetError(captured);
 
         try {
-            exitCode = await DaemonReviewerCommand.HandleAsync(["affirm", "--vendor", "antigravity"]);
+            exitCode = await DaemonReviewerCommand.HandleAsync(["affirm", "--vendor", "antigravitee"]);
         } finally {
             Console.SetError(original);
         }
 
         await Assert.That(exitCode).IsEqualTo(1);
-        await Assert.That(captured.ToString()).Contains("antigravity_reviewer_not_affirmable");
-        await Assert.That(captured.ToString()).DoesNotContain("Unknown reviewer vendor");
+        await Assert.That(captured.ToString()).Contains("Unknown reviewer vendor");
+        await Assert.That(captured.ToString()).Contains("antigravity");
     }
 }

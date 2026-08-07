@@ -833,7 +833,8 @@ kcap daemon reviewer affirm --vendor kiro
 Run that to move the minimum to whatever is installed now — which is how you exclude a build you have found
 to be broken, and, if you run it while an older build is installed, how you deliberately lower the bar
 again. The command records the version and nothing else — it does not enable the reviewer. No kcap release
-is ever needed; Gemini uses the same model and the same command (`--vendor gemini`).
+is ever needed; Gemini and Antigravity use the same model and the same command (`--vendor gemini`,
+`--vendor antigravity`).
 
 POSIX only: the isolated home holds the reviewer's own transcript, and therefore the review context, and
 cannot be created owner-only on Windows.
@@ -865,18 +866,21 @@ export GOOGLE_CLOUD_PROJECT=<your-project>
 export AGY_ADC_AUTH=1                           # selects ADC; without it agy still demands an OAuth login
 ```
 
-**Minimum version, not an affirmation.** There is **no affirm step** for Antigravity — there is nothing to
-affirm, and `kcap daemon reviewer affirm --vendor antigravity` refuses with a coded
-`antigravity_reviewer_not_affirmable` that says so. Unlike Gemini and Kiro, `agy` updates itself (observed
-going 1.1.8 → 1.1.10 mid-session), so a build-exact gate would take the reviewer offline on a cadence you
-do not control. Instead the daemon requires a **minimum** `agy` version
-(currently **1.1.10**, the build every measured behaviour behind this reviewer was established on) and
-accepts anything at or above it. A build below the floor, or one whose `agy --version` cannot be read, is
-withheld with a coded reason naming both versions. If a build is refused that you know to be good:
+**Minimum version.** Containment here depends on the installed build honouring `HOME` and reading no other
+global config source, so the daemon records a minimum `agy` version the first time you enable the reviewer.
+It is a **minimum, not an exact match**: any build at or above it runs, so **an `agy` upgrade needs no
+action from you** — which matters more here than for the other reviewers, since `agy` updates itself
+(observed going 1.1.8 → 1.1.10 mid-session). A build older than the recorded minimum, or one whose
+`agy --version` cannot be read, is withheld with a coded reason naming both versions.
 
 ```bash
-export KCAP_ANTIGRAVITY_MIN_CLI_VERSION=1.2.0   # daemon environment; restart the daemon after changing it
+kcap daemon reviewer affirm --vendor antigravity
 ```
+
+Same command and same model as Kiro and Gemini: run it to move the minimum to whatever is installed now —
+which is how you exclude a build you have found to be broken, and, if you run it while an older build is
+installed, how you deliberately lower the bar again. It records the version and nothing else; it does not
+enable the reviewer. No kcap release is ever needed.
 
 Like Gemini and Kiro, this never makes Antigravity a default reviewer — it is only ever reached by an
 explicit `vendor: "antigravity"`. Borrowed (in-place) review is not offered; a borrowed request falls back
@@ -896,9 +900,8 @@ kcap daemon service install --name "$(whoami)"    # captures the flag into the u
 
 The Antigravity ADC variables (`GOOGLE_CLOUD_PROJECT`, `AGY_ADC_AUTH`, `GOOGLE_APPLICATION_CREDENTIALS`)
 are captured by the same install, so a daemon installed *before* this shipped must be reinstalled from an
-interactive shell to pick them up. `KCAP_ANTIGRAVITY_PATH` and `KCAP_ANTIGRAVITY_MIN_CLI_VERSION` are
-**not** captured — like the other vendor path overrides, set them where the unit can see them if you need
-non-default values.
+interactive shell to pick them up. `KCAP_ANTIGRAVITY_PATH` is **not** captured — like the other vendor path
+overrides, set it where the unit can see it if you need a non-default value.
 
 Install prints a `Consent:` line naming each reviewer flag it captured. That freeze is the point to notice:
 the unit outlives the shell, so the reviewer stays enabled for that service until you reinstall without the

@@ -31,7 +31,8 @@ namespace Capacitor.Cli.Tests.Unit.Services;
 ///
 /// <para><b>Gated</b> behind <c>KCAP_ANTIGRAVITY_REVIEWER_LIVE=1</c>: CI has no <c>agy</c> binary and
 /// no Google account, and each case spends real model turns. Requires <c>agy</c> on <c>PATH</c> (or
-/// <c>KCAP_ANTIGRAVITY_PATH</c>) at or above the shipped floor, plus the same durable ADC
+/// <c>KCAP_ANTIGRAVITY_PATH</c>) — the harness records that build as this daemon's minimum, exactly
+/// as enabling the reviewer does — plus the same durable ADC
 /// credentials a supervised daemon needs — <c>gcloud auth application-default login</c>,
 /// <c>GOOGLE_CLOUD_PROJECT</c> and <c>AGY_ADC_AUTH=1</c> — which the launch path deliberately
 /// INHERITS from this process's environment rather than re-stamping, exactly as it inherits them
@@ -60,7 +61,7 @@ public class AntigravityReviewerLiveCertTests {
     static void Gate() {
         Skip.Unless(Environment.GetEnvironmentVariable(GateEnvVar) == "1",
             $"Gated live certification of the unattended Antigravity reviewer — set {GateEnvVar}=1 to run "
-          + "(spends real agy turns; needs `agy` on PATH at or above the shipped floor, and the daemon's "
+          + "(spends real agy turns; needs `agy` on PATH, and the daemon's "
           + "own ADC credentials: gcloud auth application-default login, GOOGLE_CLOUD_PROJECT=<project>, "
           + "AGY_ADC_AUTH=1). Re-run it against a new agy before recommending that build to operators.");
 
@@ -238,12 +239,20 @@ public class AntigravityReviewerLiveCertTests {
                 StateDir                              = stateDir
             };
 
+            // Seeded through the DAEMON's own path, not a hand-written record: production records the
+            // minimum from the consent event at startup, and this harness is standing in for a daemon
+            // whose operator has just enabled the reviewer. It resolves the version by really running
+            // the installed agy, so the cert still judges the INSTALLED build rather than a seamed one.
+            DaemonRunner.SeedReviewerAffirmation(
+                AntigravityHostedAgentRuntimeFactory.ReviewerStateDir(config),
+                DaemonRunner.AntigravityVendor, enabled: true, config.AntigravityPath);
+
             return new LiveHarness(root, worktree, config);
         }
 
         internal Task<HostedRuntimeStart> LaunchAsync(string prompt) {
             // binaryExists/resolveVersion left to production: this cert exists to judge the INSTALLED
-            // agy, so seaming the floor would certify a build the gate would have refused.
+            // agy, so seaming the version would certify a build the gate would have refused.
             var factory = new AntigravityHostedAgentRuntimeFactory(
                 Config, NullLoggerFactory.Instance, turnSource: SpawnAsync);
 
@@ -293,7 +302,7 @@ public class AntigravityReviewerLiveCertTests {
             if (SpawnCount < rounds)
                 throw new TimeoutException(
                     $"Only {SpawnCount} agy turn(s) spawned; expected {rounds}. The reviewer never started "
-                  + "this round — check the daemon's ADC environment and the agy version floor.");
+                  + "this round — check the daemon's ADC environment and its recorded agy minimum.");
 
             using var cts = new CancellationTokenSource(RoundBudget);
             await runtime.WaitForTurnIdleAsync(cts.Token);

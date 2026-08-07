@@ -1,3 +1,5 @@
+using Capacitor.Cli.Core;
+
 namespace Capacitor.Cli.Daemon.Acp;
 
 internal enum AntigravityReviewerDecision {
@@ -5,51 +7,60 @@ internal enum AntigravityReviewerDecision {
     UnsupportedPlatform,
     Disabled,
     VersionUnresolved,
-    VersionBelowMinimum
+    VersionNoMinimum,
+    VersionBelowMinimum,
+    VersionIncomparable
 }
 
 /// <summary>
 /// Whether THIS daemon may run Antigravity's CLI (<c>agy</c>) as an unattended review-flow reviewer.
 /// Pure, so every arm is testable without a vendor or a process.
 ///
-/// <para><b>Why a minimum version FLOOR rather than an operator affirmation.</b> Kiro and Gemini
-/// require an operator to affirm each installed build, because their containment depends on the build
-/// honouring a HOME override. <c>agy</c> was observed auto-updating itself mid-session (1.1.8 →
-/// 1.1.10) while this reviewer was being explored, so an affirmation gate would park the reviewer on
-/// a release cadence the operator neither controls nor can predict — the reviewer would be offline
-/// more often than not, and clearing the gate would become a reflex rather than a decision. Meeting
-/// the floor is therefore enough; a defect in a later build is handled by a report and a raised
-/// floor, which is why <see cref="DaemonConfig.AntigravityMinimumCliVersion"/> is operator-settable.
-/// There is deliberately no <c>affirm</c> verb for this vendor, and no refusal below may point at
-/// one.</para>
+/// <para><b>What enabling it consents to.</b> An unattended reviewer runs in a daemon-owned worktree
+/// under a per-launch, owner-only <c>HOME</c>, and its findings text is returned to whoever requested
+/// the review. That risk lands on the daemon OPERATOR, who is not necessarily the requester, which is
+/// why the decision is daemon-local and enabling it is the consent event rather than a documented
+/// default. Deliberately NOT Kiro's whole-filesystem-read paragraph: that claim is about a trusted
+/// <c>fs_read</c> primitive this vendor does not expose, and a borrowed risk statement would be a
+/// false one in either direction.</para>
 ///
-/// <para>The comparison is <see cref="DaemonRunner.CliVersionAllowed"/> — the same range grammar
-/// reviewer certification already uses. A second version parser in this codebase is exactly the
-/// "two things that must agree, with nothing making them" shape.</para>
+/// <para><b>Why a version MINIMUM.</b> Containment here is source suppression — an empty per-launch
+/// <see cref="AntigravityReviewerHome"/> in place of the operator's own <c>~/.gemini</c>, whose kcap
+/// capture plugin would otherwise fire against the conversation this runtime is already recording.
+/// That the build honours <c>HOME</c> and reads no other global config source is a behaviour of the
+/// BUILD, not of this repository. The recorded value is the OLDEST build this daemon will run: an
+/// upgrade needs no action — which matters more here than for any sibling, since <c>agy</c> was
+/// observed auto-updating itself mid-session (1.1.8 → 1.1.10) — a downgrade below it is refused, and
+/// a build later found to be bad is excluded by raising the floor past it.</para>
+///
+/// <para><b>Why that record is state and not configuration.</b> An earlier revision of this gate read
+/// the floor from <c>KCAP_ANTIGRAVITY_MIN_CLI_VERSION</c>. A value the operator could set from a shell
+/// profile would be re-affirmed by their dotfiles rather than by them — the same "consent that isn't
+/// consent" failure the enable flag exists to avoid. Kiro and Gemini use the same model; the shared
+/// comparison lives in <see cref="Core.ReviewerVersionAffirmations"/> and the record in
+/// <see cref="Core.ReviewerVersionStore"/>.</para>
 ///
 /// <para><b>This is the whole ladder</b> (consent → platform → build), and
 /// <c>AntigravityHostedAgentRuntimeFactory.ReviewerRefusal</c> is its only production caller: it adds
 /// the one arm this decision cannot express — a binary that does not resolve at all — and takes every
 /// other verdict, and every text, from here. Both the advertisement seam and the launch boundary read
-/// that one method, so the floor cannot be enforced at only one of them.</para>
+/// that one method, so the minimum cannot be enforced at only one of them.</para>
 /// </summary>
 internal static class AntigravityReviewerCapability {
-    /// <summary>Production entry point: reads the host platform, then defers to the pure overload.</summary>
-    internal static AntigravityReviewerDecision Decide(
-            bool operatorEnabled, string? installedVersion, string minimumVersion) =>
-        Decide(!OperatingSystem.IsWindows(), operatorEnabled, installedVersion, minimumVersion);
-
     /// <summary>
-    /// The decision, with the platform passed IN rather than read from the ambient OS.
+    /// The decision, with the platform passed IN rather than read from the ambient OS. There is
+    /// deliberately no ambient-reading overload: the one production caller holds a platform seam of its
+    /// own, and an overload that read the OS here would be the obvious thing to reach for next.
     ///
-    /// <para>Kiro's gate records why: reading the OS inside the decision short-circuited every
-    /// consent and version arm to <see cref="AntigravityReviewerDecision.UnsupportedPlatform"/> on the
-    /// Windows CI leg, so a dozen tests failed for a reason unrelated to what they asserted. As a
-    /// parameter, every arm is reachable from any host — including the Windows one, which is
-    /// otherwise unassertable on POSIX.</para>
+    /// <para>Kiro's gate records why it must be a parameter: reading the OS inside the decision
+    /// short-circuited every consent and version arm to
+    /// <see cref="AntigravityReviewerDecision.UnsupportedPlatform"/> on the Windows CI leg, so a dozen
+    /// tests failed for a reason unrelated to what they asserted. As a parameter, every arm is
+    /// reachable from any host — including the Windows one, which is otherwise unassertable on
+    /// POSIX.</para>
     /// </summary>
     internal static AntigravityReviewerDecision Decide(
-            bool posixHost, bool operatorEnabled, string? installedVersion, string minimumVersion) {
+            bool posixHost, bool operatorEnabled, string? installedVersion, string? minimumVersion) {
         // Consent FIRST and short-circuiting: an installed-but-wedged agy must not be probed — let
         // alone stall a daemon start — for a feature the operator switched off.
         if (!operatorEnabled) return AntigravityReviewerDecision.Disabled;
@@ -58,20 +69,16 @@ internal static class AntigravityReviewerCapability {
         // therefore the review context — cannot be made owner-only.
         if (!posixHost) return AntigravityReviewerDecision.UnsupportedPlatform;
 
-        // Parseability asked THROUGH the same comparison rather than with a second parser: every
-        // version that parses at all satisfies this range, so a false here means precisely "we could
-        // not identify this build" and never "this build is old".
-        if (!DaemonRunner.CliVersionAllowed(installedVersion, AnyParseableVersion))
-            return AntigravityReviewerDecision.VersionUnresolved;
-
-        // An unparseable FLOOR yields false here, so an operator typo refuses rather than admitting
-        // every build.
-        return DaemonRunner.CliVersionAllowed(installedVersion, ">=" + minimumVersion)
-            ? AntigravityReviewerDecision.Allowed
-            : AntigravityReviewerDecision.VersionBelowMinimum;
+        // No discard: `_ => Allowed` would silently ADMIT any arm added later, which is the wrong
+        // direction for this gate. CS8509 makes the next one a build failure instead.
+        return ReviewerVersionAffirmations.Decide(installedVersion, minimumVersion) switch {
+            ReviewerVersionAffirmation.MeetsMinimum      => AntigravityReviewerDecision.Allowed,
+            ReviewerVersionAffirmation.Unresolved        => AntigravityReviewerDecision.VersionUnresolved,
+            ReviewerVersionAffirmation.NoMinimumRecorded => AntigravityReviewerDecision.VersionNoMinimum,
+            ReviewerVersionAffirmation.BelowMinimum      => AntigravityReviewerDecision.VersionBelowMinimum,
+            ReviewerVersionAffirmation.Incomparable      => AntigravityReviewerDecision.VersionIncomparable
+        };
     }
-
-    const string AnyParseableVersion = ">=0.0";
 
     /// <summary>
     /// The coded refusal an operator can act on. Separated from <see cref="Decide"/> so the two cannot
@@ -80,16 +87,15 @@ internal static class AntigravityReviewerCapability {
     /// <param name="binaryPath">The binary the daemon would launch, named in the unresolved arm so an
     /// operator checks the right one rather than whatever is first on PATH.</param>
     internal static string DenialReason(
-            AntigravityReviewerDecision decision, string? installedVersion, string minimumVersion,
+            AntigravityReviewerDecision decision, string? installedVersion, string? minimumVersion,
             string binaryPath) =>
         decision switch {
-            // Deliberately does NOT carry Kiro's whole-filesystem-read paragraph: that
-            // claim is about a trusted fs_read primitive this vendor does not expose, and a borrowed
-            // risk statement would be a false one in either direction.
             AntigravityReviewerDecision.Disabled =>
                 "antigravity_unattended_reviewer_disabled: unattended Antigravity reviews are off on "
-              + "this daemon. Set KCAP_ANTIGRAVITY_UNATTENDED_REVIEWER=1 in the daemon's environment "
-              + "to opt in.",
+              + "this daemon. A review runs under this daemon user's authority and returns what it "
+              + "read to whoever requested it, so enable it only where the operator and the review "
+              + "requesters are in one trust domain: set KCAP_ANTIGRAVITY_UNATTENDED_REVIEWER=1 in the "
+              + "daemon's environment (not on the server).",
 
             AntigravityReviewerDecision.UnsupportedPlatform =>
                 "antigravity_reviewer_unsupported_platform: the reviewer's per-launch home holds "
@@ -97,18 +103,39 @@ internal static class AntigravityReviewerCapability {
 
             AntigravityReviewerDecision.VersionUnresolved =>
                 $"antigravity_reviewer_version_unresolved: the version of '{binaryPath}' could not be "
-              + $"determined, so it cannot be shown to meet the {minimumVersion} minimum. Check that "
-              + "the Antigravity CLI is installed (the `agy` binary — the IDE alone is not enough), "
-              + "that `agy --version` succeeds, and set KCAP_ANTIGRAVITY_PATH if it lives elsewhere.",
+              + "determined, so it cannot be compared against this daemon's recorded minimum. Check "
+              + "that the Antigravity CLI is installed (the `agy` binary — the IDE alone is not "
+              + "enough), that `agy --version` succeeds, and set KCAP_ANTIGRAVITY_PATH if it lives "
+              + "elsewhere. A build we cannot identify is refused rather than assumed compatible.",
 
-            _ =>
+            AntigravityReviewerDecision.VersionNoMinimum =>
+                "antigravity_reviewer_version_no_minimum: this daemon has no recorded minimum agy "
+              + "version, so there is nothing to check the installed build against. The usual cause is "
+              + "enabling the reviewer against an already-running daemon — it records a minimum at "
+              + "startup, so restart it with KCAP_ANTIGRAVITY_UNATTENDED_REVIEWER set. To set one now "
+              + "without restarting, run `kcap daemon reviewer affirm --vendor antigravity`.",
+
+            AntigravityReviewerDecision.VersionIncomparable =>
+                $"antigravity_reviewer_version_incomparable: agy {Describe(installedVersion)} and this "
+              + $"daemon's recorded minimum {Describe(minimumVersion)} cannot be ordered as version "
+              + "numbers, so neither can be said to be newer. Record the installed build as the "
+              + "minimum with `kcap daemon reviewer affirm --vendor antigravity`.",
+
+            // Exhaustive, like Decide's switch: a discard would print the below-minimum text for a
+            // future arm meaning something else, sending an operator to the wrong fix. Allowed throws
+            // because asking for the denial reason of a permitted decision is a caller bug.
+            AntigravityReviewerDecision.Allowed =>
+                throw new ArgumentOutOfRangeException(
+                    nameof(decision), decision, "Allowed is not a denial and has no reason."),
+
+            AntigravityReviewerDecision.VersionBelowMinimum =>
                 $"antigravity_reviewer_version_below_minimum: agy {Describe(installedVersion)} is "
-              + $"installed, below the {minimumVersion} minimum this daemon requires. Every behaviour "
-              + "this reviewer depends on was established on that build, so please upgrade the "
-              + "Antigravity CLI — or, if this build is known good, raise the floor with "
-              + "KCAP_ANTIGRAVITY_MIN_CLI_VERSION."
+              + $"installed but this daemon's recorded minimum is {Describe(minimumVersion)}. The "
+              + "reviewer's containment depends on the build honouring HOME and reading no other "
+              + "global config source, so an OLDER build than the one recorded is refused. Upgrade the "
+              + "Antigravity CLI, or deliberately lower the minimum to the installed build with "
+              + "`kcap daemon reviewer affirm --vendor antigravity`."
         };
 
-    static string Describe(string? version) =>
-        string.IsNullOrWhiteSpace(version) ? "(unknown)" : version.Trim();
+    static string Describe(string? version) => ReviewerVersionAffirmations.Describe(version);
 }

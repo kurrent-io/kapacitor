@@ -4,7 +4,7 @@ using Capacitor.Cli.Core.Config;
 namespace Capacitor.Cli.Commands;
 
 /// <summary>
-/// <c>kcap daemon reviewer affirm --vendor &lt;kiro|gemini&gt;</c> — the operator's explicit
+/// <c>kcap daemon reviewer affirm --vendor &lt;kiro|gemini|antigravity&gt;</c> — the operator's explicit
 /// acknowledgement that the installed vendor build may host an unattended reviewer on this daemon.
 ///
 /// <para><b>Why a command and not a config key.</b> The record it writes is what makes a vendor
@@ -27,15 +27,6 @@ public static class DaemonReviewerCommand {
             return Task.FromResult(Usage());
 
         var requested = ValueOf(args, "--vendor");
-
-        // A vendor that HAS an unattended reviewer but no affirmation gate is refused with its own
-        // explanation, before the unknown-vendor branch below would call it a typo. Succeeding at a
-        // no-op would be worse still: the operator would believe a gate had been cleared.
-        if (NonAffirmableReviewer.Resolve(requested) is { } nonAffirmable) {
-            Console.Error.WriteLine(nonAffirmable.Explanation);
-
-            return Task.FromResult(1);
-        }
 
         if (AffirmableReviewer.Resolve(requested) is not { } reviewer) {
             Console.Error.WriteLine(
@@ -109,8 +100,8 @@ public static class DaemonReviewerCommand {
     }
 
     /// <summary>
-    /// A reviewer whose build an operator can affirm. Both gated reviewers use the same model, so the
-    /// verb is a table rather than a per-vendor branch — a third one is a row here, not a new arm.
+    /// A reviewer whose build an operator can affirm. Every gated reviewer uses the same model, so the
+    /// verb is a table rather than a per-vendor branch — the next one is a row here, not a new arm.
     /// </summary>
     /// <param name="Vendor">Canonical vendor token, and the key the daemon's store is written under.</param>
     /// <param name="DefaultBinary">Binary probed when the path env var is unset.</param>
@@ -120,34 +111,14 @@ public static class DaemonReviewerCommand {
     internal sealed record AffirmableReviewer(
             string Vendor, string DefaultBinary, string PathEnvVar, string EnableEnvVar) {
         internal static readonly AffirmableReviewer[] All = [
-            new("kiro",   "kiro-cli", "KCAP_KIRO_PATH",   "KCAP_KIRO_UNATTENDED_REVIEWER"),
-            new("gemini", "gemini",   "KCAP_GEMINI_PATH", "KCAP_GEMINI_UNATTENDED_REVIEWER")
+            new("kiro",        "kiro-cli", "KCAP_KIRO_PATH",        "KCAP_KIRO_UNATTENDED_REVIEWER"),
+            new("gemini",      "gemini",   "KCAP_GEMINI_PATH",      "KCAP_GEMINI_UNATTENDED_REVIEWER"),
+            new("antigravity", "agy",      "KCAP_ANTIGRAVITY_PATH", "KCAP_ANTIGRAVITY_UNATTENDED_REVIEWER")
         ];
 
         internal static string VendorList => string.Join(" | ", All.Select(r => r.Vendor));
 
         internal static AffirmableReviewer? Resolve(string? vendor) =>
-            All.FirstOrDefault(r => string.Equals(r.Vendor, vendor, StringComparison.OrdinalIgnoreCase));
-    }
-
-    /// <summary>
-    /// A reviewer this build hosts unattended but whose build gate is NOT an affirmation, so there is
-    /// nothing here to record. A row rather than an arm, for the same reason
-    /// <see cref="AffirmableReviewer"/> is a table.
-    /// </summary>
-    internal sealed record NonAffirmableReviewer(string Vendor, string Explanation) {
-        internal static readonly NonAffirmableReviewer[] All = [
-            new("antigravity",
-                "antigravity_reviewer_not_affirmable: the Antigravity reviewer has no affirmation "
-              + "gate, so there is nothing to affirm. It takes a MINIMUM VERSION instead — anything at "
-              + "or above the floor is accepted — because agy updates itself, and a build-exact gate "
-              + "would take the reviewer offline on a cadence you do not control.\n"
-              + "  Enable it with KCAP_ANTIGRAVITY_UNATTENDED_REVIEWER=1 in the daemon's environment, "
-              + "and move the floor with KCAP_ANTIGRAVITY_MIN_CLI_VERSION if a build is refused you "
-              + "know to be good. Restart the daemon after either.")
-        ];
-
-        internal static NonAffirmableReviewer? Resolve(string? vendor) =>
             All.FirstOrDefault(r => string.Equals(r.Vendor, vendor, StringComparison.OrdinalIgnoreCase));
     }
 

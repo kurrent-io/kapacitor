@@ -163,8 +163,6 @@ public static partial class DaemonRunner {
             config.AntigravityModel = agyModel;
         if (Environment.GetEnvironmentVariable("KCAP_ANTIGRAVITY_UNATTENDED_REVIEWER") is { } agyConsent)
             config.AntigravityUnattendedReviewerEnabled = ParseConsentFlag(agyConsent);
-        if (Environment.GetEnvironmentVariable("KCAP_ANTIGRAVITY_MIN_CLI_VERSION") is { Length: > 0 } agyFloor)
-            config.AntigravityMinimumCliVersion = agyFloor;
 
         // The operator consent flags for the unattended ACP/CLI reviewers. Both were previously
         // reachable only from a test constructor, which made the shipped Gemini reviewer impossible
@@ -251,6 +249,10 @@ public static partial class DaemonRunner {
         SeedReviewerAffirmation(
             coverageStateDir, AcpVendorDescriptors.Gemini.Vendor,
             config.GeminiUnattendedReviewerEnabled, config.GeminiPath);
+
+        SeedReviewerAffirmation(
+            coverageStateDir, AntigravityVendor,
+            config.AntigravityUnattendedReviewerEnabled, config.AntigravityPath);
 
         // Recovers reviewer homes left by a SIGKILLed predecessor. Runs unconditionally: a daemon
         // whose operator has since disabled the reviewer still owns whatever its last incarnation
