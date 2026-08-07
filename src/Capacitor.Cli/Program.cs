@@ -276,7 +276,7 @@ switch (command) {
     case "profile":
         return await ProfileCommand.HandleAsync(args);
     case "machine":
-        return await MachineCommand.HandleAsync(args);
+        return await MachineCommand.HandleAsync(baseUrl!, args);
     case "use":
         return await UseCommand.HandleAsync(args);
     case "status":

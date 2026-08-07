@@ -28,13 +28,20 @@ public static class MachineCommand {
     /// </summary>
     static readonly string[] Visibilities = ["private", "org_public", "public"];
 
-    public static async Task<int> HandleAsync(string[] args) {
+    /// <summary>
+    /// Takes <paramref name="baseUrl"/> because <c>CreateAuthenticatedClientAsync</c> does NOT set a
+    /// BaseAddress — every other command in this CLI builds absolute URLs from the resolved server URL,
+    /// and a relative URI here throws <see cref="InvalidOperationException"/> before a request is even
+    /// sent. An earlier revision used relative paths and would have failed on every tenant call.
+    /// Raised by Qodo. `machine` is not in Program.cs's offlineCommands, so baseUrl is non-null here.
+    /// </summary>
+    public static async Task<int> HandleAsync(string baseUrl, string[] args) {
         if (args.Length < 2 || IsHelp(args[1])) return await PrintUsage();
 
         return args[1] switch {
-            "create" => await CreateAsync(args),
-            "list"   => await ListAsync(),
-            "revoke" => await RevokeAsync(args),
+            "create" => await CreateAsync(baseUrl, args),
+            "list"   => await ListAsync(baseUrl),
+            "revoke" => await RevokeAsync(baseUrl, args),
             _        => await PrintUsage()
         };
     }
@@ -43,7 +50,7 @@ public static class MachineCommand {
 
     // ── create ──────────────────────────────────────────────────────────────────────────────────
 
-    static async Task<int> CreateAsync(string[] args) {
+    static async Task<int> CreateAsync(string baseUrl, string[] args) {
         if (args.Length < 3 || IsHelp(args[2])) return await PrintCreateUsage();
 
         var name       = args[2].Trim();
@@ -163,23 +170,45 @@ public static class MachineCommand {
             return 1;
         }
 
-        // Register the PUBLIC client id with the tenant. The secret is deliberately not in this call —
-        // there is no field for it, and there is no code path on the server that could store one.
-        var registered = await RegisterAsync(provisioned.ClientId, name, role);
+        // ORDER MATTERS: disclose the secret BEFORE registering.
+        //
+        // WorkOS discloses it exactly once. An earlier revision registered first and printed after, so
+        // any registration failure — server unreachable, feature disabled, caller not an admin —
+        // destroyed the secret permanently, and a retry could not recover it: the second provisioning
+        // call is an idempotent hit that returns no secret at all. The operator was left with an
+        // unusable application occupying the name, and no way back. Raised by Qodo.
+        //
+        // Printing first cannot lose anything. The worst case becomes an unregistered machine whose
+        // credential the operator holds, which the failure path below tells them how to resolve.
+        await PrintSecretAsync(name, provisioned.ClientSecret, provisioned);
 
-        if (registered is null) return 1;
+        // The PUBLIC client id, and only that. There is no field on this request for a secret and no
+        // code path on the server that could store one.
+        var registered = await RegisterAsync(baseUrl, provisioned.ClientId, name, role);
 
-        await PrintCredentialAsync(name, provisioned.ClientSecret, provisioned, registered, visibility);
+        if (registered is null) {
+            await Console.Error.WriteLineAsync();
+            await Console.Error.WriteLineAsync(
+                "The credential above is valid, but this machine is NOT registered on the server, so it "
+              + "cannot record yet. Once the problem above is fixed, delete the application in the "
+              + "WorkOS dashboard and run `kcap machine create` again — the secret above belongs to an "
+              + "application you are about to remove, so there is nothing to keep.");
+
+            return 1;
+        }
+
+        await PrintSetupAsync(registered, provisioned, visibility);
 
         return 0;
     }
 
-    static async Task<RegisterMachineResponse?> RegisterAsync(string clientId, string name, string? role) {
+    static async Task<RegisterMachineResponse?> RegisterAsync(
+            string baseUrl, string clientId, string name, string? role) {
         try {
             using var client = await HttpClientExtensions.CreateAuthenticatedClientAsync();
 
             using var response = await client.PostAsJsonAsync(
-                "/api/admin/machines",
+                $"{baseUrl}/api/admin/machines",
                 new RegisterMachineRequest(clientId, name, role),
                 CapacitorJsonContext.Default.RegisterMachineRequest);
 
@@ -222,17 +251,17 @@ public static class MachineCommand {
     }
 
     /// <summary>
-    /// Prints the credential and how to use it. The secret goes to STDOUT (so it can be piped into a
-    /// secret store) and everything else to STDERR (so a pipe captures only the value).
+    /// The irrecoverable half: the client id and the secret. Called BEFORE registration so nothing
+    /// downstream can prevent disclosure.
+    ///
+    /// <para>The secret goes to STDOUT alone and everything else to STDERR, so
+    /// <c>... 2>/dev/null | gh secret set X</c> yields exactly the value.</para>
     /// </summary>
-    static async Task PrintCredentialAsync(
-            string name, string secret, CreateMachineApplicationResponse provisioned,
-            RegisterMachineResponse registered, string visibility) {
+    static async Task PrintSecretAsync(string name, string secret, CreateMachineApplicationResponse provisioned) {
         await Console.Error.WriteLineAsync();
         await Console.Error.WriteLineAsync($"Machine '{name}' created.");
         await Console.Error.WriteLineAsync();
         await Console.Error.WriteLineAsync($"  Client ID     {provisioned.ClientId}");
-        await Console.Error.WriteLineAsync($"  Principal     {registered.UserId}");
         await Console.Error.WriteLineAsync($"  Organization  {provisioned.OrganizationId}");
         await Console.Error.WriteLineAsync();
         await Console.Error.WriteLineAsync("  ── The secret below is shown ONCE. It is not stored anywhere ──");
@@ -240,9 +269,17 @@ public static class MachineCommand {
         await Console.Error.WriteLineAsync("     again. If you lose it, revoke this machine and create a new one.");
         await Console.Error.WriteLineAsync();
 
-        // STDOUT, alone, so `kcap machine create ci-runner 2>/dev/null` yields exactly the secret.
         await Console.Out.WriteLineAsync(secret);
+    }
 
+    /// <summary>
+    /// The recoverable half: what to do with the credential. Needs the registration result, so it runs
+    /// after — and a failure here costs instructions the help can repeat, not a secret.
+    /// </summary>
+    static async Task PrintSetupAsync(
+            RegisterMachineResponse registered, CreateMachineApplicationResponse provisioned, string visibility) {
+        await Console.Error.WriteLineAsync();
+        await Console.Error.WriteLineAsync($"  Registered as {registered.UserId}");
         await Console.Error.WriteLineAsync();
         await Console.Error.WriteLineAsync("  Give the runner these environment variables:");
         await Console.Error.WriteLineAsync();
@@ -261,11 +298,11 @@ public static class MachineCommand {
 
     // ── list ────────────────────────────────────────────────────────────────────────────────────
 
-    static async Task<int> ListAsync() {
+    static async Task<int> ListAsync(string baseUrl) {
         try {
             using var client = await HttpClientExtensions.CreateAuthenticatedClientAsync();
 
-            using var response = await client.GetAsync("/api/admin/machines");
+            using var response = await client.GetAsync($"{baseUrl}/api/admin/machines");
 
             if (response.StatusCode is HttpStatusCode.NotFound) {
                 await Console.Error.WriteLineAsync("This server does not have machine credentials enabled.");
@@ -311,7 +348,7 @@ public static class MachineCommand {
 
     // ── revoke ──────────────────────────────────────────────────────────────────────────────────
 
-    static async Task<int> RevokeAsync(string[] args) {
+    static async Task<int> RevokeAsync(string baseUrl, string[] args) {
         if (args.Length < 3 || IsHelp(args[2])) {
             await Console.Error.WriteLineAsync("Usage: kcap machine revoke <service-id>");
             await Console.Error.WriteLineAsync();
@@ -325,7 +362,7 @@ public static class MachineCommand {
         try {
             using var client = await HttpClientExtensions.CreateAuthenticatedClientAsync();
 
-            using var response = await client.PostAsync($"/api/admin/machines/{Uri.EscapeDataString(serviceId)}/revoke", null);
+            using var response = await client.PostAsync($"{baseUrl}/api/admin/machines/{Uri.EscapeDataString(serviceId)}/revoke", null);
 
             if (response.StatusCode is HttpStatusCode.NotFound) {
                 await Console.Error.WriteLineAsync($"No machine '{serviceId}'. Run `kcap machine list`.");

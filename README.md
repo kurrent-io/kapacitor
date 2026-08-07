@@ -250,6 +250,7 @@ At a glance — each links to its section below:
 | [`kcap repos`](#repository-paths) | Manage known repo paths for the launch dialog |
 | [`kcap projects` / `project`](#projects) | List and inspect projects |
 | [`kcap profile` / `use`](#profiles) | Manage and switch between servers/profiles |
+| [`kcap machine`](#machine-credentials-headless-recording) | Create credentials for CI runners and agent sandboxes |
 | [`kcap config`](#configuration) | Show and set configuration |
 | [`kcap remap`](#renamed-repo-directories-kcap-remap) | Map renamed repo directories for import |
 | [`kcap ignore`](#configuration) | Exclude paths from recording |
@@ -1480,6 +1481,54 @@ The CLI resolves which profile to use in this order:
 5. Git remote pattern matching from `--remote` flags
 6. Directory binding from `kcap use`
 7. Global active profile (or `default`)
+
+### Machine credentials (headless recording)
+
+A **machine** records sessions where no person can sign in — CI runners, ephemeral
+agent sandboxes, anywhere a browser login is impossible. It records like a user but
+is never an administrator and never a member of a project.
+
+Creating one requires the **owner or admin** role in your organization, and a server
+with machine credentials enabled.
+
+```bash
+kcap machine create ci-runner            # create; prints the secret ONCE
+kcap machine list                        # this org's machines
+kcap machine revoke service:9e96…        # stop one authenticating
+```
+
+**The secret is shown once and is never stored** — not by this CLI, not by Capacitor,
+and WorkOS will not show it again. That is deliberate: a secret nobody stores is a
+secret nobody can leak. It goes to stdout while everything else goes to stderr, so it
+can be piped straight into a secret store without touching disk:
+
+```bash
+kcap machine create ci-runner --visibility org_public \
+  2>/dev/null | gh secret set KCAP_CLIENT_SECRET
+```
+
+The runner then needs both variables in its environment:
+
+| Variable | |
+|---|---|
+| `KCAP_CLIENT_ID` | public — safe to commit |
+| `KCAP_CLIENT_SECRET` | a secret — use your CI's secret store |
+
+Finally, choose what its sessions are visible to, **on the machine itself**:
+
+```bash
+kcap config set default_visibility org_public
+```
+
+Visibility is the machine's own setting, exactly as it is for a person. The
+`--visibility` flag on `create` only selects the value printed in the instructions —
+it does not configure the runner for you.
+
+Revoking stops a machine authenticating from its next request. A token it already
+holds stays valid until it expires (up to an hour) but is no longer honoured. To cut
+it off at the source as well, delete the application in the WorkOS dashboard.
+
+Run `kcap machine --help` for the full sequence.
 
 ### Configuration
 

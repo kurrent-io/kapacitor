@@ -107,6 +107,39 @@ public class MachineCommandTests {
     }
 
     /// <summary>
+    /// Qodo: a new user-facing CLI surface must be documented in README.md in the same PR. Pinned so
+    /// the README and the command cannot drift apart silently — the compiler reads neither.
+    /// </summary>
+    [Test]
+    [Arguments("kcap machine create")]
+    [Arguments("kcap machine list")]
+    [Arguments("kcap machine revoke")]
+    [Arguments("KCAP_CLIENT_SECRET")]
+    public async Task The_readme_documents_the_command(string needle) {
+        var readme = FindReadme();
+
+        await Assert.That(readme).Contains(needle);
+    }
+
+    /// <summary>
+    /// Walks up from the test binary rather than assuming a working directory, because the test host's
+    /// cwd differs between a local `dotnet run` and CI.
+    /// </summary>
+    static string FindReadme() {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+
+        while (dir is not null) {
+            var candidate = Path.Combine(dir.FullName, "README.md");
+
+            if (File.Exists(candidate)) return File.ReadAllText(candidate);
+
+            dir = dir.Parent;
+        }
+
+        throw new FileNotFoundException("README.md not found walking up from the test binary.");
+    }
+
+    /// <summary>
     /// Revocation's limits, stated. An operator responding to a leaked credential must know the old
     /// token keeps working until it expires, so they can decide whether to also delete the application
     /// in WorkOS. Leaving that out would let someone believe a revoke was instantaneous.
