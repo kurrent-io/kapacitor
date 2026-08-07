@@ -865,9 +865,11 @@ export GOOGLE_CLOUD_PROJECT=<your-project>
 export AGY_ADC_AUTH=1                           # selects ADC; without it agy still demands an OAuth login
 ```
 
-**Minimum version, not an affirmation.** Unlike Gemini and Kiro, Antigravity has **no `affirm` verb** —
-`agy` updates itself (observed going 1.1.8 → 1.1.10 mid-session), so a build-exact gate would take the
-reviewer offline on a cadence you do not control. Instead the daemon requires a **minimum** `agy` version
+**Minimum version, not an affirmation.** There is **no affirm step** for Antigravity — there is nothing to
+affirm, and `kcap daemon reviewer affirm --vendor antigravity` refuses with a coded
+`antigravity_reviewer_not_affirmable` that says so. Unlike Gemini and Kiro, `agy` updates itself (observed
+going 1.1.8 → 1.1.10 mid-session), so a build-exact gate would take the reviewer offline on a cadence you
+do not control. Instead the daemon requires a **minimum** `agy` version
 (currently **1.1.10**, the build every measured behaviour behind this reviewer was established on) and
 accepts anything at or above it. A build below the floor, or one whose `agy --version` cannot be read, is
 withheld with a coded reason naming both versions. If a build is refused that you know to be good:
