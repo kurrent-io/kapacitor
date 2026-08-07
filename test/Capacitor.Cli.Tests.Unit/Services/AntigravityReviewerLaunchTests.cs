@@ -154,11 +154,16 @@ public class AntigravityReviewerLaunchTests {
 
     // ── advertisement ─────────────────────────────────────────────────────────────────────────────
 
+    /// <param name="version">Seamed on EVERY construction, never left to a real probe: the gate reads
+    /// the installed <c>agy</c>'s version, so an unseamed test would resolve <see langword="null"/> on
+    /// any host without the binary (CI) and refuse as <c>version_unresolved</c> — passing or failing
+    /// for a reason unrelated to what it asserts. Defaults to the shipped floor.</param>
     static AntigravityHostedAgentRuntimeFactory Factory(
             DaemonConfig config,
             Func<ProcessStartInfo, CancellationToken, Task<IAgyTurnProcess>>? turnSource = null,
-            bool binaryExists = true) =>
-        new(config, NullLoggerFactory.Instance, turnSource, _ => binaryExists);
+            bool binaryExists = true,
+            string? version = "1.1.10") =>
+        new(config, NullLoggerFactory.Instance, turnSource, _ => binaryExists, _ => version);
 
     [Test]
     public async Task A_consent_withheld_daemon_reports_an_operator_actionable_reason() {
@@ -198,6 +203,98 @@ public class AntigravityReviewerLaunchTests {
 
         await Assert.That(support.Supported).IsTrue();
         await Assert.That(support.WithheldReason).IsNull();
+    }
+
+    // ── the minimum-version floor, at the ONE ladder that owns it ─────────────────────────────────
+
+    /// <summary>The floor lives in the factory's own gate ladder, so advertisement and the launch
+    /// boundary cannot disagree about it. A build that meets it is advertised with nothing
+    /// withheld.</summary>
+    [Test]
+    [Arguments("1.1.10")]
+    [Arguments("2.5.0")]
+    public async Task A_floor_meeting_build_is_advertised(string installed) {
+        Skip.Unless(!OperatingSystem.IsWindows(), "POSIX-only: the per-launch home cannot be owner-only on Windows.");
+
+        var support = Factory(EnabledConfig(), version: installed).DescribeUnattendedSupport();
+
+        await Assert.That(support.Supported).IsTrue();
+        await Assert.That(support.WithheldReason).IsNull();
+    }
+
+    [Test]
+    public async Task A_below_floor_build_is_withheld_with_a_reason_naming_both_versions() {
+        Skip.Unless(!OperatingSystem.IsWindows(), "POSIX-only: the per-launch home cannot be owner-only on Windows.");
+
+        var support = Factory(EnabledConfig(), version: "1.1.8").DescribeUnattendedSupport();
+
+        await Assert.That(support.Supported).IsFalse();
+        await Assert.That(support.WithheldReason!).StartsWith("antigravity_reviewer_version_below_minimum");
+        await Assert.That(support.WithheldReason!).Contains("1.1.8");
+        await Assert.That(support.WithheldReason!).Contains("1.1.10");
+    }
+
+    /// <summary>A probe that could not identify the build refuses under its OWN arm — the operator's
+    /// next action is to fix the binary, not to upgrade it.</summary>
+    [Test]
+    public async Task An_unidentifiable_build_is_withheld_as_unresolved() {
+        Skip.Unless(!OperatingSystem.IsWindows(), "POSIX-only: the per-launch home cannot be owner-only on Windows.");
+
+        var support = Factory(EnabledConfig(), version: null).DescribeUnattendedSupport();
+
+        await Assert.That(support.Supported).IsFalse();
+        await Assert.That(support.WithheldReason!).StartsWith("antigravity_reviewer_version_unresolved");
+    }
+
+    /// <summary>A missing binary reports as MISSING, not as an unidentifiable version — the presence
+    /// check has to precede the probe, or an operator with no <c>agy</c> at all is sent to check a
+    /// version that was never going to resolve.</summary>
+    [Test]
+    public async Task A_missing_binary_outranks_the_version_arm() {
+        Skip.Unless(!OperatingSystem.IsWindows(), "POSIX-only: the per-launch home cannot be owner-only on Windows.");
+
+        var support = Factory(EnabledConfig(), binaryExists: false, version: null).DescribeUnattendedSupport();
+
+        await Assert.That(support.WithheldReason!).StartsWith("antigravity_reviewer_binary_missing");
+    }
+
+    /// <summary>Consent is read FIRST and short-circuits before the probe: an installed-but-wedged
+    /// <c>agy</c> must not be spawned — let alone stall a daemon start — for a feature the operator
+    /// switched off. The below-floor version is what makes this a short-circuit assertion rather than
+    /// a restatement of the disabled arm.</summary>
+    [Test]
+    public async Task A_consent_withheld_daemon_never_probes_the_binary() {
+        var config = EnabledConfig();
+        config.AntigravityUnattendedReviewerEnabled = false;
+
+        var probes = 0;
+        var factory = new AntigravityHostedAgentRuntimeFactory(
+            config, NullLoggerFactory.Instance, turnSource: null, binaryExists: _ => true,
+            resolveVersion: _ => { probes++; return "0.0.1"; });
+
+        await Assert.That(factory.DescribeUnattendedSupport().Supported).IsFalse();
+        await Assert.That(probes).IsEqualTo(0);
+    }
+
+    /// <summary>The binary is probed ONCE per decision — the verdict and its explanation both need the
+    /// version, and resolving it per consumer spawns the vendor binary twice to produce one
+    /// refusal — and it is probed at the path this DAEMON would launch, not whatever <c>agy</c>
+    /// happens to resolve to first.</summary>
+    [Test]
+    public async Task The_probe_reads_the_configured_path_exactly_once() {
+        Skip.Unless(!OperatingSystem.IsWindows(), "POSIX-only: the per-launch home cannot be owner-only on Windows.");
+
+        var config = EnabledConfig();
+        config.AntigravityPath = "/opt/agy/bin/agy";
+
+        var seen   = new List<string>();
+        var factory = new AntigravityHostedAgentRuntimeFactory(
+            config, NullLoggerFactory.Instance, turnSource: null, binaryExists: _ => true,
+            resolveVersion: path => { seen.Add(path); return "1.1.8"; });
+
+        factory.DescribeUnattendedSupport();
+
+        await Assert.That(seen).IsEquivalentTo(new[] { "/opt/agy/bin/agy" });
     }
 
     [Test]
@@ -323,6 +420,21 @@ public class AntigravityReviewerLaunchTests {
                 .StartAsync(Ctx(), CancellationToken.None));
 
         await Assert.That(ex!.Message).StartsWith("antigravity_unattended_reviewer_disabled");
+    }
+
+    /// <summary>
+    /// The same defence in depth for the FLOOR, which is the gap a floor applied only at
+    /// advertisement leaves: advertisement is what stops a launch being attempted, but an explicit
+    /// <c>vendor: "antigravity"</c> request reaches this factory without consulting it, so a
+    /// below-floor build could be launched. One ladder, read at both seams, closes it.
+    /// </summary>
+    [Test]
+    public async Task A_below_floor_build_is_refused_at_the_launch_boundary_too() {
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            Factory(EnabledConfig(), new SpyTurnSource().SpawnAsync, version: "1.1.8")
+                .StartAsync(Ctx(), CancellationToken.None));
+
+        await Assert.That(ex!.Message).StartsWith("antigravity_reviewer_version_below_minimum");
     }
 
     /// <summary>

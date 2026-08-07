@@ -51,11 +51,15 @@ internal interface IAgyTurnDiagnostics {
 /// passes null, which resolves the real binary through <c>PATH</c>. A test pins it so the CONSENT
 /// half is assertable on a host that happens to have (or not have) <c>agy</c> installed — otherwise
 /// the tests pass for the wrong reason on one machine and fail on another.</param>
+/// <param name="resolveVersion">Test seam ONLY, for the minimum-version half of the gate. Production
+/// passes null, which spawns the configured binary to read its own reported version — the same
+/// resolver the affirmation-gated reviewers use.</param>
 internal sealed partial class AntigravityHostedAgentRuntimeFactory(
         DaemonConfig                                                     config,
         ILoggerFactory                                                   loggerFactory,
         Func<ProcessStartInfo, CancellationToken, Task<IAgyTurnProcess>>? turnSource = null,
-        Func<string, bool>?                                              binaryExists = null
+        Func<string, bool>?                                              binaryExists = null,
+        Func<string, string?>?                                           resolveVersion = null
     ) : IHostedAgentRuntimeFactory {
     readonly ILogger _logger = loggerFactory.CreateLogger<AntigravityHostedAgentRuntimeFactory>();
 
@@ -64,6 +68,8 @@ internal sealed partial class AntigravityHostedAgentRuntimeFactory(
             new AgyTurnProcess(psi, loggerFactory.CreateLogger<AgyTurnProcess>())));
 
     readonly Func<string, bool> _binaryExists = binaryExists ?? CliResolver.Exists;
+
+    readonly Func<string, string?> _resolveVersion = resolveVersion ?? VendorVersionResolver.Resolve;
 
     /// <summary>The vendor token, never <c>agy</c>: the server routes on this exact string and the
     /// capture side already knows <c>antigravity</c>. <c>agy</c> is only ever a binary name.</summary>
@@ -90,26 +96,50 @@ internal sealed partial class AntigravityHostedAgentRuntimeFactory(
     /// <summary>Why this daemon refuses an unattended Antigravity reviewer, or null when it does not.
     /// The ONE place the ladder is written — advertisement and the launch boundary both read it, so a
     /// vendor cannot be dropped from advertisement and thereby never reach the path that holds the
-    /// explanation.
+    /// explanation, and the FLOOR cannot be enforced at only one of the two (an explicit
+    /// <c>vendor: "antigravity"</c> request reaches a launch without consulting advertisement).
+    ///
+    /// <para>Every verdict and every text comes from <see cref="AntigravityReviewerCapability"/>; the
+    /// only arm written here is the one that decision cannot express — a binary that does not resolve
+    /// at all — placed BEFORE the probe so a daemon with no <c>agy</c> is told it is missing rather
+    /// than that its version could not be read.</para>
     ///
     /// <para>Deliberately not cached: a long-running daemon must re-judge a binary installed (or
     /// removed) under it rather than read a startup snapshot.</para></summary>
     internal string? ReviewerRefusal() {
-        if (!config.AntigravityUnattendedReviewerEnabled)
-            return "antigravity_unattended_reviewer_disabled: unattended Antigravity reviews are off on "
-                 + "this daemon. Set KCAP_ANTIGRAVITY_UNATTENDED_REVIEWER=1 in the daemon's environment "
-                 + "to opt in.";
+        var posixHost = !OperatingSystem.IsWindows();
 
-        if (OperatingSystem.IsWindows())
-            return "antigravity_reviewer_unsupported_platform: the reviewer's per-launch home holds "
-                 + "review context and cannot be created owner-only on Windows.";
+        // Consent and platform decided WITHOUT a probe. Decide short-circuits both before it looks at
+        // a version, but C# evaluates its arguments first — so an inline probe here would spawn agy
+        // for a daemon that switched the reviewer off, which is exactly what the consent arm's
+        // short-circuit exists to prevent. A null version can only yield those two arms or
+        // VersionUnresolved, so anything else is already a refusal that needs no probe, and the
+        // ORDER between consent and platform stays owned by Decide rather than restated here.
+        var beforeProbe = AntigravityReviewerCapability.Decide(
+            posixHost, config.AntigravityUnattendedReviewerEnabled,
+            installedVersion: null, config.AntigravityMinimumCliVersion);
+
+        if (beforeProbe != AntigravityReviewerDecision.VersionUnresolved)
+            return AntigravityReviewerCapability.DenialReason(
+                beforeProbe, null, config.AntigravityMinimumCliVersion, config.AntigravityPath);
 
         if (!IsAvailable())
             return $"antigravity_reviewer_binary_missing: '{config.AntigravityPath}' does not resolve to "
                  + "an executable. Install the Antigravity CLI (the `agy` binary — the IDE alone is not "
                  + "enough), or set KCAP_ANTIGRAVITY_PATH to its location.";
 
-        return null;
+        // ONCE: the verdict and its explanation both need the version, and resolving it per consumer
+        // spawns the vendor binary twice to produce one refusal.
+        var installed = _resolveVersion(config.AntigravityPath);
+
+        var decision = AntigravityReviewerCapability.Decide(
+            posixHost, config.AntigravityUnattendedReviewerEnabled, installed,
+            config.AntigravityMinimumCliVersion);
+
+        return decision == AntigravityReviewerDecision.Allowed
+            ? null
+            : AntigravityReviewerCapability.DenialReason(
+                decision, installed, config.AntigravityMinimumCliVersion, config.AntigravityPath);
     }
 
     public async Task<HostedRuntimeStart> StartAsync(RuntimeStartContext ctx, CancellationToken ct) {

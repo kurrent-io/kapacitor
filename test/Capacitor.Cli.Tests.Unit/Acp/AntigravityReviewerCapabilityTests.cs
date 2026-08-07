@@ -1,7 +1,4 @@
-using Capacitor.Cli.Daemon;
 using Capacitor.Cli.Daemon.Acp;
-using Capacitor.Cli.Daemon.Services;
-using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Capacitor.Cli.Tests.Unit.Acp;
 
@@ -123,27 +120,6 @@ public class AntigravityReviewerCapabilityTests {
         await Assert.That(reason).StartsWith("antigravity_unattended_reviewer_disabled");
         await Assert.That(reason).Contains("KCAP_ANTIGRAVITY_UNATTENDED_REVIEWER");
         await Assert.That(reason).Contains("daemon's environment");
-    }
-
-    /// <summary>
-    /// The strongest available pin on "one ladder, not two": the shipped factory judges consent with
-    /// its own inline check, and this asserts the capability's text is BYTE-IDENTICAL to what that
-    /// check produces. If either side is reworded on its own, this goes red — so the two cannot drift
-    /// into disagreeing about what an operator is told.
-    /// </summary>
-    [Test]
-    public async Task TheDisabledReason_IsExactlyWhatTheFactorysOwnLadderReports() {
-        var config = new DaemonConfig {
-            AntigravityPath                      = "agy",
-            AntigravityUnattendedReviewerEnabled = false,
-            Name                                 = "test-daemon"
-        };
-
-        var factoryReason = new AntigravityHostedAgentRuntimeFactory(
-            config, NullLoggerFactory.Instance, turnSource: null, binaryExists: _ => true)
-            .DescribeUnattendedSupport().WithheldReason;
-
-        await Assert.That(Reason(AntigravityReviewerDecision.Disabled, null)).IsEqualTo(factoryReason);
     }
 
     /// <summary>The platform refusal says WHY rather than merely refusing. Its text cannot be compared

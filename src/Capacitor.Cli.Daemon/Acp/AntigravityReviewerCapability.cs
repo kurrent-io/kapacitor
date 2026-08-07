@@ -27,10 +27,11 @@ internal enum AntigravityReviewerDecision {
 /// reviewer certification already uses. A second version parser in this codebase is exactly the
 /// "two things that must agree, with nothing making them" shape.</para>
 ///
-/// <para><b>Ordering matches the shipped factory ladder</b> (consent → platform → build), so
-/// <c>AntigravityHostedAgentRuntimeFactory.ReviewerRefusal</c> can delegate to this without changing
-/// what any operator is told. <see cref="AntigravityReviewerDecision.Disabled"/>'s text is pinned
-/// byte-for-byte against that ladder by test.</para>
+/// <para><b>This is the whole ladder</b> (consent → platform → build), and
+/// <c>AntigravityHostedAgentRuntimeFactory.ReviewerRefusal</c> is its only production caller: it adds
+/// the one arm this decision cannot express — a binary that does not resolve at all — and takes every
+/// other verdict, and every text, from here. Both the advertisement seam and the launch boundary read
+/// that one method, so the floor cannot be enforced at only one of them.</para>
 /// </summary>
 internal static class AntigravityReviewerCapability {
     /// <summary>Production entry point: reads the host platform, then defers to the pure overload.</summary>
@@ -82,8 +83,7 @@ internal static class AntigravityReviewerCapability {
             AntigravityReviewerDecision decision, string? installedVersion, string minimumVersion,
             string binaryPath) =>
         decision switch {
-            // Byte-identical to AntigravityHostedAgentRuntimeFactory.ReviewerRefusal's consent arm,
-            // pinned by test. Deliberately does NOT carry Kiro's whole-filesystem-read paragraph: that
+            // Deliberately does NOT carry Kiro's whole-filesystem-read paragraph: that
             // claim is about a trusted fs_read primitive this vendor does not expose, and a borrowed
             // risk statement would be a false one in either direction.
             AntigravityReviewerDecision.Disabled =>

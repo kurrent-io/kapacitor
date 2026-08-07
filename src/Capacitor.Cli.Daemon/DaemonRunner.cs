@@ -476,8 +476,7 @@ public static partial class DaemonRunner {
         //
         // Classified ONCE and reused below: a gated reviewer's classification spawns the vendor binary
         // to read its version, so recomputing per consumer would probe it three times per startup.
-        var unattendedStatuses =
-            ApplyAntigravityVersionFloor(ClassifyUnattendedVendors(runtimeFactories), config);
+        var unattendedStatuses = ClassifyUnattendedVendors(runtimeFactories);
 
         config.UnattendedVendors = AdvertisedUnattendedVendors(unattendedStatuses);
         config.UnattendedVendorCapabilities =
@@ -918,12 +917,12 @@ public static partial class DaemonRunner {
     /// <see cref="ClassifyUnattendedVendors"/> so there is one rule rather than two that have to
     /// agree. Prefer classifying once where the reasons are also wanted — this overload re-probes.
     /// </summary>
-    /// <param name="config">Required, not optional: the Antigravity floor below reads it, and a
-    /// defaulted null here would be a silently fail-OPEN caller.</param>
+    /// <param name="config">Accepted, and required rather than defaulted, so a caller cannot silently
+    /// classify against a different daemon's configuration than the one whose factories it passed —
+    /// the gate ladders themselves read it through the factories.</param>
     internal static string[] ComputeUnattendedVendors(
             IEnumerable<IHostedAgentRuntimeFactory> factories, DaemonConfig config) =>
-        AdvertisedUnattendedVendors(
-            ApplyAntigravityVersionFloor(ClassifyUnattendedVendors(factories), config));
+        AdvertisedUnattendedVendors(ClassifyUnattendedVendors(factories));
 
     internal const string ClaudeLauncherPolicyVersion = "claude-unattended-v1";
     internal const string CursorLauncherPolicyVersion = "cursor-unattended-v4";
@@ -934,51 +933,6 @@ public static partial class DaemonRunner {
     /// <summary>The one vendor token this daemon knows agy by. Never <c>agy</c> — that is a binary
     /// name, and the server routes on the vendor.</summary>
     internal const string AntigravityVendor = "antigravity";
-
-    /// <summary>
-    /// Narrows a classification with the Antigravity minimum-version FLOOR — the arm that needs a
-    /// version probe, applied at the surface that decides advertisement, which is what stops a launch
-    /// being attempted at all.
-    ///
-    /// <para>Only ever turns an ADVERTISED antigravity into a withheld one: it never overrules a
-    /// refusal the factory's own ladder already made, so the two cannot disagree — an operator whose
-    /// real problem is a missing binary keeps that reason instead of being handed a version one. When
-    /// the factory's ladder consults <see cref="AntigravityReviewerCapability"/> directly this becomes
-    /// redundant and should be deleted rather than left to agree by coincidence.</para>
-    /// </summary>
-    /// <param name="resolveVersion">Test seam. Production resolves the configured binary's own
-    /// reported version, bounded, exactly as the affirmation-gated reviewers do.</param>
-    internal static IReadOnlyList<UnattendedVendorStatus> ApplyAntigravityVersionFloor(
-            IReadOnlyList<UnattendedVendorStatus> statuses, DaemonConfig config,
-            Func<string, string?>? resolveVersion = null) {
-        var index = -1;
-
-        for (var i = 0; i < statuses.Count; i++)
-            if (statuses[i] is { Advertised: true, Vendor: AntigravityVendor }) index = i;
-
-        if (index < 0) return statuses;
-
-        // ONCE: the decision and its explanation both need the version, and resolving it per consumer
-        // spawns the vendor binary twice to produce one refusal.
-        var installed = (resolveVersion ?? VendorVersionResolver.Resolve)(config.AntigravityPath);
-
-        var decision = AntigravityReviewerCapability.Decide(
-            !OperatingSystem.IsWindows(),
-            config.AntigravityUnattendedReviewerEnabled,
-            installed,
-            config.AntigravityMinimumCliVersion);
-
-        if (decision == AntigravityReviewerDecision.Allowed) return statuses;
-
-        var narrowed = statuses.ToArray();
-
-        narrowed[index] = new(
-            AntigravityVendor, false,
-            AntigravityReviewerCapability.DenialReason(
-                decision, installed, config.AntigravityMinimumCliVersion, config.AntigravityPath));
-
-        return narrowed;
-    }
 
     /// <param name="advertised">The already-classified advertised vendors, when the caller has them.
     /// Passing them avoids re-running a classification that spawns vendor binaries; omitting them
