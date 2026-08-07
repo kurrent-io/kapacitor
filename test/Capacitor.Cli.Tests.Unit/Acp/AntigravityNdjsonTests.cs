@@ -61,6 +61,22 @@ public class AntigravityNdjsonTests {
             .IsEqualTo(AntigravityEventKind.Unknown);
     }
 
+    /// <summary>
+    /// A line that is valid JSON but not an OBJECT reads as "nothing to read" (null), not as schema
+    /// drift (<see cref="AntigravityEventKind.Unknown"/>). Every agy NDJSON line is an object, so a
+    /// bare array/scalar is a torn or foreign line rather than a variant we don't understand yet —
+    /// and the distinction is load-bearing: the runtime's read loop drops a null and keeps going,
+    /// while an Unknown is a real event a future handler could act on. Untested before this test, so
+    /// the top-level object guard could be deleted with the whole suite still green.
+    /// </summary>
+    [Test]
+    public async Task A_valid_json_line_that_is_not_an_object_returns_null() {
+        await Assert.That(AntigravityNdjson.TryParseLine("[1,2,3]")).IsNull();
+        await Assert.That(AntigravityNdjson.TryParseLine("\"just a string\"")).IsNull();
+        await Assert.That(AntigravityNdjson.TryParseLine("123")).IsNull();
+        await Assert.That(AntigravityNdjson.TryParseLine("null")).IsNull();
+    }
+
     [Test]
     public async Task Text_deltas_aggregate_per_step_and_flush_on_done() {
         var acc = new AntigravityStepAccumulator();

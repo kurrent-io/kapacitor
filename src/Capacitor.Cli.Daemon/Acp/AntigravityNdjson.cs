@@ -98,7 +98,7 @@ internal static class AntigravityNdjson {
 
         using (doc) {
             var root = doc.RootElement;
-            if (root.ValueKind != JsonValueKind.Object) return null;
+            if (!root.IsObject) return null;
 
             return root.Str("event") switch {
                 "init"        => ParseInit(root),
