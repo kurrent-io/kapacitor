@@ -28,6 +28,15 @@ public static class DaemonReviewerCommand {
 
         var requested = ValueOf(args, "--vendor");
 
+        // A vendor that HAS an unattended reviewer but no affirmation gate is refused with its own
+        // explanation, before the unknown-vendor branch below would call it a typo. Succeeding at a
+        // no-op would be worse still: the operator would believe a gate had been cleared.
+        if (NonAffirmableReviewer.Resolve(requested) is { } nonAffirmable) {
+            Console.Error.WriteLine(nonAffirmable.Explanation);
+
+            return Task.FromResult(1);
+        }
+
         if (AffirmableReviewer.Resolve(requested) is not { } reviewer) {
             Console.Error.WriteLine(
                 requested is null
@@ -118,6 +127,27 @@ public static class DaemonReviewerCommand {
         internal static string VendorList => string.Join(" | ", All.Select(r => r.Vendor));
 
         internal static AffirmableReviewer? Resolve(string? vendor) =>
+            All.FirstOrDefault(r => string.Equals(r.Vendor, vendor, StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>
+    /// A reviewer this build hosts unattended but whose build gate is NOT an affirmation, so there is
+    /// nothing here to record. A row rather than an arm, for the same reason
+    /// <see cref="AffirmableReviewer"/> is a table.
+    /// </summary>
+    internal sealed record NonAffirmableReviewer(string Vendor, string Explanation) {
+        internal static readonly NonAffirmableReviewer[] All = [
+            new("antigravity",
+                "antigravity_reviewer_not_affirmable: the Antigravity reviewer has no affirmation "
+              + "gate, so there is nothing to affirm. It takes a MINIMUM VERSION instead — anything at "
+              + "or above the floor is accepted — because agy updates itself, and a build-exact gate "
+              + "would take the reviewer offline on a cadence you do not control.\n"
+              + "  Enable it with KCAP_ANTIGRAVITY_UNATTENDED_REVIEWER=1 in the daemon's environment, "
+              + "and move the floor with KCAP_ANTIGRAVITY_MIN_CLI_VERSION if a build is refused you "
+              + "know to be good. Restart the daemon after either.")
+        ];
+
+        internal static NonAffirmableReviewer? Resolve(string? vendor) =>
             All.FirstOrDefault(r => string.Equals(r.Vendor, vendor, StringComparison.OrdinalIgnoreCase));
     }
 

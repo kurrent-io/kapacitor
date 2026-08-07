@@ -13,7 +13,8 @@ namespace Capacitor.Cli.Commands;
 static class ReviewerVendors {
     /// <summary>Canonical tokens, rendered exactly as they are shown to a user. The single source —
     /// <see cref="Known"/> is derived from it, so a token can only be added in one place.</summary>
-    internal const string Tokens = "claude, codex, copilot, cursor, gemini, kiro, opencode, pi, agy";
+    internal const string Tokens =
+        "claude, codex, copilot, cursor, gemini, kiro, opencode, pi, antigravity";
 
     static readonly string[] Known = Tokens.Split(", ");
 

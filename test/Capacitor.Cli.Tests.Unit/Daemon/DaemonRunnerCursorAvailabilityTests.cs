@@ -86,7 +86,7 @@ public class DaemonRunnerCursorAvailabilityTests {
             new FakeRuntimeFactory("copilot", isAvailable: true, supportsUnattended: true),
         ];
 
-        await Assert.That(DaemonRunner.ComputeUnattendedVendors(factories))
+        await Assert.That(DaemonRunner.ComputeUnattendedVendors(factories, new DaemonConfig()))
             .IsEquivalentTo(["claude", "copilot"], TUnit.Assertions.Enums.CollectionOrdering.Matching);
     }
 
@@ -98,7 +98,7 @@ public class DaemonRunnerCursorAvailabilityTests {
             new FakeRuntimeFactory("cursor", isAvailable: true, supportsUnattended: false),
         ];
 
-        await Assert.That(DaemonRunner.ComputeUnattendedVendors(factories)).IsEquivalentTo(["claude", "codex"]);
+        await Assert.That(DaemonRunner.ComputeUnattendedVendors(factories, new DaemonConfig())).IsEquivalentTo(["claude", "codex"]);
     }
 
     [Test]
@@ -110,7 +110,7 @@ public class DaemonRunnerCursorAvailabilityTests {
             new FakeRuntimeFactory("codex", isAvailable: true, supportsUnattended: true),
         ];
 
-        await Assert.That(DaemonRunner.ComputeUnattendedVendors(factories)).IsEquivalentTo(["codex"]);
+        await Assert.That(DaemonRunner.ComputeUnattendedVendors(factories, new DaemonConfig())).IsEquivalentTo(["codex"]);
     }
 
     [Test]
@@ -120,12 +120,12 @@ public class DaemonRunnerCursorAvailabilityTests {
             new FakeRuntimeFactory("claude", isAvailable: true, supportsUnattended: true),
         ];
 
-        await Assert.That(DaemonRunner.ComputeUnattendedVendors(factories)).IsEquivalentTo(["claude", "codex"], TUnit.Assertions.Enums.CollectionOrdering.Matching);
+        await Assert.That(DaemonRunner.ComputeUnattendedVendors(factories, new DaemonConfig())).IsEquivalentTo(["claude", "codex"], TUnit.Assertions.Enums.CollectionOrdering.Matching);
     }
 
     [Test]
     public async Task ComputeUnattendedVendors_NoFactoriesReturnsEmptyArray() {
-        await Assert.That(DaemonRunner.ComputeUnattendedVendors([])).IsEmpty();
+        await Assert.That(DaemonRunner.ComputeUnattendedVendors([], new DaemonConfig())).IsEmpty();
     }
 
     // === Withheld-vendor startup diagnostic ===

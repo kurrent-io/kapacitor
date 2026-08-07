@@ -160,21 +160,25 @@ public class ServiceEnvironmentTests {
     // supervised daemon, silently — which is the failure this whole group exists to pin.
 
     static Dictionary<string, string> ConsentSource() => new() {
-        ["PATH"]                            = "/usr/bin",
-        ["KCAP_GEMINI_UNATTENDED_REVIEWER"] = "1",
-        ["KCAP_KIRO_UNATTENDED_REVIEWER"]   = "true",
+        ["PATH"]                                 = "/usr/bin",
+        ["KCAP_GEMINI_UNATTENDED_REVIEWER"]      = "1",
+        ["KCAP_KIRO_UNATTENDED_REVIEWER"]        = "true",
+        ["KCAP_ANTIGRAVITY_UNATTENDED_REVIEWER"] = "yes",
     };
 
     [Test]
     [Arguments(false)]
     [Arguments(true)]
-    public async Task Build_carries_both_reviewer_consent_flags_on_every_platform(bool isWindows) {
+    public async Task Build_carries_every_reviewer_consent_flag_on_every_platform(bool isWindows) {
         var env = ServiceEnvironment.Build(profileName: null, source: ConsentSource(), isWindows: isWindows);
 
         await Assert.That(env["KCAP_GEMINI_UNATTENDED_REVIEWER"]).IsEqualTo("1")
             .Because("a supervised daemon inherits nothing from the installing shell");
         await Assert.That(env["KCAP_KIRO_UNATTENDED_REVIEWER"]).IsEqualTo("true")
-            .Because("binding one reviewer's consent and not the other just moves the hole");
+            .Because("binding one reviewer's consent and not another just moves the hole");
+        await Assert.That(env["KCAP_ANTIGRAVITY_UNATTENDED_REVIEWER"]).IsEqualTo("yes")
+            .Because("Antigravity's consent has no config or profile binding either — dropping it here "
+                   + "makes the reviewer unreachable for a service-installed daemon, silently");
     }
 
     /// <summary>A flag the installing environment never set must not appear — capture carries an
@@ -195,7 +199,11 @@ public class ServiceEnvironmentTests {
         var env = ServiceEnvironment.Build(profileName: null, source: ConsentSource(), isWindows: false);
 
         await Assert.That(ServiceEnvironment.CarriedConsentFlags(env))
-            .IsEquivalentTo(new[] { "KCAP_GEMINI_UNATTENDED_REVIEWER", "KCAP_KIRO_UNATTENDED_REVIEWER" });
+            .IsEquivalentTo(new[] {
+                "KCAP_GEMINI_UNATTENDED_REVIEWER",
+                "KCAP_KIRO_UNATTENDED_REVIEWER",
+                "KCAP_ANTIGRAVITY_UNATTENDED_REVIEWER"
+            });
     }
 
     /// <summary>Reads the BUILT environment, not the ambient one — so the install notice cannot claim a

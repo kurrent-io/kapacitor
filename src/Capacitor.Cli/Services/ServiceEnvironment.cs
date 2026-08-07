@@ -15,7 +15,7 @@ static class ServiceEnvironment {
         ["PATH", "KCAP_CONFIG_DIR", "KCAP_PROFILE", "KCAP_URL", "KCAP_CLAUDE_PATH", "KCAP_CODEX_PATH"];
 
     /// <summary>
-    /// Operator consent for the two gated unattended reviewers. Carried on every platform: these are
+    /// Operator consent for the gated unattended reviewers. Carried on every platform: these are
     /// booleans, not secret-capable, so <see cref="GoogleSecretCapableKeys"/>'s exclusion does not apply.
     ///
     /// <para>Required because the daemon reads them from its own environment and nowhere else — no
@@ -25,8 +25,11 @@ static class ServiceEnvironment {
     /// <para>Capture carries an EXISTING opt-in; it cannot create one. It does freeze it, which is what
     /// <see cref="CarriedConsentFlags"/> reports.</para>
     /// </summary>
-    internal static readonly string[] ReviewerConsentKeys =
-        ["KCAP_GEMINI_UNATTENDED_REVIEWER", "KCAP_KIRO_UNATTENDED_REVIEWER"];
+    internal static readonly string[] ReviewerConsentKeys = [
+        "KCAP_GEMINI_UNATTENDED_REVIEWER",
+        "KCAP_KIRO_UNATTENDED_REVIEWER",
+        "KCAP_ANTIGRAVITY_UNATTENDED_REVIEWER"
+    ];
 
     /// <summary>
     /// Gemini's project/backend selection, carried on every platform because none of it is

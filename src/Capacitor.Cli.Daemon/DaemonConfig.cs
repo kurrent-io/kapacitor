@@ -237,6 +237,18 @@ public class DaemonConfig {
     /// explicit affirmative enables it.</summary>
     public bool AntigravityUnattendedReviewerEnabled { get; set; }
 
+    /// <summary>
+    /// Lowest <c>agy</c> build this daemon will host as an unattended reviewer — a FLOOR, not an
+    /// affirmation: anything at or above it is accepted without a per-release acknowledgement, because
+    /// agy auto-updates itself and a build-exact gate would take the reviewer offline on a cadence the
+    /// operator does not control. Overridable via <c>KCAP_ANTIGRAVITY_MIN_CLI_VERSION</c> so an
+    /// operator hitting a false negative can move it without waiting for a release.
+    ///
+    /// <para>The default is the build every measured behaviour behind this reviewer was established
+    /// on. A value that is not a version fails CLOSED (see <c>AntigravityReviewerCapability</c>).</para>
+    /// </summary>
+    public string AntigravityMinimumCliVersion { get; set; } = "1.1.10";
+
     /// <summary>Absolute ceiling on the FIRST turn — spawn, NDJSON handshake and auth. An
     /// unauthenticated agy can sit on an interactive OAuth wait, so this is what turns that into a
     /// bounded, coded failure.</summary>

@@ -163,6 +163,8 @@ public static partial class DaemonRunner {
             config.AntigravityModel = agyModel;
         if (Environment.GetEnvironmentVariable("KCAP_ANTIGRAVITY_UNATTENDED_REVIEWER") is { } agyConsent)
             config.AntigravityUnattendedReviewerEnabled = ParseConsentFlag(agyConsent);
+        if (Environment.GetEnvironmentVariable("KCAP_ANTIGRAVITY_MIN_CLI_VERSION") is { Length: > 0 } agyFloor)
+            config.AntigravityMinimumCliVersion = agyFloor;
 
         // The operator consent flags for the unattended ACP/CLI reviewers. Both were previously
         // reachable only from a test constructor, which made the shipped Gemini reviewer impossible
@@ -258,6 +260,14 @@ public static partial class DaemonRunner {
         // emit. The host's logging is not built yet at this point, so this writes to stderr like the
         // seeding block above.
         KiroReviewerHome.SweepStale(
+            coverageStateDir, config.DaemonEpoch ?? "unpinned", new ConsoleErrorLogger());
+
+        // The Antigravity reviewer disposes its own home on the normal path (the runtime's onDisposed
+        // hook), so this sweep covers exactly ONE case: a predecessor that was SIGKILLed and never ran
+        // it. Unconditional for the same reason as the line above — a daemon whose operator has since
+        // disabled the reviewer still owns the transcript-bearing directories its last incarnation
+        // left behind.
+        AntigravityReviewerHome.SweepStale(
             coverageStateDir, config.DaemonEpoch ?? "unpinned", new ConsoleErrorLogger());
 
         config.RecordlessSurvivorsImpossible = new CoverageJournal(coverageStateDir, NullLogger.Instance)
@@ -392,6 +402,17 @@ public static partial class DaemonRunner {
             )
         );
 
+        // Not an ACP factory: agy speaks NDJSON over one child process PER TURN, so it carries its own
+        // runtime rather than AcpHostedAgentRuntimeFactory's persistent-child shape. Takes the logger
+        // FACTORY, like the ACP registrations beside it — it builds a logger for the runtime and one
+        // per turn process, not a single typed logger.
+        builder.Services.AddSingleton<IHostedAgentRuntimeFactory>(sp =>
+            new AntigravityHostedAgentRuntimeFactory(
+                sp.GetRequiredService<DaemonConfig>(),
+                sp.GetRequiredService<ILoggerFactory>()
+            )
+        );
+
         builder.Services.AddSingleton<IReadOnlyDictionary<string, IHostedAgentRuntimeFactory>>(sp =>
             sp.GetServices<IHostedAgentRuntimeFactory>().ToDictionary(f => f.Vendor)
         );
@@ -455,7 +476,8 @@ public static partial class DaemonRunner {
         //
         // Classified ONCE and reused below: a gated reviewer's classification spawns the vendor binary
         // to read its version, so recomputing per consumer would probe it three times per startup.
-        var unattendedStatuses = ClassifyUnattendedVendors(runtimeFactories);
+        var unattendedStatuses =
+            ApplyAntigravityVersionFloor(ClassifyUnattendedVendors(runtimeFactories), config);
 
         config.UnattendedVendors = AdvertisedUnattendedVendors(unattendedStatuses);
         config.UnattendedVendorCapabilities =
@@ -896,13 +918,67 @@ public static partial class DaemonRunner {
     /// <see cref="ClassifyUnattendedVendors"/> so there is one rule rather than two that have to
     /// agree. Prefer classifying once where the reasons are also wanted — this overload re-probes.
     /// </summary>
-    internal static string[] ComputeUnattendedVendors(IEnumerable<IHostedAgentRuntimeFactory> factories) =>
-        AdvertisedUnattendedVendors(ClassifyUnattendedVendors(factories));
+    /// <param name="config">Required, not optional: the Antigravity floor below reads it, and a
+    /// defaulted null here would be a silently fail-OPEN caller.</param>
+    internal static string[] ComputeUnattendedVendors(
+            IEnumerable<IHostedAgentRuntimeFactory> factories, DaemonConfig config) =>
+        AdvertisedUnattendedVendors(
+            ApplyAntigravityVersionFloor(ClassifyUnattendedVendors(factories), config));
 
     internal const string ClaudeLauncherPolicyVersion = "claude-unattended-v1";
     internal const string CursorLauncherPolicyVersion = "cursor-unattended-v4";
     internal const string CodexLauncherPolicyVersion = "codex-unattended-v1";
     internal const string CopilotLauncherPolicyVersion = "copilot-unattended-v1";
+    internal const string AntigravityLauncherPolicyVersion = "antigravity-unattended-v1";
+
+    /// <summary>The one vendor token this daemon knows agy by. Never <c>agy</c> — that is a binary
+    /// name, and the server routes on the vendor.</summary>
+    internal const string AntigravityVendor = "antigravity";
+
+    /// <summary>
+    /// Narrows a classification with the Antigravity minimum-version FLOOR — the arm that needs a
+    /// version probe, applied at the surface that decides advertisement, which is what stops a launch
+    /// being attempted at all.
+    ///
+    /// <para>Only ever turns an ADVERTISED antigravity into a withheld one: it never overrules a
+    /// refusal the factory's own ladder already made, so the two cannot disagree — an operator whose
+    /// real problem is a missing binary keeps that reason instead of being handed a version one. When
+    /// the factory's ladder consults <see cref="AntigravityReviewerCapability"/> directly this becomes
+    /// redundant and should be deleted rather than left to agree by coincidence.</para>
+    /// </summary>
+    /// <param name="resolveVersion">Test seam. Production resolves the configured binary's own
+    /// reported version, bounded, exactly as the affirmation-gated reviewers do.</param>
+    internal static IReadOnlyList<UnattendedVendorStatus> ApplyAntigravityVersionFloor(
+            IReadOnlyList<UnattendedVendorStatus> statuses, DaemonConfig config,
+            Func<string, string?>? resolveVersion = null) {
+        var index = -1;
+
+        for (var i = 0; i < statuses.Count; i++)
+            if (statuses[i] is { Advertised: true, Vendor: AntigravityVendor }) index = i;
+
+        if (index < 0) return statuses;
+
+        // ONCE: the decision and its explanation both need the version, and resolving it per consumer
+        // spawns the vendor binary twice to produce one refusal.
+        var installed = (resolveVersion ?? VendorVersionResolver.Resolve)(config.AntigravityPath);
+
+        var decision = AntigravityReviewerCapability.Decide(
+            !OperatingSystem.IsWindows(),
+            config.AntigravityUnattendedReviewerEnabled,
+            installed,
+            config.AntigravityMinimumCliVersion);
+
+        if (decision == AntigravityReviewerDecision.Allowed) return statuses;
+
+        var narrowed = statuses.ToArray();
+
+        narrowed[index] = new(
+            AntigravityVendor, false,
+            AntigravityReviewerCapability.DenialReason(
+                decision, installed, config.AntigravityMinimumCliVersion, config.AntigravityPath));
+
+        return narrowed;
+    }
 
     /// <param name="advertised">The already-classified advertised vendors, when the caller has them.
     /// Passing them avoids re-running a classification that spawns vendor binaries; omitting them
@@ -910,7 +986,7 @@ public static partial class DaemonRunner {
     internal static IReadOnlyList<UnattendedVendorCapability> ComputeUnattendedVendorCapabilities(
             IEnumerable<IHostedAgentRuntimeFactory> factories, DaemonConfig config,
             IEnumerable<string>? advertised = null) {
-        var unattended = advertised?.ToArray() ?? ComputeUnattendedVendors(factories);
+        var unattended = advertised?.ToArray() ?? ComputeUnattendedVendors(factories, config);
         var capabilities = new List<UnattendedVendorCapability>();
         foreach (var vendor in unattended) {
             var factory = factories.First(f => string.Equals(f.Vendor, vendor, StringComparison.Ordinal));
@@ -919,6 +995,9 @@ public static partial class DaemonRunner {
                 "cursor"  => (config.CursorPath, CursorLauncherPolicyVersion),
                 "codex"   => (config.CodexPath, CodexLauncherPolicyVersion),
                 "copilot" => (config.CopilotPath, CopilotLauncherPolicyVersion),
+                // Named rather than left to the generic arm, which advertises CliVersion: null — there
+                // is a real configured path here to probe, and the floor is stated in that version.
+                AntigravityVendor => (config.AntigravityPath, AntigravityLauncherPolicyVersion),
                 _         => ("", $"{vendor}-unattended-v1")
             };
             // Trust-by-default: a vendor's borrowed-review capability is a property of its FACTORY,
