@@ -151,4 +151,103 @@ public class AntigravityNdjsonTests {
         var later = acc.Flush(model: null);
         await Assert.That(later.Any(e => e.Kind == AcpEventKind.AssistantText && e.Text == "still going!")).IsTrue();
     }
+
+    // Verbatim fixtures captured live from agy 1.1.10: a "tool" step moves through ACTIVE (the
+    // call), then either DONE (a string output) or ERROR (an object error) — never a parse failure.
+
+    const string ToolActiveLine =
+        """{"event":"step_update","step_update":{"step_index":3,"state":"ACTIVE","step_type":"tool","tool_name":"list_dir","tool_info":{"name":"list_dir","parameters":{"DirectoryPath":"/Users/tony/.gemini/antigravity-cli"}}}}""";
+
+    const string ToolDoneLine =
+        """{"event":"step_update","step_update":{"step_index":6,"state":"DONE","step_type":"tool","tool_name":"list_dir","duration_seconds":0.264916,"tool_info":{"name":"list_dir","parameters":{"DirectoryPath":"/Users/tony/.gemini/antigravity-cli"},"output":".system_generated/\n.user_uploaded/\nscratch/"}}}""";
+
+    const string ToolErrorLine =
+        """{"event":"step_update","step_update":{"step_index":3,"state":"ERROR","step_type":"tool","tool_name":"list_dir","duration_seconds":0.198566,"tool_info":{"name":"list_dir","parameters":{"DirectoryPath":"/Users/tony/.gemini/antigravity-cli"},"error":{"type":"TOOL_ERROR","message":"Permission denied for read_file(...). Matches hardcoded system protection boundary rule."}}}}""";
+
+    [Test]
+    public async Task An_active_tool_step_flushes_a_tool_call_immediately_not_deferred_to_terminal() {
+        var acc = new AntigravityStepAccumulator();
+        acc.Add(AntigravityNdjson.TryParseLine(ToolActiveLine)!);
+
+        var envelopes = acc.Flush(model: null);
+
+        var call = envelopes.Single(e => e.Kind == AcpEventKind.ToolCall);
+        await Assert.That(call.ToolCallId).IsEqualTo("3");
+        await Assert.That(call.ToolName).IsEqualTo("list_dir");
+        await Assert.That(call.ToolInputJson).Contains("DirectoryPath");
+        await Assert.That(call.ToolInputJson).Contains("/Users/tony/.gemini/antigravity-cli");
+
+        // No result yet — the step is still ACTIVE — and flushing again must not repeat the call.
+        await Assert.That(envelopes.Any(e => e.Kind == AcpEventKind.ToolResult)).IsFalse();
+        await Assert.That(acc.Flush(model: null).Count).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task A_done_tool_step_flushes_a_successful_tool_result() {
+        // Observed alone (no preceding ACTIVE reached this accumulator) — both the call and the
+        // result must still flush together, call first, since agy did send tool_info.name here too.
+        var acc = new AntigravityStepAccumulator();
+        acc.Add(AntigravityNdjson.TryParseLine(ToolDoneLine)!);
+
+        var envelopes = acc.Flush(model: null);
+
+        await Assert.That(envelopes.Any(e => e.Kind == AcpEventKind.ToolCall && e.ToolName == "list_dir")).IsTrue();
+
+        var result = envelopes.Single(e => e.Kind == AcpEventKind.ToolResult);
+        await Assert.That(result.ToolCallId).IsEqualTo("6");
+        await Assert.That(result.ToolIsError).IsFalse();
+        await Assert.That(result.ToolResult).IsEqualTo(".system_generated/\n.user_uploaded/\nscratch/");
+    }
+
+    [Test]
+    public async Task An_error_tool_step_flushes_a_failed_tool_result_not_a_thrown_exception() {
+        // ERROR is an ordinary terminal state for a tool step, not a protocol violation.
+        var acc = new AntigravityStepAccumulator();
+        acc.Add(AntigravityNdjson.TryParseLine(ToolErrorLine)!);
+
+        var envelopes = acc.Flush(model: null);
+
+        var result = envelopes.Single(e => e.Kind == AcpEventKind.ToolResult);
+        await Assert.That(result.ToolCallId).IsEqualTo("3");
+        await Assert.That(result.ToolIsError).IsTrue();
+        await Assert.That(result.ToolResult).Contains("TOOL_ERROR");
+        await Assert.That(result.ToolResult).Contains("Permission denied");
+    }
+
+    [Test]
+    public async Task A_tool_steps_call_and_result_flush_across_separate_flush_calls_for_the_same_step() {
+        // The realistic lifecycle: ACTIVE flushes the call on its own Flush call; the step survives
+        // in the accumulator; a later ERROR on the SAME step index then flushes the result.
+        var acc = new AntigravityStepAccumulator();
+        acc.Add(AntigravityNdjson.TryParseLine(ToolActiveLine)!);
+        var afterActive = acc.Flush(model: null);
+        await Assert.That(afterActive.Count(e => e.Kind == AcpEventKind.ToolCall)).IsEqualTo(1);
+
+        acc.Add(AntigravityNdjson.TryParseLine(ToolErrorLine)!);
+        var afterError = acc.Flush(model: null);
+
+        // The call must not repeat; only the result is new.
+        await Assert.That(afterError.Count).IsEqualTo(1);
+        await Assert.That(afterError[0].Kind).IsEqualTo(AcpEventKind.ToolResult);
+        await Assert.That(afterError[0].ToolIsError).IsTrue();
+    }
+
+    [Test]
+    public async Task Checkpoint_and_unknown_step_types_remain_tolerated_alongside_tool_steps() {
+        // Confirms the full observed step_type set (agent_response/checkpoint/tool/unknown/
+        // user_input) coexists without cross-contamination — a tool step in the same batch must not
+        // change how a checkpoint or unknown step is handled.
+        var acc = new AntigravityStepAccumulator();
+        acc.Add(AntigravityNdjson.TryParseLine(
+            """{"event":"step_update","step_update":{"step_index":1,"state":"DONE","step_type":"unknown"}}""")!);
+        acc.Add(AntigravityNdjson.TryParseLine(
+            """{"event":"step_update","step_update":{"step_index":4,"state":"DONE","step_type":"checkpoint","usage":{"input_tokens":10,"output_tokens":1,"thinking_tokens":0,"cache_read_tokens":0,"total_tokens":11}}}""")!);
+        acc.Add(AntigravityNdjson.TryParseLine(ToolDoneLine)!);
+
+        var envelopes = acc.Flush(model: null);
+
+        await Assert.That(envelopes.Count(e => e.Kind == AcpEventKind.Usage)).IsEqualTo(1);
+        await Assert.That(envelopes.Count(e => e.Kind == AcpEventKind.ToolCall)).IsEqualTo(1);
+        await Assert.That(envelopes.Count(e => e.Kind == AcpEventKind.ToolResult)).IsEqualTo(1);
+    }
 }
