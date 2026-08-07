@@ -780,13 +780,19 @@ review is not necessarily you) and defaults off.
 
 Two further things it does *not* do:
 
-- it does not bypass the **build affirmation**. The reviewer's only containment is Gemini's exact-name MCP
-  allowlist, which is a behaviour of the installed build — so a `gemini` version other than the one this
-  daemon affirmed is refused even with the flag on, with a coded error naming both builds. Enabling the
-  reviewer affirms whatever is installed at that moment, so you only meet this after an upgrade; clear it
-  with `kcap daemon reviewer affirm --vendor gemini`. (This replaced a maintainer-curated *certified version
-  set*, which took the reviewer offline on every Gemini release until a new kcap shipped — a build one patch
-  ahead of the certified one made the feature unreachable.)
+- it does not bypass the **minimum version**. The reviewer's only containment is Gemini's exact-name MCP
+  allowlist, which is a behaviour of the installed build, so the daemon records a minimum `gemini` version
+  the first time you enable the reviewer. That recorded version is a **minimum, not an exact match**: any
+  build at or above it runs, so **a Gemini upgrade needs no action from you**; an older one is refused, with
+  a coded error naming both versions. Run `kcap daemon reviewer affirm --vendor gemini` to move the minimum
+  to whatever is installed now — which is how you exclude a build you have found to be broken, and, if you
+  run it while an older build is installed, how you deliberately lower the bar again.
+
+  (Two earlier models are worth knowing about if you hit old docs. A maintainer-curated *certified version
+  set* took the reviewer offline on every Gemini release until a new kcap shipped — a build one patch ahead
+  of the certified one made the feature unreachable. Requiring an exact match to a version you affirmed
+  removed the kcap-release coupling but kept the treadmill, just moved onto you. The minimum keeps the
+  fail-closed direction for downgrades while letting routine upgrades through untouched.)
 - it does not make Gemini a default reviewer. It is only ever reached by an explicit `vendor: "gemini"`.
 
 #### Unattended Kiro reviews
@@ -815,16 +821,19 @@ A review launch also runs with a daemon-owned, empty `KIRO_HOME`, so your global
 `~/.kiro/settings/mcp.json` servers — `kcap-flows` among them — do not reach the reviewer. Your own
 interactive Kiro sessions are unaffected, and the file is never modified.
 
-**Version affirmation.** That suppression depends on the installed build honouring `KIRO_HOME`, so a
-`kiro-cli` version change takes the reviewer offline until you acknowledge it:
+**Minimum version.** That suppression depends on the installed build honouring `KIRO_HOME`, so the daemon
+records a minimum `kiro-cli` version the first time you enable the reviewer. It is a **minimum, not an exact
+match**: any build at or above it runs, so **a `kiro-cli` upgrade needs no action from you**; a build older
+than the recorded minimum is refused.
 
 ```bash
 kcap daemon reviewer affirm --vendor kiro
 ```
 
-Enabling the reviewer affirms whatever is installed at that moment, so you only meet this after an upgrade.
-The command records the version and nothing else — it does not enable the reviewer. No kcap release is
-needed to clear it; Gemini uses the same model and the same command (`--vendor gemini`).
+Run that to move the minimum to whatever is installed now — which is how you exclude a build you have found
+to be broken, and, if you run it while an older build is installed, how you deliberately lower the bar
+again. The command records the version and nothing else — it does not enable the reviewer. No kcap release
+is ever needed; Gemini uses the same model and the same command (`--vendor gemini`).
 
 POSIX only: the isolated home holds the reviewer's own transcript, and therefore the review context, and
 cannot be created owner-only on Windows.
@@ -847,7 +856,7 @@ variable set — unsetting it in your shell later changes nothing.
 
 If a reviewer is still not offered, the daemon says why in its own log at startup — one line per vendor that
 is installed and unattended-capable but withheld, carrying the same text the launch path would have thrown
-(consent not set, version unresolved, version uncertified/unaffirmed). It logs at `Information`, not
+(consent not set, version unresolved, no minimum recorded, version below the minimum). It logs at `Information`, not
 `Warning`: a daemon with Gemini or Kiro installed purely for interactive use and no opt-in is in a
 perfectly normal state, so this is a line to find when you go looking, not an alert.
 

@@ -63,12 +63,24 @@ public static class DaemonReviewerCommand {
         var previous = store.Affirmed;
         store.Affirm(installed);
 
+        // The recorded value is a MINIMUM, so this verb can move it DOWN as well as up — affirming
+        // while an older build is installed deliberately re-admits that build and everything above
+        // it. Say which direction it moved rather than a neutral "(was X)": lowering a floor is a
+        // security-relevant act and should not read identically to raising one.
+        var lowered = previous is not null
+                   && ReviewerVersionAffirmations.TryParseVersion(installed) is { } now
+                   && ReviewerVersionAffirmations.TryParseVersion(previous) is { } before
+                   && now < before;
+
         Console.WriteLine(
             previous is null
-                ? $"Affirmed {reviewer.DefaultBinary} {installed} for daemon '{name}' (no previous affirmation)."
+                ? $"Recorded {reviewer.DefaultBinary} {installed} as the minimum for daemon '{name}' (none was set)."
                 : previous == installed
-                    ? $"{reviewer.DefaultBinary} {installed} was already affirmed for daemon '{name}'."
-                    : $"Affirmed {reviewer.DefaultBinary} {installed} for daemon '{name}' (was {previous}).");
+                    ? $"{reviewer.DefaultBinary} {installed} is already the minimum for daemon '{name}'."
+                    : lowered
+                        ? $"LOWERED the minimum for daemon '{name}' to {reviewer.DefaultBinary} {installed} "
+                        + $"(was {previous}) — builds from {installed} up are now admitted again."
+                        : $"Raised the minimum for daemon '{name}' to {reviewer.DefaultBinary} {installed} (was {previous}).");
 
         Console.WriteLine("Restart the daemon for a running instance to pick this up.");
 
@@ -107,8 +119,13 @@ public static class DaemonReviewerCommand {
         Console.Error.WriteLine($"""
             Usage: kcap daemon reviewer affirm --vendor <{AffirmableReviewer.VendorList}> [--name <daemon>]
 
-              Records the installed vendor version as reviewed by you, clearing the fail-closed gate
-              that a version change raises. Does NOT enable the unattended reviewer — set
+              Records the installed vendor version as the MINIMUM this daemon will run. Any build at
+              or above it is admitted, so a vendor upgrade needs no action from you; an older one is
+              refused. Run this to move the minimum to whatever is installed now — which is how you
+              exclude a build you have found to be broken, and, if you run it while an OLDER build is
+              installed, how you deliberately lower the bar again.
+
+              Does NOT enable the unattended reviewer — set
               {string.Join(" / ", AffirmableReviewer.All.Select(r => r.EnableEnvVar))}
               for that, and read what it grants first.
             """);

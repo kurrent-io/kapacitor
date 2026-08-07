@@ -36,36 +36,44 @@ public class GeminiReviewerCapabilityTests {
             .IsEqualTo(GeminiReviewerDecision.VersionUnresolved);
     }
 
-    /// <summary>Nothing affirmed is not the same as affirmed-and-matching: a daemon that has never
-    /// recorded a build must refuse rather than accept whatever is installed.</summary>
+    /// <summary>No minimum recorded is not the same as meeting one: a daemon that has never recorded a
+    /// build must refuse rather than accept whatever is installed.</summary>
     [Test]
     [Arguments(null)]
     [Arguments("")]
     [Arguments("   ")]
-    public async Task NothingAffirmed_IsRefused(string? affirmed) {
-        await Assert.That(GeminiReviewerCapability.Decide(true, Installed, affirmed))
-            .IsEqualTo(GeminiReviewerDecision.VersionUnaffirmed);
+    public async Task NoMinimumRecorded_IsRefused(string? minimum) {
+        await Assert.That(GeminiReviewerCapability.Decide(true, Installed, minimum))
+            .IsEqualTo(GeminiReviewerDecision.VersionNoMinimum);
     }
 
     /// <summary>
-    /// The direction that matters, and the one that changed: a build DIFFERENT from the affirmed one is
-    /// refused whichever way it moved. A newer build may have changed the matcher — which is the whole
-    /// hazard — and an older one was never affirmed either.
+    /// The direction that matters, and it is the inverse of what this gate used to do: a NEWER build is
+    /// admitted with no operator action. Refusing every vendor release was the treadmill the
+    /// certified-set model was abandoned for, and exact-match only relocated it onto the operator.
     /// </summary>
     [Test]
     [Arguments("0.55.0")]
     [Arguments("0.54.1")]
     [Arguments("1.0.0")]
+    public async Task ANewerBuildThanTheMinimum_IsAdmitted(string installed) {
+        await Assert.That(GeminiReviewerCapability.Decide(true, installed, Installed))
+            .IsEqualTo(GeminiReviewerDecision.Allowed);
+    }
+
+    /// <summary>…while an older build than the recorded minimum is still refused, and the denial names
+    /// both versions or an operator cannot tell what to do about it.</summary>
+    [Test]
     [Arguments("0.53.0")]
-    public async Task ABuildOtherThanTheAffirmedOne_IsRefusedInBothDirections(string installed) {
+    [Arguments("0.1.0")]
+    public async Task AnOlderBuildThanTheMinimum_IsRefused(string installed) {
         var decision = GeminiReviewerCapability.Decide(true, installed, Installed);
 
-        await Assert.That(decision).IsEqualTo(GeminiReviewerDecision.VersionUnaffirmed);
+        await Assert.That(decision).IsEqualTo(GeminiReviewerDecision.VersionBelowMinimum);
 
         var reason = GeminiReviewerCapability.DenialReason(decision, installed, Installed);
 
-        await Assert.That(reason).Contains("version_unaffirmed");
-        // Both builds must appear, or the operator cannot tell what changed.
+        await Assert.That(reason).Contains("version_below_minimum");
         await Assert.That(reason).Contains(installed);
         await Assert.That(reason).Contains(Installed);
         await Assert.That(reason).Contains("kcap daemon reviewer affirm --vendor gemini");
@@ -75,9 +83,10 @@ public class GeminiReviewerCapabilityTests {
     public async Task SurroundingWhitespaceIsToleratedOnBothSides() {
         await Assert.That(GeminiReviewerCapability.Decide(true, $"  {Installed}\n", $"{Installed} "))
             .IsEqualTo(GeminiReviewerDecision.Allowed);
-        // …but the comparison is otherwise exact — a decorated build is a different build.
+        // A `v` prefix is decoration the shared parse strips, not a different build — under the old
+        // ordinal-equality rule this exact pair was refused.
         await Assert.That(GeminiReviewerCapability.Decide(true, $"v{Installed}", Installed))
-            .IsEqualTo(GeminiReviewerDecision.VersionUnaffirmed);
+            .IsEqualTo(GeminiReviewerDecision.Allowed);
     }
 
     /// <summary>The denial reason must name the actual cause, or an operator cannot act on it.</summary>
@@ -89,8 +98,15 @@ public class GeminiReviewerCapabilityTests {
                 GeminiReviewerCapability.DenialReason(GeminiReviewerDecision.VersionUnresolved, null, Installed))
             .Contains("version_unresolved");
         await Assert.That(
-                GeminiReviewerCapability.DenialReason(GeminiReviewerDecision.VersionUnaffirmed, Installed, null))
-            .Contains("version_unaffirmed");
+                GeminiReviewerCapability.DenialReason(GeminiReviewerDecision.VersionBelowMinimum, Installed, null))
+            .Contains("version_below_minimum");
+        await Assert.That(
+                GeminiReviewerCapability.DenialReason(GeminiReviewerDecision.VersionNoMinimum, Installed, null))
+            .Contains("version_no_minimum");
+        await Assert.That(
+                GeminiReviewerCapability.DenialReason(
+                    GeminiReviewerDecision.VersionIncomparable, "1.2.3.4.5", Installed))
+            .Contains("version_incomparable");
     }
 
     /// <summary>
@@ -148,18 +164,17 @@ public class GeminiReviewerCapabilityTests {
     }
 
     /// <summary>
-    /// The regression this model exists to prevent: a build ONE PATCH ahead of the last one is not
-    /// permanently refused — an operator affirmation clears it, with no kcap release involved. Under the
-    /// certified-set model this exact case (0.53.0 certified, 0.54.0 installed) made the reviewer
-    /// unreachable until a maintainer shipped a new version of kcap.
+    /// The regression this model exists to prevent, now closed outright rather than made recoverable.
+    ///
+    /// <para>Historic case: the certified-set model made 0.54.0 unreachable against a certified 0.53.0
+    /// until a maintainer shipped a new kcap. Exact-match affirmation removed the release coupling but
+    /// still refused the upgrade until an operator re-affirmed. Under a minimum, the same pair needs
+    /// <b>no action from anyone</b> — which is the whole point of the change.</para>
     /// </summary>
     [Test]
-    public async Task AVendorUpgrade_IsClearedByAffirmingIt_NotByAKcapRelease() {
+    public async Task TheOnePatchAheadUpgrade_NeedsNoActionAtAll() {
         await Assert.That(GeminiReviewerCapability.Decide(true, "0.54.0", "0.53.0"))
-            .IsEqualTo(GeminiReviewerDecision.VersionUnaffirmed);
-
-        // The operator runs `kcap daemon reviewer affirm --vendor gemini`, which records 0.54.0.
-        await Assert.That(GeminiReviewerCapability.Decide(true, "0.54.0", "0.54.0"))
-            .IsEqualTo(GeminiReviewerDecision.Allowed);
+            .IsEqualTo(GeminiReviewerDecision.Allowed)
+            .Because("a vendor patch release must not take the reviewer offline");
     }
 }

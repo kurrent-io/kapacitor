@@ -7,7 +7,9 @@ internal enum KiroReviewerDecision {
     UnsupportedPlatform,
     Disabled,
     VersionUnresolved,
-    VersionUnaffirmed
+    VersionNoMinimum,
+    VersionBelowMinimum,
+    VersionIncomparable
 }
 
 /// <summary>
@@ -24,20 +26,24 @@ internal enum KiroReviewerDecision {
 /// The reviewer is supported only where the operator and the review requesters are in one trust
 /// domain.</para>
 ///
-/// <para><b>Why a version affirmation rather than a certified set.</b> Containment is source
-/// suppression — an empty per-launch <see cref="KiroReviewerHome"/> plus the worktree layer's removal
-/// of branch-authored config. The second is ours; the first is not, because Kiro honouring
-/// <c>KIRO_HOME</c> and reading no other global config source are behaviours of the build. A
-/// maintainer-curated certified set would take the reviewer offline on every vendor release, so this
-/// fails closed when the installed version CHANGES and the operator clears it. Gemini now uses the
-/// same model; the shared comparison lives in <see cref="Core.ReviewerVersionAffirmations"/> and the
-/// record in <see cref="Core.ReviewerVersionStore"/>.</para>
+/// <para><b>Why a version MINIMUM rather than a certified set or an exact affirmation.</b> Containment
+/// is source suppression — an empty per-launch <see cref="KiroReviewerHome"/> plus the worktree
+/// layer's removal of branch-authored config. The second is ours; the first is not, because Kiro
+/// honouring <c>KIRO_HOME</c> and reading no other global config source are behaviours of the build.
+/// A maintainer-curated certified set took the reviewer offline on every vendor release, recoverable
+/// only by a kcap release; an exact affirmation fixed the release-coupling but kept the treadmill,
+/// merely relocating it onto the operator. The recorded value is now the OLDEST build this daemon
+/// will run, so a vendor upgrade needs no action and a downgrade below it is refused. The trade — a
+/// future build that weakens its own containment is admitted silently — is accepted, and the affirm
+/// verb raises the floor past a build once found to be bad. Gemini uses the same model; the shared
+/// comparison lives in <see cref="Core.ReviewerVersionAffirmations"/> and the record in
+/// <see cref="Core.ReviewerVersionStore"/>.</para>
 /// </summary>
 internal static class KiroReviewerCapability {
     /// <summary>Production entry point: reads the host platform, then defers to the pure overload.</summary>
     internal static KiroReviewerDecision Decide(
-            bool operatorEnabled, string? installedVersion, string? affirmedVersion) =>
-        Decide(!OperatingSystem.IsWindows(), operatorEnabled, installedVersion, affirmedVersion);
+            bool operatorEnabled, string? installedVersion, string? minimumVersion) =>
+        Decide(!OperatingSystem.IsWindows(), operatorEnabled, installedVersion, minimumVersion);
 
     /// <summary>
     /// The decision, with the platform passed IN rather than read from the ambient OS.
@@ -50,7 +56,7 @@ internal static class KiroReviewerCapability {
     /// from any host — including the Windows arm itself, which was previously unassertable on POSIX.</para>
     /// </summary>
     internal static KiroReviewerDecision Decide(
-            bool posixHost, bool operatorEnabled, string? installedVersion, string? affirmedVersion) {
+            bool posixHost, bool operatorEnabled, string? installedVersion, string? minimumVersion) {
         // Windows has no 0700, so the transcript-bearing reviewer home cannot be made owner-only and
         // the disposal requirement cannot be met. Refuse rather than advertise a reviewer whose review
         // context is world-readable.
@@ -62,10 +68,17 @@ internal static class KiroReviewerCapability {
         if (!operatorEnabled) return KiroReviewerDecision.Disabled;
 
         // The version half is shared with the other gated reviewers — see ReviewerVersionAffirmations.
-        return ReviewerVersionAffirmations.Decide(installedVersion, affirmedVersion) switch {
-            ReviewerVersionAffirmation.Unresolved => KiroReviewerDecision.VersionUnresolved,
-            ReviewerVersionAffirmation.Unaffirmed => KiroReviewerDecision.VersionUnaffirmed,
-            _                                     => KiroReviewerDecision.Allowed
+        //
+        // Every arm is listed and there is NO discard. A `_ => Allowed` default meant any arm added to
+        // ReviewerVersionAffirmation later was silently ADMITTED rather than refused — a fail-closed
+        // gate whose safe direction was whatever nobody thought about. Without the discard, CS8509
+        // (an error via Directory.Build.props) makes the next arm a build failure instead.
+        return ReviewerVersionAffirmations.Decide(installedVersion, minimumVersion) switch {
+            ReviewerVersionAffirmation.MeetsMinimum      => KiroReviewerDecision.Allowed,
+            ReviewerVersionAffirmation.Unresolved        => KiroReviewerDecision.VersionUnresolved,
+            ReviewerVersionAffirmation.NoMinimumRecorded => KiroReviewerDecision.VersionNoMinimum,
+            ReviewerVersionAffirmation.BelowMinimum      => KiroReviewerDecision.VersionBelowMinimum,
+            ReviewerVersionAffirmation.Incomparable      => KiroReviewerDecision.VersionIncomparable
         };
     }
 
@@ -75,7 +88,7 @@ internal static class KiroReviewerCapability {
     /// for the risk in this type's summary, so its content is asserted, not just its presence.
     /// </summary>
     internal static string DenialReason(
-            KiroReviewerDecision decision, string? installedVersion, string? affirmedVersion) =>
+            KiroReviewerDecision decision, string? installedVersion, string? minimumVersion) =>
         decision switch {
             KiroReviewerDecision.UnsupportedPlatform =>
                 "kiro_reviewer_unsupported_platform: the Kiro unattended reviewer is POSIX-only. Its "
@@ -92,14 +105,28 @@ internal static class KiroReviewerCapability {
 
             KiroReviewerDecision.VersionUnresolved =>
                 "kiro_reviewer_version_unresolved: the installed kiro-cli version could not be "
-              + "determined, so it cannot be matched against the version this daemon affirmed. A build "
+              + "determined, so it cannot be compared against this daemon's recorded minimum. A build "
               + "we cannot identify is refused rather than assumed compatible.",
 
+            KiroReviewerDecision.VersionNoMinimum =>
+                "kiro_reviewer_version_no_minimum: this daemon has no recorded minimum kiro-cli "
+              + "version, so there is nothing to check the installed build against. The usual cause is "
+              + "enabling the reviewer against an already-running daemon — it records a minimum at "
+              + "startup, so restart it with KCAP_KIRO_UNATTENDED_REVIEWER set. To set one now without "
+              + "restarting, run `kcap daemon reviewer affirm --vendor kiro`.",
+
+            KiroReviewerDecision.VersionIncomparable =>
+                $"kiro_reviewer_version_incomparable: kiro-cli {Describe(installedVersion)} and this "
+              + $"daemon's recorded minimum {Describe(minimumVersion)} cannot be ordered as version "
+              + "numbers, so neither can be said to be newer. Record the installed build as the "
+              + "minimum with `kcap daemon reviewer affirm --vendor kiro`.",
+
             _ =>
-                $"kiro_reviewer_version_unaffirmed: kiro-cli {Describe(installedVersion)} is installed "
-              + $"but this daemon affirmed {Describe(affirmedVersion)}. The reviewer's MCP containment "
-              + "depends on this build honouring KIRO_HOME and reading no other global config source, "
-              + "so a changed build is refused until an operator confirms it: run "
+                $"kiro_reviewer_version_below_minimum: kiro-cli {Describe(installedVersion)} is "
+              + $"installed but this daemon's recorded minimum is {Describe(minimumVersion)}. The "
+              + "reviewer's containment depends on the build honouring KIRO_HOME and reading no other "
+              + "global config source, so an OLDER build than the one recorded is refused. Upgrade "
+              + "kiro-cli, or deliberately lower the minimum to the installed build with "
               + "`kcap daemon reviewer affirm --vendor kiro`."
         };
 

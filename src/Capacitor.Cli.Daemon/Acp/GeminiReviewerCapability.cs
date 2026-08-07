@@ -6,7 +6,9 @@ internal enum GeminiReviewerDecision {
     Allowed,
     Disabled,
     VersionUnresolved,
-    VersionUnaffirmed
+    VersionNoMinimum,
+    VersionBelowMinimum,
+    VersionIncomparable
 }
 
 /// <summary>
@@ -36,10 +38,18 @@ internal enum GeminiReviewerDecision {
 /// <para><b>What that trade is, stated plainly.</b> The certified set asserted that a maintainer had read
 /// that build's matcher. An affirmation asserts only that the operator accepted this build. It is the weaker
 /// claim — but it is made by the party who carries the risk, on the machine that carries it, and the
-/// alternative was a reviewer nobody could run. A <i>minimum-version floor</i> was considered and rejected:
-/// it would assume the allowlist's semantics can only improve, which is an assumption about someone else's
-/// code, and would silently admit a future build that changed matching to prefix, flipped empty-list
-/// semantics, or let repository settings win.</para>
+/// alternative was a reviewer nobody could run.</para>
+///
+/// <para><b>And the recorded value is now a MINIMUM, not an exact match — which this doc used to argue
+/// against.</b> The paragraph is kept rather than deleted, because it states the real cost: a floor
+/// assumes the allowlist's semantics can only improve, which is an assumption about someone else's code,
+/// and it silently admits a future build that changed matching to prefix, flipped empty-list semantics, or
+/// let repository settings win. That objection stands on its merits and was overruled deliberately —
+/// exact-match kept the treadmill the certified set was abandoned for, merely relocating it from a kcap
+/// release onto the operator, who then re-took the same acceptance on every patch. The acceptance now
+/// carries forward across upgrades instead, and the affirm verb raises the floor past a build once found
+/// to be bad. If a Gemini release is ever found to have weakened the allowlist, this is the paragraph that
+/// says what to reach for.</para>
 ///
 /// <para>Deliberately stricter than the interactive hosting path, which runs any installed Gemini.
 /// Broken hosting degrades to a broken agent; a broken MCP gate degrades to repository-controlled process
@@ -51,16 +61,22 @@ internal static class GeminiReviewerCapability {
     /// actually use — null when it could not be resolved, which is treated as unknown and therefore denied.
     /// </summary>
     internal static GeminiReviewerDecision Decide(
-            bool operatorEnabled, string? installedVersion, string? affirmedVersion) {
+            bool operatorEnabled, string? installedVersion, string? minimumVersion) {
         // Operator flag FIRST and short-circuiting, so a daemon that opted out never interrogates the
         // vendor binary at all — an installed-but-wedged binary must not hang startup on a feature that
         // is switched off.
         if (!operatorEnabled) return GeminiReviewerDecision.Disabled;
 
-        return ReviewerVersionAffirmations.Decide(installedVersion, affirmedVersion) switch {
-            ReviewerVersionAffirmation.Unresolved => GeminiReviewerDecision.VersionUnresolved,
-            ReviewerVersionAffirmation.Unaffirmed => GeminiReviewerDecision.VersionUnaffirmed,
-            _                                     => GeminiReviewerDecision.Allowed
+        // Every arm listed, NO discard: a `_ => Allowed` default meant any arm added to
+        // ReviewerVersionAffirmation later was silently ADMITTED rather than refused, inverting a
+        // fail-closed gate. Without it, CS8509 (an error via Directory.Build.props) makes the next
+        // arm a build failure.
+        return ReviewerVersionAffirmations.Decide(installedVersion, minimumVersion) switch {
+            ReviewerVersionAffirmation.MeetsMinimum      => GeminiReviewerDecision.Allowed,
+            ReviewerVersionAffirmation.Unresolved        => GeminiReviewerDecision.VersionUnresolved,
+            ReviewerVersionAffirmation.NoMinimumRecorded => GeminiReviewerDecision.VersionNoMinimum,
+            ReviewerVersionAffirmation.BelowMinimum      => GeminiReviewerDecision.VersionBelowMinimum,
+            ReviewerVersionAffirmation.Incomparable      => GeminiReviewerDecision.VersionIncomparable
         };
     }
 
@@ -69,7 +85,7 @@ internal static class GeminiReviewerCapability {
     /// <see cref="Decide"/> so the two cannot disagree about WHY a launch was denied.
     /// </summary>
     internal static string DenialReason(
-            GeminiReviewerDecision decision, string? installedVersion, string? affirmedVersion) =>
+            GeminiReviewerDecision decision, string? installedVersion, string? minimumVersion) =>
         decision switch {
             GeminiReviewerDecision.Disabled =>
                 "gemini_unattended_reviewer_disabled: this daemon has not enabled Gemini as an unattended "
@@ -80,16 +96,30 @@ internal static class GeminiReviewerCapability {
 
             GeminiReviewerDecision.VersionUnresolved =>
                 "gemini_reviewer_version_unresolved: the installed gemini version could not be "
-              + "determined, so it cannot be matched against the version this daemon affirmed. The "
+              + "determined, so it cannot be compared against this daemon's recorded minimum. The "
               + "reviewer's only containment is that build's MCP allowlist, so an unverifiable build is "
               + "refused.",
 
+            GeminiReviewerDecision.VersionNoMinimum =>
+                "gemini_reviewer_version_no_minimum: this daemon has no recorded minimum gemini "
+              + "version, so there is nothing to check the installed build against. The usual cause is "
+              + "enabling the reviewer against an already-running daemon — it records a minimum at "
+              + "startup, so restart it with KCAP_GEMINI_UNATTENDED_REVIEWER set. To set one now "
+              + "without restarting, run `kcap daemon reviewer affirm --vendor gemini`.",
+
+            GeminiReviewerDecision.VersionIncomparable =>
+                $"gemini_reviewer_version_incomparable: gemini {Describe(installedVersion)} and this "
+              + $"daemon's recorded minimum {Describe(minimumVersion)} cannot be ordered as version "
+              + "numbers, so neither can be said to be newer. Record the installed build as the "
+              + "minimum with `kcap daemon reviewer affirm --vendor gemini`.",
+
             _ =>
-                $"gemini_reviewer_version_unaffirmed: gemini {Describe(installedVersion)} is installed but "
-              + $"this daemon affirmed {Describe(affirmedVersion)}. The reviewer's containment rests on "
-              + "this build's MCP-allowlist semantics — an exclusive exact-match gate the reviewed "
-              + "repository cannot widen — so a changed build is refused until an operator confirms it: "
-              + "run `kcap daemon reviewer affirm --vendor gemini`."
+                $"gemini_reviewer_version_below_minimum: gemini {Describe(installedVersion)} is "
+              + $"installed but this daemon's recorded minimum is {Describe(minimumVersion)}. The "
+              + "reviewer's containment rests on the build's MCP-allowlist semantics — an exclusive "
+              + "exact-match gate the reviewed repository cannot widen — so an OLDER build than the "
+              + "one recorded is refused. Upgrade gemini, or deliberately lower the minimum to the "
+              + "installed build with `kcap daemon reviewer affirm --vendor gemini`."
         };
 
     static string Describe(string? version) => ReviewerVersionAffirmations.Describe(version);

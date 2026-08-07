@@ -5,7 +5,7 @@ namespace Capacitor.Cli.Tests.Unit.Acp;
 
 /// <summary>
 /// The Kiro reviewer gate is fail-closed on three axes: platform, the operator's consent flag, and
-/// whether the installed kiro-cli is the build this daemon affirmed.
+/// whether the installed kiro-cli meets the MINIMUM version this daemon recorded.
 /// </summary>
 public class KiroReviewerCapabilityTests {
     /// <summary>Pinned, never read from the running host: these arms are about consent and versions,
@@ -24,18 +24,35 @@ public class KiroReviewerCapabilityTests {
             .IsEqualTo(KiroReviewerDecision.Disabled);
 
     /// <summary>
-    /// The direction that matters: a NEWER build is refused, not accepted. The record is an
-    /// affirmation of a specific build, not a floor — a later build may have changed how it treats
-    /// KIRO_HOME, which is the whole hazard.
+    /// The direction that matters, and it is now the opposite of what this gate used to do: a NEWER
+    /// build is ADMITTED. The record is a floor, not an affirmation of one specific build, because
+    /// refusing every vendor patch release was a treadmill with no safety payoff. If this ever
+    /// reverts to an equality compare, these arguments are what catch it.
     /// </summary>
     [Test]
     [Arguments("2.17.0")]
     [Arguments("2.16.1")]
     [Arguments("3.0.0")]
-    [Arguments("2.15.2")]
-    public async Task AChangedVersion_IsRefusedInBothDirections(string installed) =>
+    public async Task ANewerVersion_IsAdmittedWithNoOperatorAction(string installed) =>
         await Assert.That(KiroReviewerCapability.Decide(Posix, true, installed, "2.16.0"))
-            .IsEqualTo(KiroReviewerDecision.VersionUnaffirmed);
+            .IsEqualTo(KiroReviewerDecision.Allowed);
+
+    /// <summary>The other half of "minimum": older than the record is still refused.</summary>
+    [Test]
+    [Arguments("2.15.2")]
+    [Arguments("1.0.0")]
+    public async Task AnOlderVersion_IsRefused(string installed) =>
+        await Assert.That(KiroReviewerCapability.Decide(Posix, true, installed, "2.16.0"))
+            .IsEqualTo(KiroReviewerDecision.VersionBelowMinimum);
+
+    /// <summary>An unorderable pair must reach its OWN arm, never the below-minimum one — refusing an
+    /// upgrade while calling it "too old" is the failure this arm exists to prevent.</summary>
+    [Test]
+    [Arguments("2.0.0", "1.2.3.4.5")]
+    [Arguments("1.2.3.4.5", "2.0.0")]
+    public async Task AnUnorderablePair_IsIncomparableNotBelowMinimum(string installed, string minimum) =>
+        await Assert.That(KiroReviewerCapability.Decide(Posix, true, installed, minimum))
+            .IsEqualTo(KiroReviewerDecision.VersionIncomparable);
 
     /// <summary>
     /// The control for the seeding behaviour: an absent record must NOT read as permission. Without
@@ -45,9 +62,9 @@ public class KiroReviewerCapabilityTests {
     [Arguments(null)]
     [Arguments("")]
     [Arguments("   ")]
-    public async Task NoAffirmationOnRecord_IsRefused(string? affirmed) =>
-        await Assert.That(KiroReviewerCapability.Decide(Posix, true, "2.16.0", affirmed))
-            .IsEqualTo(KiroReviewerDecision.VersionUnaffirmed);
+    public async Task NoMinimumOnRecord_IsRefused(string? minimum) =>
+        await Assert.That(KiroReviewerCapability.Decide(Posix, true, "2.16.0", minimum))
+            .IsEqualTo(KiroReviewerDecision.VersionNoMinimum);
 
     [Test]
     [Arguments(null)]
@@ -64,12 +81,12 @@ public class KiroReviewerCapabilityTests {
             .IsEqualTo(KiroReviewerDecision.Allowed);
 
     [Test]
-    public async Task TheUnaffirmedReason_NamesBothVersionsAndTheFix() {
+    public async Task TheBelowMinimumReason_NamesBothVersionsAndTheFix() {
         var reason = KiroReviewerCapability.DenialReason(
-            KiroReviewerDecision.VersionUnaffirmed, "2.17.0", "2.16.0");
+            KiroReviewerDecision.VersionBelowMinimum, "2.15.0", "2.16.0");
 
-        await Assert.That(reason).StartsWith("kiro_reviewer_version_unaffirmed");
-        await Assert.That(reason).Contains("2.17.0");
+        await Assert.That(reason).StartsWith("kiro_reviewer_version_below_minimum");
+        await Assert.That(reason).Contains("2.15.0");
         await Assert.That(reason).Contains("2.16.0");
         await Assert.That(reason).Contains("kcap daemon reviewer affirm");
     }
@@ -119,7 +136,7 @@ public class KiroReviewerCapabilityTests {
     public async Task AWindowsHost_IsRefusedEvenWhenEnabledAndAffirmed() =>
         await Assert.That(KiroReviewerCapability.Decide(
                 posixHost: false, operatorEnabled: true,
-                installedVersion: "2.16.0", affirmedVersion: "2.16.0"))
+                installedVersion: "2.16.0", minimumVersion: "2.16.0"))
             .IsEqualTo(KiroReviewerDecision.UnsupportedPlatform);
 
     [Test]

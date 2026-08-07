@@ -1038,8 +1038,9 @@ public static partial class DaemonRunner {
     static readonly char[] WhitespaceSeparators = [' ', '\t', '\r', '\n'];
 
     internal static bool CliVersionAllowed(string? rawVersion, string ranges) {
-        var normalized = (rawVersion ?? "").TrimStart('v', 'V').Split('-', '+')[0];
-        if (!Version.TryParse(normalized, out var version)) return false;
+        // Shared with the reviewer minimum-version gate rather than parsed here — see
+        // ReviewerVersionAffirmations.TryParseVersion for why the two must classify identically.
+        if (ReviewerVersionAffirmations.TryParseVersion(rawVersion) is not { } version) return false;
         if (string.IsNullOrWhiteSpace(ranges)) return false;
         return ranges.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .Any(range => range.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
