@@ -49,6 +49,17 @@ public class AgyTurnProcessTests {
 
         await turn.DisposeAsync();
 
+        // Bounded WAIT, not an immediate read. SIGKILL is delivered asynchronously — the child
+        // transitions to zombie some scheduling moment after Kill() returns, and disposal does not
+        // block for that — so asserting HasExited on the very next line is a race that a loaded CI
+        // box can lose. It passed 14 consecutive local runs, which is exactly the sample size that
+        // makes a load-dependent flake look solved; this branch has already been bitten twice by
+        // that class. Waiting costs nothing on the happy path and removes the race outright.
+        //
+        // Waited on the OBSERVER, never on `child`: `child` is the handle AgyTurnProcess just
+        // disposed, and touching a disposed Process throws.
+        observer.WaitForExit(milliseconds: 5000);
+
         await Assert.That(observer.HasExited).IsTrue()
             .Because("a disposal that only releases handles leaks one live agy child per review round");
     }

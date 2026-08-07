@@ -213,9 +213,19 @@ internal sealed class AntigravityHostedAgentRuntime : IHostedAgentRuntime, IAcpT
 
     /// <summary>How long a turn's teardown waits for a child it had to KILL — one that outlived both
     /// its own stdout and <see cref="ExitConfirmationGrace"/> — before giving up and reporting the exit
-    /// unconfirmed. Deliberately shorter than <see cref="DisposeAsync"/>'s 5s turn-worker join budget:
-    /// this wait happens inside the worker, so a longer one could push a worker that was about to join
-    /// past that budget and produce the very "could not confirm" outcome it exists to avoid.</summary>
+    /// unconfirmed.
+    ///
+    /// <para>Kept short because this wait happens INSIDE the turn worker, and
+    /// <see cref="DisposeAsync"/> gives that worker a 5s join budget. Note what this does and does not
+    /// buy: it does <b>not</b> guarantee the join is met, since the worker may already have spent
+    /// arbitrary time in the turn before reaching teardown, and the budget is measured from
+    /// <see cref="DisposeAsync"/>'s call rather than from here. It only keeps this particular wait
+    /// from being the thing that blows it. A review caught the earlier phrasing of this comment
+    /// claiming the stronger guarantee, which was not true.</para>
+    ///
+    /// <para>Overshooting the join is not a correctness failure in any case — it degrades to the
+    /// unconfirmed path, which skips the HOME deletion and leaves the epoch sweep to collect it. That
+    /// is the direction this whole gate is built to fail in.</para></summary>
     static readonly TimeSpan TurnExitForceGrace = TimeSpan.FromSeconds(2);
 
     readonly ILogger _logger;
