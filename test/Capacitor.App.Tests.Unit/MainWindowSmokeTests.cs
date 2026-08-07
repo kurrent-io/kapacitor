@@ -237,7 +237,7 @@ public class MainWindowSmokeTests {
             var emptyVisible = Header().IsVisible;
 
             service.Agents.AddOrUpdate(new AgentStatusDto(
-                "a", "agent", "claude", "/repos/kcap-cli", "Running", null, null, null, DateTime.UtcNow, null));
+                "a", "agent", "claude", "/repos/kcap-cli", "Running", null, null, null, DateTime.UtcNow, null, null));
             Dispatcher.UIThread.RunJobs();
             var withRowVisible = Header().IsVisible;
 

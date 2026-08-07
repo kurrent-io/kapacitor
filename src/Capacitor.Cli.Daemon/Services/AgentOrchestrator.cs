@@ -65,6 +65,11 @@ internal record AgentInstance(
     /// servers and local spawns — the supervision payload renders null as unknown.</summary>
     public string?              RequesterUserId   { get; init; }
 
+    /// <summary>The server-stamped human-readable name for <see cref="RequesterUserId"/>. Null for
+    /// old servers, local spawns, and a PID-record recovery (never persisted, best-effort only) —
+    /// the supervision payload falls back to <see cref="RequesterUserId"/>, then "unknown".</summary>
+    public string?              RequesterDisplay  { get; init; }
+
     /// <summary>The applied Codex sandbox/approval pair — the values actually passed to the vendor
     /// CLI, whether caller-selected or derived. Set only for an interactive Codex launch on a
     /// daemon-owned worktree; null everywhere else. Stored HERE (not recomputed at each send) so the
@@ -1150,7 +1155,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             string? flowRunId = null, string? flowRole = null,
             DateTime? createdAt = null, DateTime? lastOutputAt = null, bool isPrivate = false,
             IPtyProcess? pty = null, string? startIdentity = null, string? requester = null,
-            string? model = "default", int? inactivityBoundSeconds = null,
+            string? requesterDisplay = null, string? model = "default", int? inactivityBoundSeconds = null,
             // Task 12 (unified reviewer reaping): a test that needs to control the agent's monotonic
             // age/idle (rather than the wall-clock CreatedAt/LastOutputAt above, which the new
             // FindReviewersToReap no longer reads) constructs its own AgentActivityClock over a
@@ -1165,6 +1170,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             Kind = kind, FlowRunId = flowRunId, FlowRole = flowRole, IsPrivate = isPrivate,
             CreatedAt = createdAt ?? DateTime.UtcNow, StartIdentity = startIdentity,
             RequesterUserId = requester,
+            RequesterDisplay = requesterDisplay,
             InactivityBoundSeconds = inactivityBoundSeconds,
             ActivityClock = activityClock ?? CreateActivityClock()
         };
@@ -1733,6 +1739,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
                 FlowRunId           = cmd.FlowRunId,
                 FlowRole            = cmd.FlowRole,
                 RequesterUserId     = cmd.RequesterUserId,
+                RequesterDisplay    = cmd.RequesterDisplay,
                 InactivityBoundSeconds = cmd.InactivityBoundSeconds
             };
             PublishAgent(agent);

@@ -23,11 +23,14 @@ public sealed record DaemonInfoDto(
 /// vocabulary — clients treat unknown values as opaque display text). <see cref="Kind"/>
 /// uses the KindText wire spellings (agent/review/review-flow, unknown enum names pass
 /// through) — one vocabulary across AgentList and this payload. <see cref="Requester"/> is
-/// null when unknown (old servers, local spawns); rendering "unknown" is presentation.
+/// the opaque server-stamped requester id, null when unknown (old servers, local spawns).
+/// <see cref="RequesterDisplay"/> is the server-stamped human-readable name for it, null on
+/// an old server or a local spawn; choosing which of the two to render is presentation.
 /// </summary>
 public sealed record AgentStatusDto(
     string Id, string Kind, string Vendor, string? RepoPath, string Status,
-    string? FlowRunId, string? FlowRole, string? Requester, DateTime CreatedAt, string? Model);
+    string? FlowRunId, string? FlowRole, string? Requester, DateTime CreatedAt, string? Model,
+    string? RequesterDisplay);
 
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.SnakeCaseLower)]
 [JsonSerializable(typeof(DaemonStatusDto))]

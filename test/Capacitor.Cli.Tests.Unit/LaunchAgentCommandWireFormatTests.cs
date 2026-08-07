@@ -290,6 +290,34 @@ public class LaunchAgentCommandWireFormatTests {
         var back = JsonSerializer.Deserialize(json, CapacitorJsonContext.Default.LaunchAgentCommand);
         await Assert.That(back.InactivityBoundSeconds).IsEqualTo(180);
     }
+
+    [Test]
+    public async Task RequesterDisplay_roundtrips_and_defaults_null_when_absent() {
+        // An old server never sends this field (issue #481) — the daemon must default to null,
+        // never fail to bind the command.
+        var legacyJson = """{"agent_id":"a1","model":"m","repo_path":"/r","vendor":"claude"}""";
+        var legacy = JsonSerializer.Deserialize(legacyJson, CapacitorJsonContext.Default.LaunchAgentCommand);
+        await Assert.That(legacy.RequesterDisplay).IsNull();
+
+        var cmd = new LaunchAgentCommand(
+            AgentId: "a1",
+            Prompt: null,
+            Model: "m",
+            Effort: null,
+            RepoPath: "/r",
+            Tools: null,
+            AttachmentIds: null,
+            Vendor: "claude",
+            RequesterUserId: "github:2821205",
+            RequesterDisplay: "Ada Lovelace"
+        );
+        var json = JsonSerializer.Serialize(cmd, ServerWireOptions);
+        await Assert.That(json).Contains("\"requester_display\":\"Ada Lovelace\"");
+        var back = JsonSerializer.Deserialize(json, CapacitorJsonContext.Default.LaunchAgentCommand);
+        await Assert.That(back.RequesterDisplay).IsEqualTo("Ada Lovelace");
+        // Display-only: never used for consent matching, which stays on RequesterUserId.
+        await Assert.That(back.RequesterUserId).IsEqualTo("github:2821205");
+    }
 }
 
 /// <summary>

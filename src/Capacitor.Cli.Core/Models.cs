@@ -1338,7 +1338,11 @@ public readonly record struct LaunchAgentCommand(
         //
         // Null for every non-review-flow launch and for a launch predating this field; an old daemon
         // ignores it.
-        int?              InactivityBoundSeconds = null
+        int?              InactivityBoundSeconds = null,
+        // The server-stamped human-readable name for RequesterUserId (issue #481). Display-only —
+        // NEVER used for consent matching, which stays on RequesterUserId. Appended last, same
+        // wire-compat rule as the fields above — old daemons ignore it, old servers never set it.
+        string?           RequesterDisplay = null
     );
 
 /// <summary>Caller-selected Codex launch posture. Valid ONLY for interactive, daemon-owned-worktree

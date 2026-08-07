@@ -7,6 +7,8 @@ namespace Capacitor.Cli.Tests.Unit;
 /// Requester stamping (spec §4.3): AgentInstance.RequesterUserId is captured from
 /// LaunchAgentCommand at construction — non-null when a new server sends it, null for
 /// old servers (field absent) — so the supervision payload can show who asked.
+/// RequesterDisplay (issue #481) is captured the same way, independently — a server may
+/// send the id without a display name (old server, or the server hasn't resolved one yet).
 /// </summary>
 public partial class AgentOrchestratorVendorTests {
     [Test]
@@ -31,12 +33,15 @@ public partial class AgentOrchestratorVendorTests {
                 Tools: null,
                 AttachmentIds: null,
                 Vendor: "claude",
-                RequesterUserId: "github:12345"
+                RequesterUserId: "github:12345",
+                RequesterDisplay: "Ada Lovelace"
             );
 
             await orch.HandleLaunchAgentForTest(cmd);
 
-            await Assert.That(orch.GetAgentForTest("req-1")!.RequesterUserId).IsEqualTo("github:12345");
+            var agent = orch.GetAgentForTest("req-1")!;
+            await Assert.That(agent.RequesterUserId).IsEqualTo("github:12345");
+            await Assert.That(agent.RequesterDisplay).IsEqualTo("Ada Lovelace");
         } finally {
             cleanup();
         }
@@ -68,7 +73,9 @@ public partial class AgentOrchestratorVendorTests {
 
             await orch.HandleLaunchAgentForTest(cmd);
 
-            await Assert.That(orch.GetAgentForTest("req-2")!.RequesterUserId).IsNull();
+            var agent = orch.GetAgentForTest("req-2")!;
+            await Assert.That(agent.RequesterUserId).IsNull();
+            await Assert.That(agent.RequesterDisplay).IsNull();
         } finally {
             cleanup();
         }

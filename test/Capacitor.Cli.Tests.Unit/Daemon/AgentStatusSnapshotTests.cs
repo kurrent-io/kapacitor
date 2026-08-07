@@ -109,13 +109,14 @@ public class AgentStatusSnapshotTests {
         try {
             var createdAt = new DateTime(2026, 8, 1, 12, 30, 0, DateTimeKind.Utc);
             orch.SeedAgentForTest("r1", kind: LaunchKind.ReviewFlow, flowRunId: "flow_1",
-                flowRole: "reviewer", requester: "github:12345", createdAt: createdAt);
+                flowRole: "reviewer", requester: "github:12345", requesterDisplay: "Ada Lovelace", createdAt: createdAt);
             orch.SeedAgentForTest("d1"); // defaults: LaunchKind.Default, no flow identity, no requester
 
             var byId = orch.SnapshotAgentsForStatus().ToDictionary(a => a.Id);
 
             await Assert.That(byId["r1"].Kind).IsEqualTo("review-flow");
             await Assert.That(byId["r1"].Requester).IsEqualTo("github:12345");
+            await Assert.That(byId["r1"].RequesterDisplay).IsEqualTo("Ada Lovelace");
             await Assert.That(byId["r1"].FlowRunId).IsEqualTo("flow_1");
             // SeedAgentForTest's fixed constants — pins the Select against a same-typed-neighbor
             // transposition (e.g. Vendor/RepoPath swapped) that the other assertions can't catch.
@@ -126,6 +127,7 @@ public class AgentStatusSnapshotTests {
             await Assert.That(byId["r1"].CreatedAt).IsEqualTo(createdAt);
             await Assert.That(byId["d1"].Kind).IsEqualTo("agent");
             await Assert.That(byId["d1"].Requester).IsNull();
+            await Assert.That(byId["d1"].RequesterDisplay).IsNull();
             await Assert.That(byId["d1"].FlowRunId).IsNull();
         } finally {
             await fixture.CleanupAsync();

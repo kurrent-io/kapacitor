@@ -32,7 +32,8 @@ sealed class FakeDaemonClientService : IDaemonClientService {
             string connection = "connected", int active = 0, int max = 5) {
         var agents = Enumerable.Range(0, active).Select(i => new AgentStatusDto(
             Id: $"a{i}", Kind: "agent", Vendor: "claude", RepoPath: null, Status: "Running",
-            FlowRunId: null, FlowRole: null, Requester: null, CreatedAt: DateTime.UtcNow, Model: null
+            FlowRunId: null, FlowRole: null, Requester: null, CreatedAt: DateTime.UtcNow, Model: null,
+            RequesterDisplay: null
         )).ToList();
         return new DaemonStatusDto(new DaemonInfoDto(daemon, version, serverUrl, connection, max, active), agents);
     }
