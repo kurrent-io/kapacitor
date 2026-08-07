@@ -28,11 +28,13 @@ internal interface IAgyTurnDiagnostics {
 /// review-flow reviewer and an interactive hosted agent — over the exec-per-turn
 /// <see cref="AntigravityHostedAgentRuntime"/>.
 ///
-/// <para><b>The two launch shapes differ in exactly one argument</b>
-/// (<c>--dangerously-skip-permissions</c>, hosted only; see <see cref="BuildTurnPsi"/>) and in nothing
-/// else. In particular the per-launch isolated <c>HOME</c> is NOT reviewer-only: this runtime is
-/// itself the transcript source, so a launch under the operator's own home is captured a second time
-/// by the hook lane — isolation removes a duplicate rather than removing capture.</para>
+/// <para><b>The two launch shapes differ in exactly two things:</b> one argument
+/// (<c>--dangerously-skip-permissions</c>, hosted only; see <see cref="BuildTurnPsi"/>) and the
+/// injected MCP surface (the <c>kcap-flow-result</c> channel plus the flow definition's allowlist,
+/// review only; see <see cref="BuildReviewFlowMcp"/>). In particular the per-launch isolated
+/// <c>HOME</c> is NOT reviewer-only: this runtime is itself the transcript source, so a launch under
+/// the operator's own home is captured a second time by the hook lane — isolation removes a duplicate
+/// rather than removing capture.</para>
 ///
 /// <para><b>What this factory owns that the runtime deliberately does not:</b> the argv and
 /// environment of every turn child, the per-launch isolated <c>HOME</c> (and its removal), the
@@ -224,25 +226,23 @@ internal sealed partial class AntigravityHostedAgentRuntimeFactory(
                 "antigravity_reviewer_requires_owned_worktree: this runtime has no containment "
               + "strategy for a borrowed workspace, so it runs only in a daemon-owned worktree.");
 
-        // A blank agent id would still yield a non-empty server list and slip past a count-only guard,
-        // so all three result-channel inputs are checked — a dead channel wedges the round.
-        if (string.IsNullOrWhiteSpace(ctx.ServerUrl) || string.IsNullOrWhiteSpace(ctx.CapacitorPath)
-         || string.IsNullOrWhiteSpace(ctx.AgentId))
-            throw new InvalidOperationException(
-                "antigravity_reviewer_result_channel_incomplete: cannot inject the kcap-flow-result "
-              + "channel (missing server url / kcap path / agent id).");
-
         // Canonical wire names: agy's MCP surface is the file this launch writes, not a name-matched
         // allowlist the reviewed repository could impersonate an entry in, so the per-launch aliasing
-        // Gemini and Kiro need buys nothing here.
+        // Gemini and Kiro need buys nothing here. Overwritten for BOTH shapes, so a caller-supplied
+        // identity can never reach a launch of either kind.
         ctx = ctx with { LaunchIdentity = LaunchIdentity.ForLaunch(aliasResultChannel: false) };
 
-        if (!KcapMcpRegistry.TryResolveReviewFlowAllowlist(ctx.McpAllowlist, out var allowlistServerIds, out var rejected))
-            throw new InvalidOperationException(
-                $"antigravity_reviewer_mcp_allowlist_rejected: '{rejected}' is not an auto-approvable "
-              + "read-only server.");
-
-        var injected = AcpReviewFlowMcp.Build(ctx, allowlistServerIds);
+        // Both the result channel AND its fail-closed validation are review-only — the same split
+        // AcpHostedAgentRuntimeFactory.ValidateAndBuildReviewFlowMcp draws. A hosted agent has no flow
+        // to report to, so injecting kcap-flow-result would hand it a tool it can only call
+        // meaninglessly, and validating that channel's inputs would refuse a hosted launch for a
+        // channel it never needed. The allowlist is the review-flow DEFINITION's, so its rejection is
+        // review-only for the same reason.
+        //
+        // The hosted arm forwards ctx.McpServers, mirroring the ACP factory's hosted arm. No caller
+        // populates that field today (see its comment on RuntimeStartContext), so a hosted launch's
+        // surface is empty — deliberately, because nothing is offered, rather than by a drop here.
+        var injected = ctx.IsReviewFlow ? BuildReviewFlowMcp(ctx) : ctx.McpServers ?? [];
 
         LogLaunching(ctx.AgentId, ctx.Worktree.Path, ctx.IsReviewFlow);
 
@@ -329,6 +329,31 @@ internal sealed partial class AntigravityHostedAgentRuntimeFactory(
         // INSIDE the home, and the home's own disposal owns it — reporting it separately would have
         // the orchestrator delete a file out of a directory it knows nothing about.
         return new HostedRuntimeStart(runtime, McpConfigPath: null, Transcript: runtime);
+    }
+
+    /// <summary>The reviewer's injected MCP surface — the <c>kcap-flow-result</c> submit channel plus
+    /// the flow definition's allowlist — or a throw naming what makes it undeliverable. Called for a
+    /// review flow ONLY: every refusal in here describes a review, and a hosted launch that hit one
+    /// would be refused for machinery it has no use for.
+    ///
+    /// <para>Fails closed rather than launching a reviewer with a missing or partial channel: such a
+    /// reviewer starts, runs and can never report, so the flow waits for a verdict that cannot
+    /// arrive.</para></summary>
+    static IReadOnlyList<AcpMcpServerSpec> BuildReviewFlowMcp(RuntimeStartContext ctx) {
+        // A blank agent id would still yield a non-empty server list and slip past a count-only guard,
+        // so all three result-channel inputs are checked — a dead channel wedges the round.
+        if (string.IsNullOrWhiteSpace(ctx.ServerUrl) || string.IsNullOrWhiteSpace(ctx.CapacitorPath)
+         || string.IsNullOrWhiteSpace(ctx.AgentId))
+            throw new InvalidOperationException(
+                "antigravity_reviewer_result_channel_incomplete: cannot inject the kcap-flow-result "
+              + "channel (missing server url / kcap path / agent id).");
+
+        if (!KcapMcpRegistry.TryResolveReviewFlowAllowlist(ctx.McpAllowlist, out var allowlistServerIds, out var rejected))
+            throw new InvalidOperationException(
+                $"antigravity_reviewer_mcp_allowlist_rejected: '{rejected}' is not an auto-approvable "
+              + "read-only server.");
+
+        return AcpReviewFlowMcp.Build(ctx, allowlistServerIds);
     }
 
     /// <summary>

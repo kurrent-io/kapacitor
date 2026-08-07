@@ -1,6 +1,7 @@
 // test/Capacitor.Cli.Tests.Unit/Services/AntigravityReviewerLaunchTests.cs
 using System.Diagnostics;
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Acp;
 using Capacitor.Cli.Core.LocalIpc;
 using Capacitor.Cli.Daemon;
 using Capacitor.Cli.Daemon.Acp;
@@ -56,16 +57,28 @@ public class AntigravityReviewerLaunchTests {
         return config;
     }
 
+    /// <param name="serverUrl">Defaulted to a real value; blanked by the result-channel tests, which
+    /// is the ONE input a hosted launch legitimately lacks and a review legitimately cannot.</param>
+    /// <param name="mcpAllowlist">The review-flow DEFINITION's allowlist. Never populated for a hosted
+    /// launch in production — a test passes one only to assert that the hosted arm ignores it rather
+    /// than validating it.</param>
+    /// <param name="mcpServers">The literal per-launch MCP server list. No production caller populates
+    /// it today (see the field's own comment on <see cref="RuntimeStartContext"/>); a test passes one
+    /// to pin which arm forwards it.</param>
     static RuntimeStartContext Ctx(
-            bool isReviewFlow = true, AgentActivityClock? clock = null, string? model = null) => new(
+            bool isReviewFlow = true, AgentActivityClock? clock = null, string? model = null,
+            string? serverUrl = "http://kcap.test", string capacitorPath = "/usr/local/bin/kcap",
+            string[]? mcpAllowlist = null, IReadOnlyList<AcpMcpServerSpec>? mcpServers = null) => new(
         AgentId: "agent-1", Vendor: "antigravity", SourceRepoPath: "/repo",
         Worktree: new WorktreeInfo(Path: "/abs/wt", Branch: "b", SourceRepo: "/repo"),
         Prompt: "review this",
         Model: model, Effort: null, Tools: null,
         IsReview: false, IsReviewFlow: isReviewFlow, Review: null,
         Cols: 80, Rows: 24,
-        ServerUrl: "http://kcap.test", DaemonBridgeUrl: null, CapacitorPath: "/usr/local/bin/kcap",
+        ServerUrl: serverUrl, DaemonBridgeUrl: null, CapacitorPath: capacitorPath,
+        McpAllowlist: mcpAllowlist,
         DaemonId: "daemon-1", DaemonEpoch: "epoch-1",
+        McpServers: mcpServers,
         ActivityClock: clock);
 
     static ProcessStartInfo BuildPsi(
@@ -701,6 +714,175 @@ public class AntigravityReviewerLaunchTests {
         await Assert.That(ex!.Message).StartsWith("antigravity_reviewer_requires_owned_worktree");
         await Assert.That(ex.Message).Contains("daemon-owned worktree");
         await Assert.That(ex.Message).DoesNotContain("a review must run");
+    }
+
+    // ── the injected MCP surface ───────────────────────────────────────────────────────────────────
+    //
+    // The per-launch home's mcp_config.json IS the launch's whole MCP surface (the home carries no
+    // operator config to merge with), so these assertions read that file rather than a builder's
+    // return value — the same file agy would load.
+
+    /// <summary>Reads the mcp_config.json the launch actually wrote, from the home the child was
+    /// handed. Literal path rather than <c>AntigravityPaths.McpConfigJson</c>: that resolver honours
+    /// the TEST PROCESS's own <c>GEMINI_CLI_HOME</c>, so it could read somewhere the launch never
+    /// wrote.</summary>
+    static async Task<string> McpConfigOf(SpyTurnSource spy) {
+        var home = spy.Spawns[0].Environment["HOME"]!;
+        var path = Path.Combine(home, ".gemini", "config", "mcp_config.json");
+
+        if (!File.Exists(path))
+            throw new FileNotFoundException($"The launch wrote no mcp_config.json under '{home}'.", path);
+
+        return await File.ReadAllTextAsync(path);
+    }
+
+    /// <summary>
+    /// <b>A hosted agent has no flow to report a result to</b>, so it gets neither the
+    /// <c>kcap-flow-result</c> channel nor the fail-closed validation of that channel's inputs. Both
+    /// halves matter, and the second is what this test is shaped around: the launch runs with a BLANK
+    /// server url — the exact input the review-side guard rejects — because a hosted launch refused
+    /// with <c>antigravity_reviewer_result_channel_incomplete</c> would be refused for a channel it
+    /// never needed.
+    ///
+    /// <para>The config file must still EXIST and be valid: its presence is what replaces the
+    /// operator's global config with an empty surface, which is the same mechanism that keeps a
+    /// reviewer from starting a nested flow. Absent, agy would be free to fall back.</para>
+    /// </summary>
+    [Test]
+    public async Task A_hosted_launch_gets_no_result_channel_and_is_not_refused_for_missing_one() {
+        Skip.Unless(!OperatingSystem.IsWindows(), "POSIX-only: the per-launch home cannot be owner-only on Windows.");
+
+        var spy = new SpyTurnSource();
+
+        var start = await Factory(EnabledConfig(), spy.SpawnAsync)
+            .StartAsync(Ctx(isReviewFlow: false, serverUrl: null, capacitorPath: ""), CancellationToken.None)
+            .WaitAsync(HangGuard);
+
+        await using var runtime = start.Runtime;
+
+        // It launched — bound conversation, not merely "did not throw".
+        await Assert.That(start.Transcript!.AcpSessionId).IsEqualTo(FixedConversationId);
+
+        // Present, valid, and EMPTY — no result channel smuggled in under any name.
+        await Assert.That(await McpConfigOf(spy)).IsEqualTo("""{"mcpServers":{}}""");
+    }
+
+    /// <summary>
+    /// The review direction of the same split, and the harder one to lose safely: a reviewer with no
+    /// result channel starts, runs, and can never report — the flow then waits for a verdict that
+    /// cannot arrive. Asserts the channel's COMMAND and both env vars, not just its name: the server
+    /// exits when <c>KCAP_FLOW_AGENT_ID</c> is absent, so a name-only assertion would pass a channel
+    /// that dies on first use.
+    ///
+    /// <para>Also pins that the review arm builds its OWN list rather than forwarding
+    /// <c>ctx.McpServers</c> — a caller-supplied server must not join a reviewer's surface.</para>
+    /// </summary>
+    [Test]
+    public async Task A_review_launch_injects_the_flow_result_channel_and_ignores_caller_supplied_servers() {
+        Skip.Unless(!OperatingSystem.IsWindows(), "POSIX-only: the per-launch home cannot be owner-only on Windows.");
+
+        var spy = new SpyTurnSource();
+
+        var start = await Factory(EnabledConfig(), spy.SpawnAsync)
+            .StartAsync(Ctx(isReviewFlow: true,
+                            mcpServers: [new AcpMcpServerSpec("caller-supplied", "/bin/false", null, null)]),
+                        CancellationToken.None)
+            .WaitAsync(HangGuard);
+
+        await using var runtime = start.Runtime;
+
+        var config = await McpConfigOf(spy);
+
+        await Assert.That(config).Contains("\"kcap-flow-result\"");
+        await Assert.That(config).Contains("\"/usr/local/bin/kcap\"");
+        await Assert.That(config).Contains("\"KCAP_FLOW_AGENT_ID\"");
+        await Assert.That(config).Contains("\"agent-1\"");
+        await Assert.That(config).Contains("\"KCAP_URL\"");
+        await Assert.That(config).DoesNotContain("caller-supplied");
+    }
+
+    /// <summary>A review whose result-channel inputs are incomplete must STILL fail closed with the
+    /// coded reason — scoping the injection to review flows must not weaken it. Blank server url only:
+    /// the guard is an OR over three inputs, and blanking one is what proves it still runs.</summary>
+    [Test]
+    public async Task A_review_launch_missing_result_channel_inputs_still_fails_closed() {
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            Factory(EnabledConfig(), new SpyTurnSource().SpawnAsync)
+                .StartAsync(Ctx(isReviewFlow: true, serverUrl: null), CancellationToken.None));
+
+        await Assert.That(ex!.Message).StartsWith("antigravity_reviewer_result_channel_incomplete");
+    }
+
+    /// <summary>The allowlist is the review-flow DEFINITION's, so its rejection is review-only too —
+    /// asserted as a split on one factory, because a hosted launch refused for a definition it has no
+    /// definition for is the same category error as the result-channel refusal above.</summary>
+    [Test]
+    public async Task A_non_auto_approvable_allowlist_refuses_a_review_but_not_a_hosted_launch() {
+        Skip.Unless(!OperatingSystem.IsWindows(), "POSIX-only: the per-launch home cannot be owner-only on Windows.");
+
+        var spy     = new SpyTurnSource();
+        var factory = Factory(EnabledConfig(), spy.SpawnAsync);
+
+        // kcap-flows starts flows — the recursion the reviewer allowlist exists to refuse.
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            factory.StartAsync(Ctx(isReviewFlow: true, mcpAllowlist: ["kcap-flows"]), CancellationToken.None));
+
+        await Assert.That(ex!.Message).StartsWith("antigravity_reviewer_mcp_allowlist_rejected");
+
+        // The same allowlist on a hosted launch is simply not its concern — and is never materialized.
+        var start = await factory
+            .StartAsync(Ctx(isReviewFlow: false, mcpAllowlist: ["kcap-flows"]), CancellationToken.None)
+            .WaitAsync(HangGuard);
+
+        await using var runtime = start.Runtime;
+
+        await Assert.That(await McpConfigOf(spy)).DoesNotContain("kcap-flows");
+    }
+
+    /// <summary>An auto-approvable allowlist entry reaches the reviewer's surface alongside the result
+    /// channel. Without this the allowlist could be resolved and then dropped, and every assertion
+    /// above would still pass.</summary>
+    [Test]
+    public async Task An_auto_approvable_allowlist_entry_reaches_the_reviewers_surface() {
+        Skip.Unless(!OperatingSystem.IsWindows(), "POSIX-only: the per-launch home cannot be owner-only on Windows.");
+
+        var spy = new SpyTurnSource();
+
+        var start = await Factory(EnabledConfig(), spy.SpawnAsync)
+            .StartAsync(Ctx(isReviewFlow: true, mcpAllowlist: ["kcap-review"]), CancellationToken.None)
+            .WaitAsync(HangGuard);
+
+        await using var runtime = start.Runtime;
+
+        var config = await McpConfigOf(spy);
+
+        await Assert.That(config).Contains("\"kcap-review\"");
+        await Assert.That(config).Contains("\"kcap-flow-result\"");
+    }
+
+    /// <summary>The hosted arm forwards <c>ctx.McpServers</c> verbatim, mirroring
+    /// <c>AcpHostedAgentRuntimeFactory</c>'s hosted arm. <b>No production caller populates that field
+    /// today</b>, so this pins a contract rather than a live path — the point being that a hosted agy
+    /// launch ends up with nothing DELIBERATELY (nothing is offered) rather than by a drop this
+    /// change introduced.</summary>
+    [Test]
+    public async Task A_hosted_launch_forwards_the_mcp_servers_it_was_given() {
+        Skip.Unless(!OperatingSystem.IsWindows(), "POSIX-only: the per-launch home cannot be owner-only on Windows.");
+
+        var spy = new SpyTurnSource();
+
+        var start = await Factory(EnabledConfig(), spy.SpawnAsync)
+            .StartAsync(Ctx(isReviewFlow: false,
+                            mcpServers: [new AcpMcpServerSpec("caller-supplied", "/bin/echo", ["hi"], null)]),
+                        CancellationToken.None)
+            .WaitAsync(HangGuard);
+
+        await using var runtime = start.Runtime;
+
+        var config = await McpConfigOf(spy);
+
+        await Assert.That(config).Contains("\"caller-supplied\"");
+        await Assert.That(config).DoesNotContain("kcap-flow-result");
     }
 
     /// <summary>
