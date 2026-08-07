@@ -926,10 +926,33 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
         var deletedRecords = await RunLsFilesPrefixedAsync(source, [], deletedArgs, ct);
 
         foreach (var prefix in submodulePrefixes) {
-            // Contained BEFORE the submodule's own git is invoked: the path comes from the index,
-            // and a hostile one must not steer `git -C` outside the source tree.
-            var subDir = ContainedPath(source, NormalizeRelativePath(StrictUtf8.GetString(prefix)));
+            // Decoded HERE rather than in the loop below, so it needs the loop's coded error too —
+            // a raw DecoderFallbackException would surface as an unhandled fault instead of a
+            // diagnosable snapshot failure.
+            string subRaw;
+            try { subRaw = StrictUtf8.GetString(prefix); }
+            catch (DecoderFallbackException ex) {
+                throw new InvalidOperationException("borrowed_snapshot_invalid_path_encoding", ex);
+            }
+
+            var subRel = NormalizeRelativePath(subRaw);
+            var subDir = ContainedPath(source, subRel);
+
+            // ContainedPath is LEXICAL — Path.GetFullPath does not resolve links — so a gitlink whose
+            // working-tree directory is a symlink passes containment while `git -C` follows it and
+            // enumerates a tree the snapshot has no right to read. The per-file guards below cannot
+            // undo a directory-level traversal that has already happened, so the components are
+            // checked BEFORE git is invoked here.
+            EnsureNoLinkedComponents(source, subDir, subRel);
+
             if (!Directory.Exists(subDir)) continue;   // uninitialized submodule: nothing checked out
+
+            // Nested submodules are NOT walked. Failing is deliberate: a silently incomplete snapshot
+            // is invisible to the reviewer, who would report on source it never saw.
+            var subIndex = await RunGitCaptureBytes(subDir, GitTimeout, true, ct, "ls-files", "--stage", "-z");
+            if (ReadSubmodulePrefixes(subIndex).Count > 0)
+                throw new InvalidOperationException(
+                    $"borrowed_snapshot_nested_submodules_unsupported: {subRel}");
 
             stdoutRecords.AddRange(await RunLsFilesPrefixedAsync(subDir, prefix, trackedArgs, ct));
             deletedRecords.AddRange(await RunLsFilesPrefixedAsync(subDir, prefix, deletedArgs, ct));

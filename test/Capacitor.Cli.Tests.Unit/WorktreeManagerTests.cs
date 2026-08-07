@@ -291,6 +291,39 @@ public class WorktreeManagerTests {
         }
     }
 
+    /// <summary>
+    /// A gitlink whose working-tree directory is a SYMLINK must not cause git to be invoked outside
+    /// the source tree. ContainedPath is lexical — Path.GetFullPath does not resolve links — so the
+    /// escaped path passes containment while `git -C` follows the link and enumerates a directory the
+    /// snapshot has no right to read. The per-file guards downstream cannot retroactively undo a
+    /// directory-level traversal that already happened.
+    /// </summary>
+    [Test]
+    public async Task BorrowedSnapshot_RefusesSubmodulePathThatIsASymlink() {
+        var (_, super) = MakeUpstreamWithSideRef("refs/pull/93/head", out _);
+        var outside = Path.Combine(Path.GetTempPath(), "kcap-outside-" + Guid.NewGuid().ToString("N")[..8]);
+        var root    = Path.Combine(Path.GetTempPath(), "kcap-borrowed-lnk-" + Guid.NewGuid().ToString("N")[..8]);
+        try {
+            Directory.CreateDirectory(outside);
+            File.WriteAllText(Path.Combine(outside, "secret.txt"), "must-not-be-snapshotted");
+
+            // Forge a gitlink entry whose path is a symlink to a directory outside the source.
+            Directory.CreateSymbolicLink(Path.Combine(super, "vendored"), outside);
+            Git(super, "update-index", "--add", "--cacheinfo",
+                "160000," + new string('a', 40) + ",vendored");
+
+            var manager = new WorktreeManager(
+                new DaemonConfig { WorktreeRoot = root }, NullLogger<WorktreeManager>.Instance);
+
+            var ex = await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+                await manager.CreateBorrowedSnapshotAsync(super, "review", CancellationToken.None));
+            await Assert.That(ex!.Message).StartsWith("borrowed_snapshot_symlink_unsupported");
+        } finally {
+            try { Directory.Delete(root, true); } catch { /* best-effort */ }
+            try { Directory.Delete(outside, true); } catch { /* best-effort */ }
+        }
+    }
+
     [Test]
     public async Task BorrowedSnapshot_IsIndependent_CopiesDirtyContext_AndRefreshesPristinely() {
         var (upstream, clone) = MakeUpstreamWithSideRef("refs/pull/88/head", out _);
