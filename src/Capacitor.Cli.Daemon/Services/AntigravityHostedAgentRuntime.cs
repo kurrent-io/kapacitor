@@ -189,6 +189,33 @@ internal sealed class AntigravityHostedAgentRuntime : IHostedAgentRuntime, IAcpT
     readonly string  _agentId;
     readonly string? _model;
 
+    /// <summary>
+    /// Best-effort teardown callback, invoked exactly once at the very END of <see cref="DisposeAsync"/>
+    /// — after the turn worker is joined and this runtime's last process handle is disposed, which is
+    /// the only point at which "no agy child of ours is still writing" is a fact rather than a hope.
+    /// The factory uses it to remove the per-launch <c>HOME</c>, whose content is the reviewer's own
+    /// conversation JSONL (the caller's diff, source excerpts and findings) — disposal, not disk
+    /// hygiene, and not something the daemon-epoch sweep should be left to do at the next boot.
+    /// Never throws: a home we cannot delete must not turn a completed review into a failed dispose.
+    /// </summary>
+    readonly Action? _onDisposed;
+
+    /// <summary>
+    /// Liveness-supervision: the per-launch activity clock, assigned by the factory BEFORE the first
+    /// turn is enqueued. Every stamp below is a no-op guard rather than a throw, so a direct
+    /// construction (tests, a caller that does not care about liveness) keeps working — which is
+    /// exactly why a clock assigned LATE is dangerous: it fails silently, leaving the launch's whole
+    /// stamp sequence written against nothing.
+    ///
+    /// <para><b>The exec-per-turn shape makes <see cref="AgentActivityClock.TurnInFlight"/> the
+    /// load-bearing one.</b> <c>AgentOrchestrator.FindReviewersToReap</c> lets a held turn suppress
+    /// the plain idle rule OUTRIGHT, so a flag stuck <see langword="true"/> produces a reviewer that
+    /// is never idle-reaped — and between turns this runtime has no process at all, so nothing
+    /// external would ever contradict it. It is therefore cleared in a <c>finally</c> around the whole
+    /// turn AND on entry to <see cref="RuntimePhase.Terminal"/>.</para>
+    /// </summary>
+    internal AgentActivityClock? ActivityClock { get; set; }
+
     /// <summary>The ACP-equivalent conversation id — resolved from turn 1's <c>init</c> event and never
     /// changed again. See <see cref="AcpSessionId"/> and
     /// this runtime's own conversation-id-stability test: a LATER
@@ -235,7 +262,8 @@ internal sealed class AntigravityHostedAgentRuntime : IHostedAgentRuntime, IAcpT
             TimeSpan?                                                      launchDeadline = null,
             TimeSpan?                                                      turnDeadline = null,
             int?                                                           transcriptCapacity = null,
-            int?                                                           pendingTurnsCapacity = null
+            int?                                                           pendingTurnsCapacity = null,
+            Action?                                                        onDisposed = null
         ) {
         _spawnTurn            = spawnTurn;
         _logger               = logger;
@@ -245,6 +273,7 @@ internal sealed class AntigravityHostedAgentRuntime : IHostedAgentRuntime, IAcpT
         _launchDeadline       = launchDeadline;
         _turnDeadline         = turnDeadline;
         _pendingTurnsCapacity = pendingTurnsCapacity ?? DefaultPendingTurnsCapacity;
+        _onDisposed           = onDisposed;
 
         // DropOldest: the turn worker is the only writer that matters for ordering, but
         // SingleWriter=false — EnterTerminal's TryComplete() can run concurrently with an in-flight
@@ -399,6 +428,13 @@ internal sealed class AntigravityHostedAgentRuntime : IHostedAgentRuntime, IAcpT
                     }
 
                     await _turnGate.WaitAsync(ownerCt).ConfigureAwait(false);
+
+                    // The turn is in flight from here — set BEFORE the spawn, because a turn whose
+                    // process is still being created is legitimately not idle. The finally is what
+                    // makes the pair exact: a faulted, deadlined or cancelled turn must never leave
+                    // the flag held, since a held turn suppresses the reaper's idle rule outright.
+                    ActivityClock?.SetTurnInFlight(true);
+
                     try {
                         await ProcessTurnAsync(turn, firstTurn, ownerCt).ConfigureAwait(false);
 
@@ -409,6 +445,10 @@ internal sealed class AntigravityHostedAgentRuntime : IHostedAgentRuntime, IAcpT
                                 Volatile.Write(ref _phase, (int)RuntimePhase.Idle);
                         }
                     } finally {
+                        // Also before the release, for the same reason the phase settles first: a
+                        // WaitForTurnIdleAsync caller that returns must observe a fully-settled agent,
+                        // never one that still claims a turn.
+                        ActivityClock?.SetTurnInFlight(false);
                         _turnGate.Release();
                     }
 
@@ -438,6 +478,12 @@ internal sealed class AntigravityHostedAgentRuntime : IHostedAgentRuntime, IAcpT
     async Task ProcessTurnAsync(PendingTurn turn, bool firstTurn, CancellationToken ownerCt) {
         var process = await SpawnTurnProcessAsync(turn, firstTurn, ownerCt).ConfigureAwait(false);
         if (process is null) return; // spawn failed/cancelled — SpawnTurnProcessAsync already handled it.
+
+        // The first of two launch-handshake stamps (the second is `session_created`, when this turn's
+        // `init` resolves the conversation id). Turn 1 only: LaunchStage is Starting-only and the
+        // orchestrator clears it the instant the agent reaches Running, so a later turn re-stamping it
+        // would resurrect a stage on an already-running agent.
+        if (firstTurn) ActivityClock?.SetLaunchStage("spawned");
 
         try {
             // Publish _current and check for an already-Terminal runtime as ONE atomic operation under
@@ -625,6 +671,11 @@ internal sealed class AntigravityHostedAgentRuntime : IHostedAgentRuntime, IAcpT
                 // Rule (e): the ONE place this ever completes successfully — unblocks any factory
                 // awaiting WaitForConversationIdAsync before it reads AcpSessionId.
                 _conversationIdResolved.TrySetResult();
+
+                // The handshake's second and last stamp — this is the moment the runtime has a
+                // conversation, the exec-per-turn analogue of an ACP `session/new` returning. Guarded
+                // by the same "id was null" branch, so it can fire at most once per runtime.
+                ActivityClock?.SetLaunchStage("session_created");
             } else if (!string.Equals(_conversationId, cid, StringComparison.Ordinal)) {
                 _logger.LogError(
                     "Antigravity: conversation id changed from {Old} to {New} mid-session (agentId={AgentId}); entering Terminal.",
@@ -644,6 +695,14 @@ internal sealed class AntigravityHostedAgentRuntime : IHostedAgentRuntime, IAcpT
     }
 
     void EmitEnvelope(AcpEventEnvelope env) {
+        // Advance BEFORE the channel write, never after: a reader blocked on Envelopes.ReadAsync can
+        // wake the instant TryWrite makes the item visible, on another thread, with no ordering
+        // relationship to what this one does next — so the reverse order is a race a fast reader wins,
+        // observing an envelope whose activity the clock has not yet recorded. Same reasoning
+        // AcpHostedAgentRuntime.EmitEnvelope documents. Advanced even on the dropped-because-completed
+        // path below: the content was genuinely produced.
+        ActivityClock?.Advance();
+
         if (!_transcript.Writer.TryWrite(env))
             _logger.LogDebug("Antigravity: dropped a transcript envelope — the transcript channel is already completed.");
     }
@@ -675,6 +734,13 @@ internal sealed class AntigravityHostedAgentRuntime : IHostedAgentRuntime, IAcpT
         }
 
         _terminalTcs.TrySetResult();
+
+        // Terminal is absorbing and no turn can run past it, so the reaper must never see a held turn
+        // from here on. The turn worker's own finally clears this too — but it does so only once the
+        // in-flight turn actually unwinds, which is AFTER TerminateAsync returns to its caller (and
+        // never at all, if a turn's process ignores cancellation). Clearing here is what makes "the
+        // runtime is stopped" and "the reviewer holds no turn" the same instant.
+        ActivityClock?.SetTurnInFlight(false);
 
         // Rule (e): unblock a factory parked in WaitForConversationIdAsync when a conversation id is
         // never going to arrive (e.g. turn 1's spawn itself failed) — never hang that caller forever.
@@ -810,5 +876,13 @@ internal sealed class AntigravityHostedAgentRuntime : IHostedAgentRuntime, IAcpT
 
         _ownerCts.Dispose();
         _turnGate.Dispose();
+
+        // LAST, and only here: the turn worker is joined and this runtime holds no process handle, so
+        // nothing of ours can still be writing into whatever the callback is about to remove.
+        try {
+            _onDisposed?.Invoke();
+        } catch (Exception ex) {
+            _logger.LogWarning(ex, "Antigravity: the runtime's disposal callback failed (agentId={AgentId}).", _agentId);
+        }
     }
 }
