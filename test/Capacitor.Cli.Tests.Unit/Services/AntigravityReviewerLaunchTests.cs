@@ -429,7 +429,16 @@ public class AntigravityReviewerLaunchTests {
         await spawned.Task.WaitAsync(HangGuard);
         await cts.CancelAsync();
 
-        await Assert.ThrowsAsync<OperationCanceledException>(() => launch.WaitAsync(HangGuard));
+        // Assignable, not exact. Which cancellation type surfaces depends on WHERE the cancel is
+        // observed — `OperationCanceledException` from a token check, `TaskCanceledException` from an
+        // awaited task — and both are correct here. `Assert.ThrowsAsync<T>` matches the type exactly,
+        // so it made this assertion load-dependent: it passed under the whole-suite filter and failed
+        // deterministically when this class ran alone.
+        Exception? caught = null;
+        try { await launch.WaitAsync(HangGuard); } catch (Exception ex) { caught = ex; }
+
+        await Assert.That(caught).IsNotNull();
+        await Assert.That(caught!).IsAssignableTo<OperationCanceledException>();
 
         // Still reaped: a shutdown must not be the one path that leaks a child.
         await Assert.That(child.Terminated).IsTrue();
