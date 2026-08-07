@@ -31,6 +31,57 @@ public class AntigravityReviewerHomeTests {
         await Assert.That(Directory.Exists(Path.Combine(home, ".gemini", "config", "plugins"))).IsFalse();
     }
 
+    /// <summary>
+    /// A refused Create must leave NOTHING behind. The caller binds this home's disposal to the
+    /// runtime it builds only after Create returns, so a throw from inside Create escapes with no
+    /// disposal path armed — and the first file written, <c>mcp_config.json</c>, carries the launch's
+    /// live loopback capability URL. The epoch sweep is the crash backstop, not a licence to leak on
+    /// an ordinary refusal.
+    ///
+    /// <para>Driven through the permissions layer's fail-closed throw rather than a simulated IO
+    /// fault, because that is the reachable-by-configuration path: an injected server this vendor
+    /// cannot classify. The assertion is on the home's ABSENCE, not on the exception — the throw is
+    /// the precondition, and asserting it alone would pass just as well with the directory left
+    /// sitting there.</para>
+    /// </summary>
+    [Test]
+    public async Task A_refused_create_leaves_no_home_behind() {
+        if (OperatingSystem.IsWindows()) return;
+        using var root = new TempDir();
+
+        var unclassifiable = new AcpMcpServerSpec("not-a-known-kcap-server", "kcap", ["mcp", "nope"], []);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => {
+            AntigravityReviewerHome.Create(
+                root.Path, "epoch1", "agent1", [unclassifiable], grantInjectedMcpTools: true);
+            return Task.CompletedTask;
+        });
+
+        var home = Path.Combine(
+            AntigravityReviewerHome.RootFor(root.Path),
+            AntigravityReviewerHome.NameFor("epoch1", "agent1"));
+
+        await Assert.That(Directory.Exists(home)).IsFalse();
+    }
+
+    /// <summary>
+    /// The control: the same call with a classifiable server DOES leave a home, so the assertion
+    /// above is measuring the refusal and not something that never creates a directory at all.
+    /// </summary>
+    [Test]
+    public async Task An_accepted_create_does_leave_a_home() {
+        if (OperatingSystem.IsWindows()) return;
+        using var root = new TempDir();
+
+        var home = AntigravityReviewerHome.Create(
+            root.Path, "epoch1", "agent1", [ResultChannel], grantInjectedMcpTools: true);
+
+        await Assert.That(Directory.Exists(home)).IsTrue();
+        await Assert.That(home).IsEqualTo(Path.Combine(
+            AntigravityReviewerHome.RootFor(root.Path),
+            AntigravityReviewerHome.NameFor("epoch1", "agent1")));
+    }
+
     [Test]
     public async Task The_home_is_owner_only_from_creation() {
         if (OperatingSystem.IsWindows()) return;

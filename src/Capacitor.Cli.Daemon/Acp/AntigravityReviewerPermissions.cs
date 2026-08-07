@@ -7,37 +7,23 @@ namespace Capacitor.Cli.Daemon.Acp;
 /// The <c>permissions.allow</c> rules an unattended Antigravity reviewer's per-launch home grants —
 /// the settings-file half of <see cref="AntigravityReviewerHome"/>.
 ///
-/// <para><b>Why a reviewer needs any grant at all.</b> <c>agy -p</c> has no human to answer a tool
-/// confirmation, so it auto-denies every one it raises. The reviewer's result channel IS an MCP tool,
-/// which made the one call a round depends on the one call print mode refused: measured, the
-/// conversation stops at <c>PLANNER_RESPONSE</c> with no <c>TOOL_CALL</c>, agy's own log reads
-/// <c>permission check failed for mcp "kcap-flow-result/submit_review_result": user denied permission
-/// for mcp</c>, and the round then hangs until the flow times out. agy names the remedy itself: an
-/// allow-rule under <c>permissions.allow</c>.</para>
+/// <para><c>agy -p</c> auto-denies every tool confirmation it raises, and the reviewer's result channel
+/// IS an MCP tool — so the one call a round waits for was the one print mode refused, and the round hung
+/// to the flow timeout.</para>
 ///
-/// <para><b>Not <c>--dangerously-skip-permissions</c>.</b> That flag is the reviewer's whole read
-/// boundary — measured on agy 1.1.10, with it an absolute <c>view_file</c> OUTSIDE the workspace
-/// succeeds and without it the same read is refused with a typed error (see
-/// <c>AntigravityHostedAgentRuntimeFactory.BuildTurnPsi</c>). Passing it to buy delivery would trade a
-/// containment property for a delivery fix. An allow-rule is scoped to the named tool and moves
-/// nothing else.</para>
+/// <para><b>agy's binary ships a string saying this cannot work</b> — <c>"…auto-denied. Settings
+/// allow-rules do not apply; re-run with --dangerously-skip-permissions…"</c>. It does not describe the
+/// MCP path: probed on 1.1.13 under an isolated home, the exact rule below let the call through and its
+/// absence reproduced the denial. Believe the probe, not the string; the rule form is agy's own
+/// (<c>mcp(chrome-devtools/*)</c> ships in the binary).</para>
 ///
-/// <para><b>Measured, not inferred, and the binary carries a string that contradicts it.</b> agy also
-/// ships <c>"…auto-denied. Settings allow-rules do not apply; re-run with
-/// --dangerously-skip-permissions…"</c>. That notice is NOT the MCP path: a probe against agy 1.1.13
-/// under an isolated home with one stub MCP server ran the exact rule below and the tool call reached
-/// the server, while the same home without it produced the auto-denial. The rule form is agy's own —
-/// its binary ships <c>mcp(chrome_devtools/evaluate_script)</c> and <c>mcp(chrome-devtools/*)</c>.</para>
+/// <para>The flag is not the alternative: it is the reviewer's whole read boundary (measured on 1.1.10 —
+/// with it an absolute out-of-workspace <c>view_file</c> succeeds), so it would trade containment for
+/// delivery. Rules are exact pairs, never <c>mcp(server/*)</c>, since the narrow form was measured to
+/// work and the wide one would grant whatever the channel serves next.</para>
 ///
-/// <para><b>Exact pairs, never a wildcard.</b> <c>mcp(kcap-flow-result/*)</c> would grant whatever the
-/// channel serves next without a reviewed decision, and the exact pair was measured to work — so there
-/// is no "the narrow form does not function" case buying the wider one.</para>
-///
-/// <para><b>Where the tool names come from.</b> The same two authoritative tables every other
-/// unattended reviewer's approval surface is built from — <c>KcapMcpRegistry</c>'s
-/// <c>ReservedResultChannelUnattendedSafeTools</c> and <c>ReviewFlowUnattendedSafeTools</c>. Naming
-/// tools here instead would be a second classification of the same decision, and the one that drifts is
-/// silent: a reviewer granted a tool it may not call, or refused one it needs.</para>
+/// <para>Tool names come from <c>KcapMcpRegistry</c>'s tables rather than being listed here — a second
+/// list would drift silently, granting a tool the reviewer may not call or withholding one it needs.</para>
 /// </summary>
 internal static class AntigravityReviewerPermissions {
     /// <summary>

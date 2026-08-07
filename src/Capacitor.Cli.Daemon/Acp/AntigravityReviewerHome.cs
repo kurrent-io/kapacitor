@@ -111,18 +111,36 @@ internal static class AntigravityReviewerHome {
               + "launch that could not be removed. Refusing rather than handing a reviewer another "
               + "review's conversation state.");
 
-        WriteMcpConfig(home, injected);
+        // Everything from the first WRITE onward is all-or-nothing. The caller binds this home's
+        // disposal to the runtime it creates AFTER Create returns, so a throw from in here leaves a
+        // home with no disposal path armed at all — and the first thing written, mcp_config.json,
+        // carries the launch's live loopback capability URL. The daemon-epoch sweep would eventually
+        // reclaim it, but that is the crash backstop, not a licence to leak on an ordinary refusal.
+        // WriteSettings' fail-closed throw for an unclassifiable server makes this reachable by
+        // configuration rather than only by IO failure.
+        //
+        // Scoped to start here deliberately: the emptiness refusal above keeps its existing
+        // behaviour of leaving the previous launch's undeletable content alone, and nothing
+        // capability-bearing exists before this point.
+        try {
+            WriteMcpConfig(home, injected);
 
-        // Injecting a server is only half of a usable reviewer — see WriteSettings.
-        if (grantInjectedMcpTools) WriteSettings(home, injected);
+            // Injecting a server is only half of a usable reviewer — see WriteSettings.
+            if (grantInjectedMcpTools) WriteSettings(home, injected);
 
-        // The kcap plugin dir is what lets agy's OWN capture hooks fire (job 1) — its absence is
-        // the whole mechanism, so it is checked rather than trusted to follow from "we never wrote
-        // it". A future change that seeds a fuller home must trip this, not silently double-capture.
-        if (Directory.Exists(AntigravityPaths.PluginDir(home)))
-            throw new InvalidOperationException(
-                $"antigravity_reviewer_home_not_isolated: '{home}' carries a kcap plugin directory, "
-              + "which would let this reviewer's own capture hooks fire against its conversation.");
+            // The kcap plugin dir is what lets agy's OWN capture hooks fire (job 1) — its absence is
+            // the whole mechanism, so it is checked rather than trusted to follow from "we never wrote
+            // it". A future change that seeds a fuller home must trip this, not silently double-capture.
+            if (Directory.Exists(AntigravityPaths.PluginDir(home)))
+                throw new InvalidOperationException(
+                    $"antigravity_reviewer_home_not_isolated: '{home}' carries a kcap plugin directory, "
+                  + "which would let this reviewer's own capture hooks fire against its conversation.");
+        } catch {
+            // Best-effort, and never allowed to replace the real reason: a cleanup fault here would
+            // otherwise mask the fail-closed refusal the caller needs to see.
+            Delete(home, stateDir, log ?? NullLogger.Instance);
+            throw;
+        }
 
         return home;
     }
