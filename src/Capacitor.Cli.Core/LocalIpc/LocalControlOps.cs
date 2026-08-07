@@ -39,6 +39,12 @@ public sealed class LocalControlOps(string daemonName, TimeProvider? time = null
     const string TimedOut          = "timed_out";
 
     public async Task<StopAgentResult> StopAgentAsync(string agentId, bool force, CancellationToken ct) {
+        // An empty agentId is not "stop nothing" on the wire — the daemon's StopV2 handler
+        // (AgentOrchestrator.LocalIpc.cs) reads it as stop-ALL. This is a Core API whose name
+        // says "stop agent", so that footgun must never reach the socket.
+        if (string.IsNullOrEmpty(agentId))
+            throw new ArgumentException("agentId must not be empty — an empty id is interpreted by the daemon as stop-ALL", nameof(agentId));
+
         var reply = await ExchangeAsync(LocalFrame.StopV2(force, agentId), StopReplyTimeout, ct);
         return reply.Type switch {
             FrameType.StopAck => ParseStopAck(reply.Text, agentId),

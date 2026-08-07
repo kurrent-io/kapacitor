@@ -226,6 +226,19 @@ public class LocalControlOpsTests {
         });
     }
 
+    /// An empty agentId is not "stop nothing" on the wire — the daemon's StopV2 handler reads it
+    /// as stop-ALL (AgentOrchestrator.LocalIpc.cs). No scripted server or socket-dir arrangement
+    /// here: the whole point is that the guard throws BEFORE StopAgentAsync ever reaches
+    /// ExchangeAsync/LocalSocketPaths, so this runs against a daemon name nothing is listening on
+    /// and would fail with LocalControlOpsException(daemon_unreachable) if the guard were
+    /// missing or placed after the connect attempt.
+    [Test]
+    public async Task Stop_empty_agent_id_throws_before_connecting() {
+        var ops = new LocalControlOps("lco-nonexistent-" + Guid.NewGuid().ToString("N")[..6]);
+        await Assert.ThrowsAsync<ArgumentException>(
+            async () => await ops.StopAgentAsync("", false, CancellationToken.None));
+    }
+
     // ---- GetConsentPolicyAsync ----
 
     [Test]

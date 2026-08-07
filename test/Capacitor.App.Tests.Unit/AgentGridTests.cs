@@ -405,6 +405,48 @@ public class AgentGridTests {
         await Assert.That(row.IsDisposed).IsTrue();
     }
 
+    /// Regression coverage for a P1 bug found in review: SortAndBind(out _agents, ...) replaced
+    /// the Agents COLLECTION INSTANCE on every WhenActivated run, but Agents was a plain get-only
+    /// property with no change notification — after a hide-to-tray/reopen cycle (deactivate then
+    /// reactivate), the view's ItemsControl stayed bound to the previous, now-dead collection and
+    /// the grid froze. Agents is now ONE stable ReadOnlyObservableCollection wrapper created once
+    /// in the constructor; every activation's SortAndBind targets the same backing
+    /// ObservableCollectionExtended in place instead of allocating a new one.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Agents_reference_survives_deactivate_reactivate_and_keeps_updating() {
+        var (sameReference, idsAfterReactivation) = await AvaloniaSession.DispatchAsync(() => {
+            var service = new FakeDaemonClientService();
+            var (actions, notifier) = NewActions(service);
+            var vm = new MainWindowViewModel(service, actions, notifier, CancellationToken.None);
+
+            var activation1 = vm.Activator.Activate();
+            service.Agents.AddOrUpdate(Dto(id: "a"));
+            Dispatcher.UIThread.RunJobs();
+            var agentsBeforeDeactivate = vm.Agents;
+
+            activation1.Dispose(); // window close (hide to tray)
+
+            var activation2 = vm.Activator.Activate(); // reopen
+            Dispatcher.UIThread.RunJobs(); // flush the reactivation's initial replay of the retained cache
+
+            var sameRef = ReferenceEquals(agentsBeforeDeactivate, vm.Agents);
+
+            // A cache change AFTER reactivation must still land in the SAME captured reference —
+            // that's exactly what a live ItemsControl bound to it (never re-reading the Agents
+            // property, per the ORIGINAL bug) needs to keep working.
+            service.Agents.AddOrUpdate(Dto(id: "b"));
+            Dispatcher.UIThread.RunJobs();
+
+            activation2.Dispose();
+
+            return (sameRef, agentsBeforeDeactivate.Select(r => r.Id).ToList());
+        });
+
+        await Assert.That(sameReference).IsTrue();
+        await Assert.That(idsAfterReactivation).IsEquivalentTo(["a", "b"], CollectionOrdering.Matching);
+    }
+
     [Test]
     [NotInParallel("AvaloniaSession")]
     public async Task GridEnabled_reflects_attach_state() {

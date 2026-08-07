@@ -14,10 +14,18 @@ public interface IAppNotifier {
 public sealed class AppNotifier : IAppNotifier {
     readonly Subject<string> _messages = new();
 
+    // Producers are concurrent Task.Run bodies (AgentActionService's per-agent stops, pause ops,
+    // etc.) — Rx's grammar requires OnNext calls to a single Subject be serialized (never
+    // overlapping), and a bare Subject does not do this itself. ONE lock around both effects also
+    // keeps the stderr line and the pushed message in the same relative order across threads.
+    readonly Lock _lock = new();
+
     public IObservable<string> Messages => _messages.AsObservable();
 
     public void Notify(string message) {
-        Console.Error.WriteLine($"kcap: {message}");
-        _messages.OnNext(message);
+        lock (_lock) {
+            Console.Error.WriteLine($"kcap: {message}");
+            _messages.OnNext(message);
+        }
     }
 }
