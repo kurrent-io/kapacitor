@@ -262,8 +262,11 @@ public static class MachineCommand {
     /// <c>... 2>/dev/null | gh secret set X</c> yields exactly the value.</para>
     /// </summary>
     static async Task PrintSecretAsync(string name, string secret, CreateMachineApplicationResponse provisioned) {
+        // Says only what is TRUE AT THIS POINT. Registration has not run yet and may fail, so claiming
+        // "machine created" here would be a lie in exactly the case the operator most needs to trust
+        // the output. `PrintSetupAsync` announces the completed machine once registration succeeds.
         await Console.Error.WriteLineAsync();
-        await Console.Error.WriteLineAsync($"Machine '{name}' created.");
+        await Console.Error.WriteLineAsync($"Credential issued for '{name}'.");
         await Console.Error.WriteLineAsync();
         await Console.Error.WriteLineAsync($"  Client ID     {provisioned.ClientId}");
         await Console.Error.WriteLineAsync($"  Organization  {provisioned.OrganizationId}");
@@ -283,7 +286,7 @@ public static class MachineCommand {
     static async Task PrintSetupAsync(
             RegisterMachineResponse registered, CreateMachineApplicationResponse provisioned, string visibility) {
         await Console.Error.WriteLineAsync();
-        await Console.Error.WriteLineAsync($"  Registered as {registered.UserId}");
+        await Console.Error.WriteLineAsync($"Machine registered as {registered.UserId}. It can now record.");
         await Console.Error.WriteLineAsync();
         await Console.Error.WriteLineAsync("  Give the runner these environment variables:");
         await Console.Error.WriteLineAsync();
