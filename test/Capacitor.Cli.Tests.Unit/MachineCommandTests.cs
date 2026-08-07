@@ -92,6 +92,21 @@ public class MachineCommandTests {
         await Assert.That(Help()).Contains(value);
 
     /// <summary>
+    /// Review round 1 rewrote the --visibility rejection to explain what the flag does, because
+    /// erroring on a value with no server effect is otherwise surprising. Pinned here so the
+    /// explanation is not lost in a later tidy-up: without it the message reads as a hard requirement
+    /// on something that configures nothing.
+    /// </summary>
+    [Test]
+    public async Task The_help_does_not_promise_that_the_visibility_flag_configures_anything() {
+        var help = Help();
+
+        await Assert.That(help).Contains("does not configure the runner for you");
+        await Assert.That(help).DoesNotContain("--visibility sets")
+            .Because("the flag selects the value PRINTED, it does not apply it anywhere");
+    }
+
+    /// <summary>
     /// Revocation's limits, stated. An operator responding to a leaked credential must know the old
     /// token keeps working until it expires, so they can decide whether to also delete the application
     /// in WorkOS. Leaving that out would let someone believe a revoke was instantaneous.

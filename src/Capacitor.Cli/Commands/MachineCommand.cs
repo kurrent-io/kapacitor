@@ -57,8 +57,14 @@ public static class MachineCommand {
         }
 
         if (!Visibilities.Contains(visibility, StringComparer.Ordinal)) {
+            // Validated even though the value is never SENT anywhere: its whole job is to produce a
+            // correct `kcap config set default_visibility ...` line in the output, and printing an
+            // instruction that will not work is worse than refusing. The message says so, because
+            // erroring on a flag with no server effect is otherwise surprising. Raised in review.
             await Console.Error.WriteLineAsync(
-                $"--visibility must be one of: {string.Join(", ", Visibilities)}");
+                $"--visibility must be one of: {string.Join(", ", Visibilities)}. "
+              + "It does not configure anything here — it selects the value printed in the setup "
+              + "instructions, which you then set on the machine itself.");
 
             return 1;
         }
@@ -131,9 +137,28 @@ public static class MachineCommand {
             await Console.Error.WriteLineAsync(
                 $"A machine named '{name}' already exists in this organization "
               + $"(client id {provisioned.ClientId}).");
+            // Deliberately does NOT say "shown when you created it" — whoever runs this may not be
+            // the person who did, and telling them to go and look for a secret they never had sends
+            // them somewhere that does not exist. Raised in review round 1.
             await Console.Error.WriteLineAsync(
-                "Its secret was shown only when it was created and cannot be retrieved. "
-              + "To replace it, revoke that machine and create one with a new name.");
+                "Its secret cannot be retrieved. To replace it, revoke that machine and create one "
+              + "with a different name.");
+
+            return 1;
+        }
+
+        // A create that carries no secret must NEVER reach the printer.
+        //
+        // Console.Out.WriteLineAsync(null) writes a bare newline, and the documented idiom for this
+        // command is `... 2>/dev/null | gh secret set KCAP_CLIENT_SECRET` — so a malformed response
+        // would store an EMPTY secret and report success. The runner would then fail to authenticate
+        // with nothing anywhere explaining why. The server already 502s this case; this is the second
+        // half of the same guard, on the side that would do the damage. Raised in review round 1.
+        if (string.IsNullOrEmpty(provisioned.ClientSecret)) {
+            await Console.Error.WriteLineAsync(
+                "The auth service reported a new machine but returned no secret. "
+              + $"The WorkOS application '{name}' ({provisioned.ClientId}) exists and is unusable — "
+              + "delete it in the WorkOS dashboard, then try again.");
 
             return 1;
         }
@@ -144,7 +169,7 @@ public static class MachineCommand {
 
         if (registered is null) return 1;
 
-        await PrintCredentialAsync(name, provisioned, registered, visibility);
+        await PrintCredentialAsync(name, provisioned.ClientSecret, provisioned, registered, visibility);
 
         return 0;
     }
@@ -159,11 +184,16 @@ public static class MachineCommand {
                 CapacitorJsonContext.Default.RegisterMachineRequest);
 
             if (response.StatusCode is HttpStatusCode.NotFound) {
+                // The application EXISTS in WorkOS and is unregistered here. Saying "try again" alone
+                // would send the user into the idempotent-hit wall, because the name is now taken by
+                // the orphan. Both ways out are stated. Raised in review round 1.
                 await Console.Error.WriteLineAsync(
-                    "This server does not have machine credentials enabled. "
-                  + "The WorkOS application was created but nothing here recognises it — "
-                  + "ask an administrator to enable the feature, then run `kcap machine create` again "
-                  + "with a new name.");
+                    $"This server does not have machine credentials enabled, so '{name}' "
+                  + $"({clientId}) was created in WorkOS but is not registered here.");
+                await Console.Error.WriteLineAsync(
+                    "That name is now taken. Ask an administrator to enable the feature, then either "
+                  + "delete that application in the WorkOS dashboard and reuse the name, or create a "
+                  + "machine with a different one.");
 
                 return null;
             }
@@ -196,7 +226,7 @@ public static class MachineCommand {
     /// secret store) and everything else to STDERR (so a pipe captures only the value).
     /// </summary>
     static async Task PrintCredentialAsync(
-            string name, CreateMachineApplicationResponse provisioned,
+            string name, string secret, CreateMachineApplicationResponse provisioned,
             RegisterMachineResponse registered, string visibility) {
         await Console.Error.WriteLineAsync();
         await Console.Error.WriteLineAsync($"Machine '{name}' created.");
@@ -211,7 +241,7 @@ public static class MachineCommand {
         await Console.Error.WriteLineAsync();
 
         // STDOUT, alone, so `kcap machine create ci-runner 2>/dev/null` yields exactly the secret.
-        await Console.Out.WriteLineAsync(provisioned.ClientSecret);
+        await Console.Out.WriteLineAsync(secret);
 
         await Console.Error.WriteLineAsync();
         await Console.Error.WriteLineAsync("  Give the runner these environment variables:");
