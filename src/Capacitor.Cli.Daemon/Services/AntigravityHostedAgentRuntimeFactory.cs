@@ -452,25 +452,14 @@ internal sealed partial class AntigravityHostedAgentRuntimeFactory(
     /// <c>tool_info.error</c>. Nothing here should be read as the daemon-owned worktree confining what
     /// a hosted agent can see.</para>
     ///
-    /// <para><b>What Claude is, and is NOT, a precedent for.</b> It is the precedent for a SINGLE-AXIS
-    /// no-prompt posture existing at all: <c>--permission-mode bypassPermissions</c> is one flag with
-    /// nothing underneath it, already shipped, and grouped with this concept by
-    /// <see cref="IHostedAgentLauncher"/>'s own doc. Codex is not that analogue — its posture is two
-    /// independent axes (<c>Sandbox</c> × <c>Approval</c>), so a no-prompt Codex still sits on a
-    /// sandbox value, whereas this vendor and Claude each have one axis and no floor beneath it.
-    ///
-    /// <b>It is explicitly NOT a precedent for WHICH launch kind gets that posture — Claude's split
-    /// runs the other way.</b> <c>ClaudeLauncher.BuildArgs</c> adds the flag only inside its
-    /// <c>ctx.IsReviewFlow</c> branch (and not for a borrowed workspace), and
-    /// <c>ClaudeLauncher.DisablesApprovalPrompts</c> is
-    /// <c>ctx.IsReviewFlow &amp;&amp; ctx.Work == WorkLocation.OwnedWorktree</c> — its own comment
-    /// states that interactive launches always prompt. So Claude widens its REVIEWER and prompts on
-    /// its interactive agent, the mirror image of the split here, and for its own reason: a Claude
-    /// reviewer's writes are confined to a daemon-owned throwaway worktree, whereas an interactive
-    /// Claude has a human present to answer a dialog. This runtime has neither property — a hosted
-    /// <c>agy</c> turn is exec-per-turn with no dialog anyone could answer, and a soft-denied tool
-    /// still exits 0, so the agent merely looks broken. Do NOT "align with the precedent" by moving
-    /// this flag onto the reviewer arm; that is the exact direction the split exists to prevent.</para>
+    /// <para><b>Claude is a precedent for a single-axis no-prompt posture existing, NOT for which
+    /// launch kind gets it.</b> Codex is not the analogue — its posture is two axes
+    /// (<c>Sandbox</c> × <c>Approval</c>), so a no-prompt Codex still sits on a sandbox. But Claude's
+    /// own split runs the OTHER way: <c>ClaudeLauncher.BuildArgs</c> adds
+    /// <c>bypassPermissions</c> only under <c>ctx.IsReviewFlow</c>, because its reviewer writes into a
+    /// throwaway worktree while its interactive agent has a human to answer the dialog. This runtime
+    /// has neither property. Do not "align with the precedent" by moving this flag to the reviewer
+    /// arm — that is the direction the split exists to prevent.</para>
     ///
     /// <para><b>What is deliberately absent.</b> No <c>--dangerously-skip-permissions</c> for a
     /// reviewer: it runs in a daemon-OWNED worktree and needs only to read it, which agy's headless

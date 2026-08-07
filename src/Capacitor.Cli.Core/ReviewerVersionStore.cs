@@ -23,24 +23,13 @@ namespace Capacitor.Cli.Core;
 /// consent" failure the enable flag exists to avoid. The daemon writes it; only an explicit operator
 /// command changes it.</para>
 ///
-/// <para><b>ONE per-vendor exception: antigravity's record is not anchored to a consent event.</b>
-/// Every other vendor's floor is seeded when its reviewer is turned ON, so the recorded build is the
-/// one installed at the moment the operator consented. Antigravity's floor gates more than its
-/// reviewer — it also gates HOSTED <c>agy</c> launches, which ship on by default and take no consent
-/// — so a consent-less daemon must still record one, or every hosted launch refuses as
-/// <c>version_no_minimum</c> forever. <c>DaemonRunner.SeedReviewerFloors</c> therefore seeds this one
-/// vendor from the binary RESOLVING, and seeding is once-only (keyed on the record's presence), so
-/// the two facts compose into a window: install <c>agy</c> 1.0.0 and boot with the reviewer off →
-/// floor 1.0.0; later upgrade to 1.1.10 and turn the reviewer on → seeding no-ops and the floor stays
-/// 1.0.0, so a subsequent DOWNGRADE to 1.0.0 runs an unattended reviewer that a consent-anchored
-/// floor would have refused as <c>version_below_minimum</c>. Accepted deliberately: the exposure is
-/// bounded to builds at or above the one installed before consent (never an arbitrarily old one), the
-/// hosted requirement is real, and the operator's remedy is one command —
-/// <c>kcap daemon reviewer affirm --vendor antigravity</c> raises the floor to what is installed now.
-/// The gate is NOT weakened to compensate, and consent deliberately does NOT re-seed: a re-seed on
-/// consent is the "acknowledge the upgrade you never read" failure this type's minimum-not-exact rule
-/// exists to remove, and it would silently carry a floor forward past a build the operator had
-/// already been refused on.</para>
+/// <para><b>ONE per-vendor exception: antigravity's floor is seeded from the binary resolving, not
+/// from a consent event</b> — it also gates HOSTED <c>agy</c> launches, which take no consent, and a
+/// consent-less daemon with no floor refuses every one as <c>version_no_minimum</c>. Seeding is
+/// once-only, so a floor recorded before consent is not raised when the reviewer is later enabled:
+/// a downgrade to that pre-consent build is admitted where a consent-anchored floor would refuse it.
+/// Accepted — bounded to builds at or above that one, remedy is
+/// <c>kcap daemon reviewer affirm --vendor antigravity</c>. Consent must not re-seed.</para>
 ///
 /// <para>Keyed by vendor, one file each, so affirming one vendor's build says nothing about another's.
 /// Kiro's filename is unchanged from when this type was Kiro-only — renaming it would have silently

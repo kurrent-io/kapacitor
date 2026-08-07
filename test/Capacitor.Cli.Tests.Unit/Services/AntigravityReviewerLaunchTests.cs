@@ -1,5 +1,6 @@
 // test/Capacitor.Cli.Tests.Unit/Services/AntigravityReviewerLaunchTests.cs
 using System.Diagnostics;
+using Capacitor.Cli.Commands;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Acp;
 using Capacitor.Cli.Core.LocalIpc;
@@ -737,7 +738,9 @@ public class AntigravityReviewerLaunchTests {
         if (!File.Exists(path))
             throw new FileNotFoundException($"The launch wrote no mcp_config.json under '{home}'.", path);
 
-        return await File.ReadAllTextAsync(path);
+        // Shared read: this file lives in the child's own config dir, so agy may rewrite it. A
+        // write-denying open is mandatory sharing on Windows and invisible on macOS/Linux.
+        return await WatchCommand.ReadAllTextSharedAsync(path);
     }
 
     /// <summary>
