@@ -1056,6 +1056,13 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
             // for a turn that isn't really in flight yet.
             ActivityClock?.SetTurnInFlight(true);
 
+            // Diagnostic pair with AgentOrchestrator's "SendInput received"/"SendInput delivered" —
+            // those stop at the daemon→runtime boundary, so a hung follow-up round is otherwise
+            // indistinguishable in the logs from a delivered prompt the agent never acted on. One
+            // line per turn, here at the same bracket point as TurnInFlight above (never per envelope
+            // or chunk).
+            LogTurnStarted(_agentId, _vendor);
+
             try {
                 await SendPromptAsync(connection, turn, ct).ConfigureAwait(false);
             } catch (Exception ex) when (ex is not OperationCanceledException) {
@@ -1085,6 +1092,10 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
                 // (stopReason, fault, or cancellation) — this finally always runs for a turn that
                 // reached the entered state above, so the true/false pair is exactly bracketed.
                 ActivityClock?.SetTurnInFlight(false);
+
+                // Same bracket as LogTurnStarted above — logged unconditionally so a turn that began
+                // and never finished is visible as a started-with-no-matching-ended line.
+                LogTurnEnded(_agentId, _vendor);
 
                 lock (_reconnectLock) {
                     if (_inFlight is { } f && ReferenceEquals(f.Turn, turn))
@@ -2403,6 +2414,12 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
 
     [LoggerMessage(Level = LogLevel.Information, Message = "ACP hosted agent session ended: agentId={AgentId} acpSessionId={AcpSessionId}")]
     partial void LogSessionEnded(string agentId, string acpSessionId);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "ACP turn started for agent {AgentId} (vendor={Vendor})")]
+    partial void LogTurnStarted(string agentId, string vendor);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "ACP turn ended for agent {AgentId} (vendor={Vendor})")]
+    partial void LogTurnEnded(string agentId, string vendor);
 
     [LoggerMessage(Level = LogLevel.Error, Message = "ACP launch handshake wedged at stage '{Stage}': agentId={AgentId} did not advance within {CapSeconds}s — terminating the child.")]
     partial void LogLaunchStageTimeout(string agentId, string stage, double capSeconds);

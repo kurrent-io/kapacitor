@@ -292,4 +292,74 @@ public class AcpHostedAgentRuntimeProtocolNegotiationTests {
         var infoEntries = logger.Entries.Where(e => e.Level == LogLevel.Information).ToList();
         await Assert.That(infoEntries).DoesNotContain(e => e.Message.Contains("session ended"));
     }
+
+    // ── Turn-start/turn-end diagnostic pair ─────────────────────────────────────────────────────
+    //
+    // AgentOrchestrator's "SendInput received"/"SendInput delivered" pair stops at the daemon→
+    // runtime boundary, so it cannot tell a slow-but-working reviewer from one that received a
+    // follow-up prompt and never acted on it. LogTurnStarted/LogTurnEnded close that gap at the
+    // point a turn genuinely begins/ends executing (ProcessAdmittedTurnAsync's ActivityClock
+    // bracket) — these tests pin that the pair fires exactly once per turn, never per chunk/update.
+
+    static async Task WaitUntilAsync(Func<bool> condition, TimeSpan timeout) {
+        var deadline = DateTime.UtcNow + timeout;
+        while (!condition() && DateTime.UtcNow < deadline)
+            await Task.Delay(10);
+    }
+
+    [Test]
+    public async Task Initial_prompt_turn_logs_exactly_one_started_and_one_ended_pair() {
+        var logger = new CaptureLogger();
+        await using var h = new Harness(logger, agentId: "agent-turn-1");
+        h.StartFakeAgentLoop();
+
+        await h.Runtime.StartAsync("/abs/worktree", "do the thing", h.Cts.Token).WaitAsync(HangGuard);
+
+        // StartAsync enqueues the initial prompt without awaiting it (fire-and-forget), so the
+        // turn may not have started/finished yet at this exact instant — poll rather than
+        // asserting immediately (mirrors this file's ReceivedCalls polling above).
+        List<(LogLevel Level, string Message)> Started() => logger.Entries
+            .Where(e => e.Level == LogLevel.Information && e.Message.Contains("turn started") && e.Message.Contains("agent-turn-1"))
+            .ToList();
+        List<(LogLevel Level, string Message)> Ended() => logger.Entries
+            .Where(e => e.Level == LogLevel.Information && e.Message.Contains("turn ended") && e.Message.Contains("agent-turn-1"))
+            .ToList();
+
+        await WaitUntilAsync(() => Ended().Count >= 1, HangGuard);
+
+        await Assert.That(Started().Count).IsEqualTo(1);
+        await Assert.That(Ended().Count).IsEqualTo(1);
+        await Assert.That(Started()[0].Message).Contains("vendor=cursor");
+        await Assert.That(Ended()[0].Message).Contains("vendor=cursor");
+    }
+
+    [Test]
+    public async Task A_follow_up_turn_adds_exactly_one_more_started_and_ended_pair() {
+        var logger = new CaptureLogger();
+        await using var h = new Harness(logger, agentId: "agent-turn-2");
+        h.StartFakeAgentLoop();
+
+        await h.Runtime.StartAsync("/abs/worktree", "do the thing", h.Cts.Token).WaitAsync(HangGuard);
+
+        int StartedCount() => logger.Entries.Count(e =>
+            e.Level == LogLevel.Information && e.Message.Contains("turn started") && e.Message.Contains("agent-turn-2"));
+        int EndedCount() => logger.Entries.Count(e =>
+            e.Level == LogLevel.Information && e.Message.Contains("turn ended") && e.Message.Contains("agent-turn-2"));
+
+        // Let the initial turn (fire-and-forget from StartAsync) fully settle before sending the
+        // follow-up — otherwise the follow-up could queue behind it and this test would just be
+        // re-observing the same single pair twice.
+        await WaitUntilAsync(() => EndedCount() >= 1, HangGuard);
+        await Assert.That(StartedCount()).IsEqualTo(1);
+        await Assert.That(EndedCount()).IsEqualTo(1);
+
+        await h.Runtime.SendUserInputAsync("follow-up input");
+
+        await WaitUntilAsync(() => EndedCount() >= 2, HangGuard);
+
+        // Exactly one MORE pair — not zero (the follow-up was silently dropped), not several (the
+        // line firing per chunk/update instead of once per turn).
+        await Assert.That(StartedCount()).IsEqualTo(2);
+        await Assert.That(EndedCount()).IsEqualTo(2);
+    }
 }
