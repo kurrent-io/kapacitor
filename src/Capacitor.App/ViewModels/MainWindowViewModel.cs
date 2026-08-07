@@ -31,18 +31,14 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
     // prescribe an upgrade direction.
     const string SkewMessage = "app and daemon are incompatible — make sure both are up to date";
 
-    // Status-dot palette (presentation only) — hex-only constants (plain strings, not Brush
-    // instances). A Brush is an AvaloniaObject with UI-thread affinity enforced the moment the
-    // renderer references it; caching one as a shared `static readonly` field would tie its
-    // affinity to whichever thread happens to trigger this type's static initializer FIRST
-    // (e.g. a plain unit test calling a static helper off the UI thread) and then poison every
-    // later render that reuses the same cached instance. DotBrush below constructs a fresh
-    // instance per call instead — cheap, and always on whatever thread the caller is on.
-    const string ConnectedHex   = "#4CAF50";
-    const string InProgressHex  = "#FFB300";
-    const string DisruptedHex   = "#E53935";
-    const string UnavailableHex = "#9E9E9E";
-
+    // StatusColors (shared with TrayIconRenderer's tray-icon overlay, spec §4) is hex-only
+    // constants (plain strings, not Brush instances). A Brush is an AvaloniaObject with UI-thread
+    // affinity enforced the moment the renderer references it; caching one as a shared
+    // `static readonly` field would tie its affinity to whichever thread happens to trigger this
+    // type's static initializer FIRST (e.g. a plain unit test calling a static helper off the UI
+    // thread) and then poison every later render that reuses the same cached instance. DotBrush
+    // below constructs a fresh instance per call instead — cheap, and always on whatever thread
+    // the caller is on.
     static IBrush DotBrush(string hex) => new SolidColorBrush(Color.Parse(hex));
 
     readonly IDaemonClientService _service;
@@ -79,7 +75,7 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
     // Status-dot color for ConnectionDisplay's same bucket — kept as a single source of truth so
     // the dot and the word can never disagree.
     ObservableAsPropertyHelper<IBrush>? _statusDotBrush;
-    public IBrush StatusDotBrush => _statusDotBrush?.Value ?? DotBrush(UnavailableHex);
+    public IBrush StatusDotBrush => _statusDotBrush?.Value ?? DotBrush(StatusColors.Unavailable);
 
     // "n of m agents" only while Connected (spec §1.5: active_agents is a display count, never
     // a free-slots/launch-capacity claim) — "—" otherwise, even though the last-known snapshot
@@ -265,7 +261,7 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
                 .DisposeWith(disposables);
 
             _statusDotBrush = status.CombineLatest(daemonConnection, StatusDotFor)
-                .ToProperty(this, x => x.StatusDotBrush, DotBrush(UnavailableHex))
+                .ToProperty(this, x => x.StatusDotBrush, DotBrush(StatusColors.Unavailable))
                 .DisposeWith(disposables);
 
             _agentCountText = status.CombineLatest(snapshots, (st, snap) => (st, snap))
@@ -368,15 +364,15 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
     // Same bucketing as ConnectionDisplayFor, kept as a parallel switch (not derived from the text)
     // so a future wording tweak there can never silently detune the dot's color.
     internal static IBrush StatusDotFor(AttachStatus status, string daemonConnection) {
-        if (status.State == AttachState.Connecting) return DotBrush(InProgressHex);
+        if (status.State == AttachState.Connecting) return DotBrush(StatusColors.InProgress);
         if (status.State == AttachState.Unreachable)
-            return status.Reason == IncompatibleReason ? DotBrush(DisruptedHex) : DotBrush(UnavailableHex);
+            return status.Reason == IncompatibleReason ? DotBrush(StatusColors.Disrupted) : DotBrush(StatusColors.Unavailable);
 
         return daemonConnection switch {
-            "connected" => DotBrush(ConnectedHex),
-            "connecting" or "reconnecting" => DotBrush(InProgressHex),
-            "disconnected" => DotBrush(DisruptedHex),
-            _ => DotBrush(UnavailableHex),
+            "connected" => DotBrush(StatusColors.Connected),
+            "connecting" or "reconnecting" => DotBrush(StatusColors.InProgress),
+            "disconnected" => DotBrush(StatusColors.Disrupted),
+            _ => DotBrush(StatusColors.Unavailable),
         };
     }
 

@@ -5,6 +5,11 @@
         <ImplicitUsings>enable</ImplicitUsings>
         <Nullable>enable</Nullable>
         <IsPackable>false</IsPackable>
+        <!-- This is an unbundled `dotnet run` executable, so macOS shows the binary name (not an
+             app-bundle display name) on dock hover — give it a human-friendly one. RootNamespace
+             stays Capacitor.App: only the output/assembly identity changes here. -->
+        <AssemblyName>Kurrent Capacitor</AssemblyName>
+        <RootNamespace>Capacitor.App</RootNamespace>
     </PropertyGroup>
     <ItemGroup>
         <ProjectReference Include="..\Capacitor.Cli.Core\Capacitor.Cli.Core.csproj" />
@@ -13,6 +18,12 @@
         <PackageReference Include="Avalonia.Themes.Fluent" />
         <PackageReference Include="ReactiveUI.Avalonia" />
         <PackageReference Include="DynamicData" />
+    </ItemGroup>
+    <ItemGroup>
+        <!-- .axaml files are auto-included as AvaloniaXaml by Avalonia's build props; plain
+             assets (the product-mark bitmap, spec §4) need an explicit AvaloniaResource entry
+             to ship inside the assembly's avares:// resource set. -->
+        <AvaloniaResource Include="Assets\kcap-icon.png" />
     </ItemGroup>
     <ItemGroup>
         <InternalsVisibleTo Include="Capacitor.App.Tests.Unit" />

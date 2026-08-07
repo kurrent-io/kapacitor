@@ -7,6 +7,7 @@
                      x:TypeArguments="vm:MainWindowViewModel"
                      x:DataType="vm:MainWindowViewModel"
                      Title="Kurrent Capacitor Desktop"
+                     Icon="avares://Kurrent Capacitor/Assets/kcap-icon.png"
                      Width="840" Height="480">
     <Grid Margin="20" RowDefinitions="Auto,*">
         <StackPanel Grid.Row="0" Spacing="20">

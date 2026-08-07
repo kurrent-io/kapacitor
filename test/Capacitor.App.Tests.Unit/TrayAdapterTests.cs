@@ -93,7 +93,7 @@ public class TrayAdapterTests {
         await Assert.That(seen[1].Header).IsEqualTo("v2");
     }
 
-    // ---- TrayIconRenderer.Get (needs Application.Current's merged TrayGlyphs.axaml resources) ----
+    // ---- TrayIconRenderer.Get (needs a real Avalonia asset loader for Assets/kcap-icon.png) ----
 
     [Test]
     [NotInParallel("AvaloniaSession")]

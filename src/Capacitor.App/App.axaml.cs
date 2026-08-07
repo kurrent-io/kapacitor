@@ -168,6 +168,7 @@ public partial class App : Application {
     internal static Window BuildStartupErrorWindow(Exception ex) =>
         new() {
             Title = "Kurrent Capacitor — startup failed",
+            Icon = ProductIcon.WindowIcon,
             Width = 640,
             Height = 400,
             Content = new ScrollViewer {

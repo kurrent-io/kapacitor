@@ -94,13 +94,17 @@ server-side from the same array (never treated as launch capacity). Between `Con
 first snapshot there is no gap: the AI-1650 client only reports Connected together with a valid
 first snapshot.
 
-**Icon.** One monochrome glyph asset per state (16px + 32px for 2x), rendered via a
-`TrayIconRenderer` that returns a `WindowIcon` for `(state, count)` with per-value caching. For
-Running, the count is drawn onto the glyph bitmap (`RenderTargetBitmap`, 2x, `9+` cap). Avalonia
-does not expose NSImage template-image behavior, so light/dark menu-bar contrast and the dynamic
-count bitmap are exactly the "known Avalonia platform variance" the issue assigns to manual macOS
-verification. **Pinned fallback** if that verification fails: glyph-only Running asset, count moves
-to the menu header line — a one-line change in the renderer, not a redesign.
+**Icon.** A single brand-mark base (the product mark, `Assets/kcap-icon.png`, 32px) with a small
+state overlay in the bottom-right corner (~12px), rendered via a `TrayIconRenderer` that returns a
+`WindowIcon` for `(state, count)` with per-value caching — not one glyph asset per state. Running
+overlays `CountBadge(count)` on a filled dark-green circle (legible against the burgundy mark,
+`9+` cap); every other state overlays a plain color dot from the same status-dot palette
+MainWindow's status line uses (`StatusColors`), so the window and the tray icon can never disagree
+about what a color means. Avalonia does not expose NSImage template-image behavior, so light/dark
+menu-bar contrast and the dynamic overlay bitmap are exactly the "known Avalonia platform
+variance" the issue assigns to manual macOS verification. **Pinned fallback** if the overlay
+misrenders: glyph-only base (brand mark, no overlay), count moves to the menu header line — a
+one-line change in the renderer, not a redesign.
 
 ## 5. Tray menu & adapter
 
