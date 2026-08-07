@@ -23,6 +23,25 @@ public class AntigravityReviewerCapabilityTests {
 
     // ── the arms ──────────────────────────────────────────────────────────────────────────────────
 
+    /// <summary>
+    /// Pins a cross-file assumption the factory's ladder is BUILT on but does not own: with neither
+    /// version known, the verdict must be <see cref="AntigravityReviewerDecision.VersionUnresolved"/>.
+    ///
+    /// <para><c>ReviewerRefusal</c> calls <c>Decide(posix, enabled, null, null)</c> as a probe-free
+    /// pre-check and treats exactly that arm as "consent and platform are fine, keep going" — the
+    /// binary-missing check and the version probe both sit AFTER it. The arm depends on
+    /// <c>ReviewerVersionAffirmations.Decide</c> testing the installed version before the minimum,
+    /// which is a property of a shared type in another assembly. Reorder those two null checks — a
+    /// natural "no minimum recorded, skip the comparison" impulse — and this returns
+    /// <see cref="AntigravityReviewerDecision.VersionNoMinimum"/> instead, the pre-check refuses
+    /// before ever looking for the binary, and a daemon with no <c>agy</c> installed is told its
+    /// minimum is missing. Both halves would still look correct read on their own.</para>
+    /// </summary>
+    [Test]
+    public async Task NeitherVersionKnown_IsUnresolved_WhichTheFactorysPreProbeDependsOn() =>
+        await Assert.That(AntigravityReviewerCapability.Decide(Posix, true, null, null))
+            .IsEqualTo(AntigravityReviewerDecision.VersionUnresolved);
+
     [Test]
     public async Task ConsentPlusAMinimumMeetingBuild_IsTheOnlyPermittedCombination() =>
         await Assert.That(AntigravityReviewerCapability.Decide(Posix, true, "1.1.10", Minimum))
