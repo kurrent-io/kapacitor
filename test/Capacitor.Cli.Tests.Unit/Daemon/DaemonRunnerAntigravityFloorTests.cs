@@ -129,6 +129,71 @@ public class DaemonRunnerAntigravityFloorTests {
         }
     }
 
+    /// <summary>
+    /// <b>The half of the hosted-launch fix that lives in the daemon rather than the factory.</b>
+    /// Antigravity's floor gates hosted launches too, and those need no reviewer consent — so a
+    /// consent-less daemon must still SEED a floor. Seeded from the consent event (as Kiro and Gemini
+    /// are) it never would, and every hosted launch on such a daemon would refuse as
+    /// <c>version_no_minimum</c>: the consent gate removed from the front of the ladder and quietly
+    /// reinstated behind it.
+    ///
+    /// <para>Asserted through a real hosted <c>StartAsync</c> reaching PAST the ladder rather than by
+    /// reading the record back, which would only re-derive the writer's own answer. The observable is
+    /// that a turn child was REQUESTED — the first thing beyond the gate — and not the launch's
+    /// outcome: <c>StartAsync</c> wraps everything after the gate in its own coded
+    /// <c>InvalidOperationException</c>, so a thrown sentinel is indistinguishable from a refusal,
+    /// while a turn source that was never called is exactly what a refusal looks like.</para>
+    /// </summary>
+    [Test]
+    public async Task AConsentLessDaemonSeedsTheFloorThatAdmitsAHostedLaunch() {
+        Skip.Unless(!OperatingSystem.IsWindows(), "The stub binary below is a POSIX shell script.");
+
+        var stub = await StubAgyAsync("1.1.10");
+
+        try {
+            var config = Config(minimum: null);
+            config.AntigravityPath                      = stub;
+            config.AntigravityUnattendedReviewerEnabled = false;
+
+            // Restated rather than taken from the factory: this is the shape RunAsync computes.
+            var stateDir = Path.Combine(config.StateDir!, DaemonLockPaths.Sanitize(config.Name));
+
+            DaemonRunner.SeedVersionFloor(stateDir, DaemonRunner.AntigravityVendor, stub);
+
+            var spawned = false;
+            var factory = new AntigravityHostedAgentRuntimeFactory(
+                config, NullLoggerFactory.Instance,
+                turnSource: (_, _) => {
+                    spawned = true;
+                    throw new NotSupportedException("the launch itself is not what this test is about");
+                });
+
+            try {
+                await factory.StartAsync(HostedCtx(), CancellationToken.None);
+            } catch (InvalidOperationException) {
+                // Expected: the turn source above cannot produce a conversation.
+            }
+
+            await Assert.That(spawned).IsTrue();
+
+            // The control: consent is still withheld, so the REVIEWER is still not advertised. Without
+            // it, seeding having somehow re-enabled the reviewer would read as a pass.
+            await Assert.That(factory.SupportsUnattended).IsFalse();
+        } finally {
+            File.Delete(stub);
+        }
+    }
+
+    static RuntimeStartContext HostedCtx() => new(
+        AgentId: "agent-1", Vendor: "antigravity", SourceRepoPath: "/repo",
+        Worktree: new WorktreeInfo(Path: Path.GetTempPath(), Branch: "b", SourceRepo: "/repo"),
+        Prompt: "do the thing",
+        Model: null, Effort: null, Tools: null,
+        IsReview: false, IsReviewFlow: false, Review: null,
+        Cols: 80, Rows: 24,
+        ServerUrl: "http://kcap.test", DaemonBridgeUrl: null, CapacitorPath: "/usr/local/bin/kcap",
+        DaemonId: "daemon-1", DaemonEpoch: "epoch-1");
+
     static async Task<string> StubAgyAsync(string version) {
         var stub = Path.Combine(Path.GetTempPath(), "kcap-agy-stub-" + Guid.NewGuid().ToString("N"));
 

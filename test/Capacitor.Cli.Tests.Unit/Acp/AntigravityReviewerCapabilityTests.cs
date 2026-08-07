@@ -27,7 +27,7 @@ public class AntigravityReviewerCapabilityTests {
     /// Pins a cross-file assumption the factory's ladder is BUILT on but does not own: with neither
     /// version known, the verdict must be <see cref="AntigravityReviewerDecision.VersionUnresolved"/>.
     ///
-    /// <para><c>ReviewerRefusal</c> calls <c>Decide(posix, enabled, null, null)</c> as a probe-free
+    /// <para><c>LaunchRefusal</c> calls <c>Decide(posix, consented, null, null)</c> as a probe-free
     /// pre-check and treats exactly that arm as "consent and platform are fine, keep going" — the
     /// binary-missing check and the version probe both sit AFTER it. The arm depends on
     /// <c>ReviewerVersionAffirmations.Decide</c> testing the installed version before the minimum,
@@ -190,16 +190,25 @@ public class AntigravityReviewerCapabilityTests {
         await Assert.That(reason).Contains("agy");
     }
 
-    /// <summary>The most common misconfiguration — enabling the reviewer against an already-running
-    /// daemon, which seeds its record at startup — so the remedy names BOTH the restart and the verb
-    /// that avoids one.</summary>
+    /// <summary>
+    /// The remedy names BOTH the restart (a daemon seeds its record at startup) and the verb that
+    /// avoids one.
+    ///
+    /// <para><b>And it must NOT name the reviewer consent flag.</b> This arm gates hosted launches as
+    /// well as reviews — the floor protects the per-launch isolated home, which is not a reviewer
+    /// concern — so pointing a hosted operator at <c>KCAP_ANTIGRAVITY_UNATTENDED_REVIEWER</c> would
+    /// send them to a switch that has no bearing on their launch. It is also no longer true even for a
+    /// reviewer: the daemon now seeds this vendor's floor whenever <c>agy</c> resolves, consent or
+    /// not.</para>
+    /// </summary>
     [Test]
     public async Task TheNoMinimumReason_SendsTheOperatorToARestartOrTheAffirmVerb() {
         var reason = Reason(AntigravityReviewerDecision.VersionNoMinimum, "1.1.10", null);
 
         await Assert.That(reason).StartsWith("antigravity_reviewer_version_no_minimum");
-        await Assert.That(reason).Contains("KCAP_ANTIGRAVITY_UNATTENDED_REVIEWER");
+        await Assert.That(reason).Contains("restart");
         await Assert.That(reason).Contains("kcap daemon reviewer affirm --vendor antigravity");
+        await Assert.That(reason).DoesNotContain("KCAP_ANTIGRAVITY_UNATTENDED_REVIEWER");
     }
 
     [Test]

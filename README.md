@@ -869,7 +869,9 @@ export AGY_ADC_AUTH=1                           # selects ADC; without it agy st
 ```
 
 **Minimum version.** Containment here depends on the installed build honouring `HOME` and reading no other
-global config source, so the daemon records a minimum `agy` version the first time you enable the reviewer.
+global config source, so the daemon records a minimum `agy` version at the first startup that finds `agy`
+installed — for this vendor that is not conditional on the flag above, because the same minimum also gates
+[hosted Antigravity agents](#hosted-antigravity-agents-run-without-permission-prompts).
 It is a **minimum, not an exact match**: any build at or above it runs, so **an `agy` upgrade needs no
 action from you** — which matters more here than for the other reviewers, since `agy` updates itself
 (observed going 1.1.8 → 1.1.10 mid-session). A build older than the recorded minimum, or one whose
@@ -905,9 +907,18 @@ soft-deny is the posture they want.
 
 Hosted launches otherwise take the same route as the reviewer above — the per-launch isolated `HOME`
 included, so your own `~/.gemini` config and the kcap capture plugin inside it never reach a hosted agent,
-and its transcript is recorded once rather than twice. They are gated by the same daemon switches for the
-same reason: `KCAP_ANTIGRAVITY_UNATTENDED_REVIEWER=1` and a recorded minimum `agy` version are required for
-a hosted launch too, because the containment those protect is the isolated home both shapes rely on.
+and its transcript is recorded once rather than twice.
+
+**`KCAP_ANTIGRAVITY_UNATTENDED_REVIEWER` is not required for a hosted launch, and setting it does not
+enable one.** Hosted Antigravity is on as soon as `agy` resolves, like every other hosted vendor. That flag
+consents specifically to an *unattended review*, whose risk is that it runs under your daemon's authority
+and returns what it read to whoever asked for the review — someone who need not be you. A hosted agent has
+no such gap: the server only ever launches on a daemon you own, so the person launching it is you.
+
+What a hosted launch *does* share with the reviewer is the **minimum `agy` version** (and POSIX), because
+the containment that protects is the isolated `HOME` both shapes rely on. Your daemon records that minimum
+at startup whenever `agy` resolves, so there is normally nothing to do; if you installed `agy` after the
+daemon started, restart it or run `kcap daemon reviewer affirm --vendor antigravity`.
 
 #### If your daemon runs as a service
 
@@ -1393,6 +1404,8 @@ Agent ids are long, so `attach` and `stop` accept **any unique prefix** — an a
 
 - `kcap agent attach` on one is **read-only** — you see its output, your keystrokes are not delivered, and your terminal size is not applied to it.
 - `kcap agent stop` on one is **refused** unless you pass `--force`, and `stop --all` skips them and says how many it skipped.
+
+**Agents with no terminal.** Some hosted vendors (Antigravity's `agy`, and the ACP-backed ones — Cursor, Copilot, Kiro, Gemini) never produce terminal output at all: their stdout is protocol traffic, not a screen. `kcap agent attach` on one of those is **refused by name**, telling you which vendor it is and to drive the agent from the dashboard, rather than attaching you to a blank window that never repaints. They still appear in `kcap agent ls`, and `kcap agent stop` works on them normally.
 
 Enforcement lives in the daemon, so a current CLI can't bypass it by skipping the check or lying about `--force`. That guarantee has two version-skew exceptions: an old `kcap` sends the legacy `Stop` request, which has no `--force` concept — the daemon treats that as `--force`, so an old client can silently force-stop a review or review-flow agent. And against an old daemon, `ls`/`attach` degrade silently (no kind reported, every agent reads as `agent`), but `stop` doesn't degrade — it sends a newer request format the old daemon can't decode, so the connection closes and the CLI tells you to restart the daemon instead of stopping anything.
 

@@ -1,6 +1,7 @@
 // test/Capacitor.Cli.Tests.Unit/Services/AntigravityReviewerLaunchTests.cs
 using System.Diagnostics;
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.LocalIpc;
 using Capacitor.Cli.Daemon;
 using Capacitor.Cli.Daemon.Acp;
 using Capacitor.Cli.Daemon.Services;
@@ -536,25 +537,49 @@ public class AntigravityReviewerLaunchTests {
         await Assert.That(spy.Spawns[0].ArgumentList).Contains("--dangerously-skip-permissions");
     }
 
-    /// <summary>Lifting the interactive refusal did NOT lift the vendor ladder: consent, platform and
-    /// the recorded build minimum still gate every launch from this factory. Deliberate — the isolated
-    /// home a hosted launch depends on is the same containment the version floor exists to protect —
-    /// and pinned here so the coupling cannot be dropped silently.</summary>
+    /// <summary>
+    /// <b>The split this ladder exists for, asserted on ONE daemon so it is a split and not two
+    /// independent facts.</b> The consent flag is REVIEWER-ONLY, and its own justification is what
+    /// makes that so: an unattended review runs under the daemon user's authority and returns what it
+    /// read to whoever requested the review, who need not be the operator. A hosted launch has no such
+    /// exposure — the server's <c>DaemonRegistry</c> is keyed
+    /// <c>(TeamId, OwnerUserId, Name)</c> and the launch hub resolves a daemon with the CALLER's own
+    /// normalized user id, so the launcher IS the daemon's owner — and hosted Antigravity therefore
+    /// ships on by default, like every other hosted vendor.
+    ///
+    /// <para>Before this, a hosted launch on a daemon that had simply never set the reviewer flag
+    /// failed with <c>antigravity_unattended_reviewer_disabled</c> — a review complaint about a launch
+    /// that is not a review.</para>
+    /// </summary>
     [Test]
-    public async Task A_consent_withheld_daemon_refuses_an_interactive_launch_too() {
+    public async Task Consent_gates_a_review_launch_but_not_a_hosted_launch_on_the_same_daemon() {
+        Skip.Unless(!OperatingSystem.IsWindows(), "POSIX-only: the per-launch home cannot be owner-only on Windows.");
+
         var config = EnabledConfig();
         config.AntigravityUnattendedReviewerEnabled = false;
 
+        var factory = Factory(config, new SpyTurnSource().SpawnAsync);
+
+        // Hosted: runs. Reading the bound conversation id (not merely "did not throw") is what makes
+        // this a launch assertion rather than a gate assertion.
+        var start = await factory.StartAsync(Ctx(isReviewFlow: false), CancellationToken.None)
+            .WaitAsync(HangGuard);
+
+        await using (var runtime = start.Runtime)
+            await Assert.That(start.Transcript!.AcpSessionId).IsEqualTo(FixedConversationId);
+
+        // Review: still refused, on the SAME factory instance, with the text that names the switch.
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            Factory(config, new SpyTurnSource().SpawnAsync)
-                .StartAsync(Ctx(isReviewFlow: false), CancellationToken.None));
+            factory.StartAsync(Ctx(isReviewFlow: true), CancellationToken.None));
 
         await Assert.That(ex!.Message).StartsWith("antigravity_unattended_reviewer_disabled");
+        await Assert.That(ex.Message).Contains("KCAP_ANTIGRAVITY_UNATTENDED_REVIEWER");
     }
 
     /// <summary>Defence in depth: the orchestrator's unattended gate runs first, but an explicit
     /// vendor request can reach a factory directly, so the consent gate is re-applied at the launch
-    /// boundary rather than trusted to advertisement.</summary>
+    /// boundary rather than trusted to advertisement. Separate from the split test above because this
+    /// arm throws before touching the filesystem, so it is assertable on Windows too.</summary>
     [Test]
     public async Task A_consent_withheld_daemon_refuses_a_review_launch() {
         var config = EnabledConfig();
@@ -565,6 +590,117 @@ public class AntigravityReviewerLaunchTests {
                 .StartAsync(Ctx(), CancellationToken.None));
 
         await Assert.That(ex!.Message).StartsWith("antigravity_unattended_reviewer_disabled");
+    }
+
+    /// <summary>
+    /// <b>The arm most likely to be lost by an over-broad "hosted skips the ladder" fix.</b> The build
+    /// minimum is not reviewer-specific: it protects the per-launch isolated <c>HOME</c>, which is
+    /// containment a hosted launch depends on exactly as a review does — losing it silently removes
+    /// that protection.
+    ///
+    /// <para>Asserted on a CONSENT-LESS daemon deliberately. On a consenting one the refusal could not
+    /// distinguish "the floor applies to hosted" from "the ladder still runs at all", and a fix that
+    /// skipped the whole ladder for hosted launches would pass.</para>
+    /// </summary>
+    [Test]
+    public async Task A_below_minimum_build_is_refused_for_a_hosted_launch_too() {
+        var config = EnabledConfig();
+        config.AntigravityUnattendedReviewerEnabled = false;
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            Factory(config, new SpyTurnSource().SpawnAsync, version: "1.1.8")
+                .StartAsync(Ctx(isReviewFlow: false), CancellationToken.None));
+
+        await Assert.That(ex!.Message).StartsWith("antigravity_reviewer_version_below_minimum");
+    }
+
+    /// <summary>The platform arm is shared for the same reason as the floor: Windows cannot create the
+    /// per-launch home owner-only, and that home holds a hosted agent's own conversation transcript as
+    /// surely as it holds a reviewer's.</summary>
+    [Test]
+    public async Task A_windows_host_refuses_a_hosted_launch_too() {
+        var config = EnabledConfig();
+        config.AntigravityUnattendedReviewerEnabled = false;
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            Factory(config, new SpyTurnSource().SpawnAsync, posixHost: false)
+                .StartAsync(Ctx(isReviewFlow: false), CancellationToken.None));
+
+        await Assert.That(ex!.Message).StartsWith("antigravity_reviewer_unsupported_platform");
+    }
+
+    /// <summary>Binary presence is shared too — there is nothing to launch either way.</summary>
+    [Test]
+    public async Task A_missing_binary_refuses_a_hosted_launch_too() {
+        var config = EnabledConfig();
+        config.AntigravityUnattendedReviewerEnabled = false;
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            Factory(config, new SpyTurnSource().SpawnAsync, binaryExists: false)
+                .StartAsync(Ctx(isReviewFlow: false), CancellationToken.None));
+
+        await Assert.That(ex!.Message).StartsWith("antigravity_reviewer_binary_missing");
+    }
+
+    /// <summary>
+    /// The floor's "nothing recorded" arm reaches a hosted launch, and its remedy must not send a
+    /// hosted operator to the REVIEWER consent flag. That switch has no bearing on a hosted launch, and
+    /// telling someone to set it is the same confusion — one layer down — that this whole split
+    /// removes. The affirm verb is the remedy that works for both.
+    /// </summary>
+    [Test]
+    public async Task A_hosted_launch_with_no_recorded_minimum_is_refused_without_naming_the_reviewer_flag() {
+        var config = EnabledConfig(minimum: null);
+        config.AntigravityUnattendedReviewerEnabled = false;
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            Factory(config, new SpyTurnSource().SpawnAsync)
+                .StartAsync(Ctx(isReviewFlow: false), CancellationToken.None));
+
+        await Assert.That(ex!.Message).StartsWith("antigravity_reviewer_version_no_minimum");
+        await Assert.That(ex.Message).DoesNotContain("KCAP_ANTIGRAVITY_UNATTENDED_REVIEWER");
+        await Assert.That(ex.Message).Contains("kcap daemon reviewer affirm");
+    }
+
+    /// <summary>Advertisement is specifically an offer to REVIEW unattended, so it keeps the full
+    /// ladder — consent included. Lifting consent from the launch boundary must not lift it here: the
+    /// server refuses an unadvertised reviewer, and a daemon that advertised without consent would be
+    /// offering the very thing its operator never opted into.</summary>
+    [Test]
+    public async Task Advertisement_still_requires_consent_even_though_a_hosted_launch_does_not() {
+        Skip.Unless(!OperatingSystem.IsWindows(), "POSIX-only: the per-launch home cannot be owner-only on Windows.");
+
+        var config = EnabledConfig();
+        config.AntigravityUnattendedReviewerEnabled = false;
+
+        var factory = Factory(config, new SpyTurnSource().SpawnAsync);
+
+        // Withheld from advertisement...
+        await Assert.That(factory.SupportsUnattended).IsFalse();
+        await Assert.That(factory.DescribeUnattendedSupport().WithheldReason!)
+            .StartsWith("antigravity_unattended_reviewer_disabled");
+
+        // ...on the very daemon whose hosted launches this same factory admits.
+        var start = await factory.StartAsync(Ctx(isReviewFlow: false), CancellationToken.None)
+            .WaitAsync(HangGuard);
+
+        await start.Runtime.DisposeAsync();
+    }
+
+    /// <summary>A borrowed workspace is refused because this runtime has no containment strategy for
+    /// one — a fact about the runtime, not about reviews — so the refusal must not describe the launch
+    /// as a review. Reachable from the hosted arm, which is exactly where the old wording read wrong.
+    /// </summary>
+    [Test]
+    public async Task A_borrowed_workspace_is_refused_without_calling_the_launch_a_review() {
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            Factory(EnabledConfig(), new SpyTurnSource().SpawnAsync)
+                .StartAsync(Ctx(isReviewFlow: false) with { Work = WorkLocation.BorrowedCwd },
+                            CancellationToken.None));
+
+        await Assert.That(ex!.Message).StartsWith("antigravity_reviewer_requires_owned_worktree");
+        await Assert.That(ex.Message).Contains("daemon-owned worktree");
+        await Assert.That(ex.Message).DoesNotContain("a review must run");
     }
 
     /// <summary>

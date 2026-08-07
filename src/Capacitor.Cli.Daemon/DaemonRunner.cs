@@ -250,9 +250,15 @@ public static partial class DaemonRunner {
             coverageStateDir, AcpVendorDescriptors.Gemini.Vendor,
             config.GeminiUnattendedReviewerEnabled, config.GeminiPath);
 
-        SeedReviewerAffirmation(
-            coverageStateDir, AntigravityVendor,
-            config.AntigravityUnattendedReviewerEnabled, config.AntigravityPath);
+        // Antigravity is the one vendor whose floor is NOT reviewer-only: it gates hosted agy launches
+        // too (the isolated HOME they rely on is the containment it protects), and those ship on by
+        // default with no consent flag. Seeding from the consent event would therefore leave every
+        // consent-less daemon refusing hosted launches as version_no_minimum forever — the reviewer
+        // gate removed from the front of the ladder and reinstated behind it. Installing agy IS the
+        // event here; the resolver's null-for-a-missing-binary answer is what keeps this a no-op
+        // otherwise, at the cost of one bounded `agy --version` on the first boot that finds no
+        // record, never again.
+        SeedVersionFloor(coverageStateDir, AntigravityVendor, config.AntigravityPath);
 
         // Recovers reviewer homes left by a SIGKILLed predecessor. Runs unconditionally: a daemon
         // whose operator has since disabled the reviewer still owns whatever its last incarnation
@@ -869,6 +875,19 @@ public static partial class DaemonRunner {
             string stateDir, string vendor, bool enabled, string binaryPath) {
         if (!enabled) return;
 
+        SeedVersionFloor(stateDir, vendor, binaryPath);
+    }
+
+    /// <summary>
+    /// The same seeding with NO consent condition — for a vendor whose recorded floor gates more than
+    /// its reviewer.
+    ///
+    /// <para>Deliberately a separate name rather than <c>SeedReviewerAffirmation(…, enabled: true)</c>:
+    /// a literal <c>true</c> sitting between two <c>config.XUnattendedReviewerEnabled</c> siblings
+    /// reads as an oversight, and "tidying" it back to the flag would silently reinstate the very gate
+    /// the caller exists to avoid. With no boolean to flip, the asymmetry has to be read.</para>
+    /// </summary>
+    internal static void SeedVersionFloor(string stateDir, string vendor, string binaryPath) {
         try {
             if (!ReviewerVersionStore.RecordExists(stateDir, vendor)
              && VendorVersionResolver.Resolve(binaryPath) is { Length: > 0 } installed)
