@@ -19,6 +19,11 @@ namespace Capacitor.Cli.Daemon.Acp;
 ///
 /// <para><b>Two contracts a real implementation must honor — <c>AntigravityHostedAgentRuntime</c> is
 /// built against them, not just against the happy path:</b></para>
+/// <para>0. <see cref="IAsyncDisposable.DisposeAsync"/> MAY terminate a still-running child, and an
+/// implementation over a real process does. It is therefore NOT a source of exit evidence: a caller
+/// that needs to know whether a child exited must terminate it explicitly and read
+/// <see cref="HasExited"/> while the handle is still valid, BEFORE disposing — a disposed process
+/// object reports exited whether or not it is.</para>
 /// <para>1. <see cref="IAsyncDisposable.DisposeAsync"/> MUST be idempotent. Both
 /// <c>AntigravityHostedAgentRuntime.ProcessTurnAsync</c> (in its own <c>finally</c>) and the runtime's
 /// <c>DisposeAsync</c> can each independently reach a disposal call on the SAME instance across

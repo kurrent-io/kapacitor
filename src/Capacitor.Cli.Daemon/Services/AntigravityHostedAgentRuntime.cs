@@ -211,6 +211,13 @@ internal sealed class AntigravityHostedAgentRuntime : IHostedAgentRuntime, IAcpT
     /// meaningful timeout a caller would ever want to tune.</summary>
     static readonly TimeSpan ExitConfirmationGrace = TimeSpan.FromSeconds(5);
 
+    /// <summary>How long a turn's teardown waits for a child it had to KILL — one that outlived both
+    /// its own stdout and <see cref="ExitConfirmationGrace"/> — before giving up and reporting the exit
+    /// unconfirmed. Deliberately shorter than <see cref="DisposeAsync"/>'s 5s turn-worker join budget:
+    /// this wait happens inside the worker, so a longer one could push a worker that was about to join
+    /// past that budget and produce the very "could not confirm" outcome it exists to avoid.</summary>
+    static readonly TimeSpan TurnExitForceGrace = TimeSpan.FromSeconds(2);
+
     readonly ILogger _logger;
     readonly string  _agentId;
     readonly string? _model;
@@ -232,6 +239,11 @@ internal sealed class AntigravityHostedAgentRuntime : IHostedAgentRuntime, IAcpT
     /// of that process handle, because a disposed process object reports
     /// <see cref="IAgyTurnProcess.HasExited"/> <see langword="true"/> and asking afterwards would
     /// mistake "no longer observable" for "confirmed exited".
+    ///
+    /// <para>Read AFTER that <c>finally</c> has terminated a child still running at teardown, not
+    /// before: the disposal it is about to perform kills the tree anyway, so asking first reported
+    /// "unconfirmed" for children this runtime itself went on to kill — firing the fail-safe, and
+    /// stranding a reviewer HOME, far more often than the surviving-grandchild case it is for.</para>
     ///
     /// <para>Starts <see langword="true"/> — a runtime that never spawned a turn has no child to
     /// confirm — and is cleared the instant one exists. <see cref="DisposeAsync"/>'s cleanup gate is
@@ -702,9 +714,27 @@ internal sealed class AntigravityHostedAgentRuntime : IHostedAgentRuntime, IAcpT
             // process is never reused, so it is always disposed exactly once, right here, regardless of
             // how the turn ended.
 
+            // SETTLE the child before asking about it. A child still running here is one this method
+            // is about to kill anyway — process.DisposeAsync() below kills the tree — so reading
+            // HasExited first answered a question this turn had not finished deciding, and reported
+            // "unconfirmed" for a child that then genuinely exited. That mattered twice below: a PID
+            // record left naming a dead process, and a transcript-bearing HOME left on disk for the
+            // next daemon-epoch sweep. Bounded well under DisposeAsync's own worker-join budget, so
+            // forcing the exit can never itself turn a joinable worker into an unjoined one.
+            if (!process.HasExited) {
+                try {
+                    await process.TerminateAsync(TurnExitForceGrace).ConfigureAwait(false);
+                } catch (Exception ex) {
+                    _logger.LogDebug(ex, "Antigravity: failed to reap a turn child that outlived its output.");
+                }
+            }
+
             // Asked BEFORE that disposal, which is the only point this is a truthful question: a
             // disposed process object reports HasExited true, so the same read afterwards would
-            // manufacture a confirmation. DisposeAsync's cleanup gate is the consumer.
+            // manufacture a confirmation. The terminate above only makes the answer more often YES; it
+            // can never make a survivor read as exited, so the fail-safe direction is unchanged — a
+            // child that ignores the kill still reports unconfirmed. DisposeAsync's cleanup gate is
+            // the consumer.
             _turnExitConfirmed = process.HasExited;
 
             // Cleared on CONFIRMED exit only, off that same single read: an unconfirmed survivor keeps

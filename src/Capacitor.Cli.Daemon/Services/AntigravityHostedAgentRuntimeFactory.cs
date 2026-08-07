@@ -578,6 +578,12 @@ internal sealed partial class AgyTurnProcess : IAgyTurnProcess, IAgyTurnDiagnost
     public async ValueTask DisposeAsync() {
         if (Interlocked.Exchange(ref _disposed, 1) != 0) return;   // idempotent, per the interface contract
 
+        // No bounded wait after the kill, deliberately. Kill(entireProcessTree: true) is SIGKILL on
+        // POSIX, which no child can catch or defer, so the death is already effectively synchronous
+        // with the call — a wait here was measured to change nothing observable against a real child.
+        // Callers that need a CONFIRMED exit terminate first and read HasExited while the handle is
+        // still valid (see AntigravityHostedAgentRuntime.ProcessTurnAsync's teardown), which is the
+        // only place that reading is truthful anyway.
         try {
             if (!_process.HasExited) _process.Kill(entireProcessTree: true);
         } catch {

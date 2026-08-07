@@ -430,6 +430,86 @@ public class AntigravityRuntimeLifecycleTests {
         await Assert.That(invoked).IsEqualTo(1);
     }
 
+    /// <summary>
+    /// The other half of the gate, and the one that was wrong: a child that LINGERS past its stdout
+    /// EOF and the exit-confirmation grace, but dies the moment it is actually killed. The runtime's
+    /// own turn teardown kills it — so it genuinely exited before the runtime let go of the handle —
+    /// and the confirmed-exit consequences must therefore BOTH follow: the durable PID record is
+    /// cleared, and the per-launch HOME (this callback) is removed.
+    ///
+    /// <para>Before the fix, <c>_turnExitConfirmed</c> was latched from <c>HasExited</c> BEFORE the
+    /// kill that made it true, so this shape reported "unconfirmed": the fail-safe fired on a child
+    /// that had in fact exited, stranding the reviewer's conversation JSONL on disk until the next
+    /// daemon-epoch sweep and leaving a PID record naming a dead process. The fail-safe direction is
+    /// unchanged — see the sibling test above, where the kill does NOT work and the skip still
+    /// stands — only the moment the question is asked.</para>
+    /// </summary>
+    [Test]
+    public async Task Dispose_runs_the_teardown_callback_when_a_lingering_turn_child_is_killed_at_teardown() {
+        var invoked = 0;
+        var cleared = 0;
+        var process = new LingeringTurnProcess();
+
+        await using (var rt = new AntigravityHostedAgentRuntime(
+                spawnTurn: (_, _, _) => Task.FromResult<IAgyTurnProcess>(process),
+                logger: NullLogger.Instance,
+                agentId: "agy-lingerer",
+                onDisposed: () => Interlocked.Increment(ref invoked))) {
+            rt.PidCallbacks = new AgyPidRecordCallbacks(
+                Record: _ => { },
+                Clear:  () => Interlocked.Increment(ref cleared));
+
+            await rt.SendUserInputAsync("hello").WaitAsync(HangGuard);
+            await rt.WaitForConversationIdAsync(CancellationToken.None).WaitAsync(HangGuard);
+            await rt.WaitForTurnIdleAsync(CancellationToken.None).WaitAsync(HangGuard);
+
+            // The child was genuinely still alive when its stdout hit EOF — otherwise this asserts
+            // nothing about a lingering child at all, and the fake could have exited on its own.
+            await Assert.That(process.WasKilledWhileRunning).IsTrue();
+        }
+
+        await Assert.That(cleared).IsEqualTo(1);
+        await Assert.That(invoked).IsEqualTo(1);
+    }
+
+    /// <summary>A turn child whose stdout EOFs while the process itself is still running (it never
+    /// exits on its own, and its bounded exit-confirmation wait times out), but which dies as soon as
+    /// it is signalled — the ordinary shape of a child that outlives its own output by a moment.
+    /// Terminate and dispose both kill, mirroring <c>AgyTurnProcess</c>, where both are the same
+    /// <c>Kill(entireProcessTree: true)</c>.</summary>
+    sealed class LingeringTurnProcess : IAgyTurnProcess {
+        int _killed;
+
+        public int  Pid       => 4250;
+        public bool HasExited => Volatile.Read(ref _killed) != 0;
+        public int? ExitCode  => HasExited ? 0 : null;
+
+        /// <summary>True once a kill landed on a process that was still running — the precondition
+        /// this fake exists to create, asserted rather than assumed.</summary>
+        public bool WasKilledWhileRunning { get; private set; }
+
+#pragma warning disable CS1998 // an async iterator whose lines are already in hand still needs the modifier
+        public async IAsyncEnumerable<string> ReadLinesAsync(
+                [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct) {
+            yield return $$$"""{"event":"init","conversation_id":"{{{FixedConversationId}}}","init":{"cwd":"/w"}}""";
+            yield return $$$"""{"event":"result","result":{"conversation_id":"{{{FixedConversationId}}}","status":"SUCCESS"}}""";
+
+            // EOF here, with the process still running — HasExited stays false.
+        }
+#pragma warning restore CS1998
+
+        /// <summary>Returns silently on timeout, per the interface contract — this child never exits
+        /// of its own accord, so the runtime's grace wait always expires.</summary>
+        public Task WaitForExitAsync(TimeSpan? timeout = null) => Task.CompletedTask;
+
+        public Task TerminateAsync(TimeSpan? timeout = null) { Kill(); return Task.CompletedTask; }
+        public ValueTask DisposeAsync()                      { Kill(); return ValueTask.CompletedTask; }
+
+        void Kill() {
+            if (Interlocked.Exchange(ref _killed, 1) == 0) WasKilledWhileRunning = true;
+        }
+    }
+
     /// <summary>A turn child that honours cancellation — so the turn worker unwinds normally — but
     /// never reports itself exited, and whose terminate does not make it so. The measured shape is a
     /// grandchild that outlived a non-atomic process-tree kill; the runtime cannot tell that apart
