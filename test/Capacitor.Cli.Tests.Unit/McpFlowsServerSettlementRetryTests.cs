@@ -16,7 +16,7 @@ namespace Capacitor.Cli.Tests.Unit;
 /// <remarks>
 /// None of the 409 bodies below carry <c>last_processed_seq</c> — that is deliberate, not an
 /// oversight. <c>SendWithSettlementRetryAsync</c> treats that field as progress evidence and
-/// RESETS its rolling no-progress window whenever it advances (see
+/// RE-ARMS its rolling no-progress window on the first one observed and on every advance (see
 /// <c>SettlementProgressWindowTests.cs</c>); every fixed-elapsed-deadline assertion in this file
 /// (e.g. the flat <c>SettlementElapsedDeadline</c>/<c>PollCap</c> exhaustion timings) relies on
 /// that window never resetting. Adding <c>last_processed_seq</c> to any 409 fixture here — even

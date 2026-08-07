@@ -1327,10 +1327,17 @@ public readonly record struct LaunchAgentCommand(
         // the consent engine falls through rules to the configured default).
         string?           RequesterUserId       = null,
         bool?             RequesterIsOwner      = null,
-        // Review-flow liveness-supervision spec §3/decision 6: the per-agent inactivity bound
-        // (EffectiveInactivityBound.Resolve, seconds) the daemon enforces alongside the server's own
-        // ParticipantActivityMonitor — one number, one source of truth (the flow definition). Null for
-        // every non-review-flow launch and for a launch predating this field; an old daemon ignores it.
+        // The review-flow inactivity bound in seconds (liveness-supervision spec §3). Received and
+        // stored ONLY so the daemon's wire contract matches the server's; the SERVER owns enforcement,
+        // per round, via its own participant activity monitor.
+        //
+        // The daemon must NEVER use this as a reap threshold. It is round-scoped, while the daemon's
+        // AgentOrchestrator.FindReviewersToReap is round-agnostic, so applying it there reaps healthy
+        // reviewers BETWEEN rounds. The daemon's actual rule is the coarse legacy backstop in that
+        // method (TTL / turn-wedge / idle), which never reads this field.
+        //
+        // Null for every non-review-flow launch and for a launch predating this field; an old daemon
+        // ignores it.
         int?              InactivityBoundSeconds = null
     );
 

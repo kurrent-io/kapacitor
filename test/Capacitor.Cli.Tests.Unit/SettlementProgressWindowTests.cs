@@ -4,12 +4,13 @@ using Capacitor.Cli.Commands;
 namespace Capacitor.Cli.Tests.Unit;
 
 /// <summary>
-/// Task 14 — the settlement-retry lane's rolling no-progress window: a retryable 409's optional
-/// <c>last_processed_seq</c> field (the daemon's sequenced-lane watermark at rejection time)
-/// extends <see cref="McpFlowsServer.SettlementElapsedDeadline"/>'s 3-minute budget when it
-/// STRICTLY increases over the previous 409, up to the <see cref="McpFlowsServer.SettlementAbsoluteDeadline"/>
-/// 8-minute hard cap. Every test here pins the exact elapsed time the retry gave up at — "it
-/// eventually gave up" alone would pass under several different (wrong) deadline compositions.
+/// The settlement-retry lane's rolling no-progress window: a retryable 409's optional
+/// <c>last_processed_seq</c> field (the daemon's sequenced-lane watermark at rejection time) re-arms
+/// <see cref="McpFlowsServer.SettlementElapsedDeadline"/>'s 3-minute budget when it is the FIRST seq
+/// observed or STRICTLY increases over the previous 409, up to the
+/// <see cref="McpFlowsServer.SettlementAbsoluteDeadline"/> 8-minute hard cap. Every test here pins
+/// the exact elapsed time the retry gave up at — "it eventually gave up" alone would pass under
+/// several different (wrong) deadline compositions.
 ///
 /// <para>Requests never take real time on the wire — a <see cref="SeqScriptedHandler"/> advances
 /// the shared <see cref="VirtualFlowRetryClock"/> to an exact target elapsed time before returning
@@ -59,8 +60,9 @@ public class SettlementProgressWindowTests {
         return exhausted!;
     }
 
-    /// <summary>Today's behavior, pinned: a seq that never changes exhausts at exactly the flat
-    /// 3-minute window — proving the rolling-window rewrite didn't regress the frozen case.</summary>
+    /// <summary>A seq that never changes, first seen at elapsed zero, exhausts at exactly the flat
+    /// 3-minute window — the re-arm on first observation coincides with the window it was born with,
+    /// so the frozen lane's original guarantee is untouched.</summary>
     [Test]
     public async Task Frozen_seq_exhausts_at_the_flat_3m_window() {
         var clock   = Clock();
@@ -70,6 +72,55 @@ public class SettlementProgressWindowTests {
 
         await Assert.That(exhausted.Elapsed).IsEqualTo(McpFlowsServer.SettlementElapsedDeadline);
         await Assert.That(clock.Elapsed).IsEqualTo(McpFlowsServer.SettlementElapsedDeadline);
+    }
+
+    /// <summary>The FIRST observation of a seq is itself progress evidence and re-arms the window
+    /// from the moment it arrived. The first 409 here comes back at 2m30s carrying a seq: the caller
+    /// has just been told the daemon lane's position, so it gets a full 3m from THAT instant
+    /// (exhausting at 5m30s) rather than the 30s left of the flat window it was born with.
+    ///
+    /// <para>Same test pins the other half of the guarantee: every later attempt repeats that seq
+    /// unchanged, so a lane frozen from its first observation onward still exhausts exactly one
+    /// window (3m) after that observation — the re-arm buys a stalled lane no extra time at all.
+    /// Mutation anchor: restoring the `lastSeq.HasValue &amp;&amp;` gate makes this exhaust at 3m.</para></summary>
+    [Test]
+    public async Task First_seq_observed_late_re_arms_the_window_from_its_arrival() {
+        var clock   = Clock();
+        var handler = new SeqScriptedHandler(clock, (TimeSpan.FromMinutes(2.5), 42L));
+
+        var exhausted = await RunToExhaustion(clock, handler);
+
+        var firstObservedAt = TimeSpan.FromMinutes(2.5);
+        var expected        = firstObservedAt + McpFlowsServer.SettlementElapsedDeadline;
+
+        await Assert.That(exhausted.Elapsed).IsEqualTo(expected);
+        await Assert.That(clock.Elapsed).IsEqualTo(expected);
+
+        // Not the un-re-armed answer, and nowhere near the absolute cap.
+        await Assert.That(exhausted.Elapsed).IsNotEqualTo(McpFlowsServer.SettlementElapsedDeadline);
+        await Assert.That(exhausted.Elapsed).IsLessThan(McpFlowsServer.SettlementAbsoluteDeadline);
+    }
+
+    /// <summary>The absolute cap still clips a late first observation followed by continuous
+    /// progress: the last advance at 7m30s would re-arm the rolling window to 10m30s, but the run
+    /// stops at the 8m cap measured from the first attempt.</summary>
+    [Test]
+    public async Task Late_first_seq_with_continuous_progress_is_still_clipped_by_the_8m_cap() {
+        var clock = Clock();
+
+        // First evidence at 2m30s, then a strict increase every 60s — each gap well inside the 3m
+        // window, so only the cap can stop it. Nothing is scripted at or past 8m, so the test never
+        // depends on how a virtual timeout races a handler's own clock advance mid-request.
+        var script = new (TimeSpan, long?)[] {
+            (TimeSpan.FromMinutes(2.5), 1L), (TimeSpan.FromMinutes(3.5), 2L), (TimeSpan.FromMinutes(4.5), 3L),
+            (TimeSpan.FromMinutes(5.5), 4L), (TimeSpan.FromMinutes(6.5), 5L), (TimeSpan.FromMinutes(7.5), 6L)
+        };
+        var handler = new SeqScriptedHandler(clock, script);
+
+        var exhausted = await RunToExhaustion(clock, handler);
+
+        await Assert.That(exhausted.Elapsed).IsEqualTo(McpFlowsServer.SettlementAbsoluteDeadline);
+        await Assert.That(clock.Elapsed).IsEqualTo(McpFlowsServer.SettlementAbsoluteDeadline);
     }
 
     /// <summary>The headline rolling-window scenario: the seq advances at 1m and again at 2m30s,

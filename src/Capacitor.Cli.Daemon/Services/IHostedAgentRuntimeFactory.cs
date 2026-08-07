@@ -185,13 +185,10 @@ internal sealed record RuntimeStartContext(
         // Null on any path that has not been through the factory, and on the PTY launchers, which have no
         // MCP-name gate to defend.
         LaunchIdentity?     LaunchIdentity = null,
-        // Liveness-supervision spec §0/§1 (Task 13): the SAME per-launch clock AgentOrchestrator
-        // threads onto the eventual AgentInstance and the reviewer permission-bridge grant, handed
-        // to the factory here so an ACP factory can wire it onto its runtime BEFORE calling
-        // StartAsync — not after, the way AgentOrchestrator used to assign it post-hoc once the
-        // factory's StartAsync had already returned. That ordering bug made ActivityClock null for
-        // the ENTIRE handshake, so every SetLaunchStage call inside AcpHostedAgentRuntime.StartAsync
-        // was a silent no-op. Null for every PTY launcher (which owns its clock a different way —
-        // see AgentInstance.ActivityClock) and for any construction that predates this field.
+        // The SAME per-launch clock the orchestrator threads onto the eventual AgentInstance and the
+        // reviewer permission-bridge grant. Handed to the factory so an ACP factory can wire it onto
+        // its runtime BEFORE StartAsync: assigned any later, every SetLaunchStage inside
+        // AcpHostedAgentRuntime.StartAsync is a silent no-op against a null clock. Null for the PTY
+        // launchers (AgentInstance owns their clock) and for constructions predating this field.
         AgentActivityClock? ActivityClock = null
     );

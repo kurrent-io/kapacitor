@@ -156,10 +156,16 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
     /// so the coded <c>acp_launch_stage_timeout:{stage}</c> reason reaches the factory/orchestrator's
     /// LaunchFailed path undecorated by the generic auth-hint wrapper — an operator (or the server's
     /// failure classification) needs the exact stage name.
+    ///
+    /// <para>The message describes what was ATTEMPTED, not what is assumed to have happened:
+    /// termination is best-effort in <see cref="RunHandshakeStageAsync"/> and can fail, so claiming
+    /// the child "was terminated" would misdirect an incident responder away from an orphan that is
+    /// still running.</para>
     /// </summary>
     internal sealed class AcpLaunchStageTimeoutException(string stage, TimeSpan cap) : InvalidOperationException(
         $"acp_launch_stage_timeout:{stage}: the ACP handshake did not reach '{stage}' within "
-      + $"{cap.TotalSeconds:0}s. The child process was terminated.") {
+      + $"{cap.TotalSeconds:0}s. Termination of the child process was requested (best-effort — a "
+      + "failure to terminate is logged, so the process may still be running).") {
         public string Stage { get; } = stage;
     }
 
@@ -783,9 +789,9 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
             // Failure already recorded above, at the point the version mismatch was detected.
             throw;
         } catch (AcpLaunchStageTimeoutException) {
-            // Already actionable, already killed the child, and NOT an auth issue — rethrow
-            // verbatim so the coded acp_launch_stage_timeout:{stage} reason reaches the caller
-            // undecorated, exactly like AcpProtocolVersionException above.
+            // Already actionable and NOT an auth issue — rethrow verbatim so the coded
+            // acp_launch_stage_timeout:{stage} reason reaches the caller undecorated, exactly like
+            // AcpProtocolVersionException above.
             throw;
         } catch (Exception ex) when (ex is not OperationCanceledException) {
             AcpMetrics.RecordFailure("handshake");
@@ -832,19 +838,17 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
     }
 
     /// <summary>
-    /// Liveness-supervision spec (Task 13): wraps a single ACP handshake RPC/step in its own,
-    /// independent <see cref="AcpLaunchStageTimeout"/> — a fresh <see cref="CancellationTokenSource"/>
-    /// per call is what makes each stage's budget INDEPENDENT (a stage that completes at 89s of its
-    /// own cap does not eat into the next stage's 90s; each call starts counting from zero, from
-    /// THIS instant, off <see cref="_timeProvider"/> — monotonic, so a wall-clock jump can never fail
-    /// a healthy handshake). On success, stamps <see cref="AgentActivityClock.SetLaunchStage"/> with
-    /// <paramref name="stage"/> — fresh evidence Task 11's out-of-cycle status report extends the
-    /// server's registration wait on. On expiry the child is terminated (the wedged handshake this
-    /// task exists to fix must never survive as an orphan invisible to every reaper) with the stage
-    /// and this launch's agent id logged BEFORE the kill, so the diagnosis survives even though the
-    /// process (and any further stderr it might have produced) is about to be gone; the launch then
-    /// fails with the coded, stage-naming <see cref="AcpLaunchStageTimeoutException"/> — an ordinary
-    /// <c>LaunchFailed</c> the server already understands, never a silent hang or an unhandled fault.
+    /// Wraps one ACP handshake step in its own <see cref="AcpLaunchStageTimeout"/> (liveness-
+    /// supervision spec §5). A FRESH <see cref="CancellationTokenSource"/> per call is what makes each
+    /// stage's budget independent, and it runs off <see cref="_timeProvider"/> — monotonic, so a
+    /// wall-clock jump can never fail a healthy handshake. On success, stamps
+    /// <see cref="AgentActivityClock.SetLaunchStage"/>, the evidence the out-of-cycle status report
+    /// extends the server's registration wait on.
+    ///
+    /// <para>The timeout logs the stage and agent id BEFORE attempting the kill — the process (and any
+    /// further stderr) is about to be gone. Termination is BEST-EFFORT and a failure only logs, so the
+    /// thrown message must not claim the child died; see
+    /// <see cref="AcpLaunchStageTimeoutException"/>.</para>
     /// </summary>
     async Task<T> RunHandshakeStageAsync<T>(string stage, Func<CancellationToken, Task<T>> operation, CancellationToken ct) {
         using var stageTimeout = new CancellationTokenSource(AcpLaunchStageTimeout, _timeProvider);
@@ -860,7 +864,9 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
             try {
                 await _installed.Process.TerminateAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
             } catch (Exception ex) {
-                _logger.LogDebug(ex, "ACP: failed to reap a wedged handshake at stage '{Stage}'.", stage);
+                // Warning, not Debug: the exception message says termination was only REQUESTED, so
+                // this line is the only record that an orphaned child may still be running.
+                _logger.LogWarning(ex, "ACP: failed to reap a wedged handshake at stage '{Stage}' — the child process may still be running.", stage);
             }
 
             throw new AcpLaunchStageTimeoutException(stage, AcpLaunchStageTimeout);

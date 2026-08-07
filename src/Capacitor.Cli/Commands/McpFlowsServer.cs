@@ -342,11 +342,9 @@ static class McpFlowsServer {
                 return BuildToolResult(id, payload, isError);
             }
 
-            // §6 of the liveness design: an optional `wait: true` on the two status tools blocks
-            // (bounded, repeated GETs — never a long-poll) until the round is terminal or the
-            // shared PollCap elapses, instead of the single GET below. Absent or false NEVER
-            // reaches this branch — the untouched single-GET path beneath it is the whole
-            // backwards-compat contract for every existing caller that never sends the argument.
+            // `wait: true` blocks via bounded repeated GETs instead of the single GET below. Absent or
+            // false never reaches this branch — that untouched single-GET path IS the backwards-compat
+            // contract for every existing caller.
             if (toolName is "get_review_flow_status" or "get_flow_status" && ParseWaitArg(arguments)) {
                 var waitFlowRunId = arguments?["flow_run_id"]?.GetValue<string>()
                     ?? throw new ArgumentException("Missing required argument: flow_run_id");
@@ -450,15 +448,13 @@ static class McpFlowsServer {
     /// tool result. Three minutes fits roughly two full server-side admission waits plus backoff
     /// while staying far under that ceiling. If the harness pin ever changes, re-derive this.
     ///
-    /// <para>Liveness-supervision spec §5 (Task 14): every retryable 409 that carries a STRICTLY
-    /// higher <c>last_processed_seq</c> than the previous one seen resets this window from the
-    /// moment of that response — a daemon that is genuinely draining its sequenced lane keeps
-    /// buying itself more patience. A missing/null seq (an old server, or a new one whose daemon
-    /// has never reported) is "no evidence", never a signal to reset OR to warn about a stale
-    /// client — it just falls back to today's flat window. An equal or lower seq (frozen, restarted,
-    /// or regressed — e.g. a daemon reconnect resetting its watermark) is likewise never a reset:
-    /// treating that as progress would extend the wait on a lane that is not actually draining. See
-    /// <see cref="SettlementAbsoluteDeadline"/> for the hard ceiling this window is clipped to.</para>
+    /// <para>Liveness-supervision spec §5: a retryable 409's <c>last_processed_seq</c> re-arms this
+    /// window from the moment of that response when it is the FIRST seq observed, or STRICTLY higher
+    /// than the previous one. An equal or lower seq is not progress (a frozen lane must still exhaust
+    /// one full window after its single observation; a lower one is a daemon reconnect resetting its
+    /// watermark, not a drain). A missing/null seq is "no evidence" — never a reset, and never a
+    /// reason to tell the caller anything is out of date; it simply keeps the flat window. Clipped by
+    /// <see cref="SettlementAbsoluteDeadline"/>.</para>
     ///
     /// <para>A tool call spends AT MOST ONE such window in total, which is what keeps that
     /// derivation valid: the one caller that sends twice (the preference fallback) threads
@@ -477,24 +473,16 @@ static class McpFlowsServer {
     /// call is <see cref="ToolCallBudget"/>, which this must stay under.</summary>
     internal static readonly TimeSpan SettlementAbsoluteDeadline = TimeSpan.FromMinutes(8);
 
-    /// <summary>The ONE end-to-end budget for a single <c>HandleToolCallAsync</c> that both sends and
-    /// then polls, anchored at the moment of the first POST attempt.
+    /// <summary>The ONE end-to-end budget for a tool call that sends and then polls, anchored at its
+    /// first POST attempt. The settlement lane (<see cref="SettlementAbsoluteDeadline"/>) and the
+    /// round-poll lane (<see cref="PollCap"/>) run SEQUENTIALLY, so bounding them separately bounds
+    /// the call at 8m + 8m against the ~10m MCP tool timeout the kcap plugin pins — the harness would
+    /// kill the call mid-poll with the reviewer already launched and paid for. Sharing this budget
+    /// means whatever settlement spends, the poll no longer has.
     ///
-    /// <para>The settlement lane (<see cref="SettlementAbsoluteDeadline"/>, 8m) and the round-poll lane
-    /// (<see cref="PollCap"/>, 8m) run SEQUENTIALLY within one tool call: the retry loop returns a
-    /// response, then <c>ResolveRoundResultAsync</c> starts polling. Bounding each lane separately
-    /// therefore bounded the call at 8m + 8m = 16m, against the ~10-minute MCP tool timeout the kcap
-    /// plugin pins (MCP_TOOL_TIMEOUT) — so a call that burned real settlement time could be killed by
-    /// the harness mid-poll, with the reviewer already launched and paid for. Threading the settlement
-    /// anchor into the poll lane makes the two lanes SHARE this budget instead: whatever settlement
-    /// spends, the poll no longer has.</para>
-    ///
-    /// <para>Applied as a CLIP on top of <see cref="PollCap"/>, never a replacement — the poll lane
-    /// still gets at most <c>PollCap</c>, and additionally may not run past this anchor + budget. A
-    /// call whose settlement lane returned immediately (the overwhelming majority, and every existing
-    /// fixture) is therefore bounded by <c>PollCap</c> exactly as before; only a call that genuinely
-    /// burned settlement time sees a shortened poll. 9m leaves the same margin under the harness pin
-    /// the individual lanes were each sized for. If that pin changes, re-derive this ONE value.</para>
+    /// <para>Applied as a CLIP on <see cref="PollCap"/>, never a replacement: a call whose settlement
+    /// lane returned immediately (the overwhelming majority, and every existing fixture) is bounded by
+    /// <c>PollCap</c> exactly as before. If the harness pin changes, re-derive this ONE value.</para>
     /// </summary>
     internal static readonly TimeSpan ToolCallBudget = TimeSpan.FromMinutes(9);
 
@@ -524,13 +512,10 @@ static class McpFlowsServer {
         return false;
     }
 
-    /// <summary>Parses the optional <c>last_processed_seq</c> field a settlement 409 body may carry
-    /// (Task 8 wire addition) — the daemon's sequenced-lane watermark at rejection time. A field
-    /// that is ABSENT (an old server that predates this addition) and one that is PRESENT but JSON
-    /// `null` (a new server whose daemon has simply never reported) both parse identically to
-    /// `null` here: <see cref="JsonObject"/>'s indexer returns null for a JSON null token exactly as
-    /// it does for a missing key, so there is no separate case to write. Callers must treat both the
-    /// same way — "no progress evidence", never as anything to warn about.</summary>
+    /// <summary>Parses the optional <c>last_processed_seq</c> a settlement 409 body may carry — the
+    /// daemon's sequenced-lane watermark at rejection time. ABSENT (an old server) and PRESENT-but-JSON-
+    /// null (a daemon that has never reported) both yield null, and callers must treat both the same
+    /// way: "no progress evidence", never anything to warn the caller about.</summary>
     internal static long? TryParseLastProcessedSeq(string body) {
         try {
             if (JsonNode.Parse(body) is JsonObject node
@@ -607,8 +592,7 @@ static class McpFlowsServer {
         var noProgressDeadline = startedAt + SettlementElapsedDeadline;
         // The most recently OBSERVED seq (whatever it was — a regression updates this too), so the
         // comparison is always "vs. the previous 409", never "vs. the historical high". Null means
-        // no evidence has been seen yet — including the old-server case, where it never becomes
-        // non-null and the rolling window therefore never resets.
+        // no evidence has been seen yet; the transition out of null is itself progress (see below).
         long? lastSeq = null;
 
         string? lastCode    = null;
@@ -647,16 +631,17 @@ static class McpFlowsServer {
             lastMessage = message;
             response.Dispose();
 
-            // Progress evidence: only a STRICT increase over the previously observed seq resets the
-            // rolling window — an equal value (proves the daemon lane is genuinely stalled, not just
-            // that the field is present) or a lower one (a restart/regression: the watermark itself
-            // moved backwards, most likely a daemon reconnect) both count as no progress and leave
-            // the window exactly where it was. A missing/null seq never updates lastSeq at all, so
-            // an old server (or a new one whose daemon has never reported) permanently reads as "no
-            // evidence" and the window stays the flat one from startedAt.
+            // Progress evidence re-arms the rolling window from THIS instant. Two cases qualify: the
+            // FIRST seq ever observed (evidence just arrived — a first 409 that took 2m30s to come
+            // back must not leave only 30s of window), and any STRICT increase over the previously
+            // observed one. An equal seq (the lane is genuinely stalled, not merely reporting) or a
+            // lower one (a restart/regression, most likely a daemon reconnect) is not progress and
+            // leaves the window where it is — so a frozen lane still exhausts one full window after
+            // its single observation. A missing/null seq never updates lastSeq at all, so an old
+            // server (or one whose daemon has never reported) keeps the flat window from startedAt.
             var seq = TryParseLastProcessedSeq(body);
             if (seq.HasValue) {
-                if (lastSeq.HasValue && seq.Value > lastSeq.Value)
+                if (!lastSeq.HasValue || seq.Value > lastSeq.Value)
                     noProgressDeadline = clock.UtcNow + SettlementElapsedDeadline;
 
                 lastSeq = seq;
@@ -1261,11 +1246,10 @@ static class McpFlowsServer {
     /// <paramref name="toolName"/> is the tool that initiated the round (one of
     /// start_review_flow/submit_review_round/start_flow/send_to_participant) — threaded through
     /// so the graceful-cap timeout message can point back at the matching status tool.
-    /// <paramref name="toolCallStartedAt"/> is this tool call's single budget anchor (the instant
-    /// before its first POST) — threaded through to <see cref="PollUntilTerminalAsync"/> so the poll
-    /// lane shares <see cref="ToolCallBudget"/> with the settlement lane that preceded it instead of
-    /// starting a fresh 8 minutes. Null only from a call site with no settlement lane in front of
-    /// it, which then falls back to <see cref="PollCap"/> alone.</summary>
+    /// <paramref name="toolCallStartedAt"/> is this call's single <see cref="ToolCallBudget"/> anchor
+    /// (the instant before its first POST), so the poll lane shares that budget with the settlement
+    /// lane rather than starting fresh. Null from a call site with no settlement lane in front of it,
+    /// which then falls back to <see cref="PollCap"/> alone.</summary>
     static async Task<PollResult> ResolveRoundResultAsync(HttpClient client, string apiRoot, string postBody, string toolName, bool wasDynamicStart, FlowRetryClock clock, SettlementBackoff backoff, DateTimeOffset? toolCallStartedAt = null) {
         if (TryFormatRoundlessStart(postBody, out var roundlessPendingIds) is { } roundless) {
             if (roundlessPendingIds.Count > 0 &&
@@ -1304,11 +1288,8 @@ static class McpFlowsServer {
     static async Task<PollResult> PollUntilTerminalAsync(HttpClient client, string apiRoot, string flowRunId, int roundNumber, string toolName, bool wasDynamicStart, FlowRetryClock clock, SettlementBackoff backoff, DateTimeOffset? toolCallStartedAt = null) {
         var url                   = $"{apiRoot}/api/flows/{Uri.EscapeDataString(flowRunId)}";
         var pollStartedAt         = clock.UtcNow;
-        // The poll lane's own cap, CLIPPED to whatever is left of the tool call's single shared
-        // ToolCallBudget (anchored before the settlement lane's first POST). Whatever the settlement
-        // retry spent, the poll no longer has — see ToolCallBudget for why the two lanes must not each
-        // hold an independent 8m. Absent an anchor there was no settlement lane to share with, so
-        // PollCap stands alone.
+        // The poll lane's cap, CLIPPED to what remains of the shared ToolCallBudget. Absent an anchor
+        // there was no settlement lane to share with, so PollCap stands alone.
         var pollLaneDeadline      = pollStartedAt + PollCap;
         var deadline              = toolCallStartedAt is { } anchor && anchor + ToolCallBudget < pollLaneDeadline
             ? anchor + ToolCallBudget
@@ -1422,21 +1403,15 @@ static class McpFlowsServer {
         );
     }
 
-    /// <summary>§6 of the liveness design: implements `wait: true` on get_review_flow_status /
-    /// get_flow_status — repeated bounded GETs against the SAME endpoint the plain (wait
-    /// absent/false) call hits, sharing that lane's per-attempt timeout (<see cref="PerGetTimeout"/>),
-    /// poll cadence (<see cref="PollInterval"/>), transient-failure budget
-    /// (<see cref="MaxTransientRetries"/>), and settlement-409 backoff schedule with
-    /// <see cref="PollUntilTerminalAsync"/> — until the run is terminal (closed/failed) or the
-    /// CURRENT round reaches a terminal <see cref="TerminalRoundStatuses"/> value, or
-    /// <see cref="PollCap"/> (8m) elapses, whichever comes first.
-    /// <para>Deliberately does NOT reuse <see cref="PollUntilTerminalAsync"/> outright: this is a bare
-    /// status question with no specific round number pinned by a just-submitted POST (a status wait
-    /// has none), and — more importantly — it must render through <see cref="FormatStatusResponse"/>,
-    /// the SAME envelope shape a plain wait:false call already renders, never
-    /// <see cref="FormatPolledRoundResult"/>'s round-submission shape. Reusing that method would make
-    /// the tool's response shape depend on whether wait was set, which is exactly the kind of silent
-    /// behavior drift the brief warns against.</para></summary>
+    /// <summary>Implements `wait: true` on the two status tools (liveness design §6): repeated bounded
+    /// GETs against the SAME endpoint the plain call hits, sharing <see cref="PollUntilTerminalAsync"/>'s
+    /// per-attempt timeout, cadence, transient budget and 409 backoff, until the run is terminal, the
+    /// current round reaches a <see cref="TerminalRoundStatuses"/> value, or <see cref="PollCap"/> elapses.
+    ///
+    /// <para>Deliberately NOT a reuse of <see cref="PollUntilTerminalAsync"/>: it must render through
+    /// <see cref="FormatStatusResponse"/> — the same envelope a <c>wait:false</c> call renders — never
+    /// <see cref="FormatPolledRoundResult"/>'s round-submission shape. Reusing it would make the tool's
+    /// response shape depend on whether <c>wait</c> was set.</para></summary>
     static async Task<PollResult> PollStatusUntilTerminalAsync(
             HttpClient client, string apiRoot, string flowRunId, string toolName, FlowRetryClock clock, SettlementBackoff backoff) {
         var url                   = $"{apiRoot}/api/flows/{Uri.EscapeDataString(flowRunId)}";

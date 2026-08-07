@@ -39,10 +39,15 @@ public class AcpLaunchStageTests {
         public int? ExitCode       { get; private set; }
         public int  TerminateCalls { get; private set; }
 
+        /// <summary>Makes the kill FAIL — the case that makes the timeout message's wording
+        /// load-bearing (termination is best-effort, so the message may not claim the child died).</summary>
+        public bool TerminateThrows { get; set; }
+
         public Task WaitForExitAsync(TimeSpan? timeout = null) => _exited.Task;
 
         public Task TerminateAsync(TimeSpan? timeout = null) {
             TerminateCalls++;
+            if (TerminateThrows) throw new InvalidOperationException("kill refused by the OS");
             HasExited = true;
             ExitCode  = 0;
             _exited.TrySetResult();
@@ -153,6 +158,39 @@ public class AcpLaunchStageTests {
         // i.e. proves the factory wired ActivityClock onto the runtime before the handshake began.
         await Assert.That(h.Clock.ActivitySeq).IsGreaterThanOrEqualTo(2UL);
         await Assert.That(h.Clock.LaunchStage).IsEqualTo("spawned");
+    }
+
+    /// <summary>
+    /// Termination is BEST-EFFORT: when the kill fails, the launch must still fail with the coded
+    /// stage reason, and the message must not claim a kill that did not happen — an incident
+    /// responder reading "the child process was terminated" would be steered away from an orphan
+    /// that is still running.
+    ///
+    /// <para>Two guards, two distinct anchors: restoring the old "The child process was terminated."
+    /// wording fails the wording assertions, and dropping the try/catch around the kill lets the
+    /// terminate exception escape instead of the coded one, failing the prefix assertion.</para>
+    /// </summary>
+    [Test]
+    public async Task Failed_termination_still_reports_the_coded_stage_and_never_claims_the_child_died() {
+        await using var h = new Harness();
+        h.Process.TerminateThrows        = true;
+        h.Fake.HoldInitializeResponse    = new TaskCompletionSource(); // never completed
+        h.StartFakeAgentLoop();
+
+        var startTask = h.Factory.StartAsync(MakeContext("agent-kill-fails", h.Clock), h.Cts.Token);
+
+        await h.WaitForCallAsync("initialize");
+        h.Time.Advance(TimeSpan.FromSeconds(91));
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => startTask.WaitAsync(HangGuard));
+
+        await Assert.That(ex!.Message).StartsWith("acp_launch_stage_timeout:initialized");
+        await Assert.That(h.Process.TerminateCalls).IsGreaterThanOrEqualTo(1);
+        await Assert.That(h.Process.HasExited).IsFalse(); // the kill genuinely failed
+
+        // Non-vacuity: the message really is the stage-timeout text before the negative below runs.
+        await Assert.That(ex.Message).Contains("Termination of the child process was requested");
+        await Assert.That(ex.Message).DoesNotContain("was terminated");
     }
 
     // ── Positive control: slow-but-progressing stages all succeed ───────────────────────────────

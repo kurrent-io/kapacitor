@@ -195,11 +195,10 @@ internal partial class AgentOrchestrator {
             var runtime = new PtyHostedAgentRuntime(vendor, pty);
 
             agent = new AgentInstance(agentId, null, "", null, cwd, vendor, runtime, worktree, new CancellationTokenSource()) {
-                // Every launch path builds its clock through CreateActivityClock() so the
-                // stage-advance status-report wiring is attached by construction, not per call site.
-                // Inert on this path today (a local spawn is PTY-only, so nothing stamps a launch
-                // stage), but a path that constructs the clock by hand is exactly how that wiring goes
-                // silently missing the day this path grows an ACP runtime.
+                // Every launch path must go through CreateActivityClock() so the stage-advance report
+                // wiring is attached by construction. Inert here today (a local spawn is PTY-only and
+                // stamps no stage) — but a hand-built clock is exactly how that wiring goes silently
+                // missing the day this path grows an ACP runtime.
                 ActivityClock  = CreateActivityClock(),
                 IsPrivate      = isPrivate,
                 IsLocalSpawned = true,
