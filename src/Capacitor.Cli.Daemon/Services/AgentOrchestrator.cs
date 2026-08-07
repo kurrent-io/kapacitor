@@ -1553,6 +1553,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             var daemonBridgeUrl    = _permissionBridge.BaseUrl;
             var effectiveAllowlist = cmd.McpAllowlist;
             string? reviewContextCapabilityUrl = null;
+            string? flowResultCapabilityUrl    = null;
 
             // A token record is minted for the union of two independent authorities: Codex's
             // unattended permission allowlist and a borrowed snapshot's immutable review context.
@@ -1591,9 +1592,14 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
                     daemonBridgeUrl = reviewerUrl;
                     effectiveAllowlist = reviewerServers;
                 }
-                if (snapshotBorrow)
+                if (snapshotBorrow) {
                     reviewContextCapabilityUrl = reviewerUrl +
                         "/review-context/workspace-mcp-configs";
+                    // Both capabilities hang off the SAME reviewer grant, so revoking that one token
+                    // closes the read path and the submit path together. A separately-minted token
+                    // could outlive the first and leave a live submit path after the reviewer is gone.
+                    flowResultCapabilityUrl = reviewerUrl + "/flow-result";
+                }
             }
 
             var runtimeCtx = new RuntimeStartContext(
@@ -1625,6 +1631,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
                 DaemonEpoch: _daemonEpoch,
                 IsBorrowedSnapshot: snapshotBorrow,
                 ReviewContextCapabilityUrl: reviewContextCapabilityUrl,
+                FlowResultCapabilityUrl: flowResultCapabilityUrl,
                 CodexPosture: cmd.CodexPosture,
                 // Handed to the factory so it can wire the clock onto the runtime BEFORE StartAsync —
                 // assigning it after that call returns silently defeats every handshake stage stamp.
