@@ -64,6 +64,19 @@ namespace Capacitor.Cli.Daemon.Services;
 /// unstoppable — a genuine deadlock, not a style preference. See the mutation check pinned in
 /// <c>AntigravityRuntimeLifecycleTests</c> for the reproduction.</para>
 ///
+/// <para><b>(e) <see cref="WaitForConversationIdAsync"/> is not optional for a factory that binds a
+/// transcript.</b> <see cref="AcpSessionId"/> reads <c>""</c> until turn 1's <c>init</c> resolves it, and
+/// nothing else in this class's public surface forces that ordering: <see cref="SendUserInputAsync"/>
+/// returns as soon as the turn is enqueued — before the worker even dequeues it —
+/// <see cref="SendUserInputAndWaitForWriteAsync"/> resolves at SPAWN, still before any line is read, and
+/// <see cref="WaitForTurnIdleAsync"/> is NOT a substitute (its enqueue→gate hand-off is itself
+/// asynchronous, so it can observe a momentarily-free gate and return before the turn has even started).
+/// A factory that sends the initial prompt and immediately hands this runtime to the orchestrator — which
+/// reads <see cref="AcpSessionId"/> unconditionally and synchronously the moment a launch returns — WILL
+/// bind the transcript to <c>""</c>: a silent, permanent correlation break, not a flaky race. <b>Any
+/// factory for this runtime MUST <see langword="await"/> <see cref="WaitForConversationIdAsync"/> after
+/// sending the initial prompt and BEFORE returning control to the orchestrator.</b></para>
+///
 /// <para><b>Not this class's job (yet).</b> No ACP-style reconnect/resume — a dead turn child is either a
 /// clean end-of-turn (→ <see cref="RuntimePhase.Idle"/>) or a lost reviewer (→ <see cref="RuntimePhase.Terminal"/>),
 /// never something to resume mid-turn. No terminal capability (<see cref="EmitsTerminalOutput"/> is
@@ -108,6 +121,12 @@ internal sealed class AntigravityHostedAgentRuntime : IHostedAgentRuntime, IAcpT
     /// <summary>Completed exactly once, on entry to <see cref="RuntimePhase.Terminal"/> — see the class
     /// doc's rule (c). <see cref="ReadOutputAsync"/> parks on this and nothing else.</summary>
     readonly TaskCompletionSource _terminalTcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    /// <summary>Completed once <see cref="_conversationId"/> is first resolved (turn 1's <c>init</c>), or
+    /// faulted on entry to <see cref="RuntimePhase.Terminal"/> if that never happens (e.g. turn 1's spawn
+    /// itself failed) — see rule (e) and <see cref="WaitForConversationIdAsync"/>. <c>TrySet*</c> on both
+    /// sides means whichever happens first wins and the other is a harmless no-op.</summary>
+    readonly TaskCompletionSource _conversationIdResolved = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     /// <summary>Cancelled by <see cref="TerminateAsync"/>/<see cref="DisposeAsync"/> — see the class
     /// doc's rule (d). Linked into every in-flight turn's spawn/read tokens, so cancelling this ONE
@@ -162,15 +181,32 @@ internal sealed class AntigravityHostedAgentRuntime : IHostedAgentRuntime, IAcpT
     /// this runtime's own conversation-id-stability test: a LATER
     /// turn reporting a different id would mean this runtime silently forked the reviewer's history,
     /// which is treated as an unrecoverable protocol violation (→ <see cref="RuntimePhase.Terminal"/>),
-    /// never silently accepted.</summary>
-    string? _conversationId;
+    /// never silently accepted.
+    ///
+    /// <para>Written only from the single turn worker (inside <see cref="HandleInit"/>), but read
+    /// cross-thread from <see cref="AcpSessionId"/> — declared <see langword="volatile"/> for the same
+    /// reason <see cref="_current"/> is, so a reader on another thread is guaranteed to see the write
+    /// rather than a stale value (a plain field gives no such guarantee, e.g. on arm64). The primary
+    /// ordering guarantee for a factory is still <see cref="WaitForConversationIdAsync"/> (rule (e)) —
+    /// this is the belt-and-braces fix for every OTHER read of <see cref="AcpSessionId"/>/<see cref="Cwd"/>
+    /// that isn't preceded by that barrier.</para>
+    /// </summary>
+    volatile string? _conversationId;
 
-    string? _cwd;
-    bool    _sessionStartedEmitted;
-    int     _disposed;
+    /// <summary>See <see cref="_conversationId"/>'s remarks — same cross-thread visibility reasoning.</summary>
+    volatile string? _cwd;
+
+    /// <summary>Written and read only inside <see cref="HandleInit"/>, which always runs on the single
+    /// turn worker — not read cross-thread today, but declared <see langword="volatile"/> alongside its
+    /// siblings above so that stays true even if a future change adds a cross-thread reader.</summary>
+    volatile bool _sessionStartedEmitted;
+
+    int _disposed;
 
     readonly Channel<AcpEventEnvelope> _transcript;
     readonly Channel<PendingTurn>      _pendingTurns;
+    readonly int                       _pendingTurnsCapacity;
+    int                                _droppedPendingTurns;
 
     Task _turnWorkerTask = Task.CompletedTask;
 
@@ -188,26 +224,28 @@ internal sealed class AntigravityHostedAgentRuntime : IHostedAgentRuntime, IAcpT
             int?                                                           transcriptCapacity = null,
             int?                                                           pendingTurnsCapacity = null
         ) {
-        _spawnTurn      = spawnTurn;
-        _logger         = logger;
-        _agentId        = agentId;
-        _model          = model;
-        _cwd            = cwd;
-        _launchDeadline = launchDeadline;
-        _turnDeadline   = turnDeadline;
+        _spawnTurn            = spawnTurn;
+        _logger               = logger;
+        _agentId              = agentId;
+        _model                = model;
+        _cwd                  = cwd;
+        _launchDeadline       = launchDeadline;
+        _turnDeadline         = turnDeadline;
+        _pendingTurnsCapacity = pendingTurnsCapacity ?? DefaultPendingTurnsCapacity;
 
-        // DropOldest: this runtime is the sole writer (the turn worker), so unlike AcpHostedAgentRuntime
-        // there is no concurrent writer to reason about — a stalled forwarder just loses trailing
-        // transcript rather than ever blocking the worker.
+        // DropOldest: the turn worker is the only writer that matters for ordering, but
+        // SingleWriter=false — EnterTerminal's TryComplete() can run concurrently with an in-flight
+        // TryWrite from the worker thread (a Terminate racing the tail end of a turn), which is outside
+        // the SingleWriter contract even though only one thread ever calls TryWrite itself.
         _transcript = Channel.CreateBounded<AcpEventEnvelope>(
             new BoundedChannelOptions(transcriptCapacity ?? DefaultTranscriptCapacity)
-                { SingleReader = true, SingleWriter = true, FullMode = BoundedChannelFullMode.DropOldest });
+                { SingleReader = true, SingleWriter = false, FullMode = BoundedChannelFullMode.DropOldest });
 
         // NOT SingleReader: EnterTerminal's drain (rule below) and the worker's own dequeue loop can
         // both call TryRead around a Terminate race, so this channel must tolerate two readers even
         // though exactly one of them ever "wins" any given item.
         _pendingTurns = Channel.CreateBounded<PendingTurn>(
-            new BoundedChannelOptions(pendingTurnsCapacity ?? DefaultPendingTurnsCapacity)
+            new BoundedChannelOptions(_pendingTurnsCapacity)
                 { SingleReader = false, SingleWriter = false, FullMode = BoundedChannelFullMode.DropWrite });
 
         _turnWorkerTask = RunTurnWorkerAsync();
@@ -258,19 +296,37 @@ internal sealed class AntigravityHostedAgentRuntime : IHostedAgentRuntime, IAcpT
 
     /// <summary>Acquire-then-IMMEDIATELY-release: queues behind an in-flight turn and returns once it's
     /// done, but never itself holds <see cref="_turnGate"/> — see the class doc's rule (d), which is the
-    /// exact property <see cref="TerminateAsync"/> also depends on.</summary>
+    /// exact property <see cref="TerminateAsync"/> also depends on.
+    ///
+    /// <para><b>NOT a "has this turn started" barrier.</b> The enqueue→gate hand-off is itself
+    /// asynchronous (the worker has to wake up from its own await and actually acquire the gate), so a
+    /// caller that enqueues a turn and immediately awaits this can observe a momentarily-free gate and
+    /// return before that turn has even started — see rule (e) and
+    /// <see cref="WaitForConversationIdAsync"/> for the barrier that doesn't have this gap.</para>
+    /// </summary>
     public async Task WaitForTurnIdleAsync(CancellationToken ct) {
         await _turnGate.WaitAsync(ct).ConfigureAwait(false);
         _turnGate.Release();
     }
 
     /// <summary>
+    /// Rule (e) — see the class doc. Completes once <see cref="AcpSessionId"/> has been resolved from
+    /// turn 1's <c>init</c> event, or faults if the runtime reaches <see cref="RuntimePhase.Terminal"/>
+    /// first (e.g. turn 1's spawn itself failed) — so a caller can never hang on a conversation id that
+    /// will never arrive. <b>Any factory for this runtime must await this after sending the initial
+    /// prompt and before returning control to the orchestrator</b>, which reads
+    /// <see cref="AcpSessionId"/> unconditionally and synchronously the moment a launch returns.
+    /// </summary>
+    public Task WaitForConversationIdAsync(CancellationToken ct) => _conversationIdResolved.Task.WaitAsync(ct);
+
+    /// <summary>
     /// Enqueues the turn and returns immediately — never blocks on, or observes, the turn's
-    /// completion. A dropped enqueue (the runtime is already <see cref="RuntimePhase.Terminal"/>, or the
-    /// pending-turns queue is at capacity) never throws when no acknowledgement was requested: the
-    /// channel's own atomicity (<see cref="ChannelWriter{T}.TryWrite"/> against a completed or full
-    /// bounded channel) is what makes "terminal" and "full" collapse into the same silent-drop path
-    /// without a separate check-then-act race.
+    /// completion. A dropped enqueue never throws when no acknowledgement was requested: the channel's
+    /// own atomicity (<see cref="ChannelWriter{T}.TryWrite"/> against a completed or full bounded
+    /// channel) is what makes "terminal" and "full" collapse into one non-racy check, but the two are
+    /// still logged (and faulted, for an acknowledging caller) distinctly below — a full queue is an
+    /// operational signal worth a warning and a running count, matching
+    /// <c>AcpHostedAgentRuntime.EnqueueTurn</c>'s same distinction for its own pending-turns queue.
     /// </summary>
     Task EnqueueTurn(string text, bool acknowledgeWrite) {
         var written = acknowledgeWrite
@@ -278,10 +334,20 @@ internal sealed class AntigravityHostedAgentRuntime : IHostedAgentRuntime, IAcpT
             : null;
 
         if (!_pendingTurns.Writer.TryWrite(new PendingTurn(text, written))) {
-            _logger.LogDebug(
-                "Antigravity: dropped a prompt turn — the runtime is terminal or its pending-turns queue is full.");
-            written?.TrySetException(new InvalidOperationException(
-                "Antigravity runtime dropped this input — it is terminal, or its pending-turns queue is full."));
+            if (Phase == RuntimePhase.Terminal) {
+                _logger.LogDebug("Antigravity: dropped a prompt turn — the runtime is terminal.");
+                written?.TrySetException(new InvalidOperationException(
+                    "Antigravity runtime is terminal; this input was dropped."));
+            } else {
+                // The only other reason TryWrite can fail on this bounded, not-yet-completed channel.
+                var dropped = Interlocked.Increment(ref _droppedPendingTurns);
+                _logger.LogWarning(
+                    "Antigravity: pending-turns queue full (capacity={Capacity}) — dropping this input; "
+                  + "{DroppedCount} dropped this session so far (the turn worker is likely stuck on a "
+                  + "stalled turn).", _pendingTurnsCapacity, dropped);
+                written?.TrySetException(new InvalidOperationException(
+                    "Antigravity pending-turns queue is full; this input was dropped."));
+            }
         }
 
         return written?.Task ?? Task.CompletedTask;
@@ -353,122 +419,173 @@ internal sealed class AntigravityHostedAgentRuntime : IHostedAgentRuntime, IAcpT
     /// throws: every failure path reports through <paramref name="turn"/>'s ack and/or
     /// <see cref="EnterTerminal"/> instead, so <see cref="RunTurnWorkerAsync"/>'s loop never sees an
     /// unexpected exception from a turn that merely failed (as opposed to the worker itself faulting).
+    /// The spawned process is disposed on EVERY exit path (the outer <c>finally</c>) — every round of a
+    /// review would otherwise leak that turn's pipes/handles.
     /// </summary>
     async Task ProcessTurnAsync(PendingTurn turn, bool firstTurn, CancellationToken ownerCt) {
-        IAgyTurnProcess process;
-
-        using (var spawnCts = CancellationTokenSource.CreateLinkedTokenSource(ownerCt)) {
-            if (firstTurn && _launchDeadline is { } launchDeadline)
-                spawnCts.CancelAfter(launchDeadline);
-
-            try {
-                process = await _spawnTurn(turn.Text, _conversationId, spawnCts.Token).ConfigureAwait(false);
-            } catch (OperationCanceledException) when (ownerCt.IsCancellationRequested) {
-                // Stop/dispose raced the spawn — EnterTerminal was already called by TerminateAsync.
-                turn.Written?.TrySetException(new InvalidOperationException(
-                    "Antigravity runtime stopped before this turn's process spawned."));
-                return;
-            } catch (OperationCanceledException) {
-                // Only the launch deadline could cancel spawnCts without ownerCt also being cancelled.
-                turn.Written?.TrySetException(new TimeoutException(
-                    "Antigravity: turn 1's process did not spawn within the launch deadline."));
-                _logger.LogWarning("Antigravity: turn 1 spawn exceeded the launch deadline; entering Terminal.");
-                EnterTerminal(exitCode: 1);
-                return;
-            } catch (Exception ex) {
-                // Spawn failure or auth failure, surfaced by the injected spawner as a thrown exception.
-                turn.Written?.TrySetException(ex);
-                _logger.LogWarning(ex, "Antigravity: turn process failed to spawn; entering Terminal.");
-                EnterTerminal(exitCode: 1);
-                return;
-            }
-        }
-
-        turn.Written?.TrySetResult();
-        _current = process;
-
-        var accumulator        = new AntigravityStepAccumulator();
-        var sawTerminalResult  = false;
-        var conversationChanged = false;
-        string? resultStatus   = null;
-
-        using var turnCts = CancellationTokenSource.CreateLinkedTokenSource(ownerCt);
-        if (_turnDeadline is { } turnDeadline) turnCts.CancelAfter(turnDeadline);
+        var process = await SpawnTurnProcessAsync(turn, firstTurn, ownerCt).ConfigureAwait(false);
+        if (process is null) return; // spawn failed/cancelled — SpawnTurnProcessAsync already handled it.
 
         try {
-            await foreach (var line in process.ReadLinesAsync(turnCts.Token).ConfigureAwait(false)) {
-                var evt = AntigravityNdjson.TryParseLine(line);
-                if (evt is null) continue;
+            // Publish _current and check for an already-Terminal runtime as ONE atomic operation under
+            // _stateLock — the SAME lock TerminateAsync captures _current under. This closes a real
+            // orphan-child race: TerminateAsync's capture and this publish can interleave in either
+            // order around the spawn call above, and whichever one acquires _stateLock SECOND sees the
+            // other's effect and takes responsibility for the child — so exactly one of the two ever
+            // terminates it, never zero. (If TerminateAsync's capture logic instead ran outside a lock
+            // shared with this publish, the capture could read null — this turn's process not yet
+            // published — while this method's later cancellation-observation also finds ownerCt already
+            // cancelled and does nothing, and the child would never be reaped by either side.)
+            bool alreadyTerminal;
+            lock (_stateLock) {
+                alreadyTerminal = Phase == RuntimePhase.Terminal;
+                if (!alreadyTerminal) _current = process;
+            }
 
-                switch (evt.Kind) {
-                    case AntigravityEventKind.Init:
-                        if (!HandleInit(evt)) conversationChanged = true;
-                        break;
-
-                    case AntigravityEventKind.StepUpdate:
-                        accumulator.Add(evt);
-                        foreach (var env in accumulator.Flush(_model)) EmitEnvelope(env);
-                        break;
-
-                    case AntigravityEventKind.Result:
-                        // Never translated to an envelope (session_ended is the server's to own) —
-                        // only read here to drive this runtime's own logical-terminal state.
-                        sawTerminalResult = true;
-                        resultStatus      = evt.Status;
-                        break;
+            if (alreadyTerminal) {
+                // The spawn itself succeeded (the prompt WAS delivered — agy -p's argument list IS the
+                // write), so the ack reflects that; the runtime going terminal is what stops this turn
+                // from being tracked/continued, not a failure to deliver.
+                turn.Written?.TrySetResult();
+                try {
+                    await process.TerminateAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                } catch (Exception ex) {
+                    _logger.LogDebug(ex, "Antigravity: failed to terminate a turn orphaned by a concurrent Terminate.");
                 }
-
-                if (conversationChanged) break; // stop reading — this turn's outcome is already decided.
+                return;
             }
-        } catch (OperationCanceledException) {
-            // Distinguished below via ownerCt/turnCts — both are legitimate reasons this can throw.
+
+            turn.Written?.TrySetResult();
+
+            var accumulator         = new AntigravityStepAccumulator();
+            var sawTerminalResult   = false;
+            var conversationChanged = false;
+            string? resultStatus    = null;
+
+            using var turnCts = CancellationTokenSource.CreateLinkedTokenSource(ownerCt);
+            if (_turnDeadline is { } turnDeadline) turnCts.CancelAfter(turnDeadline);
+
+            try {
+                await foreach (var line in process.ReadLinesAsync(turnCts.Token).ConfigureAwait(false)) {
+                    var evt = AntigravityNdjson.TryParseLine(line);
+                    if (evt is null) continue;
+
+                    switch (evt.Kind) {
+                        case AntigravityEventKind.Init:
+                            if (!HandleInit(evt)) conversationChanged = true;
+                            break;
+
+                        case AntigravityEventKind.StepUpdate:
+                            accumulator.Add(evt);
+                            foreach (var env in accumulator.Flush(_model)) EmitEnvelope(env);
+                            break;
+
+                        case AntigravityEventKind.Result:
+                            // Never translated to an envelope (session_ended is the server's to own) —
+                            // only read here to drive this runtime's own logical-terminal state.
+                            sawTerminalResult = true;
+                            resultStatus      = evt.Status;
+                            break;
+                    }
+
+                    if (conversationChanged) break; // stop reading — this turn's outcome is already decided.
+                }
+            } catch (OperationCanceledException) {
+                // Distinguished below via ownerCt/turnCts — both are legitimate reasons this can throw.
+            } finally {
+                _current = null;
+            }
+
+            if (ownerCt.IsCancellationRequested) return; // stop/dispose — Terminal already entered by TerminateAsync.
+
+            if (conversationChanged) {
+                // A changed conversation id means this runtime silently forked the reviewer's history —
+                // an unrecoverable protocol violation, reaped the same way a blown deadline is: kill the
+                // child THEN go Terminal, never leave an orphaned process behind.
+                try {
+                    await process.TerminateAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                } catch (Exception ex) {
+                    _logger.LogDebug(ex, "Antigravity: failed to terminate a turn after a conversation-id mismatch.");
+                }
+                EnterTerminal(exitCode: 1);
+                return;
+            }
+
+            if (turnCts.IsCancellationRequested) {
+                // The per-turn deadline fired, not an owner cancel — reap this turn's child and go Terminal.
+                try {
+                    await process.TerminateAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                } catch (Exception ex) {
+                    _logger.LogDebug(ex, "Antigravity: failed to terminate a turn that exceeded its deadline.");
+                }
+                _logger.LogWarning("Antigravity: turn exceeded its per-turn deadline; entering Terminal.");
+                EnterTerminal(exitCode: 1);
+                return;
+            }
+
+            // Normal EOF — give the OS a short, bounded grace period to confirm the exit, then trust EOF
+            // regardless: a process whose stdout closed is done producing transcript either way.
+            await process.WaitForExitAsync(ExitConfirmationGrace).ConfigureAwait(false);
+
+            if (!sawTerminalResult) {
+                // Rule (a)'s load-bearing case: EOF without a terminal `result` means the reviewer died
+                // mid-turn. Terminal, never Idle — going Idle here would park ReadOutputAsync forever.
+                EnterTerminal(exitCode: process.ExitCode is { } code and not 0 ? code : 1);
+                return;
+            }
+
+            var success = string.Equals(resultStatus, "SUCCESS", StringComparison.OrdinalIgnoreCase);
+
+            // Not yet Terminal — this only records what Terminal WOULD report if entered right now (see
+            // _terminalExitCode's remarks). RunTurnWorkerAsync flips the phase itself, back in its caller.
+            lock (_stateLock) _terminalExitCode = success ? 0 : 1;
         } finally {
-            _current = null;
-        }
-
-        if (ownerCt.IsCancellationRequested) return; // stop/dispose — Terminal already entered by TerminateAsync.
-
-        if (conversationChanged) {
-            // A changed conversation id means this runtime silently forked the reviewer's history —
-            // an unrecoverable protocol violation, reaped the same way a blown deadline is: kill the
-            // child THEN go Terminal, never leave an orphaned process behind.
+            // Every exit path above — clean success, conversation-id mismatch, deadline, EOF-without-
+            // result, the already-Terminal race, even ownerCt cancellation — lands here. A turn's
+            // process is never reused, so it is always disposed exactly once, right here, regardless of
+            // how the turn ended.
             try {
-                await process.TerminateAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                await process.DisposeAsync().ConfigureAwait(false);
             } catch (Exception ex) {
-                _logger.LogDebug(ex, "Antigravity: failed to terminate a turn after a conversation-id mismatch.");
+                _logger.LogDebug(ex, "Antigravity: failed to dispose a turn's process.");
             }
+        }
+    }
+
+    /// <summary>
+    /// Spawns ONE turn's process (bounded by <see cref="_launchDeadline"/> for turn 1 only). Returns
+    /// <see langword="null"/> on any failure — spawn/auth failure, the launch deadline, or an owner
+    /// cancel racing the spawn — having already reported it through <paramref name="turn"/>'s ack and,
+    /// where it means the runtime cannot continue, <see cref="EnterTerminal"/>. Extracted from
+    /// <see cref="ProcessTurnAsync"/> so the caller's <c>try/finally</c> only ever has to dispose a
+    /// process that actually exists.
+    /// </summary>
+    async Task<IAgyTurnProcess?> SpawnTurnProcessAsync(PendingTurn turn, bool firstTurn, CancellationToken ownerCt) {
+        using var spawnCts = CancellationTokenSource.CreateLinkedTokenSource(ownerCt);
+        if (firstTurn && _launchDeadline is { } launchDeadline)
+            spawnCts.CancelAfter(launchDeadline);
+
+        try {
+            return await _spawnTurn(turn.Text, _conversationId, spawnCts.Token).ConfigureAwait(false);
+        } catch (OperationCanceledException) when (ownerCt.IsCancellationRequested) {
+            // Stop/dispose raced the spawn — EnterTerminal was already called by TerminateAsync.
+            turn.Written?.TrySetException(new InvalidOperationException(
+                "Antigravity runtime stopped before this turn's process spawned."));
+            return null;
+        } catch (OperationCanceledException) {
+            // Only the launch deadline could cancel spawnCts without ownerCt also being cancelled.
+            turn.Written?.TrySetException(new TimeoutException(
+                "Antigravity: turn 1's process did not spawn within the launch deadline."));
+            _logger.LogWarning("Antigravity: turn 1 spawn exceeded the launch deadline; entering Terminal.");
             EnterTerminal(exitCode: 1);
-            return;
-        }
-
-        if (turnCts.IsCancellationRequested) {
-            // The per-turn deadline fired, not an owner cancel — reap this turn's child and go Terminal.
-            try {
-                await process.TerminateAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
-            } catch (Exception ex) {
-                _logger.LogDebug(ex, "Antigravity: failed to terminate a turn that exceeded its deadline.");
-            }
-            _logger.LogWarning("Antigravity: turn exceeded its per-turn deadline; entering Terminal.");
+            return null;
+        } catch (Exception ex) {
+            // Spawn failure or auth failure, surfaced by the injected spawner as a thrown exception.
+            turn.Written?.TrySetException(ex);
+            _logger.LogWarning(ex, "Antigravity: turn process failed to spawn; entering Terminal.");
             EnterTerminal(exitCode: 1);
-            return;
+            return null;
         }
-
-        // Normal EOF — give the OS a short, bounded grace period to confirm the exit, then trust EOF
-        // regardless: a process whose stdout closed is done producing transcript either way.
-        await process.WaitForExitAsync(ExitConfirmationGrace).ConfigureAwait(false);
-
-        if (!sawTerminalResult) {
-            // Rule (a)'s load-bearing case: EOF without a terminal `result` means the reviewer died
-            // mid-turn. Terminal, never Idle — going Idle here would park ReadOutputAsync forever.
-            EnterTerminal(exitCode: process.ExitCode is { } code and not 0 ? code : 1);
-            return;
-        }
-
-        var success = string.Equals(resultStatus, "SUCCESS", StringComparison.OrdinalIgnoreCase);
-
-        // Not yet Terminal — this only records what Terminal WOULD report if entered right now (see
-        // _terminalExitCode's remarks). RunTurnWorkerAsync flips the phase itself, back in its caller.
-        lock (_stateLock) _terminalExitCode = success ? 0 : 1;
     }
 
     /// <summary>Emits <c>session_started</c> at most once (turn 1's <c>init</c> only — a later turn's own
@@ -482,6 +599,10 @@ internal sealed class AntigravityHostedAgentRuntime : IHostedAgentRuntime, IAcpT
         if (evt.ConversationId is { Length: > 0 } cid) {
             if (_conversationId is null) {
                 _conversationId = cid;
+
+                // Rule (e): the ONE place this ever completes successfully — unblocks any factory
+                // awaiting WaitForConversationIdAsync before it reads AcpSessionId.
+                _conversationIdResolved.TrySetResult();
             } else if (!string.Equals(_conversationId, cid, StringComparison.Ordinal)) {
                 _logger.LogError(
                     "Antigravity: conversation id changed from {Old} to {New} mid-session (agentId={AgentId}); entering Terminal.",
@@ -509,9 +630,10 @@ internal sealed class AntigravityHostedAgentRuntime : IHostedAgentRuntime, IAcpT
     /// Enters <see cref="RuntimePhase.Terminal"/>, idempotently: the phase check-and-flip happens under
     /// <see cref="_stateLock"/> (reentrant-safe — <see cref="TerminateAsync"/> calls this from inside its
     /// own already-held <see cref="_stateLock"/> section, which C#'s <see langword="lock"/> permits on the
-    /// same thread), and every other effect — completing <see cref="_terminalTcs"/>, draining
-    /// <see cref="_pendingTurns"/>, completing <see cref="_transcript"/> — runs exactly once, only for the
-    /// caller that actually performed the transition.
+    /// same thread), and every other effect — completing <see cref="_terminalTcs"/>, faulting
+    /// <see cref="_conversationIdResolved"/> (rule (e); a no-op if it already resolved successfully),
+    /// draining <see cref="_pendingTurns"/>, completing <see cref="_transcript"/> — runs exactly once,
+    /// only for the caller that actually performed the transition.
     ///
     /// <para>The pending-turns drain exists because a turn already sitting in the channel when Terminal
     /// is entered would otherwise never be observed: once <see cref="TerminateAsync"/> cancels
@@ -531,6 +653,11 @@ internal sealed class AntigravityHostedAgentRuntime : IHostedAgentRuntime, IAcpT
         }
 
         _terminalTcs.TrySetResult();
+
+        // Rule (e): unblock a factory parked in WaitForConversationIdAsync when a conversation id is
+        // never going to arrive (e.g. turn 1's spawn itself failed) — never hang that caller forever.
+        _conversationIdResolved.TrySetException(new InvalidOperationException(
+            "Antigravity runtime went terminal before establishing a conversation id."));
 
         _pendingTurns.Writer.TryComplete();
         while (_pendingTurns.Reader.TryRead(out var dropped))

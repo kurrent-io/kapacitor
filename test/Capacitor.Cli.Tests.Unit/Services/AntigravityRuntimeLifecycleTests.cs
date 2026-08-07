@@ -1,113 +1,43 @@
 // test/Capacitor.Cli.Tests.Unit/Services/AntigravityRuntimeLifecycleTests.cs
-using System.Runtime.CompilerServices;
 using Capacitor.Cli.Daemon.Acp;
 using Capacitor.Cli.Daemon.Services;
 using Microsoft.Extensions.Logging.Abstractions;
+using static Capacitor.Cli.Tests.Unit.Services.AntigravityRuntimeFakes;
 
 namespace Capacitor.Cli.Tests.Unit.Services;
 
 /// <summary>
 /// Exercises <see cref="AntigravityHostedAgentRuntime"/>'s phase machine end-to-end against
-/// <see cref="FakeAgyTurnProcess"/> — no real <c>agy</c> process is spawned. This is the
-/// highest-risk runtime in the daemon: unlike every other <c>IHostedAgentRuntime</c>, it has no
-/// long-lived child at all — each turn is its own <c>agy -p …</c> invocation, so "the process
-/// exited" and "the runtime is done" are NOT the same event, and getting that distinction wrong
-/// produces a silent hang rather than a failing test. See the class doc on
-/// <see cref="AntigravityHostedAgentRuntime"/> for the four rules these tests pin.
+/// <see cref="FakeAgyTurnProcess"/> (in <c>AntigravityRuntimeFakes.cs</c>, shared with a sibling plan)
+/// — no real <c>agy</c> process is spawned. This is the highest-risk runtime in the daemon: unlike
+/// every other <c>IHostedAgentRuntime</c>, it has no long-lived child at all — each turn is its own
+/// <c>agy -p …</c> invocation, so "the process exited" and "the runtime is done" are NOT the same
+/// event, and getting that distinction wrong produces a silent hang rather than a failing test. See
+/// the class doc on <see cref="AntigravityHostedAgentRuntime"/> for the rules these tests pin.
+///
+/// <para><b>Why most tests await <see cref="AntigravityHostedAgentRuntime.WaitForConversationIdAsync"/>
+/// before <see cref="AntigravityHostedAgentRuntime.WaitForTurnIdleAsync"/>.</b>
+/// <see cref="AntigravityHostedAgentRuntime.SendUserInputAsync"/> returns as soon as a turn is
+/// enqueued — before the worker even dequeues it — and <c>WaitForTurnIdleAsync</c>'s
+/// acquire-then-release on a currently-FREE gate can complete synchronously, before the worker's own
+/// continuation is even scheduled to acquire it. Calling <c>WaitForTurnIdleAsync</c> right after
+/// <c>SendUserInputAsync</c> is therefore not a reliable "the turn ran" barrier — a review caught this
+/// after it let a comparison test pass on two empty strings without a single turn actually completing.
+/// <c>WaitForConversationIdAsync</c> only resolves once the worker has genuinely read a spawned turn's
+/// first line, so awaiting it first closes the gap.</para>
 /// </summary>
 public class AntigravityRuntimeLifecycleTests {
     static readonly TimeSpan HangGuard = TimeSpan.FromSeconds(5);
-
-    const string FixedConversationId = "fixed-conversation-id";
-
-    /// <summary>How one fake turn behaves, driving <see cref="FakeAgyTurnProcess.ReadLinesAsync"/>.
-    /// Pinned exactly per the design brief — a sibling plan reuses this shape.</summary>
-    public enum FakeTurn {
-        /// <summary>Emits <c>init</c> then a <c>result</c> with <c>status: SUCCESS</c>, then EOFs —
-        /// the ordinary clean-turn shape.</summary>
-        Normal,
-
-        /// <summary>Emits <c>init</c> only, then EOFs with NO <c>result</c> line at all — the "the
-        /// reviewer died mid-turn" shape rule (a) exists for.</summary>
-        EofWithoutResult,
-
-        /// <summary>Emits <c>init</c>, then blocks forever until its cancellation token fires — the
-        /// "a turn is genuinely still running" shape the deadlock mutation check exercises.</summary>
-        NeverEnds,
-    }
-
-    /// <summary><see cref="IAgyTurnProcess"/> fake for ONE turn. A fresh instance is handed out by
-    /// the injected spawner for every turn, mirroring agy's real exec-per-turn shape — this is never
-    /// reused across turns.</summary>
-    sealed class FakeAgyTurnProcess(FakeTurn turn, string conversationId) : IAgyTurnProcess {
-        public int  Pid            { get; } = 4242;
-        public bool HasExited      { get; private set; }
-        public int? ExitCode       { get; private set; }
-        public int  TerminateCalls { get; private set; }
-
-        public async IAsyncEnumerable<string> ReadLinesAsync([EnumeratorCancellation] CancellationToken ct) {
-            yield return $$$"""{"event":"init","conversation_id":"{{{conversationId}}}","init":{"cwd":"/w"}}""";
-
-            switch (turn) {
-                case FakeTurn.Normal:
-                    yield return $$$"""{"event":"result","result":{"conversation_id":"{{{conversationId}}}","status":"SUCCESS"}}""";
-                    HasExited = true;
-                    ExitCode  = 0;
-                    break;
-
-                case FakeTurn.EofWithoutResult:
-                    // No result line — the child exits having said nothing more. The runtime must
-                    // not read this EOF as "turn complete".
-                    HasExited = true;
-                    ExitCode  = 1;
-                    break;
-
-                case FakeTurn.NeverEnds:
-                    // Blocks until the runtime's own cancellation (owner-cancel or a deadline) fires —
-                    // simulates a turn that is genuinely still running.
-                    await Task.Delay(Timeout.Infinite, ct).ConfigureAwait(false);
-                    break;
-            }
-        }
-
-        public Task WaitForExitAsync(TimeSpan? timeout = null) => Task.CompletedTask;
-
-        public Task TerminateAsync(TimeSpan? timeout = null) {
-            TerminateCalls++;
-            HasExited = true;
-            ExitCode ??= -1;
-            return Task.CompletedTask;
-        }
-
-        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
-    }
-
-    /// <summary>
-    /// Builds a runtime whose turn spawner never touches a real process. Signature pinned exactly
-    /// per the design brief — a sibling plan reuses this helper directly, so <paramref name="onSpawn"/>
-    /// receiving the PROMPT (not a bare notification) and <paramref name="queueCap"/> both matter to
-    /// get right here.
-    /// </summary>
-    static AntigravityHostedAgentRuntime FakeRuntime(
-            FakeTurn        turn     = FakeTurn.Normal,
-            Action<string>? onSpawn  = null,
-            int             queueCap = 64) {
-        Func<string, string?, CancellationToken, Task<IAgyTurnProcess>> spawn = (prompt, _, _) => {
-            onSpawn?.Invoke(prompt);
-            return Task.FromResult<IAgyTurnProcess>(new FakeAgyTurnProcess(turn, FixedConversationId));
-        };
-
-        return new AntigravityHostedAgentRuntime(
-            spawnTurn: spawn,
-            logger: NullLogger.Instance,
-            pendingTurnsCapacity: queueCap);
-    }
 
     [Test]
     public async Task Between_turns_the_runtime_is_logically_alive() {
         await using var rt = FakeRuntime();
         await rt.SendUserInputAsync("hello").WaitAsync(HangGuard);
+        await rt.WaitForConversationIdAsync(CancellationToken.None).WaitAsync(HangGuard);
         await rt.WaitForTurnIdleAsync(CancellationToken.None).WaitAsync(HangGuard);
+
+        // Positive check that the turn genuinely ran (not "" == "" from a turn that never started).
+        await Assert.That(rt.AcpSessionId).IsEqualTo(FixedConversationId);
 
         // No child process exists right now. Reporting exited here would make every stop
         // trivially succeed and would mis-report the final status.
@@ -121,7 +51,10 @@ public class AntigravityRuntimeLifecycleTests {
         var read = Task.Run(async () => { await foreach (var _ in rt.ReadOutputAsync()) { } });
 
         await rt.SendUserInputAsync("hello").WaitAsync(HangGuard);
+        await rt.WaitForConversationIdAsync(CancellationToken.None).WaitAsync(HangGuard);
         await rt.WaitForTurnIdleAsync(CancellationToken.None).WaitAsync(HangGuard);
+
+        await Assert.That(rt.AcpSessionId).IsEqualTo(FixedConversationId);
 
         // Completing here would drive FinalizeAgentRunAsync and close the session after turn 1.
         await Assert.That(read.IsCompleted).IsFalse();
@@ -157,7 +90,10 @@ public class AntigravityRuntimeLifecycleTests {
     public async Task Terminate_while_idle_is_not_a_no_op() {
         await using var rt = FakeRuntime();
         await rt.SendUserInputAsync("hello").WaitAsync(HangGuard);
+        await rt.WaitForConversationIdAsync(CancellationToken.None).WaitAsync(HangGuard);
         await rt.WaitForTurnIdleAsync(CancellationToken.None).WaitAsync(HangGuard);
+
+        await Assert.That(rt.AcpSessionId).IsEqualTo(FixedConversationId);
 
         await rt.TerminateAsync(TimeSpan.FromSeconds(5)).WaitAsync(HangGuard);
 
@@ -190,16 +126,67 @@ public class AntigravityRuntimeLifecycleTests {
 
     [Test]
     public async Task The_conversation_id_is_stable_and_a_change_drives_terminal() {
-        await using var rt = FakeRuntime();
+        // WaitForConversationIdAsync only ever resolves ONCE (turn 1's id) — it can't also prove turn
+        // 2 genuinely ran. Track each spawn explicitly instead of relying on WaitForTurnIdleAsync's
+        // racy gate hand-off (see the class doc).
+        var spawnSignals = new TaskCompletionSource[2];
+        for (var i = 0; i < spawnSignals.Length; i++)
+            spawnSignals[i] = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        var spawnCount = 0;
+
+        await using var rt = FakeRuntime(onSpawn: _ => {
+            var i = Interlocked.Increment(ref spawnCount) - 1;
+            if (i < spawnSignals.Length) spawnSignals[i].TrySetResult();
+        });
+
         await rt.SendUserInputAsync("one").WaitAsync(HangGuard);
+        await spawnSignals[0].Task.WaitAsync(HangGuard); // turn 1 genuinely started
         await rt.WaitForTurnIdleAsync(CancellationToken.None).WaitAsync(HangGuard);
         var first = rt.AcpSessionId;
 
+        // Positive check — a vacuous run (turn 1 never actually processed) would leave this "".
+        await Assert.That(first).IsEqualTo(FixedConversationId);
+
         await rt.SendUserInputAsync("two").WaitAsync(HangGuard);
+        await spawnSignals[1].Task.WaitAsync(HangGuard); // turn 2 genuinely started
         await rt.WaitForTurnIdleAsync(CancellationToken.None).WaitAsync(HangGuard);
 
         // A changed conversation id means we silently forked the reviewer's history.
         await Assert.That(rt.AcpSessionId).IsEqualTo(first);
+        await Assert.That(rt.HasExited).IsFalse(); // still idle — two clean turns, no mismatch.
+    }
+
+    [Test]
+    public async Task A_changed_conversation_id_mid_session_drives_terminal() {
+        // FakeRuntime always uses ONE FakeTurn for every spawn, so a mismatch (which only makes sense
+        // after a first turn has already established an id) needs a bespoke spawn closure: turn 1
+        // Normal (establishes the baseline id), turn 2 ChangedConversationId (reports a different one).
+        var callIndex = 0;
+        Func<string, string?, CancellationToken, Task<IAgyTurnProcess>> spawn = (_, _, _) => {
+            var kind = Interlocked.Increment(ref callIndex) == 1 ? FakeTurn.Normal : FakeTurn.ChangedConversationId;
+            return Task.FromResult<IAgyTurnProcess>(new FakeAgyTurnProcess(kind, FixedConversationId));
+        };
+
+        await using var rt = new AntigravityHostedAgentRuntime(spawnTurn: spawn, logger: NullLogger.Instance);
+
+        await rt.SendUserInputAsync("one").WaitAsync(HangGuard);
+        await rt.WaitForConversationIdAsync(CancellationToken.None).WaitAsync(HangGuard);
+        await rt.WaitForTurnIdleAsync(CancellationToken.None).WaitAsync(HangGuard);
+        await Assert.That(rt.AcpSessionId).IsEqualTo(FixedConversationId);
+        await Assert.That(rt.HasExited).IsFalse(); // idle after a clean first turn, not terminal yet.
+
+        var read = Task.Run(async () => { await foreach (var _ in rt.ReadOutputAsync()) { } });
+        await rt.SendUserInputAsync("two").WaitAsync(HangGuard);
+
+        // The mismatch drives Terminal, never Idle — wait on the terminal signal itself, since this
+        // turn will never reach WaitForTurnIdleAsync's "idle" outcome.
+        await read.WaitAsync(HangGuard);
+
+        await Assert.That(rt.HasExited).IsTrue();
+        await Assert.That(rt.ExitCode).IsNotEqualTo(0);
+
+        // The stable id from turn 1 is preserved — never silently overwritten by the mismatched one.
+        await Assert.That(rt.AcpSessionId).IsEqualTo(FixedConversationId);
     }
 
     [Test]
@@ -208,6 +195,7 @@ public class AntigravityRuntimeLifecycleTests {
         await using var rt = FakeRuntime(onSpawn: p => prompts.Add(p));
 
         await rt.SendUserInputAsync("do the review").WaitAsync(HangGuard);
+        await rt.WaitForConversationIdAsync(CancellationToken.None).WaitAsync(HangGuard);
         await rt.WaitForTurnIdleAsync(CancellationToken.None).WaitAsync(HangGuard);
 
         await Assert.That(prompts).Contains("do the review");
@@ -232,5 +220,23 @@ public class AntigravityRuntimeLifecycleTests {
 
         // Only turn 1 ever spawned — turn 2 sits in the (capacity-1) queue and turn 3 was dropped.
         await Assert.That(spawns).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task A_turns_process_is_disposed_after_the_turn_ends() {
+        FakeAgyTurnProcess? spawned = null;
+        Func<string, string?, CancellationToken, Task<IAgyTurnProcess>> spawn = (_, _, _) => {
+            spawned = new FakeAgyTurnProcess(FakeTurn.Normal, FixedConversationId);
+            return Task.FromResult<IAgyTurnProcess>(spawned);
+        };
+
+        await using var rt = new AntigravityHostedAgentRuntime(spawnTurn: spawn, logger: NullLogger.Instance);
+
+        await rt.SendUserInputAsync("hello").WaitAsync(HangGuard);
+        await rt.WaitForConversationIdAsync(CancellationToken.None).WaitAsync(HangGuard);
+        await rt.WaitForTurnIdleAsync(CancellationToken.None).WaitAsync(HangGuard);
+
+        await Assert.That(spawned).IsNotNull();
+        await Assert.That(spawned!.DisposeCalls).IsEqualTo(1);
     }
 }
