@@ -67,12 +67,8 @@ internal static class KiroReviewerCapability {
         // off — the same trap the Gemini gate documents.
         if (!operatorEnabled) return KiroReviewerDecision.Disabled;
 
-        // The version half is shared with the other gated reviewers — see ReviewerVersionAffirmations.
-        //
-        // Every arm is listed and there is NO discard. A `_ => Allowed` default meant any arm added to
-        // ReviewerVersionAffirmation later was silently ADMITTED rather than refused — a fail-closed
-        // gate whose safe direction was whatever nobody thought about. Without the discard, CS8509
-        // (an error via Directory.Build.props) makes the next arm a build failure instead.
+        // No discard: `_ => Allowed` silently ADMITTED any arm added later, which is the wrong
+        // direction for this gate. CS8509 makes the next one a build failure instead.
         return ReviewerVersionAffirmations.Decide(installedVersion, minimumVersion) switch {
             ReviewerVersionAffirmation.MeetsMinimum      => KiroReviewerDecision.Allowed,
             ReviewerVersionAffirmation.Unresolved        => KiroReviewerDecision.VersionUnresolved,

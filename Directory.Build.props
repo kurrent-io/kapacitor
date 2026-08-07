@@ -7,7 +7,7 @@
              maps to the permissive outcome makes the safe direction of a fail-closed gate whatever
              nobody thought about. The reviewer version gate shipped exactly that bug. Measured before
              enabling: zero CS8509 warnings across the daemon, Core, the CLI and the unit tests. -->
-        <WarningsAsErrors>CS8509</WarningsAsErrors>
+        <WarningsAsErrors>$(WarningsAsErrors);CS8509</WarningsAsErrors>
         <MinVerTagPrefix>v</MinVerTagPrefix>
     </PropertyGroup>
     <ItemGroup>

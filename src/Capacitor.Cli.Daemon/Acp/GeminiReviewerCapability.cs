@@ -67,10 +67,8 @@ internal static class GeminiReviewerCapability {
         // is switched off.
         if (!operatorEnabled) return GeminiReviewerDecision.Disabled;
 
-        // Every arm listed, NO discard: a `_ => Allowed` default meant any arm added to
-        // ReviewerVersionAffirmation later was silently ADMITTED rather than refused, inverting a
-        // fail-closed gate. Without it, CS8509 (an error via Directory.Build.props) makes the next
-        // arm a build failure.
+        // No discard: `_ => Allowed` silently ADMITTED any arm added later, which is the wrong
+        // direction for this gate. CS8509 makes the next one a build failure instead.
         return ReviewerVersionAffirmations.Decide(installedVersion, minimumVersion) switch {
             ReviewerVersionAffirmation.MeetsMinimum      => GeminiReviewerDecision.Allowed,
             ReviewerVersionAffirmation.Unresolved        => GeminiReviewerDecision.VersionUnresolved,
