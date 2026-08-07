@@ -1,4 +1,5 @@
 using System.Net;
+using System.Text;
 using System.Net.Http.Json;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Auth;
@@ -207,14 +208,30 @@ public static class MachineCommand {
         try {
             using var client = await HttpClientExtensions.CreateAuthenticatedClientAsync();
 
-            // *WithRetryAsync rather than the raw verbs, matching every other command here. Two things
-            // come with it that the raw call does not have: a bounded retry, and EnsureAbsolute — the
-            // guard that turns a relative or scheme-less URL into an actionable message instead of the
-            // opaque InvalidOperationException that hid this file's worst bug until review.
-            using var response = await client.PostWithRetryAsync(
-                $"{baseUrl}/api/admin/machines",
-                JsonContent.Create(new RegisterMachineRequest(clientId, name, role),
-                    CapacitorJsonContext.Default.RegisterMachineRequest));
+            // DELIBERATELY NOT PostWithRetryAsync — this is the one call here that must not auto-retry.
+            //
+            // Registration is not idempotent from the client's side: the server 409s a duplicate. So if
+            // the server succeeds and the RESPONSE is lost, a retry returns 409 and the CLI reports
+            // failure for something that worked. That is bad on its own, and worse in combination with
+            // the disclosure ordering above: the operator is holding a freshly printed secret and being
+            // told to go and destroy the credential. Raised in review.
+            //
+            // Retry buys little here anyway — it only helps for failures BEFORE the request lands, which
+            // the operator can retry themselves knowing what happened. list and revoke keep the retry:
+            // one is a read, the other is idempotent server-side.
+            var url = $"{baseUrl}/api/admin/machines";
+
+            // The absolute-URL guard the retry helpers would have given us, kept explicitly rather than
+            // lost with them. A relative URL here is what made this whole command dead until review.
+            if (!HttpClientExtensions.IsAcceptableUrl(url)) {
+                await Console.Error.WriteLineAsync($"Server URL is not usable: '{baseUrl}'.");
+
+                return null;
+            }
+
+            using var response = await client.PostAsJsonAsync(
+                url, new RegisterMachineRequest(clientId, name, role),
+                CapacitorJsonContext.Default.RegisterMachineRequest);
 
             if (response.StatusCode is HttpStatusCode.NotFound) {
                 // The application EXISTS in WorkOS and is unregistered here. Saying "try again" alone
@@ -233,6 +250,18 @@ public static class MachineCommand {
 
             if (response.StatusCode is HttpStatusCode.Forbidden or HttpStatusCode.Unauthorized) {
                 await Console.Error.WriteLineAsync("You need to be a Capacitor administrator to register a machine.");
+
+                return null;
+            }
+
+            // A 409 means the server already has this client id — which may be a genuine duplicate, or
+            // a previous attempt of THIS command that landed and lost its response. Saying "failed"
+            // flatly would send someone to delete a machine that is in fact registered and working.
+            if (response.StatusCode is HttpStatusCode.Conflict) {
+                await Console.Error.WriteLineAsync(
+                    "The server reports this machine is already registered. That may be a genuine "
+                  + "duplicate, or an earlier attempt that succeeded without the response reaching us. "
+                  + "Run `kcap machine list` to check before deleting anything.");
 
                 return null;
             }
@@ -369,9 +398,15 @@ public static class MachineCommand {
         try {
             using var client = await HttpClientExtensions.CreateAuthenticatedClientAsync();
 
+            // An empty StringContent would send `Content-Type: text/plain`, which a strict endpoint can
+            // reject with a 415. The endpoint binds no body at all, so the content is inert either way —
+            // but an inert body with the WRONG media type is a needless way to fail. Raised in review.
+            //
+            // Retry is safe HERE, unlike registration: revocation is idempotent server-side, so a lost
+            // response followed by a retry converges on the intended state rather than a false conflict.
             using var response = await client.PostWithRetryAsync(
                 $"{baseUrl}/api/admin/machines/{Uri.EscapeDataString(serviceId)}/revoke",
-                new StringContent(""));
+                new StringContent("{}", Encoding.UTF8, "application/json"));
 
             if (response.StatusCode is HttpStatusCode.NotFound) {
                 await Console.Error.WriteLineAsync($"No machine '{serviceId}'. Run `kcap machine list`.");
