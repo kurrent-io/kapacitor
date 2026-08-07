@@ -118,6 +118,13 @@ internal sealed partial class AntigravityHostedAgentRuntimeFactory(
 
     public bool SupportsUnattended => DescribeUnattendedSupport().Supported;
 
+    /// <summary>Every launch this runtime serves runs under the per-launch isolated <c>HOME</c>
+    /// <see cref="StartAsync"/> creates, and an MCP server is spawned as the vendor's child, so the
+    /// result channel inherits it and finds no token store. Unconditional rather than borrowed-scoped:
+    /// this runtime refuses a borrowed workspace outright and redirects <c>HOME</c> regardless, which
+    /// is exactly why a borrowed-ness predicate could not reach it.</summary>
+    public bool ReviewFlowRedirectsHome => true;
+
     /// <summary>
     /// Advertisement keeps the FULL ladder, consent included, because advertising is specifically an
     /// offer to REVIEW unattended — the one thing the consent flag governs. A daemon that advertised
@@ -371,6 +378,17 @@ internal sealed partial class AntigravityHostedAgentRuntimeFactory(
             throw new InvalidOperationException(
                 "antigravity_reviewer_result_channel_incomplete: cannot inject the kcap-flow-result "
               + "channel (missing server url / kcap path / agent id).");
+
+        // This runtime DECLARES that its reviews redirect HOME (see ReviewFlowRedirectsHome), so a
+        // review reaching here without brokered delivery means that declaration was not honoured —
+        // the same code-level-invariant shape as AcpHostedAgentRuntimeFactory.ValidateBorrowedArtifact.
+        // The alternative to failing is a reviewer that reads its context, reasons, and can never
+        // report: the round then burns its whole timeout with no error anywhere.
+        if (!ctx.RequiresBrokeredResultDelivery)
+            throw new InvalidOperationException(
+                "antigravity_reviewer_result_delivery_unbrokered: this reviewer runs under a "
+              + "per-launch isolated HOME, so its result channel has no token store to authenticate "
+              + "from and must be launched with a daemon-brokered delivery capability.");
 
         if (!KcapMcpRegistry.TryResolveReviewFlowAllowlist(ctx.McpAllowlist, out var allowlistServerIds, out var rejected))
             throw new InvalidOperationException(

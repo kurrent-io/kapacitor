@@ -2034,6 +2034,11 @@ public partial class AgentOrchestratorVendorTests {
         public bool   SupportsBorrowedReviewFlow { get; init; }
         public bool   BorrowedReviewRequiresIndependentSnapshot { get; init; }
 
+        /// <summary>Stands in for a runtime that isolates HOME on every review it serves (Antigravity
+        /// today). Independent of borrowed-ness on purpose — that is the whole point of the
+        /// declaration, and a test that could only set it alongside a borrow would prove nothing.</summary>
+        public bool   ReviewFlowRedirectsHome { get; init; }
+
         /// <summary>Task 8: lets a test give this factory a reviewer-model resolver so the
         /// orchestrator's ResolveReviewerModel preflight handler can resolve against it.</summary>
         public IReviewerModelResolver? ReviewerModelResolver { get; init; }

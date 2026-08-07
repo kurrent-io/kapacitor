@@ -1581,16 +1581,36 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             string? reviewContextCapabilityUrl = null;
             string? flowResultCapabilityUrl    = null;
 
-            // A token record is minted for the union of two independent authorities: Codex's
-            // unattended permission allowlist and a borrowed snapshot's immutable review context.
-            // Direct Codex keeps its permissions-only grant; non-Codex snapshot runtimes get an
-            // empty permission set plus context. One record means one revocation cannot drift.
+            // Whether this reviewer's kcap-flow-result channel must deliver through a daemon-brokered
+            // capability instead of authenticating for itself. The channel resolves its credential
+            // from PathHelpers.ConfigDir, which hangs off HOME — so the question is whether the launch
+            // runs under the daemon user's HOME, and there are two independent causes of its not doing
+            // so, one owned by the launch and one by the runtime:
+            //
+            //   • a borrowed snapshot, whose OS sandbox moves HOME into a per-launch state dir, and
+            //   • a runtime that isolates HOME on every review it serves (Antigravity), which borrows
+            //     nothing at all and is therefore unreachable through the first.
+            //
+            // The borrowed arm stays unconditional rather than being narrowed to the sandboxed vendors:
+            // the snapshot lane has delivered through the broker since #488, and a snapshot runtime that
+            // keeps its own HOME (Cursor) losing that is a behaviour change nothing here asks for.
+            //
+            // Computed ONCE and used for the mint, the forwarder and the context, so the grant that
+            // serves the submit path and the env the channel is launched with cannot disagree.
+            var brokeredResultDelivery = snapshotBorrow
+                                      || (isReviewFlow && runtimeFactory.ReviewFlowRedirectsHome);
+
+            // A token record is minted for the union of three independent authorities: Codex's
+            // unattended permission allowlist, a borrowed snapshot's immutable review context, and a
+            // brokered result channel's submit forwarder. Direct Codex keeps its permissions-only
+            // grant; every other reviewer here gets an empty permission set plus whichever capability
+            // it needs. One record means one revocation cannot drift.
             var codexReviewer = isReviewFlow &&
                 string.Equals(cmd.Vendor, "codex", StringComparison.OrdinalIgnoreCase);
-            if (codexReviewer || snapshotBorrow) {
+            if (codexReviewer || brokeredResultDelivery) {
                 if (daemonBridgeUrl is null)
                     throw new InvalidOperationException(
-                        "Borrowed review context requires the local permission bridge.");
+                        "An unattended reviewer's capabilities require the local permission bridge.");
 
                 string[] reviewerServers = [];
                 if (codexReviewer &&
@@ -1613,24 +1633,24 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
                     : null;
                 var reviewerUrl = _permissionBridge.RegisterReviewerToken(
                     reviewerServers, reviewGeneration, activityClock,
-                    // Only a borrowed snapshot gets a submit forwarder. Its sandbox redirects HOME,
-                    // so its result channel has no token store; every other reviewer authenticates
-                    // for itself and must NOT be handed a daemon-credentialed relay it has no need
-                    // for. Withholding it also keeps the endpoint 404 rather than merely unused.
-                    snapshotBorrow ? ForwardFlowSubmissionAsync : null);
+                    // Only a reviewer that cannot reach its own token store gets a submit forwarder.
+                    // Every other reviewer authenticates for itself and must NOT be handed a
+                    // daemon-credentialed relay it has no need for. Withholding it also keeps the
+                    // endpoint 404 rather than merely unused.
+                    brokeredResultDelivery ? ForwardFlowSubmissionAsync : null);
                 reviewerToken = reviewerUrl; // the URL doubles as the revoke handle
                 if (codexReviewer) {
                     daemonBridgeUrl = reviewerUrl;
                     effectiveAllowlist = reviewerServers;
                 }
-                if (snapshotBorrow) {
+                if (snapshotBorrow)
                     reviewContextCapabilityUrl = reviewerUrl +
                         "/review-context/workspace-mcp-configs";
-                    // Both capabilities hang off the SAME reviewer grant, so revoking that one token
-                    // closes the read path and the submit path together. A separately-minted token
-                    // could outlive the first and leave a live submit path after the reviewer is gone.
-                    flowResultCapabilityUrl = reviewerUrl;
-                }
+                // The capability IS the reviewer grant, so revoking that one token closes the submit
+                // path in the same operation that closes the read path a borrowed launch also holds.
+                // A separately-minted token could outlive the first and leave a live submit path
+                // after the reviewer is gone.
+                if (brokeredResultDelivery) flowResultCapabilityUrl = reviewerUrl;
             }
 
             var runtimeCtx = new RuntimeStartContext(
@@ -1663,6 +1683,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
                 IsBorrowedSnapshot: snapshotBorrow,
                 ReviewContextCapabilityUrl: reviewContextCapabilityUrl,
                 FlowResultCapabilityUrl: flowResultCapabilityUrl,
+                RequiresBrokeredResultDelivery: brokeredResultDelivery,
                 CodexPosture: cmd.CodexPosture,
                 // Handed to the factory so it can wire the clock onto the runtime BEFORE StartAsync —
                 // assigning it after that call returns silently defeats every handshake stage stamp.

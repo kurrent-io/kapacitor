@@ -68,11 +68,19 @@ public class AntigravityReviewerLaunchTests {
     /// to pin which arm forwards it.</param>
     /// <param name="isReview">The PR-review launch kind (<c>LaunchKind.Review</c>) — a THIRD shape,
     /// distinct from both arms above and refused outright; see the test that pins it.</param>
+    /// <param name="brokeredResultDelivery">Defaults to <paramref name="isReviewFlow"/>, which is
+    /// exactly what the orchestrator derives for this runtime: it declares
+    /// <c>ReviewFlowRedirectsHome</c>, so every review it serves is brokered and no hosted launch is.
+    /// A test passes <see langword="false"/> on a review to reach the wiring guard.</param>
+    /// <param name="flowResultCapabilityUrl">The loopback capability the brokered channel delivers
+    /// through, minted on the reviewer grant. Defaulted to a real-shaped value because production
+    /// always has one here.</param>
     static RuntimeStartContext Ctx(
             bool isReviewFlow = true, AgentActivityClock? clock = null, string? model = null,
             string? serverUrl = "http://kcap.test", string capacitorPath = "/usr/local/bin/kcap",
             string[]? mcpAllowlist = null, IReadOnlyList<AcpMcpServerSpec>? mcpServers = null,
-            bool isReview = false) => new(
+            bool isReview = false, bool? brokeredResultDelivery = null,
+            string? flowResultCapabilityUrl = CapabilityUrl) => new(
         AgentId: "agent-1", Vendor: "antigravity", SourceRepoPath: "/repo",
         Worktree: new WorktreeInfo(Path: "/abs/wt", Branch: "b", SourceRepo: "/repo"),
         Prompt: "review this",
@@ -84,7 +92,13 @@ public class AntigravityReviewerLaunchTests {
         McpAllowlist: mcpAllowlist,
         DaemonId: "daemon-1", DaemonEpoch: "epoch-1",
         McpServers: mcpServers,
+        RequiresBrokeredResultDelivery: brokeredResultDelivery ?? isReviewFlow,
+        FlowResultCapabilityUrl: flowResultCapabilityUrl,
         ActivityClock: clock);
+
+    /// <summary>Shape-accurate stand-in for the reviewer grant's own URL (loopback + 32 hex chars),
+    /// so nothing here passes on a value the bridge would never mint.</summary>
+    const string CapabilityUrl = "http://127.0.0.1:1234/0123456789abcdef0123456789abcdef";
 
     static ProcessStartInfo BuildPsi(
             DaemonConfig config, string? conversationId = null, bool isReviewFlow = true) =>
@@ -804,8 +818,70 @@ public class AntigravityReviewerLaunchTests {
         await Assert.That(config).Contains("\"/usr/local/bin/kcap\"");
         await Assert.That(config).Contains("\"KCAP_FLOW_AGENT_ID\"");
         await Assert.That(config).Contains("\"agent-1\"");
-        await Assert.That(config).Contains("\"KCAP_URL\"");
+        await Assert.That(config).Contains("\"KCAP_FLOW_CAPABILITY_URL\"");
         await Assert.That(config).DoesNotContain("caller-supplied");
+    }
+
+    /// <summary>
+    /// <b>The delivery credential, at the launch boundary.</b> This runtime hands the child a
+    /// per-launch isolated <c>HOME</c>, and the result channel is spawned as that child's child — so
+    /// it inherits the isolated home and resolves <c>PathHelpers.ConfigDir</c> at an empty directory.
+    /// Measured live: the channel failed with <c>Not logged in. Run 'kcap login' on the host shell.</c>
+    /// after the reviewer had already produced its answer.
+    ///
+    /// <para>The ABSENCE of <c>KCAP_URL</c> on the channel is the load-bearing half: that variable is
+    /// what routes delivery at the unreachable token store, so leaving it alongside the capability
+    /// would keep the broken path reachable as a silent fallback. Asserted on the mcp_config the
+    /// launch actually WROTE, not on a builder's return value — the file the child loads is the only
+    /// thing that decides this.</para>
+    /// </summary>
+    [Test]
+    public async Task A_review_launch_delivers_through_the_capability_and_never_the_token_store() {
+        Skip.Unless(!OperatingSystem.IsWindows(), "POSIX-only: the per-launch home cannot be owner-only on Windows.");
+
+        var spy = new SpyTurnSource();
+
+        var start = await Factory(EnabledConfig(), spy.SpawnAsync)
+            .StartAsync(Ctx(isReviewFlow: true), CancellationToken.None).WaitAsync(HangGuard);
+
+        await using var runtime = start.Runtime;
+
+        var config = await McpConfigOf(spy);
+
+        await Assert.That(config).Contains($"\"KCAP_FLOW_CAPABILITY_URL\":\"{CapabilityUrl}\"");
+        await Assert.That(config).DoesNotContain("KCAP_URL");
+    }
+
+    /// <summary>
+    /// The wiring guard, in the shape of <c>AcpHostedAgentRuntimeFactory.ValidateBorrowedArtifact</c>:
+    /// this runtime DECLARES that every review it serves redirects HOME, so a review reaching it
+    /// without the brokered capability means the orchestrator did not honour that declaration. The
+    /// alternative to failing here is a reviewer that starts, reads, reasons and then silently cannot
+    /// report — which burns the round's whole timeout and is the exact failure this whole path exists
+    /// to remove.
+    /// </summary>
+    [Test]
+    public async Task A_review_launch_that_was_not_given_brokered_delivery_is_refused() {
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            Factory(EnabledConfig(), new SpyTurnSource().SpawnAsync)
+                .StartAsync(Ctx(isReviewFlow: true, brokeredResultDelivery: false),
+                            CancellationToken.None));
+
+        await Assert.That(ex!.Message).StartsWith("antigravity_reviewer_result_delivery_unbrokered");
+    }
+
+    /// <summary>
+    /// The declaration itself, read through the interface — the only surface the orchestrator
+    /// consults. It is deliberately NOT borrowed-ness: this runtime refuses a borrowed workspace
+    /// outright (see above) and still redirects HOME, which is precisely why keying delivery on a
+    /// borrowed snapshot left this reviewer unable to report.
+    /// </summary>
+    [Test]
+    public async Task The_runtime_declares_that_its_reviews_redirect_home() {
+        IHostedAgentRuntimeFactory factory = Factory(EnabledConfig());
+
+        await Assert.That(factory.ReviewFlowRedirectsHome).IsTrue();
+        await Assert.That(factory.SupportsBorrowedReviewFlow).IsFalse();
     }
 
     /// <summary>

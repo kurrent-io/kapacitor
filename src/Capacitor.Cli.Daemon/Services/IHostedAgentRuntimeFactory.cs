@@ -62,6 +62,28 @@ internal interface IHostedAgentRuntimeFactory {
     bool BorrowedReviewRequiresIndependentSnapshot => false;
 
     /// <summary>
+    /// Whether a review-flow launch this runtime serves runs the vendor — and therefore every MCP
+    /// child the vendor spawns — under a <c>HOME</c> that is not the daemon user's.
+    ///
+    /// <para>That is a delivery fact, not a containment one. The <c>kcap-flow-result</c> channel
+    /// resolves its credential from <see cref="Core.PathHelpers"/>' config dir, which hangs off
+    /// <c>HOME</c>, so a redirected launch's channel reads an empty directory and cannot authenticate.
+    /// Such a launch must be given the daemon-brokered delivery capability instead of
+    /// <c>KCAP_URL</c> — see <c>RuntimeStartContext.RequiresBrokeredResultDelivery</c>.</para>
+    ///
+    /// <para><b>Deliberately independent of borrowed-ness.</b> A borrowed snapshot is one CAUSE of a
+    /// redirected home (the Copilot sandbox moves it into a per-launch state dir), not the property
+    /// itself: Antigravity isolates <c>HOME</c> on every launch it serves and refuses a borrowed
+    /// workspace outright. Keying delivery on borrowed-ness alone therefore left that reviewer on the
+    /// path it cannot use — it produced a correct answer and then failed to submit it.</para>
+    ///
+    /// <para>Not a vendor test, and not an advertisement gate: a runtime that answers <c>true</c> is
+    /// simply promising that its review launches need brokered delivery, and the orchestrator mints
+    /// accordingly.</para>
+    /// </summary>
+    bool ReviewFlowRedirectsHome => false;
+
+    /// <summary>
     /// This runtime's reviewer MODEL override resolver, or <see langword="null"/> when the vendor has
     /// no authoritative resolver yet. PTY factories delegate to their launcher-owned policy; ACP /
     /// multi-provider factories return <see langword="null"/> (which does not remove their existing
@@ -170,12 +192,19 @@ internal sealed record RuntimeStartContext(
         // Exact loopback GET capability for the immutable Git-index review-context generation.
         // Present only for borrowed-snapshot review flows; never a backend or filesystem URL.
         string?            ReviewContextCapabilityUrl = null,
-        // Exact loopback POST capability the result channel submits through, so a borrowed
-        // reviewer can report without a credential inside the sandbox. Required — not merely
-        // permitted — for a borrowed snapshot: that launch's HOME is a per-launch state dir, so the
-        // channel's own token store is unreachable and the ambient-credential path cannot work.
-        // The daemon holds the authenticated connection and forwards; nothing here is a backend URL.
+        // Exact loopback POST capability the result channel submits through, so a reviewer whose HOME
+        // is not the daemon user's can report without a credential of its own. The daemon holds the
+        // authenticated connection and forwards; nothing here is a backend URL.
         string?            FlowResultCapabilityUrl = null,
+        // Whether this launch's result channel MUST deliver through FlowResultCapabilityUrl rather
+        // than authenticating for itself, in which case the capability is required — not merely
+        // permitted — and its absence fails the launch instead of falling back to KCAP_URL.
+        //
+        // Derived by the orchestrator, because neither party alone determines it: a borrowed snapshot
+        // is one cause (the sandbox redirects HOME) and IHostedAgentRuntimeFactory
+        // .ReviewFlowRedirectsHome is the other. The ONE thing AcpReviewFlowMcp reads, so the two
+        // causes cannot end up expressed differently at the two ends of the same launch.
+        bool               RequiresBrokeredResultDelivery = false,
         // Caller-selected Codex sandbox/approval posture, carried verbatim from
         // LaunchAgentCommand.CodexPosture through to LauncherContext.CodexPosture. Non-null only for
         // an interactive daemon-owned-worktree Codex launch that passed the orchestrator's guard.

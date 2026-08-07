@@ -1,4 +1,5 @@
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.LocalIpc;
 using Capacitor.Cli.Daemon.Services;
 
 namespace Capacitor.Cli.Tests.Unit;
@@ -168,6 +169,109 @@ public partial class AgentOrchestratorVendorTests {
                 // Failed fast: no PTY spawned, no agent registered, no reviewer token left behind.
                 await Assert.That(ptyFactory.SpawnCalls).IsEqualTo(0);
                 await Assert.That(orch.GetAgentForTest("rev-bad")).IsNull();
+                await Assert.That(bridge.ReviewerTokenCountForTest).IsEqualTo(0);
+            } finally {
+                await bridge.DisposeAsync();
+            }
+        } finally {
+            cleanup();
+        }
+    }
+
+    /// <summary>
+    /// A runtime that declares <c>ReviewFlowRedirectsHome</c> gets the daemon-brokered delivery
+    /// capability even though it borrows NOTHING — the case a borrowed-ness predicate cannot reach.
+    /// Its result channel resolves the token store from HOME, and this launch's HOME is a per-launch
+    /// isolated directory, so the ambient-credential path fails at delivery with "Not logged in"
+    /// after the reviewer has already done the work.
+    ///
+    /// <para>The URL identity assertion is the load-bearing half: the capability must be the reviewer
+    /// GRANT's own URL, so revoking the reviewer closes the submit path in the same operation.</para>
+    /// </summary>
+    [Test, NotInParallel("LocalPermissionBridgeTests")]
+    public async Task ReviewFlow_home_redirecting_runtime_is_minted_a_delivery_capability_without_borrowing() {
+        var (repoPath, cleanup) = CreateGitRepo();
+
+        try {
+            var server  = new CaptureServerConnection();
+            var factory = new SpyHostedAgentRuntimeFactory("antigravity") {
+                SupportsUnattended      = true,
+                ReviewFlowRedirectsHome = true
+            };
+
+            await using var orch = BuildOrchestrator(
+                server, new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>(),
+                allowedRepoPath: repoPath, extraRuntimeFactories: [factory]);
+            var bridge = orch.PermissionBridgeForTest;
+            await bridge.StartAsync(CancellationToken.None);
+
+            try {
+                await orch.HandleLaunchAgentForTest(new LaunchAgentCommand(
+                    AgentId: "rev-agy", Prompt: "review", Model: "default", Effort: null,
+                    RepoPath: repoPath, Tools: null, AttachmentIds: null, Vendor: "antigravity",
+                    Kind: LaunchKind.ReviewFlow, McpAllowlist: ["kcap-review"]));
+
+                var ctx = factory.LastContext;
+                await Assert.That(ctx).IsNotNull();
+                // Borrows nothing — this is exactly the launch shape #488's predicate misses.
+                await Assert.That(ctx!.IsBorrowedSnapshot).IsFalse();
+                await Assert.That(ctx.Work).IsEqualTo(WorkLocation.OwnedWorktree);
+
+                await Assert.That(ctx.RequiresBrokeredResultDelivery).IsTrue();
+                await Assert.That(ctx.FlowResultCapabilityUrl).IsNotNull();
+
+                var agent = orch.GetAgentForTest("rev-agy");
+                await Assert.That(agent!.ReviewerBridgeToken).IsEqualTo(ctx.FlowResultCapabilityUrl);
+                await Assert.That(bridge.ReviewerTokenCountForTest).IsEqualTo(1);
+
+                // The grant carries a SUBMIT FORWARDER, not merely a URL. A grant minted without one
+                // 404s that endpoint by design, so a not-404 is the only thing that distinguishes a
+                // capability that can deliver from a URL that can only fail. It is not a 200 either:
+                // this orchestrator's ServerUrl is an unreachable loopback port, so the forwarder
+                // runs and faults — which is the bridge's 500, and is proof it ran at all.
+                using var client = new HttpClient();
+                var submit = await client.PostAsync($"{ctx.FlowResultCapabilityUrl}/flow-result",
+                    new StringContent("{\"kind\":\"clean\"}", System.Text.Encoding.UTF8, "application/json"));
+                await Assert.That(submit.StatusCode).IsNotEqualTo(System.Net.HttpStatusCode.NotFound);
+
+                // The capability dies with the reviewer: one revocation closes the submit path.
+                await orch.CleanupAgentForTest("rev-agy");
+                await Assert.That(bridge.ReviewerTokenCountForTest).IsEqualTo(0);
+            } finally {
+                await bridge.DisposeAsync();
+            }
+        } finally {
+            cleanup();
+        }
+    }
+
+    /// <summary>The negative control for the broadening: a runtime that does NOT redirect HOME keeps
+    /// the ambient-credential path and is minted nothing. Same vendor-neutral spy as above, so the
+    /// only difference between the two is the declaration itself.</summary>
+    [Test, NotInParallel("LocalPermissionBridgeTests")]
+    public async Task ReviewFlow_runtime_that_keeps_its_home_is_minted_no_delivery_capability() {
+        var (repoPath, cleanup) = CreateGitRepo();
+
+        try {
+            var server  = new CaptureServerConnection();
+            var factory = new SpyHostedAgentRuntimeFactory("antigravity") { SupportsUnattended = true };
+
+            await using var orch = BuildOrchestrator(
+                server, new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>(),
+                allowedRepoPath: repoPath, extraRuntimeFactories: [factory]);
+            var bridge = orch.PermissionBridgeForTest;
+            await bridge.StartAsync(CancellationToken.None);
+
+            try {
+                await orch.HandleLaunchAgentForTest(new LaunchAgentCommand(
+                    AgentId: "rev-plain", Prompt: "review", Model: "default", Effort: null,
+                    RepoPath: repoPath, Tools: null, AttachmentIds: null, Vendor: "antigravity",
+                    Kind: LaunchKind.ReviewFlow, McpAllowlist: ["kcap-review"]));
+
+                var ctx = factory.LastContext;
+                await Assert.That(ctx).IsNotNull();
+                await Assert.That(ctx!.RequiresBrokeredResultDelivery).IsFalse();
+                await Assert.That(ctx.FlowResultCapabilityUrl).IsNull();
                 await Assert.That(bridge.ReviewerTokenCountForTest).IsEqualTo(0);
             } finally {
                 await bridge.DisposeAsync();

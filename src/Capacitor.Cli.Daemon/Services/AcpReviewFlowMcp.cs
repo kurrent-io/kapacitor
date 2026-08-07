@@ -24,14 +24,19 @@ internal static class AcpReviewFlowMcp {
         var channelName = ctx.LaunchIdentity?.ResultChannelWireName
                        ?? KcapMcpRegistry.ReservedResultChannelId;
 
-        // A borrowed launch delivers through a daemon capability, never KCAP_URL — that variable
-        // routes the channel at the token store, which its redirected HOME cannot reach. Mutually
+        // A launch whose HOME is not the daemon user's delivers through a daemon capability, never
+        // KCAP_URL — that variable routes the channel at a token store it cannot reach. Mutually
         // exclusive on purpose: passing both leaves the broken path reachable as a silent fallback.
-        if (ctx.IsBorrowedSnapshot && string.IsNullOrWhiteSpace(ctx.FlowResultCapabilityUrl))
+        //
+        // Read from the ONE derived flag rather than re-deriving the causes here. Borrowed-ness is
+        // only one of them (the Antigravity reviewer borrows nothing and still redirects HOME), and a
+        // second derivation would be free to disagree with the mint that produced the capability.
+        if (ctx.RequiresBrokeredResultDelivery && string.IsNullOrWhiteSpace(ctx.FlowResultCapabilityUrl))
             throw new InvalidOperationException(
-                "Borrowed-snapshot review cannot inject kcap-flow-result (missing result capability URL).");
+                "Review launch cannot inject kcap-flow-result (missing result capability URL): its "
+              + "HOME is redirected away from the token store, so the channel cannot authenticate.");
 
-        var resultEnv = ctx.IsBorrowedSnapshot
+        var resultEnv = ctx.RequiresBrokeredResultDelivery
             ? new AcpMcpServerEnvVar[] { new("KCAP_FLOW_CAPABILITY_URL", ctx.FlowResultCapabilityUrl!),
                                          new("KCAP_FLOW_AGENT_ID", ctx.AgentId) }
             : [new("KCAP_URL", ctx.ServerUrl!), new("KCAP_FLOW_AGENT_ID", ctx.AgentId)];
