@@ -32,9 +32,12 @@ public sealed class TelemetrySpool(string path, int maxEvents = 2000) {
                        .OfType<TelemetryEvent>()
                        .ToList();
         } catch {
-            // Telemetry code must NEVER throw. Path validation and other rare exceptions
-            // have escaped enumerated filters twice already in this namespace. The never-throw
-            // constraint is absolute — graceful degradation is required.
+            // Telemetry code must NEVER throw. Path-validation exceptions like PathTooLongException,
+            // NotSupportedException, or ArgumentException are theoretically reachable from a
+            // pathological KCAP_CONFIG_DIR. This catch is defence-in-depth; triggering a read or
+            // delete failure deterministically across platforms requires filesystem states a unit
+            // test can't reliably create (permission-denied files, exclusive locks), so this is
+            // not unit-tested. The constraint is absolute: graceful degradation is required.
             return [];
         }
     }
@@ -51,9 +54,12 @@ public sealed class TelemetrySpool(string path, int maxEvents = 2000) {
         try {
             if (File.Exists(path)) File.Delete(path);
         } catch {
-            // Telemetry code must NEVER throw. Path validation and other rare exceptions
-            // have escaped enumerated filters twice already in this namespace. The never-throw
-            // constraint is absolute — best effort on delete failure.
+            // Telemetry code must NEVER throw. Path-validation exceptions like PathTooLongException,
+            // NotSupportedException, or ArgumentException are theoretically reachable from a
+            // pathological KCAP_CONFIG_DIR. This catch is defence-in-depth; triggering a delete
+            // failure deterministically across platforms requires filesystem states a unit test
+            // can't reliably create (exclusive locks), so this is not unit-tested. The constraint
+            // is absolute: best effort on delete failure.
         }
     }
 

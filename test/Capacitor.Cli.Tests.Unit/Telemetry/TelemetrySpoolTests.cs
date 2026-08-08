@@ -98,16 +98,20 @@ public class TelemetrySpoolTests {
     }
 
     [Test]
-    public async Task Structurally_invalid_path_degrades_rather_than_throwing() {
-        // Enumerated filters have missed a case twice in this namespace; the never-throw
-        // constraint is absolute. A path containing a NUL character is structurally invalid
-        // for all OS file APIs — File.Exists, ReadAllLines, Delete all throw ArgumentException,
-        // which escaped the old enumerated filter.
+    public async Task Unusable_path_degrades_rather_than_throwing_on_append() {
+        // Enumerated filters have missed exception categories twice in this namespace; the
+        // never-throw constraint is absolute. Path.GetDirectoryName on a path with embedded
+        // NUL returns "", and Directory.CreateDirectory("") throws ArgumentException, which
+        // escaped the old enumerated filter. The widened catch in Append swallows it.
         var spool = new TelemetrySpool("bad\0path.jsonl");
 
-        // Must degrade, not throw
+        // Append must degrade, not throw — this exercises the widened catch
+        spool.Append([Event("a")]);
+
+        // DrainAll and Clear don't actually exercise their catches on this path
+        // (File.Exists swallows the ArgumentException internally and returns false),
+        // but calling them proves they don't throw on a junk path.
         await Assert.That(spool.DrainAll().Count).IsEqualTo(0);
-        spool.Append([Event("a")]);   // must not throw
-        spool.Clear();                // must not throw
+        spool.Clear();
     }
 }
