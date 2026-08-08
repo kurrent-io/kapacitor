@@ -92,6 +92,23 @@ public class PiRpcHostedAgentRuntimeTests {
             async () => await rt.WaitForSessionReadyAsync(CancellationToken.None).WaitAsync(HangGuard));
     }
 
+    /// <summary>The deadline is not optional — an alive-but-silent child (spawned, hung before its
+    /// first read, never exiting) trips NO other resolver, so an omitted deadline would leave that
+    /// shape with no way out of the barrier at all. This pins the constant rather than waiting it
+    /// out; the behavioural half is
+    /// <see cref="Ready_barrier_faults_when_the_deadline_elapses"/>, which injects a short one.</summary>
+    [Test]
+    public async Task A_ready_deadline_always_applies_even_when_the_caller_omits_one() {
+        await Assert.That(PiRpcHostedAgentRuntime.DefaultReadyDeadline).IsEqualTo(TimeSpan.FromSeconds(30));
+
+        // Constructing with no readyDeadline must not throw and must not resolve the barrier early;
+        // the fault itself arrives 30s later, which is deliberately not waited on here.
+        var (rt, _) = NewRuntime(answerGetState: false, readyDeadline: null);
+        await using var __ = rt;
+
+        await Assert.That(rt.WaitForSessionReadyAsync(CancellationToken.None).IsCompleted).IsFalse();
+    }
+
     [Test]
     public async Task Ready_barrier_faults_when_the_state_response_carries_no_session_id() {
         var (rt, _) = NewRuntime(stateResponse: GetStateResponse(sessionId: null));
@@ -241,6 +258,36 @@ public class PiRpcHostedAgentRuntimeTests {
         await Assert.That(third.Kind).IsEqualTo(AcpEventKind.AssistantText);
     }
 
+    /// <summary>A write that fails must not leave its text in the echo memory: the echo can never
+    /// arrive, and a stale entry would silently swallow the NEXT genuine user message with the same
+    /// text — a retry of exactly what just failed being the likeliest next thing to happen.</summary>
+    [Test]
+    public async Task A_failed_send_does_not_leave_a_stale_echo_entry_behind() {
+        var (rt, proc) = NewRuntime();
+        await using var _ = rt;
+
+        await rt.WaitForSessionReadyAsync(CancellationToken.None).WaitAsync(HangGuard);
+
+        proc.FailWrites = true;
+        await Assert.ThrowsAsync<IOException>(async () => await rt.SendUserInputAsync("retry me"));
+        proc.FailWrites = false;
+
+        var firstEcho = await NextEnvelopeAsync(rt);
+        await Assert.That(firstEcho.Kind).IsEqualTo(AcpEventKind.UserMessage);
+
+        var note = await NextEnvelopeAsync(rt);
+        await Assert.That(note.Kind).IsEqualTo(AcpEventKind.SystemNote);
+        await Assert.That(note.Text).Contains("could not be delivered");
+
+        // The stale entry, if any, would swallow this genuine user message.
+        proc.Push(UserMessage("retry me"));
+        proc.Push(AssistantText("sentinel"));
+
+        var kept = await NextEnvelopeAsync(rt);
+        await Assert.That(kept.Kind).IsEqualTo(AcpEventKind.UserMessage);
+        await Assert.That(kept.Text).IsEqualTo("retry me");
+    }
+
     [Test]
     public async Task A_user_message_we_did_not_send_reaches_the_transcript() {
         var (rt, proc) = NewRuntime();
@@ -341,6 +388,49 @@ public class PiRpcHostedAgentRuntimeTests {
 
         // A waiter parked on a settle that will never come is a hang, not a stop.
         await idle.WaitAsync(HangGuard);
+    }
+
+    /// <summary>A cancelled waiter must not stay in the list — it is the one unbounded collection
+    /// here, and the orchestrator's periodic borrowed-snapshot refresh cancels one per cycle.</summary>
+    [Test]
+    public async Task A_cancelled_turn_idle_waiter_is_removed_from_the_list() {
+        var (rt, proc) = NewRuntime(stateResponse: GetStateResponse(isStreaming: true));
+        await using var _ = rt;
+
+        await rt.WaitForSessionReadyAsync(CancellationToken.None).WaitAsync(HangGuard);
+
+        using var cts = new CancellationTokenSource();
+        var abandoned = rt.WaitForTurnIdleAsync(cts.Token);
+        await Assert.That(rt.TurnIdleWaiterCount).IsEqualTo(1);
+
+        await cts.CancelAsync();
+        await Assert.ThrowsAsync<TaskCanceledException>(async () => await abandoned.WaitAsync(HangGuard));
+
+        await Assert.That(rt.TurnIdleWaiterCount).IsEqualTo(0);
+
+        // A later settle must still work, and must not trip over the removed waiter.
+        var live = rt.WaitForTurnIdleAsync(CancellationToken.None);
+        proc.Push(AgentSettled);
+        await live.WaitAsync(HangGuard);
+    }
+
+    /// <summary>F3's race: a command registered AFTER <c>EnterTerminal</c> took its key snapshot
+    /// would park forever — the send's response observer never completes, and the handshake's own
+    /// registration racing a synchronously-dead child would burn the whole dispose join budget.</summary>
+    [Test]
+    public async Task A_command_registered_after_terminal_is_faulted_rather_than_parked() {
+        var (rt, proc) = NewRuntime();
+        await using var _ = rt;
+
+        await rt.WaitForSessionReadyAsync(CancellationToken.None).WaitAsync(HangGuard);
+
+        var read = Task.Run(async () => { await foreach (var _unused in rt.ReadOutputAsync()) { } });
+        proc.EndOfStream();
+        await read.WaitAsync(HangGuard);   // terminal has genuinely been entered
+
+        await rt.SendUserInputAsync("lands after the end").WaitAsync(HangGuard);
+
+        await Assert.That(rt.PendingCommandCount).IsEqualTo(0);
     }
 
     // ---- Stopping ----

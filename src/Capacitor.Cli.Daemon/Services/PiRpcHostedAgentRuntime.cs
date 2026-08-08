@@ -33,9 +33,16 @@ namespace Capacitor.Cli.Daemon.Services;
 /// documents at length). The barrier is only usable because it resolves on EVERY path: the
 /// response arrives (success), the response says <c>success:false</c> or carries no
 /// <c>sessionId</c> (fault — fail closed rather than bind <c>""</c>), the child exits or its stdout
-/// EOFs (fault, via <see cref="EnterTerminal"/>), the write itself fails (fault), or the optional
-/// <c>readyDeadline</c> elapses (fault). A hanging barrier wedges the launch path; a faulted one
-/// merely fails a launch.</para>
+/// EOFs (fault, via <see cref="EnterTerminal"/>), the write itself fails (fault), or the deadline
+/// elapses (fault). A hanging barrier wedges the launch path; a faulted one merely fails a launch.</para>
+///
+/// <para>That last path is why the deadline is NOT optional. A caller may override it, but it
+/// always applies — <see cref="DefaultReadyDeadline"/> backs an omitted one. Every other path
+/// needs the child to DO something (answer, refuse, or die); an alive-but-silent child — spawned,
+/// hung before its first read, never exiting — does none of them, so a null deadline would leave
+/// that one shape with no resolver at all. A launch path that hangs only when a callsite forgot to
+/// pass a timeout is the exact failure this barrier exists to prevent, arriving through the
+/// barrier's own configuration.</para>
 ///
 /// <para><b>(b) <see cref="ReadOutputAsync"/> parks on one signal, created once.</b> Same rule as
 /// Antigravity's (c): the orchestrator drives <c>FinalizeAgentRunAsync</c> from that stream's
@@ -74,12 +81,20 @@ internal sealed class PiRpcHostedAgentRuntime : IHostedAgentRuntime, IAcpTranscr
 
     static readonly TimeSpan DefaultStopGrace = TimeSpan.FromSeconds(3);
 
+    /// <summary>Backs an omitted <c>readyDeadline</c> — see rule (a) on why the deadline is never
+    /// allowed to be absent. Generous rather than tight: it bounds a PATHOLOGY (a child that
+    /// spawned but never speaks), not normal startup, and a healthy <c>pi</c> answers
+    /// <c>get_state</c> in milliseconds. The cost of it being too long is a slow failed launch; the
+    /// cost of it being too short is a launch that fails on a cold, loaded machine that would have
+    /// succeeded.</summary>
+    internal static readonly TimeSpan DefaultReadyDeadline = TimeSpan.FromSeconds(30);
+
     readonly IPiRpcProcess _process;
     readonly ILogger       _logger;
     readonly string        _agentId;
     readonly string?       _requestedModel;
     readonly string        _cwd;
-    readonly TimeSpan?     _readyDeadline;
+    readonly TimeSpan      _readyDeadline;
     readonly TimeSpan      _stopGrace;
     readonly Action?       _onDisposed;
 
@@ -110,7 +125,12 @@ internal sealed class PiRpcHostedAgentRuntime : IHostedAgentRuntime, IAcpTranscr
 
     /// <summary>In-flight commands awaiting their correlated <c>response</c> frame, keyed by the
     /// <c>id</c> this runtime stamped on them. Faulted wholesale by <see cref="EnterTerminal"/> —
-    /// a response that can never arrive must never leave a waiter parked.</summary>
+    /// a response that can never arrive must never leave a waiter parked.
+    ///
+    /// <para><b>Bound:</b> one entry per in-flight user message, released on its response or at
+    /// terminal — so this is bounded by USER INPUT RATE, not by wire traffic. Pi's event stream can
+    /// be arbitrarily chatty without adding a single entry here, since only commands this runtime
+    /// SENDS are ever registered.</para></summary>
     readonly ConcurrentDictionary<string, TaskCompletionSource<PiRpcFrame>> _pending = new();
 
     readonly Lock         _echoGate    = new();
@@ -155,7 +175,7 @@ internal sealed class PiRpcHostedAgentRuntime : IHostedAgentRuntime, IAcpTranscr
         _agentId        = agentId;
         _requestedModel = requestedModel;
         _cwd            = cwd;
-        _readyDeadline  = readyDeadline;
+        _readyDeadline  = readyDeadline ?? DefaultReadyDeadline;   // never absent — rule (a)
         _stopGrace      = stopGrace ?? DefaultStopGrace;
         _onDisposed     = onDisposed;
         _ownerToken     = _ownerCts.Token;
@@ -276,18 +296,51 @@ internal sealed class PiRpcHostedAgentRuntime : IHostedAgentRuntime, IAcpTranscr
         && envelopes is [{ Kind: AcpEventKind.UserMessage, Text: { } text }]
         && TryConsumeSentPrompt(text);
 
+    // ---- Command correlation ----
+
+    /// <summary>
+    /// Registers a command's response waiter — the ONLY way an entry enters <see cref="_pending"/>.
+    ///
+    /// <para><b>The post-registration re-check is the whole point.</b>
+    /// <see cref="EnterTerminal"/>'s fault loop iterates a SNAPSHOT of the keys, so a waiter
+    /// registered after that snapshot was taken is never faulted by it, and the terminal flag is
+    /// already set so nothing will fault it later either — the entry parks forever. Two real
+    /// callers hit that window: a viewer's <see cref="SendUserInputAsync"/> racing a stop (its
+    /// <see cref="ObservePromptResponseAsync"/> would never complete), and the constructor's own
+    /// handshake racing a child that died synchronously (which would then burn the whole
+    /// <see cref="DisposeAsync"/> join budget on a task that can never finish). Re-checking here,
+    /// AFTER the entry is visible, means the two orderings cover each other: either
+    /// <see cref="EnterTerminal"/>'s snapshot sees this entry, or this check sees the flag it
+    /// set.</para>
+    /// </summary>
+    TaskCompletionSource<PiRpcFrame> RegisterPending(string id) {
+        var waiter = new TaskCompletionSource<PiRpcFrame>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _pending[id] = waiter;
+
+        if (Volatile.Read(ref _terminal) != 0) FaultPending(id);
+
+        return waiter;
+    }
+
+    void FaultPending(string id) {
+        if (_pending.TryRemove(id, out var waiter))
+            waiter.TrySetException(new InvalidOperationException(
+                $"Pi: the hosted session ended before command {id} was answered."));
+    }
+
+    /// <summary>Test/diagnostic view of the correlation table — see <see cref="RegisterPending"/>
+    /// for the race this makes observable.</summary>
+    internal int PendingCommandCount => _pending.Count;
+
     // ---- Handshake ----
 
     async Task RunHandshakeAsync() {
-        var waiter = new TaskCompletionSource<PiRpcFrame>(TaskCreationOptions.RunContinuationsAsynchronously);
-        _pending[InitStateCommandId] = waiter;
+        var waiter = RegisterPending(InitStateCommandId);
 
         try {
             await _process.WriteLineAsync(PiRpc.GetStateCommand(InitStateCommandId), _ownerToken).ConfigureAwait(false);
 
-            var response = _readyDeadline is { } deadline
-                ? await waiter.Task.WaitAsync(deadline).ConfigureAwait(false)
-                : await waiter.Task.ConfigureAwait(false);
+            var response = await waiter.Task.WaitAsync(_readyDeadline).ConfigureAwait(false);
 
             ApplyState(response);
         } catch (Exception ex) {
@@ -377,13 +430,28 @@ internal sealed class PiRpcHostedAgentRuntime : IHostedAgentRuntime, IAcpTranscr
         EmitLocalEnvelope(new AcpEventEnvelope(Kind: AcpEventKind.UserMessage, Text: text));
 
         var id     = NextCommandId();
-        var waiter = new TaskCompletionSource<PiRpcFrame>(TaskCreationOptions.RunContinuationsAsynchronously);
-        _pending[id] = waiter;
+        var waiter = RegisterPending(id);
 
         try {
             await _process.WriteLineAsync(PiRpc.PromptCommand(id, text), _ownerToken).ConfigureAwait(false);
         } catch {
             _pending.TryRemove(id, out _);
+
+            // Undo the echo memory: this message never reached Pi, so its echo can never arrive —
+            // and a stale entry is not inert. It would silently swallow the NEXT genuine user
+            // message with identical text (a retry of exactly what just failed is the likeliest
+            // thing to happen next), which is the dedupe misfiring on real content.
+            TryConsumeSentPrompt(text);
+
+            // Best-effort: dropped when the channel is already completed (the common case if the
+            // write failed BECAUSE the session is ending), which is fine — the session ending is
+            // itself the user-visible signal. Worth emitting for the case the write failed while
+            // the session is otherwise healthy, where this note is the only feedback the person who
+            // typed the message gets; the rethrow below only reaches the daemon log.
+            EmitLocalEnvelope(new AcpEventEnvelope(
+                Kind: AcpEventKind.SystemNote,
+                Text: "Your message could not be delivered to the agent."));
+
             throw;
         }
 
@@ -480,7 +548,30 @@ internal sealed class PiRpcHostedAgentRuntime : IHostedAgentRuntime, IAcpTranscr
             _idleWaiters.Add(waiter);
         }
 
-        return waiter.Task.WaitAsync(ct);
+        return ct.CanBeCanceled ? AwaitTurnIdleAsync(waiter, ct) : waiter.Task;
+    }
+
+    /// <summary>Waits, and on CANCELLATION removes its own waiter from
+    /// <see cref="_idleWaiters"/> — the list is the one unbounded collection in this runtime, and a
+    /// cancelled caller that leaves its entry behind leaks until the next settle (which may never
+    /// come). The live caller that makes this real rather than theoretical is the orchestrator's
+    /// periodic borrowed-snapshot refresh, which waits under a timeout every cycle: a slow leak,
+    /// one entry per cancelled cycle, for as long as a turn stays in flight.</summary>
+    async Task AwaitTurnIdleAsync(TaskCompletionSource waiter, CancellationToken ct) {
+        try {
+            await waiter.Task.WaitAsync(ct).ConfigureAwait(false);
+        } catch (OperationCanceledException) {
+            // Harmless if a concurrent SetBusy(false) already drained it — Remove on an absent
+            // item is a no-op, and the waiter itself is unreferenced after this.
+            lock (_turnGate) _idleWaiters.Remove(waiter);
+            throw;
+        }
+    }
+
+    /// <summary>Test/diagnostic view — see <see cref="AwaitTurnIdleAsync"/> for the leak this makes
+    /// observable.</summary>
+    internal int TurnIdleWaiterCount {
+        get { lock (_turnGate) return _idleWaiters.Count; }
     }
 
     void SetBusy(bool busy) {
@@ -547,11 +638,9 @@ internal sealed class PiRpcHostedAgentRuntime : IHostedAgentRuntime, IAcpTranscr
 
         _terminalTcs.TrySetResult();
 
-        foreach (var id in _pending.Keys) {
-            if (_pending.TryRemove(id, out var waiter))
-                waiter.TrySetException(new InvalidOperationException(
-                    $"Pi: the hosted session ended before command {id} was answered."));
-        }
+        // A snapshot of the keys, deliberately — see RegisterPending, which covers the entries
+        // registered after this loop reads them (the flag set above is what that check observes).
+        foreach (var id in _pending.Keys) FaultPending(id);
 
         FaultSessionReadyIfUnresolved(
             $"Pi: the hosted session ended before its identity handshake completed (agentId={_agentId}).",
