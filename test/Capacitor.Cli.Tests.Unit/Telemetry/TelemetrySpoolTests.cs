@@ -66,6 +66,22 @@ public class TelemetrySpoolTests {
         await Assert.That(drained[0].Name).IsEqualTo("good");
     }
 
+    [Test]
+    public async Task Type_mismatched_fields_are_skipped_not_fatal() {
+        var path = NewPath();
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        // Structurally valid JSON with a wrong field type: GetValue<string>() throws
+        // InvalidOperationException, not JsonException, so a narrow filter lets it escape.
+        File.WriteAllText(path, "{\"event\":123,\"timestamp\":\"1970-01-01T00:00:00+00:00\",\"properties\":{}}\n");
+        var spool = new TelemetrySpool(path);
+        spool.Append([Event("good")]);
+
+        var drained = spool.DrainAll();
+
+        await Assert.That(drained.Count).IsEqualTo(1);
+        await Assert.That(drained[0].Name).IsEqualTo("good");
+    }
+
     // Drop-oldest keeps the newest events, which are the ones most likely to still matter.
     [Test]
     public async Task Oldest_events_are_dropped_past_the_cap() {

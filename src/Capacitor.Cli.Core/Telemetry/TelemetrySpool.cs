@@ -34,12 +34,19 @@ public sealed class TelemetrySpool(string path, int maxEvents = 2000) {
         }
     }
 
+    /// <summary>
+    /// Best effort. If Clear fails, the spool replays duplicates on the next drain, which
+    /// over-counts slightly — strictly better than failing the user's command. Note: DrainAll
+    /// followed by Clear is not atomic. If another kcap process appends between drain and clear,
+    /// those events are deleted, not duplicated — an accepted cost of distributed best-effort
+    /// telemetry. Concurrent appends during DrainAll can also hit file-sharing IOException,
+    /// causing the entire batch to no-op.
+    /// </summary>
     public void Clear() {
         try {
             if (File.Exists(path)) File.Delete(path);
         } catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
-            // Best effort. A spool we fail to clear replays duplicates next time, which
-            // over-counts slightly — strictly better than failing the user's command.
+            // Best effort — losing spooled telemetry is never worth failing a command.
         }
     }
 
@@ -65,8 +72,12 @@ public sealed class TelemetrySpool(string path, int maxEvents = 2000) {
             if (name is null || ts is null || o["properties"] is not JsonObject props) return null;
 
             return new TelemetryEvent(name, (JsonObject)props.DeepClone(), DateTimeOffset.Parse(ts));
-        } catch (Exception e) when (e is System.Text.Json.JsonException or FormatException) {
-            return null;   // a torn or hand-edited line is skipped, never fatal
+        } catch (Exception) {
+            // Broad catch required by the never-throw constraint: a torn write, truncated file,
+            // or hand-edited spool can produce structurally-valid JSON with unexpected types,
+            // which JsonNode.GetValue<T>() raises InvalidOperationException for. Any exception
+            // escaping to the NativeAOT runtime causes SIGABRT. Graceful degradation is required.
+            return null;
         }
     }
 }
