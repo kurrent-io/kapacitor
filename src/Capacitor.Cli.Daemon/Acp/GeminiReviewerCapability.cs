@@ -15,13 +15,17 @@ internal enum GeminiReviewerDecision {
 /// Whether THIS daemon may run Gemini as an unattended review-flow reviewer. Two conditions, both
 /// fail-closed, and the type is pure so both are testable without a vendor or a process.
 ///
-/// <para><b>Why a capability at all.</b> An unattended reviewer runs in a daemon-owned worktree with the
-/// daemon's own HOME, so prompt-injected repository content that reaches the model's tool use gets code
-/// execution with the daemon user's full authority — durable credential compromise included. That risk lands
-/// on the DAEMON OPERATOR, who is not necessarily the person requesting the review: a caller can ask for
-/// <c>vendor: "gemini"</c> without owning the host being exposed. So the decision belongs in daemon-local
-/// configuration, and <b>enabling it is the operator's consent event</b>. A non-default plus documentation
-/// would be informed guidance, not consent.</para>
+/// <para><b>The risk, which is real and unchanged.</b> An unattended reviewer runs in a daemon-owned
+/// worktree with the daemon's own HOME, so prompt-injected repository content that reaches the model's tool
+/// use gets code execution with the daemon user's full authority — durable credential compromise included.
+/// That lands on the DAEMON OPERATOR, who is not necessarily the person requesting the review.</para>
+///
+/// <para><b>Why that is nevertheless no longer an opt-in.</b> The reviewer vendor is caller-chosen, and
+/// Claude, Codex, Cursor and Copilot have never been gated — each with the same full authority. A caller who
+/// would have been blocked from <c>vendor: "gemini"</c> simply asked for one of those, so the gate cost the
+/// operator a service-unit edit and bought nothing. The switch is now an opt-OUT
+/// (<c>KCAP_GEMINI_UNATTENDED_REVIEWER=0</c>); the decision that actually scopes this is whether to permit
+/// unattended reviews on the daemon at all, which is <c>kcap daemon consent</c>.</para>
 ///
 /// <para><b>Why the build is gated, and why by affirmation.</b> The security mechanism is the vendor's MCP
 /// allowlist behaving as an exclusive exact-match gate that the repository's own settings cannot widen. That

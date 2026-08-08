@@ -16,19 +16,20 @@ internal enum AntigravityReviewerDecision {
 /// Whether THIS daemon may run Antigravity's CLI (<c>agy</c>) as an unattended review-flow reviewer.
 /// Pure, so every arm is testable without a vendor or a process.
 ///
-/// <para><b>What enabling it consents to.</b> An unattended reviewer runs in a daemon-owned worktree
-/// under a per-launch, owner-only <c>HOME</c>, and its findings text is returned to whoever requested
-/// the review. That risk lands on the daemon OPERATOR, who is not necessarily the requester, which is
-/// why the decision is daemon-local and enabling it is the consent event rather than a documented
-/// default. Deliberately NOT Kiro's whole-filesystem-read paragraph: that claim is about a trusted
-/// <c>fs_read</c> primitive this vendor does not expose, and a borrowed risk statement would be a
-/// false one in either direction.</para>
+/// <para><b>ENABLED by default; the switch is an opt-OUT.</b> An unattended reviewer runs in a
+/// daemon-owned worktree under a per-launch, owner-only <c>HOME</c>, and its findings text is returned
+/// to whoever requested the review — a cross-principal risk that lands on the daemon OPERATOR. It used
+/// to be an opt-in on that basis. It is not any more, because the reviewer vendor is caller-chosen and
+/// Claude, Codex, Cursor and Copilot have never been gated, each with the same authority: the gate
+/// excluded nobody and cost the operator a service-unit edit. Deliberately still NOT Kiro's
+/// whole-filesystem-read paragraph — that claim is about a trusted <c>fs_read</c> primitive this vendor
+/// does not expose, and a borrowed risk statement would be false in either direction.</para>
 ///
-/// <para><b>Consent is the ONE arm that is reviewer-only</b> (see
+/// <para><b>The disabled arm is the ONE that is reviewer-only</b> (see
 /// <c>AntigravityHostedAgentRuntimeFactory.LaunchRefusal</c>'s parameter doc). The paragraph above is
 /// exactly why: the risk it describes is cross-principal, and a HOSTED launch has no counterpart —
 /// the server resolves a launch's daemon with the caller's own user id, so the launcher is the
-/// daemon's owner. Hosted Antigravity ships on by default; every other arm below still gates it.</para>
+/// daemon's owner. Hosted Antigravity has always shipped on; every other arm below gates both.</para>
 ///
 /// <para><b>Why a version MINIMUM.</b> Containment here is source suppression — an empty per-launch
 /// <see cref="AntigravityReviewerHome"/> in place of the operator's own <c>~/.gemini</c>, whose kcap

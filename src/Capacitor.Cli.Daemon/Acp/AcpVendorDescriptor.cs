@@ -431,10 +431,12 @@ internal static class AcpVendorDescriptors {
     /// prompt intermittently for a tool in its own trust list. If OpenCode is ever observed doing that,
     /// this is the flag to revisit — with a measurement, not a preference.</para>
     ///
-    /// <para><b>Unattended is GATED</b> — <c>SupportsUnattended</c> being true here only makes the
-    /// vendor eligible; <see cref="OpenCodeReviewerCapability"/> decides per daemon, and refuses unless
-    /// the operator has consented AND the installed build meets this daemon's recorded minimum. The
-    /// consent event is what it is because the reviewer's read tools are not path-scoped.</para>
+    /// <para><b>Unattended is ENABLED by default, and still build-gated</b> —
+    /// <c>SupportsUnattended</c> being true here only makes the vendor eligible;
+    /// <see cref="OpenCodeReviewerCapability"/> decides per daemon. It refuses when the operator has
+    /// EXPLICITLY disabled the vendor, or when the installed build is below this daemon's recorded
+    /// minimum. There is no opt-in: gating one vendor never narrowed anything, since the reviewer vendor
+    /// is caller-chosen and four others run ungated with more capability.</para>
     ///
     /// <para><b><see cref="SupportsReconnectResume"/> is <c>false</c> as UNPROBED</b>, which is a
     /// different claim from <see cref="Kiro"/>'s and <see cref="Gemini"/>'s — both of those are

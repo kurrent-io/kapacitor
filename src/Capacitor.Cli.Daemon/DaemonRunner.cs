@@ -844,14 +844,9 @@ public static partial class DaemonRunner {
         value?.Trim() is not { } v || !(v == "0" || string.Equals(v, "false", StringComparison.OrdinalIgnoreCase));
 
     /// <summary>
-    /// Parses an unattended-reviewer consent flag. Fail-closed polarity, the opposite of
-    /// <see cref="ParseAcpReconnectFlag"/>: only an explicit <c>1</c>/<c>true</c>/<c>yes</c>/<c>on</c>
-    /// enables it, and unset, blank or unrecognised leaves it OFF. Enabling one of these is a
-    /// security consent event, so a typo must not be read as consent.
-    /// </summary>
-    /// <summary>
-    /// Whether a gated reviewer vendor is permitted on this daemon. **Absent means ENABLED** — this is
-    /// an opt-OUT, and it used to be an opt-in.
+    /// Whether a reviewer vendor is permitted on this daemon. **Absent means ENABLED** — this is an
+    /// opt-OUT, and it used to be an opt-in. Same polarity as
+    /// <see cref="ParseAcpReconnectFlag"/> now, where it used to be deliberately the opposite.
     ///
     /// <para><b>Why the default flipped.</b> The opt-in gate did not do the job it claimed. The reviewer
     /// vendor is a caller-chosen parameter, and Claude, Codex, Cursor and Copilot have never been gated
@@ -936,17 +931,18 @@ public static partial class DaemonRunner {
     /// CONDITION each vendor is seeded under unpinned. Driving this method instead makes the
     /// difference between the vendors the thing under test.</para>
     ///
-    /// <para>Kiro and Gemini seed from the CONSENT event, not from a first refusal: an operator who
-    /// has just turned a reviewer on should not be refused over an upgrade that never happened, which
-    /// teaches people to clear the gate without reading it. Cheap, and a no-op for a vendor the
-    /// operator has not opted into.</para>
+    /// <para>Kiro, Gemini and OpenCode seed whenever the vendor is not explicitly DISABLED — which,
+    /// since the switch defaults to enabled, means on essentially every boot. That is what keeps the
+    /// floor from becoming the opt-in gate under a new name: with no record the ladder answers
+    /// <c>version_no_minimum</c>, a refusal only <c>kcap daemon reviewer affirm</c> can clear. Skipping
+    /// a disabled vendor is the one remaining condition, and it exists so an installed-but-wedged
+    /// binary cannot stall a boot for a feature the operator switched off.</para>
     ///
-    /// <para>Antigravity is the one vendor whose floor is NOT reviewer-only: it gates hosted
-    /// <c>agy</c> launches too (the isolated <c>HOME</c> they rely on is the containment it protects),
-    /// and those ship on by default with no consent flag. Seeding from the consent event would
-    /// therefore leave every consent-less daemon refusing hosted launches as
-    /// <c>version_no_minimum</c> forever — the reviewer gate removed from the front of the ladder and
-    /// reinstated behind it. Installing <c>agy</c> IS the event here; the resolver's
+    /// <para>Antigravity seeds with NO condition at all, because its floor is NOT reviewer-only: it
+    /// gates hosted <c>agy</c> launches too (the isolated <c>HOME</c> they rely on is the containment it
+    /// protects), and those have always shipped on. Conditioning it on the reviewer switch would leave a
+    /// daemon that disabled the REVIEWER refusing hosted launches as <c>version_no_minimum</c> forever.
+    /// Installing <c>agy</c> IS the event here; the resolver's
     /// null-for-a-missing-binary answer is what keeps this a no-op otherwise, at the cost of one
     /// bounded <c>agy --version</c> on the first boot that finds no record, never again.</para>
     /// </summary>
