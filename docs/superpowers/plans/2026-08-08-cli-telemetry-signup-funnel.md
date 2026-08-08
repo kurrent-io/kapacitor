@@ -817,7 +817,11 @@ public static class PostHogPayload {
         foreach (var e in events) {
             var props = (JsonObject)e.Properties.DeepClone();
             props["distinct_id"] = distinctId;
-            props["$ip"]         = null;   // suppress geo-IP resolution at ingest
+            // Both are needed. $ip alone does NOT suppress geo-IP: PostHog populates it from the
+            // incoming connection and runs GeoIP off that, so a null value falls back to the
+            // request IP. $geoip_disable is the documented switch.
+            props["$ip"]            = null;
+            props["$geoip_disable"] = true;
 
             // Group and property travel together, and only for SaaS. Deriving an `org` from a
             // self-hosted host label would put an internal hostname fragment in the data for no
@@ -2440,4 +2444,10 @@ git commit -m "Document CLI telemetry and its opt-outs"
 
 - **kcap-web privacy policy.** `src/pages/privacy.astro` describes web and server collection only and needs a CLI paragraph. Different repo, so a companion PR.
 - **PR references.** Per `CLAUDE.md`, the PR description must reference both a GitHub issue (with a closing keyword) and a Linear issue. Neither exists for this work yet — open the GitHub issue first and let Linear auto-import it.
-- **`$ip: null` behaviour.** Confirm against PostHog's current ingest handling that this suppresses geo-IP resolution rather than being ignored.
+- ~~**`$ip: null` behaviour.**~~ **Resolved during the final branch review, and it did not hold.**
+  `$ip` alone does not suppress geo-IP — PostHog populates it from the incoming connection and runs
+  GeoIP off that, so a null value falls back to the request IP. Without `$geoip_disable: true` every
+  event would have carried country, city and coordinates derived from the user's real IP, on an EU
+  project whose privacy policy claims an IP-discard posture. Both properties now ship. This is the
+  one open question in this plan that turned out to be a real defect rather than a formality — worth
+  remembering that "confirm rather than assume" items deserve a verification step, not a note.
