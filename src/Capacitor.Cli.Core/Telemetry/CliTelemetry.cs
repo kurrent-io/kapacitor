@@ -145,9 +145,9 @@ public static class CliTelemetry {
         if (TelemetryState.Read().NoticeShown) return;
 
         Console.Error.WriteLine(
-            "kcap collects anonymous usage data — command names only, never arguments, file paths, or");
+            "kcap collects anonymous usage data — command and flag names only, never argument values,");
         Console.Error.WriteLine(
-            "transcript content. Opt out: kcap config set telemetry off (or DO_NOT_TRACK=1).");
+            "file paths, or transcript content. Opt out: kcap config set telemetry off (or DO_NOT_TRACK=1).");
         Console.Error.WriteLine("https://capacitor.kurrent.io/privacy");
 
         TelemetryState.MarkNoticeShown();

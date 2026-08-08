@@ -230,9 +230,14 @@ Once per device, emitted alongside the notice. Provides the installed-but-never-
 
 ## Privacy
 
-Never collected: argv values, file paths, repo names or URLs, session ids, prompt or transcript
-content, environment variable values, usernames, email addresses. Enforced by construction — events
-are assembled from allowlists, so omission is the default for anything not explicitly named.
+Never collected: argument *values*, file paths, repo names or URLs, session ids, prompt or
+transcript content, environment variable values, usernames, email addresses. Enforced by
+construction — events are assembled from allowlists, so omission is the default for anything not
+explicitly named.
+
+The only argv fragments ever sent are the flag and subcommand *names* admitted by the shape/
+allowlist rules in the event catalog above — e.g. `--no-prompt`, `--skip-codex-hooks` — never a
+value, and never raw argv.
 
 `$ip: null` on every payload suppresses geo-IP resolution, matching the IP-discard posture the
 privacy policy already states for web. PostHog's current handling of this property should be
@@ -241,8 +246,8 @@ confirmed during implementation rather than assumed.
 First-run notice, stderr only (never stdout, so scripted output stays clean), once per device:
 
 ```
-kcap collects anonymous usage data — command names only, never arguments, file paths, or
-transcript content. Opt out: kcap config set telemetry off (or DO_NOT_TRACK=1).
+kcap collects anonymous usage data — command and flag names only, never argument values,
+file paths, or transcript content. Opt out: kcap config set telemetry off (or DO_NOT_TRACK=1).
 https://capacitor.kurrent.io/privacy
 ```
 

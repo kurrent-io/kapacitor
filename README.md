@@ -1551,7 +1551,7 @@ After adding a remap, re-run `kcap import --org` (or whichever scope you use). T
 
 ### Telemetry
 
-kcap reports anonymous usage data so we can see which commands people use and where setup goes wrong. It records **command names, exit codes, durations, MCP tool names, and setup-funnel steps.** It never records command arguments, file paths, repo names or URLs, session ids, transcript content, environment variable values, usernames, or email addresses.
+kcap reports anonymous usage data so we can see which commands people use and where setup goes wrong. It records **command and flag names, exit codes, durations, MCP tool names, and setup-funnel steps.** It never records argument values, file paths, repo names or URLs, session ids, transcript content, environment variable values, usernames, or email addresses.
 
 The first time you run a reportable command, kcap prints a one-time notice to stderr; it never prints again on that machine.
 
