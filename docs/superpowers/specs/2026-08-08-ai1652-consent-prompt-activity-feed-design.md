@@ -42,8 +42,8 @@ launch that reused the id; hoisting the AI-1651 per-window ticker into an app-li
 service; headless ViewModel tests for the full prompt matrix.
 
 **Out:** macOS system notification (AI-1653); consent-rules editor UI (slice 4); any change to
-engine matching, rule ordering/precedence, policy storage, or prompt timeout semantics; new
-IPC frame types; Windows/Linux app packaging.
+engine matching, rule ordering/precedence, policy storage, or prompt timeout semantics; any
+frame types beyond the two §4.1 v2 values; Windows/Linux app packaging.
 
 ## 4. Wire & Core changes
 
@@ -135,16 +135,21 @@ this: capabilities are learned on one socket while consent ops travel on fresh b
 connections, so a daemon restart/downgrade between them (TOCTOU) would route a v2-shaped
 resolve into the v1 handler. The v2 operations therefore ride **new append-only frame
 types** — `ConsentSubscribeV2 = 17` and `ConsentResolveV2 = 18` — which the app uses
-exclusively. A v1 daemon's routing switch answers any unknown frame type with an `Error`
-frame (`LocalControlServer` default arm), so against a v1 incarnation the v2 resolve draws
-`daemon_rejected` (no resolution occurred — the cached prompt is *structurally impossible* to
-resolve through the v1 id-only handler, whichever incarnation answers the socket) and the v2
-subscribe ends without registering a subscriber (the v1 daemon keeps its fast `prompt_no_ui`
-denials instead of waiting on a subscriber that renders nothing). On a v2 daemon, frame 17
-routes to the same subscribe handler as frame 11, and frame 18 routes to a resolve path that
-**requires** `prompt_id` (missing/empty → `Ok=false` "invalid resolve payload"); the v1
-frames 11/12 remain routed unchanged for legacy callers, served by `TryResolve`'s null-echo
-path.
+exclusively. A shipped v1 daemon never even routes these bytes: its `FrameCodec.Decode`
+throws `InvalidDataException` for a type absent from its enum/switch *before* the routing
+arm, and `LocalControlServer.HandleConnectionAsync` catches, logs, and closes the socket
+without writing any frame. The observable contract against a v1 incarnation is therefore
+**EOF**: the v2 resolve reads end-of-stream and classifies as `unexpected_reply`; the v2
+subscribe yields its client-local `Subscribed` and then ends — never registering a subscriber
+(the v1 daemon keeps its fast `prompt_no_ui` denials instead of waiting on a subscriber that
+renders nothing). Either failure shape (EOF today; a decodable `Error` from any future
+decode-but-don't-route daemon → `daemon_rejected`) is a `LocalControlOpsException` the app
+maps to a kept entry (§5) — and in every shape the cached prompt is *structurally impossible*
+to resolve through the v1 id-only handler, whichever incarnation answers the socket. On a v2
+daemon, frame 17 routes to the same subscribe handler as frame 11, and frame 18 routes to a
+resolve path that **requires** `prompt_id` (missing/empty → `Ok=false` "invalid resolve
+payload"); the v1 frames 11/12 remain routed unchanged for legacy callers, served by
+`TryResolve`'s null-echo path.
 
 **Capability `consent/2`** is appended to `LocalControlCapabilities.Current` as the
 *discovery* signal (advertised, per the AI-1648 convention, only because the live v2 handlers
@@ -166,7 +171,8 @@ public static async IAsyncEnumerable<ConsentStreamEvent> RunAsync(
 ```
 
 Connects to the daemon's socket, writes `FrameType.ConsentSubscribeV2` (empty text; §4.1 —
-a v1 daemon answers the unknown frame with `Error`, ending the enumeration without
+a v1 daemon's codec rejects the unknown byte before routing and the server closes without
+replying, so the enumeration yields its client-local `Subscribed` and then ends on EOF, never
 registering a subscriber), **yields `Subscribed` once** immediately after that write
 succeeds, then reads frames and yields one `Pending` per `ConsentPending` frame. The `Subscribed` event exists because an async iterator
 exposes no other observable boundary between "dialing" and "subscribed": with an empty replay
@@ -571,7 +577,7 @@ cadence picks up count changes through the model stream — no new refresh machi
 | Failure | Surface | Behavior |
 |---|---|---|
 | Daemon unreachable (no subscription) | Tray | Existing AI-1651 rows; no prompts possible; feed still renders from file |
-| Daemon without `consent/2` (incl. `consent/1`-only) | Tray | No subscription, prompts, or resolves; cache cleared; down-level surfacing. Enforcement doesn't depend on the check: a v1 incarnation answering a v2 frame (restart TOCTOU) errors it — structurally unable to resolve or subscribe (§4.1) |
+| Daemon without `consent/2` (incl. `consent/1`-only) | Tray | No subscription, prompts, or resolves; cache cleared; down-level surfacing. Enforcement doesn't depend on the check: a v1 incarnation's codec rejects a v2 frame before routing and closes without replying (restart TOCTOU) — the resolve observes EOF → `unexpected_reply`, no resolution occurs (§4.1) |
 | Consent dial fails while status Connected | none (self-heal) | Cache NOT cleared (clear sits at the `Subscribed` boundary); 1s delay → retry |
 | Daemon dies between subscribe write and replay | none (self-heal) | Cache cleared but restored by the next successful replay (~1s cadence); bounded, UI-only (§5) |
 | Consent stream dies while Connected | none (self-heal) | 1s delay → resubscribe (fresh replay reconciles at the `Subscribed` boundary) |
@@ -645,13 +651,15 @@ throughout — no real sleeps).
 - Capability: `LocalControlCapabilities.Current` advertises `consent/2` alongside
   `consent/1`; mixed-version acceptance — an app facing a `consent/1`-only capability set
   starts no subscription and sends no resolve.
-- Incarnation swap (the restart TOCTOU): against a v1-routing server (routes frames 11/12,
-  answers 17/18 with the shipped `default`-arm `Error` frame), a cached v2 prompt's resolve
-  via `ConsentResolveV2` draws `daemon_rejected` — **no resolution occurs and a same-id
-  pending on that daemon is untouched**; `ConsentSubscribeV2` against the same server ends
-  the enumeration without registering a subscriber. V2-daemon side: frame 18 with a
-  missing/empty `prompt_id` acks `Ok=false` "invalid resolve payload"; frames 11/12 still
-  route for legacy callers.
+- Incarnation swap (the restart TOCTOU): against a faithful v1 fake — a server whose
+  *decoder* rejects frame bytes 17/18 before routing and closes the connection without
+  writing a frame, mirroring the shipped v1 `FrameCodec.Decode`/`HandleConnectionAsync`
+  behavior (NOT a routing-default `Error` reply, which no deployed v1 daemon produces) — a
+  cached v2 prompt's resolve via `ConsentResolveV2` observes EOF → `unexpected_reply` and
+  **no resolution occurs; a same-id pending on that daemon is untouched**;
+  `ConsentSubscribeV2` against the same fake yields `Subscribed` then ends on EOF without
+  registering a subscriber. V2-daemon side: frame 18 with a missing/empty `prompt_id` acks
+  `Ok=false` "invalid resolve payload"; frames 11/12 still route for legacy callers.
 
 **App (the "full prompt matrix" from the issue):**
 - Allow once / Deny → correct `ConsentResolveDto`, entry removed, queue advances.
