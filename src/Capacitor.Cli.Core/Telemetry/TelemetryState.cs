@@ -15,10 +15,9 @@ public readonly record struct TelemetryStateFile(string? Id, bool? Enabled, bool
 /// means opting out can delete it without touching authentication.
 ///
 /// Each mutation (device id creation, toggling enabled, marking notice shown) acquires a
-/// cross-process lock to prevent lost-update races where two concurrent writers each read the
-/// pre-write state, modify different fields, and then last-writer-wins clobber the other's
-/// field. On lock-acquisition failure, degrades to best-effort unlocked write rather than
-/// silently dropping the change — this is critical for opt-out enforcement, where a lost
+/// cross-process lock and performs its read-modify-write atomically inside the lock to prevent
+/// lost-update races. On lock-acquisition failure, degrades to best-effort unlocked write rather
+/// than silently dropping the change — this is critical for opt-out enforcement, where a lost
 /// SetEnabled(false) would be a privacy failure.
 /// </summary>
 public static class TelemetryState {
@@ -47,51 +46,82 @@ public static class TelemetryState {
     /// identifier minted for them.
     /// </summary>
     public static string? GetOrCreateDeviceId() {
-        var state = Read();
-        if (state.Enabled is false) return null;
-        if (!string.IsNullOrWhiteSpace(state.Id)) return state.Id;
-
-        var id = Guid.NewGuid().ToString("N");
-        Write(state with { Id = id });
-
-        return Read().Id ?? id;   // a peer may have won the race; adopt whatever landed
+        string? result = null;
+        Mutate(state => {
+            if (state.Enabled is false) {
+                result = null;
+                return state;   // no write
+            }
+            if (!string.IsNullOrWhiteSpace(state.Id)) {
+                result = state.Id;
+                return state;   // no write
+            }
+            var id = Guid.NewGuid().ToString("N");
+            result = id;
+            return state with { Id = id };
+        });
+        return result;
     }
 
-    public static void SetEnabled(bool enabled) => Write(Read() with { Enabled = enabled });
+    public static void SetEnabled(bool enabled) =>
+        Mutate(state => state with { Enabled = enabled });
 
-    public static void MarkNoticeShown() => Write(Read() with { NoticeShown = true });
+    public static void MarkNoticeShown() =>
+        Mutate(state => state with { NoticeShown = true });
 
-    static void Write(TelemetryStateFile state) {
+    /// <summary>
+    /// Acquires a cross-process lock, reads current state, applies the mutation, and writes
+    /// back atomically. On lock-acquisition failure, falls back to unlocked read-modify-write
+    /// to ensure changes like SetEnabled(false) are never silently dropped.
+    /// </summary>
+    static void Mutate(Func<TelemetryStateFile, TelemetryStateFile> apply) {
         var path = Path;
         var dir = System.IO.Path.GetDirectoryName(path)!;
 
-        // Acquire a cross-process lock to prevent lost updates when multiple processes modify
-        // different fields concurrently. On timeout or lock-acquisition failure, fall back to
-        // unlocked write — better than silently dropping the change, especially critical for
-        // SetEnabled(false) opt-out enforcement.
         try {
             using (ConfigFileLock.Acquire(path, TimeSpan.FromSeconds(2))) {
                 Directory.CreateDirectory(dir);
-                var json = JsonSerializer.Serialize(state, CapacitorJsonContext.Default.TelemetryStateFile);
-                File.WriteAllText(path, json);
+                var currentState = ReadLocked(path);
+                var newState = apply(currentState);
+                WriteLocked(path, newState);
             }
-        } catch (Exception e) when (e is TimeoutException or OperationCanceledException) {
-            // Lock timeout; proceed with unlocked write as fallback.
-            WriteUnlocked(path, dir, state);
-        } catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
-            // Lock acquire failure or file I/O error; proceed with unlocked write.
-            WriteUnlocked(path, dir, state);
+        } catch (Exception) {
+            // Lock acquisition failed (timeout, foreign-owned mutex, path errors, etc.)
+            // or an exception escaped from inside the lock (should not happen, but catch broadly
+            // per global constraint: telemetry must never throw to NativeAOT runtime).
+            // Degrade to unlocked read-modify-write rather than silently dropping the change.
+            MutateUnlocked(path, dir, apply);
         }
     }
 
-    static void WriteUnlocked(string path, string dir, TelemetryStateFile state) {
+    static void MutateUnlocked(string path, string dir, Func<TelemetryStateFile, TelemetryStateFile> apply) {
         try {
             Directory.CreateDirectory(dir);
+            var currentState = ReadLocked(path);
+            var newState = apply(currentState);
+            WriteLocked(path, newState);
+        } catch (Exception) {
+            // Best effort. Telemetry must never throw to the NativeAOT runtime.
+        }
+    }
+
+    static TelemetryStateFile ReadLocked(string path) {
+        if (!File.Exists(path)) return default;
+        try {
+            var json = File.ReadAllText(path);
+            var deserialized = JsonSerializer.Deserialize(json, CapacitorJsonContext.Default.TelemetryStateFile);
+            return deserialized;
+        } catch (Exception e) when (e is JsonException or IOException or UnauthorizedAccessException) {
+            return default;
+        }
+    }
+
+    static void WriteLocked(string path, TelemetryStateFile state) {
+        try {
             var json = JsonSerializer.Serialize(state, CapacitorJsonContext.Default.TelemetryStateFile);
             File.WriteAllText(path, json);
         } catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
-            // Best effort. A device id we fail to persist just means a new one next run,
-            // which skews counts slightly — never a reason to fail the user's command.
+            // Best effort.
         }
     }
 }
