@@ -465,11 +465,11 @@ successor.
 
 **Buttons:**
 
-| Button | Wire | Notes |
+| Button | Wire (all via `ConsentResolveV2`, always carrying the pinned target's `request_id` **and** `prompt_id` — the v2 daemon rejects a missing/empty `prompt_id`, §4.1) | Notes |
 |---|---|---|
-| Allow once | `ConsentResolve{decision: "allow"}` | |
-| Allow & remember | `ConsentResolve{decision: "allow", save_rule: {action: "allow", requester: <id>, kind: null, repo: null, vendor: null}}` | Daemon stays the single rule writer. Label is deliberately not "Always allow" — an appended rule is first-match-shadowed by earlier denies (§4.1), so the label must not promise "always". **Hidden when `Requester` is null *or empty*** — the same predicate as §5's service guard, which remains the real safety boundary. Tooltip: "Saves a rule allowing future launches from this requester. Existing deny rules — including Pause — take precedence until removed." |
-| Deny | `ConsentResolve{decision: "deny"}` | |
+| Allow once | `ConsentResolveV2{request_id, prompt_id, decision: "allow"}` | |
+| Allow & remember | `ConsentResolveV2{request_id, prompt_id, decision: "allow", save_rule: {action: "allow", requester: <id>, kind: null, repo: null, vendor: null}}` | Daemon stays the single rule writer. Label is deliberately not "Always allow" — an appended rule is first-match-shadowed by earlier denies (§4.1), so the label must not promise "always". **Hidden when `Requester` is null *or empty*** — the same predicate as §5's service guard, which remains the real safety boundary. Tooltip: "Saves a rule allowing future launches from this requester. Existing deny rules — including Pause — take precedence until removed." |
+| Deny | `ConsentResolveV2{request_id, prompt_id, decision: "deny"}` | |
 
 While a resolve is in flight all three disable (no double-submit); the countdown keeps
 ticking, but **hint expiry never preempts an in-flight resolve**: if the countdown reaches
@@ -507,7 +507,8 @@ this state.
   closing anyway.
 
 A late ack for a request the VM already advanced past updates nothing: the service's
-instance-guarded removal already ran or no-ops, and the VM only renders its pin.
+identity-guarded (`PromptId`-matched) removal already ran or no-ops, and the VM only renders
+its pin.
 
 Toasts use `AppNotifier` extended to attach a `WindowNotificationManager` to the prompt window
 — the main window may be closed, so prompt-related warnings must surface on the prompt window
@@ -662,7 +663,9 @@ throughout — no real sleeps).
   `Ok=false` "invalid resolve payload"; frames 11/12 still route for legacy callers.
 
 **App (the "full prompt matrix" from the issue):**
-- Allow once / Deny → correct `ConsentResolveDto`, entry removed, queue advances.
+- Allow once / Deny / Allow & remember → the sent `ConsentResolveDto` carries **the pinned
+  target's exact `PromptId`** (asserted per button at the service/VM boundary, not just DTO
+  serialization) plus its `RequestId` and decision; entry removed, queue advances.
 - Allow & remember → `save_rule` is requester-only; button hidden when `Requester` is null
   **and** when it is empty (same predicate as the service guard); **the service guard:
   `ResolveAsync(saveRule: true)` on a null/empty-requester target sends NO `save_rule` and
