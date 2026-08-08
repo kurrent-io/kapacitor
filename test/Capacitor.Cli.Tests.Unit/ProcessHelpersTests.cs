@@ -166,6 +166,23 @@ public class ProcessHelpersTests {
     }
 
     [Test]
+    public async Task DecodeNulTerminated_is_bounded_and_rejects_malformed_regions() {
+        // The exact scenario the bounded decode exists for: a full region with NO terminator must
+        // read as null, never as a truncated path and never as a scan past the region.
+        var unterminated = new byte[16];
+        Array.Fill(unterminated, (byte)'a');
+        await Assert.That(ProcessHelpers.DecodeNulTerminated(unterminated)).IsNull();
+
+        // Empty-at-zero is "no cwd", not "".
+        await Assert.That(ProcessHelpers.DecodeNulTerminated(new byte[8])).IsNull();
+
+        // A properly terminated path decodes to exactly the bytes before the NUL — including
+        // non-ASCII, since APFS paths are UTF-8.
+        var ok = "/tmp/wörk\0garbage-after-nul"u8.ToArray();
+        await Assert.That(ProcessHelpers.DecodeNulTerminated(ok)).IsEqualTo("/tmp/wörk");
+    }
+
+    [Test]
     public async Task GetProcessCwd_returns_null_for_invalid_pids() {
         await Assert.That(ProcessHelpers.GetProcessCwd(0)).IsNull();
         await Assert.That(ProcessHelpers.GetProcessCwd(-5)).IsNull();

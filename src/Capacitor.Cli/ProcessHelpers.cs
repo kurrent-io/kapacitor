@@ -230,9 +230,21 @@ static partial class ProcessHelpers {
             return null;
         }
 
-        var path = Marshal.PtrToStringUTF8((nint)(buffer + VnodePathCdirOffset));
+        return DecodeNulTerminated(new ReadOnlySpan<byte>(buffer + VnodePathCdirOffset, VnodePathMax));
+    }
 
-        return string.IsNullOrEmpty(path) ? null : path;
+    /// <summary>
+    /// Decodes a NUL-terminated UTF-8 string from a FIXED-LENGTH region, or null when the region is
+    /// empty-at-zero or carries no terminator at all. Bounded deliberately: an unbounded
+    /// <c>Marshal.PtrToStringUTF8</c> here would scan past the path region — and past the stack
+    /// buffer — the day the kernel fills the field without a NUL or the struct layout shifts in a
+    /// way the length check cannot see. A full, unterminated region is malformed data, and a
+    /// truncated guess at a PATH is worse than none.
+    /// </summary>
+    internal static string? DecodeNulTerminated(ReadOnlySpan<byte> region) {
+        var nul = region.IndexOf((byte)0);
+
+        return nul <= 0 ? null : Encoding.UTF8.GetString(region[..nul]);
     }
 
     static string? GetProcessCwdLinux(int pid) =>
