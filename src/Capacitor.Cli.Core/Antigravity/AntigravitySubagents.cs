@@ -22,10 +22,19 @@ public static class AntigravitySubagents {
     /// deterministic regardless of directory enumeration order.
     /// </summary>
     public static IReadOnlyDictionary<string, string> BuildParentMap(
-            string? home = null, string? geminiCliHome = null, CancellationToken ct = default) {
+            string? home = null, string? geminiCliHome = null, CancellationToken ct = default)
+        => BuildParentMapUnder(Path.Combine(AntigravityPaths.Root(home, geminiCliHome), "brain"), ct);
+
+    /// <summary>
+    /// <see cref="BuildParentMap(string?,string?,CancellationToken)"/> over an EXPLICIT brain root.
+    /// Import scans each product root's brain separately: a subagent chain never crosses roots
+    /// (child <c>messages/</c> linkage lives beside the parent under one root, and conversation ids
+    /// are unique UUIDs), so per-root maps are complete and need no union.
+    /// </summary>
+    public static IReadOnlyDictionary<string, string> BuildParentMapUnder(
+            string brainRoot, CancellationToken ct = default) {
         var map = new Dictionary<string, string>(StringComparer.Ordinal);
 
-        var brainRoot = Path.Combine(AntigravityPaths.Root(home, geminiCliHome), "brain");
         if (!Directory.Exists(brainRoot)) return map;
 
         foreach (var brainDir in Directory.EnumerateDirectories(brainRoot)) {

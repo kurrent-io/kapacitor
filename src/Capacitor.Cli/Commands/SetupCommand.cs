@@ -219,9 +219,14 @@ public static class SetupCommand {
             // OpenCode keeps config under ~/.config/opencode + data under
             // ~/.local/share/opencode; the PATH probe covers fresh installs.
             OpenCode: OpenCodePaths.IsInstalled() || AgentDetector.IsInstalled("opencode"),
-            // Antigravity (GUI IDE) keeps state under ~/.gemini/antigravity; the PATH
-            // probe covers a CLI/fresh install that hasn't created it yet.
-            Antigravity: AntigravityPaths.IsInstalled() || AgentDetector.IsInstalled("antigravity"));
+            // Antigravity is one vendor over two surfaces: the GUI (state under
+            // ~/.gemini/antigravity) and the `agy` CLI (state under ~/.gemini/antigravity-cli).
+            // IsInstalled() now covers either root; the PATH probes cover a fresh install that has
+            // not created a root yet — and the CLI binary is `agy`, not `antigravity`, so both
+            // names must be probed or an agy-only machine goes undetected and nothing installs.
+            Antigravity: AntigravityPaths.IsInstalled()
+                || AgentDetector.IsInstalled("antigravity")
+                || AgentDetector.IsInstalled("agy"));
 
         bool PromptYesNo(string text) =>
             AnsiConsole.Prompt(new ConfirmationPrompt(text) { DefaultValue = true });

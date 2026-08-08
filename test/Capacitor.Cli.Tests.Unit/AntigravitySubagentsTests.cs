@@ -65,6 +65,31 @@ public class AntigravitySubagentsTests {
         await Assert.That(map["bbbbbbbb-0000-0000-0000-000000000001"]).IsEqualTo("aaaaaaaa-0000-0000-0000-000000000001");
     }
 
+    // BuildParentMapUnder scans an EXPLICIT brain root — the seam the dual-root import uses so an
+    // agy-CLI-root chain maps as completely as a GUI one. Points it at the antigravity-cli brain.
+    [Test]
+    public async Task BuildParentMapUnder_maps_a_chain_in_the_agy_CLI_brain_root() {
+        using var tmp = new TempBrain();
+        const string parent = "dddddddd-0000-0000-0000-00000000d001";
+        const string child  = "eeeeeeee-0000-0000-0000-00000000e001";
+        var cliBrain = Path.Combine(tmp.Home, ".gemini", "antigravity-cli", "brain");
+        var pDir = Path.Combine(cliBrain, parent, ".system_generated", "logs");
+        var cDir = Path.Combine(cliBrain, child,  ".system_generated", "logs");
+        Directory.CreateDirectory(pDir);
+        Directory.CreateDirectory(cDir);
+        File.WriteAllLines(Path.Combine(pDir, "transcript_full.jsonl"),
+            [$$"""{"type":"INVOKE_SUBAGENT","content":"{\"conversationId\":\"{{child}}\"}"}"""]);
+        File.WriteAllLines(Path.Combine(cDir, "transcript_full.jsonl"),
+            ["""{"type":"USER_INPUT","content":"hi"}"""]);
+
+        var map = AntigravitySubagents.BuildParentMapUnder(cliBrain);
+        await Assert.That(map[child]).IsEqualTo(parent);
+
+        // And the GUI-root overload sees nothing here — proving the roots are scanned independently.
+        var guiMap = AntigravitySubagents.BuildParentMap(home: tmp.Home, geminiCliHome: "");
+        await Assert.That(guiMap.ContainsKey(child)).IsFalse();
+    }
+
     [Test]
     public async Task BuildParentMap_direction_is_from_the_invoker_not_the_message_sender() {
         // Regression for the messages-scan inversion (7f8d9d93 → a1204f98): the ROOT invokes the

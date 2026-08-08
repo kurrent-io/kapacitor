@@ -28,11 +28,21 @@ public class AntigravityImportSourceTests {
         return home;
     }
 
-    static string BrainDir(string home, string convId) =>
-        Path.Combine(home, ".gemini", "antigravity", "brain", convId);
+    // The GUI product subdir. `WriteTranscriptUnder`/`AppendInvokeUnder` take the subdir so the
+    // same fixtures serve the agy CLI root ("antigravity-cli") for the dual-root tests.
+    const string GuiSub = "antigravity";
+    const string CliSub = "antigravity-cli";
 
-    static void WriteTranscript(string home, string convId, params string[] lines) {
-        var dir = Path.Combine(BrainDir(home, convId), ".system_generated", "logs");
+    static string BrainDir(string home, string convId) => BrainDirUnder(home, GuiSub, convId);
+
+    static string BrainDirUnder(string home, string productSub, string convId) =>
+        Path.Combine(home, ".gemini", productSub, "brain", convId);
+
+    static void WriteTranscript(string home, string convId, params string[] lines) =>
+        WriteTranscriptUnder(home, GuiSub, convId, lines);
+
+    static void WriteTranscriptUnder(string home, string productSub, string convId, params string[] lines) {
+        var dir = Path.Combine(BrainDirUnder(home, productSub, convId), ".system_generated", "logs");
         Directory.CreateDirectory(dir);
         File.WriteAllLines(Path.Combine(dir, "transcript_full.jsonl"), lines);
     }
@@ -40,13 +50,21 @@ public class AntigravityImportSourceTests {
     // Appends an INVOKE_SUBAGENT step to convId's transcript naming childId as the spawned
     // conversation — the spawn-time linkage BuildParentMap now reads instead of
     // messages/*.json.
-    static void AppendInvoke(string home, string convId, string childId) {
-        var dir = Path.Combine(BrainDir(home, convId), ".system_generated", "logs");
+    static void AppendInvoke(string home, string convId, string childId) =>
+        AppendInvokeUnder(home, GuiSub, convId, childId);
+
+    static void AppendInvokeUnder(string home, string productSub, string convId, string childId) {
+        var dir = Path.Combine(BrainDirUnder(home, productSub, convId), ".system_generated", "logs");
         Directory.CreateDirectory(dir);
         File.AppendAllLines(Path.Combine(dir, "transcript_full.jsonl"), [
             $$"""{"type":"INVOKE_SUBAGENT","content":"{\"conversationId\":\"{{childId}}\"}"}"""
         ]);
     }
+
+    // Distinct ids for the CLI root — UUIDs are globally unique, so a CLI conversation never
+    // collides with a GUI one and the two roots concatenate cleanly.
+    const string CliRoot  = "dddddddd-0000-0000-0000-00000000d001";
+    const string CliChild = "eeeeeeee-0000-0000-0000-00000000e001";
 
     static string UserLine(string ts) =>
         $$"""{"step_index":0,"source":"USER_EXPLICIT","type":"USER_INPUT","status":"DONE","created_at":"{{ts}}","content":"<USER_REQUEST>hi</USER_REQUEST>"}""";
@@ -98,6 +116,73 @@ public class AntigravityImportSourceTests {
             await Assert.That(discovered[0].SessionId).IsEqualTo(Dashless(Root));
             var children = (List<string>)discovered[0].SourceMeta!["Children"]!;
             await Assert.That(children.OrderBy(x => x).ToList()).IsEquivalentTo(new List<string> { Child, Grand }.OrderBy(x => x).ToList());
+        } finally { Directory.Delete(home, recursive: true); }
+    }
+
+    // G1: an agy conversation lives under antigravity-cli/brain. Before dual-root discovery it was
+    // invisible to `kcap import --antigravity`; this is the core gap the bundle closes.
+    [Test]
+    public async Task Discover_finds_a_conversation_under_the_agy_CLI_root() {
+        var home = NewHome();
+        try {
+            WriteTranscriptUnder(home, CliSub, CliRoot, UserLine("2026-07-02T19:00:00Z"));
+
+            var source = new AntigravityImportSource(home: home, geminiCliHome: "");
+            await Assert.That(source.IsAvailable).IsTrue(); // available on the CLI root alone
+
+            var discovered = await source.DiscoverAsync(
+                new DiscoveryFilters(FilterCwd: null, FilterSession: null, Since: null, MinLines: 0),
+                CancellationToken.None);
+
+            await Assert.That(discovered.Count).IsEqualTo(1);
+            await Assert.That(discovered[0].SessionId).IsEqualTo(Dashless(CliRoot));
+            // The session carries its own product root so children resolve under antigravity-cli.
+            await Assert.That((string)discovered[0].SourceMeta!["ProductRoot"]!)
+                .EndsWith(CliSub);
+            // ...and the transcript path it surfaces is under the CLI root, not the GUI's.
+            await Assert.That((string)discovered[0].SourceMeta!["TranscriptPath"]!)
+                .Contains(Path.Combine(CliSub, "brain"));
+        } finally { Directory.Delete(home, recursive: true); }
+    }
+
+    // Both roots populated: every session from each appears, once. UUIDs are unique so there is no
+    // cross-root collision or dedup to get wrong.
+    [Test]
+    public async Task Discover_returns_sessions_from_BOTH_roots() {
+        var home = NewHome();
+        try {
+            WriteTranscript(home, Root, UserLine("2026-07-02T19:00:00Z"));            // GUI
+            WriteTranscriptUnder(home, CliSub, CliRoot, UserLine("2026-07-02T19:05:00Z")); // agy CLI
+
+            var source = new AntigravityImportSource(home: home, geminiCliHome: "");
+            var discovered = await source.DiscoverAsync(
+                new DiscoveryFilters(FilterCwd: null, FilterSession: null, Since: null, MinLines: 0),
+                CancellationToken.None);
+
+            await Assert.That(discovered.Select(d => d.SessionId).OrderBy(x => x).ToList())
+                .IsEquivalentTo(new List<string> { Dashless(Root), Dashless(CliRoot) }.OrderBy(x => x).ToList());
+        } finally { Directory.Delete(home, recursive: true); }
+    }
+
+    // A subagent chain under the CLI root nests exactly as under the GUI root — the per-root parent
+    // map is complete because chains never cross roots.
+    [Test]
+    public async Task Discover_nests_a_subagent_under_the_agy_CLI_root() {
+        var home = NewHome();
+        try {
+            WriteTranscriptUnder(home, CliSub, CliRoot,  UserLine("2026-07-02T19:00:00Z"));
+            WriteTranscriptUnder(home, CliSub, CliChild, UserLine("2026-07-02T19:01:00Z"));
+            AppendInvokeUnder(home, CliSub, CliRoot, CliChild);
+
+            var source = new AntigravityImportSource(home: home, geminiCliHome: "");
+            var discovered = await source.DiscoverAsync(
+                new DiscoveryFilters(FilterCwd: null, FilterSession: null, Since: null, MinLines: 0),
+                CancellationToken.None);
+
+            await Assert.That(discovered.Count).IsEqualTo(1); // only the root is a session
+            await Assert.That(discovered[0].SessionId).IsEqualTo(Dashless(CliRoot));
+            var children = (List<string>)discovered[0].SourceMeta!["Children"]!;
+            await Assert.That(children).Contains(CliChild);
         } finally { Directory.Delete(home, recursive: true); }
     }
 

@@ -66,17 +66,42 @@ public static class AntigravityPaths {
     public static string SkillsDir(string? home = null, string? geminiCliHome = null)
         => Path.Combine(GeminiPaths.Root(home, geminiCliHome), "skills");
 
-    /// <summary>Per-conversation "brain" dir: <c>&lt;root&gt;/brain/&lt;id&gt;</c>.</summary>
+    /// <summary>
+    /// The two product roots one <c>antigravity</c> vendor writes conversations under — the GUI's
+    /// <see cref="Root"/> and the CLI's <see cref="CliConfigRoot"/> — in a fixed order (GUI first).
+    /// Returned whether or not each exists; callers filter by presence. Import enumerates BOTH so an
+    /// <c>agy</c> conversation is not invisible to <c>kcap import --antigravity</c>. Conversation ids
+    /// are UUIDs, unique across roots, so a chain never spans roots (a child's <c>messages/</c> dir
+    /// lives beside its parent under one root) and per-root processing needs no cross-root dedup.
+    /// </summary>
+    public static IReadOnlyList<string> BrainProductRoots(string? home = null, string? geminiCliHome = null)
+        => [Root(home, geminiCliHome), CliConfigRoot(home, geminiCliHome)];
+
+    /// <summary>Per-conversation "brain" dir under an EXPLICIT product root:
+    /// <c>&lt;productRoot&gt;/brain/&lt;id&gt;</c>. The root-parameterized form the dual-root import
+    /// resolves paths through; the convenience overloads below fix the root to the GUI's.</summary>
+    public static string BrainDirUnder(string productRoot, string conversationId)
+        => Path.Combine(productRoot, "brain", conversationId);
+
+    /// <summary>Full JSONL transcript under an explicit product root.</summary>
+    public static string TranscriptFullPathUnder(string productRoot, string conversationId)
+        => Path.Combine(BrainDirUnder(productRoot, conversationId), ".system_generated", "logs", "transcript_full.jsonl");
+
+    /// <summary>Inter-agent messages dir under an explicit product root.</summary>
+    public static string MessagesDirUnder(string productRoot, string conversationId)
+        => Path.Combine(BrainDirUnder(productRoot, conversationId), ".system_generated", "messages");
+
+    /// <summary>Per-conversation "brain" dir: <c>&lt;root&gt;/brain/&lt;id&gt;</c> (GUI root).</summary>
     public static string BrainDir(string conversationId, string? home = null, string? geminiCliHome = null)
-        => Path.Combine(Root(home, geminiCliHome), "brain", conversationId);
+        => BrainDirUnder(Root(home, geminiCliHome), conversationId);
 
-    /// <summary>Full JSONL transcript: <c>&lt;brain&gt;/.system_generated/logs/transcript_full.jsonl</c>.</summary>
+    /// <summary>Full JSONL transcript: <c>&lt;brain&gt;/.system_generated/logs/transcript_full.jsonl</c> (GUI root).</summary>
     public static string TranscriptFullPath(string conversationId, string? home = null, string? geminiCliHome = null)
-        => Path.Combine(BrainDir(conversationId, home, geminiCliHome), ".system_generated", "logs", "transcript_full.jsonl");
+        => TranscriptFullPathUnder(Root(home, geminiCliHome), conversationId);
 
-    /// <summary>Inter-agent messages dir (child→parent linkage): <c>&lt;brain&gt;/.system_generated/messages</c>.</summary>
+    /// <summary>Inter-agent messages dir (child→parent linkage): <c>&lt;brain&gt;/.system_generated/messages</c> (GUI root).</summary>
     public static string MessagesDir(string conversationId, string? home = null, string? geminiCliHome = null)
-        => Path.Combine(BrainDir(conversationId, home, geminiCliHome), ".system_generated", "messages");
+        => MessagesDirUnder(Root(home, geminiCliHome), conversationId);
 
     /// <summary>Per-conversation SQLite db (protobuf gen_metadata → tokens/model): <c>&lt;root&gt;/conversations/&lt;id&gt;.db</c>.</summary>
     public static string ConversationDb(string conversationId, string? home = null, string? geminiCliHome = null)
@@ -131,9 +156,15 @@ public static class AntigravityPaths {
         => Path.Combine(WorkspacePluginDir(workspaceRoot), "hooks.json");
 
     /// <summary>
-    /// Detection by data-root presence — Antigravity creates <c>~/.gemini/antigravity</c>
-    /// on first run. (The app bundle can also be probed by callers.)
+    /// Detection by data-root presence — the GUI creates <c>~/.gemini/antigravity</c> and the
+    /// <c>agy</c> CLI creates <c>~/.gemini/antigravity-cli</c>, each on first run. EITHER root means
+    /// the product is present: they are one vendor (<c>antigravity</c>) over two surfaces sharing
+    /// the same plugin/MCP config, so an <c>agy</c>-only machine — GUI root absent, CLI root present
+    /// — must detect exactly as a GUI machine does, or the shared hooks plugin never installs and no
+    /// downstream capture runs. Callers additionally PATH-probe <c>agy</c> for the fresh case where
+    /// neither root exists yet (see <c>SetupCommand</c>).
     /// </summary>
     public static bool IsInstalled(string? home = null, string? geminiCliHome = null)
-        => Directory.Exists(Root(home, geminiCliHome));
+        => Directory.Exists(Root(home, geminiCliHome))
+        || Directory.Exists(CliConfigRoot(home, geminiCliHome));
 }
