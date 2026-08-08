@@ -26,8 +26,10 @@ namespace Capacitor.Cli.Tests.Unit.SessionStartMemory;
 /// fetched). The transcript, not the answer, is the authoritative record; the answer-based
 /// assertion here is only sound because tools are forbidden.</para>
 ///
-/// <para>The Antigravity GUI app shares the same plugin config but is a separate runtime; nothing
-/// here observes it.</para>
+/// <para>The Antigravity 2.0 GUI app shares the same plugin config and was certified separately
+/// by direct observation (2026-08-08): a real app conversation on the shipped build was captured
+/// and injected — the app populates <c>workspacePaths</c> itself, so it never needed the print-mode
+/// fallback. Nothing in this file observes the app.</para>
 ///
 /// <para>Both tests are <c>[NotInParallel]</c>: the negative control mutates the REAL
 /// process-global <c>disable_memory_index</c> config. <c>[NotInParallel]</c> only prevents
