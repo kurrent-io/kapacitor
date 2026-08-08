@@ -79,7 +79,8 @@ Each hook pipes its JSON payload through the `kcap` CLI, which enriches it with 
 - `validate-plan` / `kcap-validate-plan` — Verify that all planned items were completed
 - `disable` / `kcap-disable` — Stop recording and delete all server data for the current session
 - `hide` / `kcap-hide` — Hide the current session (owner-only visibility)
-- `review-flows` / `kcap-review-flows` — Run structured, iterative spec/code review loops
+- `review-flows` / `kcap-review-flows` — Run structured, iterative spec/code review loops; the reviewer vendor is chosen independently of the driver (pass a lowercase token like `claude`/`codex`/`cursor`)
+- `agent-flows` / `kcap-agent-flows` — Run structured multi-participant agent flows (catalog `definition_id` or an inline `definition_yaml`), each participant declaring its own vendor/model
 - `guided-tour` / `kcap-guided-tour` — Onboarding tour: what Capacitor has recorded for your team, then per-use-case tutorials (evals, session recall, PR review, analytics)
 
 In Claude they're invoked as `/kcap:recap`, `/kcap:errors`, `/kcap:guided-tour`, etc.

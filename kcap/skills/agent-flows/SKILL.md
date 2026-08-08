@@ -72,7 +72,7 @@ explicitly ask you to proceed with whatever vendor the definition or saved prefe
 Canonical reviewer aliases for reserved review flows: Claude / Claude Code → `claude`; Codex /
 OpenAI Codex → `codex`; Cursor / cursor-agent → `cursor`; GitHub Copilot / Copilot CLI → `copilot`;
 Gemini / Gemini CLI → `gemini`; Kiro / Kiro CLI → `kiro`; Pi → `pi`; OpenCode → `opencode`;
-Antigravity / agy → `agy`. Normalize only names bound to the reviewer role, honor negation and
+Antigravity / agy → `antigravity`. Normalize only names bound to the reviewer role, honor negation and
 positive contrast, and ask rather than guessing when two reviewer candidates remain.
 
 For the reserved `spec-review`/`code-review` aliases only, `start_flow` also accepts a top-level

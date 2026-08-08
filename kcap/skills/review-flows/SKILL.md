@@ -60,7 +60,7 @@ candidates remain after negation, ask the user to choose; never guess.
 
 Canonical reviewer aliases: Claude / Claude Code → `claude`; Codex / OpenAI Codex → `codex`;
 Cursor / cursor-agent → `cursor`; GitHub Copilot / Copilot CLI → `copilot`; Gemini / Gemini CLI →
-`gemini`; Kiro / Kiro CLI → `kiro`; Pi → `pi`; OpenCode → `opencode`; Antigravity / agy → `agy`.
+`gemini`; Kiro / Kiro CLI → `kiro`; Pi → `pi`; OpenCode → `opencode`; Antigravity / agy → `antigravity`.
 Normalize only the reviewer-role mention. Positive contrast (for example, “from Codex, ask Claude”)
 selects Claude; negated names are removed; two remaining reviewer candidates are ambiguous.
 
