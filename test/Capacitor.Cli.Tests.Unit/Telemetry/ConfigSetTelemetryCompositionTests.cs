@@ -1,4 +1,5 @@
 using Capacitor.Cli.Commands;
+using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.Core.Telemetry;
 using TUnit.Assertions;
@@ -28,21 +29,35 @@ namespace Capacitor.Cli.Tests.Unit.Telemetry;
 /// <c>RepoPathStoreGlobalSetup</c>'s <c>[ModuleInitializer]</c> pins for the whole process, and
 /// share that class's <see cref="NotInParallelAttribute"/> key so nothing else deletes or
 /// rewrites <c>config.json</c> underneath this test.
+///
+/// Deliberately does NOT set <see cref="TelemetryState.PathOverride"/>. That static has its own
+/// dedicated lock key (<c>nameof(TelemetryState) + "." + nameof(TelemetryState.PathOverride)</c>,
+/// see <c>TelemetryStateTests</c>), shared by every class that mutates it
+/// (<c>TelemetryStateTests</c>, <c>SetupFunnelTests</c>, <c>CliTelemetryTests</c>,
+/// <c>McpTelemetryTests</c>, <c>ConfigTelemetryKeyTests</c>). This class locks under
+/// <c>TokenStoreProfileTests</c> instead, for the config dir it genuinely shares — setting
+/// <c>PathOverride</c> too would race those five telemetry classes under local (non-CI)
+/// parallelism, a gap CI's <c>--maximum-parallel-tests 1</c> would never expose. It doesn't need
+/// to: left unset, telemetry state falls back to its own default
+/// (<c>PathHelpers.ConfigPath("telemetry.json")</c>), which already resolves inside the same
+/// <c>KCAP_CONFIG_DIR</c> the module initializer pinned. <c>telemetry.json</c> is cleaned up in
+/// <c>[After(Test)]</c> so it can't leak into a later test that reads persisted telemetry state
+/// without an override.
 /// </summary>
 [NotInParallel(nameof(TokenStoreProfileTests))]
 public class ConfigSetTelemetryCompositionTests {
-    static string ConfigPath => AppConfig.GetConfigPath();
+    static string ConfigPath    => AppConfig.GetConfigPath();
+    static string TelemetryPath => PathHelpers.ConfigPath("telemetry.json");
 
     [Before(Test)]
     public void Cleanup() {
         SharedConfigDirCleanup.ClearWithRetry("config.json", () => File.Delete(ConfigPath));
         AppConfig.ResetResolvedStateForTesting();
-
-        // Isolate telemetry state too, so this test doesn't depend on whatever PathOverride a
-        // sibling ConfigTelemetryKeyTests test happened to leave behind.
-        TelemetryState.PathOverride =
-            Path.Combine(Path.GetTempPath(), $"kcap-cfg-composition-{Guid.NewGuid():N}", "telemetry.json");
     }
+
+    [After(Test)]
+    public void CleanupTelemetryState() =>
+        SharedConfigDirCleanup.ClearWithRetry("telemetry.json", () => File.Delete(TelemetryPath));
 
     [Test]
     public async Task Set_telemetry_off_returns_zero_and_leaves_an_existing_profile_on_disk_byte_for_byte_unchanged() {
