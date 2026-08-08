@@ -61,14 +61,20 @@ public static class MachineAuth {
             return null;
         }
 
-        if (uri.Scheme == Uri.UriSchemeHttps || uri.IsLoopback) {
+        // https anywhere, or http on loopback. `IsLoopback` is HOST-only, so it must be paired with the
+        // http scheme — otherwise ftp://127.0.0.1 or ws://localhost would pass, being loopback but not a
+        // credential-safe POST target. (Review round 2.)
+        var httpsAnywhere   = uri.Scheme == Uri.UriSchemeHttps;
+        var httpOnLoopback  = uri.Scheme == Uri.UriSchemeHttp && uri.IsLoopback;
+
+        if (httpsAnywhere || httpOnLoopback) {
             problem = null;
 
             return raw;
         }
 
-        problem = $"{TokenUrlVar} must be https (or loopback for testing) — refusing to send a machine "
-                + $"credential to {uri.Scheme}://{uri.Host}.";
+        problem = $"{TokenUrlVar} must be https (or http on loopback for testing) — refusing to send a "
+                + $"machine credential to {uri.Scheme}://{uri.Host}.";
 
         return null;
     }

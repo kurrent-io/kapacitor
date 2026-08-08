@@ -288,6 +288,26 @@ public class MachineAuthTests : IDisposable {
             .Because("the credential must not leave the process at all when the endpoint is untrusted");
     }
 
+    /// <summary>
+    /// Review round 2: the loopback carve-out is for http ONLY. `Uri.IsLoopback` is host-only, so an
+    /// odd-scheme loopback URL (ftp/ws/file) must NOT be admitted just for being loopback — it is not a
+    /// credential-safe POST target.
+    /// </summary>
+    [Test]
+    [Arguments("ftp://127.0.0.1/oauth2/token")]
+    [Arguments("ws://localhost/oauth2/token")]
+    public async Task An_odd_scheme_loopback_token_url_is_refused(string url) {
+        Clear();
+        Environment.SetEnvironmentVariable(MachineAuth.TokenUrlVar, url);
+
+        var result = await MachineTokenProvider.GetTokenAsync(
+            new MachineCredential("client_01ABC", "sekrit"), null, CancellationToken.None);
+
+        await Assert.That(result.Token).IsNull();
+        await Assert.That(result.Problem!).Contains("https");
+        await Assert.That(_server.LogEntries.Count()).IsEqualTo(0);
+    }
+
     /// <summary>Loopback over http is the deliberate carve-out — a credential cannot leave the machine.</summary>
     [Test]
     public async Task A_loopback_http_token_url_is_allowed_so_stubs_stay_testable() {
