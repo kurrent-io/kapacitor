@@ -1,9 +1,7 @@
-using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization.Metadata;
-using Capacitor.Cli.Core.Telemetry;
 
 namespace Capacitor.Cli.Commands;
 
@@ -31,12 +29,14 @@ static class McpReviewContextServer {
             return 2;
         }
 
-        // This sidecar is spawned via Program.cs's early short-circuit, before the standard
-        // command flow's own CliTelemetry.Initialize("mcp", …) — so unlike its siblings, no
-        // outer Initialize call precedes this one. Denylisted "mcp" would have left telemetry
-        // disabled anyway; re-initialise under the reportable pseudo-command "mcp-server" so
-        // per-tool-call events actually leave. No backend URL or auth here — never any.
-        CliTelemetry.Initialize("mcp-server", serverUrl: null, loggedIn: false);
+        // Deliberately uninstrumented, unlike its eight siblings: this sidecar's whole contract
+        // (see the class comment) is that it reaches nothing but its one capability URL and
+        // writes nothing to KCAP_CONFIG_DIR. Telemetry needs both — a persisted device id on
+        // disk and an outbound POST to the analytics endpoint — so wiring it here previously
+        // broke borrowed-review's sandboxed-egress and no-config-authority guarantees at once.
+        // Enforced by McpReviewContextServerIntegrationTests
+        // .Daemon_context_mode_starts_without_backend_and_performs_one_exact_get — don't add it
+        // back without re-reading why that test asserts an empty config dir.
 
         using var handler = new HttpClientHandler { AllowAutoRedirect = false, UseProxy = false };
         using var client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(10) };
@@ -46,34 +46,24 @@ static class McpReviewContextServer {
         using var reader = new StreamReader(stdin, Encoding.UTF8);
         await using var writer = new StreamWriter(stdout, new UTF8Encoding(false)) { AutoFlush = true };
 
-        try {
-            while (await reader.ReadLineAsync() is { } line) {
-                if (string.IsNullOrWhiteSpace(line)) continue;
-                JsonObject? request;
-                try { request = JsonNode.Parse(line)?.AsObject(); } catch { continue; }
-                if (request is null || request["id"] is not { } id) continue;
+        while (await reader.ReadLineAsync() is { } line) {
+            if (string.IsNullOrWhiteSpace(line)) continue;
+            JsonObject? request;
+            try { request = JsonNode.Parse(line)?.AsObject(); } catch { continue; }
+            if (request is null || request["id"] is not { } id) continue;
 
-                var method = request["method"]?.GetValue<string>();
-                var response = method switch {
-                    "initialize" => BuildInitializeResponse(id, request),
-                    "tools/list" => ToResponse(
-                        id, new McpToolsResult(tools), McpJsonContext.Default.McpToolsResult),
-                    "tools/call" => await TimedDispatchToolCallAsync(client, validated!, id, request),
-                    _ => McpProtocol.TryHandleStandardMethod(method, id)
-                         ?? BuildErrorResponse(id, -32601, $"Method not found: {method}")
-                };
-                await writer.WriteLineAsync(response);
-            }
-            return 0;
-        } finally {
-            // Unlike its siblings, this sidecar is spawned via Program.cs's early short-circuit
-            // (before the standard command flow's AppDomain.ProcessExit-registered flush) — so
-            // without an explicit flush here, anything queued since the last periodic
-            // (every-20th-call) flush is lost when the harness closes stdin. This tool is called
-            // only a handful of times per review round, rarely reaching that threshold, which
-            // would otherwise make its telemetry functionally dead.
-            await CliTelemetry.FlushAndClose();
+            var method = request["method"]?.GetValue<string>();
+            var response = method switch {
+                "initialize" => BuildInitializeResponse(id, request),
+                "tools/list" => ToResponse(
+                    id, new McpToolsResult(tools), McpJsonContext.Default.McpToolsResult),
+                "tools/call" => await DispatchToolCallAsync(client, validated!, id, request),
+                _ => McpProtocol.TryHandleStandardMethod(method, id)
+                     ?? BuildErrorResponse(id, -32601, $"Method not found: {method}")
+            };
+            await writer.WriteLineAsync(response);
         }
+        return 0;
     }
 
     internal static bool TryValidateCapabilityUrl(string? value, out string? validated) {
@@ -113,23 +103,6 @@ static class McpReviewContextServer {
                 : BuildToolResult(id, $"Error: review context unavailable (HTTP {(int)response.StatusCode}).", true);
         } catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException) {
             return BuildToolResult(id, "Error: review context unavailable.", true);
-        }
-    }
-
-    // Records which MCP tools agents actually reach for. Never touches the response path: the
-    // result (or the exception) is returned exactly as DispatchToolCallAsync produced it.
-    static async Task<string> TimedDispatchToolCallAsync(
-            HttpClient client, string capabilityUrl, JsonNode id, JsonObject request) {
-        var start = Stopwatch.GetTimestamp();
-        var tool  = McpTelemetry.SafeToolName(request);
-        var ok    = false;
-
-        try {
-            var response = await DispatchToolCallAsync(client, capabilityUrl, id, request);
-            ok = true;
-            return response;
-        } finally {
-            McpTelemetry.ToolCalled("kcap-review-context", tool, ok, CommandTiming.ElapsedMs(start));
         }
     }
 
