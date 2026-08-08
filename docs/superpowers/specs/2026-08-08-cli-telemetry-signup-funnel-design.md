@@ -167,12 +167,20 @@ allowlist of known literals** (`daemon start`, `plugin install`, `config set`, `
 omitted when the token doesn't match — never raw argv.
 
 `flags[]` carries flag *names* only, sorted, values never sent. Names are admitted by **shape**
-rather than by a name allowlist: a token qualifies only if it matches `^--[a-z][a-z0-9-]{0,39}$`
+rather than by a name allowlist: a token qualifies only if it matches `^--[a-z][a-z0-9-]{0,28}$`
 after any `=value` suffix is stripped. A global allowlist across ~40 commands would rot silently as
-flags are added, and shape is what actually makes a flag name safe — the pattern structurally cannot
-express a path, URL, GUID, or email address, so nothing identifying can survive it regardless of what
-future commands introduce. Non-matching tokens, and every non-`--` token, are dropped; the flag list
-is additionally capped at 12 entries.
+flags are added, and shape is what actually makes a flag name safe.
+
+The 30-character bound is load-bearing, not incidental. An earlier draft allowed 40, which admitted
+`--`-prefixed GUIDs: a UUID's alphabet is lowercase hex plus hyphen, exactly the character class
+here, so any GUID beginning with a hex letter — ~37% of UUIDv4s — satisfied the pattern. At 30 a
+GUID token (`--` plus 36 characters) cannot fit, while every real kcap flag clears it with room to
+spare; the longest is `--skip-antigravity-hooks` at 24. With that bound the pattern genuinely cannot
+express a path, URL, GUID, or email address. A future flag name longer than 30 characters is dropped
+rather than reported, which is the allow-by-exception default behaving correctly.
+
+Non-matching tokens, and every non-`--` token, are dropped; the flag list is additionally capped at
+12 entries.
 
 ### Setup funnel
 
