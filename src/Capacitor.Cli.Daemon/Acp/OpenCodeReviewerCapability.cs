@@ -18,8 +18,11 @@ internal enum OpenCodeReviewerDecision {
 ///
 /// <para><b>ENABLED by default; the switch is an opt-OUT.</b> It shipped as an opt-in and that was
 /// wrong. The reviewer vendor is a caller-chosen parameter, and Claude, Codex, Cursor and Copilot have
-/// never been gated — each running with FULL tool access. So the gate stopped nobody (request an
-/// ungated vendor instead) while taxing the honest path with a service-unit edit and a restart. It was
+/// never been gated — each running with FULL tool access. So on any daemon that also ADVERTISES one of
+/// those, the gate did not widen the capability class a requester could reach (they ask for an ungated
+/// vendor with MORE capability) while taxing the honest path with a service-unit edit and a restart.
+/// On a daemon advertising only gated vendors it did separate the hosted role from the unattended
+/// reviewer role, and the flip genuinely widens what a non-operator can cause to run. It was
 /// also attached to the wrong end of the risk scale: this is the most contained reviewer of the eight —
 /// no shell, no write, no network, only <c>read</c>/<c>grep</c>/<c>glob</c>/<c>list</c> plus its own
 /// result channel, verified against a positive control.</para>

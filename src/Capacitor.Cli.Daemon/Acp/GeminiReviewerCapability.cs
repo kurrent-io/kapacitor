@@ -21,11 +21,14 @@ internal enum GeminiReviewerDecision {
 /// That lands on the DAEMON OPERATOR, who is not necessarily the person requesting the review.</para>
 ///
 /// <para><b>Why that is nevertheless no longer an opt-in.</b> The reviewer vendor is caller-chosen, and
-/// Claude, Codex, Cursor and Copilot have never been gated — each with the same full authority. A caller who
-/// would have been blocked from <c>vendor: "gemini"</c> simply asked for one of those, so the gate cost the
-/// operator a service-unit edit and bought nothing. The switch is now an opt-OUT
-/// (<c>KCAP_GEMINI_UNATTENDED_REVIEWER=0</c>); the decision that actually scopes this is whether to permit
-/// unattended reviews on the daemon at all, which is <c>kcap daemon consent</c>.</para>
+/// Claude, Codex, Cursor and Copilot have never been gated — each with the same full authority. Wherever
+/// one of those is also ADVERTISED, a caller blocked from <c>vendor: "gemini"</c> simply asked for one of
+/// them, so the gate cost the operator a service-unit edit without narrowing the capability class reachable
+/// — though not literally nothing, since a Gemini reviewer burns the operator's own Gemini credentials.
+/// Where only gated vendors are advertised, the flip does widen what a non-operator can cause to run. The
+/// switch is now an opt-OUT (<c>KCAP_GEMINI_UNATTENDED_REVIEWER=0</c>); the decision that actually scopes
+/// this is whether to permit unattended reviews on the daemon at all, which is <c>kcap daemon consent</c> —
+/// note that DEFAULTS TO ALLOW, so it scopes nothing until configured.</para>
 ///
 /// <para><b>Why the build is gated, and why by affirmation.</b> The security mechanism is the vendor's MCP
 /// allowlist behaving as an exclusive exact-match gate that the repository's own settings cannot widen. That

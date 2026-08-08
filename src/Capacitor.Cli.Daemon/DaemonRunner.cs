@@ -165,10 +165,10 @@ public static partial class DaemonRunner {
         if (Environment.GetEnvironmentVariable("KCAP_ANTIGRAVITY_MODEL") is { Length: > 0 } agyModel)
             config.AntigravityModel = agyModel;
         // The per-vendor reviewer switches. These are OPT-OUT now: unset means enabled, matching
-        // Claude/Codex/Cursor/Copilot, which have never been gated. See ParseConsentFlag for why the
-        // opt-in gate was removed — in short, the reviewer vendor is a caller-chosen parameter, so
-        // gating four vendors while four others ran with MORE capability stopped nobody and only
-        // taxed the honest path.
+        // Claude/Codex/Cursor/Copilot, which have never been gated. See ParseConsentFlag for the full
+        // argument and its three precisions — in short, the reviewer vendor is a caller-chosen
+        // parameter, so wherever an ungated vendor is also advertised, gating these four did not widen
+        // the capability class a requester could reach, and only taxed the honest path.
         foreach (var (variable, apply) in new (string, Action<bool>)[] {
             ("KCAP_GEMINI_UNATTENDED_REVIEWER",      v => config.GeminiUnattendedReviewerEnabled      = v),
             ("KCAP_KIRO_UNATTENDED_REVIEWER",        v => config.KiroUnattendedReviewerEnabled        = v),
@@ -178,8 +178,11 @@ public static partial class DaemonRunner {
             var raw = Environment.GetEnvironmentVariable(variable);
             apply(ParseConsentFlag(raw));
 
-            // A value we cannot read is treated as the default (enabled), so an operator who meant to
-            // DISABLE and mistyped it would otherwise get the opposite with no signal whatsoever.
+            // Warned for EVERY variable, from the same loop that applies it, so a mangled value can
+            // never be silently swallowed on one vendor because a hand-maintained warning list missed
+            // it. A value we cannot read DISABLES (see ParseConsentFlag) — the operator's evident
+            // intent, since unset already enables — and the symptom of the opposite mistake is a
+            // reviewer that simply stops being advertised, which is why it says so out loud.
             if (DescribeUnparseableConsent(variable, raw) is { } warning)
                 await Console.Error.WriteLineAsync(warning);
         }
@@ -869,29 +872,30 @@ public static partial class DaemonRunner {
     /// unattended-reviewer role, and the flip genuinely widens what a non-operator requester can cause
     /// to run with no human in the loop.</para>
     ///
-    /// <para><b>What actually compensates, stated without inflation.</b> The operator keeps an explicit
-    /// opt-out. <c>kcap daemon consent</c> is the only control that scopes unattended launches as such —
-    /// but note it DEFAULTS TO ALLOW, so it compensates only for an operator who has configured it, not
-    /// for the average daemon. The version floor is deliberately NOT on this list: it constrains which
-    /// BUILD runs, never whether a non-operator can cause an unattended launch, and counting it as a
-    /// compensating control would inflate the set.</para>
+    /// <para><b>What actually compensates, stated without inflation.</b> Exactly two things, and the
+    /// floor in the DEFAULT configuration is worth saying plainly: on a fresh daemon that has not been
+    /// configured further, the only thing between a non-operator requester and an unattended gated-vendor
+    /// launch is that the vendor be installed, certified and above its version floor.
+    /// <list type="number">
+    /// <item>The operator keeps an explicit opt-out — and it is REACHABLE on the supported install path:
+    /// <see cref="Cli.Services.ServiceEnvironment"/> carries these four variables into a service unit on
+    /// every platform, DERIVED from the affirmable-reviewer registry so a new vendor cannot be omitted.
+    /// The caveat is timing, not reachability: a supervised daemon's environment is FROZEN at
+    /// <c>kcap daemon service install</c>, so an opt-out set afterwards needs a reinstall to take
+    /// effect.</item>
+    /// <item><c>kcap daemon consent</c> is the only control that scopes unattended launches as such — but
+    /// it DEFAULTS TO ALLOW, so it compensates only for an operator who has configured it, not for the
+    /// average daemon.</item>
+    /// </list></para>
     ///
-    /// <para><b>What still protects the launch.</b> The per-vendor version FLOOR
-    /// (<see cref="ReviewerVersionAffirmations"/>), which is a different mechanism with a different job:
-    /// several of these vendors' containment is environment-based, and env vars fail SILENTLY when a
-    /// build stops honouring them. The floor is seeded automatically at first boot so it never blocks a
-    /// first launch, and `kcap daemon reviewer affirm` raises it past a build found to be bad. That is
-    /// remediation, not permission.</para>
+    /// <para><b>The version floor is deliberately NOT a third entry</b>, though it is easy to count as
+    /// one. It constrains which BUILD runs, never whether a non-operator can cause an unattended launch;
+    /// it is seeded automatically at first boot precisely so it never blocks a first launch. It is real
+    /// protection against a different failure — several of these vendors' containment is environment-based
+    /// and fails SILENTLY when a build stops honouring it, which is what
+    /// <c>kcap daemon reviewer affirm</c> exists to remediate. Remediation, not permission.</para>
     ///
-    /// <para><b>An explicit opt-out is preserved</b> rather than deleting the variable, because silently
-    /// ENABLING something an operator had deliberately set to <c>0</c> is the one surprise this change
-    /// must not spring. Recognised falsey values disable; recognised truthy values enable; anything else
-    /// falls back to the default and is reported by <see cref="DescribeUnparseableConsent"/> — the same
-    /// rule the feature-gate work follows, so a typo in a service unit cannot take a daemon's reviewer
-    /// offline without saying so.</para>
-    /// </summary>
-    /// <summary>
-    /// <b>Unset means enabled; a value we cannot read means DISABLED.</b>
+    /// <para><b>Unset means enabled; a value we cannot read means DISABLED.</b>
     ///
     /// <para>Those two are not in tension, and the asymmetry is the point. Since unset already enables,
     /// the only reason to set one of these variables at all is to turn a reviewer OFF — enabling needs no
@@ -903,6 +907,14 @@ public static partial class DaemonRunner {
     /// <para>The direction is also cheap in the wrong case: a typo'd ENABLE attempt (<c>=y</c>,
     /// <c>=enabled</c>) lands on the pre-change behaviour, which is the safe side, and the operator still
     /// gets the warning either way.</para>
+    ///
+    /// <para><b>That justification does not generalise, so do not reuse this from anywhere else.</b> It
+    /// rests on TWO facts specific to the four reviewer variables: unset already means enabled, and
+    /// disabling is therefore the only possible intent behind setting one. A setting where unset means
+    /// disabled, or where fail-open was chosen deliberately, needs its own parse and its own reasoning —
+    /// inheriting this one by name would silently import an argument that does not hold. The four
+    /// <c>KCAP_*_UNATTENDED_REVIEWER</c> variables in <see cref="RunAsync"/>'s apply loop are the only
+    /// production callers.</para>
     /// </summary>
     internal static bool ParseConsentFlag(string? value) => RecogniseConsent(value) ?? false;
 
@@ -926,12 +938,17 @@ public static partial class DaemonRunner {
     internal static bool? RecogniseConsent(string? value) {
         var v = value?.Trim();
 
+        // DO NOT fold these two early returns into the `return null` fallthrough below. They look like
+        // "nothing to recognise" and they are not: `ParseConsentFlag` maps null to FALSE, so collapsing
+        // them would turn all four reviewers OFF on every daemon with the variables unset — which is
+        // essentially all of them. The same tidy-up was harmless while this failed open; the fail-closed
+        // flip is what made it catastrophic. Unset must never reach the `??`.
         if (string.IsNullOrEmpty(v)) return true;   // unset — the new default
 
         if (v.Length >= 2 && (v[0] == '"' || v[0] == '\'') && v[^1] == v[0])
             v = v[1..^1].Trim();
 
-        if (v.Length == 0) return true;
+        if (v.Length == 0) return true;             // `""` / `''` — an empty value, not an unreadable one
 
         if (v == "0"
          || string.Equals(v, "false", StringComparison.OrdinalIgnoreCase)
@@ -1050,8 +1067,21 @@ public static partial class DaemonRunner {
     internal static void SeedVersionFloor(string stateDir, string vendor, string binaryPath) {
         try {
             if (!ReviewerVersionStore.RecordExists(stateDir, vendor)
-             && VendorVersionResolver.Resolve(binaryPath) is { Length: > 0 } installed)
+             && VendorVersionResolver.Resolve(binaryPath) is { Length: > 0 } installed) {
                 new ReviewerVersionStore(stateDir, vendor).Affirm(installed);
+
+                // Printed because a floor is affirmed ONCE and never re-probed, so a wrong number is
+                // pinned permanently and gates silently in both directions — too high refuses a working
+                // reviewer, too low under-gates. Resolve validates SHAPE (a dotted-numeric token), which
+                // rules out banners, `unknown` and localised errors, but NOT a version-shaped token that
+                // is not the installed build: an update nag ("0.11.14 -> 0.12.0"), a runtime line
+                // ("Node.js v22.1.0") or a date stamp ("2026.08.08") all qualify and can precede the
+                // real version. This line is what makes such a floor diagnosable at all.
+                Console.Error.WriteLine(
+                    $"{vendor} reviewer version floor seeded at {installed} (from '{binaryPath} --version'). "
+                  + $"Correct it with `kcap daemon reviewer affirm --vendor {vendor}` if that is not the "
+                  + "installed build.");
+            }
         } catch (Exception ex) {
             // The gate fails closed on its own if this never ran; a boot must not die for it.
             Console.Error.WriteLine($"{vendor} reviewer version seeding skipped: {ex.Message}");
@@ -1298,9 +1328,11 @@ public static partial class DaemonRunner {
     [LoggerMessage(Level = LogLevel.Information, Message = "Unattended vendor '{Vendor}': CLI version {CliVersion}, as observed by probing the configured binary at daemon startup. That is a startup observation, not the build a later reviewer runs — if the vendor updates while this daemon keeps running, launches pick up the new build and this line stays stale until the daemon restarts.")]
     static partial void LogUnattendedVendorIdentity(ILogger logger, string vendor, string cliVersion);
 
-    // Information, not Warning: a gated vendor installed with no opt-in is a NORMAL steady state (an
-    // operator may run Kiro or Gemini interactively only), so Warning would alert on a correct
-    // configuration at every restart. Default minimum level is Information, so it is logged either way.
+    // Information, not Warning: an installed vendor withheld for a reason the operator chose — an
+    // explicit opt-out, or an unsupported platform — is a NORMAL steady state, so Warning would alert on
+    // a correct configuration at every restart. Default minimum level is Information, so it is logged
+    // either way. (Pre-ungating this said "installed with no opt-in", which was the common case then and
+    // is the rare one now; the level is still right for the reasons that remain.)
     // {Reason} ends the message because each reason is itself a sentence ending in a period.
     [LoggerMessage(Level = LogLevel.Information, Message = "Vendor '{Vendor}' is installed and can host an unattended reviewer, but this daemon is NOT offering it, so a review flow requesting this vendor is refused by the server as an unadvertised reviewer — which does not say why. Restart the daemon after changing this. Reason: {Reason}")]
     static partial void LogUnattendedVendorWithheld(ILogger logger, string vendor, string reason);

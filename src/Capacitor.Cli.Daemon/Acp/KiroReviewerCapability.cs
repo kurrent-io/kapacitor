@@ -18,9 +18,12 @@ internal enum KiroReviewerDecision {
 ///
 /// <para><b>ENABLED by default; the switch is an opt-OUT.</b> It shipped as an opt-in and that was
 /// wrong. The reviewer vendor is a caller-chosen parameter, and Claude, Codex, Cursor and Copilot have
-/// never been gated — each running with FULL tool access, including shell and write. So gating Kiro
-/// stopped nobody (a requester simply asks for an ungated vendor with more capability) while taxing
-/// the honest path with a service-unit edit and a restart. It was also the wrong end of the risk
+/// never been gated — each running with FULL tool access, including shell and write. So on any daemon
+/// that also ADVERTISES one of those, gating Kiro did not widen the capability class a requester could
+/// reach (they simply ask for an ungated vendor with more capability) while taxing the honest path with
+/// a service-unit edit and a restart. On a daemon advertising only gated vendors it did separate the
+/// hosted role from the unattended reviewer role, and the flip genuinely widens what a non-operator can
+/// cause to run with no human in the loop. It was also the wrong end of the risk
 /// scale: this reviewer's trust list is <c>fs_read</c> + <c>thinking</c>, never <c>fs_write</c>, never
 /// <c>execute_bash</c>.</para>
 ///

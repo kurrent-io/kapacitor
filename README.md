@@ -750,8 +750,10 @@ the opt-in did not do the job it appeared to do:
 
 - **The reviewer vendor is chosen by the caller.** Claude, Codex, Cursor and Copilot have never been gated,
   and each runs with a *full* tool surface — shell and file writes included. So on any daemon that also
-  advertises one of those, the gate stopped nobody: a requester it blocked simply asked for an ungated
-  vendor with more capability, not less.
+  advertises one of those, the gate did not widen the class of capability a requester could reach: one it
+  blocked simply asked for an ungated vendor with more capability, not less. (Not quite "stopped nobody" —
+  a Gemini reviewer burns *your* Gemini credentials and obeys Gemini's own permission model, which is not a
+  subset of "Claude was available anyway".)
   > The exception, since the claim is not universal: on a daemon where you installed **only** a gated
   > vendor's CLI — for hosted work, say — and no ungated one, these variables were the only thing keeping
   > that binary from also serving unattended reviews. If that is your setup and you want it back, set the
@@ -782,6 +784,16 @@ Unset means enabled. A value the daemon cannot read as true or false is treated 
 warned about at startup — because the only reason to set one of these at all is to turn a reviewer off,
 so an unreadable value is a failed "off" rather than an ambiguous input. Surrounding quotes are tolerated
 (`"0"` works), since a mis-quoted service-unit entry is the usual way that happens.
+
+**On a service-installed daemon, set it before you install.** `kcap daemon service install` copies these
+four variables into the service unit — on every platform — but a supervised daemon inherits nothing from
+your shell afterwards, so its environment is frozen at install time. Exporting an opt-out later has no
+effect until you reinstall the service:
+
+```bash
+export KCAP_GEMINI_UNATTENDED_REVIEWER=0
+kcap daemon service install        # re-run so the unit picks the value up
+```
 
 Be aware that disabling one vendor does not stop unattended review on that daemon: a requester can still
 name an ungated vendor. If you want no unattended reviews at all, `kcap daemon consent` is the gate that

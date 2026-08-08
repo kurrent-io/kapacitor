@@ -20,8 +20,11 @@ internal enum AntigravityReviewerDecision {
 /// daemon-owned worktree under a per-launch, owner-only <c>HOME</c>, and its findings text is returned
 /// to whoever requested the review — a cross-principal risk that lands on the daemon OPERATOR. It used
 /// to be an opt-in on that basis. It is not any more, because the reviewer vendor is caller-chosen and
-/// Claude, Codex, Cursor and Copilot have never been gated, each with the same authority: the gate
-/// excluded nobody and cost the operator a service-unit edit. Deliberately still NOT Kiro's
+/// Claude, Codex, Cursor and Copilot have never been gated, each with the same authority: on a daemon
+/// that also ADVERTISES one of those, the gate did not widen the capability class a requester could
+/// reach, and cost the operator a service-unit edit. On a daemon advertising only gated vendors it did
+/// separate the hosted role from the unattended reviewer role, and the flip genuinely widens what a
+/// non-operator can cause to run with no human in the loop. Deliberately still NOT Kiro's
 /// whole-filesystem-read paragraph — that claim is about a trusted <c>fs_read</c> primitive this vendor
 /// does not expose, and a borrowed risk statement would be false in either direction.</para>
 ///
