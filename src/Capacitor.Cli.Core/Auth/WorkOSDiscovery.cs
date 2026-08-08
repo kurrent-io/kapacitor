@@ -1,4 +1,5 @@
 using Capacitor.Cli.Core.Config;
+using Capacitor.Cli.Core.Telemetry;
 
 namespace Capacitor.Cli.Core.Auth;
 
@@ -80,6 +81,11 @@ public static class WorkOSDiscovery {
         }
 
         if (result.Tenants.Length == 0) {
+            // Fires before the provisioner-null check below: a headless run (null provisioner,
+            // "ask your admin" dead-end) still reached the fork and must count as such — this is
+            // the denominator for "reached signup".
+            SetupFunnel.TenantNone(AuthProvider.WorkOS);
+
             if (provisioner is null) {
                 await Console.Error.WriteLineAsync("No Capacitor tenants are linked to your account. Ask your admin to invite you.");
 

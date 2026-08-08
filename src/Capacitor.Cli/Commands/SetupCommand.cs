@@ -13,6 +13,7 @@ using Capacitor.Cli.Core.Kiro;
 using Capacitor.Cli.Core.Mcp;
 using Capacitor.Cli.Core.OpenCode;
 using Capacitor.Cli.Core.Pi;
+using Capacitor.Cli.Core.Telemetry;
 using Spectre.Console;
 using Spectre.Console.Rendering;
 using Profile = Capacitor.Cli.Core.Config.Profile;
@@ -57,6 +58,11 @@ public static class SetupCommand {
         var legacyPluginScope = GetArg(args, "--plugin-scope"); // "user" | "project" | "skip" | null
         var skipClaude       = skipClaudeFlag || legacyPluginScope == "skip";
         var legacyProjectScope = legacyPluginScope == "project";
+
+        SetupFunnel.Started(
+            hasExistingProfile: (await AppConfig.LoadProfileConfig()).Profiles.Count > 0,
+            serverUrlProvided:  serverUrlArg is not null,
+            noPrompt:           noPrompt);
 
         // Resolve repo root once and reuse for both the project-scope install path and the
         // non-repo tip at the end. --plugin-scope project writes hooks at <repo>/.claude/...,
@@ -524,6 +530,18 @@ public static class SetupCommand {
 
         WriteNextSteps(ShouldOfferGuidedTour(detectedSummary is not null, claudeSettingsPath, stepPaths));
 
+        // Same fields as Result.AnyHooksInstalled, counted instead of OR'd: CodingAgentsStep
+        // doesn't surface a count directly, so this sums the per-vendor hook-install outcomes
+        // already tracked locally in installResult — vendor names themselves are never sent
+        // (see SetupFunnel.Succeeded).
+        var agentsConfigured = new[] {
+            installResult.ClaudeInstalled, installResult.CodexHooksInstalled, installResult.CursorHooksInstalled,
+            installResult.CopilotHooksInstalled, installResult.GeminiHooksInstalled, installResult.KiroHooksInstalled,
+            installResult.PiExtensionInstalled, installResult.OpenCodeExtensionInstalled, installResult.AntigravityHooksInstalled,
+        }.Count(installed => installed);
+
+        SetupFunnel.Succeeded(agentsConfigured);
+
         return 0;
     }
 
@@ -801,6 +819,7 @@ public static class SetupCommand {
         }
 
         var provider = OAuthLoginFlow.ChooseDiscoveryProvider(args, isInteractive: !HeadlessEnvironment.IsHeadless());
+        SetupFunnel.SigninOpened(HeadlessEnvironment.IsHeadless() ? "device" : "browser", provider);
 
         if (provider == AuthProvider.WorkOS) {
             // Offer inline tenant creation only in an interactive session; headless
@@ -811,6 +830,9 @@ public static class SetupCommand {
 
             var workosDiscovery = await WorkOSDiscovery.RunWithLiveAuthAsync(
                 AuthProxyEndpoint.Url, proxyConfig, proxyClient, new SpectreTenantPicker(), provisioner);
+
+            if (workosDiscovery.ExitCode == 0) SetupFunnel.SigninCompleted(AuthProvider.WorkOS);
+            else                               SetupFunnel.SigninFailed("workos_discovery_failed");
 
             // Checked before ExitCode, which is deliberately non-zero on a re-target. The user has
             // no WorkOS tenant but does belong to a workspace, so continue setup against that
@@ -845,10 +867,16 @@ public static class SetupCommand {
 
         var ghToken = await OAuthLoginFlow.AcquireGitHubTokenAsync(
             proxyConfig.GitHubClientId, proxyConfig.GitHubCodeExchangeUrl, forceDevice);
-        if (ghToken is null) return null;
+        if (ghToken is null) {
+            SetupFunnel.SigninFailed("github_token_denied");
+            return null;
+        }
+        SetupFunnel.SigninCompleted(AuthProvider.GitHubApp);
 
         var discovery = new TenantDiscovery(proxyClient, new SpectreTenantPicker());
         var outcome   = await discovery.RunAsync(AuthProxyEndpoint.Url, ghToken);
+
+        if (outcome.Tenants.Length == 0) SetupFunnel.TenantNone(AuthProvider.GitHubApp);
 
         if (outcome.ErrorMessage is not null) {
             AnsiConsole.MarkupLine($"  [red]✗[/] {Markup.Escape(outcome.ErrorMessage)}");
