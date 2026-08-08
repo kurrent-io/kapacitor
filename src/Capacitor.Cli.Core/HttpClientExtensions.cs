@@ -75,6 +75,45 @@ public static class HttpClientExtensions {
             return (NewClient(), AuthStatus.NoAuthRequired, null); // No auth needed
         }
 
+        // Machine credentials. A headless runner (CI, an ephemeral agent sandbox) has no
+        // profile and no token store: it carries KCAP_CLIENT_ID/KCAP_CLIENT_SECRET and mints its own
+        // short-lived bearer. This is the single place every authenticated CLI call resolves a token, so
+        // it is the only place that needs to know.
+        //
+        // Placed AFTER the None check — a server needing no auth needs no credential either — and BEFORE
+        // the token-store paths, because on a runner those would find nothing and advise `kcap login`,
+        // which a runner cannot do.
+        //
+        // Gated on `Intended` (either variable present) rather than on both, so a half-configured runner
+        // is told which variable is missing instead of silently falling through to that same wrong advice.
+        //
+        // No UnauthorizedRetryHandler: it refreshes through TokenStore, and client_credentials has no
+        // refresh token. A 401 comes back here as `rejectedAccessToken`, and re-minting is the repair.
+        if (MachineAuth.Intended) {
+            var credential = MachineAuth.TryRead(out var problem);
+
+            if (credential is null) {
+                MachineAuthProblem = problem;
+
+                return (NewClient(), AuthStatus.NotAuthenticated, null);
+            }
+
+            var machineToken = await MachineTokenProvider.GetTokenAsync(credential, rejectedAccessToken, ct);
+
+            if (machineToken is null) {
+                MachineAuthProblem = MachineTokenProvider.Problem;
+
+                return (NewClient(), AuthStatus.NotAuthenticated, null);
+            }
+
+            MachineAuthProblem = null;
+
+            var machineClient = NewClient();
+            machineClient.DefaultRequestHeaders.Authorization = new("Bearer", machineToken);
+
+            return (machineClient, AuthStatus.Ok, null);
+        }
+
         // Recovery from a server rejection is self-contained: it already attempted a rotation and
         // applied the binding check. Falling through to the resolving accessor afterwards would let
         // an expired token be refreshed a SECOND time — re-spending a single-use WorkOS refresh
@@ -124,7 +163,11 @@ public static class HttpClientExtensions {
 
                 break;
             case AuthStatus.NotAuthenticated:
-                await Console.Error.WriteLineAsync("Not authenticated. Run 'kcap login' to authenticate.");
+                // A machine cannot run `kcap login`, so telling it to is worse than saying nothing.
+                await Console.Error.WriteLineAsync(
+                    MachineAuthProblem is { } machineProblem
+                        ? $"Machine authentication failed: {machineProblem}"
+                        : "Not authenticated. Run 'kcap login' to authenticate.");
 
                 break;
             case AuthStatus.WrongServer:
@@ -138,6 +181,13 @@ public static class HttpClientExtensions {
 
         return client;
     }
+
+    /// <summary>
+    /// Why machine auth failed on the last client construction, when it did. Lets the interactive
+    /// wrapper print an actionable message rather than advising `kcap login` on a runner that has no
+    /// browser and no profile.
+    /// </summary>
+    internal static string? MachineAuthProblem { get; private set; }
 
     static string? cachedProvider;
 

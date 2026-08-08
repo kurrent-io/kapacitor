@@ -923,6 +923,7 @@ public sealed record CurationApplyResponse {
 [JsonSerializable(typeof(Auth.AuthDiscoveryResponse))]
 [JsonSerializable(typeof(Auth.TokenExchangeRequest))]
 [JsonSerializable(typeof(Auth.TokenExchangeResponse))]
+[JsonSerializable(typeof(Auth.MachineTokenResponse))]
 [JsonSerializable(typeof(Auth.AuthErrorResponse))]
 [JsonSerializable(typeof(Auth.RefreshTokenRequest))]
 [JsonSerializable(typeof(Auth.GitHubDeviceCodeResponse))]
