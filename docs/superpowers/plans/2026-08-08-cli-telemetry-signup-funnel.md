@@ -1993,7 +1993,7 @@ git commit -m "Instrument the setup signup funnel"
 
 **Files:**
 - Create: `src/Capacitor.Cli.Core/Telemetry/McpTelemetry.cs`
-- Modify: the eight MCP servers in `src/Capacitor.Cli/Commands/Mcp*Server.cs`
+- Modify: the nine MCP servers handling `tools/call` in `src/Capacitor.Cli/Commands/Mcp*Server.cs`
 - Test: `test/Capacitor.Cli.Tests.Unit/Telemetry/McpTelemetryTests.cs`
 
 **Interfaces:**
@@ -2094,7 +2094,26 @@ public static class McpTelemetry {
 }
 ```
 
-In each of the eight MCP servers (`McpMemoryServer.cs`, `McpSessionsServer.cs`, `McpReviewServer.cs`, `McpFlowsServer.cs`, `McpWorkItemsServer.cs`, `McpAnalyticsServer.cs`, `McpReviewContextServer.cs`, `McpJudgeServer.cs`), add `using Capacitor.Cli.Core.Telemetry;` and wrap the `tools/call` dispatch. For `McpMemoryServer.cs` the switch arm at line 82 becomes:
+Nine files handle `tools/call` — verified by grep, and note this is one more than an earlier draft of
+this plan listed:
+
+| File | `server` label |
+|---|---|
+| `McpMemoryServer.cs` | `kcap-memory` |
+| `McpSessionsServer.cs` | `kcap-sessions` |
+| `McpReviewServer.cs` | `kcap-review` |
+| `McpFlowsServer.cs` | `kcap-flows` |
+| `McpWorkItemsServer.cs` | `kcap-workitems` |
+| `McpAnalyticsServer.cs` | `kcap-analytics` |
+| `McpFlowResultServer.cs` | `kcap-flow-result` |
+| `McpJudgeServer.cs` | `kcap-judge` |
+| `McpReviewContextServer.cs` | `kcap-review-context` |
+
+The first six match `KcapMcpServers.All` registry names. The last three are internal servers with no
+registry entry (they serve hosted reviewers and flows rather than a user's harness); their labels are
+coined here to match the registry's naming convention.
+
+In each, add `using Capacitor.Cli.Core.Telemetry;` and wrap the `tools/call` dispatch. For `McpMemoryServer.cs` the switch arm at line 82 becomes:
 
 ```csharp
 "tools/call" => await TimedDispatchAsync(id, request),
