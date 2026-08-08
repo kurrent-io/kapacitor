@@ -818,8 +818,8 @@ daemon user's full authority**. Concretely, and not bounded to the review:
 - **verdict** — steered content can simply ask the model to report `clean`. A review result is not
   authenticated review output.
 
-This is a property of unattended review generally, not of Gemini specifically — enabling Gemini widens which
-vendors can do it rather than introducing it. The one path that does *not* grant this is a sandboxed borrowed
+This is a property of unattended review generally, not of Gemini specifically — Gemini widens which vendors
+can do it rather than introducing it, and Claude, Codex, Cursor and Copilot have never been gated at all. The one path that does *not* grant this is a sandboxed borrowed
 review, which Gemini cannot use yet.
 
 **This is on by default, so read the above as describing what your daemon already does** once `gemini`
@@ -1353,10 +1353,11 @@ sees:
 - **Your global MCP servers are absent** (an empty per-launch `OPENCODE_CONFIG_DIR`). Otherwise a
   reviewer would inherit `kcap-flows` and could start review flows of its own.
 
-Enabling it does **not** bypass the build check. The containment above is behaviour of the installed
-`opencode` build, so the daemon records a **minimum** version and refuses anything older. Enabling
-seeds that minimum from whatever is installed, so a later upgrade needs no action from you; to move
-the floor to the currently-installed build (after a bad release, say), run:
+Being on by default does **not** bypass the build check. The containment above is behaviour of the
+installed `opencode` build, so the daemon records a **minimum** version and refuses anything older.
+That minimum is seeded on the first startup that finds the binary, from whatever is installed then, so
+a later upgrade needs no action from you; to move the floor to the currently-installed build (after a
+bad release, say), run:
 
 ```bash
 kcap daemon reviewer affirm --vendor opencode
