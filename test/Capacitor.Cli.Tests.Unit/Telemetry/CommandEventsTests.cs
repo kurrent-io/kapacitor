@@ -95,6 +95,13 @@ public class CommandEventsTests {
         await Assert.That(CommandEvents.Flags(["setup", token]).Length).IsEqualTo(0);
     }
 
+    // GUIDs share this pattern's alphabet (lowercase hex + hyphen), so length bound alone rejects them.
+    // A UUID is 36 hex+hyphen chars; with `--` prefix it's 38 total and exceeds the 30-char limit.
+    [Test]
+    public async Task Guid_shaped_tokens_are_rejected() {
+        await Assert.That(CommandEvents.Flags(["setup", "--ab9c1f4e-2a77-4d19-9f0e-1c2d3e4f5a6b"]).Length).IsEqualTo(0);
+    }
+
     [Test]
     public async Task Flag_list_is_capped() {
         var many = new[] { "setup" }
