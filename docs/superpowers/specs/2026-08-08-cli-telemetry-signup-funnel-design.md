@@ -239,6 +239,13 @@ The only argv fragments ever sent are the flag and subcommand *names* admitted b
 allowlist rules in the event catalog above — e.g. `--no-prompt`, `--skip-codex-hooks` — never a
 value, and never raw argv.
 
+**What identifies an installation, stated positively**, so this section can be read on its own rather
+than only as a list of exclusions: the anonymous device id, and — for SaaS installs only — the
+workspace slug, as both the `org` property and the `organization` group (Decision 2). The slug names
+a *workspace*, not a person; nothing links a device to a named human. Self-hosted installs send
+neither. Every event also carries `cli_version`, `os`, `arch`, `is_ci`, `is_headless`, `has_server`
+and `logged_in` — environment shape, never environment contents.
+
 `$ip: null` on every payload suppresses geo-IP resolution, matching the IP-discard posture the
 privacy policy already states for web. PostHog's current handling of this property should be
 confirmed during implementation rather than assumed.
