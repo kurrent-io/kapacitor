@@ -1,23 +1,30 @@
 namespace Capacitor.Cli.Tests.Unit.SessionStartMemory;
 
 /// <summary>
-/// Env-gated certification that the SessionStart memory index actually reaches the model on the
-/// Antigravity CLI (<c>agy</c>). The envelope shape (<c>injectSteps: [{ userMessage }]</c>) and the
-/// always-emit invariant are covered against fakes by <c>AntigravitySessionStartMemoryTests</c>;
-/// this is the only place asserting the end-to-end claim.
+/// Env-gated UPSTREAM-CHANGE WATCH for Antigravity CLI (<c>agy</c>) print mode — NOT the
+/// certification of the feature. The feature IS certified, on the surface humans use: a real
+/// interactive <c>agy</c> 1.1.11 session on 2026-08-07 carried the injected index as its own
+/// transcript event (the <c>&lt;!-- kcap-memory-index:v1 --&gt;</c> block, verbatim, event 4 of the
+/// recorded session). What is NOT certified is print mode, because print mode is where the feature
+/// does not work — and that gap is upstream, not ours.
 ///
-/// <para><b>Load-bearing, not a nice-to-have.</b> Unit tests prove the bytes
-/// <c>AntigravityHookCommand</c> writes to the <c>PreInvocation</c> hook's stdout — they do not
-/// prove <c>agy</c> surfaces those bytes to the model. Three earlier adapters (Cursor, Copilot,
-/// Gemini) merged on unit tests alone and each turned out to have a live gap somewhere between the
-/// emitted bytes and the model's context; this cert closes that exact debt for Antigravity by
-/// driving one real <c>agy -p</c> turn — which loads the same
-/// <c>~/.gemini/config/plugins/kcap/hooks.json</c> the Antigravity GUI shares — and asserting the
-/// model itself echoes a nonce that can only have reached it through the injected index.</para>
+/// <para><b>The measured print-mode matrix (agy 1.1.10 and 1.1.11, verified by transcript
+/// comparison, not by model answers):</b> <c>agy -p</c> fires the <c>PreInvocation</c> hook (the
+/// run IS captured — session-start POSTs, a watcher spawns), our hook emits a well-formed
+/// <c>injectSteps</c> payload, and agy discards it: the injected-index event is absent from the
+/// print-mode transcript while the identical setup produces it interactively. So this file's
+/// positive case FAILS TODAY BY DESIGN. A pass here means an agy release started honouring
+/// <c>injectSteps</c> in print mode — update the README Antigravity matrix row when that happens.</para>
 ///
-/// <para>This certifies the <c>agy</c> CLI. The GUI IDE shares the plugin and the same kcap hook
-/// code path, so a pass here is strong evidence for the IDE too, but it is not an IDE
-/// observation.</para>
+/// <para><b>Do not "fix" a failure here by loosening the prompt.</b> The prompt forbids tools
+/// because every harness we inject into also has the <c>kcap-memory</c> MCP server registered: a
+/// model allowed tools will fetch a memory via <c>search_memories</c> and produce a convincing pass
+/// with zero injection (measured — the print-mode session named a real memory it had gone and
+/// fetched). The transcript, not the answer, is the authoritative record; the answer-based
+/// assertion here is only sound because tools are forbidden.</para>
+///
+/// <para>The Antigravity GUI app shares the same plugin config but is a separate runtime; nothing
+/// here observes it.</para>
 ///
 /// <para>Both tests are <c>[NotInParallel]</c>: the negative control mutates the REAL
 /// process-global <c>disable_memory_index</c> config. <c>[NotInParallel]</c> only prevents
@@ -77,6 +84,14 @@ public class AntigravityMemoryIndexLiveCertTests {
             var (exitCode, stdout, _) = await RunAgyAsync(worktree.FullName, MemoryIndexLiveCertHarness.PositivePrompt);
 
             LogInjectedStepEvidence(nonce, stdout);
+
+            // Expected to FAIL on agy <= 1.1.11: print mode discards injectSteps (see class doc).
+            // Interactive agy is certified; a PASS here is upstream fixing print mode — update the
+            // README Antigravity matrix row before celebrating.
+            Console.WriteLine(
+                "[cert] NOTE: agy print mode has discarded injectSteps on every build measured "
+              + "(1.1.10, 1.1.11). A failure below on those builds is the KNOWN upstream gap, not a "
+              + "kcap regression; interactive agy is the certified surface.");
 
             await Assert.That(exitCode).IsEqualTo(0);
             await Assert.That(MemoryIndexLiveCertHarness.ExtractAssistantAnswer(stdout)).Contains(nonce);
