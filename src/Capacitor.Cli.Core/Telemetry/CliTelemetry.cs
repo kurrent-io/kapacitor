@@ -107,7 +107,15 @@ public static class CliTelemetry {
             var flags = CommandEvents.Flags(args);
             if (flags.Length > 0) {
                 var arr = new JsonArray();
-                foreach (var f in flags) arr.Add(f);   // never a collection expression — AOT
+                foreach (var f in flags) {
+                    // Not a collection expression, and not arr.Add(f) either: JsonArray.Add<T>(T)
+                    // binds whenever the argument's static type is narrower than JsonNode?, which
+                    // "f: string" is — so a bare Add(f) still pulls in the AOT-unsafe generic
+                    // overload. Only an argument statically typed JsonNode? selects the plain
+                    // Add(JsonNode?) instance method.
+                    JsonNode? node = JsonValue.Create(f);
+                    arr.Add(node);
+                }
                 props["flags"] = arr;
             }
 

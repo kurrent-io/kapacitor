@@ -56,9 +56,15 @@ public class CliTelemetryTests {
         await Assert.That(e.Properties["duration_ms"]!.GetValue<long>()).IsEqualTo(42L);
     }
 
+    // Initialise with a REPORTABLE command so Enabled stays true, which means RecordCommand's own
+    // `!CommandEvents.IsReportable(command)` guard — not Initialize's — is what suppresses the
+    // event. Load-bearing for Task 10: a long-lived MCP server process calls
+    // Initialize("mcp-server", …) once, then RecordCommand may be called per-invocation with a
+    // different, potentially denylisted, command string. Initialising with "hook" here would let
+    // Initialize's Enabled=false short-circuit RecordCommand before its own guard ever runs.
     [Test]
     public async Task Denylisted_commands_emit_nothing() {
-        var sink = StartCapturing("hook");
+        var sink = StartCapturing("status");
 
         CliTelemetry.RecordCommand("hook", ["hook", "--claude"], exitCode: 0, durationMs: 5);
 

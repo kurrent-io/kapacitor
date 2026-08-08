@@ -45,11 +45,17 @@ public static class PostHogPayload {
                 props["org"]     = orgGroup;
             }
 
-            batch.Add(new JsonObject {
+            // Not batch.Add(new JsonObject {...}) directly: JsonArray.Add<T>(T) binds whenever the
+            // argument's static type is narrower than JsonNode? — JsonObject qualifies even though
+            // it IS a JsonNode, because exact-type overload betterness still prefers the generic
+            // over the widening conversion to Add(JsonNode?). Only a JsonNode?-typed local selects
+            // the AOT-safe non-generic overload.
+            JsonNode? entry = new JsonObject {
                 ["event"]      = e.Name,
                 ["properties"] = props,
                 ["timestamp"]  = e.Timestamp.ToString("o"),
-            });
+            };
+            batch.Add(entry);
         }
 
         return new JsonObject {
