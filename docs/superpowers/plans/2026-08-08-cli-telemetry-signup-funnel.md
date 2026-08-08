@@ -1911,11 +1911,27 @@ In `RunDiscoveryAsync` (line 789), after `provider` is chosen (line 803):
 SetupFunnel.SigninOpened(HeadlessEnvironment.IsHeadless() ? "device" : "browser", provider);
 ```
 
-In the WorkOS branch, after `workosDiscovery` returns and before the retarget check (line 819):
+The WorkOS sign-in events go **inside `WorkOSDiscovery.RunAsync`**, not in `SetupCommand` after
+`RunWithLiveAuthAsync` returns. That method performs sign-in, tenant enumeration *and* provisioning
+internally, so anchoring on its return is wrong twice over:
+
+- **Ordering:** `signin_completed` would arrive after `tenant_none` and `workspace_provisioned`, so an
+  ordered PostHog funnel converts 0% past the sign-in step — destroying the "split by last step
+  reached" this feature exists for.
+- **Meaning:** its `ExitCode` is non-zero for a declined offer, a provisioning failure, "no tenant
+  selected", and the retarget path (deliberately `ExitCode = 1`, and it can still reach
+  `cli_setup_succeeded`). Keying `signin_failed` on it would make that metric mostly people whose
+  sign-in worked fine.
+
+Anchor on the point where live auth has succeeded and enumeration has not begun — the `auth is null`
+branch and the line immediately after it:
 
 ```csharp
-if (workosDiscovery.ExitCode == 0) SetupFunnel.SigninCompleted(AuthProvider.WorkOS);
-else                               SetupFunnel.SigninFailed("workos_discovery_failed");
+// inside the auth-failure branch
+SetupFunnel.SigninFailed("workos_signin_failed");
+
+// immediately after, before DiscoverWorkOSTenantsAsync
+SetupFunnel.SigninCompleted(AuthProvider.WorkOS);
 ```
 
 In the GitHub branch, after `AcquireGitHubTokenAsync` (line 848):
