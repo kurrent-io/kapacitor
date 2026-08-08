@@ -6,6 +6,7 @@ using Capacitor.Cli.Commands;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Auth;
 using Capacitor.Cli.Core.Config;
+using Capacitor.Cli.Core.Telemetry;
 using ReviewCommand = Capacitor.Cli.Commands.ReviewCommand;
 using WatchCommand = Capacitor.Cli.Commands.WatchCommand;
 
@@ -76,6 +77,24 @@ ProcessUrlPolicy.Current = CrashReporter.IsFailOpenCommand(command)
     : UrlFailurePolicy.FailFast;
 
 var baseUrl = await AppConfig.ResolveServerUrl(args, gitTimeoutMs: isHook ? 1000 : 5000);
+
+// Telemetry: initialised once the server URL is known (it decides the `organization` group) and
+// torn down from ProcessExit, which observes the exit code returned by top-level Main. Every
+// call swallows, so nothing here can fail a command.
+var commandStart = System.Diagnostics.Stopwatch.GetTimestamp();
+
+// TokenStore.LoadAsync() is the LOCAL read (src/Capacitor.Cli.Core/Auth/TokenStore.cs:211) —
+// deliberately not GetValidTokensAsync(), which can refresh over the network. `logged_in` is a
+// cheap fact about disk, never a reason to make a request on the command path.
+var loggedIn = false;
+try { loggedIn = await TokenStore.LoadAsync() is not null; } catch { }
+
+CliTelemetry.Initialize(command, baseUrl, loggedIn);
+
+AppDomain.CurrentDomain.ProcessExit += (_, _) => {
+    CliTelemetry.RecordCommand(command, args, Environment.ExitCode, CommandTiming.ElapsedMs(commandStart));
+    CliTelemetry.FlushAndClose().GetAwaiter().GetResult();
+};
 
 // Fire-and-forget update check (prints hint to stderr after command finishes).
 // Skipped for `uninstall` — the check writes ~/.config/kcap/update-check-{channel}.json
