@@ -96,4 +96,18 @@ public class TelemetrySpoolTests {
         await Assert.That(drained[0].Name).IsEqualTo("e15");
         await Assert.That(drained[^1].Name).IsEqualTo("e24");
     }
+
+    [Test]
+    public async Task Structurally_invalid_path_degrades_rather_than_throwing() {
+        // Enumerated filters have missed a case twice in this namespace; the never-throw
+        // constraint is absolute. A path containing a NUL character is structurally invalid
+        // for all OS file APIs — File.Exists, ReadAllLines, Delete all throw ArgumentException,
+        // which escaped the old enumerated filter.
+        var spool = new TelemetrySpool("bad\0path.jsonl");
+
+        // Must degrade, not throw
+        await Assert.That(spool.DrainAll().Count).IsEqualTo(0);
+        spool.Append([Event("a")]);   // must not throw
+        spool.Clear();                // must not throw
+    }
 }

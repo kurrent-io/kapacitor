@@ -16,20 +16,25 @@ public sealed class TelemetrySpool(string path, int maxEvents = 2000) {
             var lines = events.Select(Serialize).ToList();
             File.AppendAllLines(path, lines);
             Trim();
-        } catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
-            // Best effort — losing spooled telemetry is never worth failing a command.
+        } catch {
+            // Telemetry code must NEVER throw. Path validation and other rare exceptions
+            // have escaped enumerated filters twice already in this namespace. The never-throw
+            // constraint is absolute — losing spooled telemetry is never worth failing a command.
         }
     }
 
     public IReadOnlyList<TelemetryEvent> DrainAll() {
-        if (!File.Exists(path)) return [];
-
         try {
+            if (!File.Exists(path)) return [];
+
             return File.ReadAllLines(path)
                        .Select(Deserialize)
                        .OfType<TelemetryEvent>()
                        .ToList();
-        } catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
+        } catch {
+            // Telemetry code must NEVER throw. Path validation and other rare exceptions
+            // have escaped enumerated filters twice already in this namespace. The never-throw
+            // constraint is absolute — graceful degradation is required.
             return [];
         }
     }
@@ -45,16 +50,24 @@ public sealed class TelemetrySpool(string path, int maxEvents = 2000) {
     public void Clear() {
         try {
             if (File.Exists(path)) File.Delete(path);
-        } catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
-            // Best effort — losing spooled telemetry is never worth failing a command.
+        } catch {
+            // Telemetry code must NEVER throw. Path validation and other rare exceptions
+            // have escaped enumerated filters twice already in this namespace. The never-throw
+            // constraint is absolute — best effort on delete failure.
         }
     }
 
     void Trim() {
-        var lines = File.ReadAllLines(path);
-        if (lines.Length <= maxEvents) return;
+        try {
+            var lines = File.ReadAllLines(path);
+            if (lines.Length <= maxEvents) return;
 
-        File.WriteAllLines(path, lines[^maxEvents..]);
+            File.WriteAllLines(path, lines[^maxEvents..]);
+        } catch {
+            // Telemetry code must NEVER throw. Trim is best-effort; if it fails, the spool
+            // grows slightly but the command proceeds. Enumerated filters have missed cases twice
+            // already in this namespace — catch broadly.
+        }
     }
 
     static string Serialize(TelemetryEvent e) =>
