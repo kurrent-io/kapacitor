@@ -110,7 +110,21 @@ public class TelemetryClientTests {
         await Assert.That(flushed).IsTrue();
         await Assert.That(ok.LastBody!.Contains("offline_event")).IsTrue();
         await Assert.That(ok.LastBody!.Contains("fresh_event")).IsTrue();
+        // Ordering: spooled events (offline) come before queued events (fresh)
+        await Assert.That(ok.LastBody!.IndexOf("offline_event") < ok.LastBody!.IndexOf("fresh_event")).IsTrue();
         await Assert.That(spool.DrainAll().Count).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task Repeated_failures_do_not_duplicate_spooled_events() {
+        var handler = new StubHandler(HttpStatusCode.ServiceUnavailable);
+        var client  = Client(handler, out var spool);
+        client.Enqueue(Event("cli_command"));
+
+        await client.FlushAsync("device-1", null, TimeSpan.FromSeconds(2));
+        await client.FlushAsync("device-1", null, TimeSpan.FromSeconds(2));
+
+        await Assert.That(spool.DrainAll().Count).IsEqualTo(1);
     }
 
     [Test]

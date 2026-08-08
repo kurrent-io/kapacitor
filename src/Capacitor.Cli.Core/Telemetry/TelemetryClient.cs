@@ -19,17 +19,28 @@ public sealed class TelemetryClient(
     /// <summary>Ships queued + previously spooled events. Returns false when nothing reached
     /// PostHog, in which case everything has been spooled for a later attempt.</summary>
     public async Task<bool> FlushAsync(string distinctId, string? orgGroup, TimeSpan budget) {
-        List<TelemetryEvent> pending;
+        List<TelemetryEvent> queued;
         lock (_queue) {
-            pending = [.. spool.DrainAll(), .. _queue];
+            queued = [.. _queue];
             _queue.Clear();
         }
 
+        // Drained OUTSIDE the lock: it is file I/O, and blocking a concurrent Enqueue on disk
+        // is not what the queue lock is for.
+        //
+        // Spooled and queued events are kept apart deliberately. DrainAll is a read, not a take,
+        // so re-appending the spooled ones on failure would duplicate them on every retry, and
+        // the eventual success would ship the duplicates. Only the queued ones need spilling.
+        var spooled = spool.DrainAll();
+        var pending = new List<TelemetryEvent>(spooled.Count + queued.Count);
+        pending.AddRange(spooled);   // spool first: previously-failed events keep their place in the funnel
+        pending.AddRange(queued);
+
         if (pending.Count == 0) return true;
 
-        var body = PostHogPayload.Build(pending, token, distinctId, orgGroup);
-
         try {
+            var body = PostHogPayload.Build(pending, token, distinctId, orgGroup);
+
             using var http = new HttpClient(handler, disposeHandler: false) { Timeout = budget };
             using var cts  = new CancellationTokenSource(budget);
             using var content = new StringContent(body, Encoding.UTF8);
@@ -38,14 +49,17 @@ public sealed class TelemetryClient(
             var response = await http.PostAsync($"{endpoint.TrimEnd('/')}/batch/", content, cts.Token);
 
             if (!response.IsSuccessStatusCode) {
-                spool.Append(pending);
+                spool.Append(queued);
                 return false;
             }
 
             spool.Clear();
             return true;
-        } catch (Exception e) when (e is HttpRequestException or TaskCanceledException or OperationCanceledException or InvalidOperationException or UriFormatException) {
-            spool.Append(pending);
+        } catch {
+            // Telemetry code must NEVER throw: under NativeAOT this becomes SIGABRT. Any exception —
+            // whether from building the payload, setting the budget, network/serialization errors, or
+            // anything else — spills the queued events for replay, exactly like a failed POST.
+            spool.Append(queued);
             return false;
         }
     }
