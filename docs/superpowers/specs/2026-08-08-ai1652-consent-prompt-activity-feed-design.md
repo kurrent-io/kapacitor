@@ -34,10 +34,11 @@ launches…" menu item; `ResolveConsentAsync` on `ILocalControlOps`; consent sub
 in Core; decision-record hoisting to Core (shared write/read shape); `requester_display`
 threading through the consent pipeline (additive); `rule_saved` reporting on `ConsentAckDto`
 (additive) so a rule installed for an already-decided request is disclosed, not hidden; a
-request-identity echo on `ConsentResolveDto` (additive `requested_at`, verified by the broker)
-so a stale resolve can never decide a different launch that reused the id; hoisting the
-AI-1651 per-window ticker into an app-lifetime service; headless ViewModel tests for the full
-prompt matrix.
+daemon-minted `prompt_id` request identity on `ConsentPendingDto` echoed on
+`ConsentResolveDto` and atomically claimed by the broker, advertised as a new `consent/2`
+capability the app requires, so a stale resolve can never decide a different launch that
+reused the id; hoisting the AI-1651 per-window ticker into an app-lifetime service; headless
+ViewModel tests for the full prompt matrix.
 
 **Out:** macOS system notification (AI-1653); consent-rules editor UI (slice 4); any change to
 engine matching, rule ordering/precedence, policy storage, or prompt timeout semantics; new
@@ -72,14 +73,14 @@ installed rule. The handler change: populate `RuleSaved` on **both** ack branche
 no-pending branch drops the save outcome entirely). `Ok`'s meaning is unchanged: it reflects
 the resolution outcome only.
 
-**Down-level disambiguation is the caller's job.** A pre-AI-1652 daemon advertises the same
-`consent/1` capability but omits `rule_saved`, which deserializes as null — the same value a
-new daemon uses for "no save requested". The wire cannot distinguish these, but the *service*
-can: it knows whether it sent `save_rule`. Client-side interpretation, pinned in §5: when the
-service sent `save_rule` and the ack's `RuleSaved` is null, the rule outcome is **unknown
-(down-level daemon)** — except on `Ok=true` with `Error=null`, where the shipped daemon's own
-contract (it reports a rejected save via `Error` even when `Ok=true`) already implies the
-save succeeded.
+**Down-level daemons are gated out, not disambiguated.** A pre-AI-1652 daemon advertises the
+same `consent/1` capability, omits `rule_saved` (deserializes as null), and — critically —
+silently ignores unmapped members on `ConsentResolveDto`, so it would resolve by id alone and
+void the identity guarantee below. The app therefore requires the new **`consent/2`**
+capability (below) before subscribing or resolving at all; behind that gate `RuleSaved` is
+always present. The service still keeps a *defensive* mapping (§5): `save_rule` sent but
+`RuleSaved` null → rule outcome unknown — unreachable behind the gate, honest if it ever
+fires.
 
 **Rule ordering is deliberately untouched.** The handler appends the saved rule at the end
 and `LaunchConsentEngine` is first-match-wins, so an earlier matching rule — the pause
@@ -93,28 +94,47 @@ The daemon resolve handler otherwise exists (`LaunchConsentIpc.HandleResolveAsyn
 is needed on one-shot connections (hello is optional; the CLI consent verbs already send bare
 frames).
 
-**Request identity: the `requested_at` echo.** `ConsentResolveDto` carries only `request_id`
-today, and the broker's `TryResolve` resolves whichever pending entry currently holds that
-key. A request id is the agent id, and the daemon explicitly makes **no id-non-reuse
-assumption** (`SequencedCommandProcessor` treats two launches for one id as distinct
-instances, and the orchestrator builds consent input afresh from each command) — so a
-successor B under A's id can carry a *different* requester, kind, repo, or vendor, and a
-delayed resolve for A must never decide B. Close this on the wire:
+**Request identity: the daemon-minted `prompt_id`.** `ConsentResolveDto` carries only
+`request_id` today, and the broker's `TryResolve` resolves whichever pending entry currently
+holds that key. A request id is the agent id, and the daemon explicitly makes **no
+id-non-reuse assumption** (`SequencedCommandProcessor` treats two launches for one id as
+distinct instances, and the orchestrator builds consent input afresh from each command) — so
+a successor B under A's id can carry a *different* requester, kind, repo, or vendor, and a
+delayed resolve for A must never decide B. Wall-clock stamps cannot serve as the
+discriminator (`RequestedAt` comes from `GetUtcNow()` — clock steps can revisit an earlier
+exact value, and OS clock resolution can repeat across calls), so the identity is an opaque
+value the daemon mints:
 
-- `ConsentResolveDto` gains trailing `string? RequestedAt` (wire `requested_at`,
-  positional-required convention: no C# default, nulls always written) — an echo of the
-  pending request's `RequestedAt` stamp.
-- `LaunchConsentBroker.TryResolve` gains the echo parameter: with a null echo (a caller that
-  never saw the stamp) behavior is unchanged; with a non-null echo the resolve succeeds only
-  if it matches the pending entry's `RequestedAt` exactly (ordinal). A mismatch is treated as
-  no-pending: `Ok=false`, the honest already-decided path.
+- `LaunchConsentGate` mints a fresh **`PromptId`** (`Guid.NewGuid().ToString("N")` —
+  process-lifetime unique by construction, no clock involvement) for every prompt entry;
+  `LaunchConsentPromptRequest` carries it.
+- `ConsentPendingDto` gains trailing `string? PromptId` (wire `prompt_id`,
+  positional-required convention: no C# default, nulls always written), appended **after**
+  §4.3's `RequesterDisplay` — final positional order: …, `RequesterDisplay`, `PromptId`.
+- `ConsentResolveDto` gains trailing `string? PromptId` (wire `prompt_id`) — the echo.
+- `LaunchConsentBroker.TryResolve` gains the echo parameter, and for a non-null echo the
+  match and removal are **one atomic claim**: look up the pending entry, compare the echo to
+  its `PromptId`, then conditionally remove the exact captured `Pending` *object* via the
+  `KeyValuePair`-conditional overload — the same primitive the broker's timeout/cleanup paths
+  already use — before completing its TCS. A mismatch, or a lost claim (the entry was
+  replaced between match and removal), returns false and **never retries against the
+  successor**; the handler acks `Ok=false`, the honest already-decided path. A null echo (a
+  caller that never saw the id) preserves legacy resolve-by-key behavior.
 - The app always sends the echo (§5).
 
-`(RequestId, RequestedAt)` is thereby the **request identity**, enforced end-to-end — the
-client's cache guards (§5) use the same pair. Identity collision would require two prompts of
-the same agent id stamped at the same 100 ns wall-clock tick, with a full launch round-trip
-between them — not physically achievable in production; tests that freeze the clock must
-fabricate distinct stamps.
+`PromptId` is thereby the **request identity**, enforced end-to-end — the client's cache
+guards and tombstones (§5) key on it, `RequestId` remains only the cache/broker key and the
+per-agent queue identity.
+
+**Capability `consent/2`.** The identity guarantee is only real when the daemon enforces it —
+a pre-AI-1652 daemon deserializes the resolve while silently dropping the unmapped `prompt_id`
+and resolves by id alone. `LocalControlCapabilities.Current` therefore appends **`consent/2`**
+(advertised, per the AI-1648 convention, only because the live handler enforces
+identity-checked resolution, populates `rule_saved`, and stamps `prompt_id`/
+`requester_display` on pendings). The app treats a daemon advertising `consent/1` without
+`consent/2` exactly like one with no consent capability at all: no subscription, no prompts,
+no resolves (§5) — mixed-version consent fails closed rather than degrading to the unguarded
+path.
 
 ### 4.2 Consent subscription client (Core)
 
@@ -151,9 +171,9 @@ write and the replay. §5 states the accepted consequence.
 - A frame of any type other than `ConsentPending`, or a frame whose JSON does not
   *deserialize*, also ends the enumeration — protocol confusion is a dead connection.
 - A frame that deserializes but is **structurally invalid** — null root, or null/empty
-  `RequestId`, `Kind`, `RepoPath`, `Vendor`, `RequestedAt`, or `TimeoutSeconds <= 0` (STJ
-  source-gen does not enforce non-nullable members; `{}` decodes "successfully") — is
-  **skipped**, not fatal. Ending the enumeration here would be a thrash loop: the resubscribe
+  `RequestId`, `PromptId` (a `consent/2` daemon always stamps it — §4.1), `Kind`, `RepoPath`,
+  `Vendor`, `RequestedAt`, or `TimeoutSeconds <= 0` (STJ source-gen does not enforce
+  non-nullable members; `{}` decodes "successfully") — is **skipped**, not fatal. Ending the enumeration here would be a thrash loop: the resubscribe
   replay would redeliver the same invalid entry forever.
 - Only `OperationCanceledException` (the caller's `ct`) propagates.
 
@@ -271,42 +291,47 @@ explicitly documents that a successor prompt can reuse a predecessor's id. The s
 and resolve travel on separate connections, so successor B can be upserted (replacing A's
 cache slot by key) before predecessor A's ack is processed — an unconditional remove-by-key
 would then evict B, and with no withdrawal push nothing would restore it. Therefore **every**
-removal is guarded by the §4.1 request identity: it captures the `(RequestId, RequestedAt)`
-pair it is acting on and removes only if the entry currently cached under that key carries the
-same pair. B differs in `RequestedAt` by the §4.1 identity contract, so a stale removal for A
-can never evict B — while a *replayed instance of A itself* (same pair, fresh object) is
-correctly evicted. A removal that finds a different pair is a no-op. Because the resolve
-carries the echo, the ack verifiably concerns exactly the identity the app targeted: whether B
-replaced A in the daemon before the resolve arrived (mismatch → `Ok=false`) or B arrived
-after A's resolution (`Ok=true` for A), B's cache entry survives either way and is prompted on
-its own terms.
+removal is guarded by the §4.1 request identity: it captures the `PromptId` it is acting on
+and removes only if the entry currently cached under that `RequestId` carries the same
+`PromptId`. B carries a different daemon-minted `PromptId` by construction, so a stale removal
+for A can never evict B — while a *replayed instance of A itself* (same `PromptId`, fresh
+object) is correctly evicted. A removal that finds a different `PromptId` is a no-op. Because
+the resolve carries the echo, the ack verifiably concerns exactly the identity the app
+targeted: whether B replaced A in the daemon before the resolve arrived (mismatch/lost claim
+→ `Ok=false`) or B arrived after A's resolution (`Ok=true` for A), B's cache entry survives
+either way and is prompted on its own terms.
 
 **Conclusion tombstones (ghost-replay defense).** The broker's `Subscribe` snapshots pending
-entries without synchronizing against a concurrent `TryResolve`, so a resubscribe replay can
-redeliver a request the app is just concluding — and the orderings differ: the ghost `Pending`
-can arrive *before* the conclusive ack (a reconnect's replay raced the resolve) or *after* it.
-On every conclusive ack the service atomically (1) records a tombstone for the request
-identity `(RequestId, RequestedAt)` and (2) evicts any currently cached entry matching that
-identity — closing the replay-ghost-admitted-before-ack ordering, which a guard keyed on the
-original instance alone would miss. An incoming `Pending` matching a live tombstone is
-dropped. By the §4.1 identity contract a matching frame *is* the concluded request — never a
-distinct successor — so dropping is always correct and no delayed admission is needed; the
-10-second TTL is purely a memory bound (ghost frames only arise from replay snapshots taken
-within the milliseconds-wide resolve race, never seconds later). Expiry/prune do **not**
-tombstone: a request the app merely gave up on locally is still live daemon-side (the
-clock-step case) and must be allowed to reappear.
+entries without synchronizing against a concurrent `TryResolve`, and a snapshotted frame can
+sit in the unbounded per-subscriber channel arbitrarily long (backpressure, suspension, a
+large replay) — so a `Pending` for a request the app already concluded can arrive *before*
+the conclusive ack (a reconnect's replay raced the resolve) or *after* it, with no bounded
+delivery latency. On every conclusive ack the service atomically (1) records the concluded
+`PromptId` as a tombstone and (2) evicts any currently cached entry carrying it — closing the
+ghost-admitted-before-ack ordering, which a guard keyed on the original instance alone would
+miss. An incoming `Pending` whose `PromptId` is tombstoned is dropped; by the §4.1 identity
+contract a matching frame *is* the concluded request — never a distinct successor — so
+dropping is always correct. **Tombstones are scoped to the subscription connection, with no
+TTL**: they are retired in bulk at each `Subscribed` boundary, because a fresh replay provably
+cannot contain a concluded request (`TryResolve` removes the entry before the ack exists, and
+`Subscribe` snapshots the current map) — a time-based TTL would reopen the window for a frame
+delayed past it. Within one connection the set grows only with conclusions on that connection;
+a defensive FIFO cap of 1024 bounds pathological lifetimes and is documented as such. Expiry/
+prune do **not** tombstone: a request the app merely gave up on locally is still live
+daemon-side (the clock-step case) and must be allowed to reappear.
 
 **Subscription lifecycle — status-driven.** The service observes
 `DaemonClientService.Status`:
 
-- On `Connected` with capabilities containing `"consent/1"` → start the subscription loop.
+- On `Connected` with capabilities containing `"consent/2"` → start the subscription loop.
 - On leaving `Connected` (Connecting/Unreachable) → cancel the loop. Pending entries are NOT
   cleared on disconnect — the daemon may still be alive holding live prompts; entries expire
   via their own deadline hints, and a successful resubscribe reconciles (below).
-- On `Connected` **without** `"consent/1"` (a down-level daemon incarnation) → no
-  subscription, and the cache **is** cleared: any retained entries belong to a previous
-  incarnation and can never be resolved against this one. The existing shell surfaces the
-  daemon-outdated condition.
+- On `Connected` **without** `"consent/2"` — including a daemon advertising only `consent/1`
+  (§4.1: it would resolve without the identity check) → no subscription, no prompts, no
+  resolves, and the cache **is** cleared: any retained entries belong to a previous
+  incarnation and can never be safely resolved against this one. The existing shell surfaces
+  the daemon-outdated condition.
 
 **Loop:** while in the connected state: enumerate `ConsentSubscription.RunAsync`; on the
 `Subscribed` event clear the pending cache; on each `Pending` event upsert by `RequestId`
@@ -343,7 +368,7 @@ Task<ConsentResolveOutcome> ResolveAsync(PendingConsent target, bool allow, bool
 ```
 
 `ResolveAsync` builds the `ConsentResolveDto` (`decision: allow|deny`; **always** the
-`requested_at` echo from `target` — the §4.1 identity check; when `saveRule`, a requester-only
+`prompt_id` echo from `target` — the §4.1 identity check; when `saveRule`, a requester-only
 `save_rule` from `target.Requester`) and calls `ILocalControlOps.ResolveConsentAsync`. One
 resolve in flight at a time — serialized on one lane, same discipline as `PauseController`. **Null-requester guard lives here, not only on the
 button:** when `saveRule` is requested but `target.Requester` is null or empty, the service
@@ -353,9 +378,8 @@ is the safety boundary, and it is tested directly.
 
 `ConsentResolveOutcome` (cache effects identity-guarded on `target`; `RuleOutcome` is the
 service's disambiguation — it knows whether it sent `save_rule` (§4.1): `Saved`, `Rejected`,
-`Unknown` (save requested, `RuleSaved` null, i.e. down-level daemon — except `Ok=true` +
-`Error=null`, which implies `Saved` on the shipped daemon's own contract), `NotRequested`,
-`SkippedNoRequester`):
+`Unknown` (save requested but `RuleSaved` null — unreachable behind the `consent/2` gate,
+kept as a defensive mapping), `NotRequested`, `SkippedNoRequester`):
 
 | Outcome | Ack | Cache effect | Meaning |
 |---|---|---|---|
@@ -527,12 +551,12 @@ cadence picks up count changes through the model stream — no new refresh machi
 | Failure | Surface | Behavior |
 |---|---|---|
 | Daemon unreachable (no subscription) | Tray | Existing AI-1651 rows; no prompts possible; feed still renders from file |
-| Daemon without `consent/1` | Tray | No subscription; cache cleared (stale incarnation); existing down-level surfacing |
+| Daemon without `consent/2` (incl. `consent/1`-only) | Tray | No subscription, prompts, or resolves — identity check can't be enforced; cache cleared; existing down-level surfacing |
 | Consent dial fails while status Connected | none (self-heal) | Cache NOT cleared (clear sits at the `Subscribed` boundary); 1s delay → retry |
 | Daemon dies between subscribe write and replay | none (self-heal) | Cache cleared but restored by the next successful replay (~1s cadence); bounded, UI-only (§5) |
 | Consent stream dies while Connected | none (self-heal) | 1s delay → resubscribe (fresh replay reconciles at the `Subscribed` boundary) |
 | Structurally invalid pending frame | none | Skipped (ending the stream would thrash the resubscribe loop) |
-| Ghost replay of a just-concluded request | none | Arrives after the ack → tombstone drops it; admitted before the ack → the ack's identity-matched eviction removes it — no second prompt either way |
+| Ghost replay of a just-concluded request | none | Arrives after the ack → connection-scoped tombstone drops it (no TTL — arbitrarily delayed frames stay dropped); admitted before the ack → the ack's identity-matched eviction removes it — no second prompt either way |
 | Wall-clock step vs. daemon's monotonic deadline | Prompt window | Hint expiry is never a verdict: non-authoritative copy, buttons stay active, ack governs |
 | Resolve transport failure | Prompt toast | Entry kept; buttons re-enable |
 | Resolve cancelled (shutdown) | none | OCE propagates; silent abort — never rendered as transport failure |
@@ -540,7 +564,7 @@ cadence picks up count changes through the model stream — no new refresh machi
 | Rule save rejected / unknown / skipped (no requester) | Prompt toast | Decision applied; warning shown |
 | Request expired (no withdrawal push) | Prompt window / prune | Non-authoritative expiry display; cache prune at `PruneAfter` (identity-guarded, skips the in-flight resolve target, refreshed on transport failure) |
 | Same-id successor while ack in flight | none | Identity-pair removal guard — a stale ack/prune never evicts the successor |
-| Stale resolve reaching the daemon after id reuse | daemon | Closed: the `requested_at` echo mismatches and the broker answers no-pending (`Ok=false`) — a verdict for A can never decide B (§4.1) |
+| Stale resolve reaching the daemon after id reuse | daemon | Closed: the `prompt_id` echo mismatches (or the atomic claim is lost) and the broker answers no-pending (`Ok=false`) — a verdict for A can never decide B (§4.1) |
 | Decision log absent / IO failure / bad lines | Activity tab | Clean absence → `Complete` empty read → empty state; I/O failure → `Complete=false` → last-good rows kept; invalid lines skipped |
 | Rotation race during read | Activity tab | `Distinct()` merge; miss self-heals next poll |
 
@@ -552,7 +576,7 @@ throughout — no real sleeps).
 **Core:**
 - `ResolveConsentAsync` against an in-proc fake server (pattern of existing `LocalControlOps`
   tests): ack round-trip (`Ok`/`Error`/`RuleSaved` shapes, including an old-format ack with no
-  `rule_saved` member → null; the sent `ConsentResolveDto` carries the `requested_at` echo),
+  `rule_saved` member → null; the sent `ConsentResolveDto` carries the `prompt_id` echo),
   decodable `Error` frame → `daemon_rejected`, malformed ack → `unexpected_reply`, EOF →
   `unexpected_reply`, transport → `daemon_unreachable`, phase timeout → `timed_out`,
   caller-cancellation propagates.
@@ -583,12 +607,21 @@ throughout — no real sleeps).
   `save_rule` → `RuleSaved=null` (written as JSON null).
 - Engine: an earlier matching deny (index 0 wildcard) shadows a later appended allow —
   first-match-wins pinned by test.
-- Broker identity check: `TryResolve` with a matching `requested_at` echo resolves; a
+- Prompt identity: every prompt entry gets a fresh `PromptId` — two same-agent-id prompts
+  under a **frozen clock** (identical `RequestedAt`) still carry distinct identities, and all
+  guards discriminate them (the failure mode a timestamp identity would have).
+- Broker identity check: `TryResolve` with a matching `prompt_id` echo resolves; a
   mismatching echo returns false (and the handler acks `Ok=false`) leaving the pending entry
-  untouched; a null echo preserves legacy resolve-by-id behavior. The two orderings the echo
-  exists for, end to end through the handler: **B replaces A in the broker before A's resolve
-  arrives** → A's resolve mismatches, `Ok=false`, B stays pending; **A resolved, then A's ack
-  raced by B's arrival** → `Ok=true` concerned only A, B stays pending.
+  untouched; a null echo preserves legacy resolve-by-id behavior; **a lost claim — the
+  captured `Pending` replaced between match and conditional removal — returns false and the
+  successor is untouched** (exercised deterministically against the claim primitive with a
+  stale captured instance). The two orderings the echo exists for, end to end through the
+  handler: **B replaces A in the broker before A's resolve arrives** → A's resolve
+  mismatches, `Ok=false`, B stays pending; **A resolved, then A's ack raced by B's arrival**
+  → `Ok=true` concerned only A, B stays pending.
+- Capability: `LocalControlCapabilities.Current` advertises `consent/2` alongside
+  `consent/1`; mixed-version acceptance — an app facing a `consent/1`-only capability set
+  starts no subscription and sends no resolve.
 
 **App (the "full prompt matrix" from the issue):**
 - Allow once / Deny → correct `ConsentResolveDto`, entry removed, queue advances.
@@ -604,10 +637,11 @@ throughout — no real sleeps).
   prompted; **B arrives after A's `Ok=true` ack** → A was evicted, B is admitted and
   prompted. In both, the successor is decided only on its own terms.
 - Ghost replay (both orderings): a ghost `Pending` arriving *after* A's conclusive ack is
-  dropped by the tombstone; a ghost admitted *before* the ack (reconnect replay raced the
-  resolve — a fresh instance with A's identity) is evicted by the ack's identity-matched
-  removal — no second raise either way. A tombstone past its TTL no longer filters (memory
-  bound, not a correctness window).
+  dropped by the tombstone — **including one delayed arbitrarily long within the same
+  subscription connection** (no TTL to outlive); a ghost admitted *before* the ack (reconnect
+  replay raced the resolve — a fresh instance with A's identity) is evicted by the ack's
+  identity-matched removal — no second raise either way. Tombstones are retired at the
+  `Subscribed` boundary: after a resubscribe, a fresh replay's entries are admitted normally.
 - Hint expiry with no resolve in flight → non-authoritative copy, **buttons remain active**;
   a click after hint-zero that acks `Ok=true` is `Applied` (the wall-clock-step case: hint
   fired early, request was still live); one that acks `Ok=false` runs "Already decided"; the
@@ -631,8 +665,8 @@ throughout — no real sleeps).
   entries — no `Subscribed`, no clear); reconnect-with-empty-replay leaves an empty cache
   (the `Subscribed` boundary makes this observable); stream death after `Subscribed` but
   before any replay frame → cache cleared, restored by the next attempt's replay; `Connected`
-  without `consent/1` clears the cache and never subscribes; stream-end-while-Connected
-  retries.
+  without `consent/2` (including `consent/1`-only) clears the cache and never subscribes;
+  stream-end-while-Connected retries.
 - Shutdown: app quits with the prompt window open and a resolve in flight → clean disposal in
   the §5 order, OCE path exercised.
 - `ActivityViewModel`: rows map records (fallback chains, source labels, unrecognized source
