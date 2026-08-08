@@ -1,25 +1,28 @@
 namespace Capacitor.Cli.Tests.Unit.SessionStartMemory;
 
 /// <summary>
-/// Env-gated UPSTREAM-CHANGE WATCH for Antigravity CLI (<c>agy</c>) print mode — NOT the
-/// certification of the feature. The feature IS certified, on the surface humans use: a real
-/// interactive <c>agy</c> 1.1.11 session on 2026-08-07 carried the injected index as its own
-/// transcript event (the <c>&lt;!-- kcap-memory-index:v1 --&gt;</c> block, verbatim, event 4 of the
-/// recorded session). What is NOT certified is print mode, because print mode is where the feature
-/// does not work — and that gap is upstream, not ours.
+/// Env-gated certification that the SessionStart memory index reaches the model on the Antigravity
+/// CLI (<c>agy</c>) in print mode. Interactive <c>agy</c> is certified by direct observation — a
+/// real 1.1.11 session on 2026-08-07 carried the injected index as its own transcript event — and
+/// print mode is certified HERE, now that the workspace fallback exists.
 ///
-/// <para><b>The measured print-mode matrix (agy 1.1.10 and 1.1.11, verified by transcript
-/// comparison, not by model answers):</b> <c>agy -p</c> fires the <c>PreInvocation</c> hook (the
-/// run IS captured — session-start POSTs, a watcher spawns), our hook emits a well-formed
-/// <c>injectSteps</c> payload, and agy discards it: the injected-index event is absent from the
-/// print-mode transcript while the identical setup produces it interactively. So this file's
-/// positive case FAILS TODAY BY DESIGN. A pass here means an agy release started honouring
-/// <c>injectSteps</c> in print mode — update the README Antigravity matrix row when that happens.</para>
+/// <para><b>The print-mode history, because it was misdiagnosed twice.</b> <c>agy -p</c> fires the
+/// <c>PreInvocation</c> hook and honours <c>injectSteps</c> (probe-verified: injected steps land in
+/// the print-mode transcript on every invocation) — but it sends <c>"workspacePaths": []</c> where
+/// interactive sends the launch directory. Our adapter deliberately refuses to fetch an index
+/// without a scope, so print mode got zero bytes and the failure read exactly like "agy discards
+/// injectSteps". The fix recovers the workspace from the <c>agy</c> process's own cwd when the
+/// payload omits it (<c>AntigravityHookCommand.AgentWorkspaceCwd</c>); the payload always wins, so
+/// a vendor release that populates <c>workspacePaths</c> takes over silently.</para>
+///
+/// <para><b>Run this under the OAuth login, never with <c>AGY_ADC_AUTH=1</c>.</b> Measured on
+/// 1.1.11: ADC/Vertex auth disables agy's plugin hooks outright — no capture, no injection, and a
+/// failure here that has nothing to do with what this cert certifies.</para>
 ///
 /// <para><b>Do not "fix" a failure here by loosening the prompt.</b> The prompt forbids tools
 /// because every harness we inject into also has the <c>kcap-memory</c> MCP server registered: a
 /// model allowed tools will fetch a memory via <c>search_memories</c> and produce a convincing pass
-/// with zero injection (measured — the print-mode session named a real memory it had gone and
+/// with zero injection (measured — a print-mode session named a real memory it had gone and
 /// fetched). The transcript, not the answer, is the authoritative record; the answer-based
 /// assertion here is only sound because tools are forbidden.</para>
 ///
@@ -85,13 +88,13 @@ public class AntigravityMemoryIndexLiveCertTests {
 
             LogInjectedStepEvidence(nonce, stdout);
 
-            // Expected to FAIL on agy <= 1.1.11: print mode discards injectSteps (see class doc).
-            // Interactive agy is certified; a PASS here is upstream fixing print mode — update the
-            // README Antigravity matrix row before celebrating.
+            // A failure here on a kcap carrying the workspace fallback is REAL — but check auth
+            // first: under AGY_ADC_AUTH=1 agy runs no plugin hooks at all (measured 1.1.11), which
+            // reproduces the failure for a reason unrelated to what this cert certifies.
             Console.WriteLine(
-                "[cert] NOTE: agy print mode has discarded injectSteps on every build measured "
-              + "(1.1.10, 1.1.11). A failure below on those builds is the KNOWN upstream gap, not a "
-              + "kcap regression; interactive agy is the certified surface.");
+                "[cert] NOTE: this cert requires the OAuth login. With AGY_ADC_AUTH=1 agy disables "
+              + "plugin hooks outright — no capture, no injection — and this assertion fails for an "
+              + "auth-mode reason, not an injection defect.");
 
             await Assert.That(exitCode).IsEqualTo(0);
             await Assert.That(MemoryIndexLiveCertHarness.ExtractAssistantAnswer(stdout)).Contains(nonce);

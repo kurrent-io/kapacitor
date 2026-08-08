@@ -185,6 +185,60 @@ static partial class ProcessHelpers {
     const uint HANDLE_FLAG_INHERIT = 0x00000001;
 
     /// <summary>
+    /// Returns another same-user process's current working directory, or <c>null</c> when it cannot
+    /// be read (process gone, access denied, or Windows — where there is no cheap same-user API and
+    /// every caller of this method is fail-open by contract).
+    ///
+    /// <para>Exists for hook payloads that omit the workspace: the hook's OWN cwd is wherever the
+    /// vendor chdir'd it (Antigravity: the plugin directory), so the only truthful workspace source
+    /// left is the agent process itself — resolve the agent's pid via
+    /// <see cref="ResolveCodingAgentPid"/>, then read its cwd here.</para>
+    /// </summary>
+    public static string? GetProcessCwd(int pid) {
+        if (pid <= 0) {
+            return null;
+        }
+
+        try {
+            if (OperatingSystem.IsMacOS()) {
+                return GetProcessCwdMac(pid);
+            }
+
+            return OperatingSystem.IsLinux() ? GetProcessCwdLinux(pid) : null;
+        } catch {
+            return null;
+        }
+    }
+
+    // proc_pidinfo(pid, PROC_PIDVNODEPATHINFO, ...) fills a proc_vnodepathinfo:
+    // { vnode_info_path pvi_cdir; vnode_info_path pvi_rdir; }, where vnode_info_path is
+    // { vnode_info (152 bytes); char vip_path[MAXPATHLEN=1024]; }. The cwd string therefore
+    // sits at offset 152. Offsets are pinned by the round-trip test on our own pid, which
+    // fails loudly if a macOS release ever reshapes the struct.
+    const int ProcPidVnodePathInfo = 9;
+    const int VnodePathInfoSize    = 2352;
+    const int VnodePathCdirOffset  = 152;
+    const int VnodePathMax         = 1024;
+
+    static unsafe string? GetProcessCwdMac(int pid) {
+        var buffer = stackalloc byte[VnodePathInfoSize];
+        var filled = proc_pidinfo(pid, ProcPidVnodePathInfo, 0, buffer, VnodePathInfoSize);
+
+        // pvi_cdir must be complete; a short fill means the struct we assume is not the
+        // struct we got, and a guessed path is worse than none.
+        if (filled < VnodePathCdirOffset + VnodePathMax) {
+            return null;
+        }
+
+        var path = Marshal.PtrToStringUTF8((nint)(buffer + VnodePathCdirOffset));
+
+        return string.IsNullOrEmpty(path) ? null : path;
+    }
+
+    static string? GetProcessCwdLinux(int pid) =>
+        Directory.ResolveLinkTarget($"/proc/{pid}/cwd", returnFinalTarget: true)?.FullName;
+
+    /// <summary>
     /// Returns the parent process id of the current process, or <c>null</c> on failure.
     /// </summary>
     public static int? GetParentPid() {

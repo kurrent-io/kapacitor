@@ -148,4 +148,91 @@ public class AntigravitySessionStartMemoryTests {
         await Assert.That(code).IsEqualTo(0);
         await Assert.That(sw.ToString()).IsEqualTo("");
     }
+
+    // ---- workspace resolution: the print-mode empty-workspacePaths gap (agy 1.1.11, measured) ----
+    //
+    // Print mode sends `"workspacePaths": []` where interactive sends the launch dir. The fallback
+    // recovers the workspace from the agent process itself; these pin the three properties that
+    // make it safe: payload wins, empty payload consults the fallback, and a null fallback is the
+    // exact pre-fallback behaviour.
+
+    static System.Text.Json.Nodes.JsonObject Payload(string json) =>
+        (System.Text.Json.Nodes.JsonObject)System.Text.Json.Nodes.JsonNode.Parse(json)!;
+
+    // Ordering is the safety property: a vendor release that starts populating workspacePaths must
+    // silently win. Asserted by a THROWING fallback, so "not invoked" cannot pass vacuously.
+    [Test]
+    public async Task A_populated_payload_never_consults_the_fallback() {
+        var resolved = AntigravityHookCommand.ResolveWorkspace(
+            Payload("""{"workspacePaths":["/real/workspace"]}"""),
+            () => throw new InvalidOperationException("fallback must not run"));
+
+        await Assert.That(resolved).IsEqualTo("/real/workspace");
+    }
+
+    [Test]
+    public async Task An_empty_workspacePaths_array_resolves_via_the_fallback() {
+        var resolved = AntigravityHookCommand.ResolveWorkspace(
+            Payload("""{"workspacePaths":[]}"""), () => "/agent/cwd");
+
+        await Assert.That(resolved).IsEqualTo("/agent/cwd");
+    }
+
+    [Test]
+    public async Task A_missing_workspacePaths_field_resolves_via_the_fallback() {
+        var resolved = AntigravityHookCommand.ResolveWorkspace(Payload("{}"), () => "/agent/cwd");
+
+        await Assert.That(resolved).IsEqualTo("/agent/cwd");
+    }
+
+    // The singular `cwd` form still outranks the fallback — it is payload data too.
+    [Test]
+    public async Task A_payload_cwd_field_outranks_the_fallback() {
+        var resolved = AntigravityHookCommand.ResolveWorkspace(
+            Payload("""{"workspacePaths":[],"cwd":"/payload/cwd"}"""),
+            () => throw new InvalidOperationException("fallback must not run"));
+
+        await Assert.That(resolved).IsEqualTo("/payload/cwd");
+    }
+
+    [Test]
+    public async Task A_null_fallback_result_leaves_the_workspace_unresolved() {
+        await Assert.That(AntigravityHookCommand.ResolveWorkspace(Payload("{}"), () => null)).IsNull();
+    }
+
+    // Environment-dependent by nature (there is no agy ancestor under the test runner), so the
+    // pinnable property is the fail-open contract: never throws, and never fabricates a path when
+    // no agent is on the ancestry chain.
+    [Test]
+    public async Task The_production_fallback_fails_open_without_an_agy_ancestor() {
+        await Assert.That(AntigravityHookCommand.AgentWorkspaceCwd()).IsNull();
+    }
+
+    // The WIRING pin: ResolveWorkspace existing and HandleCore calling it are two separate facts,
+    // and only this test makes them agree. Routed through the disabled-session fast path — which
+    // sits immediately AFTER workspace resolution — so the run stays hermetic (no POST, no watcher)
+    // while still proving the injected fallback was consulted for an empty-workspacePaths payload.
+    [Test, NotInParallel]
+    public async Task HandleCore_consults_the_fallback_for_an_empty_workspacePaths_payload() {
+        const string conversationId = "e80c33bf-c10f-4d2f-b626-b0043f488fc0";
+        DisabledSessions.Mark(conversationId.Replace("-", ""));
+
+        try {
+            var consulted = false;
+            var sw        = new StringWriter();
+            var code      = await AntigravityHookCommand.Handle(
+                "https://example.test", ["--antigravity", "PreInvocation"],
+                new StringReader($$"""
+                    {"conversationId":"{{conversationId}}","transcriptPath":"/tmp/t.jsonl","workspacePaths":[]}
+                    """),
+                sw,
+                workspaceFallback: () => { consulted = true; return null; });
+
+            await Assert.That(code).IsEqualTo(0);
+            await Assert.That(sw.ToString()).IsEqualTo("");
+            await Assert.That(consulted).IsTrue();
+        } finally {
+            DisabledSessions.RemoveMarker(conversationId.Replace("-", ""));
+        }
+    }
 }
