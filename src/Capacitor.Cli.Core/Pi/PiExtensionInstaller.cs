@@ -55,8 +55,10 @@ public static class PiExtensionInstaller {
               // --memory-contract declares that THIS extension captures and delivers
               // the command's stdout; an older kcap ignores unknown args (fail-open).
               if (event === "session-start") args.push("--memory-contract", "1");
-              // kcap spawns a detached watcher and returns fast; bound it so a hung
-              // kcap can never stall pi's startup or shutdown.
+              // kcap spawns a detached watcher and returns fast — except on session-start, where it
+              // also blocks briefly (bounded to a ~3.5s hook budget) awaiting the memory-index fetch
+              // before returning. Either way this exec timeout sits well outside that ceiling, so a
+              // hung kcap can never stall pi's startup or shutdown.
               const res = await pi.exec("kcap", args, { timeout: 10000 });
               return { file: String(file), stdout: res?.stdout ?? "" };
             } catch {

@@ -1,3 +1,4 @@
+using Capacitor.Cli;
 using Capacitor.Cli.Core.Pi;
 
 namespace Capacitor.Cli.Tests.Unit;
@@ -26,16 +27,23 @@ public class PiExtensionMemoryTests {
 
     // stdout is only trusted when it opens with the marker — arbitrary stderr-ish noise or a future
     // non-fragment stdout line must not be appended to the model's system prompt verbatim.
+    //
+    // The two halves' shared literal. The CLI emits this marker at the head of every fragment and the
+    // extension recognises it before caching; they live in different languages, so nothing but this
+    // assertion makes them agree.
     [Test]
     public async Task fragment_is_validated_by_marker_before_caching() {
-        await Assert.That(Ts).Contains("<!-- kcap-memory-index:v1 -->");
+        await Assert.That(Ts).Contains(MemoryIndexEmitter.FragmentMarker);
     }
 
     // The cache is keyed by the session FILE and consulted against the CURRENT file in
     // before_agent_start — a switched/forked session must not inherit another session's fragment.
+    // Pins the guard LINE itself, not just the variable name: "memFile" alone is satisfied by the
+    // declaration, so a deleted fork/switch guard would still pass a Contains("memFile") check.
     [Test]
     public async Task cache_is_keyed_and_checked_by_session_file() {
-        await Assert.That(Ts).Contains("memFile");
+        await Assert.That(Ts).Contains("if (!current");
+        await Assert.That(Ts).Contains("String(current) !== memFile");
     }
 
     // Idempotence within a turn's chained prompt: appending twice would double the index.
