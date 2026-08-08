@@ -84,4 +84,31 @@ public class PostHogPayloadTests {
     public async Task Non_saas_urls_yield_no_group(string? url) {
         await Assert.That(PostHogPayload.OrgGroup(url)).IsNull();
     }
+
+    // Build must not graft payload fields onto the caller's event: Task 6 re-serialises spooled
+    // events on retry, so in-place mutation would compound across attempts.
+    [Test]
+    public async Task Build_does_not_mutate_the_source_event() {
+        var e = Event("cli_command");
+
+        PostHogPayload.Build([e], "phc_test", "device-1", orgGroup: "acme");
+
+        await Assert.That(e.Properties.Count).IsEqualTo(1);
+        await Assert.That(e.Properties["source"]!.GetValue<string>()).IsEqualTo("cli");
+        await Assert.That(e.Properties.ContainsKey("distinct_id")).IsFalse();
+        await Assert.That(e.Properties.ContainsKey("$ip")).IsFalse();
+        await Assert.That(e.Properties.ContainsKey("$groups")).IsFalse();
+        await Assert.That(e.Properties.ContainsKey("org")).IsFalse();
+    }
+
+    [Test]
+    public async Task Build_does_not_mutate_nested_properties_of_the_source_event() {
+        var nested = new JsonObject { ["inner"] = "value" };
+        var e      = new TelemetryEvent("cli_command", new JsonObject { ["nested"] = nested }, DateTimeOffset.UnixEpoch);
+
+        var json = PostHogPayload.Build([e], "phc_test", "device-1", null);
+        JsonNode.Parse(json)!["batch"]![0]!["properties"]!["nested"]!.AsObject()["inner"] = "mutated";
+
+        await Assert.That(e.Properties["nested"]!.AsObject()["inner"]!.GetValue<string>()).IsEqualTo("value");
+    }
 }
