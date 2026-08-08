@@ -1,0 +1,106 @@
+using Capacitor.Cli.Core.Telemetry;
+using TUnit.Assertions;
+using TUnit.Assertions.Extensions;
+using TUnit.Core;
+
+namespace Capacitor.Cli.Tests.Unit.Telemetry;
+
+public class CommandEventsTests {
+    [Test]
+    [Arguments("hook")]
+    [Arguments("watch")]
+    [Arguments("mcp")]
+    [Arguments("permission-request")]
+    [Arguments("generate-whats-done")]
+    [Arguments("set-title")]
+    [Arguments("copilot-finalize")]
+    [Arguments("cursor-verify-appendonly")]
+    public async Task Machine_driven_verbs_are_not_reportable(string command) {
+        await Assert.That(CommandEvents.IsReportable(command)).IsFalse();
+    }
+
+    [Test]
+    [Arguments("setup")]
+    [Arguments("recap")]
+    [Arguments("daemon")]
+    [Arguments("status")]
+    [Arguments("import")]
+    public async Task Human_verbs_are_reportable(string command) {
+        await Assert.That(CommandEvents.IsReportable(command)).IsTrue();
+    }
+
+    [Test]
+    public async Task Known_subcommands_are_reported() {
+        await Assert.That(CommandEvents.Subcommand("daemon", ["daemon", "start"])).IsEqualTo("start");
+        await Assert.That(CommandEvents.Subcommand("plugin", ["plugin", "install"])).IsEqualTo("install");
+        await Assert.That(CommandEvents.Subcommand("config", ["config", "set", "server_url", "https://acme.kcap.ai"])).IsEqualTo("set");
+        await Assert.That(CommandEvents.Subcommand("curate", ["curate", "apply"])).IsEqualTo("apply");
+    }
+
+    [Test]
+    public async Task Unknown_subcommand_token_is_dropped() {
+        await Assert.That(CommandEvents.Subcommand("daemon", ["daemon", "frobnicate"])).IsNull();
+    }
+
+    // The whole point of the allowlist: verbs whose positional is user data.
+    [Test]
+    public async Task Session_ids_and_paths_in_positionals_never_survive() {
+        await Assert.That(CommandEvents.Subcommand("recap", ["recap", "0b9c1f4e-2a77-4d19-9f0e-1c2d3e4f5a6b"])).IsNull();
+        await Assert.That(CommandEvents.Subcommand("hide",  ["hide",  "0b9c1f4e-2a77-4d19-9f0e-1c2d3e4f5a6b"])).IsNull();
+        await Assert.That(CommandEvents.Subcommand("ignore", ["ignore", Path.Combine("Users", "alexey", "secret")])).IsNull();
+        await Assert.That(CommandEvents.Subcommand("remap", ["remap", "git@github.com:acme/private.git"])).IsNull();
+    }
+
+    [Test]
+    public async Task Verbs_with_no_subcommands_report_none() {
+        await Assert.That(CommandEvents.Subcommand("status", ["status"])).IsNull();
+        await Assert.That(CommandEvents.Subcommand("setup",  ["setup"])).IsNull();
+    }
+
+    [Test]
+    public async Task Flags_are_collected_sorted_and_deduplicated() {
+        var flags = CommandEvents.Flags(["setup", "--no-prompt", "--skip-codex-hooks", "--no-prompt"]);
+
+        await Assert.That(flags.Length).IsEqualTo(2);
+        await Assert.That(flags[0]).IsEqualTo("--no-prompt");
+        await Assert.That(flags[1]).IsEqualTo("--skip-codex-hooks");
+    }
+
+    [Test]
+    public async Task Flag_values_are_stripped_and_never_reported() {
+        var flags = CommandEvents.Flags(["setup", "--server-url=https://internal.corp.example", "--server-url", "https://internal.corp.example"]);
+
+        await Assert.That(flags.Length).IsEqualTo(1);
+        await Assert.That(flags[0]).IsEqualTo("--server-url");
+    }
+
+    [Test]
+    public async Task Non_flag_tokens_are_dropped_entirely() {
+        var flags = CommandEvents.Flags(["recap", "0b9c1f4e-2a77-4d19-9f0e-1c2d3e4f5a6b", "some/path"]);
+
+        await Assert.That(flags.Length).IsEqualTo(0);
+    }
+
+    // Shape rule: the pattern cannot express a path, URL, GUID, or email.
+    [Test]
+    [Arguments("--Bad-Upper")]
+    [Arguments("--1leading-digit")]
+    [Arguments("--has/slash")]
+    [Arguments("--has.dot")]
+    [Arguments("--has@at")]
+    [Arguments("--")]
+    [Arguments("-short")]
+    [Arguments("--this-flag-name-is-far-too-long-to-be-a-real-flag-name")]
+    public async Task Malformed_flag_shapes_are_rejected(string token) {
+        await Assert.That(CommandEvents.Flags(["setup", token]).Length).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task Flag_list_is_capped() {
+        var many = new[] { "setup" }
+            .Concat(Enumerable.Range(0, 40).Select(i => $"--flag-{i}"))
+            .ToArray();
+
+        await Assert.That(CommandEvents.Flags(many).Length).IsEqualTo(12);
+    }
+}
