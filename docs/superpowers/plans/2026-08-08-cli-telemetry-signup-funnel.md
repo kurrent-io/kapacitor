@@ -2141,7 +2141,16 @@ static async Task<JsonObject> TimedDispatchAsync(JsonNode? id, JsonObject reques
 
 Repeat per server with its own server name (`kcap-sessions`, `kcap-review`, `kcap-flows`, `kcap-workitems`, `kcap-analytics`, `kcap-review-context`, `kcap-judge`). Adapt the request/response types to each server's actual signature — they differ; read the existing `DispatchToolCallAsync` in each file rather than assuming the shape above.
 
-Each MCP server's startup must also call `CliTelemetry.Initialize("mcp-server", baseUrl, loggedIn)` and register a flush. Since these are long-lived, add a periodic flush: after every 20th tool call, call `await CliTelemetry.FlushAndClose()`. Add that counter inside `McpTelemetry`:
+**The first-run notice must be suppressed for `"mcp-server"`.** Before this task, `"mcp"` was
+denylisted so `Initialize` returned before the notice ran for any MCP process. Initialising with
+`"mcp-server"` changes that — and since kcap-memory/sessions/flows/review auto-spawn on every agent
+session, the first-ever `kcap` process on a fresh machine is plausibly an MCP server, whose stderr
+most agent hosts never surface to a human. It would print the notice where nobody reads it *and*
+consume the once-per-device marker, so the human never sees it — reproducing the silent-by-default
+posture Decision 5 explicitly rejected. Skip the notice, the marker, and `cli_first_run` entirely for
+`"mcp-server"`, leaving the first human-invoked command to do the disclosure.
+
+Each MCP server's startup must also call `CliTelemetry.Initialize("mcp-server", baseUrl, loggedIn)` and register a flush. Note that `McpReviewContextServer` short-circuits in `Program.cs` *before* the `ProcessExit` flush registration, so it needs its own flush in a `finally` around its loop — without one it exposes a single tool called a handful of times per review round, never reaches the 20-call periodic flush, and reports nothing at all. Since these are long-lived, add a periodic flush: after every 20th tool call, call `await CliTelemetry.FlushAndClose()`. Add that counter inside `McpTelemetry`:
 
 ```csharp
 static int _sinceFlush;
