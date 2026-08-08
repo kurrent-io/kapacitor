@@ -729,7 +729,10 @@ switch (command) {
             return await KiroHookCommand.Handle(baseUrl!, Console.In, args, hookProcessStart);
         }
         if (args.Contains("--pi")) {
-            return await PiHookCommand.Handle(baseUrl!, args);
+            // hookProcessStart, not a handler-local timestamp: HookBudget.Remaining is relative to
+            // it, and self-initializing inside Handle would inflate the memory-fetch budget by the
+            // pre-dispatch work (config load, spool drain), overshooting the true hook ceiling.
+            return await PiHookCommand.Handle(baseUrl!, args, Console.Out, hookProcessStart);
         }
         if (args.Contains("--opencode")) {
             return await OpenCodeHookCommand.Handle(baseUrl!, args);
