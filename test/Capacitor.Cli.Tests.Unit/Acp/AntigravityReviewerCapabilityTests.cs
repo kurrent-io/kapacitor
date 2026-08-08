@@ -255,7 +255,9 @@ public class AntigravityReviewerCapabilityTests {
     [Arguments("off", false)]
     [Arguments("", true)]
     [Arguments("   ", true)]
-    [Arguments("ture", true)]
+    // Set-but-unrecognised disables: setting this variable at all is only ever an attempt to turn the
+    // reviewer off, so an unreadable value is a failed "off".
+    [Arguments("ture", false)]
     [Arguments(null, true)]
     public async Task TheConsentFlagIsAnOptOut(string? value, bool expected) =>
         await Assert.That(DaemonRunner.ParseConsentFlag(value)).IsEqualTo(expected);

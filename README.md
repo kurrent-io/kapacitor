@@ -778,11 +778,14 @@ export KCAP_OPENCODE_UNATTENDED_REVIEWER=0
 export KCAP_ANTIGRAVITY_UNATTENDED_REVIEWER=0
 ```
 
-Unset means enabled. A value the daemon cannot read as true or false is treated as **enabled** and logged
-as a warning at startup — so a typo cannot quietly take a reviewer offline, and you are told about it
-either way. Be aware that disabling one vendor does not stop unattended review on that daemon: a requester
-can still name an ungated vendor. If you want no unattended reviews at all, `kcap daemon consent` is the
-gate that actually does that.
+Unset means enabled. A value the daemon cannot read as true or false is treated as **disabled**, and
+warned about at startup — because the only reason to set one of these at all is to turn a reviewer off,
+so an unreadable value is a failed "off" rather than an ambiguous input. Surrounding quotes are tolerated
+(`"0"` works), since a mis-quoted service-unit entry is the usual way that happens.
+
+Be aware that disabling one vendor does not stop unattended review on that daemon: a requester can still
+name an ungated vendor. If you want no unattended reviews at all, `kcap daemon consent` is the gate that
+actually does that — note it **defaults to allow**, so it only helps once you have configured it.
 
 #### What an unattended Gemini review grants
 

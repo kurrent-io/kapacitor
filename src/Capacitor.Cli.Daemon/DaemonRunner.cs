@@ -850,21 +850,31 @@ public static partial class DaemonRunner {
     ///
     /// <para><b>Why the default flipped.</b> The reviewer vendor is a caller-chosen parameter, and
     /// Claude, Codex, Cursor and Copilot have never been gated at all — each running with FULL tool
-    /// access (shell and write) in the same worktree. <b>On any daemon that also advertises one of
-    /// those</b> — the overwhelmingly common case — the gate excluded nobody: a requester it blocked
-    /// from one vendor simply asked for an ungated one with more capability, while the honest path paid
-    /// a service-unit edit and a restart. Worse, two of the four gated vendors (Kiro, OpenCode) run
-    /// READ-ONLY reviewers, so the strictest policy sat on the least dangerous configurations.</para>
+    /// access (shell and write) in the same worktree. <b>On any daemon that also ADVERTISES one of
+    /// those</b> — the overwhelmingly common case — the gate did not widen the CAPABILITY CLASS a
+    /// requester could reach: one it blocked from a gated vendor simply asked for an ungated one with
+    /// more capability, while the honest path paid a service-unit edit and a restart. Two of the four
+    /// gated vendors (Kiro, OpenCode) also run READ-ONLY reviewers, so the strictest policy sat on the
+    /// least dangerous configurations.</para>
     ///
-    /// <para><b>The contingency, stated because the claim above is NOT universal</b> (review found this,
-    /// and an earlier revision of this comment asserted it unconditionally). On a daemon where the
-    /// operator installed ONLY a gated vendor's CLI — for hosted/interactive work, the ordinary reason
-    /// to install one — and no ungated vendor, these variables were the only thing separating the
-    /// hosted role from the unattended-reviewer role. There, the flip does widen what a requester who is
-    /// not the operator can cause to run with no human in the loop. That is accepted rather than
-    /// unnoticed: the operator keeps an explicit opt-out, the version floor still gates the build, and
-    /// <c>kcap daemon consent</c> is the control that actually scopes unattended launches — unlike a
-    /// per-vendor switch, it cannot be routed around by naming a different vendor.</para>
+    /// <para><b>Three precisions, because earlier revisions of this comment overstated all three</b> —
+    /// review caught each. (1) The predicate is ADVERTISED, not installed: a vendor must also be
+    /// certified and above its version floor, so a daemon with an uncertified Claude advertises no
+    /// ungated vendor either. (2) "Did not widen the capability class" is the true claim, not "excluded
+    /// nobody": even where an ungated vendor exists, this flip adds execution paths with different
+    /// binaries, different vendor-side permission models and different CREDENTIALS — a Gemini reviewer
+    /// burns the operator's Gemini credentials, which is not a subset of "Claude was already
+    /// available". (3) On a daemon that advertises ONLY a gated vendor — installed for hosted work, the
+    /// ordinary reason — these variables were the sole separation between the hosted role and the
+    /// unattended-reviewer role, and the flip genuinely widens what a non-operator requester can cause
+    /// to run with no human in the loop.</para>
+    ///
+    /// <para><b>What actually compensates, stated without inflation.</b> The operator keeps an explicit
+    /// opt-out. <c>kcap daemon consent</c> is the only control that scopes unattended launches as such —
+    /// but note it DEFAULTS TO ALLOW, so it compensates only for an operator who has configured it, not
+    /// for the average daemon. The version floor is deliberately NOT on this list: it constrains which
+    /// BUILD runs, never whether a non-operator can cause an unattended launch, and counting it as a
+    /// compensating control would inflate the set.</para>
     ///
     /// <para><b>What still protects the launch.</b> The per-vendor version FLOOR
     /// (<see cref="ReviewerVersionAffirmations"/>), which is a different mechanism with a different job:
@@ -880,7 +890,21 @@ public static partial class DaemonRunner {
     /// rule the feature-gate work follows, so a typo in a service unit cannot take a daemon's reviewer
     /// offline without saying so.</para>
     /// </summary>
-    internal static bool ParseConsentFlag(string? value) => RecogniseConsent(value) ?? true;
+    /// <summary>
+    /// <b>Unset means enabled; a value we cannot read means DISABLED.</b>
+    ///
+    /// <para>Those two are not in tension, and the asymmetry is the point. Since unset already enables,
+    /// the only reason to set one of these variables at all is to turn a reviewer OFF — enabling needs no
+    /// variable. So an unrecognised value is not an ambiguous input, it is a FAILED ATTEMPT TO SAY OFF,
+    /// and honouring the evident intent means failing closed. Review caught this: an earlier revision
+    /// failed open here, reasoning from the general "a typo must not take a feature offline" rule, which
+    /// does not transfer to a setting whose only use is to disable.</para>
+    ///
+    /// <para>The direction is also cheap in the wrong case: a typo'd ENABLE attempt (<c>=y</c>,
+    /// <c>=enabled</c>) lands on the pre-change behaviour, which is the safe side, and the operator still
+    /// gets the warning either way.</para>
+    /// </summary>
+    internal static bool ParseConsentFlag(string? value) => RecogniseConsent(value) ?? false;
 
     /// <summary>
     /// The ONE value set: true, false, or null for "set but unrecognised". Both
@@ -935,7 +959,9 @@ public static partial class DaemonRunner {
     internal static string? DescribeUnparseableConsent(string variable, string? value) =>
         RecogniseConsent(value) is null
             ? $"{variable} is set to '{value?.Trim()}', which this daemon does not recognise as true or "
-            + "false. Treating it as ENABLED (the default). Use 0/false/no/off to disable this reviewer."
+            + "false. Treating it as DISABLED, because the only reason to set this variable is to turn "
+            + "the reviewer off — unset already means enabled. Use 0/false/no/off to disable, or unset "
+            + "it (or use 1/true/yes/on) to enable."
             : null;
 
     /// <summary>

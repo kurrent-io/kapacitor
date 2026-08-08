@@ -110,13 +110,14 @@ public class KiroReviewerCapabilityTests {
 
     /// <summary>
     /// The switch is an opt-OUT: unset means ENABLED, matching the never-gated
-    /// Claude/Codex/Cursor/Copilot reviewers. Only a recognised falsey value disables.
+    /// Claude/Codex/Cursor/Copilot reviewers.
     ///
-    /// <para>An UNRECOGNISED value resolves to the default (enabled) rather than to disabled, which is
-    /// the deliberate half of this and the half worth stating: it means a typo cannot silently take a
-    /// reviewer offline. The cost — a typo also cannot silently disable one — is covered by
-    /// <see cref="AnUnparseableValue_IsReportedRatherThanSilentlyIgnored"/>, which makes the daemon say
-    /// so at startup.</para>
+    /// <para>An UNRECOGNISED value resolves to DISABLED, not to the default. That looks contradictory
+    /// until you notice that setting the variable at all is only ever an attempt to turn the reviewer
+    /// OFF — enabling requires no variable — so an unreadable value is a failed "off", and honouring the
+    /// evident intent means failing closed. Review corrected an earlier revision that failed open here
+    /// by borrowing the general "a typo must not take a feature offline" rule, which does not transfer
+    /// to a setting with only one use.</para>
     /// </summary>
     [Test]
     [Arguments("1", true)]
@@ -131,11 +132,31 @@ public class KiroReviewerCapabilityTests {
     [Arguments("off", false)]
     [Arguments("", true)]
     [Arguments("   ", true)]
-    [Arguments("ture", true)]
-    [Arguments("enabled", true)]
     [Arguments(null, true)]
+    // Set-but-unrecognised is DISABLED, not enabled. Since unset already enables, the only reason to set
+    // this variable is to turn the reviewer off — so an unreadable value is a failed "off", and honouring
+    // that intent means failing closed. Review corrected an earlier revision that failed open here.
+    [Arguments("ture", false)]
+    [Arguments("enabled", false)]
+    [Arguments("2", false)]
     public async Task TheConsentFlagIsAnOptOut(string? value, bool expected) =>
         await Assert.That(DaemonRunner.ParseConsentFlag(value)).IsEqualTo(expected);
+
+    /// <summary>
+    /// The asymmetry spelled out, because "unset enables but garbage disables" reads contradictory until
+    /// you notice that setting the variable at all is only ever an attempt to disable.
+    /// </summary>
+    [Test]
+    public async Task UnsetEnables_ButAnUnreadableValueDisables() {
+        await Assert.That(DaemonRunner.ParseConsentFlag(null)).IsTrue();
+        await Assert.That(DaemonRunner.ParseConsentFlag("")).IsTrue();
+
+        await Assert.That(DaemonRunner.ParseConsentFlag("flase")).IsFalse();
+        await Assert.That(DaemonRunner.ParseConsentFlag("disabled")).IsFalse();
+
+        // A typo'd ENABLE attempt lands on the pre-change behaviour, which is the safe side.
+        await Assert.That(DaemonRunner.ParseConsentFlag("y")).IsFalse();
+    }
 
     /// <summary>
     /// A value that is SET but unreadable must be reported. Without this, an operator who typed
@@ -152,8 +173,10 @@ public class KiroReviewerCapabilityTests {
         await Assert.That(warning).IsNotNull();
         await Assert.That(warning!).Contains("KCAP_KIRO_UNATTENDED_REVIEWER");
         await Assert.That(warning).Contains(value);
-        await Assert.That(warning).Contains("ENABLED");
+        await Assert.That(warning).Contains("DISABLED");
         await Assert.That(warning).Contains("0/false/no/off");
+        // The warning must state the outcome it actually produced, or it sends the operator the wrong way.
+        await Assert.That(DaemonRunner.ParseConsentFlag(value)).IsFalse();
     }
 
     /// <summary>Nothing to report for a value the parse understands, or for the ordinary unset case —
@@ -196,7 +219,10 @@ public class KiroReviewerCapabilityTests {
     [Arguments("0\"")]
     [Arguments("\"0'")]
     public async Task OnlyOneLevelOfMatchedQuotesIsStripped(string value) {
-        await Assert.That(DaemonRunner.ParseConsentFlag(value)).IsTrue();
+        // Unrecognised, therefore disabled AND reported. Note these shapes all arise from a botched
+        // DISABLE attempt, so failing closed happens to land on what the operator wanted — the quote
+        // stripping is what makes that the RIGHT answer rather than an accidentally-right one.
+        await Assert.That(DaemonRunner.ParseConsentFlag(value)).IsFalse();
         await Assert.That(DaemonRunner.DescribeUnparseableConsent("KCAP_KIRO_UNATTENDED_REVIEWER", value))
             .IsNotNull();
     }
