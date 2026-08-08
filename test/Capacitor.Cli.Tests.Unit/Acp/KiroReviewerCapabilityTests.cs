@@ -170,6 +170,59 @@ public class KiroReviewerCapabilityTests {
             .IsNull();
 
     /// <summary>
+    /// A quoting artifact must not turn a DISABLE into an enable. The realistic sources are a mis-quoted
+    /// service-unit entry, a <c>.cmd</c> wrapper's <c>set "K=V"</c>, and a hand-edited plist — all of
+    /// which deliver the value with its quotes attached. Since disabling is the operator's only lever,
+    /// failing open there is the mistake worth preventing outright. Raised by review.
+    /// </summary>
+    [Test]
+    [Arguments("\"0\"")]
+    [Arguments("'0'")]
+    [Arguments("\"false\"")]
+    [Arguments("  \"off\"  ")]
+    [Arguments("'no'")]
+    public async Task AQuotedFalseyValue_StillDisables(string value) {
+        await Assert.That(DaemonRunner.ParseConsentFlag(value)).IsFalse();
+        // ...and does not also warn, since it was understood.
+        await Assert.That(DaemonRunner.DescribeUnparseableConsent("KCAP_KIRO_UNATTENDED_REVIEWER", value))
+            .IsNull();
+    }
+
+    /// <summary>Only ONE level, and only MATCHED quotes: anything still unrecognised afterwards is
+    /// reported rather than stripped again, so this cannot quietly accept arbitrary shapes.</summary>
+    [Test]
+    [Arguments("\"\"0\"\"")]
+    [Arguments("\"0")]
+    [Arguments("0\"")]
+    [Arguments("\"0'")]
+    public async Task OnlyOneLevelOfMatchedQuotesIsStripped(string value) {
+        await Assert.That(DaemonRunner.ParseConsentFlag(value)).IsTrue();
+        await Assert.That(DaemonRunner.DescribeUnparseableConsent("KCAP_KIRO_UNATTENDED_REVIEWER", value))
+            .IsNotNull();
+    }
+
+    /// <summary>
+    /// The structural guarantee that replaced a by-inspection one: the parse and the warning are derived
+    /// from a single recogniser, so they cannot disagree about which values are understood. A
+    /// disagreement would either warn on every boot for a correct config, or swallow a typo silently.
+    /// </summary>
+    [Test]
+    [Arguments("1")] [Arguments("0")] [Arguments("true")] [Arguments("false")]
+    [Arguments("yes")] [Arguments("no")] [Arguments("on")] [Arguments("off")]
+    [Arguments("YES")] [Arguments("Off")] [Arguments("\"1\"")]
+    [Arguments("flase")] [Arguments("enabled")] [Arguments("2")] [Arguments("-")]
+    [Arguments(null)] [Arguments("")] [Arguments("   ")]
+    public async Task TheParseAndTheWarningShareOneValueSet(string? value) {
+        var recognised = DaemonRunner.RecogniseConsent(value) is not null;
+        var warned     = DaemonRunner.DescribeUnparseableConsent("VAR", value) is not null;
+
+        await Assert.That(warned).IsEqualTo(!recognised);
+        // And the parse never contradicts the recogniser on a value it DOES understand.
+        if (DaemonRunner.RecogniseConsent(value) is { } known)
+            await Assert.That(DaemonRunner.ParseConsentFlag(value)).IsEqualTo(known);
+    }
+
+    /// <summary>
     /// The Windows arm, now assertable from any host. It refuses BEFORE the operator flag and before
     /// any version comparison — a fully-consented, correctly-affirmed daemon is still refused, because
     /// the reviewer home holds review context and cannot be created owner-only there.

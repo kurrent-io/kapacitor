@@ -749,8 +749,14 @@ Every reviewer vendor your daemon can host is available to a review flow out of 
 the opt-in did not do the job it appeared to do:
 
 - **The reviewer vendor is chosen by the caller.** Claude, Codex, Cursor and Copilot have never been gated,
-  and each runs with a *full* tool surface — shell and file writes included. So anyone the gate was meant to
-  stop simply asked for one of those instead, with more capability, not less.
+  and each runs with a *full* tool surface — shell and file writes included. So on any daemon that also
+  advertises one of those, the gate stopped nobody: a requester it blocked simply asked for an ungated
+  vendor with more capability, not less.
+  > The exception, since the claim is not universal: on a daemon where you installed **only** a gated
+  > vendor's CLI — for hosted work, say — and no ungated one, these variables were the only thing keeping
+  > that binary from also serving unattended reviews. If that is your setup and you want it back, set the
+  > variable to `0`. `kcap daemon consent` is the better control, because it cannot be sidestepped by
+  > naming a different vendor.
 - **It was attached to the wrong end of the risk scale.** Two of the four gated vendors (Kiro, OpenCode) run
   *read-only* reviewers. The strictest policy was on the most contained configuration.
 - **It taxed the honest path.** A supervised daemon inherits nothing from your shell, so turning a reviewer

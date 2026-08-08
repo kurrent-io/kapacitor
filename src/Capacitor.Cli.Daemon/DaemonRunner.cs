@@ -848,14 +848,23 @@ public static partial class DaemonRunner {
     /// opt-OUT, and it used to be an opt-in. Same polarity as
     /// <see cref="ParseAcpReconnectFlag"/> now, where it used to be deliberately the opposite.
     ///
-    /// <para><b>Why the default flipped.</b> The opt-in gate did not do the job it claimed. The reviewer
-    /// vendor is a caller-chosen parameter, and Claude, Codex, Cursor and Copilot have never been gated
-    /// at all — each of them running with FULL tool access (shell and write) in the same worktree. So
-    /// anyone the gate was supposed to stop simply requested an ungated vendor with more capability,
-    /// while the honest path paid a service-unit edit and a restart. A control every caller can route
-    /// around by picking a different value from a menu is friction, not security. Worse, two of the four
-    /// gated vendors (Kiro, OpenCode) run READ-ONLY reviewers, so the strictest policy was attached to
-    /// the least dangerous configuration.</para>
+    /// <para><b>Why the default flipped.</b> The reviewer vendor is a caller-chosen parameter, and
+    /// Claude, Codex, Cursor and Copilot have never been gated at all — each running with FULL tool
+    /// access (shell and write) in the same worktree. <b>On any daemon that also advertises one of
+    /// those</b> — the overwhelmingly common case — the gate excluded nobody: a requester it blocked
+    /// from one vendor simply asked for an ungated one with more capability, while the honest path paid
+    /// a service-unit edit and a restart. Worse, two of the four gated vendors (Kiro, OpenCode) run
+    /// READ-ONLY reviewers, so the strictest policy sat on the least dangerous configurations.</para>
+    ///
+    /// <para><b>The contingency, stated because the claim above is NOT universal</b> (review found this,
+    /// and an earlier revision of this comment asserted it unconditionally). On a daemon where the
+    /// operator installed ONLY a gated vendor's CLI — for hosted/interactive work, the ordinary reason
+    /// to install one — and no ungated vendor, these variables were the only thing separating the
+    /// hosted role from the unattended-reviewer role. There, the flip does widen what a requester who is
+    /// not the operator can cause to run with no human in the loop. That is accepted rather than
+    /// unnoticed: the operator keeps an explicit opt-out, the version floor still gates the build, and
+    /// <c>kcap daemon consent</c> is the control that actually scopes unattended launches — unlike a
+    /// per-vendor switch, it cannot be routed around by naming a different vendor.</para>
     ///
     /// <para><b>What still protects the launch.</b> The per-vendor version FLOOR
     /// (<see cref="ReviewerVersionAffirmations"/>), which is a different mechanism with a different job:
@@ -871,10 +880,34 @@ public static partial class DaemonRunner {
     /// rule the feature-gate work follows, so a typo in a service unit cannot take a daemon's reviewer
     /// offline without saying so.</para>
     /// </summary>
-    internal static bool ParseConsentFlag(string? value) {
+    internal static bool ParseConsentFlag(string? value) => RecogniseConsent(value) ?? true;
+
+    /// <summary>
+    /// The ONE value set: true, false, or null for "set but unrecognised". Both
+    /// <see cref="ParseConsentFlag"/> and <see cref="DescribeUnparseableConsent"/> are derived from it.
+    ///
+    /// <para><b>Why one method rather than two agreeing ones.</b> Review caught the shape: a parse and a
+    /// separate "is this recognised?" predicate are two things that must agree with nothing making them.
+    /// Add a falsey spelling to the parse only and every correctly-configured daemon warns on every boot
+    /// forever; add a truthy spelling to the predicate only and a typo is silently swallowed. They did
+    /// agree, but by inspection. Now they cannot disagree.</para>
+    ///
+    /// <para><b>Matched surrounding quotes are stripped</b>, because the realistic way a DISABLE attempt
+    /// becomes unrecognised is a quoting artifact — a mis-quoted service-unit entry, a <c>.cmd</c>
+    /// wrapper's <c>set "K=V"</c>, a hand-edited plist — and the value then arrives as literal
+    /// <c>"0"</c>. Since disabling is now the operator's only lever, a fail-open there is the one
+    /// mistake worth spending three lines to prevent. One level only: a value that is still unrecognised
+    /// after stripping is reported, not stripped again.</para>
+    /// </summary>
+    internal static bool? RecogniseConsent(string? value) {
         var v = value?.Trim();
 
         if (string.IsNullOrEmpty(v)) return true;   // unset — the new default
+
+        if (v.Length >= 2 && (v[0] == '"' || v[0] == '\'') && v[^1] == v[0])
+            v = v[1..^1].Trim();
+
+        if (v.Length == 0) return true;
 
         if (v == "0"
          || string.Equals(v, "false", StringComparison.OrdinalIgnoreCase)
@@ -882,33 +915,28 @@ public static partial class DaemonRunner {
          || string.Equals(v, "off",   StringComparison.OrdinalIgnoreCase))
             return false;
 
-        return true;
+        if (v == "1"
+         || string.Equals(v, "true", StringComparison.OrdinalIgnoreCase)
+         || string.Equals(v, "yes",  StringComparison.OrdinalIgnoreCase)
+         || string.Equals(v, "on",   StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        return null;   // set, but says nothing this daemon understands
     }
 
     /// <summary>
     /// A warning for a consent variable that is SET but says nothing this daemon recognises, or null
-    /// when there is nothing to report. Split from <see cref="ParseConsentFlag"/> so the parse stays
-    /// pure and total: an operator who typed <c>flase</c> meaning to disable a reviewer would otherwise
-    /// get it enabled with no signal at all, which is precisely the direction worth being loud about.
+    /// when there is nothing to report.
+    ///
+    /// <para>An operator who typed <c>flase</c> meaning to disable a reviewer would otherwise get it
+    /// enabled with no signal at all, which is the direction worth being loud about now that disabling
+    /// is the only lever.</para>
     /// </summary>
-    internal static string? DescribeUnparseableConsent(string variable, string? value) {
-        var v = value?.Trim();
-
-        if (string.IsNullOrEmpty(v)) return null;
-
-        var recognised = v is "0" or "1"
-            || string.Equals(v, "false", StringComparison.OrdinalIgnoreCase)
-            || string.Equals(v, "true",  StringComparison.OrdinalIgnoreCase)
-            || string.Equals(v, "no",    StringComparison.OrdinalIgnoreCase)
-            || string.Equals(v, "yes",   StringComparison.OrdinalIgnoreCase)
-            || string.Equals(v, "off",   StringComparison.OrdinalIgnoreCase)
-            || string.Equals(v, "on",    StringComparison.OrdinalIgnoreCase);
-
-        return recognised
-            ? null
-            : $"{variable} is set to '{v}', which this daemon does not recognise as true or false. "
-            + "Treating it as ENABLED (the default). Use 0/false/no/off to disable this reviewer.";
-    }
+    internal static string? DescribeUnparseableConsent(string variable, string? value) =>
+        RecogniseConsent(value) is null
+            ? $"{variable} is set to '{value?.Trim()}', which this daemon does not recognise as true or "
+            + "false. Treating it as ENABLED (the default). Use 0/false/no/off to disable this reviewer."
+            : null;
 
     /// <summary>
     /// True when a "cursor" <see cref="IHostedAgentRuntimeFactory"/> is registered but
