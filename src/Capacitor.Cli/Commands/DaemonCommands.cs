@@ -951,13 +951,20 @@ public static class DaemonCommands {
         await Console.Out.WriteLineAsync($"Service '{id}' installed ({manager.Describe()}).");
         await Console.Out.WriteLineAsync("  Auto-restarts on crash/SIGKILL; starts at login.");
 
-        // Freezing an unattended-reviewer consent flag into a unit is worth saying out loud. The unit
-        // outlives the shell it was captured from, so an operator who later unsets the variable would
-        // otherwise have no indication the service kept consenting on their behalf.
-        foreach (var flag in ServiceEnvironment.CarriedConsentFlags(env))
+        // A reviewer switch frozen into a unit is worth saying out loud: the unit outlives the shell it
+        // was captured from, so an operator who later changes the variable has no effect until they
+        // reinstall. The line must state what the captured VALUE does, not assume it enables — since
+        // these became opt-outs, a captured `0` DISABLES, and the old "the reviewer it enables stays on"
+        // text was exactly backwards for that case. Classified through the same Core parser the daemon
+        // reads, so the notice and the daemon can never disagree about a value's meaning.
+        foreach (var flag in ServiceEnvironment.CarriedConsentFlags(env)) {
+            var effect = ReviewerConsent.IsEnabled(env[flag])
+                ? "keeps that reviewer ENABLED (already the default)"
+                : "DISABLES that reviewer";
             await Console.Out.WriteLineAsync(
-                $"  Consent:   {flag}={env[flag]} captured into the unit — the unattended reviewer it "
-              + "enables stays on for this service until you reinstall without it.");
+                $"  Reviewer:  {flag}={env[flag]} captured into the unit — {effect} for this service "
+              + "until you reinstall with a different value.");
+        }
 
         await Console.Out.WriteLineAsync($"  Log:       {logPath}");
         await Console.Out.WriteLineAsync($"  Stop:      kcap daemon service stop --name {id}");

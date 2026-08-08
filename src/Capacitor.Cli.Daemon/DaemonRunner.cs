@@ -918,7 +918,7 @@ public static partial class DaemonRunner {
     /// <c>KCAP_*_UNATTENDED_REVIEWER</c> variables in <see cref="RunAsync"/>'s apply loop are the only
     /// production callers.</para>
     /// </summary>
-    internal static bool ParseConsentFlag(string? value) => RecogniseConsent(value) ?? false;
+    internal static bool ParseConsentFlag(string? value) => ReviewerConsent.IsEnabled(value);
 
     /// <summary>
     /// Where a gated reviewer's opt-out lands on <see cref="DaemonConfig"/>.
@@ -945,68 +945,14 @@ public static partial class DaemonRunner {
           + "would silently do nothing. Add the accessor here.")
     };
 
-    /// <summary>
-    /// The ONE value set: true, false, or null for "set but unrecognised". Both
-    /// <see cref="ParseConsentFlag"/> and <see cref="DescribeUnparseableConsent"/> are derived from it.
-    ///
-    /// <para><b>Why one method rather than two agreeing ones.</b> Review caught the shape: a parse and a
-    /// separate "is this recognised?" predicate are two things that must agree with nothing making them.
-    /// Add a falsey spelling to the parse only and every correctly-configured daemon warns on every boot
-    /// forever; add a truthy spelling to the predicate only and a typo is silently swallowed. They did
-    /// agree, but by inspection. Now they cannot disagree.</para>
-    ///
-    /// <para><b>Matched surrounding quotes are stripped</b>, because the realistic way a DISABLE attempt
-    /// becomes unrecognised is a quoting artifact — a mis-quoted service-unit entry, a <c>.cmd</c>
-    /// wrapper's <c>set "K=V"</c>, a hand-edited plist — and the value then arrives as literal
-    /// <c>"0"</c>. Since disabling is now the operator's only lever, a fail-open there is the one
-    /// mistake worth spending three lines to prevent. One level only: a value that is still unrecognised
-    /// after stripping is reported, not stripped again.</para>
-    /// </summary>
-    internal static bool? RecogniseConsent(string? value) {
-        var v = value?.Trim();
+    /// <summary>Thin forwarders to <see cref="ReviewerConsent"/> in Core, kept so the daemon's own call
+    /// sites and tests read the parser under a daemon-local name. The rules — and the reason unset must
+    /// never reach the <c>?? false</c> — live on the Core type, which the CLI's install-output notice
+    /// reads too so the two cannot describe a captured value differently.</summary>
+    internal static bool? RecogniseConsent(string? value) => ReviewerConsent.Recognise(value);
 
-        // DO NOT fold these two early returns into the `return null` fallthrough below. They look like
-        // "nothing to recognise" and they are not: `ParseConsentFlag` maps null to FALSE, so collapsing
-        // them would turn all four reviewers OFF on every daemon with the variables unset — which is
-        // essentially all of them. The same tidy-up was harmless while this failed open; the fail-closed
-        // flip is what made it catastrophic. Unset must never reach the `??`.
-        if (string.IsNullOrEmpty(v)) return true;   // unset — the new default
-
-        if (v.Length >= 2 && (v[0] == '"' || v[0] == '\'') && v[^1] == v[0])
-            v = v[1..^1].Trim();
-
-        if (v.Length == 0) return true;             // `""` / `''` — an empty value, not an unreadable one
-
-        if (v == "0"
-         || string.Equals(v, "false", StringComparison.OrdinalIgnoreCase)
-         || string.Equals(v, "no",    StringComparison.OrdinalIgnoreCase)
-         || string.Equals(v, "off",   StringComparison.OrdinalIgnoreCase))
-            return false;
-
-        if (v == "1"
-         || string.Equals(v, "true", StringComparison.OrdinalIgnoreCase)
-         || string.Equals(v, "yes",  StringComparison.OrdinalIgnoreCase)
-         || string.Equals(v, "on",   StringComparison.OrdinalIgnoreCase))
-            return true;
-
-        return null;   // set, but says nothing this daemon understands
-    }
-
-    /// <summary>
-    /// A warning for a consent variable that is SET but says nothing this daemon recognises, or null
-    /// when there is nothing to report.
-    ///
-    /// <para>An operator who typed <c>flase</c> meaning to disable a reviewer would otherwise get it
-    /// enabled with no signal at all, which is the direction worth being loud about now that disabling
-    /// is the only lever.</para>
-    /// </summary>
     internal static string? DescribeUnparseableConsent(string variable, string? value) =>
-        RecogniseConsent(value) is null
-            ? $"{variable} is set to '{value?.Trim()}', which this daemon does not recognise as true or "
-            + "false. Treating it as DISABLED, because the only reason to set this variable is to turn "
-            + "the reviewer off — unset already means enabled. Use 0/false/no/off to disable, or unset "
-            + "it (or use 1/true/yes/on) to enable."
-            : null;
+        ReviewerConsent.DescribeUnparseable(variable, value);
 
     /// <summary>
     /// True when a "cursor" <see cref="IHostedAgentRuntimeFactory"/> is registered but
