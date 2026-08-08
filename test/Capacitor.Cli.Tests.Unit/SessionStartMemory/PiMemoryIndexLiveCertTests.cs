@@ -35,6 +35,18 @@ namespace Capacitor.Cli.Tests.Unit.SessionStartMemory;
 /// with the observed <c>pi --version</c> output (see <c>RecordCertEnvironmentAsync</c>'s console line)
 /// before this comment can make the same claim OpenCode's does.</para>
 ///
+/// <para><b>The <c>-p</c> stdout-shape assumption is GUARDED, not just disclosed.</b> The positive case
+/// asserts on <c>stdout.Trim()</c> directly on the assumption that print mode writes ONLY the
+/// assistant's final text — unlike OpenCode, which structurally defends that claim by parsing just the
+/// <c>type: "text"</c> NDJSON frames. Because that structural defense has no Pi equivalent, the positive
+/// case instead asserts, BEFORE the nonce assertion, that raw stdout does NOT contain
+/// <see cref="MemoryIndexEmitter.FragmentMarker"/>: if a future <c>pi</c> build ever echoed the injected
+/// system prompt, the marker would ride along with the nonce and turn what would otherwise be a silent
+/// vacuous pass (the negative control cannot catch this — it has no fragment to echo) into a loud,
+/// diagnosable failure. That guard is necessarily partial — a reformatted echo that drops the literal
+/// marker text would not trip it — so the deferred first live run must still eyeball raw stdout by eye,
+/// not just trust the guard.</para>
+///
 /// <para><b>Known flakiness, and which kind it is.</b> Per the shared harness's <c>PositivePrompt</c>,
 /// the positive case asks the model to echo 32 random hex characters; a small/free model can
 /// mistranscribe them. That is a model-capability flake, not a delivery defect — see
@@ -185,10 +197,29 @@ public class PiMemoryIndexLiveCertTests {
 
             await Assert.That(exitCode).IsEqualTo(0);
 
+            // Structural echo guard, BEFORE the nonce assertion. -p mode is ASSUMED (not yet verified
+            // against a live run — see the class doc) to write only the assistant's final text, with no
+            // echo of the request or the chained system prompt. If a future pi build ever echoes any
+            // part of the injected prompt, the nonce would ride along WITHOUT the model having produced
+            // it — a vacuous pass invisible to the nonce assertion alone, because the negative control
+            // has no fragment at all to echo and so cannot catch it either. The marker is never something
+            // the model is asked to reproduce (PositivePrompt asks only for the nonce), and ordinary
+            // extension/plugin startup noise does not contain it, so this cannot trip on a true pass —
+            // only on the exact failure mode it exists to convert from a silent false-positive into a
+            // loud one.
+            await Assert.That(stdout).DoesNotContain(MemoryIndexEmitter.FragmentMarker)
+                .Because("the injected-fragment marker appeared in raw pi stdout, which means pi echoed "
+                       + "the injected system prompt back — the nonce's presence below proves nothing "
+                       + "about model receipt. Fix the stdout extraction (this cert currently assumes -p "
+                       + "mode emits ONLY the assistant's final text) before trusting this cert again");
+
             // -p (print) mode writes ONLY the assistant's final text to stdout — no echo of the request
             // or the chained system prompt — so the stream IS the model's answer; no NDJSON/frame
             // extraction is needed or safe to add (it would risk matching an echoed request instead of
-            // what the model said).
+            // what the model said). That assumption is now GUARDED by the assertion above rather than
+            // merely disclosed — but the deferred first live run must still eyeball raw stdout, since a
+            // partial or reformatted echo that happens not to carry the literal marker text is not
+            // something the guard can catch.
             var said = stdout.Trim();
 
             // The model's own words go in the failure message, because the two ways this can fail look
@@ -251,10 +282,19 @@ public class PiMemoryIndexLiveCertTests {
     /// process and the model did not use it (before_agent_start not splicing it into the system
     /// prompt). Asserting on it would weaken the cert to "the harness ingested it", which is exactly the
     /// standard that let earlier adapters merge without proof the MODEL received anything.
+    ///
+    /// <para>Also logs whether <see cref="MemoryIndexEmitter.FragmentMarker"/> itself shows up in raw
+    /// stdout — purely informational here (the hard guard against an echo is the assertion in the
+    /// positive case below); kept beside the nonce line so both diagnostics land together in the test
+    /// log.</para>
     /// </summary>
-    static void LogInjectionEvidence(string nonce, string stdout) =>
+    static void LogInjectionEvidence(string nonce, string stdout) {
         Console.WriteLine(
             $"[cert] nonce present anywhere in the raw stdout (NOT the pass condition): {stdout.Contains(nonce)}");
+        Console.WriteLine(
+            $"[cert] injected-fragment marker present in raw stdout (structural echo guard): "
+          + $"{stdout.Contains(MemoryIndexEmitter.FragmentMarker)}");
+    }
 
     /// <summary>Saves the nonce memory, deleting the worktree if the save throws — the memory is the
     /// expensive thing to leak, but a save failure must not also strand a temp directory.</summary>
