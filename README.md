@@ -822,14 +822,16 @@ This is a property of unattended review generally, not of Gemini specifically �
 vendors can do it rather than introducing it. The one path that does *not* grant this is a sandboxed borrowed
 review, which Gemini cannot use yet.
 
-**Enabling this flag is your consent to the above**, which is why it is daemon-local (the person requesting a
-review is not necessarily you) and defaults off.
+**This is on by default, so read the above as describing what your daemon already does** once `gemini`
+resolves. The switch is daemon-local — the person requesting a review is not necessarily you — and it is
+now an opt-OUT: `KCAP_GEMINI_UNATTENDED_REVIEWER=0` to turn it off. If your daemon is service-managed, set
+it and re-run `kcap daemon service install`, since a supervised daemon's environment is frozen at install.
 
 Two further things it does *not* do:
 
 - it does not bypass the **minimum version**. The reviewer's only containment is Gemini's exact-name MCP
   allowlist, which is a behaviour of the installed build, so the daemon records a minimum `gemini` version
-  the first time you enable the reviewer. That recorded version is a **minimum, not an exact match**: any
+  on the first startup that finds the binary. That recorded version is a **minimum, not an exact match**: any
   build at or above it runs, so **a Gemini upgrade needs no action from you**; an older one is refused, with
   a coded error naming both versions. Run `kcap daemon reviewer affirm --vendor gemini` to move the minimum
   to whatever is installed now — which is how you exclude a build you have found to be broken, and, if you
@@ -867,7 +869,7 @@ A review launch also runs with a daemon-owned, empty `KIRO_HOME`, so your global
 interactive Kiro sessions are unaffected, and the file is never modified.
 
 **Minimum version.** That suppression depends on the installed build honouring `KIRO_HOME`, so the daemon
-records a minimum `kiro-cli` version the first time you enable the reviewer. It is a **minimum, not an exact
+records a minimum `kiro-cli` version on the first startup that finds the binary. It is a **minimum, not an exact
 match**: any build at or above it runs, so **a `kiro-cli` upgrade needs no action from you**; a build older
 than the recorded minimum is refused.
 
@@ -933,11 +935,13 @@ action from you** — which matters more here than for the other reviewers, sinc
 (observed going 1.1.8 → 1.1.10 mid-session). A build older than the recorded minimum, or one whose
 `agy --version` cannot be read, is withheld with a coded reason naming both versions.
 
-Because this vendor's minimum is recorded when `agy` first resolves rather than when you enable the
-reviewer, there is one window worth knowing about: install `agy`, run a daemon with the reviewer *off*,
-then upgrade `agy` and only afterwards turn the reviewer on — and the recorded minimum is still the older
+This vendor's minimum is recorded whenever `agy` first resolves, even on a daemon whose reviewer you have
+explicitly turned off — its floor also gates *hosted* Antigravity agents, which are never gated by the
+reviewer switch. That leaves one window worth knowing about, now that reviewers are on by default it needs
+a deliberate opt-out to reach: install `agy`, run a daemon with `KCAP_ANTIGRAVITY_UNATTENDED_REVIEWER=0`,
+then upgrade `agy` and only afterwards unset that variable — and the recorded minimum is still the older
 build you started with, so a later *downgrade* back to it would be admitted. Run the command below once
-after enabling the reviewer if you want the minimum to be the build you actually reviewed with.
+after re-enabling if you want the minimum to be the build you actually reviewed with.
 
 ```bash
 kcap daemon reviewer affirm --vendor antigravity

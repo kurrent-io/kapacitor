@@ -41,7 +41,7 @@ static class ServiceEnvironment {
     /// installing the service has no effect until the service is reinstalled.</para>
     /// </summary>
     internal static readonly string[] ReviewerConsentKeys =
-        [.. Commands.DaemonReviewerCommand.AffirmableReviewer.All.Select(r => r.EnableEnvVar)];
+        [.. Core.GatedReviewers.All.Select(r => r.EnableEnvVar)];
 
     /// <summary>
     /// Gemini's project/backend selection, carried on every platform because none of it is
