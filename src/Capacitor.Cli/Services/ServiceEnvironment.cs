@@ -28,10 +28,13 @@ static class ServiceEnvironment {
     /// <c>DaemonRunner.ParseConsentFlag</c>), so this array is load-bearing for that argument rather
     /// than a convenience.</para>
     ///
-    /// <para><b>DERIVED from the affirmable-reviewer registry, not listed again here.</b> Every one of
-    /// these vendors has both a switch and a build affirmation, so this was two hand-maintained lists of
-    /// the same set with nothing making them agree. Deriving removes the drift class instead of testing
-    /// for it — and post-inversion it is what guarantees a newly-added reviewer arrives disableable.</para>
+    /// <para><b>DERIVED from <see cref="Core.GatedReviewers"/>, not listed again here</b> — the SAME rows
+    /// the daemon's own apply loop iterates to build its config. This was three hand-maintained lists of
+    /// one set (here, the daemon, and the affirm verb) with nothing making them agree; now there is one
+    /// registry and the drift class is gone rather than tested for. Post-inversion that is what
+    /// guarantees a newly-added reviewer arrives disableable: a row that reaches the daemon reaches the
+    /// service unit by construction, and one the daemon has no accessor for fails the boot loudly
+    /// instead of shipping an opt-out that does nothing.</para>
     ///
     /// <para><b>Capture FREEZES the value at install time</b> (what <see cref="CarriedConsentFlags"/>
     /// reports). A supervised daemon inherits nothing later, so an opt-out an operator exports after

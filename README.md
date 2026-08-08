@@ -1258,7 +1258,7 @@ KCAP_CURSOR_PATH=/opt/cursor/bin/cursor-agent kcap daemon
 KCAP_CURSOR_MODEL=claude-opus-4-8 kcap daemon
 ```
 
-`KCAP_COPILOT_PATH` overrides the `copilot` binary the daemon spawns for **GitHub Copilot hosted agents** (`copilot --acp --stdio`), mirroring `KCAP_CURSOR_PATH` — the daemon hosts Claude, Codex, Cursor, Copilot, Kiro, Gemini, OpenCode and Antigravity. `KCAP_GEMINI_PATH` overrides the `gemini` binary the same way (`gemini --experimental-acp`), and applies to both hosted Gemini agents and the opt-in [unattended Gemini reviewer](#gemini-as-an-unattended-review-flow-reviewer--off-by-default-and-why) — whose build-affirmation check reads whichever binary it names. `KCAP_OPENCODE_PATH` overrides the `opencode` binary the daemon spawns for **OpenCode hosted agents** (`opencode acp`) — no longer reserved; see [Hosted OpenCode agents](#hosted-opencode-agents) below.
+`KCAP_COPILOT_PATH` overrides the `copilot` binary the daemon spawns for **GitHub Copilot hosted agents** (`copilot --acp --stdio`), mirroring `KCAP_CURSOR_PATH` — the daemon hosts Claude, Codex, Cursor, Copilot, Kiro, Gemini, OpenCode and Antigravity. `KCAP_GEMINI_PATH` overrides the `gemini` binary the same way (`gemini --experimental-acp`), and applies to both hosted Gemini agents and the [unattended Gemini reviewer](#unattended-reviewers-are-enabled-by-default-they-used-to-be-opt-in) (enabled by default) — whose build-affirmation check reads whichever binary it names. `KCAP_OPENCODE_PATH` overrides the `opencode` binary the daemon spawns for **OpenCode hosted agents** (`opencode acp`) — no longer reserved; see [Hosted OpenCode agents](#hosted-opencode-agents) below.
 
 ```bash
 KCAP_COPILOT_PATH=/opt/copilot/bin/copilot kcap daemon

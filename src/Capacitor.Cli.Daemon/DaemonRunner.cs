@@ -169,13 +169,15 @@ public static partial class DaemonRunner {
         // argument and its three precisions — in short, the reviewer vendor is a caller-chosen
         // parameter, so wherever an ungated vendor is also advertised, gating these four did not widen
         // the capability class a requester could reach, and only taxed the honest path.
-        foreach (var (variable, apply) in new (string, Action<bool>)[] {
-            ("KCAP_GEMINI_UNATTENDED_REVIEWER",      v => config.GeminiUnattendedReviewerEnabled      = v),
-            ("KCAP_KIRO_UNATTENDED_REVIEWER",        v => config.KiroUnattendedReviewerEnabled        = v),
-            ("KCAP_OPENCODE_UNATTENDED_REVIEWER",    v => config.OpenCodeUnattendedReviewerEnabled    = v),
-            ("KCAP_ANTIGRAVITY_UNATTENDED_REVIEWER", v => config.AntigravityUnattendedReviewerEnabled = v),
-        }) {
-            var raw = Environment.GetEnvironmentVariable(variable);
+        // Iterates the SHARED registry, not a local list. A vendor listed here but missing from
+        // GatedReviewers.All would be absent from every service unit (ServiceEnvironment derives the
+        // allowlist from the same rows), leaving a reviewer that cannot be turned off on the supported
+        // install path — so there is one list, and ConsentApplier below fails the boot rather than
+        // silently skipping a row it has no accessor for.
+        foreach (var reviewer in GatedReviewers.All) {
+            var variable = reviewer.EnableEnvVar;
+            var apply    = ConsentApplier(config, reviewer.Vendor);
+            var raw      = Environment.GetEnvironmentVariable(variable);
             apply(ParseConsentFlag(raw));
 
             // Warned for EVERY variable, from the same loop that applies it, so a mangled value can
@@ -917,6 +919,31 @@ public static partial class DaemonRunner {
     /// production callers.</para>
     /// </summary>
     internal static bool ParseConsentFlag(string? value) => RecogniseConsent(value) ?? false;
+
+    /// <summary>
+    /// Where a gated reviewer's opt-out lands on <see cref="DaemonConfig"/>.
+    ///
+    /// <para><b>Throws for an unknown vendor rather than returning null or a no-op.</b> The one caller
+    /// iterates <see cref="GatedReviewers.All"/>, so an unmapped row means someone added a reviewer to
+    /// the registry — which puts its variable into every service unit and into
+    /// <c>daemon reviewer affirm</c>'s usage text — without wiring the daemon to actually read it. The
+    /// operator would then set the documented variable and watch it do nothing: an opt-out that appears
+    /// to exist and does not. Refusing to boot turns that into a failure the author hits immediately,
+    /// and <c>Consent_applier_covers_every_gated_reviewer</c> hits it in CI first.</para>
+    ///
+    /// <para>A string switch has no compiler exhaustiveness, which is exactly why the throw is here and
+    /// not a discard arm.</para>
+    /// </summary>
+    internal static Action<bool> ConsentApplier(DaemonConfig config, string vendor) => vendor switch {
+        "gemini"      => v => config.GeminiUnattendedReviewerEnabled      = v,
+        "kiro"        => v => config.KiroUnattendedReviewerEnabled        = v,
+        "opencode"    => v => config.OpenCodeUnattendedReviewerEnabled    = v,
+        "antigravity" => v => config.AntigravityUnattendedReviewerEnabled = v,
+        _ => throw new NotSupportedException(
+            $"Gated reviewer '{vendor}' is in GatedReviewers.All but no DaemonConfig flag is wired to "
+          + $"its opt-out switch, so setting {GatedReviewers.Resolve(vendor)?.EnableEnvVar ?? "it"} "
+          + "would silently do nothing. Add the accessor here.")
+    };
 
     /// <summary>
     /// The ONE value set: true, false, or null for "set but unrecognised". Both
