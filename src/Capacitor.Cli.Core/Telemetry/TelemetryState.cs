@@ -13,6 +13,13 @@ public readonly record struct TelemetryStateFile(string? Id, bool? Enabled, bool
 /// auth-relevant identifier sent to the Capacitor server to prove machine identity;
 /// an analytics id is a different purpose with a different lifetime, and keeping it separate
 /// means opting out can delete it without touching authentication.
+///
+/// Each mutation (device id creation, toggling enabled, marking notice shown) acquires a
+/// cross-process lock to prevent lost-update races where two concurrent writers each read the
+/// pre-write state, modify different fields, and then last-writer-wins clobber the other's
+/// field. On lock-acquisition failure, degrades to best-effort unlocked write rather than
+/// silently dropping the change — this is critical for opt-out enforcement, where a lost
+/// SetEnabled(false) would be a privacy failure.
 /// </summary>
 public static class TelemetryState {
     /// <summary>Test seam. Null in production, where the path resolves under the config dir.</summary>
@@ -55,9 +62,31 @@ public static class TelemetryState {
     public static void MarkNoticeShown() => Write(Read() with { NoticeShown = true });
 
     static void Write(TelemetryStateFile state) {
+        var path = Path;
+        var dir = System.IO.Path.GetDirectoryName(path)!;
+
+        // Acquire a cross-process lock to prevent lost updates when multiple processes modify
+        // different fields concurrently. On timeout or lock-acquisition failure, fall back to
+        // unlocked write — better than silently dropping the change, especially critical for
+        // SetEnabled(false) opt-out enforcement.
         try {
-            var path = Path;
-            Directory.CreateDirectory(System.IO.Path.GetDirectoryName(path)!);
+            using (ConfigFileLock.Acquire(path, TimeSpan.FromSeconds(2))) {
+                Directory.CreateDirectory(dir);
+                var json = JsonSerializer.Serialize(state, CapacitorJsonContext.Default.TelemetryStateFile);
+                File.WriteAllText(path, json);
+            }
+        } catch (Exception e) when (e is TimeoutException or OperationCanceledException) {
+            // Lock timeout; proceed with unlocked write as fallback.
+            WriteUnlocked(path, dir, state);
+        } catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
+            // Lock acquire failure or file I/O error; proceed with unlocked write.
+            WriteUnlocked(path, dir, state);
+        }
+    }
+
+    static void WriteUnlocked(string path, string dir, TelemetryStateFile state) {
+        try {
+            Directory.CreateDirectory(dir);
             var json = JsonSerializer.Serialize(state, CapacitorJsonContext.Default.TelemetryStateFile);
             File.WriteAllText(path, json);
         } catch (Exception e) when (e is IOException or UnauthorizedAccessException) {

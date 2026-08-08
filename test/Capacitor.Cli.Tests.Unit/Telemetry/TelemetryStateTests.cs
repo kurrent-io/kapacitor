@@ -5,7 +5,9 @@ using TUnit.Core;
 
 namespace Capacitor.Cli.Tests.Unit.Telemetry;
 
-[NotInParallel(nameof(TelemetryStateTests))]
+// Lock on TelemetryState.PathOverride (the shared resource) rather than this class name, so that
+// other test classes in Tasks 7, 9, and 11 which also use PathOverride can reuse the same lock key.
+[NotInParallel(nameof(TelemetryState) + "." + nameof(TelemetryState.PathOverride))]
 public class TelemetryStateTests {
     static string NewTempPath() =>
         Path.Combine(Path.GetTempPath(), $"kcap-telemetry-{Guid.NewGuid():N}", "telemetry.json");
@@ -83,6 +85,20 @@ public class TelemetryStateTests {
         await Assert.That(TelemetryState.Read().NoticeShown).IsFalse();
         TelemetryState.MarkNoticeShown();
         await Assert.That(TelemetryState.Read().NoticeShown).IsTrue();
+    }
+
+    [Test]
+    public async Task Mark_notice_shown_preserves_existing_device_id_and_enabled() {
+        TelemetryState.PathOverride = NewTempPath();
+        var id = TelemetryState.GetOrCreateDeviceId();
+        TelemetryState.SetEnabled(false);
+
+        TelemetryState.MarkNoticeShown();
+
+        var state = TelemetryState.Read();
+        await Assert.That(state.Id).IsEqualTo(id);
+        await Assert.That(state.Enabled).IsEqualTo((bool?)false);
+        await Assert.That(state.NoticeShown).IsTrue();
     }
 
     [Test]
