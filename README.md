@@ -21,7 +21,7 @@
   - MCP servers: [sessions](#sessions-mcp-server-for-agents) · [flows](#flows-mcp-server-for-agents) · [flow-result](#flow-result-mcp-server-hosted-reviewers) · [memory](#memory-mcp-server-for-agents)
   - Importing: [import](#loading-historical-sessions) · [remap](#renamed-repo-directories-kcap-remap)
   - Agents & daemon: [daemon](#daemon) · [agent](#local-agents-kcap-agent) · [repos](#repository-paths)
-  - Account: [projects](#projects) · [profiles](#profiles) · [config](#configuration) · [uninstall](#uninstalling) · [other](#other-commands)
+  - Account: [projects](#projects) · [profiles](#profiles) · [config](#configuration) · [telemetry](#telemetry) · [uninstall](#uninstalling) · [other](#other-commands)
 - [License](#license)
 
 ## Why Capacitor
@@ -175,6 +175,8 @@ If your repo directories have been renamed or deleted on disk, the import prints
 ### 4. Open the dashboard
 
 Open the server URL in your browser. The dashboard shows repositories, sessions, and agents. It updates in real time as Claude Code sessions are active.
+
+kcap also reports anonymous CLI usage data by default — see [Telemetry](#telemetry) for what's collected and how to opt out.
 
 ### Sessions and Flows MCP servers for agents
 
@@ -1546,6 +1548,30 @@ Semantics:
 - Remaps are global, not per-profile — same rename affects all profiles' imports.
 
 After adding a remap, re-run `kcap import --org` (or whichever scope you use). The missing-cwd report at the top of the import will show what's still unresolved. Ephemeral worktree paths under `<project>/.<anything>/worktrees/<slug>` are auto-attributed to `<project>` when it still exists on disk, so deleted-worktree cwds don't need a remap entry.
+
+### Telemetry
+
+kcap reports anonymous usage data so we can see which commands people use and where setup goes wrong. It records **command names, exit codes, durations, MCP tool names, and setup-funnel steps.** It never records command arguments, file paths, repo names or URLs, session ids, transcript content, environment variable values, usernames, or email addresses.
+
+The first time you run a reportable command, kcap prints a one-time notice to stderr; it never prints again on that machine.
+
+Turn it off in any of three ways:
+
+```bash
+kcap config set telemetry off   # persisted, machine-wide
+export KCAP_TELEMETRY=0         # this shell only
+export DO_NOT_TRACK=1           # the cross-tool convention, honoured by kcap too
+```
+
+`telemetry` is deliberately machine-wide rather than per-profile: consent is a property of the machine, and having it flip when you switch profiles would be surprising.
+
+Precedence, highest first: `KCAP_TELEMETRY` > `DO_NOT_TRACK` > the persisted `telemetry` setting > on by default. `KCAP_TELEMETRY` wins over `DO_NOT_TRACK` **in both directions** — it's the kcap-specific, deliberate statement, and the only way to opt back in on a machine whose shell profile sets a blanket `DO_NOT_TRACK`:
+
+```bash
+DO_NOT_TRACK=1 KCAP_TELEMETRY=1 kcap status   # reports anyway — the explicit setting wins
+```
+
+`kcap config show` reports the effective state and which setting decided it, e.g. `Telemetry: off (source: DO_NOT_TRACK)`.
 
 ### Uninstalling
 

@@ -20,3 +20,4 @@ Config keys:
   excluded_repos              Excluded repos, comma-separated (owner/repo,owner/repo)
   update_check                Enable update check (true/false)
   flows.reviewer_vendor       Preferred review-flow reviewer vendor (used only when the definition names none)
+  telemetry                   Anonymous CLI usage reporting, machine-wide (on/off)
