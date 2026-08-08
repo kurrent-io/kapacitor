@@ -612,10 +612,12 @@ public static partial class CommandEvents {
     /// the pattern cannot express a path, URL, GUID, or email address, so nothing identifying
     /// survives regardless of what future commands introduce.
     ///
-    /// The 30-character bound is load-bearing. At 40 this admitted `--`-prefixed GUIDs — a
-    /// UUID's alphabet is lowercase hex plus hyphen, exactly this character class, so any GUID
-    /// starting with a hex letter matched. A GUID token is 38 characters and cannot fit in 30;
-    /// the longest real kcap flag, `--skip-antigravity-hooks`, is 24.
+    /// The 37-character bound is load-bearing and sits in a narrow window. At 40 this admitted
+    /// `--`-prefixed GUIDs — a UUID's alphabet is lowercase hex plus hyphen, exactly this
+    /// character class, so any GUID starting with a hex letter matched. The window's floor is
+    /// the longest real kcap flag, `--skip-antigravity-instructions` (31); its ceiling is a
+    /// GUID token (38). Both edges are pinned by tests: relaxing re-admits GUIDs, tightening
+    /// below 31 silently drops a real flag.
     /// </summary>
     public static string[] Flags(string[] args) =>
         args.Where(a => a.StartsWith("--", StringComparison.Ordinal))
@@ -626,7 +628,7 @@ public static partial class CommandEvents {
             .Take(MaxFlags)
             .ToArray();
 
-    [GeneratedRegex(@"^--[a-z][a-z0-9-]{0,28}$")]
+    [GeneratedRegex(@"^--[a-z][a-z0-9-]{0,34}$")]
     private static partial Regex FlagShape();
 }
 ```

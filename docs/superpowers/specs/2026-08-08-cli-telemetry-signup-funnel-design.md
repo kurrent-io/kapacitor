@@ -167,20 +167,31 @@ allowlist of known literals** (`daemon start`, `plugin install`, `config set`, `
 omitted when the token doesn't match — never raw argv.
 
 `flags[]` carries flag *names* only, sorted, values never sent. Names are admitted by **shape**
-rather than by a name allowlist: a token qualifies only if it matches `^--[a-z][a-z0-9-]{0,28}$`
-after any `=value` suffix is stripped. A global allowlist across ~40 commands would rot silently as
-flags are added, and shape is what actually makes a flag name safe.
+rather than by a name allowlist: a token qualifies only if it matches `^--[a-z][a-z0-9-]{0,34}$`
+(37 characters maximum) after any `=value` suffix is stripped. A global allowlist across ~40
+commands would rot silently as flags are added, and shape is what actually makes a flag name safe.
 
-The 30-character bound is load-bearing, not incidental. An earlier draft allowed 40, which admitted
-`--`-prefixed GUIDs: a UUID's alphabet is lowercase hex plus hyphen, exactly the character class
-here, so any GUID beginning with a hex letter — ~37% of UUIDv4s — satisfied the pattern. At 30 a
-GUID token (`--` plus 36 characters) cannot fit, while every real kcap flag clears it with room to
-spare; the longest is `--skip-antigravity-hooks` at 24. With that bound the pattern genuinely cannot
-express a path, URL, GUID, or email address. A future flag name longer than 30 characters is dropped
-rather than reported, which is the allow-by-exception default behaving correctly.
+The length bound is load-bearing, and it lives in a narrow window. An earlier draft allowed 40,
+which admitted `--`-prefixed GUIDs: a UUID's alphabet is lowercase hex plus hyphen, exactly the
+character class here, so any GUID beginning with a hex letter — ~37% of UUIDv4s — satisfied the
+pattern. The window is therefore bounded below by the longest real flag,
+`--skip-antigravity-instructions` at **31** characters, and above by a GUID token (`--` plus 36) at
+**38**. 37 sits inside it with six characters of headroom.
+
+Both edges are pinned by regression tests, because both can break silently: relaxing the bound
+re-admits GUIDs, and tightening it below 31 would drop a real flag from the data with no error.
+A future flag name longer than 37 characters is dropped rather than reported — the
+allow-by-exception default behaving correctly, and the reason new long flags should be added with
+a glance at this bound.
 
 Non-matching tokens, and every non-`--` token, are dropped; the flag list is additionally capped at
 12 entries.
+
+**Residual, accepted:** a shape rule cannot distinguish a short lowercase-hex identifier (a
+truncated git SHA, say) from a flag name. The guarantee is specifically that paths, URLs, GUIDs and
+email addresses cannot survive — not that no identifier of any kind could ever be expressed within
+37 characters of `[a-z0-9-]`. Closing that would require an allowlist, with the maintenance cost
+this design rejected.
 
 ### Setup funnel
 
