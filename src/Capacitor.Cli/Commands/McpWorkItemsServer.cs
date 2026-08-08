@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
@@ -6,6 +7,7 @@ using System.Text.Json.Nodes;
 using System.Text.Json.Serialization.Metadata;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Auth;
+using Capacitor.Cli.Core.Telemetry;
 
 namespace Capacitor.Cli.Commands;
 
@@ -22,6 +24,14 @@ static class McpWorkItemsServer {
 
     public static async Task<int> RunAsync(string baseUrl) {
         var tools = BuildToolsList();
+
+        // MCP servers are long-lived and denylisted under the top-level "mcp" command
+        // (CommandEvents.Denylisted) — re-initialise under the reportable pseudo-command
+        // "mcp-server" so per-tool-call events actually leave. Best-effort: a stale token on
+        // disk must never block the server from starting.
+        var loggedIn = false;
+        try { loggedIn = await TokenStore.LoadAsync() is not null; } catch { }
+        CliTelemetry.Initialize("mcp-server", baseUrl, loggedIn);
 
         // Validate the server_url shape once, locally (pure string check — no network, token,
         // or stderr). Used to fail gracefully instead of hard-exiting mid-request (below).
@@ -50,6 +60,22 @@ static class McpWorkItemsServer {
                 // paths from IO errors) and return a generic tool error, keeping the loop alive.
                 await Console.Error.WriteLineAsync($"kcap mcp workitems: unexpected error handling tools/call: {ex}");
                 return BuildToolResult(callId, "Error: internal error handling the request.", isError: true);
+            }
+        }
+
+        // Records which MCP tools agents actually reach for. Never touches the response path:
+        // the result (or the exception) is returned exactly as DispatchToolCallAsync produced it.
+        async Task<string> TimedDispatchToolCallAsync(JsonNode callId, JsonObject callRequest) {
+            var start = Stopwatch.GetTimestamp();
+            var tool  = McpTelemetry.SafeToolName(callRequest);
+            var ok    = false;
+
+            try {
+                var response = await DispatchToolCallAsync(callId, callRequest);
+                ok = true;
+                return response;
+            } finally {
+                McpTelemetry.ToolCalled("kcap-workitems", tool, ok, CommandTiming.ElapsedMs(start));
             }
         }
 
@@ -83,7 +109,7 @@ static class McpWorkItemsServer {
                     null         => BuildErrorResponse(id, -32600, "Invalid request: method must be a string"),
                     "initialize" => BuildInitializeResponse(id, request),
                     "tools/list" => BuildToolsListResponse(id, tools),
-                    "tools/call" => await DispatchToolCallAsync(id, request),
+                    "tools/call" => await TimedDispatchToolCallAsync(id, request),
                     _            => McpProtocol.TryHandleStandardMethod(method, id)
                                     ?? BuildErrorResponse(id, -32601, $"Method not found: {method}")
                 };

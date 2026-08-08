@@ -1,9 +1,12 @@
+using System.Diagnostics;
 using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization.Metadata;
 using Capacitor.Cli.Core;
+using Capacitor.Cli.Core.Auth;
+using Capacitor.Cli.Core.Telemetry;
 
 namespace Capacitor.Cli.Commands;
 
@@ -18,6 +21,14 @@ static class McpJudgeServer {
         // BEFORE the JSON-RPC handshake, leaving the judge run to fail opaquely.
         var urlOk = HttpClientExtensions.IsAcceptableUrl(baseUrl);
         HttpClient? client = null;
+
+        // MCP servers are long-lived and denylisted under the top-level "mcp" command
+        // (CommandEvents.Denylisted) — re-initialise under the reportable pseudo-command
+        // "mcp-server" so per-tool-call events actually leave. Best-effort: a stale token on
+        // disk must never block the server from starting.
+        var loggedIn = false;
+        try { loggedIn = await TokenStore.LoadAsync() is not null; } catch { }
+        CliTelemetry.Initialize("mcp-server", baseUrl, loggedIn);
 
         var tools = BuildToolsList();
 
@@ -50,7 +61,7 @@ static class McpJudgeServer {
             var response = method switch {
                 "initialize" => BuildInitializeResponse(id, request),
                 "tools/list" => BuildToolsListResponse(id, tools),
-                "tools/call" => await DispatchToolCallAsync(id, request),
+                "tools/call" => await TimedDispatchToolCallAsync(id, request),
                 _            => McpProtocol.TryHandleStandardMethod(method, id)
                                 ?? BuildErrorResponse(id, -32601, $"Method not found: {method}")
             };
@@ -71,6 +82,22 @@ static class McpJudgeServer {
 
             client ??= await HttpClientExtensions.CreateAuthenticatedClientAsync(baseUrl);
             return await HandleToolCallAsync(callId, callRequest, client, baseUrl, expectedSessionId);
+        }
+
+        // Records which MCP tools agents actually reach for. Never touches the response path:
+        // the result (or the exception) is returned exactly as DispatchToolCallAsync produced it.
+        async Task<string> TimedDispatchToolCallAsync(JsonNode callId, JsonObject callRequest) {
+            var start = Stopwatch.GetTimestamp();
+            var tool  = McpTelemetry.SafeToolName(callRequest);
+            var ok    = false;
+
+            try {
+                var response = await DispatchToolCallAsync(callId, callRequest);
+                ok = true;
+                return response;
+            } finally {
+                McpTelemetry.ToolCalled("kcap-judge", tool, ok, CommandTiming.ElapsedMs(start));
+            }
         }
     }
 
