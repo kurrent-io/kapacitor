@@ -139,8 +139,20 @@ internal sealed class LaunchConsentBroker : ILaunchConsentPrompter {
         }
     }
 
-    public bool TryResolve(string requestId, bool allow) =>
-        _pending.TryRemove(requestId, out var p) && p.Tcs.TrySetResult(allow);
+    public bool TryResolve(string requestId, bool allow) => TryResolve(requestId, allow, null);
+
+    /// Non-null echo: resolve succeeds only for the pending entry whose PromptId matches
+    /// exactly, and match+removal is ONE atomic claim — the KeyValuePair-conditional remove is
+    /// the same ABA primitive the timeout/cleanup paths use (class doc). A lost claim (the
+    /// matched instance replaced between lookup and removal) returns false and NEVER retries
+    /// against the successor. Null echo: legacy resolve-by-id (v1 frame callers).
+    public bool TryResolve(string requestId, bool allow, string? promptIdEcho) {
+        if (!_pending.TryGetValue(requestId, out var p)) return false;
+        if (promptIdEcho is not null &&
+            !string.Equals(promptIdEcho, p.Request.PromptId, StringComparison.Ordinal)) return false;
+        if (!_pending.TryRemove(new KeyValuePair<string, Pending>(requestId, p))) return false;
+        return p.Tcs.TrySetResult(allow);
+    }
 
     public IReadOnlyList<LaunchConsentPromptRequest> PendingSnapshot() =>
         _pending.Values.Select(p => p.Request).ToList();

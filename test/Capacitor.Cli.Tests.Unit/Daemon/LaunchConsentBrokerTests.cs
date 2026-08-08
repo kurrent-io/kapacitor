@@ -15,8 +15,10 @@ public class LaunchConsentBrokerTests {
         return await task;
     }
 
-    static LaunchConsentPromptRequest Req(string id = "a1") =>
-        new(id, "user_x", "agent", "/tmp/repo", "claude", DateTimeOffset.UtcNow.ToString("O"), 5);
+    static LaunchConsentPromptRequest Req(string id = "a1", string promptId = "p1") =>
+        new(id, "user_x", "agent", "/tmp/repo", "claude", DateTimeOffset.UtcNow.ToString("O"), 5, null, promptId);
+
+    static LaunchConsentPromptRequest ReqWithPromptId(string id, string promptId) => Req(id, promptId);
 
     [Test]
     public async Task No_subscriber_reports_HasSubscriber_false() {
@@ -253,5 +255,46 @@ public class LaunchConsentBrokerTests {
 
         await Assert.That(async () => await promptTask).Throws<OperationCanceledException>();
         await Assert.That(broker.TryResolve("a-external-cancel", allow: true)).IsFalse();
+    }
+
+    // ══ TryResolve promptId-echo claim (spec §4.1) — the atomic identity-checked overload. ═════
+
+    [Test]
+    public async Task TryResolve_with_matching_echo_resolves_and_mismatch_leaves_pending_untouched() {
+        var broker = new LaunchConsentBroker();
+        var (id, _) = broker.Subscribe();
+        var promptTask = broker.PromptAsync(ReqWithPromptId("agent-1", "p-A"), TimeSpan.FromMinutes(1), TimeProvider.System, CancellationToken.None);
+
+        await Assert.That(broker.TryResolve("agent-1", true, "WRONG")).IsFalse();   // mismatch: no claim
+        await Assert.That(promptTask.IsCompleted).IsFalse();                        // A still pending
+        await Assert.That(broker.TryResolve("agent-1", true, "p-A")).IsTrue();      // exact echo claims
+        await Assert.That(await promptTask).IsTrue();
+        broker.Unsubscribe(id);
+    }
+
+    [Test]
+    public async Task Stale_echo_for_a_superseded_request_never_decides_the_successor() {
+        // A times out; successor B reuses the id; A's late resolve must answer false and leave B live.
+        var broker = new LaunchConsentBroker();
+        var (id, _) = broker.Subscribe();
+        var a = broker.PromptAsync(ReqWithPromptId("agent-1", "p-A"), TimeSpan.Zero, TimeProvider.System, CancellationToken.None);
+        await Assert.That(await a).IsNull(); // timeout claimed A
+        var b = broker.PromptAsync(ReqWithPromptId("agent-1", "p-B"), TimeSpan.FromMinutes(1), TimeProvider.System, CancellationToken.None);
+
+        await Assert.That(broker.TryResolve("agent-1", true, "p-A")).IsFalse(); // stale identity: refused
+        await Assert.That(b.IsCompleted).IsFalse();                             // B untouched
+        await Assert.That(broker.TryResolve("agent-1", false, "p-B")).IsTrue(); // B decided on its own terms
+        await Assert.That(await b).IsFalse();
+        broker.Unsubscribe(id);
+    }
+
+    [Test]
+    public async Task Null_echo_preserves_legacy_resolve_by_id() {
+        var broker = new LaunchConsentBroker();
+        var (id, _) = broker.Subscribe();
+        var a = broker.PromptAsync(ReqWithPromptId("agent-1", "p-A"), TimeSpan.FromMinutes(1), TimeProvider.System, CancellationToken.None);
+        await Assert.That(broker.TryResolve("agent-1", true, null)).IsTrue();
+        await Assert.That(await a).IsTrue();
+        broker.Unsubscribe(id);
     }
 }

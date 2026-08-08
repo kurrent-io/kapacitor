@@ -115,7 +115,7 @@ internal sealed class LaunchConsentIpc(
     }
 
     static ConsentPendingDto ToDto(LaunchConsentPromptRequest r) =>
-        new(r.RequestId, r.Requester, r.Kind, r.RepoPath, r.Vendor, r.RequestedAt, r.TimeoutSeconds, null, null);
+        new(r.RequestId, r.Requester, r.Kind, r.RepoPath, r.Vendor, r.RequestedAt, r.TimeoutSeconds, r.RequesterDisplay, r.PromptId);
 
     static Task WriteAck(Stream stream, ConsentAckDto ack, CancellationToken ct) {
         var json = JsonSerializer.Serialize(ack, ConsentIpcJsonContext.Default.ConsentAckDto);

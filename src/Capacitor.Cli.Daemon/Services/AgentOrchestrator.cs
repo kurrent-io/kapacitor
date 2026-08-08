@@ -1327,7 +1327,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
         // messages to this daemon queue behind the prompt for the same window.
         var consentInput = new LaunchConsentInput(
             cmd.RequesterUserId, cmd.RequesterIsOwner ?? false,
-            LaunchConsentEngine.KindToken(cmd.Kind), cmd.RepoPath, cmd.Vendor);
+            LaunchConsentEngine.KindToken(cmd.Kind), cmd.RepoPath, cmd.Vendor, cmd.RequesterDisplay);
         var consent = await _consentGate.DecideAsync(cmd.AgentId, consentInput, _shutdownCts.Token);
         if (!consent.Allowed) {
             _logger.LogWarning("Launch {AgentId} denied by consent policy ({Source})", cmd.AgentId, consent.Source);

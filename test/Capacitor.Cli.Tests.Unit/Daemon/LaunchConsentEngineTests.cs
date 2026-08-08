@@ -6,8 +6,8 @@ namespace Capacitor.Cli.Tests.Unit.Daemon;
 internal class LaunchConsentEngineTests {
     static LaunchConsentInput Input(
         string? requester = "user_abc", bool owner = false, string kind = "agent",
-        string repo = "/Users/me/dev/proj", string vendor = "claude")
-        => new(requester, owner, kind, repo, vendor);
+        string repo = "/Users/me/dev/proj", string vendor = "claude", string? requesterDisplay = null)
+        => new(requester, owner, kind, repo, vendor, requesterDisplay);
 
     static LaunchConsentPolicy Policy(
         LaunchConsentDefault def = LaunchConsentDefault.Allow, params LaunchConsentRule[] rules)
@@ -121,6 +121,17 @@ internal class LaunchConsentEngineTests {
         var d = LaunchConsentEngine.Evaluate(policy, Input(owner: true));
         await Assert.That(d.Verdict).IsEqualTo(LaunchConsentVerdict.Allow);
         await Assert.That(d.Source).IsEqualTo("owner");
+    }
+
+    [Test] // first-match-wins pins the "Allow & remember shadowed by pause" contract (spec §4.1).
+    public async Task Earlier_wildcard_deny_shadows_a_later_appended_allow() {
+        var policy = new LaunchConsentPolicy(LaunchConsentDefault.Prompt, 45, [
+            new LaunchConsentRule("deny", null, null, null, null),          // pause at rules[0]
+            new LaunchConsentRule("allow", "github:1", null, null, null),   // appended by Allow & remember
+        ]);
+        var d = LaunchConsentEngine.Evaluate(policy, Input(requester: "github:1"));
+        await Assert.That(d.Verdict).IsEqualTo(LaunchConsentVerdict.Deny);
+        await Assert.That(d.Source).IsEqualTo("rule[0]");
     }
 
     [Test]

@@ -1,10 +1,11 @@
+using Capacitor.Cli.Core.LocalIpc;
 using Microsoft.Extensions.Logging;
 
 namespace Capacitor.Cli.Daemon.Services;
 
 internal sealed record LaunchConsentPromptRequest(
     string RequestId, string? Requester, string Kind, string RepoPath, string Vendor,
-    string RequestedAt, int TimeoutSeconds);
+    string RequestedAt, int TimeoutSeconds, string? RequesterDisplay, string PromptId);
 
 /// Implemented by LaunchConsentBroker (Task 6). Null answer = timeout / subscriber vanished.
 internal interface ILaunchConsentPrompter {
@@ -62,7 +63,8 @@ internal sealed class LaunchConsentGate(
                 detail: $"owner approval required and no approval UI attached within {wait.TotalSeconds:0.0}s grace");
 
         var req = new LaunchConsentPromptRequest(agentId, input.RequesterUserId, input.Kind,
-            input.RepoPath, input.Vendor, requestedAt, policy.PromptTimeoutSeconds);
+            input.RepoPath, input.Vendor, requestedAt, policy.PromptTimeoutSeconds,
+            input.RequesterDisplay, Guid.NewGuid().ToString("N"));
         logger.LogInformation("Launch {AgentId} awaiting owner consent (timeout {Timeout}s)", agentId, req.TimeoutSeconds);
         // Recomputed (zero allowed — a subscriber arriving exactly at the deadline still gets a
         // single fail-closed settlement via PromptAsync's own timeout, never a special case here).
@@ -76,9 +78,10 @@ internal sealed class LaunchConsentGate(
     }
 
     LaunchConsentOutcome Done(string agentId, in LaunchConsentInput input, bool allowed, string source, string detail) {
-        log.Record(new LaunchConsentRecord(
+        log.Record(new ConsentDecisionRecord(
             DateTimeOffset.UtcNow.ToString("O"), agentId, input.RequesterUserId, input.RequesterIsOwner,
-            input.Kind, input.RepoPath, input.Vendor, allowed ? "allowed" : "denied", source));
+            input.Kind, input.RepoPath, input.Vendor, allowed ? "allowed" : "denied", source,
+            input.RequesterDisplay));
         return new LaunchConsentOutcome(allowed, source, detail);
     }
 }

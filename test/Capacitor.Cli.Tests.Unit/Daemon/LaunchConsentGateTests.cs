@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Capacitor.Cli.Daemon.Services;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Time.Testing;
@@ -16,8 +17,8 @@ public class LaunchConsentGateTests {
         return (gate, store, dir);
     }
 
-    static LaunchConsentInput Input(bool owner = false) =>
-        new("user_x", owner, "agent", "/tmp/repo", "claude");
+    static LaunchConsentInput Input(bool owner = false, string? requesterDisplay = null) =>
+        new("user_x", owner, "agent", "/tmp/repo", "claude", requesterDisplay);
 
     sealed class FakePrompter(bool? answer, bool hasSubscriber = true) : ILaunchConsentPrompter {
         public LaunchConsentPromptRequest? Seen;
@@ -26,6 +27,19 @@ public class LaunchConsentGateTests {
             Task.FromResult(hasSubscriber);
         public Task<bool?> PromptAsync(LaunchConsentPromptRequest req, TimeSpan timeout, TimeProvider time, CancellationToken ct) {
             Seen = req;
+            return Task.FromResult(answer);
+        }
+    }
+
+    /// Like FakePrompter, but accumulates every request it is asked to prompt — for pinning
+    /// per-call identity (e.g. distinct minted PromptIds across repeated DecideAsync calls).
+    sealed class CapturingPrompter(bool? answer) : ILaunchConsentPrompter {
+        public readonly List<LaunchConsentPromptRequest> Requests = [];
+        public bool HasSubscriber => true;
+        public Task<bool> WaitForSubscriberAsync(TimeSpan wait, TimeProvider time, CancellationToken ct) =>
+            Task.FromResult(true);
+        public Task<bool?> PromptAsync(LaunchConsentPromptRequest req, TimeSpan timeout, TimeProvider time, CancellationToken ct) {
+            Requests.Add(req);
             return Task.FromResult(answer);
         }
     }
@@ -83,6 +97,37 @@ public class LaunchConsentGateTests {
     [Test]
     public async Task Denied_reason_prefix_is_the_public_wire_literal() {
         await Assert.That(LaunchConsentGate.DeniedReasonPrefix).IsEqualTo("launch_denied_by_owner");
+    }
+
+    [Test]
+    public async Task Gate_mints_distinct_prompt_ids_under_a_frozen_clock_and_threads_display() {
+        // Frozen TimeProvider (never advanced): RequestedAt is identical for both prompts —
+        // PromptId must still differ (the failure mode a timestamp identity would have had).
+        var prompter = new CapturingPrompter(answer: true);
+        var (gate, _, _) = Build(LaunchConsentDefault.Prompt, prompter, time: new FakeTimeProvider());
+        var input = new LaunchConsentInput("github:1", false, "agent", "/r", "codex", "Mathias");
+
+        await gate.DecideAsync("agent-1", input, CancellationToken.None);
+        await gate.DecideAsync("agent-1", input, CancellationToken.None);
+
+        var (a, b) = (prompter.Requests[0], prompter.Requests[1]);
+        await Assert.That(a.RequestedAt).IsEqualTo(b.RequestedAt);        // clock frozen
+        await Assert.That(a.PromptId).IsNotEqualTo(b.PromptId);          // identity is not the clock
+        await Assert.That(a.PromptId).IsNotEmpty();
+        await Assert.That(a.RequesterDisplay).IsEqualTo("Mathias");
+    }
+
+    [Test]
+    public async Task Done_records_requester_display_in_the_decision_record() {
+        // Rule-allowed path (no prompter needed): input display lands in the log record.
+        var (gate, _, dir) = Build(LaunchConsentDefault.Allow);
+        var o = await gate.DecideAsync("a1",
+            new LaunchConsentInput("github:1", false, "agent", "/r", "codex", "Mathias"), CancellationToken.None);
+        await Assert.That(o.Source).IsEqualTo("default");
+
+        var lines = File.ReadAllLines(Path.Combine(dir, "consent-decisions.jsonl"));
+        using var parsed = JsonDocument.Parse(lines[0]);
+        await Assert.That(parsed.RootElement.GetProperty("requester_display").GetString()).IsEqualTo("Mathias");
     }
 
     // ══ Deadline discipline (spec §3.2) — grace + monotonic deadline + TimeProvider plumbing.

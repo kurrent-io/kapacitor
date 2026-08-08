@@ -1,13 +1,14 @@
 using System.Text.Json;
+using Capacitor.Cli.Core.LocalIpc;
 using Capacitor.Cli.Daemon.Services;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Capacitor.Cli.Tests.Unit.Daemon;
 
 public class LaunchConsentDecisionLogTests {
-    static LaunchConsentRecord Rec(string agent = "a1") => new(
+    static ConsentDecisionRecord Rec(string agent = "a1") => new(
         DateTimeOffset.UtcNow.ToString("O"), agent, "user_x", false,
-        "agent", "/tmp/repo", "claude", "denied", "default");
+        "agent", "/tmp/repo", "claude", "denied", "default", "Mathias");
 
     [Test]
     public async Task Records_append_as_parseable_snake_case_jsonl() {
@@ -20,6 +21,7 @@ public class LaunchConsentDecisionLogTests {
         using var parsed = JsonDocument.Parse(lines[0]);
         await Assert.That(parsed.RootElement.GetProperty("agent_id").GetString()).IsEqualTo("a1");
         await Assert.That(parsed.RootElement.GetProperty("outcome").GetString()).IsEqualTo("denied");
+        await Assert.That(lines[0]).Contains("\"requester_display\":\"Mathias\"");
     }
 
     [Test]

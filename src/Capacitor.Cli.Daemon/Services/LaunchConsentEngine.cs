@@ -7,7 +7,8 @@ internal readonly record struct LaunchConsentInput(
     bool RequesterIsOwner,
     string Kind,
     string RepoPath,
-    string Vendor);
+    string Vendor,
+    string? RequesterDisplay);
 
 internal enum LaunchConsentVerdict { Allow, Deny, Prompt }
 

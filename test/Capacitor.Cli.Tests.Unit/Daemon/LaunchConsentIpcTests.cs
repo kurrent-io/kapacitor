@@ -191,7 +191,7 @@ public class LaunchConsentIpcTests {
             await FrameCodec.WriteAsync(subscriber, new LocalFrame(FrameType.ConsentSubscribe), ct);
             await SpinUntilSubscribedAsync(h.Broker, ct);
 
-            var input = new LaunchConsentInput("user_x", RequesterIsOwner: false, "agent", "/tmp/repo", "claude");
+            var input = new LaunchConsentInput("user_x", RequesterIsOwner: false, "agent", "/tmp/repo", "claude", null);
             var decideTask = h.Gate.DecideAsync("a9", input, ct);
 
             var pending = await FrameCodec.ReadAsync(subscriber, ct);
@@ -224,7 +224,7 @@ public class LaunchConsentIpcTests {
             await FrameCodec.WriteAsync(subscriber, new LocalFrame(FrameType.ConsentSubscribe), ct);
             await SpinUntilSubscribedAsync(h.Broker, ct);
 
-            var input = new LaunchConsentInput("user_x", RequesterIsOwner: false, "review-flow", "/tmp/repo", "claude");
+            var input = new LaunchConsentInput("user_x", RequesterIsOwner: false, "review-flow", "/tmp/repo", "claude", null);
             var decideTask = h.Gate.DecideAsync("a10", input, ct);
 
             var pending = await FrameCodec.ReadAsync(subscriber, ct);
@@ -347,7 +347,7 @@ public class LaunchConsentIpcTests {
             await FrameCodec.WriteAsync(subscriber, new LocalFrame(FrameType.ConsentSubscribe), ct);
             await SpinUntilSubscribedAsync(h.Broker, ct);
 
-            var input = new LaunchConsentInput("user_x", RequesterIsOwner: false, "agent", "/tmp/repo", "claude");
+            var input = new LaunchConsentInput("user_x", RequesterIsOwner: false, "agent", "/tmp/repo", "claude", null);
             var decideTask = h.Gate.DecideAsync("a11", input, ct);
 
             var pending = await FrameCodec.ReadAsync(subscriber, ct);
