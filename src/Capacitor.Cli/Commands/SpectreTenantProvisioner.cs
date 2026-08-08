@@ -44,6 +44,7 @@ public sealed class SpectreTenantProvisioner(TenantProvisioningClient client, st
                         ? ValidationResult.Error("Enter a workspace slug (e.g. acme) or a full server URL")
                         : ValidationResult.Success()));
 
+            SetupFunnel.WorkspaceRedirected();
             return ProvisionOffer.ExistingWorkspace(workspace.Trim());
         }
 

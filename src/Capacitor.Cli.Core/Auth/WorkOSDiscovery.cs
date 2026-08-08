@@ -63,10 +63,19 @@ public static class WorkOSDiscovery {
 
         var auth = await orglessLogin();
         if (auth is null || string.IsNullOrEmpty(auth.RefreshToken)) {
+            // Anchored here, not on this method's return: by the time RunAsync returns, it has
+            // also run tenant enumeration and (on the zero-tenant fork) provisioning, so keying
+            // signin_completed/failed on the overall outcome would place signin_completed after
+            // tenant_none/workspace_provisioned and make signin_failed fire for declined offers,
+            // provisioning failures, and the deliberately-non-zero retarget path — none of which
+            // are a sign-in failure.
+            SetupFunnel.SigninFailed("workos_signin_failed");
             await Console.Error.WriteLineAsync("WorkOS sign-in failed.");
 
             return new(1);
         }
+
+        SetupFunnel.SigninCompleted(AuthProvider.WorkOS);
 
         var result = await proxy.DiscoverWorkOSTenantsAsync(proxyUrl, auth.AccessToken);
         if (result.Error != DiscoveryError.None) {

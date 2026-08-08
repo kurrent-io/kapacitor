@@ -1,7 +1,11 @@
+using Capacitor.Cli.Core.Auth;
 using Capacitor.Cli.Core.Telemetry;
+using NSubstitute;
 using TUnit.Assertions;
+using TUnit.Assertions.Enums;
 using TUnit.Assertions.Extensions;
 using TUnit.Core;
+using DiscoveryResult = Capacitor.Cli.Core.Auth.DiscoveryResult;
 
 namespace Capacitor.Cli.Tests.Unit.Telemetry;
 
@@ -34,11 +38,14 @@ public class SetupFunnelTests {
         SetupFunnel.WorkspaceProvisioned();
         SetupFunnel.Succeeded(agentsConfigured: 3);
 
+        // CollectionOrdering.Matching: IsEquivalentTo defaults to set comparison (any order) and
+        // would pass even on a transposed sequence — this is exactly the funnel's ordering that
+        // matters (a PostHog ordered funnel converts on step order, not just step presence).
         await Assert.That(sink.Select(e => e.Name).ToArray()).IsEquivalentTo(new[] {
             "cli_setup_started", "cli_setup_signin_opened", "cli_setup_signin_completed",
             "cli_setup_tenant_none", "cli_setup_workspace_offered", "cli_setup_workspace_requested",
             "cli_setup_workspace_provisioned", "cli_setup_succeeded",
-        });
+        }, CollectionOrdering.Matching);
     }
 
     [Test]
@@ -69,11 +76,13 @@ public class SetupFunnelTests {
     public async Task Started_carries_its_entry_conditions() {
         var sink = StartCapturing();
 
-        SetupFunnel.Started(hasExistingProfile: true, serverUrlProvided: true, noPrompt: true);
+        // Mixed, not all-true: all-true would pass under a transposed mapping (e.g.
+        // ["no_prompt"] = serverUrlProvided) just as easily as the correct one.
+        SetupFunnel.Started(hasExistingProfile: true, serverUrlProvided: false, noPrompt: true);
 
         var props = sink[0].Properties;
         await Assert.That(props["has_existing_profile"]!.GetValue<bool>()).IsTrue();
-        await Assert.That(props["server_url_provided"]!.GetValue<bool>()).IsTrue();
+        await Assert.That(props["server_url_provided"]!.GetValue<bool>()).IsFalse();
         await Assert.That(props["no_prompt"]!.GetValue<bool>()).IsTrue();
     }
 
@@ -103,12 +112,45 @@ public class SetupFunnelTests {
         SetupFunnel.TenantNone("workos");
         SetupFunnel.WorkspaceOffered();
         SetupFunnel.WorkspaceDeclined();
+        SetupFunnel.WorkspaceRedirected();
         SetupFunnel.WorkspaceRequested();
         SetupFunnel.WorkspaceProvisioned();
         SetupFunnel.WorkspaceFailed("poll_timeout");
         SetupFunnel.Succeeded(1);
 
+        // Without this, an Emit that silently no-ops would leave sink empty and the loop below
+        // would assert nothing — a test that cannot fail. 12 = the 12 calls above.
+        await Assert.That(sink.Count).IsEqualTo(12);
+
         foreach (var e in sink)
             await Assert.That(serverEvents.Contains(e.Name)).IsFalse();
+    }
+
+    // Call-site coverage, not just SetupFunnel's statics: every test above calls SetupFunnel
+    // directly, so a wiring defect inside WorkOSDiscovery.RunAsync itself — e.g. the original bug
+    // of anchoring signin_completed/signin_failed on RunAsync's overall ExitCode instead of the
+    // live-auth result — was invisible to this suite. A zero-tenant, no-provisioner run reaches
+    // the legacy "ask your admin" dead-end (ExitCode 1) despite sign-in having fully succeeded,
+    // which is exactly the case that anchoring on ExitCode gets wrong.
+    [Test]
+    public async Task WorkOSDiscovery_emits_signin_completed_before_tenant_none_for_a_zero_tenant_run() {
+        var sink = StartCapturing();
+
+        var proxy = Substitute.For<IAuthProxyClient>();
+        proxy.DiscoverWorkOSTenantsAsync(Arg.Any<string>(), Arg.Any<string>())
+             .Returns(Task.FromResult(new DiscoveryResult([], DiscoveryError.None)));
+
+        var outcome = await WorkOSDiscovery.RunAsync(
+            "https://auth.kcap.ai", new ProxyConfigResponse { WorkOSClientId = "client_d" },
+            proxy, Substitute.For<ITenantPicker>(),
+            ()     => Task.FromResult<WorkOSAuthResponse?>(new WorkOSAuthResponse { AccessToken = "acc", RefreshToken = "rt" }),
+            (_, _) => Task.FromResult<WorkOSAuthResponse?>(null));
+
+        // No provisioner passed -> the legacy "ask your admin" dead-end -> ExitCode 1, even though
+        // sign-in itself worked fine.
+        await Assert.That(outcome.ExitCode).IsEqualTo(1);
+
+        await Assert.That(sink.Select(e => e.Name).ToArray()).IsEquivalentTo(
+            new[] { "cli_setup_signin_completed", "cli_setup_tenant_none" }, CollectionOrdering.Matching);
     }
 }

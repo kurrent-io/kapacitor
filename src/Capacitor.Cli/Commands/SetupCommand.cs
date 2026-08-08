@@ -819,7 +819,14 @@ public static class SetupCommand {
         }
 
         var provider = OAuthLoginFlow.ChooseDiscoveryProvider(args, isInteractive: !HeadlessEnvironment.IsHeadless());
-        SetupFunnel.SigninOpened(HeadlessEnvironment.IsHeadless() ? "device" : "browser", provider);
+        // WorkOS discovery always authenticates via a loopback browser (see
+        // WorkOSDiscovery.RunWithLiveAuthAsync's orglessLogin) — headless never switches it to a
+        // device flow the way GitHub App's AcquireGitHubTokenAsync does, so the label must not
+        // vary with headlessness for this provider.
+        var signinMode = provider == AuthProvider.WorkOS
+            ? "browser"
+            : HeadlessEnvironment.IsHeadless() ? "device" : "browser";
+        SetupFunnel.SigninOpened(signinMode, provider);
 
         if (provider == AuthProvider.WorkOS) {
             // Offer inline tenant creation only in an interactive session; headless
@@ -828,11 +835,11 @@ public static class SetupCommand {
                 ? null
                 : new SpectreTenantProvisioner(new TenantProvisioningClient(new HttpClient()), ProvisioningEndpoint.Url);
 
+            // Sign-in events fire inside WorkOSDiscovery.RunAsync itself, right after live auth
+            // succeeds/fails and before tenant enumeration begins — see the comment there for why
+            // anchoring on this call's return (ExitCode) would be wrong.
             var workosDiscovery = await WorkOSDiscovery.RunWithLiveAuthAsync(
                 AuthProxyEndpoint.Url, proxyConfig, proxyClient, new SpectreTenantPicker(), provisioner);
-
-            if (workosDiscovery.ExitCode == 0) SetupFunnel.SigninCompleted(AuthProvider.WorkOS);
-            else                               SetupFunnel.SigninFailed("workos_discovery_failed");
 
             // Checked before ExitCode, which is deliberately non-zero on a re-target. The user has
             // no WorkOS tenant but does belong to a workspace, so continue setup against that
