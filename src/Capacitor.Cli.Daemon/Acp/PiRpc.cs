@@ -37,18 +37,20 @@ internal sealed record PiRpcFrame(
 /// <summary>
 /// Pure protocol layer for hosted Pi: parses one JSONL-RPC line into a <see cref="PiRpcFrame"/>,
 /// translates an event frame into the daemon's canonical <see cref="AcpEventEnvelope"/> transcript
-/// events, and builds the JSON text for the four commands this daemon sends to Pi. No process, no
-/// I/O, no state — see <c>AntigravityNdjson</c> for the structural template this mirrors.
+/// events, and builds the JSON text for the three commands this daemon sends to Pi in PR-1
+/// (<c>prompt</c>/<c>abort</c>/<c>get_state</c> — <c>set_model</c> is PR-2's, see the reviewer/model
+/// lane). No process, no I/O, no state — see <c>AntigravityNdjson</c> for the structural template
+/// this mirrors.
 ///
 /// Commands are hand-built as JSON text (never reflection-based serialization — this runs AOT) using
 /// <see cref="System.Text.Json.Nodes.JsonObject"/>, matching <c>AcpRpc.cs</c>'s idiom of keeping the
 /// wire shape explicit rather than riding a shared source-gen context whose property-naming policy
 /// would need to special-case this one vendor's camelCase field names
-/// (<c>streamingBehavior</c>/<c>set_model</c>'s own <c>model</c>) against the rest of the codebase's
-/// snake_case <see cref="CapacitorJsonContext"/>.
+/// (<c>streamingBehavior</c>) against the rest of the codebase's snake_case
+/// <see cref="CapacitorJsonContext"/>.
 /// </summary>
 internal static class PiRpc {
-    const int ExtensionErrorTextCap = 500;
+    const int ExtensionNoteTextCap = 500;
 
     /// <summary>
     /// Parses one JSONL-RPC line. Returns <see langword="null"/> for a blank/whitespace-only line or
@@ -107,26 +109,42 @@ internal static class PiRpc {
     /// <item><description><c>message_end</c> with a user message maps to ONE <c>user_message</c>
     /// envelope carrying the concatenated text — content may be a plain string or a content-part
     /// array (only <c>text</c> parts contribute; a user message has no thinking/toolCall parts).</description></item>
-    /// <item><description><c>tool_execution_end</c> maps to ONE <c>tool_result</c>. The result is
-    /// best-effort text: a JSON string is used verbatim, anything else (object/array/number/etc.) is
-    /// serialized back to compact JSON text — this never throws on an unexpected shape.</description></item>
+    /// <item><description><c>tool_execution_end</c> maps to ONE <c>tool_result</c>. Upstream's
+    /// <c>result</c> is an OBJECT — <c>{"content":[{"type":"text","text":".."}],"details":{..}}</c> —
+    /// so the text is the concatenation of its <c>content[]</c> items' <c>text</c> fields (the same
+    /// content-part concatenation <see cref="TranslateUserMessage"/> uses). A plain string
+    /// <c>result</c> is used verbatim (schema drift, tolerated); anything else — an object with no
+    /// <c>content</c> array, or any other shape — falls back to <c>GetRawText()</c> rather than
+    /// dropping the result, so this never throws on an unexpected shape.</description></item>
     /// <item><description><c>extension_error</c> maps to ONE <c>system_note</c>, its text capped at
-    /// <see cref="ExtensionErrorTextCap"/> characters.</description></item>
+    /// <see cref="ExtensionNoteTextCap"/> characters.</description></item>
+    /// <item><description><c>extension_ui_request</c> — a dialog or fire-and-forget UI call from a
+    /// user's OWN Pi extension (<c>KCAP_PI_PURE</c> only stands down kcap's own extension) — maps to
+    /// ONE <c>system_note</c> naming the request's <c>method</c>, capped at
+    /// <see cref="ExtensionNoteTextCap"/> characters. A dialog method (<c>select</c>/<c>confirm</c>/
+    /// <c>input</c>/<c>editor</c>) blocks the child on stdin for an <c>extension_ui_response</c> this
+    /// daemon never sends, so without this the turn stalls silently; the note is emitted for every
+    /// method, not just the blocking ones, since a hosted viewer has no way to tell them apart
+    /// either.</description></item>
     /// <item><description>Every other known event (<c>agent_start</c>/<c>agent_end</c>/
     /// <c>agent_settled</c>/<c>turn_start</c>/<c>turn_end</c>/<c>message_start</c>/
     /// <c>message_update</c>/<c>bash_execution_update</c>) and any unrecognized type yield
-    /// <c>[]</c> — deliberately no <c>system_note</c> spam for known-but-untranslated events; the
-    /// runtime logs unknown types separately.</description></item>
+    /// <c>[]</c> — deliberately no <c>system_note</c> spam for known-but-untranslated events, and no
+    /// debug logging either; the only place this protocol layer's caller logs anything is the read
+    /// pump, and only for a frame with no recognizable string <c>type</c> at all (see
+    /// <see cref="PiRpcFrameKind.Unknown"/>) — a known-or-unknown EVENT type that yields
+    /// <c>[]</c> here is silent by design.</description></item>
     /// </list>
     /// </summary>
     public static IReadOnlyList<AcpEventEnvelope> ToEnvelopes(PiRpcFrame frame, string? fallbackModel) {
         if (frame.Kind != PiRpcFrameKind.Event) return [];
 
         return frame.Type switch {
-            "message_end"        => TranslateMessageEnd(frame.Root, fallbackModel),
-            "tool_execution_end" => TranslateToolExecutionEnd(frame.Root),
-            "extension_error"    => TranslateExtensionError(frame.Root),
-            _                    => [],
+            "message_end"          => TranslateMessageEnd(frame.Root, fallbackModel),
+            "tool_execution_end"   => TranslateToolExecutionEnd(frame.Root),
+            "extension_error"      => TranslateExtensionError(frame.Root),
+            "extension_ui_request" => TranslateExtensionUiRequest(frame.Root),
+            _                      => [],
         };
     }
 
@@ -214,13 +232,7 @@ internal static class PiRpc {
         var isError    = root.TryGetProperty("isError", out var e) && e.ValueKind == JsonValueKind.True;
 
         string? resultText = null;
-        if (root.TryGetProperty("result", out var result)) {
-            resultText = result.ValueKind switch {
-                JsonValueKind.String => result.GetString(),
-                JsonValueKind.Null   => null,
-                _                    => result.GetRawText(),
-            };
-        }
+        if (root.TryGetProperty("result", out var result)) resultText = ExtractToolResultText(result);
 
         return [new AcpEventEnvelope(
             Kind: AcpEventKind.ToolResult,
@@ -229,20 +241,54 @@ internal static class PiRpc {
             ToolIsError: isError)];
     }
 
+    /// <summary>Upstream's <c>result</c> is normally an object carrying <c>content[]</c> — the same
+    /// content-part shape <see cref="TranslateUserMessage"/> concatenates, so this reuses that
+    /// approach rather than a second copy of it. A plain string is schema drift, tolerated verbatim;
+    /// anything else (an object with no <c>content</c> array, an array, a number, …) falls back to
+    /// <c>GetRawText()</c> so a result is never silently dropped.</summary>
+    static string? ExtractToolResultText(JsonElement result) {
+        if (result.ValueKind == JsonValueKind.String) return result.GetString();
+        if (result.ValueKind == JsonValueKind.Null) return null;
+
+        if (result.ValueKind == JsonValueKind.Object && result.Arr("content") is { } content) {
+            var sb = new System.Text.StringBuilder();
+            foreach (var item in content.EnumerateArray()) {
+                if (item.IsObject && item.Str("type") == "text" && item.Str("text") is { } t) sb.Append(t);
+            }
+            return sb.ToString();
+        }
+
+        return result.GetRawText();
+    }
+
     static IReadOnlyList<AcpEventEnvelope> TranslateExtensionError(JsonElement root) {
         var error = root.Str("error");
         if (error is null) return [];
 
-        var bounded = error.Length > ExtensionErrorTextCap ? error[..ExtensionErrorTextCap] : error;
-        return [new AcpEventEnvelope(Kind: AcpEventKind.SystemNote, Text: bounded)];
+        return [new AcpEventEnvelope(Kind: AcpEventKind.SystemNote, Text: Cap(error))];
     }
+
+    /// <summary>See the <see cref="ToEnvelopes"/> class doc's <c>extension_ui_request</c> item: a
+    /// dialog method blocks the child waiting for an <c>extension_ui_response</c> this daemon never
+    /// sends, so a hosted turn that hits one stalls with no other signal anywhere in the
+    /// transcript.</summary>
+    static IReadOnlyList<AcpEventEnvelope> TranslateExtensionUiRequest(JsonElement root) {
+        var method = root.Str("method") ?? "unknown";
+
+        return [new AcpEventEnvelope(
+            Kind: AcpEventKind.SystemNote,
+            Text: Cap($"Pi extension requested interactive input ({method}); hosted sessions cannot "
+                    + "answer, the turn may stall."))];
+    }
+
+    static string Cap(string text) => text.Length > ExtensionNoteTextCap ? text[..ExtensionNoteTextCap] : text;
 
     // ---- Command builders ----
     //
-    // Hand-built via JsonObject rather than a source-gen context: these four shapes are small, fixed,
-    // and vendor-specific (camelCase, unlike the rest of this codebase's snake_case wire contracts),
-    // so a one-off object literal is clearer than teaching a shared JsonSerializerContext a
-    // per-command naming exception.
+    // Hand-built via JsonObject rather than a source-gen context: these shapes are small, fixed, and
+    // vendor-specific (camelCase, unlike the rest of this codebase's snake_case wire contracts), so a
+    // one-off object literal is clearer than teaching a shared JsonSerializerContext a per-command
+    // naming exception.
 
     public static string PromptCommand(string id, string message) =>
         new System.Text.Json.Nodes.JsonObject {
@@ -262,12 +308,5 @@ internal static class PiRpc {
         new System.Text.Json.Nodes.JsonObject {
             ["id"]   = id,
             ["type"] = "get_state",
-        }.ToJsonString();
-
-    public static string SetModelCommand(string id, string model) =>
-        new System.Text.Json.Nodes.JsonObject {
-            ["id"]    = id,
-            ["type"]  = "set_model",
-            ["model"] = model,
         }.ToJsonString();
 }

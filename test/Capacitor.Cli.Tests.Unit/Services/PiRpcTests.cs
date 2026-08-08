@@ -163,7 +163,13 @@ public class PiRpcTests {
 
     [Test]
     public async Task Tool_execution_end_yields_tool_result_with_text_and_not_error() {
-        const string line = """{"type":"tool_execution_end","toolCallId":"call_123","toolName":"bash","result":{"stdout":"ok"},"isError":false}""";
+        // Upstream's `result` is an OBJECT carrying a content array (rpc.md ~1003) — not the bare
+        // "stdout" shape an earlier revision of this test assumed.
+        const string line = """
+            {"type":"tool_execution_end","toolCallId":"call_123","toolName":"bash",
+             "result":{"content":[{"type":"text","text":"total 48\ndrwxr-xr-x"}],"details":{"truncation":null}},
+             "isError":false}
+            """;
 
         var frame = PiRpc.TryParseLine(line);
         var envelopes = PiRpc.ToEnvelopes(frame!, fallbackModel: null);
@@ -172,11 +178,38 @@ public class PiRpcTests {
         await Assert.That(envelopes[0].Kind).IsEqualTo(AcpEventKind.ToolResult);
         await Assert.That(envelopes[0].ToolCallId).IsEqualTo("call_123");
         await Assert.That(envelopes[0].ToolIsError).IsEqualTo(false);
-        await Assert.That(envelopes[0].ToolResult).IsNotNull();
+        await Assert.That(envelopes[0].ToolResult).IsEqualTo("total 48\ndrwxr-xr-x");
+    }
+
+    [Test]
+    public async Task Tool_execution_end_result_concatenates_multiple_content_text_items() {
+        const string line = """
+            {"type":"tool_execution_end","toolCallId":"call_999","toolName":"bash",
+             "result":{"content":[{"type":"text","text":"part one "},{"type":"text","text":"part two"}]},
+             "isError":false}
+            """;
+
+        var frame = PiRpc.TryParseLine(line);
+        var envelopes = PiRpc.ToEnvelopes(frame!, fallbackModel: null);
+
+        await Assert.That(envelopes.Count).IsEqualTo(1);
+        await Assert.That(envelopes[0].ToolResult).IsEqualTo("part one part two");
+    }
+
+    [Test]
+    public async Task Tool_execution_end_result_falls_back_to_raw_json_when_no_content_array() {
+        const string line = """{"type":"tool_execution_end","toolCallId":"call_777","result":{"foo":"bar"},"isError":false}""";
+
+        var frame = PiRpc.TryParseLine(line);
+        var envelopes = PiRpc.ToEnvelopes(frame!, fallbackModel: null);
+
+        await Assert.That(envelopes.Count).IsEqualTo(1);
+        await Assert.That(envelopes[0].ToolResult).IsEqualTo("""{"foo":"bar"}""");
     }
 
     [Test]
     public async Task Tool_execution_end_with_isError_true_is_marked_as_error() {
+        // A plain string result is schema drift, not the documented shape — tolerated verbatim.
         const string line = """{"type":"tool_execution_end","toolCallId":"call_456","toolName":"bash","result":"command not found","isError":true}""";
 
         var frame = PiRpc.TryParseLine(line);
@@ -214,6 +247,23 @@ public class PiRpcTests {
         await Assert.That(envelopes.Count).IsEqualTo(1);
         await Assert.That(envelopes[0].Kind).IsEqualTo(AcpEventKind.SystemNote);
         await Assert.That(envelopes[0].Text!.Length).IsEqualTo(500);
+    }
+
+    // ---- ToEnvelopes: extension_ui_request ----
+
+    [Test]
+    public async Task Extension_ui_request_yields_one_system_note_naming_the_method() {
+        const string line = """
+            {"type":"extension_ui_request","id":"uuid-1","method":"select","title":"Allow dangerous command?","options":["Allow","Block"],"timeout":10000}
+            """;
+
+        var frame = PiRpc.TryParseLine(line);
+        var envelopes = PiRpc.ToEnvelopes(frame!, fallbackModel: null);
+
+        await Assert.That(envelopes.Count).IsEqualTo(1);
+        await Assert.That(envelopes[0].Kind).IsEqualTo(AcpEventKind.SystemNote);
+        await Assert.That(envelopes[0].Text).Contains("select");
+        await Assert.That(envelopes[0].Text).Contains("hosted sessions cannot answer");
     }
 
     // ---- ToEnvelopes: known-but-untranslated / unknown events ----
@@ -298,14 +348,8 @@ public class PiRpcTests {
         await Assert.That(frame.Root.Str("type")).IsEqualTo("get_state");
     }
 
-    [Test]
-    public async Task SetModelCommand_produces_exact_json() {
-        var json = PiRpc.SetModelCommand("req-5", "pi-large");
-        var frame = PiRpc.TryParseLine(json);
-
-        await Assert.That(frame).IsNotNull();
-        await Assert.That(frame!.Root.Str("id")).IsEqualTo("req-5");
-        await Assert.That(frame.Root.Str("type")).IsEqualTo("set_model");
-        await Assert.That(frame.Root.Str("model")).IsEqualTo("pi-large");
-    }
+    // set_model is PR-2's — see PiRpc's class doc. Its correct upstream shape
+    // ({"type":"set_model","provider":..,"modelId":..}, rpc.md ~222) will be added with the reviewer
+    // / model-selection lane; PR-1 never called SetModelCommand, so it was dead code carrying the
+    // WRONG shape ({"model":..}) and has been removed along with this test.
 }

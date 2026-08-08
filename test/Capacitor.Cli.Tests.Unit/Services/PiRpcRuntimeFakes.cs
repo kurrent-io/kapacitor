@@ -46,6 +46,11 @@ internal sealed class FakePiRpcProcess : IPiRpcProcess {
     public int  TerminateCalls { get; private set; }
     public int  DisposeCalls   { get; private set; }
 
+    /// <summary>Settable so a test can simulate a child that left a stderr trail — the real
+    /// <c>PiRpcProcess</c>'s capture, faked here rather than replayed through a scripted stderr
+    /// stream this fake has no stdio pipes for.</summary>
+    public string? Diagnostics { get; set; }
+
     /// <summary>Every command line the runtime wrote, in order. A snapshot copy — the runtime writes
     /// from its own threads while a test reads.</summary>
     public IReadOnlyList<string> Writes {

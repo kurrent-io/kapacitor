@@ -48,6 +48,11 @@ internal interface IPiRpcProcess : IAsyncDisposable {
     /// <summary>OS exit code once <see cref="HasExited"/>; null while running or if unknown.</summary>
     int? ExitCode { get; }
 
+    /// <summary>A bounded capture of whatever the child wrote to stderr, or null if it wrote
+    /// nothing. Read on a failed launch (see <c>PiRpcHostedAgentRuntimeFactory</c>'s post-spawn
+    /// catch) or an unexpected exit, to turn silence into a reason an operator can act on.</summary>
+    string? Diagnostics { get; }
+
     /// <summary>
     /// Reads this child's stdout, LF-framed, one JSONL line at a time, ending when stdout hits EOF
     /// (the process exited, or is about to). Must not throw for a normal EOF — the sequence simply

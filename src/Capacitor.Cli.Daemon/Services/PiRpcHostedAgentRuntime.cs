@@ -290,7 +290,13 @@ internal sealed class PiRpcHostedAgentRuntime : IHostedAgentRuntime, IAcpTranscr
     /// <summary>Rule (c): true when this frame is Pi echoing back a prompt we sent, in which case
     /// the whole frame is dropped (we already emitted the <c>user_message</c> at send time). Only
     /// ever true for a single-envelope user-message frame — an assistant frame, or a user frame
-    /// whose text matches nothing we sent, is real transcript.</summary>
+    /// whose text matches nothing we sent, is real transcript.
+    ///
+    /// <para><b>Known cosmetic hole, not worth solving in PR-1.</b> Pi expands a <c>/skill:name</c>
+    /// or <c>/template</c> input before echoing it back (rpc.md ~73) — the echoed
+    /// <c>message_end</c> carries the EXPANDED text, not what this daemon literally sent, so
+    /// <see cref="TryConsumeSentPrompt"/> finds no match and the slash-command message renders
+    /// twice (once from the send-time envelope, once from the un-deduped echo).</para></summary>
     bool IsOurOwnEcho(PiRpcFrame frame, IReadOnlyList<AcpEventEnvelope> envelopes) =>
         frame.Type == "message_end"
         && envelopes is [{ Kind: AcpEventKind.UserMessage, Text: { } text }]

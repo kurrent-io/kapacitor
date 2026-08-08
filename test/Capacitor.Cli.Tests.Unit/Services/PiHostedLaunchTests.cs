@@ -184,13 +184,20 @@ public class PiHostedLaunchTests {
     }
 
     [Test]
-    public async Task DescribeUnattendedSupport_CarriesTheNotImplementedReason() {
-        var factory = new PiRpcHostedAgentRuntimeFactory(new DaemonConfig(), NullLoggerFactory.Instance);
+    public async Task DescribeUnattendedSupport_WithheldReasonIsNull_PiNeverClaimedUnattendedSupport() {
+        // WithheldReason is reserved for a vendor this daemon's OWN config is refusing to offer —
+        // Pi simply doesn't support it yet, so the default IHostedAgentRuntimeFactory implementation
+        // (no override here) must report null, not a reason. A prior revision's override reported a
+        // non-null reason, which made every daemon with pi installed log a false "restart to enable"
+        // operator instruction at boot.
+        IHostedAgentRuntimeFactory factory = new PiRpcHostedAgentRuntimeFactory(new DaemonConfig(), NullLoggerFactory.Instance);
 
+        // A default interface member is only reachable through the interface type — there is no
+        // override on the concrete class to call directly, which is the whole point of this fix.
         var support = factory.DescribeUnattendedSupport();
 
         await Assert.That(support.Supported).IsFalse();
-        await Assert.That(support.WithheldReason).IsEqualTo("pi reviewer lane not yet implemented");
+        await Assert.That(support.WithheldReason).IsNull();
     }
 
     [Test]
@@ -246,9 +253,10 @@ public class PiHostedLaunchTests {
         readonly System.Threading.Channels.Channel<string> _lines =
             System.Threading.Channels.Channel.CreateUnbounded<string>();
 
-        public int    Pid       => 4242;
-        public bool   HasExited => false;
-        public int?   ExitCode  => null;
+        public int     Pid         => 4242;
+        public bool    HasExited   => false;
+        public int?    ExitCode    => null;
+        public string? Diagnostics => null;
 
         public List<string> Written { get; } = [];
 
@@ -311,10 +319,11 @@ public class PiHostedLaunchTests {
     /// (bounded by the runtime's own internal ready deadline) and the factory must dispose the runtime
     /// rather than leak it.</summary>
     sealed class SilentProcess : IPiRpcProcess {
-        public int  Pid       => 9999;
-        public bool HasExited => false;
-        public int? ExitCode  => null;
-        public bool Disposed  { get; private set; }
+        public int     Pid         => 9999;
+        public bool    HasExited   => false;
+        public int?    ExitCode    => null;
+        public bool    Disposed    { get; private set; }
+        public string? Diagnostics { get; set; }
 
         public IAsyncEnumerable<string> ReadLinesAsync(CancellationToken ct) =>
             System.Threading.Channels.Channel.CreateUnbounded<string>().Reader.ReadAllAsync(ct);
@@ -330,16 +339,31 @@ public class PiHostedLaunchTests {
     }
 
     [Test]
-    [Timeout(35_000)]
     public async Task StartAsync_ASilentChild_FaultsAndDisposesRatherThanHanging() {
         var silent  = new SilentProcess();
         var factory = new PiRpcHostedAgentRuntimeFactory(
             new DaemonConfig(), NullLoggerFactory.Instance,
-            processSource: (_, _) => Task.FromResult<IPiRpcProcess>(silent));
+            processSource: (_, _) => Task.FromResult<IPiRpcProcess>(silent),
+            // A short test-only deadline (see the factory ctor's readyDeadline param) instead of
+            // burning the real 30s DefaultReadyDeadline this launch would otherwise wait out.
+            readyDeadline: TimeSpan.FromMilliseconds(500));
 
         await Assert.ThrowsAsync<Exception>(() => factory.StartAsync(Ctx(), CancellationToken.None));
 
         await Assert.That(silent.Disposed).IsTrue();
+    }
+
+    [Test]
+    public async Task StartAsync_ASilentChildWithDiagnostics_AppendsThemToTheThrownError() {
+        var silent = new SilentProcess { Diagnostics = "authentication required: run `pi login`" };
+        var factory = new PiRpcHostedAgentRuntimeFactory(
+            new DaemonConfig(), NullLoggerFactory.Instance,
+            processSource: (_, _) => Task.FromResult<IPiRpcProcess>(silent),
+            readyDeadline: TimeSpan.FromMilliseconds(500));
+
+        var ex = await Assert.ThrowsAsync<Exception>(() => factory.StartAsync(Ctx(), CancellationToken.None));
+
+        await Assert.That(ex!.Message).Contains("authentication required");
     }
 
     // ── DI registration: after DaemonRunner's registration shape, "pi" resolves ──

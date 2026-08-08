@@ -1,5 +1,6 @@
 // src/Capacitor.Cli.Daemon/Services/PiRpcHostedAgentRuntimeFactory.cs
 using System.Diagnostics;
+using System.Text;
 using Capacitor.Cli.Core.LocalIpc;
 using Capacitor.Cli.Daemon.Acp;
 using Microsoft.Extensions.Logging;
@@ -11,9 +12,10 @@ namespace Capacitor.Cli.Daemon.Services;
 /// hosted agent over the LONG-LIVED <see cref="PiRpcHostedAgentRuntime"/>.
 ///
 /// <para><b>PR-1 scope: interactive hosting only.</b> <see cref="SupportsUnattended"/> is
-/// unconditionally <see langword="false"/> — the reviewer lane is a later PR — so
-/// <see cref="DescribeUnattendedSupport"/> always carries the same withheld reason and this factory
-/// never needs to spawn <c>pi</c> to answer either question.</para>
+/// unconditionally <see langword="false"/> — the reviewer lane is a later PR. Pi never claimed
+/// unattended support at all, so the default <see cref="IHostedAgentRuntimeFactory.DescribeUnattendedSupport"/>
+/// (a null <see cref="UnattendedSupport.WithheldReason"/>) is correct, and this factory never needs
+/// to spawn <c>pi</c> to answer either question.</para>
 ///
 /// <para><b>Not an ACP factory.</b> Pi speaks its own LF-framed JSONL-RPC over stdio for ONE
 /// long-lived child that backs the whole hosted session (see <see cref="IPiRpcProcess"/>'s class doc
@@ -42,11 +44,16 @@ namespace Capacitor.Cli.Daemon.Services;
 /// the same builder a real launch uses.</param>
 /// <param name="binaryExists">Test seam ONLY, for <see cref="IsAvailable"/>. Production passes null,
 /// which resolves the real binary through <c>PATH</c> via <see cref="CliResolver.Exists"/>.</param>
+/// <param name="readyDeadline">Test seam ONLY, threaded verbatim into every
+/// <see cref="PiRpcHostedAgentRuntime"/> this factory constructs. Production passes null, which
+/// falls through to <see cref="PiRpcHostedAgentRuntime.DefaultReadyDeadline"/> — so a test can bound
+/// a silent-child launch to milliseconds instead of burning the real 30s default.</param>
 internal sealed partial class PiRpcHostedAgentRuntimeFactory(
         DaemonConfig                                                 config,
         ILoggerFactory                                                loggerFactory,
         Func<ProcessStartInfo, CancellationToken, Task<IPiRpcProcess>>? processSource = null,
-        Func<string, bool>?                                           binaryExists = null
+        Func<string, bool>?                                           binaryExists = null,
+        TimeSpan?                                                     readyDeadline = null
     ) : IHostedAgentRuntimeFactory {
     readonly ILogger _logger = loggerFactory.CreateLogger<PiRpcHostedAgentRuntimeFactory>();
 
@@ -60,12 +67,14 @@ internal sealed partial class PiRpcHostedAgentRuntimeFactory(
 
     public bool IsAvailable() => _binaryExists(config.PiPath);
 
-    /// <summary>PR-1 only — the reviewer lane is not implemented yet. See
-    /// <see cref="DescribeUnattendedSupport"/> for the reason surfaced to an operator.</summary>
+    /// <summary>PR-1 only — the reviewer lane is not implemented yet. Pi never claimed unattended
+    /// support in the first place, so the default <see cref="IHostedAgentRuntimeFactory.DescribeUnattendedSupport"/>
+    /// (<c>new(SupportsUnattended, null)</c>) is correct as-is: <see cref="UnattendedSupport.WithheldReason"/>
+    /// is reserved for a vendor this daemon's OWN configuration is refusing to offer, not for one that
+    /// simply doesn't support it yet. An earlier revision overrode this with a non-null reason, which
+    /// made every daemon with <c>pi</c> installed log a false "restart to enable" operator
+    /// instruction at boot.</summary>
     public bool SupportsUnattended => false;
-
-    public UnattendedSupport DescribeUnattendedSupport() =>
-        new(false, "pi reviewer lane not yet implemented");
 
     /// <summary>Pi's model rides argv (<c>--model</c>), applied on every launch that resolves one —
     /// unlike a vendor whose model-selection hook is unverified.</summary>
@@ -111,7 +120,8 @@ internal sealed partial class PiRpcHostedAgentRuntimeFactory(
                 loggerFactory.CreateLogger<PiRpcHostedAgentRuntime>(),
                 ctx.AgentId,
                 ResolveModel(config, ctx),
-                ctx.Worktree.Path);
+                ctx.Worktree.Path,
+                readyDeadline: readyDeadline);
         } catch {
             // Construction itself failing (it should not, in practice) still leaves a spawned child —
             // no orphan pi processes.
@@ -121,6 +131,18 @@ internal sealed partial class PiRpcHostedAgentRuntimeFactory(
 
         // MUST precede the first input: a clock assigned later makes every stamp inside the launch a
         // silent no-op, and a liveness sweep would then judge this agent from an empty record.
+        //
+        // Deferred, not fixed: the runtime's constructor starts its read pump and handshake tasks
+        // immediately (before this line runs), so a response that arrives between construction and
+        // this assignment would stamp the clock's SetLaunchStage against a still-null ActivityClock —
+        // the identical race AntigravityHostedAgentRuntimeFactory's own post-construction
+        // `runtime.ActivityClock = ctx.ActivityClock;` assignment carries, unfixed, today. Threading
+        // the clock through the runtime's constructor instead (set before RunPumpAsync/
+        // RunHandshakeAsync start) would close it, but would also touch every direct-construction
+        // test site (PiRpcRuntimeFakes.NewRuntime, PiRpcHostedAgentRuntimeTests) for a window that
+        // requires the real child to answer get_state before this single assignment statement runs —
+        // sub-millisecond in practice. Left as-is, matching the sibling factory's accepted risk;
+        // revisit both together if this is ever observed rather than theorized.
         runtime.ActivityClock = ctx.ActivityClock;
 
         try {
@@ -139,6 +161,16 @@ internal sealed partial class PiRpcHostedAgentRuntimeFactory(
             // A genuine shutdown propagates AS a cancellation — do not dress it up as a launch failure.
             if (ex is OperationCanceledException && ct.IsCancellationRequested) throw;
 
+            // An unauthenticated or misconfigured pi should surface its real stderr rather than just
+            // the generic handshake-failed message the runtime already throws — mirrors
+            // AntigravityHostedAgentRuntimeFactory.DescribeLaunchFailure in spirit (this vendor has no
+            // auth-specific cases to distinguish yet, so there is no case ladder, just the append).
+            //
+            // Bare `throw;` when there's nothing to add: it preserves ex's original stack trace,
+            // where re-throwing ex itself (`throw ex;`) would reset it to here. Wrapping only
+            // happens in the branch that actually adds information, and ex's own stack trace
+            // survives intact as the wrapper's InnerException.
+            if (DescribeLaunchFailure(ex, process.Diagnostics) is { } wrapped) throw wrapped;
             throw;
         }
 
@@ -177,11 +209,20 @@ internal sealed partial class PiRpcHostedAgentRuntimeFactory(
             argv.Add(model);
         }
 
+        // No-BOM UTF-8, matching AcpConnection's wire encoding: a BOM emitted before the first JSON
+        // line would break pi's line parser, and the platform-default encoding these three
+        // properties would otherwise fall back to is not guaranteed to be UTF-8 (nor BOM-free) on
+        // every OS this daemon runs on.
+        var noBomUtf8 = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
+
         var psi = new ProcessStartInfo(config.PiPath, argv) {
             WorkingDirectory       = ctx.Worktree.Path,
             RedirectStandardInput  = true,
             RedirectStandardOutput = true,
             RedirectStandardError  = true,
+            StandardInputEncoding  = noBomUtf8,
+            StandardOutputEncoding = noBomUtf8,
+            StandardErrorEncoding  = noBomUtf8,
             UseShellExecute        = false,
             CreateNoWindow         = true
         };
@@ -197,6 +238,22 @@ internal sealed partial class PiRpcHostedAgentRuntimeFactory(
 
         return psi;
     }
+
+    /// <summary>
+    /// Wraps <paramref name="cause"/> with its child's captured stderr appended, or
+    /// <see langword="null"/> when there is none to add — in spirit with
+    /// <c>AntigravityHostedAgentRuntimeFactory.DescribeLaunchFailure</c>, but without that method's
+    /// auth/timeout case ladder: this vendor has no equivalent well-known failure shapes to
+    /// distinguish yet, so there is nothing to branch on beyond "did the child say anything on the
+    /// way out". <paramref name="cause"/> is preserved as <see cref="Exception.InnerException"/>,
+    /// stack trace and all, when this returns non-null; the caller falls back to a bare
+    /// <c>throw;</c> of <paramref name="cause"/> itself when this returns <see langword="null"/>, so
+    /// that unadorned case never has its stack trace reset.
+    /// </summary>
+    static Exception? DescribeLaunchFailure(Exception cause, string? diagnostics) =>
+        diagnostics is { Length: > 0 }
+            ? new InvalidOperationException($"{cause.Message} (pi stderr: {diagnostics})", cause)
+            : null;
 
     [LoggerMessage(Level = LogLevel.Information, Message = "Pi launch: agentId={AgentId} cwd={Cwd}")]
     partial void LogLaunching(string agentId, string cwd);
