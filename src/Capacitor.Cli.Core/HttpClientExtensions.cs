@@ -98,7 +98,12 @@ public static class HttpClientExtensions {
 
             if (minted.Token is null) return (NewClient(), AuthStatus.NotAuthenticated, null, minted.Problem);
 
-            var machineClient = NewClient();
+            // Install the machine 401-retry handler on the same terms the token-store path installs its
+            // own (Qodo): honour autoRetryUnauthorized so a caller running its own 401 loop — the MCP
+            // servers — is not double-retried, but give every ordinary caller automatic re-mint. Without
+            // it a mid-life revocation would 401 repeatedly until the cache expired.
+            var machineClient = NewClient(
+                autoRetryUnauthorized ? new MachineUnauthorizedRetryHandler(credential, minted.Token) : null);
             machineClient.DefaultRequestHeaders.Authorization = new("Bearer", minted.Token);
 
             return (machineClient, AuthStatus.Ok, null, null);
@@ -358,7 +363,7 @@ public static class HttpClientExtensions {
     public static string RenderUnreachableError(string? baseUrl, string? exceptionMessage) =>
         $"{UnreachableHint} {UnusableUrlDiagnostic.Sanitize(baseUrl)} {StripControlCharacters(exceptionMessage)}";
 
-    static string StripControlCharacters(string? value) =>
+    internal static string StripControlCharacters(string? value) =>
         string.IsNullOrEmpty(value) ? "" : new string(value.Where(c => !char.IsControl(c)).ToArray());
 
     /// <summary>

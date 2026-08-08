@@ -1,3 +1,4 @@
+using System.Net;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Auth;
 using WireMock.RequestBuilders;
@@ -352,6 +353,80 @@ public class MachineAuthTests : IDisposable {
         await Assert.That(_server.LogEntries.Count()).IsEqualTo(2)
             .Because("a different client id must mint its own token, not inherit the cached one");
         await Assert.That(b.Token).IsNotNull();
+    }
+
+    // ── Automatic 401 recovery on the constructed client (Qodo finding 1) ───────────────────────
+
+    /// <summary>
+    /// The gap the previous revision had: an authenticated machine client got NO 401-retry handler, so
+    /// a token revoked mid-life produced repeated 401s. This drives a real request through the
+    /// constructed client: the token endpoint issues tok_A, the API 401s it once, and the client must
+    /// re-mint (tok_B) and resend WITHOUT the caller threading anything back.
+    /// </summary>
+    [Test]
+    public async Task An_authenticated_client_automatically_re_mints_on_a_401() {
+        Clear();
+        UseStubTokenEndpoint();
+
+        _server.Given(Request.Create().WithPath("/auth/config").UsingGet())
+            .RespondWith(Response.Create().WithStatusCode(200)
+                .WithHeader("Content-Type", "application/json")
+                .WithBody("{\"provider\":\"workos\",\"client_id\":\"client_01TENANT\",\"authkit_domain\":\"\",\"organization_id\":\"org_01T\"}"));
+
+        // Two tokens in sequence from the mint endpoint, via a WireMock scenario state machine.
+        _server.Given(Request.Create().WithPath("/oauth2/token").UsingPost())
+            .InScenario("mint").WhenStateIs(null).WillSetStateTo("second")
+            .RespondWith(Response.Create().WithStatusCode(200)
+                .WithHeader("Content-Type", "application/json")
+                .WithBody("{\"access_token\":\"tok_1\",\"expires_in\":3600}"));
+        _server.Given(Request.Create().WithPath("/oauth2/token").UsingPost())
+            .InScenario("mint").WhenStateIs("second")
+            .RespondWith(Response.Create().WithStatusCode(200)
+                .WithHeader("Content-Type", "application/json")
+                .WithBody("{\"access_token\":\"tok_2\",\"expires_in\":3600}"));
+
+        // /api/ping: 401 the first token, 200 the second.
+        _server.Given(Request.Create().WithPath("/api/ping").UsingGet().WithHeader("Authorization", "Bearer tok_1"))
+            .RespondWith(Response.Create().WithStatusCode(401));
+        _server.Given(Request.Create().WithPath("/api/ping").UsingGet().WithHeader("Authorization", "Bearer tok_2"))
+            .RespondWith(Response.Create().WithStatusCode(200).WithBody("ok"));
+
+        Environment.SetEnvironmentVariable(MachineAuth.ClientIdVar, "client_01ABC");
+        Environment.SetEnvironmentVariable(MachineAuth.ClientSecretVar, "sekrit");
+
+        // The interactive builder is the one that installs the retry handler (autoRetryUnauthorized:true).
+        var client = await HttpClientExtensions.CreateAuthenticatedClientAsync(_server.Urls[0]);
+
+        using var resp = await client.GetAsync($"{_server.Urls[0]}/api/ping");
+
+        await Assert.That(resp.StatusCode).IsEqualTo(HttpStatusCode.OK)
+            .Because("the client must re-mint after the first token is rejected and resend");
+
+        var mints = _server.LogEntries.Count(e => e.RequestMessage.Path.Contains("/oauth2/token"));
+        await Assert.That(mints).IsEqualTo(2)
+            .Because("exactly one re-mint: the initial token plus one recovery");
+    }
+
+    // ── Error hygiene: no userinfo, no control chars in the Problem (Qodo finding 2) ────────────
+
+    /// <summary>
+    /// A KCAP_WORKOS_TOKEN_URL carrying userinfo must not print the secret half in the Problem string.
+    /// The URL reaches stderr, so it goes through the same Sanitize the rest of the CLI uses.
+    /// </summary>
+    [Test]
+    public async Task A_token_url_with_userinfo_does_not_leak_it_into_the_problem() {
+        Clear();
+        // Loopback so the scheme check admits it and we reach the mint, which then fails (nothing
+        // listening on that path) and builds the Problem string containing the URL.
+        Environment.SetEnvironmentVariable(MachineAuth.TokenUrlVar, "http://id:supersecret@127.0.0.1:1/oauth2/token");
+
+        var result = await MachineTokenProvider.GetTokenAsync(
+            new MachineCredential("client_01ABC", "sekrit"), null, CancellationToken.None);
+
+        await Assert.That(result.Token).IsNull();
+        await Assert.That(result.Problem).IsNotNull();
+        await Assert.That(result.Problem!).DoesNotContain("supersecret")
+            .Because("userinfo in the token URL must be dropped before it reaches stderr");
     }
 
 }
