@@ -28,8 +28,8 @@ decision log, and pending-consent wired into the tray's existing `Attention` sta
 
 ## 3. Scope
 
-**In:** consent subscription service in the app; prompt window (Allow once / Always allow /
-Deny, countdown, queue); Activity tab; tray `Attention` on pending consent + "Review pending
+**In:** consent subscription service in the app; prompt window (Allow once / Allow & remember
+/ Deny, countdown, queue); Activity tab; tray `Attention` on pending consent + "Review pending
 launches…" menu item; `ResolveConsentAsync` on `ILocalControlOps`; consent subscription client
 in Core; decision-record hoisting to Core (shared write/read shape); `requester_display`
 threading through the consent pipeline (additive); `rule_saved` reporting on `ConsentAckDto`
@@ -61,38 +61,73 @@ classification are identical to the existing ops — caller-cancellation propaga
 ops), any other frame type or a null/malformed ack → `unexpected_reply`.
 
 **`ConsentAckDto` gains trailing `bool? RuleSaved`** (wire `rule_saved`, positional-required
-convention: no C# default, nulls always written). Semantics: null when the resolve carried no
-`save_rule`; `true`/`false` = the rule write succeeded/failed. The daemon's
+convention: no C# default, nulls always written). Daemon semantics: null when the resolve
+carried no `save_rule`; `true`/`false` = the rule write succeeded/failed. The daemon's
 `HandleResolveAsync` deliberately persists `save_rule` *before* attempting the resolution —
-"Always allow" expresses durable trust in the requester, which stands even when this
+"Allow & remember" expresses durable trust in the requester, which stands even when this
 particular launch has already been decided — so today an `Ok=false` ack can silently hide an
 installed rule. The handler change: populate `RuleSaved` on **both** ack branches (today the
 no-pending branch drops the save outcome entirely). `Ok`'s meaning is unchanged: it reflects
 the resolution outcome only.
 
+**Down-level disambiguation is the caller's job.** A pre-AI-1652 daemon advertises the same
+`consent/1` capability but omits `rule_saved`, which deserializes as null — the same value a
+new daemon uses for "no save requested". The wire cannot distinguish these, but the *service*
+can: it knows whether it sent `save_rule`. Client-side interpretation, pinned in §5: when the
+service sent `save_rule` and the ack's `RuleSaved` is null, the rule outcome is **unknown
+(down-level daemon)** — except on `Ok=true` with `Error=null`, where the shipped daemon's own
+contract (it reports a rejected save via `Error` even when `Ok=true`) already implies the
+save succeeded.
+
 **Rule ordering is deliberately untouched.** The handler appends the saved rule at the end
 and `LaunchConsentEngine` is first-match-wins, so an earlier matching rule — the pause
 wildcard deny at `rules[0]`, or any manual deny — takes precedence over an appended allow
-until that earlier rule is removed. This is correct: "Always allow" must never silently
-override pause or an explicit deny. The UI copy carries the consequence honestly (§6).
+until that earlier rule is removed. This is correct: a remembered allow must never silently
+override pause or an explicit deny. The UI copy carries the consequence honestly (§6: the
+button says "Allow & remember", not "Always allow" — the label must not promise what
+precedence may withhold).
 
 The daemon resolve handler otherwise exists (`LaunchConsentIpc.HandleResolveAsync`); no hello
 is needed on one-shot connections (hello is optional; the CLI consent verbs already send bare
 frames).
+
+**Stale resolve vs. same-id successor — accepted, with rationale.** `ConsentResolveDto`
+carries only `request_id`, and the broker's `TryResolve` resolves whichever pending entry
+currently holds that key. If request A times out, a successor B reuses the id, and A's delayed
+resolve then arrives, it decides B. This is deliberately accepted rather than closed with a
+wire generation check: a request id is the agent id, and a same-id successor is by
+construction a **retry of the same launch** — same requester, kind, repo, and vendor (the
+server retries the same command). The user's verdict was about that content, and applying it
+to the retry honors their intent. (A future wire generation echo — an additive `requested_at`
+on `ConsentResolveDto` verified by the broker — remains open to a later slice if this
+assumption ever breaks.)
 
 ### 4.2 Consent subscription client (Core)
 
 `ConsentSubscription` in `Capacitor.Cli.Core/LocalIpc/`:
 
 ```csharp
-public static async IAsyncEnumerable<ConsentPendingDto> RunAsync(
+public abstract record ConsentStreamEvent {
+    public sealed record Subscribed : ConsentStreamEvent;               // connect + subscribe write succeeded
+    public sealed record Pending(ConsentPendingDto Request) : ConsentStreamEvent;
+}
+
+public static async IAsyncEnumerable<ConsentStreamEvent> RunAsync(
     string daemonName, [EnumeratorCancellation] CancellationToken ct)
 ```
 
-Connects to the daemon's socket, writes `FrameType.ConsentSubscribe` (empty text), then reads
-frames and yields one `ConsentPendingDto` per `ConsentPending` frame. The daemon replays the
-full pending set immediately, then pushes new requests (broker contract: exactly-once per
-subscriber, no withdrawal push).
+Connects to the daemon's socket, writes `FrameType.ConsentSubscribe` (empty text), **yields
+`Subscribed` once** immediately after that write succeeds, then reads frames and yields one
+`Pending` per `ConsentPending` frame. The `Subscribed` event exists because an async iterator
+exposes no other observable boundary between "dialing" and "subscribed": with an empty replay
+the first read never completes, so a consumer that must act at the subscribe boundary (the §5
+cache clear) would otherwise have no signal. The daemon replays the full pending set
+immediately after the subscribe registers, then pushes new requests (broker contract:
+exactly-once per subscriber, no withdrawal push).
+
+**`Subscribed` is a client-local boundary, not a server acknowledgment.** A flushed subscribe
+write does not prove the daemon registered the subscription — the peer can die between the
+write and the replay. §5 states the accepted consequence.
 
 **Termination and validation contract:**
 
@@ -161,14 +196,22 @@ lines and is unaffected.
 **Reader** (Core, same file):
 
 ```csharp
+public sealed record ConsentLogReadResult(IReadOnlyList<ConsentDecisionRecord> Records, bool Complete);
+
 public static class ConsentDecisionLogReader {
     public static string PathFor(string daemonName);   // DaemonLockPaths.Directory / Sanitize(name) / consent-decisions.jsonl
-    public static IReadOnlyList<ConsentDecisionRecord> ReadTail(string daemonName, int max);
+    public static ConsentLogReadResult ReadTail(string daemonName, int max);
 }
 ```
 
 `ReadTail` reads `{path}.1` then `{path}` (each may be absent), keeps the last `max` valid
-records, newest first. Rules:
+records, newest first. `Complete` distinguishes what a bare list cannot: a **clean absence**
+(the file does not exist — `FileNotFoundException`/`DirectoryNotFoundException` on open)
+counts as complete, while an **I/O failure** (`IOException`, `UnauthorizedAccessException`,
+including a file vanishing mid-read) makes that file contribute nothing and flips
+`Complete=false`. `ReadTail` itself never throws for any of these; worst case is
+`([], false)`. The consumer contract (§7) needs exactly this bit: an incomplete read must not
+be mistaken for a genuinely shorter/empty log. Rules:
 
 - **Sharing:** every open is `FileAccess.Read` with `FileShare.ReadWrite | FileShare.Delete` —
   the daemon appends and rotates (`File.Move`) this file live; on Windows a write-denying open
@@ -178,10 +221,6 @@ records, newest first. Rules:
   write), and lines that parse but are structurally invalid — null root, or null `DecidedAt`,
   `AgentId`, `Kind`, `RepoPath`, `Vendor`, `Outcome`, or `Source` (`Requester`,
   `RequesterDisplay` stay nullable; a missing `requester_is_owner` reads as `false`).
-- **Per-file I/O failure = absent:** `FileNotFoundException`, `DirectoryNotFoundException`,
-  `IOException`, and `UnauthorizedAccessException` on either file (races with rotation or
-  daemon-state-dir deletion between stat and open, or between the two reads) make that file
-  contribute nothing. `ReadTail` never throws for these; worst case it returns an empty list.
 - **Rotation race:** a rotation between the two reads can transiently duplicate or miss lines.
   Records have value equality — the merged list is `Distinct()`-ed, and a miss self-heals on
   the next refresh (§7). Accepted: this is a display feed, not an audit query.
@@ -191,8 +230,8 @@ records, newest first. Rules:
 `src/Capacitor.App/Services/ConsentService.cs` (+ `IConsentService`): owns the consent
 subscription, the pending queue, and resolution. Single instance, created at startup beside
 `DaemonClientService`. **The service is the sole owner of the pending cache** — every
-insertion and removal happens here; ViewModels only read (§6 pins *displayed* items
-separately).
+insertion and removal happens here (removals occur only on conclusive acks and via the prune;
+§6's ViewModel never removes, it only reads and pins).
 
 **Shared ticker (infrastructure, in scope):** the AI-1651 1-second ticker currently lives as a
 private observable inside `MainWindowViewModel`. It hoists into an app-lifetime `ITicker`
@@ -204,19 +243,36 @@ holds), and `ActivityViewModel` (stat poll) consume the same instance.
 
 **State:** `SourceCache<PendingConsent, string>` keyed by `RequestId`. `PendingConsent` wraps
 the `ConsentPendingDto` plus a computed `DeadlineHint = RequestedAt + TimeoutSeconds`
-(`DateTimeOffset` parse of the daemon's ISO stamp; same machine, so no clock-skew handling; an
-unparseable `RequestedAt` falls back to arrival time + `TimeoutSeconds`). The deadline is a
-*hint* — AI-1648's subscriber grace means the daemon's real deadline can differ slightly; the
-authoritative outcome is only ever a resolve ack.
+(`DateTimeOffset` parse of the daemon's ISO stamp; an unparseable `RequestedAt` falls back to
+arrival time + `TimeoutSeconds`). **The deadline is a heuristic, never an outcome.** The
+daemon enforces its timeout on a *monotonic* clock anchored at prompt entry; `RequestedAt` is
+wall-clock metadata, so an NTP/manual clock step can make the hint disagree with the daemon's
+real deadline in either direction. Nothing in the app treats hint expiry as a decision: the
+authoritative outcome is only ever a resolve ack (§6 renders expiry accordingly), and the
+prune below is availability hygiene, not settlement — a prematurely pruned still-live request
+simply times out daemon-side exactly as if no UI were attached.
 
 **Instance-guarded removal (ABA defense).** `RequestId` is the agent id, and the broker
 explicitly documents that a successor prompt can reuse a predecessor's id (retry of the same
 agent). The subscription and resolve travel on separate connections, so successor B can be
 upserted before predecessor A's ack is processed — an unconditional remove-by-key would then
-evict B, and with no withdrawal/replay push nothing would restore it. Therefore **every**
-removal (conclusive ack, dismiss, prune) captures the exact `PendingConsent` it is acting on
-and removes only if the cache still holds that value (record value-equality; A and B differ at
-least in `RequestedAt`). A removal that finds a different value is a no-op.
+evict B, and with no withdrawal push nothing would restore it. Therefore **every** removal
+(conclusive ack, prune) captures the exact `PendingConsent` *instance* it is acting on and
+removes only if the cache still holds that same instance — **reference identity, not value
+equality**: each received frame materializes a fresh instance, whereas DTO field values
+(including `RequestedAt`, a wall-clock stamp) can legitimately collide between a predecessor
+and its retry. A removal that finds a different instance is a no-op.
+
+**Conclusion tombstones (ghost-replay defense).** The broker's `Subscribe` snapshots pending
+entries without synchronizing against a concurrent `TryResolve`, so a resubscribe replay can
+redeliver a request the app just concluded — re-adding a ghost and auto-raising a second
+prompt whose answer can only be "already decided". On every conclusive ack the service records
+a tombstone `(RequestId, RequestedAt)` with a 10-second TTL; an incoming `Pending` matching a
+live tombstone is dropped. The TTL bounds the risk of suppressing a genuine same-id successor
+to the case where it also carries an identical wall-clock stamp *within the window* —
+accepted as vanishingly unlikely, and self-healing (the next resubscribe replays it after the
+TTL). Expiry/prune do **not** tombstone: a request the app merely gave up on locally is still
+live daemon-side (the clock-step case) and must be allowed to reappear.
 
 **Subscription lifecycle — status-driven.** The service observes
 `DaemonClientService.Status`:
@@ -230,27 +286,31 @@ least in `RequestedAt`). A removal that finds a different value is a no-op.
   incarnation and can never be resolved against this one. The existing shell surfaces the
   daemon-outdated condition.
 
-**Loop:** while in the connected state: dial and write the `ConsentSubscribe` frame; **only
-after that write succeeds** clear the pending cache, then upsert each incoming DTO by
-`RequestId`. The clear sits at the subscribe-write boundary, not before the dial: a failed
-dial while the status socket still reports Connected must not erase a still-actionable queue
-— retained entries keep the tray attention and their countdowns alive through the transient.
-After the boundary, the daemon's replay is authoritative by construction: anything the daemon
-no longer holds is gone from the cache (accepted tradeoff: an entry resolved while
-disconnected vanishes without a terminal display; the Activity feed carries its outcome). If
-the enumeration ends while status still reports Connected (protocol confusion, half-dead
-socket, failed dial), delay 1s and go around. Loop cancellation stops cleanly.
+**Loop:** while in the connected state: enumerate `ConsentSubscription.RunAsync`; on the
+`Subscribed` event clear the pending cache; on each `Pending` event upsert by `RequestId`
+(tombstones filtering, above). The clear sits at the `Subscribed` boundary, not before the
+dial: a failed dial while the status socket still reports Connected must not erase a
+still-actionable queue — retained entries keep the tray attention and their countdowns alive
+through the transient. After the boundary the daemon's replay is authoritative: anything it no
+longer holds is gone from the cache by construction.
+
+**Accepted post-`Subscribed` window:** `Subscribed` is client-local (§4.2) — if the daemon
+dies between the subscribe write and the replay, the cache has been cleared and no replay
+restores it until the next successful attempt (~1s cadence). The loss is bounded and
+UI-only: the daemon-side prompts were never dismissed, and the next successful replay
+restores them; if no daemon comes back, the entries were unanswerable anyway. If the
+enumeration ends while status still reports Connected (protocol confusion, half-dead socket,
+failed dial), delay 1s and go around. Loop cancellation stops cleanly.
 
 **Pruning:** on the shared ticker, entries with `now > DeadlineHint + 5s` are removed
 (instance-guarded). This bounds ghost entries from requests that expired daemon-side (there is
-no withdrawal push) and from disconnected periods. The prompt VM shows the expired state and
-dismisses before the prune fires (§6); the prune is the backstop.
+no withdrawal push) and from disconnected periods. Under a clock step the prune inherits the
+hint's heuristic nature (above) — accepted.
 
 **Resolution:**
 
 ```csharp
 Task<ConsentResolveOutcome> ResolveAsync(PendingConsent target, bool allow, bool saveRule, CancellationToken ct);
-void Dismiss(PendingConsent target);   // instance-guarded removal; used by the VM's terminal-state advance
 ```
 
 `ResolveAsync` builds the `ConsentResolveDto` (`decision: allow|deny`; when `saveRule`, a
@@ -262,23 +322,28 @@ sends the resolve *without* `save_rule` (a null requester would serialize into a
 allow-everything rule) and reports it in the outcome; the §6 button-hiding is UX, this guard
 is the safety boundary, and it is tested directly.
 
-`ConsentResolveOutcome` (all cache effects instance-guarded on `target`):
+`ConsentResolveOutcome` (cache effects instance-guarded on `target`; `RuleOutcome` is the
+service's disambiguation — it knows whether it sent `save_rule` (§4.1): `Saved`, `Rejected`,
+`Unknown` (save requested, `RuleSaved` null, i.e. down-level daemon — except `Ok=true` +
+`Error=null`, which implies `Saved` on the shipped daemon's own contract), `NotRequested`,
+`SkippedNoRequester`):
 
 | Outcome | Ack | Cache effect | Meaning |
 |---|---|---|---|
-| `Applied` | `Ok=true, Error=null` | remove | applied (`RuleSaved` carried along: null/true/false) |
-| `AppliedRuleRejected` | `Ok=true, Error!=null` or `RuleSaved=false` | remove | decision applied; rule not saved — warn |
-| `AlreadyDecided` | `Ok=false` | remove | decided elsewhere (daemon timeout / race); `RuleSaved` carried along — a rule may still have been installed (§4.1) and the UI must disclose it |
-| `RuleSkippedNoRequester` | `Ok=true` (no save_rule sent) | remove | applied; rule not saved because the request had no requester identity |
+| `Applied` | `Ok=true`, rule outcome `Saved`/`NotRequested` | remove + tombstone | applied |
+| `AppliedRuleRejected` | `Ok=true`, rule outcome `Rejected` or `Unknown` | remove + tombstone | decision applied; rule not saved (or outcome unknown on a down-level daemon) — warn |
+| `AlreadyDecided` | `Ok=false` | remove + tombstone | decided elsewhere (daemon timeout / race); carries `RuleOutcome` — a rule may still have been installed (§4.1) and §6 must disclose saved / not saved / unknown |
+| `RuleSkippedNoRequester` | `Ok=true` (no save_rule sent) | remove + tombstone | applied; rule not saved because the request had no requester identity |
 | `TransportFailure` | `LocalControlOpsException` | keep | daemon unreachable/timeout — request may still be pending daemon-side |
 | *(propagates)* | `OperationCanceledException` | keep | caller/app-shutdown cancellation is its own path — never rendered as a transport failure; the VM treats it as a silent abort |
 
 **Exposed:** the pending cache (`IObservable` via DynamicData `.Connect()` — mutated on
-background continuations; consumers marshal with `ObserveOn(RxApp.MainThreadScheduler)`),
-`IObservable<int> PendingCount`, `ResolveAsync`, `Dismiss`, and an **unconditional**
-entry-added signal. The service knows nothing about windows: the prompt-window *coordinator*
-subscribes to the added signal, filters by window visibility, and marshals to the UI thread
-(§6). The count feeds `TrayViewModel` (§8).
+background continuations; consumers marshal with
+`ObserveOn(RxSchedulers.MainThreadScheduler)`, the app's existing scheduler seam),
+`IObservable<int> PendingCount`, `ResolveAsync`, and an **unconditional** entry-added signal.
+The service knows nothing about windows: the prompt-window *coordinator* subscribes to the
+added signal, filters by window visibility, and marshals to the UI thread (§6). The count
+feeds `TrayViewModel` (§8).
 
 **Shutdown:** app shutdown disposes in order: prompt-window coordinator (closes the window,
 cancelling any in-flight resolve via the OCE path above) → `ConsentService` (cancels the
@@ -306,9 +371,10 @@ stealing mid-interaction).
 `RequestId` ordinal for determinism) and pins the head as `Current`. While `Current` is in a
 terminal display or has a resolve in flight, cache changes (new arrivals, prune, replay
 reconciliation) do **not** swap the displayed item out from under the user — the pin releases
-only on advance. Removal is never the VM's job directly: it calls `ResolveAsync`/`Dismiss` on
-the pinned instance and the service's instance guard makes a stale removal a no-op (a
-successor with the same id is untouched).
+only on advance (or, in the hint-expired state, when the service's prune removes the pinned
+instance — below). The VM never removes cache entries; conclusive acks and the prune do (§5),
+and the instance guard makes any stale action a no-op that can never touch a same-id
+successor.
 
 **Content** — for the pinned current request:
 
@@ -323,30 +389,37 @@ successor with the same id is untouched).
 | Button | Wire | Notes |
 |---|---|---|
 | Allow once | `ConsentResolve{decision: "allow"}` | |
-| Always allow | `ConsentResolve{decision: "allow", save_rule: {action: "allow", requester: <id>, kind: null, repo: null, vendor: null}}` | Daemon stays the single rule writer. **Hidden when `Requester` is null** (§5 holds the real guard). Tooltip carries the precedence honestly: "Saves a rule allowing future launches from this requester. Existing deny rules — including Pause — take precedence until removed." No stronger promise is made anywhere in the UI (§4.1: the appended rule is first-match-shadowed by earlier denies). |
+| Allow & remember | `ConsentResolve{decision: "allow", save_rule: {action: "allow", requester: <id>, kind: null, repo: null, vendor: null}}` | Daemon stays the single rule writer. Label is deliberately not "Always allow" — an appended rule is first-match-shadowed by earlier denies (§4.1), so the label must not promise "always". **Hidden when `Requester` is null *or empty*** — the same predicate as §5's service guard, which remains the real safety boundary. Tooltip: "Saves a rule allowing future launches from this requester. Existing deny rules — including Pause — take precedence until removed." |
 | Deny | `ConsentResolve{decision: "deny"}` | |
 
 While a resolve is in flight all three disable (no double-submit); the countdown keeps
 ticking, but **hint expiry never preempts an in-flight resolve**: if the countdown reaches
 zero mid-resolve, the display shows "Expiring…" and waits for the ack — the ack is
-authoritative and governs the terminal state. Expiry acts on its own only when no resolve is
-in flight.
+authoritative and governs the terminal state.
 
-**Terminal states (per pinned request; each holds for 2 seconds, ticker-driven, then the VM
-dismisses/advances — the pin guarantees the display survives concurrent cache changes):**
+**Hint expiry (no resolve in flight) is not a verdict.** When the countdown reaches zero the
+window does *not* claim a denial — the hint is wall-clock and the daemon's deadline is
+monotonic (§5), so the request may in fact still be live. The countdown is replaced by
+"Response time elapsed — unanswered requests are denied by the daemon", and **the buttons
+stay active**: a click still resolves normally (if the daemon really did time out, the ack
+comes back `Ok=false` and the honest "Already decided" path runs; after a backward clock step,
+the click simply works). The entry stays in the cache until the §5 prune removes it (hint+5s,
+instance-guarded); the VM advances when its pinned instance leaves the cache in this state.
+
+**Terminal states (per pinned request):**
 
 - **Decided (`Applied`)** → advance immediately (no hold): window shows the next pending or
   closes when the queue empties. `AppliedRuleRejected` and `RuleSkippedNoRequester`
   additionally show a warning toast over the prompt window: "Decision applied — rule not
-  saved: {reason}".
-- **Already decided (`AlreadyDecided`)** → buttons are replaced by "Already decided" for the
-  2-second hold, then `Dismiss` + advance. Never a silent success: the user always sees that
-  their click did not decide this launch. When the click was **Always allow** and the ack's
-  `RuleSaved=true`, the text discloses the side effect: "Already decided — your always-allow
-  rule for {requester} was still saved."
-- **Expired (countdown ≤ 0, no resolve in flight)** → buttons are replaced by "Expired —
-  denied by timeout" for the 2-second hold, then `Dismiss` + advance (the §5 prune is the
-  backstop).
+  saved: {reason}" (for rule outcome `Unknown`: "Decision applied — this daemon version
+  doesn't report whether the rule was saved").
+- **Already decided (`AlreadyDecided`)** → buttons are replaced by "Already decided" for a
+  2-second hold (ticker-driven), then advance (the cache entry is already gone — the pin is
+  what the user is looking at). Never a silent success. After an **Allow & remember** click
+  the text discloses the §4.1 side effect per `RuleOutcome`: `Saved` → "Already decided —
+  your allow rule for {requester} was still saved."; `Rejected` → "Already decided — no rule
+  was saved."; `Unknown` → "Already decided — this daemon version doesn't report whether your
+  allow rule was saved."
 - **Transport failure (`TransportFailure`)** → toast over the prompt window ("Daemon
   unreachable — the request is still pending"), buttons re-enable, entry stays. The daemon
   may still be waiting.
@@ -362,7 +435,7 @@ itself.
 
 **Pause interplay:** none needed for prompting. Pause is a wildcard deny rule at `rules[0]`,
 so paused launches are rule-denied without prompting and simply appear in the Activity feed as
-denials. (Its interaction with "Always allow" is the §4.1 precedence note.)
+denials. (Its interaction with "Allow & remember" is the §4.1 precedence note.)
 
 ## 7. Activity tab
 
@@ -384,9 +457,12 @@ capped at 200 records.
   immediately on the ack *and* relies on the regular 2s stat poll to converge — the spec
   promise is "your decision appears no later than the next poll", not "immediately".
 
-Read failures never blank the feed: a `ReadTail` that returns empty (or a refresh that
-throws) while a previous read had rows keeps the last-good rows on display; the empty state
-renders only when the log is genuinely absent/empty on a clean read.
+**Display rule, keyed off `ConsentLogReadResult.Complete` (§4.4):** a `Complete` read
+replaces the rows — including replacing them with the empty state when it is genuinely empty
+(legitimate log deletion must be able to empty the feed). An **incomplete** read (any per-file
+I/O failure) never replaces existing rows: last-good rows stay on display and the next poll
+retries; if there are no previous rows, the partial records are shown as best-effort. The
+empty state therefore renders only on a clean empty read.
 
 The reader is `ConsentDecisionLogReader.ReadTail(daemonName, 200)` — pure file I/O, so the
 feed works with the daemon stopped or unreachable.
@@ -422,16 +498,20 @@ cadence picks up count changes through the model stream — no new refresh machi
 |---|---|---|
 | Daemon unreachable (no subscription) | Tray | Existing AI-1651 rows; no prompts possible; feed still renders from file |
 | Daemon without `consent/1` | Tray | No subscription; cache cleared (stale incarnation); existing down-level surfacing |
-| Consent dial fails while status Connected | none (self-heal) | Cache NOT cleared (clear sits after the subscribe-write boundary); 1s delay → retry |
-| Consent stream dies while Connected | none (self-heal) | 1s delay → resubscribe (fresh replay reconciles after the write boundary) |
+| Consent dial fails while status Connected | none (self-heal) | Cache NOT cleared (clear sits at the `Subscribed` boundary); 1s delay → retry |
+| Daemon dies between subscribe write and replay | none (self-heal) | Cache cleared but restored by the next successful replay (~1s cadence); bounded, UI-only (§5) |
+| Consent stream dies while Connected | none (self-heal) | 1s delay → resubscribe (fresh replay reconciles at the `Subscribed` boundary) |
 | Structurally invalid pending frame | none | Skipped (ending the stream would thrash the resubscribe loop) |
+| Ghost replay of a just-concluded request | none | Conclusion tombstone (10s TTL) drops it — no second prompt |
+| Wall-clock step vs. daemon's monotonic deadline | Prompt window | Hint expiry is never a verdict: non-authoritative copy, buttons stay active, ack governs |
 | Resolve transport failure | Prompt toast | Entry kept; buttons re-enable |
 | Resolve cancelled (shutdown) | none | OCE propagates; silent abort — never rendered as transport failure |
-| Resolve `Ok=false` | Prompt window | "Already decided" — never a silent success; `RuleSaved=true` disclosed |
-| Rule save rejected / skipped (no requester) | Prompt toast | Decision applied; warning shown |
-| Request expired (no withdrawal push) | Prompt window / prune | Countdown expiry display (never preempting an in-flight resolve); cache prune at hint+5s |
-| Same-id successor while ack in flight | none | Instance-guarded removals — a stale ack/dismiss/prune never evicts the successor |
-| Decision log absent / IO failure / bad lines | Activity tab | Absent → empty contribution; last-good rows kept on failed refresh; invalid lines skipped |
+| Resolve `Ok=false` | Prompt window | "Already decided" — never a silent success; rule outcome disclosed as saved / not saved / unknown (down-level) |
+| Rule save rejected / unknown / skipped (no requester) | Prompt toast | Decision applied; warning shown |
+| Request expired (no withdrawal push) | Prompt window / prune | Non-authoritative expiry display; cache prune at hint+5s (instance-guarded) |
+| Same-id successor while ack in flight | none | Reference-identity removal guard — a stale ack/prune never evicts the successor |
+| Stale resolve reaching the daemon after id reuse | daemon | Accepted: a same-id successor is a retry of the same launch content; the verdict transfers honestly (§4.1) |
+| Decision log absent / IO failure / bad lines | Activity tab | Clean absence → `Complete` empty read → empty state; I/O failure → `Complete=false` → last-good rows kept; invalid lines skipped |
 | Rotation race during read | Activity tab | `Distinct()` merge; miss self-heals next poll |
 
 ## 10. Testing
@@ -441,22 +521,27 @@ throughout — no real sleeps).
 
 **Core:**
 - `ResolveConsentAsync` against an in-proc fake server (pattern of existing `LocalControlOps`
-  tests): ack round-trip (`Ok`/`Error`/`RuleSaved` shapes), decodable `Error` frame →
-  `daemon_rejected`, malformed ack → `unexpected_reply`, EOF → `unexpected_reply`, transport
-  → `daemon_unreachable`, phase timeout → `timed_out`, caller-cancellation propagates.
-- `ConsentSubscription`: replay + push frames yield DTOs in order; EOF ends enumeration;
-  failed connect (`SocketException`) ends enumeration (no daemon listening); unexpected frame
-  type ends enumeration; undecodable JSON ends enumeration; **decodable-but-structurally-
-  invalid pending (null request_id via `{}`) is skipped and the stream continues**; `ct`
-  propagates OCE. Absent `requester_display` deserializes to null.
+  tests): ack round-trip (`Ok`/`Error`/`RuleSaved` shapes, including an old-format ack with no
+  `rule_saved` member → null), decodable `Error` frame → `daemon_rejected`, malformed ack →
+  `unexpected_reply`, EOF → `unexpected_reply`, transport → `daemon_unreachable`, phase
+  timeout → `timed_out`, caller-cancellation propagates.
+- `ConsentSubscription`: `Subscribed` yielded after connect+write and **before any read**
+  (observable with an empty replay — first `MoveNextAsync` completes); replay + push frames
+  yield `Pending` events in order; EOF ends enumeration; failed connect (`SocketException`)
+  ends enumeration without yielding `Subscribed`; unexpected frame type ends enumeration;
+  undecodable JSON ends enumeration; **decodable-but-structurally-invalid pending (null
+  request_id via `{}`) is skipped and the stream continues**; `ct` propagates OCE. Absent
+  `requester_display` deserializes to null.
 - `ConsentDecisionLogReader`: tail across the rotation pair (order, cap, newest-first);
   undecodable-line skip; **parseable-but-structurally-invalid line (`{}`) skip**;
-  `Distinct()` dedup; absent files → empty; file vanishing between stat and open → empty, no
-  throw; old-format lines (no `requester_display`) parse with null; **a reader holding an
-  open handle (the reader's own share mode) does not block the writer's actual operations —
-  append AND `File.Move` rotation — while a concurrent `ReadTail` succeeds** (the sharing
-  regression guard; trivially green on Unix, load-bearing on the Windows CI leg — both
-  directions and both operations covered, since `FileShare.Delete` is what rotation needs).
+  `Distinct()` dedup; absent files → `([], Complete=true)`; **one file unreadable (I/O
+  failure) → partial records with `Complete=false`**; file vanishing between stat and open →
+  clean absence, no throw; old-format lines (no `requester_display`) parse with null; **a
+  reader holding an open handle (the reader's own share mode) does not block the writer's
+  actual operations — append AND `File.Move` rotation — while a concurrent `ReadTail`
+  succeeds** (the sharing regression guard; trivially green on Unix, load-bearing on the
+  Windows CI leg — both directions and both operations covered, since `FileShare.Delete` is
+  what rotation needs).
 
 **Daemon:**
 - Gate threads `RequesterDisplay` into the prompt request and the decision record (extend
@@ -470,34 +555,45 @@ throughout — no real sleeps).
 
 **App (the "full prompt matrix" from the issue):**
 - Allow once / Deny → correct `ConsentResolveDto`, entry removed, queue advances.
-- Always allow → `save_rule` is requester-only; button hidden when `Requester` is null; **the
-  service guard: `ResolveAsync(saveRule: true)` on a null/empty-requester target sends NO
-  `save_rule` and reports `RuleSkippedNoRequester`** (tested directly, not via the button).
+- Allow & remember → `save_rule` is requester-only; button hidden when `Requester` is null
+  **and** when it is empty (same predicate as the service guard); **the service guard:
+  `ResolveAsync(saveRule: true)` on a null/empty-requester target sends NO `save_rule` and
+  reports `RuleSkippedNoRequester`** (tested directly, not via the button).
+- Rule-outcome disambiguation: after an Allow & remember click, `AlreadyDecided` with
+  `RuleSaved=true` / `false` / absent (old-format ack) shows the saved / not-saved /
+  unknown-down-level disclosure respectively.
 - ABA: successor with the same `RequestId` upserted while predecessor's resolve is in flight
-  → the predecessor's ack removes nothing; the successor survives and is displayed next.
-- Countdown expiry with no resolve in flight → "Expired — denied by timeout", 2s hold
-  (ticker-driven), `Dismiss`, advance; prune removes ghost entries at hint+5s
-  (instance-guarded).
-- Countdown reaches zero while a resolve is in flight → no expiry preemption; `Ok=true` after
-  zero → `Applied`; `Ok=false` after zero → "Already decided"; the next request is unaffected.
-- `AlreadyDecided` → 2s hold, then advance — never silent; with `RuleSaved=true` after an
-  Always-allow click, the disclosure text is shown.
-- `AppliedRuleRejected` → warning surfaced, entry removed.
+  → the predecessor's ack removes nothing; the successor survives and is displayed next —
+  **including when both carry an identical `RequestedAt`** (reference identity, not value
+  equality).
+- Ghost replay: a `Pending` for a request concluded within the tombstone TTL is dropped — no
+  re-add, no second raise; one arriving after the TTL is admitted.
+- Hint expiry with no resolve in flight → non-authoritative copy, **buttons remain active**;
+  a click after hint-zero that acks `Ok=true` is `Applied` (the wall-clock-step case: hint
+  fired early, request was still live); one that acks `Ok=false` runs "Already decided"; the
+  prune removes the entry at hint+5s (instance-guarded) and the VM advances on that removal.
+- Countdown reaches zero while a resolve is in flight → no expiry preemption; the ack
+  governs; the next request is unaffected.
+- `AlreadyDecided` → 2s hold, then advance — never silent.
+- `AppliedRuleRejected` (including rule outcome `Unknown`) → warning surfaced, entry removed.
 - Transport failure → entry kept, buttons re-enable. Cancellation (lane-queued and
   in-flight) → silent abort, entry kept, no toast.
 - Queue: "1 of N" indicator; oldest-first ordering; the pinned display does not swap while a
   terminal hold or in-flight resolve is active; additions while visible don't re-raise;
   addition while closed raises (coordinator-filtered, marshalled to the UI thread — the add
   originates off the UI thread in the test).
-- Subscription lifecycle: clear happens only after the subscribe write succeeds (failed dial
-  retains entries); reconnect-with-empty-replay leaves an empty cache; `Connected` without
-  `consent/1` clears the cache and never subscribes; stream-end-while-Connected retries.
+- Subscription lifecycle: clear happens at the `Subscribed` event (failed dial retains
+  entries — no `Subscribed`, no clear); reconnect-with-empty-replay leaves an empty cache
+  (the `Subscribed` boundary makes this observable); stream death after `Subscribed` but
+  before any replay frame → cache cleared, restored by the next attempt's replay; `Connected`
+  without `consent/1` clears the cache and never subscribes; stream-end-while-Connected
+  retries.
 - Shutdown: app quits with the prompt window open and a resolve in flight → clean disposal in
   the §5 order, OCE path exercised.
 - `ActivityViewModel`: rows map records (fallback chains, source labels, unrecognized source
   verbatim, unparseable timestamp verbatim); refresh on tab-visible / stat-change /
-  own-resolution (eventual — asserted via the next poll tick, not instant); last-good rows
-  kept when a refresh fails; empty state only on clean-empty read.
+  own-resolution (eventual — asserted via the next poll tick, not instant); **`Complete=false`
+  read keeps last-good rows; `Complete=true` empty read shows the empty state**.
 - `TrayViewModel`: new Attention row (pending>0 while Idle/Running → Attention + header);
   connection-trouble precedence unchanged; menu item visibility.
 
@@ -507,5 +603,7 @@ throughout — no real sleeps).
 - Consent rules editor UI → umbrella slice 4.
 - Attach/approve from the CLI (`kcap daemon consent` gains no resolve verb — the app is the
   approval surface; the CLI keeps rules + log only).
+- A wire generation echo on `ConsentResolveDto` (§4.1's accepted stale-resolve tradeoff notes
+  it as a future option).
 - Any change to engine matching, rule ordering/precedence, policy storage, or prompt timeout
   semantics.
