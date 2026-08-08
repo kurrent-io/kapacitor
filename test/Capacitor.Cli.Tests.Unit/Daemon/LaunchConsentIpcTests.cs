@@ -133,6 +133,38 @@ public class LaunchConsentIpcTests {
         while (!broker.HasSubscriber && DateTime.UtcNow < deadline) await Task.Delay(10, ct);
     }
 
+    // ══ v2 helpers: a fresh connection per resolve (mirrors the file's existing one-shot-resolve
+    // tests), routed through the real LocalControlServer switch so the ConsentResolveV2/
+    // ConsentSubscribeV2 routing added for the v2 consent surface is exercised, not bypassed. ═════
+
+    static async Task<ConsentAckDto> ResolveAsync(Harness h, string json, bool requireEcho, CancellationToken ct) {
+        await using var s = await ConnectAsync(h.SockPath, ct);
+        var frameType = requireEcho ? FrameType.ConsentResolveV2 : FrameType.ConsentResolve;
+        await FrameCodec.WriteAsync(s, LocalFrame.ConsentJson(frameType, json), ct);
+        var resp = await FrameCodec.ReadAsync(s, ct);
+        return JsonSerializer.Deserialize(resp!.Text, ConsentIpcJsonContext.Default.ConsentAckDto)!;
+    }
+
+    /// Builds a ConsentResolveDto payload via the shared source-gen context (rather than a
+    /// hand-typed literal) so the helper can't drift from the wire shape it's meant to exercise.
+    /// `action` overrides the save_rule's action independently of `decision` — needed to drive a
+    /// store-side rejection (an invalid action) while still resolving a valid allow/deny.
+    static string ResolveJson(string requestId, string decision, bool saveRule, string? promptId, string? action = null) {
+        var rule = saveRule ? new ConsentRuleDto(action ?? decision, "github:1", "agent", null, null) : null;
+        return JsonSerializer.Serialize(new ConsentResolveDto(requestId, decision, rule, promptId),
+            ConsentIpcJsonContext.Default.ConsentResolveDto);
+    }
+
+    static IReadOnlyList<LaunchConsentRule> StoreRules(Harness h) => h.Store.Current.Rules;
+
+    static bool PendingStillLive(Harness h, string requestId) =>
+        h.Broker.PendingSnapshot().Any(p => p.RequestId == requestId);
+
+    static async Task<ConsentPendingDto> FirstPendingFrom(Stream subscribeStream, CancellationToken ct) {
+        var frame = await FrameCodec.ReadAsync(subscribeStream, ct);
+        return JsonSerializer.Deserialize(frame!.Text, ConsentIpcJsonContext.Default.ConsentPendingDto)!;
+    }
+
     [Test]
     [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
     public async Task RulesGet_returns_current_policy_and_RulesPut_replaces_it() {
@@ -372,6 +404,137 @@ public class LaunchConsentIpcTests {
             var outcome = await decideTask;
             await Assert.That(outcome.Allowed).IsTrue();
             await Assert.That(outcome.Source).IsEqualTo("prompt_user");
+        });
+    }
+
+    // ══ v2 consent surface (ConsentSubscribeV2/ConsentResolveV2): a mandatory prompt_id identity
+    // echo, rule_saved reported on both ack branches, and ToDto stamping pinned against the
+    // broker's own ground-truth PromptId/RequesterDisplay. ═══════════════════════════════════════
+
+    [Test]
+    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
+    public async Task V2_resolve_without_prompt_id_acks_invalid_payload() {
+        if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
+
+        await RunAsync("v2-resolve-noecho", LaunchConsentDefault.Allow, 45, async (h, ct) => {
+            // A v2 resolve missing prompt_id entirely never reaches the broker.
+            await using (var s1 = await ConnectAsync(h.SockPath, ct)) {
+                await FrameCodec.WriteAsync(s1, LocalFrame.ConsentJson(FrameType.ConsentResolveV2,
+                    """{"request_id":"a1","decision":"allow","save_rule":null}"""), ct);
+                var resp = await FrameCodec.ReadAsync(s1, ct);
+                var ack = JsonSerializer.Deserialize(resp!.Text, ConsentIpcJsonContext.Default.ConsentAckDto)!;
+                await Assert.That(ack.Ok).IsFalse();
+                await Assert.That(ack.Error).Contains("prompt_id");
+            }
+
+            // Nor does an empty-string prompt_id.
+            var emptyEchoAck = await ResolveAsync(h, ResolveJson("a1", "allow", saveRule: false, ""), requireEcho: true, ct);
+            await Assert.That(emptyEchoAck.Ok).IsFalse();
+            await Assert.That(emptyEchoAck.Error).Contains("prompt_id");
+        });
+    }
+
+    [Test]
+    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
+    public async Task Rule_saved_is_populated_on_both_ok_branches() {
+        if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
+
+        await RunAsync("v2-rule-saved", LaunchConsentDefault.Prompt, 30, async (h, ct) => {
+            await using var subscriber = await ConnectAsync(h.SockPath, ct);
+            await FrameCodec.WriteAsync(subscriber, new LocalFrame(FrameType.ConsentSubscribeV2), ct);
+            await SpinUntilSubscribedAsync(h.Broker, ct);
+
+            var input = new LaunchConsentInput("user_x", RequesterIsOwner: false, "agent", "/tmp/repo", "claude", null);
+
+            // (1) save_rule + live pending + matching echo → Ok=true, RuleSaved=true.
+            var decideTask1 = h.Gate.DecideAsync("a1", input, ct);
+            var pending1 = await FirstPendingFrom(subscriber, ct);
+            var okAck = await ResolveAsync(h, ResolveJson("a1", "allow", saveRule: true, pending1.PromptId), requireEcho: true, ct);
+            await Assert.That(okAck.Ok).IsTrue();
+            await Assert.That(okAck.RuleSaved).IsEqualTo(true);
+            await decideTask1;
+
+            // (2) save_rule + NO pending → the rule is still persisted (save-before-resolve is
+            // deliberate — "Allow & remember" is a durable trust statement, not conditioned on this
+            // particular launch still being live), Ok=false, RuleSaved=true.
+            var nopAck = await ResolveAsync(h, ResolveJson("ghost", "allow", saveRule: true, "p-x"), requireEcho: true, ct);
+            await Assert.That(nopAck.Ok).IsFalse();
+            await Assert.That(nopAck.RuleSaved).IsEqualTo(true);
+            await Assert.That(StoreRules(h).Any(r => r.Requester == "github:1")).IsTrue(); // persisted despite Ok=false
+
+            // (3) save_rule rejected by the store (invalid action) → RuleSaved=false on BOTH the
+            // still-resolves-fine branch and the no-pending branch.
+            var decideTask3 = h.Gate.DecideAsync("a1", input, ct); // successor prompt reusing "a1" — case (1)'s was already claimed
+            var pending3 = await FirstPendingFrom(subscriber, ct);
+            var rejectedButLiveAck = await ResolveAsync(
+                h, ResolveJson("a1", "allow", saveRule: true, pending3.PromptId, action: "bogus"), requireEcho: true, ct);
+            await Assert.That(rejectedButLiveAck.Ok).IsTrue(); // the resolution itself still applies
+            await Assert.That(rejectedButLiveAck.RuleSaved).IsEqualTo(false);
+            await decideTask3;
+
+            var rejectedNoPendingAck = await ResolveAsync(
+                h, ResolveJson("ghost2", "allow", saveRule: true, "p-y", action: "bogus"), requireEcho: true, ct);
+            await Assert.That(rejectedNoPendingAck.Ok).IsFalse();
+            await Assert.That(rejectedNoPendingAck.RuleSaved).IsEqualTo(false);
+
+            // (4) no save_rule → RuleSaved=null.
+            var decideTask4 = h.Gate.DecideAsync("a1", input, ct);
+            var pending4 = await FirstPendingFrom(subscriber, ct);
+            var plainAck = await ResolveAsync(h, ResolveJson("a1", "deny", saveRule: false, pending4.PromptId), requireEcho: true, ct);
+            await Assert.That(plainAck.RuleSaved).IsNull();
+            await decideTask4;
+        });
+    }
+
+    [Test]
+    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
+    public async Task V2_resolve_with_mismatching_echo_acks_no_pending_and_leaves_the_request_live() {
+        if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
+
+        await RunAsync("v2-resolve-mismatch", LaunchConsentDefault.Prompt, 30, async (h, ct) => {
+            await using var subscriber = await ConnectAsync(h.SockPath, ct);
+            await FrameCodec.WriteAsync(subscriber, new LocalFrame(FrameType.ConsentSubscribeV2), ct);
+            await SpinUntilSubscribedAsync(h.Broker, ct);
+
+            var input = new LaunchConsentInput("user_x", RequesterIsOwner: false, "agent", "/tmp/repo", "claude", null);
+            var decideTask = h.Gate.DecideAsync("a1", input, ct);
+            var pending = await FirstPendingFrom(subscriber, ct);
+
+            var ack = await ResolveAsync(h, ResolveJson("a1", "allow", saveRule: false, "WRONG"), requireEcho: true, ct);
+            await Assert.That(ack.Ok).IsFalse();
+            await Assert.That(PendingStillLive(h, "a1")).IsTrue();
+
+            // Resolve for real with the correct echo, so the DecideAsync task doesn't outlive the test.
+            var cleanupAck = await ResolveAsync(h, ResolveJson("a1", "allow", saveRule: false, pending.PromptId), requireEcho: true, ct);
+            await Assert.That(cleanupAck.Ok).IsTrue();
+            await decideTask;
+        });
+    }
+
+    [Test]
+    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
+    public async Task Subscribe_pushes_prompt_id_and_requester_display_on_pending_frames() {
+        if (OperatingSystem.IsWindows()) return; // Unix-domain socket path
+
+        await RunAsync("v2-subscribe-stamped", LaunchConsentDefault.Prompt, 30, async (h, ct) => {
+            await using var subscriber = await ConnectAsync(h.SockPath, ct);
+            await FrameCodec.WriteAsync(subscriber, new LocalFrame(FrameType.ConsentSubscribeV2), ct);
+            await SpinUntilSubscribedAsync(h.Broker, ct);
+
+            var input = new LaunchConsentInput("user_x", RequesterIsOwner: false, "agent", "/tmp/repo", "claude", "Mathias");
+            var decideTask = h.Gate.DecideAsync("a1", input, ct);
+
+            var dto = await FirstPendingFrom(subscriber, ct);
+            // Assert against the broker's own ground-truth request, not just a non-null check —
+            // this is the pin for ToDto's stamping (previously untested).
+            var live = h.Broker.PendingSnapshot().Single(p => p.RequestId == "a1");
+            await Assert.That(dto.PromptId).IsEqualTo(live.PromptId);
+            await Assert.That(dto.RequesterDisplay).IsEqualTo(live.RequesterDisplay);
+            await Assert.That(dto.RequesterDisplay).IsEqualTo("Mathias");
+
+            var ack = await ResolveAsync(h, ResolveJson("a1", "allow", saveRule: false, dto.PromptId), requireEcho: true, ct);
+            await Assert.That(ack.Ok).IsTrue();
+            await decideTask;
         });
     }
 }
