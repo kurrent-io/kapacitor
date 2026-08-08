@@ -1553,6 +1553,8 @@ After adding a remap, re-run `kcap import --org` (or whichever scope you use). T
 
 kcap reports anonymous usage data so we can see which commands people use and where setup goes wrong. It records **command and flag names, exit codes, durations, MCP tool names, and setup-funnel steps.** It never records argument values, file paths, repo names or URLs, session ids, transcript content, environment variable values, usernames, or email addresses.
 
+What identifies an installation, stated plainly: a random device id generated once and stored on this machine, so events can be tied to one install over time without naming a person. For a hosted `*.kcap.ai` workspace, every event additionally carries that workspace's slug — as an `org` property and an `organization` group — so usage rolls up per workspace; self-hosted installs never send it, and the slug names a workspace, not a user.
+
 The first time you run a reportable command, kcap prints a one-time notice to stderr; it never prints again on that machine.
 
 Turn it off in any of three ways:

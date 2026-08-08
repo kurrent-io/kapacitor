@@ -62,6 +62,21 @@ public class CliTelemetryTests {
     // Initialize("mcp-server", …) once, then RecordCommand may be called per-invocation with a
     // different, potentially denylisted, command string. Initialising with "hook" here would let
     // Initialize's Enabled=false short-circuit RecordCommand before its own guard ever runs.
+    // End-to-end version of CommandEventsTests.Unrecognised_tokens_report_unknown: proves the
+    // redaction actually reaches the emitted event's `command` property, not just the pure
+    // allowlist function. `command` here is NOT denylisted (it's not a real verb at all), so
+    // RecordCommand proceeds — CommandEvents.ReportableCommand is what has to catch it.
+    [Test]
+    public async Task Record_command_redacts_an_unrecognised_verb_to_unknown() {
+        var sink = StartCapturing("status");
+
+        CliTelemetry.RecordCommand(
+            "/Users/me/work/acme-private", ["/Users/me/work/acme-private"], exitCode: 1, durationMs: 3);
+
+        var e = sink.Single(x => x.Name == "cli_command");
+        await Assert.That(e.Properties["command"]!.GetValue<string>()).IsEqualTo("unknown");
+    }
+
     [Test]
     public async Task Denylisted_commands_emit_nothing() {
         var sink = StartCapturing("status");

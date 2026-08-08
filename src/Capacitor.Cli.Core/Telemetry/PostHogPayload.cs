@@ -35,7 +35,16 @@ public static class PostHogPayload {
         foreach (var e in events) {
             var props = (JsonObject)e.Properties.DeepClone();
             props["distinct_id"] = distinctId;
-            props["$ip"]         = null;   // suppress geo-IP resolution at ingest
+
+            // `$ip: null` alone does NOT suppress PostHog's GeoIP enrichment: $ip is populated
+            // from the connecting IP regardless of this property, and the GeoIP transform falls
+            // back to that request IP whenever $ip is falsy. `$geoip_disable: true` is PostHog's
+            // documented switch for the enrichment itself. Both are set — $ip null is belt,
+            // $geoip_disable is braces — because leaving only the former ships every event with
+            // the developer's real-IP-derived $geoip_country_name/city/lat/long, on an EU-hosted
+            // project whose privacy policy states an IP-discard posture.
+            props["$ip"]            = null;
+            props["$geoip_disable"] = true;
 
             // Group and property travel together, and only for SaaS. Deriving an `org` from a
             // self-hosted host label would put an internal hostname fragment in the data for no

@@ -108,7 +108,7 @@ public static class CliTelemetry {
             if (!Enabled || !CommandEvents.IsReportable(command)) return;
 
             var props = new JsonObject {
-                ["command"]     = command,
+                ["command"]     = CommandEvents.ReportableCommand(command),
                 ["exit_code"]   = exitCode,
                 ["duration_ms"] = durationMs,
             };

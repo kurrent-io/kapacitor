@@ -59,7 +59,7 @@ public sealed class TelemetrySpool(string path, int maxEvents = 2000) {
             // pathological KCAP_CONFIG_DIR. This catch is defence-in-depth; triggering a delete
             // failure deterministically across platforms requires filesystem states a unit test
             // can't reliably create (exclusive locks), so this is not unit-tested. The constraint
-            // is absolute: best effort on delete failure.
+            // is absolute: a failed delete means duplicates on the next drain, not lost events.
         }
     }
 

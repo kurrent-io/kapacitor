@@ -30,6 +30,9 @@ public class PostHogPayloadTests {
         await Assert.That(props["distinct_id"]!.GetValue<string>()).IsEqualTo("device-1");
         await Assert.That(props["$ip"]).IsNull();
         await Assert.That(props.ContainsKey("$ip")).IsTrue();
+        // $ip: null alone does not suppress PostHog's GeoIP enrichment (it falls back to the
+        // connecting IP) — $geoip_disable: true is the documented switch for the enrichment itself.
+        await Assert.That(props["$geoip_disable"]!.GetValue<bool>()).IsTrue();
     }
 
     [Test]
@@ -101,6 +104,7 @@ public class PostHogPayloadTests {
         await Assert.That(e.Properties["source"]!.GetValue<string>()).IsEqualTo("cli");
         await Assert.That(e.Properties.ContainsKey("distinct_id")).IsFalse();
         await Assert.That(e.Properties.ContainsKey("$ip")).IsFalse();
+        await Assert.That(e.Properties.ContainsKey("$geoip_disable")).IsFalse();
         await Assert.That(e.Properties.ContainsKey("$groups")).IsFalse();
         await Assert.That(e.Properties.ContainsKey("org")).IsFalse();
     }

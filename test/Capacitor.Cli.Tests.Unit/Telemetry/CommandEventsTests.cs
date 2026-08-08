@@ -29,6 +29,16 @@ public class CommandEventsTests {
         await Assert.That(CommandEvents.IsReportable(command)).IsTrue();
     }
 
+    // `uninstall` is human-invoked, unlike the rest of the denylist — it's excluded for a
+    // different reason: Directory.Delete on the config dir happens BEFORE the ProcessExit
+    // telemetry flush, and a failed POST spills to telemetry-spool.jsonl via
+    // TelemetrySpool.Append, which Directory.CreateDirectory's the config dir right back into
+    // existence. Program.cs already skips the update check for the identical reason.
+    [Test]
+    public async Task Uninstall_is_not_reportable() {
+        await Assert.That(CommandEvents.IsReportable("uninstall")).IsFalse();
+    }
+
     [Test]
     public async Task Known_subcommands_are_reported() {
         await Assert.That(CommandEvents.Subcommand("daemon", ["daemon", "start"])).IsEqualTo("start");
@@ -110,6 +120,28 @@ public class CommandEventsTests {
 
         await Assert.That(flags.Length).IsEqualTo(1);
         await Assert.That(flags[0]).IsEqualTo("--skip-antigravity-instructions");
+    }
+
+    [Test]
+    [Arguments("setup")]
+    [Arguments("daemon")]
+    [Arguments("status")]
+    [Arguments("hook")] // known-but-denylisted verbs are still KNOWN verbs — the two lists are independent
+    [Arguments("uninstall")]
+    public async Task Known_verbs_report_themselves(string command) {
+        await Assert.That(CommandEvents.ReportableCommand(command)).IsEqualTo(command);
+    }
+
+    // The allowlist half of the redaction guarantee: `Program.cs` falls through to
+    // `Unknown command: {command}` for anything not in its dispatch switch, and args[0] is
+    // arbitrary — a fat-fingered session GUID, an absolute path pasted a token early, a repo URL.
+    // None of these are real verbs, so none may reach the `command` property verbatim.
+    [Test]
+    [Arguments("0b9c1f4e-2a77-4d19-9f0e-1c2d3e4f5a6b")]
+    [Arguments("/Users/me/work/acme-private")]
+    [Arguments("git@github.com:acme/private.git")]
+    public async Task Unrecognised_tokens_report_unknown(string command) {
+        await Assert.That(CommandEvents.ReportableCommand(command)).IsEqualTo("unknown");
     }
 
     [Test]

@@ -95,9 +95,9 @@ kcap commands are short-lived, so an event must escape before the process does.
   spike: `ProcessExit` observes `Environment.ExitCode` set from a top-level `Main`'s `return`, so
   per-command exit codes are recordable with a three-line change and no restructuring of the
   ~630-line dispatch switch in `Program.cs`.
-- **A failed flush spills to a bounded disk spool** (`telemetry-spool.jsonl`, ~256KB, drop-oldest)
-  that the next successful flush from any process replays. Offline runs survive without putting disk
-  I/O on the normal path.
+- **A failed flush spills to a bounded disk spool** (`telemetry-spool.jsonl`, capped at 2000 events,
+  drop-oldest — `TelemetrySpool.cs:10`) that the next successful flush from any process replays.
+  Offline runs survive without putting disk I/O on the normal path.
 
 ### 5. On by default, with a first-run notice
 
@@ -145,7 +145,7 @@ delete the analytics id outright without touching authentication.
 ## Event catalog
 
 Every CLI event carries `source: "cli"` (mirroring the server's `source: "server"`), `cli_version`,
-`os`, `arch`, `is_ci`, `is_headless`, and `$ip: null`.
+`os`, `arch`, `is_ci`, `is_headless`, `$ip: null`, and `$geoip_disable: true`.
 
 **No CLI event may reuse a server event name.** The server already emits `cli_setup_completed`
 (`PosthogEventMapper.cs:39`); a second producer of that name would double-count across two different
@@ -206,14 +206,19 @@ Flushed eagerly, in order:
 | `cli_setup_tenant_none` | **signed in, zero tenants — the "go sign up" fork** | `provider` |
 | `cli_setup_workspace_offered` | provisioner prompt shown | |
 | `cli_setup_workspace_declined` | declined or cancelled out | |
+| `cli_setup_workspace_redirected` | offered a new workspace, but pointed setup at one already owned instead | |
 | `cli_setup_workspace_requested` | slug confirmed, provisioning POSTed | |
 | `cli_setup_workspace_provisioned` | poll resolves live | |
 | `cli_setup_workspace_failed` | poll fails | `reason`: `slug_taken`, `reserved`, `poll_timeout`, `unauthorized` |
 | `cli_setup_succeeded` | setup finishes | `agents_configured` (count, not vendor names) |
 
 The drop-off measure is `cli_setup_tenant_none` minus `cli_setup_workspace_provisioned`, split by the
-last step reached. Combined with the web's `cli_snippet_copied`, the funnel reads copy → run → signin
-→ signup → live, with only the copy→run hop uncorrelated per person.
+last step reached — with `cli_setup_workspace_redirected` excluded from that split. It is not
+abandonment: setup continues against the workspace the person redirected to and may still reach
+`cli_setup_succeeded`, so bucketing it alongside `cli_setup_workspace_declined` would mis-count the
+"I already have a workspace" branch as a lost signup. Combined with the web's `cli_snippet_copied`,
+the funnel reads copy → run → signin → signup → live, with only the copy→run hop uncorrelated per
+person.
 
 Closing that last hop would require a per-visitor token in the copied snippet
 (`kcap setup --ref=…`). Rejected: it makes the headline install instruction look like tracking, and
@@ -246,9 +251,12 @@ a *workspace*, not a person; nothing links a device to a named human. Self-hoste
 neither. Every event also carries `cli_version`, `os`, `arch`, `is_ci`, `is_headless`, `has_server`
 and `logged_in` — environment shape, never environment contents.
 
-`$ip: null` on every payload suppresses geo-IP resolution, matching the IP-discard posture the
-privacy policy already states for web. PostHog's current handling of this property should be
-confirmed during implementation rather than assumed.
+`$ip: null` and `$geoip_disable: true` on every payload suppress geo-IP resolution, matching the
+IP-discard posture the privacy policy already states for web. Confirmed during implementation:
+`$ip: null` alone does **not** suppress it — PostHog populates `$ip` from the connecting IP
+regardless, and the GeoIP transform falls back to that request IP whenever `$ip` is falsy;
+`$geoip_disable` is PostHog's documented switch for the enrichment itself. Both are set — `$ip`
+null costs nothing and `$geoip_disable` is what actually does the work.
 
 First-run notice, stderr only (never stdout, so scripted output stays clean), once per device:
 

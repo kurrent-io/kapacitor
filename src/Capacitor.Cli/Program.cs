@@ -86,8 +86,14 @@ var commandStart = System.Diagnostics.Stopwatch.GetTimestamp();
 // TokenStore.LoadAsync() is the LOCAL read (src/Capacitor.Cli.Core/Auth/TokenStore.cs:211) —
 // deliberately not GetValidTokensAsync(), which can refresh over the network. `logged_in` is a
 // cheap fact about disk, never a reason to make a request on the command path.
+//
+// Gated on IsReportable: denylisted commands (chiefly `hook`, thousands of invocations/day on
+// the agent's critical path) never send `logged_in` — CliTelemetry.Initialize below disables
+// itself for them regardless — so the disk read has no consumer and is worth skipping outright.
 var loggedIn = false;
-try { loggedIn = await TokenStore.LoadAsync() is not null; } catch { }
+if (CommandEvents.IsReportable(command)) {
+    try { loggedIn = await TokenStore.LoadAsync() is not null; } catch { }
+}
 
 CliTelemetry.Initialize(command, baseUrl, loggedIn);
 
