@@ -22,6 +22,27 @@ public class PiRpcProcessTests {
             UseShellExecute        = false,
         })!;
 
+    /// <summary>A child that NEVER reads its stdin — unlike <c>/bin/cat</c>, which drains stdin as
+    /// fast as it's written, so a write to it can never fill the OS pipe buffer and block. Used only
+    /// by the dispose/write race test below, which needs a writer to be genuinely stuck mid-flush,
+    /// holding the stdin gate, for the race it exercises to be real rather than incidental.</summary>
+    static Process StartNonReadingChild() =>
+        Process.Start(new ProcessStartInfo("/bin/sh", "-c \"exec sleep 30\"") {
+            RedirectStandardInput  = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError  = true,
+            UseShellExecute        = false,
+        })!;
+
+    static async Task<Exception?> SwallowFault(Task task) {
+        try {
+            await task.ConfigureAwait(false);
+            return null;
+        } catch (Exception ex) {
+            return ex;
+        }
+    }
+
     /// <summary>
     /// The whole point of this abstraction over <c>AgyTurnProcess</c>: stdin is NOT closed at
     /// construction, so a line written after construction is still deliverable — and because the
@@ -140,54 +161,56 @@ public class PiRpcProcessTests {
 
     /// <summary>
     /// The regression this pins: <c>DisposeAsync</c> used to call <c>_stdinGate.Dispose()</c>, but
-    /// <see cref="SemaphoreSlim.Dispose()"/> does not release outstanding async waiters — a
-    /// <see cref="PiRpcProcess.WriteLineAsync"/> call blocked in <c>WaitAsync</c> when dispose ran
-    /// could hang FOREVER, and the racing writer's own <c>finally</c> release could throw
-    /// <see cref="ObjectDisposedException"/> over whatever it was already unwinding. Task 3's runtime
-    /// races exactly this shape — a send or abort racing teardown — so this test drives the real
-    /// race rather than just unit-testing the fixed code in isolation: a write in flight when
-    /// dispose runs, and a write issued strictly after dispose has completed, must both settle
-    /// promptly, never hang.
+    /// <see cref="SemaphoreSlim.Dispose()"/> does not release outstanding async waiters. That only
+    /// bites when a SECOND writer is genuinely queued in <c>WaitAsync</c> behind a first writer that
+    /// is itself still blocked holding the gate — a single unopposed <c>WriteLineAsync</c> acquires
+    /// the semaphore synchronously and never exercises the disposed-waiter path at all (an earlier
+    /// version of this test raced exactly one write against dispose and was proven vacuous by
+    /// mutation testing: reverting the fix left it green).
+    ///
+    /// <para>So this test manufactures the real precondition directly: A child that never reads its
+    /// stdin (<see cref="StartNonReadingChild"/>) lets writer A block mid-<c>WriteAsync</c>/
+    /// <c>FlushAsync</c> — <c>Process.StandardInput</c>'s <c>AutoFlush</c> is on by default, so
+    /// writing more than the OS pipe buffer can hold with nobody draining it blocks the write itself
+    /// — WHILE HOLDING <c>_stdinGate</c>. Writer B then queues behind A in <c>WaitAsync</c>. Only
+    /// with a real waiter parked on the gate does disposing it (the bug) or leaving it alone (the
+    /// fix) diverge. <c>DisposeAsync</c> then runs concurrently with both; the pre-fix code hangs B
+    /// forever, the fix lets everything settle (faulted is fine — the kill breaks A's pipe and B's
+    /// disposed-check throws) within the bounded wait below.</para>
     /// </summary>
     [Test]
-    public async Task DisposeAsync_racing_a_WriteLineAsync_never_hangs_and_leaves_writes_failing_fast() {
-        Skip.Unless(!OperatingSystem.IsWindows(), "Uses /bin/cat as a real long-lived RPC-shaped child; Pi hosting is POSIX-only anyway.");
+    public async Task DisposeAsync_racing_a_writer_queued_behind_a_blocked_write_never_hangs() {
+        Skip.Unless(!OperatingSystem.IsWindows(), "Uses /bin/sh as a real long-lived, non-reading child; Pi hosting is POSIX-only anyway.");
 
-        var proc = new PiRpcProcess(StartCat(), NullLogger<PiRpcProcess>.Instance);
+        var proc = new PiRpcProcess(StartNonReadingChild(), NullLogger<PiRpcProcess>.Instance);
 
-        // Race a write against dispose. This half of the test does not care whether the racing
-        // write succeeds (it may complete before the kill lands) or faults (if the kill wins) — the
-        // only claim it makes is that NEITHER task hangs waiting on the other, which is exactly what
-        // a disposed-out-from-under-it SemaphoreSlim would cause.
-        var racingWrite = proc.WriteLineAsync("""{"type":"prompt","id":"racing"}""", CancellationToken.None)
-            .ContinueWith(t => t.Exception, TaskContinuationOptions.ExecuteSynchronously);
+        // Bigger than any OS pipe buffer this test could plausibly run against (typically 16-64KB
+        // on macOS/Linux) — large enough that A is still mid-flush, holding the gate, when B tries
+        // to queue behind it.
+        var hugeLine = new string('a', 8 * 1024 * 1024);
+        var writeA   = SwallowFault(proc.WriteLineAsync(hugeLine, CancellationToken.None));
+
+        // Give A time to acquire the gate and actually block on the pipe write, rather than racing
+        // its own semaphore acquisition.
+        await Task.Delay(TimeSpan.FromMilliseconds(200));
+
+        await Assert.That(writeA.IsCompleted).IsFalse()
+            .Because("A must still be blocked mid-write, holding the gate, for B to queue behind it " +
+                      "— if A already finished (e.g. the OS pipe buffer absorbed the whole line) this " +
+                      "test proves nothing, exactly like the mutation-caught prior version");
+
+        // B queues in WaitAsync behind A. THIS is the state the pre-fix `_stdinGate.Dispose()` could
+        // strand forever.
+        var writeB = SwallowFault(proc.WriteLineAsync("""{"type":"prompt","id":"queued"}""", CancellationToken.None));
+
         var disposeTask = proc.DisposeAsync().AsTask();
 
-        var both   = Task.WhenAll(racingWrite, disposeTask);
-        var winner = await Task.WhenAny(both, Task.Delay(TimeSpan.FromSeconds(5)));
+        var all    = Task.WhenAll(writeA, writeB, disposeTask);
+        var winner = await Task.WhenAny(all, Task.Delay(TimeSpan.FromSeconds(5)));
 
-        await Assert.That(ReferenceEquals(winner, both)).IsTrue()
-            .Because("a write racing dispose must never hang — the defect under test was disposing " +
-                     "the stdin semaphore while a waiter was still queued on it");
-
-        // A write issued strictly AFTER dispose has already completed must fault immediately —
-        // never queue behind a gate that will never again be released.
-        var postDisposeWrite = proc.WriteLineAsync("""{"type":"prompt","id":"after-dispose"}""", CancellationToken.None);
-        var postWinner        = await Task.WhenAny(postDisposeWrite, Task.Delay(TimeSpan.FromSeconds(5)));
-
-        await Assert.That(ReferenceEquals(postWinner, postDisposeWrite)).IsTrue()
-            .Because("a write issued after dispose must fault promptly, not hang");
-
-        Exception? caught = null;
-
-        try {
-            await postDisposeWrite;
-        } catch (Exception ex) {
-            caught = ex;
-        }
-
-        await Assert.That(caught).IsNotNull();
-        await Assert.That(caught is ObjectDisposedException or IOException).IsTrue()
-            .Because($"expected ObjectDisposedException or IOException, got {caught?.GetType().FullName}");
+        await Assert.That(ReferenceEquals(winner, all)).IsTrue()
+            .Because("neither the blocked writer, the writer queued behind it, nor dispose itself " +
+                      "may hang — the defect under test was disposing the stdin semaphore while a " +
+                      "waiter was queued on it");
     }
 }
