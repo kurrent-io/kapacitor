@@ -23,8 +23,14 @@ namespace Capacitor.Cli.Daemon.Acp;
 /// a settle has a gap by construction: a server can initialize, be used, and be missed between two
 /// samples. Judging each notification on arrival closes it.</para>
 ///
-/// <para><b>Counting, not membership.</b> A duplicate of an injected name is INSIDE the injected set,
-/// so a membership test admits it. Each name is expected exactly once.</para>
+/// <para><b>Membership, not counting.</b> This originally required each injected name to initialize
+/// exactly once, reasoning that a duplicate could be a second server standing up under an injected
+/// name. But every injected name carries a per-launch GUID (Kiro aliases the result channel and the
+/// allowlist servers), so nothing in the operator's global config can be standing under one — a
+/// suppression failure surfaces as the operator's own server NAMES, which the membership arm catches.
+/// And kiro-cli 2.16.0 announces one injected server's initialization more than once as ordinary
+/// behaviour, so the count rule reaped every reviewer launch while the surface was exactly the
+/// injected set. A repeated announce of an injected name is therefore benign.</para>
 ///
 /// <para><b>Known residual, not mitigated:</b> a build that stopped emitting
 /// <c>server_initialized</c> for extra servers while still emitting it for injected ones defeats
@@ -90,11 +96,10 @@ internal sealed class KiroMcpSurfaceMonitor {
                 return;
             }
 
-            if (!_seen.Add(serverName))
-                _violation =
-                    $"kiro_reviewer_mcp_surface_unexpected: MCP server '{serverName}' initialized more "
-                  + "than once. An injected name is inside the expected set, so only counting catches a "
-                  + "second server standing up under it.";
+            // Recorded for readiness, never counted: kiro-cli (2.16.0) announces one injected server's
+            // initialization more than once, and an injected name is a per-launch GUID nothing else can
+            // stand up under — see the class doc.
+            _seen.Add(serverName);
         }
     }
 
