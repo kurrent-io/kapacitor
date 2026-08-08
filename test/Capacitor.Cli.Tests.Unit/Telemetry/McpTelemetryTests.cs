@@ -1,3 +1,4 @@
+using System.Text.Json.Nodes;
 using Capacitor.Cli.Core.Telemetry;
 using TUnit.Assertions;
 using TUnit.Assertions.Extensions;
@@ -44,16 +45,52 @@ public class McpTelemetryTests {
         await Assert.That(sink.Single().Properties["ok"]!.GetValue<bool>()).IsFalse();
     }
 
-    // Tool arguments can contain repo paths, prompts, and session ids.
+    // Tool arguments can contain repo paths, prompts, and session ids. An earlier draft of this
+    // test checked the absence of three literal key names (arguments/params/input), which would
+    // still pass against an implementation that leaked argument data under any OTHER key.
+    // Inverted to an allowlist so ANY unexpected key fails the test, regardless of its name.
     [Test]
     public async Task No_argument_data_is_carried() {
         var sink = StartCapturing();
 
         McpTelemetry.ToolCalled("kcap-memory", "save_memory", ok: true, durationMs: 1);
 
+        // The four event-specific properties, plus every shared property CliTelemetry.Capture
+        // merges in (see CliTelemetry.Initialize's `_shared` object) — nothing else may appear.
+        var allowed = new HashSet<string> {
+            "server", "tool", "ok", "duration_ms",
+            "source", "cli_version", "os", "arch", "is_ci", "is_headless", "has_server", "logged_in"
+        };
+
         var keys = sink.Single().Properties.Select(p => p.Key).ToArray();
-        await Assert.That(keys.Contains("arguments")).IsFalse();
-        await Assert.That(keys.Contains("params")).IsFalse();
-        await Assert.That(keys.Contains("input")).IsFalse();
+        await Assert.That(keys.All(allowed.Contains)).IsTrue();
+    }
+
+    [Test]
+    public async Task SafeToolName_returns_unknown_when_params_is_missing() {
+        var request = new JsonObject();
+
+        await Assert.That(McpTelemetry.SafeToolName(request)).IsEqualTo("unknown");
+    }
+
+    [Test]
+    public async Task SafeToolName_returns_unknown_when_params_is_not_an_object() {
+        var request = new JsonObject { ["params"] = "not-an-object" };
+
+        await Assert.That(McpTelemetry.SafeToolName(request)).IsEqualTo("unknown");
+    }
+
+    [Test]
+    public async Task SafeToolName_returns_unknown_when_name_is_missing() {
+        var request = new JsonObject { ["params"] = new JsonObject() };
+
+        await Assert.That(McpTelemetry.SafeToolName(request)).IsEqualTo("unknown");
+    }
+
+    [Test]
+    public async Task SafeToolName_returns_unknown_when_name_is_not_a_string() {
+        var request = new JsonObject { ["params"] = new JsonObject { ["name"] = 123 } };
+
+        await Assert.That(McpTelemetry.SafeToolName(request)).IsEqualTo("unknown");
     }
 }

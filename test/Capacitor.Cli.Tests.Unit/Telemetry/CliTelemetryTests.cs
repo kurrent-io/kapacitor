@@ -119,4 +119,28 @@ public class CliTelemetryTests {
         await Assert.That(firstSink.Any(e => e.Name == "cli_first_run")).IsTrue();
         await Assert.That(secondSink.Any(e => e.Name == "cli_first_run")).IsFalse();
     }
+
+    // Task 10: "mcp-server" is the pseudo-command MCP servers re-initialise under (see
+    // McpTelemetry). An agent-spawned MCP server's stderr is not watched by a human, and on a
+    // fresh machine it can plausibly be the very first kcap-family process ever run — so it must
+    // never consume the once-per-device first-run notice on a human's behalf. The first
+    // human-invoked, reportable command afterward must still see it.
+    [Test]
+    public async Task Mcp_server_initialise_does_not_consume_the_first_run_notice() {
+        var path = NewStatePath();
+
+        TelemetryState.PathOverride = path;
+        var mcpSink = new List<TelemetryEvent>();
+        CliTelemetry.TestSink = mcpSink;
+        CliTelemetry.Initialize("mcp-server", null, loggedIn: false);
+
+        TelemetryState.PathOverride = path;
+        var humanSink = new List<TelemetryEvent>();
+        CliTelemetry.TestSink = humanSink;
+        CliTelemetry.Initialize("status", null, loggedIn: false);
+
+        await Assert.That(mcpSink.Any(e => e.Name == "cli_first_run")).IsFalse();
+        await Assert.That(humanSink.Any(e => e.Name == "cli_first_run")).IsTrue();
+        await Assert.That(TelemetryState.Read().NoticeShown).IsTrue();
+    }
 }

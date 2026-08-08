@@ -46,24 +46,34 @@ static class McpReviewContextServer {
         using var reader = new StreamReader(stdin, Encoding.UTF8);
         await using var writer = new StreamWriter(stdout, new UTF8Encoding(false)) { AutoFlush = true };
 
-        while (await reader.ReadLineAsync() is { } line) {
-            if (string.IsNullOrWhiteSpace(line)) continue;
-            JsonObject? request;
-            try { request = JsonNode.Parse(line)?.AsObject(); } catch { continue; }
-            if (request is null || request["id"] is not { } id) continue;
+        try {
+            while (await reader.ReadLineAsync() is { } line) {
+                if (string.IsNullOrWhiteSpace(line)) continue;
+                JsonObject? request;
+                try { request = JsonNode.Parse(line)?.AsObject(); } catch { continue; }
+                if (request is null || request["id"] is not { } id) continue;
 
-            var method = request["method"]?.GetValue<string>();
-            var response = method switch {
-                "initialize" => BuildInitializeResponse(id, request),
-                "tools/list" => ToResponse(
-                    id, new McpToolsResult(tools), McpJsonContext.Default.McpToolsResult),
-                "tools/call" => await TimedDispatchToolCallAsync(client, validated!, id, request),
-                _ => McpProtocol.TryHandleStandardMethod(method, id)
-                     ?? BuildErrorResponse(id, -32601, $"Method not found: {method}")
-            };
-            await writer.WriteLineAsync(response);
+                var method = request["method"]?.GetValue<string>();
+                var response = method switch {
+                    "initialize" => BuildInitializeResponse(id, request),
+                    "tools/list" => ToResponse(
+                        id, new McpToolsResult(tools), McpJsonContext.Default.McpToolsResult),
+                    "tools/call" => await TimedDispatchToolCallAsync(client, validated!, id, request),
+                    _ => McpProtocol.TryHandleStandardMethod(method, id)
+                         ?? BuildErrorResponse(id, -32601, $"Method not found: {method}")
+                };
+                await writer.WriteLineAsync(response);
+            }
+            return 0;
+        } finally {
+            // Unlike its siblings, this sidecar is spawned via Program.cs's early short-circuit
+            // (before the standard command flow's AppDomain.ProcessExit-registered flush) — so
+            // without an explicit flush here, anything queued since the last periodic
+            // (every-20th-call) flush is lost when the harness closes stdin. This tool is called
+            // only a handful of times per review round, rarely reaching that threshold, which
+            // would otherwise make its telemetry functionally dead.
+            await CliTelemetry.FlushAndClose();
         }
-        return 0;
     }
 
     internal static bool TryValidateCapabilityUrl(string? value, out string? validated) {

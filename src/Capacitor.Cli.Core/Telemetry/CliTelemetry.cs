@@ -56,7 +56,18 @@ public static class CliTelemetry {
             if (TestSink is null)
                 _client = new TelemetryClient(new HttpClientHandler(), Spool(), Token, Endpoint);
 
-            NoticeAndFirstRun();
+            // "mcp-server" is the re-initialise long-lived MCP servers perform on top of the
+            // denylisted "mcp" (see McpTelemetry) — an agent-spawned, non-interactive process
+            // whose stderr no human is watching. kcap-memory/-sessions/-flows/-review
+            // auto-register and spawn on every agent session, so on a fresh machine one of them
+            // is plausibly the very first kcap-family process ever run. Letting the notice fire
+            // there would print the disclosure into a void AND consume the once-per-device
+            // marker, so no human-invoked command would ever show it — silently reproducing the
+            // silent-by-default posture this feature exists to avoid. Skip the notice, the
+            // marker, and the cli_first_run event for this pseudo-command; the first
+            // human-invoked (reportable, non-"mcp-server") command still shows it as designed.
+            if (command != "mcp-server")
+                NoticeAndFirstRun();
         } catch {
             Enabled = false;
         }
