@@ -67,7 +67,8 @@ internal interface IPiRpcProcess : IAsyncDisposable {
     /// <summary>Wait up to <paramref name="timeout"/> for the process to exit (returns silently on timeout).</summary>
     Task WaitForExitAsync(TimeSpan? timeout = null);
 
-    /// <summary>Terminate the process (SIGTERM then SIGKILL) within <paramref name="timeout"/>. Must
+    /// <summary>Terminate the process — an immediate kill of the whole process tree, matching
+    /// <c>AgyTurnProcess</c> (not a graceful signal first) — within <paramref name="timeout"/>. Must
     /// be safe to call even after <see cref="IAsyncDisposable.DisposeAsync"/> has already run — see
     /// this interface's class doc.</summary>
     Task TerminateAsync(TimeSpan? timeout = null);
@@ -76,9 +77,10 @@ internal interface IPiRpcProcess : IAsyncDisposable {
 /// <summary>
 /// <see cref="IPiRpcProcess"/> over a real <see cref="Process"/> — the long-lived <c>pi</c> child
 /// backing one hosted Pi session for its whole lifetime. Mirrors <c>AgyTurnProcess</c>'s
-/// terminate/wait/dispose semantics (SIGTERM-then-kill via <see cref="Process.Kill(bool)"/>, bounded
-/// waits that return silently on timeout, idempotent dispose, terminate-safe-after-dispose) and its
-/// bounded stderr diagnostics capture, but differs in the one place the two runtimes differ: stdin.
+/// terminate/wait/dispose semantics (an immediate kill of the whole process tree via
+/// <see cref="Process.Kill(bool)"/> — not a graceful signal first — bounded waits that return
+/// silently on timeout, idempotent dispose, terminate-safe-after-dispose) and its bounded stderr
+/// diagnostics capture, but differs in the one place the two runtimes differ: stdin.
 /// <c>AgyTurnProcess</c> closes it the instant the child spawns (a fresh exec-per-turn process that
 /// never needs a second write); this type deliberately leaves it open and adds
 /// <see cref="WriteLineAsync"/>, serialized under a <see cref="SemaphoreSlim"/> so two commands fired
@@ -105,6 +107,12 @@ internal sealed partial class PiRpcProcess : IPiRpcProcess {
     readonly SemaphoreSlim           _stdinGate       = new(1, 1);
 
     int _disposed;
+
+    /// <summary>Read wherever a caller needs to know disposal has started WITHOUT racing
+    /// <see cref="DisposeAsync"/>'s own idempotency check — <see cref="_disposed"/> is set via
+    /// <see cref="Interlocked.Exchange(ref int, int)"/> the instant <see cref="DisposeAsync"/>
+    /// begins, so a plain volatile read here is already coherent with that write.</summary>
+    bool IsDisposed => Volatile.Read(ref _disposed) != 0;
 
     internal PiRpcProcess(ProcessStartInfo psi, ILogger logger)
         : this(Process.Start(psi) ?? throw new InvalidOperationException(
@@ -164,11 +172,24 @@ internal sealed partial class PiRpcProcess : IPiRpcProcess {
     /// <summary>
     /// Writes <paramref name="json"/> + <c>\n</c> to stdin and flushes, serialized under
     /// <see cref="_stdinGate"/> so concurrent callers never interleave partial lines on the wire.
+    ///
+    /// <para>Checked for disposal BOTH before and after acquiring the gate. The pre-check is the
+    /// fast path once disposal has already finished (no need to queue behind a gate nobody will
+    /// ever signal again); the post-check catches a writer that was already queued in
+    /// <c>WaitAsync</c> when <see cref="DisposeAsync"/> ran and only got the gate because the
+    /// PREVIOUS holder's own <c>finally</c> released it — without this second check that writer
+    /// would go on to write into a process <see cref="DisposeAsync"/> just killed. Either check
+    /// throws <see cref="ObjectDisposedException"/>, matching the type this method's contract
+    /// promises for a call after disposal.</para>
     /// </summary>
     public async Task WriteLineAsync(string json, CancellationToken ct) {
+        if (IsDisposed) throw new ObjectDisposedException(nameof(PiRpcProcess));
+
         await _stdinGate.WaitAsync(ct).ConfigureAwait(false);
 
         try {
+            if (IsDisposed) throw new ObjectDisposedException(nameof(PiRpcProcess));
+
             await _process.StandardInput.WriteAsync((json + "\n").AsMemory(), ct).ConfigureAwait(false);
             await _process.StandardInput.FlushAsync(ct).ConfigureAwait(false);
         } finally {
@@ -243,10 +264,18 @@ internal sealed partial class PiRpcProcess : IPiRpcProcess {
     public async ValueTask DisposeAsync() {
         if (Interlocked.Exchange(ref _disposed, 1) != 0) return;   // idempotent, per the interface contract
 
+        // The kill happens FIRST, before anything else in this method, and that ordering is load
+        // bearing for WriteLineAsync's post-dispose behaviour: a writer already inside the
+        // `_stdinGate` critical section (mid WriteAsync/FlushAsync on stdin) is not cancelled by
+        // disposal — killing the child here breaks its pipe out from under it instead, so that
+        // in-flight write fails fast (IOException/ObjectDisposedException) rather than hanging on a
+        // dead pipe that will never accept more bytes.
+        //
         // No bounded wait after the kill, deliberately — see AgyTurnProcess's identical comment.
-        // Kill(entireProcessTree: true) is SIGKILL on POSIX, which no child can catch or defer, so
-        // the death is already effectively synchronous with the call. Callers that need a CONFIRMED
-        // exit terminate first and read HasExited while the handle is still valid.
+        // Kill(entireProcessTree: true) is an immediate kill (SIGKILL on POSIX), which no child can
+        // catch or defer, so the death is already effectively synchronous with the call. Callers
+        // that need a CONFIRMED exit terminate first and read HasExited while the handle is still
+        // valid.
         try {
             if (!_process.HasExited) _process.Kill(entireProcessTree: true);
         } catch {
@@ -267,8 +296,16 @@ internal sealed partial class PiRpcProcess : IPiRpcProcess {
         }
 
         _stderrDrainCts.Dispose();
-        _stdinGate.Dispose();
 
+        // _stdinGate is deliberately left undisposed. Disposing a SemaphoreSlim does NOT release
+        // outstanding async waiters — a WriteLineAsync already blocked in WaitAsync when this method
+        // ran would then hang forever, and the holder that eventually releases it would have its
+        // `finally { Release() }` throw ObjectDisposedException on top of whatever it was already
+        // unwinding, potentially masking the real failure. A SemaphoreSlim holds no unmanaged state
+        // unless its AvailableWaitHandle is touched (never is, here), so leaving it undisposed is
+        // accepted .NET practice. WriteLineAsync's own IsDisposed checks (before AND after acquiring
+        // the gate) are what actually turn a post-dispose writer away — cleanly, and without ever
+        // waiting on a signal that would otherwise never come.
         try {
             _process.Dispose();
         } catch {

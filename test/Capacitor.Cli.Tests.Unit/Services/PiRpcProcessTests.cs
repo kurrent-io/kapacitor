@@ -137,4 +137,57 @@ public class PiRpcProcessTests {
 
         await proc.DisposeAsync();
     }
+
+    /// <summary>
+    /// The regression this pins: <c>DisposeAsync</c> used to call <c>_stdinGate.Dispose()</c>, but
+    /// <see cref="SemaphoreSlim.Dispose()"/> does not release outstanding async waiters — a
+    /// <see cref="PiRpcProcess.WriteLineAsync"/> call blocked in <c>WaitAsync</c> when dispose ran
+    /// could hang FOREVER, and the racing writer's own <c>finally</c> release could throw
+    /// <see cref="ObjectDisposedException"/> over whatever it was already unwinding. Task 3's runtime
+    /// races exactly this shape — a send or abort racing teardown — so this test drives the real
+    /// race rather than just unit-testing the fixed code in isolation: a write in flight when
+    /// dispose runs, and a write issued strictly after dispose has completed, must both settle
+    /// promptly, never hang.
+    /// </summary>
+    [Test]
+    public async Task DisposeAsync_racing_a_WriteLineAsync_never_hangs_and_leaves_writes_failing_fast() {
+        Skip.Unless(!OperatingSystem.IsWindows(), "Uses /bin/cat as a real long-lived RPC-shaped child; Pi hosting is POSIX-only anyway.");
+
+        var proc = new PiRpcProcess(StartCat(), NullLogger<PiRpcProcess>.Instance);
+
+        // Race a write against dispose. This half of the test does not care whether the racing
+        // write succeeds (it may complete before the kill lands) or faults (if the kill wins) — the
+        // only claim it makes is that NEITHER task hangs waiting on the other, which is exactly what
+        // a disposed-out-from-under-it SemaphoreSlim would cause.
+        var racingWrite = proc.WriteLineAsync("""{"type":"prompt","id":"racing"}""", CancellationToken.None)
+            .ContinueWith(t => t.Exception, TaskContinuationOptions.ExecuteSynchronously);
+        var disposeTask = proc.DisposeAsync().AsTask();
+
+        var both   = Task.WhenAll(racingWrite, disposeTask);
+        var winner = await Task.WhenAny(both, Task.Delay(TimeSpan.FromSeconds(5)));
+
+        await Assert.That(ReferenceEquals(winner, both)).IsTrue()
+            .Because("a write racing dispose must never hang — the defect under test was disposing " +
+                     "the stdin semaphore while a waiter was still queued on it");
+
+        // A write issued strictly AFTER dispose has already completed must fault immediately —
+        // never queue behind a gate that will never again be released.
+        var postDisposeWrite = proc.WriteLineAsync("""{"type":"prompt","id":"after-dispose"}""", CancellationToken.None);
+        var postWinner        = await Task.WhenAny(postDisposeWrite, Task.Delay(TimeSpan.FromSeconds(5)));
+
+        await Assert.That(ReferenceEquals(postWinner, postDisposeWrite)).IsTrue()
+            .Because("a write issued after dispose must fault promptly, not hang");
+
+        Exception? caught = null;
+
+        try {
+            await postDisposeWrite;
+        } catch (Exception ex) {
+            caught = ex;
+        }
+
+        await Assert.That(caught).IsNotNull();
+        await Assert.That(caught is ObjectDisposedException or IOException).IsTrue()
+            .Because($"expected ObjectDisposedException or IOException, got {caught?.GetType().FullName}");
+    }
 }
