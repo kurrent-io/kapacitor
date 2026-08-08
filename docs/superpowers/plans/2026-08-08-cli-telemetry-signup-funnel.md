@@ -14,7 +14,14 @@
 
 - **Telemetry must never throw.** An exception escaping to the NativeAOT runtime aborts the process with SIGABRT (see the comment at `src/Capacitor.Cli/Program.cs:113`). Every public entry point on `CliTelemetry` wraps its body in `try { … } catch { }`.
 - **Telemetry must never write to stdout.** Only the first-run notice and `KCAP_TELEMETRY_DEBUG=1` output go to stderr.
-- **AOT-safe JSON only.** Serialize via source-generated `CapacitorJsonContext` (declared at `src/Capacitor.Cli.Core/Models.cs:1058`) or `JsonNode.ToJsonString()`. Never use a `JsonArray` collection expression (`[a, b]`) — it compiles to `Add<T>()` and requires dynamic code. Use `new JsonArray(a, b)`.
+- **AOT-safe JSON only.** Serialize via source-generated `CapacitorJsonContext` (declared at `src/Capacitor.Cli.Core/Models.cs:1058`) or `JsonNode.ToJsonString()`.
+  - Never use a `JsonArray` collection expression (`[a, b]`) — it compiles to `Add<T>()` and requires dynamic code.
+  - **Avoiding the collection expression is not sufficient.** `JsonArray.Add<T>(T)` carries both `RequiresUnreferencedCode` and `RequiresDynamicCode`, and plain `arr.Add(x)` binds to it for *any* argument whose static type is narrower than `JsonNode?` — including `string` and `JsonObject`, and including `JsonValue.Create(x)`, since exact-type overload betterness still prefers the generic. The non-generic `Add(JsonNode?)` is only selected when the argument's static type is exactly `JsonNode?`:
+    ```csharp
+    JsonNode? node = JsonValue.Create(f);   // or the JsonObject you are appending
+    arr.Add(node);                          // binds Add(JsonNode?), no IL2026/IL3050
+    ```
+  - This is invisible to `dotnet build`. Only `dotnet publish -c Release` surfaces it, which is why it must be checked before a task is called done, not only in Task 12.
 - **Ingest endpoint:** `https://phog.kurrent.io` — **Token:** `phc_DeHBgHGersY4LmDlADnPrsCPOAmMO7QFOH8f4DVEVmD`. Public write-only ingest key, already a source literal in `kcap-web/src/config.ts`; not a secret.
 - **PostHog group key is `organization`**, attached **only** when the server URL host ends in `.kcap.ai`.
 - **No CLI event may be named `cli_setup_completed`, `user_registered`, `user_logged_in`, `session_ingest_started`, `session_ingest_ended`, `eval_ran`, `fact_retained`, `daemon_connected`, `daemon_disconnected`, `hosted_agent_started`, or `hosted_agent_ended`** — all are emitted by the server.
@@ -820,11 +827,14 @@ public static class PostHogPayload {
                 props["org"]     = orgGroup;
             }
 
-            batch.Add(new JsonObject {
+            // Typed as JsonNode? deliberately: a JsonObject argument would bind the generic
+            // JsonArray.Add<T>, which is RequiresDynamicCode and fails the AOT publish.
+            JsonNode? entry = new JsonObject {
                 ["event"]      = e.Name,
                 ["properties"] = props,
                 ["timestamp"]  = e.Timestamp.ToString("o"),
-            });
+            };
+            batch.Add(entry);
         }
 
         return new JsonObject {
@@ -1513,7 +1523,12 @@ public static class CliTelemetry {
             var flags = CommandEvents.Flags(args);
             if (flags.Length > 0) {
                 var arr = new JsonArray();
-                foreach (var f in flags) arr.Add(f);   // never a collection expression — AOT
+                // Typed as JsonNode? deliberately: arr.Add(f) on a string binds the generic
+                // JsonArray.Add<T>, which is RequiresDynamicCode and fails the AOT publish.
+                foreach (var f in flags) {
+                    JsonNode? node = JsonValue.Create(f);
+                    arr.Add(node);
+                }
                 props["flags"] = arr;
             }
 
