@@ -31,13 +31,13 @@ public class MachineAuthTests : IDisposable {
     static void Clear() {
         Environment.SetEnvironmentVariable(MachineAuth.ClientIdVar, null);
         Environment.SetEnvironmentVariable(MachineAuth.ClientSecretVar, null);
-        Environment.SetEnvironmentVariable("KCAP_WORKOS_TOKEN_URL", null);
+        Environment.SetEnvironmentVariable(MachineAuth.TokenUrlVar, null);
         MachineTokenProvider.ResetForTesting();
         HttpClientExtensions.ResetProviderCacheForTesting();
     }
 
     void UseStubTokenEndpoint() =>
-        Environment.SetEnvironmentVariable("KCAP_WORKOS_TOKEN_URL", $"{_server.Urls[0]}/oauth2/token");
+        Environment.SetEnvironmentVariable(MachineAuth.TokenUrlVar, $"{_server.Urls[0]}/oauth2/token");
 
     void StubToken(string token, int expiresIn = 3600) =>
         _server.Given(Request.Create().WithPath("/oauth2/token").UsingPost())
@@ -108,10 +108,10 @@ public class MachineAuthTests : IDisposable {
         UseStubTokenEndpoint();
         StubToken("tok_minted");
 
-        var token = await MachineTokenProvider.GetTokenAsync(
+        var result = await MachineTokenProvider.GetTokenAsync(
             new MachineCredential("client_01ABC", "sekrit"), rejectedToken: null, CancellationToken.None);
 
-        await Assert.That(token).IsEqualTo("tok_minted");
+        await Assert.That(result.Token).IsEqualTo("tok_minted");
 
         var requests = _server.LogEntries.ToList();
 
@@ -122,6 +122,11 @@ public class MachineAuthTests : IDisposable {
         await Assert.That(body).Contains("grant_type=client_credentials");
         await Assert.That(body).Contains("client_id=client_01ABC");
         await Assert.That(body).Contains("client_secret=sekrit");
+
+        // Review: some token endpoints reject other content types with misleading errors, so pin it.
+        var contentType = requests[0].RequestMessage.Headers!["Content-Type"].First();
+
+        await Assert.That(contentType).Contains("application/x-www-form-urlencoded");
     }
 
     /// <summary>Second call reuses the cached token — no second mint.</summary>
@@ -136,7 +141,7 @@ public class MachineAuthTests : IDisposable {
         await MachineTokenProvider.GetTokenAsync(credential, null, CancellationToken.None);
         var second = await MachineTokenProvider.GetTokenAsync(credential, null, CancellationToken.None);
 
-        await Assert.That(second).IsEqualTo("tok_cached");
+        await Assert.That(second.Token).IsEqualTo("tok_cached");
         await Assert.That(_server.LogEntries.Count()).IsEqualTo(1)
             .Because("the whole point of the in-memory cache is not re-minting per call");
     }
@@ -154,11 +159,11 @@ public class MachineAuthTests : IDisposable {
         var credential = new MachineCredential("client_01ABC", "sekrit");
         var first      = await MachineTokenProvider.GetTokenAsync(credential, null, CancellationToken.None);
 
-        await Assert.That(first).IsEqualTo("tok_first");
+        await Assert.That(first.Token).IsEqualTo("tok_first");
 
-        var refreshed = await MachineTokenProvider.GetTokenAsync(credential, rejectedToken: first, CancellationToken.None);
+        var refreshed = await MachineTokenProvider.GetTokenAsync(credential, rejectedToken: first.Token, CancellationToken.None);
 
-        await Assert.That(refreshed).IsNotNull();
+        await Assert.That(refreshed.Token).IsNotNull();
         await Assert.That(_server.LogEntries.Count()).IsEqualTo(2)
             .Because("the cached token was the one the server refused, so it had to be re-minted");
     }
@@ -177,13 +182,13 @@ public class MachineAuthTests : IDisposable {
                 // A hostile/naive endpoint reflecting the request back at us.
                 .WithBody("{\"error\":\"unauthorized\",\"echo\":\"client_secret=hunter2-the-secret\"}"));
 
-        var token = await MachineTokenProvider.GetTokenAsync(
+        var result = await MachineTokenProvider.GetTokenAsync(
             new MachineCredential("client_01ABC", "hunter2-the-secret"), null, CancellationToken.None);
 
-        await Assert.That(token).IsNull();
-        await Assert.That(MachineTokenProvider.Problem).IsNotNull();
-        await Assert.That(MachineTokenProvider.Problem!).Contains("401");
-        await Assert.That(MachineTokenProvider.Problem!).DoesNotContain("hunter2-the-secret")
+        await Assert.That(result.Token).IsNull();
+        await Assert.That(result.Problem).IsNotNull();
+        await Assert.That(result.Problem!).Contains("401");
+        await Assert.That(result.Problem!).DoesNotContain("hunter2-the-secret")
             .Because("the response body is never echoed — it can reflect the credential");
     }
 
@@ -196,11 +201,11 @@ public class MachineAuthTests : IDisposable {
             .RespondWith(Response.Create().WithStatusCode(200)
                 .WithHeader("Content-Type", "application/json").WithBody("{\"expires_in\":3600}"));
 
-        var token = await MachineTokenProvider.GetTokenAsync(
+        var result = await MachineTokenProvider.GetTokenAsync(
             new MachineCredential("client_01ABC", "sekrit"), null, CancellationToken.None);
 
-        await Assert.That(token).IsNull();
-        await Assert.That(MachineTokenProvider.Problem!).Contains("no access_token");
+        await Assert.That(result.Token).IsNull();
+        await Assert.That(result.Problem!).Contains("no access_token");
     }
 
     // ── The wiring: does an authenticated client actually carry the bearer? ─────────────────────
@@ -231,6 +236,12 @@ public class MachineAuthTests : IDisposable {
         await Assert.That(client.DefaultRequestHeaders.Authorization).IsNotNull();
         await Assert.That(client.DefaultRequestHeaders.Authorization!.Scheme).IsEqualTo("Bearer");
         await Assert.That(client.DefaultRequestHeaders.Authorization!.Parameter).IsEqualTo("tok_wired");
+
+        // Review: without this the test would still pass if the branch moved ahead of provider
+        // discovery — it would only be checking the final header, not that a mint actually happened.
+        var mints = _server.LogEntries.Count(e => e.RequestMessage.Path.Contains("/oauth2/token"));
+
+        await Assert.That(mints).IsEqualTo(1);
     }
 
     /// <summary>
@@ -254,4 +265,73 @@ public class MachineAuthTests : IDisposable {
         await Assert.That(status).IsEqualTo(AuthStatus.NotAuthenticated);
         await Assert.That(client.DefaultRequestHeaders.Authorization).IsNull();
     }
+    // ── The token-URL override is a redirect primitive ─────────────────────────────────────────
+
+    /// <summary>
+    /// Review found that KCAP_WORKOS_TOKEN_URL can point the mint at an attacker-chosen host, and the
+    /// REQUEST carries the secret. Plaintext non-loopback must be refused — and refused rather than
+    /// silently falling back to the default, which would send the real credential to the real endpoint
+    /// while the developer believed they were pointed at a stub.
+    /// </summary>
+    [Test]
+    public async Task A_plaintext_non_loopback_token_url_is_refused_without_sending_the_credential() {
+        Clear();
+        Environment.SetEnvironmentVariable(MachineAuth.TokenUrlVar, "http://evil.example.com/oauth2/token");
+
+        var result = await MachineTokenProvider.GetTokenAsync(
+            new MachineCredential("client_01ABC", "sekrit"), null, CancellationToken.None);
+
+        await Assert.That(result.Token).IsNull();
+        await Assert.That(result.Problem!).Contains("https");
+        await Assert.That(result.Problem!).DoesNotContain("sekrit");
+        await Assert.That(_server.LogEntries.Count()).IsEqualTo(0)
+            .Because("the credential must not leave the process at all when the endpoint is untrusted");
+    }
+
+    /// <summary>Loopback over http is the deliberate carve-out — a credential cannot leave the machine.</summary>
+    [Test]
+    public async Task A_loopback_http_token_url_is_allowed_so_stubs_stay_testable() {
+        Clear();
+        UseStubTokenEndpoint();
+        StubToken("tok_loopback");
+
+        var result = await MachineTokenProvider.GetTokenAsync(
+            new MachineCredential("client_01ABC", "sekrit"), null, CancellationToken.None);
+
+        await Assert.That(result.Token).IsEqualTo("tok_loopback");
+    }
+
+    [Test]
+    public async Task A_malformed_token_url_is_refused() {
+        Clear();
+        Environment.SetEnvironmentVariable(MachineAuth.TokenUrlVar, "not-a-url");
+
+        var result = await MachineTokenProvider.GetTokenAsync(
+            new MachineCredential("client_01ABC", "sekrit"), null, CancellationToken.None);
+
+        await Assert.That(result.Token).IsNull();
+        await Assert.That(result.Problem!).Contains(MachineAuth.TokenUrlVar);
+    }
+
+    /// <summary>
+    /// Review #3: the cache is keyed on client id AND token URL, so a second credential does not receive
+    /// the first one's token.
+    /// </summary>
+    [Test]
+    public async Task A_different_credential_does_not_receive_the_cached_token() {
+        Clear();
+        UseStubTokenEndpoint();
+        StubToken("tok_for_A");
+
+        var a = await MachineTokenProvider.GetTokenAsync(new MachineCredential("client_A", "s"), null, CancellationToken.None);
+
+        await Assert.That(a.Token).IsEqualTo("tok_for_A");
+
+        var b = await MachineTokenProvider.GetTokenAsync(new MachineCredential("client_B", "s"), null, CancellationToken.None);
+
+        await Assert.That(_server.LogEntries.Count()).IsEqualTo(2)
+            .Because("a different client id must mint its own token, not inherit the cached one");
+        await Assert.That(b.Token).IsNotNull();
+    }
+
 }

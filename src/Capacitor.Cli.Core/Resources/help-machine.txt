@@ -52,6 +52,13 @@ Full sequence:
   # 4. On the runner, choose what its sessions are visible to
   kcap config set default_visibility org_public
 
+  The runner needs no profile and no login: with those two variables set, kcap
+  exchanges them for a short-lived token itself. Point it at the server with
+  KCAP_URL.
+
+  Network note: the exchange calls WorkOS directly, so a runner behind an
+  egress policy needs that host reachable.
+
 Why step 4 runs on the machine
 
   Visibility is the machine's own setting, exactly as it is for a person — it

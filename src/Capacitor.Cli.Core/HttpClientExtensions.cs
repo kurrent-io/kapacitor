@@ -44,7 +44,7 @@ public static class HttpClientExtensions {
     public static async Task<(HttpClient Client, AuthStatus Status)> CreateClientWithAuthStatusAsync(
         string? baseUrl = null, CancellationToken ct = default, bool allowAutoRedirect = true,
         string? rejectedAccessToken = null) {
-        var (client, status, _) = await CreateClientCoreAsync(baseUrl, ct, allowAutoRedirect,
+        var (client, status, _, _) = await CreateClientCoreAsync(baseUrl, ct, allowAutoRedirect,
             rejectedAccessToken, autoRetryUnauthorized: false);
 
         return (client, status);
@@ -54,7 +54,7 @@ public static class HttpClientExtensions {
     /// Shared client construction. Returns the resolution alongside the client so callers that
     /// report a mismatch quote the issuing server from the same snapshot the decision used.
     /// </summary>
-    static async Task<(HttpClient Client, AuthStatus Status, TokenResolution? Resolution)> CreateClientCoreAsync(
+    static async Task<(HttpClient Client, AuthStatus Status, TokenResolution? Resolution, string? MachineProblem)> CreateClientCoreAsync(
         string? baseUrl, CancellationToken ct, bool allowAutoRedirect,
         string? rejectedAccessToken, bool autoRetryUnauthorized) {
         baseUrl ??= AppConfig.ResolvedServerUrl ?? Environment.GetEnvironmentVariable("KCAP_URL") ?? "http://localhost:5108";
@@ -72,7 +72,7 @@ public static class HttpClientExtensions {
         var provider = await DiscoverProviderAsync(baseUrl, ct);
 
         if (provider == "None") {
-            return (NewClient(), AuthStatus.NoAuthRequired, null); // No auth needed
+            return (NewClient(), AuthStatus.NoAuthRequired, null, null); // No auth needed
         }
 
         // Machine credentials. A headless runner (CI, an ephemeral agent sandbox) has no
@@ -92,26 +92,16 @@ public static class HttpClientExtensions {
         if (MachineAuth.Intended) {
             var credential = MachineAuth.TryRead(out var problem);
 
-            if (credential is null) {
-                MachineAuthProblem = problem;
+            if (credential is null) return (NewClient(), AuthStatus.NotAuthenticated, null, problem);
 
-                return (NewClient(), AuthStatus.NotAuthenticated, null);
-            }
+            var minted = await MachineTokenProvider.GetTokenAsync(credential, rejectedAccessToken, ct);
 
-            var machineToken = await MachineTokenProvider.GetTokenAsync(credential, rejectedAccessToken, ct);
-
-            if (machineToken is null) {
-                MachineAuthProblem = MachineTokenProvider.Problem;
-
-                return (NewClient(), AuthStatus.NotAuthenticated, null);
-            }
-
-            MachineAuthProblem = null;
+            if (minted.Token is null) return (NewClient(), AuthStatus.NotAuthenticated, null, minted.Problem);
 
             var machineClient = NewClient();
-            machineClient.DefaultRequestHeaders.Authorization = new("Bearer", machineToken);
+            machineClient.DefaultRequestHeaders.Authorization = new("Bearer", minted.Token);
 
-            return (machineClient, AuthStatus.Ok, null);
+            return (machineClient, AuthStatus.Ok, null, null);
         }
 
         // Recovery from a server rejection is self-contained: it already attempted a rotation and
@@ -121,12 +111,12 @@ public static class HttpClientExtensions {
         if (rejectedAccessToken is not null) {
             var recovered = await TokenStore.RecoverForServerAsync(baseUrl, rejectedAccessToken, ct);
 
-            if (recovered is null) return (NewClient(), AuthStatus.Expired, null);
+            if (recovered is null) return (NewClient(), AuthStatus.Expired, null, null);
 
             var recoveredClient = NewClient(autoRetryUnauthorized ? new UnauthorizedRetryHandler(recovered, baseUrl) : null);
             recoveredClient.DefaultRequestHeaders.Authorization = new("Bearer", recovered.AccessToken);
 
-            return (recoveredClient, AuthStatus.Ok, null);
+            return (recoveredClient, AuthStatus.Ok, null, null);
         }
 
         var resolution = await TokenStore.GetValidTokensForServerAsync(baseUrl, ct);
@@ -135,10 +125,10 @@ public static class HttpClientExtensions {
             var client = NewClient(autoRetryUnauthorized ? new UnauthorizedRetryHandler(resolution.Tokens, baseUrl) : null);
             client.DefaultRequestHeaders.Authorization = new("Bearer", resolution.Tokens.AccessToken);
 
-            return (client, AuthStatus.Ok, resolution);
+            return (client, AuthStatus.Ok, resolution, null);
         }
 
-        return (NewClient(), resolution.Status, resolution);
+        return (NewClient(), resolution.Status, resolution, null);
     }
 
     /// <summary>
@@ -154,7 +144,7 @@ public static class HttpClientExtensions {
     /// </param>
     public static async Task<HttpClient> CreateAuthenticatedClientAsync(string? baseUrl = null, CancellationToken ct = default,
             bool autoRetryUnauthorized = true) {
-        var (client, status, resolution) = await CreateClientCoreAsync(baseUrl, ct, allowAutoRedirect: true,
+        var (client, status, resolution, machineProblem) = await CreateClientCoreAsync(baseUrl, ct, allowAutoRedirect: true,
             rejectedAccessToken: null, autoRetryUnauthorized);
 
         switch (status) {
@@ -165,8 +155,8 @@ public static class HttpClientExtensions {
             case AuthStatus.NotAuthenticated:
                 // A machine cannot run `kcap login`, so telling it to is worse than saying nothing.
                 await Console.Error.WriteLineAsync(
-                    MachineAuthProblem is { } machineProblem
-                        ? $"Machine authentication failed: {machineProblem}"
+                    machineProblem is { } reason
+                        ? $"Machine authentication failed: {reason}"
                         : "Not authenticated. Run 'kcap login' to authenticate.");
 
                 break;
@@ -181,13 +171,6 @@ public static class HttpClientExtensions {
 
         return client;
     }
-
-    /// <summary>
-    /// Why machine auth failed on the last client construction, when it did. Lets the interactive
-    /// wrapper print an actionable message rather than advising `kcap login` on a runner that has no
-    /// browser and no profile.
-    /// </summary>
-    internal static string? MachineAuthProblem { get; private set; }
 
     static string? cachedProvider;
 

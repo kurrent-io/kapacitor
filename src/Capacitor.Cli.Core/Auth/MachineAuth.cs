@@ -35,9 +35,56 @@ public static class MachineAuth {
         (Environment.GetEnvironmentVariable("KCAP_WORKOS_TOKEN_URL") ?? DefaultTokenUrl).Trim();
 
     /// <summary>
+    /// The token URL, refusing any override that could exfiltrate the credential.
+    ///
+    /// <para>Review raised that <c>KCAP_WORKOS_TOKEN_URL</c> is a redirect primitive: the request
+    /// direction carries the secret, so an attacker who can set one environment variable — a k8s
+    /// ConfigMap rather than a Secret, a CI "variable" rather than a "secret" — could point the mint at
+    /// a host they control and harvest it. The no-echo rule protects the RESPONSE direction; this
+    /// protects the request.</para>
+    ///
+    /// <para><b>https, except loopback.</b> A bare https requirement would be untestable without
+    /// trusting a stub's certificate, and loopback is the same carve-out OAuth redirect-URI rules make
+    /// for the same reason: a credential cannot leave the machine over 127.0.0.1. Anything else plaintext
+    /// is refused rather than silently falling back to the default, because a silent fallback would send
+    /// the real credential to the real endpoint while the developer believed they were pointed at a stub.</para>
+    ///
+    /// <para>Reports rather than throws: this whole path's contract is to return an auth outcome, and a
+    /// property that throws would surface as an unhandled exception inside a hook.</para>
+    /// </summary>
+    public static string? TryResolveTokenUrl(out string? problem) {
+        var raw = TokenUrl;
+
+        if (!Uri.TryCreate(raw, UriKind.Absolute, out var uri)) {
+            problem = $"{TokenUrlVar} is not a valid absolute URL ({raw}).";
+
+            return null;
+        }
+
+        if (uri.Scheme == Uri.UriSchemeHttps || uri.IsLoopback) {
+            problem = null;
+
+            return raw;
+        }
+
+        problem = $"{TokenUrlVar} must be https (or loopback for testing) — refusing to send a machine "
+                + $"credential to {uri.Scheme}://{uri.Host}.";
+
+        return null;
+    }
+
+    public const string TokenUrlVar = "KCAP_WORKOS_TOKEN_URL";
+
+    /// <summary>
     /// True when EITHER variable is present — i.e. someone intended machine auth. Deliberately not
     /// "both", so a half-configured runner is diagnosed rather than silently falling back to a token
     /// store it does not have and being told to run <c>kcap login</c>, which it cannot do.
+    ///
+    /// <para><b>Do not widen this.</b> It decides that machine auth applies INSTEAD of the profile, so an
+    /// interactive developer with an ambient <c>KCAP_CLIENT_ID</c> is diverted off their own token store
+    /// until they unset it. That is survivable because these names are specific to this product and the
+    /// failure is loud (they are told which variable is missing) — neither of which would hold for a
+    /// looser gate like a bare <c>CLIENT_ID</c> or a "looks like a machine" heuristic.</para>
     /// </summary>
     public static bool Intended =>
         !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(ClientIdVar))
