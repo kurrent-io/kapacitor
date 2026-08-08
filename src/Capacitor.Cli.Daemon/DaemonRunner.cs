@@ -1104,6 +1104,16 @@ public static partial class DaemonRunner {
                 // is not the installed build: an update nag ("0.11.14 -> 0.12.0"), a runtime line
                 // ("Node.js v22.1.0") or a date stamp ("2026.08.08") all qualify and can precede the
                 // real version. This line is what makes such a floor diagnosable at all.
+                //
+                // All four vendors' `--version` output was measured on 2026-08-08 and every one yields
+                // the right token under first-qualifying-token extraction:
+                //     kiro-cli 2.16.0   ("kiro-cli" has no dot, so the version wins)
+                //     gemini   0.54.0   (bare)
+                //     opencode 1.18.9   (bare)
+                //     agy      1.1.11   (bare)
+                // That is an observation of four builds on one host, not a guarantee: any of them may
+                // add a nag line or a runtime banner in a later release, which is precisely the drift
+                // this log line exists to make visible.
                 Console.Error.WriteLine(
                     $"{vendor} reviewer version floor seeded at {installed} (from '{binaryPath} --version'). "
                   + $"Correct it with `kcap daemon reviewer affirm --vendor {vendor}` if that is not the "
