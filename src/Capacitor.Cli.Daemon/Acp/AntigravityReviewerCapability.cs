@@ -103,11 +103,11 @@ internal static class AntigravityReviewerCapability {
             string binaryPath) =>
         decision switch {
             AntigravityReviewerDecision.Disabled =>
-                "antigravity_unattended_reviewer_disabled: unattended Antigravity reviews are off on "
-              + "this daemon. A review runs under this daemon user's authority and returns what it "
-              + "read to whoever requested it, so enable it only where the operator and the review "
-              + "requesters are in one trust domain: set KCAP_ANTIGRAVITY_UNATTENDED_REVIEWER=1 in the "
-              + "daemon's environment (not on the server).",
+                "antigravity_unattended_reviewer_disabled: this daemon has EXPLICITLY disabled "
+              + "unattended Antigravity reviews. Unset KCAP_ANTIGRAVITY_UNATTENDED_REVIEWER in the "
+              + "daemon's environment (not on the server) to restore the default, which is enabled — or "
+              + "set it to 1. A review runs under this daemon user's authority either way, as it does "
+              + "for the never-gated Claude, Codex, Cursor and Copilot reviewers.",
 
             AntigravityReviewerDecision.UnsupportedPlatform =>
                 "antigravity_reviewer_unsupported_platform: the per-launch home holds the agent's own "

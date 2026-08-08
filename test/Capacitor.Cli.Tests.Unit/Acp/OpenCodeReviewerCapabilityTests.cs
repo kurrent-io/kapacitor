@@ -65,22 +65,19 @@ public class OpenCodeReviewerCapabilityTests {
             .IsEqualTo(OpenCodeReviewerDecision.VersionIncomparable);
 
     /// <summary>
-    /// The consent text is the acceptance artifact for this gate's actual risk, so its CONTENT is
-    /// asserted rather than merely its presence. The narrow tool surface makes it tempting to describe
-    /// this reviewer as contained; the unbounded READ is the thing an operator is consenting to and the
-    /// text has to say so.
+    /// Reached only when an operator EXPLICITLY disabled it, so the text's job is to say how to undo
+    /// that — and to give the context that makes the choice informed, since this is the most contained
+    /// reviewer of the eight and someone disabling it may be reasoning from the old opt-in framing.
     /// </summary>
     [Test]
-    public async Task TheDisabledReason_NamesTheUnboundedReadAndTheVariableThatEnablesIt() {
+    public async Task TheDisabledReason_SaysHowToUndoItAndHowContainedThisReviewerIs() {
         var reason = OpenCodeReviewerCapability.DenialReason(
             OpenCodeReviewerDecision.Disabled, "1.18.9", "1.18.9");
 
         await Assert.That(reason).StartsWith("opencode_unattended_reviewer_disabled");
-        await Assert.That(reason).Contains("NOT path-scoped");
-        await Assert.That(reason).Contains("every file this daemon user can read");
-        await Assert.That(reason).Contains("KCAP_OPENCODE_UNATTENDED_REVIEWER=1");
-        // The distinction that makes the consent decision comprehensible rather than alarming.
-        await Assert.That(reason).Contains("no shell and no write");
+        await Assert.That(reason).Contains("EXPLICITLY disabled");
+        await Assert.That(reason).Contains("KCAP_OPENCODE_UNATTENDED_REVIEWER");
+        await Assert.That(reason).Contains("no shell, no");
     }
 
     /// <summary>Asking for the denial reason of a PERMITTED decision is a caller bug, not a blank

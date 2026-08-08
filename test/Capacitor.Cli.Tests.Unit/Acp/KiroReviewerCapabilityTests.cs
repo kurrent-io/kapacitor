@@ -92,24 +92,31 @@ public class KiroReviewerCapabilityTests {
     }
 
     /// <summary>
-    /// The consent text IS the acceptance artifact for the accepted risk, so its content is the
-    /// assertion. A refusal that merely names a flag would let an operator enable this without ever
-    /// being told what they are accepting.
+    /// This arm is now reached only when an operator EXPLICITLY disabled the reviewer, so the text has a
+    /// different job than it used to: tell them how to undo it, and — because the obvious next question
+    /// is "was I protecting myself with that?" — say plainly that the switch does not narrow anything a
+    /// requester cannot route around by naming an ungated vendor.
     /// </summary>
     [Test]
-    public async Task TheDisabledReason_StatesTheRiskAndTheTrustDomainCondition() {
+    public async Task TheDisabledReason_SaysHowToUndoItAndThatItGuardsLittle() {
         var reason = KiroReviewerCapability.DenialReason(KiroReviewerDecision.Disabled, null, null);
 
         await Assert.That(reason).StartsWith("kiro_unattended_reviewer_disabled");
-        await Assert.That(reason).Contains("every file this daemon user can read");
-        await Assert.That(reason).Contains("return what it read to whoever requested the review");
-        await Assert.That(reason).Contains("one trust domain");
+        await Assert.That(reason).Contains("EXPLICITLY disabled");
         await Assert.That(reason).Contains("KCAP_KIRO_UNATTENDED_REVIEWER");
+        // The honest caveat: gating one vendor while four run ungated with more capability stops nobody.
+        await Assert.That(reason).Contains("never gated");
     }
 
     /// <summary>
-    /// Enabling a reviewer is a security consent event, so only an explicit affirmative counts —
-    /// a typo, a blank, or an unrecognised value must not be read as consent.
+    /// The switch is an opt-OUT: unset means ENABLED, matching the never-gated
+    /// Claude/Codex/Cursor/Copilot reviewers. Only a recognised falsey value disables.
+    ///
+    /// <para>An UNRECOGNISED value resolves to the default (enabled) rather than to disabled, which is
+    /// the deliberate half of this and the half worth stating: it means a typo cannot silently take a
+    /// reviewer offline. The cost — a typo also cannot silently disable one — is covered by
+    /// <see cref="AnUnparseableValue_IsReportedRatherThanSilentlyIgnored"/>, which makes the daemon say
+    /// so at startup.</para>
     /// </summary>
     [Test]
     [Arguments("1", true)]
@@ -119,13 +126,48 @@ public class KiroReviewerCapabilityTests {
     [Arguments("on", true)]
     [Arguments("0", false)]
     [Arguments("false", false)]
-    [Arguments("", false)]
-    [Arguments("   ", false)]
-    [Arguments("ture", false)]
-    [Arguments("enabled", false)]
-    [Arguments(null, false)]
-    public async Task TheConsentFlagOnlyAcceptsAnExplicitAffirmative(string? value, bool expected) =>
+    [Arguments("FALSE", false)]
+    [Arguments("no", false)]
+    [Arguments("off", false)]
+    [Arguments("", true)]
+    [Arguments("   ", true)]
+    [Arguments("ture", true)]
+    [Arguments("enabled", true)]
+    [Arguments(null, true)]
+    public async Task TheConsentFlagIsAnOptOut(string? value, bool expected) =>
         await Assert.That(DaemonRunner.ParseConsentFlag(value)).IsEqualTo(expected);
+
+    /// <summary>
+    /// A value that is SET but unreadable must be reported. Without this, an operator who typed
+    /// <c>flase</c> meaning to disable a reviewer gets it enabled with no signal at all — the one
+    /// direction this default flip could surprise someone in.
+    /// </summary>
+    [Test]
+    [Arguments("flase")]
+    [Arguments("enabled")]
+    [Arguments("nope")]
+    public async Task AnUnparseableValue_IsReportedRatherThanSilentlyIgnored(string value) {
+        var warning = DaemonRunner.DescribeUnparseableConsent("KCAP_KIRO_UNATTENDED_REVIEWER", value);
+
+        await Assert.That(warning).IsNotNull();
+        await Assert.That(warning!).Contains("KCAP_KIRO_UNATTENDED_REVIEWER");
+        await Assert.That(warning).Contains(value);
+        await Assert.That(warning).Contains("ENABLED");
+        await Assert.That(warning).Contains("0/false/no/off");
+    }
+
+    /// <summary>Nothing to report for a value the parse understands, or for the ordinary unset case —
+    /// a warning on every boot for a correctly-configured daemon would train people to ignore it.</summary>
+    [Test]
+    [Arguments(null)]
+    [Arguments("")]
+    [Arguments("1")]
+    [Arguments("0")]
+    [Arguments("false")]
+    [Arguments("ON")]
+    public async Task ARecognisedOrAbsentValue_IsNotReported(string? value) =>
+        await Assert.That(DaemonRunner.DescribeUnparseableConsent("KCAP_KIRO_UNATTENDED_REVIEWER", value))
+            .IsNull();
 
     /// <summary>
     /// The Windows arm, now assertable from any host. It refuses BEFORE the operator flag and before

@@ -86,11 +86,13 @@ internal static class GeminiReviewerCapability {
             GeminiReviewerDecision decision, string? installedVersion, string? minimumVersion) =>
         decision switch {
             GeminiReviewerDecision.Disabled =>
-                "gemini_unattended_reviewer_disabled: this daemon has not enabled Gemini as an unattended "
-              + "review-flow reviewer. Enabling it accepts that a review grants prompt-injected repository "
-              + "content code execution with this daemon user's authority, including its credentials — set "
-              + "KCAP_GEMINI_UNATTENDED_REVIEWER=1 in the daemon's environment (not on the server) only if "
-              + "that is acceptable.",
+                "gemini_unattended_reviewer_disabled: this daemon has EXPLICITLY disabled Gemini as an "
+              + "unattended review-flow reviewer. Unset KCAP_GEMINI_UNATTENDED_REVIEWER in the daemon's "
+              + "environment (not on the server) to restore the default, which is enabled — or set it "
+              + "to 1. Worth knowing before you re-enable: a Gemini review grants prompt-injected "
+              + "repository content code execution with this daemon user's authority. That is a real "
+              + "risk, but it is the same posture as the never-gated Claude, Codex, Cursor and Copilot "
+              + "reviewers, so this switch narrows nothing a requester cannot route around.",
 
             GeminiReviewerDecision.VersionUnresolved =>
                 "gemini_reviewer_version_unresolved: the installed gemini version could not be "
@@ -100,10 +102,10 @@ internal static class GeminiReviewerCapability {
 
             GeminiReviewerDecision.VersionNoMinimum =>
                 "gemini_reviewer_version_no_minimum: this daemon has no recorded minimum gemini "
-              + "version, so there is nothing to check the installed build against. The usual cause is "
-              + "enabling the reviewer against an already-running daemon — it records a minimum at "
-              + "startup, so restart it with KCAP_GEMINI_UNATTENDED_REVIEWER set. To set one now "
-              + "without restarting, run `kcap daemon reviewer affirm --vendor gemini`.",
+              + "version, so there is nothing to check the installed build against. A daemon records "
+              + "one automatically at startup, so the usual cause is that the version probe failed "
+              + "then — check that `gemini --version` succeeds for the daemon user, and restart. To "
+              + "record one now without restarting, run `kcap daemon reviewer affirm --vendor gemini`.",
 
             GeminiReviewerDecision.VersionIncomparable =>
                 $"gemini_reviewer_version_incomparable: gemini {Describe(installedVersion)} and this "

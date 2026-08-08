@@ -194,13 +194,11 @@ public class AntigravityReviewerCapabilityTests {
     /// The remedy names BOTH the restart (a daemon seeds its record at startup) and the verb that
     /// avoids one.
     ///
-    /// <para><b>And it must NOT name the reviewer consent flag.</b> This arm gates hosted launches as
-    /// well as reviews — the floor protects the per-launch isolated home, which is not a reviewer
-    /// concern — so pointing a hosted operator at <c>KCAP_ANTIGRAVITY_UNATTENDED_REVIEWER</c> would
-    /// send them to a switch that has no bearing on their launch. It is also no longer true even for a
-    /// reviewer: the daemon now seeds this vendor's floor whenever <c>agy</c> resolves, consent or
-    /// not.</para>
-    /// </summary>
+    /// <para><b>And it must NOT name the reviewer switch.</b> This arm gates hosted launches as well as
+    /// reviews — the floor protects the per-launch isolated home, which is not a reviewer concern — so
+    /// pointing a hosted operator at <c>KCAP_ANTIGRAVITY_UNATTENDED_REVIEWER</c> would send them to a
+    /// setting that has no bearing on their launch. It is doubly untrue now that the switch defaults to
+    /// enabled and this vendor's floor is seeded whenever <c>agy</c> resolves.</para>
     [Test]
     public async Task TheNoMinimumReason_SendsTheOperatorToARestartOrTheAffirmVerb() {
         var reason = Reason(AntigravityReviewerDecision.VersionNoMinimum, "1.1.10", null);
@@ -246,19 +244,20 @@ public class AntigravityReviewerCapabilityTests {
     /// Enabling a reviewer is a security consent event, so only an explicit affirmative counts —
     /// a typo, a blank, or an unrecognised value must not be read as consent.
     /// </summary>
+    /// <summary>Opt-OUT: unset means enabled. The full matrix, including the unparseable-value
+    /// reporting, lives in <c>KiroReviewerCapabilityTests</c> — the parse is shared, so duplicating it
+    /// per vendor would be four copies of one fact.</summary>
     [Test]
     [Arguments("1", true)]
-    [Arguments("true", true)]
-    [Arguments("TRUE", true)]
-    [Arguments("yes", true)]
     [Arguments("on", true)]
     [Arguments("0", false)]
     [Arguments("false", false)]
-    [Arguments("", false)]
-    [Arguments("   ", false)]
-    [Arguments("ture", false)]
-    [Arguments(null, false)]
-    public async Task TheConsentFlagOnlyAcceptsAnExplicitAffirmative(string? value, bool expected) =>
+    [Arguments("off", false)]
+    [Arguments("", true)]
+    [Arguments("   ", true)]
+    [Arguments("ture", true)]
+    [Arguments(null, true)]
+    public async Task TheConsentFlagIsAnOptOut(string? value, bool expected) =>
         await Assert.That(DaemonRunner.ParseConsentFlag(value)).IsEqualTo(expected);
 
     static string Reason(AntigravityReviewerDecision decision, string? installed, string? minimum) =>

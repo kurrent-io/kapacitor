@@ -117,16 +117,18 @@ public class OpenCodeHostedLaunchTests {
     /// coded reason; only the consent-specific code is POSIX-scoped.</para>
     /// </summary>
     [Test]
-    public async Task AReviewFlowLaunch_IsRefusedOnADaemonThatHasNotConsented() {
-        await Assert.That(() => Psi(isReviewFlow: true))
+    public async Task AReviewFlowLaunch_IsRefusedOnADaemonThatExplicitlyDisabledIt() {
+        var disabled = new DaemonConfig { OpenCodeUnattendedReviewerEnabled = false };
+
+        await Assert.That(() => Psi(disabled, isReviewFlow: true))
             .Throws<InvalidOperationException>()
             .WithMessageContaining("opencode_");
 
         Skip.Unless(!OperatingSystem.IsWindows(),
-            "The consent arm is unreachable on Windows: the gate refuses on platform first, before "
-          + "consent is consulted.");
+            "The disabled arm is unreachable on Windows: the gate refuses on platform first, before "
+          + "the opt-out is consulted.");
 
-        await Assert.That(() => Psi(isReviewFlow: true))
+        await Assert.That(() => Psi(disabled, isReviewFlow: true))
             .Throws<InvalidOperationException>()
             .WithMessageContaining("opencode_unattended_reviewer_disabled");
     }

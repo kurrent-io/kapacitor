@@ -16,15 +16,19 @@ internal enum KiroReviewerDecision {
 /// Whether THIS daemon may run Kiro as an unattended review-flow reviewer. Pure, so every arm is
 /// testable without a vendor or a process.
 ///
-/// <para><b>What enabling it consents to, stated because it is broader than it looks.</b> An
-/// unattended reviewer runs in a daemon-owned worktree with the daemon's own HOME, and a trusted
-/// <c>fs_read</c> is measurably NOT path-scoped — it is a whole-filesystem read primitive under the
-/// daemon's uid. So a review can read every file this daemon user can read, its own credentials
-/// included, and its findings text is returned to whoever requested the review. That risk lands on
-/// the daemon OPERATOR, who is not necessarily the requester, which is why the decision is
-/// daemon-local configuration and enabling it is the consent event rather than a documented default.
-/// The reviewer is supported only where the operator and the review requesters are in one trust
-/// domain.</para>
+/// <para><b>ENABLED by default; the switch is an opt-OUT.</b> It shipped as an opt-in and that was
+/// wrong. The reviewer vendor is a caller-chosen parameter, and Claude, Codex, Cursor and Copilot have
+/// never been gated — each running with FULL tool access, including shell and write. So gating Kiro
+/// stopped nobody (a requester simply asks for an ungated vendor with more capability) while taxing
+/// the honest path with a service-unit edit and a restart. It was also the wrong end of the risk
+/// scale: this reviewer's trust list is <c>fs_read</c> + <c>thinking</c>, never <c>fs_write</c>, never
+/// <c>execute_bash</c>.</para>
+///
+/// <para><b>The residual risk is real and unchanged, it just is not what a per-vendor gate addressed.</b>
+/// A trusted <c>fs_read</c> is measurably NOT path-scoped — a whole-filesystem read primitive under the
+/// daemon's uid — so a review can read every file this daemon user can, credentials included, and its
+/// findings text goes back to the requester. Equally true of the four never-gated vendors. The honest
+/// framing is that running ANY unattended reviewer is the decision, not running this one.</para>
 ///
 /// <para><b>Why a version MINIMUM rather than a certified set or an exact affirmation.</b> Containment
 /// is source suppression — an empty per-launch <see cref="KiroReviewerHome"/> plus the worktree
@@ -92,12 +96,12 @@ internal static class KiroReviewerCapability {
               + "cannot be created owner-only on this platform.",
 
             KiroReviewerDecision.Disabled =>
-                "kiro_unattended_reviewer_disabled: this daemon has not enabled Kiro as an unattended "
-              + "review-flow reviewer. Enabling it grants a review read access to every file this "
-              + "daemon user can read — including its own credentials — with no filesystem boundary, "
-              + "and a reviewer can return what it read to whoever requested the review. Enable it "
-              + "only on a daemon whose operator and review requesters are in one trust domain: set "
-              + "KCAP_KIRO_UNATTENDED_REVIEWER=1 in the daemon's environment (not on the server).",
+                "kiro_unattended_reviewer_disabled: this daemon has EXPLICITLY disabled Kiro as an "
+              + "unattended review-flow reviewer. Unset KCAP_KIRO_UNATTENDED_REVIEWER in the daemon's "
+              + "environment (not on the server) to restore the default, which is enabled — or set it "
+              + "to 1. Note what the switch does and does not buy: a reviewer runs under this daemon "
+              + "user's authority either way, and Claude, Codex, Cursor and Copilot are never gated, so "
+              + "disabling Kiro alone does not stop a requester who can simply ask for one of those.",
 
             KiroReviewerDecision.VersionUnresolved =>
                 "kiro_reviewer_version_unresolved: the installed kiro-cli version could not be "
@@ -106,10 +110,10 @@ internal static class KiroReviewerCapability {
 
             KiroReviewerDecision.VersionNoMinimum =>
                 "kiro_reviewer_version_no_minimum: this daemon has no recorded minimum kiro-cli "
-              + "version, so there is nothing to check the installed build against. The usual cause is "
-              + "enabling the reviewer against an already-running daemon — it records a minimum at "
-              + "startup, so restart it with KCAP_KIRO_UNATTENDED_REVIEWER set. To set one now without "
-              + "restarting, run `kcap daemon reviewer affirm --vendor kiro`.",
+              + "version, so there is nothing to check the installed build against. A daemon records "
+              + "one automatically at startup, so the usual cause is that the version probe failed "
+              + "then — check that `kiro-cli --version` succeeds for the daemon user, and restart. To "
+              + "record one now without restarting, run `kcap daemon reviewer affirm --vendor kiro`.",
 
             KiroReviewerDecision.VersionIncomparable =>
                 $"kiro_reviewer_version_incomparable: kiro-cli {Describe(installedVersion)} and this "

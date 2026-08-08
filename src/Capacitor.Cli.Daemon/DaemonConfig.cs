@@ -177,35 +177,36 @@ public class DaemonConfig {
     public string? KiroModel { get; set; }
 
     /// <summary>
-    /// Whether THIS daemon may run Gemini as an unattended review-flow reviewer. **Default false, and
-    /// enabling it is the operator's consent event.**
+    /// Whether THIS daemon may run Gemini as an unattended review-flow reviewer. **Default TRUE — the
+    /// variable is an opt-OUT.**
     ///
     /// <para>An unattended reviewer runs in a daemon-owned worktree with this daemon's own HOME, so
     /// repository content that steers the model into tool use gets code execution with this user's full
     /// authority — including the credentials in the token store, writes that reach other worktrees and the
-    /// installed CLI, and processes that outlive the review. That risk lands on whoever runs this daemon,
-    /// who is not necessarily the person requesting the review, which is why the decision lives here in
-    /// daemon-local configuration and not in the server's flow settings.</para>
+    /// installed CLI, and processes that outlive the review. That is a genuine risk and it is unchanged.
+    /// What changed is the recognition that a PER-VENDOR gate never addressed it: the reviewer vendor is
+    /// a caller-chosen parameter, and Claude, Codex, Cursor and Copilot have the same authority with no
+    /// gate at all, so anyone the gate excluded just asked for one of those.</para>
     ///
-    /// <para>Enabling it does NOT bypass the build affirmation: the reviewer's only containment is the
-    /// vendor's exact-name MCP allowlist, which is a behaviour of the installed build, so a build other than
-    /// the affirmed one is refused even when this is true. Enabling seeds the affirmation from whatever is
-    /// installed, so that is only met after an upgrade. See <c>GeminiReviewerCapability</c>.</para>
+    /// <para>The build affirmation still applies: the reviewer's containment is the vendor's exact-name
+    /// MCP allowlist, a behaviour of the installed build, so a build BELOW this daemon's recorded floor
+    /// is refused. The floor is seeded automatically at startup so it never blocks a first launch —
+    /// see <c>GeminiReviewerCapability</c>.</para>
     ///
-    /// <para>Set via <c>KCAP_GEMINI_UNATTENDED_REVIEWER</c> in the DAEMON's environment, which for a
-    /// supervised daemon means the service unit — <c>ServiceEnvironment</c> carries it there, since a
-    /// unit inherits nothing from the installing shell.</para>
+    /// <para>Set <c>KCAP_GEMINI_UNATTENDED_REVIEWER=0</c> in the DAEMON's environment to disable, which
+    /// for a supervised daemon means the service unit — <c>ServiceEnvironment</c> carries it there,
+    /// since a unit inherits nothing from the installing shell.</para>
     /// </summary>
-    public bool GeminiUnattendedReviewerEnabled { get; set; }
+    public bool GeminiUnattendedReviewerEnabled { get; set; } = true;
 
     /// <summary>
-    /// Whether THIS daemon may run Kiro as an unattended review-flow reviewer. Off by default, and
-    /// turning it on is the operator's consent event — see <c>KiroReviewerCapability</c> for exactly
-    /// what is being consented to, which is broader than it looks: a trusted read tool is not
-    /// path-scoped, so a review can read every file this daemon user can read and return what it read
-    /// to whoever requested the review. Overridable via <c>KCAP_KIRO_UNATTENDED_REVIEWER</c>.
+    /// Whether THIS daemon may run Kiro as an unattended review-flow reviewer. **Default TRUE — the
+    /// variable is an opt-OUT** (<c>KCAP_KIRO_UNATTENDED_REVIEWER=0</c> disables). A trusted read tool
+    /// is not path-scoped, so a review can read every file this daemon user can and return it to the
+    /// requester — true here and equally true of the never-gated Claude/Codex/Cursor/Copilot reviewers,
+    /// which can additionally write and execute. See <c>KiroReviewerCapability</c>.
     /// </summary>
-    public bool KiroUnattendedReviewerEnabled { get; set; }
+    public bool KiroUnattendedReviewerEnabled { get; set; } = true;
 
     /// <summary>
     /// One absolute budget, in seconds, for a Kiro reviewer launch: spawn through the first prompt
@@ -233,15 +234,15 @@ public class DaemonConfig {
     /// which is a clean audit signal rather than a silent downgrade.</summary>
     public string? AntigravityModel { get; set; }
 
-    /// <summary>Operator consent for unattended Antigravity reviews. Fail-closed: only an
-    /// explicit affirmative enables it. Overridable via
-    /// <c>KCAP_ANTIGRAVITY_UNATTENDED_REVIEWER</c>.
+    /// <summary>Whether THIS daemon may run unattended Antigravity reviews. **Default TRUE — the
+    /// variable is an opt-OUT** (<c>KCAP_ANTIGRAVITY_UNATTENDED_REVIEWER=0</c> disables), matching the
+    /// never-gated Claude/Codex/Cursor/Copilot reviewers that carry the same authority.
     ///
     /// <para>The minimum <c>agy</c> build is deliberately NOT config: it is a daemon-owned record
     /// (<c>ReviewerVersionStore</c>, moved by <c>kcap daemon reviewer affirm --vendor antigravity</c>),
     /// exactly as for Kiro and Gemini. A floor an operator could set from a shell profile would be
     /// re-affirmed by their dotfiles rather than by them.</para></summary>
-    public bool AntigravityUnattendedReviewerEnabled { get; set; }
+    public bool AntigravityUnattendedReviewerEnabled { get; set; } = true;
 
     /// <summary>Absolute ceiling on the FIRST turn — spawn, NDJSON handshake and auth. An
     /// unauthenticated agy can sit on an interactive OAuth wait, so this is what turns that into a
@@ -278,14 +279,12 @@ public class DaemonConfig {
     public string? OpenCodeModel { get; set; }
 
     /// <summary>
-    /// Whether THIS daemon may run OpenCode as an unattended review-flow reviewer. Off by default, and
-    /// turning it on is the operator's consent event — see <c>OpenCodeReviewerCapability</c> for exactly
-    /// what is being consented to. The reviewer gets no shell and no write tools, but its read tools are
-    /// not path-scoped, so a review can read every file this daemon user can read and return what it
-    /// read to whoever requested the review. Overridable via
-    /// <c>KCAP_OPENCODE_UNATTENDED_REVIEWER</c>.
+    /// Whether THIS daemon may run OpenCode as an unattended review-flow reviewer. **Default TRUE — the
+    /// variable is an opt-OUT** (<c>KCAP_OPENCODE_UNATTENDED_REVIEWER=0</c> disables). This is the most
+    /// contained reviewer of the eight: no shell, no write, no network. Its read tools are still not
+    /// path-scoped, as with every other reviewer. See <c>OpenCodeReviewerCapability</c>.
     /// </summary>
-    public bool OpenCodeUnattendedReviewerEnabled { get; set; }
+    public bool OpenCodeUnattendedReviewerEnabled { get; set; } = true;
 
     /// <summary>
     /// One absolute budget, in seconds, for an OpenCode reviewer launch: spawn through the first prompt

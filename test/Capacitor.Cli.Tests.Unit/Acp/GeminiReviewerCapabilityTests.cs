@@ -110,16 +110,19 @@ public class GeminiReviewerCapabilityTests {
     }
 
     /// <summary>
-    /// The consent text is the acceptance artifact for what enabling this grants, so its content is
-    /// asserted rather than just its presence — and it must name the variable that actually turns it on.
+    /// Reached only when an operator EXPLICITLY disabled it. The text still has to state what a Gemini
+    /// review grants — that risk is unchanged and is the sharpest of the four — while saying how to undo
+    /// the disable and that the switch narrows nothing a requester cannot route around.
     /// </summary>
     [Test]
-    public async Task TheDisabledReasonStatesWhatEnablingGrants_AndHowToEnableIt() {
+    public async Task TheDisabledReason_StatesTheGrantAndHowToUndoTheDisable() {
         var reason = GeminiReviewerCapability.DenialReason(GeminiReviewerDecision.Disabled, null, null);
 
+        await Assert.That(reason).StartsWith("gemini_unattended_reviewer_disabled");
+        await Assert.That(reason).Contains("EXPLICITLY disabled");
         await Assert.That(reason).Contains("code execution");
-        await Assert.That(reason).Contains("credentials");
-        await Assert.That(reason).Contains("KCAP_GEMINI_UNATTENDED_REVIEWER=1");
+        await Assert.That(reason).Contains("KCAP_GEMINI_UNATTENDED_REVIEWER");
+        await Assert.That(reason).Contains("never-gated");
     }
 
     // ── version extraction, which the affirmation check depends on ──

@@ -164,20 +164,25 @@ public static partial class DaemonRunner {
             config.AntigravityPath = agyPath;
         if (Environment.GetEnvironmentVariable("KCAP_ANTIGRAVITY_MODEL") is { Length: > 0 } agyModel)
             config.AntigravityModel = agyModel;
-        if (Environment.GetEnvironmentVariable("KCAP_ANTIGRAVITY_UNATTENDED_REVIEWER") is { } agyConsent)
-            config.AntigravityUnattendedReviewerEnabled = ParseConsentFlag(agyConsent);
+        // The per-vendor reviewer switches. These are OPT-OUT now: unset means enabled, matching
+        // Claude/Codex/Cursor/Copilot, which have never been gated. See ParseConsentFlag for why the
+        // opt-in gate was removed — in short, the reviewer vendor is a caller-chosen parameter, so
+        // gating four vendors while four others ran with MORE capability stopped nobody and only
+        // taxed the honest path.
+        foreach (var (variable, apply) in new (string, Action<bool>)[] {
+            ("KCAP_GEMINI_UNATTENDED_REVIEWER",      v => config.GeminiUnattendedReviewerEnabled      = v),
+            ("KCAP_KIRO_UNATTENDED_REVIEWER",        v => config.KiroUnattendedReviewerEnabled        = v),
+            ("KCAP_OPENCODE_UNATTENDED_REVIEWER",    v => config.OpenCodeUnattendedReviewerEnabled    = v),
+            ("KCAP_ANTIGRAVITY_UNATTENDED_REVIEWER", v => config.AntigravityUnattendedReviewerEnabled = v),
+        }) {
+            var raw = Environment.GetEnvironmentVariable(variable);
+            apply(ParseConsentFlag(raw));
 
-        // The operator consent flags for the unattended ACP/CLI reviewers. Both were previously
-        // reachable only from a test constructor, which made the shipped Gemini reviewer impossible
-        // to turn on in production; binding one and not the other would just move that hole.
-        config.GeminiUnattendedReviewerEnabled =
-            ParseConsentFlag(Environment.GetEnvironmentVariable("KCAP_GEMINI_UNATTENDED_REVIEWER"));
-
-        config.KiroUnattendedReviewerEnabled =
-            ParseConsentFlag(Environment.GetEnvironmentVariable("KCAP_KIRO_UNATTENDED_REVIEWER"));
-
-        config.OpenCodeUnattendedReviewerEnabled =
-            ParseConsentFlag(Environment.GetEnvironmentVariable("KCAP_OPENCODE_UNATTENDED_REVIEWER"));
+            // A value we cannot read is treated as the default (enabled), so an operator who meant to
+            // DISABLE and mistyped it would otherwise get the opposite with no signal whatsoever.
+            if (DescribeUnparseableConsent(variable, raw) is { } warning)
+                await Console.Error.WriteLineAsync(warning);
+        }
 
         config.DebugFrames = ParseDebugFramesFlag(Environment.GetEnvironmentVariable("KCAP_ACP_DEBUG_FRAMES"));
 
@@ -245,10 +250,6 @@ public static partial class DaemonRunner {
         var coverageStateDir = Path.Combine(
             config.StateDir ?? DaemonLockPaths.Directory, DaemonLockPaths.Sanitize(config.Name));
         SeedReviewerFloors(coverageStateDir, config);
-
-        SeedReviewerAffirmation(
-            coverageStateDir, AcpVendorDescriptors.OpenCode.Vendor,
-            config.OpenCodeUnattendedReviewerEnabled, config.OpenCodePath);
 
         // Recovers reviewer homes left by a SIGKILLed predecessor. Runs unconditionally: a daemon
         // whose operator has since disabled the reviewer still owns whatever its last incarnation
@@ -848,12 +849,71 @@ public static partial class DaemonRunner {
     /// enables it, and unset, blank or unrecognised leaves it OFF. Enabling one of these is a
     /// security consent event, so a typo must not be read as consent.
     /// </summary>
-    internal static bool ParseConsentFlag(string? value) =>
-        value?.Trim() is { Length: > 0 } v
-     && (v == "1"
-      || string.Equals(v, "true", StringComparison.OrdinalIgnoreCase)
-      || string.Equals(v, "yes",  StringComparison.OrdinalIgnoreCase)
-      || string.Equals(v, "on",   StringComparison.OrdinalIgnoreCase));
+    /// <summary>
+    /// Whether a gated reviewer vendor is permitted on this daemon. **Absent means ENABLED** — this is
+    /// an opt-OUT, and it used to be an opt-in.
+    ///
+    /// <para><b>Why the default flipped.</b> The opt-in gate did not do the job it claimed. The reviewer
+    /// vendor is a caller-chosen parameter, and Claude, Codex, Cursor and Copilot have never been gated
+    /// at all — each of them running with FULL tool access (shell and write) in the same worktree. So
+    /// anyone the gate was supposed to stop simply requested an ungated vendor with more capability,
+    /// while the honest path paid a service-unit edit and a restart. A control every caller can route
+    /// around by picking a different value from a menu is friction, not security. Worse, two of the four
+    /// gated vendors (Kiro, OpenCode) run READ-ONLY reviewers, so the strictest policy was attached to
+    /// the least dangerous configuration.</para>
+    ///
+    /// <para><b>What still protects the launch.</b> The per-vendor version FLOOR
+    /// (<see cref="ReviewerVersionAffirmations"/>), which is a different mechanism with a different job:
+    /// several of these vendors' containment is environment-based, and env vars fail SILENTLY when a
+    /// build stops honouring them. The floor is seeded automatically at first boot so it never blocks a
+    /// first launch, and `kcap daemon reviewer affirm` raises it past a build found to be bad. That is
+    /// remediation, not permission.</para>
+    ///
+    /// <para><b>An explicit opt-out is preserved</b> rather than deleting the variable, because silently
+    /// ENABLING something an operator had deliberately set to <c>0</c> is the one surprise this change
+    /// must not spring. Recognised falsey values disable; recognised truthy values enable; anything else
+    /// falls back to the default and is reported by <see cref="DescribeUnparseableConsent"/> — the same
+    /// rule the feature-gate work follows, so a typo in a service unit cannot take a daemon's reviewer
+    /// offline without saying so.</para>
+    /// </summary>
+    internal static bool ParseConsentFlag(string? value) {
+        var v = value?.Trim();
+
+        if (string.IsNullOrEmpty(v)) return true;   // unset — the new default
+
+        if (v == "0"
+         || string.Equals(v, "false", StringComparison.OrdinalIgnoreCase)
+         || string.Equals(v, "no",    StringComparison.OrdinalIgnoreCase)
+         || string.Equals(v, "off",   StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        return true;
+    }
+
+    /// <summary>
+    /// A warning for a consent variable that is SET but says nothing this daemon recognises, or null
+    /// when there is nothing to report. Split from <see cref="ParseConsentFlag"/> so the parse stays
+    /// pure and total: an operator who typed <c>flase</c> meaning to disable a reviewer would otherwise
+    /// get it enabled with no signal at all, which is precisely the direction worth being loud about.
+    /// </summary>
+    internal static string? DescribeUnparseableConsent(string variable, string? value) {
+        var v = value?.Trim();
+
+        if (string.IsNullOrEmpty(v)) return null;
+
+        var recognised = v is "0" or "1"
+            || string.Equals(v, "false", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(v, "true",  StringComparison.OrdinalIgnoreCase)
+            || string.Equals(v, "no",    StringComparison.OrdinalIgnoreCase)
+            || string.Equals(v, "yes",   StringComparison.OrdinalIgnoreCase)
+            || string.Equals(v, "off",   StringComparison.OrdinalIgnoreCase)
+            || string.Equals(v, "on",    StringComparison.OrdinalIgnoreCase);
+
+        return recognised
+            ? null
+            : $"{variable} is set to '{v}', which this daemon does not recognise as true or false. "
+            + "Treating it as ENABLED (the default). Use 0/false/no/off to disable this reviewer.";
+    }
 
     /// <summary>
     /// True when a "cursor" <see cref="IHostedAgentRuntimeFactory"/> is registered but
@@ -899,6 +959,10 @@ public static partial class DaemonRunner {
             stateDir, AcpVendorDescriptors.Gemini.Vendor,
             config.GeminiUnattendedReviewerEnabled, config.GeminiPath);
 
+        SeedReviewerAffirmation(
+            stateDir, AcpVendorDescriptors.OpenCode.Vendor,
+            config.OpenCodeUnattendedReviewerEnabled, config.OpenCodePath);
+
         SeedVersionFloor(stateDir, AntigravityVendor, config.AntigravityPath);
     }
 
@@ -911,6 +975,12 @@ public static partial class DaemonRunner {
     /// a write that a directory at the pathname makes throw — bricking a boot on a file that is
     /// supposed to fail closed, never fatally.</para>
     /// </summary>
+    /// <param name="enabled">The vendor's opt-out state. Only skips the probe for a vendor the operator
+    /// has EXPLICITLY disabled — which is now the rare case, since the switch defaults to enabled.
+    /// Seeding on the ordinary path is what keeps the version floor from blocking a first launch: with
+    /// no record, the gate answers <c>version_no_minimum</c>, and that is a refusal only
+    /// <c>kcap daemon reviewer affirm</c> can clear. A floor is meant to exclude a build found to be
+    /// bad, not to be an opt-in gate wearing a different hat.</param>
     internal static void SeedReviewerAffirmation(
             string stateDir, string vendor, bool enabled, string binaryPath) {
         if (!enabled) return;

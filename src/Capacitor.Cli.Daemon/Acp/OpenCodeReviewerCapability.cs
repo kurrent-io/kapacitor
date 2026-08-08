@@ -16,15 +16,20 @@ internal enum OpenCodeReviewerDecision {
 /// Whether THIS daemon may run OpenCode as an unattended review-flow reviewer. Pure, so every arm is
 /// testable without a vendor or a process.
 ///
-/// <para><b>What enabling it consents to.</b> The reviewer's tool surface is deliberately narrow —
-/// <see cref="OpenCodeReviewerPermissions"/> denies everything and admits only the read family plus the
-/// injected result channel, with no shell and no write, verified against a positive control. But
-/// <c>read</c>/<c>grep</c>/<c>glob</c>/<c>list</c> are NOT path-scoped: they are whole-filesystem read
-/// primitives under the daemon's uid. So a review can read every file this daemon user can read, its
-/// own credentials included, and its findings text goes back to whoever requested the review. That risk
-/// lands on the daemon OPERATOR, who is not necessarily the requester, which is why the decision is
-/// daemon-local configuration and enabling it is the consent event. Identical in substance to the Kiro
-/// gate; the narrower tool surface changes the blast radius of a WRITE, not of a read.</para>
+/// <para><b>ENABLED by default; the switch is an opt-OUT.</b> It shipped as an opt-in and that was
+/// wrong. The reviewer vendor is a caller-chosen parameter, and Claude, Codex, Cursor and Copilot have
+/// never been gated — each running with FULL tool access. So the gate stopped nobody (request an
+/// ungated vendor instead) while taxing the honest path with a service-unit edit and a restart. It was
+/// also attached to the wrong end of the risk scale: this is the most contained reviewer of the eight —
+/// no shell, no write, no network, only <c>read</c>/<c>grep</c>/<c>glob</c>/<c>list</c> plus its own
+/// result channel, verified against a positive control.</para>
+///
+/// <para><b>The residual risk is real and unchanged, it just is not what a per-vendor gate addressed.</b>
+/// Those read tools are NOT path-scoped: they are whole-filesystem read primitives under the daemon's
+/// uid, so a review can read every file this daemon user can and its findings text goes back to the
+/// requester. That is equally true of the four never-gated vendors, which can additionally write and
+/// execute — so the honest framing is that running ANY unattended reviewer is the decision, not running
+/// this one.</para>
 ///
 /// <para><b>Why a version MINIMUM rather than a certified set or an exact affirmation.</b> Same model
 /// as Kiro and Gemini, and for the same reason: containment here is source suppression plus a
@@ -87,13 +92,11 @@ internal static class OpenCodeReviewerCapability {
               + "owner-only on this platform — another local user could seed MCP servers into it.",
 
             OpenCodeReviewerDecision.Disabled =>
-                "opencode_unattended_reviewer_disabled: this daemon has not enabled OpenCode as an "
-              + "unattended review-flow reviewer. The reviewer gets no shell and no write tools, but its "
-              + "read tools are NOT path-scoped: enabling this grants a review read access to every file "
-              + "this daemon user can read — including its own credentials — and a reviewer can return "
-              + "what it read to whoever requested the review. Enable it only on a daemon whose operator "
-              + "and review requesters are in one trust domain: set "
-              + "KCAP_OPENCODE_UNATTENDED_REVIEWER=1 in the daemon's environment (not on the server).",
+                "opencode_unattended_reviewer_disabled: this daemon has EXPLICITLY disabled OpenCode as "
+              + "an unattended review-flow reviewer. Unset KCAP_OPENCODE_UNATTENDED_REVIEWER in the "
+              + "daemon's environment (not on the server) to restore the default, which is enabled — or "
+              + "set it to 1. For context, this is the most contained reviewer available: no shell, no "
+              + "write, no network — only read/grep/glob/list plus its own result channel.",
 
             OpenCodeReviewerDecision.VersionUnresolved =>
                 "opencode_reviewer_version_unresolved: the installed opencode version could not be "
@@ -102,10 +105,10 @@ internal static class OpenCodeReviewerCapability {
 
             OpenCodeReviewerDecision.VersionNoMinimum =>
                 "opencode_reviewer_version_no_minimum: this daemon has no recorded minimum opencode "
-              + "version, so there is nothing to check the installed build against. The usual cause is "
-              + "enabling the reviewer against an already-running daemon — it records a minimum at "
-              + "startup, so restart it with KCAP_OPENCODE_UNATTENDED_REVIEWER set. To set one now "
-              + "without restarting, run `kcap daemon reviewer affirm --vendor opencode`.",
+              + "version, so there is nothing to check the installed build against. A daemon records "
+              + "one automatically at startup, so the usual cause is that the version probe failed "
+              + "then — check that `opencode --version` succeeds for the daemon user, and restart. To "
+              + "record one now without restarting, run `kcap daemon reviewer affirm --vendor opencode`.",
 
             OpenCodeReviewerDecision.VersionIncomparable =>
                 $"opencode_reviewer_version_incomparable: opencode {Describe(installedVersion)} and this "
