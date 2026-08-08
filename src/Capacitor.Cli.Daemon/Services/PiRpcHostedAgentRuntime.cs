@@ -286,6 +286,9 @@ internal sealed class PiRpcHostedAgentRuntime : IHostedAgentRuntime, IAcpTranscr
                 return;
         }
 
+        // Display fallback only — NOT the authoritative ResolvedModel (see ApplyState's comment on
+        // _resolvedModel = ExtractModelId(...)): this feeds envelope.Model for rendering, never the
+        // confirmed-applied-model signal the orchestrator reads off ResolvedModel.
         var envelopes = PiRpc.ToEnvelopes(frame, _resolvedModel ?? _requestedModel);
         if (envelopes.Count == 0) return;
 
@@ -393,7 +396,10 @@ internal sealed class PiRpcHostedAgentRuntime : IHostedAgentRuntime, IAcpTranscr
         // signal (see the ResolvedModel property doc), so when get_state omits a model, null is the
         // only truthful value — the IAcpTranscriptSource contract's "null ⇒ vendor default applies".
         // Reporting the merely-requested model here would be an attribution lie: it claims Pi
-        // confirmed a model it never mentioned.
+        // confirmed a model it never mentioned. ResolvedModel is deliberately null in that case — it
+        // is never backfilled from _requestedModel. The transcript ENVELOPE fallback below (see
+        // HandleEvent's `_resolvedModel ?? _requestedModel`) is a SEPARATE, intentional concern: a
+        // display fallback for envelope.Model, not the authoritative ResolvedModel this field feeds.
         _resolvedModel = ExtractModelId(data.Value);
 
         // Pi may already be mid-turn when we attach (a resumed session), so the initial busy state
@@ -479,7 +485,10 @@ internal sealed class PiRpcHostedAgentRuntime : IHostedAgentRuntime, IAcpTranscr
         // Observed in the background: Pi's response to `prompt` acknowledges acceptance, and a
         // refusal (e.g. a prompt that raced an in-flight turn) is only ever visible to the person
         // who typed the message as a transcript note. Never awaited here — a prompt that queues
-        // behind a long turn must not block the daemon's command lane.
+        // behind a long turn must not block the daemon's command lane. No lifetime leak: this
+        // fire-and-forget task always completes because its pending waiter is faulted by
+        // EnterTerminal, and _pumpTask (whose finally calls EnterTerminal) is created in the
+        // constructor before it returns, so DisposeAsync always has it to join.
         _ = ObservePromptResponseAsync(waiter.Task);
     }
 
@@ -530,12 +539,24 @@ internal sealed class PiRpcHostedAgentRuntime : IHostedAgentRuntime, IAcpTranscr
     // ---- Echo memory (rule (c)) ----
 
     void RememberSentPrompt(string text) {
+        var evicted = false;
+
         lock (_echoGate) {
             _sentPrompts.Add(text);
 
             // Oldest-first eviction: an entry that has waited this long was never echoed.
-            while (_sentPrompts.Count > SentPromptMemory) _sentPrompts.RemoveAt(0);
+            while (_sentPrompts.Count > SentPromptMemory) {
+                _sentPrompts.RemoveAt(0);
+                evicted = true;
+            }
         }
+
+        // Debug, not Warning: unreachable in normal turn-based interactive use (a caller waits for
+        // idle between sends), so this is detectability for the live cert, not an operational
+        // alarm — logged outside the lock, and only when eviction actually dropped an entry, to
+        // avoid flooding.
+        if (evicted)
+            _logger.LogDebug("Pi: evicted an un-echoed sent-prompt at the cap (agentId={AgentId}).", _agentId);
     }
 
     /// <summary>Most-recent-first, consume-on-match — see rule (c) on why consuming (rather than
@@ -558,7 +579,13 @@ internal sealed class PiRpcHostedAgentRuntime : IHostedAgentRuntime, IAcpTranscr
     /// <summary>Completes immediately when Pi is not streaming, else on the next
     /// <c>agent_settled</c>. Entering terminal releases every waiter (via
     /// <see cref="EnterTerminal"/>'s <c>SetBusy(false)</c>) — a waiter parked on a settle that can
-    /// never arrive is a hang, not a stop.</summary>
+    /// never arrive is a hang, not a stop.
+    ///
+    /// <para>A caller that may need to stop waiting on a wedged turn (e.g. a child blocked on an
+    /// <c>extension_ui_request</c> that never settles — see <see cref="PiRpc"/>'s
+    /// <c>TranslateExtensionUiRequest</c>) MUST pass a cancellable token: with
+    /// <see cref="CancellationToken.None"/> the waiter only completes on the next
+    /// <c>agent_settled</c> or on <see cref="EnterTerminal"/>.</para></summary>
     public Task WaitForTurnIdleAsync(CancellationToken ct) {
         TaskCompletionSource waiter;
 
@@ -667,6 +694,10 @@ internal sealed class PiRpcHostedAgentRuntime : IHostedAgentRuntime, IAcpTranscr
             $"Pi: the hosted session ended before its identity handshake completed (agentId={_agentId}).",
             inner: null);
 
+        // Releasing idle waiters here can wake a caller that then attempts SendUserInputAsync during
+        // teardown; that write fails fast (dead pipe → caught → "could not be delivered" note) — i.e.
+        // "idle after EnterTerminal" does NOT mean the agent is accepting input. Accepted fail-open
+        // behavior, not a bug.
         SetBusy(false);
 
         _transcript.Writer.TryComplete();

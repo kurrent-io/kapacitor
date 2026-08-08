@@ -269,7 +269,13 @@ internal static class PiRpc {
     /// <summary>See the <see cref="ToEnvelopes"/> class doc's <c>extension_ui_request</c> item: a
     /// dialog method blocks the child waiting for an <c>extension_ui_response</c> this daemon never
     /// sends, so a hosted turn that hits one stalls with no other signal anywhere in the
-    /// transcript.</summary>
+    /// transcript.
+    ///
+    /// <para><b>Recovery.</b> A dialog method (<c>select</c>/<c>confirm</c>/<c>input</c>/
+    /// <c>editor</c>) leaves the child BLOCKED on stdin waiting for an <c>extension_ui_response</c>
+    /// this daemon never sends; this note is the only signal anywhere that it happened. The runtime
+    /// does not synthesize a response or auto-abort in PR-1 — the only way out is termination
+    /// (graceful stop → abort → terminate).</para></summary>
     static IReadOnlyList<AcpEventEnvelope> TranslateExtensionUiRequest(JsonElement root) {
         var method = root.Str("method") ?? "unknown";
 
