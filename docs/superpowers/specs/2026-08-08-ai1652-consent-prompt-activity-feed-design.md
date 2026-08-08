@@ -35,10 +35,11 @@ in Core; decision-record hoisting to Core (shared write/read shape); `requester_
 threading through the consent pipeline (additive); `rule_saved` reporting on `ConsentAckDto`
 (additive) so a rule installed for an already-decided request is disclosed, not hidden; a
 daemon-minted `prompt_id` request identity on `ConsentPendingDto` echoed on
-`ConsentResolveDto` and atomically claimed by the broker, advertised as a new `consent/2`
-capability the app requires, so a stale resolve can never decide a different launch that
-reused the id; hoisting the AI-1651 per-window ticker into an app-lifetime service; headless
-ViewModel tests for the full prompt matrix.
+`ConsentResolveDto` and atomically claimed by the broker, carried on **new v2 consent frame
+types** an old daemon structurally cannot decode (fail-closed on the wire) and advertised as
+a new `consent/2` capability for discovery, so a stale resolve can never decide a different
+launch that reused the id; hoisting the AI-1651 per-window ticker into an app-lifetime
+service; headless ViewModel tests for the full prompt matrix.
 
 **Out:** macOS system notification (AI-1653); consent-rules editor UI (slice 4); any change to
 engine matching, rule ordering/precedence, policy storage, or prompt timeout semantics; new
@@ -46,7 +47,8 @@ IPC frame types; Windows/Linux app packaging.
 
 ## 4. Wire & Core changes
 
-No new frame types and no protocol version change. Everything below is additive.
+Everything below is additive: two new append-only `FrameType` values (§4.1) and trailing
+DTO fields; no protocol version change and no change to any existing frame's semantics.
 
 ### 4.1 `ResolveConsentAsync` on `ILocalControlOps`, and `rule_saved` on the ack
 
@@ -55,8 +57,8 @@ Task<ConsentAckDto> ResolveConsentAsync(ConsentResolveDto resolve, CancellationT
 ```
 
 One-shot, exactly the existing `LocalControlOps` pattern (connect → send → single reply →
-close): writes `FrameType.ConsentResolve` with the `ConsentResolveDto` JSON as `Text`, expects
-exactly one `ConsentAck` frame, deserializes `ConsentAckDto`. Per-phase timeouts and failure
+close): writes `FrameType.ConsentResolveV2` (below) with the `ConsentResolveDto` JSON as
+`Text`, expects exactly one `ConsentAck` frame, deserializes `ConsentAckDto`. Per-phase timeouts and failure
 classification are identical to the existing ops — caller-cancellation propagates
 (`OperationCanceledException` checked first), `EndOfStreamException` before `IOException`
 (derivation order) → `unexpected_reply`, transport → `daemon_unreachable`, phase timeout →
@@ -126,15 +128,28 @@ value the daemon mints:
 guards and tombstones (§5) key on it, `RequestId` remains only the cache/broker key and the
 per-agent queue identity.
 
-**Capability `consent/2`.** The identity guarantee is only real when the daemon enforces it —
-a pre-AI-1652 daemon deserializes the resolve while silently dropping the unmapped `prompt_id`
-and resolves by id alone. `LocalControlCapabilities.Current` therefore appends **`consent/2`**
-(advertised, per the AI-1648 convention, only because the live handler enforces
-identity-checked resolution, populates `rule_saved`, and stamps `prompt_id`/
-`requester_display` on pendings). The app treats a daemon advertising `consent/1` without
-`consent/2` exactly like one with no consent capability at all: no subscription, no prompts,
-no resolves (§5) — mixed-version consent fails closed rather than degrading to the unguarded
+**V2 frames: enforcement is structural, not negotiated.** The identity guarantee is only real
+when the daemon enforces it — a pre-AI-1652 daemon deserializes the v1 resolve while silently
+dropping the unmapped `prompt_id` and resolves by id alone. A capability check cannot close
+this: capabilities are learned on one socket while consent ops travel on fresh bare-frame
+connections, so a daemon restart/downgrade between them (TOCTOU) would route a v2-shaped
+resolve into the v1 handler. The v2 operations therefore ride **new append-only frame
+types** — `ConsentSubscribeV2 = 17` and `ConsentResolveV2 = 18` — which the app uses
+exclusively. A v1 daemon's routing switch answers any unknown frame type with an `Error`
+frame (`LocalControlServer` default arm), so against a v1 incarnation the v2 resolve draws
+`daemon_rejected` (no resolution occurred — the cached prompt is *structurally impossible* to
+resolve through the v1 id-only handler, whichever incarnation answers the socket) and the v2
+subscribe ends without registering a subscriber (the v1 daemon keeps its fast `prompt_no_ui`
+denials instead of waiting on a subscriber that renders nothing). On a v2 daemon, frame 17
+routes to the same subscribe handler as frame 11, and frame 18 routes to a resolve path that
+**requires** `prompt_id` (missing/empty → `Ok=false` "invalid resolve payload"); the v1
+frames 11/12 remain routed unchanged for legacy callers, served by `TryResolve`'s null-echo
 path.
+
+**Capability `consent/2`** is appended to `LocalControlCapabilities.Current` as the
+*discovery* signal (advertised, per the AI-1648 convention, only because the live v2 handlers
+exist): §5 uses it to decide whether to run the consent loop and to surface the down-level
+condition. Security does not rest on it — the frames fail closed on their own.
 
 ### 4.2 Consent subscription client (Core)
 
@@ -150,9 +165,10 @@ public static async IAsyncEnumerable<ConsentStreamEvent> RunAsync(
     string daemonName, [EnumeratorCancellation] CancellationToken ct)
 ```
 
-Connects to the daemon's socket, writes `FrameType.ConsentSubscribe` (empty text), **yields
-`Subscribed` once** immediately after that write succeeds, then reads frames and yields one
-`Pending` per `ConsentPending` frame. The `Subscribed` event exists because an async iterator
+Connects to the daemon's socket, writes `FrameType.ConsentSubscribeV2` (empty text; §4.1 —
+a v1 daemon answers the unknown frame with `Error`, ending the enumeration without
+registering a subscriber), **yields `Subscribed` once** immediately after that write
+succeeds, then reads frames and yields one `Pending` per `ConsentPending` frame. The `Subscribed` event exists because an async iterator
 exposes no other observable boundary between "dialing" and "subscribed": with an empty replay
 the first read never completes, so a consumer that must act at the subscribe boundary (the §5
 cache clear) would otherwise have no signal. The daemon replays the full pending set
@@ -311,14 +327,18 @@ delivery latency. On every conclusive ack the service atomically (1) records the
 ghost-admitted-before-ack ordering, which a guard keyed on the original instance alone would
 miss. An incoming `Pending` whose `PromptId` is tombstoned is dropped; by the §4.1 identity
 contract a matching frame *is* the concluded request — never a distinct successor — so
-dropping is always correct. **Tombstones are scoped to the subscription connection, with no
-TTL**: they are retired in bulk at each `Subscribed` boundary, because a fresh replay provably
-cannot contain a concluded request (`TryResolve` removes the entry before the ack exists, and
-`Subscribe` snapshots the current map) — a time-based TTL would reopen the window for a frame
-delayed past it. Within one connection the set grows only with conclusions on that connection;
-a defensive FIFO cap of 1024 bounds pathological lifetimes and is documented as such. Expiry/
-prune do **not** tombstone: a request the app merely gave up on locally is still live
-daemon-side (the clock-step case) and must be allowed to reappear.
+dropping is always correct — **forever**. Tombstones therefore live for the
+**`ConsentService` lifetime: no TTL, no per-connection retirement, no size cap.** Any time-
+or boundary-based retirement reopens a window: a client-local `Subscribed` is not ordered
+against a concurrent ack (the daemon can snapshot a replay *before* a resolve concludes while
+the app processes the ack *before* its local `Subscribed` — retiring there would admit the
+still-in-flight snapshotted frame), and any cap's eviction re-admits a frame delayed past it.
+None of that trades against anything real: a `PromptId` is a GUID that is never reused, so a
+lifetime tombstone can never wrongly suppress a future request, and the memory cost is ~50
+bytes per *concluded human decision* — thousands of conclusions in one app session amount to
+hundreds of kilobytes, accepted and documented. Expiry/prune do **not** tombstone: a request
+the app merely gave up on locally is still live daemon-side (the clock-step case) and must be
+allowed to reappear.
 
 **Subscription lifecycle — status-driven.** The service observes
 `DaemonClientService.Status`:
@@ -551,12 +571,12 @@ cadence picks up count changes through the model stream — no new refresh machi
 | Failure | Surface | Behavior |
 |---|---|---|
 | Daemon unreachable (no subscription) | Tray | Existing AI-1651 rows; no prompts possible; feed still renders from file |
-| Daemon without `consent/2` (incl. `consent/1`-only) | Tray | No subscription, prompts, or resolves — identity check can't be enforced; cache cleared; existing down-level surfacing |
+| Daemon without `consent/2` (incl. `consent/1`-only) | Tray | No subscription, prompts, or resolves; cache cleared; down-level surfacing. Enforcement doesn't depend on the check: a v1 incarnation answering a v2 frame (restart TOCTOU) errors it — structurally unable to resolve or subscribe (§4.1) |
 | Consent dial fails while status Connected | none (self-heal) | Cache NOT cleared (clear sits at the `Subscribed` boundary); 1s delay → retry |
 | Daemon dies between subscribe write and replay | none (self-heal) | Cache cleared but restored by the next successful replay (~1s cadence); bounded, UI-only (§5) |
 | Consent stream dies while Connected | none (self-heal) | 1s delay → resubscribe (fresh replay reconciles at the `Subscribed` boundary) |
 | Structurally invalid pending frame | none | Skipped (ending the stream would thrash the resubscribe loop) |
-| Ghost replay of a just-concluded request | none | Arrives after the ack → connection-scoped tombstone drops it (no TTL — arbitrarily delayed frames stay dropped); admitted before the ack → the ack's identity-matched eviction removes it — no second prompt either way |
+| Ghost replay of a just-concluded request | none | Arrives after the ack → service-lifetime tombstone drops it (no TTL, no retirement, no cap — arbitrarily delayed frames stay dropped, across resubscribes); admitted before the ack → the ack's identity-matched eviction removes it — no second prompt either way |
 | Wall-clock step vs. daemon's monotonic deadline | Prompt window | Hint expiry is never a verdict: non-authoritative copy, buttons stay active, ack governs |
 | Resolve transport failure | Prompt toast | Entry kept; buttons re-enable |
 | Resolve cancelled (shutdown) | none | OCE propagates; silent abort — never rendered as transport failure |
@@ -585,8 +605,11 @@ throughout — no real sleeps).
   yield `Pending` events in order; EOF ends enumeration; failed connect (`SocketException`)
   ends enumeration without yielding `Subscribed`; unexpected frame type ends enumeration;
   undecodable JSON ends enumeration; **decodable-but-structurally-invalid pending (null
-  request_id via `{}`) is skipped and the stream continues**; `ct` propagates OCE. Absent
-  `requester_display` deserializes to null.
+  request_id via `{}`) is skipped and the stream continues**; **the `PromptId` requirement is
+  isolated: a v1-shaped pending with every pre-existing field valid and `prompt_id`
+  separately absent, null, and empty yields no `Pending` event and the stream continues** (a
+  `{}` frame alone would stay green with the PromptId check forgotten); `ct` propagates OCE.
+  Absent `requester_display` deserializes to null.
 - `ConsentDecisionLogReader`: tail across the rotation pair (order, cap, newest-first);
   undecodable-line skip; **parseable-but-structurally-invalid line (`{}`) skip**;
   `Distinct()` dedup; absent files → `([], Complete=true)`; **one file unreadable (I/O
@@ -622,6 +645,13 @@ throughout — no real sleeps).
 - Capability: `LocalControlCapabilities.Current` advertises `consent/2` alongside
   `consent/1`; mixed-version acceptance — an app facing a `consent/1`-only capability set
   starts no subscription and sends no resolve.
+- Incarnation swap (the restart TOCTOU): against a v1-routing server (routes frames 11/12,
+  answers 17/18 with the shipped `default`-arm `Error` frame), a cached v2 prompt's resolve
+  via `ConsentResolveV2` draws `daemon_rejected` — **no resolution occurs and a same-id
+  pending on that daemon is untouched**; `ConsentSubscribeV2` against the same server ends
+  the enumeration without registering a subscriber. V2-daemon side: frame 18 with a
+  missing/empty `prompt_id` acks `Ok=false` "invalid resolve payload"; frames 11/12 still
+  route for legacy callers.
 
 **App (the "full prompt matrix" from the issue):**
 - Allow once / Deny → correct `ConsentResolveDto`, entry removed, queue advances.
@@ -637,11 +667,13 @@ throughout — no real sleeps).
   prompted; **B arrives after A's `Ok=true` ack** → A was evicted, B is admitted and
   prompted. In both, the successor is decided only on its own terms.
 - Ghost replay (both orderings): a ghost `Pending` arriving *after* A's conclusive ack is
-  dropped by the tombstone — **including one delayed arbitrarily long within the same
-  subscription connection** (no TTL to outlive); a ghost admitted *before* the ack (reconnect
-  replay raced the resolve — a fresh instance with A's identity) is evicted by the ack's
-  identity-matched removal — no second raise either way. Tombstones are retired at the
-  `Subscribed` boundary: after a resubscribe, a fresh replay's entries are admitted normally.
+  dropped by the tombstone — **including one delayed arbitrarily long, and including the
+  snapshot-before-ack / `Subscribed`-after-ack interleaving** (daemon snapshots the replay,
+  the resolve concludes and tombstones A, the local `Subscribed` fires, THEN the snapshotted
+  A frame arrives — still dropped: tombstones survive the boundary); a ghost admitted
+  *before* the ack (replay raced the resolve — a fresh instance with A's identity) is evicted
+  by the ack's identity-matched removal — no second raise either way. Entries never concluded
+  are admitted normally after any resubscribe (their `PromptId`s are not tombstoned).
 - Hint expiry with no resolve in flight → non-authoritative copy, **buttons remain active**;
   a click after hint-zero that acks `Ok=true` is `Applied` (the wall-clock-step case: hint
   fired early, request was still live); one that acks `Ok=false` runs "Already decided"; the
