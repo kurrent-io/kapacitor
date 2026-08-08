@@ -39,10 +39,10 @@ population whose workflows we understand least.
 server's pseudonymous id (`Posthog:IdSalt` is server-side and must stay there), so CLI events
 necessarily form a third person alongside the web person and the server person.
 
-After setup succeeds the CLI attaches the `organization` group — the same group key the server uses
-(`PosthogGroupIdentityService.cs:13`, `PostHogCaptureSink.cs:14`) — plus an `org` property. CLI usage
-then rolls up per workspace and sits alongside server events in group-level analysis, without ever
-linking a device to a named human.
+Where a workspace is known, the CLI attaches the `organization` group — the same group key the server
+uses (`PosthogGroupIdentityService.cs:13`, `PostHogCaptureSink.cs:14`) — plus a matching `org`
+property. CLI usage then rolls up per workspace and sits alongside server events in group-level
+analysis, without ever linking a device to a named human.
 
 Merging the anonymous device into the identified user via `$identify` was considered. It would need a
 new server endpoint handing the client its own pseudonymous hash, and it buys person-level joins that
@@ -59,9 +59,13 @@ needed.
 **This holds for SaaS only.** On a self-hosted deployment `Tenant:Name` defaults to `"local"` and is
 otherwise whatever the operator configured; it has no defined relationship to the server's hostname.
 Deriving a group from the host label there would produce a group that *looks* joined to the server's
-but isn't — a silently wrong dashboard, which is worse than no dashboard. So the group is attached
-only when the server URL is a `*.kcap.ai` host, where the chart guarantees the correspondence. The
-`org` property ships unconditionally and still supports manual correlation elsewhere.
+but isn't — a silently wrong dashboard, which is worse than no dashboard.
+
+So the `organization` group and its accompanying `org` property are both attached only when the
+server URL is a `*.kcap.ai` host, where the chart guarantees the correspondence, and both are omitted
+otherwise. Shipping the property unconditionally was considered and rejected: off SaaS its only
+possible value is a fragment of an internal hostname, which buys no analysis (it can't be joined to
+anything) and puts company-identifying data in the payload, against the never-collect list below.
 
 ### 3. Human-invoked commands and MCP tool calls; hooks excluded entirely
 
@@ -160,9 +164,15 @@ the signal.
 Positional arguments are the sharp edge: `kcap recap <sessionId>`, `kcap ignore <path>`, and
 `kcap remap <path>` all carry identifying data. `subcommand` is therefore drawn from a **per-verb
 allowlist of known literals** (`daemon start`, `plugin install`, `config set`, `curate apply`, …) and
-omitted when the token doesn't match — never raw argv. `flags[]` likewise carries recognized flag
-*names* only, sorted, with values never sent. The default for anything unrecognized is omission, so
-new commands and new flags are silent until deliberately added.
+omitted when the token doesn't match — never raw argv.
+
+`flags[]` carries flag *names* only, sorted, values never sent. Names are admitted by **shape**
+rather than by a name allowlist: a token qualifies only if it matches `^--[a-z][a-z0-9-]{0,39}$`
+after any `=value` suffix is stripped. A global allowlist across ~40 commands would rot silently as
+flags are added, and shape is what actually makes a flag name safe — the pattern structurally cannot
+express a path, URL, GUID, or email address, so nothing identifying can survive it regardless of what
+future commands introduce. Non-matching tokens, and every non-`--` token, are dropped; the flag list
+is additionally capped at 12 entries.
 
 ### Setup funnel
 
