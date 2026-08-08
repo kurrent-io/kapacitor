@@ -1262,7 +1262,7 @@ KCAP_CURSOR_PATH=/opt/cursor/bin/cursor-agent kcap daemon
 KCAP_CURSOR_MODEL=claude-opus-4-8 kcap daemon
 ```
 
-`KCAP_COPILOT_PATH` overrides the `copilot` binary the daemon spawns for **GitHub Copilot hosted agents** (`copilot --acp --stdio`), mirroring `KCAP_CURSOR_PATH` — the daemon hosts Claude, Codex, Cursor, Copilot, Kiro, Gemini, OpenCode and Antigravity. `KCAP_GEMINI_PATH` overrides the `gemini` binary the same way (`gemini --experimental-acp`), and applies to both hosted Gemini agents and the [unattended Gemini reviewer](#unattended-reviewers-are-enabled-by-default-they-used-to-be-opt-in) (enabled by default) — whose build-affirmation check reads whichever binary it names. `KCAP_OPENCODE_PATH` overrides the `opencode` binary the daemon spawns for **OpenCode hosted agents** (`opencode acp`) — no longer reserved; see [Hosted OpenCode agents](#hosted-opencode-agents) below.
+`KCAP_COPILOT_PATH` overrides the `copilot` binary the daemon spawns for **GitHub Copilot hosted agents** (`copilot --acp --stdio`), mirroring `KCAP_CURSOR_PATH` — the daemon hosts Claude, Codex, Cursor, Copilot, Kiro, Gemini, Pi, OpenCode and Antigravity. `KCAP_GEMINI_PATH` overrides the `gemini` binary the same way (`gemini --experimental-acp`), and applies to both hosted Gemini agents and the [unattended Gemini reviewer](#unattended-reviewers-are-enabled-by-default-they-used-to-be-opt-in) (enabled by default) — whose build-affirmation check reads whichever binary it names. `KCAP_OPENCODE_PATH` overrides the `opencode` binary the daemon spawns for **OpenCode hosted agents** (`opencode acp`) — no longer reserved; see [Hosted OpenCode agents](#hosted-opencode-agents) below. `KCAP_PI_PATH` overrides the `pi` binary the daemon spawns for **Pi hosted agents** (`pi --mode rpc`) — interactive hosting only in this release; see [Hosted Pi agents](#hosted-pi-agents) below.
 
 ```bash
 KCAP_COPILOT_PATH=/opt/copilot/bin/copilot kcap daemon
@@ -1408,6 +1408,34 @@ verbatim, exactly like every other agent, with no Cursor/ACP-specific redaction.
 | `KCAP_CODEX_IDLE_MINUTES` | `60` | How long a Codex rollout file may be idle (no new rollout lines and no Codex tool call in flight) before the `kcap watch` background watcher ends the session (`reason: idle_timeout`). Increase for very long thinking/compute turns; decrease for faster cleanup of abandoned sessions. Invalid or non-positive values fall back to the 60-minute default. |
 | `KCAP_PARENT_DEAD_CEILING_MINUTES` | `360` | Staged recovery ceiling for a watcher whose parent coding-agent PID was already dead at startup (a resolution glitch) and can't be re-resolved. The watcher first periodically re-resolves and re-arms the parent-exit watchdog; only if that keeps failing AND the transcript makes no progress for this long does it post `session-end` (`reason: parent_dead_ceiling`). Deliberately far above the idle timeout so a user parked at a Kiro/OpenCode prompt is never ended prematurely. Invalid or non-positive values fall back to 360 minutes (6h). |
 | `KCAP_CURSOR_IDLE_CEILING_MINUTES` | `60` | How long a Cursor session's transcript watcher may go idle before it exits (AI-1382). Unlike Codex/Antigravity, this exit does NOT itself POST `session-end` — Cursor's end-of-session synthesis stays owned by the `sessionEnd` hook or, as a backstop, a server-side lease-gated sweep; the next hook for that session reactivates a fresh watcher. Invalid or non-positive values fall back to the 60-minute default. |
+
+### Hosted Pi agents
+
+`KCAP_PI_MODEL` overrides the model a `pi` hosted agent runs, mirroring `KCAP_OPENCODE_MODEL` —
+including the same deliberate absence of a built-in default: with nothing set (and no per-launch
+model from the dashboard, which takes precedence) the agent runs whatever Pi's own configured
+default is and kcap reports none. The value is passed verbatim as `--model <value>` on the spawned
+`pi --mode rpc` child's argv; kcap does not query or validate it against Pi's available models, so
+an unrecognized value is Pi's own error to report.
+
+```bash
+KCAP_PI_MODEL=claude-opus-4-5 kcap daemon
+```
+
+Two things are worth knowing before you pick Pi:
+
+- **Your Pi extension does not load in a hosted agent.** kcap's global Pi live-ingest extension
+  (`~/.pi/agent/extensions/kcap.ts`) auto-loads inside every `pi` process on the machine, hosted or
+  not, so the daemon spawns the hosted child with `KCAP_PI_PURE=1` — read by the extension at the
+  top of its exported function, which then returns immediately and registers no handlers. Without
+  it a hosted session would be captured twice: once over the RPC wire this runtime already speaks,
+  and once by the extension's own `session_start`/`session_shutdown` hooks. Sessions you start
+  yourself are untouched: the extension keeps its whole job there.
+- **Interactive hosting only, in an owned worktree only, in this release.** Pi has no reviewer lane
+  yet — `start_review_flow(vendor="pi")` and a Pi PR review (`kcap review <pr>` / the dashboard's
+  Review PR action) are both refused, the latter because that surface needs the `kcap mcp review`
+  tool set only the PTY-backed vendors are given. There is also no borrowed-workspace containment
+  for Pi, so a hosted Pi launch always runs in a daemon-owned worktree, never your own checkout.
 
 #### Review-flow reviewer backstops & crash-survivor reaping
 
