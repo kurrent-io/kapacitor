@@ -297,6 +297,25 @@ public class DaemonConfig {
     /// </summary>
     public int OpenCodeReviewerLaunchTimeoutSeconds { get; set; } = 120;
 
+    /// <summary>Path or bare command for Pi's RPC entry point, spawned as
+    /// <c>{PiPath} --mode rpc</c> by <c>PiRpcHostedAgentRuntimeFactory</c>. Interactive hosting only
+    /// in PR-1 — the reviewer lane is not implemented yet. Availability is
+    /// <c>CliResolver.Exists(PiPath)</c>. Overridable via <c>KCAP_PI_PATH</c>.</summary>
+    public string PiPath { get; set; } = "pi";
+
+    /// <summary>
+    /// Optional daemon-wide default model for hosted Pi agents, passed as <c>--model</c> on the
+    /// spawned <c>pi --mode rpc</c> child. Overridable via <c>KCAP_PI_MODEL</c>, mirroring
+    /// <see cref="OpenCodeModel"/>.
+    ///
+    /// <para>Like <see cref="OpenCodeModel"/> and <see cref="KiroModel"/> the default is NULL,
+    /// deliberately: a zero-configuration launch keeps Pi's own configured default and reports no
+    /// model. A per-launch <c>RuntimeStartContext.Model</c> takes precedence over this daemon-wide
+    /// default (the <c>"default"</c> sentinel falls through to it, same convention as every other
+    /// vendor's <c>ResolveModel</c>).</para>
+    /// </summary>
+    public string? PiModel { get; set; }
+
     /// <summary>Path or bare command for Google Gemini CLI's ACP entry point, spawned as
     /// <c>{GeminiPath} --experimental-acp …</c> by <c>AcpHostedAgentRuntimeFactory</c>. No longer
     /// reserved: it drives interactive hosting AND the gated unattended reviewer, whose build-affirmation

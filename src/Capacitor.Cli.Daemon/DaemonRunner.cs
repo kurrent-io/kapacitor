@@ -157,6 +157,12 @@ public static partial class DaemonRunner {
         if (Environment.GetEnvironmentVariable("KCAP_OPENCODE_MODEL") is { Length: > 0 } envOpenCodeModel)
             config.OpenCodeModel = envOpenCodeModel;
 
+        if (Environment.GetEnvironmentVariable("KCAP_PI_PATH") is { Length: > 0 } envPiPath)
+            config.PiPath = envPiPath;
+
+        if (Environment.GetEnvironmentVariable("KCAP_PI_MODEL") is { Length: > 0 } envPiModel)
+            config.PiModel = envPiModel;
+
         if (Environment.GetEnvironmentVariable("KCAP_GEMINI_PATH") is { Length: > 0 } envGeminiPath)
             config.GeminiPath = envGeminiPath;
 
@@ -425,6 +431,17 @@ public static partial class DaemonRunner {
         // per turn process, not a single typed logger.
         builder.Services.AddSingleton<IHostedAgentRuntimeFactory>(sp =>
             new AntigravityHostedAgentRuntimeFactory(
+                sp.GetRequiredService<DaemonConfig>(),
+                sp.GetRequiredService<ILoggerFactory>()
+            )
+        );
+
+        // Not an ACP factory either: pi speaks its own LF-framed JSONL-RPC over one LONG-LIVED
+        // process for the whole hosted session (see IPiRpcProcess), unlike Antigravity's
+        // exec-per-turn shape above. PR-1 only — interactive hosting; the reviewer lane
+        // (SupportsUnattended) is not implemented yet.
+        builder.Services.AddSingleton<IHostedAgentRuntimeFactory>(sp =>
+            new PiRpcHostedAgentRuntimeFactory(
                 sp.GetRequiredService<DaemonConfig>(),
                 sp.GetRequiredService<ILoggerFactory>()
             )

@@ -57,4 +57,12 @@ public class PiExtensionMemoryTests {
     public async Task shutdown_clears_the_cache() {
         await Assert.That(Ts).Contains("memFragment = null");
     }
+
+    // Dual-capture gate: a hosted launch sets KCAP_PI_PURE=1 (PiLaunchEnvironment.Apply) and this
+    // extension must stand down entirely rather than registering handlers that would double-record
+    // the session the daemon's own RPC runtime already captures.
+    [Test]
+    public async Task hosted_launches_stand_down_via_kcap_pi_pure() {
+        await Assert.That(Ts).Contains("process?.env?.KCAP_PI_PURE === \"1\"");
+    }
 }

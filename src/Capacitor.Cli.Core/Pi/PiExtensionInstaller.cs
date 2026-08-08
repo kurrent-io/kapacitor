@@ -35,6 +35,11 @@ public static class PiExtensionInstaller {
         // pi session.
 
         export default function (pi: any) {
+          // Hosted launches set KCAP_PI_PURE=1: the daemon owns capture there, and this
+          // extension standing down is what prevents the session being recorded twice.
+          // Mirrors OPENCODE_PURE.
+          if (typeof process !== "undefined" && process?.env?.KCAP_PI_PURE === "1") return;
+
           // Team-memory fragment for the CURRENT session file, or null. Keyed by file
           // because that is Pi's stable session identity: resume reuses the file,
           // fork/switch mint a different one (which must never inherit this fragment).
