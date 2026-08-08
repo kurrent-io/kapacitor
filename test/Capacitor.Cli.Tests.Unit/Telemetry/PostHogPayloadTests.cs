@@ -1,0 +1,87 @@
+using System.Text.Json.Nodes;
+using Capacitor.Cli.Core.Telemetry;
+using TUnit.Assertions;
+using TUnit.Assertions.Extensions;
+using TUnit.Core;
+
+namespace Capacitor.Cli.Tests.Unit.Telemetry;
+
+public class PostHogPayloadTests {
+    static TelemetryEvent Event(string name) =>
+        new(name, new JsonObject { ["source"] = "cli" }, DateTimeOffset.UnixEpoch);
+
+    static JsonObject Parse(string json) => JsonNode.Parse(json)!.AsObject();
+
+    [Test]
+    public async Task Batch_carries_token_and_events() {
+        var json = PostHogPayload.Build([Event("cli_command")], "phc_test", "device-1", orgGroup: null);
+        var root = Parse(json);
+
+        await Assert.That(root["api_key"]!.GetValue<string>()).IsEqualTo("phc_test");
+        await Assert.That(root["batch"]!.AsArray().Count).IsEqualTo(1);
+        await Assert.That(root["batch"]![0]!["event"]!.GetValue<string>()).IsEqualTo("cli_command");
+    }
+
+    [Test]
+    public async Task Every_event_carries_distinct_id_and_suppresses_geoip() {
+        var json  = PostHogPayload.Build([Event("cli_command")], "phc_test", "device-1", orgGroup: null);
+        var props = Parse(json)["batch"]![0]!["properties"]!.AsObject();
+
+        await Assert.That(props["distinct_id"]!.GetValue<string>()).IsEqualTo("device-1");
+        await Assert.That(props["$ip"]).IsNull();
+        await Assert.That(props.ContainsKey("$ip")).IsTrue();
+    }
+
+    [Test]
+    public async Task Org_group_and_property_are_attached_together() {
+        var json  = PostHogPayload.Build([Event("cli_command")], "phc_test", "device-1", orgGroup: "acme");
+        var props = Parse(json)["batch"]![0]!["properties"]!.AsObject();
+
+        await Assert.That(props["$groups"]!["organization"]!.GetValue<string>()).IsEqualTo("acme");
+        await Assert.That(props["org"]!.GetValue<string>()).IsEqualTo("acme");
+    }
+
+    [Test]
+    public async Task Org_group_and_property_are_both_absent_when_null() {
+        var json  = PostHogPayload.Build([Event("cli_command")], "phc_test", "device-1", orgGroup: null);
+        var props = Parse(json)["batch"]![0]!["properties"]!.AsObject();
+
+        await Assert.That(props.ContainsKey("$groups")).IsFalse();
+        await Assert.That(props.ContainsKey("org")).IsFalse();
+    }
+
+    [Test]
+    public async Task Existing_properties_survive() {
+        var json  = PostHogPayload.Build([Event("cli_command")], "phc_test", "device-1", orgGroup: null);
+        var props = Parse(json)["batch"]![0]!["properties"]!.AsObject();
+
+        await Assert.That(props["source"]!.GetValue<string>()).IsEqualTo("cli");
+    }
+
+    [Test]
+    public async Task Timestamp_is_round_trip_iso8601() {
+        var json = PostHogPayload.Build([Event("cli_command")], "phc_test", "device-1", null);
+        var ts   = Parse(json)["batch"]![0]!["timestamp"]!.GetValue<string>();
+
+        await Assert.That(DateTimeOffset.Parse(ts)).IsEqualTo(DateTimeOffset.UnixEpoch);
+    }
+
+    // The org group is only sound where the Helm chart guarantees Tenant__Name == slug.
+    [Test]
+    [Arguments("https://acme.kcap.ai", "acme")]
+    [Arguments("https://acme.kcap.ai/", "acme")]
+    [Arguments("https://ACME.kcap.ai", "acme")]
+    public async Task Saas_urls_yield_the_slug(string url, string expected) {
+        await Assert.That(PostHogPayload.OrgGroup(url)).IsEqualTo(expected);
+    }
+
+    [Test]
+    [Arguments("https://capacitor.internal.corp")]
+    [Arguments("http://localhost:5000")]
+    [Arguments("https://kcap.ai")]
+    [Arguments("not a url")]
+    [Arguments(null)]
+    public async Task Non_saas_urls_yield_no_group(string? url) {
+        await Assert.That(PostHogPayload.OrgGroup(url)).IsNull();
+    }
+}
