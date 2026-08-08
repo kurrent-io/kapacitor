@@ -2107,11 +2107,25 @@ this plan listed:
 | `McpAnalyticsServer.cs` | `kcap-analytics` |
 | `McpFlowResultServer.cs` | `kcap-flow-result` |
 | `McpJudgeServer.cs` | `kcap-judge` |
-| `McpReviewContextServer.cs` | `kcap-review-context` |
+| ~~`McpReviewContextServer.cs`~~ | **excluded — see below** |
 
-The first six match `KcapMcpServers.All` registry names. The last three are internal servers with no
+The first six match `KcapMcpServers.All` registry names. The rest are internal servers with no
 registry entry (they serve hosted reviewers and flows rather than a user's harness); their labels are
 coined here to match the registry's naming convention.
+
+**`McpReviewContextServer` is deliberately excluded.** It is a review-context sidecar whose own code
+says "No backend URL or auth here — never any": it is spawned with a single 127.0.0.1 capability URL,
+performs exactly one GET, and has no config authority. Instrumenting it broke that contract three
+ways — it wrote `telemetry.json` into the config dir, and the flush added an outbound POST to
+`phog.kurrent.io` from a process designed to reach nothing but its capability URL, which matters
+because borrowed review runs under an OS sandbox with `(deny default)`. An integration test
+(`Daemon_context_mode_starts_without_backend_and_performs_one_exact_get`) asserts the contract and
+caught it.
+
+The data lost is negligible — it exposes one tool, serving hosted reviewers rather than humans — and
+it was already the one server needing a bespoke flush because it bypasses `Program.cs`'s exit
+handler. Two special cases and a broken isolation contract for a metric nobody would query is a bad
+trade. Do not re-add it.
 
 In each, add `using Capacitor.Cli.Core.Telemetry;` and wrap the `tools/call` dispatch. For `McpMemoryServer.cs` the switch arm at line 82 becomes:
 
