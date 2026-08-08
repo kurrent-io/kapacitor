@@ -15,6 +15,10 @@ public enum FrameType : byte {
     StopV2  = 10,  // stop with a force flag (see FrameCodec.StopV2); supersedes Stop
     Hello   = 15,  // optional one-shot: client info (Text = ClientHelloDto JSON; empty valid)
     StatusSubscribe = 16, // long-lived: push DaemonStatus snapshots (immediate + on change)
+    // v2 consent frames (append-only). A v1 daemon's codec throws on these bytes
+    // before routing — that codec-level rejection IS the down-level fail-closed contract.
+    ConsentSubscribeV2 = 17, // long-lived: v2 subscribe (same reply stream as ConsentSubscribe)
+    ConsentResolveV2   = 18, // one-shot: resolve requiring the prompt_id identity echo
     // Consent control frames — values append-only
     ConsentSubscribe = 11, // long-lived: replay pending + push new ConsentPending frames
     ConsentResolve   = 12, // one-shot: resolve a pending request (Text = ConsentResolveDto JSON)

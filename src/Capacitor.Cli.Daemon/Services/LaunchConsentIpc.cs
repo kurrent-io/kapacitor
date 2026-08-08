@@ -46,7 +46,7 @@ internal sealed class LaunchConsentIpc(
             // (an uncaught exception here drops the connection with no ConsentAck at all).
             if (dto is null || string.IsNullOrEmpty(dto.RequestId) || dto.Decision is not ("allow" or "deny")
                     || (dto.SaveRule is { } saveRuleShape && saveRuleShape.Action is null)) {
-                ack = new ConsentAckDto(false, "invalid resolve payload (decision must be allow|deny)");
+                ack = new ConsentAckDto(false, "invalid resolve payload (decision must be allow|deny)", null);
             } else {
                 string? saveError = null;
                 if (dto.SaveRule is { } r) {
@@ -62,11 +62,11 @@ internal sealed class LaunchConsentIpc(
                 // id" (Ok=false), so it rides along as Error even when Ok=true. See ConsentAckDto.
                 var resolved = broker.TryResolve(dto.RequestId, dto.Decision == "allow");
                 ack = resolved
-                    ? new ConsentAckDto(true, saveError)
-                    : new ConsentAckDto(false, "no pending consent request with that id");
+                    ? new ConsentAckDto(true, saveError, null)
+                    : new ConsentAckDto(false, "no pending consent request with that id", null);
             }
         } catch (JsonException) {
-            ack = new ConsentAckDto(false, "malformed resolve payload");
+            ack = new ConsentAckDto(false, "malformed resolve payload", null);
         }
         await WriteAck(stream, ack, ct);
     }
@@ -93,29 +93,29 @@ internal sealed class LaunchConsentIpc(
             // still deserializes without throwing — so check for a null element before touching
             // r.Action on it, or this throws an uncaught NullReferenceException instead.
             if (dto is null || dto.Default is null || dto.Rules is null || dto.Rules.Any(r => r is null || r.Action is null)) {
-                ack = new ConsentAckDto(false, "malformed policy payload");
+                ack = new ConsentAckDto(false, "malformed policy payload", null);
             } else {
                 var def = dto.Default switch {
                     "deny" => LaunchConsentDefault.Deny, "prompt" => LaunchConsentDefault.Prompt,
                     "allow" => LaunchConsentDefault.Allow,
                     _ => (LaunchConsentDefault?)null };
                 if (def is null) {
-                    ack = new ConsentAckDto(false, "invalid default (allow|deny|prompt)");
+                    ack = new ConsentAckDto(false, "invalid default (allow|deny|prompt)", null);
                 } else {
                     var next = new LaunchConsentPolicy(def.Value, dto.PromptTimeoutSeconds,
                         dto.Rules.Select(r => new LaunchConsentRule(r.Action, r.Requester, r.Kind, r.Repo, r.Vendor)).ToList());
                     ack = store.TryReplace(next, out var error)
-                        ? new ConsentAckDto(true, null) : new ConsentAckDto(false, error);
+                        ? new ConsentAckDto(true, null, null) : new ConsentAckDto(false, error, null);
                 }
             }
         } catch (JsonException) {
-            ack = new ConsentAckDto(false, "malformed policy payload");
+            ack = new ConsentAckDto(false, "malformed policy payload", null);
         }
         await WriteAck(stream, ack, ct);
     }
 
     static ConsentPendingDto ToDto(LaunchConsentPromptRequest r) =>
-        new(r.RequestId, r.Requester, r.Kind, r.RepoPath, r.Vendor, r.RequestedAt, r.TimeoutSeconds);
+        new(r.RequestId, r.Requester, r.Kind, r.RepoPath, r.Vendor, r.RequestedAt, r.TimeoutSeconds, null, null);
 
     static Task WriteAck(Stream stream, ConsentAckDto ack, CancellationToken ct) {
         var json = JsonSerializer.Serialize(ack, ConsentIpcJsonContext.Default.ConsentAckDto);

@@ -37,7 +37,7 @@ sealed class ScriptedLocalControlOps : ILocalControlOps {
         return tcs;
     }
 
-    public void QueueAck(bool ok, string? error) => ArmPut().SetResult(new ConsentAckDto(ok, error));
+    public void QueueAck(bool ok, string? error) => ArmPut().SetResult(new ConsentAckDto(ok, error, null));
 
     public TaskCompletionSource<StopAgentResult> ArmStop() {
         var tcs = new TaskCompletionSource<StopAgentResult>(TaskCreationOptions.RunContinuationsAsynchronously);
