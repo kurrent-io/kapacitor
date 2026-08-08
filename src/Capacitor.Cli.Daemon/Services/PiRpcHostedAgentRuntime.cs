@@ -152,7 +152,11 @@ internal sealed class PiRpcHostedAgentRuntime : IHostedAgentRuntime, IAcpTranscr
     /// orchestrator reads it the instant a launch returns).</summary>
     volatile string? _sessionId;
 
-    /// <summary>See <see cref="_sessionId"/> — same cross-thread reasoning.</summary>
+    /// <summary>See <see cref="_sessionId"/> — same cross-thread reasoning. Null means the
+    /// handshake's <c>get_state</c> did not carry a model (see <see cref="ExtractModelId"/>) — NEVER
+    /// backfilled with <see cref="_requestedModel"/>, since <see cref="ResolvedModel"/> is read as a
+    /// CONFIRMED-applied-model signal, and a requested-but-unconfirmed model would be an attribution
+    /// lie.</summary>
     volatile string? _resolvedModel;
 
     /// <summary>Liveness-supervision clock, assigned by the factory BEFORE the first input. Every
@@ -201,6 +205,12 @@ internal sealed class PiRpcHostedAgentRuntime : IHostedAgentRuntime, IAcpTranscr
 
     public string  AcpSessionId  => _sessionId ?? "";
     public string  Cwd           => _cwd;
+
+    /// <summary>The CONFIRMED-applied model, per the <see cref="IAcpTranscriptSource"/> contract:
+    /// null means the vendor's own default applies, never "we don't know yet". Sourced solely from
+    /// <see cref="_resolvedModel"/> (set once, from the handshake's <c>get_state</c> — see
+    /// <see cref="ApplyState"/>) — deliberately NOT backfilled with the merely-requested model, since
+    /// the orchestrator reads this as confirmation Pi actually applied it.</summary>
     public string? ResolvedModel => _resolvedModel;
 
     public ChannelReader<AcpEventEnvelope> Envelopes => _transcript.Reader;
@@ -377,13 +387,19 @@ internal sealed class PiRpcHostedAgentRuntime : IHostedAgentRuntime, IAcpTranscr
             return;
         }
 
-        _sessionId     = sessionId;
-        _resolvedModel = ExtractModelId(data.Value) ?? _requestedModel;
+        _sessionId = sessionId;
+
+        // NOT `?? _requestedModel`: ResolvedModel is the orchestrator's CONFIRMED-applied-model
+        // signal (see the ResolvedModel property doc), so when get_state omits a model, null is the
+        // only truthful value — the IAcpTranscriptSource contract's "null ⇒ vendor default applies".
+        // Reporting the merely-requested model here would be an attribution lie: it claims Pi
+        // confirmed a model it never mentioned.
+        _resolvedModel = ExtractModelId(data.Value);
 
         // Pi may already be mid-turn when we attach (a resumed session), so the initial busy state
         // comes from the handshake, not from having observed an agent_start we were never running
         // to see.
-        if (data.Value.TryGetProperty("isStreaming", out var streaming) && streaming.ValueKind == JsonValueKind.True)
+        if (data.Value.Bool("isStreaming") == true)
             SetBusy(true);
 
         ActivityClock?.SetLaunchStage("session_created");
@@ -392,17 +408,16 @@ internal sealed class PiRpcHostedAgentRuntime : IHostedAgentRuntime, IAcpTranscr
     }
 
     /// <summary>Pi's <c>model</c> is a full object, not a string — <c>id</c> is its identity. A
-    /// bare string is tolerated as schema drift rather than dropped, and anything else reads as
-    /// absent (the caller then falls back to the requested model, whose only consumer is
-    /// attribution).</summary>
+    /// bare string is tolerated as schema drift rather than dropped, and anything else — missing
+    /// entirely, or an unrecognized shape — reads as absent (null): <see cref="ApplyState"/> assigns
+    /// this straight to <see cref="_resolvedModel"/> with NO requested-model fallback, since a null
+    /// here means Pi never confirmed a model at all.</summary>
     static string? ExtractModelId(JsonElement data) {
         if (!data.TryGetProperty("model", out var model)) return null;
+        if (model.IsString) return model.GetString();
+        if (model.IsObject) return model.Str("id") ?? model.Str("name");
 
-        return model.ValueKind switch {
-            JsonValueKind.String => model.GetString(),
-            JsonValueKind.Object => model.Str("id") ?? model.Str("name"),
-            _                    => null,
-        };
+        return null;
     }
 
     void FaultSessionReadyIfUnresolved(string message, Exception? inner) {

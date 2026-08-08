@@ -49,15 +49,20 @@ public class PiRpcHostedAgentRuntimeTests {
         await Assert.That(FirstCommandId(proc, "get_state")).IsEqualTo("init-state");
     }
 
+    /// <summary>Security/correctness regression: <see cref="PiRpcHostedAgentRuntime.ResolvedModel"/>
+    /// is read by the orchestrator as a CONFIRMED-applied-model signal, so a <c>get_state</c> that
+    /// carries no model must resolve to null — the <see cref="IAcpTranscriptSource"/> contract's
+    /// "null ⇒ vendor default applies" — NEVER the merely-requested model. Reporting the requested
+    /// model here would misrepresent an unconfirmed value as confirmed.</summary>
     [Test]
-    public async Task Ready_barrier_falls_back_to_the_requested_model_when_the_state_carries_none() {
+    public async Task Ready_barrier_resolves_null_model_when_the_state_carries_none() {
         var (rt, _) = NewRuntime(stateResponse: GetStateResponse(modelId: null));
         await using var __ = rt;
 
         await rt.WaitForSessionReadyAsync(CancellationToken.None).WaitAsync(HangGuard);
 
         await Assert.That(rt.AcpSessionId).IsEqualTo(SessionId);
-        await Assert.That(rt.ResolvedModel).IsEqualTo(RequestedModel);
+        await Assert.That(rt.ResolvedModel).IsNull();
     }
 
     /// <summary>MUTATION-PINNED (task report, guard (a)). A child that dies before answering

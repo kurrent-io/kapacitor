@@ -3,6 +3,7 @@ using Capacitor.Cli.Daemon;
 using Capacitor.Cli.Daemon.Acp;
 using Capacitor.Cli.Daemon.Services;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Capacitor.Cli.Tests.Unit.Services;
@@ -353,17 +354,53 @@ public class PiHostedLaunchTests {
         await Assert.That(silent.Disposed).IsTrue();
     }
 
+    /// <summary>Security regression: the child's captured stderr must stay DAEMON-LOCAL. Stderr can
+    /// carry prompt fragments, paths, or auth detail — the same reason
+    /// <c>PiRpcProcess.DrainStderrAsync</c> never logs it either — and the thrown exception's
+    /// <c>Message</c> is exactly what <c>AgentOrchestrator</c> forwards, verbatim, off-host to the
+    /// server via <c>LaunchFailedAsync</c>. So the message must carry only a generic, non-sensitive
+    /// indicator, while the raw stderr text lands in the daemon's own log instead.</summary>
     [Test]
-    public async Task StartAsync_ASilentChildWithDiagnostics_AppendsThemToTheThrownError() {
-        var silent = new SilentProcess { Diagnostics = "authentication required: run `pi login`" };
+    public async Task StartAsync_ASilentChildWithDiagnostics_KeepsStderrOutOfTheThrownMessage() {
+        var silent        = new SilentProcess { Diagnostics = "authentication required: run `pi login`" };
+        var loggerFactory = new CaptureLoggerFactory();
         var factory = new PiRpcHostedAgentRuntimeFactory(
-            new DaemonConfig(), NullLoggerFactory.Instance,
+            new DaemonConfig(), loggerFactory,
             processSource: (_, _) => Task.FromResult<IPiRpcProcess>(silent),
             readyDeadline: TimeSpan.FromMilliseconds(500));
 
         var ex = await Assert.ThrowsAsync<Exception>(() => factory.StartAsync(Ctx(), CancellationToken.None));
 
-        await Assert.That(ex!.Message).Contains("authentication required");
+        await Assert.That(ex!.Message).DoesNotContain("authentication required");
+        await Assert.That(ex.Message).Contains("stderr captured in daemon log");
+
+        // The raw text must still be RECOVERABLE — just from the access-controlled local sink, not
+        // from the exception that left the daemon.
+        await Assert.That(loggerFactory.Logger.Entries
+            .Any(e => e.Level == LogLevel.Warning && e.Message.Contains("authentication required")))
+            .IsTrue();
+    }
+
+    /// <summary>Records every log call across every category (one instance shared by every
+    /// <c>CreateLogger&lt;T&gt;()</c> call) — mirrors <c>AcpHostedAgentRuntimeFactoryTests.CaptureLogger</c>'s
+    /// established pattern, wrapped in a minimal <see cref="ILoggerFactory"/> so it can be handed to
+    /// the factory's real constructor.</summary>
+    sealed class CaptureLogger : ILogger {
+        public readonly List<(LogLevel Level, string Message)> Entries = [];
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool         IsEnabled(LogLevel logLevel)                            => true;
+
+        public void Log<TState>(LogLevel level, EventId id, TState state, Exception? ex, Func<TState, Exception?, string> formatter)
+            => Entries.Add((level, formatter(state, ex)));
+    }
+
+    sealed class CaptureLoggerFactory : ILoggerFactory {
+        public readonly CaptureLogger Logger = new();
+
+        public ILogger CreateLogger(string categoryName) => Logger;
+        public void    AddProvider(ILoggerProvider provider) { }
+        public void    Dispose() { }
     }
 
     // ── DI registration: after DaemonRunner's registration shape, "pi" resolves ──

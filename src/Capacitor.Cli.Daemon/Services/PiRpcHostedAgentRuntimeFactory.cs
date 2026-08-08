@@ -161,10 +161,9 @@ internal sealed partial class PiRpcHostedAgentRuntimeFactory(
             // A genuine shutdown propagates AS a cancellation — do not dress it up as a launch failure.
             if (ex is OperationCanceledException && ct.IsCancellationRequested) throw;
 
-            // An unauthenticated or misconfigured pi should surface its real stderr rather than just
-            // the generic handshake-failed message the runtime already throws — mirrors
-            // AntigravityHostedAgentRuntimeFactory.DescribeLaunchFailure in spirit (this vendor has no
-            // auth-specific cases to distinguish yet, so there is no case ladder, just the append).
+            // The child's captured stderr is logged LOCALLY (never embedded in the exception message
+            // — see DescribeLaunchFailure's doc) and this exception is what AgentOrchestrator forwards
+            // verbatim to the server via LaunchFailedAsync.
             //
             // Bare `throw;` when there's nothing to add: it preserves ex's original stack trace,
             // where re-throwing ex itself (`throw ex;`) would reset it to here. Wrapping only
@@ -240,21 +239,44 @@ internal sealed partial class PiRpcHostedAgentRuntimeFactory(
     }
 
     /// <summary>
-    /// Wraps <paramref name="cause"/> with its child's captured stderr appended, or
-    /// <see langword="null"/> when there is none to add — in spirit with
-    /// <c>AntigravityHostedAgentRuntimeFactory.DescribeLaunchFailure</c>, but without that method's
-    /// auth/timeout case ladder: this vendor has no equivalent well-known failure shapes to
-    /// distinguish yet, so there is nothing to branch on beyond "did the child say anything on the
-    /// way out". <paramref name="cause"/> is preserved as <see cref="Exception.InnerException"/>,
-    /// stack trace and all, when this returns non-null; the caller falls back to a bare
-    /// <c>throw;</c> of <paramref name="cause"/> itself when this returns <see langword="null"/>, so
-    /// that unadorned case never has its stack trace reset.
+    /// Logs the child's captured stderr to the DAEMON'S OWN log — never into the exception message
+    /// that propagates out of this factory — and returns a safe wrapper around
+    /// <paramref name="cause"/>, or <see langword="null"/> when there is no stderr to log.
+    ///
+    /// <para><b>Why stderr must never reach the returned exception.</b>
+    /// <see cref="PiRpcProcess.Diagnostics"/> is a bounded capture of whatever the child wrote to
+    /// stderr, and <c>PiRpcProcess.DrainStderrAsync</c> deliberately never logs that text itself
+    /// because it can carry prompt fragments, paths, or auth detail. This exception, however, is
+    /// what <c>AgentOrchestrator</c>'s launch catch forwards verbatim to the server via
+    /// <c>LaunchFailedAsync</c> — an off-host sink. Embedding the raw capture in the message would
+    /// defeat the exact boundary <c>DrainStderrAsync</c> exists to hold, so it is logged at Warning
+    /// here (the daemon log is the access-controlled local sink) and the returned exception carries
+    /// only <paramref name="cause"/>'s own generic reason plus an indicator that stderr was
+    /// captured — never the stderr text. This mirrors the SAFER of the two vendor factories:
+    /// <c>AntigravityHostedAgentRuntimeFactory.DescribeLaunchFailure</c> only ever uses its
+    /// diagnostics capture to CLASSIFY a known failure shape (auth, via
+    /// <c>LooksLikeAuthFailure</c>) and picks one of a few fixed, non-sensitive message templates —
+    /// it never appends the raw capture either.</para>
+    ///
+    /// <para><paramref name="cause"/> is preserved as <see cref="Exception.InnerException"/>, stack
+    /// trace and all, when this returns non-null; the caller falls back to a bare <c>throw;</c> of
+    /// <paramref name="cause"/> itself when this returns <see langword="null"/>, so that unadorned
+    /// case never has its stack trace reset.</para>
     /// </summary>
-    static Exception? DescribeLaunchFailure(Exception cause, string? diagnostics) =>
-        diagnostics is { Length: > 0 }
-            ? new InvalidOperationException($"{cause.Message} (pi stderr: {diagnostics})", cause)
-            : null;
+    Exception? DescribeLaunchFailure(Exception cause, string? diagnostics) {
+        if (diagnostics is not { Length: > 0 }) return null;
+
+        LogPiLaunchStderr(diagnostics);
+
+        return new InvalidOperationException($"{cause.Message} (stderr captured in daemon log)", cause);
+    }
 
     [LoggerMessage(Level = LogLevel.Information, Message = "Pi launch: agentId={AgentId} cwd={Cwd}")]
     partial void LogLaunching(string agentId, string cwd);
+
+    /// <summary>The daemon-local-only sink for a failed launch's captured stderr — see
+    /// <see cref="DescribeLaunchFailure"/>'s class doc for why this text must never reach the
+    /// exception that propagates to the orchestrator/server.</summary>
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Pi launch failed; captured stderr follows (not sent to server): {Diagnostics}")]
+    partial void LogPiLaunchStderr(string diagnostics);
 }

@@ -85,9 +85,7 @@ internal static class PiRpc {
                 Kind: kind,
                 Type: type ?? "",
                 Id: root.Str("id"),
-                Success: root.TryGetProperty("success", out var s) && s.ValueKind is JsonValueKind.True or JsonValueKind.False
-                    ? s.GetBoolean()
-                    : null,
+                Success: root.Bool("success"),
                 // Clone: `doc` is disposed at the end of this `using` block, and JsonElement values
                 // sourced from a disposed JsonDocument throw on access.
                 Root: root.Clone());
@@ -212,9 +210,9 @@ internal static class PiRpc {
         if (!message.TryGetProperty("content", out var content)) return [];
 
         string text;
-        if (content.ValueKind == JsonValueKind.String) {
+        if (content.IsString) {
             text = content.GetString() ?? "";
-        } else if (content.ValueKind == JsonValueKind.Array) {
+        } else if (content.IsArray) {
             var sb = new System.Text.StringBuilder();
             foreach (var item in content.EnumerateArray()) {
                 if (item.IsObject && item.Str("type") == "text" && item.Str("text") is { } t) sb.Append(t);
@@ -229,7 +227,7 @@ internal static class PiRpc {
 
     static IReadOnlyList<AcpEventEnvelope> TranslateToolExecutionEnd(JsonElement root) {
         var toolCallId = root.Str("toolCallId");
-        var isError    = root.TryGetProperty("isError", out var e) && e.ValueKind == JsonValueKind.True;
+        var isError    = root.Bool("isError") == true;
 
         string? resultText = null;
         if (root.TryGetProperty("result", out var result)) resultText = ExtractToolResultText(result);
@@ -247,10 +245,10 @@ internal static class PiRpc {
     /// anything else (an object with no <c>content</c> array, an array, a number, …) falls back to
     /// <c>GetRawText()</c> so a result is never silently dropped.</summary>
     static string? ExtractToolResultText(JsonElement result) {
-        if (result.ValueKind == JsonValueKind.String) return result.GetString();
-        if (result.ValueKind == JsonValueKind.Null) return null;
+        if (result.IsString) return result.GetString();
+        if (result.IsNull) return null;
 
-        if (result.ValueKind == JsonValueKind.Object && result.Arr("content") is { } content) {
+        if (result.IsObject && result.Arr("content") is { } content) {
             var sb = new System.Text.StringBuilder();
             foreach (var item in content.EnumerateArray()) {
                 if (item.IsObject && item.Str("type") == "text" && item.Str("text") is { } t) sb.Append(t);
