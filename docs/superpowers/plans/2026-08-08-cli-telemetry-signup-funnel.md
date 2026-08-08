@@ -1343,14 +1343,20 @@ public class CliTelemetryTests {
         await Assert.That(sink.Count).IsEqualTo(0);
     }
 
+    // An uninitialised facade must be inert, not merely non-throwing: a swallowed exception and
+    // a correctly-skipped capture look identical from the outside unless state is asserted.
     [Test]
-    public async Task Capture_before_initialize_does_not_throw() {
+    public async Task Capture_before_initialize_is_inert() {
         CliTelemetry.Reset();
+        var sink = new List<TelemetryEvent>();
+        CliTelemetry.TestSink = sink;
 
         CliTelemetry.Capture("orphan", new JsonObject());
+        CliTelemetry.RecordCommand("status", ["status"], 0, 1);
         await CliTelemetry.FlushAndClose();
 
-        await Assert.That(true).IsTrue();   // reaching here without an exception is the assertion
+        await Assert.That(CliTelemetry.Enabled).IsFalse();
+        await Assert.That(sink.Count).IsEqualTo(0);
     }
 
     [Test]
