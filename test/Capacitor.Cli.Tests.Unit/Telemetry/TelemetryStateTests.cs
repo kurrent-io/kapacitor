@@ -45,6 +45,26 @@ public class TelemetryStateTests {
         await Assert.That(id.Contains('-')).IsFalse();
     }
 
+    [Test]
+    public async Task Second_get_device_id_does_not_rewrite_file_when_id_exists() {
+        var path = NewTempPath();
+        TelemetryState.PathOverride = path;
+
+        // First call creates the ID and writes the file.
+        TelemetryState.GetOrCreateDeviceId();
+        await System.Threading.Tasks.Task.Delay(10);   // ensure timestamp granularity
+
+        var timestampAfterFirstCall = File.GetLastWriteTimeUtc(path);
+        await System.Threading.Tasks.Task.Delay(10);   // ensure time passes before second call
+
+        // Second call should return the same ID without rewriting.
+        TelemetryState.GetOrCreateDeviceId();
+
+        var timestampAfterSecondCall = File.GetLastWriteTimeUtc(path);
+
+        await Assert.That(timestampAfterSecondCall).IsEqualTo(timestampAfterFirstCall);
+    }
+
     // Opting out before first run must not mint an analytics identifier at all.
     [Test]
     public async Task No_device_id_is_written_while_disabled() {

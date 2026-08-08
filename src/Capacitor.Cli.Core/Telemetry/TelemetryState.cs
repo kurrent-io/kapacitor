@@ -50,11 +50,11 @@ public static class TelemetryState {
         Mutate(state => {
             if (state.Enabled is false) {
                 result = null;
-                return state;   // no write
+                return null;   // signal: no write needed
             }
             if (!string.IsNullOrWhiteSpace(state.Id)) {
                 result = state.Id;
-                return state;   // no write
+                return null;   // signal: no write needed
             }
             var id = Guid.NewGuid().ToString("N");
             result = id;
@@ -71,10 +71,12 @@ public static class TelemetryState {
 
     /// <summary>
     /// Acquires a cross-process lock, reads current state, applies the mutation, and writes
-    /// back atomically. On lock-acquisition failure, falls back to unlocked read-modify-write
-    /// to ensure changes like SetEnabled(false) are never silently dropped.
+    /// back atomically if the mutation returns a non-null result. Returning null from the
+    /// delegate signals "no change needed"; no write occurs in either the locked or fallback path.
+    /// On lock-acquisition failure, falls back to unlocked read-modify-write to ensure changes
+    /// like SetEnabled(false) are never silently dropped.
     /// </summary>
-    static void Mutate(Func<TelemetryStateFile, TelemetryStateFile> apply) {
+    static void Mutate(Func<TelemetryStateFile, TelemetryStateFile?> apply) {
         var path = Path;
         var dir = System.IO.Path.GetDirectoryName(path)!;
 
@@ -83,7 +85,9 @@ public static class TelemetryState {
                 Directory.CreateDirectory(dir);
                 var currentState = ReadLocked(path);
                 var newState = apply(currentState);
-                WriteLocked(path, newState);
+                if (newState.HasValue) {
+                    WriteLocked(path, newState.Value);
+                }
             }
         } catch (Exception) {
             // Lock acquisition failed (timeout, foreign-owned mutex, path errors, etc.)
@@ -94,12 +98,19 @@ public static class TelemetryState {
         }
     }
 
-    static void MutateUnlocked(string path, string dir, Func<TelemetryStateFile, TelemetryStateFile> apply) {
+    static void MutateUnlocked(string path, string dir, Func<TelemetryStateFile, TelemetryStateFile?> apply) {
         try {
             Directory.CreateDirectory(dir);
             var currentState = ReadLocked(path);
             var newState = apply(currentState);
-            WriteLocked(path, newState);
+            if (newState.HasValue) {
+                WriteLocked(path, newState.Value);
+            }
+            // Note: without cross-process locking in this fallback path, two concurrent processes
+            // can each mint different GUIDs, and last-writer-wins on disk. A process that loses the
+            // race will have returned its own id, now orphaned on disk. This is acceptable as a
+            // graceful degradation when the lock mechanism is unavailable, and is documented so
+            // future readers don't conclude the re-read was omitted by oversight.
         } catch (Exception) {
             // Best effort. Telemetry must never throw to the NativeAOT runtime.
         }
