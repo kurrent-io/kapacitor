@@ -14,12 +14,15 @@ sealed class ScriptedLocalControlOps : ILocalControlOps {
     readonly Queue<TaskCompletionSource<ConsentPolicyDto>> _gets = new();
     readonly Queue<TaskCompletionSource<ConsentAckDto>> _puts = new();
     readonly Queue<TaskCompletionSource<StopAgentResult>> _stops = new();
+    readonly Queue<TaskCompletionSource<ConsentAckDto>> _resolves = new();
 
     public int GetCalls;
     public int PutCalls;
     public int StopCalls;
+    public int ResolveCalls;
     public readonly List<ConsentPolicyDto> PutPayloads = [];
     public readonly List<(string AgentId, bool Force)> StopPayloads = [];
+    public readonly List<ConsentResolveDto> ResolvePayloads = [];
 
     public TaskCompletionSource<ConsentPolicyDto> ArmGet() {
         var tcs = new TaskCompletionSource<ConsentPolicyDto>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -49,6 +52,16 @@ sealed class ScriptedLocalControlOps : ILocalControlOps {
     public void QueueStopFailure(string reason) => ArmStop().SetException(new LocalControlOpsException(reason, reason));
     public void QueueStopUnmappedFailure(Exception ex) => ArmStop().SetException(ex);
 
+    public TaskCompletionSource<ConsentAckDto> ArmResolve() {
+        var tcs = new TaskCompletionSource<ConsentAckDto>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _resolves.Enqueue(tcs);
+        return tcs;
+    }
+
+    public void QueueResolve(bool ok, string? error, bool? ruleSaved = null) => ArmResolve().SetResult(new ConsentAckDto(ok, error, ruleSaved));
+    public void QueueResolveFailure(string reason) => ArmResolve().SetException(new LocalControlOpsException(reason, reason));
+    public void QueueResolveUnmappedFailure(Exception ex) => ArmResolve().SetException(ex);
+
     public Task<ConsentPolicyDto> GetConsentPolicyAsync(CancellationToken ct) {
         Interlocked.Increment(ref GetCalls);
         if (ct.IsCancellationRequested) return Task.FromCanceled<ConsentPolicyDto>(ct);
@@ -74,6 +87,16 @@ sealed class ScriptedLocalControlOps : ILocalControlOps {
         if (ct.IsCancellationRequested) return Task.FromCanceled<StopAgentResult>(ct);
         if (_stops.Count == 0) throw new InvalidOperationException("ScriptedLocalControlOps: unscripted Stop call");
         var tcs = _stops.Dequeue();
+        ct.Register(() => tcs.TrySetCanceled(ct));
+        return tcs.Task;
+    }
+
+    public Task<ConsentAckDto> ResolveConsentAsync(ConsentResolveDto resolve, CancellationToken ct) {
+        Interlocked.Increment(ref ResolveCalls);
+        ResolvePayloads.Add(resolve);
+        if (ct.IsCancellationRequested) return Task.FromCanceled<ConsentAckDto>(ct);
+        if (_resolves.Count == 0) throw new InvalidOperationException("ScriptedLocalControlOps: unscripted Resolve call");
+        var tcs = _resolves.Dequeue();
         ct.Register(() => tcs.TrySetCanceled(ct));
         return tcs.Task;
     }

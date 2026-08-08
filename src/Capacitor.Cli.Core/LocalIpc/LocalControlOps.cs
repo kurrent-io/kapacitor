@@ -18,6 +18,7 @@ public interface ILocalControlOps {
     Task<StopAgentResult>  StopAgentAsync(string agentId, bool force, CancellationToken ct);
     Task<ConsentPolicyDto> GetConsentPolicyAsync(CancellationToken ct);
     Task<ConsentAckDto>    PutConsentPolicyAsync(ConsentPolicyDto policy, CancellationToken ct);
+    Task<ConsentAckDto>    ResolveConsentAsync(ConsentResolveDto resolve, CancellationToken ct);
 }
 
 /// One-shot Core IPC operations behind a fresh socket per call — no Hello negotiation (callers
@@ -79,6 +80,23 @@ public sealed class LocalControlOps(string daemonName, TimeProvider? time = null
                 throw new LocalControlOpsException(DaemonRejected, reply.Text);
             default:
                 throw new LocalControlOpsException(UnexpectedReply, $"unexpected daemon response to consent rules put ({reply.Type})");
+        }
+    }
+
+    public async Task<ConsentAckDto> ResolveConsentAsync(ConsentResolveDto resolve, CancellationToken ct) {
+        var json = JsonSerializer.Serialize(resolve, ConsentIpcJsonContext.Default.ConsentResolveDto);
+        // ConsentResolveV2, never the v1 frame: a v1 daemon must fail closed at its codec rather
+        // than resolve by id without the identity check (spec §4.1).
+        var reply = await ExchangeAsync(LocalFrame.ConsentJson(FrameType.ConsentResolveV2, json), ConsentReplyTimeout, ct);
+        switch (reply.Type) {
+            case FrameType.ConsentAck:
+                var ack = DeserializeOrThrow(reply.Text, ConsentIpcJsonContext.Default.ConsentAckDto, "malformed consent ack reply");
+                if (ack is null) throw new LocalControlOpsException(UnexpectedReply, "malformed consent ack reply");
+                return ack;
+            case FrameType.Error:
+                throw new LocalControlOpsException(DaemonRejected, reply.Text);
+            default:
+                throw new LocalControlOpsException(UnexpectedReply, $"unexpected daemon response to consent resolve ({reply.Type})");
         }
     }
 

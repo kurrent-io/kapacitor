@@ -1,4 +1,5 @@
 using System.Net.Sockets;
+using System.Text.Json;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.LocalIpc;
 
@@ -71,6 +72,35 @@ public class LocalControlOpsTests {
         var f = await FrameCodec.ReadAsync(s, ct);                       // expect ConsentRulesPut
         if (f?.Type == FrameType.ConsentRulesPut)
             await FrameCodec.WriteAsync(s, LocalFrame.ConsentJson(FrameType.ConsentAck, json), ct);
+    };
+    static ConnScript ConsentResolveV2Ack(string json) => async (_, s, ct) => {
+        var f = await FrameCodec.ReadAsync(s, ct);                       // expect ConsentResolveV2
+        if (f?.Type == FrameType.ConsentResolveV2)
+            await FrameCodec.WriteAsync(s, LocalFrame.ConsentJson(FrameType.ConsentAck, json), ct);
+    };
+    /// Same as <see cref="ConsentResolveV2Ack"/> but hands the request's raw Text to the caller
+    /// before replying, so a test can assert what was actually written on the wire (the
+    /// prompt_id echo) rather than just the parsed reply.
+    static ConnScript ConsentResolveV2AckCapturing(string json, Action<string> captureRequestText) => async (_, s, ct) => {
+        var f = await FrameCodec.ReadAsync(s, ct);
+        if (f?.Type == FrameType.ConsentResolveV2) {
+            captureRequestText(f.Text);
+            await FrameCodec.WriteAsync(s, LocalFrame.ConsentJson(FrameType.ConsentAck, json), ct);
+        }
+    };
+    /// A faithful v1 daemon: reads the raw 5-byte header, sees a type byte its codec has no case
+    /// for, and closes without writing ANY frame (FrameCodec.Decode throws InvalidDataException →
+    /// HandleConnectionAsync catches/logs/closes). NOT a routing-default Error reply — no deployed
+    /// v1 daemon produces one for byte 18 (spec §4.1).
+    static ConnScript V1CodecReject() => async (_, s, ct) => {
+        var head = new byte[5];
+        var read = 0;
+        while (read < 5) {
+            var n = await s.ReadAsync(head.AsMemory(read), ct);
+            if (n == 0) return;
+            read += n;
+        }
+        // v1 FrameCodec would throw here — the server closes the socket, writing nothing.
     };
     static ConnScript Eof() => async (_, s, ct) => { await FrameCodec.ReadAsync(s, ct); }; // read, close silently
     static ConnScript TruncatedHeader() => async (_, s, ct) => {
@@ -322,6 +352,118 @@ public class LocalControlOpsTests {
             await Assert.That(ex!.Reason).IsEqualTo("daemon_rejected");
             await Assert.That(ex.Message).IsEqualTo("not authorized");
         });
+    }
+
+    // ---- ResolveConsentAsync ----
+
+    [Test]
+    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
+    [Arguments("""{"ok":true,"error":null,"rule_saved":null}""", true, null, null)]
+    [Arguments("""{"ok":true,"error":"partial rule save failure","rule_saved":false}""", true, "partial rule save failure", false)]
+    [Arguments("""{"ok":false,"error":"no pending consent request with that id","rule_saved":true}""", false, "no pending consent request with that id", true)]
+    [Arguments("""{"ok":false,"error":"x"}""", false, "x", null)] // old-format ack: no rule_saved member at all
+    public async Task Resolve_ack_shapes(string json, bool ok, string? error, bool? ruleSaved) {
+        if (OperatingSystem.IsWindows()) return;
+
+        await WithOpsAsync([ConsentResolveV2Ack(json)], async ops => {
+            var ack = await ops.ResolveConsentAsync(new ConsentResolveDto("r1", "allow", null, "p1"), CancellationToken.None);
+            await Assert.That(ack.Ok).IsEqualTo(ok);
+            await Assert.That(ack.Error).IsEqualTo(error);
+            await Assert.That(ack.RuleSaved).IsEqualTo(ruleSaved);
+        });
+    }
+
+    [Test]
+    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
+    public async Task Resolve_echoes_prompt_id_on_the_written_frame() {
+        if (OperatingSystem.IsWindows()) return;
+
+        string? sentText = null;
+        await WithOpsAsync(
+            [ConsentResolveV2AckCapturing("""{"ok":true,"error":null,"rule_saved":null}""", t => sentText = t)],
+            async ops => await ops.ResolveConsentAsync(new ConsentResolveDto("r1", "allow", null, "prompt-xyz"), CancellationToken.None));
+
+        var sent = JsonSerializer.Deserialize(sentText!, ConsentIpcJsonContext.Default.ConsentResolveDto);
+        await Assert.That(sent!.PromptId).IsEqualTo("prompt-xyz");
+    }
+
+    [Test]
+    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
+    public async Task Resolve_maps_error_frame_to_daemon_rejected() {
+        if (OperatingSystem.IsWindows()) return;
+
+        await WithOpsAsync([ErrorThen("nope")], async ops => {
+            var ex = await Assert.ThrowsAsync<LocalControlOpsException>(
+                async () => await ops.ResolveConsentAsync(new ConsentResolveDto("r1", "allow", null, "p1"), CancellationToken.None));
+            await Assert.That(ex!.Reason).IsEqualTo("daemon_rejected");
+            await Assert.That(ex.Message).IsEqualTo("nope");
+        });
+    }
+
+    /// The incarnation-swap pin (spec §9/§10): a v1 daemon fails closed at its own codec rather
+    /// than resolving by request id without the identity check, so the caller must see this as
+    /// "nothing was resolved", never as a successful ack.
+    [Test]
+    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
+    public async Task Resolve_against_a_v1_codec_observes_eof_as_unexpected_reply_and_nothing_was_resolved() {
+        if (OperatingSystem.IsWindows()) return;
+
+        await WithOpsAsync([V1CodecReject()], async ops => {
+            var ex = await Assert.ThrowsAsync<LocalControlOpsException>(
+                async () => await ops.ResolveConsentAsync(new ConsentResolveDto("r1", "allow", null, "p1"), CancellationToken.None));
+            await Assert.That(ex!.Reason).IsEqualTo("unexpected_reply");
+            await Assert.That(ex.Message).IsEqualTo("daemon closed the connection without replying");
+        });
+    }
+
+    [Test]
+    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
+    public async Task Resolve_clean_eof() {
+        if (OperatingSystem.IsWindows()) return;
+
+        await WithOpsAsync([Eof()], async ops => {
+            var ex = await Assert.ThrowsAsync<LocalControlOpsException>(
+                async () => await ops.ResolveConsentAsync(new ConsentResolveDto("r1", "allow", null, "p1"), CancellationToken.None));
+            await Assert.That(ex!.Reason).IsEqualTo("unexpected_reply");
+        });
+    }
+
+    [Test]
+    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
+    public async Task Resolve_malformed_ack() {
+        if (OperatingSystem.IsWindows()) return;
+
+        await WithOpsAsync([ConsentResolveV2Ack("not json")], async ops => {
+            var ex = await Assert.ThrowsAsync<LocalControlOpsException>(
+                async () => await ops.ResolveConsentAsync(new ConsentResolveDto("r1", "allow", null, "p1"), CancellationToken.None));
+            await Assert.That(ex!.Reason).IsEqualTo("unexpected_reply");
+        });
+    }
+
+    [Test] // real short timeout, matching this file's existing choice of real time over FakeTimeProvider for socket tests
+    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
+    public async Task Resolve_reply_timeout() {
+        if (OperatingSystem.IsWindows()) return;
+
+        await WithOpsAsync([Stall()], async ops => {
+            var ex = await Assert.ThrowsAsync<LocalControlOpsException>(
+                async () => await ops.ResolveConsentAsync(new ConsentResolveDto("r1", "allow", null, "p1"), CancellationToken.None));
+            await Assert.That(ex!.Reason).IsEqualTo("timed_out");
+        }, configure: ops => ops.ConsentReplyTimeout = TimeSpan.FromMilliseconds(100));
+    }
+
+    [Test]
+    [NotInParallel(nameof(DaemonLockPaths) + ".OverrideDirectoryForTesting")]
+    public async Task Resolve_caller_cancellation() {
+        if (OperatingSystem.IsWindows()) return;
+
+        await WithOpsAsync([Stall()], async ops => {
+            using var cts = new CancellationTokenSource();
+            var task = ops.ResolveConsentAsync(new ConsentResolveDto("r1", "allow", null, "p1"), cts.Token);
+            await Task.Delay(50); // let connect+write land so cancellation is observed during the reply wait
+            cts.Cancel();
+            await Assert.ThrowsAsync<OperationCanceledException>(async () => await task);
+        }, configure: ops => ops.ConsentReplyTimeout = TimeSpan.FromSeconds(30));
     }
 
     // ---- shared transport classification (exercised via StopAgentAsync) ----
