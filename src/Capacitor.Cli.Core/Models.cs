@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
+using Capacitor.Cli.Core.Telemetry;
 
 namespace Capacitor.Cli.Core;
 
@@ -1050,6 +1051,7 @@ public sealed record CurationApplyResponse {
 // (not just nested inside another JsonSerializable graph) because SignalR's JsonHubProtocol
 // serializes each hub-invocation argument independently by its declared type.
 [JsonSerializable(typeof(IReadOnlyDictionary<string, string>))]
+[JsonSerializable(typeof(TelemetryStateFile))]
 // UseStringEnumConverter=true matches the server's SignalR JSON protocol, which
 // serialises enums (e.g. LaunchKind) as camelCase strings. Without it the
 // source-gen LaunchKind JsonTypeInfo defaults to numeric and silently drops the
