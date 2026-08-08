@@ -110,6 +110,7 @@ public class PiRpcTests {
         await Assert.That(envelopes[2].ToolCallId).IsEqualTo("call_123");
         await Assert.That(envelopes[2].ToolName).IsEqualTo("bash");
         await Assert.That(envelopes[2].ToolInputJson).IsEqualTo("""{"cmd":"ls"}""");
+        await Assert.That(envelopes[2].Model).IsEqualTo("pi-large");
 
         await Assert.That(envelopes[3].Kind).IsEqualTo(AcpEventKind.Usage);
         await Assert.That(envelopes[3].Model).IsEqualTo("pi-large");

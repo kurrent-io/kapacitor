@@ -173,14 +173,14 @@ internal static class PiRpc {
                             Kind: AcpEventKind.ToolCall,
                             ToolCallId: item.Str("id"),
                             ToolName: item.Str("name"),
-                            ToolInputJson: item.Obj("arguments")?.GetRawText()));
+                            ToolInputJson: item.Obj("arguments")?.GetRawText(),
+                            Model: model));
                         break;
                 }
             }
         }
 
-        if (message.Obj("usage") is not null) {
-            var usage = message.Obj("usage")!.Value;
+        if (message.Obj("usage") is { } usage) {
             (envelopes ??= []).Add(new AcpEventEnvelope(
                 Kind: AcpEventKind.Usage,
                 Model: model,
