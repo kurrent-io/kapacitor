@@ -48,18 +48,20 @@ Merging the anonymous device into the identified user via `$identify` was consid
 new server endpoint handing the client its own pseudonymous hash, and it buys person-level joins that
 the funnel question does not require. Not in scope; the group is the cheap 80%.
 
-**Open item — must be verified before the group is switched on.** The group's value on the server is
-`Tenant:Name` (`PosthogServiceCollectionExtensions.cs:71`), a deployment-config string that is empty
-in `appsettings.json` and set by the deploy pipeline. What that pipeline writes for a
-`{slug}.kcap.ai` tenant is not visible in kcap-web, whose provisioning path
-(`src/server/signup/provision.ts`) only records the slug in D1. If it is the slug, the CLI derives the
-identical value from the server URL's host label and the groups join. If it is anything else, CLI and
-server events fork into two groups that look joined but aren't — a silently wrong dashboard, which is
-worse than no dashboard.
+The group's value on the server is `Tenant:Name` (`PosthogServiceCollectionExtensions.cs:71`), which
+the Helm chart sets from the tenant slug — `Tenant__Name` is documented as "tenant slug; chart sets
+to `{{ .Values.slug }}`" (kcap-server `docs/superpowers/specs/2026-06-09-server-diagnostics-design.md:111`).
+Since a SaaS tenant is served at `{slug}.kcap.ai`, the CLI derives the identical value from the
+server URL's host label and the two producers land in the same group. Slugs are canonicalised
+lowercase (`SlugValidator.Canonicalize`) and host labels are lowercase, so no case reconciliation is
+needed.
 
-Therefore: ship the `org` **property** unconditionally, and gate the **group** assignment on
-confirming the pipeline value. If confirmation fails, the group is omitted and the property still
-supports manual correlation.
+**This holds for SaaS only.** On a self-hosted deployment `Tenant:Name` defaults to `"local"` and is
+otherwise whatever the operator configured; it has no defined relationship to the server's hostname.
+Deriving a group from the host label there would produce a group that *looks* joined to the server's
+but isn't — a silently wrong dashboard, which is worse than no dashboard. So the group is attached
+only when the server URL is a `*.kcap.ai` host, where the chart guarantees the correspondence. The
+`org` property ships unconditionally and still supports manual correlation elsewhere.
 
 ### 3. Human-invoked commands and MCP tool calls; hooks excluded entirely
 
@@ -244,6 +246,8 @@ IL2026.
 - Denylist test: `hook`, `watch`, and `mcp` verbs emit nothing
 - Funnel sequence tests against a fake sink: happy path; `tenant_none` → declined; provisioning
   failure
+- Group derivation: `https://acme.kcap.ai` yields group `acme`; a self-hosted URL yields no group at
+  all, only the `org` property
 - Spool: bounded, drop-oldest, replayed by the next successful flush
 - Offline: a failed flush leaves exit code and stderr untouched
 - Path assertions use `Path.Combine`; this repo has a Windows CI leg that catches separator literals
