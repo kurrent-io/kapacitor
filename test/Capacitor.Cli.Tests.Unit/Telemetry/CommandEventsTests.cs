@@ -96,10 +96,20 @@ public class CommandEventsTests {
     }
 
     // GUIDs share this pattern's alphabet (lowercase hex + hyphen), so length bound alone rejects them.
-    // A UUID is 36 hex+hyphen chars; with `--` prefix it's 38 total and exceeds the 30-char limit.
+    // A UUID is 36 hex+hyphen chars; with `--` prefix it's 38 total and exceeds the 37-char limit.
     [Test]
     public async Task Guid_shaped_tokens_are_rejected() {
         await Assert.That(CommandEvents.Flags(["setup", "--ab9c1f4e-2a77-4d19-9f0e-1c2d3e4f5a6b"]).Length).IsEqualTo(0);
+    }
+
+    // The longest real kcap flag, and the floor of the shape rule's window. If this ever
+    // stops matching, a real flag has silently vanished from telemetry with no error anywhere.
+    [Test]
+    public async Task Longest_real_flag_is_accepted() {
+        var flags = CommandEvents.Flags(["setup", "--skip-antigravity-instructions"]);
+
+        await Assert.That(flags.Length).IsEqualTo(1);
+        await Assert.That(flags[0]).IsEqualTo("--skip-antigravity-instructions");
     }
 
     [Test]
