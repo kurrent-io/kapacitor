@@ -24,6 +24,8 @@ public partial class App : Application {
     // first, so a quit never strands a dead icon in the menu bar (spec §9).
     MainWindowCoordinator? _coordinator;
     PauseController? _pause;
+    ConsentService? _consent;
+    ConsentPromptCoordinator? _promptCoordinator;
     TrayViewModel? _trayVm;
     TrayIconManager? _tray;
     // No disposal needed — RefCount tears its Interval down with its last subscriber. Held for
@@ -77,6 +79,17 @@ public partial class App : Application {
             // nothing can trigger a protected-kind stop before ShowMainWindow below assigns it.
             var actions = new AgentActionService(ops, notifier, new ShellUrlOpener(), service.Snapshots, _shutdown.Token, ConfirmForceStopAsync);
 
+            // The prompt window is built per raise, never here: the coordinator owns its lifetime
+            // and each window gets its own ViewModel over the one shared service (spec §6).
+            var consent = new ConsentService(
+                service, ops, ticker, ct => ConsentSubscription.RunAsync(service.DaemonName, ct),
+                TimeProvider.System, _shutdown.Token);
+            _consent = consent;
+            _promptCoordinator = new ConsentPromptCoordinator(consent, () => new ConsentPromptWindow {
+                DataContext = new ConsentPromptViewModel(consent, notifier, ticker, TimeProvider.System, _shutdown.Token),
+                Notifier = notifier,
+            });
+
             _coordinator = new MainWindowCoordinator(() => BuildAndShowMainWindow(service, actions, notifier, ticker, _shutdown.Token));
             // A shutdown that started before this continuation resumed already ran its first
             // pass against a null coordinator, so a window built now must never be
@@ -100,12 +113,14 @@ public partial class App : Application {
             // must not intercept anything from here on — every close on this path is a real one.
             if (_coordinator is not null) _coordinator.QuitInProgress = true;
             Console.Error.WriteLine($"kcap app failed to start: {ex}");
-            await HandleStartupFailureAsync(desktop, ex, _service, _shutdown, [_tray, _trayVm, _pause]);
+            await HandleStartupFailureAsync(desktop, ex, _service, _shutdown, [_tray, _trayVm, _promptCoordinator, _consent, _pause]);
             // all already disposed above — never let a later OnShutdownRequested (e.g. Cmd+Q
             // while the error window is up) dispose any of them a second time
             _service = null;
             _tray = null;
             _trayVm = null;
+            _promptCoordinator = null;
+            _consent = null;
             _pause = null;
         }
     }
@@ -319,8 +334,12 @@ public partial class App : Application {
 
     async Task DisposeAndShutdownAsync() {
         if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop) {
+            // Prompt coordinator BEFORE the consent service (spec §5): the window and its
+            // ViewModel are gone before the service they resolve against, so no click can reach a
+            // disposed one. A resolve already in flight was cancelled by _shutdown at the top of
+            // OnShutdownRequested and settles on the ViewModel's silent-abort path.
             await DisposeUiThenConfirmShutdownAsync(
-                [_tray, _trayVm, _pause],
+                [_tray, _trayVm, _promptCoordinator, _consent, _pause],
                 _service is null ? null : _service.DisposeAsync, () => _shutdownConfirmed = true, desktop, _exitCode);
         } else {
             if (_service is not null) await _service.DisposeAsync();
