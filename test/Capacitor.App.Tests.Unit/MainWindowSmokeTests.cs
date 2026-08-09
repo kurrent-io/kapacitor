@@ -38,7 +38,7 @@ public class MainWindowSmokeTests {
                 service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, null));
 
                 var (actions, _) = NewActions(service);
-                var vm = new MainWindowViewModel(service, actions, CancellationToken.None);
+                var vm = new MainWindowViewModel(service, actions, new FakeTicker(), CancellationToken.None);
                 var window = new MainWindow { DataContext = vm };
                 window.Show();
                 // Control.Loaded is POSTED at DispatcherPriority.Loaded (Avalonia defers it, it
@@ -84,7 +84,7 @@ public class MainWindowSmokeTests {
         var (thrown, startEnabledAfter) = await AvaloniaSession.DispatchAsync(() => {
             var service = new FakeDaemonClientService();
             var (actions, _) = NewActions(service);
-            var vm = new MainWindowViewModel(service, actions, CancellationToken.None);
+            var vm = new MainWindowViewModel(service, actions, new FakeTicker(), CancellationToken.None);
             var window = new MainWindow { DataContext = vm };
             window.Show();
             Dispatcher.UIThread.RunJobs();
@@ -139,7 +139,7 @@ public class MainWindowSmokeTests {
 
             var shutdown = new CancellationTokenSource();
             var (actions, _) = NewActions(service);
-            var vm = new MainWindowViewModel(service, actions, shutdown.Token);
+            var vm = new MainWindowViewModel(service, actions, new FakeTicker(), shutdown.Token);
             var window = new MainWindow { DataContext = vm };
             window.Show();
             Dispatcher.UIThread.RunJobs();
@@ -183,9 +183,9 @@ public class MainWindowSmokeTests {
 
     /// Spec §8 empty state: "No agents running" renders only while Connected AND the Agents
     /// cache is empty. Deliberately NOT wrapped in WithImmediateRxScheduler: no agent is ever
-    /// added to service.Agents here, so the real shared ticker inside MainWindowViewModel is
-    /// never subscribed either way — but the real dispatcher is what MainWindowViewModel's own
-    /// production ctor is meant to run under, so this stays close to that path.
+    /// added to service.Agents here, so the injected FakeTicker is never subscribed either way —
+    /// but the real dispatcher is what MainWindowViewModel's own production ctor is meant to run
+    /// under, so this stays close to that path.
     [Test]
     [NotInParallel("AvaloniaSession")]
     public async Task Empty_agents_grid_shows_no_agents_running_while_connected() {
@@ -195,7 +195,7 @@ public class MainWindowSmokeTests {
             service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, null));
 
             var (actions, _) = NewActions(service);
-            var vm = new MainWindowViewModel(service, actions, CancellationToken.None);
+            var vm = new MainWindowViewModel(service, actions, new FakeTicker(), CancellationToken.None);
             var window = new MainWindow { DataContext = vm };
             window.Show();
             Dispatcher.UIThread.RunJobs();
@@ -227,7 +227,7 @@ public class MainWindowSmokeTests {
             service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, null));
 
             var (actions, _) = NewActions(service);
-            var vm = new MainWindowViewModel(service, actions, CancellationToken.None);
+            var vm = new MainWindowViewModel(service, actions, new FakeTicker(), CancellationToken.None);
             var window = new MainWindow { DataContext = vm };
             window.Show();
             Dispatcher.UIThread.RunJobs();
@@ -261,7 +261,7 @@ public class MainWindowSmokeTests {
             await AvaloniaSession.DispatchAsync(async () => {
                 var service = new FakeDaemonClientService();
                 var (actions, _) = NewActions(service);
-                var vm = new MainWindowViewModel(service, actions, CancellationToken.None);
+                var vm = new MainWindowViewModel(service, actions, new FakeTicker(), CancellationToken.None);
                 var window = new MainWindow { DataContext = vm };
                 window.Show();
                 Dispatcher.UIThread.RunJobs();
@@ -304,7 +304,7 @@ public class MainWindowSmokeTests {
         var rendered = await AvaloniaSession.DispatchAsync(() => {
             var service = new FakeDaemonClientService();
             var (actions, notifier) = NewActions(service);
-            var vm = new MainWindowViewModel(service, actions, CancellationToken.None);
+            var vm = new MainWindowViewModel(service, actions, new FakeTicker(), CancellationToken.None);
             var window = new MainWindow { DataContext = vm, Notifier = notifier };
             window.Show();
             Dispatcher.UIThread.RunJobs();

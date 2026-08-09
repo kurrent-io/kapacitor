@@ -26,6 +26,9 @@ public partial class App : Application {
     PauseController? _pause;
     TrayViewModel? _trayVm;
     TrayIconManager? _tray;
+    // No disposal needed — RefCount tears its Interval down with its last subscriber. Held for
+    // later tasks (consent prompt / activity feed) to share the same 1 Hz heartbeat.
+    UiTicker? _ticker;
     bool _shutdownStarted;
     bool _shutdownConfirmed;
     // 0 = normal shutdown. Set to 1 on a startup failure so the DEFERRED shutdown path (Cmd+Q /
@@ -66,13 +69,15 @@ public partial class App : Application {
             // toast/stderr channel (spec §11).
             var ops = new LocalControlOps(service.DaemonName);
             var notifier = new AppNotifier();
+            var ticker = new UiTicker();
+            _ticker = ticker;
             _pause = new PauseController(ops, notifier.Notify, _shutdown.Token);
             // ConfirmForceStopAsync reads _coordinator at INVOCATION time (a captured field, not
             // a captured value) — safe even though _coordinator is still null right here, because
             // nothing can trigger a protected-kind stop before ShowMainWindow below assigns it.
             var actions = new AgentActionService(ops, notifier, new ShellUrlOpener(), service.Snapshots, _shutdown.Token, ConfirmForceStopAsync);
 
-            _coordinator = new MainWindowCoordinator(() => BuildAndShowMainWindow(service, actions, notifier, _shutdown.Token));
+            _coordinator = new MainWindowCoordinator(() => BuildAndShowMainWindow(service, actions, notifier, ticker, _shutdown.Token));
             // A shutdown that started before this continuation resumed already ran its first
             // pass against a null coordinator, so a window built now must never be
             // close-protected (BeginShutdownPass's rule 1 is the general defense; this is the
@@ -195,12 +200,12 @@ public partial class App : Application {
     // already-visible window is a no-op, so this stays correct even if a future edit changes the
     // timing such that ShowMainWindow() DOES still see a non-null MainWindow.
     internal static MainWindow BuildAndShowMainWindow(
-            IDaemonClientService service, AgentActionService actions, IAppNotifier notifier,
+            IDaemonClientService service, AgentActionService actions, IAppNotifier notifier, ITicker ticker,
             CancellationToken shutdownToken) {
         // Notifier is set on the WINDOW (spec §11 toast overlay), not the ViewModel — the toast
         // is a View-level concern (WindowNotificationManager lives on MainWindow) independent of
         // the VM's WhenActivated-scoped projections.
-        var window = new MainWindow { DataContext = new MainWindowViewModel(service, actions, shutdownToken), Notifier = notifier };
+        var window = new MainWindow { DataContext = new MainWindowViewModel(service, actions, ticker, shutdownToken), Notifier = notifier };
         window.Show();
         return window;
     }

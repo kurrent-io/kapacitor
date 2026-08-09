@@ -133,37 +133,6 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
     readonly ObservableAsPropertyHelper<bool> _retryVisible;
     public bool RetryVisible => _retryVisible.Value;
 
-    // ONE shared ticker for every row (spec §8): Publish().RefCount() makes it HOT, so all rows
-    // observe the same Interval and tick in lockstep instead of each cold-subscribing its own.
-    //
-    // SubscribeOn is load-bearing. Rows are built inside DynamicData's Transform, which runs on
-    // whatever thread mutates the SourceCache — in production DaemonClientService's socket pump
-    // thread, never the UI thread. AvaloniaScheduler's non-zero-dueTime path does NOT marshal: it
-    // calls DispatcherTimer.RunOnce, which resolves Dispatcher.CurrentDispatcher — a THREAD-LOCAL
-    // lookup that, off the UI thread, silently constructs a brand-new dispatcher for that thread
-    // which nothing ever pumps. Its Tick never fires, so the Interval produces no value at all and
-    // every row's Uptime freezes at its seed forever, with no exception and no log. SubscribeOn
-    // forces the subscription — and therefore Interval's first Schedule call — onto the real UI
-    // dispatcher via AvaloniaScheduler's zero-dueTime Dispatcher.UIThread.Post path.
-    //
-    // No StartWith: a row's immediate first value is the OAPH's initialUptime argument
-    // (AgentRowViewModel), so a StartWith would only re-emit the identical string. The scheduler is
-    // captured NOW (Rx operators take a scheduler by value, not a live reference to
-    // RxSchedulers.MainThreadScheduler) and RefCount defers the connection until a row subscribes —
-    // which is what lets a test construct this VM inside AvaloniaSession.WithImmediateRxScheduler
-    // WITHOUT ever subscribing a row: subscribing an Interval under an immediate scheduler would
-    // block/spin forever, since Interval never completes.
-    readonly IObservable<long> _ticker = Observable
-        .Interval(TimeSpan.FromSeconds(1), RxSchedulers.MainThreadScheduler)
-        .SubscribeOn(RxSchedulers.MainThreadScheduler)
-        .Publish()
-        .RefCount();
-
-    // Test seam: the only way to exercise the REAL ticker (real 1s Interval on the real
-    // AvaloniaScheduler) from the production subscription thread — the row-level tests inject a
-    // Subject and so cannot observe the off-UI-thread hazard the SubscribeOn above exists for.
-    internal IObservable<long> Ticker => _ticker;
-
     readonly TimeProvider _time;
 
     /// <param name="shutdownToken">
@@ -172,7 +141,7 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
     /// unbounded wait would survive app exit).
     /// </param>
     public MainWindowViewModel(
-            IDaemonClientService service, AgentActionService actions,
+            IDaemonClientService service, AgentActionService actions, ITicker ticker,
             CancellationToken shutdownToken, TimeProvider? time = null) {
         _service = service;
         _time = time ?? TimeProvider.System;
@@ -299,7 +268,7 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
             // whatever rows are still live at that point — DisposeMany disposes its full current
             // set on teardown, not just on per-item Remove/Update.
             service.Agents.Connect()
-                .Transform(dto => new AgentRowViewModel(dto, actions, _ticker, _time, connected, stopsInFlight))
+                .Transform(dto => new AgentRowViewModel(dto, actions, ticker.Ticks, _time, connected, stopsInFlight))
                 .DisposeMany()
                 .ObserveOn(RxSchedulers.MainThreadScheduler)
                 .SortAndBind(_agentsSource, RowComparer)

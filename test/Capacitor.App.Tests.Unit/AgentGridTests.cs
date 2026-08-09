@@ -25,15 +25,13 @@ sealed class MutableTimeProvider : TimeProvider {
 /// pipeline (sort order, EditDiff removal, GridEnabled) driven through
 /// AvaloniaSession.DispatchAsync with the REAL dispatcher scheduler.
 ///
-/// The full-pipeline tests deliberately do NOT use AvaloniaSession.WithImmediateRxScheduler:
-/// MainWindowViewModel's shared ticker is a real Observable.Interval(1s, RxSchedulers.
-/// MainThreadScheduler), and subscribing an Interval to ImmediateScheduler.Instance blocks/spins
-/// the calling thread forever (Rx's ImmediateScheduler executes a relative-time Schedule by
-/// SLEEPING for the real due time rather than truly firing "immediately" — verified against the
-/// installed System.Reactive 6.1.0 before writing this comment). Any test that populates
-/// service.Agents and exercises the resulting rows must run under the real (non-blocking)
-/// AvaloniaScheduler instead. (The toast overlay this VM used to drive via a Banner property now
-/// lives entirely in the View — see MainWindow.axaml.cs and AppNotifierTests.)
+/// The full-pipeline tests pass a FakeTicker (never a real Interval — UiTickerTests owns the real
+/// one, including the off-UI-thread hazard) but still run under AvaloniaSession.DispatchAsync's
+/// REAL dispatcher scheduler rather than WithImmediateRxScheduler: that's the scheduler
+/// production's WhenActivated pipeline actually runs under (ObserveOn(RxSchedulers.
+/// MainThreadScheduler) on status/snapshots), so this stays closest to the real thing. (The toast
+/// overlay this VM used to drive via a Banner property now lives entirely in the View — see
+/// MainWindow.axaml.cs and AppNotifierTests.)
 public class AgentGridTests {
     // ---- UptimeFormat (spec §8) ----
 
@@ -333,7 +331,7 @@ public class AgentGridTests {
         var ids = await AvaloniaSession.DispatchAsync(() => {
             var service = new FakeDaemonClientService();
             var (actions, _) = NewActions(service);
-            var vm = new MainWindowViewModel(service, actions, CancellationToken.None);
+            var vm = new MainWindowViewModel(service, actions, new FakeTicker(), CancellationToken.None);
             using var activation = vm.Activator.Activate();
 
             var t0 = new DateTime(2026, 8, 6, 10, 0, 0, DateTimeKind.Utc);
@@ -354,7 +352,7 @@ public class AgentGridTests {
         var (beforeCount, afterIds) = await AvaloniaSession.DispatchAsync(() => {
             var service = new FakeDaemonClientService();
             var (actions, _) = NewActions(service);
-            var vm = new MainWindowViewModel(service, actions, CancellationToken.None);
+            var vm = new MainWindowViewModel(service, actions, new FakeTicker(), CancellationToken.None);
             using var activation = vm.Activator.Activate();
 
             var t0 = DateTime.UtcNow;
@@ -385,7 +383,7 @@ public class AgentGridTests {
         var (sameInstance, oldDisposed, newDisposed, newStatus, agentsCountAfter) = await AvaloniaSession.DispatchAsync(() => {
             var service = new FakeDaemonClientService();
             var (actions, _) = NewActions(service);
-            var vm = new MainWindowViewModel(service, actions, CancellationToken.None);
+            var vm = new MainWindowViewModel(service, actions, new FakeTicker(), CancellationToken.None);
             using var activation = vm.Activator.Activate();
 
             var t0 = DateTime.UtcNow;
@@ -416,7 +414,7 @@ public class AgentGridTests {
         var row = await AvaloniaSession.DispatchAsync(() => {
             var service = new FakeDaemonClientService();
             var (actions, _) = NewActions(service);
-            var vm = new MainWindowViewModel(service, actions, CancellationToken.None);
+            var vm = new MainWindowViewModel(service, actions, new FakeTicker(), CancellationToken.None);
             var activation = vm.Activator.Activate();
 
             service.Agents.AddOrUpdate(Dto(id: "a"));
@@ -428,46 +426,6 @@ public class AgentGridTests {
         });
 
         await Assert.That(row.IsDisposed).IsTrue();
-    }
-
-    /// Regression coverage for the frozen-Uptime bug: rows are constructed inside DynamicData's
-    /// Transform, which runs on whatever thread mutates the SourceCache — in production
-    /// DaemonClientService's socket pump thread, never the UI thread. Subscribing the shared ticker
-    /// from there used to bind its DispatcherTimer to a per-thread dispatcher nothing pumps, so the
-    /// Interval produced no value at all and Uptime stayed at its seed forever. This drives the VM's
-    /// REAL ticker (real 1s Interval on the real AvaloniaScheduler) from a background thread — the
-    /// row-level uptime tests inject a Subject and are blind to the whole hazard.
-    [Test]
-    [NotInParallel("AvaloniaSession")]
-    public async Task Ticker_subscribed_off_the_ui_thread_still_ticks_on_the_dispatcher() {
-        var (ticks, everyTickOnUiThread) = await AvaloniaSession.DispatchAsync(async () => {
-            var service = new FakeDaemonClientService();
-            var (actions, _) = NewActions(service);
-            var vm = new MainWindowViewModel(service, actions, CancellationToken.None);
-
-            var count = 0;
-            var onUiThread = true;
-            IDisposable? subscription = null;
-            await Task.Run(() => subscription = vm.Ticker.Subscribe(_ => {
-                onUiThread &= Dispatcher.UIThread.CheckAccess();
-                Interlocked.Increment(ref count);
-            }));
-
-            // Baseline excludes anything the ticker delivers SYNCHRONOUSLY on subscribe (a
-            // StartWith-style seed), so the wait below can only be satisfied by a genuine periodic
-            // tick — the exact thing the broken version never produced.
-            var seedOnSubscribe = Volatile.Read(ref count);
-
-            // DispatchAsync's async overload pumps a DispatcherFrame around this body, which is
-            // what lets the dispatcher's own timers run while we wait.
-            await WaitUntilAsync(() => Volatile.Read(ref count) > seedOnSubscribe, what: "a periodic ticker tick");
-            subscription!.Dispose();
-
-            return (Volatile.Read(ref count) - seedOnSubscribe, onUiThread);
-        });
-
-        await Assert.That(ticks).IsGreaterThan(0);
-        await Assert.That(everyTickOnUiThread).IsTrue();
     }
 
     /// Regression coverage for a P1 bug found in review: SortAndBind(out _agents, ...) replaced
@@ -483,7 +441,7 @@ public class AgentGridTests {
         var (sameReference, idsAfterReactivation) = await AvaloniaSession.DispatchAsync(() => {
             var service = new FakeDaemonClientService();
             var (actions, _) = NewActions(service);
-            var vm = new MainWindowViewModel(service, actions, CancellationToken.None);
+            var vm = new MainWindowViewModel(service, actions, new FakeTicker(), CancellationToken.None);
 
             var activation1 = vm.Activator.Activate();
             service.Agents.AddOrUpdate(Dto(id: "a"));
@@ -518,7 +476,7 @@ public class AgentGridTests {
         var (whileConnected, whileUnreachable) = await AvaloniaSession.DispatchAsync(() => {
             var service = new FakeDaemonClientService();
             var (actions, _) = NewActions(service);
-            var vm = new MainWindowViewModel(service, actions, CancellationToken.None);
+            var vm = new MainWindowViewModel(service, actions, new FakeTicker(), CancellationToken.None);
             using var activation = vm.Activator.Activate();
 
             service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, null));
@@ -542,7 +500,7 @@ public class AgentGridTests {
         var (idsWhileConnected, idsWhileDisconnected, actionsEnabledWhileDisconnected) = await AvaloniaSession.DispatchAsync(() => {
             var service = new FakeDaemonClientService();
             var (actions, _) = NewActions(service);
-            var vm = new MainWindowViewModel(service, actions, CancellationToken.None);
+            var vm = new MainWindowViewModel(service, actions, new FakeTicker(), CancellationToken.None);
             using var activation = vm.Activator.Activate();
 
             service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, null));
@@ -574,7 +532,7 @@ public class AgentGridTests {
         var (beforeStop, whileInFlight) = await AvaloniaSession.DispatchAsync(() => {
             var service = new FakeDaemonClientService();
             var (actions, _) = NewActions(service, ops);
-            var vm = new MainWindowViewModel(service, actions, CancellationToken.None);
+            var vm = new MainWindowViewModel(service, actions, new FakeTicker(), CancellationToken.None);
             using var activation = vm.Activator.Activate();
 
             service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, null));
