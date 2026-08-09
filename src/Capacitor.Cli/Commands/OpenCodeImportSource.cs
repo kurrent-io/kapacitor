@@ -141,11 +141,16 @@ internal sealed class OpenCodeImportSource : IImportSource {
             // Completeness is tracked client-side (the ledger): a hit on this server with a
             // matching content fingerprint (parent transcript + children) means we already
             // fully imported it AND it hasn't changed since — skip. Never trusted when the
-            // below-cap counting walk was truncated (see above).
-            lock (_ledgerLock) {
-                if (!countTruncated && _ledger.IsComplete(ctx.BaseUrl, s.SessionId, fingerprint)) {
-                    results.Add(Make(s, meta, ImportCommand.ClassificationStatus.AlreadyLoaded, total));
-                    continue;
+            // below-cap counting walk was truncated (see above). --reimport bypasses the
+            // ledger entirely so a session the ledger wrongly believes complete (e.g. deleted
+            // server-side after import) re-classifies as New/Partial and re-sends; the resend
+            // is idempotent via canonical prt_ ids, and a successful import refreshes the entry.
+            if (!ctx.Reimport) {
+                lock (_ledgerLock) {
+                    if (!countTruncated && _ledger.IsComplete(ctx.BaseUrl, s.SessionId, fingerprint)) {
+                        results.Add(Make(s, meta, ImportCommand.ClassificationStatus.AlreadyLoaded, total));
+                        continue;
+                    }
                 }
             }
 

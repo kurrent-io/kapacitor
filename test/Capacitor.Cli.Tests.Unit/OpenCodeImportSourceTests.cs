@@ -130,6 +130,42 @@ public class OpenCodeImportSourceTests {
     }
 
     [Test]
+    public async Task classify_reimport_bypasses_the_ledger_and_reclassifies() {
+        using var fix = new OpenCodeDbFixture();
+        fix.AddSession("ses_x", null, "/w", "T", 100);
+        fix.AddMessageWithText("ses_x", "m1", "hello", 100);
+
+        using var server = WireMockServer.Start();
+        server.Given(Request.Create().WithPath("/api/sessions/*/last-line").UsingGet())
+              .RespondWith(Response.Create().WithStatusCode(404));
+        foreach (var p in new[] { "/hooks/session-start/opencode", "/hooks/transcript",
+                                  "/hooks/set-title", "/hooks/session-end/opencode" })
+            server.Given(Request.Create().WithPath(p).UsingPost()).RespondWith(Response.Create().WithStatusCode(200));
+        using var client = new HttpClient();
+
+        var loadCtx = new ClassifyContext(client, server.Url!, MinLines: 1, ExcludedRepos: null, ExcludedPaths: null);
+
+        // First run fully imports and records the ledger.
+        var s1 = new OpenCodeImportSource(fix.DbPath, fix.LedgerPath);
+        var c1 = await s1.ClassifyAsync(await s1.DiscoverAsync(new DiscoveryFilters(null, null, null, 0), CancellationToken.None), loadCtx, CancellationToken.None);
+        await s1.ImportSessionAsync(c1[0], new ImportContext(client, server.Url!, false), CancellationToken.None);
+
+        var discovered = await new OpenCodeImportSource(fix.DbPath, fix.LedgerPath)
+            .DiscoverAsync(new DiscoveryFilters(null, null, null, 0), CancellationToken.None);
+
+        // Control: a fresh source with the default (Reimport: false) context still skips it.
+        var skip = await new OpenCodeImportSource(fix.DbPath, fix.LedgerPath)
+            .ClassifyAsync(discovered, loadCtx, CancellationToken.None);
+        await Assert.That(skip[0].Status).IsEqualTo(ImportCommand.ClassificationStatus.AlreadyLoaded);
+
+        // --reimport bypasses the ledger → the session re-classifies (New here, since the
+        // server reports no watermark) and is eligible to re-send.
+        var forced = await new OpenCodeImportSource(fix.DbPath, fix.LedgerPath)
+            .ClassifyAsync(discovered, loadCtx with { Reimport = true }, CancellationToken.None);
+        await Assert.That(forced[0].Status).IsEqualTo(ImportCommand.ClassificationStatus.New);
+    }
+
+    [Test]
     public async Task classify_repair_when_not_in_ledger_and_watermark_present() {
         using var fix = new OpenCodeDbFixture();
         fix.AddSession("ses_x", null, "/w", "T", 100);
