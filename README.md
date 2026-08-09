@@ -1829,9 +1829,11 @@ kcap logout         # delete stored tokens
 > web dashboard's own out-of-date banner and notification-centre entry — and
 > the in-agent nudge Claude Code sessions can see (above) — know to show up.
 > `kcap config set update_check false` is the full, persisted opt-out: it
-> disables the notice, the `kcap status` annotation, the headers that drive
-> the server-side banner/notification, and the in-agent nudge — everywhere,
-> until you turn it back on. `--no-update-check` is narrower and one-shot: it
+> disables the notice and the `kcap status` annotation, makes the server
+> suppress its own banner/notification for you via the transmitted opt-out
+> marker (the version is still sent — the opt-out is signaled, not omitted),
+> and drops the in-agent nudge — everywhere, until you turn it back on.
+> `--no-update-check` is narrower and one-shot: it
 > only suppresses the notice and the `kcap status` annotation for that single
 > invocation — it doesn't change what gets sent to the server, so the banner,
 > notification, and in-agent nudge keep following whatever `update_check` is

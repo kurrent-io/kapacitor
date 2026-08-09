@@ -14,14 +14,8 @@ namespace Capacitor.Cli.Commands;
 
 public static class StatusCommand {
     public static async Task<int> HandleAsync(string? baseUrl, string[] args) {
-        // Version — reuses UpdateNotice's shared lazy update-check (Capacitor.Cli.UpdateNotice
-        // .GetSharedCheckAsync) rather than calling UpdateCommand.CheckForUpdateAsync directly, so
-        // this line and the exit-time footer (UpdateNotice.FlushAsync) never trigger two network
-        // round-trips for one invocation. When this line prints the inline annotation it calls
-        // UpdateNotice.MarkReported() so FlushAsync's own finally-block print is suppressed —
-        // the information must surface exactly once, not twice. Respects the same opt-outs
-        // FlushAsync does (--no-update-check, profile.UpdateCheck == false) by skipping the check
-        // entirely rather than forcing one the user disabled.
+        // Version line reuses UpdateNotice's shared check and marks-reported so the exit footer
+        // doesn't double-print; respects the same opt-outs.
         await WriteVersionLineAsync(args);
 
         // Server

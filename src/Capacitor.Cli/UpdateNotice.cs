@@ -4,25 +4,9 @@ using Capacitor.Cli.Core.Config;
 namespace Capacitor.Cli;
 
 /// <summary>
-/// Deterministic exit-time "update available" notice for human-facing invocations.
-///
-/// <para>Before this, the hint was printed by a fire-and-forget <c>Task.Run</c> launched near the
-/// top of <c>Program.cs</c> and never explicitly awaited on most paths — it only reliably resolved
-/// inside <see cref="ClaudeHookCommand"/>'s own two await sites, i.e. inside a Claude hook, where
-/// nobody reads stderr. Every other command — the ones a human is actually looking at — raced the
-/// process exit and usually lost. <see cref="FlushAsync"/> is the fix: <c>Program.cs</c> awaits it
-/// from a <c>finally</c> wrapping the whole command dispatch (including the <c>--help</c> and
-/// no-server-configured early exits), so it runs deterministically before the process exits.</para>
-///
-/// <para><see cref="IsHumanFacing"/> is the suppression predicate — nobody is watching stderr on a
-/// hook/MCP-server/watcher/foreground-daemon invocation, and printing on <c>update</c>/<c>uninstall</c>
-/// or a caller-passed <c>--no-update-check</c> would be actively wrong. Everything else counts.</para>
-///
-/// <para><see cref="MarkReported"/> plus the shared, lazily-started check task
-/// (<see cref="GetSharedCheckAsync"/>) let a second exit-time surface — <c>kcap status</c>'s own
-/// inline version line — reuse the same in-flight/completed check instead of triggering a second
-/// network round-trip, and suppress this class's own footer once it has already surfaced the
-/// information itself.</para>
+/// Deterministic exit-time "update available" notice for human-facing commands. Shares a single
+/// check (<see cref="GetSharedCheckAsync"/>) and a reported-once gate (<see cref="MarkReported"/>)
+/// with <c>kcap status</c>'s own version line so the two surfaces don't double-print.
 /// </summary>
 internal static class UpdateNotice {
     static readonly object _gate = new();
