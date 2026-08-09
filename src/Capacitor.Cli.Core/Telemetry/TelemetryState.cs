@@ -41,17 +41,18 @@ public static class TelemetryState {
     public static bool? PersistedEnabled() => Read().Enabled;
 
     /// <summary>
-    /// Returns the stable device id, creating one on first call. Returns null — and writes
-    /// nothing — when telemetry is disabled, so an opted-out user never has an analytics
-    /// identifier minted for them.
+    /// Returns the stable device id, creating one on first call. Mints unconditionally — whether
+    /// telemetry is enabled is NOT this method's decision. That precedence is
+    /// <see cref="TelemetrySettings.Resolve"/>'s job alone; <see cref="CliTelemetry.Initialize"/>
+    /// is the one gate that gets to skip this call entirely when disabled. An earlier revision
+    /// re-checked <c>state.Enabled is false</c> here too, which meant an explicit
+    /// <c>KCAP_TELEMETRY=1</c> could never override a persisted opt-out: Initialize would resolve
+    /// enabled, call this method, and this method would independently veto it and return null,
+    /// disabling the facade right back.
     /// </summary>
     public static string? GetOrCreateDeviceId() {
         string? result = null;
         Mutate(state => {
-            if (state.Enabled is false) {
-                result = null;
-                return null;   // signal: no write needed
-            }
             if (!string.IsNullOrWhiteSpace(state.Id)) {
                 result = state.Id;
                 return null;   // signal: no write needed
@@ -63,8 +64,15 @@ public static class TelemetryState {
         return result;
     }
 
+    /// <summary>
+    /// Persists the enable flag. Disabling also clears <see cref="TelemetryStateFile.Id"/>: the
+    /// spec's rationale for a device id file separate from <c>machine.json</c> is that opt-out
+    /// can delete the analytics id outright, not merely stop minting new ones. Re-enabling later
+    /// mints a fresh id (see <see cref="GetOrCreateDeviceId"/>), which is more private than
+    /// resurrecting the discarded one.
+    /// </summary>
     public static void SetEnabled(bool enabled) =>
-        Mutate(state => state with { Enabled = enabled });
+        Mutate(state => state with { Enabled = enabled, Id = enabled ? state.Id : null });
 
     public static void MarkNoticeShown() =>
         Mutate(state => state with { NoticeShown = true });
@@ -127,12 +135,30 @@ public static class TelemetryState {
         }
     }
 
+    /// <summary>
+    /// Writes atomically: serialise to a temp file in the SAME directory, then rename over the
+    /// target. <see cref="Read"/> takes no lock (locking every command-startup read would put a
+    /// cross-process mutex on the hot path), so it relies on never observing a half-written file.
+    /// A plain <c>File.WriteAllText(path, ...)</c> truncates the target before rewriting it — a
+    /// concurrent unlocked <see cref="Read"/> landing in that window sees partial JSON, hits its
+    /// catch, and returns <c>default</c> (<c>Enabled = null</c>), which
+    /// <see cref="TelemetrySettings.Resolve"/> treats as "no persisted choice → enabled by
+    /// default" — silently re-enabling telemetry a process just opted out of. The temp file lives
+    /// next to the target so the rename stays on one volume (required for it to be atomic), and a
+    /// reader then only ever sees the fully-old or fully-new file, never a torn one.
+    /// </summary>
     static void WriteLocked(string path, TelemetryStateFile state) {
+        var dir      = System.IO.Path.GetDirectoryName(path) ?? "";
+        var tempPath = System.IO.Path.Combine(dir, $".{System.IO.Path.GetFileName(path)}.tmp-{Guid.NewGuid():N}");
+
         try {
             var json = JsonSerializer.Serialize(state, CapacitorJsonContext.Default.TelemetryStateFile);
-            File.WriteAllText(path, json);
+            File.WriteAllText(tempPath, json);
+            File.Move(tempPath, path, overwrite: true);
         } catch (Exception e) when (e is IOException or UnauthorizedAccessException) {
-            // Best effort.
+            // Best effort. Clean up the temp file so a failed write doesn't leave debris behind —
+            // itself best-effort, since we're already in the never-throw fallback path.
+            try { if (File.Exists(tempPath)) File.Delete(tempPath); } catch { }
         }
     }
 }

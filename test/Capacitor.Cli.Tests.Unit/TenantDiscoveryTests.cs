@@ -56,6 +56,9 @@ public class TenantDiscoveryTests {
 
         await Assert.That(outcome.Picked).IsNull();
         await Assert.That(outcome.ErrorMessage!).Contains("No Capacitor tenants");
+        // The genuine "authenticated but has no tenant" case — this is what should count toward
+        // the funnel's cli_setup_tenant_none denominator (see SetupCommand).
+        await Assert.That(outcome.NoTenantsFound).IsTrue();
     }
 
     [Test]
@@ -68,6 +71,10 @@ public class TenantDiscoveryTests {
         var outcome = await discovery.RunAsync("https://proxy", "gh");
 
         await Assert.That(outcome.ErrorMessage!).Contains("unreachable");
+        // A discovery-service failure ALSO returns zero tenants but must NOT be counted as
+        // "reached signup, has no tenant" — that was the bug: SetupCommand used to key off
+        // outcome.Tenants.Length == 0 alone, which conflated this with the genuine case above.
+        await Assert.That(outcome.NoTenantsFound).IsFalse();
     }
 
     [Test]
@@ -80,6 +87,7 @@ public class TenantDiscoveryTests {
         var outcome = await discovery.RunAsync("https://proxy", "gh");
 
         await Assert.That(outcome.ErrorMessage!).Contains("GitHub rejected");
+        await Assert.That(outcome.NoTenantsFound).IsFalse();
     }
 
     [Test]
@@ -92,6 +100,7 @@ public class TenantDiscoveryTests {
         var outcome = await discovery.RunAsync("https://proxy", "gh");
 
         await Assert.That(outcome.ErrorMessage!).Contains("returned an error");
+        await Assert.That(outcome.NoTenantsFound).IsFalse();
     }
 
     [Test]

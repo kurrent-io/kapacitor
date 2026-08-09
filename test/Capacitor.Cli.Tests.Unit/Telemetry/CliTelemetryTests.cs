@@ -1,4 +1,5 @@
 using System.Text.Json.Nodes;
+using Capacitor.Cli.Commands;
 using Capacitor.Cli.Core.Telemetry;
 using TUnit.Assertions;
 using TUnit.Assertions.Extensions;
@@ -157,5 +158,87 @@ public class CliTelemetryTests {
         await Assert.That(mcpSink.Any(e => e.Name == "cli_first_run")).IsFalse();
         await Assert.That(humanSink.Any(e => e.Name == "cli_first_run")).IsTrue();
         await Assert.That(TelemetryState.Read().NoticeShown).IsTrue();
+    }
+
+    // The property "never mint a device id while opted out" still holds — only its enforcement
+    // point moved. TelemetryState.GetOrCreateDeviceId no longer re-checks state.Enabled itself
+    // (TelemetryStateTests.Get_or_create_device_id_mints_unconditionally_regardless_of_the_persisted_flag
+    // pins that it now mints even when called directly against a disabled state); Initialize's
+    // own `if (!Enabled) return;` is the one gate left, and it must never reach
+    // GetOrCreateDeviceId at all when TelemetrySettings.Resolve says disabled.
+    [Test]
+    public async Task Initialize_never_mints_a_device_id_while_opted_out_via_persisted_config() {
+        TelemetryState.PathOverride = NewStatePath();
+        TelemetryState.SetEnabled(false);
+        var sink = new List<TelemetryEvent>();
+        CliTelemetry.TestSink = sink;
+
+        CliTelemetry.Initialize("status", null, loggedIn: false);
+
+        await Assert.That(CliTelemetry.Enabled).IsFalse();
+        await Assert.That(TelemetryState.Read().Id).IsNull();
+    }
+
+    // Regression test for the P2 finding: GetOrCreateDeviceId used to independently veto minting
+    // whenever the PERSISTED flag was false, regardless of what TelemetrySettings.Resolve (which
+    // already accounts for KCAP_TELEMETRY outranking the persisted config) had decided. That made
+    // the documented top-priority env var unable to opt back in once a user had persisted "off" —
+    // Initialize would resolve Enabled=true, call GetOrCreateDeviceId, get null back from the
+    // stale independent check, and disable itself right back. Mutates the REAL process env var
+    // (TelemetrySettings.Resolve(bool?) reads it live), safe under this class's shared
+    // [NotInParallel] lock — no other suite in this run touches the real KCAP_TELEMETRY var.
+    [Test]
+    public async Task Kcap_telemetry_env_var_overrides_a_persisted_off_and_mints_a_device_id() {
+        TelemetryState.PathOverride = NewStatePath();
+        TelemetryState.SetEnabled(false);
+        var sink = new List<TelemetryEvent>();
+        CliTelemetry.TestSink = sink;
+
+        var saved = Environment.GetEnvironmentVariable("KCAP_TELEMETRY");
+        Environment.SetEnvironmentVariable("KCAP_TELEMETRY", "1");
+        try {
+            CliTelemetry.Initialize("status", null, loggedIn: false);
+
+            await Assert.That(CliTelemetry.Enabled).IsTrue();
+            await Assert.That(TelemetryState.Read().Id).IsNotNull();
+        } finally {
+            Environment.SetEnvironmentVariable("KCAP_TELEMETRY", saved);
+        }
+    }
+
+    // Regression test for the P1 finding's belt-and-braces half. Program.cs now pre-applies
+    // `config set telemetry off` to disk before calling Initialize (see Program.cs), so the plain
+    // case never activates telemetry at all. But Initialize CAN still come up live despite a
+    // persisted "off" — KCAP_TELEMETRY=1 legitimately overrides it (finding 2) — so this
+    // simulates that: telemetry is already live with cli_first_run queued (as if it had resolved
+    // enabled for whatever reason) by the time `config set telemetry off` runs, and asserts
+    // ConfigCommand.TryApplyTelemetry's CliTelemetry.DiscardAndDisable() tears it down completely
+    // in the SAME process — discarding what's queued, disabling the facade, and deleting the id —
+    // rather than leaving it to survive to this process's own ProcessExit flush.
+    [Test]
+    public async Task Opting_out_via_config_tears_down_telemetry_in_the_same_process_and_deletes_the_id() {
+        var path = NewStatePath();
+        TelemetryState.PathOverride = path;
+        var sink = new List<TelemetryEvent>();
+        CliTelemetry.TestSink = sink;
+        CliTelemetry.Initialize("config", null, loggedIn: false);
+
+        // Sanity: telemetry actually came up live and minted an id — otherwise the assertions
+        // below would trivially pass having exercised nothing.
+        await Assert.That(CliTelemetry.Enabled).IsTrue();
+        await Assert.That(TelemetryState.Read().Id).IsNotNull();
+        await Assert.That(sink.Any(e => e.Name == "cli_first_run")).IsTrue();
+
+        var exit = await ConfigCommand.HandleAsync(["config", "set", "telemetry", "off"]);
+
+        await Assert.That(exit).IsEqualTo(0);
+        await Assert.That(CliTelemetry.Enabled).IsFalse();
+        await Assert.That(sink).IsEmpty();
+        await Assert.That(TelemetryState.Read().Id).IsNull();
+        await Assert.That(TelemetryState.PersistedEnabled()).IsEqualTo((bool?)false);
+
+        // The disabled facade must not resurrect anything on the exit-time flush either.
+        await CliTelemetry.FlushAndClose();
+        await Assert.That(sink).IsEmpty();
     }
 }

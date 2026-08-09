@@ -93,7 +93,7 @@ static class McpJudgeServer {
 
             try {
                 var response = await DispatchToolCallAsync(callId, callRequest);
-                ok = true;
+                ok = McpTelemetry.ResponseOk(response);
                 return response;
             } finally {
                 McpTelemetry.ToolCalled("kcap-judge", tool, ok, CommandTiming.ElapsedMs(start));

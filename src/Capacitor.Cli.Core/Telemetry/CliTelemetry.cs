@@ -141,6 +141,26 @@ public static class CliTelemetry {
         } catch { }
     }
 
+    /// <summary>
+    /// Tears telemetry down in THIS process the instant the persisted flag flips to false.
+    /// Program.cs calls <see cref="Initialize"/> before any command handler runs, so by the time
+    /// `kcap config set telemetry off` executes, telemetry has already resolved enabled (no file
+    /// on a fresh machine), minted a device id, and possibly queued <c>cli_first_run</c> — the
+    /// persisted flag alone would not stop THIS process's own ProcessExit flush from shipping it.
+    /// Called from <c>ConfigCommand.TryApplyTelemetry</c> right after
+    /// <see cref="TelemetryState.SetEnabled"/> persists the "off" (which already clears the
+    /// on-disk id — this clears the in-memory copy and whatever was queued for it). Re-enabling
+    /// later mints a fresh id via the normal <see cref="Initialize"/> path.
+    /// </summary>
+    public static void DiscardAndDisable() {
+        try {
+            TestSink?.Clear();
+            _client   = null;
+            _deviceId = null;
+            Enabled   = false;
+        } catch { }
+    }
+
     static void NoticeAndFirstRun() {
         if (TelemetryState.Read().NoticeShown) return;
 

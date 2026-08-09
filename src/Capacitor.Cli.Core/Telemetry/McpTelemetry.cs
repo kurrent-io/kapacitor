@@ -43,4 +43,22 @@ public static class McpTelemetry {
             return "unknown";
         }
     }
+
+    /// <summary>
+    /// Every kcap MCP server's tools/call dispatch catches its own exceptions (invalid URLs,
+    /// unknown tools, auth failures, ...) and returns a normal JSON-RPC result shaped
+    /// <c>{"result":{"content":[...],"isError":true}}</c> rather than throwing or an
+    /// <c>{"error":...}</c> envelope — so "the call returned a string" says nothing about
+    /// success. This reads that flag out of the response the dispatcher already produced.
+    /// Read defensively, for the telemetry wrapper only: anything that isn't an explicit
+    /// `isError: true` (missing, false, or unparseable — the latter would itself be a
+    /// serialization bug elsewhere) counts as success rather than throwing here.
+    /// </summary>
+    internal static bool ResponseOk(string responseJson) {
+        try {
+            return JsonNode.Parse(responseJson)?["result"]?["isError"]?.GetValue<bool>() != true;
+        } catch {
+            return true;
+        }
+    }
 }

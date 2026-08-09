@@ -95,6 +95,20 @@ if (CommandEvents.IsReportable(command)) {
     try { loggedIn = await TokenStore.LoadAsync() is not null; } catch { }
 }
 
+// `kcap config set telemetry off` must never activate telemetry for the very invocation that
+// opts out: without this, Initialize below resolves Enabled from the not-yet-updated persisted
+// flag, mints a device id, shows the first-run notice, and queues cli_first_run — all before
+// ConfigCommand ever runs. Pre-apply the "off" to disk here so Initialize sees it already
+// persisted. Value recognition only (no throw on garbage — an invalid value is reported
+// normally once ConfigCommand actually dispatches); KCAP_TELEMETRY=1 still overrides a persisted
+// "off" exactly as it does everywhere else, since Resolve checks the env var first regardless of
+// what's on disk. ConfigCommand.TryApplyTelemetry re-applies the same (idempotent) change and
+// covers that override case with its own DiscardAndDisable.
+if (args.Length >= 4 && command == "config" && args[1] == "set" && args[2] == "telemetry"
+ && ConfigCommand.TryParseTelemetryToggle(args[3]) == false) {
+    TelemetryState.SetEnabled(false);
+}
+
 CliTelemetry.Initialize(command, baseUrl, loggedIn);
 
 AppDomain.CurrentDomain.ProcessExit += (_, _) => {

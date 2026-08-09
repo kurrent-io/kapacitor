@@ -65,16 +65,53 @@ public class TelemetryStateTests {
         await Assert.That(timestampAfterSecondCall).IsEqualTo(timestampAfterFirstCall);
     }
 
-    // Opting out before first run must not mint an analytics identifier at all.
+    // GetOrCreateDeviceId no longer re-decides precedence: an earlier revision independently
+    // vetoed minting when state.Enabled was false, which meant KCAP_TELEMETRY=1 could never
+    // override a persisted opt-out (CliTelemetry.Initialize would resolve enabled, call this
+    // method, and this method would silently disable the facade right back). Precedence is
+    // TelemetrySettings.Resolve's job alone; Initialize's own gate is what skips this call
+    // entirely when disabled — see CliTelemetryTests for that property asserted through the real
+    // gate, and Kcap_telemetry_env_var_overrides_a_persisted_off_and_mints_a_device_id for the
+    // regression this fixes. Called directly, this method mints unconditionally.
     [Test]
-    public async Task No_device_id_is_written_while_disabled() {
+    public async Task Get_or_create_device_id_mints_unconditionally_regardless_of_the_persisted_flag() {
         TelemetryState.PathOverride = NewTempPath();
         TelemetryState.SetEnabled(false);
 
         var id = TelemetryState.GetOrCreateDeviceId();
 
-        await Assert.That(id).IsNull();
+        await Assert.That(id).IsNotNull();
+        await Assert.That(TelemetryState.Read().Id).IsEqualTo(id);
+    }
+
+    // Closes a documented gap: the spec justifies telemetry.json being separate from
+    // machine.json on the grounds that opt-out can delete the analytics id outright, not merely
+    // stop minting new ones.
+    [Test]
+    public async Task Set_enabled_false_deletes_an_existing_device_id() {
+        TelemetryState.PathOverride = NewTempPath();
+        var id = TelemetryState.GetOrCreateDeviceId();
+        await Assert.That(id).IsNotNull();
+
+        TelemetryState.SetEnabled(false);
+
         await Assert.That(TelemetryState.Read().Id).IsNull();
+        await Assert.That(TelemetryState.PersistedEnabled()).IsEqualTo((bool?)false);
+    }
+
+    // Re-enabling must not resurrect the discarded id — GetOrCreateDeviceId mints a fresh one,
+    // which is the more private behaviour the spec calls for.
+    [Test]
+    public async Task Re_enabling_after_disable_mints_a_fresh_device_id() {
+        TelemetryState.PathOverride = NewTempPath();
+        var original = TelemetryState.GetOrCreateDeviceId();
+
+        TelemetryState.SetEnabled(false);
+        TelemetryState.SetEnabled(true);
+        var fresh = TelemetryState.GetOrCreateDeviceId();
+
+        await Assert.That(fresh).IsNotNull();
+        await Assert.That(fresh).IsNotEqualTo(original);
     }
 
     [Test]
@@ -88,12 +125,14 @@ public class TelemetryStateTests {
         await Assert.That(TelemetryState.PersistedEnabled()).IsEqualTo((bool?)true);
     }
 
+    // Superseded by Set_enabled_false_deletes_an_existing_device_id above: disabling now clears
+    // the id (finding fix), so SetEnabled(true) — not (false) — is the preserving case.
     [Test]
-    public async Task Set_enabled_preserves_existing_device_id() {
+    public async Task Set_enabled_true_preserves_existing_device_id() {
         TelemetryState.PathOverride = NewTempPath();
         var id = TelemetryState.GetOrCreateDeviceId();
 
-        TelemetryState.SetEnabled(false);
+        TelemetryState.SetEnabled(true);
 
         await Assert.That(TelemetryState.Read().Id).IsEqualTo(id);
     }
@@ -111,13 +150,17 @@ public class TelemetryStateTests {
     public async Task Mark_notice_shown_preserves_existing_device_id_and_enabled() {
         TelemetryState.PathOverride = NewTempPath();
         var id = TelemetryState.GetOrCreateDeviceId();
-        TelemetryState.SetEnabled(false);
+        // Enabled=true here (not false): disabling now clears Id (finding fix), so pairing
+        // MarkNoticeShown with a disabled state would make Id's expected value ambiguous. The
+        // property this test cares about — MarkNoticeShown doesn't clobber Id or Enabled — reads
+        // just as well from the enabled case.
+        TelemetryState.SetEnabled(true);
 
         TelemetryState.MarkNoticeShown();
 
         var state = TelemetryState.Read();
         await Assert.That(state.Id).IsEqualTo(id);
-        await Assert.That(state.Enabled).IsEqualTo((bool?)false);
+        await Assert.That(state.Enabled).IsEqualTo((bool?)true);
         await Assert.That(state.NoticeShown).IsTrue();
     }
 
@@ -132,6 +175,22 @@ public class TelemetryStateTests {
 
         await Assert.That(state.Id).IsNull();
         await Assert.That(state.NoticeShown).IsFalse();
+    }
+
+    // Writes go through a temp-file-then-rename so an unlocked concurrent Read() never observes
+    // a half-written file (File.WriteAllText truncates before rewriting, which a torn read could
+    // catch as corrupt JSON and silently resolve to "enabled" again). This asserts the visible
+    // consequence: no stray temp file left in the directory once a write completes.
+    [Test]
+    public async Task Write_leaves_no_temp_file_behind_after_a_successful_mutation() {
+        var path = NewTempPath();
+        TelemetryState.PathOverride = path;
+
+        TelemetryState.SetEnabled(false);
+
+        var dir     = Path.GetDirectoryName(path)!;
+        var entries = Directory.GetFiles(dir);
+        await Assert.That(entries).IsEquivalentTo(new[] { path });
     }
 
     [Test]

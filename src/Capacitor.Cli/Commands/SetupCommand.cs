@@ -883,7 +883,11 @@ public static class SetupCommand {
         var discovery = new TenantDiscovery(proxyClient, new SpectreTenantPicker());
         var outcome   = await discovery.RunAsync(AuthProxyEndpoint.Url, ghToken);
 
-        if (outcome.Tenants.Length == 0) SetupFunnel.TenantNone(AuthProvider.GitHubApp);
+        // Keyed on the discriminator, not outcome.Tenants.Length == 0: a proxy-unreachable,
+        // token-rejected, or upstream-error outcome ALSO returns zero tenants, and those are
+        // discovery-service failures, not "authenticated but has no tenant" — the funnel's
+        // denominator would otherwise be inflated with outages that never reached signup.
+        if (outcome.NoTenantsFound) SetupFunnel.TenantNone(AuthProvider.GitHubApp);
 
         if (outcome.ErrorMessage is not null) {
             AnsiConsole.MarkupLine($"  [red]✗[/] {Markup.Escape(outcome.ErrorMessage)}");

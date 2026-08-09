@@ -120,16 +120,35 @@ public static class ConfigCommand {
     public static bool TryApplyTelemetry(string key, string value) {
         if (key != "telemetry") return false;
 
-        var enabled = value.Trim().ToLowerInvariant() switch {
-            "on" or "true" or "1" or "yes"  => true,
-            "off" or "false" or "0" or "no" => false,
-            _ => throw new ArgumentException($"Invalid value for telemetry: '{value}'. Must be on or off."),
-        };
+        var enabled = TryParseTelemetryToggle(value)
+            ?? throw new ArgumentException($"Invalid value for telemetry: '{value}'. Must be on or off.");
 
         TelemetryState.SetEnabled(enabled);
 
+        // Belt-and-braces, not the primary defence: Program.cs's pre-Initialize check (see
+        // Program.cs, right before CliTelemetry.Initialize) already stops telemetry from ever
+        // activating for a plain `config set telemetry off`, so there is normally nothing left to
+        // discard by the time this runs. But KCAP_TELEMETRY=1 legitimately overrides a persisted
+        // "off" (finding: env outranks config), so Initialize can still have come up live despite
+        // the value being applied here — tear it down in that case too.
+        if (!enabled) CliTelemetry.DiscardAndDisable();
+
         return true;
     }
+
+    /// <summary>
+    /// Pure recognizer for the "telemetry" value vocabulary. Shared by <see cref="TryApplyTelemetry"/>
+    /// (which throws on an unrecognized value — invalid input is this command's problem to report)
+    /// and Program.cs's pre-<c>CliTelemetry.Initialize</c> short-circuit (which must NOT throw: an
+    /// invalid value there is reported normally once the command actually dispatches). Returns
+    /// null for anything unrecognized.
+    /// </summary>
+    internal static bool? TryParseTelemetryToggle(string value) =>
+        value.Trim().ToLowerInvariant() switch {
+            "on" or "true" or "1" or "yes"  => true,
+            "off" or "false" or "0" or "no" => false,
+            _                                => null,
+        };
 
     /// <summary>
     /// Applies a single <c>key = value</c> update to a <see cref="Profile"/>. Pure function, exposed for testing.

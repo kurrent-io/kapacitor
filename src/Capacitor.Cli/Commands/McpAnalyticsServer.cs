@@ -72,7 +72,7 @@ static class McpAnalyticsServer {
 
             try {
                 var response = await DispatchToolCallAsync(callId, callRequest);
-                ok = true;
+                ok = McpTelemetry.ResponseOk(response);
                 return response;
             } finally {
                 McpTelemetry.ToolCalled("kcap-analytics", tool, ok, CommandTiming.ElapsedMs(start));

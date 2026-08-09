@@ -9,16 +9,30 @@ namespace Capacitor.Cli.Core.Telemetry;
 /// caller is on a user's command path and must not wait on a broken network.
 /// </summary>
 public sealed class TelemetryClient(
-        HttpMessageHandler handler, TelemetrySpool spool, string token, string endpoint) {
+        HttpMessageHandler handler, TelemetrySpool spool, string token, string endpoint,
+        TimeProvider? timeProvider = null) {
     readonly List<TelemetryEvent> _queue = [];
+
+    // Test seam only: production always uses the default (real) clock. Lets a test simulate a
+    // slow drain/serialize phase deterministically instead of racing real wall-clock timing.
+    readonly TimeProvider _clock = timeProvider ?? TimeProvider.System;
 
     public void Enqueue(TelemetryEvent e) {
         lock (_queue) _queue.Add(e);
     }
 
     /// <summary>Ships queued + previously spooled events. Returns false when nothing reached
-    /// PostHog, in which case everything has been spooled for a later attempt.</summary>
+    /// PostHog, in which case everything has been spooled for a later attempt.
+    ///
+    /// <paramref name="budget"/> bounds this WHOLE call, not just the HTTP phase: timing starts
+    /// here, before <see cref="TelemetrySpool.DrainAll"/> (disk I/O, up to 2000 spooled lines)
+    /// and <see cref="PostHogPayload.Build"/> (serializing the whole batch) — both of which run
+    /// synchronously on the caller's command path (<c>CliTelemetry.CaptureNow</c>, the
+    /// ProcessExit handler). Without that, a slow disk with a large spool could stall a command
+    /// well past the intended budget before the HTTP phase even started timing.</summary>
     public async Task<bool> FlushAsync(string distinctId, string? orgGroup, TimeSpan budget) {
+        var start = _clock.GetTimestamp();
+
         List<TelemetryEvent> queued;
         lock (_queue) {
             queued = [.. _queue];
@@ -43,8 +57,18 @@ public sealed class TelemetryClient(
 
             var body = PostHogPayload.Build(pending, token, distinctId, orgGroup);
 
-            using var http = new HttpClient(handler, disposeHandler: false) { Timeout = budget };
-            using var cts  = new CancellationTokenSource(budget);
+            // Whatever the drain + build above already spent comes out of the budget before the
+            // HTTP phase gets any of it. If that alone exhausted it, a request could not finish
+            // in time regardless of how it's timed out — spill instead of starting one that has
+            // no chance of completing within budget.
+            var remaining = budget - _clock.GetElapsedTime(start);
+            if (remaining <= TimeSpan.Zero) {
+                spool.Append(queued);
+                return false;
+            }
+
+            using var http = new HttpClient(handler, disposeHandler: false) { Timeout = remaining };
+            using var cts  = new CancellationTokenSource(remaining);
             using var content = new StringContent(body, Encoding.UTF8);
             content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
 

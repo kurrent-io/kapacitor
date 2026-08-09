@@ -93,4 +93,50 @@ public class McpTelemetryTests {
 
         await Assert.That(McpTelemetry.SafeToolName(request)).IsEqualTo("unknown");
     }
+
+    // ── ResponseOk: every kcap MCP server's tools/call dispatch catches its own exceptions and
+    // returns isError:true rather than throwing, so "dispatch returned a string" says nothing
+    // about success — this is what the wrapper reads instead. ───────────────────────────────────
+
+    [Test]
+    public async Task ResponseOk_is_false_when_the_result_carries_isError_true() {
+        var response = """{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"boom"}],"isError":true}}""";
+
+        await Assert.That(McpTelemetry.ResponseOk(response)).IsFalse();
+    }
+
+    [Test]
+    public async Task ResponseOk_is_true_when_isError_is_absent() {
+        // The real wire shape on success: BuildToolResult's `isError ? true : null` combined with
+        // DefaultIgnoreCondition.WhenWritingNull means a successful call omits the key entirely.
+        var response = """{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"ok"}]}}""";
+
+        await Assert.That(McpTelemetry.ResponseOk(response)).IsTrue();
+    }
+
+    [Test]
+    public async Task ResponseOk_is_true_when_isError_is_explicitly_false() {
+        var response = """{"jsonrpc":"2.0","id":1,"result":{"content":[],"isError":false}}""";
+
+        await Assert.That(McpTelemetry.ResponseOk(response)).IsTrue();
+    }
+
+    [Test]
+    public async Task ResponseOk_never_throws_on_malformed_json() {
+        await Assert.That(McpTelemetry.ResponseOk("not json at all")).IsTrue();
+        await Assert.That(McpTelemetry.ResponseOk("")).IsTrue();
+        await Assert.That(McpTelemetry.ResponseOk("""{"result":"not-an-object"}""")).IsTrue();
+        await Assert.That(McpTelemetry.ResponseOk("""{"result":{"isError":"not-a-bool"}}""")).IsTrue();
+    }
+
+    [Test]
+    public async Task ResponseOk_is_true_for_a_jsonrpc_error_envelope() {
+        // A protocol-level error (bad method, malformed request) is a different failure shape
+        // entirely — {"error":...}, no "result" at all — distinct from the tool-level
+        // isError:true this helper exists to read. Not this helper's concern either way: it
+        // returns true (no isError:true found), same as any other shape lacking that flag.
+        var response = """{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"Method not found"}}""";
+
+        await Assert.That(McpTelemetry.ResponseOk(response)).IsTrue();
+    }
 }

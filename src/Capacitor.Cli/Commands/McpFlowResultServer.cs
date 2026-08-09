@@ -130,7 +130,7 @@ static class McpFlowResultServer {
 
             try {
                 var response = await DispatchToolCallAsync(callId, callRequest);
-                ok = true;
+                ok = McpTelemetry.ResponseOk(response);
                 return response;
             } finally {
                 McpTelemetry.ToolCalled("kcap-flow-result", tool, ok, CommandTiming.ElapsedMs(start));

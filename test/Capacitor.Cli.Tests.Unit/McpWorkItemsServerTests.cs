@@ -1,5 +1,6 @@
 using System.Text.Json.Nodes;
 using Capacitor.Cli.Commands;
+using Capacitor.Cli.Core.Telemetry;
 
 namespace Capacitor.Cli.Tests.Unit;
 
@@ -473,5 +474,44 @@ public class McpWorkItemsServerTests {
         var h = await DispatchAsync("declare_work_breakdown", """{"part_ids":["a"]}""");
 
         await Assert.That(h.Calls).IsEqualTo(0);
+    }
+
+    // ── telemetry: a real dispatch failure must read back as ok=false ─────────────────────────
+    //
+    // Regression coverage for the systematic MCP telemetry bug: every server's TimedDispatchToolCallAsync
+    // used to set ok=true merely because DispatchToolCallAsync returned a string, even when that
+    // string was a JSON-RPC result carrying isError:true (HandleToolCallAsync catches its own
+    // exceptions and returns such a result rather than throwing). This drives a REAL failure
+    // through the actual dispatch method — an unrecognized tool name, which never reaches the
+    // network — and feeds its actual output into McpTelemetry.ResponseOk, the same function the
+    // wrapper now calls, so a reversion of either half would fail this test.
+    [Test]
+    public async Task ResponseOk_reads_false_from_an_unknown_tool_dispatch_error() {
+        using var client = new HttpClient(new CapturingHandler());
+        var request = new JsonObject {
+            ["params"] = new JsonObject { ["name"] = "not_a_real_tool", ["arguments"] = new JsonObject() }
+        };
+
+        var response = await McpWorkItemsServer.HandleToolCallAsync(JsonValue.Create(1)!, request, client, "http://x");
+
+        await Assert.That(McpTelemetry.ResponseOk(response)).IsFalse();
+    }
+
+    // Sanity check for the same wiring: a genuine success must still read back as ok=true, so a
+    // bug that made ResponseOk (or the dispatch it reads) unconditionally false would not slip
+    // past the test above alone.
+    [Test]
+    public async Task ResponseOk_reads_true_from_a_successful_dispatch() {
+        using var client = new HttpClient(new CapturingHandler());
+        var request = new JsonObject {
+            ["params"] = new JsonObject {
+                ["name"]      = "get_work_item_topology",
+                ["arguments"] = JsonNode.Parse("""{"work_item_id":"wi-1"}""")
+            }
+        };
+
+        var response = await McpWorkItemsServer.HandleToolCallAsync(JsonValue.Create(1)!, request, client, "http://x");
+
+        await Assert.That(McpTelemetry.ResponseOk(response)).IsTrue();
     }
 }
