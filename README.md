@@ -447,6 +447,16 @@ workspace: unknown
 
 Status and polled round-result output also cross-check the reviewer's **vendor**: if the `reviewer` participant's vendor disagrees with the run-level `applied_reviewer_vendor` (or the server flags `reviewer_vendor_mismatch`), the CLI renders a `⚠ reviewer vendor mismatch` warning telling the driver to treat the run's results as suspect, close the flow, and report it. Agreement renders nothing.
 
+A dynamic (`definition_yaml`) flow whose participants can be dollar-metered also reports its **budget enforcement** level, so you know whether every participant's spend counts against `budget_usd`:
+
+```
+budget enforcement: full
+
+budget enforcement: partial (unmetered roles: probe, helper)
+```
+
+`partial` names the roles whose vendor hosts turns that report no token usage (they're bounded by `max_rounds`/`round_timeout`/`idle_ttl` instead of the dollar budget); `full` means every participant's spend is metered. The line is **absent** for catalog review flows, for runs without a dynamic budget, and against an older server — its absence carries no meaning. It appears on start, every round, status and close.
+
 Responses from these tools may carry **`pending_messages`** — out-of-band notes participants push to the driver via `send_flow_message` (see the flow-result server below). The CLI acknowledges them to the server after rendering the response, so a message is normally shown once — but a failed acknowledgment redelivers it on a later call (at-least-once), so consumers should treat the `message_id` as the dedup key and react to each id only once.
 
 While the server is rebuilding its flows read model (a projection replay after a server upgrade), flow tools can return a coded **`server_catching_up`** error (HTTP 409) with the replay's progress. It is temporary and retryable: wait a few minutes and retry, or ask the user how to proceed. The CLI renders the same guidance on every surface — start/submit, status/close, and the flow-result sidecar tools.

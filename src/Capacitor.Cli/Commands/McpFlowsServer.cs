@@ -1195,6 +1195,7 @@ static class McpFlowsServer {
                       "lazily on its first message.");
             sb.AppendLine();
             AppendWorkspaceDiagnostics(sb, node);
+            AppendBudgetDisclosure(sb, node);
             pendingIds = AppendPendingMessages(sb, node);
             return sb.ToString();
         } catch {
@@ -1560,6 +1561,7 @@ static class McpFlowsServer {
         }
         AppendReviewerModelAudit(sb, node);
         AppendWorkspaceDiagnostics(sb, node);
+        AppendBudgetDisclosure(sb, node);
         // Before the result text: the driver should read the warning before the (suspect) result.
         AppendReviewerVendorMismatchWarning(sb, node);
         if (!string.IsNullOrEmpty(resultText)) { sb.AppendLine(); sb.Append(resultText); }
@@ -1599,6 +1601,7 @@ static class McpFlowsServer {
             if (vendorSource is not null) { sb.Append("reviewer_vendor_source: "); AppendLine(sb, vendorSource); }
             AppendReviewerModelAudit(sb, node);
             AppendWorkspaceDiagnostics(sb, node);
+            AppendBudgetDisclosure(sb, node);
 
             if (!string.IsNullOrEmpty(resultText)) {
                 sb.AppendLine();
@@ -1648,6 +1651,7 @@ static class McpFlowsServer {
             if (vendorSource is not null) { sb.Append("reviewer_vendor_source: "); AppendLine(sb, vendorSource); }
             AppendReviewerModelAudit(sb, node);
             AppendWorkspaceDiagnostics(sb, node);
+            AppendBudgetDisclosure(sb, node);
 
             if (!string.IsNullOrEmpty(lastResultKind)) {
                 sb.Append("result_kind: "); AppendLine(sb, lastResultKind);
@@ -1745,6 +1749,7 @@ static class McpFlowsServer {
             // Close is often the LAST thing a caller reads, so it is the surface most likely to be
             // the only record of what the reviewer actually saw.
             AppendWorkspaceDiagnostics(sb, node);
+            AppendBudgetDisclosure(sb, node);
 
             pendingIds = AppendPendingMessages(sb, node);
             return sb.ToString();
@@ -1854,6 +1859,45 @@ static class McpFlowsServer {
                 sb.Append("workspace: "); AppendLine(sb, mode);
                 break;
         }
+    }
+
+    /// <summary>Render the additive budget-enforcement disclosure a dynamic run carries.
+    /// ABSENT (both keys omitted) on the wire for catalog / budget-irrelevant runs and against an
+    /// older server — nothing is rendered, byte-identical to before. "partial" names the roles whose
+    /// spend is rounds/time-governed rather than dollar-metered; "full" (or any future level) is
+    /// reported verbatim.</summary>
+    static void AppendBudgetDisclosure(StringBuilder sb, JsonObject node) {
+        var enforcement = TryGetString(node, "budget_enforcement");
+        if (enforcement is null) return;   // catalog / no dynamic budget / old server → render nothing
+
+        if (enforcement == "partial") {
+            sb.Append("budget enforcement: partial");
+            if (node["unmetered_roles"] is JsonArray roles) {
+                // Skip malformed/hostile elements (see IsRenderableRole); open the parenthetical
+                // only once a valid role is found.
+                var open = false;
+                foreach (var role in roles) {
+                    if (role is not JsonValue v || !v.TryGetValue<string>(out var name) || !IsRenderableRole(name))
+                        continue;
+                    sb.Append(open ? ", " : " (unmetered roles: ");
+                    sb.Append(name);
+                    open = true;
+                }
+                if (open) sb.Append(')');
+            }
+            sb.AppendLine();
+        } else {
+            sb.Append("budget enforcement: "); AppendLine(sb, enforcement);
+        }
+    }
+
+    /// <summary>A role name is renderable only if it is non-blank and free of control characters —
+    /// a server-supplied name with a newline/CR would otherwise forge lines in this line-oriented
+    /// output.</summary>
+    static bool IsRenderableRole(string name) {
+        if (string.IsNullOrWhiteSpace(name)) return false;
+        foreach (var c in name) if (char.IsControl(c)) return false;
+        return true;
     }
 
     /// <summary> E-c: deliver-once ack for pending messages. Callers must invoke this
