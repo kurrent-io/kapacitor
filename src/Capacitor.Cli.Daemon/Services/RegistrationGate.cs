@@ -53,7 +53,12 @@ internal sealed class RegistrationGate {
         // The hook owns its diagnostics; this gate has no logger and deliberately swallows.
         if (postRegister is not null) {
             try { await postRegister(); }
-            catch { /* deliberately empty — readiness stays set; best-effort post-register work */ }
+            // Cancellation is a shutdown signal, not a hook failure — it must propagate, never be
+            // swallowed as success.
+            catch (OperationCanceledException) { throw; }
+            // A genuine hook FAILURE is best-effort: MarkRegistered already ran, so it must not un-set
+            // readiness or fault the reconnect path.
+            catch { /* deliberately empty — see summary */ }
         }
     }
 }

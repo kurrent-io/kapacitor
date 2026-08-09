@@ -146,4 +146,19 @@ public class RegistrationGateTests {
         // The daemon is registered despite the post-register throw — the bracket completed cleanly.
         await Assert.That(gate.IsReady(HubConnectionState.Connected)).IsTrue();
     }
+
+    // Cancellation is a shutdown signal, NOT a hook failure: it must propagate out of the bracket rather
+    // than be swallowed as success (readiness still set, since MarkRegistered ran first).
+    [Test]
+    public async Task A_cancelled_post_register_hook_propagates_the_cancellation() {
+        var gate = new RegistrationGate();
+
+        await Assert.That(async () => await gate.RunRegistrationAsync(
+                daemonConnect:    () => Task.CompletedTask,
+                reRegisterAgents: () => Task.CompletedTask,
+                postRegister:     () => throw new OperationCanceledException()))
+            .Throws<OperationCanceledException>();
+
+        await Assert.That(gate.IsReady(HubConnectionState.Connected)).IsTrue();
+    }
 }
