@@ -1873,13 +1873,13 @@ static class McpFlowsServer {
         if (enforcement == "partial") {
             sb.Append("budget enforcement: partial");
             if (node["unmetered_roles"] is JsonArray roles) {
-                // Degrade on any hostile/malformed element rather than throw: skip a non-string
-                // JsonValue, a JsonObject/JsonArray, a JSON null, or an empty string, and open the
-                // parenthetical only once a valid role is found (so an all-invalid array renders no
-                // "(unmetered roles: )" at all).
+                // Degrade on any hostile/malformed element: skip a non-string value, an
+                // object/array, null, whitespace-only, or a name carrying control characters
+                // (a newline would forge a line in this line-oriented output). Open the
+                // parenthetical only once a renderable role is found.
                 var open = false;
                 foreach (var role in roles) {
-                    if (role is not JsonValue v || !v.TryGetValue<string>(out var name) || string.IsNullOrEmpty(name))
+                    if (role is not JsonValue v || !v.TryGetValue<string>(out var name) || !IsRenderableRole(name))
                         continue;
                     sb.Append(open ? ", " : " (unmetered roles: ");
                     sb.Append(name);
@@ -1891,6 +1891,15 @@ static class McpFlowsServer {
         } else {
             sb.Append("budget enforcement: "); AppendLine(sb, enforcement);
         }
+    }
+
+    /// <summary>A role name is renderable only if it is non-blank and free of control characters —
+    /// a server-supplied name with a newline/CR would otherwise forge lines in this line-oriented
+    /// output.</summary>
+    static bool IsRenderableRole(string name) {
+        if (string.IsNullOrWhiteSpace(name)) return false;
+        foreach (var c in name) if (char.IsControl(c)) return false;
+        return true;
     }
 
     /// <summary> E-c: deliver-once ack for pending messages. Callers must invoke this
