@@ -1872,13 +1872,20 @@ static class McpFlowsServer {
 
         if (enforcement == "partial") {
             sb.Append("budget enforcement: partial");
-            if (node["unmetered_roles"] is JsonArray roles && roles.Count > 0) {
-                sb.Append(" (unmetered roles: ");
-                for (var i = 0; i < roles.Count; i++) {
-                    if (i > 0) sb.Append(", ");
-                    sb.Append(roles[i]?.GetValue<string>() ?? "");
+            if (node["unmetered_roles"] is JsonArray roles) {
+                // Degrade on any hostile/malformed element rather than throw: skip a non-string
+                // JsonValue, a JsonObject/JsonArray, a JSON null, or an empty string, and open the
+                // parenthetical only once a valid role is found (so an all-invalid array renders no
+                // "(unmetered roles: )" at all).
+                var open = false;
+                foreach (var role in roles) {
+                    if (role is not JsonValue v || !v.TryGetValue<string>(out var name) || string.IsNullOrEmpty(name))
+                        continue;
+                    sb.Append(open ? ", " : " (unmetered roles: ");
+                    sb.Append(name);
+                    open = true;
                 }
-                sb.Append(')');
+                if (open) sb.Append(')');
             }
             sb.AppendLine();
         } else {

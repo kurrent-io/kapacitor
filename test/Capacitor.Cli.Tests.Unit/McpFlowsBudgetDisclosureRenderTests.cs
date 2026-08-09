@@ -59,4 +59,24 @@ public class McpFlowsBudgetDisclosureRenderTests {
         var text = Status("""{"flow_run_id":"f1","definition_id":"spec-review","status":"running"}""");
         await Assert.That(text).DoesNotContain("budget enforcement");
     }
+
+    // A malformed/hostile unmetered_roles must degrade, never throw or render an empty item.
+    [Test] public async Task Malformed_role_elements_are_skipped_not_thrown() {
+        var text = Round("""{"flow_run_id":"f1","status":"clean","result_kind":"clean","budget_enforcement":"partial","unmetered_roles":["reviewer",null,42,{"x":1},"","driver"]}""");
+        await Assert.That(text).Contains("budget enforcement: partial");
+        await Assert.That(text).Contains("unmetered roles: reviewer, driver");
+        await Assert.That(text).DoesNotContain(", ,");
+    }
+
+    [Test] public async Task All_invalid_roles_render_partial_without_a_parenthetical() {
+        var text = Round("""{"flow_run_id":"f1","status":"clean","result_kind":"clean","budget_enforcement":"partial","unmetered_roles":[null,42]}""");
+        await Assert.That(text).Contains("budget enforcement: partial");
+        await Assert.That(text).DoesNotContain("unmetered roles");
+    }
+
+    [Test] public async Task A_non_array_unmetered_roles_does_not_throw() {
+        var text = Round("""{"flow_run_id":"f1","status":"clean","result_kind":"clean","budget_enforcement":"partial","unmetered_roles":"oops"}""");
+        await Assert.That(text).Contains("budget enforcement: partial");
+        await Assert.That(text).DoesNotContain("unmetered roles");
+    }
 }
