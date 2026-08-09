@@ -250,15 +250,20 @@ public sealed class ConsentService : IConsentService {
     // merely gave up on locally is still live daemon-side (the clock-step case) and must be allowed
     // to reappear.
     void Prune() {
-        var now      = _time.GetUtcNow();
-        var inFlight = Volatile.Read(ref _inFlightPromptId);
+        var now = _time.GetUtcNow();
         try {
-            _cache.Edit(u => {
-                foreach (var stale in u.Items.Where(p => now > p.PruneAfter && p.PromptId != inFlight).ToList()) {
-                    if (u.Lookup(stale.RequestId) is { HasValue: true, Value.PromptId: var id } && id == stale.PromptId)
-                        u.Remove(stale.RequestId);
-                }
-            });
+            // The in-flight marker is read INSIDE the section that edits: snapshotting it first
+            // would let a resolve claim its target in the gap and still lose it mid-call, after
+            // which a TransportFailure's refresh finds nothing cached and cannot re-add it.
+            lock (_lock) {
+                var inFlight = _inFlightPromptId;
+                _cache.Edit(u => {
+                    foreach (var stale in u.Items.Where(p => now > p.PruneAfter && p.PromptId != inFlight).ToList()) {
+                        if (u.Lookup(stale.RequestId) is { HasValue: true, Value.PromptId: var id } && id == stale.PromptId)
+                            u.Remove(stale.RequestId);
+                    }
+                });
+            }
         } catch (Exception ex) {
             // The ticker is SHARED (tray, rows, countdowns): a throw from this handler would tear
             // down everyone's 1 Hz heartbeat, e.g. on a tick racing shutdown's cache disposal.

@@ -304,6 +304,33 @@ public class ConsentServiceTests {
         await Assert.That(h.View.Count).IsEqualTo(1);
     }
 
+    // The OTHER cancellation shape: cancelled while the ops call is in flight, so the OCE surfaces
+    // from INSIDE the resolve's try — the one place the unmapped-exception arm could swallow it and
+    // fabricate a TransportFailure settlement out of a caller's abort.
+    [Test]
+    public async Task Cancellation_in_flight_propagates_and_keeps_the_entry() {
+        using var h = new ConsentHarness();
+        await h.StartAsync();
+        var entry = await h.EmitAsync(Dto());
+        using var cts = new CancellationTokenSource();
+
+        h.Ops.ArmResolve(); // never completed: the token, not the ack, ends this call
+        var resolve = h.Service.ResolveAsync(entry, allow: true, saveRule: false, cts.Token);
+        await WaitUntilAsync(() => h.Ops.ResolveCalls == 1, what: "the resolve to reach the ops layer");
+        await cts.CancelAsync();
+
+        await Assert.ThrowsAsync<OperationCanceledException>(() => resolve);
+        await Assert.That(h.View.Count).IsEqualTo(1);
+
+        // No tombstone: after a clearing resubscribe the same identity is admitted again.
+        await h.DrainAsync();
+        await h.RetryAsync();
+        h.Stream.EmitSubscribed();
+        await WaitUntilAsync(() => h.View.Count == 0, what: "the Subscribed clear");
+        await h.EmitAsync(Dto());
+        await Assert.That(h.View.Count).IsEqualTo(1);
+    }
+
     // ---- 12: prune ----
 
     [Test]
