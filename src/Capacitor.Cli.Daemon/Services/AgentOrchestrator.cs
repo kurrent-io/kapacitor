@@ -1065,6 +1065,13 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     internal async Task SendDaemonStatusReportOnceAsync() {
         try { await _server.DaemonStatusReportAsync(BuildStatusReport()); }
         catch (Exception ex) { _logger.LogDebug(ex, "DaemonStatusReport send failed — ignoring"); }
+        // Settlement lost-ack redelivery (D1): after advertising the watermarks, re-deliver any UNRETIRED terminal acks — a lost
+        // ack in a reconnect window is re-elicited here instead of waiting for the server to retransmit
+        // the whole command (the server tolerates the duplicate per D2″). No-op when nothing is
+        // unretired; sends are contained + one-way, so this can never fault the report path. This covers
+        // the periodic tick, the server's on-request report, and the activity-triggered report — every
+        // status-report moment is also a re-sync moment. A validated AckProcessedPrefix stops the re-sends.
+        Processor?.RedeliverUnretiredProcessedAcks();
     }
 
     /// <summary>The out-of-cycle report fired on a launch-stage transition, wired in
@@ -3103,7 +3110,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     /// The bounded ownership-retry in <see cref="ServerConnection.RequestPermissionAsync"/> is the
     /// final safety net for the residual case.
     /// </summary>
-    async Task ReRegisterAgentsAsync() {
+    internal async Task ReRegisterAgentsAsync() {
         // PrivateLocal agents are never registered with the server, so never re-register them.
         foreach (var agent in _agents.Values.Where(a => (a.Status is "Starting" or "Running") && !a.IsPrivate)) {
             for (var attempt = 1; ; attempt++) {
@@ -3149,6 +3156,13 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
                 }
             }
         }
+
+        // Settlement lost-ack redelivery (D1): a reconnect is the highest-value re-sync moment — the terminal ack most likely to
+        // have been lost is one that settled while the transport was down. Re-deliver every unretired
+        // terminal ack now that registration is back, rather than waiting up to a full status-report
+        // interval. Fires regardless of agent count (an ack can be unretired after its agent is gone) and
+        // is a contained, one-way no-op when nothing is unretired.
+        Processor?.RedeliverUnretiredProcessedAcks();
     }
 
     static readonly TimeSpan StartupTimeout     = TimeSpan.FromSeconds(90);

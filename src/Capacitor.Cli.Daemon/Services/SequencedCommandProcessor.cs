@@ -61,7 +61,22 @@ internal readonly record struct CommandOutcome(
 /// before the write and never touched again.</para>
 /// </summary>
 internal sealed class SequencedCommandProcessor : IAsyncDisposable {
-    sealed class CacheEntry { public required string CommandId; public bool Processed; public CommandOutcome Outcome; }
+    sealed class CacheEntry {
+        public required string CommandId;
+        // Settlement lost-ack redelivery (D1): the item's own identity, retained so a settled entry can build/re-send its
+        // terminal ack at status-tick / reconnect time without the original SequencedItem in hand.
+        // Epoch is the processor-wide _epoch; Seq is also the cache key, kept here for self-contained
+        // rebuilds.
+        public required long Seq;
+        public required string AgentId;
+        public bool Processed;
+        public CommandOutcome Outcome;
+        // Settlement lost-ack redelivery (D1): the SINGLE published terminal ack. Frozen once (get-or-freeze) so the proactive
+        // send, a duplicate-replay, and every tick re-delivery all carry byte-identical liveness — a
+        // live-liveness read that changed between two sends can never make two acks for one command
+        // disagree. Null until the first successful freeze (a throwing liveness read defers it).
+        public CommandAck? FrozenAck;
+    }
 
     /// <summary>One lane entry. EXACTLY ONE shape is populated — sequenced (identity + terminal-answer
     /// machinery + a per-item execution-completion task) or un-sequenced (a bare delegate, no reply
@@ -231,7 +246,7 @@ internal sealed class SequencedCommandProcessor : IAsyncDisposable {
 
         // ACCEPT + lane-item, atomically under _lock.
         _highestAcceptedSeq = item.Seq;
-        _cache[item.Seq] = new CacheEntry { CommandId = item.CommandId, Processed = false };
+        _cache[item.Seq] = new CacheEntry { CommandId = item.CommandId, Seq = item.Seq, AgentId = item.AgentId, Processed = false };
         var done = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var lane = LaneItem.ForSequenced(item, execute, done);
 
@@ -495,12 +510,62 @@ internal sealed class SequencedCommandProcessor : IAsyncDisposable {
     /// command reaches this — holding the lock across it would put that read on the critical path of
     /// concurrent <see cref="SubmitAsync"/>/<see cref="AckPrefix"/> callers. Both callers commit the
     /// outcome to the cache first, so an ack can never advertise an outcome the cache lacks.</para></summary>
-    CommandAck BuildProcessedAck(SequencedItem item, CommandOutcome outcome) {
-        var live   = _readLiveness(outcome.AgentId ?? item.AgentId);
+    CommandAck BuildProcessedAck(SequencedItem item, CommandOutcome outcome) =>
+        BuildProcessedAck(item.Seq, item.CommandId, item.AgentId, outcome);
+
+    /// <summary>Settlement lost-ack redelivery (D1): the primitive builder, so a re-delivery can rebuild an entry's terminal ack
+    /// from the cached identity (Seq/CommandId/AgentId + Outcome) without the original SequencedItem. Same
+    /// live <c>_readLiveness</c> read and lock-scope contract as the item overload.</summary>
+    CommandAck BuildProcessedAck(long seq, string commandId, string agentId, CommandOutcome outcome) {
+        var live   = _readLiveness(outcome.AgentId ?? agentId);
         var reason = outcome.RejectReason is { } r ? RejectReasonWireToken(r) : null;
 
-        return new CommandAck(_epoch, item.Seq, item.CommandId, CommandAckState.Processed,
-            outcome.Kind, live, outcome.AgentId ?? item.AgentId, outcome.SessionId, reason);
+        return new CommandAck(_epoch, seq, commandId, CommandAckState.Processed,
+            outcome.Kind, live, outcome.AgentId ?? agentId, outcome.SessionId, reason);
+    }
+
+    /// <summary>Settlement lost-ack redelivery (D1) (freeze the terminal ack): get-or-freeze the SINGLE terminal ack for a settled
+    /// command. The candidate is built OUTSIDE <c>_lock</c> (readLiveness walks lifecycle collections and
+    /// must never run under the lock), then published under <c>_lock</c> IFF the entry has no frozen ack
+    /// yet — a single winner. Every sender (proactive settle, duplicate-replay, tick/reconnect
+    /// re-delivery) sends the RETURNED winner, so a liveness value that changed between two sends can never
+    /// make two terminal acks for one command disagree.
+    /// <para>Returns <c>null</c> when the entry is gone (retired) OR the build threw: a throwing
+    /// readLiveness must not abandon the item — the outcome stays committed <c>Processed</c>, the freeze is
+    /// simply deferred, and a later tick/reconnect re-attempts it. This is the exact containment
+    /// <see cref="SendSettledAck"/> used to apply to the inline build.</para></summary>
+    CommandAck? TryGetOrFreezeAck(long seq, string commandId, string agentId, CommandOutcome outcome) {
+        lock (_lock) {
+            if (!_cache.TryGetValue(seq, out var current)) return null;      // retired
+            if (current.FrozenAck is { } already) return already;            // fast path: winner exists
+        }
+        CommandAck candidate;
+        try {
+            candidate = BuildProcessedAck(seq, commandId, agentId, outcome);
+        } catch (Exception ex) {
+            // Leave FrozenAck null so a later re-delivery retries; the outcome is already committed.
+            _logger.LogDebug(ex, "Deferring terminal-ack freeze for seq {Seq}: liveness read threw.", seq);
+            return null;
+        }
+        lock (_lock) {
+            if (!_cache.TryGetValue(seq, out var entry)) return null;        // retired during the build
+            return entry.FrozenAck ??= candidate;                            // publish iff unset; losers take the winner
+        }
+    }
+
+    /// <summary>Settlement lost-ack redelivery (D1) (re-deliver unretired outcomes): every Processed cache entry the server has NOT
+    /// confirmed via a validated <c>AckProcessedPrefix</c> (retirement evicts the entry, so presence in the
+    /// cache IS the unretired predicate). Snapshotted under <c>_lock</c> so the caller iterates without
+    /// holding it. Each carries what a re-send needs: the frozen ack if already published, else the
+    /// identity+outcome to (re)freeze at send time.</summary>
+    internal IReadOnlyList<(long Seq, string CommandId, string AgentId, CommandOutcome Outcome, CommandAck? FrozenAck)>
+        EnumerateUnretiredProcessedEntries() {
+        lock (_lock) {
+            var result = new List<(long, string, string, CommandOutcome, CommandAck?)>();
+            foreach (var e in _cache.Values)
+                if (e.Processed) result.Add((e.Seq, e.CommandId, e.AgentId, e.Outcome, e.FrozenAck));
+            return result;
+        }
     }
 
     /// <summary>Build AND fire a settled command's terminal ack without ever letting it fault the caller.
@@ -515,8 +580,27 @@ internal sealed class SequencedCommandProcessor : IAsyncDisposable {
     /// <see cref="SubmitAsync"/> it escapes into the hub handler. Both callers reach this only AFTER the
     /// outcome is recorded in the cache, so swallowing the ack costs at most one status-report interval
     /// of slot latency — never a wrong or missing terminal fact.</para></summary>
-    void SendSettledAck(SequencedItem item, CommandOutcome outcome) =>
-        SendContained(() => _sendAck(BuildProcessedAck(item, outcome)), item.Seq, "settled ack");
+    void SendSettledAck(SequencedItem item, CommandOutcome outcome) {
+        // Settlement lost-ack redelivery (D1): send the FROZEN winner (get-or-freeze), never a freshly-built ack — so the proactive
+        // send and any later duplicate-replay/re-delivery are byte-identical. A deferred freeze (liveness
+        // read threw) sends nothing now; a later tick/reconnect re-delivery retries it.
+        if (TryGetOrFreezeAck(item.Seq, item.CommandId, item.AgentId, outcome) is { } ack)
+            SendContained(() => _sendAck(ack), item.Seq, "settled ack");
+    }
+
+    /// <summary>Settlement lost-ack redelivery (D1) (re-deliver unretired outcomes): re-send the terminal ack of every unretired
+    /// Processed command, freezing any winner-less entry first (a freeze deferred by a throwing liveness
+    /// read now retries). The orchestrator calls this after every successful (re)connect + registration and
+    /// on each status-report tick while any unretired processed entry remains, so a terminal ack lost in a
+    /// reconnect window is re-elicited without waiting for the server to retransmit the command. Sends are
+    /// contained + one-way and never block the lane; a validated <see cref="AckProcessedPrefix"/> evicts
+    /// retired entries, which is what makes the re-sends stop.</summary>
+    public void RedeliverUnretiredProcessedAcks() {
+        foreach (var (seq, commandId, agentId, outcome, frozen) in EnumerateUnretiredProcessedEntries()) {
+            var ack = frozen ?? TryGetOrFreezeAck(seq, commandId, agentId, outcome);
+            if (ack is { } resend) SendContained(() => _sendAck(resend), seq, "re-delivered settled ack");
+        }
+    }
 
     /// <summary>Phase B2-b (sequenced-settlement design §5.5): the wire token a cached
     /// <see cref="CommandRejectedReason"/> carries on a processed-duplicate <see cref="CommandAck"/> —
@@ -587,7 +671,7 @@ internal sealed class SequencedCommandProcessor : IAsyncDisposable {
         // would (a) advertise a non-contiguous prefix and (b) be regressed below when the earlier item's
         // consumer later advances to N-1. AdvanceWatermarkLocked is monotonic + contiguous by construction.
         _cache[item.Seq] = new CacheEntry {
-            CommandId = item.CommandId, Processed = true,
+            CommandId = item.CommandId, Seq = item.Seq, AgentId = item.AgentId, Processed = true,
             Outcome = new CommandOutcome(CommandOutcomeKind.InternalError, item.AgentId) };
         AdvanceWatermarkLocked();
         rejection = new CommandRejected(item.Epoch, item.Seq, item.CommandId, CommandRejectedReason.InternalError, item.AgentId);
