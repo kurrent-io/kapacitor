@@ -111,7 +111,9 @@ Verify with `kcap whoami` and `kcap status`. `kcap whoami` prints your identity 
 resolved, then asks the server whether it actually accepts your token — it exits non-zero if the
 server rejects it, or if the token was issued by a different server than the profile now targets
 (re-run `kcap login`). If the server can't be reached it says so and still exits 0, so it stays
-usable offline.
+usable offline. `kcap status` prints its own **Version** line — the installed CLI version, with an
+inline `(update available: …)` annotation when a newer one is out — see
+[`kcap update`](#other-commands) for the full opt-out story.
 
 Setup closes with a **Next steps** box. Each item opens with a question, because neither step is for
 everyone:
@@ -205,7 +207,7 @@ Once set up, Capacitor runs silently in the background. Every Claude Code (and C
 - **Tool usage** — every tool call with timing and results
 - **Token consumption** — input/output/cache token counts per interaction
 - **Repository context** — git repo, branch, and PR linkage
-- **In-agent upgrade prompts** — in Claude Code sessions, when the server is running a newer kcap release than the local CLI, additional context is injected into the session so the agent can offer the user an upgrade via `kcap update`. The stderr `kcap` update hint continues to fire for direct command-line use.
+- **In-agent upgrade prompts** — in Claude Code sessions, when the server is running a newer kcap release than the local CLI, additional context is injected into the session so the agent can offer the user an upgrade via `kcap update`. The stderr `kcap` update hint continues to fire for direct command-line use, and every request also carries the CLI's version to the server so it can surface its own out-of-date banner/notification (see [`kcap update`](#other-commands) for the full picture, including how `update_check: false` turns all of this off).
 - **SessionStart context injection** — at every session start the server injects top evaluation-derived fact clusters for the current repo into Claude's `additionalContext`. The injected block is split into two sections: `## Known patterns` (repo/project facts relevant to any reader) and `## Guidance from past sessions` (agent-targeted action items derived from prior eval suggestions with `audience: "agent"`). Opt out by setting `disable_session_guidelines: true` in `~/.config/kcap/config.json` or via `kcap config set disable_session_guidelines true`.
 - **SessionStart team-memory index** — at every session start (Claude Code, Codex CLI, GitHub Copilot CLI, Gemini CLI, AWS Kiro CLI, Google Antigravity, Pi, OpenCode, and Cursor CLI's `cursor-agent` — see the capability matrix below for the full per-harness rollout) `kcap` also fetches a compact index of durable [team memories](#memory-mcp-server-for-agents) visible for the current repo/machine and appends a `## Team memory` block to the session's injected context (`additionalContext` for Claude, Codex, Copilot, and Gemini, `additional_context` for Cursor, raw stdout for Kiro, `injectSteps`/`userMessage` for Antigravity, system-prompt append via the kcap Pi extension for Pi, and system-entry append via the kcap OpenCode plugin for OpenCode): one `slug: description` line per memory, grouped **Org / Team / Yours**, with a nudge to call `get_memory` / `search_memories` for full content. Only the index is injected — never the bodies — so the cost stays roughly flat as the pool grows (mirrors a local `MEMORY.md`). Best-effort and fail-open (a slow or failed fetch injects nothing, never blocking the hook), and only ever injected once per conversation. Opt out with `disable_memory_index: true` in `~/.config/kcap/config.json` or `kcap config set disable_memory_index true`.
 - **Crash resilience** — if a `kcap` command hits an unexpected error it records the exception (with stack trace) to `~/.config/kcap/crash.log` (honours `KCAP_CONFIG_DIR`; size-capped) and exits cleanly instead of aborting. Hook and detached-generator commands the coding agent spawns **fail open** (exit 0, nothing surfaced to the agent); other commands exit non-zero with a one-line stderr message pointing at the log.
@@ -1808,6 +1810,19 @@ kcap logout         # delete stored tokens
 > **stable** channel (npm dist-tag `latest`); beta is strictly opt-in. Beta
 > releases correspond to server versions rolled out to internal tenants first,
 > so most users should stay on stable.
+>
+> **Staying current, and turning it all off.** Beyond the stderr hint above,
+> every human-facing `kcap` command prints an "Update available" notice after
+> it finishes if a newer version exists, and `kcap status`'s **Version** line
+> shows the same thing inline. Every request `kcap` sends also carries its
+> version (and, if update checks are off, an explicit opt-out marker) to your
+> server, which is how the web dashboard's own out-of-date banner and
+> notification-centre entry — and the in-agent nudge Claude Code sessions can
+> see (above) — know to show up. `kcap config set update_check false` (or
+> `--no-update-check` for a single invocation) turns off **all** of it at
+> once: the stderr hint, the exit-time notice, the `kcap status` annotation,
+> the headers that drive the server-side banner/notification, and the
+> in-agent nudge. It defaults to on.
 
 The v1 config format stored `server_url` as a bare host name without a
 scheme. If `kcap` crashes with `An invalid request URI was provided`

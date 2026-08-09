@@ -644,7 +644,13 @@ public static class ClaudeHookCommand {
                 try {
                     var disabled        = AppConfig.ResolvedProfile?.Profile?.DisableSessionGuidelines is true;
                     var lessonsFragment = SessionGuidelinesEmitter.BuildFragment(responseNode, disabled);
-                    var nudgeFragment   = VersionNudgeEmitter.BuildFragment(responseNode, CapacitorVersion.CurrentDisplay());
+                    // update_check=false opts out of ALL kcap update nudging, including the
+                    // in-agent one — skip emission entirely rather than let a server that still
+                    // sends `version` sneak the fragment past a locally-disabled preference.
+                    var updateCheckOff  = AppConfig.ResolvedProfile?.Profile?.UpdateCheck is false;
+                    var nudgeFragment   = updateCheckOff
+                        ? null
+                        : VersionNudgeEmitter.BuildFragment(responseNode, CapacitorVersion.CurrentDisplay());
                     // join the parallel memory-index fetch, bounded by the remaining
                     // hook budget so a slow fetch can't delay the hook (fail-open → null).
                     var memoryFragment = await AwaitMemoryFragmentAsync(memoryIndexTask, processStart);

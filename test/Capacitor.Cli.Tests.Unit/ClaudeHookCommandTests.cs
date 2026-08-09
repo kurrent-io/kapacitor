@@ -54,6 +54,52 @@ public class ClaudeHookCommandTests {
         await Assert.That(fx.RouteOrder).Contains("session-start");
     }
 
+    // ── In-agent version nudge gated on update_check ────────────────────────────────────────
+
+    [Test, NotInParallel]
+    public async Task update_check_off_suppresses_the_in_agent_nudge_even_when_server_reports_a_newer_version() {
+        using var fx = new Fixture { RespondJson = """{"version": "999.0.0"}""" };
+        var stdout = new StringWriter();
+
+        var exit = await WithProfileAsync(new Profile { UpdateCheck = false }, () =>
+            ClaudeHookCommand.HandleCore(
+                fx.Client, AuthStatus.Ok, fx.Spool, System.Diagnostics.Stopwatch.GetTimestamp(),
+                "http://localhost", new StringReader(
+                    $$"""{"hook_event_name":"SessionStart","session_id":"{{Sid}}","cwd":"/tmp"}"""),
+                memoryStoreFactory: () => new SessionStartMemoryLeaseStore(
+                    Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"))),
+                stdout: stdout));
+
+        await Assert.That(exit).IsEqualTo(0);
+        var ctx = stdout.ToString();
+        await Assert.That(ctx).DoesNotContain("999.0.0");
+        await Assert.That(ctx).DoesNotContain("kcap update");
+    }
+
+    /// <summary>Non-vacuous control for the test above: with update_check on (the default), the
+    /// same newer-version server response still produces the in-agent nudge fragment — proves the
+    /// gate suppresses the fragment specifically because of the opt-out, not because the fixture
+    /// never produces one.</summary>
+    [Test, NotInParallel]
+    public async Task update_check_on_still_emits_the_in_agent_nudge_for_a_newer_server_version() {
+        using var fx = new Fixture { RespondJson = """{"version": "999.0.0"}""" };
+        var stdout = new StringWriter();
+
+        var exit = await WithProfileAsync(new Profile { UpdateCheck = true }, () =>
+            ClaudeHookCommand.HandleCore(
+                fx.Client, AuthStatus.Ok, fx.Spool, System.Diagnostics.Stopwatch.GetTimestamp(),
+                "http://localhost", new StringReader(
+                    $$"""{"hook_event_name":"SessionStart","session_id":"{{Sid}}","cwd":"/tmp"}"""),
+                memoryStoreFactory: () => new SessionStartMemoryLeaseStore(
+                    Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"))),
+                stdout: stdout));
+
+        await Assert.That(exit).IsEqualTo(0);
+        var ctx = stdout.ToString();
+        await Assert.That(ctx).Contains("999.0.0");
+        await Assert.That(ctx).Contains("kcap update");
+    }
+
     // ── SessionStart team-memory index: behavioral baseline ─────────────────────────────────
     // Characterizes today's byte-level SessionStart output on the shared
     // SessionStartMemoryOrchestrator/ContextProvider/LeaseStore foundation (StartMemoryIndexTask
