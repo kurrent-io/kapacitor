@@ -38,12 +38,18 @@ public partial class AgentOrchestratorVendorTests {
     }
 
     [Test]
-    public async Task Reconnect_reregistration_redelivers_unretired_terminal_acks() {
+    public async Task Reconnect_redelivers_unretired_terminal_acks_only_AFTER_readiness_is_restored() {
         var (orch, server, proactive) = await OrchestratorWithOneSettledCommandAsync();
         await using var _ = orch;
 
-        await orch.ReRegisterAgentsAsync();                 // the reconnect hook (no agents to re-register)
+        // The PRE-READY re-register hook must NOT re-deliver: it runs inside the registration bracket
+        // before MarkRegistered, where CommandAckAsync silently drops sends (IsReady still false). If the
+        // re-delivery were (wrongly) here, this would add an ack.
+        await orch.ReRegisterAgentsAsync();
+        await Assert.That(server.Acks.Count).IsEqualTo(proactive);   // unchanged — not re-delivered here
 
+        // The POST-REGISTER hook (fires with IsReady == true) is where re-delivery is wired.
+        await server.OnRegisteredHook!.Invoke();
         await Assert.That(server.Acks.Count).IsEqualTo(proactive + 1);
         await Assert.That(server.Acks[^1].Seq).IsEqualTo(1L);
         await Assert.That(server.Acks[^1].State).IsEqualTo(CommandAckState.Processed);

@@ -516,6 +516,10 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
         _server.OnSendSpecialKey         += HandleSendSpecialKey;
         _server.OnResizeTerminal         += HandleResizeTerminal;
         _server.ReRegisterAgentsHook          =  ReRegisterAgentsAsync;
+        // Settlement lost-ack redelivery (D1): re-deliver unretired terminal acks POST-registration
+        // (readiness restored) — inside ReRegisterAgentsHook the CommandAckAsync IsReady gate would drop
+        // them. Fires on every (re)connect + heartbeat re-register.
+        _server.OnRegisteredHook              =  () => { Processor?.RedeliverUnretiredProcessedAcks(); return Task.CompletedTask; };
         _server.FindRepoForRemoteHandler      =  HandleFindRepoForRemote;
         _server.ProbeBorrowSourceHandler      =  HandleProbeBorrowSource;
         // Task 8: the side-effect-free reviewer-model preflight. Pure resolution over the
@@ -3156,13 +3160,9 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
                 }
             }
         }
-
-        // Settlement lost-ack redelivery (D1): a reconnect is the highest-value re-sync moment — the terminal ack most likely to
-        // have been lost is one that settled while the transport was down. Re-deliver every unretired
-        // terminal ack now that registration is back, rather than waiting up to a full status-report
-        // interval. Fires regardless of agent count (an ack can be unretired after its agent is gone) and
-        // is a contained, one-way no-op when nothing is unretired.
-        Processor?.RedeliverUnretiredProcessedAcks();
+        // NOTE: the settlement lost-ack re-delivery is deliberately NOT here — this hook runs inside the
+        // registration bracket BEFORE readiness is restored, so CommandAckAsync would drop every ack. It
+        // is wired to OnRegisteredHook instead, which runs post-MarkRegistered (IsReady == true).
     }
 
     static readonly TimeSpan StartupTimeout     = TimeSpan.FromSeconds(90);

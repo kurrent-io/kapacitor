@@ -39,10 +39,16 @@ internal sealed class RegistrationGate {
     /// If <paramref name="daemonConnect"/> throws (e.g. name-in-use), the exception propagates
     /// and readiness stays cleared — re-registration is skipped and MarkRegistered never runs.
     /// </summary>
-    public async Task RunRegistrationAsync(Func<Task> daemonConnect, Func<Task> reRegisterAgents) {
+    public async Task RunRegistrationAsync(
+            Func<Task> daemonConnect, Func<Task> reRegisterAgents, Func<Task>? postRegister = null) {
         MarkUnregistered();
         await daemonConnect();
         await reRegisterAgents();
         MarkRegistered();
+        // postRegister runs with IsReady == true — for work that must reach the server on the freshly
+        // ready transport (e.g. re-delivering unretired terminal acks, which CommandAckAsync drops while
+        // readiness is still cleared inside this bracket). Its failure must not un-register the daemon,
+        // so it is the caller's job to contain it.
+        if (postRegister is not null) await postRegister();
     }
 }
