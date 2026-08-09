@@ -432,8 +432,13 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
     /// <c>error.message</c> (via <see cref="AcpRpcException"/>), which could otherwise be arbitrarily
     /// long or multi-line and degrade logs/UI downstream. The full original exception is retained as
     /// the thrown exception's <c>InnerException</c>, so nothing is lost for daemon-side diagnostics.
+    /// <c>internal</c> (not the class's usual private default) so
+    /// <see cref="AcpHostedAgentRuntimeFactory"/>, a different class in the same namespace, has ONE
+    /// sanitizer to call for its own transport-cause truncation rather than a byte-for-byte
+    /// duplicate — the two must never drift, and a fix to this one (e.g. never splitting a Unicode
+    /// surrogate pair at the boundary) must reach every caller.
     /// </summary>
-    static string SanitizeForForward(string message, int maxLength = 500) {
+    internal static string SanitizeForForward(string message, int maxLength = 500) {
         var oneLine = message.ReplaceLineEndings(" ").Trim();
         return oneLine.Length <= maxLength ? oneLine : oneLine[..maxLength] + "…";
     }
@@ -1740,7 +1745,19 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
         // null, which is a Kiro/OpenCode-only concern (the isolated-home cleanup hook) that has
         // nothing to do with whether a reap needs awaiting.
         if (TakeReap() is { } reap) {
-            try { await reap.ConfigureAwait(false); } catch { /* already logged by the reap */ }
+            try {
+                // Bounded defensively, same rationale and value as the exit-confirmation wait below:
+                // production reap tasks bottom out in AcpChildProcess.TerminateAsync, which is
+                // self-bounded (2-5s callers), so this isn't live today — but the await is now
+                // unconditional for every vendor, and a future/test IAcpProcess whose TerminateAsync
+                // ignores its own timeout must not be able to wedge disposal outright. A reap that
+                // won't settle is a "didn't confirm" signal, not a reason to hang teardown.
+                await reap.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            } catch {
+                // Already logged by the reap; a timeout here logs nothing further for the same reason
+                // the exit-confirmation wait below doesn't escalate past Debug — this is a bound, not
+                // a new failure class.
+            }
         }
 
         // BEFORE disposing anything, when the child is still observable. AcpChildProcess.HasExited

@@ -407,20 +407,16 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
     /// <summary>
     /// The reclassified message's transport half: the sanitized handshake cause when
     /// <see cref="AcpHostedAgentRuntime.StartAsync"/>'s own wrapper produced one, else the caught
-    /// exception's own (separately sanitized) message — covers every stage the wrapper doesn't reach,
-    /// namely model selection (never wrapped at all) and a launch deadline firing mid-RPC (whose
-    /// <see cref="OperationCanceledException"/> the wrapper deliberately never touches either).
+    /// exception's own message run through the SAME sanitizer — covers every stage the wrapper
+    /// doesn't reach, namely model selection (never wrapped at all) and a launch deadline firing
+    /// mid-RPC (whose <see cref="OperationCanceledException"/> the wrapper deliberately never
+    /// touches either). Calls <see cref="AcpHostedAgentRuntime.SanitizeForForward"/> directly rather
+    /// than a local copy, so a future fix to that sanitizer (e.g. Unicode-safe truncation) reaches
+    /// this call site too instead of silently missing it.
     /// </summary>
     static string DescribeTransportCause(Exception ex) =>
-        (ex as AcpHostedAgentRuntime.AcpHandshakeFailedException)?.TransportMessage ?? Sanitize(ex.Message);
-
-    /// <summary>Single-lined + length-capped, mirroring <c>AcpHostedAgentRuntime.SanitizeForForward</c>
-    /// — duplicated rather than shared because the message sanitized here may never have passed
-    /// through that type at all (e.g. a raw transport exception escaping model selection).</summary>
-    static string Sanitize(string message, int maxLength = 500) {
-        var oneLine = message.ReplaceLineEndings(" ").Trim();
-        return oneLine.Length <= maxLength ? oneLine : oneLine[..maxLength] + "…";
-    }
+        (ex as AcpHostedAgentRuntime.AcpHandshakeFailedException)?.TransportMessage
+            ?? AcpHostedAgentRuntime.SanitizeForForward(ex.Message);
 
     /// <summary>
     /// Disposes whatever a launch already obtained when no <see cref="AcpHostedAgentRuntime"/> was

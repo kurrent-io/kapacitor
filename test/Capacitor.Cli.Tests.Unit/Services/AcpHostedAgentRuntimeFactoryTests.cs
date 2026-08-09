@@ -2624,6 +2624,60 @@ public class AcpHostedAgentRuntimeFactoryTests {
         await fake.DisposeAsync();
     }
 
+    /// <summary>Race order (a), WITH a disposal hook — the fourth cell of the 2×2 matrix (race order
+    /// (a)/(b) × no-hook/with-hook) alongside
+    /// <see cref="ReapDuringInitialize_Cursor_FactoryReclassifiesToVerdict_NoAuthHint"/> (a, no-hook)
+    /// and both <c>ReapLandsDuringDisposalAwait_*</c> tests (b, no-hook / b, with-hook). Same recipe
+    /// as the no-hook sibling — OpenCode instead of Cursor for the hook, a plain (instant-resolving)
+    /// <see cref="FakeAcpProcess"/> so the reap's claim AND its async portion both settle before
+    /// <c>StartAsync</c>'s own catch even runs. In THIS order the reap is already fully resolved
+    /// before disposal starts, so the hook's presence changes nothing observable about
+    /// reclassification (disposal's exit-confirmation gate is scoped inside the
+    /// <c>_onDisposed is not null</c> block, downstream of the now-unconditional reap-await) — the
+    /// assertions are deliberately identical to the no-hook sibling's, which is itself the point: the
+    /// matrix cell exists to prove that, not to find a NEW divergent behavior.</summary>
+    [Test]
+    public async Task ReapDuringInitialize_WithDisposalHook_FactoryReclassifiesToVerdict_NoAuthHint() {
+        var fake = new FakeAcpAgent();
+        fake.HoldInitializeResponse = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var factory = new AcpHostedAgentRuntimeFactory(
+            // OpenCode is a GATED reviewer vendor (like Kiro/Gemini) — see OpenCodeEnabledConfig. Its
+            // default 120s ReviewerLaunchTimeoutSeconds is what wires the onDisposed cleanup hook.
+            descriptor: AcpVendorDescriptors.OpenCode,
+            config: OpenCodeEnabledConfig(),
+            loggerFactory: NullLoggerFactory.Instance,
+            connection: new CaptureServerConnection(),
+            connectionSource: _ => (fake.ClientWriteStream, fake.ClientReadStream, new FakeAcpProcess()),
+            resolveVendorVersion: _ => OpenCodeBuild);
+
+        using var cts = new CancellationTokenSource();
+        var fakeRunTask = fake.RunAsync(cts.Token);
+
+        var startTask = factory.StartAsync(ReviewContext(), cts.Token);
+
+        var deadline = DateTime.UtcNow + HangGuard;
+        while (!fake.ReceivedCalls.Any(c => c.Method == "initialize") && DateTime.UtcNow < deadline)
+            await Task.Delay(10);
+        await Assert.That(fake.ReceivedCalls.Any(c => c.Method == "initialize")).IsTrue();
+
+        await WriteReapTriggerFrameAsync(fake);
+        fake.SimulateCrash();
+
+        var ex = await Assert.ThrowsAsync<AcpHostedAgentRuntimeFactory.AcpReviewerReapedException>(
+            () => startTask.WaitAsync(HangGuard));
+
+        await Assert.That(ex.Message).StartsWith(ReapVerdictReason);
+        await Assert.That(ex.Message).Contains("(transport:");
+        await Assert.That(ex.Message).Contains("read loop ended");
+        await Assert.That(ex.Message).DoesNotContain("auth/subscription");
+        await Assert.That(ex.InnerException).IsNotNull();
+
+        cts.Cancel();
+        try { await fakeRunTask.WaitAsync(HangGuard); } catch { /* torn down by the simulated crash */ }
+        await fake.DisposeAsync();
+    }
+
     /// <summary>Per-stage coverage, stage 2 of 3: a reap during <c>session/new</c> — the SAME
     /// hint-composing wrapper as initialize, so the reclassification path is identical; this pins
     /// that the stage boundary itself doesn't matter.</summary>
