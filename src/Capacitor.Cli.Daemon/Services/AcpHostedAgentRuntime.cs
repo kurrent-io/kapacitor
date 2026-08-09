@@ -435,12 +435,21 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
     /// <c>internal</c> (not the class's usual private default) so
     /// <see cref="AcpHostedAgentRuntimeFactory"/>, a different class in the same namespace, has ONE
     /// sanitizer to call for its own transport-cause truncation rather than a byte-for-byte
-    /// duplicate — the two must never drift, and a fix to this one (e.g. never splitting a Unicode
-    /// surrogate pair at the boundary) must reach every caller.
+    /// duplicate — the two must never drift, and this fix (never splitting a Unicode surrogate pair
+    /// at the boundary) reaches every caller.
     /// </summary>
     internal static string SanitizeForForward(string message, int maxLength = 500) {
         var oneLine = message.ReplaceLineEndings(" ").Trim();
-        return oneLine.Length <= maxLength ? oneLine : oneLine[..maxLength] + "…";
+        if (oneLine.Length <= maxLength) return oneLine;
+
+        // A raw code-unit slice at maxLength can land between a surrogate pair's two halves. Back
+        // off one position when that would happen so the cut only ever falls on a whole character —
+        // never grow past the cap to include the pair instead. cut > 0 guards the maxLength <= 0
+        // edge (nothing to back off from; falls through to the pre-fix substring behavior).
+        var cut = maxLength;
+        if (cut > 0 && char.IsHighSurrogate(oneLine[cut - 1])) cut--;
+
+        return oneLine[..cut] + "…";
     }
 
     /// <summary>

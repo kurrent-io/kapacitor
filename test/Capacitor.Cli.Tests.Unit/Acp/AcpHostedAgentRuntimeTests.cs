@@ -669,4 +669,67 @@ public class AcpHostedAgentRuntimeTests {
         await Assert.That(claimed).IsTrue();
         await Assert.That(h.Runtime.Verdict!.ReapedInsideLaunchWindow).IsFalse();
     }
+
+    /// <summary>Reap reasons can embed agent-controlled text (e.g. a JSON-RPC method from an inbound
+    /// frame), which may contain non-BMP characters — a raw UTF-16 code-unit slice at the cap can
+    /// land between a surrogate pair's two halves, leaving a lone surrogate in the forwarded string
+    /// (design spec §3.1). Nine filler chars put "😀" (U+1F600, a high+low surrogate pair) exactly
+    /// astride the cut: its high half at index maxLength-1, low half at index maxLength — precisely
+    /// the boundary a naive <c>oneLine[..maxLength]</c> would slice through.</summary>
+    [Test]
+    public async Task Sanitize_never_splits_surrogate_at_boundary() {
+        const int maxLength = 10;
+        var oneLine = new string('a', maxLength - 1) + char.ConvertFromUtf32(0x1F600) + "-well-past-the-cap";
+
+        // Precondition: the pair really does straddle the cut this test means to exercise.
+        await Assert.That(char.IsHighSurrogate(oneLine[maxLength - 1])).IsTrue();
+        await Assert.That(char.IsLowSurrogate(oneLine[maxLength])).IsTrue();
+
+        var result = AcpHostedAgentRuntime.SanitizeForForward(oneLine, maxLength);
+
+        await Assert.That(result.All(c => !char.IsHighSurrogate(c) && !char.IsLowSurrogate(c))).IsTrue();
+        await Assert.That(result.Length).IsLessThanOrEqualTo(maxLength + 1); // +1 for the "…" suffix
+        await Assert.That(result).EndsWith("…");
+    }
+
+    /// <summary>Line breaks collapse to spaces (<c>ReplaceLineEndings</c>) before the cap is ever
+    /// applied, so a coded reason's prefix — e.g. the <c>unattended_interaction_forbidden:{method}</c>
+    /// shape writers use (design spec §3.1) — survives at the front and no raw line-break character
+    /// remains anywhere in the result.</summary>
+    [Test]
+    public async Task Sanitize_collapses_multiline_input_and_keeps_the_code_prefix() {
+        const string prefix = "unattended_interaction_forbidden:tools/call";
+        var input = $"{prefix}\nsecond line\r\nthird line";
+
+        var result = AcpHostedAgentRuntime.SanitizeForForward(input);
+
+        await Assert.That(result).StartsWith(prefix);
+        await Assert.That(result).DoesNotContain("\n");
+        await Assert.That(result).DoesNotContain("\r");
+    }
+
+    /// <summary>Truncation only ever trims the TAIL, so an oversized single-line reason keeps its
+    /// leading coded prefix intact — the reason a caller can rely on the prefix for classification
+    /// even when the full message got capped.</summary>
+    [Test]
+    public async Task Sanitize_of_an_oversized_reason_keeps_the_leading_coded_prefix() {
+        const string prefix = "unattended_interaction_forbidden:tools/call";
+        var input = prefix + new string('x', 600); // well past the 500-char default cap
+
+        var result = AcpHostedAgentRuntime.SanitizeForForward(input);
+
+        await Assert.That(result).StartsWith(prefix);
+        await Assert.That(result).EndsWith("…");
+        await Assert.That(result.Length).IsLessThanOrEqualTo(501); // default maxLength(500) + "…"
+    }
+
+    /// <summary>The back-off reads <c>oneLine[maxLength - 1]</c> — guards against a non-positive cap
+    /// underflowing that index instead of just falling through to the pre-fix (already-safe)
+    /// substring behavior.</summary>
+    [Test]
+    public async Task Sanitize_with_a_non_positive_cap_does_not_throw() {
+        var result = AcpHostedAgentRuntime.SanitizeForForward("anything at all", maxLength: 0);
+
+        await Assert.That(result).IsEqualTo("…");
+    }
 }
