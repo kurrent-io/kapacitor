@@ -276,7 +276,7 @@ switch (command) {
     case "use":
         return await UseCommand.HandleAsync(args);
     case "status":
-        return await StatusCommand.HandleAsync(baseUrl);
+        return await StatusCommand.HandleAsync(baseUrl, args);
     case "config":
         return await ConfigCommand.HandleAsync(args);
     case "ignore":

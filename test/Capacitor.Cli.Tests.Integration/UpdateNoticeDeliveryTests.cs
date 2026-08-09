@@ -131,6 +131,78 @@ public class UpdateNoticeDeliveryTests : IDisposable {
         await Assert.That(r.Stderr).DoesNotContain("Update available:");
     }
 
+    // --- kcap status: the Version line reuses the same shared check and single-reports ---
+
+    /// <summary>
+    /// <c>kcap status</c> is itself human-facing (it is not in the suppressed population), so
+    /// without the <see cref="Capacitor.Cli.UpdateNotice.MarkReported"/> wiring both the Version
+    /// line's own inline annotation AND <c>Program.cs</c>'s outer-<c>finally</c> footer would
+    /// print the "newer version available" information — once inline (stdout) and once as the
+    /// two-line footer (stderr). Counting case-insensitive occurrences of "update available"
+    /// across BOTH streams pins that it happens exactly once; checking only one stream would
+    /// miss a regression that moved (rather than duplicated) the print.
+    /// </summary>
+    [Test]
+    public async Task Status_PrintsInlineUpdateAnnotation_AndSuppressesTheExitFooter() {
+        var cfgDir = SeedFreshNewerCache();
+
+        var r = await RunAsync(["status"], cfgDir);
+
+        await Assert.That(r.ExitCode).IsEqualTo(0);
+        await Assert.That(r.Stdout).Contains("kcap ");
+        await Assert.That(r.Stdout).Contains($"(update available: {NewerVersion})");
+        await Assert.That(r.Stderr).DoesNotContain("Update available:");
+
+        var combined  = r.Stdout + r.Stderr;
+        var occurrences = CountOccurrences(combined, "update available");
+        await Assert.That(occurrences).IsEqualTo(1);
+    }
+
+    /// <summary>
+    /// <c>--no-update-check</c> must skip the check entirely for the Version line too — not just
+    /// suppress the print of an already-performed check — so the line prints the bare version
+    /// with no annotation even though the seeded cache reports a newer version.
+    /// </summary>
+    [Test]
+    public async Task Status_NoUpdateCheckFlag_PrintsBareVersion_NoAnnotation() {
+        var cfgDir = SeedFreshNewerCache();
+
+        var r = await RunAsync(["status", "--no-update-check"], cfgDir);
+
+        await Assert.That(r.ExitCode).IsEqualTo(0);
+        await Assert.That(r.Stdout).Contains("kcap ");
+        await Assert.That(r.Stdout).DoesNotContain("update available");
+        await Assert.That(r.Stderr).DoesNotContain("Update available:");
+    }
+
+    /// <summary>Same opt-out, via the profile's persisted <c>update_check: false</c> instead of the flag.</summary>
+    [Test]
+    public async Task Status_ProfileUpdateCheckDisabled_PrintsBareVersion_NoAnnotation() {
+        var cfgDir = SeedFreshNewerCache();
+        File.WriteAllText(Path.Combine(cfgDir, "config.json"), """
+            {"version":2,"active_profile":"default","profiles":{"default":{"update_check":false}},"profile_bindings":{},"cwd_remap":[]}
+            """);
+
+        var r = await RunAsync(["status"], cfgDir);
+
+        await Assert.That(r.ExitCode).IsEqualTo(0);
+        await Assert.That(r.Stdout).Contains("kcap ");
+        await Assert.That(r.Stdout).DoesNotContain("update available");
+        await Assert.That(r.Stderr).DoesNotContain("Update available:");
+    }
+
+    static int CountOccurrences(string haystack, string needle) {
+        var count = 0;
+        var idx   = 0;
+
+        while ((idx = haystack.IndexOf(needle, idx, StringComparison.OrdinalIgnoreCase)) >= 0) {
+            count++;
+            idx += needle.Length;
+        }
+
+        return count;
+    }
+
     // --- helpers ---
 
     /// <summary>
