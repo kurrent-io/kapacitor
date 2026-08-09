@@ -349,6 +349,36 @@ public class ConsentPromptViewModelTests {
         await Assert.That(afterEviction).IsEqualTo("a2");
     }
 
+    /// The ViewModel half of the same defect: a warning that has nowhere to advance to must hold
+    /// the pin (and the window) rather than close on the beat it was raised. The multi-entry test
+    /// above pins the other half — a queue with somewhere to go still advances immediately.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Rule_warning_holds_the_window_when_the_queue_would_empty() {
+        var (phaseText, pinned, buttonsVisible, closedDuringHold, afterHold, closedAfterHold) =
+            await AvaloniaSession.DispatchAsync(async () => {
+                using var h = new PromptHarness(Entry("a1", "p1"));
+                h.Activate();
+
+                h.Consent.Queue(ConsentResolveKind.AppliedRuleRejected, ConsentRuleOutcome.Rejected, "store full");
+                await h.Vm.AllowRememberCommand.Execute().ToTask();
+                PromptHarness.Pump();
+
+                var held = (h.Vm.PhaseText, h.Vm.Current is not null, h.Vm.ButtonsVisible, h.CloseRequests);
+
+                h.Tick();
+                h.Tick();
+                return (held.PhaseText, held.Item2, held.ButtonsVisible, held.CloseRequests, h.Vm.Current, h.CloseRequests);
+            });
+
+        await Assert.That(phaseText).IsEqualTo("Decision applied — rule not saved: store full");
+        await Assert.That(pinned).IsTrue();
+        await Assert.That(buttonsVisible).IsFalse(); // the request is settled: nothing left to click
+        await Assert.That(closedDuringHold).IsEqualTo(0);
+        await Assert.That(afterHold).IsNull();
+        await Assert.That(closedAfterHold).IsEqualTo(1);
+    }
+
     // ---- 10: transport failure ----
 
     /// The outcome's rule value on this path describes a rule that was never sent, so it must NOT

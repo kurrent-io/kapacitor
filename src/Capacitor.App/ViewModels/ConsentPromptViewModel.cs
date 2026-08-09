@@ -12,8 +12,10 @@ using ReactiveUI;
 namespace Capacitor.App.ViewModels;
 
 /// Ready/Expired are the two INTERACTIVE states — hint expiry is not a verdict (spec §6), so the
-/// buttons behave identically in both and only the countdown line differs.
-public enum ConsentPromptPhase { Ready, Resolving, AlreadyDecided, Expired }
+/// buttons behave identically in both and only the countdown line differs. Concluded is the
+/// 2-second terminal hold: the pinned request is settled and its disclosure is on screen — either
+/// "Already decided" or an applied decision whose rule did not save.
+public enum ConsentPromptPhase { Ready, Resolving, Concluded, Expired }
 
 /// Renders ONE pinned consent request at a time (spec §6). The pin is what the user is looking at:
 /// it is taken from the sorted queue head and released only on an advance — never swapped out from
@@ -21,7 +23,7 @@ public enum ConsentPromptPhase { Ready, Resolving, AlreadyDecided, Expired }
 /// conclusive acks and the prune do that inside ConsentService (spec §5), and its identity guard
 /// makes any stale action a no-op.
 ///
-/// Three honesty rules carry the reviewed reasoning:
+/// Four honesty rules carry the reviewed reasoning:
 ///
 /// * <b>Expiry is never a verdict.</b> The deadline hint is wall-clock and the daemon's deadline is
 ///   monotonic, so a hint that reached zero proves nothing. The countdown line says so and the
@@ -32,6 +34,9 @@ public enum ConsentPromptPhase { Ready, Resolving, AlreadyDecided, Expired }
 /// * <b>A transport failure discloses nothing about the rule.</b> Its outcome carries a rule value
 ///   that was never sent, so this path shows only the transport toast, re-enables the buttons and
 ///   keeps the entry.
+/// * <b>A warning outlives the decision that raised it.</b> A toast posted on the same beat the
+///   window closes is never seen, so a rule-not-saved disclosure with nothing left to advance to
+///   holds the window for the terminal hold instead of closing under its own toast.
 public sealed class ConsentPromptViewModel : ReactiveObject, IActivatableViewModel {
     const string ExpiredCopy     = "Response time elapsed — unanswered requests are denied by the daemon";
     const string ExpiringCopy    = "Expiring…";
@@ -59,9 +64,10 @@ public sealed class ConsentPromptViewModel : ReactiveObject, IActivatableViewMod
     readonly CancellationToken _shutdownToken;
     readonly Subject<Unit> _closeRequested = new();
 
-    // ONE stable collection, created once and never replaced (the AI-1651 lesson — see
-    // MainWindowViewModel._agentsSource): WhenActivated re-runs on every window, and SortAndBind's
-    // IList overload mutates THIS instance in place.
+    // ONE stable collection, created once and never replaced (the lesson recorded on
+    // MainWindowViewModel._agentsSource — a swapped instance leaves the view bound to a dead
+    // collection): WhenActivated re-runs on every window, and SortAndBind's IList overload mutates
+    // THIS instance in place.
     readonly ObservableCollectionExtended<PendingConsent> _queueSource = new();
 
     // The pin's own conclusion, held until the next advance. The service evicts a concluded entry
@@ -94,8 +100,8 @@ public sealed class ConsentPromptViewModel : ReactiveObject, IActivatableViewMod
     }
 
     string? _phaseText;
-    /// Terminal-state line ("Already decided", plus the §4.1 rule-side-effect disclosure). Null
-    /// while the request is still answerable.
+    /// Terminal-state line: "Already decided" with its §4.1 rule-side-effect disclosure, or a
+    /// rule-not-saved warning being held on screen. Null while the request is still answerable.
     public string? PhaseText {
         get => _phaseText;
         private set => this.RaiseAndSetIfChanged(ref _phaseText, value);
@@ -178,7 +184,7 @@ public sealed class ConsentPromptViewModel : ReactiveObject, IActivatableViewMod
 
         _buttonsEnabled = canResolve.ToProperty(this, x => x.ButtonsEnabled, initialValue: false);
         _buttonsVisible = this
-            .WhenAnyValue(x => x.Current, x => x.Phase, (target, phase) => target is not null && phase != ConsentPromptPhase.AlreadyDecided)
+            .WhenAnyValue(x => x.Current, x => x.Phase, (target, phase) => target is not null && phase != ConsentPromptPhase.Concluded)
             .ToProperty(this, x => x.ButtonsVisible, initialValue: false);
 
         AllowOnceCommand     = ReactiveCommand.CreateFromTask(() => RunResolveAsync(allow: true, saveRule: false), canResolve);
@@ -229,7 +235,7 @@ public sealed class ConsentPromptViewModel : ReactiveObject, IActivatableViewMod
     /// holding a terminal state; otherwise the pin survives until it leaves the cache (the
     /// hint-expired prune, spec §6).
     void OnQueueChanged() {
-        if (Phase is ConsentPromptPhase.Resolving or ConsentPromptPhase.AlreadyDecided) {
+        if (Phase is ConsentPromptPhase.Resolving or ConsentPromptPhase.Concluded) {
             UpdatePosition();
             return;
         }
@@ -238,7 +244,7 @@ public sealed class ConsentPromptViewModel : ReactiveObject, IActivatableViewMod
     }
 
     void OnTick() {
-        if (Phase == ConsentPromptPhase.AlreadyDecided) {
+        if (Phase == ConsentPromptPhase.Concluded) {
             if (++_heldTicks >= TerminalHoldTicks) Advance();
             return;
         }
@@ -253,7 +259,7 @@ public sealed class ConsentPromptViewModel : ReactiveObject, IActivatableViewMod
 
         _heldTicks = 0;
         PhaseText  = null;
-        Current    = _queueSource.FirstOrDefault(p => _settled is null || p.PromptId != _settled.PromptId);
+        Current    = NextAfterSettled();
         _settled   = null;
         Phase      = RestingPhase();
         UpdatePosition();
@@ -268,6 +274,11 @@ public sealed class ConsentPromptViewModel : ReactiveObject, IActivatableViewMod
             ? ConsentPromptPhase.Expired
             : ConsentPromptPhase.Ready;
 
+    /// What an advance would land on: the sorted head, skipping the identity this pin just
+    /// concluded (see _settled). Null means the window has nothing left to show.
+    PendingConsent? NextAfterSettled() =>
+        _queueSource.FirstOrDefault(p => _settled is null || p.PromptId != _settled.PromptId);
+
     bool StillQueued(PendingConsent target) =>
         _queueSource.Any(p => p.RequestId == target.RequestId && p.PromptId == target.PromptId);
 
@@ -280,7 +291,7 @@ public sealed class ConsentPromptViewModel : ReactiveObject, IActivatableViewMod
 
     string Countdown() {
         var target = Current;
-        if (target is null || Phase == ConsentPromptPhase.AlreadyDecided) return "";
+        if (target is null || Phase == ConsentPromptPhase.Concluded) return "";
 
         var remaining = target.DeadlineHint - _time.GetUtcNow();
         if (remaining > TimeSpan.Zero) return $"Expires in {(int)Math.Ceiling(remaining.TotalSeconds)}s";
@@ -292,7 +303,7 @@ public sealed class ConsentPromptViewModel : ReactiveObject, IActivatableViewMod
 
     async Task RunResolveAsync(bool allow, bool saveRule) {
         var target = Current;
-        if (target is null || Phase is ConsentPromptPhase.Resolving or ConsentPromptPhase.AlreadyDecided) return;
+        if (target is null || Phase is ConsentPromptPhase.Resolving or ConsentPromptPhase.Concluded) return;
 
         Phase = ConsentPromptPhase.Resolving;
         try {
@@ -321,19 +332,32 @@ public sealed class ConsentPromptViewModel : ReactiveObject, IActivatableViewMod
                 break;
 
             case ConsentResolveKind.AlreadyDecided:
-                _settled   = Current;
-                PhaseText  = DecidedText(outcome.RuleOutcome);
-                _heldTicks = 0;
-                Phase      = ConsentPromptPhase.AlreadyDecided;
+                _settled = Current;
+                Hold(DecidedText(outcome.RuleOutcome));
                 break;
 
             // Applied / AppliedRuleRejected / RuleSkippedNoRequester: the decision landed.
             default:
                 _settled = Current;
-                if (RuleWarning(outcome) is { } warning) _notifier.Notify(warning);
-                Advance();
+                var warning = RuleWarning(outcome);
+                if (warning is not null) _notifier.Notify(warning);
+
+                // With something else queued the advance keeps the window up and the toast lands
+                // over the next request. On the LAST one the advance closes the window on this
+                // very beat, and a posted toast over a closed window is no disclosure at all — so
+                // the warning takes the same terminal hold "Already decided" gets, and the close
+                // follows it.
+                if (warning is not null && NextAfterSettled() is null) Hold(warning); else Advance();
                 break;
         }
+    }
+
+    /// The 2-tick terminal hold: the pin stays on screen carrying its disclosure, the buttons go
+    /// (there is nothing left to click), and OnTick advances out of it.
+    void Hold(string disclosure) {
+        PhaseText  = disclosure;
+        _heldTicks = 0;
+        Phase      = ConsentPromptPhase.Concluded;
     }
 
     /// Never a silent success (spec §6) — and after an Allow &amp; remember the §4.1 side effect is

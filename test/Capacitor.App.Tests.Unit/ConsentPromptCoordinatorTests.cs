@@ -140,6 +140,43 @@ public class ConsentPromptCoordinatorTests {
         await Assert.That(reopenedVisible).IsTrue();
     }
 
+    /// Regression coverage for an Important defect found in review: on the LAST pending request —
+    /// the common single-prompt case — the rule-not-saved warning was notified and then thrown
+    /// away, because the advance emptied the queue and closed the window on the same beat, before
+    /// the posted toast ever rendered. Exactly the disclosure spec §6's "never a silent success"
+    /// exists for. Asserted on what the user can observe: the window still up, with the warning on
+    /// screen.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Rule_warning_on_the_last_pending_request_is_actually_shown() {
+        var (visibleAfterAck, rendered, visibleAfterHold, builds) = await AvaloniaSession.DispatchAsync(async () => {
+            using var f = new Fixture();
+            f.Consent.Add(Entry("a1", "p1")); // the ONLY pending request
+            f.Coordinator.ShowPromptWindow();
+            Dispatcher.UIThread.RunJobs();
+            var window = f.Last;
+            var vm = (ConsentPromptViewModel)window.DataContext!;
+
+            f.Consent.Queue(ConsentResolveKind.AppliedRuleRejected, ConsentRuleOutcome.Rejected, "store full");
+            await vm.AllowRememberCommand.Execute().ToTask();
+            Dispatcher.UIThread.RunJobs();
+
+            var visible = window.IsVisible;
+            var texts = string.Join('\n', window.GetVisualDescendants().OfType<TextBlock>().Select(t => t.Text ?? ""));
+
+            f.Ticker.Tick();
+            f.Ticker.Tick();
+            Dispatcher.UIThread.RunJobs();
+
+            return (visible, texts, window.IsVisible, f.Windows.Count);
+        });
+
+        await Assert.That(visibleAfterAck).IsTrue();
+        await Assert.That(rendered).Contains("Decision applied — rule not saved: store full");
+        await Assert.That(visibleAfterHold).IsFalse(); // disclosed for the hold, then closed
+        await Assert.That(builds).IsEqualTo(1);
+    }
+
     /// Rendering acceptance for the §6 copy: the bound text actually reaches the screen (a
     /// mistyped binding path renders empty), including the toast overlay this window owns because
     /// the main window may be closed.
