@@ -177,10 +177,14 @@ public class TelemetryStateTests {
         await Assert.That(state.NoticeShown).IsFalse();
     }
 
-    // Writes go through a temp-file-then-rename so an unlocked concurrent Read() never observes
-    // a half-written file (File.WriteAllText truncates before rewriting, which a torn read could
-    // catch as corrupt JSON and silently resolve to "enabled" again). This asserts the visible
-    // consequence: no stray temp file left in the directory once a write completes.
+    // Guards the litter risk the temp-file-then-rename write introduced: a failed or half-finished
+    // write must not leave a stray file next to telemetry.json.
+    //
+    // It deliberately does NOT prove atomicity, and would have passed against the old
+    // File.WriteAllText too — interleaving a read with a write to observe a torn file isn't
+    // something a unit test can do deterministically across platforms. Atomicity rests on
+    // File.Move(overwrite: true) being a same-volume rename; this test only covers the cleanup
+    // half of that change.
     [Test]
     public async Task Write_leaves_no_temp_file_behind_after_a_successful_mutation() {
         var path = NewTempPath();
