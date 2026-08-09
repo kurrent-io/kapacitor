@@ -424,6 +424,23 @@ The service knows nothing about windows: the prompt-window *coordinator* subscri
 added signal, filters by window visibility, and marshals to the UI thread (§6). The count
 feeds `TrayViewModel` (§8).
 
+**Entry-added identity — the signal is the FIRST SURFACING of a `PromptId`
+(implementation-discovered refinement).** "Unconditional" above means only "not filtered by
+window state". Keyed on the cache KEY the signal was wrong in both directions, and both
+directions were shipped defects. A successor B under A's `RequestId` — the id-reuse case this
+whole section is built around, and the likeliest second prompt there is — replaced A's cache
+slot in silence, so a deferred or hidden window never raised for the retry. And the
+`Subscribed` clear re-admits every replayed entry into an *empty* cache, so every replayed
+request looked new and re-raised a window the user had explicitly deferred (§6). The service
+therefore keeps a `_surfaced` PromptId set beside the tombstones, with the same lifetime and
+the same argument behind it: a never-reused GUID can never suppress a future request, at ~50
+bytes per request ever seen. `EntryAdded` fires when, and only when, an upsert introduces a
+PromptId that set has not seen. Tombstones are a subset of it and stay separate because they do
+a different job — a tombstone *drops* the frame, `_surfaced` only keeps it *quiet*. The
+down-level `Connected` cache clear joins the tombstone test and the insert under the one lock
+for the same reason they already share it: an upsert that had passed its tombstone test would
+otherwise land after that clear and resurrect a previous incarnation's entry.
+
 **Shutdown:** app shutdown disposes in order: prompt-window coordinator (closes the window,
 cancelling any in-flight resolve via the OCE path above) → `ConsentService` (cancels the
 subscription loop and the resolve lane) → `DaemonClientService` (existing). Quitting with the
@@ -445,6 +462,20 @@ without deciding is an explicit *defer*: the queue is untouched, the tray stays 
 `Attention`, and the tray menu's "Review pending launches…" reopens it. Additions while the
 window is already visible just update the queue indicator — no re-activation (no focus
 stealing mid-interaction).
+
+**Raise identity and the close debounce (implementation-discovered refinement).** "A new
+request" above is a `PromptId` the service has never surfaced (§5), not a new cache key: a
+same-`RequestId` successor raises, and a resubscribe's replay of an already-surfaced request
+does not — which is what makes the defer survive a reconnect blip instead of being undone by
+it. Symmetrically, "closes when the queue empties" (below) applies *on the spot* only to a
+**decision** — an ack, or the end of its terminal hold. A queue the CACHE emptied waits one
+ticker beat before closing, because the clear and its replay arrive as two separate changesets
+and closing on the intermediate one flickered the window shut and rebuilt it with a fresh
+ViewModel, a reset pin and stolen focus; a replay landing inside that beat cancels the close
+outright. The pin releases immediately either way — nothing that left the cache stays on
+screen. Accepted consequence: a replay more than a beat late does close the window, and its
+already-surfaced requests do not raise a new one — the tray keeps `Attention` and "Review
+pending launches…" is the way back.
 
 **Displayed item is a pinned snapshot.** The VM sorts the cache (by `RequestedAt`, then
 `RequestId` ordinal for determinism) and pins the head as `Current`. While `Current` is in a
@@ -596,6 +627,7 @@ cadence picks up count changes through the model stream — no new refresh machi
 | Rule save rejected / unknown / skipped (no requester) | Prompt toast | Decision applied; warning shown |
 | Request expired (no withdrawal push) | Prompt window / prune | Non-authoritative expiry display; cache prune at `PruneAfter` (identity-guarded, skips the in-flight resolve target, refreshed on transport failure) |
 | Same-id successor while ack in flight | none | Identity-pair removal guard — a stale ack/prune never evicts the successor |
+| Resubscribe replay while the window is deferred or open | none | No re-raise (the replayed identities were already surfaced, §5) and no flicker close (a cache-caused close waits a beat and the replay cancels it, §6) |
 | Stale resolve reaching the daemon after id reuse | daemon | Closed: the `prompt_id` echo mismatches (or the atomic claim is lost) and the broker answers no-pending (`Ok=false`) — a verdict for A can never decide B (§4.1) |
 | Decision log absent / IO failure / bad lines | Activity tab | Clean absence → `Complete` empty read → empty state; I/O failure → `Complete=false` → last-good rows kept; invalid lines skipped |
 | Rotation race during read | Activity tab | `Distinct()` merge; miss self-heals next poll |
@@ -709,6 +741,13 @@ throughout — no real sleeps).
   terminal hold or in-flight resolve is active; additions while visible don't re-raise;
   addition while closed raises (coordinator-filtered, marshalled to the UI thread — the add
   originates off the UI thread in the test).
+- Raise identity and the close debounce (the §5/§6 refinements): a same-`RequestId` successor
+  carrying a fresh `PromptId` fires the added signal and raises a hidden window; a
+  resubscribe's replay of already-surfaced identities fires nothing (a deferred window stays
+  closed, the tray count is still restored) while a genuinely new request pushed after the same
+  reconnect still fires; an OPEN window survives a clear+replay without closing or being
+  rebuilt (ticker-driven, deterministic); a cache-caused emptiness with no replay still closes
+  it on the next beat, and an ack-emptied queue still closes it immediately.
 - Subscription lifecycle: clear happens at the `Subscribed` event (failed dial retains
   entries — no `Subscribed`, no clear); reconnect-with-empty-replay leaves an empty cache
   (the `Subscribed` boundary makes this observable); stream death after `Subscribed` but

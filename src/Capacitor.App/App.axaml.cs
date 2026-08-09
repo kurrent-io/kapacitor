@@ -26,14 +26,17 @@ public partial class App : Application {
     PauseController? _pause;
     ConsentService? _consent;
     ConsentPromptCoordinator? _promptCoordinator;
-    // No disposal needed — a plain ticker subscription (ActivityViewModel's class doc comment),
-    // same as _ticker below. Held so it survives StartAsync's own stack frame: the prompt window
-    // factory and BuildAndShowMainWindow both close over the SAME instance.
+    // Disposed with the other UI services below: it holds a constructor-scoped subscription to
+    // the shared ticker, which is RefCount'd — an undisposed subscriber keeps the Interval (and
+    // this object) running past teardown. Held as a field so it survives StartAsync's own stack
+    // frame: the prompt window factory and BuildAndShowMainWindow both close over the SAME
+    // instance.
     ActivityViewModel? _activity;
     TrayViewModel? _trayVm;
     TrayIconManager? _tray;
-    // No disposal needed — RefCount tears its Interval down with its last subscriber. Held for
-    // later tasks (consent prompt / activity feed) to share the same 1 Hz heartbeat.
+    // No disposal needed — RefCount tears its Interval down with its last subscriber, and every
+    // subscriber above IS disposed. Held so the consent prompt and the activity feed share the
+    // same 1 Hz heartbeat.
     UiTicker? _ticker;
     bool _shutdownStarted;
     bool _shutdownConfirmed;
@@ -127,7 +130,7 @@ public partial class App : Application {
             // must not intercept anything from here on — every close on this path is a real one.
             if (_coordinator is not null) _coordinator.QuitInProgress = true;
             Console.Error.WriteLine($"kcap app failed to start: {ex}");
-            await HandleStartupFailureAsync(desktop, ex, _service, _shutdown, [_tray, _trayVm, _promptCoordinator, _consent, _pause]);
+            await HandleStartupFailureAsync(desktop, ex, _service, _shutdown, [_tray, _trayVm, _promptCoordinator, _consent, _activity, _pause]);
             // all already disposed above — never let a later OnShutdownRequested (e.g. Cmd+Q
             // while the error window is up) dispose any of them a second time
             _service = null;
@@ -373,7 +376,7 @@ public partial class App : Application {
             // disposed one. A resolve already in flight was cancelled by _shutdown at the top of
             // OnShutdownRequested and settles on the ViewModel's silent-abort path.
             await DisposeUiThenConfirmShutdownAsync(
-                [_tray, _trayVm, _promptCoordinator, _consent, _pause],
+                [_tray, _trayVm, _promptCoordinator, _consent, _activity, _pause],
                 _service is null ? null : _service.DisposeAsync, () => _shutdownConfirmed = true, desktop, _exitCode);
         } else {
             if (_service is not null) await _service.DisposeAsync();

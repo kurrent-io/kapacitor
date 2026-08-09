@@ -28,7 +28,7 @@ public sealed class UiTicker : ITicker {
     // (AgentRowViewModel), so a StartWith would only re-emit the identical string. The scheduler is
     // captured NOW (Rx operators take a scheduler by value, not a live reference to
     // RxSchedulers.MainThreadScheduler) and RefCount defers the connection until a row subscribes —
-    // which is what lets a test construct this VM inside AvaloniaSession.WithImmediateRxScheduler
+    // which is what lets a test construct this ticker inside AvaloniaSession.WithImmediateRxScheduler
     // WITHOUT ever subscribing a row: subscribing an Interval under an immediate scheduler would
     // block/spin forever, since Interval never completes.
     public IObservable<long> Ticks { get; } = Observable

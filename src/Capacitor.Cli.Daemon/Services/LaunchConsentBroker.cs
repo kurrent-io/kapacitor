@@ -18,7 +18,8 @@ namespace Capacitor.Cli.Daemon.Services;
 /// it first; expiry surfaces as TryResolve returning false. Never persisted — a daemon restart
 /// clears pending prompts (the server retries or fails the launch with the coded timeout denial).
 ///
-/// All cleanup removals (the OCE-catch claim attempt and the outer finally) are INSTANCE-scoped
+/// EVERY removal — PromptAsync's timeout claim, its OCE-catch claim attempt, its outer finally,
+/// and TryResolve's own claim (echo-matched or legacy) — is INSTANCE-scoped
 /// via the ConcurrentDictionary KeyValuePair-conditional overload, keyed on the exact `Pending`
 /// object PromptAsync added — never a plain key-based remove. This closes an ABA race: if a new
 /// prompt B reuses the same RequestId (agent-id retry, legacy/sequenced lane overlap) and TryAdds

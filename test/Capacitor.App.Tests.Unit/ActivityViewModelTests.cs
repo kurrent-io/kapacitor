@@ -260,4 +260,29 @@ public class ActivityViewModelTests {
         vm.RequestRefresh();
         await Assert.That(vm.Rows.Count).IsEqualTo(1); // recovers on the next call
     }
+
+    // ---- 8: disposal releases the shared ticker ----
+
+    /// The subscription is constructor-scoped (no WhenActivated), and the shared ticker is
+    /// Publish().RefCount() — an undisposed subscriber keeps its Interval, and this object,
+    /// running past app teardown.
+    [Test]
+    public async Task Dispose_stops_the_stat_poll() {
+        var reader = new ScriptedReader();
+        reader.Set(new ConsentLogReadResult([Rec()], true));
+        var stat = new ScriptedStat { Key = "k0" };
+        var ticker = new FakeTicker();
+        var vm = new ActivityViewModel(reader.Read, stat.Get, ticker);
+
+        vm.OnTabVisibleChanged(true);
+        await Assert.That(reader.ReadCalls).IsEqualTo(1);
+
+        vm.Dispose();
+
+        stat.Key = "k1";
+        ticker.Tick();
+        ticker.Tick();
+        await Assert.That(reader.ReadCalls).IsEqualTo(1);
+        await Assert.That(ticker.Subject.HasObservers).IsFalse();
+    }
 }

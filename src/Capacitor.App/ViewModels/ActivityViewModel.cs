@@ -24,9 +24,16 @@ public sealed record ActivityRow(
 /// WhenActivated/window activation, since the prompt-window factory must capture this same
 /// instance independently of MainWindowViewModel's own construction. The ticker already delivers
 /// on the UI thread (UiTicker's doc comment), so no ObserveOn is needed here.
-public sealed class ActivityViewModel : ReactiveObject {
+///
+/// That constructor-scoped subscription is why this is IDisposable: the shared ticker is
+/// Publish().RefCount(), so its Interval only tears down when the LAST subscriber goes — a
+/// subscriber nobody disposes keeps a 1 Hz timer (and this object) alive past teardown, including
+/// the startup-failure path where the app lingers on an error window. App disposes it in reverse
+/// creation order with the other UI services.
+public sealed class ActivityViewModel : ReactiveObject, IDisposable {
     readonly Func<ConsentLogReadResult> _read;
     readonly Func<string> _statKey;
+    readonly IDisposable _tickSub;
 
     readonly ObservableCollectionExtended<ActivityRow> _rowsSource = new();
     public ReadOnlyObservableCollection<ActivityRow> Rows { get; }
@@ -46,8 +53,10 @@ public sealed class ActivityViewModel : ReactiveObject {
         _statKey = statKey;
         Rows = new ReadOnlyObservableCollection<ActivityRow>(_rowsSource);
 
-        ticker.Ticks.Subscribe(_ => OnTick());
+        _tickSub = ticker.Ticks.Subscribe(_ => OnTick());
     }
+
+    public void Dispose() => _tickSub.Dispose();
 
     /// Tab-visibility trigger (spec §7): a true transition (tab selected AND window visible, per
     /// MainWindow.axaml.cs) does an immediate read and primes the poll's stat baseline so the very
@@ -108,8 +117,10 @@ public sealed class ActivityViewModel : ReactiveObject {
         : !string.IsNullOrWhiteSpace(r.Requester)      ? r.Requester
         : "unknown";
 
+    // RoundtripKind, matching ConsentService.DeadlineFor: both parse the same daemon-written ISO
+    // stamps, and one parse style across the app is one behavior to reason about.
     static string FormatTime(string decidedAt) =>
-        DateTimeOffset.TryParse(decidedAt, CultureInfo.InvariantCulture, DateTimeStyles.None, out var parsed)
+        DateTimeOffset.TryParse(decidedAt, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var parsed)
             ? parsed.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture)
             : decidedAt; // unparseable — rendered verbatim rather than thrown
 
