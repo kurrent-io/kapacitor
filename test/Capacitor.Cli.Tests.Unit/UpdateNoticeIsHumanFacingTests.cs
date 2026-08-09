@@ -38,26 +38,29 @@ public class UpdateNoticeIsHumanFacingTests {
         await Assert.That(UpdateNotice.IsHumanFacing("watch", ["watch", "sid", "/tmp/t.jsonl"])).IsFalse();
     }
 
-    // --- Suppressed: `daemon run` specifically — NOT every daemon subcommand ---
+    // --- Suppressed: the whole `daemon` command family (there is no separate `run` subcommand —
+    // the foreground shape is plain `kcap daemon start`, which blocks for the daemon's lifetime) ---
 
     [Test]
-    public async Task DaemonRun_IsSuppressed() {
-        await Assert.That(UpdateNotice.IsHumanFacing("daemon", ["daemon", "run"])).IsFalse();
+    public async Task DaemonStart_IsSuppressed() {
+        // The real foreground shape: `daemon start` with no -d/--detach blocks for the daemon's
+        // whole lifetime (this is what Capacitor.AppHost runs on every dev-loop restart).
+        await Assert.That(UpdateNotice.IsHumanFacing("daemon", ["daemon", "start"])).IsFalse();
+        // The detached form is also suppressed — the whole family is, not just the blocking shape.
+        await Assert.That(UpdateNotice.IsHumanFacing("daemon", ["daemon", "start", "-d"])).IsFalse();
     }
 
     [Test]
     [Arguments("status")]
-    [Arguments("stop")]
-    [Arguments("install")]
-    public async Task DaemonOtherSubcommands_AreNotSuppressed(string subcommand) {
-        // Only `daemon run` (the foreground daemon process itself) is excluded — a bare `daemon`
-        // with no subcommand, or any other subcommand, is an ordinary human-facing CLI call.
-        await Assert.That(UpdateNotice.IsHumanFacing("daemon", ["daemon", subcommand])).IsTrue();
+    [Arguments("logs")]
+    [Arguments("doctor")]
+    public async Task AllDaemonSubcommands_AreSuppressed(string subcommand) {
+        await Assert.That(UpdateNotice.IsHumanFacing("daemon", ["daemon", subcommand])).IsFalse();
     }
 
     [Test]
-    public async Task BareDaemon_WithNoSubcommand_IsNotSuppressed() {
-        await Assert.That(UpdateNotice.IsHumanFacing("daemon", ["daemon"])).IsTrue();
+    public async Task BareDaemon_WithNoSubcommand_IsSuppressed() {
+        await Assert.That(UpdateNotice.IsHumanFacing("daemon", ["daemon"])).IsFalse();
     }
 
     // --- Suppressed: update / uninstall themselves ---

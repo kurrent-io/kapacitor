@@ -38,16 +38,19 @@ internal static class UpdateNotice {
     /// <see cref="CrashReporter.FailOpenCommands"/> (<c>hook</c>, <c>generate-whats-done</c>,
     /// <c>set-title</c>, <c>copilot-finalize</c> — agent-spawned, nobody reads their stderr);
     /// <c>mcp</c> (a stdio JSON-RPC server — stderr is not a terminal) and <c>watch</c> (a
-    /// long-lived background process); <c>daemon run</c> (the foreground daemon process itself,
-    /// as opposed to e.g. <c>daemon status</c>); <c>update</c>/<c>uninstall</c> (nudging "run
-    /// kcap update" from inside one of those is noise at best, and uninstall's cache-file write
-    /// would race the command's own config-dir deletion); and an explicit <c>--no-update-check</c>
-    /// flag. Everything else is human-facing and returns true.
+    /// long-lived background process); the entire <c>daemon</c> command family (there is no
+    /// separate <c>run</c> subcommand — the foreground shape is plain <c>kcap daemon start</c>
+    /// without <c>-d</c>/<c>--detach</c>, which spawns the daemon child and blocks for its whole
+    /// lifetime, exactly what <c>Capacitor.AppHost</c> runs on every dev-loop restart; every other
+    /// <c>daemon</c> subcommand is infra/diagnostic and the "am I current?" nudge use-case is
+    /// already served by <c>kcap status</c>); <c>update</c>/<c>uninstall</c> (nudging "run kcap
+    /// update" from inside one of those is noise at best, and uninstall's cache-file write would
+    /// race the command's own config-dir deletion); and an explicit <c>--no-update-check</c> flag.
+    /// Everything else is human-facing and returns true.
     /// </summary>
     public static bool IsHumanFacing(string command, string[] args) {
         if (CrashReporter.FailOpenCommands.Contains(command)) return false;
-        if (command is "mcp" or "watch") return false;
-        if (command == "daemon" && args.Length > 1 && args[1] == "run") return false;
+        if (command is "mcp" or "watch" or "daemon") return false;
         if (command is "update" or "uninstall") return false;
         if (args.Contains("--no-update-check")) return false;
 

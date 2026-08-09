@@ -245,7 +245,6 @@ public class UnusableUrlGuardTests : IDisposable {
             processStart: Stopwatch.GetTimestamp(),
             baseUrl: BadUrl,
             stdin: new StringReader($$"""{"hook_event_name":"SessionStart","session_id":"{{Sid}}"}"""),
-            updateCheckTask: null,
             clientFactory: () => {
                 entered = true;
                 throw new InvalidOperationException("the claude guard did not run");

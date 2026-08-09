@@ -436,7 +436,7 @@ public class ClaudeHookCommandTests {
         var exit = await ClaudeHookCommand.HandleWithDeps(
             fx.Spool, processStart, "http://localhost",
             new StringReader($$"""{"hook_event_name":"SessionEnd","session_id":"{{Sid}}","transcript_path":"/none","cwd":"/tmp"}"""),
-            updateCheckTask: null, clientFactory: slowFactory);
+            clientFactory: slowFactory);
         sw.Stop();
 
         await Assert.That(exit).IsEqualTo(0);
@@ -538,7 +538,7 @@ public class ClaudeHookCommandTests {
         var exit = await ClaudeHookCommand.HandleWithDeps(
             fx.Spool, processStart, "http://localhost",
             new StringReader($$"""{"hook_event_name":"SubagentStop","session_id":"{{Sid}}","agent_id":"{{AgentId}}","transcript_path":"/none","cwd":"/tmp"}"""),
-            updateCheckTask: null, clientFactory: slowFactory);
+            clientFactory: slowFactory);
         sw.Stop();
         await Assert.That(exit).IsEqualTo(0);
         await Assert.That(sw.Elapsed).IsLessThan(TimeSpan.FromSeconds(5));
