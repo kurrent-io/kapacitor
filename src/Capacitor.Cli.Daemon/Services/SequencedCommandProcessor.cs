@@ -63,18 +63,15 @@ internal readonly record struct CommandOutcome(
 internal sealed class SequencedCommandProcessor : IAsyncDisposable {
     sealed class CacheEntry {
         public required string CommandId;
-        // Settlement lost-ack redelivery (D1): the item's own identity, retained so a settled entry can build/re-send its
-        // terminal ack at status-tick / reconnect time without the original SequencedItem in hand.
-        // Epoch is the processor-wide _epoch; Seq is also the cache key, kept here for self-contained
-        // rebuilds.
+        // Lost-ack redelivery (D1): the item's own identity, so a settled entry can re-send its terminal
+        // ack at tick/reconnect time without the SequencedItem (Epoch is _epoch; Seq is also the key).
         public required long Seq;
         public required string AgentId;
         public bool Processed;
         public CommandOutcome Outcome;
-        // Settlement lost-ack redelivery (D1): the SINGLE published terminal ack. Frozen once (get-or-freeze) so the proactive
-        // send, a duplicate-replay, and every tick re-delivery all carry byte-identical liveness — a
-        // live-liveness read that changed between two sends can never make two acks for one command
-        // disagree. Null until the first successful freeze (a throwing liveness read defers it).
+        // Lost-ack redelivery (D1): the SINGLE published terminal ack — frozen once (get-or-freeze) so the
+        // proactive send, a duplicate-replay, and every re-delivery carry byte-identical liveness. Null
+        // until the first successful freeze (a throwing liveness read defers it).
         public CommandAck? FrozenAck;
     }
 
@@ -591,13 +588,12 @@ internal sealed class SequencedCommandProcessor : IAsyncDisposable {
             SendContained(() => _sendAck(ack), item.Seq, "settled ack");
     }
 
-    /// <summary>Settlement lost-ack redelivery (D1) (re-deliver unretired outcomes): re-send the terminal ack of every unretired
-    /// Processed command, freezing any winner-less entry first (a freeze deferred by a throwing liveness
-    /// read now retries). The orchestrator calls this after every successful (re)connect + registration and
-    /// on each status-report tick while any unretired processed entry remains, so a terminal ack lost in a
-    /// reconnect window is re-elicited without waiting for the server to retransmit the command. Sends are
-    /// contained + one-way and never block the lane; a validated <see cref="AckProcessedPrefix"/> evicts
-    /// retired entries, which is what makes the re-sends stop.</summary>
+    /// <summary>Lost-ack redelivery (D1): re-send the terminal ack of every unretired Processed command,
+    /// freezing any winner-less entry first (a freeze deferred by a throwing liveness read now retries).
+    /// The orchestrator calls this post-registration and on each status-report tick, so a terminal ack lost
+    /// in a reconnect window is re-elicited without a server retransmit. Sends are contained + one-way and
+    /// never block the lane; a validated <see cref="AckProcessedPrefix"/> evicts retired entries, stopping
+    /// the re-sends.</summary>
     public void RedeliverUnretiredProcessedAcks() {
         foreach (var (seq, commandId, agentId, outcome, frozen) in EnumerateUnretiredProcessedEntries()) {
             var ack = frozen ?? TryGetOrFreezeAck(seq, commandId, agentId, outcome);

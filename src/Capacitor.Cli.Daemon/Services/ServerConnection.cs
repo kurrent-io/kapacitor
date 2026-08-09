@@ -574,7 +574,12 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
             // IsReady gate. Contained so a failing re-delivery never un-registers the daemon.
             postRegister: async () => {
                 try { await (OnRegisteredHook?.Invoke() ?? Task.CompletedTask); }
-                catch (Exception ex) { _logger.LogDebug(ex, "post-registration hook failed — ignoring"); }
+                catch (Exception ex) {
+                    // The log itself is contained: a throwing ILogger provider is a supported input, so a
+                    // bare LogDebug here could re-throw and defeat this very containment.
+                    try { _logger.LogDebug(ex, "post-registration hook failed — ignoring"); }
+                    catch { /* logger provider threw — swallow so post-register containment holds */ }
+                }
             }
         );
 

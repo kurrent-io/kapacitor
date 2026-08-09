@@ -47,8 +47,13 @@ internal sealed class RegistrationGate {
         MarkRegistered();
         // postRegister runs with IsReady == true — for work that must reach the server on the freshly
         // ready transport (e.g. re-delivering unretired terminal acks, which CommandAckAsync drops while
-        // readiness is still cleared inside this bracket). Its failure must not un-register the daemon,
-        // so it is the caller's job to contain it.
-        if (postRegister is not null) await postRegister();
+        // readiness is still cleared inside this bracket). It is CONTAINED here: MarkRegistered has already
+        // run, so a throw from the hook — including from a throwing ILogger inside its OWN error handling,
+        // a supported input in this codebase — must never un-set readiness or fault the reconnect path.
+        // The hook owns its diagnostics; this gate has no logger and deliberately swallows.
+        if (postRegister is not null) {
+            try { await postRegister(); }
+            catch { /* deliberately empty — readiness stays set; best-effort post-register work */ }
+        }
     }
 }
