@@ -636,13 +636,60 @@ public class AcpInteractionBridgeTests {
         var result = await bridge.HandleAsync(request, CancellationToken.None);
 
         await Assert.That(routed).IsEqualTo(0);
-        await Assert.That(reaped).IsEquivalentTo([method]);
+        // Task 2: the published reason is the forbidden-method CODING, not the bare method.
+        await Assert.That(reaped).IsEquivalentTo([$"unattended_interaction_forbidden:{method}"]);
         if (method == "vendor/unknown_interaction")
             await Assert.That(result).IsNull();
         else if (method == "elicitation/create")
             await Assert.That(result!.Value.GetRawText()).IsEqualTo("""{"action":"cancel"}""");
         else
             await Assert.That(result!.Value.GetProperty("outcome").GetProperty("outcome").GetString()).IsEqualTo("cancelled");
+    }
+
+    /// <summary>The gap Task 2 closes: pre-fix, an unadmittable frame (params missing/malformed, or
+    /// no sessionId) invoked the SAME callback with just <c>request.Method</c> — the same shape a
+    /// forbidden-method reap uses — discarding the bridge's own precise <c>why</c> entirely. The
+    /// published reason must be the frame-unadmittable coding of `why`, never the bare method and
+    /// never the forbidden-method coding (which a caller could otherwise not distinguish from this
+    /// case).</summary>
+    [Test]
+    public async Task Unadmittable_frame_publishes_its_why_not_method() {
+        string? reason = null;
+        var bridge = new AcpInteractionBridge(
+            requestInteraction: (req, ct) => throw new InvalidOperationException("must not be called"),
+            agentId: AgentId,
+            logger: NullLogger.Instance,
+            unattendedPolicy: AcpUnattendedInteractionPolicy.AllowlistedAutoApprove,
+            unexpectedUnattendedInteraction: r => reason = r);
+
+        // Missing params is the simplest unadmittable frame — UnadmittableFrame's own logged `why`
+        // is "session/request_permission had no params" (see the bridge's first UnadmittableFrame
+        // call site).
+        var request = new AcpRequest(1, "session/request_permission", Params: null);
+        await bridge.HandleAsync(request, CancellationToken.None);
+
+        await Assert.That(reason).IsEqualTo("unattended_frame_unadmittable: session/request_permission had no params");
+        await Assert.That(reason).IsNotEqualTo(request.Method);
+        await Assert.That(reason).IsNotEqualTo($"unattended_interaction_forbidden:{request.Method}");
+    }
+
+    /// <summary>Contrasted against the unadmittable-frame case above: a FORBIDDEN-METHOD reap (here,
+    /// the Fail-policy branch) publishes the generic method-coded reason, not a `why`-shaped one —
+    /// the two reap causes must stay distinguishable downstream.</summary>
+    [Test]
+    public async Task Forbidden_method_publishes_method_coded_string() {
+        string? reason = null;
+        var bridge = new AcpInteractionBridge(
+            requestInteraction: (req, ct) => throw new InvalidOperationException("must not be called"),
+            agentId: AgentId,
+            logger: NullLogger.Instance,
+            unattendedPolicy: AcpUnattendedInteractionPolicy.Fail,
+            unexpectedUnattendedInteraction: r => reason = r);
+
+        var request = new AcpRequest(1, "session/request_permission", PermissionParamsWithOptions("[]"));
+        await bridge.HandleAsync(request, CancellationToken.None);
+
+        await Assert.That(reason).IsEqualTo("unattended_interaction_forbidden:session/request_permission");
     }
 
     static (AcpInteractionBridge Bridge, Func<int> Calls) AutoApproveBridge(ILogger? logger = null) {
@@ -1210,7 +1257,8 @@ public class AcpInteractionBridgeTests {
 
         await Assert.That(result!.Value.GetProperty("outcome").GetProperty("outcome").GetString())
             .IsEqualTo("cancelled");
-        await Assert.That(reaped).IsEquivalentTo(["session/request_permission"]);
+        // Task 2: the published reason is the forbidden-method CODING, not the bare method.
+        await Assert.That(reaped).IsEquivalentTo(["unattended_interaction_forbidden:session/request_permission"]);
         await Assert.That(routed()).IsEqualTo(0);
     }
 
@@ -1225,7 +1273,7 @@ public class AcpInteractionBridgeTests {
                 PermissionParamsFor($"Running: {Admitted}", "[]")),
             CancellationToken.None);
 
-        await Assert.That(reaped).IsEquivalentTo(["session/request_permission"]);
+        await Assert.That(reaped).IsEquivalentTo(["unattended_interaction_forbidden:session/request_permission"]);
     }
 
     /// <summary>Every NON-permission method under this policy behaves exactly as Fail — the tool
@@ -1240,7 +1288,7 @@ public class AcpInteractionBridgeTests {
             new AcpRequest(1, method, PermissionParamsFor($"Running: {Admitted}", "[]")),
             CancellationToken.None);
 
-        await Assert.That(reaped).IsEquivalentTo([method]);
+        await Assert.That(reaped).IsEquivalentTo([$"unattended_interaction_forbidden:{method}"]);
         await Assert.That(routed()).IsEqualTo(0);
     }
 }

@@ -18,6 +18,12 @@ namespace Capacitor.Cli.Daemon.Acp;
 /// than taking a concrete <c>ServerConnection</c> dependency, so this class is unit-testable
 /// without a real SignalR connection (see <c>AcpInteractionBridgeTests</c>).
 ///
+/// <paramref name="unexpectedUnattendedInteraction"/> fires on every reap this bridge triggers, and
+/// carries the CODED REASON (design spec §3.1) that <c>AcpHostedAgentRuntime</c> forwards verbatim
+/// into its reap claim — never the bare JSON-RPC method: an unadmittable frame codes its own logged
+/// <c>why</c> (<c>unattended_frame_unadmittable: …</c>), everything else codes the method
+/// (<c>unattended_interaction_forbidden:{method}</c>) via <see cref="ForbiddenInteractionReason"/>.
+///
 /// Defensive-by-construction: every code path that can fail (missing/malformed params, the
 /// server call throwing, a decision that doesn't map to any offered option) returns a
 /// <c>"cancelled"</c>/safest-available-option result rather than propagating an exception —
@@ -41,15 +47,26 @@ internal sealed partial class AcpInteractionBridge(
     /// <see cref="AcpUnattendedInteractionPolicy.AllowlistedAutoApprove"/> it ALSO reaps, because a
     /// frame we cannot read is a frame we cannot admit — and "not admitted reaps exactly as Fail
     /// does" has to hold for the frames we understand least, not just the ones we understand.
+    ///
+    /// Publishes the FRAME-UNADMITTABLE coding of this method's own logged <paramref name="why"/> —
+    /// never the generic forbidden-method coding <see cref="ForbiddenInteractionReason"/> uses —
+    /// so a caller downstream (design spec §3.1) can tell "we couldn't even parse this" apart from
+    /// "we understood it and it wasn't allowed."
     /// </summary>
     JsonElement? UnadmittableFrame(AcpRequest request, string why) {
         if (unattendedPolicy == AcpUnattendedInteractionPolicy.AllowlistedAutoApprove) {
             logger.LogWarning("ACP: reaping unattended reviewer — {Why} (agent {AgentId})", why, agentId);
-            unexpectedUnattendedInteraction?.Invoke(request.Method);
+            unexpectedUnattendedInteraction?.Invoke($"unattended_frame_unadmittable: {why}");
         }
 
         return CancelledResult();
     }
+
+    /// <summary>The coded reason published for every FORBIDDEN-METHOD reap (as opposed to
+    /// <see cref="UnadmittableFrame"/>'s frame-unadmittable coding) — one formula shared by all
+    /// three call sites below, so they can never drift from each other or from the coded prefix a
+    /// caller downstream matches on.</summary>
+    static string ForbiddenInteractionReason(string method) => $"unattended_interaction_forbidden:{method}";
 
     /// <summary>
     /// Handles one inbound <see cref="AcpRequest"/>. Returns <see langword="null"/> for any method
@@ -81,7 +98,7 @@ internal sealed partial class AcpInteractionBridge(
         || (unattendedPolicy == AcpUnattendedInteractionPolicy.AllowlistedAutoApprove
             && request.Method != "session/request_permission")) {
             LogUnexpectedUnattendedInteraction(agentId, request.Method);
-            unexpectedUnattendedInteraction?.Invoke(request.Method);
+            unexpectedUnattendedInteraction?.Invoke(ForbiddenInteractionReason(request.Method));
 
             // Each method cancels in ITS OWN protocol's result shape — the stabilized
             // elicitation response is a different object from the permission outcome. The
@@ -150,7 +167,7 @@ internal sealed partial class AcpInteractionBridge(
         if (unattendedPolicy == AcpUnattendedInteractionPolicy.AllowlistedAutoApprove) {
             if (!UnattendedToolAdmission.IsAdmitted(parsed.ToolCall, admittedToolIds ?? EmptyAdmitted)) {
                 LogUnexpectedUnattendedInteraction(agentId, request.Method);
-                unexpectedUnattendedInteraction?.Invoke(request.Method);
+                unexpectedUnattendedInteraction?.Invoke(ForbiddenInteractionReason(request.Method));
 
                 return CancelledResult();
             }
@@ -167,7 +184,7 @@ internal sealed partial class AcpInteractionBridge(
             // Admitted tool, but no allow option we can identify. Reap rather than guess: an
             // unrecognised option set is exactly where a wrong pick grants something nobody asked for.
             LogUnexpectedUnattendedInteraction(agentId, request.Method);
-            unexpectedUnattendedInteraction?.Invoke(request.Method);
+            unexpectedUnattendedInteraction?.Invoke(ForbiddenInteractionReason(request.Method));
 
             return CancelledResult();
         }

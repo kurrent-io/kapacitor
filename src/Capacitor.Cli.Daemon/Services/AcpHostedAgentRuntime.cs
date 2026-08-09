@@ -554,16 +554,22 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
             return;
     }
 
-    void HandleUnexpectedUnattendedInteraction(string method) {
+    /// <summary>Wired as the bridge's reason-bearing reap callback (design spec §3.1) — <paramref
+    /// name="reason"/> arrives ALREADY CODED (<c>unattended_frame_unadmittable: …</c> or
+    /// <c>unattended_interaction_forbidden:{method}</c>; see <c>AcpInteractionBridge</c>'s
+    /// <c>unexpectedUnattendedInteraction</c> doc), so it forwards verbatim — same shape as <see
+    /// cref="HandleMcpSurfaceViolation"/> forwarding its own <c>violation</c> text, and no longer
+    /// re-derives the forbidden-method coding itself now that the bridge owns both codings.</summary>
+    void HandleUnexpectedUnattendedInteraction(string reason) {
         // Do not await process termination on AcpConnection's read loop: that loop is currently
         // handling the offending request, and the child may wait for its response before exiting.
         // Reap out-of-band and cancel both runtime workers immediately.
         // Same channel as the violation path: this is the SAME termination, so disposal must wait on
         // it too. Leaving either untracked would reintroduce the race for whichever path fired.
-        if (!TryStartReap($"unattended_interaction_forbidden:{method}", () => {
+        if (!TryStartReap(reason, () => {
                 _cts.Cancel();
 
-                return ReapUnexpectedInteractionAsync(method);
+                return ReapUnexpectedInteractionAsync(reason);
             }))
             return;
     }
