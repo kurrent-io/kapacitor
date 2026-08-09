@@ -1811,18 +1811,21 @@ kcap logout         # delete stored tokens
 > releases correspond to server versions rolled out to internal tenants first,
 > so most users should stay on stable.
 >
-> **Staying current, and turning it all off.** Beyond the stderr hint above,
-> every human-facing `kcap` command prints an "Update available" notice after
-> it finishes if a newer version exists, and `kcap status`'s **Version** line
-> shows the same thing inline. Every request `kcap` sends also carries its
-> version (and, if update checks are off, an explicit opt-out marker) to your
-> server, which is how the web dashboard's own out-of-date banner and
-> notification-centre entry — and the in-agent nudge Claude Code sessions can
-> see (above) — know to show up. `kcap config set update_check false` (or
-> `--no-update-check` for a single invocation) turns off **all** of it at
-> once: the stderr hint, the exit-time notice, the `kcap status` annotation,
-> the headers that drive the server-side banner/notification, and the
-> in-agent nudge. It defaults to on.
+> **Staying current, and turning it all off.** Every human-facing `kcap`
+> command prints an "Update available" notice after it finishes if a newer
+> version exists, and `kcap status`'s **Version** line shows the same thing
+> inline. Every request `kcap` sends also carries its version (and, if update
+> checks are off, an explicit opt-out marker) to your server, which is how the
+> web dashboard's own out-of-date banner and notification-centre entry — and
+> the in-agent nudge Claude Code sessions can see (above) — know to show up.
+> `kcap config set update_check false` is the full, persisted opt-out: it
+> disables the notice, the `kcap status` annotation, the headers that drive
+> the server-side banner/notification, and the in-agent nudge — everywhere,
+> until you turn it back on. `--no-update-check` is narrower and one-shot: it
+> only suppresses the notice and the `kcap status` annotation for that single
+> invocation — it doesn't change what gets sent to the server, so the banner,
+> notification, and in-agent nudge keep following whatever `update_check` is
+> persisted to. It defaults to on.
 
 The v1 config format stored `server_url` as a bare host name without a
 scheme. If `kcap` crashes with `An invalid request URI was provided`
