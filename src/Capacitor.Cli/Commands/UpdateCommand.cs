@@ -67,7 +67,8 @@ public static class UpdateCommand {
             }
         }
 
-        var (latest, current) = await CheckForUpdateAsync(forceCheck: true, channel);
+        var checkResult       = await CheckForUpdateAsync(forceCheck: true, channel);
+        var (latest, current) = (checkResult.Latest, checkResult.Current);
 
         if (checkOnly) {
             // Machine-readable probe consumed by the npm launcher (kcap.js).
@@ -131,8 +132,9 @@ public static class UpdateCommand {
         try {
             var profile = await AppConfig.GetActiveProfileAsync();
             if (profile?.UpdateCheck == false) return;
-            var channel = ResolveChannel([], profile?.UpdateChannel);
-            var (latest, current) = await CheckForUpdateAsync(forceCheck: false, channel);
+            var channel           = ResolveChannel([], profile?.UpdateChannel);
+            var checkResult       = await CheckForUpdateAsync(forceCheck: false, channel);
+            var (latest, current) = (checkResult.Latest, checkResult.Current);
 
             if (latest is not null && current is not null && IsNewer(latest, current)) {
                 await Console.Error.WriteLineAsync();
@@ -151,61 +153,174 @@ public static class UpdateCommand {
     static string CachePathFor(string channel) =>
         PathHelpers.ConfigPath($"update-check-{channel}.json");
 
-    internal static async Task<(string? latest, string? current)> CheckForUpdateAsync(bool forceCheck, string channel) {
-        var current   = GetCurrentVersion();
-        var cachePath = CachePathFor(channel);
+    /// <summary>
+    /// On-disk shape of a per-channel update-check cache file. Two kinds of
+    /// record share the file: a <b>success</b> record (<see cref="CheckedAt"/>
+    /// set, <see cref="Failed"/> false) and a <b>backoff</b> record written
+    /// after a failed/cancelled fetch (<see cref="AttemptedAt"/> set,
+    /// <see cref="Failed"/> true) that still retains the last known
+    /// <see cref="LatestVersion"/> so a transient registry outage doesn't
+    /// regress an already-known "update available" result.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="Parse"/> reads the legacy two-field shape
+    /// (<c>{latest_version, checked_at}</c>, written before backoff support
+    /// existed) as a plain success record — the missing <see cref="AttemptedAt"/>/
+    /// <see cref="Failed"/> fields default to null/false. That backward
+    /// compatibility is deliberate: an existing on-disk cache from an older
+    /// build must not be treated as corrupt.
+    /// </remarks>
+    internal sealed record UpdateCacheRecord(
+        string? LatestVersion,
+        DateTimeOffset? CheckedAt,
+        DateTimeOffset? AttemptedAt,
+        bool Failed) {
 
-        if (!forceCheck) {
-            // Check cache
-            if (File.Exists(cachePath)) {
-                try {
-                    var cacheJson     = await File.ReadAllTextAsync(cachePath);
-                    var cache         = JsonNode.Parse(cacheJson);
-                    var checkedAt     = cache?["checked_at"]?.GetValue<DateTimeOffset>();
-                    var cachedVersion = cache?["latest_version"]?.GetValue<string>();
+        /// <summary>
+        /// Parses a cache file's JSON. Returns null for anything unparseable
+        /// (corrupt/truncated file) so the caller can fall through to a fresh
+        /// fetch rather than throw.
+        /// </summary>
+        public static UpdateCacheRecord? Parse(string json) {
+            try {
+                var node = JsonNode.Parse(json);
+                if (node is null) return null;
 
-                    if (checkedAt is not null
-                     && DateTimeOffset.UtcNow - checkedAt.Value < TimeSpan.FromHours(24)
-                     && cachedVersion is not null) {
-                        return (cachedVersion, current);
-                    }
-                } catch {
-                    // Corrupted cache — re-check
-                }
+                var latestVersion = node["latest_version"]?.GetValue<string>();
+                var checkedAt     = node["checked_at"]?.GetValue<DateTimeOffset>();
+                var attemptedAt   = node["attempted_at"]?.GetValue<DateTimeOffset>();
+                var failed        = node["failed"]?.GetValue<bool>() ?? false;
+
+                return new UpdateCacheRecord(latestVersion, checkedAt, attemptedAt, failed);
+            } catch {
+                return null;
             }
         }
 
-        // Query npm registry
+        public string ToJson() {
+            var obj = new JsonObject {
+                ["latest_version"] = LatestVersion,
+                ["checked_at"]     = CheckedAt,
+                ["attempted_at"]   = AttemptedAt,
+                ["failed"]         = Failed,
+            };
+
+            return obj.ToJsonString();
+        }
+
+        /// <summary>True for a successful check still inside the cache TTL (24h in production).</summary>
+        public bool IsFresh(DateTimeOffset now, TimeSpan ttl) =>
+            !Failed && LatestVersion is not null && CheckedAt is not null && now - CheckedAt.Value < ttl;
+
+        /// <summary>
+        /// True for a failed/cancelled check still inside its backoff window
+        /// (1h in production) — the window during which a passive check
+        /// skips the network entirely and serves the retained
+        /// <see cref="LatestVersion"/> (which may itself be null if no check
+        /// has ever succeeded).
+        /// </summary>
+        public bool InFailureBackoff(DateTimeOffset now, TimeSpan backoff) =>
+            Failed && AttemptedAt is not null && now - AttemptedAt.Value < backoff;
+    }
+
+    /// <summary>Result of <see cref="CheckForUpdateAsync"/>.</summary>
+    /// <param name="FromCache">
+    /// True when <paramref name="Latest"/> came from a cached/retained value
+    /// (a fresh success record, or a retained version served during failure
+    /// backoff) rather than a network round-trip that just completed.
+    /// </param>
+    internal sealed record UpdateCheckResult(string? Current, string? Latest, bool Newer, bool FromCache);
+
+    static readonly TimeSpan CacheTtl       = TimeSpan.FromHours(24);
+    static readonly TimeSpan FailureBackoff = TimeSpan.FromHours(1);
+
+    /// <param name="ct">
+    /// Bounds the network fetch. <c>forceCheck</c> callers pass
+    /// <see cref="CancellationToken.None"/> and rely on the 5s
+    /// <see cref="HttpClient.Timeout"/> below; passive callers pass a short
+    /// (~3s) token so an unresponsive registry can't stall every CLI
+    /// invocation. Never used for the cache write itself — see
+    /// <see cref="WriteCacheRecordAsync"/>.
+    /// </param>
+    internal static async Task<UpdateCheckResult> CheckForUpdateAsync(bool forceCheck, string channel, CancellationToken ct = default) {
+        var current   = GetCurrentVersion();
+        var cachePath = CachePathFor(channel);
+        var now       = DateTimeOffset.UtcNow;
+
+        UpdateCacheRecord? cached = null;
+        if (File.Exists(cachePath)) {
+            try {
+                // Never bound this local read by the (possibly short, passive)
+                // request token — only the network fetch below should be.
+                cached = UpdateCacheRecord.Parse(await File.ReadAllTextAsync(cachePath, CancellationToken.None));
+            } catch {
+                // Corrupted/unreadable cache file — fall through to a fresh fetch.
+            }
+        }
+
+        if (!forceCheck && cached is not null
+         && (cached.IsFresh(now, CacheTtl) || cached.InFailureBackoff(now, FailureBackoff))) {
+            // Either a fresh success record, or a still-backed-off failure
+            // record — both cases serve the retained LatestVersion (which is
+            // null only if no check has ever succeeded) without touching the
+            // network.
+            return new UpdateCheckResult(current, cached.LatestVersion, IsNewer(cached.LatestVersion, current), FromCache: true);
+        }
+
+        // Query npm registry.
         using var http = new HttpClient();
         http.Timeout = TimeSpan.FromSeconds(5);
         http.DefaultRequestHeaders.Add("User-Agent", "kcap-cli");
 
         try {
-            var resp = await http.GetAsync($"{RegistryBaseUrl}/@kurrent/kcap/{channel}");
+            var resp = await http.GetAsync($"{RegistryBaseUrl}/@kurrent/kcap/{channel}", ct);
 
-            if (!resp.IsSuccessStatusCode) return (null, current);
+            if (!resp.IsSuccessStatusCode) {
+                await WriteBackoffRecordAsync(cachePath, cached?.LatestVersion, now);
+                return new UpdateCheckResult(current, cached?.LatestVersion, IsNewer(cached?.LatestVersion, current), FromCache: true);
+            }
 
-            var body   = await resp.Content.ReadAsStringAsync();
+            var body   = await resp.Content.ReadAsStringAsync(ct);
             var json   = JsonNode.Parse(body);
             var latest = json?["version"]?.GetValue<string>();
 
-            // Cache result
             if (latest is not null) {
-                var dir = Path.GetDirectoryName(cachePath)!;
-                Directory.CreateDirectory(dir);
-
-                var cacheObj = new JsonObject {
-                    ["latest_version"] = latest,
-                    ["checked_at"]     = DateTimeOffset.UtcNow
-                };
-                var tempPath = $"{cachePath}.tmp";
-                await File.WriteAllTextAsync(tempPath, cacheObj.ToJsonString());
-                File.Move(tempPath, cachePath, overwrite: true);
+                await WriteCacheRecordAsync(cachePath, new UpdateCacheRecord(latest, now, AttemptedAt: null, Failed: false));
             }
 
-            return (latest, current);
+            return new UpdateCheckResult(current, latest, IsNewer(latest, current), FromCache: false);
         } catch {
-            return (null, current);
+            // Network failure, non-2xx handled above, or cancellation (either
+            // the passive ct bound or the 5s HttpClient.Timeout). Pin a 1h
+            // backoff so a wedged/slow registry isn't re-hit on every
+            // invocation, but keep serving the last version we successfully
+            // saw (stale-while-backoff).
+            await WriteBackoffRecordAsync(cachePath, cached?.LatestVersion, now);
+            return new UpdateCheckResult(current, cached?.LatestVersion, IsNewer(cached?.LatestVersion, current), FromCache: true);
+        }
+    }
+
+    static Task WriteBackoffRecordAsync(string cachePath, string? retainedLatestVersion, DateTimeOffset attemptedAt) =>
+        WriteCacheRecordAsync(cachePath, new UpdateCacheRecord(retainedLatestVersion, CheckedAt: null, attemptedAt, Failed: true));
+
+    /// <summary>
+    /// Atomic tmp+<see cref="File.Move(string, string, bool)"/> write, same
+    /// pattern the rest of the config store uses. Deliberately never passed
+    /// the request's own <see cref="CancellationToken"/> — a cancelled fetch
+    /// must still be able to persist its backoff record — and never lets a
+    /// filesystem failure propagate: a best-effort cache write must not turn
+    /// an otherwise-successful check into a reported failure.
+    /// </summary>
+    static async Task WriteCacheRecordAsync(string cachePath, UpdateCacheRecord record) {
+        try {
+            var dir = Path.GetDirectoryName(cachePath)!;
+            Directory.CreateDirectory(dir);
+
+            var tempPath = $"{cachePath}.tmp";
+            await File.WriteAllTextAsync(tempPath, record.ToJson(), CancellationToken.None);
+            File.Move(tempPath, cachePath, overwrite: true);
+        } catch {
+            // Best-effort — never fail the check because the cache write did.
         }
     }
 
