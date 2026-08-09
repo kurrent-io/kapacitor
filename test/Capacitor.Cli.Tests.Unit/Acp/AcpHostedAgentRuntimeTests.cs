@@ -550,4 +550,123 @@ public class AcpHostedAgentRuntimeTests {
         // Release the fake's held response so the harness can tear down cleanly.
         h.Fake.HoldSetConfigOptionResponse.TrySetResult();
     }
+
+    // ── TerminationVerdict fused to the reap claim ─────────────────────────────────
+    // TryStartReap/TakeReap/FirstTurnSettledForTest are exercised directly (internal) rather than
+    // through HandleMcpSurfaceViolation/HandleUnexpectedUnattendedInteraction, so these tests can
+    // control claim/window timing deterministically instead of racing real ACP connection I/O.
+
+    /// <summary>A starter's synchronous prefix can throw (production: _cts.Cancel() racing a
+    /// disposed _cts). No verdict must survive that — and the claim must reopen for the next
+    /// caller, which then wins both the claim and the verdict.</summary>
+    [Test]
+    public async Task Verdict_published_only_on_successful_claim() {
+        await using var h = new Harness();
+
+        await Assert.That(() => h.Runtime.TryStartReap(
+                "first-reason", () => throw new InvalidOperationException("cancel failed")))
+            .Throws<InvalidOperationException>();
+
+        await Assert.That(h.Runtime.Verdict).IsNull();
+
+        var claimed = h.Runtime.TryStartReap("second-reason", () => Task.CompletedTask);
+
+        await Assert.That(claimed).IsTrue();
+        await Assert.That(h.Runtime.Verdict).IsNotNull();
+        await Assert.That(h.Runtime.Verdict!.Reason).IsEqualTo("second-reason");
+    }
+
+    /// <summary>The window bit must be read BEFORE the starter runs. Here the starter itself
+    /// settles the marker synchronously (standing in for production's _cts.Cancel() eventually
+    /// settling it via ProcessAdmittedTurnAsync's finally) — a snapshot taken anywhere other than
+    /// strictly before the starter runs would observe "settled" and misclassify.</summary>
+    [Test]
+    public async Task Window_bit_snapshotted_before_cancel() {
+        await using var h = new Harness();
+        h.StartFakeAgentLoop();
+
+        // Hold the prompt response so the first turn is genuinely still in flight when the reap is
+        // claimed below — nothing has settled the marker yet.
+        h.Fake.HoldPromptResponses = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        await h.Runtime.StartAsync("/abs/worktree", "review this", h.Cts.Token).WaitAsync(HangGuard);
+
+        var deadline = DateTime.UtcNow + HangGuard;
+        while (!h.Fake.ReceivedCalls.Any(c => c.Method == "session/prompt") && DateTime.UtcNow < deadline)
+            await Task.Delay(10);
+        await Assert.That(h.Fake.ReceivedCalls.Any(c => c.Method == "session/prompt")).IsTrue();
+        await Assert.That(h.Runtime.FirstTurnSettledForTest.Task.IsCompleted).IsFalse();
+
+        var claimed = h.Runtime.TryStartReap("reap-reason", () => {
+            h.Runtime.FirstTurnSettledForTest.TrySetResult();
+            return Task.CompletedTask;
+        });
+
+        await Assert.That(claimed).IsTrue();
+        await Assert.That(h.Runtime.Verdict!.ReapedInsideLaunchWindow).IsTrue();
+
+        h.Fake.HoldPromptResponses.TrySetResult();
+    }
+
+    /// <summary>Barrier contention: the winner is held inside its synchronous starter, so the claim
+    /// + window snapshot + verdict publish are all still inside _reapLock. A concurrent TakeReap()
+    /// (disposal's seam) and a concurrent second TryStartReap() call (the loser) must both block on
+    /// that same lock — TakeReap can never observe a claim with no published verdict/task, and the
+    /// loser can neither publish nor overwrite once it does get in.</summary>
+    [Test]
+    public async Task Concurrent_loser_cannot_publish_or_overwrite() {
+        await using var h = new Harness();
+
+        var winnerEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseWinner = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var winnerTask = Task.Run(() => h.Runtime.TryStartReap("winner-reason", () => {
+            winnerEntered.TrySetResult();
+            releaseWinner.Task.GetAwaiter().GetResult(); // synchronous block INSIDE _reapLock
+            return Task.CompletedTask;
+        }));
+
+        await winnerEntered.Task.WaitAsync(HangGuard);
+
+        // Explicit type argument: Task.Run would otherwise resolve TakeReap's Task? return via the
+        // Func<Task> "unwrap" overload (treating it as the work to await) instead of Func<Task?>
+        // (treating it as the RESULT), silently changing what takeTask represents.
+        var takeTask  = Task.Run<Task?>(() => h.Runtime.TakeReap());
+        var loserTask = Task.Run(() => h.Runtime.TryStartReap("loser-reason", () => Task.CompletedTask));
+
+        // Neither concurrent caller can have progressed past the lock yet.
+        await Task.Delay(200);
+        await Assert.That(takeTask.IsCompleted).IsFalse();
+        await Assert.That(loserTask.IsCompleted).IsFalse();
+
+        releaseWinner.TrySetResult();
+
+        await Assert.That(await winnerTask.WaitAsync(HangGuard)).IsTrue();
+        await Assert.That(await loserTask.WaitAsync(HangGuard)).IsFalse();
+
+        // A plain bool, not the Task value itself: TUnit's Assert.That special-cases a Task-typed
+        // value as something to further await, which collides with checking whether the reference
+        // came back null.
+        Task? takenReap = await takeTask.WaitAsync(HangGuard);
+        await Assert.That(takenReap is not null).IsTrue();
+
+        await Assert.That(h.Runtime.Verdict).IsNotNull();
+        await Assert.That(h.Runtime.Verdict!.Reason).IsEqualTo("winner-reason");
+    }
+
+    /// <summary>Reviewer launches always carry a prompt, but the window still needs a defined close
+    /// for a launch that doesn't — otherwise no turn ever runs, ProcessAdmittedTurnAsync's finally
+    /// never fires, and the marker (so the window) would stay open forever.</summary>
+    [Test]
+    public async Task Empty_initial_prompt_closes_window_at_handoff() {
+        await using var h = new Harness();
+        h.StartFakeAgentLoop();
+
+        await h.Runtime.StartAsync("/abs/worktree", "", h.Cts.Token).WaitAsync(HangGuard);
+
+        var claimed = h.Runtime.TryStartReap("reason", () => Task.CompletedTask);
+
+        await Assert.That(claimed).IsTrue();
+        await Assert.That(h.Runtime.Verdict!.ReapedInsideLaunchWindow).IsFalse();
+    }
 }

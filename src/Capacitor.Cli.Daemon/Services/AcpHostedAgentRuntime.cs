@@ -297,17 +297,41 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
     Task? _reapTask;
     readonly object _reapLock = new();
 
+    /// <summary>The reap claim's fused, immutable outcome: the writer's coded reason (sanitized —
+    /// see <see cref="TryStartReap"/>) plus whether the claim landed while the launch window
+    /// (<see cref="_firstTurnSettled"/>) was still open. Published at most once, by whichever reap
+    /// wins the claim.</summary>
+    public sealed record TerminationVerdict(string Reason, bool ReapedInsideLaunchWindow);
+
+    /// <summary>Null until a reap wins the claim (and forever null if none ever does, or the sole
+    /// claim's starter throws). Read by the orchestrator to reclassify a launch/registration failure
+    /// with the daemon's coded reason instead of surfacing as an unknown failure.</summary>
+    public TerminationVerdict? Verdict { get; private set; }
+
     /// <summary>
-    /// Claims the single reap slot. The claim and the later publication happen under ONE lock, and
+    /// Claims the single reap slot and, on success, publishes the fused <see cref="TerminationVerdict"/>.
+    /// The claim, the launch-window snapshot, and the publication all happen under ONE lock, and
     /// <see cref="TakeReap"/> waits on that same lock — so a disposal can no longer land in the gap
-    /// between "the guard flipped" and "the task exists" and conclude there is nothing to await.
-    /// An interlocked flag alone cannot express that, because the two steps are not one operation.
+    /// between "the guard flipped" and "the task/verdict exist" and conclude there is nothing to
+    /// await or classify. An interlocked flag alone cannot express that, because these are not one
+    /// operation.
+    ///
+    /// <para><paramref name="reason"/> is the writer's raw coded string — sanitized here (single-line
+    /// + length-capped via <see cref="SanitizeForForward"/>) before publication, since it can carry
+    /// agent-controlled text (e.g. a JSON-RPC method from an inbound frame). The window bit is
+    /// snapshotted from <see cref="_firstTurnSettled"/> BEFORE <paramref name="start"/> runs: the
+    /// reap's own <c>_cts.Cancel()</c> settles that marker in <see cref="ProcessAdmittedTurnAsync"/>'s
+    /// <c>finally</c>, so reading it after <paramref name="start"/> has run would be
+    /// self-contaminating — every claimed reap would read "settled" regardless of when it actually
+    /// fired.</para>
     /// </summary>
-    bool TryStartReap(Func<Task> start) {
+    internal bool TryStartReap(string reason, Func<Task> start) {
         lock (_reapLock) {
             if (_reapClaimed) return false;
 
             _reapClaimed = true;
+
+            var insideLaunchWindow = !_firstTurnSettled.Task.IsCompleted;
 
             // Started AND published inside the lock: claiming, releasing, then publishing leaves the
             // gap this exists to close — a disposal taking the lock in between sees a claim with no
@@ -316,7 +340,8 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
             // The callback runs SYNCHRONOUS work first (logging, _cts.Cancel()), so it can throw —
             // notably when a dispatched notification races disposal past _cts.Dispose(). Unwinding
             // out of here would release the lock with the slot claimed and no task published, which
-            // is precisely the prohibited state. So the claim is released on failure.
+            // is precisely the prohibited state. So the claim is released on failure — and the
+            // verdict below is never reached, so nothing is published for this claim.
             try {
                 _reapTask = start();
             } catch {
@@ -324,13 +349,15 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
                 throw;
             }
 
+            Verdict = new TerminationVerdict(SanitizeForForward(reason), insideLaunchWindow);
+
             return true;
         }
     }
 
     /// <summary>The in-flight reap, or null when none was ever claimed. A claim with no task yet
     /// published cannot be observed: the claimant publishes before releasing the caller.</summary>
-    Task? TakeReap() { lock (_reapLock) return _reapTask; }
+    internal Task? TakeReap() { lock (_reapLock) return _reapTask; }
 
     bool _reapClaimed;
 
@@ -356,8 +383,16 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
     int _sawFirstUpdate;
 
     /// <summary>Completes when the first turn ends, however it ends — the other way to disarm the
-    /// first-output watchdog.</summary>
+    /// first-output watchdog. Also the launch-window marker <see cref="TryStartReap"/> snapshots
+    /// (design spec §3.3): the window is open from spawn until this settles. An empty/absent initial
+    /// prompt settles it directly at <see cref="StartAsync"/>'s completion (see that method's tail)
+    /// — a deterministic backstop, since no turn ever runs to settle it otherwise.</summary>
     readonly TaskCompletionSource _firstTurnSettled = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    /// <summary>Test-only: the SAME instance <see cref="TryStartReap"/> snapshots, so a test can
+    /// settle it directly — simulating a reap's own cancel — without driving a real turn through the
+    /// connection. Never touched by production code.</summary>
+    internal TaskCompletionSource FirstTurnSettledForTest => _firstTurnSettled;
 
     /// <summary>Agent capabilities negotiated by <see cref="StartAsync"/>'s <c>initialize</c> call; null before that.</summary>
     AgentCapabilities? _negotiatedCapabilities;
@@ -509,7 +544,8 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
         // TRACKED, not fire-and-forget. Disposal deletes the reviewer's transcript-bearing home, and
         // doing that while an in-flight reap has not confirmed the child is gone would leave a live
         // reviewer writing into a deleted path — and recreating it.
-        if (!TryStartReap(() => {
+        // The violation forwards VERBATIM as the published verdict's coded reason.
+        if (!TryStartReap(violation, () => {
                 _logger.LogError("ACP: reaping unattended reviewer — {Violation}", violation);
                 _cts.Cancel();
 
@@ -524,7 +560,7 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
         // Reap out-of-band and cancel both runtime workers immediately.
         // Same channel as the violation path: this is the SAME termination, so disposal must wait on
         // it too. Leaving either untracked would reintroduce the race for whichever path fired.
-        if (!TryStartReap(() => {
+        if (!TryStartReap($"unattended_interaction_forbidden:{method}", () => {
                 _cts.Cancel();
 
                 return ReapUnexpectedInteractionAsync(method);
@@ -834,6 +870,12 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
         if (!string.IsNullOrEmpty(initialPrompt)) {
             _ = EnqueueTurn(initialPrompt, acknowledgeWrite: false);
             ArmFirstOutputWatchdog();
+        } else {
+            // Deterministic backstop (design spec §3.3): no turn will ever run to settle the marker
+            // via ProcessAdmittedTurnAsync when the launch carries no initial prompt — reviewer
+            // launches always carry one, but the window still needs a defined close for any launch
+            // that doesn't, or a later reap would misclassify as still inside it forever.
+            _firstTurnSettled.TrySetResult();
         }
     }
 
