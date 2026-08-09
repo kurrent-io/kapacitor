@@ -372,4 +372,110 @@ public partial class AgentOrchestratorVendorTests {
         await Assert.That(server.StatusChangedCalls).Contains(("stop-normal-1", "Completed"));
         await Assert.That(agent.Status).IsEqualTo("Completed");
     }
+
+    /// <summary>Part A final-review fix wave, item 2: the publish→report race. A same-tick
+    /// TTL/idle/stuck-Starting sweep can reach StopAgentCoreAsync in the instant AFTER
+    /// TryStartReap has published the verdict but BEFORE the finalizer's CAS has set
+    /// LaunchFailureVerdictReported — this seeds exactly that instant (verdict published, guard
+    /// flag still 0) rather than the fully-reported state
+    /// Stop_after_published_verdict_does_not_clear_failed_status_or_reason already covers.</summary>
+    [Test]
+    public async Task Stop_racing_a_published_but_not_yet_reported_verdict_does_not_emit_completed() {
+        var server = new CaptureServerConnection();
+        await using var orch = BuildOrchestrator(
+            server, new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>());
+
+        var (runtime, process, fake) = BuildVerdictRuntime("stop-race-2");
+        await using var _ = fake;
+
+        var claimed = runtime.TryStartReap(
+            "kiro_reviewer_mcp_surface_unexpected: violation", () => Task.CompletedTask);
+        await Assert.That(claimed).IsTrue();
+        await Assert.That(runtime.Verdict!.ReapedInsideLaunchWindow).IsTrue();
+        process.SignalExited(0);
+
+        var agent = SeedAcpAgent(orch, "stop-race-2", runtime, status: "Running");
+        // Precondition: the verdict is published, but nothing has reported it yet — the finalizer
+        // never ran for this agent in this test.
+        await Assert.That(agent.LaunchFailureVerdictReported).IsEqualTo(0);
+
+        await orch.HandleStopAgentForTest("stop-race-2");
+
+        await Assert.That(server.StatusChangedCalls.Any(c => c.AgentId == "stop-race-2")).IsFalse();
+        await Assert.That(agent.Status).IsNotEqualTo("Completed");
+    }
+
+    // ── Part A final-review fix wave, item 1: §3.5 wired into the general launch-failure catch ──
+    // MapLaunchFailureReason/DescribeLaunchFailure previously covered ONLY the finalizer's verdict
+    // arm; the orchestrator's general catch (HandleLaunchAgentCore, the site a reclassified
+    // AcpReviewerReapedException — and any other pre-StartAsync factory failure — actually lands
+    // on) still forwarded ex.Message raw, so a blank/whitespace message reached LaunchFailed
+    // unmapped. These two tests exercise that general catch directly (SpyHostedAgentRuntimeFactory
+    // .StartThrow, no AgentInstance ever created — the same "pre-insert failure" landing zone
+    // Report_sent_exactly_once_across_factory_and_finalizer's Part A already proved is the sole
+    // reporter for this scenario).
+
+    [Test]
+    public async Task Factory_prespawn_failure_with_blank_message_reports_the_typed_fallback() {
+        var (repoPath, cleanup) = CreateGitRepo();
+
+        try {
+            var server = new CaptureServerConnection();
+            var blankMessageFactory = new SpyHostedAgentRuntimeFactory("cursor") {
+                StartThrow = new InvalidOperationException("   ")
+            };
+
+            await using var orch = BuildOrchestrator(
+                server, new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>(),
+                allowedRepoPath: repoPath, extraRuntimeFactories: [blankMessageFactory]);
+
+            await orch.HandleLaunchAgentForTest(new LaunchAgentCommand(
+                AgentId: "blank-msg-1",
+                Prompt: "go",
+                Model: "",
+                Effort: null,
+                RepoPath: repoPath,
+                Tools: null,
+                AttachmentIds: null,
+                Vendor: "cursor"
+            ));
+
+            var reported = server.LaunchFailedCalls.Single(c => c.AgentId == "blank-msg-1").Reason;
+            await Assert.That(reported).IsEqualTo($"launch_failed:{nameof(InvalidOperationException)} — see daemon log");
+        } finally {
+            cleanup();
+        }
+    }
+
+    [Test]
+    public async Task Factory_prespawn_failure_with_a_real_message_passes_it_through_verbatim() {
+        var (repoPath, cleanup) = CreateGitRepo();
+
+        try {
+            var server = new CaptureServerConnection();
+            var realMessageFactory = new SpyHostedAgentRuntimeFactory("cursor") {
+                StartThrow = new InvalidOperationException("cursor-agent binary not found on PATH")
+            };
+
+            await using var orch = BuildOrchestrator(
+                server, new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>(),
+                allowedRepoPath: repoPath, extraRuntimeFactories: [realMessageFactory]);
+
+            await orch.HandleLaunchAgentForTest(new LaunchAgentCommand(
+                AgentId: "real-msg-1",
+                Prompt: "go",
+                Model: "",
+                Effort: null,
+                RepoPath: repoPath,
+                Tools: null,
+                AttachmentIds: null,
+                Vendor: "cursor"
+            ));
+
+            var reported = server.LaunchFailedCalls.Single(c => c.AgentId == "real-msg-1").Reason;
+            await Assert.That(reported).IsEqualTo("cursor-agent binary not found on PATH");
+        } finally {
+            cleanup();
+        }
+    }
 }

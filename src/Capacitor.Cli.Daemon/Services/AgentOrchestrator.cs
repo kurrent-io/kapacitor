@@ -86,10 +86,13 @@ internal record AgentInstance(
     /// <summary>Design spec §3.3: single-flight guard for reporting a published ACP launch-window
     /// reap verdict to the server — claimed (0→1) by the FIRST path that reports it, via
     /// <see cref="System.Threading.Interlocked.CompareExchange(ref int,int,int)"/>, so dedupe is
-    /// structural rather than dependent on today's call-site ordering. Only
-    /// <see cref="AgentOrchestrator.FinalizeAgentRunAsync"/> consults this today (the factory's
-    /// pre-registration reclassification, design spec §3.2, has no <see cref="AgentInstance"/> to
-    /// share it with — see that method's remarks) but it is the canonical claim any future
+    /// structural rather than dependent on today's call-site ordering. Set by
+    /// <see cref="AgentOrchestrator.FinalizeAgentRunAsync"/>'s verdict arm; read (via a plain
+    /// <see cref="System.Threading.Volatile.Read(ref int)"/>, no claim) by
+    /// <see cref="AgentOrchestrator.StopAgentCoreAsync"/> to suppress a racing stop's non-failure
+    /// "Completed" transition once a verdict has already been reported — the factory's
+    /// pre-registration reclassification (design spec §3.2) has no <see cref="AgentInstance"/> to
+    /// share it with (see that method's remarks) — but it is the canonical claim any future
     /// verdict-reporting call site for this agent must take before sending.</summary>
     public int LaunchFailureVerdictReported;
 
@@ -1736,7 +1739,10 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
                 // CodexUnsupportedWindowsException: Windows build older than 10.0.17763, where
                 // Codex's Windows sandbox does not exist — carries the version + doc link.
                 // All map to the same cleanup path.
-                await _server.LaunchFailedAsync(agentId, ex.Message);
+                // §3.5: DescribeLaunchFailure covers a null/whitespace ex.Message with the typed
+                // fallback; these three exception types always carry a real message, but every
+                // LaunchFailed send site routes through the same fallback rather than assuming so.
+                await _server.LaunchFailedAsync(agentId, AcpHostedAgentRuntimeFactory.DescribeLaunchFailure(ex));
 
                 // No AgentInstance was created, so CleanupAgentAsync won't run — revoke the reviewer
                 // token here (if we minted one) so it doesn't leak into the live-token set.
@@ -1932,7 +1938,8 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             // can't strand a live child; a pre-insert failure falls through to the transient cleanup below.
             if (_agents.ContainsKey(agentId)) {
                 await CleanupAgentAsync(agentId);
-                await _server.LaunchFailedAsync(agentId, ex.Message);
+                // §3.5: never forward a null/whitespace ex.Message raw.
+                await _server.LaunchFailedAsync(agentId, AcpHostedAgentRuntimeFactory.DescribeLaunchFailure(ex));
                 return new CommandOutcome(CommandOutcomeKind.LaunchFailedCleaned, agentId);
             }
 
@@ -1974,7 +1981,11 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
                 }
             }
 
-            await _server.LaunchFailedAsync(agentId, ex.Message);
+            // §3.5: this is the landing site for a factory pre-StartAsync failure — including a
+            // reclassified AcpReviewerReapedException (design spec §3.2) — thrown before any
+            // AgentInstance exists, so DescribeLaunchFailure's fallback is the ONLY cover a blank
+            // message gets here.
+            await _server.LaunchFailedAsync(agentId, AcpHostedAgentRuntimeFactory.DescribeLaunchFailure(ex));
 
             // Phase B2-b (sequenced-settlement design §4.2.2): a pre-insert failure — the worktree (if any)
             // was torn down and no agent was ever registered; terminal for the sequenced lane.
@@ -2507,14 +2518,24 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             // reviewer that trips a containment tripwire is a plausible TTL/idle-reap candidate on
             // the very same heartbeat tick). A published verdict has already forced terminal
             // "Failed" and told the server via LaunchFailedAsync; a non-failure "Completed"
-            // transition here would clear the FailureReason that call just set server-side. Gated
-            // on the verdict-REPORTED flag specifically, not `Status == "Failed"` — an unrelated
-            // Failed state must not by itself block a legitimate Completed transition.
-            var verdictAlreadyReported = Volatile.Read(ref agent.LaunchFailureVerdictReported) != 0;
+            // transition here would clear the FailureReason that call just set server-side.
+            //
+            // Two independent reads, ORed, because the verdict is PUBLISHED at reap-claim time
+            // (TryStartReap) strictly before the finalizer's report runs — a same-tick sweep could
+            // otherwise read LaunchFailureVerdictReported in the instant BEFORE that CAS flips it
+            // and still emit the non-failure transition. Reading the runtime's own Verdict closes
+            // that window: it is suppressed the moment the verdict exists, not only once it has
+            // been reported. Post-window (ReapedInsideLaunchWindow == false) leaves both reads
+            // false, preserving the byte-identical teardown for that case. Gated on these two
+            // signals specifically, not `Status == "Failed"` — an unrelated Failed state must not
+            // by itself block a legitimate Completed transition.
+            var suppressCompleted =
+                Volatile.Read(ref agent.LaunchFailureVerdictReported) != 0
+             || agent.Runtime is AcpHostedAgentRuntime { Verdict.ReapedInsideLaunchWindow: true };
 
             // Set status BEFORE cancelling ReadCts so the read loop's finally
             // block sees "Completed" and skips its own status change / event append.
-            if (!verdictAlreadyReported) SetAgentStatus(agent, "Completed");
+            if (!suppressCompleted) SetAgentStatus(agent, "Completed");
             // Mark this as a user-initiated stop so the read-loop's finally-block
             // EndAgentSessionAsync call uses "agent_stopped" if it ends up being
             // the only successful call (e.g., transient SignalR failure here).
@@ -2525,7 +2546,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
 
             // An unregistered agent has no server-side row to update.
             if (!agent.IsPrivate) {
-                if (!verdictAlreadyReported) _ = _server.AgentStatusChangedAsync(agentId, "Completed", agent.SessionId);
+                if (!suppressCompleted) _ = _server.AgentStatusChangedAsync(agentId, "Completed", agent.SessionId);
                 _ = _server.AppendAgentRunEventAsync(agentId, new AgentRunStopped("user", null));
             }
 

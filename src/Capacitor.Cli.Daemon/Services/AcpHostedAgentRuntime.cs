@@ -1762,10 +1762,13 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
                 // ignores its own timeout must not be able to wedge disposal outright. A reap that
                 // won't settle is a "didn't confirm" signal, not a reason to hang teardown.
                 await reap.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
-            } catch {
-                // Already logged by the reap; a timeout here logs nothing further for the same reason
-                // the exit-confirmation wait below doesn't escalate past Debug — this is a bound, not
-                // a new failure class.
+            } catch (Exception ex) {
+                // The reap's OWN outcome is already logged; this is a SEPARATE, symmetric Debug
+                // line for the bound itself (matching the exit-confirmation wait below, which also
+                // never escalates past Debug) — a reap that hasn't settled within 5s during
+                // disposal is a real anomaly worth a daemon-log line, not a reason to hang or fault
+                // teardown.
+                _logger.LogDebug(ex, "ACP: reap task did not settle before disposal completed.");
             }
         }
 
