@@ -543,8 +543,11 @@ internal sealed class SequencedCommandProcessor : IAsyncDisposable {
         try {
             candidate = BuildProcessedAck(seq, commandId, agentId, outcome);
         } catch (Exception ex) {
-            // Leave FrozenAck null so a later re-delivery retries; the outcome is already committed.
-            _logger.LogDebug(ex, "Deferring terminal-ack freeze for seq {Seq}: liveness read threw.", seq);
+            // Leave FrozenAck null so a later re-delivery retries; the outcome is already committed. The
+            // diagnostic goes through LogQuietly because a throwing ILogger provider is a supported input
+            // here — logging must not become the failure and let the exception escape the containment
+            // (which would fault SubmitAsync into the hub, or fault a tick/reconnect re-delivery).
+            LogQuietly(ex, "{What} freeze for seq {Seq}: liveness read threw — deferred for re-delivery", "terminal-ack", seq);
             return null;
         }
         lock (_lock) {

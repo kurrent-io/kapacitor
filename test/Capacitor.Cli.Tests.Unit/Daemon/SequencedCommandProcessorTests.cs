@@ -448,6 +448,34 @@ public class SequencedCommandProcessorTests {
         await Assert.That(p.LastProcessedSeq).IsEqualTo(2L);
     }
 
+    // Settlement lost-ack redelivery (D1) deferred-freeze containment: a throwing liveness read AND a
+    // throwing logger TOGETHER must still not fault SubmitAsync. The deferred-freeze diagnostic routes
+    // through the contained LogQuietly, so a throwing logger provider (a supported input) cannot let the
+    // exception escape; the outcome stays committed with no ack, and a later re-delivery (liveness
+    // recovered) completes the freeze and sends.
+    [Test] public async Task A_throwing_liveness_and_a_throwing_logger_together_still_defer_without_faulting() {
+        var throwLiveness = 1;
+        var acks = new List<CommandAck>();
+        await using var p = new SequencedCommandProcessor(
+            "e1",
+            _ => { if (Interlocked.Exchange(ref throwLiveness, 0) == 1) throw new InvalidOperationException("liveness blip"); return AgentLiveness.Live; },
+            a => { lock (acks) acks.Add(a); return Task.CompletedTask; },
+            _ => Task.CompletedTask,
+            new ThrowingLogger());
+
+        // Proactive freeze: liveness throws → the deferred-freeze catch logs through the THROWING logger.
+        // Neither the lane nor the submitter may fault.
+        await p.SubmitAsync(new SequencedItem(SequencedKind.Launch, "e1", 1, "cmd1", "a1"),
+            () => Task.FromResult(new CommandOutcome(CommandOutcomeKind.LaunchExecuted, "a1", "sess")));
+        await Assert.That(p.LastProcessedSeq).IsEqualTo(1L);   // committed despite the double throw
+        await Assert.That(acks).IsEmpty();                     // freeze deferred, no ack
+
+        // Liveness recovered: a re-delivery completes the freeze and sends (the success path logs nothing).
+        p.RedeliverUnretiredProcessedAcks();
+        await Assert.That(acks).HasCount().EqualTo(1);
+        await Assert.That(acks[0].State).IsEqualTo(CommandAckState.Processed);
+    }
+
     // Rejections are captured under _lock and sent after release, so no transport delegate runs inside
     // the processor's critical section. Asserted directly rather than by timing.
     [Test] public async Task Rejection_sends_do_not_run_inside_the_processor_lock() {
