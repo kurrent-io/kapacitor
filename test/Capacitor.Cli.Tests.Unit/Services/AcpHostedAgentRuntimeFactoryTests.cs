@@ -41,6 +41,86 @@ public class AcpHostedAgentRuntimeFactoryTests {
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 
+    /// <summary>An <see cref="IAcpProcess"/> whose <see cref="TerminateAsync"/> blocks until the test
+    /// completes <see cref="ReleaseTerminate"/> — unlike <see cref="FakeAcpProcess"/>'s
+    /// instant-resolving TerminateAsync, this lets a test PROVE disposal genuinely awaits an in-flight
+    /// reap task (rather than merely being consistent with either "awaited" or "not awaited at all").
+    /// <see cref="TerminateEntered"/>'s completion is set synchronously, inside the SAME claim that
+    /// starts this task, strictly BEFORE <see cref="AcpHostedAgentRuntime.Verdict"/> is assigned a few
+    /// statements later in that same unbroken call stack — but because this TCS uses
+    /// <c>RunContinuationsAsynchronously</c>, a test awaiting it only resumes on a LATER scheduled
+    /// continuation, by which point that synchronous burst (Verdict included) has unconditionally
+    /// already finished. So by the time a test observes this signal, Verdict is guaranteed published,
+    /// and it can assert the factory's overall launch task is still pending with zero ambiguity about
+    /// ordering.</summary>
+    sealed class GatedAcpProcess : IAcpProcess {
+        readonly TaskCompletionSource _exited = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public readonly TaskCompletionSource ReleaseTerminate = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public readonly TaskCompletionSource TerminateEntered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public int  Pid       { get; init; } = 4343;
+        public bool HasExited { get; private set; }
+        public int? ExitCode  { get; private set; }
+
+        public Task WaitForExitAsync(TimeSpan? timeout = null) => _exited.Task;
+
+        public async Task TerminateAsync(TimeSpan? timeout = null) {
+            TerminateEntered.TrySetResult();
+            await ReleaseTerminate.Task.ConfigureAwait(false);
+            HasExited = true;
+            ExitCode  = 0;
+            _exited.TrySetResult();
+        }
+
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    }
+
+    /// <summary>
+    /// An <see cref="IAcpProcess"/> whose <see cref="TerminateAsync"/> SYNCHRONOUSLY cancels a
+    /// caller-supplied token as its very first action, before returning a completed task.
+    ///
+    /// <para>Exists for one scenario: reclassification during model selection, where the ONLY way to
+    /// make the (by-design never-fatal) <c>session/set_config_option</c> RPC actually escape
+    /// <c>StartAsync</c> uncaught is to cancel the launch's own token — but that races the reap's OWN
+    /// <c>_cts.Cancel()</c>, which independently tears down the read loop and faults the SAME pending
+    /// RPC with a non-cancellation exception the model selector's catch swallows. A test-side
+    /// await-a-barrier-then-cancel sequence cannot close that race: the barrier's continuation is
+    /// scheduled (<c>RunContinuationsAsynchronously</c>), so resuming test code to fire the
+    /// cancellation is itself subject to threadpool delay — exactly the delay that let the read-loop
+    /// teardown win under load.</para>
+    ///
+    /// <para>This closes it structurally instead of by timing: <c>TryStartReap</c> calls its
+    /// <c>start</c> closure — which synchronously reaches <c>Process.TerminateAsync</c> — BEFORE
+    /// assigning <c>Verdict</c>. Canceling here, synchronously, only QUEUES the pending RPC's
+    /// cancellation continuation; that continuation cannot actually run until this synchronous call
+    /// stack unwinds back through <c>TryStartReap</c>, which assigns <c>Verdict</c> on the way out —
+    /// so by the time anything resumes <c>StartAsync</c>'s unwind, the verdict this test asserts on
+    /// is unconditionally already published. No scheduling assumption, no barrier wait.</para>
+    /// </summary>
+    sealed class CancelCallerTokenOnTerminateProcess(CancellationTokenSource cancelOnTerminate) : IAcpProcess {
+        // A GENUINELY pending exit signal (mirrors FakeAcpProcess) — NOT an already-completed task:
+        // WatchProcessExitAsync starts watching at runtime CONSTRUCTION, and an immediately-completed
+        // WaitForExitAsync (with HasExited still false) fed it an inconsistent "already exited" signal
+        // that derailed the handshake before it ever reached model selection.
+        readonly TaskCompletionSource _exited = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public int  Pid       { get; init; } = 4444;
+        public bool HasExited { get; private set; }
+        public int? ExitCode  { get; private set; }
+
+        public Task WaitForExitAsync(TimeSpan? timeout = null) => _exited.Task;
+
+        public Task TerminateAsync(TimeSpan? timeout = null) {
+            cancelOnTerminate.Cancel();
+            HasExited = true;
+            ExitCode  = 0;
+            _exited.TrySetResult();
+            return Task.CompletedTask;
+        }
+
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    }
+
     /// <summary>
     /// Records whether <see cref="ServerConnection.RequestAcpInteractionAsync"/> was actually
     /// invoked BY THE RUNTIME THE FACTORY PRODUCED (not by the test calling it directly) — a real
@@ -2453,5 +2533,444 @@ public class AcpHostedAgentRuntimeFactoryTests {
         try { await fakeRun.WaitAsync(HangGuard); } catch (OperationCanceledException) { }
         await started.Runtime.DisposeAsync();
         await fake.DisposeAsync();
+    }
+
+    // ── Launch-phase reclassification: a reap's coded verdict replaces the generic handshake/
+    //    timeout text, after disposal unconditionally awaits any claimed reap ──────────────────────
+    // Every reap here is triggered the same way: an unattended review-flow launch (Fail policy —
+    // Cursor/OpenCode both use it) reaps on ANY inbound server request, so a bare
+    // session/request_permission frame — written directly via FakeAcpAgent.WriteRawFrameAsync,
+    // bypassing the fake's own scripted dispatch loop entirely — publishes the deterministic verdict
+    // reason "unattended_interaction_forbidden:session/request_permission" without needing the frame's
+    // own params (sessionId/toolCall/options) to be well-formed. The read loop is live from
+    // StartAsync's very first line, before any handshake RPC is even sent, so this can land during
+    // any stage.
+
+    const string ReapVerdictReason = "unattended_interaction_forbidden:session/request_permission";
+
+    /// <summary>OpenCode is a GATED reviewer vendor (like Kiro/Gemini) — RequireReviewerCapability
+    /// refuses it before <c>_connectionSource</c> even runs unless the operator has opted in AND the
+    /// resolved build matches (or exceeds) what this daemon has affirmed. Mirrors the established
+    /// <c>GeminiEnabledConfig</c> pattern: a real, per-test-unique StateDir backs a filesystem
+    /// <see cref="ReviewerVersionStore"/>, and <paramref name="launchTimeoutSeconds"/> lets a caller
+    /// override the 120s default when a test needs the deadline to actually fire.</summary>
+    const string OpenCodeBuild = "1.0.0";
+
+    static DaemonConfig OpenCodeEnabledConfig(int? launchTimeoutSeconds = null) {
+        var config = new DaemonConfig {
+            OpenCodeUnattendedReviewerEnabled = true,
+            StateDir = Path.Combine(Path.GetTempPath(), "kcap-opencode-gate-" + Guid.NewGuid().ToString("N")),
+            Name     = "test-daemon"
+        };
+
+        if (launchTimeoutSeconds is { } seconds)
+            config.OpenCodeReviewerLaunchTimeoutSeconds = seconds;
+
+        AcpHostedAgentRuntimeFactory.VersionStoreFor(config, AcpVendorDescriptors.OpenCode.Vendor).Affirm(OpenCodeBuild);
+
+        return config;
+    }
+
+    static Task WriteReapTriggerFrameAsync(FakeAcpAgent fake) =>
+        fake.WriteRawFrameAsync(
+            FakeAcpAgent.BuildRequestPermissionFrame(id: 999, sessionId: "unused", toolCallJson: "{}", optionsJson: "[]"),
+            CancellationToken.None);
+
+    /// <summary>Per-stage coverage, stage 1 of 3: a reap during <c>initialize</c>. Also stands in for
+    /// race order (a) — reap fully resolved (claim, window snapshot, verdict publish, AND the fake
+    /// process's instant-resolving TerminateAsync) before StartAsync's own catch even runs, since
+    /// nothing here holds the reap's async portion open.</summary>
+    [Test]
+    public async Task ReapDuringInitialize_Cursor_FactoryReclassifiesToVerdict_NoAuthHint() {
+        var fake = new FakeAcpAgent();
+        fake.HoldInitializeResponse = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var factory = new AcpHostedAgentRuntimeFactory(
+            descriptor: AcpVendorDescriptors.Cursor,
+            config: new DaemonConfig(),
+            loggerFactory: NullLoggerFactory.Instance,
+            connection: new CaptureServerConnection(),
+            connectionSource: _ => (fake.ClientWriteStream, fake.ClientReadStream, new FakeAcpProcess()));
+
+        using var cts = new CancellationTokenSource();
+        var fakeRunTask = fake.RunAsync(cts.Token);
+
+        var startTask = factory.StartAsync(ReviewContext(), cts.Token);
+
+        var deadline = DateTime.UtcNow + HangGuard;
+        while (!fake.ReceivedCalls.Any(c => c.Method == "initialize") && DateTime.UtcNow < deadline)
+            await Task.Delay(10);
+        await Assert.That(fake.ReceivedCalls.Any(c => c.Method == "initialize")).IsTrue();
+
+        await WriteReapTriggerFrameAsync(fake);
+
+        // The reap's own process termination doesn't tear down THIS fake's pipes (FakeAcpProcess is a
+        // stub) — the crash is simulated explicitly, standing in for what a real child's death does
+        // to the transport (design spec's "the in-flight handshake RPC dies with the transport's
+        // 'read loop ended' exception").
+        fake.SimulateCrash();
+
+        var ex = await Assert.ThrowsAsync<AcpHostedAgentRuntimeFactory.AcpReviewerReapedException>(
+            () => startTask.WaitAsync(HangGuard));
+
+        await Assert.That(ex.Message).StartsWith(ReapVerdictReason);
+        await Assert.That(ex.Message).Contains("(transport:");
+        await Assert.That(ex.Message).Contains("read loop ended");
+        await Assert.That(ex.Message).DoesNotContain("auth/subscription");
+        await Assert.That(ex.InnerException).IsNotNull();
+
+        cts.Cancel();
+        try { await fakeRunTask.WaitAsync(HangGuard); } catch { /* torn down by the simulated crash */ }
+        await fake.DisposeAsync();
+    }
+
+    /// <summary>Per-stage coverage, stage 2 of 3: a reap during <c>session/new</c> — the SAME
+    /// hint-composing wrapper as initialize, so the reclassification path is identical; this pins
+    /// that the stage boundary itself doesn't matter.</summary>
+    [Test]
+    public async Task ReapDuringSessionNew_Cursor_FactoryReclassifiesToVerdict_NoAuthHint() {
+        var fake = new FakeAcpAgent();
+        fake.HoldSessionNewResponse = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var factory = new AcpHostedAgentRuntimeFactory(
+            descriptor: AcpVendorDescriptors.Cursor,
+            config: new DaemonConfig(),
+            loggerFactory: NullLoggerFactory.Instance,
+            connection: new CaptureServerConnection(),
+            connectionSource: _ => (fake.ClientWriteStream, fake.ClientReadStream, new FakeAcpProcess()));
+
+        using var cts = new CancellationTokenSource();
+        var fakeRunTask = fake.RunAsync(cts.Token);
+
+        var startTask = factory.StartAsync(ReviewContext(), cts.Token);
+
+        var deadline = DateTime.UtcNow + HangGuard;
+        while (!fake.ReceivedCalls.Any(c => c.Method == "session/new") && DateTime.UtcNow < deadline)
+            await Task.Delay(10);
+        await Assert.That(fake.ReceivedCalls.Any(c => c.Method == "session/new")).IsTrue();
+
+        await WriteReapTriggerFrameAsync(fake);
+        fake.SimulateCrash();
+
+        var ex = await Assert.ThrowsAsync<AcpHostedAgentRuntimeFactory.AcpReviewerReapedException>(
+            () => startTask.WaitAsync(HangGuard));
+
+        await Assert.That(ex.Message).StartsWith(ReapVerdictReason);
+        await Assert.That(ex.Message).Contains("(transport:");
+        await Assert.That(ex.Message).DoesNotContain("auth/subscription");
+
+        cts.Cancel();
+        try { await fakeRunTask.WaitAsync(HangGuard); } catch { /* torn down by the simulated crash */ }
+        await fake.DisposeAsync();
+    }
+
+    /// <summary>Per-stage coverage, stage 3 of 3: a reap during model selection — the ONE stage
+    /// StartAsync's hint-composing wrapper never covered (it runs strictly after that try/catch), so
+    /// its raw exception is never an <see cref="AcpHostedAgentRuntime.AcpHandshakeFailedException"/>
+    /// and the factory falls to <c>Sanitize(ex.Message)</c> for the transport half.
+    ///
+    /// <para>Model selection's own RPC failures are BY DESIGN never fatal
+    /// (<c>ConfigOptionModelSelector.TrySelectAsync</c>'s <c>catch (Exception ex) when (ex is not
+    /// OperationCanceledException)</c> swallows a transport fault exactly like the one
+    /// <see cref="ReapDuringInitialize_Cursor_FactoryReclassifiesToVerdict_NoAuthHint"/> uses — so
+    /// simulating the crash here would let StartAsync recover and return normally, with nothing for
+    /// the factory to reclassify. Cancelling the caller's own token is the one thing that DOES escape
+    /// that catch (its cancellation contract), and — since Cursor carries no launch deadline of its
+    /// own — routes through the GENERAL catch-all rather than the deadline-specific one, proving
+    /// reclassification does not depend on which of the two catches observes the exception.</para>
+    ///
+    /// <para>Canceling the caller's token itself races the reap's OWN internal <c>_cts.Cancel()</c>,
+    /// which independently tears down the read loop and faults the SAME pending RPC with a
+    /// non-cancellation exception the selector's catch swallows — so a naive "await a signal, then
+    /// cancel" sequence is racy under load (the signal's own continuation is scheduled, handing the
+    /// read-loop teardown extra time). <see cref="CancelCallerTokenOnTerminateProcess"/> closes this
+    /// structurally: see its own remarks.</para>
+    /// </summary>
+    [Test]
+    public async Task ReapDuringModelSet_Cursor_FactoryReclassifiesToVerdict_NoAuthHint() {
+        var fake = new FakeAcpAgent();
+        fake.SetSessionNewResult(FakeAcpAgent.BuildSessionNewResult(
+            FakeAcpAgent.FixedSessionId,
+            currentModelId: "composer-2.5[fast=true]",
+            availableModels: [("claude-sonnet-4-5[thinking=true,context=200k]", "claude-sonnet-4-5")]));
+        fake.HoldSetConfigOptionResponse = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        using var cts = new CancellationTokenSource();
+        var process = new CancelCallerTokenOnTerminateProcess(cts);
+
+        var factory = new AcpHostedAgentRuntimeFactory(
+            descriptor: AcpVendorDescriptors.Cursor,
+            config: new DaemonConfig(),
+            loggerFactory: NullLoggerFactory.Instance,
+            connection: new CaptureServerConnection(),
+            connectionSource: _ => (fake.ClientWriteStream, fake.ClientReadStream, process));
+
+        var fakeRunTask = fake.RunAsync(cts.Token);
+
+        var ctx = ReviewContext() with { Model = "claude-sonnet-4-5" };
+        var startTask = factory.StartAsync(ctx, cts.Token);
+
+        var deadline = DateTime.UtcNow + HangGuard;
+        while (!fake.ReceivedCalls.Any(c => c.Method == "session/set_config_option") && DateTime.UtcNow < deadline)
+            await Task.Delay(10);
+        await Assert.That(fake.ReceivedCalls.Any(c => c.Method == "session/set_config_option")).IsTrue();
+
+        // Triggers the reap; its OWN dispatch synchronously reaches CancelCallerTokenOnTerminateProcess
+        // .TerminateAsync, which cancels cts before TryStartReap assigns Verdict on the way back out —
+        // by the time anything resumes StartAsync's pending model-selection await, Verdict is already
+        // published. Cursor carries no launch deadline of its own, so this exercises the GENERAL
+        // catch-all (not the deadline-specific one), proving reclassification is stage-agnostic even
+        // for the one stage StartAsync's hint-composing wrapper never covered.
+        await WriteReapTriggerFrameAsync(fake);
+
+        var ex = await Assert.ThrowsAsync<AcpHostedAgentRuntimeFactory.AcpReviewerReapedException>(
+            () => startTask.WaitAsync(HangGuard));
+
+        await Assert.That(ex.Message).StartsWith(ReapVerdictReason);
+        await Assert.That(ex.Message).Contains("(transport:");
+        await Assert.That(ex.Message).DoesNotContain("auth/subscription");
+
+        fake.HoldSetConfigOptionResponse.TrySetResult();
+        try { await fakeRunTask.WaitAsync(HangGuard); } catch (OperationCanceledException) { }
+        await fake.DisposeAsync();
+    }
+
+    /// <summary>Race order (b), no-hook (cursor) shape — the regression this whole task exists to
+    /// close: pre-fix, DisposeAsync only looked at TakeReap() when `_onDisposed` was non-null, so a
+    /// cursor-shaped runtime's disposal could return (and the factory reclassify against a possibly
+    /// still-forming Verdict — or, worse on a slower machine, an unclaimed one) WITHOUT ever waiting
+    /// for an in-flight reap. <see cref="GatedAcpProcess.TerminateEntered"/> proves the reap's async
+    /// portion has genuinely started (so its synchronous claim + Verdict publish are already done)
+    /// before this asserts the overall launch task is STILL PENDING — deterministic on the "started"
+    /// half, then a short bounded wait (matching this project's established
+    /// "give a task a chance to (not) complete, then assert IsCompleted" idiom — see e.g.
+    /// AcpHostedAgentRuntimeTests.ReadOutputAsync_stays_open_until_the_process_exits) to let a
+    /// regressed implementation demonstrate completing prematurely if it would.</summary>
+    [Test]
+    public async Task ReapLandsDuringDisposalAwait_CursorShape_NoHook_BlocksFactoryUntilReapCompletes() {
+        var fake    = new FakeAcpAgent();
+        var process = new GatedAcpProcess();
+        fake.HoldInitializeResponse = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var factory = new AcpHostedAgentRuntimeFactory(
+            // ReviewerLaunchTimeoutSeconds is null for Cursor (only Kiro/OpenCode carry one) => no
+            // onDisposed cleanup hook is wired for this launch.
+            descriptor: AcpVendorDescriptors.Cursor,
+            config: new DaemonConfig(),
+            loggerFactory: NullLoggerFactory.Instance,
+            connection: new CaptureServerConnection(),
+            connectionSource: _ => (fake.ClientWriteStream, fake.ClientReadStream, process));
+
+        using var cts = new CancellationTokenSource();
+        var fakeRunTask = fake.RunAsync(cts.Token);
+
+        var startTask = factory.StartAsync(ReviewContext(), cts.Token);
+
+        var deadline = DateTime.UtcNow + HangGuard;
+        while (!fake.ReceivedCalls.Any(c => c.Method == "initialize") && DateTime.UtcNow < deadline)
+            await Task.Delay(10);
+        await Assert.That(fake.ReceivedCalls.Any(c => c.Method == "initialize")).IsTrue();
+
+        await WriteReapTriggerFrameAsync(fake);
+
+        // Proves the reap's async portion (ReapUnexpectedInteractionAsync -> Process.TerminateAsync)
+        // has started — Verdict is already published by this point (it's set synchronously, inside
+        // the same claim that started this task).
+        await process.TerminateEntered.Task.WaitAsync(HangGuard);
+
+        fake.SimulateCrash();
+
+        // ReleaseTerminate is still unset, so the reap task cannot have completed — give a (possibly
+        // regressed) implementation a bounded window to complete anyway before asserting it hasn't.
+        await Task.WhenAny(startTask, Task.Delay(300));
+        await Assert.That(startTask.IsCompleted).IsFalse();
+
+        process.ReleaseTerminate.TrySetResult();
+
+        var ex = await Assert.ThrowsAsync<AcpHostedAgentRuntimeFactory.AcpReviewerReapedException>(
+            () => startTask.WaitAsync(HangGuard));
+
+        await Assert.That(ex.Message).StartsWith(ReapVerdictReason);
+        await Assert.That(ex.Message).DoesNotContain("auth/subscription");
+
+        cts.Cancel();
+        try { await fakeRunTask.WaitAsync(HangGuard); } catch { /* torn down by the simulated crash */ }
+        await fake.DisposeAsync();
+    }
+
+    /// <summary>Race order (b), WITH a disposal hook (OpenCode — also Fail policy, so the SAME
+    /// trigger mechanism as the cursor-shape sibling test applies; only the vendor's reviewer-launch
+    /// timeout — hence `onDisposed` wiring — differs). Proves the fix's unconditional move doesn't
+    /// regress the shape that ALREADY awaited the reap pre-fix.</summary>
+    [Test]
+    public async Task ReapLandsDuringDisposalAwait_WithDisposalHook_BlocksFactoryUntilReapCompletes() {
+        var fake    = new FakeAcpAgent();
+        var process = new GatedAcpProcess();
+        fake.HoldInitializeResponse = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var factory = new AcpHostedAgentRuntimeFactory(
+            // OpenCodeReviewerLaunchTimeoutSeconds defaults to 120s (long enough never to fire here)
+            // => onDisposed IS wired for this launch (DeleteReviewerIsolatedDirectory). OpenCode is a
+            // GATED reviewer vendor (like Kiro/Gemini) — the enabled config carries a matching
+            // operator opt-in + version affirmation, or RequireReviewerCapability refuses the launch
+            // before _connectionSource ever runs.
+            descriptor: AcpVendorDescriptors.OpenCode,
+            config: OpenCodeEnabledConfig(),
+            loggerFactory: NullLoggerFactory.Instance,
+            connection: new CaptureServerConnection(),
+            connectionSource: _ => (fake.ClientWriteStream, fake.ClientReadStream, process),
+            resolveVendorVersion: _ => OpenCodeBuild);
+
+        using var cts = new CancellationTokenSource();
+        var fakeRunTask = fake.RunAsync(cts.Token);
+
+        var startTask = factory.StartAsync(ReviewContext(), cts.Token);
+
+        var deadline = DateTime.UtcNow + HangGuard;
+        while (!fake.ReceivedCalls.Any(c => c.Method == "initialize") && DateTime.UtcNow < deadline)
+            await Task.Delay(10);
+        await Assert.That(fake.ReceivedCalls.Any(c => c.Method == "initialize")).IsTrue();
+
+        await WriteReapTriggerFrameAsync(fake);
+
+        await process.TerminateEntered.Task.WaitAsync(HangGuard);
+
+        fake.SimulateCrash();
+
+        await Task.WhenAny(startTask, Task.Delay(300));
+        await Assert.That(startTask.IsCompleted).IsFalse();
+
+        process.ReleaseTerminate.TrySetResult();
+
+        var ex = await Assert.ThrowsAsync<AcpHostedAgentRuntimeFactory.AcpReviewerReapedException>(
+            () => startTask.WaitAsync(HangGuard));
+
+        await Assert.That(ex.Message).StartsWith(ReapVerdictReason);
+        await Assert.That(ex.Message).DoesNotContain("auth/subscription");
+
+        cts.Cancel();
+        try { await fakeRunTask.WaitAsync(HangGuard); } catch { /* torn down by the simulated crash */ }
+        await fake.DisposeAsync();
+    }
+
+    /// <summary>Mutation guard (design spec §3.2): with no reap ever claimed, there is no verdict to
+    /// reclassify against, so the composed message — auth hint included — must stay exactly what
+    /// StartAsync produced before AcpHandshakeFailedException/AcpReviewerReapedException existed.
+    /// Also pins the new exception's shape: TransportMessage holds the SANITIZED cause alone, with
+    /// no hint appended.</summary>
+    [Test]
+    public async Task No_verdict_keeps_message_byte_identical() {
+        var fake = new FakeAcpAgent();
+        fake.FailNextInitialize(-32000, "not authenticated");
+
+        var factory = new AcpHostedAgentRuntimeFactory(
+            descriptor: AcpVendorDescriptors.Cursor,
+            config: new DaemonConfig { CursorPath = "cursor-agent" },
+            loggerFactory: NullLoggerFactory.Instance,
+            connection: new CaptureServerConnection(),
+            connectionSource: _ => (fake.ClientWriteStream, fake.ClientReadStream, new FakeAcpProcess()));
+
+        using var cts = new CancellationTokenSource();
+        var fakeRunTask = fake.RunAsync(cts.Token);
+
+        var ex = await Assert.ThrowsAsync<AcpHostedAgentRuntime.AcpHandshakeFailedException>(
+            () => factory.StartAsync(MakeContext("agent-1"), cts.Token).WaitAsync(HangGuard));
+
+        await Assert.That(ex.Message).IsEqualTo(
+            "ACP handshake (initialize/session-new) failed: not authenticated — if this is an "
+          + "auth/subscription issue, run `cursor-agent login` and verify a Team-tier subscription.");
+        await Assert.That(ex.TransportMessage).IsEqualTo("not authenticated");
+
+        cts.Cancel();
+        try { await fakeRunTask.WaitAsync(HangGuard); } catch (OperationCanceledException) { }
+        await fake.DisposeAsync();
+    }
+
+    /// <summary>The launch-DEADLINE catch (~308–333) must consult the verdict identically to the
+    /// general catch-all — a deadline racing a reap must not bypass reclassification and surface the
+    /// generic <c>{vendor}_reviewer_launch_timeout</c> text instead.</summary>
+    [Test]
+    public async Task Deadline_catch_racing_verdict_reclassifies() {
+        var fake = new FakeAcpAgent();
+        fake.HoldInitializeResponse = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var factory = new AcpHostedAgentRuntimeFactory(
+            // OpenCode is a GATED reviewer vendor (like Kiro/Gemini) — see OpenCodeEnabledConfig.
+            descriptor: AcpVendorDescriptors.OpenCode,
+            // Real wall-clock budget — ReviewerLaunchDeadline's CancelAfter has no TimeProvider seam.
+            // Short but not razor-thin, so CI contention can't starve the reap-trigger write before it fires.
+            config: OpenCodeEnabledConfig(launchTimeoutSeconds: 2),
+            loggerFactory: NullLoggerFactory.Instance,
+            connection: new CaptureServerConnection(),
+            connectionSource: _ => (fake.ClientWriteStream, fake.ClientReadStream, new FakeAcpProcess()),
+            resolveVendorVersion: _ => OpenCodeBuild);
+
+        using var cts = new CancellationTokenSource();
+        var fakeRunTask = fake.RunAsync(cts.Token);
+
+        var startTask = factory.StartAsync(ReviewContext(), cts.Token);
+
+        var deadline = DateTime.UtcNow + HangGuard;
+        while (!fake.ReceivedCalls.Any(c => c.Method == "initialize") && DateTime.UtcNow < deadline)
+            await Task.Delay(10);
+        await Assert.That(fake.ReceivedCalls.Any(c => c.Method == "initialize")).IsTrue();
+
+        // Publish the verdict well before the 2s launch deadline fires below.
+        await WriteReapTriggerFrameAsync(fake);
+
+        var ex = await Assert.ThrowsAsync<AcpHostedAgentRuntimeFactory.AcpReviewerReapedException>(
+            () => startTask.WaitAsync(HangGuard));
+
+        await Assert.That(ex.Message).StartsWith(ReapVerdictReason);
+        await Assert.That(ex.Message).DoesNotContain("opencode_reviewer_launch_timeout");
+        await Assert.That(ex.Message).DoesNotContain("auth/subscription");
+
+        fake.HoldInitializeResponse.TrySetResult();
+        cts.Cancel();
+        try { await fakeRunTask.WaitAsync(HangGuard); } catch (OperationCanceledException) { }
+        await fake.DisposeAsync();
+    }
+
+    /// <summary>
+    /// No production step between a successful spawn (_connectionSource returning) and
+    /// runtime.StartAsync is reachable-by-test to organically throw with any normal input today — so
+    /// this exercises the extracted disposal unit directly. Design spec §3.2's fix ("a
+    /// post-spawn/pre-protected-region construction failure currently leaks the child") is about
+    /// WHATEVER this launch already obtained getting torn down even when no runtime was ever built
+    /// to own it — exactly what <see cref="AcpHostedAgentRuntimeFactory.DisposeUnclaimedSpawnAsync"/>
+    /// does, and what the factory's widened try/catch now calls when `runtime` is still null.
+    /// </summary>
+    [Test]
+    public async Task Post_spawn_construction_failure_disposes_child() {
+        var fake       = new FakeAcpAgent();
+        var connection = new AcpConnection(fake.ClientWriteStream, fake.ClientReadStream, NullLogger.Instance);
+        var process    = new FakeAcpProcess();
+
+        await AcpHostedAgentRuntimeFactory.DisposeUnclaimedSpawnAsync(connection, process);
+
+        await Assert.That(process.HasExited).IsTrue();
+
+        await fake.DisposeAsync();
+    }
+
+    /// <summary>§3.5's non-empty-reason fallback: Task 4's orchestrator mapping owns applying it, but
+    /// a pre-StartAsync factory failure — no runtime ever wired, so no verdict — is exactly the case
+    /// that formula exists to cover, and this pins the shared formula plus that the factory itself
+    /// propagates such a failure byte-identically (untouched by this task's reclassification).</summary>
+    [Test]
+    public async Task Whitespace_prespawn_exception_yields_typed_fallback() {
+        var factory = new AcpHostedAgentRuntimeFactory(
+            descriptor: AcpVendorDescriptors.Cursor,
+            config: new DaemonConfig { CursorPath = "cursor-agent" },
+            loggerFactory: NullLoggerFactory.Instance,
+            connection: new CaptureServerConnection(),
+            connectionSource: _ => throw new InvalidOperationException("   "));
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => factory.StartAsync(MakeContext("agent-1"), CancellationToken.None).WaitAsync(HangGuard));
+
+        await Assert.That(ex.Message.Trim()).IsEmpty();
+        await Assert.That(AcpHostedAgentRuntimeFactory.DescribeLaunchFailure(ex))
+            .IsEqualTo($"launch_failed:{nameof(InvalidOperationException)} — see daemon log");
     }
 }

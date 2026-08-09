@@ -409,6 +409,24 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
     sealed class AcpProtocolVersionException(string message) : InvalidOperationException(message);
 
     /// <summary>
+    /// The initialize/session-new wrapper's failure, carrying the sanitized transport cause as a
+    /// SEPARATE property from the composed, hint-decorated <see cref="Exception.Message"/> (design
+    /// spec §3.2). <see cref="Message"/> is composed exactly as the plain
+    /// <see cref="InvalidOperationException"/> this replaces always was — byte-identical for the
+    /// no-verdict path — but <see cref="TransportMessage"/> lets a caller (the factory's
+    /// launch-failure reclassification) quote just the transport cause, so a reclassified suffix can
+    /// never smuggle the auth hint back in. <c>internal</c> (not the sibling exceptions' default
+    /// private) because the factory, in a different class, needs to pattern-match on it.
+    /// </summary>
+    internal sealed class AcpHandshakeFailedException(string stage, string transportMessage, string hint, Exception inner)
+        : InvalidOperationException(
+            $"ACP handshake ({stage}) failed: {transportMessage} — if this is an auth/subscription issue, {hint}.",
+            inner) {
+        /// <summary>The sanitized transport-level failure cause alone — no auth hint appended.</summary>
+        public string TransportMessage { get; } = transportMessage;
+    }
+
+    /// <summary>
     /// Makes an error message safe to fold into a forwarded launch-failure string: collapses line
     /// breaks to spaces and caps the length. The source can be an agent-controlled JSON-RPC
     /// <c>error.message</c> (via <see cref="AcpRpcException"/>), which could otherwise be arbitrarily
@@ -845,9 +863,8 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
             // Deliberately conservative: the exact wire shape of a logged-out/unsubscribed cursor-agent
             // failure is unverified, so this does NOT pattern-match specific error text (a live
             // logged-out probe is a follow-up). Never masks the original error, only annotates it.
-            throw new InvalidOperationException(
-                $"ACP handshake (initialize/session-new) failed: {SanitizeForForward(ex.Message)} — if this is an auth/subscription issue, {DiagnosticAuthHint}.",
-                ex);
+            throw new AcpHandshakeFailedException(
+                "initialize/session-new", SanitizeForForward(ex.Message), DiagnosticAuthHint, ex);
         }
 
         // Select the requested model (if any) BEFORE the first prompt fires. Awaited, but never
@@ -1714,14 +1731,22 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
         // Set false only when the child's exit could not be confirmed — see below.
         var cleanupSafe = true;
 
+        // UNCONDITIONAL, independent of _onDisposed: a claimed reap's Verdict is published
+        // synchronously at claim time (TryStartReap), but "post-disposal the verdict is final" also
+        // needs the reap's TASK to have settled before any caller (the factory's launch-failure
+        // catch) treats disposal as done — otherwise a no-hook (cursor-shaped) runtime could return
+        // from DisposeAsync while an in-flight reap is still tearing down the same process disposal
+        // is about to touch below. Design spec §3.2: this was previously gated on _onDisposed is not
+        // null, which is a Kiro/OpenCode-only concern (the isolated-home cleanup hook) that has
+        // nothing to do with whether a reap needs awaiting.
+        if (TakeReap() is { } reap) {
+            try { await reap.ConfigureAwait(false); } catch { /* already logged by the reap */ }
+        }
+
         // BEFORE disposing anything, when the child is still observable. AcpChildProcess.HasExited
         // reports true as soon as the underlying Process is disposed, so asking afterwards mistakes
         // "no longer observable" for "confirmed exited" — the opposite of what this gate is for.
         if (_onDisposed is not null) {
-            if (TakeReap() is { } reap) {
-                try { await reap.ConfigureAwait(false); } catch { /* already logged by the reap */ }
-            }
-
             try {
                 // Bounded HERE with WaitAsync rather than by trusting the timeout argument: the
                 // interface takes one but does not oblige an implementation to honour it, and the

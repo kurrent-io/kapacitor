@@ -164,72 +164,89 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
         var connLogger    = loggerFactory.CreateLogger<AcpConnection>();
 
         var (input, output, acpProcess) = _connectionSource(ctx);
-        var acpConnection = new AcpConnection(input, output, connLogger, config.DebugFrames);
 
-        // Reconnect eligibility (reconnect spec §4), decided at construction: probe-verified
-        // vendor AND an interactive launch AND the kill switch off. The remaining conjuncts
-        // (advertised loadSession, the resume cap) are runtime facts the runtime itself gates on
-        // per incident. The spawn closure re-invokes THIS launch's connection source, so a
-        // candidate is spawned by the same code path — argv, env, cwd — as the original child, and
-        // carries no registration/forwarder/slot side effects (§6.2's pure-spawn contract).
-        var reconnect = descriptor.SupportsReconnectResume && !ctx.IsReviewFlow && config.AcpReconnectEnabled
-            ? new AcpReconnectSupport { Spawn = () => _connectionSource(ctx) }
-            : null;
-        // PidCallbacks defaults to AcpPidRecordCallbacks.Unwired — FAIL-CLOSED (code-review r1/r2):
-        // a crash landing in the orchestrator's wiring window fails its attempts (§6.2's
-        // record-before-any-handshake MUST) rather than proceeding with an unrecorded candidate,
-        // and the orchestrator replaces recorder+clearer in ONE atomic reference assignment so no
-        // partially-wired state is ever observable.
+        // Nullable: a post-spawn/pre-StartAsync construction failure below (acpConnection or the
+        // runtime itself) must still be able to tear down what THIS launch already obtained, even
+        // though no AcpHostedAgentRuntime exists yet to own that ordered cleanup. Widened region —
+        // design spec §3.2's "post-spawn/pre-protected-region construction failure currently leaks
+        // the child" fix.
+        AcpConnection? acpConnection = null;
+        AcpHostedAgentRuntime runtime;
 
-        // Spec-review Finding 4: real production wiring — every launch now gets the
-        // permission/elicitation bridge, not the default MethodNotFound/decline.
-        var runtime = new AcpHostedAgentRuntime(
-            acpConnection,
-            acpProcess,
-            runtimeLogger,
-            agentId: ctx.AgentId,
-            requestInteraction: connection.RequestAcpInteractionAsync,
-            // Drives the handshake's per-stage caps (RunHandshakeStageAsync), so a test's
-            // FakeTimeProvider controls them without a real 90-second wait.
-            timeProvider: _timeProvider,
-            debugFrames: config.DebugFrames,
-            vendor: descriptor.Vendor,
-            modelSelector: descriptor.ModelSelector,
-            unattendedInteractionPolicy: unattendedInteractionPolicy,
-            reconnect: reconnect,
-            // Built from the SAME spec list session/new receives, so the expected set is what was
-            // actually sent rather than a re-derivation of it.
-            mcpSurfaceMonitor: KiroMcpSurfaceMonitor.For(
-                descriptor, ctx.IsReviewFlow, reviewMcp, ctx.LaunchIdentity),
-            // NULL for every launch with nothing to clean up, rather than a lambda that no-ops
-            // internally: the runtime keys its ordered-teardown path (await the reap, confirm child
-            // exit) on this being non-null, so an always-supplied callback made every ACP launch of
-            // every vendor pay that wait. The factory can only clean up launches that FAILED, so a
-            // successful review's home needs this hook — it holds review context, and would
-            // otherwise survive until a later daemon epoch swept it.
-            onDisposed: ReviewerLaunchTimeoutSeconds(descriptor, config, ctx) is not null
-                ? (Action)(() => DeleteReviewerIsolatedDirectory(descriptor, config, ctx, _logger))
-                : null,
-            // The second half of the launch bound. The deadline below covers spawn through the
-            // handshake; StartAsync deliberately does NOT await the first turn, so a peer that
-            // completes initialize and then wedges on the credential path would otherwise be
-            // unbounded. Time-to-first-OUTPUT, never turn completion — a real review runs long.
-            firstOutputDeadline: ReviewerLaunchTimeoutSeconds(descriptor, config, ctx) is { } firstOutputSeconds
-                ? TimeSpan.FromSeconds(firstOutputSeconds)
-                : null,
-            // The set AllowlistedAutoApprove admits, built from the SAME injected specs and identity
-            // the trust argv is built from. Two derivations would let the reviewer be TRUSTED to call
-            // a tool the policy then refuses to approve — a round that dies on its own result call.
-            admittedToolIds: descriptor.UnattendedInteractionPolicy
-                                 == AcpUnattendedInteractionPolicy.AllowlistedAutoApprove
-                          && ctx.IsReviewFlow && reviewMcp is { Count: > 0 } && ctx.LaunchIdentity is { } id
-                ? UnattendedToolAdmission.AdmittedFor(reviewMcp, id)
-                : null
-        );
+        try {
+            acpConnection = new AcpConnection(input, output, connLogger, config.DebugFrames);
 
-        // MUST precede StartAsync below: the handshake's SetLaunchStage stamps are no-ops against a
-        // null clock, so a later assignment silently defeats every stage stamp for the whole launch.
-        runtime.ActivityClock = ctx.ActivityClock;
+            // Reconnect eligibility (reconnect spec §4), decided at construction: probe-verified
+            // vendor AND an interactive launch AND the kill switch off. The remaining conjuncts
+            // (advertised loadSession, the resume cap) are runtime facts the runtime itself gates on
+            // per incident. The spawn closure re-invokes THIS launch's connection source, so a
+            // candidate is spawned by the same code path — argv, env, cwd — as the original child, and
+            // carries no registration/forwarder/slot side effects (§6.2's pure-spawn contract).
+            var reconnect = descriptor.SupportsReconnectResume && !ctx.IsReviewFlow && config.AcpReconnectEnabled
+                ? new AcpReconnectSupport { Spawn = () => _connectionSource(ctx) }
+                : null;
+            // PidCallbacks defaults to AcpPidRecordCallbacks.Unwired — FAIL-CLOSED (code-review r1/r2):
+            // a crash landing in the orchestrator's wiring window fails its attempts (§6.2's
+            // record-before-any-handshake MUST) rather than proceeding with an unrecorded candidate,
+            // and the orchestrator replaces recorder+clearer in ONE atomic reference assignment so no
+            // partially-wired state is ever observable.
+
+            // Spec-review Finding 4: real production wiring — every launch now gets the
+            // permission/elicitation bridge, not the default MethodNotFound/decline.
+            runtime = new AcpHostedAgentRuntime(
+                acpConnection,
+                acpProcess,
+                runtimeLogger,
+                agentId: ctx.AgentId,
+                requestInteraction: connection.RequestAcpInteractionAsync,
+                // Drives the handshake's per-stage caps (RunHandshakeStageAsync), so a test's
+                // FakeTimeProvider controls them without a real 90-second wait.
+                timeProvider: _timeProvider,
+                debugFrames: config.DebugFrames,
+                vendor: descriptor.Vendor,
+                modelSelector: descriptor.ModelSelector,
+                unattendedInteractionPolicy: unattendedInteractionPolicy,
+                reconnect: reconnect,
+                // Built from the SAME spec list session/new receives, so the expected set is what was
+                // actually sent rather than a re-derivation of it.
+                mcpSurfaceMonitor: KiroMcpSurfaceMonitor.For(
+                    descriptor, ctx.IsReviewFlow, reviewMcp, ctx.LaunchIdentity),
+                // NULL for every launch with nothing to clean up, rather than a lambda that no-ops
+                // internally: the runtime keys its ordered-teardown path (await the reap, confirm child
+                // exit) on this being non-null, so an always-supplied callback made every ACP launch of
+                // every vendor pay that wait. The factory can only clean up launches that FAILED, so a
+                // successful review's home needs this hook — it holds review context, and would
+                // otherwise survive until a later daemon epoch swept it.
+                onDisposed: ReviewerLaunchTimeoutSeconds(descriptor, config, ctx) is not null
+                    ? (Action)(() => DeleteReviewerIsolatedDirectory(descriptor, config, ctx, _logger))
+                    : null,
+                // The second half of the launch bound. The deadline below covers spawn through the
+                // handshake; StartAsync deliberately does NOT await the first turn, so a peer that
+                // completes initialize and then wedges on the credential path would otherwise be
+                // unbounded. Time-to-first-OUTPUT, never turn completion — a real review runs long.
+                firstOutputDeadline: ReviewerLaunchTimeoutSeconds(descriptor, config, ctx) is { } firstOutputSeconds
+                    ? TimeSpan.FromSeconds(firstOutputSeconds)
+                    : null,
+                // The set AllowlistedAutoApprove admits, built from the SAME injected specs and identity
+                // the trust argv is built from. Two derivations would let the reviewer be TRUSTED to call
+                // a tool the policy then refuses to approve — a round that dies on its own result call.
+                admittedToolIds: descriptor.UnattendedInteractionPolicy
+                                     == AcpUnattendedInteractionPolicy.AllowlistedAutoApprove
+                              && ctx.IsReviewFlow && reviewMcp is { Count: > 0 } && ctx.LaunchIdentity is { } id
+                    ? UnattendedToolAdmission.AdmittedFor(reviewMcp, id)
+                    : null
+            );
+
+            // MUST precede StartAsync below: the handshake's SetLaunchStage stamps are no-ops against
+            // a null clock, so a later assignment silently defeats every stage stamp for the launch.
+            runtime.ActivityClock = ctx.ActivityClock;
+        } catch {
+            // No AcpHostedAgentRuntime was ever built (a throw here means construction never reached
+            // its own assignment) — nothing owns ordered teardown, so tear down directly whatever this
+            // launch DID already obtain rather than leaking the spawned child.
+            await DisposeUnclaimedSpawnAsync(acpConnection, acpProcess).ConfigureAwait(false);
+            throw;
+        }
 
         // Review flow: the injected result channel + allowlist. Otherwise unchanged (null today).
         var mcpServers = ctx.IsReviewFlow
@@ -305,7 +322,7 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
                 ResolveRequestedModel(descriptor, config, ctx),
                 mcpServers
             ).ConfigureAwait(false);
-        } catch (OperationCanceledException) when (launchDeadline is { IsCancellationRequested: true }
+        } catch (OperationCanceledException ex) when (launchDeadline is { IsCancellationRequested: true }
                                                 && !ct.IsCancellationRequested) {
             LogSurfaceOnceIfEstablished();
 
@@ -315,8 +332,8 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
             // rather than just the coded error.
             try {
                 await acpProcess.TerminateAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
-            } catch (Exception ex) {
-                _logger.LogDebug(ex,
+            } catch (Exception termEx) {
+                _logger.LogDebug(termEx,
                     "ACP: failed to reap {Vendor} reviewer after its launch deadline expired.", descriptor.Vendor);
             }
 
@@ -324,21 +341,33 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
             // unlinked path. The directory holds review state, so this is disposal, not disk hygiene.
             // No explicit delete here: runtime.DisposeAsync runs the ordered cleanup (await the
             // reap, confirm exit, then delete), and deleting again afterwards would bypass exactly
-            // the exit-confirmed gate that ordering exists to enforce.
+            // the exit-confirmed gate that ordering exists to enforce. DisposeAsync now unconditionally
+            // awaits any claimed reap, so a Verdict checked immediately afterward is final.
             await runtime.DisposeAsync().ConfigureAwait(false);
+
+            // Design spec §3.2: the deadline catch consults the verdict IDENTICALLY to the general
+            // catch below — a reap racing the launch deadline must not bypass reclassification and
+            // surface the generic timeout text instead of the coded reason.
+            if (ReclassifyIfReaped(runtime, ex) is { } deadlineReclassified) throw deadlineReclassified;
 
             throw new InvalidOperationException(
                 $"{descriptor.Vendor}_reviewer_launch_timeout: the reviewer did not complete its first "
               + $"prompt within {ReviewerLaunchTimeoutSeconds(descriptor, config, ctx)}s. The child was "
               + $"terminated and its isolated directory removed. {ReviewerLaunchTimeoutHint(descriptor)}");
-        } catch {
+        } catch (Exception ex) {
             // An established session is a fact the record must keep even though the launch failed.
             LogSurfaceOnceIfEstablished();
 
             // The runtime owns both the connection and the process; dispose on a failed handshake
             // so a half-started child process is never leaked.
-            // As above: disposal owns the exit-confirmed deletion.
+            // As above: disposal owns the exit-confirmed deletion, and now unconditionally awaits any
+            // claimed reap first, so the Verdict check right after is never racing it.
             await runtime.DisposeAsync().ConfigureAwait(false);
+
+            // Design spec §3.2: the single reclassification seam — a published Verdict means this
+            // launch was reaped, and its coded reason becomes the exception's headline instead of
+            // whatever StartAsync actually threw. No verdict ⇒ ex propagates byte-identically.
+            if (ReclassifyIfReaped(runtime, ex) is { } reclassified) throw reclassified;
 
             throw;
         }
@@ -350,6 +379,84 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
         // bind + forward without downcasting Runtime.
         return new HostedRuntimeStart(runtime, McpConfigPath: null, Transcript: runtime);
     }
+
+    /// <summary>
+    /// A reviewer launch reaped by a containment tripwire during <see cref="StartAsync"/> (design
+    /// spec §3.2) — the daemon's coded <see cref="AcpHostedAgentRuntime.TerminationVerdict"/>
+    /// reclassified as the launch failure's headline, with the transport-level cause folded in
+    /// parenthetically rather than lost. <see cref="Exception.InnerException"/> is whatever
+    /// <see cref="AcpHostedAgentRuntime.StartAsync"/> (or the launch deadline) actually threw, so
+    /// daemon-side diagnostics keep everything.
+    /// </summary>
+    internal sealed class AcpReviewerReapedException(string message, Exception inner)
+        : InvalidOperationException(message, inner);
+
+    /// <summary>
+    /// The single reclassification seam (design spec §3.2): after ordered disposal — which now
+    /// unconditionally awaits any claimed reap (<see cref="AcpHostedAgentRuntime.DisposeAsync"/>) — a
+    /// published <see cref="AcpHostedAgentRuntime.Verdict"/> means this launch was reaped, and its
+    /// coded reason becomes the exception's headline instead of whatever the caller actually caught.
+    /// Returns <see langword="null"/> when no verdict was ever published, so the caller's own
+    /// exception propagates completely untouched (byte-identical no-verdict path).
+    /// </summary>
+    static AcpReviewerReapedException? ReclassifyIfReaped(AcpHostedAgentRuntime runtime, Exception ex) =>
+        runtime.Verdict is { } verdict
+            ? new AcpReviewerReapedException($"{verdict.Reason} (transport: {DescribeTransportCause(ex)})", ex)
+            : null;
+
+    /// <summary>
+    /// The reclassified message's transport half: the sanitized handshake cause when
+    /// <see cref="AcpHostedAgentRuntime.StartAsync"/>'s own wrapper produced one, else the caught
+    /// exception's own (separately sanitized) message — covers every stage the wrapper doesn't reach,
+    /// namely model selection (never wrapped at all) and a launch deadline firing mid-RPC (whose
+    /// <see cref="OperationCanceledException"/> the wrapper deliberately never touches either).
+    /// </summary>
+    static string DescribeTransportCause(Exception ex) =>
+        (ex as AcpHostedAgentRuntime.AcpHandshakeFailedException)?.TransportMessage ?? Sanitize(ex.Message);
+
+    /// <summary>Single-lined + length-capped, mirroring <c>AcpHostedAgentRuntime.SanitizeForForward</c>
+    /// — duplicated rather than shared because the message sanitized here may never have passed
+    /// through that type at all (e.g. a raw transport exception escaping model selection).</summary>
+    static string Sanitize(string message, int maxLength = 500) {
+        var oneLine = message.ReplaceLineEndings(" ").Trim();
+        return oneLine.Length <= maxLength ? oneLine : oneLine[..maxLength] + "…";
+    }
+
+    /// <summary>
+    /// Disposes whatever a launch already obtained when no <see cref="AcpHostedAgentRuntime"/> was
+    /// ever built to own ordered teardown — the widened pre-StartAsync construction-failure guard's
+    /// cleanup unit (design spec §3.2: "a post-spawn/pre-protected-region construction failure
+    /// currently leaks the child"). Best-effort throughout: a launch that already failed must not be
+    /// masked by a cleanup fault. <paramref name="process"/> is terminated before either is disposed,
+    /// mirroring <see cref="AcpHostedAgentRuntime.DisposeAsync"/>'s own ordering (a reap is not a
+    /// disposal — releasing handles under a still-alive child just leaves it running).
+    /// </summary>
+    internal static async Task DisposeUnclaimedSpawnAsync(AcpConnection? connection, IAcpProcess? process) {
+        if (process is not null) {
+            try {
+                await process.TerminateAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            } catch {
+                // Best-effort — the launch's own construction failure is the error that matters.
+            }
+        }
+
+        if (connection is not null)
+            await connection.DisposeAsync().ConfigureAwait(false);
+
+        if (process is not null)
+            await process.DisposeAsync().ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Design spec §3.5's non-empty-reason fallback formula: <c>launch_failed:{exception type name}
+    /// — see daemon log</c> for a null/whitespace reason, else the reason verbatim. Task 4's
+    /// orchestrator mapping owns APPLYING this to whatever a launch failure ultimately reports, but a
+    /// pre-StartAsync factory failure — thrown before any runtime (hence any verdict) exists — is
+    /// exactly the case the fallback exists to cover, so the formula lives here rather than being
+    /// duplicated at every call site.
+    /// </summary>
+    internal static string DescribeLaunchFailure(Exception ex) =>
+        string.IsNullOrWhiteSpace(ex.Message) ? $"launch_failed:{ex.GetType().Name} — see daemon log" : ex.Message;
 
     /// <summary>
     /// Fail-closed validation + build of the review-flow MCP list, run as the FIRST thing in
