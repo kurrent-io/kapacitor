@@ -1195,6 +1195,7 @@ static class McpFlowsServer {
                       "lazily on its first message.");
             sb.AppendLine();
             AppendWorkspaceDiagnostics(sb, node);
+            AppendBudgetDisclosure(sb, node);
             pendingIds = AppendPendingMessages(sb, node);
             return sb.ToString();
         } catch {
@@ -1560,6 +1561,7 @@ static class McpFlowsServer {
         }
         AppendReviewerModelAudit(sb, node);
         AppendWorkspaceDiagnostics(sb, node);
+        AppendBudgetDisclosure(sb, node);
         // Before the result text: the driver should read the warning before the (suspect) result.
         AppendReviewerVendorMismatchWarning(sb, node);
         if (!string.IsNullOrEmpty(resultText)) { sb.AppendLine(); sb.Append(resultText); }
@@ -1599,6 +1601,7 @@ static class McpFlowsServer {
             if (vendorSource is not null) { sb.Append("reviewer_vendor_source: "); AppendLine(sb, vendorSource); }
             AppendReviewerModelAudit(sb, node);
             AppendWorkspaceDiagnostics(sb, node);
+            AppendBudgetDisclosure(sb, node);
 
             if (!string.IsNullOrEmpty(resultText)) {
                 sb.AppendLine();
@@ -1648,6 +1651,7 @@ static class McpFlowsServer {
             if (vendorSource is not null) { sb.Append("reviewer_vendor_source: "); AppendLine(sb, vendorSource); }
             AppendReviewerModelAudit(sb, node);
             AppendWorkspaceDiagnostics(sb, node);
+            AppendBudgetDisclosure(sb, node);
 
             if (!string.IsNullOrEmpty(lastResultKind)) {
                 sb.Append("result_kind: "); AppendLine(sb, lastResultKind);
@@ -1745,6 +1749,7 @@ static class McpFlowsServer {
             // Close is often the LAST thing a caller reads, so it is the surface most likely to be
             // the only record of what the reviewer actually saw.
             AppendWorkspaceDiagnostics(sb, node);
+            AppendBudgetDisclosure(sb, node);
 
             pendingIds = AppendPendingMessages(sb, node);
             return sb.ToString();
@@ -1853,6 +1858,31 @@ static class McpFlowsServer {
                 // caller ends up trusting a decision the server never made.
                 sb.Append("workspace: "); AppendLine(sb, mode);
                 break;
+        }
+    }
+
+    /// <summary>Render the additive budget-enforcement disclosure a dynamic run carries.
+    /// ABSENT (both keys omitted) on the wire for catalog / budget-irrelevant runs and against an
+    /// older server — nothing is rendered, byte-identical to before. "partial" names the roles whose
+    /// spend is rounds/time-governed rather than dollar-metered; "full" (or any future level) is
+    /// reported verbatim.</summary>
+    static void AppendBudgetDisclosure(StringBuilder sb, JsonObject node) {
+        var enforcement = TryGetString(node, "budget_enforcement");
+        if (enforcement is null) return;   // catalog / no dynamic budget / old server → render nothing
+
+        if (enforcement == "partial") {
+            sb.Append("budget enforcement: partial");
+            if (node["unmetered_roles"] is JsonArray roles && roles.Count > 0) {
+                sb.Append(" (unmetered roles: ");
+                for (var i = 0; i < roles.Count; i++) {
+                    if (i > 0) sb.Append(", ");
+                    sb.Append(roles[i]?.GetValue<string>() ?? "");
+                }
+                sb.Append(')');
+            }
+            sb.AppendLine();
+        } else {
+            sb.Append("budget enforcement: "); AppendLine(sb, enforcement);
         }
     }
 
