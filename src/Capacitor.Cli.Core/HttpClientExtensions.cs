@@ -53,8 +53,24 @@ public static class HttpClientExtensions {
     /// <summary>
     /// Shared client construction. Returns the resolution alongside the client so callers that
     /// report a mismatch quote the issuing server from the same snapshot the decision used.
+    ///
+    /// <para>Every client this produces — regardless of which branch below built it — leaves here
+    /// carrying the observation headers the server's update-notification pipeline reads (see
+    /// <see cref="AttachObservationHeadersAsync"/>): this is the ONE choke point every authenticated
+    /// CLI request flows through, so it is the one place that can promise every request the server
+    /// sees is tagged. <see cref="WhoamiCommand.ProbeAsync"/> deliberately bypasses this method (it
+    /// must not mutate auth state) and attaches the same headers explicitly.</para>
     /// </summary>
     static async Task<(HttpClient Client, AuthStatus Status, TokenResolution? Resolution, string? MachineProblem)> CreateClientCoreAsync(
+        string? baseUrl, CancellationToken ct, bool allowAutoRedirect,
+        string? rejectedAccessToken, bool autoRetryUnauthorized) {
+        var result = await CreateClientCoreImplAsync(baseUrl, ct, allowAutoRedirect, rejectedAccessToken, autoRetryUnauthorized);
+        await AttachObservationHeadersAsync(result.Client, ct);
+
+        return result;
+    }
+
+    static async Task<(HttpClient Client, AuthStatus Status, TokenResolution? Resolution, string? MachineProblem)> CreateClientCoreImplAsync(
         string? baseUrl, CancellationToken ct, bool allowAutoRedirect,
         string? rejectedAccessToken, bool autoRetryUnauthorized) {
         baseUrl ??= AppConfig.ResolvedServerUrl ?? Environment.GetEnvironmentVariable("KCAP_URL") ?? "http://localhost:5108";
@@ -134,6 +150,43 @@ public static class HttpClientExtensions {
         }
 
         return (NewClient(), resolution.Status, resolution, null);
+    }
+
+    /// <summary>Wire header naming the installed CLI's display version (see <see cref="CapacitorVersion.CurrentDisplay"/>).</summary>
+    public const string CliVersionHeader = "X-Kcap-Cli-Version";
+
+    /// <summary>
+    /// Wire header sent ONLY to declare the active profile's update-check preference is off. Its
+    /// ABSENCE on a version-carrying request means the preference is on (the default) — never send
+    /// an "on" value, only omit the header.
+    /// </summary>
+    public const string UpdateCheckHeader = "X-Kcap-Update-Check";
+
+    /// <summary>Value <see cref="UpdateCheckHeader"/> carries when sent.</summary>
+    public const string UpdateCheckOffValue = "off";
+
+    /// <summary>
+    /// Attaches the two observation headers the server's CLI-update-notification pipeline reads to
+    /// <paramref name="client"/>. Always attaches <see cref="CliVersionHeader"/> — unless
+    /// <see cref="CapacitorVersion.CurrentDisplay"/> can't resolve a real version, in which case
+    /// sending "unknown" would be worse than omitting it. Attaches <see cref="UpdateCheckHeader"/>
+    /// only when the active profile has explicitly opted out, per the absence-means-on contract
+    /// above. Reads the profile via <see cref="AppConfig.GetActiveProfileAsync"/> — the same
+    /// accessor <c>UpdateNotice</c> uses — which is a cache hit (no disk I/O) whenever the process
+    /// already resolved a profile, so this stays cheap on the per-request hot path.
+    /// </summary>
+    internal static async Task AttachObservationHeadersAsync(HttpClient client, CancellationToken ct = default) {
+        var version = CapacitorVersion.CurrentDisplay();
+
+        if (!string.IsNullOrWhiteSpace(version) && !version.Equals("unknown", StringComparison.OrdinalIgnoreCase)) {
+            client.DefaultRequestHeaders.Add(CliVersionHeader, version);
+        }
+
+        var profile = await AppConfig.GetActiveProfileAsync();
+
+        if (profile?.UpdateCheck == false) {
+            client.DefaultRequestHeaders.Add(UpdateCheckHeader, UpdateCheckOffValue);
+        }
     }
 
     /// <summary>
