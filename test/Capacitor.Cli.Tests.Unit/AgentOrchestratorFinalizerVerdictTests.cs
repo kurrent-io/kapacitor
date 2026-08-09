@@ -316,4 +316,60 @@ public partial class AgentOrchestratorVendorTests {
         await Assert.That(reported).Contains("TerminationVerdict");
         await Assert.That(reported).Contains("launch_failed:");
     }
+
+    // ── StopAgentCoreAsync must not walk a published verdict's Failed back to Completed ────────
+    // Design spec §3.3's "no non-failure AgentStatusChanged after a published verdict" guarantee
+    // has a second seam beyond the finalizer itself: StopAgentCoreAsync is the single funnel for
+    // EVERY stop trigger (HandleStopAgent's own doc comment: server StopAgent, sequenced
+    // StopAgentV2, and the heartbeat's own TTL/idle/stuck-Starting reap sweep — plus a
+    // local-socket stop, which calls it directly) and runs unconditionally while the agent is
+    // still published in _agents, which is exactly the window between the finalizer's report and
+    // CleanupAgentAsync's unpublish. A reviewer that trips a containment tripwire is a plausible
+    // candidate for the SAME heartbeat tick's TTL/idle reap, so this is a real race, not a
+    // hypothetical one. These two tests seed the guard state directly (rather than driving a full
+    // concurrent finalize+stop race, which the rest of this file's tests already show reports
+    // LaunchFailureVerdictReported=1 and Status="Failed" — see e.g.
+    // Published_verdict_forces_terminal_failed_regardless_of_exit_code) so the race window itself
+    // is exercised deterministically.
+
+    [Test]
+    public async Task Stop_after_published_verdict_does_not_clear_failed_status_or_reason() {
+        var server = new CaptureServerConnection();
+        await using var orch = BuildOrchestrator(
+            server, new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>());
+
+        var agent = orch.SeedAgentForTest("stop-race-1", status: "Running");
+
+        // Simulate the finalizer's verdict arm having already run — it reports the coded reason
+        // then forces terminal Failed — BEFORE CleanupAgentAsync has unpublished this agent, i.e.
+        // the exact window a concurrent stop can land in.
+        agent.LaunchFailureVerdictReported = 1;
+        agent.Status                       = "Failed";
+
+        await orch.HandleStopAgentForTest("stop-race-1");
+
+        // No non-failure AgentStatusChanged at all — not even a REPEATED "Failed" one, since the
+        // gate suppresses the whole call, matching Published_verdict_forces_terminal_failed_regardless_of_exit_code's
+        // "zero calls" bar rather than merely "no Completed call".
+        await Assert.That(server.StatusChangedCalls.Any(c => c.AgentId == "stop-race-1")).IsFalse();
+        await Assert.That(agent.Status).IsEqualTo("Failed");
+    }
+
+    [Test]
+    public async Task Stop_without_a_published_verdict_still_transitions_to_completed_and_notifies() {
+        // Regression check: an ordinary stop (no verdict ever published — the overwhelmingly
+        // common case, e.g. every claude/codex PTY agent, and every ACP agent that never trips a
+        // containment tripwire) must still behave exactly as before this fix.
+        var server = new CaptureServerConnection();
+        await using var orch = BuildOrchestrator(
+            server, new SpyPtyProcessFactory(), new Dictionary<string, IHostedAgentLauncher>());
+
+        var agent = orch.SeedAgentForTest("stop-normal-1", status: "Running");
+        await Assert.That(agent.LaunchFailureVerdictReported).IsEqualTo(0); // precondition: no verdict
+
+        await orch.HandleStopAgentForTest("stop-normal-1");
+
+        await Assert.That(server.StatusChangedCalls).Contains(("stop-normal-1", "Completed"));
+        await Assert.That(agent.Status).IsEqualTo("Completed");
+    }
 }

@@ -2500,9 +2500,21 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
         try {
             LogStopping(agentId);
 
+            // Design spec §3.3: StopAgentCoreAsync is the single funnel for every stop trigger —
+            // server StopAgent/StopAgentV2, a local-socket stop, AND the heartbeat's own
+            // TTL/idle/stuck-Starting reap sweep (HandleStopAgent's doc lists all three) — and any
+            // of them can race the finalizer having ALREADY reported a launch-window verdict (a
+            // reviewer that trips a containment tripwire is a plausible TTL/idle-reap candidate on
+            // the very same heartbeat tick). A published verdict has already forced terminal
+            // "Failed" and told the server via LaunchFailedAsync; a non-failure "Completed"
+            // transition here would clear the FailureReason that call just set server-side. Gated
+            // on the verdict-REPORTED flag specifically, not `Status == "Failed"` — an unrelated
+            // Failed state must not by itself block a legitimate Completed transition.
+            var verdictAlreadyReported = Volatile.Read(ref agent.LaunchFailureVerdictReported) != 0;
+
             // Set status BEFORE cancelling ReadCts so the read loop's finally
             // block sees "Completed" and skips its own status change / event append.
-            SetAgentStatus(agent, "Completed");
+            if (!verdictAlreadyReported) SetAgentStatus(agent, "Completed");
             // Mark this as a user-initiated stop so the read-loop's finally-block
             // EndAgentSessionAsync call uses "agent_stopped" if it ends up being
             // the only successful call (e.g., transient SignalR failure here).
@@ -2513,7 +2525,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
 
             // An unregistered agent has no server-side row to update.
             if (!agent.IsPrivate) {
-                _ = _server.AgentStatusChangedAsync(agentId, "Completed", agent.SessionId);
+                if (!verdictAlreadyReported) _ = _server.AgentStatusChangedAsync(agentId, "Completed", agent.SessionId);
                 _ = _server.AppendAgentRunEventAsync(agentId, new AgentRunStopped("user", null));
             }
 
