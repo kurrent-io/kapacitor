@@ -2218,6 +2218,11 @@ public partial class AgentOrchestratorVendorTests {
         internal override string? CurrentConnectionId => ConnectionIdForTest;
         public List<(string AgentId, string Reason)> LaunchFailedCalls { get; } = [];
 
+        /// <summary>When set, LaunchFailedAsync still RECORDS the call (so a test can assert the
+        /// send was attempted) but returns a faulted task — for the finalizer's verdict-report
+        /// fault-containment test (a report fault must never skip CleanupAgentAsync/unregister).</summary>
+        public Exception? LaunchFailedThrow { get; init; }
+
         /// <summary>When set, EndAgentSessionAsync blocks until this token is cancelled,
         /// simulating a session-end call stuck waiting for a SignalR reconnect.</summary>
         public CancellationTokenSource? EndSessionBlockUntil { get; init; }
@@ -2228,7 +2233,7 @@ public partial class AgentOrchestratorVendorTests {
         public override Task LaunchFailedAsync(string agentId, string reason) {
             LaunchFailedCalls.Add((agentId, reason));
 
-            return Task.CompletedTask;
+            return LaunchFailedThrow is { } ex ? Task.FromException(ex) : Task.CompletedTask;
         }
 
         /// <summary>Every <see cref="DaemonStatusReport"/> the orchestrator sent, in order — the

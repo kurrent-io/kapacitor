@@ -83,6 +83,16 @@ internal record AgentInstance(
     /// one teardown runs even if the launch-catch and the read-loop's finally race.</summary>
     public int CleanupStarted;
 
+    /// <summary>Design spec §3.3: single-flight guard for reporting a published ACP launch-window
+    /// reap verdict to the server — claimed (0→1) by the FIRST path that reports it, via
+    /// <see cref="System.Threading.Interlocked.CompareExchange(ref int,int,int)"/>, so dedupe is
+    /// structural rather than dependent on today's call-site ordering. Only
+    /// <see cref="AgentOrchestrator.FinalizeAgentRunAsync"/> consults this today (the factory's
+    /// pre-registration reclassification, design spec §3.2, has no <see cref="AgentInstance"/> to
+    /// share it with — see that method's remarks) but it is the canonical claim any future
+    /// verdict-reporting call site for this agent must take before sending.</summary>
+    public int LaunchFailureVerdictReported;
+
     /// <summary>Phase B (D4): the child's exact start-identity captured ONCE at spawn (the
     /// <c>ProcessStartToken</c>). Teardown uses THIS stored token — never a freshly-recaptured one — so a
     /// pid recycled after the child exited can't be adopted and later killed. Null only when the pid was
@@ -2218,6 +2228,38 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
 
     async Task FinalizeAgentRunAsync(AgentInstance agent) {
         try {
+            // Design spec §3.3: the registered-agent report seam, and the FIRST action here —
+            // strictly before the process-exit wait below. The runtime's Verdict is published at
+            // reap-CLAIM time (TryStartReap), not at process exit, so waiting on exit first would
+            // only widen the race against the server's reviewer-readiness wait for no benefit.
+            // Post-window reaps (ReapedInsideLaunchWindow == false) are deliberately NOT reported
+            // here — today's teardown for that case must stay byte-identical (documented residual,
+            // spec §1).
+            if (agent.Runtime is AcpHostedAgentRuntime { Verdict: { ReapedInsideLaunchWindow: true } verdict }
+                && Interlocked.CompareExchange(ref agent.LaunchFailureVerdictReported, 1, 0) == 0) {
+                if (!agent.IsPrivate) {
+                    // Own try/catch, deliberately separate from this method's own outer one below —
+                    // a report fault must never skip CleanupAgentAsync or the normal unregister
+                    // (capacity decrement + the durable death record ride AgentUnregistered and must
+                    // still run exactly once).
+                    try {
+                        await _server.LaunchFailedAsync(
+                            agent.Id,
+                            MapLaunchFailureReason(verdict.Reason, nameof(AcpHostedAgentRuntime.TerminationVerdict)));
+                    } catch (Exception ex) {
+                        LogVerdictReportFailed(ex, agent.Id);
+                    }
+                }
+
+                // Force terminal Failed regardless of the child's exit code. This also makes the
+                // exit-code-driven classification below a no-op for this agent (agent.Status is
+                // already terminal), which is what keeps the daemon's status pipeline from ever
+                // emitting a non-failure AgentStatusChanged after a published verdict — a
+                // non-failure transition would clear the FailureReason the LaunchFailed call above
+                // just set server-side.
+                SetAgentStatus(agent, "Failed");
+            }
+
             // PTY output can end before waitpid reports the child as exited.
             // Wait briefly for the process to finalize so we get a real exit code.
             await agent.Runtime.WaitForExitAsync(TimeSpan.FromSeconds(5));
@@ -3180,6 +3222,16 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     internal static bool IsStartupFailure(DateTime createdAt, DateTime lastOutputAt, bool hasReceivedOutput)
         => !hasReceivedOutput || lastOutputAt - createdAt < MinSessionLifespan;
 
+    /// <summary>Design spec §3.5: a <c>LaunchFailed</c> reason must never be forwarded empty. A
+    /// verdict's <c>Reason</c> should never be blank in practice — every writer
+    /// (<c>HandleMcpSurfaceViolation</c>, the bridge's reason-bearing reap callback) passes a coded
+    /// string — but this is the general, defensive cover, keyed off a caller-supplied identifier for
+    /// WHAT produced the blank reason (a type name today) rather than an exception specifically, so
+    /// the same mapping also covers a pre-<c>StartAsync</c> factory failure's plain exception message
+    /// if a future call site adopts it.</summary>
+    internal static string MapLaunchFailureReason(string? reason, string fallbackSource) =>
+        !string.IsNullOrWhiteSpace(reason) ? reason : $"launch_failed:{fallbackSource} — see daemon log";
+
     static readonly HashSet<string> ValidEffortLevels = ["low", "medium", "high", "max"];
 
     static readonly TimeSpan SessionIdPollInterval = TimeSpan.FromSeconds(2);
@@ -3636,6 +3688,9 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     [LoggerMessage(Level = LogLevel.Warning, Message = "Agent {AgentId} failed during startup (exit code {ExitCode}): {Reason}")]
     partial void LogStartupFailed(string agentId, int? exitCode, string reason);
 
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Failed to report launch-window reap verdict for agent {AgentId} (continuing teardown)")]
+    partial void LogVerdictReportFailed(Exception ex, string agentId);
+
     [LoggerMessage(Level = LogLevel.Error, Message = "Agent {AgentId} wedged on an unattended consent/trust dialog — failing the launch fast: {Reason}")]
     partial void LogConsentDialogWedge(string agentId, string reason);
 
@@ -3766,6 +3821,12 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     /// <c>_ = ReadAgentOutputAsync(agent)</c> in HandleLaunchAgent) so a seeded agent's consent-dialog
     /// fail-fast + tail-capture can be exercised without the full ReviewFlow launch gauntlet.</summary>
     internal Task ReadAgentOutputForTest(AgentInstance agent) => ReadAgentOutputAsync(agent);
+
+    /// <summary>Test-only: drive the read loop's finally-block teardown directly (mirrors what
+    /// <c>ReadAgentOutputAsync</c>'s own finally invokes) so the verdict-report arm, its ordering
+    /// against the process-exit wait, and the rest of teardown can be exercised without needing a
+    /// runtime whose <c>ReadOutputAsync</c> stream can be driven to completion.</summary>
+    internal Task FinalizeAgentRunForTest(AgentInstance agent) => FinalizeAgentRunAsync(agent);
 
     /// <summary>Test-only: the retained failed-launch log root, for asserting a capture landed.</summary>
     internal FailedLaunchLog? FailedLaunchLogForTest => _failedLaunchLog;
