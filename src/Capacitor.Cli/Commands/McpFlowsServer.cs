@@ -1873,10 +1873,8 @@ static class McpFlowsServer {
         if (enforcement == "partial") {
             sb.Append("budget enforcement: partial");
             if (node["unmetered_roles"] is JsonArray roles) {
-                // Degrade on any hostile/malformed element: skip a non-string value, an
-                // object/array, null, whitespace-only, or a name carrying control characters
-                // (a newline would forge a line in this line-oriented output). Open the
-                // parenthetical only once a renderable role is found.
+                // Skip malformed/hostile elements (see IsRenderableRole); open the parenthetical
+                // only once a valid role is found.
                 var open = false;
                 foreach (var role in roles) {
                     if (role is not JsonValue v || !v.TryGetValue<string>(out var name) || !IsRenderableRole(name))
