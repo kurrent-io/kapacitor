@@ -520,7 +520,7 @@ public class AppStartupTests {
                 var (desktop, fake) = FakeClassicDesktopLifetime.Create();
                 var daemon = new FakeDaemonClientService();
                 var (actions, _) = NewActions(daemon);
-                var trayVm = new TrayViewModel(daemon, new FakePauseController(), actions);
+                var trayVm = new TrayViewModel(daemon, new FakePauseController(), actions, new FakeConsentService());
                 var app = Application.Current!;
                 var tray = new TrayIconManager(app, trayVm);
 

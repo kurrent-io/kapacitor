@@ -27,4 +27,4 @@ public sealed record TrayAgentEntry(string Id, string Label, string Kind, bool S
 public sealed record TrayPauseItem(bool Enabled, bool Checked);
 public sealed record TrayMenuModel(
     TrayState State, int RunningCount, string Header,
-    IReadOnlyList<TrayAgentEntry> Agents, TrayPauseItem Pause);
+    IReadOnlyList<TrayAgentEntry> Agents, TrayPauseItem Pause, int PendingConsent);

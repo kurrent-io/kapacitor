@@ -19,8 +19,8 @@ public class TrayAdapterTests {
 
     static TrayMenuModel Model(
             TrayState state = TrayState.Idle, int count = 0, string header = "hdr",
-            IReadOnlyList<TrayAgentEntry>? agents = null, TrayPauseItem? pause = null) =>
-        new(state, count, header, agents ?? [], pause ?? new TrayPauseItem(Enabled: true, Checked: false));
+            IReadOnlyList<TrayAgentEntry>? agents = null, TrayPauseItem? pause = null, int pendingConsent = 0) =>
+        new(state, count, header, agents ?? [], pause ?? new TrayPauseItem(Enabled: true, Checked: false), pendingConsent);
 
     // ---- CountBadge (pure) ----
 
@@ -141,7 +141,8 @@ public class TrayAdapterTests {
             var (headerText, headerEnabled) = await AvaloniaSession.DispatchAsync(() => {
                 var service = new FakeDaemonClientService();
                 var pause = new FakePauseController();
-                using var vm = new TrayViewModel(service, pause, NewActions(service));
+                var consent = new FakeConsentService();
+                using var vm = new TrayViewModel(service, pause, NewActions(service), consent);
                 var builder = new TrayMenuBuilder(vm);
                 var menu = new NativeMenu();
 
@@ -163,7 +164,8 @@ public class TrayAdapterTests {
             var (itemCount, separatorCount) = await AvaloniaSession.DispatchAsync(() => {
                 var service = new FakeDaemonClientService();
                 var pause = new FakePauseController();
-                using var vm = new TrayViewModel(service, pause, NewActions(service));
+                var consent = new FakeConsentService();
+                using var vm = new TrayViewModel(service, pause, NewActions(service), consent);
                 var builder = new TrayMenuBuilder(vm);
                 var menu = new NativeMenu();
 
@@ -185,7 +187,8 @@ public class TrayAdapterTests {
             var result = await AvaloniaSession.DispatchAsync(() => {
                 var service = new FakeDaemonClientService();
                 var pause = new FakePauseController();
-                using var vm = new TrayViewModel(service, pause, NewActions(service));
+                var consent = new FakeConsentService();
+                using var vm = new TrayViewModel(service, pause, NewActions(service), consent);
                 var builder = new TrayMenuBuilder(vm);
                 var menu = new NativeMenu();
 
@@ -224,6 +227,60 @@ public class TrayAdapterTests {
         });
     }
 
+    // ---- Review pending launches item (spec §8) ----
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Rebuild_omits_the_review_item_when_no_pending_consent() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            var hasReviewItem = await AvaloniaSession.DispatchAsync(() => {
+                var service = new FakeDaemonClientService();
+                var pause = new FakePauseController();
+                var consent = new FakeConsentService();
+                using var vm = new TrayViewModel(service, pause, NewActions(service), consent);
+                var builder = new TrayMenuBuilder(vm);
+                var menu = new NativeMenu();
+
+                builder.Rebuild(menu, Model(agents: [], pendingConsent: 0));
+
+                return menu.Items.OfType<NativeMenuItem>().Any(i => i.Header == "Review pending launches…");
+            });
+
+            await Assert.That(hasReviewItem).IsFalse();
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Rebuild_includes_review_item_between_agents_and_pause_when_pending_consent_positive() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            var (header, reviewIndex, pauseIndex, commandMatches) = await AvaloniaSession.DispatchAsync(() => {
+                var service = new FakeDaemonClientService();
+                var pause = new FakePauseController();
+                var consent = new FakeConsentService();
+                using var vm = new TrayViewModel(service, pause, NewActions(service), consent);
+                var builder = new TrayMenuBuilder(vm);
+                var menu = new NativeMenu();
+
+                var agents = new List<TrayAgentEntry> {
+                    new("a1", "agent · claude · repo-one", "agent", StopEnabled: true),
+                };
+                builder.Rebuild(menu, Model(agents: agents, pendingConsent: 3));
+
+                var items = menu.Items.OfType<NativeMenuItem>().ToList();
+                var review = items.First(i => i.Header == "Review pending launches…");
+                var pauseItem = items.First(i => i.Header == "Pause new launches");
+
+                return (review.Header, menu.Items.IndexOf(review), menu.Items.IndexOf(pauseItem),
+                    ReferenceEquals(review.Command, vm.ReviewPendingCommand));
+            });
+
+            await Assert.That(header).IsEqualTo("Review pending launches…");
+            await Assert.That(reviewIndex).IsEqualTo(pauseIndex - 1); // immediately before the pause toggle
+            await Assert.That(commandMatches).IsTrue();
+        });
+    }
+
     // Regression coverage (review Critical 1): NativeMenuItem.OnPropertyChanged recomputes
     // IsEnabled from Command.CanExecute(CommandParameter) whenever Command is (re)assigned
     // (decompiler-verified) — so IsEnabled must be the LAST property set in BuildPauseItem's
@@ -242,7 +299,8 @@ public class TrayAdapterTests {
             var (toggleType, isChecked, isEnabled, parameter, commandMatches) = await AvaloniaSession.DispatchAsync(() => {
                 var service = new FakeDaemonClientService();
                 var pause = new FakePauseController();
-                using var vm = new TrayViewModel(service, pause, NewActions(service));
+                var consent = new FakeConsentService();
+                using var vm = new TrayViewModel(service, pause, NewActions(service), consent);
                 var builder = new TrayMenuBuilder(vm);
                 var menu = new NativeMenu();
 
@@ -268,7 +326,8 @@ public class TrayAdapterTests {
             var (openHeader, openMatches, quitHeader, quitMatches) = await AvaloniaSession.DispatchAsync(() => {
                 var service = new FakeDaemonClientService();
                 var pause = new FakePauseController();
-                using var vm = new TrayViewModel(service, pause, NewActions(service));
+                var consent = new FakeConsentService();
+                using var vm = new TrayViewModel(service, pause, NewActions(service), consent);
                 var builder = new TrayMenuBuilder(vm);
                 var menu = new NativeMenu();
 
@@ -311,7 +370,8 @@ public class TrayAdapterTests {
             var (icon, tooltip, itemCountBeforeNeedsUpdate) = await AvaloniaSession.DispatchAsync(() => {
                 var service = new FakeDaemonClientService();
                 var pause = new FakePauseController();
-                using var vm = new TrayViewModel(service, pause, NewActions(service));
+                var consent = new FakeConsentService();
+                using var vm = new TrayViewModel(service, pause, NewActions(service), consent);
                 service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, []));
                 service.SnapshotsSubject.OnNext(FakeDaemonClientService.Snap(connection: "connected", active: 2));
 
@@ -335,7 +395,8 @@ public class TrayAdapterTests {
             var iconChanged = await AvaloniaSession.DispatchAsync(() => {
                 var service = new FakeDaemonClientService();
                 var pause = new FakePauseController();
-                using var vm = new TrayViewModel(service, pause, NewActions(service));
+                var consent = new FakeConsentService();
+                using var vm = new TrayViewModel(service, pause, NewActions(service), consent);
 
                 var app = Application.Current!;
                 using var manager = new TrayIconManager(app, vm);
@@ -361,7 +422,8 @@ public class TrayAdapterTests {
             var iconsAfterDispose = await AvaloniaSession.DispatchAsync(() => {
                 var service = new FakeDaemonClientService();
                 var pause = new FakePauseController();
-                using var vm = new TrayViewModel(service, pause, NewActions(service));
+                var consent = new FakeConsentService();
+                using var vm = new TrayViewModel(service, pause, NewActions(service), consent);
 
                 var app = Application.Current!;
                 var manager = new TrayIconManager(app, vm);

@@ -4,6 +4,7 @@ using Capacitor.App.Services;
 using Capacitor.App.ViewModels;
 using Capacitor.Cli.Core.LocalIpc;
 using TUnit.Assertions.Enums;
+using static Capacitor.App.Tests.Unit.ConsentEntries;
 
 namespace Capacitor.App.Tests.Unit;
 
@@ -47,7 +48,8 @@ public class TrayViewModelTests {
             var service = new FakeDaemonClientService();
             var pause = new FakePauseController();
             var actions = NewActions(service);
-            using var vm = new TrayViewModel(service, pause, actions);
+            var consent = new FakeConsentService();
+            using var vm = new TrayViewModel(service, pause, actions, consent);
 
             service.StatusSubject.OnNext(new AttachStatus(AttachState.Unreachable, reason, null));
 
@@ -63,7 +65,8 @@ public class TrayViewModelTests {
             var service = new FakeDaemonClientService();
             var pause = new FakePauseController();
             var actions = NewActions(service);
-            using var vm = new TrayViewModel(service, pause, actions);
+            var consent = new FakeConsentService();
+            using var vm = new TrayViewModel(service, pause, actions, consent);
 
             await Assert.That(vm.MenuModel.State).IsEqualTo(TrayState.Connecting);
             await Assert.That(vm.MenuModel.RunningCount).IsEqualTo(0);
@@ -85,7 +88,8 @@ public class TrayViewModelTests {
             var service = new FakeDaemonClientService();
             var pause = new FakePauseController();
             var actions = NewActions(service);
-            using var vm = new TrayViewModel(service, pause, actions);
+            var consent = new FakeConsentService();
+            using var vm = new TrayViewModel(service, pause, actions, consent);
 
             service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, []));
             service.SnapshotsSubject.OnNext(Snap(connection, active));
@@ -102,7 +106,8 @@ public class TrayViewModelTests {
             var service = new FakeDaemonClientService();
             var pause = new FakePauseController();
             var actions = NewActions(service);
-            using var vm = new TrayViewModel(service, pause, actions);
+            var consent = new FakeConsentService();
+            using var vm = new TrayViewModel(service, pause, actions, consent);
 
             service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, []));
             // No snapshot pushed — cannot happen per the client pin, but Project must stay total.
@@ -118,7 +123,8 @@ public class TrayViewModelTests {
             var service = new FakeDaemonClientService();
             var pause = new FakePauseController();
             var actions = NewActions(service);
-            using var vm = new TrayViewModel(service, pause, actions);
+            var consent = new FakeConsentService();
+            using var vm = new TrayViewModel(service, pause, actions, consent);
 
             service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, []));
             service.SnapshotsSubject.OnNext(Snap("connected", 3));
@@ -142,7 +148,8 @@ public class TrayViewModelTests {
             var service = new FakeDaemonClientService();
             var pause = new FakePauseController();
             var actions = NewActions(service);
-            using var vm = new TrayViewModel(service, pause, actions);
+            var consent = new FakeConsentService();
+            using var vm = new TrayViewModel(service, pause, actions, consent);
 
             service.StatusSubject.OnNext(new AttachStatus(AttachState.Unreachable, "daemon_unreachable", null));
 
@@ -157,7 +164,8 @@ public class TrayViewModelTests {
             var service = new FakeDaemonClientService();
             var pause = new FakePauseController();
             var actions = NewActions(service);
-            using var vm = new TrayViewModel(service, pause, actions);
+            var consent = new FakeConsentService();
+            using var vm = new TrayViewModel(service, pause, actions, consent);
 
             await Assert.That(vm.MenuModel.Header).IsEqualTo("daemon-a: connecting…");
         });
@@ -170,7 +178,8 @@ public class TrayViewModelTests {
             var service = new FakeDaemonClientService();
             var pause = new FakePauseController();
             var actions = NewActions(service);
-            using var vm = new TrayViewModel(service, pause, actions);
+            var consent = new FakeConsentService();
+            using var vm = new TrayViewModel(service, pause, actions, consent);
 
             service.StatusSubject.OnNext(new AttachStatus(AttachState.Unreachable, "daemon_incompatible", null));
 
@@ -186,7 +195,8 @@ public class TrayViewModelTests {
             var service = new FakeDaemonClientService();
             var pause = new FakePauseController();
             var actions = NewActions(service);
-            using var vm = new TrayViewModel(service, pause, actions);
+            var consent = new FakeConsentService();
+            using var vm = new TrayViewModel(service, pause, actions, consent);
 
             service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, []));
             service.SnapshotsSubject.OnNext(Snap("reconnecting"));
@@ -202,7 +212,8 @@ public class TrayViewModelTests {
             var service = new FakeDaemonClientService();
             var pause = new FakePauseController();
             var actions = NewActions(service);
-            using var vm = new TrayViewModel(service, pause, actions);
+            var consent = new FakeConsentService();
+            using var vm = new TrayViewModel(service, pause, actions, consent);
 
             service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, []));
             service.SnapshotsSubject.OnNext(Snap("disconnected"));
@@ -218,7 +229,8 @@ public class TrayViewModelTests {
             var service = new FakeDaemonClientService();
             var pause = new FakePauseController();
             var actions = NewActions(service);
-            using var vm = new TrayViewModel(service, pause, actions);
+            var consent = new FakeConsentService();
+            using var vm = new TrayViewModel(service, pause, actions, consent);
 
             service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, []));
             service.SnapshotsSubject.OnNext(Snap("connected", 0));
@@ -234,7 +246,8 @@ public class TrayViewModelTests {
             var service = new FakeDaemonClientService();
             var pause = new FakePauseController();
             var actions = NewActions(service);
-            using var vm = new TrayViewModel(service, pause, actions);
+            var consent = new FakeConsentService();
+            using var vm = new TrayViewModel(service, pause, actions, consent);
 
             service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, []));
             service.SnapshotsSubject.OnNext(Snap("connected", 4));
@@ -250,7 +263,8 @@ public class TrayViewModelTests {
             var service = new FakeDaemonClientService();
             var pause = new FakePauseController();
             var actions = NewActions(service);
-            using var vm = new TrayViewModel(service, pause, actions);
+            var consent = new FakeConsentService();
+            using var vm = new TrayViewModel(service, pause, actions, consent);
 
             service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, []));
             service.SnapshotsSubject.OnNext(Snap("weird"));
@@ -266,7 +280,8 @@ public class TrayViewModelTests {
             var service = new FakeDaemonClientService();
             var pause = new FakePauseController();
             var actions = NewActions(service);
-            using var vm = new TrayViewModel(service, pause, actions);
+            var consent = new FakeConsentService();
+            using var vm = new TrayViewModel(service, pause, actions, consent);
 
             service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, []));
             service.SnapshotsSubject.OnNext(Snap("connected", -1));
@@ -282,7 +297,8 @@ public class TrayViewModelTests {
             var service = new FakeDaemonClientService();
             var pause = new FakePauseController();
             var actions = NewActions(service);
-            using var vm = new TrayViewModel(service, pause, actions);
+            var consent = new FakeConsentService();
+            using var vm = new TrayViewModel(service, pause, actions, consent);
 
             service.StatusSubject.OnNext(new AttachStatus(AttachState.Unreachable, "future_reason", null));
 
@@ -299,7 +315,8 @@ public class TrayViewModelTests {
             var service = new FakeDaemonClientService();
             var pause = new FakePauseController();
             var actions = NewActions(service);
-            using var vm = new TrayViewModel(service, pause, actions);
+            var consent = new FakeConsentService();
+            using var vm = new TrayViewModel(service, pause, actions, consent);
 
             var t0 = new DateTime(2026, 8, 6, 10, 0, 0, DateTimeKind.Utc);
             var agents = new List<AgentStatusDto> {
@@ -326,7 +343,8 @@ public class TrayViewModelTests {
             var service = new FakeDaemonClientService();
             var pause = new FakePauseController();
             var actions = NewActions(service);
-            using var vm = new TrayViewModel(service, pause, actions);
+            var consent = new FakeConsentService();
+            using var vm = new TrayViewModel(service, pause, actions, consent);
 
             var t0 = new DateTime(2026, 8, 6, 10, 0, 0, DateTimeKind.Utc);
             var agents = new List<AgentStatusDto> {
@@ -350,7 +368,8 @@ public class TrayViewModelTests {
             var service = new FakeDaemonClientService();
             var pause = new FakePauseController();
             var actions = NewActions(service);
-            using var vm = new TrayViewModel(service, pause, actions);
+            var consent = new FakeConsentService();
+            using var vm = new TrayViewModel(service, pause, actions, consent);
 
             var agents = new List<AgentStatusDto> {
                 new("r", "review-flow", "codex", null, "Running", null, null, null, DateTime.UtcNow, null, null),
@@ -370,7 +389,8 @@ public class TrayViewModelTests {
             var service = new FakeDaemonClientService();
             var pause = new FakePauseController();
             var actions = NewActions(service);
-            using var vm = new TrayViewModel(service, pause, actions);
+            var consent = new FakeConsentService();
+            using var vm = new TrayViewModel(service, pause, actions, consent);
 
             var agents = new List<AgentStatusDto> {
                 new("a", "agent", "claude", "/Users/alexey/dev/kcap-server/.claude/worktrees/hazy-sleeping-plum", "Running", null, null, null, DateTime.UtcNow, null, null),
@@ -390,7 +410,8 @@ public class TrayViewModelTests {
             var service = new FakeDaemonClientService();
             var pause = new FakePauseController();
             var actions = NewActions(service);
-            using var vm = new TrayViewModel(service, pause, actions);
+            var consent = new FakeConsentService();
+            using var vm = new TrayViewModel(service, pause, actions, consent);
 
             var agents = new List<AgentStatusDto> {
                 new("a", "agent", "claude", null, "Running", null, null, null, DateTime.UtcNow, null, null),
@@ -414,7 +435,8 @@ public class TrayViewModelTests {
             var service = new FakeDaemonClientService();
             var pause = new FakePauseController();
             var actions = NewActions(service);
-            using var vm = new TrayViewModel(service, pause, actions);
+            var consent = new FakeConsentService();
+            using var vm = new TrayViewModel(service, pause, actions, consent);
 
             pause.StateSubject.OnNext(new PauseState(Checked: false, Verified: true, Busy: false));
             service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, [])); // no consent/1
@@ -431,7 +453,8 @@ public class TrayViewModelTests {
             var service = new FakeDaemonClientService();
             var pause = new FakePauseController();
             var actions = NewActions(service);
-            using var vm = new TrayViewModel(service, pause, actions);
+            var consent = new FakeConsentService();
+            using var vm = new TrayViewModel(service, pause, actions, consent);
 
             pause.StateSubject.OnNext(new PauseState(Checked: false, Verified: true, Busy: false));
             service.StatusSubject.OnNext(new AttachStatus(AttachState.Unreachable, "daemon_unreachable", null));
@@ -454,7 +477,8 @@ public class TrayViewModelTests {
             var service = new FakeDaemonClientService();
             var pause = new FakePauseController();
             var actions = NewActions(service);
-            using var vm = new TrayViewModel(service, pause, actions);
+            var consent = new FakeConsentService();
+            using var vm = new TrayViewModel(service, pause, actions, consent);
 
             service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, ["consent/1"]));
             service.SnapshotsSubject.OnNext(Snap());
@@ -477,7 +501,8 @@ public class TrayViewModelTests {
             var service = new FakeDaemonClientService();
             var pause = new FakePauseController();
             var actions = NewActions(service);
-            using var vm = new TrayViewModel(service, pause, actions);
+            var consent = new FakeConsentService();
+            using var vm = new TrayViewModel(service, pause, actions, consent);
 
             service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, ["consent/1"]));
             service.SnapshotsSubject.OnNext(Snap());
@@ -494,7 +519,8 @@ public class TrayViewModelTests {
             var service = new FakeDaemonClientService();
             var pause = new FakePauseController();
             var actions = NewActions(service);
-            using var vm = new TrayViewModel(service, pause, actions);
+            var consent = new FakeConsentService();
+            using var vm = new TrayViewModel(service, pause, actions, consent);
 
             service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, ["consent/1"]));
             service.SnapshotsSubject.OnNext(Snap());
@@ -511,7 +537,8 @@ public class TrayViewModelTests {
             var service = new FakeDaemonClientService();
             var pause = new FakePauseController();
             var actions = NewActions(service);
-            using var vm = new TrayViewModel(service, pause, actions);
+            var consent = new FakeConsentService();
+            using var vm = new TrayViewModel(service, pause, actions, consent);
 
             service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, ["consent/1"]));
             service.SnapshotsSubject.OnNext(Snap());
@@ -529,7 +556,8 @@ public class TrayViewModelTests {
             var service = new FakeDaemonClientService();
             var pause = new FakePauseController();
             var actions = NewActions(service);
-            using var vm = new TrayViewModel(service, pause, actions);
+            var consent = new FakeConsentService();
+            using var vm = new TrayViewModel(service, pause, actions, consent);
 
             service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, ["consent/1"]));
             service.SnapshotsSubject.OnNext(Snap());
@@ -549,7 +577,8 @@ public class TrayViewModelTests {
             var service = new FakeDaemonClientService();
             var pause = new FakePauseController();
             var actions = NewActions(service);
-            using var vm = new TrayViewModel(service, pause, actions);
+            var consent = new FakeConsentService();
+            using var vm = new TrayViewModel(service, pause, actions, consent);
 
             vm.RequestPauseRefresh();
 
@@ -568,7 +597,8 @@ public class TrayViewModelTests {
             var service = new FakeDaemonClientService();
             var pause = new FakePauseController();
             var actions = NewActions(service);
-            using var vm = new TrayViewModel(service, pause, actions);
+            var consent = new FakeConsentService();
+            using var vm = new TrayViewModel(service, pause, actions, consent);
 
             // Connecting -> Connected(with capability): exactly one refresh from the edge.
             service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, ["consent/1"]));
@@ -600,7 +630,8 @@ public class TrayViewModelTests {
             var service = new FakeDaemonClientService();
             var pause = new FakePauseController();
             var actions = NewActions(service);
-            using var vm = new TrayViewModel(service, pause, actions);
+            var consent = new FakeConsentService();
+            using var vm = new TrayViewModel(service, pause, actions, consent);
 
             await vm.TogglePauseCommand.Execute(desired).ToTask();
 
@@ -626,7 +657,8 @@ public class TrayViewModelTests {
             var pause = new FakePauseController();
             var ops = new ScriptedLocalControlOps();
             var actions = new AgentActionService(ops, new RecordingNotifier(), new RecordingOpener(), service.SnapshotsSubject, CancellationToken.None, NeverConfirm.Confirm);
-            using var vm = new TrayViewModel(service, pause, actions);
+            var consent = new FakeConsentService();
+            using var vm = new TrayViewModel(service, pause, actions, consent);
 
             var agents = new List<AgentStatusDto> {
                 new("a", "agent", "claude", null, "Running", null, null, null, DateTime.UtcNow, null, null),
@@ -656,7 +688,8 @@ public class TrayViewModelTests {
             var ops = new ScriptedLocalControlOps();
             var notifier = new RecordingNotifier();
             var actions = new AgentActionService(ops, notifier, new RecordingOpener(), service.SnapshotsSubject, CancellationToken.None, NeverConfirm.Confirm);
-            using var vm = new TrayViewModel(service, pause, actions);
+            var consent = new FakeConsentService();
+            using var vm = new TrayViewModel(service, pause, actions, consent);
 
             var agents = new List<AgentStatusDto> {
                 new("a", "agent", "claude", "/repos/kcap-cli", "Running", null, null, null, DateTime.UtcNow, null, null),
@@ -685,7 +718,8 @@ public class TrayViewModelTests {
             var ops = new ScriptedLocalControlOps();
             var confirmer = new RecordingConfirmer();
             var actions = new AgentActionService(ops, new RecordingNotifier(), new RecordingOpener(), service.SnapshotsSubject, CancellationToken.None, confirmer.Confirm);
-            using var vm = new TrayViewModel(service, pause, actions);
+            var consent = new FakeConsentService();
+            using var vm = new TrayViewModel(service, pause, actions, consent);
 
             var agents = new List<AgentStatusDto> {
                 new("a", "review-flow", "codex", "/repos/kcap-cli", "Running", null, null, null, DateTime.UtcNow, null, null),
@@ -712,7 +746,8 @@ public class TrayViewModelTests {
             var ops = new ScriptedLocalControlOps();
             var opener = new RecordingOpener();
             var actions = new AgentActionService(ops, new RecordingNotifier(), opener, service.SnapshotsSubject, CancellationToken.None, NeverConfirm.Confirm);
-            using var vm = new TrayViewModel(service, pause, actions);
+            var consent = new FakeConsentService();
+            using var vm = new TrayViewModel(service, pause, actions, consent);
 
             service.SnapshotsSubject.OnNext(FakeDaemonClientService.Snap(serverUrl: "https://x.kcap.ai"));
 
@@ -732,7 +767,8 @@ public class TrayViewModelTests {
             var pause = new FakePauseController();
             var actions = NewActions(service);
             var calls = 0;
-            using var vm = new TrayViewModel(service, pause, actions, openMainWindow: () => calls++);
+            var consent = new FakeConsentService();
+            using var vm = new TrayViewModel(service, pause, actions, consent, openMainWindow: () => calls++);
 
             await vm.OpenMainWindowCommand.Execute().ToTask();
 
@@ -748,7 +784,8 @@ public class TrayViewModelTests {
             var pause = new FakePauseController();
             var actions = NewActions(service);
             var calls = 0;
-            using var vm = new TrayViewModel(service, pause, actions, quit: () => calls++);
+            var consent = new FakeConsentService();
+            using var vm = new TrayViewModel(service, pause, actions, consent, quit: () => calls++);
 
             await vm.QuitCommand.Execute().ToTask();
 
@@ -763,10 +800,86 @@ public class TrayViewModelTests {
             var service = new FakeDaemonClientService();
             var pause = new FakePauseController();
             var actions = NewActions(service);
-            using var vm = new TrayViewModel(service, pause, actions); // no delegates injected
+            var consent = new FakeConsentService();
+            using var vm = new TrayViewModel(service, pause, actions, consent); // no delegates injected
 
             await vm.OpenMainWindowCommand.Execute().ToTask();
             await vm.QuitCommand.Execute().ToTask();
+            await vm.ReviewPendingCommand.Execute().ToTask();
+        });
+    }
+
+    // ---- §8 pending-consent Attention row + Review menu item ----
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Pending_consent_asserts_attention_over_idle_and_running() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            var service = new FakeDaemonClientService();
+            var pause = new FakePauseController();
+            var actions = NewActions(service);
+            var consent = new FakeConsentService();
+            using var vm = new TrayViewModel(service, pause, actions, consent);
+
+            service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, []));
+            service.SnapshotsSubject.OnNext(Snap("connected", 0));
+            consent.Add(Entry("a1", "p1"));
+
+            await Assert.That(vm.MenuModel.State).IsEqualTo(TrayState.Attention);
+            await Assert.That(vm.MenuModel.Header).IsEqualTo("daemon-a: 1 launch awaiting approval");
+            await Assert.That(vm.MenuModel.RunningCount).IsEqualTo(0);
+            await Assert.That(vm.MenuModel.PendingConsent).IsEqualTo(1);
+
+            // 2 agents running + pendingCount 3 -> still Attention, plural copy, badge keeps 2.
+            service.SnapshotsSubject.OnNext(Snap("connected", 2));
+            consent.Add(Entry("a2", "p2", requestedAt: T0.AddSeconds(1)));
+            consent.Add(Entry("a3", "p3", requestedAt: T0.AddSeconds(2)));
+
+            await Assert.That(vm.MenuModel.State).IsEqualTo(TrayState.Attention);
+            await Assert.That(vm.MenuModel.Header).IsEqualTo("daemon-a: 3 launches awaiting approval");
+            await Assert.That(vm.MenuModel.RunningCount).IsEqualTo(2);
+            await Assert.That(vm.MenuModel.PendingConsent).IsEqualTo(3);
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Connection_trouble_rows_keep_precedence() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            var service = new FakeDaemonClientService();
+            var pause = new FakePauseController();
+            var actions = NewActions(service);
+            var consent = new FakeConsentService();
+            using var vm = new TrayViewModel(service, pause, actions, consent);
+
+            for (var i = 0; i < 5; i++) consent.Add(Entry($"a{i}", $"p{i}", requestedAt: T0.AddSeconds(i)));
+
+            service.StatusSubject.OnNext(new AttachStatus(AttachState.Unreachable, "daemon_unreachable", null));
+            await Assert.That(vm.MenuModel.State).IsEqualTo(TrayState.Stopped); // row 1 still wins
+            await Assert.That(vm.MenuModel.PendingConsent).IsEqualTo(5);
+
+            service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, []));
+            service.SnapshotsSubject.OnNext(Snap("reconnecting"));
+
+            await Assert.That(vm.MenuModel.State).IsEqualTo(TrayState.Attention);
+            await Assert.That(vm.MenuModel.Header).IsEqualTo("daemon-a: reconnecting to server"); // row 5's copy wins
+        });
+    }
+
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task ReviewPendingCommand_invokes_the_injected_delegate() {
+        await AvaloniaSession.WithImmediateRxScheduler(async () => {
+            var service = new FakeDaemonClientService();
+            var pause = new FakePauseController();
+            var actions = NewActions(service);
+            var consent = new FakeConsentService();
+            var calls = 0;
+            using var vm = new TrayViewModel(service, pause, actions, consent, openReviewPrompts: () => calls++);
+
+            await vm.ReviewPendingCommand.Execute().ToTask();
+
+            await Assert.That(calls).IsEqualTo(1);
         });
     }
 }

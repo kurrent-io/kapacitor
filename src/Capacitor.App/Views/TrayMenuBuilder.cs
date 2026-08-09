@@ -20,6 +20,11 @@ public sealed class TrayMenuBuilder(TrayViewModel vm) {
             menu.Items.Add(new NativeMenuItemSeparator());
         }
 
+        // Between the agents section and the pause toggle (spec §8), visible only while a launch
+        // is actually awaiting the owner.
+        if (model.PendingConsent > 0)
+            menu.Items.Add(new NativeMenuItem("Review pending launches…") { Command = vm.ReviewPendingCommand });
+
         menu.Items.Add(BuildPauseItem(model.Pause));
         menu.Items.Add(new NativeMenuItem("Open Kurrent Capacitor") { Command = vm.OpenMainWindowCommand });
         menu.Items.Add(new NativeMenuItemSeparator());

@@ -115,7 +115,8 @@ public partial class App : Application {
             // LAST, deliberately (spec §9): anything above throwing lands in the catch with no
             // tray icon ever created, leaving the error window as the only surface.
             _trayVm = new TrayViewModel(
-                service, _pause, actions, openMainWindow: _coordinator.ShowMainWindow, quit: () => desktop.TryShutdown());
+                service, _pause, actions, consent, openMainWindow: _coordinator.ShowMainWindow,
+                quit: () => desktop.TryShutdown(), openReviewPrompts: _promptCoordinator.ShowPromptWindow);
             _tray = new TrayIconManager(this, _trayVm);
         } catch (Exception ex) {
             // BEFORE any await: a shutdown request can arrive while cleanup below is still

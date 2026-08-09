@@ -13,6 +13,7 @@ public sealed class ConsentPromptCoordinator : IDisposable {
     readonly Func<ConsentPromptWindow> _windowFactory;
     readonly IDisposable _subscription;
     ConsentPromptWindow? _window;
+    bool _disposed;
 
     public ConsentPromptCoordinator(IConsentService consent, Func<ConsentPromptWindow> windowFactory) {
         _windowFactory = windowFactory;
@@ -26,6 +27,10 @@ public sealed class ConsentPromptCoordinator : IDisposable {
     /// The tray menu's "Review pending launches…" target, and the coordinator's own raise path.
     /// Must run on the UI thread.
     public void ShowPromptWindow() {
+        // A click racing shutdown must never rebuild a window during teardown (Dispose below runs
+        // first in App's disposal order, but the tray's command delegate is still reachable until
+        // the tray icon itself is gone).
+        if (_disposed) return;
         Raises++;
         if (_window is null) {
             var window = _windowFactory();
@@ -42,6 +47,7 @@ public sealed class ConsentPromptCoordinator : IDisposable {
     }
 
     public void Dispose() {
+        _disposed = true;
         _subscription.Dispose();
         _window?.Close();
         _window = null;

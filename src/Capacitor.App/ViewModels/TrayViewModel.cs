@@ -9,9 +9,9 @@ using ReactiveUI;
 namespace Capacitor.App.ViewModels;
 
 /// Projects IDaemonClientService.Status/Snapshots + IPauseController.State +
-/// AgentActionService.StopsInFlight into the tray's menu model (spec §4, §5, §7). Constructor-
-/// scoped, not WhenActivated: the tray icon exists before any window is shown, so MenuModel must
-/// be live from construction, not gated on activation.
+/// AgentActionService.StopsInFlight + IConsentService.PendingCount into the tray's menu model
+/// (spec §4, §5, §7, §8). Constructor-scoped, not WhenActivated: the tray icon exists before any
+/// window is shown, so MenuModel must be live from construction, not gated on activation.
 public sealed class TrayViewModel : ReactiveObject, IDisposable {
     const string IncompatibleReason = "daemon_incompatible";
     const string UnreachableReason  = "daemon_unreachable";
@@ -50,9 +50,14 @@ public sealed class TrayViewModel : ReactiveObject, IDisposable {
     public ReactiveCommand<Unit, Unit> OpenMainWindowCommand { get; }
     public ReactiveCommand<Unit, Unit> QuitCommand { get; }
 
+    // The tray menu's "Review pending launches…" target (spec §8); the coordinator itself
+    // filters/marshals the raise, so this command is a plain delegate call, same shape as
+    // OpenMainWindowCommand/QuitCommand above.
+    public ReactiveCommand<Unit, Unit> ReviewPendingCommand { get; }
+
     public TrayViewModel(
-            IDaemonClientService service, IPauseController pause, AgentActionService actions,
-            Action? openMainWindow = null, Action? quit = null) {
+            IDaemonClientService service, IPauseController pause, AgentActionService actions, IConsentService consent,
+            Action? openMainWindow = null, Action? quit = null, Action? openReviewPrompts = null) {
         _pause = pause;
 
         TogglePauseCommand = ReactiveCommand.Create<bool>(pause.RequestToggle);
@@ -63,28 +68,33 @@ public sealed class TrayViewModel : ReactiveObject, IDisposable {
         OpenInWebCommand = ReactiveCommand.Create<string>(actions.OpenInWeb);
         OpenMainWindowCommand = ReactiveCommand.Create(openMainWindow ?? (() => { }));
         QuitCommand = ReactiveCommand.Create(quit ?? (() => { }));
+        ReviewPendingCommand = ReactiveCommand.Create(openReviewPrompts ?? (() => { }));
 
         var snapshots = service.Snapshots
             .Select(s => (DaemonStatusDto?)s)
             .StartWith((DaemonStatusDto?)null);
 
-        var projected = service.Status.CombineLatest(snapshots, pause.State, actions.StopsInFlight,
-            (status, snap, pauseState, inFlight) => Build(service.DaemonName, status, snap, pauseState, inFlight));
+        // consent.PendingCount is DynamicData's CountChanged, which seeds the current count on
+        // subscribe (decompile-verified) — deliberately NOT StartWith(0)'d, which would inject a
+        // spurious extra 0 ahead of that seed and could flicker Attention at startup.
+        var projected = service.Status.CombineLatest(snapshots, pause.State, actions.StopsInFlight, consent.PendingCount,
+            (status, snap, pauseState, inFlight, pending) => Build(service.DaemonName, status, snap, pauseState, inFlight, pending));
 
-        // Status, snapshots (seeded above), and pause.State are all replay-1, so CombineLatest
-        // emits synchronously on subscribe — captured here as the OAPH's initial value so
-        // MenuModel is never default(TrayMenuModel) (null) before RxSchedulers.MainThreadScheduler
-        // delivers the ObserveOn'd copy below. The synchronous-emission assumption rests on
-        // IPauseController.State's documented replay-1 contract, which a future implementation
-        // could violate — defended below rather than left to surface as an unexplained NRE on
-        // first MenuModel access.
+        // Status, snapshots (seeded above), pause.State, and consent.PendingCount are all
+        // replay-1-shaped (seed on subscribe), so CombineLatest emits synchronously on subscribe —
+        // captured here as the OAPH's initial value so MenuModel is never default(TrayMenuModel)
+        // (null) before RxSchedulers.MainThreadScheduler delivers the ObserveOn'd copy below. The
+        // synchronous-emission assumption rests on IPauseController.State's and
+        // IConsentService.PendingCount's documented replay-on-subscribe contracts, which a future
+        // implementation could violate — defended below rather than left to surface as an
+        // unexplained NRE on first MenuModel access.
         TrayMenuModel? seed = null;
         using (projected.Subscribe(v => seed = v)) { }
 
         _menuModel = projected
             .ObserveOn(RxSchedulers.MainThreadScheduler)
             .ToProperty(this, x => x.MenuModel, seed ?? throw new InvalidOperationException(
-                "IPauseController.State must replay a value on subscribe (contract in IPauseController)."))
+                "IPauseController.State and IConsentService.PendingCount must replay a value on subscribe."))
             .DisposeWith(_disposables);
 
         // Edge-triggered passive refresh (spec §6): fired once on the attach-state transition
@@ -109,11 +119,20 @@ public sealed class TrayViewModel : ReactiveObject, IDisposable {
 
     static TrayMenuModel Build(
             string daemonName, AttachStatus status, DaemonStatusDto? snap, PauseState pauseState,
-            IReadOnlySet<string> stopsInFlight) {
+            IReadOnlySet<string> stopsInFlight, int pendingConsent) {
         var (state, count) = Project(status, snap);
+
+        // Row 11 (spec §8): pending consent asserts Attention only while Connected — a launch is
+        // awaiting the owner. Connection-trouble rows above already left state at something other
+        // than Idle/Running, so they keep precedence for free; the running-count badge (count)
+        // keeps the agent count regardless.
+        var pendingAttention = status.State == AttachState.Connected && pendingConsent > 0
+            && state is TrayState.Idle or TrayState.Running;
+        if (pendingAttention) state = TrayState.Attention;
+
         return new TrayMenuModel(
-            state, count, HeaderText(daemonName, status, snap, state, count),
-            BuildEntries(status, snap, stopsInFlight), BuildPause(status, pauseState));
+            state, count, HeaderText(daemonName, status, snap, state, count, pendingAttention, pendingConsent),
+            BuildEntries(status, snap, stopsInFlight), BuildPause(status, pauseState), pendingConsent);
     }
 
     /// Pure ten-row mapping (spec §4), precedence top-down.
@@ -145,18 +164,22 @@ public sealed class TrayViewModel : ReactiveObject, IDisposable {
         return (TrayState.Attention, 0); // row 9 — unrecognized connection value
     }
 
-    static string HeaderText(string daemonName, AttachStatus status, DaemonStatusDto? snap, TrayState state, int count) {
+    static string HeaderText(
+            string daemonName, AttachStatus status, DaemonStatusDto? snap, TrayState state, int count,
+            bool pendingAttention, int pendingConsent) {
         if (state == TrayState.Attention && status.State == AttachState.Unreachable && status.Reason == IncompatibleReason)
             return SkewMessage; // no daemon-name prefix
 
-        var body = state switch {
-            TrayState.Stopped    => "not running",
-            TrayState.Connecting => "connecting…",
-            TrayState.Idle       => "connected — no agents",
-            TrayState.Running    => $"connected — {count} agent(s) running",
-            TrayState.Attention  => AttentionBody(status, snap),
-            _                    => "needs attention",
-        };
+        var body = pendingAttention
+            ? $"{pendingConsent} launch{(pendingConsent == 1 ? "" : "es")} awaiting approval"
+            : state switch {
+                TrayState.Stopped    => "not running",
+                TrayState.Connecting => "connecting…",
+                TrayState.Idle       => "connected — no agents",
+                TrayState.Running    => $"connected — {count} agent(s) running",
+                TrayState.Attention  => AttentionBody(status, snap),
+                _                    => "needs attention",
+            };
         return $"{daemonName}: {body}";
     }
 

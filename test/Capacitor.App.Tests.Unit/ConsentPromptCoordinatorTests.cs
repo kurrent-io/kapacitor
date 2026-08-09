@@ -241,4 +241,30 @@ public class ConsentPromptCoordinatorTests {
         await Assert.That(windows).IsEqualTo(1);
         await Assert.That(raisesAfterDispose).IsEqualTo(1);
     }
+
+    /// The gap Dispose_closes_the_window doesn't cover: that test's post-dispose signal travels
+    /// through the (already-torn-down) EntryAdded subscription, never reaching ShowPromptWindow.
+    /// The tray's "Review pending launches…" item (spec §8) calls ShowPromptWindow directly — a
+    /// click racing shutdown must not rebuild a window during teardown.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task ShowPromptWindow_after_dispose_is_a_no_op() {
+        var (windowsAfterDispose, raisesAfterDispose) = await AvaloniaSession.DispatchAsync(() => {
+            using var f = new Fixture();
+            f.Consent.Add(Entry("a1", "p1"));
+            f.Coordinator.ShowPromptWindow();
+            Dispatcher.UIThread.RunJobs();
+
+            f.Coordinator.Dispose();
+            Dispatcher.UIThread.RunJobs();
+
+            f.Coordinator.ShowPromptWindow();
+            Dispatcher.UIThread.RunJobs();
+
+            return (f.Windows.Count, f.Coordinator.Raises);
+        });
+
+        await Assert.That(windowsAfterDispose).IsEqualTo(1);
+        await Assert.That(raisesAfterDispose).IsEqualTo(1);
+    }
 }
