@@ -661,10 +661,6 @@ public static class ClaudeHookCommand {
 
             resp.Dispose();
 
-            if (updateCheckTask is not null) {
-                await updateCheckTask;
-            }
-
             return 0;
         }
 
@@ -814,10 +810,6 @@ public static class ClaudeHookCommand {
 
                 break;
             }
-        }
-
-        if (updateCheckTask is not null) {
-            await updateCheckTask;
         }
 
         return 0;

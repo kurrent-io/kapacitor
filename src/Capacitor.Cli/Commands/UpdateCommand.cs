@@ -18,8 +18,10 @@ public static class UpdateCommand {
     /// <summary>
     /// Version-transition arrow. ASCII on Windows: legacy console codepages
     /// (cp437/cp850) can't encode `→` and render it as `␦`/`?`.
+    /// Internal (not private): <see cref="Capacitor.Cli.UpdateNotice"/> renders the same hint
+    /// text from its own exit-time print path and must not drift from this formatting.
     /// </summary>
-    static readonly string Arrow = OperatingSystem.IsWindows() ? "->" : "→";
+    internal static readonly string Arrow = OperatingSystem.IsWindows() ? "->" : "→";
 
     /// <summary>
     /// Resolves the effective update channel (npm dist-tag): an explicit
@@ -125,25 +127,79 @@ public static class UpdateCommand {
     }
 
     /// <summary>
-    /// Print an update hint to stderr if a newer version is available.
-    /// Called on every CLI invocation (cached, max once per 24h).
+    /// Print an update hint to stderr if a newer version is available. Budget-aware
+    /// (<see cref="CheckForUpdateWithBudgetAsync"/>) so a slow/unreachable registry can't stall
+    /// the caller. Retained as a standalone, no-args entry point; the actual exit-time call site
+    /// is <see cref="Capacitor.Cli.UpdateNotice.FlushAsync"/>, which additionally applies the
+    /// human-facing suppression predicate and a cross-surface "already reported" gate so this
+    /// text is never printed twice for one invocation.
     /// </summary>
     public static async Task PrintUpdateHintIfAvailable() {
         try {
             var profile = await AppConfig.GetActiveProfileAsync();
             if (profile?.UpdateCheck == false) return;
-            var channel           = ResolveChannel([], profile?.UpdateChannel);
-            var checkResult       = await CheckForUpdateAsync(forceCheck: false, channel);
-            var (latest, current) = (checkResult.Latest, checkResult.Current);
+            var channel     = ResolveChannel([], profile?.UpdateChannel);
+            var checkResult = await CheckForUpdateWithBudgetAsync(channel);
 
-            if (latest is not null && current is not null && IsNewer(latest, current)) {
+            if (checkResult is { Newer: true, Latest: not null, Current: not null }) {
                 await Console.Error.WriteLineAsync();
-                await Console.Error.WriteLineAsync($"Update available: {current} {Arrow} {latest}");
+                await Console.Error.WriteLineAsync($"Update available: {checkResult.Current} {Arrow} {checkResult.Latest}");
                 await Console.Error.WriteLineAsync("Run `kcap update` to update");
             }
         } catch {
             // Best effort — never break the CLI for update checks
         }
+    }
+
+    /// <summary>
+    /// Two-tier budget over <see cref="CheckForUpdateAsync"/> for a passive, exit-time caller
+    /// (<see cref="Capacitor.Cli.UpdateNotice"/>): the common cache-fresh case (a local file
+    /// read, no network — see <see cref="UpdateCacheRecord.IsFresh"/>) is bound by a defensive
+    /// <paramref name="cacheFreshBudget"/> (default ~300ms); a stale/missing cache instead rides
+    /// the fetch's own cancellation deadline (<paramref name="networkCancelAfter"/>, default
+    /// ~3s, passed as the fetch's <c>ct</c>) plus a short <paramref name="cleanupGrace"/>
+    /// (default ~500ms) so the failure/backoff write — deliberately unbound by that token, see
+    /// <see cref="WriteCacheRecordAsync"/> — can still land on disk.
+    /// </summary>
+    /// <returns>
+    /// The completed result, or <c>null</c> if neither tier produced one in time. A still-running
+    /// check past that point is abandoned (never awaited further by the caller) but not orphaned:
+    /// a continuation disposes its <see cref="CancellationTokenSource"/> once it eventually
+    /// finishes and observes any fault so it can't surface as an unobserved task exception.
+    /// </returns>
+    internal static async Task<UpdateCheckResult?> CheckForUpdateWithBudgetAsync(
+            string channel,
+            TimeSpan? cacheFreshBudget = null,
+            TimeSpan? networkCancelAfter = null,
+            TimeSpan? cleanupGrace = null) {
+        var cacheFreshBudgetVal   = cacheFreshBudget ?? TimeSpan.FromMilliseconds(300);
+        var networkCancelAfterVal = networkCancelAfter ?? TimeSpan.FromSeconds(3);
+        var cleanupGraceVal       = cleanupGrace ?? TimeSpan.FromMilliseconds(500);
+
+        var cts       = new CancellationTokenSource(networkCancelAfterVal);
+        var checkTask = CheckForUpdateAsync(forceCheck: false, channel, cts.Token);
+
+        // Dispose only once the task reaches a terminal state — never synchronously here, since
+        // an abandoned check (either tier below giving up) may still be running past this method's
+        // own return. Also observes a fault so a late exception can't become unobserved.
+        _ = checkTask.ContinueWith(static (t, state) => {
+            ((CancellationTokenSource)state!).Dispose();
+            if (t.IsFaulted) _ = t.Exception;
+        }, cts, TaskScheduler.Default);
+
+        var firstWinner = await Task.WhenAny(checkTask, Task.Delay(cacheFreshBudgetVal));
+        if (firstWinner == checkTask) {
+            return checkTask.IsCompletedSuccessfully ? checkTask.Result : null;
+        }
+
+        // Cache was stale/missing (the fetch above didn't return from a local file read within
+        // the defensive bound) — a network refresh is in flight. Let the cancellation already
+        // armed on `cts` cut the HTTP request at networkCancelAfterVal, then allow cleanupGraceVal
+        // more for the CancellationToken.None-guarded backoff write to persist.
+        var remaining    = networkCancelAfterVal - cacheFreshBudgetVal + cleanupGraceVal;
+        var secondWinner = await Task.WhenAny(checkTask, Task.Delay(remaining > TimeSpan.Zero ? remaining : TimeSpan.Zero));
+
+        return secondWinner == checkTask && checkTask.IsCompletedSuccessfully ? checkTask.Result : null;
     }
 
     /// <summary>

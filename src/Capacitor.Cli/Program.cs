@@ -77,18 +77,14 @@ ProcessUrlPolicy.Current = CrashReporter.IsFailOpenCommand(command)
 
 var baseUrl = await AppConfig.ResolveServerUrl(args, gitTimeoutMs: isHook ? 1000 : 5000);
 
-// Fire-and-forget update check (prints hint to stderr after command finishes).
-// Skipped for `uninstall` — the check writes ~/.config/kcap/update-check-{channel}.json
-// (e.g. update-check-latest.json), which would race with uninstall's `rm -rf`
-// of the config dir and recreate it after the command has reported success.
-// Skipped for `update` — nudging "run `kcap update`" from inside `kcap update`
-// is noise at best and lands mid-upgrade at worst.
-var   noUpdateCheck   = args.Contains("--no-update-check") || command is "uninstall" or "update";
-Task? updateCheckTask = null;
-
-if (!noUpdateCheck) {
-    updateCheckTask = Task.Run(UpdateCommand.PrintUpdateHintIfAvailable);
-}
+// Everything from here to the end of command dispatch — including the --help,
+// per-command-help, and no-server-configured early exits below — runs inside this
+// try/finally so the deterministic exit-time update notice (UpdateNotice.FlushAsync)
+// fires on every path out of the command, not just the ones that fall through the
+// switch. UpdateNotice.IsHumanFacing is the suppression predicate (hooks, mcp, watch,
+// the foreground daemon, update/uninstall themselves, --no-update-check) — it decides
+// per-invocation whether FlushAsync does anything at all.
+try {
 
 if (command is "--help" or "-h" or "help") {
     await PrintUsage();
@@ -713,7 +709,7 @@ switch (command) {
                 sessionId: null); // current session unknown here — reading stdin now would consume it
         }
         if (args.Contains("--claude")) {
-            return await ClaudeHookCommand.Handle(baseUrl!, Console.In, updateCheckTask, hookProcessStart);
+            return await ClaudeHookCommand.Handle(baseUrl!, Console.In, processStart: hookProcessStart);
         }
         if (args.Contains("--codex")) {
             return await CodexHookCommand.Handle(baseUrl!, Console.In, hookProcessStart);
@@ -764,6 +760,10 @@ return 1;
     CrashReporter.Record(command, topLevelEx);
 
     return CrashReporter.ExitCode(command);
+}
+
+} finally {
+    await UpdateNotice.FlushAsync(command, args);
 }
 
 static string? GetArg(string[] arguments, string flag) {
