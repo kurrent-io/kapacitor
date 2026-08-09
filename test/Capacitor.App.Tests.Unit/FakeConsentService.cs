@@ -30,11 +30,13 @@ static class ConsentEntries {
 /// Two behaviors deliberately mirror the real service (spec §5), because the ViewModel's advance
 /// rules are only honest against them: a conclusive outcome evicts its target from the cache
 /// (identity-guarded) BEFORE the awaiting caller resumes, and a transport failure keeps it.
-/// EntryAdded fires on genuinely new keys only, from whatever thread Add is called on.
+/// EntryAdded fires on the FIRST SURFACING of a PromptId — a same-key successor fires, a replay
+/// after <see cref="Clear"/> does not — from whatever thread Add is called on.
 sealed class FakeConsentService : IConsentService {
     public readonly SourceCache<PendingConsent, string> Cache = new(p => p.RequestId);
 
     readonly Subject<ReactiveUnit> _entryAdded = new();
+    readonly HashSet<string> _surfaced = [];
     readonly Queue<TaskCompletionSource<ConsentResolveOutcome>> _outcomes = new();
     readonly List<PendingConsent> _deferredConclusions = [];
 
@@ -51,13 +53,18 @@ sealed class FakeConsentService : IConsentService {
     public IObservable<ReactiveUnit> EntryAdded => _entryAdded;
 
     public void Add(PendingConsent entry) {
-        var isNew = !Cache.Lookup(entry.RequestId).HasValue;
+        bool isNew;
+        lock (_surfaced) isNew = _surfaced.Add(entry.PromptId);
         Cache.AddOrUpdate(entry);
         if (isNew) _entryAdded.OnNext(ReactiveUnit.Default);
     }
 
     /// The §5 prune: an entry disappearing under the ViewModel with no ack involved.
     public void Prune(PendingConsent entry) => Cache.Remove(entry.RequestId);
+
+    /// The §5 Subscribed boundary: the cache is emptied, the daemon's replay re-adds through
+    /// <see cref="Add"/>. Surfaced identities survive it, exactly as in the real service.
+    public void Clear() => Cache.Clear();
 
     public TaskCompletionSource<ConsentResolveOutcome> Arm() {
         var tcs = new TaskCompletionSource<ConsentResolveOutcome>(TaskCreationOptions.RunContinuationsAsynchronously);

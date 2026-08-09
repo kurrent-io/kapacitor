@@ -11,8 +11,18 @@ namespace Capacitor.App.Services;
 /// stream, holds the pending queue, and is the only place entries are inserted or removed —
 /// ViewModels read and pin, never mutate.
 ///
-/// Three guards carry the reviewed reasoning:
+/// Four guards carry the reviewed reasoning:
 ///
+/// * <b>EntryAdded is the FIRST SURFACING of a PromptId, never a new cache key</b> — the signal
+///   is the raise trigger (spec §6), so it has to mean "a request the user has not been offered
+///   yet". Keyed on the cache key it was wrong in both directions: a successor B under A's
+///   RequestId (a relaunch — the likeliest second prompt there is) replaced the slot in silence
+///   and never raised, while a resubscribe's clear+replay made every replayed entry look new and
+///   re-raised a window the user had explicitly deferred. `_surfaced` is therefore a
+///   service-lifetime PromptId set with the tombstone argument behind it — never-reused GUIDs, so
+///   it can never suppress a future request, at ~50 bytes per request ever seen. Tombstones are a
+///   subset of it (a concluded request was surfaced first) and stay separate because they do a
+///   different job: a tombstone DROPS the frame, `_surfaced` only keeps it quiet.
 /// * <b>Tombstones live for the service lifetime</b> — no TTL, no per-connection retirement, no
 ///   size cap. The broker snapshots its pending set without synchronizing against a concurrent
 ///   resolve, and a snapshotted frame can sit in the per-subscriber channel arbitrarily long, so a
@@ -39,7 +49,8 @@ public sealed class ConsentService : IConsentService {
 
     readonly SourceCache<PendingConsent, string> _cache = new(p => p.RequestId);
     readonly HashSet<string> _tombstones = [];
-    readonly Lock _lock = new();          // guards _tombstones, _inFlightPromptId, _loopCts, _disposed
+    readonly HashSet<string> _surfaced = [];
+    readonly Lock _lock = new();          // guards _tombstones, _surfaced, _inFlightPromptId, _loopCts, _disposed
     readonly SemaphoreSlim _lane = new(1, 1); // one resolve in flight (PauseController discipline)
     readonly Subject<Unit> _entryAdded = new();
 
@@ -154,7 +165,11 @@ public sealed class ConsentService : IConsentService {
         // entries came from, and it would resolve without the identity check — they can never be
         // safely answered against it. Disconnected states retain instead: the daemon may still be
         // alive holding live prompts.
-        if (status.State == AttachState.Connected) _cache.Clear();
+        //
+        // Under the same lock Upsert holds: this runs on the status thread, so an Upsert that had
+        // already passed its tombstone test would otherwise land its insert AFTER the clear and
+        // resurrect a previous incarnation's entry into a cache that must be empty.
+        if (status.State == AttachState.Connected) lock (_lock) _cache.Clear();
     }
 
     void StartLoop() {
@@ -216,11 +231,8 @@ public sealed class ConsentService : IConsentService {
         // record-and-evict, so a ghost can never slip in between an ack's two halves.
         lock (_lock) {
             if (_tombstones.Contains(entry.PromptId)) return;
-            added = false;
-            _cache.Edit(u => {
-                added = !u.Lookup(entry.RequestId).HasValue;
-                u.AddOrUpdate(entry);
-            });
+            added = _surfaced.Add(entry.PromptId);
+            _cache.Edit(u => u.AddOrUpdate(entry));
         }
         if (added) _entryAdded.OnNext(Unit.Default);
     }

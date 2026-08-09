@@ -109,6 +109,75 @@ public class ConsentPromptCoordinatorTests {
         await Assert.That(reopenedRequestId).IsEqualTo("a1"); // the same queue, still pending
     }
 
+    /// A defer must survive a reconnect blip: the stream drops, the resubscribe clears and the
+    /// daemon replays the SAME requests — nothing the user has not already dismissed, so no
+    /// window comes back uninvited. A genuinely new request still raises one.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Deferred_window_is_not_reraised_by_a_resubscribe_replay() {
+        var (buildsAfterReplay, raisesAfterReplay, buildsAfterNew, visibleAfterNew, pinnedAfterNew) =
+            await AvaloniaSession.DispatchAsync(async () => {
+                using var f = new Fixture();
+                f.Consent.Add(Entry("a1", "p1"));
+                f.Coordinator.ShowPromptWindow();
+                Dispatcher.UIThread.RunJobs();
+                f.Last.Close(); // the explicit defer
+                Dispatcher.UIThread.RunJobs();
+
+                await Task.Run(() => {
+                    f.Consent.Clear();
+                    f.Consent.Add(Entry("a1", "p1"));
+                });
+                Dispatcher.UIThread.RunJobs();
+                var afterReplay = (f.Windows.Count, f.Coordinator.Raises);
+
+                await Task.Run(() => f.Consent.Add(Entry("a2", "p2", requestedAt: T0.AddSeconds(5))));
+                Dispatcher.UIThread.RunJobs();
+
+                var vm = (ConsentPromptViewModel)f.Last.DataContext!;
+                return (afterReplay.Count, afterReplay.Raises, f.Windows.Count, f.Last.IsVisible, vm.Current?.RequestId);
+            });
+
+        await Assert.That(buildsAfterReplay).IsEqualTo(1); // the replay raised nothing
+        await Assert.That(raisesAfterReplay).IsEqualTo(1);
+        await Assert.That(buildsAfterNew).IsEqualTo(2);    // a new request still does
+        await Assert.That(visibleAfterNew).IsTrue();
+        await Assert.That(pinnedAfterNew).IsEqualTo("a1"); // over the whole still-pending queue
+    }
+
+    /// The window-level half of the same defect: an OPEN window used to close on the clear's
+    /// empty changeset and be rebuilt by the replay — a fresh ViewModel, the pin reset, focus
+    /// stolen mid-decision. The same window survives, still pinned on the same request.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Open_window_survives_a_resubscribe_clear_and_replay() {
+        var (builds, raises, visible, sameWindow, pinned) = await AvaloniaSession.DispatchAsync(async () => {
+            using var f = new Fixture();
+            f.Consent.Add(Entry("a1", "p1"));
+            f.Coordinator.ShowPromptWindow();
+            Dispatcher.UIThread.RunJobs();
+            var open = f.Last;
+
+            await Task.Run(() => f.Consent.Clear());
+            Dispatcher.UIThread.RunJobs();
+
+            await Task.Run(() => f.Consent.Add(Entry("a1", "p1")));
+            Dispatcher.UIThread.RunJobs();
+            f.Ticker.Tick();
+            f.Ticker.Tick();
+            Dispatcher.UIThread.RunJobs();
+
+            var vm = (ConsentPromptViewModel)f.Last.DataContext!;
+            return (f.Windows.Count, f.Coordinator.Raises, open.IsVisible, ReferenceEquals(open, f.Last), vm.Current?.RequestId);
+        });
+
+        await Assert.That(builds).IsEqualTo(1);
+        await Assert.That(raises).IsEqualTo(1);
+        await Assert.That(visible).IsTrue();
+        await Assert.That(sameWindow).IsTrue();
+        await Assert.That(pinned).IsEqualTo("a1");
+    }
+
     /// The window's own close: an advance that finds nothing left (spec §6). Proves the
     /// ViewModel→window wiring, and that the coordinator releases the instance so the next
     /// arrival raises a fresh one rather than trying to Show() a closed window.

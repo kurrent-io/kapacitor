@@ -73,7 +73,7 @@ public class ConsentServiceTests {
     // ---- 3: upsert + added signal ----
 
     [Test]
-    public async Task Replay_upserts_by_request_id_and_entryadded_fires_on_new_keys_only() {
+    public async Task Replay_upserts_by_request_id_and_entryadded_fires_once_per_identity() {
         using var h = new ConsentHarness();
         await h.StartAsync();
 
@@ -86,6 +86,50 @@ public class ConsentServiceTests {
         await h.DrainAsync(); // FIFO barrier: the re-push has been processed
         await Assert.That(h.View.Count).IsEqualTo(2);
         await Assert.That(h.Added).IsEqualTo(2);
+    }
+
+    /// A successor sharing the RequestId but carrying a fresh PromptId is a NEW request — the
+    /// likeliest second prompt there is (a relaunch under the same agent id) — so a hidden or
+    /// deferred window has to be raised for it. A signal keyed on the cache KEY missed exactly
+    /// this: the successor replaced the slot silently and nothing ever prompted for it.
+    [Test]
+    public async Task Entryadded_fires_for_a_same_key_successor_identity() {
+        using var h = new ConsentHarness();
+        await h.StartAsync();
+
+        await h.EmitAsync(Dto("a1", "p1"));
+        await WaitUntilAsync(() => h.Added == 1, what: "the first added signal");
+
+        await h.EmitAsync(Dto("a1", "p2")); // same key, different request
+        await WaitUntilAsync(() => h.Added == 2, what: "the successor's added signal");
+        await Assert.That(h.View.Count).IsEqualTo(1);
+        await Assert.That(h.View.Lookup("a1").Value.PromptId).IsEqualTo("p2");
+    }
+
+    /// A resubscribe clears at the Subscribed boundary and the daemon replays everything, so every
+    /// replayed entry re-enters an EMPTY cache — a key-keyed signal fired for all of them and
+    /// re-raised a window the user had explicitly deferred. First-surfacing is per PromptId and
+    /// survives the boundary (like a tombstone), while a genuinely new request still signals.
+    [Test]
+    public async Task Entryadded_is_silent_on_a_resubscribe_replay_and_fires_for_a_new_request() {
+        using var h = new ConsentHarness();
+        await h.StartAsync();
+        await h.EmitAsync(Dto("a1", "p1"));
+        await h.EmitAsync(Dto("a2", "p2"));
+        await WaitUntilAsync(() => h.Added == 2, what: "two added signals");
+
+        await h.DrainAsync();
+        await h.RetryAsync();
+        h.Stream.EmitSubscribed();
+        await WaitUntilAsync(() => h.View.Count == 0, what: "the Subscribed clear");
+
+        h.Stream.EmitPending(Dto("a1", "p1")); // the replay: same identities, fresh objects
+        h.Stream.EmitPending(Dto("a2", "p2"));
+        h.Stream.EmitPending(Dto("a3", "p3")); // ...and one request the service has never seen
+        await h.DrainAsync();                  // FIFO barrier: all three have been processed
+
+        await Assert.That(h.Added).IsEqualTo(3);      // exactly one signal, for the new request
+        await Assert.That(h.View.Count).IsEqualTo(3); // the replay still restored the tray count
     }
 
     // ---- 4: tombstones ----
@@ -104,18 +148,22 @@ public class ConsentServiceTests {
         h.Stream.EmitPending(Dto("a1", "p1"));
         await h.DrainAsync();
         await Assert.That(h.View.Count).IsEqualTo(0); // ghost replay dropped
+        await Assert.That(h.Added).IsEqualTo(1);      // ...and never raised a second prompt
 
         await h.RetryAsync();
         h.Stream.EmitSubscribed();
         h.Stream.EmitPending(Dto("a1", "p1"));
         await h.DrainAsync();
         await Assert.That(h.View.Count).IsEqualTo(0); // STILL dropped: tombstones are service-lifetime
+        await Assert.That(h.Added).IsEqualTo(1);
 
         await h.RetryAsync();
         h.Stream.EmitSubscribed();
         var successor = await h.EmitAsync(Dto("a1", "p2")); // different identity under the same key
+        await h.DrainAsync();
         await Assert.That(successor.PromptId).IsEqualTo("p2");
         await Assert.That(h.View.Count).IsEqualTo(1);
+        await Assert.That(h.Added).IsEqualTo(2); // a never-concluded identity: prompted on its own terms
     }
 
     // ---- 5: identity-guarded eviction ----
@@ -136,7 +184,9 @@ public class ConsentServiceTests {
         h.Stream.EmitSubscribed();
         await WaitUntilAsync(() => h.View.Count == 0, what: "the Subscribed clear");
         var replayed = await h.EmitAsync(Dto("a1", "p1"));
+        await h.DrainAsync();
         await Assert.That(ReferenceEquals(replayed, original)).IsFalse();
+        await Assert.That(h.Added).IsEqualTo(1); // a replayed identity is not a new request
 
         gate.SetResult(new ConsentAckDto(true, null, null));
         var outcome = await resolve;
@@ -158,6 +208,8 @@ public class ConsentServiceTests {
         await WaitUntilAsync(() => h.Ops.ResolveCalls == 1, what: "the resolve to reach the ops layer");
 
         var successor = await h.EmitAsync(Dto("a1", "p2"));
+        await h.DrainAsync();
+        await Assert.That(h.Added).IsEqualTo(2); // the successor is a request of its own: raise for it
 
         gate.SetResult(new ConsentAckDto(false, "already decided", null));
         var outcome = await resolve;

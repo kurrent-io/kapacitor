@@ -37,6 +37,10 @@ public enum ConsentPromptPhase { Ready, Resolving, Concluded, Expired }
 /// * <b>A warning outlives the decision that raised it.</b> A toast posted on the same beat the
 ///   window closes is never seen, so a rule-not-saved disclosure with nothing left to advance to
 ///   holds the window for the terminal hold instead of closing under its own toast.
+/// * <b>Only a DECISION closes the window on the spot.</b> A queue the cache emptied — a
+///   resubscribe's clear, whose replay arrives as a separate changeset — waits one beat before
+///   closing, so a reconnect blip can no longer flicker the window shut and rebuild it (see
+///   Advance).
 public sealed class ConsentPromptViewModel : ReactiveObject, IActivatableViewModel {
     const string ExpiredCopy     = "Response time elapsed — unanswered requests are denied by the daemon";
     const string ExpiringCopy    = "Expiring…";
@@ -76,6 +80,10 @@ public sealed class ConsentPromptViewModel : ReactiveObject, IActivatableViewMod
     // and the ack's continuation are two independently posted jobs and their order is not ours to
     // assume. Skipping the settled identity makes the advance correct under either one.
     PendingConsent? _settled;
+
+    // Armed when the CACHE emptied the queue (a resubscribe's clear, a prune) rather than a local
+    // settle; disarmed by the next entry to arrive. See Advance.
+    bool _closeDeferred;
 
     int _heldTicks;
 
@@ -204,6 +212,7 @@ public sealed class ConsentPromptViewModel : ReactiveObject, IActivatableViewMod
             // without this Clear a reactivation's initial replay would insert a second copy of
             // everything currently cached (MainWindowViewModel's identical note).
             _queueSource.Clear();
+            _closeDeferred = false; // a close armed under the previous activation is not this one's
 
             // ObserveOn BEFORE the binding operator: the cache is mutated on the service's
             // background continuations (spec §5).
@@ -248,12 +257,21 @@ public sealed class ConsentPromptViewModel : ReactiveObject, IActivatableViewMod
             return;
         }
 
-        if (Current is null || !StillQueued(Current)) Advance(); else UpdatePosition();
+        if (Current is null || !StillQueued(Current)) Advance(settled: false); else UpdatePosition();
     }
 
     void OnTick() {
         if (Phase == ConsentPromptPhase.Concluded) {
-            if (++_heldTicks >= TerminalHoldTicks) Advance();
+            if (++_heldTicks >= TerminalHoldTicks) Advance(settled: true);
+            return;
+        }
+
+        // Still empty a beat after the cache emptied it: the emptiness was real, not a
+        // resubscribe's clear with its replay in flight. One-shot — a queue that stays empty
+        // never re-fires it.
+        if (_closeDeferred) {
+            _closeDeferred = false;
+            _closeRequested.OnNext(Unit.Default);
             return;
         }
 
@@ -262,7 +280,14 @@ public sealed class ConsentPromptViewModel : ReactiveObject, IActivatableViewMod
 
     /// Releases the pin and takes the sorted head — or signals empty. Nothing here removes: the
     /// service evicts a concluded entry, and _settled covers the beat before that eviction shows up.
-    void Advance() {
+    ///
+    /// <paramref name="settled"/> marks the LOCAL paths — an ack, or the end of its terminal hold —
+    /// which close on this very beat (spec §6). An emptiness the CACHE caused waits one ticker beat
+    /// instead: a resubscribe clears and replays as two separate changesets, and closing on the
+    /// intermediate one flickered the window shut and rebuilt it a moment later with a fresh
+    /// ViewModel, a reset pin and stolen focus. The pin still releases immediately either way —
+    /// nothing that left the cache stays on screen.
+    void Advance(bool settled) {
         var wasPinned = Current is not null;
 
         _heldTicks = 0;
@@ -272,9 +297,17 @@ public sealed class ConsentPromptViewModel : ReactiveObject, IActivatableViewMod
         Phase      = RestingPhase();
         UpdatePosition();
 
+        if (Current is not null) {
+            _closeDeferred = false; // the queue came back: a deferred close is off
+            return;
+        }
+
         // Only a released pin can empty the window. A ViewModel activating before its first
-        // changeset arrives (ObserveOn POSTS the initial replay) has nothing to close over yet.
-        if (Current is null && wasPinned) _closeRequested.OnNext(Unit.Default);
+        // changeset arrives (ObserveOn POSTS the initial replay) has nothing to close over yet —
+        // and neither does a second empty changeset arriving while a close is already armed.
+        if (!wasPinned) return;
+
+        if (settled) _closeRequested.OnNext(Unit.Default); else _closeDeferred = true;
     }
 
     ConsentPromptPhase RestingPhase() =>
@@ -357,7 +390,7 @@ public sealed class ConsentPromptViewModel : ReactiveObject, IActivatableViewMod
                 // very beat, and a posted toast over a closed window is no disclosure at all — so
                 // the warning takes the same terminal hold "Already decided" gets, and the close
                 // follows it.
-                if (warning is not null && NextAfterSettled() is null) Hold(warning); else Advance();
+                if (warning is not null && NextAfterSettled() is null) Hold(warning); else Advance(settled: true);
                 break;
         }
     }

@@ -440,25 +440,90 @@ public class ConsentPromptViewModelTests {
     [Test]
     [NotInParallel("AvaloniaSession")]
     public async Task Advance_on_pinned_removal_in_expired_state() {
-        var (phase, afterFirstPrune, currentAfterSecond, closed) = await AvaloniaSession.DispatchAsync(() => {
-            var first = Entry("a1", "p1");
-            var second = Entry("a2", "p2", requestedAt: T0.AddSeconds(5));
-            using var h = new PromptHarness(first, second);
-            h.Activate();
-            h.Tick(TimeSpan.FromSeconds(40));
+        var (phase, afterFirstPrune, currentAfterSecond, closedOnPrune, closedAfterBeat) =
+            await AvaloniaSession.DispatchAsync(() => {
+                var first = Entry("a1", "p1");
+                var second = Entry("a2", "p2", requestedAt: T0.AddSeconds(5));
+                using var h = new PromptHarness(first, second);
+                h.Activate();
+                h.Tick(TimeSpan.FromSeconds(40));
 
-            var expiredPhase = h.Vm.Phase;
-            h.Prune(first);
-            var advanced = h.Vm.Current!.RequestId;
+                var expiredPhase = h.Vm.Phase;
+                h.Prune(first);
+                var advanced = h.Vm.Current!.RequestId;
 
-            h.Prune(second);
-            return (expiredPhase, advanced, h.Vm.Current, h.CloseRequests);
-        });
+                h.Prune(second);
+                var onPrune = (h.Vm.Current, h.CloseRequests);
+
+                h.Tick();
+                return (expiredPhase, advanced, onPrune.Current, onPrune.CloseRequests, h.CloseRequests);
+            });
 
         await Assert.That(phase).IsEqualTo(ConsentPromptPhase.Expired);
         await Assert.That(afterFirstPrune).IsEqualTo("a2");
         await Assert.That(currentAfterSecond).IsNull();
-        await Assert.That(closed).IsEqualTo(1);
+        // The pin releases at once (nothing dishonest stays on screen) but the CLOSE waits one
+        // beat: a cache-caused emptiness may be a resubscribe's clear with its replay in flight.
+        await Assert.That(closedOnPrune).IsEqualTo(0);
+        await Assert.That(closedAfterBeat).IsEqualTo(1); // still empty a beat later: really empty
+    }
+
+    // ---- 12b: clear+replay must not flicker the window shut ----
+
+    /// A resubscribe clears the cache and the daemon replays into it as two separate changesets,
+    /// so an OPEN window saw the intermediate empty state, closed itself, and was then re-raised
+    /// as a fresh window — pin reset, focus stolen, mid-decision. The close waits one beat, and
+    /// a replay landing inside it cancels the close outright.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Clear_and_replay_within_a_beat_never_closes_the_window() {
+        var (currentWhileEmpty, closedWhileEmpty, currentAfterReplay, closedAfterBeats, position) =
+            await AvaloniaSession.DispatchAsync(() => {
+                var first = Entry("a1", "p1");
+                var second = Entry("a2", "p2", requestedAt: T0.AddSeconds(5));
+                using var h = new PromptHarness(first, second);
+                h.Activate();
+
+                h.Clear();
+                var empty = (h.Vm.Current, h.CloseRequests);
+
+                h.Add(Entry("a1", "p1"));                                  // the replay: same
+                h.Add(Entry("a2", "p2", requestedAt: T0.AddSeconds(5)));   // identities, fresh objects
+                h.Tick();
+                h.Tick();
+
+                return (empty.Current, empty.CloseRequests, h.Vm.Current, h.CloseRequests, h.Vm.PositionText);
+            });
+
+        await Assert.That(currentWhileEmpty).IsNull();
+        await Assert.That(closedWhileEmpty).IsEqualTo(0);
+        await Assert.That(currentAfterReplay!.RequestId).IsEqualTo("a1"); // re-pinned on the head
+        await Assert.That(closedAfterBeats).IsEqualTo(0);                 // and never closed
+        await Assert.That(position).IsEqualTo("1 of 2");
+    }
+
+    /// The other half of the same rule: an emptiness that is REAL still closes the window — one
+    /// beat later, not never.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Clear_with_no_replay_closes_the_window_on_the_next_beat() {
+        var (closedOnClear, closedAfterBeat, closedAfterTwoBeats) = await AvaloniaSession.DispatchAsync(() => {
+            using var h = new PromptHarness(Entry("a1", "p1"));
+            h.Activate();
+
+            h.Clear();
+            var onClear = h.CloseRequests;
+
+            h.Tick();
+            var afterBeat = h.CloseRequests;
+
+            h.Tick(); // the close is one-shot: a still-empty queue never re-fires it
+            return (onClear, afterBeat, h.CloseRequests);
+        });
+
+        await Assert.That(closedOnClear).IsEqualTo(0);
+        await Assert.That(closedAfterBeat).IsEqualTo(1);
+        await Assert.That(closedAfterTwoBeats).IsEqualTo(1);
     }
 
     // ---- 13: no double-submit ----
@@ -552,6 +617,14 @@ sealed class PromptHarness : IDisposable {
 
     public void Prune(PendingConsent entry) {
         Consent.Prune(entry);
+        Pump();
+    }
+
+    /// The §5 Subscribed boundary: the cache is emptied and the daemon's replay re-adds. Pumped
+    /// separately from the replay, because that IS the production shape — the clear and each
+    /// replayed entry are independently posted changesets.
+    public void Clear() {
+        Consent.Clear();
         Pump();
     }
 

@@ -48,10 +48,14 @@ public interface IConsentService : IDisposable {
     /// consumers marshal with ObserveOn(RxSchedulers.MainThreadScheduler).
     IObservable<IChangeSet<PendingConsent, string>> Pending { get; }
 
+    /// Replays the current count on subscribe (DynamicData's CountChanged) — TrayViewModel's
+    /// derivation stream relies on that seed to emit synchronously rather than starting null.
     IObservable<int> PendingCount { get; }
 
-    /// Fires once per newly-keyed entry, unconditionally: the service knows nothing about windows,
-    /// so the prompt-window coordinator is what filters by visibility (spec §5/§6).
+    /// Fires once per request identity, on its FIRST surfacing — a PromptId not already cached
+    /// under its key and never surfaced before (so a same-RequestId successor DOES fire and a
+    /// resubscribe's replay does NOT). Unconditional beyond that: the service knows nothing about
+    /// windows, so the prompt-window coordinator is what filters by visibility (spec §5/§6).
     IObservable<Unit> EntryAdded { get; }
 
     Task<ConsentResolveOutcome> ResolveAsync(PendingConsent target, bool allow, bool saveRule, CancellationToken ct);
