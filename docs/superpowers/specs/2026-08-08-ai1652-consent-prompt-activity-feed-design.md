@@ -492,7 +492,12 @@ this state.
   closes when the queue empties. `AppliedRuleRejected` and `RuleSkippedNoRequester`
   additionally show a warning toast over the prompt window: "Decision applied — rule not
   saved: {reason}" (for rule outcome `Unknown`: "Decision applied — this daemon version
-  doesn't report whether the rule was saved").
+  doesn't report whether the rule was saved"). **Exception (implementation-discovered
+  contradiction, resolved for disclosure):** when a rule warning must be shown AND the queue
+  would empty, the window holds for the 2-second terminal beat displaying the warning
+  in-window before closing — a toast "over the prompt window" cannot render on a window that
+  closes synchronously, and "never a silent success" outranks "advance immediately". A clean
+  `Applied` with an empty queue still closes immediately.
 - **Already decided (`AlreadyDecided`)** → buttons are replaced by "Already decided" for a
   2-second hold (ticker-driven), then advance (the cache entry is already gone — the pin is
   what the user is looking at). Never a silent success. After an **Allow & remember** click
