@@ -108,6 +108,11 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
     readonly ObservableCollectionExtended<AgentRowViewModel> _agentsSource = new();
     public ReadOnlyObservableCollection<AgentRowViewModel> Agents { get; }
 
+    /// The Activity tab (spec §7) — constructed once at the composition root, same instance the
+    /// prompt window's onConcluded callback nudges, so this is a plain ctor-injected reference,
+    /// not something built here.
+    public ActivityViewModel Activity { get; }
+
     ObservableAsPropertyHelper<bool>? _gridEnabled;
     public bool GridEnabled => _gridEnabled?.Value ?? false;
 
@@ -142,10 +147,11 @@ public sealed class MainWindowViewModel : ReactiveObject, IActivatableViewModel 
     /// </param>
     public MainWindowViewModel(
             IDaemonClientService service, AgentActionService actions, ITicker ticker,
-            CancellationToken shutdownToken, TimeProvider? time = null) {
+            CancellationToken shutdownToken, ActivityViewModel activity, TimeProvider? time = null) {
         _service = service;
         _time = time ?? TimeProvider.System;
         Agents = new ReadOnlyObservableCollection<AgentRowViewModel>(_agentsSource);
+        Activity = activity;
 
         // ReactiveCommand's own CanExecute observable already ANDs the supplied canExecute with
         // "not currently executing" (confirmed against the installed ReactiveUI 23.2.28 API

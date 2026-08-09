@@ -26,6 +26,10 @@ public partial class App : Application {
     PauseController? _pause;
     ConsentService? _consent;
     ConsentPromptCoordinator? _promptCoordinator;
+    // No disposal needed — a plain ticker subscription (ActivityViewModel's class doc comment),
+    // same as _ticker below. Held so it survives StartAsync's own stack frame: the prompt window
+    // factory and BuildAndShowMainWindow both close over the SAME instance.
+    ActivityViewModel? _activity;
     TrayViewModel? _trayVm;
     TrayIconManager? _tray;
     // No disposal needed — RefCount tears its Interval down with its last subscriber. Held for
@@ -79,6 +83,14 @@ public partial class App : Application {
             // nothing can trigger a protected-kind stop before ShowMainWindow below assigns it.
             var actions = new AgentActionService(ops, notifier, new ShellUrlOpener(), service.Snapshots, _shutdown.Token, ConfirmForceStopAsync);
 
+            // Constructed once here, like the ticker and consent service (spec §7): the prompt
+            // window factory below and MainWindowViewModel both need the SAME instance — the
+            // former to nudge it on every conclusive ack, the latter to render it.
+            var activity = new ActivityViewModel(
+                () => ConsentDecisionLogReader.ReadTail(service.DaemonName, 200),
+                () => ActivityStatKey(service.DaemonName), ticker);
+            _activity = activity;
+
             // The prompt window is built per raise, never here: the coordinator owns its lifetime
             // and each window gets its own ViewModel over the one shared service (spec §6).
             var consent = new ConsentService(
@@ -86,11 +98,12 @@ public partial class App : Application {
                 TimeProvider.System, _shutdown.Token);
             _consent = consent;
             _promptCoordinator = new ConsentPromptCoordinator(consent, () => new ConsentPromptWindow {
-                DataContext = new ConsentPromptViewModel(consent, notifier, ticker, TimeProvider.System, _shutdown.Token),
+                DataContext = new ConsentPromptViewModel(
+                    consent, notifier, ticker, TimeProvider.System, _shutdown.Token, activity.RequestRefresh),
                 Notifier = notifier,
             });
 
-            _coordinator = new MainWindowCoordinator(() => BuildAndShowMainWindow(service, actions, notifier, ticker, _shutdown.Token));
+            _coordinator = new MainWindowCoordinator(() => BuildAndShowMainWindow(service, actions, notifier, ticker, _shutdown.Token, activity));
             // A shutdown that started before this continuation resumed already ran its first
             // pass against a null coordinator, so a window built now must never be
             // close-protected (BeginShutdownPass's rule 1 is the general defense; this is the
@@ -122,6 +135,7 @@ public partial class App : Application {
             _promptCoordinator = null;
             _consent = null;
             _pause = null;
+            _activity = null;
         }
     }
 
@@ -216,14 +230,33 @@ public partial class App : Application {
     // timing such that ShowMainWindow() DOES still see a non-null MainWindow.
     internal static MainWindow BuildAndShowMainWindow(
             IDaemonClientService service, AgentActionService actions, IAppNotifier notifier, ITicker ticker,
-            CancellationToken shutdownToken) {
+            CancellationToken shutdownToken, ActivityViewModel activity) {
         // Notifier is set on the WINDOW (spec §11 toast overlay), not the ViewModel — the toast
         // is a View-level concern (WindowNotificationManager lives on MainWindow) independent of
         // the VM's WhenActivated-scoped projections.
-        var window = new MainWindow { DataContext = new MainWindowViewModel(service, actions, ticker, shutdownToken), Notifier = notifier };
+        var window = new MainWindow {
+            DataContext = new MainWindowViewModel(service, actions, ticker, shutdownToken, activity), Notifier = notifier,
+        };
         window.Show();
         return window;
     }
+
+    // Combines both log files' (LastWriteTimeUtc, Length) into one comparison key for
+    // ActivityViewModel's stat poll (spec §7) — a single try/catch, since either file being
+    // absent or transiently unreadable is "no stats" for the pair as a whole, not per file.
+    // FileInfo.Length throws FileNotFoundException on a missing file (unlike
+    // File.GetLastWriteTimeUtc, which returns a sentinel instead) — that throw is what carries a
+    // clean absence into the caught "absent" branch.
+    internal static string ActivityStatKey(string daemonName) {
+        try {
+            var path = ConsentDecisionLogReader.PathFor(daemonName);
+            return $"{StatOf(path + ".1")}|{StatOf(path)}";
+        } catch {
+            return "absent";
+        }
+    }
+
+    static string StatOf(string path) => $"{File.GetLastWriteTimeUtc(path).Ticks}:{new FileInfo(path).Length}";
 
     // Composed here (not inside AgentActionService, spec decision 5): the service only awaits the
     // seam; every UI concern — the dialog itself, choosing an owner, marshaling onto the UI

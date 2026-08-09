@@ -1,4 +1,6 @@
 using System.Reactive.Linq;
+using Avalonia;
+using Avalonia.Controls;
 using Avalonia.Controls.Notifications;
 using Capacitor.App.Services;
 using Capacitor.App.ViewModels;
@@ -20,6 +22,10 @@ public partial class MainWindow : ReactiveWindow<MainWindowViewModel> {
     WindowNotificationManager? _notifications;
     IDisposable? _notifierSubscription;
     IAppNotifier? _notifier;
+
+    // Defaults to false — the Agents TabItem is selected first (MainWindow.axaml), so Activity
+    // starts unselected regardless of the window's own visibility.
+    bool _activityTabSelected;
 
     /// Assigned by App.BuildAndShowMainWindow (spec §11) — the SAME IAppNotifier instance
     /// AgentActionService pushes into, so the toast overlay and stderr mirroring are always in
@@ -60,4 +66,29 @@ public partial class MainWindow : ReactiveWindow<MainWindowViewModel> {
     // banner it replaces (spec §11).
     void ShowToast(string message) =>
         _notifications?.Show(new Notification("Kurrent Capacitor", message, NotificationType.Warning, TimeSpan.FromSeconds(4)));
+
+    // Wired from MainWindow.axaml's TabControl (spec §7): the Activity tab's refresh cadence
+    // needs to know it is ACTUALLY on screen, which is the AND of tab selection and the window's
+    // own visibility below — a background window with Activity selected must not poll.
+    void OnTabSelectionChanged(object? sender, SelectionChangedEventArgs e) {
+        _activityTabSelected = e.AddedItems.Count > 0 && ReferenceEquals(e.AddedItems[0], ActivityTabItem);
+        UpdateActivityVisibility();
+    }
+
+    // IsVisible is decompile-verified to be exactly what Show()/Hide() toggle (see
+    // App.ShowConfirmForceStopDialogAsync's owner check) — hide-to-tray never fires Closed/Opened
+    // (MainWindowCoordinator's own doc comment: it "never detaches this window from the visual
+    // tree"), so this property is the one signal that actually tracks on-screen state across a
+    // hide/reopen cycle.
+    protected override void OnPropertyChanged(AvaloniaPropertyChangedEventArgs change) {
+        base.OnPropertyChanged(change);
+        // DataContextProperty too — defensive: production always assigns DataContext before the
+        // first Show(), but this keeps the check correct even if a caller (a test) does it the
+        // other way around.
+        if (change.Property == IsVisibleProperty || change.Property == DataContextProperty) UpdateActivityVisibility();
+    }
+
+    void UpdateActivityVisibility() {
+        if (DataContext is MainWindowViewModel vm) vm.Activity.OnTabVisibleChanged(_activityTabSelected && IsVisible);
+    }
 }

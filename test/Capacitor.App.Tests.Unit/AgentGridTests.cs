@@ -331,7 +331,7 @@ public class AgentGridTests {
         var ids = await AvaloniaSession.DispatchAsync(() => {
             var service = new FakeDaemonClientService();
             var (actions, _) = NewActions(service);
-            var vm = new MainWindowViewModel(service, actions, new FakeTicker(), CancellationToken.None);
+            var vm = new MainWindowViewModel(service, actions, new FakeTicker(), CancellationToken.None, TestActivity.New());
             using var activation = vm.Activator.Activate();
 
             var t0 = new DateTime(2026, 8, 6, 10, 0, 0, DateTimeKind.Utc);
@@ -352,7 +352,7 @@ public class AgentGridTests {
         var (beforeCount, afterIds) = await AvaloniaSession.DispatchAsync(() => {
             var service = new FakeDaemonClientService();
             var (actions, _) = NewActions(service);
-            var vm = new MainWindowViewModel(service, actions, new FakeTicker(), CancellationToken.None);
+            var vm = new MainWindowViewModel(service, actions, new FakeTicker(), CancellationToken.None, TestActivity.New());
             using var activation = vm.Activator.Activate();
 
             var t0 = DateTime.UtcNow;
@@ -383,7 +383,7 @@ public class AgentGridTests {
         var (sameInstance, oldDisposed, newDisposed, newStatus, agentsCountAfter) = await AvaloniaSession.DispatchAsync(() => {
             var service = new FakeDaemonClientService();
             var (actions, _) = NewActions(service);
-            var vm = new MainWindowViewModel(service, actions, new FakeTicker(), CancellationToken.None);
+            var vm = new MainWindowViewModel(service, actions, new FakeTicker(), CancellationToken.None, TestActivity.New());
             using var activation = vm.Activator.Activate();
 
             var t0 = DateTime.UtcNow;
@@ -414,7 +414,7 @@ public class AgentGridTests {
         var row = await AvaloniaSession.DispatchAsync(() => {
             var service = new FakeDaemonClientService();
             var (actions, _) = NewActions(service);
-            var vm = new MainWindowViewModel(service, actions, new FakeTicker(), CancellationToken.None);
+            var vm = new MainWindowViewModel(service, actions, new FakeTicker(), CancellationToken.None, TestActivity.New());
             var activation = vm.Activator.Activate();
 
             service.Agents.AddOrUpdate(Dto(id: "a"));
@@ -441,7 +441,7 @@ public class AgentGridTests {
         var (sameReference, idsAfterReactivation) = await AvaloniaSession.DispatchAsync(() => {
             var service = new FakeDaemonClientService();
             var (actions, _) = NewActions(service);
-            var vm = new MainWindowViewModel(service, actions, new FakeTicker(), CancellationToken.None);
+            var vm = new MainWindowViewModel(service, actions, new FakeTicker(), CancellationToken.None, TestActivity.New());
 
             var activation1 = vm.Activator.Activate();
             service.Agents.AddOrUpdate(Dto(id: "a"));
@@ -476,7 +476,7 @@ public class AgentGridTests {
         var (whileConnected, whileUnreachable) = await AvaloniaSession.DispatchAsync(() => {
             var service = new FakeDaemonClientService();
             var (actions, _) = NewActions(service);
-            var vm = new MainWindowViewModel(service, actions, new FakeTicker(), CancellationToken.None);
+            var vm = new MainWindowViewModel(service, actions, new FakeTicker(), CancellationToken.None, TestActivity.New());
             using var activation = vm.Activator.Activate();
 
             service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, null));
@@ -500,7 +500,7 @@ public class AgentGridTests {
         var (idsWhileConnected, idsWhileDisconnected, actionsEnabledWhileDisconnected) = await AvaloniaSession.DispatchAsync(() => {
             var service = new FakeDaemonClientService();
             var (actions, _) = NewActions(service);
-            var vm = new MainWindowViewModel(service, actions, new FakeTicker(), CancellationToken.None);
+            var vm = new MainWindowViewModel(service, actions, new FakeTicker(), CancellationToken.None, TestActivity.New());
             using var activation = vm.Activator.Activate();
 
             service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, null));
@@ -532,7 +532,7 @@ public class AgentGridTests {
         var (beforeStop, whileInFlight) = await AvaloniaSession.DispatchAsync(() => {
             var service = new FakeDaemonClientService();
             var (actions, _) = NewActions(service, ops);
-            var vm = new MainWindowViewModel(service, actions, new FakeTicker(), CancellationToken.None);
+            var vm = new MainWindowViewModel(service, actions, new FakeTicker(), CancellationToken.None, TestActivity.New());
             using var activation = vm.Activator.Activate();
 
             service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, null));

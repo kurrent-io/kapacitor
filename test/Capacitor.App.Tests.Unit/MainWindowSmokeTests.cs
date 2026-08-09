@@ -38,7 +38,7 @@ public class MainWindowSmokeTests {
                 service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, null));
 
                 var (actions, _) = NewActions(service);
-                var vm = new MainWindowViewModel(service, actions, new FakeTicker(), CancellationToken.None);
+                var vm = new MainWindowViewModel(service, actions, new FakeTicker(), CancellationToken.None, TestActivity.New());
                 var window = new MainWindow { DataContext = vm };
                 window.Show();
                 // Control.Loaded is POSTED at DispatcherPriority.Loaded (Avalonia defers it, it
@@ -84,7 +84,7 @@ public class MainWindowSmokeTests {
         var (thrown, startEnabledAfter) = await AvaloniaSession.DispatchAsync(() => {
             var service = new FakeDaemonClientService();
             var (actions, _) = NewActions(service);
-            var vm = new MainWindowViewModel(service, actions, new FakeTicker(), CancellationToken.None);
+            var vm = new MainWindowViewModel(service, actions, new FakeTicker(), CancellationToken.None, TestActivity.New());
             var window = new MainWindow { DataContext = vm };
             window.Show();
             Dispatcher.UIThread.RunJobs();
@@ -139,7 +139,7 @@ public class MainWindowSmokeTests {
 
             var shutdown = new CancellationTokenSource();
             var (actions, _) = NewActions(service);
-            var vm = new MainWindowViewModel(service, actions, new FakeTicker(), shutdown.Token);
+            var vm = new MainWindowViewModel(service, actions, new FakeTicker(), shutdown.Token, TestActivity.New());
             var window = new MainWindow { DataContext = vm };
             window.Show();
             Dispatcher.UIThread.RunJobs();
@@ -195,7 +195,7 @@ public class MainWindowSmokeTests {
             service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, null));
 
             var (actions, _) = NewActions(service);
-            var vm = new MainWindowViewModel(service, actions, new FakeTicker(), CancellationToken.None);
+            var vm = new MainWindowViewModel(service, actions, new FakeTicker(), CancellationToken.None, TestActivity.New());
             var window = new MainWindow { DataContext = vm };
             window.Show();
             Dispatcher.UIThread.RunJobs();
@@ -227,7 +227,7 @@ public class MainWindowSmokeTests {
             service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, null));
 
             var (actions, _) = NewActions(service);
-            var vm = new MainWindowViewModel(service, actions, new FakeTicker(), CancellationToken.None);
+            var vm = new MainWindowViewModel(service, actions, new FakeTicker(), CancellationToken.None, TestActivity.New());
             var window = new MainWindow { DataContext = vm };
             window.Show();
             Dispatcher.UIThread.RunJobs();
@@ -261,7 +261,7 @@ public class MainWindowSmokeTests {
             await AvaloniaSession.DispatchAsync(async () => {
                 var service = new FakeDaemonClientService();
                 var (actions, _) = NewActions(service);
-                var vm = new MainWindowViewModel(service, actions, new FakeTicker(), CancellationToken.None);
+                var vm = new MainWindowViewModel(service, actions, new FakeTicker(), CancellationToken.None, TestActivity.New());
                 var window = new MainWindow { DataContext = vm };
                 window.Show();
                 Dispatcher.UIThread.RunJobs();
@@ -304,7 +304,7 @@ public class MainWindowSmokeTests {
         var rendered = await AvaloniaSession.DispatchAsync(() => {
             var service = new FakeDaemonClientService();
             var (actions, notifier) = NewActions(service);
-            var vm = new MainWindowViewModel(service, actions, new FakeTicker(), CancellationToken.None);
+            var vm = new MainWindowViewModel(service, actions, new FakeTicker(), CancellationToken.None, TestActivity.New());
             var window = new MainWindow { DataContext = vm, Notifier = notifier };
             window.Show();
             Dispatcher.UIThread.RunJobs();
@@ -322,5 +322,55 @@ public class MainWindowSmokeTests {
 
         await Assert.That(rendered).Contains("Kurrent Capacitor");
         await Assert.That(rendered).Contains("Couldn't stop agent-a");
+    }
+
+    // ---- Activity tab visibility wiring (spec §7) ----
+    //
+    // Proves the real production wiring end to end — MainWindow.axaml's TabControl selection and
+    // the window's own IsVisible (Show()/Hide()) both drive ActivityViewModel.OnTabVisibleChanged
+    // through the code-behind, not just that the ViewModel reacts correctly in isolation
+    // (ActivityViewModelTests already covers that). Selecting Agents leaves the read count
+    // unchanged; each TRUE transition (select Activity, then re-Show after a Hide) issues exactly
+    // one more immediate read; Hide is a FALSE transition and reads nothing.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public async Task Activity_tab_visibility_follows_selection_and_window_IsVisible() {
+        var (afterAgents, afterActivity, afterHide, afterReshow) = await AvaloniaSession.DispatchAsync(() => {
+            var service = new FakeDaemonClientService();
+            var (actions, _) = NewActions(service);
+            var reader = new ScriptedReader();
+            reader.Set(new ConsentLogReadResult([], true));
+            var activity = new ActivityViewModel(reader.Read, () => "k", new FakeTicker());
+            var vm = new MainWindowViewModel(service, actions, new FakeTicker(), CancellationToken.None, activity);
+            var window = new MainWindow { DataContext = vm };
+            window.Show();
+            Dispatcher.UIThread.RunJobs();
+
+            var readsAgents = reader.ReadCalls; // Agents tab selected by default — no Activity read
+
+            var tabs = window.GetVisualDescendants().OfType<TabControl>().First(t => t.Name == "MainTabs");
+            var activityTab = window.GetVisualDescendants().OfType<TabItem>().First(t => t.Name == "ActivityTabItem");
+            tabs.SelectedItem = activityTab;
+            Dispatcher.UIThread.RunJobs();
+            var readsActivity = reader.ReadCalls;
+
+            window.Hide();
+            Dispatcher.UIThread.RunJobs();
+            var readsHidden = reader.ReadCalls;
+
+            window.Show();
+            Dispatcher.UIThread.RunJobs();
+            var readsReshown = reader.ReadCalls;
+
+            window.Close();
+            Dispatcher.UIThread.RunJobs();
+
+            return (readsAgents, readsActivity, readsHidden, readsReshown);
+        });
+
+        await Assert.That(afterAgents).IsEqualTo(0);
+        await Assert.That(afterActivity).IsEqualTo(1); // selecting Activity: one immediate read
+        await Assert.That(afterHide).IsEqualTo(1); // hiding is a FALSE transition — no read
+        await Assert.That(afterReshow).IsEqualTo(2); // re-showing: another TRUE transition
     }
 }

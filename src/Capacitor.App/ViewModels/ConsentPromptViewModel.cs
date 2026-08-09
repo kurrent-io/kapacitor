@@ -62,6 +62,7 @@ public sealed class ConsentPromptViewModel : ReactiveObject, IActivatableViewMod
     readonly IAppNotifier _notifier;
     readonly TimeProvider _time;
     readonly CancellationToken _shutdownToken;
+    readonly Action? _onConcluded;
     readonly Subject<Unit> _closeRequested = new();
 
     // ONE stable collection, created once and never replaced (the lesson recorded on
@@ -154,13 +155,20 @@ public sealed class ConsentPromptViewModel : ReactiveObject, IActivatableViewMod
     public ReactiveCommand<Unit, Unit> AllowRememberCommand { get; }
     public ReactiveCommand<Unit, Unit> DenyCommand { get; }
 
+    /// <param name="onConcluded">
+    /// Invoked after every conclusive ack (AlreadyDecided or a landed decision — never a
+    /// TransportFailure, which settles nothing). Composition wires this to the app's single
+    /// ActivityViewModel's RequestRefresh (spec §7): own decisions are eventual, not instant — see
+    /// that method's own doc comment.
+    /// </param>
     public ConsentPromptViewModel(
             IConsentService consent, IAppNotifier notifier, ITicker ticker, TimeProvider time,
-            CancellationToken shutdownToken) {
+            CancellationToken shutdownToken, Action? onConcluded = null) {
         _consent       = consent;
         _notifier      = notifier;
         _time          = time;
         _shutdownToken = shutdownToken;
+        _onConcluded   = onConcluded;
         Queue          = new ReadOnlyObservableCollection<PendingConsent>(_queueSource);
 
         var current = this.WhenAnyValue(x => x.Current);
@@ -333,12 +341,14 @@ public sealed class ConsentPromptViewModel : ReactiveObject, IActivatableViewMod
 
             case ConsentResolveKind.AlreadyDecided:
                 _settled = Current;
+                _onConcluded?.Invoke();
                 Hold(DecidedText(outcome.RuleOutcome));
                 break;
 
             // Applied / AppliedRuleRejected / RuleSkippedNoRequester: the decision landed.
             default:
                 _settled = Current;
+                _onConcluded?.Invoke();
                 var warning = RuleWarning(outcome);
                 if (warning is not null) _notifier.Notify(warning);
 
