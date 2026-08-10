@@ -37,6 +37,14 @@ namespace Capacitor.Cli.Daemon.Acp;
 /// plugin directory job 1 depends on must still never exist, and creation verifies that rather than
 /// assuming it.</para>
 ///
+/// <para><b>And a review home carries a second file, for the same reason.</b> Kiro trusts its injected
+/// tools through launch argv (<see cref="KiroReviewerTrustList"/>); <c>agy</c> has no such flag, and
+/// <c>agy -p</c> auto-denies every tool confirmation it cannot prompt a human for — so a home that
+/// injects the result channel and grants nothing produces a reviewer that reads, reasons, and can never
+/// report. The <c>settings.json</c> written into <c>.gemini/antigravity-cli/</c> (a DIFFERENT file from
+/// the <c>mcp_config.json</c> above) carries the <c>permissions.allow</c> rules that close it; see
+/// <see cref="WriteSettings"/> and <see cref="AntigravityReviewerPermissions"/>.</para>
+///
 /// <para><b>Why disposal is a security requirement, not hygiene.</b> The reviewer's own conversation
 /// JSONL (<c>brain/&lt;id&gt;/.system_generated/logs/transcript_full.jsonl</c>, see
 /// <see cref="AntigravityPaths"/>) carries the caller's diff, source excerpts and findings. The home
@@ -59,12 +67,25 @@ internal static class AntigravityReviewerHome {
         $"{Prefix}{Sanitize(daemonEpoch)}-{Sanitize(launchId)}";
 
     /// <summary>
-    /// Creates an owner-only home carrying only a fresh <c>mcp_config.json</c> for
-    /// <paramref name="injected"/>. Never seeds the kcap plugin directory — that absence is what job
+    /// Creates an owner-only home carrying a fresh <c>mcp_config.json</c> for
+    /// <paramref name="injected"/>, and — for an unattended review — the <c>settings.json</c> that
+    /// grants those servers' tools. Never seeds the kcap plugin directory — that absence is what job
     /// 1 above depends on, so it is verified after writing rather than assumed.
     /// </summary>
+    /// <param name="grantInjectedMcpTools">Whether this launch's injected MCP tools need
+    /// <c>permissions.allow</c> rules — true for an unattended review, false for a hosted agent.
+    ///
+    /// <para><b>A parameter rather than "grant whatever was injected".</b> A hosted launch already
+    /// passes <c>--dangerously-skip-permissions</c>, so a rule for it would be dead config; and its
+    /// injected list is <c>ctx.McpServers</c>, whose contents are a caller's rather than a review
+    /// definition's — deriving rules from it would put an unclassifiable server through
+    /// <see cref="AntigravityReviewerPermissions"/>'s fail-closed throw and refuse a launch that was
+    /// never asking for a grant. Deliberately not defaulted: a caller that omits it would get a
+    /// reviewer that starts, runs, and is auto-denied on the one call the round waits for — the exact
+    /// defect this parameter exists to fix.</para></param>
     internal static string Create(string stateDir, string daemonEpoch, string launchId,
-                                  IReadOnlyList<AcpMcpServerSpec> injected, ILogger? log = null) {
+                                  IReadOnlyList<AcpMcpServerSpec> injected, bool grantInjectedMcpTools,
+                                  ILogger? log = null) {
         var root = RootFor(stateDir);
         CreateOwnerOnly(root);
 
@@ -90,15 +111,36 @@ internal static class AntigravityReviewerHome {
               + "launch that could not be removed. Refusing rather than handing a reviewer another "
               + "review's conversation state.");
 
-        WriteMcpConfig(home, injected);
+        // Everything from the first WRITE onward is all-or-nothing. The caller binds this home's
+        // disposal to the runtime it creates AFTER Create returns, so a throw from in here leaves a
+        // home with no disposal path armed at all — and the first thing written, mcp_config.json,
+        // carries the launch's live loopback capability URL. The daemon-epoch sweep would eventually
+        // reclaim it, but that is the crash backstop, not a licence to leak on an ordinary refusal.
+        // WriteSettings' fail-closed throw for an unclassifiable server makes this reachable by
+        // configuration rather than only by IO failure.
+        //
+        // Scoped to start here deliberately: the emptiness refusal above keeps its existing
+        // behaviour of leaving the previous launch's undeletable content alone, and nothing
+        // capability-bearing exists before this point.
+        try {
+            WriteMcpConfig(home, injected);
 
-        // The kcap plugin dir is what lets agy's OWN capture hooks fire (job 1) — its absence is
-        // the whole mechanism, so it is checked rather than trusted to follow from "we never wrote
-        // it". A future change that seeds a fuller home must trip this, not silently double-capture.
-        if (Directory.Exists(AntigravityPaths.PluginDir(home)))
-            throw new InvalidOperationException(
-                $"antigravity_reviewer_home_not_isolated: '{home}' carries a kcap plugin directory, "
-              + "which would let this reviewer's own capture hooks fire against its conversation.");
+            // Injecting a server is only half of a usable reviewer — see WriteSettings.
+            if (grantInjectedMcpTools) WriteSettings(home, injected);
+
+            // The kcap plugin dir is what lets agy's OWN capture hooks fire (job 1) — its absence is
+            // the whole mechanism, so it is checked rather than trusted to follow from "we never wrote
+            // it". A future change that seeds a fuller home must trip this, not silently double-capture.
+            if (Directory.Exists(AntigravityPaths.PluginDir(home)))
+                throw new InvalidOperationException(
+                    $"antigravity_reviewer_home_not_isolated: '{home}' carries a kcap plugin directory, "
+                  + "which would let this reviewer's own capture hooks fire against its conversation.");
+        } catch {
+            // Best-effort, and never allowed to replace the real reason: a cleanup fault here would
+            // otherwise mask the fail-closed refusal the caller needs to see.
+            Delete(home, stateDir, log ?? NullLogger.Instance);
+            throw;
+        }
 
         return home;
     }
@@ -112,23 +154,7 @@ internal static class AntigravityReviewerHome {
     /// — the latter lower to a generic <c>Add&lt;T&gt;</c> that trips NativeAOT (IL3050), the same
     /// rule <c>ClaudeLauncher.BuildReviewFlowMcpConfig</c> and <c>ReviewLaunchBuilder</c> follow.</summary>
     static void WriteMcpConfig(string home, IReadOnlyList<AcpMcpServerSpec> injected) {
-        var path = AntigravityPaths.McpConfigJson(home);
-
-        // AntigravityPaths.McpConfigJson → GeminiPaths.Root honors THIS PROCESS's own
-        // GEMINI_CLI_HOME when set, falling back to `home` only when it is not — so on a daemon
-        // that happens to run with GEMINI_CLI_HOME set, the resolved path would escape `home`
-        // entirely, writing the reviewer's result channel outside the isolated home job 3 exists
-        // to guarantee (and potentially into the operator's own Gemini tree). Not something to fix
-        // in AntigravityPaths (that fallback is correct for its other, non-isolated callers) — this
-        // class's whole purpose is isolation, so it is verified here rather than assumed.
-        var homeFull = Path.TrimEndingDirectorySeparator(Path.GetFullPath(home));
-        var pathFull = Path.GetFullPath(path);
-
-        if (!pathFull.StartsWith(homeFull + Path.DirectorySeparatorChar, StringComparison.Ordinal))
-            throw new InvalidOperationException(
-                $"antigravity_reviewer_home_escaped_root: mcp_config.json resolved to '{pathFull}', "
-              + $"outside the isolated home '{homeFull}' (likely GEMINI_CLI_HOME set in the daemon's "
-              + "own environment). Refusing to write a reviewer's result channel outside its isolated home.");
+        var pathFull = ResolveInsideHome(home, AntigravityPaths.McpConfigJson(home), "mcp_config.json");
 
         Directory.CreateDirectory(Path.GetDirectoryName(pathFull)!);
 
@@ -150,6 +176,64 @@ internal static class AntigravityReviewerHome {
 
         var root = new JsonObject { ["mcpServers"] = mcpServers };
         File.WriteAllText(pathFull, root.ToJsonString());
+    }
+
+    /// <summary>
+    /// Writes <c>{home}/.gemini/antigravity-cli/settings.json</c> — the <c>agy</c> CLI's OWN settings
+    /// file, a different file from the <c>mcp_config.json</c> above — carrying nothing but the
+    /// <c>permissions.allow</c> rules for <paramref name="injected"/>.
+    ///
+    /// <para><b>Injecting a server is only half of a usable reviewer.</b> <c>agy -p</c> has no human to
+    /// answer a tool confirmation, so it auto-denies every one it raises — and the reviewer's result
+    /// channel IS an MCP tool, which made the one call each round depends on the one call print mode
+    /// refused. Measured: the conversation stopped at <c>PLANNER_RESPONSE</c> with no <c>TOOL_CALL</c>,
+    /// agy logged <c>user denied permission for mcp</c>, and every round hung to the flow's timeout. See
+    /// <see cref="AntigravityReviewerPermissions"/> for the rule form and why not
+    /// <c>--dangerously-skip-permissions</c>.</para>
+    ///
+    /// <para>Same fresh-write-into-a-fresh-directory shape as <see cref="WriteMcpConfig"/>: the whole
+    /// file is this launch's content, so there is no operator config to merge with — which is also what
+    /// makes the grant exactly this launch's and not the operator's own rules plus it.</para>
+    /// </summary>
+    static void WriteSettings(string home, IReadOnlyList<AcpMcpServerSpec> injected) {
+        var pathFull = ResolveInsideHome(home, AntigravityPaths.CliSettingsJson(home), "settings.json");
+
+        Directory.CreateDirectory(Path.GetDirectoryName(pathFull)!);
+
+        var allow = new JsonArray();
+
+        // Built BEFORE anything is written: an unclassifiable server throws, and a home left carrying a
+        // half-written grant would be worse than one carrying none.
+        foreach (var rule in AntigravityReviewerPermissions.AllowRulesFor(injected)) allow.Add((JsonNode?)rule);
+
+        var root = new JsonObject { ["permissions"] = new JsonObject { ["allow"] = allow } };
+        File.WriteAllText(pathFull, root.ToJsonString());
+    }
+
+    /// <summary>
+    /// The full path of a file this class means to write INSIDE <paramref name="home"/>, or a throw.
+    ///
+    /// <para><c>AntigravityPaths</c> → <c>GeminiPaths.Root</c> honors THIS PROCESS's own
+    /// <c>GEMINI_CLI_HOME</c> when set, falling back to <paramref name="home"/> only when it is not — so
+    /// on a daemon that happens to run with <c>GEMINI_CLI_HOME</c> set, the resolved path would escape
+    /// <paramref name="home"/> entirely, writing the reviewer's result channel (or its permission
+    /// grants) outside the isolated home job 3 exists to guarantee, and potentially into the operator's
+    /// own Gemini tree. Not something to fix in <c>AntigravityPaths</c> (that fallback is correct for
+    /// its other, non-isolated callers) — this class's whole purpose is isolation, so it is verified
+    /// here rather than assumed, once for every file the home writes.</para>
+    /// </summary>
+    static string ResolveInsideHome(string home, string path, string what) {
+        var homeFull = Path.TrimEndingDirectorySeparator(Path.GetFullPath(home));
+        var pathFull = Path.GetFullPath(path);
+
+        if (!pathFull.StartsWith(homeFull + Path.DirectorySeparatorChar, StringComparison.Ordinal))
+            throw new InvalidOperationException(
+                $"antigravity_reviewer_home_escaped_root: {what} resolved to '{pathFull}', "
+              + $"outside the isolated home '{homeFull}' (likely GEMINI_CLI_HOME set in the daemon's "
+              + "own environment). Refusing to write a reviewer's result channel, or the grants that "
+              + "admit it, outside its isolated home.");
+
+        return pathFull;
     }
 
     /// <summary>

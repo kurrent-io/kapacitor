@@ -303,9 +303,9 @@ public class TrayViewModelTests {
 
             var t0 = new DateTime(2026, 8, 6, 10, 0, 0, DateTimeKind.Utc);
             var agents = new List<AgentStatusDto> {
-                new("b", "agent", "claude", "/repos/kcap-cli", "Running", null, null, null, t0.AddMinutes(2), null),
-                new("a", "agent", "claude", "/repos/kcap-cli", "Starting", null, null, null, t0, null),
-                new("c", "review", "codex", null, "Completed", null, null, null, t0.AddMinutes(1), null),
+                new("b", "agent", "claude", "/repos/kcap-cli", "Running", null, null, null, t0.AddMinutes(2), null, null),
+                new("a", "agent", "claude", "/repos/kcap-cli", "Starting", null, null, null, t0, null, null),
+                new("c", "review", "codex", null, "Completed", null, null, null, t0.AddMinutes(1), null, null),
             };
 
             service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, []));
@@ -330,8 +330,8 @@ public class TrayViewModelTests {
 
             var t0 = new DateTime(2026, 8, 6, 10, 0, 0, DateTimeKind.Utc);
             var agents = new List<AgentStatusDto> {
-                new("z", "agent", "claude", null, "Running", null, null, null, t0, null),
-                new("a", "agent", "claude", null, "Running", null, null, null, t0, null),
+                new("z", "agent", "claude", null, "Running", null, null, null, t0, null, null),
+                new("a", "agent", "claude", null, "Running", null, null, null, t0, null, null),
             };
 
             service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, []));
@@ -353,7 +353,7 @@ public class TrayViewModelTests {
             using var vm = new TrayViewModel(service, pause, actions);
 
             var agents = new List<AgentStatusDto> {
-                new("r", "review-flow", "codex", null, "Running", null, null, null, DateTime.UtcNow, null),
+                new("r", "review-flow", "codex", null, "Running", null, null, null, DateTime.UtcNow, null, null),
             };
 
             service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, []));
@@ -373,7 +373,7 @@ public class TrayViewModelTests {
             using var vm = new TrayViewModel(service, pause, actions);
 
             var agents = new List<AgentStatusDto> {
-                new("a", "agent", "claude", "/Users/alexey/dev/kcap-server/.claude/worktrees/hazy-sleeping-plum", "Running", null, null, null, DateTime.UtcNow, null),
+                new("a", "agent", "claude", "/Users/alexey/dev/kcap-server/.claude/worktrees/hazy-sleeping-plum", "Running", null, null, null, DateTime.UtcNow, null, null),
             };
 
             service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, []));
@@ -393,7 +393,7 @@ public class TrayViewModelTests {
             using var vm = new TrayViewModel(service, pause, actions);
 
             var agents = new List<AgentStatusDto> {
-                new("a", "agent", "claude", null, "Running", null, null, null, DateTime.UtcNow, null),
+                new("a", "agent", "claude", null, "Running", null, null, null, DateTime.UtcNow, null, null),
             };
 
             service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, []));
@@ -629,7 +629,7 @@ public class TrayViewModelTests {
             using var vm = new TrayViewModel(service, pause, actions);
 
             var agents = new List<AgentStatusDto> {
-                new("a", "agent", "claude", null, "Running", null, null, null, DateTime.UtcNow, null),
+                new("a", "agent", "claude", null, "Running", null, null, null, DateTime.UtcNow, null, null),
             };
             service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, []));
             service.SnapshotsSubject.OnNext(Snap("connected", 1, agents));
@@ -659,7 +659,7 @@ public class TrayViewModelTests {
             using var vm = new TrayViewModel(service, pause, actions);
 
             var agents = new List<AgentStatusDto> {
-                new("a", "agent", "claude", "/repos/kcap-cli", "Running", null, null, null, DateTime.UtcNow, null),
+                new("a", "agent", "claude", "/repos/kcap-cli", "Running", null, null, null, DateTime.UtcNow, null, null),
             };
             service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, []));
             service.SnapshotsSubject.OnNext(Snap("connected", 1, agents));
@@ -688,7 +688,7 @@ public class TrayViewModelTests {
             using var vm = new TrayViewModel(service, pause, actions);
 
             var agents = new List<AgentStatusDto> {
-                new("a", "review-flow", "codex", "/repos/kcap-cli", "Running", null, null, null, DateTime.UtcNow, null),
+                new("a", "review-flow", "codex", "/repos/kcap-cli", "Running", null, null, null, DateTime.UtcNow, null, null),
             };
             service.StatusSubject.OnNext(new AttachStatus(AttachState.Connected, null, []));
             service.SnapshotsSubject.OnNext(Snap("connected", 1, agents));

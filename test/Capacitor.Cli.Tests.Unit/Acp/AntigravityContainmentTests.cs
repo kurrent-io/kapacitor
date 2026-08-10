@@ -88,7 +88,8 @@ public class AntigravityContainmentTests {
 
             // Production home and production argv/env — an assertion over a re-derived spawn shape
             // would certify the test's idea of the launch, not the launch.
-            home = AntigravityReviewerHome.Create(stateDir, "containment-epoch", "containment-agent", []);
+            home = AntigravityReviewerHome.Create(
+                stateDir, "containment-epoch", "containment-agent", [], grantInjectedMcpTools: true);
 
             var psi = AntigravityHostedAgentRuntimeFactory.BuildTurnPsi(
                 config: new DaemonConfig {

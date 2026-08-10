@@ -86,6 +86,13 @@ public partial class AgentOrchestratorVendorTests {
                 .IsEqualTo("untracked-one");
             await Assert.That(File.Exists(Path.Combine(ctx.Worktree.Path, ".mcp.json"))).IsFalse();
             await Assert.That(ctx.ReviewContextCapabilityUrl).IsNotNull();
+            // The result channel's delivery capability rides the SAME reviewer grant as the context
+            // capability, so one revocation closes both. A separately-minted token could outlive the
+            // first and leave a live submit path after the reviewer is gone — which is also why the
+            // token count below stays at 1.
+            await Assert.That(ctx.FlowResultCapabilityUrl).IsNotNull();
+            await Assert.That(ctx.FlowResultCapabilityUrl!)
+                .IsEqualTo(ctx.ReviewContextCapabilityUrl!.Split("/review-context")[0]);
             await Assert.That(bridge.ReviewerTokenCountForTest).IsEqualTo(1);
             await Assert.That(orch.GetAgentForTest(cmd.AgentId)!.BorrowedSnapshotSource)
                 .IsEqualTo(BorrowAuthorizer.Canonicalize(cwd));

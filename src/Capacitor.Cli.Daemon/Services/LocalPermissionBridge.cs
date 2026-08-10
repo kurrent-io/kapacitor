@@ -30,6 +30,10 @@ internal sealed partial class LocalPermissionBridge(
     const int    MaxBindAttempts = 15;
     const string PathSuffix      = "/permission-request";
 
+    /// <summary>Cap on a reviewer submission body. The poster is a sandboxed vendor child, so an
+    /// unbounded read is a memory-exhaustion lever.</summary>
+    internal const int MaxSubmitBodyBytes = 1024 * 1024;
+
     static readonly object       PortClaimsLock = new();
     static readonly HashSet<int>  ClaimedPorts   = [];
 
@@ -214,7 +218,11 @@ internal sealed partial class LocalPermissionBridge(
             BorrowedReviewContextGeneration? reviewContext = null,
             // The launch's activity clock, so a tool-call hit on this token advances it. Optional and
             // trailing so pre-existing call sites keep compiling; production always supplies one.
-            AgentActivityClock? activityClock = null) {
+            AgentActivityClock? activityClock = null,
+            // Relays a borrowed reviewer's submission under the DAEMON's credential; null for every
+            // other reviewer, which authenticates for itself. On the GRANT so it is revoked with the
+            // token — a submit path outliving its reviewer could report into an already-reaped flow.
+            Func<string, string, CancellationToken, Task<(int Status, string Body)>>? submitForwarder = null) {
         if (_listener is null || _sharedToken is null)
             throw new InvalidOperationException("LocalPermissionBridge not started");
 
@@ -224,7 +232,8 @@ internal sealed partial class LocalPermissionBridge(
                 token = NewToken();   // CSPRNG collisions are negligible; never silently reuse one
 
             _listener.Prefixes.Add($"http://127.0.0.1:{_port}/{token}/");
-            _reviewerTokens[token] = new ReviewerGrant([.. allowlistServers], reviewContext, activityClock);
+            _reviewerTokens[token] = new ReviewerGrant(
+                [.. allowlistServers], reviewContext, activityClock, submitForwarder);
 
             return $"http://127.0.0.1:{_port}/{token}";
         }
@@ -333,6 +342,56 @@ internal sealed partial class LocalPermissionBridge(
                 context.Response.StatusCode = 404;
                 context.Response.Close();
                 return;
+            }
+
+            // Borrowed-reviewer result delivery. Routed like review-context above: exact method/path,
+            // live grant only. A grant minted without a forwarder 404s rather than exposing an
+            // endpoint that could only fail.
+            if (context.Request.HttpMethod == "POST" && rawUrl is not null) {
+                var trimmedRaw = rawUrl.TrimStart('/');
+                var slash      = trimmedRaw.IndexOf('/');
+                if (slash > 0) {
+                    var submitToken = trimmedRaw[..slash];
+                    // Upstream path chosen from a fixed table, never echoed from the request: the
+                    // caller is sandboxed, and echoing would make this an open authenticated relay.
+                    var apiPath = rawUrl switch {
+                        _ when rawUrl.Equals($"/{submitToken}/flow-result", StringComparison.Ordinal)
+                            => "/api/flows/reviewer/result",
+                        _ when rawUrl.Equals($"/{submitToken}/flow-message", StringComparison.Ordinal)
+                            => "/api/flows/participant/message",
+                        _   => null
+                    };
+                    if (apiPath is not null) {
+                        if (!_reviewerTokens.TryGetValue(submitToken, out var submitGrant) ||
+                            submitGrant.SubmitForwarder is not { } forward) {
+                            context.Response.StatusCode = 404;
+                            context.Response.Close();
+
+                            return;
+                        }
+
+                        // A reviewer mid-delivery is alive; reaping it here would discard the result.
+                        submitGrant.ActivityClock?.Advance();
+
+                        var submitBody = await ReadCappedBodyAsync(context.Request.InputStream, ct);
+                        if (submitBody is null) {
+                            context.Response.StatusCode = 413;
+                            context.Response.Close();
+
+                            return;
+                        }
+
+                        var (status, responseBody) = await forward(apiPath, submitBody, ct);
+                        var payload = Encoding.UTF8.GetBytes(responseBody);
+                        context.Response.ContentType     = "application/json";
+                        context.Response.StatusCode      = status;
+                        context.Response.ContentLength64 = payload.LongLength;
+                        await context.Response.OutputStream.WriteAsync(payload, ct);
+                        context.Response.Close();
+
+                        return;
+                    }
+                }
             }
 
             // Require token + vendor + endpoint match. The HttpListener prefix already routed us
@@ -577,10 +636,32 @@ internal sealed partial class LocalPermissionBridge(
         return false;
     }
 
+    /// <summary>Reads at most <see cref="MaxSubmitBodyBytes"/>, returning null when the body exceeds
+    /// it. Bounded on BYTES ACTUALLY READ rather than Content-Length, which a chunked or hostile
+    /// client need not send truthfully — checking the header alone would be a guard the attacker
+    /// controls. One byte past the cap is enough to reject, so an oversized body is never fully
+    /// buffered.</summary>
+    static async Task<string?> ReadCappedBodyAsync(Stream input, CancellationToken ct) {
+        var buffer = new byte[8192];
+        using var accumulated = new MemoryStream();
+
+        while (true) {
+            var read = await input.ReadAsync(buffer, ct);
+            if (read == 0) break;
+
+            if (accumulated.Length + read > MaxSubmitBodyBytes) return null;
+
+            accumulated.Write(buffer, 0, read);
+        }
+
+        return Encoding.UTF8.GetString(accumulated.GetBuffer(), 0, (int)accumulated.Length);
+    }
+
     sealed record ReviewerGrant(
         string[] AllowlistServers,
         BorrowedReviewContextGeneration? ReviewContext,
-        AgentActivityClock? ActivityClock = null);
+        AgentActivityClock? ActivityClock = null,
+        Func<string, string, CancellationToken, Task<(int Status, string Body)>>? SubmitForwarder = null);
 
     static string BuildHookResponseJson(PermissionDecision decision, string vendor) =>
         vendor switch {

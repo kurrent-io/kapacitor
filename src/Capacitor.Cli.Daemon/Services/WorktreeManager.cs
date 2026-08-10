@@ -839,11 +839,12 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
                 generation = await CreateReviewContextGenerationAsync(
                     source, reviewContextRoot, sourceHead, initialIndex, caseSensitive, plan, ct);
 
-            if (SplitNulRecords(initialIndex)
-                .Any(entry => entry.Span.StartsWith("160000 "u8)))
-                throw new InvalidOperationException("borrowed_snapshot_submodules_unsupported");
+            // Submodules snapshot as plain content: borrowing shows the developer's checked-out
+            // files, not the pinned commit. Their .git is never copied — it is a gitlink into the
+            // superproject's .git/modules, which this snapshot does not have.
+            var submodulePrefixes = ReadSubmodulePrefixes(initialIndex);
 
-            var manifest = await ReadSourceManifestAsync(source, plan, caseSensitive, ct);
+            var manifest = await ReadSourceManifestAsync(source, plan, caseSensitive, submodulePrefixes, ct);
             await ApplyReservedIndexPolicyAsync(destination, plan, caseSensitive, ct);
             await CopyManifestAsync(source, destination, manifest, ct);
             RemoveFilesOutsideManifest(destination, manifest.Keys, caseSensitive, ct);
@@ -854,7 +855,7 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
             var finalIndex = await RunGitCaptureBytes(source, GitTimeout, true, ct,
                 "ls-files", "--stage", "-z");
             var finalManifest = await ReadSourceManifestAsync(
-                source, plan, caseSensitive, ct);
+                source, plan, caseSensitive, submodulePrefixes, ct);
             if (!string.Equals(sourceHead, finalHead, StringComparison.Ordinal) ||
                 !initialIndex.AsSpan().SequenceEqual(finalIndex) ||
                 !ManifestsEqual(manifest, finalManifest))
@@ -869,36 +870,118 @@ public partial class WorktreeManager(DaemonConfig config, ILogger<WorktreeManage
         }
     }
 
+    /// <summary>Gitlink paths from a `ls-files --stage -z` index dump, as raw bytes. Kept undecoded
+    /// so a non-UTF8 submodule path cannot break the classify-before-decode guarantee the manifest
+    /// loop relies on — it is decoded there, under the same guard as every other path.</summary>
+    static List<byte[]> ReadSubmodulePrefixes(byte[] index) {
+        var prefixes = new List<byte[]>();
+
+        foreach (var entry in SplitNulRecords(index)) {
+            if (!entry.Span.StartsWith("160000 "u8)) continue;
+
+            // `<mode> <sha> <stage>\t<path>` — the path is everything past the first tab.
+            var tab = entry.Span.IndexOf((byte)'\t');
+            if (tab < 0 || tab + 1 >= entry.Span.Length) continue;
+
+            prefixes.Add(entry.Span[(tab + 1)..].ToArray());
+        }
+
+        return prefixes;
+    }
+
+    /// <summary>Enumerates one repository's snapshot-eligible paths, each prefixed so it is relative
+    /// to the SUPERPROJECT. Every returned path therefore flows through the same containment,
+    /// symlink and capacity guards as a superproject path — a submodule is not a second, weaker
+    /// lane.</summary>
+    static async Task<List<byte[]>> RunLsFilesPrefixedAsync(
+            string repoDir, byte[] prefix, string[] args, CancellationToken ct) {
+        var stdout  = await RunGitCaptureBytes(repoDir, GitTimeout, true, ct, args);
+        var records = new List<byte[]>();
+
+        foreach (var record in SplitNulRecords(stdout)) {
+            if (prefix.Length == 0) {
+                records.Add(record.ToArray());
+                continue;
+            }
+
+            var combined = new byte[prefix.Length + 1 + record.Length];
+            prefix.CopyTo(combined, 0);
+            combined[prefix.Length] = (byte)'/';
+            record.Span.CopyTo(combined.AsSpan(prefix.Length + 1));
+            records.Add(combined);
+        }
+
+        return records;
+    }
+
     static async Task<Dictionary<string, SnapshotFile>> ReadSourceManifestAsync(
-            string source, SnapshotExclusionPlan plan, bool caseSensitive, CancellationToken ct) {
-        var stdout = await RunGitCaptureBytes(source, GitTimeout, true, ct,
-            "ls-files", "-co", "--exclude-standard", "-z");
+            string source, SnapshotExclusionPlan plan, bool caseSensitive,
+            IReadOnlyList<byte[]> submodulePrefixes, CancellationToken ct) {
+        string[] trackedArgs = ["ls-files", "-co", "--exclude-standard", "-z"];
+        string[] deletedArgs = ["ls-files", "--deleted", "-z"];
+
+        var stdoutRecords  = await RunLsFilesPrefixedAsync(source, [], trackedArgs, ct);
+        var deletedRecords = await RunLsFilesPrefixedAsync(source, [], deletedArgs, ct);
+
+        foreach (var prefix in submodulePrefixes) {
+            // Decoded HERE rather than in the loop below, so it needs the loop's coded error too —
+            // a raw DecoderFallbackException would surface as an unhandled fault instead of a
+            // diagnosable snapshot failure.
+            string subRaw;
+            try { subRaw = StrictUtf8.GetString(prefix); }
+            catch (DecoderFallbackException ex) {
+                throw new InvalidOperationException("borrowed_snapshot_invalid_path_encoding", ex);
+            }
+
+            var subRel = NormalizeRelativePath(subRaw);
+            var subDir = ContainedPath(source, subRel);
+
+            // ContainedPath is LEXICAL — Path.GetFullPath does not resolve links — so a gitlink whose
+            // working-tree directory is a symlink passes containment while `git -C` follows it and
+            // enumerates a tree the snapshot has no right to read. The per-file guards below cannot
+            // undo a directory-level traversal that has already happened, so the components are
+            // checked BEFORE git is invoked here.
+            EnsureNoLinkedComponents(source, subDir, subRel);
+
+            // Gate on the submodule's OWN git, not on the directory: `git submodule` leaves an empty
+            // directory for an uninitialized one, so Directory.Exists is true there and `git -C`
+            // would fail and abort the entire snapshot — the opposite of skipping it.
+            if (!Path.Exists(Path.Combine(subDir, ".git"))) continue;
+
+            // Nested submodules are NOT walked. Failing is deliberate: a silently incomplete snapshot
+            // is invisible to the reviewer, who would report on source it never saw.
+            var subIndex = await RunGitCaptureBytes(subDir, GitTimeout, true, ct, "ls-files", "--stage", "-z");
+            if (ReadSubmodulePrefixes(subIndex).Count > 0)
+                throw new InvalidOperationException(
+                    $"borrowed_snapshot_nested_submodules_unsupported: {subRel}");
+
+            stdoutRecords.AddRange(await RunLsFilesPrefixedAsync(subDir, prefix, trackedArgs, ct));
+            deletedRecords.AddRange(await RunLsFilesPrefixedAsync(subDir, prefix, deletedArgs, ct));
+        }
         // A stage-only addition has no working-tree bytes to mirror. Skip those exact raw paths
         // before decoding so an unrelated, absent non-UTF8 index entry cannot interfere with the
         // review-context extractor's classify-before-decode guarantee.
-        var deleted = await RunGitCaptureBytes(source, GitTimeout, true, ct,
-            "ls-files", "--deleted", "-z");
-        var deletedPaths = SplitNulRecords(deleted)
-            .Select(static path => Convert.ToBase64String(path.Span))
+        var deletedPaths = deletedRecords
+            .Select(static path => Convert.ToBase64String(path))
             .ToHashSet(StringComparer.Ordinal);
         var comparison = caseSensitive
             ? StringComparer.Ordinal
             : StringComparer.OrdinalIgnoreCase;
         var result = new Dictionary<string, SnapshotFile>(comparison);
         long total = 0;
-        foreach (var rawBytes in SplitNulRecords(stdout)) {
+        foreach (var rawBytes in stdoutRecords) {
             ct.ThrowIfCancellationRequested();
-            if (deletedPaths.Contains(Convert.ToBase64String(rawBytes.Span))) continue;
+            if (deletedPaths.Contains(Convert.ToBase64String(rawBytes))) continue;
             // Vendor config is matched HERE, on the raw bytes, by the same classifier the review-context
             // extractor uses — and before decoding, preserving that extractor's classify-before-decode
             // guarantee. Routing it through IsUnderExcluded instead would be a second matcher with
             // different case-folding semantics (OrdinalIgnoreCase there, ASCII-only here), which is how a
             // path becomes excluded by one and invisible to the other.
-            if (ClassifyReservedPath(rawBytes.Span, plan.Reserved, caseSensitive).Kind
+            if (ClassifyReservedPath(rawBytes, plan.Reserved, caseSensitive).Kind
                     != ReservedPathMatchKind.Unrelated)
                 continue;
             string raw;
-            try { raw = StrictUtf8.GetString(rawBytes.Span); }
+            try { raw = StrictUtf8.GetString(rawBytes); }
             catch (DecoderFallbackException ex) {
                 throw new InvalidOperationException(
                     "borrowed_snapshot_invalid_path_encoding", ex);

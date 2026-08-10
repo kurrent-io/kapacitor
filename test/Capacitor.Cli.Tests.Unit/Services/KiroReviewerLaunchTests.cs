@@ -136,16 +136,46 @@ public class KiroReviewerLaunchTests {
                 UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
     }
 
+    /// <summary>
+    /// An EXPLICITLY disabled daemon still refuses at the launch boundary. Note the config now has to
+    /// set the flag false on purpose — the default is enabled — which is the point of the test: the
+    /// opt-out must still be honoured at the boundary an explicit <c>vendor: "kiro"</c> request reaches
+    /// without consulting advertisement.
+    /// </summary>
     [Test]
-    public async Task ADisabledDaemon_RefusesAReviewLaunch() {
+    public async Task AnExplicitlyDisabledDaemon_StillRefusesAReviewLaunch() {
         Skip.Unless(!OperatingSystem.IsWindows(),
             "The Kiro unattended reviewer is POSIX-only: its isolated home holds review context and cannot be created owner-only on Windows.");
 
-        var config = new DaemonConfig { StateDir = StateDir(), Name = "test-daemon" };
+        var config = new DaemonConfig {
+            StateDir = StateDir(), Name = "test-daemon", KiroUnattendedReviewerEnabled = false
+        };
 
         await Assert.That(() => Psi(isReviewFlow: true, config))
             .Throws<InvalidOperationException>()
             .WithMessageContaining("kiro_unattended_reviewer_disabled");
+    }
+
+    /// <summary>
+    /// The other half, and the one this change exists for: a DEFAULT daemon — nothing configured —
+    /// launches. Before, an operator got a refusal here and had to edit a service unit to use a feature
+    /// they had explicitly requested.
+    /// </summary>
+    [Test]
+    public async Task ADefaultDaemon_LaunchesAReviewWithoutAnyOptIn() {
+        Skip.Unless(!OperatingSystem.IsWindows(),
+            "The Kiro unattended reviewer is POSIX-only.");
+
+        var stateDir = StateDir();
+        var config = new DaemonConfig { StateDir = stateDir, Name = "test-daemon", DaemonEpoch = "epoch-1" };
+
+        // Seeded exactly as a real boot seeds it, which is now unconditional.
+        AcpHostedAgentRuntimeFactory.VersionStoreFor(config, AcpVendorDescriptors.Kiro.Vendor)
+            .Affirm(InstalledVersion);
+
+        var psi = Psi(isReviewFlow: true, config);
+
+        await Assert.That(psi.ArgumentList).Contains("--trust-tools");
     }
 
     /// <summary>

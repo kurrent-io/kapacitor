@@ -44,6 +44,29 @@ public class McpFlowResultServerTests {
         await Assert.That(body).Contains("agent-1");
     }
 
+    /// <summary>
+    /// The borrowed-reviewer delivery path. That launch's HOME is a per-launch state dir, so the
+    /// channel has no token store and must POST to the daemon-minted loopback capability verbatim
+    /// rather than composing an API path under a server root. The deliberately unusable apiRoot is
+    /// the load-bearing half: if the override were ignored, the request would go there and the
+    /// capability endpoint would see nothing.
+    /// </summary>
+    [Test]
+    public async Task Capability_url_overrides_the_api_root_for_a_borrowed_reviewer() {
+        using var server = WireMockServer.Start();
+        server.Given(Request.Create().WithPath("/abc123/flow-result").UsingPost())
+              .RespondWith(Response.Create().WithStatusCode(200).WithBody("""{"flow_run_id":"f1","round_id":"r1","round_number":1}"""));
+        using var client = new HttpClient();
+
+        var (text, isError) = await McpFlowResultServer.SubmitCoreAsync(
+            client, "http://unreachable.invalid", "agent-1", Args(), NoDelay([]),
+            submitUrlOverride: $"{server.Url}/abc123/flow-result");
+
+        await Assert.That(isError).IsFalse();
+        await Assert.That(text).IsEqualTo("Result recorded. You may end your reply now.");
+        await Assert.That(server.LogEntries.Single().RequestMessage.Path).IsEqualTo("/abc123/flow-result");
+    }
+
     [Test]
     public async Task Clean_kind_omits_null_text_from_the_wire() {
         using var server = WireMockServer.Start();

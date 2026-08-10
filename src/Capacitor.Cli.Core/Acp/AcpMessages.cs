@@ -202,6 +202,35 @@ public sealed record AvailableModelDto(
 );
 
 /// <summary>
+/// One entry in <c>session/new</c>'s <c>result.configOptions</c> — the SECOND shape an ACP agent may
+/// publish its selectable-model list in, alongside <see cref="SessionModelsInfo"/>. Probe-confirmed
+/// against real <c>opencode acp</c> 1.18.9 (<c>docs/probes/2026-08-07-opencode-acp/</c>), which
+/// returns no <c>models</c> object at all:
+/// <c>{"id":"model","currentValue":"opencode/big-pickle","options":[{"value":"…","name":"…"}]}</c>
+/// (plus sibling entries such as <c>mode</c> and, model-dependently, <c>effort</c>).
+///
+/// <para><see cref="Id"/> is matched against the same literal <c>"model"</c>
+/// <see cref="SetConfigOptionParams.ConfigId"/> uses, so the list read and the value written cannot
+/// address two different options.</para>
+/// </summary>
+public sealed record SessionConfigOptionDto(
+    [property: JsonPropertyName("id")]           string?                  Id,
+    [property: JsonPropertyName("currentValue")] string?                  CurrentValue,
+    [property: JsonPropertyName("options")]      ConfigOptionChoiceDto[]? Options
+);
+
+/// <summary>
+/// One selectable value in <see cref="SessionConfigOptionDto.Options"/>. <see cref="Value"/> is the
+/// exact wire value <c>session/set_config_option</c> requires (OpenCode's are
+/// <c>provider/model</c>, e.g. <c>opencode/deepseek-v4-flash-free</c>); <see cref="Name"/> is the
+/// display label (e.g. <c>OpenCode Zen/DeepSeek V4 Flash Free</c>).
+/// </summary>
+public sealed record ConfigOptionChoiceDto(
+    [property: JsonPropertyName("value")] string  Value,
+    [property: JsonPropertyName("name")]   string? Name
+);
+
+/// <summary>
 /// <c>session/request_permission</c> params sent BY THE AGENT (server-initiated request, handled
 /// via <see cref="Daemon.Acp.AcpConnection.OnServerRequest"/>). Spec-derived, NOT
 /// probe-confirmed: the probe never observed a real <c>session/request_permission</c> frame

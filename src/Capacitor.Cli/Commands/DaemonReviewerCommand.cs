@@ -105,25 +105,19 @@ public static class DaemonReviewerCommand {
 
     /// <summary>
     /// A reviewer whose build an operator can affirm. Every gated reviewer uses the same model, so the
-    /// verb is a table rather than a per-vendor branch — the next one is a row here, not a new arm.
+    /// verb is a table rather than a per-vendor branch — the next one is a row in
+    /// <see cref="GatedReviewers.All"/>, not a new arm.
+    ///
+    /// <para>The table itself moved to Core: the daemon's own apply loop reads the same rows to build
+    /// its config, and it cannot see this project. See <see cref="GatedReviewers"/> for why one list
+    /// rather than two that must agree.</para>
     /// </summary>
-    /// <param name="Vendor">Canonical vendor token, and the key the daemon's store is written under.</param>
-    /// <param name="DefaultBinary">Binary probed when the path env var is unset.</param>
-    /// <param name="PathEnvVar">Env var the daemon itself honours for this vendor's binary — read here
-    /// so the verb affirms the build the DAEMON would launch, not whatever happens to be first on PATH.</param>
-    /// <param name="EnableEnvVar">The consent flag, named in usage text because affirming is not enabling.</param>
-    internal sealed record AffirmableReviewer(
-            string Vendor, string DefaultBinary, string PathEnvVar, string EnableEnvVar) {
-        internal static readonly AffirmableReviewer[] All = [
-            new("kiro",        "kiro-cli", "KCAP_KIRO_PATH",        "KCAP_KIRO_UNATTENDED_REVIEWER"),
-            new("gemini",      "gemini",   "KCAP_GEMINI_PATH",      "KCAP_GEMINI_UNATTENDED_REVIEWER"),
-            new("antigravity", "agy",      "KCAP_ANTIGRAVITY_PATH", "KCAP_ANTIGRAVITY_UNATTENDED_REVIEWER")
-        ];
+    internal static class AffirmableReviewer {
+        internal static GatedReviewer[] All => GatedReviewers.All;
 
-        internal static string VendorList => string.Join(" | ", All.Select(r => r.Vendor));
+        internal static string VendorList => GatedReviewers.VendorList;
 
-        internal static AffirmableReviewer? Resolve(string? vendor) =>
-            All.FirstOrDefault(r => string.Equals(r.Vendor, vendor, StringComparison.OrdinalIgnoreCase));
+        internal static GatedReviewer? Resolve(string? vendor) => GatedReviewers.Resolve(vendor);
     }
 
     static string? ValueOf(string[] args, string flag) {
@@ -142,9 +136,12 @@ public static class DaemonReviewerCommand {
               exclude a build you have found to be broken, and, if you run it while an OLDER build is
               installed, how you deliberately lower the bar again.
 
-              Does NOT enable the unattended reviewer — set
+              Affirming is not a consent switch in either direction. Unattended reviewers are
+              ENABLED by default; to turn one off, set its variable to 0 in the DAEMON's
+              environment (and re-run `kcap daemon service install` if it is service-managed,
+              since a supervised daemon's environment is frozen at install):
               {string.Join(" / ", AffirmableReviewer.All.Select(r => r.EnableEnvVar))}
-              for that, and read what it grants first.
+              Read what an unattended review grants before leaving one on.
             """);
 
         return 1;

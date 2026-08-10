@@ -99,7 +99,7 @@ The setup wizard walks you through:
 1. **Server** — with no `--server-url`/`<tenant>`, kcap **discovers** your tenant: it signs you in with your organization's single sign-on (pass `--github` to use GitHub instead), then lets you choose from the tenants you belong to. A bare `<tenant>` slug expands to `https://<tenant>.kcap.ai`; a full URL is used as-is. If you sign in with your organization's single sign-on and discovery finds no Capacitor tenant, `kcap setup` asks how to continue: create one for you (name + workspace URL, provisioned and waited for until it's live), point at a workspace you already belong to (enter its slug or URL — the same as `kcap setup <tenant>`), or cancel. That middle choice matters because SSO discovery only lists workspaces that use org SSO: a workspace whose members sign in with the GitHub App shows up here as "no tenant", so pick **I already have a workspace**, or re-run with `--github`.
 2. **Login** — authenticates via your tenant's configured sign-in method; discovery completes the sign-in inline
 3. **Default visibility** — choose how your sessions are visible to others
-4. **Coding-agent hooks** — detects Claude Code and Codex CLI on `PATH`, Cursor by user-dir presence (`~/.cursor/`), GitHub Copilot CLI by `~/.copilot/` or `copilot` on `PATH`, Google Gemini CLI by `~/.gemini/` or `gemini` on `PATH`, AWS Kiro CLI by `~/.kiro/` or `kiro`/`kiro-cli` on `PATH`, Pi by `~/.pi/` or `pi` on `PATH`, SST OpenCode by `~/.config/opencode/` (or `~/.local/share/opencode/`) or `opencode` on `PATH`, and Google Antigravity by `~/.gemini/antigravity/` or `antigravity` on `PATH`, lists what it found, then asks **one** yes/no prompt to install kcap for every detected agent (hooks — or, for Pi/OpenCode/Antigravity, the live-ingest plugin — plus skills, instructions, and MCP) — plus a single shared set of agent skills under `~/.agents/skills/`, installed once when any of Codex, Cursor, Copilot, Gemini, Pi, or OpenCode is detected (Claude gets its skills from the bundled plugin; AWS Kiro and Google Antigravity read their own skills dirs — `~/.kiro/skills` and `~/.gemini/skills` respectively — so each gets its own copy there instead of the shared tree) — all user-wide. For Codex it also offers to enable **sandbox network access** for kcap (see below) — Codex blocks sandbox network by default, so the kcap skills can't reach the server without it. Each agent's own config-relocation environment variable is honored when set: `CLAUDE_CONFIG_DIR` (Claude), `CODEX_HOME` (Codex), `GEMINI_CLI_HOME` (Gemini — names the parent of `.gemini`), `KIRO_HOME` (Kiro), `COPILOT_HOME` (Copilot), `OPENCODE_CONFIG_DIR` (OpenCode), and `PI_CODING_AGENT_DIR` (Pi). Cursor's hooks path is fixed at `~/.cursor/hooks.json` and is not relocated.
+4. **Coding-agent hooks** — detects Claude Code and Codex CLI on `PATH`, Cursor by user-dir presence (`~/.cursor/`), GitHub Copilot CLI by `~/.copilot/` or `copilot` on `PATH`, Google Gemini CLI by `~/.gemini/` or `gemini` on `PATH`, AWS Kiro CLI by `~/.kiro/` or `kiro`/`kiro-cli` on `PATH`, Pi by `~/.pi/` or `pi` on `PATH`, SST OpenCode by `~/.config/opencode/` (or `~/.local/share/opencode/`) or `opencode` on `PATH`, and Google Antigravity by `~/.gemini/antigravity/` (GUI) or `~/.gemini/antigravity-cli/` (the `agy` CLI) or `antigravity`/`agy` on `PATH`, lists what it found, then asks **one** yes/no prompt to install kcap for every detected agent (hooks — or, for Pi/OpenCode/Antigravity, the live-ingest plugin — plus skills, instructions, and MCP) — plus a single shared set of agent skills under `~/.agents/skills/`, installed once when any of Codex, Cursor, Copilot, Gemini, Pi, or OpenCode is detected (Claude gets its skills from the bundled plugin; AWS Kiro and Google Antigravity read their own skills dirs — `~/.kiro/skills` and `~/.gemini/skills` respectively — so each gets its own copy there instead of the shared tree) — all user-wide. For Codex it also offers to enable **sandbox network access** for kcap (see below) — Codex blocks sandbox network by default, so the kcap skills can't reach the server without it. Each agent's own config-relocation environment variable is honored when set: `CLAUDE_CONFIG_DIR` (Claude), `CODEX_HOME` (Codex), `GEMINI_CLI_HOME` (Gemini — names the parent of `.gemini`), `KIRO_HOME` (Kiro), `COPILOT_HOME` (Copilot), `OPENCODE_CONFIG_DIR` (OpenCode), and `PI_CODING_AGENT_DIR` (Pi). Cursor's hooks path is fixed at `~/.cursor/hooks.json` and is not relocated.
 5. **Daemon** — configure the daemon name for remote agent execution (the daemon verb is `kcap daemon`; `kcap agent` is a separate group that runs coding agents — see [Local agents](#local-agents-kcap-agent))
 6. **Import past sessions** — offers (default yes) to import this repository's past sessions across every detected agent, equivalent to `kcap import --repo .`. Only shown when the current directory is a git repo with a resolvable origin remote and your authentication requirements are satisfied — which includes no-auth servers (auth provider `None`, no token needed); otherwise it's skipped with the usual `kcap import` hint. Opt out with `--skip-import`.
 
@@ -111,7 +111,9 @@ Verify with `kcap whoami` and `kcap status`. `kcap whoami` prints your identity 
 resolved, then asks the server whether it actually accepts your token — it exits non-zero if the
 server rejects it, or if the token was issued by a different server than the profile now targets
 (re-run `kcap login`). If the server can't be reached it says so and still exits 0, so it stays
-usable offline.
+usable offline. `kcap status` prints its own **Version** line — the installed CLI version, with an
+inline `(update available: …)` annotation when a newer one is out — see
+[`kcap update`](#other-commands) for the full opt-out story.
 
 Setup closes with a **Next steps** box. Each item opens with a question, because neither step is for
 everyone:
@@ -166,7 +168,7 @@ kcap import --antigravity       # only Antigravity
 
 > **OpenCode** likewise has no shell hooks: live capture uses a shipped OpenCode plugin. Run `kcap plugin install --opencode` (or accept the `kcap setup` prompt) to write `~/.config/opencode/plugins/kcap.ts`, which `opencode` auto-loads and streams each session live (`vendor=opencode`). Subagents (the `task` tool / `@agent`) are captured too — the plugin fetches each child session via the SDK and streams it, so it nests under the parent in the trace. Historical `kcap import --opencode` reads OpenCode's SQLite database (`~/.local/share/opencode/opencode.db`) and imports every transitive descendant session (children, grandchildren, and so on — see [Loading historical sessions](#loading-historical-sessions)), so it backfills sessions from before the plugin was installed.
 
-This backfills your past sessions from `~/.claude/projects/` (Claude), `~/.codex/sessions/` (Codex), `~/.cursor/projects/.../agent-transcripts/` (Cursor), `~/.copilot/session-state/` (Copilot), `~/.gemini/tmp/<project>/chats/` (Gemini), `~/.kiro/sessions/cli/` (Kiro), `~/.pi/agent/sessions/` (Pi), `~/.local/share/opencode/opencode.db` (OpenCode), and `~/.gemini/antigravity/brain/` (Antigravity) so they appear in the dashboard. All agents are discovered automatically — pass `--claude`, `--codex`, `--cursor`, `--copilot`, `--gemini`, `--kiro`, `--pi`, `--opencode`, or `--antigravity` (one or more) to narrow the run. All forms are idempotent — safe to run multiple times.
+This backfills your past sessions from `~/.claude/projects/` (Claude), `~/.codex/sessions/` (Codex), `~/.cursor/projects/.../agent-transcripts/` (Cursor), `~/.copilot/session-state/` (Copilot), `~/.gemini/tmp/<project>/chats/` (Gemini), `~/.kiro/sessions/cli/` (Kiro), `~/.pi/agent/sessions/` (Pi), `~/.local/share/opencode/opencode.db` (OpenCode), and both `~/.gemini/antigravity/brain/` (GUI) and `~/.gemini/antigravity-cli/brain/` (the `agy` CLI) (Antigravity) so they appear in the dashboard. All agents are discovered automatically — pass `--claude`, `--codex`, `--cursor`, `--copilot`, `--gemini`, `--kiro`, `--pi`, `--opencode`, or `--antigravity` (one or more) to narrow the run. All forms are idempotent — safe to run multiple times.
 
 You must pick an explicit scope (`--all`, `--org`, or `--repo`) so personal/private repos aren't uploaded by accident. `--org <owner>` filters by the git-remote owner (GitHub org/user) detected on each session — independent of your profile name, so it behaves identically under GitHub and WorkOS sign-in. A bare `--org` lets you pick an owner from your discovered repos and remembers it for next time. Run with no scope on an interactive terminal to get a picker. See [Loading historical sessions](#loading-historical-sessions) for the full set of flags.
 
@@ -207,14 +209,14 @@ Once set up, Capacitor runs silently in the background. Every Claude Code (and C
 - **Tool usage** — every tool call with timing and results
 - **Token consumption** — input/output/cache token counts per interaction
 - **Repository context** — git repo, branch, and PR linkage
-- **In-agent upgrade prompts** — in Claude Code sessions, when the server is running a newer kcap release than the local CLI, additional context is injected into the session so the agent can offer the user an upgrade via `kcap update`. The stderr `kcap` update hint continues to fire for direct command-line use.
+- **In-agent upgrade prompts** — in Claude Code sessions, when the server is running a newer kcap release than the local CLI, additional context is injected into the session so the agent can offer the user an upgrade via `kcap update`. The stderr `kcap` update hint continues to fire for direct command-line use, and every request also carries the CLI's version to the server so it can surface its own out-of-date banner/notification (see [`kcap update`](#other-commands) for the full picture, including how `update_check: false` turns all of this off).
 - **SessionStart context injection** — at every session start the server injects top evaluation-derived fact clusters for the current repo into Claude's `additionalContext`. The injected block is split into two sections: `## Known patterns` (repo/project facts relevant to any reader) and `## Guidance from past sessions` (agent-targeted action items derived from prior eval suggestions with `audience: "agent"`). Opt out by setting `disable_session_guidelines: true` in `~/.config/kcap/config.json` or via `kcap config set disable_session_guidelines true`.
-- **SessionStart team-memory index** — at every session start (Claude Code, Codex CLI, GitHub Copilot CLI, Gemini CLI, AWS Kiro CLI, Google Antigravity, and Cursor CLI's `cursor-agent` — see the capability matrix below for the full per-harness rollout) `kcap` also fetches a compact index of durable [team memories](#memory-mcp-server-for-agents) visible for the current repo/machine and appends a `## Team memory` block to the session's injected context (`additionalContext` for Claude, Codex, Copilot, and Gemini, `additional_context` for Cursor, raw stdout for Kiro, `injectSteps`/`userMessage` for Antigravity): one `slug: description` line per memory, grouped **Org / Team / Yours**, with a nudge to call `get_memory` / `search_memories` for full content. Only the index is injected — never the bodies — so the cost stays roughly flat as the pool grows (mirrors a local `MEMORY.md`). Best-effort and fail-open (a slow or failed fetch injects nothing, never blocking the hook), and only ever injected once per conversation. Opt out with `disable_memory_index: true` in `~/.config/kcap/config.json` or `kcap config set disable_memory_index true`.
+- **SessionStart team-memory index** — at every session start (Claude Code, Codex CLI, GitHub Copilot CLI, Gemini CLI, AWS Kiro CLI, Google Antigravity, Pi, OpenCode, and Cursor CLI's `cursor-agent` — see the capability matrix below for the full per-harness rollout) `kcap` also fetches a compact index of durable [team memories](#memory-mcp-server-for-agents) visible for the current repo/machine and appends a `## Team memory` block to the session's injected context (`additionalContext` for Claude, Codex, Copilot, and Gemini, `additional_context` for Cursor, raw stdout for Kiro, `injectSteps`/`userMessage` for Antigravity, system-prompt append via the kcap Pi extension for Pi, and system-entry append via the kcap OpenCode plugin for OpenCode): one `slug: description` line per memory, grouped **Org / Team / Yours**, with a nudge to call `get_memory` / `search_memories` for full content. Only the index is injected — never the bodies — so the cost stays roughly flat as the pool grows (mirrors a local `MEMORY.md`). Best-effort and fail-open (a slow or failed fetch injects nothing, never blocking the hook), and only ever injected once per conversation. Opt out with `disable_memory_index: true` in `~/.config/kcap/config.json` or `kcap config set disable_memory_index true`.
 - **Crash resilience** — if a `kcap` command hits an unexpected error it records the exception (with stack trace) to `~/.config/kcap/crash.log` (honours `KCAP_CONFIG_DIR`; size-capped) and exits cleanly instead of aborting. Hook and detached-generator commands the coding agent spawns **fail open** (exit 0, nothing surfaced to the agent); other commands exit non-zero with a one-line stderr message pointing at the log.
 
 The SessionStart memory foundation is deliberately separate from harness activation. Every row uses
 the same typed fetch/render, lifecycle, fenced lease, and golden output contracts. Claude, Cursor,
-Codex, Copilot, Gemini, Kiro, and Antigravity are wired; each remaining adapter is activated and
+Codex, Copilot, Gemini, Kiro, Pi, OpenCode, and Antigravity are wired; each remaining adapter is activated and
 live-certified by its own AI-1456 child issue.
 
 | Harness | Shared foundation | Hook/extension wired | Live receipt | Upstream status |
@@ -226,9 +228,9 @@ live-certified by its own AI-1456 child issue.
 | GitHub Copilot CLI | yes | yes (`sessionStart`'s top-level `additionalContext`; silent when there is nothing to inject) | **certified** — gated live cert, `copilot 1.0.75` | available |
 | Gemini CLI | yes | yes (`sessionStart`'s top-level `additionalContext`; falls back to the plain `{"continue":true}` allow payload when there is nothing to inject) | pending | available |
 | Kiro CLI | yes | yes (`agentSpawn` raw stdout — no envelope; Kiro appends hook stdout to agent context verbatim) | **certified** — gated live cert, `kiro-cli 2.12.1`. The once-per-session dedupe is unit-covered only: a resumed `kiro-cli` invocation carries a different hook session id, so it cannot certify it | available — injects **once per session** despite `agentSpawn` firing every prompt |
-| Pi | yes | no | pending | extension bridge required |
-| OpenCode | yes | no | pending | extension bridge required |
-| Antigravity | yes | yes (`PreInvocation` → `{"injectSteps":[{"userMessage":…}]}`; zero bytes when there is no index) | pending — **IDE only**. The gated cert (`KCAP_ANTIGRAVITY_MEMORY_LIVE=1` + `KCAP_URL`) was run against `agy` 1.1.10 and the model did **not** receive the index: the CLI's print mode fires the hook but ignores the returned `injectSteps`. Our side is verified (hook fires; a correct 516–2518 byte payload is emitted; run completes well inside the hook budget), so the cert is retained as the regression test for when upstream honours it. Certification therefore needs the **manual IDE procedure** | available on the **IDE**; on the **CLI** the hook fires and captures, but the injection is not surfaced to the model (`agy` 1.1.10). Injects **once per conversation** despite `PreInvocation` firing every invocation |
+| Pi | yes | yes (extension: the session-start hook prints the fragment raw on stdout — zero bytes when there is nothing to inject — and `kcap.ts` appends it to each turn's chained system prompt in `before_agent_start`; the fetch stays once per session behind the durable lease, keyed on the session **file**, so resume dedupes and fork re-fetches) | pending — gated cert shipped (`KCAP_PI_MEMORY_LIVE=1` + `KCAP_URL`, positive + negative control, echo-detector guard), not yet run live | available |
+| OpenCode | yes | yes (plugin `experimental.chat.system.transform` — the fragment is appended as a new system entry, never replacing one; the CLI writes it raw on the start hook's stdout and zero bytes when there is nothing to inject) | **certified** — gated live cert, `opencode 1.18.9`, positive case plus negative control. Injection rides an **experimental** OpenCode API, so this cert is the only thing that would notice an upstream change silently ceasing delivery — it already earned that: it caught a start/first-request race no unit test could see, where a one-turn session got no index at all. Needs the plugin AND the `kcap` on `PATH` to be the same build; the positive case asks a model to echo 32 random hex characters, so a small free model flakes on transcription — the failure message distinguishes that from a delivery failure | available; transform contract measured on `opencode` 1.18.9. Appends on **every request** (OpenCode rebuilds the system array per request), while the fetch stays **once per session** behind the durable lease |
+| Antigravity | yes | yes (`PreInvocation` → `{"injectSteps":[{"userMessage":…}]}`; zero bytes when there is no index) | **certified — interactive CLI** (a real `agy` 1.1.11 session on 2026-08-07 carried the injected index as its own transcript event). **Print mode (`agy -p`) injects too as of the workspace fallback**: agy honours `injectSteps` in print mode (probe-verified — injected steps land in the transcript on every invocation), but sends `"workspacePaths": []` where interactive sends the launch dir, which starved the index fetch of its scope; the hook now recovers the workspace from the `agy` process's own cwd when the payload omits it (payload always wins, so a vendor fix takes over silently). Two operational facts, both measured on 1.1.11: hooks do not fire at all under `AGY_ADC_AUTH=1` (ADC/Vertex auth) — capture and injection both require the OAuth login; and the gated live cert (`KCAP_ANTIGRAVITY_MEMORY_LIVE=1` + `KCAP_URL`) must therefore run under OAuth. **Antigravity 2.0 (GUI app): certified 2026-08-08** — a real app conversation on the shipped 0.11.14 was captured AND injected (model echoed the first memory slug under a tool ban; the index marker appears in the conversation checkpoint; no tool calls in the transcript), so the app populates `workspacePaths` itself and needs no fallback | available — interactive CLI (certified) and print mode (workspace fallback); nothing under ADC auth (vendor: hooks disabled); injects **once per conversation** despite `PreInvocation` firing every invocation |
 
 ## CLI commands
 
@@ -252,6 +254,7 @@ At a glance — each links to its section below:
 | [`kcap repos`](#repository-paths) | Manage known repo paths for the launch dialog |
 | [`kcap projects` / `project`](#projects) | List and inspect projects |
 | [`kcap profile` / `use`](#profiles) | Manage and switch between servers/profiles |
+| [`kcap machine`](#machine-credentials-headless-recording) | Create credentials for CI runners and agent sandboxes |
 | [`kcap config`](#configuration) | Show and set configuration |
 | [`kcap remap`](#renamed-repo-directories-kcap-remap) | Map renamed repo directories for import |
 | [`kcap ignore`](#configuration) | Exclude paths from recording |
@@ -269,7 +272,7 @@ kcap setup --server-url <url> --no-prompt    # CI / scripted
 
 With no server argument, setup (and `kcap login`) runs **tenant discovery**: it signs you in with your organization's single sign-on, then lets you pick from the tenants you belong to. Pass `--github` to sign in with GitHub instead; `--discover` forces discovery even when a server is configured. In SSH / headless environments (no browser), discovery falls back to GitHub Device Flow, since SSO needs a local browser.
 
-The setup wizard detects every supported coding agent, asks **one** yes/no prompt to install kcap (hooks, skills, instructions, MCP) for all of them, configures the daemon, and finishes with an offer to import this repository's past sessions. Claude Code and Codex CLI are detected via `PATH`; Cursor is detected by user-dir presence (`~/.cursor/`), so IDE users without the `cursor` shell command are covered; GitHub Copilot CLI is detected via `~/.copilot/` or `copilot` on `PATH`; Google Gemini CLI via `~/.gemini/` or `gemini` on `PATH`; AWS Kiro CLI via `~/.kiro/` or `kiro`/`kiro-cli` on `PATH`; Pi via `~/.pi/agent/` or `pi` on `PATH`; SST OpenCode via `~/.config/opencode/` (or `~/.local/share/opencode/`) or `opencode` on `PATH`; and Google Antigravity via `~/.gemini/antigravity/` or `antigravity` on `PATH` (Pi, OpenCode, and Antigravity have no shell hooks, so for those the wizard installs a live-ingest plugin rather than hook config). Re-run any time to update the configuration.
+The setup wizard detects every supported coding agent, asks **one** yes/no prompt to install kcap (hooks, skills, instructions, MCP) for all of them, configures the daemon, and finishes with an offer to import this repository's past sessions. Claude Code and Codex CLI are detected via `PATH`; Cursor is detected by user-dir presence (`~/.cursor/`), so IDE users without the `cursor` shell command are covered; GitHub Copilot CLI is detected via `~/.copilot/` or `copilot` on `PATH`; Google Gemini CLI via `~/.gemini/` or `gemini` on `PATH`; AWS Kiro CLI via `~/.kiro/` or `kiro`/`kiro-cli` on `PATH`; Pi via `~/.pi/agent/` or `pi` on `PATH`; SST OpenCode via `~/.config/opencode/` (or `~/.local/share/opencode/`) or `opencode` on `PATH`; and Google Antigravity via `~/.gemini/antigravity/` (GUI) or `~/.gemini/antigravity-cli/` (the `agy` CLI) or `antigravity`/`agy` on `PATH` (Pi, OpenCode, and Antigravity have no shell hooks, so for those the wizard installs a live-ingest plugin rather than hook config). Re-run any time to update the configuration.
 
 - **New tenant:** when signing in via Kurrent's hosted auth and you have no tenant yet, `setup` prompts to create one (organization name + `<slug>.kcap.ai` workspace URL) and waits for it to come online. Non-interactive runs (`--no-prompt`) skip this and exit with guidance.
 - **Import past sessions:** the final step offers (default yes) to import this repository's past sessions across every detected agent — equivalent to `kcap import --repo .`. It only appears when the current directory is a git repo with a resolvable origin remote and your authentication requirements are satisfied — which includes no-auth servers (auth provider `None`); otherwise it's skipped with the usual `kcap import` hint. Opt out with `--skip-import`.
@@ -446,6 +449,16 @@ workspace: unknown
 
 Status and polled round-result output also cross-check the reviewer's **vendor**: if the `reviewer` participant's vendor disagrees with the run-level `applied_reviewer_vendor` (or the server flags `reviewer_vendor_mismatch`), the CLI renders a `⚠ reviewer vendor mismatch` warning telling the driver to treat the run's results as suspect, close the flow, and report it. Agreement renders nothing.
 
+A dynamic (`definition_yaml`) flow whose participants can be dollar-metered also reports its **budget enforcement** level, so you know whether every participant's spend counts against `budget_usd`:
+
+```
+budget enforcement: full
+
+budget enforcement: partial (unmetered roles: probe, helper)
+```
+
+`partial` names the roles whose vendor hosts turns that report no token usage (they're bounded by `max_rounds`/`round_timeout`/`idle_ttl` instead of the dollar budget); `full` means every participant's spend is metered. The line is **absent** for catalog review flows, for runs without a dynamic budget, and against an older server — its absence carries no meaning. It appears on start, every round, status and close.
+
 Responses from these tools may carry **`pending_messages`** — out-of-band notes participants push to the driver via `send_flow_message` (see the flow-result server below). The CLI acknowledges them to the server after rendering the response, so a message is normally shown once — but a failed acknowledgment redelivers it on a later call (at-least-once), so consumers should treat the `message_id` as the dedup key and react to each id only once.
 
 While the server is rebuilding its flows read model (a projection replay after a server upgrade), flow tools can return a coded **`server_catching_up`** error (HTTP 409) with the replay's progress. It is temporary and retryable: wait a few minutes and retry, or ask the user how to proceed. The CLI renders the same guidance on every surface — start/submit, status/close, and the flow-result sidecar tools.
@@ -611,7 +624,7 @@ Cursor historical import walks every JSONL transcript under `~/.cursor/projects/
 
 Kiro historical import reads each session's append-only log at `~/.kiro/sessions/cli/{id}.jsonl` (plus the sibling `{id}.json` for cwd / model / title) and posts the lines through `POST /hooks/transcript` — the same lines the live watcher tails, so live and historical ingest converge. Set `KIRO_HOME` to point at a non-default location. Kiro persists no token counts, so imported Kiro sessions show no token usage (by design). Re-imports are idempotent — event ids are deterministic over `(session id, message/tool id, kind)`.
 
-OpenCode historical import reads its SQLite database (`~/.local/share/opencode/opencode.db`, honouring `XDG_DATA_HOME`) and reconstructs the same `{info,parts}` lines the live plugin streams — so live and historical ingest converge on one canonical event stream (`vendor=opencode`). Unlike live capture, which only nests direct children, historical import walks every transitive descendant session (children, grandchildren, and so on, up to a depth of 8) and imports each one as a direct subagent of the top-level root (`/hooks/subagent-*`) — flattened because a session's stream key can't express deeper nesting. A descendant beyond the depth cap is never silently dropped: import prints a `[kcap] opencode: root <id> descendants_omitted=N (depth cap 8 exceeded)` diagnostic to stderr, appending `(lower bound — counting ceiling hit)` in the rare case where counting the omitted subtree itself hit an internal safety cap before finishing — the count is then a lower bound, not exact. Because the server exposes no completeness signal, kcap records each fully-imported session in a local ledger (`~/.cache/kcap/opencode-imported.json`, keyed by server) to skip it on re-run — the ledger key is a content fingerprint over the whole descendant tree (including omitted ids), so a newly-reachable descendant invalidates a stale entry; a session interrupted mid-import is repaired on the next run. Re-imports are idempotent — canonical event ids derive from OpenCode's stable `prt_` part ids.
+OpenCode historical import reads its SQLite database (`~/.local/share/opencode/opencode.db`, honouring `XDG_DATA_HOME`) and reconstructs the same `{info,parts}` lines the live plugin streams — so live and historical ingest converge on one canonical event stream (`vendor=opencode`). Unlike live capture, which only nests direct children, historical import walks every transitive descendant session (children, grandchildren, and so on, up to a depth of 8) and imports each one as a direct subagent of the top-level root (`/hooks/subagent-*`) — flattened because a session's stream key can't express deeper nesting. A descendant beyond the depth cap is never silently dropped: import prints a `[kcap] opencode: root <id> descendants_omitted=N (depth cap 8 exceeded)` diagnostic to stderr, appending `(lower bound — counting ceiling hit)` in the rare case where counting the omitted subtree itself hit an internal safety cap before finishing — the count is then a lower bound, not exact. Because the server exposes no completeness signal, kcap records each fully-imported session in a local ledger (`~/.cache/kcap/opencode-imported.json`, keyed by server) to skip it on re-run — the ledger key is a content fingerprint over the whole descendant tree (including omitted ids), so a newly-reachable descendant invalidates a stale entry; a session interrupted mid-import is repaired on the next run. The ledger trusts local state, so a session deleted server-side after import is wrongly skipped on re-run — pass `--reimport` (see Additional flags below) to bypass the ledger for the selected sessions. Re-imports are idempotent — canonical event ids derive from OpenCode's stable `prt_` part ids.
 
 Claude (`CLAUDE_CONFIG_DIR`), Codex (`CODEX_HOME`), Gemini (`GEMINI_CLI_HOME`, which names the parent of `.gemini`), OpenCode (`OPENCODE_CONFIG_DIR`), and Pi (`PI_CODING_AGENT_DIR`, which names the `~/.pi/agent` leaf) historical/live paths follow each agent's own config-relocation environment variable when it is set, so a relocated config is discovered automatically.
 
@@ -623,7 +636,10 @@ kcap import --org EventStore --private        # mark every imported session as O
 kcap import --org EventStore --since 2026-01-01  # only sessions on or after this date
 kcap import --org EventStore --cwd /path/to/project  # filter by working directory
 kcap import --org EventStore --session abc123    # single session
+kcap import --opencode --session ses_x --reimport  # force one OpenCode session past its ledger entry
 ```
+
+`--reimport` forces OpenCode sessions to re-import even when the local completeness ledger (described above) records them as already loaded — the escape hatch for a session that was deleted server-side (e.g. via `kcap disable`) but is still marked complete locally, which a plain re-run would otherwise skip. Scope it with the usual vendor/`--repo`/`--cwd`/`--session` filters to force just the affected sessions; the re-send is idempotent, and a successful forced import refreshes the ledger entry. It has no effect on other vendors, which already re-classify every run.
 
 Non-interactive runs (no TTY, e.g. CI) must pass both a scope flag and `--yes`. The command is idempotent and resumable — re-running with the same scope only uploads what's missing or incomplete. A server-side tracker deduplicates events on `(stream, eventId)` so previously-imported turns don't get re-appended.
 
@@ -738,28 +754,72 @@ kcap daemon consent log -n 50                                    # tail consent-
 
 `show`/`set-default`/`allow`/`deny`/`remove` mutate the policy over the daemon's local socket and require the target daemon to be running; `log` reads `consent-decisions.jsonl` straight off disk, so it works even with the daemon stopped. All six take `--name <n>` like the rest of `kcap daemon`.
 
-> **Two different gates, deliberately.** `daemon consent` authorises an individual launch and defaults to
-> *allow*; the Gemini reviewer flag below is a **capability** gate that defaults to *off* and asks a
-> different question — whether this daemon may run that vendor unattended **at all**. A per-launch deny is
-> not a substitute: the reviewer's containment rests on a behaviour of the installed vendor build, so the
-> safe default has to be off rather than on-until-denied.
+> **`daemon consent` is the gate that authorises an individual launch**, and it defaults to *allow*. The
+> per-vendor reviewer switches below are a different thing — whether this daemon may run a given vendor
+> unattended **at all** — and they now default to *enabled* too. See the note directly below for why they
+> used to be opt-in and no longer are.
 
-#### Gemini as an unattended review-flow reviewer — off by default, and why
+#### Unattended reviewers are enabled by default (they used to be opt-in)
 
-A **hosted** Gemini agent needs nothing beyond the project setting above. Using Gemini as an **unattended
-review-flow reviewer** is a separate, deliberately opt-in decision, because of what an unattended review
-grants:
+Every reviewer vendor your daemon can host is available to a review flow out of the box. Four of them
+— Gemini, Kiro, OpenCode and Antigravity — used to require an explicit opt-in. That was removed, because
+the opt-in did not do the job it appeared to do:
+
+- **The reviewer vendor is chosen by the caller.** Claude, Codex, Cursor and Copilot have never been gated,
+  and each runs with a *full* tool surface — shell and file writes included. So on any daemon that also
+  advertises one of those, the gate did not widen the class of capability a requester could reach: one it
+  blocked simply asked for an ungated vendor with more capability, not less. (Not quite "stopped nobody" —
+  a Gemini reviewer burns *your* Gemini credentials and obeys Gemini's own permission model, which is not a
+  subset of "Claude was available anyway".)
+  > The exception, since the claim is not universal: on a daemon where you installed **only** a gated
+  > vendor's CLI — for hosted work, say — and no ungated one, these variables were the only thing keeping
+  > that binary from also serving unattended reviews. If that is your setup and you want it back, set the
+  > variable to `0`. `kcap daemon consent` is the better control, because it cannot be sidestepped by
+  > naming a different vendor.
+- **It was attached to the wrong end of the risk scale.** Two of the four gated vendors (Kiro, OpenCode) run
+  *read-only* reviewers. The strictest policy was on the most contained configuration.
+- **It taxed the honest path.** A supervised daemon inherits nothing from your shell, so turning a reviewer
+  on meant editing a service unit and restarting — to use a feature you had explicitly requested.
+
+What remains is the part that was doing real work: a per-vendor **version floor**. Several of these
+reviewers' containment depends on behaviour of the installed vendor build — and for OpenCode it is
+environment-based, which fails *silently* if a future build stops honouring it. Your daemon records a
+minimum version automatically at startup and refuses anything older. Use `kcap daemon reviewer affirm
+--vendor <name>` to move that floor past a build you have found to be bad. It is remediation, not
+permission, and it never blocks a first launch.
+
+**To disable a vendor**, set its variable to `0` (or `false`/`no`/`off`) in the **daemon's** environment:
 
 ```bash
-export KCAP_GEMINI_UNATTENDED_REVIEWER=1     # this DAEMON's environment — not a server setting
+export KCAP_GEMINI_UNATTENDED_REVIEWER=0        # this DAEMON's environment — not a server setting
+export KCAP_KIRO_UNATTENDED_REVIEWER=0
+export KCAP_OPENCODE_UNATTENDED_REVIEWER=0
+export KCAP_ANTIGRAVITY_UNATTENDED_REVIEWER=0
 ```
 
-Only an explicit `1`/`true`/`yes`/`on` enables it; anything else, a typo included, leaves it off. Enabling a
-reviewer is a consent decision, so a misspelling must not read as consent.
+Unset means enabled. A value the daemon cannot read as true or false is treated as **disabled**, and
+warned about at startup — because the only reason to set one of these at all is to turn a reviewer off,
+so an unreadable value is a failed "off" rather than an ambiguous input. Surrounding quotes are tolerated
+(`"0"` works), since a mis-quoted service-unit entry is the usual way that happens.
 
-> Earlier docs showed a `GeminiUnattendedReviewerEnabled` key in `~/.config/kcap/config.json`. Nothing read
-> it — the flag was reachable only from a test constructor, so the Gemini unattended reviewer could not
-> actually be turned on. The environment variable above is the working form.
+**On a service-installed daemon, set it before you install.** `kcap daemon service install` copies these
+four variables into the service unit — on every platform — but a supervised daemon inherits nothing from
+your shell afterwards, so its environment is frozen at install time. Exporting an opt-out later has no
+effect until you reinstall the service:
+
+```bash
+export KCAP_GEMINI_UNATTENDED_REVIEWER=0
+kcap daemon service install        # re-run so the unit picks the value up
+```
+
+Be aware that disabling one vendor does not stop unattended review on that daemon: a requester can still
+name an ungated vendor. If you want no unattended reviews at all, `kcap daemon consent` is the gate that
+actually does that — note it **defaults to allow**, so it only helps once you have configured it.
+
+#### What an unattended Gemini review grants
+
+A **hosted** Gemini agent needs nothing beyond the project setting above. A Gemini **reviewer** is worth
+understanding before you leave it on, because its posture is the broadest of the set:
 
 **Read this before setting it.** An unattended reviewer runs in a daemon-owned worktree with this daemon's
 own `HOME`, so repository content that steers the model into using its tools gets **code execution with your
@@ -775,18 +835,20 @@ daemon user's full authority**. Concretely, and not bounded to the review:
 - **verdict** — steered content can simply ask the model to report `clean`. A review result is not
   authenticated review output.
 
-This is a property of unattended review generally, not of Gemini specifically — enabling Gemini widens which
-vendors can do it rather than introducing it. The one path that does *not* grant this is a sandboxed borrowed
+This is a property of unattended review generally, not of Gemini specifically — Gemini widens which vendors
+can do it rather than introducing it, and Claude, Codex, Cursor and Copilot have never been gated at all. The one path that does *not* grant this is a sandboxed borrowed
 review, which Gemini cannot use yet.
 
-**Enabling this flag is your consent to the above**, which is why it is daemon-local (the person requesting a
-review is not necessarily you) and defaults off.
+**This is on by default, so read the above as describing what your daemon already does** once `gemini`
+resolves. The switch is daemon-local — the person requesting a review is not necessarily you — and it is
+now an opt-OUT: `KCAP_GEMINI_UNATTENDED_REVIEWER=0` to turn it off. If your daemon is service-managed, set
+it and re-run `kcap daemon service install`, since a supervised daemon's environment is frozen at install.
 
 Two further things it does *not* do:
 
 - it does not bypass the **minimum version**. The reviewer's only containment is Gemini's exact-name MCP
   allowlist, which is a behaviour of the installed build, so the daemon records a minimum `gemini` version
-  the first time you enable the reviewer. That recorded version is a **minimum, not an exact match**: any
+  on the first startup that finds the binary. That recorded version is a **minimum, not an exact match**: any
   build at or above it runs, so **a Gemini upgrade needs no action from you**; an older one is refused, with
   a coded error naming both versions. Run `kcap daemon reviewer affirm --vendor gemini` to move the minimum
   to whatever is installed now — which is how you exclude a build you have found to be broken, and, if you
@@ -801,11 +863,9 @@ Two further things it does *not* do:
 
 #### Unattended Kiro reviews
 
-```bash
-export KCAP_KIRO_UNATTENDED_REVIEWER=1       # this DAEMON's environment — not a server setting
-```
+Enabled by default; `KCAP_KIRO_UNATTENDED_REVIEWER=0` in the daemon's environment disables it.
 
-**Everything in the Gemini warning above applies**, with one difference in each direction.
+**Everything in the Gemini section above applies**, with one difference in each direction.
 
 *Tighter:* a Kiro reviewer runs with a **scoped** tool set — `fs_read`, `thinking`, and the tools of the MCP
 servers the launch itself injects. `fs_write` and `execute_bash` are not trusted, and a permission request that
@@ -826,7 +886,7 @@ A review launch also runs with a daemon-owned, empty `KIRO_HOME`, so your global
 interactive Kiro sessions are unaffected, and the file is never modified.
 
 **Minimum version.** That suppression depends on the installed build honouring `KIRO_HOME`, so the daemon
-records a minimum `kiro-cli` version the first time you enable the reviewer. It is a **minimum, not an exact
+records a minimum `kiro-cli` version on the first startup that finds the binary. It is a **minimum, not an exact
 match**: any build at or above it runs, so **a `kiro-cli` upgrade needs no action from you**; a build older
 than the recorded minimum is refused.
 
@@ -845,9 +905,7 @@ cannot be created owner-only on Windows.
 
 #### Unattended Antigravity reviews
 
-```bash
-export KCAP_ANTIGRAVITY_UNATTENDED_REVIEWER=1   # this DAEMON's environment — not a server setting
-```
+Enabled by default; `KCAP_ANTIGRAVITY_UNATTENDED_REVIEWER=0` in the daemon's environment disables it.
 
 The prerequisite is the Antigravity **CLI** — the `agy` binary on `PATH` (or `KCAP_ANTIGRAVITY_PATH`
 pointing at it). The Antigravity **IDE** alone is not enough: it ships no `agy`, and a daemon with only the
@@ -859,6 +917,13 @@ the kcap capture plugin inside it do not reach the reviewer, and your interactiv
 unaffected. POSIX only, for the same reason as Kiro: that home holds the reviewer's own transcript, and
 therefore the review context, and cannot be created owner-only on Windows.
 
+That home also carries a small `settings.json` holding `permissions.allow` rules for exactly the MCP tools
+the launch injected — the `kcap-flow-result` submit channel, plus any read-only servers the flow definition
+allowlisted — named one `server/tool` pair at a time, never a wildcard. `agy -p` has no human to approve a
+tool confirmation and auto-denies every one it raises, so without those rules a reviewer reads its context,
+reasons, and can never deliver its result. The grant admits those named tools and nothing else;
+`--dangerously-skip-permissions`, which *is* the read boundary, stays off this arm.
+
 **Give the daemon durable credentials.** An unattended reviewer's stdin is closed, so it cannot complete an
 interactive login — an unauthenticated `agy` fails the launch with a coded
 `antigravity_reviewer_auth_unavailable` rather than hanging. Application Default Credentials are the
@@ -868,7 +933,15 @@ supported setup:
 gcloud auth application-default login
 export GOOGLE_CLOUD_PROJECT=<your-project>
 export AGY_ADC_AUTH=1                           # selects ADC; without it agy still demands an OAuth login
+export GOOGLE_APPLICATION_CREDENTIALS="$HOME/.config/gcloud/application_default_credentials.json"
 ```
+
+All three are required. The credential path looks redundant — ADC has a well-known default location, and
+that is exactly where `gcloud auth application-default login` just wrote it — but a reviewer launch
+redirects `HOME` to a per-launch state directory, so the default location is not visible to the child.
+Without the explicit path `agy` reports `authentication required. Run 'agy' to log in.` even with the
+other two set correctly. The daemon does not fill this in for you: it never reads a credential location
+of its own accord, only forwards what you exported.
 
 **Minimum version.** Containment here depends on the installed build honouring `HOME` and reading no other
 global config source, so the daemon records a minimum `agy` version at the first startup that finds `agy`
@@ -879,11 +952,13 @@ action from you** — which matters more here than for the other reviewers, sinc
 (observed going 1.1.8 → 1.1.10 mid-session). A build older than the recorded minimum, or one whose
 `agy --version` cannot be read, is withheld with a coded reason naming both versions.
 
-Because this vendor's minimum is recorded when `agy` first resolves rather than when you enable the
-reviewer, there is one window worth knowing about: install `agy`, run a daemon with the reviewer *off*,
-then upgrade `agy` and only afterwards turn the reviewer on — and the recorded minimum is still the older
+This vendor's minimum is recorded whenever `agy` first resolves, even on a daemon whose reviewer you have
+explicitly turned off — its floor also gates *hosted* Antigravity agents, which are never gated by the
+reviewer switch. That leaves one window worth knowing about, now that reviewers are on by default it needs
+a deliberate opt-out to reach: install `agy`, run a daemon with `KCAP_ANTIGRAVITY_UNATTENDED_REVIEWER=0`,
+then upgrade `agy` and only afterwards unset that variable — and the recorded minimum is still the older
 build you started with, so a later *downgrade* back to it would be admitted. Run the command below once
-after enabling the reviewer if you want the minimum to be the build you actually reviewed with.
+after re-enabling if you want the minimum to be the build you actually reviewed with.
 
 ```bash
 kcap daemon reviewer affirm --vendor antigravity
@@ -915,7 +990,8 @@ read absolute paths outside its worktree, so a daemon-owned worktree does not co
 sees. A hosted agent runs on your own machine, under your own daemon, at your own request; if you would
 rather it asked first, restrict the vendor with [`kcap daemon consent`](#launch-consent-kcap-daemon-consent).
 **Review-flow reviewers never get the flag** — they read an owned worktree and nothing else, so the
-soft-deny is the posture they want.
+soft-deny is the posture they want; the one thing they must still be able to call, their own result
+channel, is admitted by name instead (above).
 
 Hosted launches otherwise take the same route as the reviewer above — the per-launch isolated `HOME`
 included, so your own `~/.gemini` config and the kcap capture plugin inside it never reach a hosted agent,
@@ -934,14 +1010,15 @@ daemon started, restart it or run `kcap daemon reviewer affirm --vendor antigrav
 
 #### If your daemon runs as a service
 
-All three consent flags above are read from the **daemon's own environment**, and a supervised daemon (`kcap daemon
-service install` — launchd, systemd, or a Windows scheduled task) inherits nothing from the shell you
-installed it from. Exporting a flag in your shell therefore does nothing for a service-installed daemon until
-the unit itself carries it, so export it *first* and then reinstall:
+The reviewer switches above are read from the **daemon's own environment**, and a supervised daemon (`kcap
+daemon service install` — launchd, systemd, or a Windows scheduled task) inherits nothing from the shell you
+installed it from. Since the switches now default to *enabled*, this only matters when you want to **disable**
+one: exporting it in your shell does nothing for a service-installed daemon until the unit itself carries it,
+so export it *first* and then reinstall:
 
 ```bash
-export KCAP_GEMINI_UNATTENDED_REVIEWER=1
-kcap daemon service install --name "$(whoami)"    # captures the flag into the unit
+export KCAP_GEMINI_UNATTENDED_REVIEWER=0
+kcap daemon service install --name "$(whoami)"    # captures the setting into the unit
 ```
 
 The Antigravity ADC variables (`GOOGLE_CLOUD_PROJECT`, `AGY_ADC_AUTH`, `GOOGLE_APPLICATION_CREDENTIALS`)
@@ -949,9 +1026,9 @@ are captured by the same install, so a daemon installed *before* this shipped mu
 interactive shell to pick them up. `KCAP_ANTIGRAVITY_PATH` is **not** captured — like the other vendor path
 overrides, set it where the unit can see it if you need a non-default value.
 
-Install prints a `Consent:` line naming each reviewer flag it captured. That freeze is the point to notice:
-the unit outlives the shell, so the reviewer stays enabled for that service until you reinstall without the
-variable set — unsetting it in your shell later changes nothing.
+Install prints a `Consent:` line naming each reviewer variable it captured. That freeze is the point to
+notice: the unit outlives the shell, so a reviewer you disabled stays disabled for that service until you
+reinstall without the variable set — unsetting it in your shell later changes nothing.
 
 If a reviewer is still not offered, the daemon says why in its own log at startup — one line per vendor that
 is installed and unattended-capable but withheld, carrying the same text the launch path would have thrown
@@ -1150,7 +1227,7 @@ On `session.created` the plugin runs `kcap hook --opencode` (POSTs lifecycle + s
 
 #### Google Antigravity plugin
 
-Google Antigravity is a GUI agent IDE detected via `~/.gemini/antigravity/` (it shares the `~/.gemini` home with the Gemini CLI, honouring `GEMINI_CLI_HOME`) or the `antigravity` binary on `PATH`. Antigravity has **no shell hooks** — it runs *control hooks* configured by a **plugin** — so `install --antigravity` installs the kcap capture plugin to `~/.gemini/config/plugins/kcap/`: a `plugin.json` manifest (which the GUI requires to load the directory) plus a `hooks.json` `kcap` block (preserving any hook blocks you authored). The GUI only reads plugins under its config root — the `~/.gemini/antigravity-cli/` dir is the `agy` CLI's config and is invisible to the IDE. Restart Antigravity after installing so it reloads the plugin.
+Google Antigravity is one vendor over two surfaces — the GUI IDE and the `agy` CLI — detected via `~/.gemini/antigravity/` (GUI) or `~/.gemini/antigravity-cli/` (the `agy` CLI); it shares the `~/.gemini` home with the Gemini CLI, honouring `GEMINI_CLI_HOME`; or the `antigravity`/`agy` binary on `PATH`. Detecting the CLI root (or `agy`) matters because an agy-only machine has neither the GUI data root nor an `antigravity` binary — without it the shared capture plugin would never install. Antigravity has **no shell hooks** — it runs *control hooks* configured by a **plugin** — so `install --antigravity` installs the kcap capture plugin to `~/.gemini/config/plugins/kcap/`: a `plugin.json` manifest (which the GUI requires to load the directory) plus a `hooks.json` `kcap` block (preserving any hook blocks you authored). The GUI only reads plugins under its config root — the `~/.gemini/antigravity-cli/` dir is the `agy` CLI's config and is invisible to the IDE. Restart Antigravity after installing so it reloads the plugin.
 
 ```bash
 kcap plugin install --antigravity           # install the kcap plugin to ~/.gemini/config/plugins/kcap/
@@ -1159,7 +1236,7 @@ kcap plugin remove --antigravity            # remove the kcap plugin
 
 Beyond the capture plugin, `install --antigravity` (and `kcap setup`) also **registers the four kcap MCP servers** in Antigravity's own `~/.gemini/config/mcp_config.json` — its OWN MCP file, not the Gemini CLI's `settings.json` (opt out `--skip-antigravity-mcp`); **installs the kcap steering block** into the shared `~/.gemini/GEMINI.md` (opt out `--skip-antigravity-instructions`); and **copies the kcap skills** into `~/.gemini/skills` — where Antigravity reads them, **not** `~/.agents/skills` (opt out `--skip-antigravity-skills`). All three are non-destructive and idempotent. `remove --antigravity` reverses them, but leaves the shared `~/.gemini/GEMINI.md` block in place when the Gemini CLI integration is still installed (that block is shared; `remove --gemini` owns it then).
 
-Antigravity fires a distinct control hook per lifecycle/tool event; kcap acts on the first `PreInvocation` of a conversation (POSTs lifecycle + spawns a watcher tailing that conversation's `transcript_full.jsonl`, `vendor=antigravity`) — so kcap must be on `PATH`. Antigravity is a GUI whose process outlives any one conversation (like the Codex desktop app), so there is no per-conversation exit signal: the watcher ends a session after it goes idle (default 60 min; override with `KCAP_ANTIGRAVITY_IDLE_MINUTES`), and a later turn reactivates it. Token/model usage lives in each conversation's sibling SQLite db (`conversations/<id>.db`), not the JSONL, so the watcher decodes it and streams the per-generation cost (priced on read; cost is never stored). **Subagents** (Antigravity's nested agents) are separate conversations; both *live* capture and historical `kcap import --antigravity` nest them under the parent, derived from the `INVOKE_SUBAGENT` step in the parent's `transcript_full.jsonl` (the spawn-time linkage signal). Live capture POSTs a subagent-link as each child is spawned; import reads the same `INVOKE_SUBAGENT` steps across all conversations on disk. Historical import reads `~/.gemini/antigravity/brain/*/…/transcript_full.jsonl` and backfills sessions from before the hooks were installed; it's watermark-idempotent (safe to re-run) and leaves the working dir empty (Antigravity records no machine-readable cwd in the transcript — live capture gets it from the hook payload). Imported sessions currently carry content but not cost (cost injection on import is a follow-up). To import one conversation, `kcap import --antigravity --session <id>` accepts the id in **either** form — the dashed brain-dir conversation id or its dashless canonical form (the id kcap shows for the session) — because import canonicalizes to the same dashless id that live capture uses.
+Antigravity fires a distinct control hook per lifecycle/tool event; kcap acts on the first `PreInvocation` of a conversation (POSTs lifecycle + spawns a watcher tailing that conversation's `transcript_full.jsonl`, `vendor=antigravity`) — so kcap must be on `PATH`. Antigravity is a GUI whose process outlives any one conversation (like the Codex desktop app), so there is no per-conversation exit signal: the watcher ends a session after it goes idle (default 60 min; override with `KCAP_ANTIGRAVITY_IDLE_MINUTES`), and a later turn reactivates it. Token/model usage lives in each conversation's sibling SQLite db (`conversations/<id>.db`), not the JSONL, so the watcher decodes it and streams the per-generation cost (priced on read; cost is never stored). **Subagents** (Antigravity's nested agents) are separate conversations; both *live* capture and historical `kcap import --antigravity` nest them under the parent, derived from the `INVOKE_SUBAGENT` step in the parent's `transcript_full.jsonl` (the spawn-time linkage signal). Live capture POSTs a subagent-link as each child is spawned; import reads the same `INVOKE_SUBAGENT` steps across all conversations on disk. Historical import reads both product roots' brains — `~/.gemini/antigravity/brain/*/…/transcript_full.jsonl` (GUI) and `~/.gemini/antigravity-cli/brain/*/…/transcript_full.jsonl` (the `agy` CLI) — and backfills sessions from before the hooks were installed; it's watermark-idempotent (safe to re-run) and leaves the working dir empty (Antigravity records no machine-readable cwd in the transcript — live capture gets it from the hook payload). Imported sessions currently carry content but not cost (cost injection on import is a follow-up). To import one conversation, `kcap import --antigravity --session <id>` accepts the id in **either** form — the dashed brain-dir conversation id or its dashless canonical form (the id kcap shows for the session) — because import canonicalizes to the same dashless id that live capture uses.
 
 Cursor uses a single user-scope `hooks.json`; there is no project-scope variant.
 
@@ -1202,7 +1279,7 @@ KCAP_CURSOR_PATH=/opt/cursor/bin/cursor-agent kcap daemon
 KCAP_CURSOR_MODEL=claude-opus-4-8 kcap daemon
 ```
 
-`KCAP_COPILOT_PATH` overrides the `copilot` binary the daemon spawns for **GitHub Copilot hosted agents** (`copilot --acp --stdio`), mirroring `KCAP_CURSOR_PATH` — the daemon hosts Claude, Codex, Cursor, Copilot, Kiro, and Gemini. `KCAP_GEMINI_PATH` overrides the `gemini` binary the same way (`gemini --experimental-acp`), and applies to both hosted Gemini agents and the opt-in [unattended Gemini reviewer](#gemini-as-an-unattended-review-flow-reviewer--off-by-default-and-why) — whose build-affirmation check reads whichever binary it names. `KCAP_OPENCODE_PATH` remains **reserved** plumbing for the not-yet-hosted OpenCode vendor, so setting it has no observable effect yet.
+`KCAP_COPILOT_PATH` overrides the `copilot` binary the daemon spawns for **GitHub Copilot hosted agents** (`copilot --acp --stdio`), mirroring `KCAP_CURSOR_PATH` — the daemon hosts Claude, Codex, Cursor, Copilot, Kiro, Gemini, Pi, OpenCode and Antigravity. `KCAP_GEMINI_PATH` overrides the `gemini` binary the same way (`gemini --experimental-acp`), and applies to both hosted Gemini agents and the [unattended Gemini reviewer](#unattended-reviewers-are-enabled-by-default-they-used-to-be-opt-in) (enabled by default) — whose build-affirmation check reads whichever binary it names. `KCAP_OPENCODE_PATH` overrides the `opencode` binary the daemon spawns for **OpenCode hosted agents** (`opencode acp`) — no longer reserved; see [Hosted OpenCode agents](#hosted-opencode-agents) below. `KCAP_PI_PATH` overrides the `pi` binary the daemon spawns for **Pi hosted agents** (`pi --mode rpc`) — interactive hosting only in this release; see [Hosted Pi agents](#hosted-pi-agents) below.
 
 ```bash
 KCAP_COPILOT_PATH=/opt/copilot/bin/copilot kcap daemon
@@ -1239,6 +1316,72 @@ One limit is worth knowing before you pick Kiro:
   reviewer would be handed the flow-starting `kcap-flows` server. Containment for that is tracked
   separately. (This also means a *pinned reviewer* model never reaches Kiro today — reviewer model
   overrides remain gated on the vendors that advertise resolver support.)
+
+### Hosted OpenCode agents
+
+`KCAP_OPENCODE_MODEL` overrides the model an `opencode` hosted agent runs, mirroring
+`KCAP_KIRO_MODEL` — including the same deliberate absence of a built-in default: with nothing set
+(and no per-launch model from the dashboard, which takes precedence) the agent runs whatever
+OpenCode's own configured default is and kcap reports none. The value is matched against the models
+your OpenCode account actually offers, whose ids are `provider/model`; a display label works too, so
+`opencode/deepseek-v4-flash-free`, the `opencode/deepseek` prefix and `DeepSeek V4 Flash Free` all
+resolve to the same model. An unrecognized value falls back to OpenCode's own default with none
+reported.
+
+```bash
+KCAP_OPENCODE_MODEL=opencode/big-pickle kcap daemon
+```
+
+Two things are worth knowing before you pick OpenCode:
+
+- **Your OpenCode plugins do not load in a hosted agent.** The daemon spawns the child with
+  `OPENCODE_PURE=1`. This is not a preference: OpenCode is the one vendor where kcap has *two* capture
+  paths, and kcap's own live-ingest plugin (`~/.config/opencode/plugins/kcap.ts`) loads inside the
+  hosted child too — where it would start a second, independent recording of the very session the
+  daemon is already recording, so the run would show up twice. Suppressing external plugins in the
+  hosted child is what keeps a daemon-hosted session to exactly one recording. Sessions you start
+  yourself are untouched: the plugin keeps its whole job there.
+- **Unattended review works out of the box** — see below.
+
+#### OpenCode as an unattended review-flow reviewer
+
+`start_review_flow(vendor="opencode")` works on any daemon with `opencode` installed. To turn it off,
+set `KCAP_OPENCODE_UNATTENDED_REVIEWER=0` in the daemon's environment.
+
+The reviewer's tool surface is deliberately narrow — the narrowest of any reviewer kcap offers. It gets
+`read`, `grep`, `glob` and `list` plus the one MCP channel it reports results through — **no shell, no
+write, no edit, no network** — enforced by OpenCode's own permission table rather than by asking the
+model nicely.
+
+Worth knowing about the part that narrow surface does *not* cover: **those read tools are not
+path-scoped.** They are whole-filesystem read primitives running as the daemon user, so a review can read
+any file that user can read — credentials included — and a reviewer's findings text goes back to whoever
+requested the review. That is true of *every* reviewer, including Claude, Codex, Cursor and Copilot, which
+can additionally write files and run shell commands. So the decision worth making is whether to allow
+unattended reviews on this daemon at all (`kcap daemon consent`), not which vendor serves them.
+
+Two further things the launch does, which are worth knowing because they change what the reviewer
+sees:
+
+- **The reviewed branch's own configuration is ignored** (`OPENCODE_DISABLE_PROJECT_CONFIG`). A
+  contributor-authored `opencode.json` / `.opencode/` and the repo's `AGENTS.md`/`CLAUDE.md` are
+  inputs *from the thing being reviewed into the reviewer judging it*, so they are suppressed. The
+  cost is that the reviewer does not see your repo's guidance documents.
+- **Your global MCP servers are absent** (an empty per-launch `OPENCODE_CONFIG_DIR`). Otherwise a
+  reviewer would inherit `kcap-flows` and could start review flows of its own.
+
+Being on by default does **not** bypass the build check. The containment above is behaviour of the
+installed `opencode` build, so the daemon records a **minimum** version and refuses anything older.
+That minimum is seeded on the first startup that finds the binary, from whatever is installed then, so
+a later upgrade needs no action from you; to move the floor to the currently-installed build (after a
+bad release, say), run:
+
+```bash
+kcap daemon reviewer affirm --vendor opencode
+```
+
+POSIX only: the containment is an *empty* config directory, which cannot be made owner-only on
+Windows.
 
 **Hosted Cursor agents run over ACP.** The `cursor` vendor is launched by the daemon as
 `cursor-agent acp` (Cursor's Agent Client Protocol server) in an isolated worktree, driven from the
@@ -1282,6 +1425,34 @@ verbatim, exactly like every other agent, with no Cursor/ACP-specific redaction.
 | `KCAP_CODEX_IDLE_MINUTES` | `60` | How long a Codex rollout file may be idle (no new rollout lines and no Codex tool call in flight) before the `kcap watch` background watcher ends the session (`reason: idle_timeout`). Increase for very long thinking/compute turns; decrease for faster cleanup of abandoned sessions. Invalid or non-positive values fall back to the 60-minute default. |
 | `KCAP_PARENT_DEAD_CEILING_MINUTES` | `360` | Staged recovery ceiling for a watcher whose parent coding-agent PID was already dead at startup (a resolution glitch) and can't be re-resolved. The watcher first periodically re-resolves and re-arms the parent-exit watchdog; only if that keeps failing AND the transcript makes no progress for this long does it post `session-end` (`reason: parent_dead_ceiling`). Deliberately far above the idle timeout so a user parked at a Kiro/OpenCode prompt is never ended prematurely. Invalid or non-positive values fall back to 360 minutes (6h). |
 | `KCAP_CURSOR_IDLE_CEILING_MINUTES` | `60` | How long a Cursor session's transcript watcher may go idle before it exits (AI-1382). Unlike Codex/Antigravity, this exit does NOT itself POST `session-end` — Cursor's end-of-session synthesis stays owned by the `sessionEnd` hook or, as a backstop, a server-side lease-gated sweep; the next hook for that session reactivates a fresh watcher. Invalid or non-positive values fall back to the 60-minute default. |
+
+### Hosted Pi agents
+
+`KCAP_PI_MODEL` overrides the model a `pi` hosted agent runs, mirroring `KCAP_OPENCODE_MODEL` —
+including the same deliberate absence of a built-in default: with nothing set (and no per-launch
+model from the dashboard, which takes precedence) the agent runs whatever Pi's own configured
+default is and kcap reports none. The value is passed verbatim as `--model <value>` on the spawned
+`pi --mode rpc` child's argv; kcap does not query or validate it against Pi's available models, so
+an unrecognized value is Pi's own error to report.
+
+```bash
+KCAP_PI_MODEL=claude-opus-4-5 kcap daemon
+```
+
+Two things are worth knowing before you pick Pi:
+
+- **Your Pi extension does not load in a hosted agent.** kcap's global Pi live-ingest extension
+  (`~/.pi/agent/extensions/kcap.ts`) auto-loads inside every `pi` process on the machine, hosted or
+  not, so the daemon spawns the hosted child with `KCAP_PI_PURE=1` — read by the extension at the
+  top of its exported function, which then returns immediately and registers no handlers. Without
+  it a hosted session would be captured twice: once over the RPC wire this runtime already speaks,
+  and once by the extension's own `session_start`/`session_shutdown` hooks. Sessions you start
+  yourself are untouched: the extension keeps its whole job there.
+- **Interactive hosting only, in an owned worktree only, in this release.** Pi has no reviewer lane
+  yet — `start_review_flow(vendor="pi")` and a Pi PR review (`kcap review <pr>` / the dashboard's
+  Review PR action) are both refused, the latter because that surface needs the `kcap mcp review`
+  tool set only the PTY-backed vendors are given. There is also no borrowed-workspace containment
+  for Pi, so a hosted Pi launch always runs in a daemon-owned worktree, never your own checkout.
 
 #### Review-flow reviewer backstops & crash-survivor reaping
 
@@ -1483,6 +1654,54 @@ The CLI resolves which profile to use in this order:
 6. Directory binding from `kcap use`
 7. Global active profile (or `default`)
 
+### Machine credentials (headless recording)
+
+A **machine** records sessions where no person can sign in — CI runners, ephemeral
+agent sandboxes, anywhere a browser login is impossible. It records like a user but
+is never an administrator and never a member of a project.
+
+Creating one requires the **owner or admin** role in your organization, and a server
+with machine credentials enabled.
+
+```bash
+kcap machine create ci-runner            # create; prints the secret ONCE
+kcap machine list                        # this org's machines
+kcap machine revoke service:9e96…        # stop one authenticating
+```
+
+**The secret is shown once and is never stored** — not by this CLI, not by Capacitor,
+and WorkOS will not show it again. That is deliberate: a secret nobody stores is a
+secret nobody can leak. It goes to stdout while everything else goes to stderr, so it
+can be piped straight into a secret store without touching disk:
+
+```bash
+kcap machine create ci-runner --visibility org_public \
+  2>/dev/null | gh secret set KCAP_CLIENT_SECRET
+```
+
+The runner then needs both variables in its environment:
+
+| Variable | |
+|---|---|
+| `KCAP_CLIENT_ID` | public — safe to commit |
+| `KCAP_CLIENT_SECRET` | a secret — use your CI's secret store |
+
+Finally, choose what its sessions are visible to, **on the machine itself**:
+
+```bash
+kcap config set default_visibility org_public
+```
+
+Visibility is the machine's own setting, exactly as it is for a person. The
+`--visibility` flag on `create` only selects the value printed in the instructions —
+it does not configure the runner for you.
+
+Revoking stops a machine authenticating from its next request. A token it already
+holds stays valid until it expires (up to an hour) but is no longer honoured. To cut
+it off at the source as well, delete the application in the WorkOS dashboard.
+
+Run `kcap machine --help` for the full sequence.
+
 ### Configuration
 
 ```bash
@@ -1629,6 +1848,24 @@ kcap logout         # delete stored tokens
 > **stable** channel (npm dist-tag `latest`); beta is strictly opt-in. Beta
 > releases correspond to server versions rolled out to internal tenants first,
 > so most users should stay on stable.
+>
+> **Staying current, and turning it all off.** Every human-facing `kcap`
+> command prints an "Update available" notice after it finishes if a newer
+> version exists, and `kcap status`'s **Version** line shows the same thing
+> inline. Every request `kcap` sends also carries its version (and, if update
+> checks are off, an explicit opt-out marker) to your server, which is how the
+> web dashboard's own out-of-date banner and notification-centre entry — and
+> the in-agent nudge Claude Code sessions can see (above) — know to show up.
+> `kcap config set update_check false` is the full, persisted opt-out: it
+> disables the notice and the `kcap status` annotation, makes the server
+> suppress its own banner/notification for you via the transmitted opt-out
+> marker (the version is still sent — the opt-out is signaled, not omitted),
+> and drops the in-agent nudge — everywhere, until you turn it back on.
+> `--no-update-check` is narrower and one-shot: it
+> only suppresses the notice and the `kcap status` annotation for that single
+> invocation — it doesn't change what gets sent to the server, so the banner,
+> notification, and in-agent nudge keep following whatever `update_check` is
+> persisted to. It defaults to on.
 
 The v1 config format stored `server_url` as a bare host name without a
 scheme. If `kcap` crashes with `An invalid request URI was provided`

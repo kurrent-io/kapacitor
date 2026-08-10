@@ -48,10 +48,14 @@ internal sealed class AntigravityImportSource : IImportSource {
         _geminiCliHome = geminiCliHome;
     }
 
-    string BrainRoot => Path.Combine(AntigravityPaths.Root(_home, _geminiCliHome), "brain");
+    // Both product roots' brain dirs (GUI + agy CLI), in fixed order. Import enumerates every one
+    // that exists — an agy-only machine has only the CLI root, and before this it was invisible.
+    IReadOnlyList<string> BrainRoots =>
+        AntigravityPaths.BrainProductRoots(_home, _geminiCliHome)
+            .Select(r => Path.Combine(r, "brain")).ToList();
 
     public string Vendor => "antigravity";
-    public bool   IsAvailable => Directory.Exists(BrainRoot);
+    public bool   IsAvailable => BrainRoots.Any(Directory.Exists);
     public bool   SupportsTitleGeneration => false; // server computes a fallback title at session-end
     public bool   AttachesChildContentOnReplay => true;  // AlreadyLoaded repair branch imports children
 
@@ -59,16 +63,44 @@ internal sealed class AntigravityImportSource : IImportSource {
 
     public Task<IReadOnlyList<DiscoveredSession>> DiscoverAsync(DiscoveryFilters filters, CancellationToken ct) {
         var result = new List<DiscoveredSession>();
-        if (!Directory.Exists(BrainRoot)) return Task.FromResult<IReadOnlyList<DiscoveredSession>>(result);
+
+        // Normalize the --session filter to the dashless canonical form so it matches the
+        // dashless session id we surface, whether the user passed a dashed or dashless id
+        // (mirrors GeminiImportSource).
+        var sessionFilter = filters.FilterSession is { } fs ? ImportCommand.NormalizeGuid(fs) : null;
+
+        var sinceUtc = filters.Since is { } since
+            ? new DateTimeOffset(since.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc), TimeSpan.Zero)
+            : (DateTimeOffset?)null;
+
+        // Each product root is scanned independently: chains never cross roots (a child's
+        // messages/ linkage lives beside its parent under one root) and conversation ids are
+        // unique UUIDs, so results concatenate with no cross-root dedup.
+        foreach (var brainRoot in BrainRoots) {
+            ct.ThrowIfCancellationRequested();
+            DiscoverInRoot(brainRoot, sessionFilter, sinceUtc, result, ct);
+        }
+
+        return Task.FromResult<IReadOnlyList<DiscoveredSession>>(result);
+    }
+
+    void DiscoverInRoot(
+            string brainRoot, string? sessionFilter, DateTimeOffset? sinceUtc,
+            List<DiscoveredSession> result, CancellationToken ct) {
+        if (!Directory.Exists(brainRoot)) return;
+
+        // The product root this brain dir belongs to (brainRoot is "<productRoot>/brain"), carried
+        // onto each session so ImportChildrenAsync resolves child transcripts under the SAME root.
+        var productRoot = Path.GetDirectoryName(brainRoot)!;
 
         // Resolve every conversation to its top-level ancestor: roots (no parent) import as
         // sessions; ALL transitive descendants (children, grandchildren, …) import as their
         // root's subagents. Cycle-/non-tree-safe (BuildRootDescendants) so a deep chain isn't
         // lost and a cycle imports standalone rather than vanishing. Linkage is complete on disk.
-        var parentMap = AntigravitySubagents.BuildParentMap(_home, _geminiCliHome, ct);
+        var parentMap = AntigravitySubagents.BuildParentMapUnder(brainRoot, ct);
         List<string> convIds;
         try {
-            convIds = Directory.EnumerateDirectories(BrainRoot).Select(Path.GetFileName).OfType<string>().ToList();
+            convIds = Directory.EnumerateDirectories(brainRoot).Select(Path.GetFileName).OfType<string>().ToList();
         } catch {
             // A hostile/inaccessible brain root must not abort the whole import pass.
             convIds = [];
@@ -82,18 +114,9 @@ internal sealed class AntigravityImportSource : IImportSource {
         var invokeEdges   = parentMap.Count;
         var danglingChild = parentMap.Keys.Count(c => !allConversationIds.Contains(c));
         var msgButNoInvoke = convIds.Count(id =>
-            Directory.Exists(AntigravityPaths.MessagesDir(id, _home, _geminiCliHome))
+            Directory.Exists(AntigravityPaths.MessagesDirUnder(productRoot, id))
             && !parentMap.ContainsKey(id) && !linkedChildIds.Contains(id));
-        Log($"Antigravity import: {invokeEdges} invoke edge(s); {danglingChild} invoked child id(s) with no conversation dir; {msgButNoInvoke} conversation(s) with messages/ but no invoke edge");
-
-        // Normalize the --session filter to the dashless canonical form so it matches the
-        // dashless session id we surface, whether the user passed a dashed or dashless id
-        // (mirrors GeminiImportSource).
-        var sessionFilter = filters.FilterSession is { } fs ? ImportCommand.NormalizeGuid(fs) : null;
-
-        var sinceUtc = filters.Since is { } since
-            ? new DateTimeOffset(since.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc), TimeSpan.Zero)
-            : (DateTimeOffset?)null;
+        Log($"Antigravity import ({Path.GetFileName(productRoot)}): {invokeEdges} invoke edge(s); {danglingChild} invoked child id(s) with no conversation dir; {msgButNoInvoke} conversation(s) with messages/ but no invoke edge");
 
         foreach (var (convId, descendants) in byRoot) {
             ct.ThrowIfCancellationRequested();
@@ -104,7 +127,7 @@ internal sealed class AntigravityImportSource : IImportSource {
 
             if (sessionFilter is not null && !string.Equals(sessionId, sessionFilter, StringComparison.Ordinal)) continue;
 
-            var transcript = AntigravityPaths.TranscriptFullPath(convId, _home, _geminiCliHome);
+            var transcript = AntigravityPaths.TranscriptFullPathUnder(productRoot, convId);
             if (!File.Exists(transcript)) continue;
 
             var firstTimestamp = ReadFirstTimestamp(transcript);
@@ -120,14 +143,15 @@ internal sealed class AntigravityImportSource : IImportSource {
                 FirstTimestamp: firstTimestamp,
                 SourceMeta:     new Dictionary<string, object?> {
                     ["TranscriptPath"] = transcript,
+                    // The product root this session lives under, so ImportChildrenAsync resolves
+                    // its children under the same root rather than defaulting to the GUI's.
+                    ["ProductRoot"]    = productRoot,
                     // Dashed conversation ids — kept dashed because they resolve on-disk brain-dir
                     // transcript paths in ImportChildrenAsync; the server-facing agent_id is
                     // canonicalized to dashless there.
                     ["Children"]       = descendants, // all transitive descendants, nested under this root
                 }));
         }
-
-        return Task.FromResult<IReadOnlyList<DiscoveredSession>>(result);
     }
 
     public async Task<IReadOnlyList<ImportCommand.SessionClassification>> ClassifyAsync(
@@ -292,6 +316,13 @@ internal sealed class AntigravityImportSource : IImportSource {
         if (!sourceMeta.TryGetValue("Children", out var kidsObj) || kidsObj is not List<string> { Count: > 0 } children)
             return false;
 
+        // The root this session was discovered under — children resolve under the SAME root. Falls
+        // back to the GUI root for a pre-ProductRoot SourceMeta (there is no such caller in-tree,
+        // but the fold stays truthful rather than silently mis-resolving a CLI child).
+        var productRoot = sourceMeta.TryGetValue("ProductRoot", out var pr) && pr is string { Length: > 0 } p
+            ? p
+            : AntigravityPaths.Root(_home, _geminiCliHome);
+
         var anyChildContentSent = false;
 
         foreach (var childId in children) {
@@ -302,7 +333,7 @@ internal sealed class AntigravityImportSource : IImportSource {
             // form: the server canonicalizes agent_id on both ingest and watermark read, so this
             // matches live routing/correlation and the dashless session ids used everywhere else
             // (mirrors GeminiImportSource).
-            var childTranscript = AntigravityPaths.TranscriptFullPath(childId, _home, _geminiCliHome);
+            var childTranscript = AntigravityPaths.TranscriptFullPathUnder(productRoot, childId);
             if (!File.Exists(childTranscript)) continue;
 
             var childAgentId = ImportCommand.NormalizeGuid(childId);

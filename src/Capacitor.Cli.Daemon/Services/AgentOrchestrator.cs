@@ -65,6 +65,11 @@ internal record AgentInstance(
     /// servers and local spawns — the supervision payload renders null as unknown.</summary>
     public string?              RequesterUserId   { get; init; }
 
+    /// <summary>The server-stamped human-readable name for <see cref="RequesterUserId"/>. Null for
+    /// old servers, local spawns, and a PID-record recovery (never persisted, best-effort only) —
+    /// the supervision payload falls back to <see cref="RequesterUserId"/>, then "unknown".</summary>
+    public string?              RequesterDisplay  { get; init; }
+
     /// <summary>The applied Codex sandbox/approval pair — the values actually passed to the vendor
     /// CLI, whether caller-selected or derived. Set only for an interactive Codex launch on a
     /// daemon-owned worktree; null everywhere else. Stored HERE (not recomputed at each send) so the
@@ -228,6 +233,26 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     // existing direct-construction sites (and DI, which resolves an optional parameter to a
     // registered singleton when one exists) keep compiling unchanged.
     readonly DaemonStatusNotifier _statusNotifier;
+
+    /// <summary>
+    /// Relays a borrowed reviewer's flow submission to the server under the DAEMON's credential.
+    ///
+    /// <para>The daemon runs unsandboxed with the real HOME, so its token store resolves; the
+    /// reviewer's does not. <paramref name="apiPath"/> comes from the bridge's own fixed route table,
+    /// never from the request, so a sandboxed child cannot steer this at an arbitrary API path.</para>
+    ///
+    /// <para>The client is per-call, matching <see cref="EvalRunner"/>: a submission happens once per
+    /// round, and a cached client would pin a token across a rotation.</para>
+    /// </summary>
+    async Task<(int Status, string Body)> ForwardFlowSubmissionAsync(
+            string apiPath, string body, CancellationToken ct) {
+        using var http = await HttpClientExtensions.CreateAuthenticatedClientAsync(_config.ServerUrl, ct);
+        using var content  = new StringContent(body, Encoding.UTF8, "application/json");
+        using var response = await http.PostAsync(
+            $"{_config.ServerUrl.TrimEnd('/')}{apiPath}", content, ct);
+
+        return ((int)response.StatusCode, await response.Content.ReadAsStringAsync(ct));
+    }
 
     /// <summary>Test seam: exposes which notifier this orchestrator actually pulses into, so a DI
     /// wiring test can pin that the registered singleton — not a private fallback nobody
@@ -491,6 +516,10 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
         _server.OnSendSpecialKey         += HandleSendSpecialKey;
         _server.OnResizeTerminal         += HandleResizeTerminal;
         _server.ReRegisterAgentsHook          =  ReRegisterAgentsAsync;
+        // Settlement lost-ack redelivery (D1): re-deliver unretired terminal acks POST-registration
+        // (readiness restored) — inside ReRegisterAgentsHook the CommandAckAsync IsReady gate would drop
+        // them. Fires on every (re)connect + heartbeat re-register.
+        _server.OnRegisteredHook              =  () => { Processor?.RedeliverUnretiredProcessedAcks(); return Task.CompletedTask; };
         _server.FindRepoForRemoteHandler      =  HandleFindRepoForRemote;
         _server.ProbeBorrowSourceHandler      =  HandleProbeBorrowSource;
         // Task 8: the side-effect-free reviewer-model preflight. Pure resolution over the
@@ -1040,6 +1069,13 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     internal async Task SendDaemonStatusReportOnceAsync() {
         try { await _server.DaemonStatusReportAsync(BuildStatusReport()); }
         catch (Exception ex) { _logger.LogDebug(ex, "DaemonStatusReport send failed — ignoring"); }
+        // Settlement lost-ack redelivery (D1): after advertising the watermarks, re-deliver any UNRETIRED terminal acks — a lost
+        // ack in a reconnect window is re-elicited here instead of waiting for the server to retransmit
+        // the whole command (the server tolerates the duplicate per D2″). No-op when nothing is
+        // unretired; sends are contained + one-way, so this can never fault the report path. This covers
+        // the periodic tick, the server's on-request report, and the activity-triggered report — every
+        // status-report moment is also a re-sync moment. A validated AckProcessedPrefix stops the re-sends.
+        Processor?.RedeliverUnretiredProcessedAcks();
     }
 
     /// <summary>The out-of-cycle report fired on a launch-stage transition, wired in
@@ -1150,7 +1186,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             string? flowRunId = null, string? flowRole = null,
             DateTime? createdAt = null, DateTime? lastOutputAt = null, bool isPrivate = false,
             IPtyProcess? pty = null, string? startIdentity = null, string? requester = null,
-            string? model = "default", int? inactivityBoundSeconds = null,
+            string? requesterDisplay = null, string? model = "default", int? inactivityBoundSeconds = null,
             // Task 12 (unified reviewer reaping): a test that needs to control the agent's monotonic
             // age/idle (rather than the wall-clock CreatedAt/LastOutputAt above, which the new
             // FindReviewersToReap no longer reads) constructs its own AgentActivityClock over a
@@ -1165,6 +1201,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             Kind = kind, FlowRunId = flowRunId, FlowRole = flowRole, IsPrivate = isPrivate,
             CreatedAt = createdAt ?? DateTime.UtcNow, StartIdentity = startIdentity,
             RequesterUserId = requester,
+            RequesterDisplay = requesterDisplay,
             InactivityBoundSeconds = inactivityBoundSeconds,
             ActivityClock = activityClock ?? CreateActivityClock()
         };
@@ -1553,17 +1590,38 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
             var daemonBridgeUrl    = _permissionBridge.BaseUrl;
             var effectiveAllowlist = cmd.McpAllowlist;
             string? reviewContextCapabilityUrl = null;
+            string? flowResultCapabilityUrl    = null;
 
-            // A token record is minted for the union of two independent authorities: Codex's
-            // unattended permission allowlist and a borrowed snapshot's immutable review context.
-            // Direct Codex keeps its permissions-only grant; non-Codex snapshot runtimes get an
-            // empty permission set plus context. One record means one revocation cannot drift.
+            // Whether this reviewer's kcap-flow-result channel must deliver through a daemon-brokered
+            // capability instead of authenticating for itself. The channel resolves its credential
+            // from PathHelpers.ConfigDir, which hangs off HOME — so the question is whether the launch
+            // runs under the daemon user's HOME, and there are two independent causes of its not doing
+            // so, one owned by the launch and one by the runtime:
+            //
+            //   • a borrowed snapshot, whose OS sandbox moves HOME into a per-launch state dir, and
+            //   • a runtime that isolates HOME on every review it serves (Antigravity), which borrows
+            //     nothing at all and is therefore unreachable through the first.
+            //
+            // The borrowed arm stays unconditional rather than being narrowed to the sandboxed vendors:
+            // the snapshot lane has delivered through the broker since #488, and a snapshot runtime that
+            // keeps its own HOME (Cursor) losing that is a behaviour change nothing here asks for.
+            //
+            // Computed ONCE and used for the mint, the forwarder and the context, so the grant that
+            // serves the submit path and the env the channel is launched with cannot disagree.
+            var brokeredResultDelivery = snapshotBorrow
+                                      || (isReviewFlow && runtimeFactory.ReviewFlowRedirectsHome);
+
+            // A token record is minted for the union of three independent authorities: Codex's
+            // unattended permission allowlist, a borrowed snapshot's immutable review context, and a
+            // brokered result channel's submit forwarder. Direct Codex keeps its permissions-only
+            // grant; every other reviewer here gets an empty permission set plus whichever capability
+            // it needs. One record means one revocation cannot drift.
             var codexReviewer = isReviewFlow &&
                 string.Equals(cmd.Vendor, "codex", StringComparison.OrdinalIgnoreCase);
-            if (codexReviewer || snapshotBorrow) {
+            if (codexReviewer || brokeredResultDelivery) {
                 if (daemonBridgeUrl is null)
                     throw new InvalidOperationException(
-                        "Borrowed review context requires the local permission bridge.");
+                        "An unattended reviewer's capabilities require the local permission bridge.");
 
                 string[] reviewerServers = [];
                 if (codexReviewer &&
@@ -1585,7 +1643,12 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
                           "borrowed_snapshot_review_context_missing")
                     : null;
                 var reviewerUrl = _permissionBridge.RegisterReviewerToken(
-                    reviewerServers, reviewGeneration, activityClock);
+                    reviewerServers, reviewGeneration, activityClock,
+                    // Only a reviewer that cannot reach its own token store gets a submit forwarder.
+                    // Every other reviewer authenticates for itself and must NOT be handed a
+                    // daemon-credentialed relay it has no need for. Withholding it also keeps the
+                    // endpoint 404 rather than merely unused.
+                    brokeredResultDelivery ? ForwardFlowSubmissionAsync : null);
                 reviewerToken = reviewerUrl; // the URL doubles as the revoke handle
                 if (codexReviewer) {
                     daemonBridgeUrl = reviewerUrl;
@@ -1594,6 +1657,11 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
                 if (snapshotBorrow)
                     reviewContextCapabilityUrl = reviewerUrl +
                         "/review-context/workspace-mcp-configs";
+                // The capability IS the reviewer grant, so revoking that one token closes the submit
+                // path in the same operation that closes the read path a borrowed launch also holds.
+                // A separately-minted token could outlive the first and leave a live submit path
+                // after the reviewer is gone.
+                if (brokeredResultDelivery) flowResultCapabilityUrl = reviewerUrl;
             }
 
             var runtimeCtx = new RuntimeStartContext(
@@ -1625,6 +1693,8 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
                 DaemonEpoch: _daemonEpoch,
                 IsBorrowedSnapshot: snapshotBorrow,
                 ReviewContextCapabilityUrl: reviewContextCapabilityUrl,
+                FlowResultCapabilityUrl: flowResultCapabilityUrl,
+                RequiresBrokeredResultDelivery: brokeredResultDelivery,
                 CodexPosture: cmd.CodexPosture,
                 // Handed to the factory so it can wire the clock onto the runtime BEFORE StartAsync —
                 // assigning it after that call returns silently defeats every handshake stage stamp.
@@ -1733,6 +1803,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
                 FlowRunId           = cmd.FlowRunId,
                 FlowRole            = cmd.FlowRole,
                 RequesterUserId     = cmd.RequesterUserId,
+                RequesterDisplay    = cmd.RequesterDisplay,
                 InactivityBoundSeconds = cmd.InactivityBoundSeconds
             };
             PublishAgent(agent);
@@ -3043,7 +3114,7 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
     /// The bounded ownership-retry in <see cref="ServerConnection.RequestPermissionAsync"/> is the
     /// final safety net for the residual case.
     /// </summary>
-    async Task ReRegisterAgentsAsync() {
+    internal async Task ReRegisterAgentsAsync() {
         // PrivateLocal agents are never registered with the server, so never re-register them.
         foreach (var agent in _agents.Values.Where(a => (a.Status is "Starting" or "Running") && !a.IsPrivate)) {
             for (var attempt = 1; ; attempt++) {
@@ -3089,6 +3160,9 @@ internal partial class AgentOrchestrator : IAsyncDisposable {
                 }
             }
         }
+        // NOTE: the settlement lost-ack re-delivery is deliberately NOT here — this hook runs inside the
+        // registration bracket BEFORE readiness is restored, so CommandAckAsync would drop every ack. It
+        // is wired to OnRegisteredHook instead, which runs post-MarkRegistered (IsReady == true).
     }
 
     static readonly TimeSpan StartupTimeout     = TimeSpan.FromSeconds(90);

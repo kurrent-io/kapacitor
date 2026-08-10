@@ -16,19 +16,23 @@ internal enum AntigravityReviewerDecision {
 /// Whether THIS daemon may run Antigravity's CLI (<c>agy</c>) as an unattended review-flow reviewer.
 /// Pure, so every arm is testable without a vendor or a process.
 ///
-/// <para><b>What enabling it consents to.</b> An unattended reviewer runs in a daemon-owned worktree
-/// under a per-launch, owner-only <c>HOME</c>, and its findings text is returned to whoever requested
-/// the review. That risk lands on the daemon OPERATOR, who is not necessarily the requester, which is
-/// why the decision is daemon-local and enabling it is the consent event rather than a documented
-/// default. Deliberately NOT Kiro's whole-filesystem-read paragraph: that claim is about a trusted
-/// <c>fs_read</c> primitive this vendor does not expose, and a borrowed risk statement would be a
-/// false one in either direction.</para>
+/// <para><b>ENABLED by default; the switch is an opt-OUT.</b> An unattended reviewer runs in a
+/// daemon-owned worktree under a per-launch, owner-only <c>HOME</c>, and its findings text is returned
+/// to whoever requested the review — a cross-principal risk that lands on the daemon OPERATOR. It used
+/// to be an opt-in on that basis. It is not any more, because the reviewer vendor is caller-chosen and
+/// Claude, Codex, Cursor and Copilot have never been gated, each with the same authority: on a daemon
+/// that also ADVERTISES one of those, the gate did not widen the capability class a requester could
+/// reach, and cost the operator a service-unit edit. On a daemon advertising only gated vendors it did
+/// separate the hosted role from the unattended reviewer role, and the flip genuinely widens what a
+/// non-operator can cause to run with no human in the loop. Deliberately still NOT Kiro's
+/// whole-filesystem-read paragraph — that claim is about a trusted <c>fs_read</c> primitive this vendor
+/// does not expose, and a borrowed risk statement would be false in either direction.</para>
 ///
-/// <para><b>Consent is the ONE arm that is reviewer-only</b> (see
+/// <para><b>The disabled arm is the ONE that is reviewer-only</b> (see
 /// <c>AntigravityHostedAgentRuntimeFactory.LaunchRefusal</c>'s parameter doc). The paragraph above is
 /// exactly why: the risk it describes is cross-principal, and a HOSTED launch has no counterpart —
 /// the server resolves a launch's daemon with the caller's own user id, so the launcher is the
-/// daemon's owner. Hosted Antigravity ships on by default; every other arm below still gates it.</para>
+/// daemon's owner. Hosted Antigravity has always shipped on; every other arm below gates both.</para>
 ///
 /// <para><b>Why a version MINIMUM.</b> Containment here is source suppression — an empty per-launch
 /// <see cref="AntigravityReviewerHome"/> in place of the operator's own <c>~/.gemini</c>, whose kcap
@@ -103,11 +107,11 @@ internal static class AntigravityReviewerCapability {
             string binaryPath) =>
         decision switch {
             AntigravityReviewerDecision.Disabled =>
-                "antigravity_unattended_reviewer_disabled: unattended Antigravity reviews are off on "
-              + "this daemon. A review runs under this daemon user's authority and returns what it "
-              + "read to whoever requested it, so enable it only where the operator and the review "
-              + "requesters are in one trust domain: set KCAP_ANTIGRAVITY_UNATTENDED_REVIEWER=1 in the "
-              + "daemon's environment (not on the server).",
+                "antigravity_unattended_reviewer_disabled: this daemon has EXPLICITLY disabled "
+              + "unattended Antigravity reviews. Unset KCAP_ANTIGRAVITY_UNATTENDED_REVIEWER in the "
+              + "daemon's environment (not on the server) to restore the default, which is enabled — or "
+              + "set it to 1. A review runs under this daemon user's authority either way, as it does "
+              + "for the never-gated Claude, Codex, Cursor and Copilot reviewers.",
 
             AntigravityReviewerDecision.UnsupportedPlatform =>
                 "antigravity_reviewer_unsupported_platform: the per-launch home holds the agent's own "

@@ -924,6 +924,7 @@ public sealed record CurationApplyResponse {
 [JsonSerializable(typeof(Auth.AuthDiscoveryResponse))]
 [JsonSerializable(typeof(Auth.TokenExchangeRequest))]
 [JsonSerializable(typeof(Auth.TokenExchangeResponse))]
+[JsonSerializable(typeof(Auth.MachineTokenResponse))]
 [JsonSerializable(typeof(Auth.AuthErrorResponse))]
 [JsonSerializable(typeof(Auth.RefreshTokenRequest))]
 [JsonSerializable(typeof(Auth.GitHubDeviceCodeResponse))]
@@ -1033,6 +1034,8 @@ public sealed record CurationApplyResponse {
 [JsonSerializable(typeof(Acp.SetModelParams))]
 [JsonSerializable(typeof(Acp.SessionModelsInfo))]
 [JsonSerializable(typeof(Acp.AvailableModelDto))]
+[JsonSerializable(typeof(Acp.SessionConfigOptionDto))]
+[JsonSerializable(typeof(Acp.ConfigOptionChoiceDto))]
 [JsonSerializable(typeof(Acp.SessionRequestPermissionParams))]
 [JsonSerializable(typeof(Acp.PermissionOptionDto))]
 [JsonSerializable(typeof(Acp.PermissionOutcomeResult))]
@@ -1057,6 +1060,13 @@ public sealed record CurationApplyResponse {
 // source-gen LaunchKind JsonTypeInfo defaults to numeric and silently drops the
 // invocation — the daemon receives "kind": "review" / "default" and the
 // LaunchAgent handler never fires (DEV-1665).
+// Machine credentials. Registered here because the AOT CLI has no reflection fallback:
+// an unregistered type throws at runtime, not at build.
+[JsonSerializable(typeof(Capacitor.Cli.Core.Commands.CreateMachineApplicationRequest))]
+[JsonSerializable(typeof(Capacitor.Cli.Core.Commands.CreateMachineApplicationResponse))]
+[JsonSerializable(typeof(Capacitor.Cli.Core.Commands.RegisterMachineRequest))]
+[JsonSerializable(typeof(Capacitor.Cli.Core.Commands.RegisterMachineResponse))]
+[JsonSerializable(typeof(Capacitor.Cli.Core.Commands.MachineSummary[]))]
 [JsonSourceGenerationOptions(
     PropertyNamingPolicy = JsonKnownNamingPolicy.SnakeCaseLower,
     UseStringEnumConverter = true
@@ -1340,7 +1350,11 @@ public readonly record struct LaunchAgentCommand(
         //
         // Null for every non-review-flow launch and for a launch predating this field; an old daemon
         // ignores it.
-        int?              InactivityBoundSeconds = null
+        int?              InactivityBoundSeconds = null,
+        // The server-stamped human-readable name for RequesterUserId (issue #481). Display-only —
+        // NEVER used for consent matching, which stays on RequesterUserId. Appended last, same
+        // wire-compat rule as the fields above — old daemons ignore it, old servers never set it.
+        string?           RequesterDisplay = null
     );
 
 /// <summary>Caller-selected Codex launch posture. Valid ONLY for interactive, daemon-owned-worktree

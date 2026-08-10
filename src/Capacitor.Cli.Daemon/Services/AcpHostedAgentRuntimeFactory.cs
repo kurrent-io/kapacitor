@@ -207,15 +207,15 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
             // every vendor pay that wait. The factory can only clean up launches that FAILED, so a
             // successful review's home needs this hook — it holds review context, and would
             // otherwise survive until a later daemon epoch swept it.
-            onDisposed: ctx.IsReviewFlow && descriptor.Vendor == AcpVendorDescriptors.Kiro.Vendor
-                ? (Action)(() => DeleteKiroReviewerHome(descriptor, config, ctx, _logger))
+            onDisposed: ReviewerLaunchTimeoutSeconds(descriptor, config, ctx) is not null
+                ? (Action)(() => DeleteReviewerIsolatedDirectory(descriptor, config, ctx, _logger))
                 : null,
             // The second half of the launch bound. The deadline below covers spawn through the
             // handshake; StartAsync deliberately does NOT await the first turn, so a peer that
             // completes initialize and then wedges on the credential path would otherwise be
             // unbounded. Time-to-first-OUTPUT, never turn completion — a real review runs long.
-            firstOutputDeadline: ctx.IsReviewFlow && descriptor.Vendor == AcpVendorDescriptors.Kiro.Vendor
-                ? TimeSpan.FromSeconds(config.KiroReviewerLaunchTimeoutSeconds)
+            firstOutputDeadline: ReviewerLaunchTimeoutSeconds(descriptor, config, ctx) is { } firstOutputSeconds
+                ? TimeSpan.FromSeconds(firstOutputSeconds)
                 : null,
             // The set AllowlistedAutoApprove admits, built from the SAME injected specs and identity
             // the trust argv is built from. Two derivations would let the reviewer be TRUSTED to call
@@ -295,7 +295,7 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
         // "Opening browser..." and STAYS ALIVE FOREVER. Nothing else here bounds that: the runtime
         // bounds only its settlement wait, and a server-side round timeout would fail the round while
         // leaving this child, and its transcript-bearing home, behind.
-        using var launchDeadline = KiroReviewerLaunchDeadline(descriptor, config, ctx, ct);
+        using var launchDeadline = ReviewerLaunchDeadline(descriptor, config, ctx, ct);
 
         try {
             await runtime.StartAsync(
@@ -316,22 +316,21 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
             try {
                 await acpProcess.TerminateAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
             } catch (Exception ex) {
-                _logger.LogDebug(ex, "ACP: failed to reap Kiro reviewer after its launch deadline expired.");
+                _logger.LogDebug(ex,
+                    "ACP: failed to reap {Vendor} reviewer after its launch deadline expired.", descriptor.Vendor);
             }
 
-            // Only after the child is gone: deleting under a live Kiro leaves it writing into an
-            // unlinked path. The home is transcript-bearing, so this is disposal, not disk hygiene.
+            // Only after the child is gone: deleting under a live child leaves it writing into an
+            // unlinked path. The directory holds review state, so this is disposal, not disk hygiene.
             // No explicit delete here: runtime.DisposeAsync runs the ordered cleanup (await the
             // reap, confirm exit, then delete), and deleting again afterwards would bypass exactly
             // the exit-confirmed gate that ordering exists to enforce.
             await runtime.DisposeAsync().ConfigureAwait(false);
 
             throw new InvalidOperationException(
-                $"kiro_reviewer_launch_timeout: the reviewer did not complete its first prompt within "
-              + $"{config.KiroReviewerLaunchTimeoutSeconds}s. The child was terminated and its isolated "
-              + "home removed. A kiro-cli whose credential has expired stays alive on an interactive "
-              + "browser prompt rather than failing, which is the shape this bound exists for — check "
-              + "that the daemon user's kiro-cli is still authenticated.");
+                $"{descriptor.Vendor}_reviewer_launch_timeout: the reviewer did not complete its first "
+              + $"prompt within {ReviewerLaunchTimeoutSeconds(descriptor, config, ctx)}s. The child was "
+              + $"terminated and its isolated directory removed. {ReviewerLaunchTimeoutHint(descriptor)}");
         } catch {
             // An established session is a fact the record must keep even though the launch failed.
             LogSurfaceOnceIfEstablished();
@@ -355,30 +354,81 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
     /// <summary>
     /// Fail-closed validation + build of the review-flow MCP list, run as the FIRST thing in
     /// <see cref="StartAsync"/> — before <c>_connectionSource</c> can spawn a child. Returns
-    /// <summary>The single absolute budget for a Kiro review launch, or null for every other launch
-    /// (which keeps their behaviour byte-identical). Linked to the caller's token so a real shutdown
-    /// still wins and is not misreported as a timeout.</summary>
-    static CancellationTokenSource? KiroReviewerLaunchDeadline(
+    /// <summary>
+    /// The launch budget, in seconds, for a review launch whose vendor gets one — Kiro and OpenCode,
+    /// which both own a per-launch isolated directory that a wedged child would strand. Null for every
+    /// other launch, which keeps their behaviour byte-identical.
+    ///
+    /// <para>The ONE place the "does this vendor have a reviewer budget" question is answered, so the
+    /// deadline, the <c>firstOutputDeadline</c> and the <c>onDisposed</c> cleanup cannot come to
+    /// different conclusions — a budget without the matching cleanup hook strands exactly the directory
+    /// the budget fired to reclaim.</para>
+    /// </summary>
+    internal static int? ReviewerLaunchTimeoutSeconds(
+            AcpVendorDescriptor descriptor, DaemonConfig config, RuntimeStartContext ctx) {
+        if (!ctx.IsReviewFlow) return null;
+
+        if (descriptor.Vendor == AcpVendorDescriptors.Kiro.Vendor)
+            return config.KiroReviewerLaunchTimeoutSeconds;
+
+        if (descriptor.Vendor == AcpVendorDescriptors.OpenCode.Vendor)
+            return config.OpenCodeReviewerLaunchTimeoutSeconds;
+
+        return null;
+    }
+
+    /// <summary>The single absolute budget for a gated review launch, or null for every other launch.
+    /// Linked to the caller's token so a real shutdown still wins and is not misreported as a
+    /// timeout.</summary>
+    static CancellationTokenSource? ReviewerLaunchDeadline(
             AcpVendorDescriptor descriptor, DaemonConfig config, RuntimeStartContext ctx, CancellationToken ct) {
-        if (!ctx.IsReviewFlow || descriptor.Vendor != AcpVendorDescriptors.Kiro.Vendor) return null;
+        if (ReviewerLaunchTimeoutSeconds(descriptor, config, ctx) is not { } seconds) return null;
 
         var linked = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        linked.CancelAfter(TimeSpan.FromSeconds(config.KiroReviewerLaunchTimeoutSeconds));
+        linked.CancelAfter(TimeSpan.FromSeconds(seconds));
         return linked;
     }
 
-    /// <summary>Best-effort disposal of a failed launch's reviewer home. Never throws: a home we
-    /// cannot delete must not replace the launch's real error with a cleanup one.</summary>
-    static void DeleteKiroReviewerHome(
+    /// <summary>The vendor-specific tail of the launch-timeout error: what the operator should check.
+    /// Both vendors' CLIs share the failure this bound exists for — an expired credential that waits on
+    /// an interactive login instead of failing — so the shape is the same and only the binary
+    /// differs.</summary>
+    static string ReviewerLaunchTimeoutHint(AcpVendorDescriptor descriptor) =>
+        descriptor.Vendor == AcpVendorDescriptors.OpenCode.Vendor
+            ? "An opencode whose credential has expired can wait on an interactive login rather than "
+            + "failing, which is the shape this bound exists for — check that the daemon user's "
+            + "opencode is still authenticated (`opencode auth login`)."
+            : "A kiro-cli whose credential has expired stays alive on an interactive browser prompt "
+            + "rather than failing, which is the shape this bound exists for — check that the daemon "
+            + "user's kiro-cli is still authenticated.";
+
+    /// <summary>Best-effort disposal of a failed launch's isolated reviewer directory. Never throws: a
+    /// directory we cannot delete must not replace the launch's real error with a cleanup one.
+    ///
+    /// <para>Each vendor's own delete is used rather than a shared recursive one, because each refuses a
+    /// path outside ITS root — a shared helper would have to be told which root to check against, and
+    /// that argument is exactly the thing worth not getting wrong.</para></summary>
+    static void DeleteReviewerIsolatedDirectory(
             AcpVendorDescriptor descriptor, DaemonConfig config, RuntimeStartContext ctx, ILogger log) {
-        if (!ctx.IsReviewFlow || descriptor.Vendor != AcpVendorDescriptors.Kiro.Vendor) return;
+        if (!ctx.IsReviewFlow) return;
 
         var stateDir = ReviewerStateDir(config);
+        var epoch    = config.DaemonEpoch ?? "unpinned";
 
-        KiroReviewerHome.Delete(
-            Path.Combine(KiroReviewerHome.RootFor(stateDir),
-                         KiroReviewerHome.NameFor(config.DaemonEpoch ?? "unpinned", ctx.AgentId)),
-            stateDir, log);
+        if (descriptor.Vendor == AcpVendorDescriptors.Kiro.Vendor) {
+            KiroReviewerHome.Delete(
+                Path.Combine(KiroReviewerHome.RootFor(stateDir),
+                             KiroReviewerHome.NameFor(epoch, ctx.AgentId)),
+                stateDir, log);
+            return;
+        }
+
+        if (descriptor.Vendor == AcpVendorDescriptors.OpenCode.Vendor) {
+            OpenCodeReviewerConfigDir.Delete(
+                Path.Combine(OpenCodeReviewerConfigDir.RootFor(stateDir),
+                             OpenCodeReviewerConfigDir.NameFor(epoch, ctx.AgentId)),
+                stateDir, log);
+        }
     }
 
     internal static AcpUnattendedInteractionPolicy ResolveUnattendedInteractionPolicy(
@@ -697,6 +747,26 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
             psi.Environment["KIRO_HOME"] = KiroReviewerHome.Create(
                 ReviewerStateDir(config), config.DaemonEpoch ?? "unpinned", ctx.AgentId);
 
+        // OpenCode's launch controls are env-shaped rather than argv-shaped (`opencode acp` accepts
+        // none of the global flags), so its whole posture lives here. Unlike Kiro's branch above this
+        // is NOT review-only: the plugin suppression it applies is what keeps an INTERACTIVE hosted
+        // session from being captured twice.
+        if (descriptor.Vendor == AcpVendorDescriptors.OpenCode.Vendor) {
+            OpenCodeLaunchEnvironment.Apply(psi.Environment);
+
+            // A review launch additionally gets the isolated config dir, project-config suppression and
+            // the scoped permission table. Built from the SAME injected spec list session/new receives —
+            // deriving the permission entries from server ids instead would be a second derivation of
+            // the same names, and that failure is silent: the reviewer starts normally and its own
+            // result channel is simply absent from its toolset (measured).
+            if (ctx.IsReviewFlow)
+                OpenCodeLaunchEnvironment.ApplyReviewer(
+                    psi.Environment,
+                    OpenCodeReviewerConfigDir.Create(
+                        ReviewerStateDir(config), config.DaemonEpoch ?? "unpinned", ctx.AgentId),
+                    ValidateAndBuildReviewFlowMcp(ctx, descriptor, resolved)!);
+        }
+
         if (stateRoot is not null) {
             // HOME and TMPDIR both move into the per-launch root, which is what keeps the reviewer
             // away from the user's vendor profile, command history and caches — and what removes the
@@ -852,6 +922,15 @@ internal sealed partial class AcpHostedAgentRuntimeFactory(
             return kiro == KiroReviewerDecision.Allowed
                 ? null
                 : KiroReviewerCapability.DenialReason(kiro, g.Installed, g.Affirmed);
+        }
+
+        if (descriptor.Vendor == AcpVendorDescriptors.OpenCode.Vendor) {
+            var g   = GateInputsFor(descriptor, config, config.OpenCodeUnattendedReviewerEnabled, resolveVersion);
+            var oc  = OpenCodeReviewerCapability.Decide(g.Enabled, g.Installed, g.Affirmed);
+
+            return oc == OpenCodeReviewerDecision.Allowed
+                ? null
+                : OpenCodeReviewerCapability.DenialReason(oc, g.Installed, g.Affirmed);
         }
 
         if (!UsesMcpNameAllowlistArgv(descriptor)) return null;

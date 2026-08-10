@@ -28,30 +28,81 @@ public static class PiExtensionInstaller {
         // Pi has no shell hooks, so this extension bridges Pi's in-process lifecycle
         // events to the kcap CLI: on session start/shutdown it invokes
         // `kcap hook --pi`, which POSTs /hooks/session-{start,end}/pi and runs the
-        // transcript watcher (vendor=pi). Safe-by-default — every handler swallows
-        // errors so a kcap or server hiccup never disrupts the pi session.
+        // transcript watcher (vendor=pi). On session-start, kcap's stdout is a DATA
+        // channel carrying the team-memory index fragment, which this extension
+        // appends to each turn's system prompt (before_agent_start). Safe-by-default —
+        // every handler swallows errors so a kcap or server hiccup never disrupts the
+        // pi session.
 
         export default function (pi: any) {
-          async function notify(event: string, ctx: any, reason?: string) {
+          // Hosted launches set KCAP_PI_PURE=1: the daemon owns capture there, and this
+          // extension standing down is what prevents the session being recorded twice.
+          // Mirrors OPENCODE_PURE.
+          if (typeof process !== "undefined" && process?.env?.KCAP_PI_PURE === "1") return;
+
+          // Team-memory fragment for the CURRENT session file, or null. Keyed by file
+          // because that is Pi's stable session identity: resume reuses the file,
+          // fork/switch mint a different one (which must never inherit this fragment).
+          let memFile: string | null = null;
+          let memFragment: string | null = null;
+
+          // Only stdout that opens with the marker is a memory fragment. Anything else
+          // (a future diagnostic, an error string) must not reach the system prompt.
+          const MEMORY_MARKER = "<!-- kcap-memory-index:v1 -->";
+
+          async function notify(event: string, ctx: any, reason?: string): Promise<any> {
             try {
               const file = ctx?.sessionManager?.getSessionFile?.();
-              if (!file) return; // ephemeral (--no-session): nothing to record
+              if (!file) return null; // ephemeral (--no-session): nothing to record
               const args = ["hook", "--pi", "--event", event, "--file", String(file)];
               if (ctx?.cwd) args.push("--cwd", String(ctx.cwd));
               if (reason) args.push("--reason", String(reason));
-              // kcap spawns a detached watcher and returns fast; bound it so a hung
-              // kcap can never stall pi's startup or shutdown.
-              await pi.exec("kcap", args, { timeout: 10000 });
+              // --memory-contract declares that THIS extension captures and delivers
+              // the command's stdout; an older kcap ignores unknown args (fail-open).
+              if (event === "session-start") args.push("--memory-contract", "1");
+              // kcap spawns a detached watcher and returns fast — except on session-start, where it
+              // also blocks briefly (bounded to a ~3.5s hook budget) awaiting the memory-index fetch
+              // before returning. Either way this exec timeout sits well outside that ceiling, so a
+              // hung kcap can never stall pi's startup or shutdown.
+              const res = await pi.exec("kcap", args, { timeout: 10000 });
+              return { file: String(file), stdout: res?.stdout ?? "" };
             } catch {
-              // never disrupt the pi session
+              return null; // never disrupt the pi session
             }
           }
 
           pi.on("session_start", async (event: any, ctx: any) => {
-            await notify("session-start", ctx, event?.reason);
+            const res = await notify("session-start", ctx, event?.reason);
+            if (!res) return;
+            if (res.file !== memFile) {
+              // A different session file never inherits the previous fragment.
+              memFile = res.file;
+              memFragment = null;
+            }
+            const out = String(res.stdout ?? "").trim();
+            // A later empty result never erases a cached ready fragment (repeat
+            // session_start with a spent lease legitimately returns nothing).
+            if (out.startsWith(MEMORY_MARKER)) memFragment = out;
+          });
+
+          pi.on("before_agent_start", async (_event: any, ctx: any) => {
+            try {
+              if (!memFragment) return;
+              const current = ctx?.sessionManager?.getSessionFile?.();
+              if (!current || String(current) !== memFile) return;
+              // Chained system prompt is rebuilt fresh each turn; append exactly once
+              // per turn (the includes() guard is belt-and-braces against re-entry).
+              if (_event?.systemPrompt && !String(_event.systemPrompt).includes(memFragment)) {
+                return { systemPrompt: _event.systemPrompt + "\n\n" + memFragment };
+              }
+            } catch {
+              // never disrupt the pi session
+            }
           });
 
           pi.on("session_shutdown", async (event: any, ctx: any) => {
+            memFile = null;
+            memFragment = null;
             await notify("session-end", ctx, event?.reason);
           });
         }

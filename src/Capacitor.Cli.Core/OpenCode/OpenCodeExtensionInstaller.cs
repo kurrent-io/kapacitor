@@ -64,16 +64,64 @@ public static class OpenCodeExtensionInstaller {
           // STABLE transcript, so a still-streaming markerless child is never flushed mid-stream.
           const childFirstSeen = new Map<string, { key: string; since: number }>()
 
-          async function runKcap(args: string[]) {
+          // Team-memory index, keyed by TOP-LEVEL session id. The value is whatever
+          // `kcap hook --opencode --event session-start` printed on stdout: the fragment, or "" when
+          // there is none. kcap owns every decision behind it (auth, scope, the once-per-session
+          // durable lease, byte budget) — this plugin never talks to the server and never renders
+          // anything.
+          const memory = new Map<string, string>()
+          // In-flight CLASSIFY+START per session id, published synchronously by ensureStarted so a
+          // chat.system.transform racing it has something to await rather than concluding there is
+          // nothing in flight.
+          const pendingStart = new Map<string, Promise<boolean>>()
+          const MEMORY_MARKER = "<!-- kcap-memory-index:v1 -->"
+          const MEMORY_MAX_SESSIONS = 64      // bounded: never an unbounded process-global map
+          // Matches runKcap's own 10s ceiling. Only ever paid on a session's FIRST request, and only
+          // while the start is genuinely still running — a shorter bound would silently give up on a
+          // slow-but-healthy fetch and lose the one injection that session's lease paid for.
+          const MEMORY_WAIT_MS = 10000
+          // Cold-start attempts per session from the TRANSFORM path, and why it is bounded: a session
+          // whose classification keeps failing never reaches start(), so `started` never records it and
+          // the transform would re-trigger classify on EVERY model request, forever. The event path is
+          // unaffected (session.idle retries there as designed) — this bounds only the request-path
+          // healing, which exists for a plugin loaded mid-session and has no business retrying
+          // indefinitely. Found by review tracing the `!started.has(sid)` guard.
+          const MEMORY_COLD_START_ATTEMPTS = 3
+          const coldStarts = new Map<string, number>()
+
+          function rememberMemory(sid: string, fragment: string) {
+            if (!fragment) return
+            // VALIDATE before trusting: only stdout that actually opens with the marker is a memory
+            // fragment. Without this, any future line some other code path prints on this command's
+            // stdout would be appended to the model's system prompt verbatim, which is both a
+            // correctness and a content problem — stdout is a data channel here, and a data channel
+            // needs a shape.
+            if (!fragment.startsWith(MEMORY_MARKER)) return
+            // A repeated start returning nothing must not erase a fragment already cached.
+            if (memory.has(sid)) return
+            // Cheap bound: drop the oldest insertion (Map preserves insertion order).
+            if (memory.size >= MEMORY_MAX_SESSIONS) {
+              const oldest = memory.keys().next()
+              if (!oldest.done) memory.delete(oldest.value)
+            }
+            memory.set(sid, fragment)
+          }
+
+          async function runKcap(args: string[]): Promise<string> {
             try {
               // kcap spawns a detached watcher and returns fast; bound it so a hung
-              // kcap can never stall OpenCode.
-              await Promise.race([
+              // kcap can never stall OpenCode. `.quiet()` keeps the child's output off OpenCode's
+              // own stdio while still handing it back on the result — session-start uses stdout as a
+              // DATA channel for the team-memory fragment.
+              const res: any = await Promise.race([
                 $`kcap ${args}`.quiet().nothrow(),
-                new Promise((res) => setTimeout(res, 10000)),
+                new Promise((res) => setTimeout(() => res(null), 10000)),
               ])
+              const out = res?.stdout
+              return typeof out === "string" ? out : out ? out.toString() : ""
             } catch {
               // never disrupt the OpenCode session
+              return ""
             }
           }
 
@@ -121,11 +169,46 @@ public static class OpenCodeExtensionInstaller {
             if (started.has(sid)) return
             started.add(sid)
             try { mkdirSync(dir, { recursive: true }); appendFileSync(file(sid), "") } catch {}
-            const args = ["hook", "--opencode", "--event", "session-start", "--session", sid, "--file", file(sid)]
+            // --memory-contract declares that THIS plugin captures and delivers the command's stdout.
+            // A binary that understands it only then fetches the index and spends the session's
+            // once-only injection lease; an older plugin, which discards stdout, sends no flag and the
+            // binary spends nothing on output nobody will deliver.
+            const args = ["hook", "--opencode", "--event", "session-start", "--session", sid,
+                          "--file", file(sid), "--memory-contract", "1"]
             const cwd = info?.directory ?? directory
             if (cwd) args.push("--cwd", String(cwd))
             if (info?.version) args.push("--version", String(info.version))
-            await runKcap(args)
+            rememberMemory(sid, (await runKcap(args)).trim())
+          }
+
+          // Classification + start for one session, as ONE awaitable whose in-flight marker is
+          // published SYNCHRONOUSLY — before the classify's first await — so a chat.system.transform
+          // firing between session.created and the end of classification finds it. Resolves true once
+          // the session is proven top-level and its start has run.
+          //
+          // That synchronous publication is the whole point, and its absence was a real defect: an
+          // earlier revision set the marker inside start(), which only runs AFTER classify resolves.
+          // OpenCode publishes session.created and then issues the first LLM request, so the transform
+          // reliably landed in the window where classification was still in flight, saw no pending
+          // start, and declined to inject. On a one-turn `opencode run` — the shape the live cert
+          // uses — that meant the session never received its index at all, and because it is a race it
+          // presented as intermittent rather than broken. Caught by the live cert, not by unit tests.
+          function ensureStarted(sid: string, info?: any): Promise<boolean> {
+            const existing = pendingStart.get(sid)
+            if (existing) return existing
+
+            const gate = (async () => {
+              if (await classify(sid, info) !== "top") return false
+              await start(sid, info)
+              return true
+            })()
+
+            pendingStart.set(sid, gate)
+            // Cleared on settle, which is exactly when `memory` has been populated (or proven empty),
+            // so a later transform reads the cache rather than waiting on a finished promise.
+            const clear = () => pendingStart.delete(sid)
+            gate.then(clear, clear)
+            return gate
           }
 
           async function fetchMessages(sid: string): Promise<any[]> {
@@ -298,21 +381,93 @@ public static class OpenCodeExtensionInstaller {
           }
 
           return {
+            // Team-memory injection. OpenCode calls this once per LLM REQUEST with a mutable
+            // { system: string[] } that it rebuilds from scratch each time, so appending on every
+            // request is what keeps the index in the model's context for the whole session — and each
+            // array still ends up with exactly one copy.
+            //
+            // Four things this must not do, each measured against opencode 1.18.9:
+            //  1. Never inject without a sessionID. The same hook name is also triggered by OpenCode's
+            //     agent-config GENERATOR, which passes no sessionID — injecting there would pollute
+            //     generated agent definitions.
+            //  2. Never inject into a subagent's session. `children` is the classifier's own record;
+            //     an id it has not proven top-level simply has no cached fragment.
+            //  3. Never REPLACE or reorder existing entries. system[0] is OpenCode's whole assembled
+            //     prompt; it also collapses entries 1..n itself, but only while system[0] is
+            //     unchanged, so mutating it would defeat OpenCode's own normalisation.
+            //  4. Never throw. OpenCode awaits this hook without a try/catch, so an exception here
+            //     would surface as a failed model request.
+            "experimental.chat.system.transform": async (input: any, output: any) => {
+              try {
+                const sid = input?.sessionID
+                if (!sid) return                       // (1) the agent-config generator path
+                if (children.has(sid)) return          // (2)
+                const system: any = output?.system
+                if (!Array.isArray(system)) return
+
+                let fragment = memory.get(sid)
+
+                if (fragment === undefined) {
+                  // The classify+start for a brand-new session runs CONCURRENTLY with its first
+                  // request, so without this wait the very first turn — often the only turn — would
+                  // miss the fragment its once-per-session lease has already been spent on.
+                  const pending = pendingStart.get(sid)
+                  if (pending) {
+                    await Promise.race([
+                      pending,
+                      new Promise((res) => setTimeout(res, MEMORY_WAIT_MS)),
+                    ])
+                    fragment = memory.get(sid)
+                  } else if (!started.has(sid)) {
+                    // Nothing cached and nothing in flight: the plugin never saw this session start
+                    // (loaded mid-session, or a resumed one). Heal in the BACKGROUND — a kcap spawn
+                    // belongs nowhere near the critical path of a model request — and inject from the
+                    // next request on. ensureStarted's classify fails closed, so ambiguous parentage
+                    // defers rather than injecting into a possible child.
+                    //
+                    // Bounded, because a session that never classifies would otherwise re-probe on
+                    // every single request for the life of the process.
+                    const attempts = coldStarts.get(sid) ?? 0
+                    if (attempts < MEMORY_COLD_START_ATTEMPTS) {
+                      coldStarts.set(sid, attempts + 1)
+                      void ensureStarted(sid)
+                    }
+                  }
+                }
+
+                if (!fragment) return
+                // (3) Append only, and only once per array — the marker check is what keeps this
+                // correct if a future OpenCode retains transformed entries instead of rebuilding.
+                if (system.some((s: any) => typeof s === "string" && s.includes(MEMORY_MARKER))) return
+                system.push(fragment)
+              } catch {
+                // (4) fail open: leave the system prompt exactly as it was
+              }
+            },
             event: async ({ event }: any) => {
               try {
                 const type = event?.type
                 const sid = event?.properties?.sessionID
                 if (!sid) return
                 if (children.has(sid)) return  // known subagent — its parent streams it
+                if (type === "session.deleted") {
+                  // Drop this session's cached fragment promptly rather than waiting for the bounded
+                  // map to evict it. The bound is the guarantee; this is the tidy path.
+                  memory.delete(sid)
+                  coldStarts.delete(sid)
+                  return
+                }
                 if (type === "session.created") {
                   // START a top-level session only on a CONFIRMED classification — never on
                   // "unknown" (a session.get hiccup), which would misfile a child as both a
                   // top-level session and a subagent. "unknown" defers to the next idle.
-                  if (await classify(sid, event.properties?.info) === "top") await start(sid, event.properties?.info)
+                  // Via ensureStarted so the in-flight marker exists from this call's first
+                  // synchronous instant — the first LLM request races this.
+                  await ensureStarted(sid, event.properties?.info)
                 } else if (type === "session.idle") {
                   if (!started.has(sid)) {
-                    if (await classify(sid) !== "top") return  // child → skip; unknown → retry next idle
-                    await start(sid)
+                    // child → skip; unknown → retry next idle
+                    if (!(await ensureStarted(sid))) return
                   }
                   // Fetch the parent transcript ONCE and reuse it for both the write and the
                   // subagent completion-scan (avoids two full fetches per idle / snapshot skew).

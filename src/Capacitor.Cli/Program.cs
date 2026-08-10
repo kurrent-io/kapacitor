@@ -81,6 +81,9 @@ var baseUrl = await AppConfig.ResolveServerUrl(args, gitTimeoutMs: isHook ? 1000
 // Telemetry: initialised once the server URL is known (it decides the `organization` group) and
 // torn down from ProcessExit, which observes the exit code returned by top-level Main. Every
 // call swallows, so nothing here can fail a command.
+//
+// Deliberately ahead of the update-notice try/finally below: this is process setup, and the
+// ProcessExit handler outlives that block anyway.
 var commandStart = System.Diagnostics.Stopwatch.GetTimestamp();
 
 // TokenStore.LoadAsync() is the LOCAL read (src/Capacitor.Cli.Core/Auth/TokenStore.cs:211) —
@@ -116,18 +119,14 @@ AppDomain.CurrentDomain.ProcessExit += (_, _) => {
     CliTelemetry.FlushAndClose().GetAwaiter().GetResult();
 };
 
-// Fire-and-forget update check (prints hint to stderr after command finishes).
-// Skipped for `uninstall` — the check writes ~/.config/kcap/update-check-{channel}.json
-// (e.g. update-check-latest.json), which would race with uninstall's `rm -rf`
-// of the config dir and recreate it after the command has reported success.
-// Skipped for `update` — nudging "run `kcap update`" from inside `kcap update`
-// is noise at best and lands mid-upgrade at worst.
-var   noUpdateCheck   = args.Contains("--no-update-check") || command is "uninstall" or "update";
-Task? updateCheckTask = null;
-
-if (!noUpdateCheck) {
-    updateCheckTask = Task.Run(UpdateCommand.PrintUpdateHintIfAvailable);
-}
+// Everything from here to the end of command dispatch — including the --help,
+// per-command-help, and no-server-configured early exits below — runs inside this
+// try/finally so the deterministic exit-time update notice (UpdateNotice.FlushAsync)
+// fires on every path out of the command, not just the ones that fall through the
+// switch. UpdateNotice.IsHumanFacing is the suppression predicate (hooks, mcp, watch,
+// the foreground daemon, update/uninstall themselves, --no-update-check) — it decides
+// per-invocation whether FlushAsync does anything at all.
+try {
 
 if (command is "--help" or "-h" or "help") {
     await PrintUsage();
@@ -314,10 +313,12 @@ switch (command) {
         return await PluginCommand.HandleAsync(args);
     case "profile":
         return await ProfileCommand.HandleAsync(args);
+    case "machine":
+        return await MachineCommand.HandleAsync(baseUrl!, args);
     case "use":
         return await UseCommand.HandleAsync(args);
     case "status":
-        return await StatusCommand.HandleAsync(baseUrl);
+        return await StatusCommand.HandleAsync(baseUrl, args);
     case "config":
         return await ConfigCommand.HandleAsync(args);
     case "ignore":
@@ -572,6 +573,7 @@ switch (command) {
         }
 
         var generateSummaries = args.Contains("--generate-summaries");
+        var reimport          = args.Contains("--reimport");
 
         // Build sources
         var explicitVendorSelection = vsel.Vendors.Count > 0;
@@ -628,7 +630,8 @@ switch (command) {
             activeProfile:           activeProfile,
             currentRepo:             currentRepo,
             needOrgPick:             resolveResult.NeedOrgPick,
-            storedOrg:               storedOrg);
+            storedOrg:               storedOrg,
+            reimport:                reimport);
     }
     case "watch" when args.Length < 3:
         Console.Error.WriteLine("Usage: kcap watch <sessionId> <transcriptPath> [--agent-id <agentId>] [--cwd <cwd>] [--skip-title] [--parent-pid <pid>] [--vendor claude|codex|copilot|gemini|kiro|pi|opencode|antigravity|cursor]");
@@ -748,7 +751,7 @@ switch (command) {
                 sessionId: null); // current session unknown here — reading stdin now would consume it
         }
         if (args.Contains("--claude")) {
-            return await ClaudeHookCommand.Handle(baseUrl!, Console.In, updateCheckTask, hookProcessStart);
+            return await ClaudeHookCommand.Handle(baseUrl!, Console.In, processStart: hookProcessStart);
         }
         if (args.Contains("--codex")) {
             return await CodexHookCommand.Handle(baseUrl!, Console.In, hookProcessStart);
@@ -766,7 +769,10 @@ switch (command) {
             return await KiroHookCommand.Handle(baseUrl!, Console.In, args, hookProcessStart);
         }
         if (args.Contains("--pi")) {
-            return await PiHookCommand.Handle(baseUrl!, args);
+            // hookProcessStart, not a handler-local timestamp: HookBudget.Remaining is relative to
+            // it, and self-initializing inside Handle would inflate the memory-fetch budget by the
+            // pre-dispatch work (config load, spool drain), overshooting the true hook ceiling.
+            return await PiHookCommand.Handle(baseUrl!, args, Console.Out, hookProcessStart);
         }
         if (args.Contains("--opencode")) {
             return await OpenCodeHookCommand.Handle(baseUrl!, args);
@@ -796,6 +802,10 @@ return 1;
     CrashReporter.Record(command, topLevelEx);
 
     return CrashReporter.ExitCode(command);
+}
+
+} finally {
+    await UpdateNotice.FlushAsync(command, args);
 }
 
 static string? GetArg(string[] arguments, string flag) {

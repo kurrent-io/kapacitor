@@ -254,9 +254,10 @@ public class GeminiReviewerLaunchTests {
     /// routing around the advertisement check.
     /// </summary>
     [Test]
-    public async Task ADisabledDaemon_RefusesAReviewLaunchBeforeAnyProcessCouldStart() {
+    public async Task AnExplicitlyDisabledDaemon_RefusesAReviewLaunchBeforeAnyProcessCouldStart() {
         var ex = Assert.Throws<InvalidOperationException>(
-            () => Build(isReviewFlow: true, config: new DaemonConfig()));
+            () => Build(isReviewFlow: true,
+                        config: new DaemonConfig { GeminiUnattendedReviewerEnabled = false }));
 
         await Assert.That(ex!.Message).Contains("gemini_unattended_reviewer_disabled");
     }

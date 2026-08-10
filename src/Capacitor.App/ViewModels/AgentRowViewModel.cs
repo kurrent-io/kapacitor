@@ -57,7 +57,7 @@ public sealed class AgentRowViewModel : ReactiveObject, IDisposable {
         VendorDisplay = dto.Model is null ? dto.Vendor : $"{dto.Vendor} ({dto.Model})";
         RepoLeaf = RepoLabel.Leaf(dto.RepoPath);
         RepoFull = dto.RepoPath ?? "";
-        Requester = dto.Requester ?? "unknown";
+        Requester = !string.IsNullOrWhiteSpace(dto.RequesterDisplay) ? dto.RequesterDisplay : dto.Requester ?? "unknown";
         StatusText = dto.Status;
         CreatedAt = dto.CreatedAt;
 

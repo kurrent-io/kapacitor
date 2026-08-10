@@ -130,4 +130,35 @@ public class RegistrationGateTests {
         await Assert.That(reRegistered).IsFalse();
         await Assert.That(gate.IsReady(HubConnectionState.Connected)).IsFalse();
     }
+
+    // Settlement lost-ack redelivery (D1): postRegister runs AFTER MarkRegistered, so a throw there
+    // (including from a throwing ILogger inside the hook's own error handling — a supported input) must
+    // be contained: RunRegistrationAsync must not fault the reconnect path, and readiness stays set.
+    [Test]
+    public async Task A_throwing_post_register_hook_is_contained_and_readiness_stays_set() {
+        var gate = new RegistrationGate();
+
+        await gate.RunRegistrationAsync(
+            daemonConnect:    () => Task.CompletedTask,
+            reRegisterAgents: () => Task.CompletedTask,
+            postRegister:     () => throw new InvalidOperationException("hook and its logger both blew up"));
+
+        // The daemon is registered despite the post-register throw — the bracket completed cleanly.
+        await Assert.That(gate.IsReady(HubConnectionState.Connected)).IsTrue();
+    }
+
+    // Cancellation is a shutdown signal, NOT a hook failure: it must propagate out of the bracket rather
+    // than be swallowed as success (readiness still set, since MarkRegistered ran first).
+    [Test]
+    public async Task A_cancelled_post_register_hook_propagates_the_cancellation() {
+        var gate = new RegistrationGate();
+
+        await Assert.That(async () => await gate.RunRegistrationAsync(
+                daemonConnect:    () => Task.CompletedTask,
+                reRegisterAgents: () => Task.CompletedTask,
+                postRegister:     () => throw new OperationCanceledException()))
+            .Throws<OperationCanceledException>();
+
+        await Assert.That(gate.IsReady(HubConnectionState.Connected)).IsTrue();
+    }
 }

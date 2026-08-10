@@ -54,6 +54,10 @@ Options:
   --session <id>          Import a specific session only (composes with scope)
   --min-lines <n>         Skip sessions shorter than n lines (default: 15)
   --generate-summaries    Also generate per-session what's-done summaries
+  --reimport              Force OpenCode sessions to re-import even if a local
+                          ledger records them as complete (use after deleting a
+                          session server-side); scope it with the vendor/--repo/
+                          --cwd/--session filters. No effect on other vendors.
 
 Re-running the same command is idempotent — a server-side watermark dedupes
 already-imported lines so nothing is double-loaded.

@@ -26,3 +26,14 @@ Options:
 
 Beta releases correspond to server versions rolled out to internal
 tenants first. Most users should stay on the default stable channel.
+
+update_check (kcap config set update_check false):
+  Controls ALL kcap update nudging, not just the local stderr hint. With
+  it off, kcap: skips the passive "update available" hint printed after
+  human-facing commands (and the kcap status annotation); still sends
+  X-Kcap-Cli-Version but adds X-Kcap-Update-Check: off, so the server
+  suppresses its own out-of-date banner and notification for you (the
+  opt-out is a signal carried on the wire, not an omission — the server
+  still knows your version); and drops the in-agent nudge it would
+  otherwise inject into a Claude Code session's context when the server
+  reports a newer version. It defaults to true (on) for a fresh profile.

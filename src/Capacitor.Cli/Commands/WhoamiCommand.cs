@@ -88,6 +88,11 @@ public static class WhoamiCommand {
             using var http = new HttpClient(new HttpClientHandler { AllowAutoRedirect = false });
             http.DefaultRequestHeaders.Authorization = new("Bearer", accessToken);
 
+            // This probe deliberately bypasses HttpClientExtensions' choke point (it must not
+            // mutate auth state), so it attaches the same observation headers explicitly rather
+            // than inheriting them for free.
+            await HttpClientExtensions.AttachObservationHeadersAsync(http);
+
             using var response = await http.GetOnceAsync(
                 $"{AppConfig.NormalizeUrl(baseUrl)}{ProbePath}", ProbeTimeout);
 

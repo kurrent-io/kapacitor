@@ -2,6 +2,7 @@ using System.Text.Json.Nodes;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.Core.Antigravity;
 using Capacitor.Cli.Core.Auth;
+using Capacitor.Cli.Core.Config;
 using Capacitor.Cli.Core.Copilot;
 using Capacitor.Cli.Core.Cursor;
 using Capacitor.Cli.Core.Gemini;
@@ -12,7 +13,11 @@ using Capacitor.Cli.Core.Pi;
 namespace Capacitor.Cli.Commands;
 
 public static class StatusCommand {
-    public static async Task<int> HandleAsync(string? baseUrl) {
+    public static async Task<int> HandleAsync(string? baseUrl, string[] args) {
+        // Version line reuses UpdateNotice's shared check and marks-reported so the exit footer
+        // doesn't double-print; respects the same opt-outs.
+        await WriteVersionLineAsync(args);
+
         // Server
         Console.Write("  Server:  ");
 
@@ -81,6 +86,51 @@ public static class StatusCommand {
 
         return 0;
     }
+
+    static async Task WriteVersionLineAsync(string[] args) {
+        Console.Write("  Version: ");
+
+        var current = CapacitorVersion.CurrentDisplay();
+
+        // Opt-out: an explicit --no-update-check flag or a disabled profile setting means no
+        // check is performed at all (never force one the user turned off) — the line still
+        // prints the bare version.
+        if (args.Contains("--no-update-check")) {
+            await Console.Out.WriteLineAsync(FormatVersionLine(current, null));
+
+            return;
+        }
+
+        var profile = await AppConfig.GetActiveProfileAsync();
+
+        if (profile?.UpdateCheck == false) {
+            await Console.Out.WriteLineAsync(FormatVersionLine(current, null));
+
+            return;
+        }
+
+        var channel = UpdateCommand.ResolveChannel(args, profile?.UpdateChannel);
+        var result  = await UpdateNotice.GetSharedCheckAsync(channel);
+
+        await Console.Out.WriteLineAsync(FormatVersionLine(current, result));
+
+        if (result is { Newer: true, Latest: not null }) {
+            // Surfaced inline already — the exit-time footer (UpdateNotice.FlushAsync) must not
+            // print the same information a second time.
+            UpdateNotice.MarkReported();
+        }
+    }
+
+    /// <summary>
+    /// Pure formatting for the Version line: <c>kcap {current}</c>, with an inline
+    /// <c>(update available: {latest})</c> annotation appended only when
+    /// <paramref name="result"/> reports a newer version. Split out from
+    /// <see cref="WriteVersionLineAsync"/> so the exact text is unit-testable without any I/O.
+    /// </summary>
+    internal static string FormatVersionLine(string current, UpdateCommand.UpdateCheckResult? result) =>
+        result is { Newer: true, Latest: not null }
+            ? $"kcap {current} (update available: {result.Latest})"
+            : $"kcap {current}";
 
     static async Task WriteAgentStatusAsync() {
         if (!Directory.Exists(DaemonLockPaths.Directory)) {

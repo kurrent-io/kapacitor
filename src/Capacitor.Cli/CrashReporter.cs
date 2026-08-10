@@ -17,8 +17,10 @@ namespace Capacitor.Cli;
 internal static class CrashReporter {
     // Commands the coding agent spawns as hooks or detached side-processes, where a
     // crash must never surface (no error banner, no crash report) — mirrors the
-    // hook handler's own fail-open behaviour.
-    static readonly HashSet<string> FailOpenCommands = new(StringComparer.Ordinal) {
+    // hook handler's own fail-open behaviour. Internal (not private): also consumed
+    // directly by UpdateNotice.IsHumanFacing — the same population never gets the
+    // exit-time update notice either, since nobody reads their stderr.
+    internal static readonly HashSet<string> FailOpenCommands = new(StringComparer.Ordinal) {
         "hook", "generate-whats-done", "set-title", "copilot-finalize",
     };
 

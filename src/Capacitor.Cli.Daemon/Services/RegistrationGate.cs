@@ -39,10 +39,26 @@ internal sealed class RegistrationGate {
     /// If <paramref name="daemonConnect"/> throws (e.g. name-in-use), the exception propagates
     /// and readiness stays cleared — re-registration is skipped and MarkRegistered never runs.
     /// </summary>
-    public async Task RunRegistrationAsync(Func<Task> daemonConnect, Func<Task> reRegisterAgents) {
+    public async Task RunRegistrationAsync(
+            Func<Task> daemonConnect, Func<Task> reRegisterAgents, Func<Task>? postRegister = null) {
         MarkUnregistered();
         await daemonConnect();
         await reRegisterAgents();
         MarkRegistered();
+        // postRegister runs with IsReady == true — for work that must reach the server on the freshly
+        // ready transport (e.g. re-delivering unretired terminal acks, which CommandAckAsync drops while
+        // readiness is still cleared inside this bracket). It is CONTAINED here: MarkRegistered has already
+        // run, so a throw from the hook — including from a throwing ILogger inside its OWN error handling,
+        // a supported input in this codebase — must never un-set readiness or fault the reconnect path.
+        // The hook owns its diagnostics; this gate has no logger and deliberately swallows.
+        if (postRegister is not null) {
+            try { await postRegister(); }
+            // Cancellation is a shutdown signal, not a hook failure — it must propagate, never be
+            // swallowed as success.
+            catch (OperationCanceledException) { throw; }
+            // A genuine hook FAILURE is best-effort: MarkRegistered already ran, so it must not un-set
+            // readiness or fault the reconnect path.
+            catch { /* deliberately empty — see summary */ }
+        }
     }
 }

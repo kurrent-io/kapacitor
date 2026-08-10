@@ -62,7 +62,8 @@ public class DaemonClientServiceTests {
     static DaemonStatusDto Snap(string daemon, params string[] ids) {
         var agents = ids.Select(id => new AgentStatusDto(
             Id: id, Kind: "agent", Vendor: "claude", RepoPath: null, Status: "Running",
-            FlowRunId: null, FlowRole: null, Requester: null, CreatedAt: DateTime.UtcNow, Model: null
+            FlowRunId: null, FlowRole: null, Requester: null, CreatedAt: DateTime.UtcNow, Model: null,
+            RequesterDisplay: null
         )).ToList();
         return new DaemonStatusDto(
             new DaemonInfoDto(daemon, "1.0.0", "http://localhost:9999", "connected", MaxAgents: 10, ActiveAgents: agents.Count),

@@ -15,6 +15,9 @@ Profiles:
   profile remove <name>            Remove a profile
   profile show [name]              Show profile details
   use <profile> [--global] [--save]  Switch active profile
+  machine create <name>            Create a headless recording credential
+  machine list                     Show this org's machines
+  machine revoke <service-id>      Stop a machine authenticating
 
 Configuration:
   config show                      Print current configuration

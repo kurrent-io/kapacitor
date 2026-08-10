@@ -40,15 +40,17 @@ static class AntigravityHookCommand {
     internal static Task<int> Handle(string baseUrl, string[] args, TextReader stdin, TextWriter stdout,
             long processStart = 0,
             Func<string?, CancellationToken, Task<HttpClient>>? memoryClientFactory = null,
-            Func<SessionStartMemoryLeaseStore>?                 memoryStoreFactory  = null) =>
+            Func<SessionStartMemoryLeaseStore>?                 memoryStoreFactory  = null,
+            Func<string?>?                                      workspaceFallback   = null) =>
         HandleCore(baseUrl, args, stdin, stdout,
             processStart == 0 ? System.Diagnostics.Stopwatch.GetTimestamp() : processStart,
-            memoryClientFactory, memoryStoreFactory);
+            memoryClientFactory, memoryStoreFactory, workspaceFallback);
 
     static async Task<int> HandleCore(string baseUrl, string[] args, TextReader stdin, TextWriter stdout,
             long processStart,
             Func<string?, CancellationToken, Task<HttpClient>>? memoryClientFactory,
-            Func<SessionStartMemoryLeaseStore>?                 memoryStoreFactory) {
+            Func<SessionStartMemoryLeaseStore>?                 memoryStoreFactory,
+            Func<string?>?                                      workspaceFallback) {
         var eventName = EventArg(args);
         if (string.IsNullOrWhiteSpace(eventName)) {
             // Control hooks must always exit 0 (a non-zero exit makes Antigravity treat the
@@ -82,7 +84,7 @@ static class AntigravityHookCommand {
         // stream (the dashed conversationId is kept only for the transcript file path).
         var sessionId = conversationId!.Replace("-", "");
 
-        var cwd = FirstWorkspacePath(payload);
+        var cwd = ResolveWorkspace(payload, workspaceFallback ?? AgentWorkspaceCwd);
 
         // Mirror the disabled-session fast path: `kcap disable` must stop every POST
         // and watcher restart for the session.
@@ -330,6 +332,49 @@ static class AntigravityHookCommand {
         }
         // Fall back to a singular form if present.
         return Str(payload, "cwd");
+    }
+
+    /// <summary>
+    /// The payload's workspace, else <paramref name="agentCwdFallback"/> — invoked ONLY when the
+    /// payload yields nothing, so a vendor release that starts populating <c>workspacePaths</c>
+    /// silently wins over the fallback.
+    ///
+    /// <para><b>Why a fallback exists at all (measured, agy 1.1.11).</b> Print mode
+    /// (<c>agy -p</c>) sends <c>"workspacePaths": []</c> in every hook payload, while an
+    /// interactive session sends the launch directory — same hook file, same payload shape
+    /// otherwise. Without a workspace the memory index has no scope and the captured session no
+    /// repo, so print-mode runs silently lost both. This was long misdiagnosed as "print mode
+    /// ignores <c>injectSteps</c>": a hook probe proved injected steps land in the print-mode
+    /// transcript on every invocation — the payload's empty workspace was starving OUR emission,
+    /// not the vendor dropping it.</para>
+    /// </summary>
+    internal static string? ResolveWorkspace(JsonObject payload, Func<string?> agentCwdFallback) =>
+        FirstWorkspacePath(payload) ?? agentCwdFallback();
+
+    /// <summary>
+    /// The agent process's own working directory — the launch dir, which is exactly what
+    /// interactive mode reports as <c>workspacePaths[0]</c>. Resolved by walking the ppid chain to
+    /// the nearest <c>agy</c> ancestor and reading ITS cwd. Never this hook process's cwd: the
+    /// vendor chdirs hook children to the plugin directory, which is the wrong-scope hazard the
+    /// scope-safety note in <see cref="StartMemoryIndexTask"/> exists to prevent. A resolved
+    /// directory that no longer exists is rejected rather than handed to git. Fail-open on every
+    /// path — a missing fallback just means print mode behaves as it did before this existed.
+    /// </summary>
+    internal static string? AgentWorkspaceCwd() {
+        try {
+            if (ProcessHelpers.GetParentPid() is not { } parentPid || parentPid <= 1) return null;
+
+            if (ProcessHelpers.ResolveCodingAgentPid(parentPid, "agy", ProcessHelpers.GetProcessInfo)
+                    is not { } agentPid) {
+                return null;
+            }
+
+            var cwd = ProcessHelpers.GetProcessCwd(agentPid);
+
+            return cwd is { Length: > 0 } && Directory.Exists(cwd) ? cwd : null;
+        } catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException) {
+            return null;
+        }
     }
 
     /// <summary>

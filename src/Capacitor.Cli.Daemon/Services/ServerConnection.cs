@@ -568,7 +568,21 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
     internal virtual Task RegisterDaemonAsync() =>
         _gate.RunRegistrationAsync(
             daemonConnect: DaemonConnectAsync,
-            reRegisterAgents: ReRegisterAgentsAndAcpBindingsAsync
+            reRegisterAgents: ReRegisterAgentsAndAcpBindingsAsync,
+            // Runs AFTER MarkRegistered, i.e. with IsReady == true, so a re-delivery here actually reaches
+            // the server — inside reRegisterAgents it would be silently dropped by the CommandAckAsync
+            // IsReady gate. Contained so a failing re-delivery never un-registers the daemon.
+            postRegister: async () => {
+                try { await (OnRegisteredHook?.Invoke() ?? Task.CompletedTask); }
+                // Cancellation (shutdown) propagates — never contained as a hook failure.
+                catch (OperationCanceledException) { throw; }
+                catch (Exception ex) {
+                    // The log itself is contained: a throwing ILogger provider is a supported input, so a
+                    // bare LogDebug here could re-throw and defeat this very containment.
+                    try { _logger.LogDebug(ex, "post-registration hook failed — ignoring"); }
+                    catch { /* logger provider threw — swallow so post-register containment holds */ }
+                }
+            }
         );
 
     /// <summary>
@@ -672,6 +686,14 @@ internal partial class ServerConnection : IAsyncDisposable, IDaemonHeartbeatPort
     /// Null until wired (early startup / tests) — treated as a no-op.
     /// </summary>
     internal Func<Task>? ReRegisterAgentsHook { get; set; }
+
+    /// <summary>Invoked inside <see cref="RegisterDaemonAsync"/> AFTER readiness is restored
+    /// (post-<c>MarkRegistered</c>), unlike <see cref="ReRegisterAgentsHook"/>. For work that must reach
+    /// the server on the freshly ready transport — the settlement lost-ack re-delivery lives here because
+    /// <see cref="CommandAckAsync"/> silently drops sends while <see cref="IsReady"/> is still false inside
+    /// the registration bracket. Null until wired (early startup / tests) — a no-op; failures are contained
+    /// by the caller so they never un-register the daemon.</summary>
+    internal Func<Task>? OnRegisteredHook { get; set; }
 
     async Task<string[]> MergeRepoPathsAsync() {
         var persisted = await RepoPathStore.GetSortedPathsAsync();

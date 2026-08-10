@@ -1,0 +1,84 @@
+kcap machine — credentials for headless recording
+
+A machine records sessions without a person signing in: CI runners, ephemeral
+agent sandboxes, anywhere a browser login is impossible. It records like a user
+but is never an administrator and never a member of a project.
+
+Usage: kcap machine <create|list|revoke>
+
+  create <name> [--visibility <v>] [--role <role>]
+                          Create a machine and print its secret ONCE
+  list                    Show this organization's machines
+  revoke <service-id>     Stop a machine authenticating
+
+Requires the owner or admin role in your organization.
+
+THE SECRET IS SHOWN ONCE
+
+  It is issued by WorkOS and never stored — not by this CLI, not by Capacitor,
+  and WorkOS will not show it again. If you lose it, revoke the machine and
+  create a new one.
+
+  That is deliberate rather than an inconvenience: a secret nobody stores is a
+  secret nobody can leak. It travels from WorkOS to your terminal and stops
+  there; it never reaches the Capacitor server at all.
+
+  The secret goes to stdout and everything else to stderr, so you can pipe it
+  straight into a secret store without it touching disk.
+
+Flags for create:
+
+  --visibility <v>   What the machine's sessions are visible to. One of:
+                     private, org_public, public. Default: private.
+                     Printed in the setup instructions — see below for why it
+                     is set on the machine rather than here.
+  --role <role>      The machine's role in Capacitor. Default: member.
+                     A machine is never an administrator whatever you pass.
+
+Full sequence:
+
+  # 1. Create it, capturing the secret straight into your secret store
+  kcap machine create ci-runner --visibility org_public \
+    2>/dev/null | gh secret set KCAP_CLIENT_SECRET
+
+  # 2. Note the client id it printed, and set that too. The client id is
+  #    public — it is safe to commit.
+  gh secret set KCAP_CLIENT_ID --body client_01ABC...
+
+  # 3. On the runner, both variables must be in the environment:
+  #      KCAP_CLIENT_ID      public, safe to commit
+  #      KCAP_CLIENT_SECRET  a secret; use your CI's secret store
+
+  # 4. On the runner, choose what its sessions are visible to
+  kcap config set default_visibility org_public
+
+  The runner needs no profile and no login: with those two variables set, kcap
+  exchanges them for a short-lived token itself. Point it at the server with
+  KCAP_URL.
+
+  Network note: the exchange calls WorkOS directly, so a runner behind an
+  egress policy needs that host reachable.
+
+Why step 4 runs on the machine
+
+  Visibility is the machine's own setting, exactly as it is for a person — it
+  lives in the profile the machine records with. --visibility on create only
+  tells you which value to set; it does not configure the runner for you,
+  because this command has no access to it.
+
+Taking a machine out of service:
+
+  kcap machine list                  # find the service id
+  kcap machine revoke service:9e96...
+
+  Revoking stops it authenticating from its next request. A token it already
+  holds stays valid until it expires (up to an hour) but is no longer honoured.
+  To cut it off at the source as well, delete the application in the WorkOS
+  dashboard — that takes effect immediately.
+
+Examples:
+
+  kcap machine create ci-runner
+  kcap machine create nightly-agent --visibility org_public
+  kcap machine list
+  kcap machine revoke service:9e96baf8f4f55363bc23d9a3a79939b3

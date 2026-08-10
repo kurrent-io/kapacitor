@@ -24,24 +24,24 @@ public static class ClaudeHookCommand {
     // send the POST; the server's StopAndDrain + the "kcap import" hint recover the rest.
     static readonly TimeSpan PreHookDrainCap = TimeSpan.FromSeconds(8);
 
-    public static Task<int> Handle(string baseUrl, TextReader stdin, Task? updateCheckTask = null, long processStart = 0,
+    public static Task<int> Handle(string baseUrl, TextReader stdin, long processStart = 0,
             TextWriter? stdout = null) {
         var spool = new HookSpool(PathHelpers.ConfigPath("spool"));
         spool.ReapOlderThan(TimeSpan.FromDays(30));
         var ps = processStart == 0 ? Stopwatch.GetTimestamp() : processStart;
-        return HandleWithDeps(spool, ps, baseUrl, stdin, updateCheckTask, stdout);
+        return HandleWithDeps(spool, ps, baseUrl, stdin, stdout);
     }
 
     static Task<int> HandleWithDeps(HookSpool spool, long processStart, string baseUrl, TextReader stdin,
-            Task? updateCheckTask, TextWriter? stdout = null)
-        => HandleWithDeps(spool, processStart, baseUrl, stdin, updateCheckTask,
+            TextWriter? stdout = null)
+        => HandleWithDeps(spool, processStart, baseUrl, stdin,
             () => HttpClientExtensions.CreateClientWithAuthStatusAsync(baseUrl),
             async (rejectedAccessToken, ct) => (await HttpClientExtensions.CreateClientWithAuthStatusAsync(
                 baseUrl, ct, allowAutoRedirect: false, rejectedAccessToken: rejectedAccessToken)).Client,
             stdout);
 
     internal static async Task<int> HandleWithDeps(
-            HookSpool spool, long processStart, string baseUrl, TextReader stdin, Task? updateCheckTask,
+            HookSpool spool, long processStart, string baseUrl, TextReader stdin,
             Func<Task<(HttpClient Client, AuthStatus Status)>> clientFactory,
             Func<string?, CancellationToken, Task<HttpClient>>? memoryClientFactory = null,
             TextWriter? stdout = null) {
@@ -112,7 +112,7 @@ public static class ClaudeHookCommand {
         var (client, authStatus) = created.Value;
         try {
             return await HandleCore(client, authStatus, spool, processStart, baseUrl, new StringReader(body),
-                updateCheckTask, memoryClientFactory, stdout: stdout);
+                memoryClientFactory, stdout: stdout);
         } catch (Exception ex) {
             await Console.Error.WriteLineAsync($"[kcap] claude hook failed (fail-open): {ex.Message}");
             return 0;
@@ -247,7 +247,7 @@ public static class ClaudeHookCommand {
     }
 
     internal static async Task<int> HandleCore(HttpClient client, AuthStatus authStatus, HookSpool spool,
-        long processStart, string baseUrl, TextReader stdin, Task? updateCheckTask = null,
+        long processStart, string baseUrl, TextReader stdin,
         Func<string?, CancellationToken, Task<HttpClient>>? memoryClientFactory = null,
         Func<SessionStartMemoryLeaseStore>? memoryStoreFactory = null,
         TextWriter? stdout = null) {
@@ -644,7 +644,13 @@ public static class ClaudeHookCommand {
                 try {
                     var disabled        = AppConfig.ResolvedProfile?.Profile?.DisableSessionGuidelines is true;
                     var lessonsFragment = SessionGuidelinesEmitter.BuildFragment(responseNode, disabled);
-                    var nudgeFragment   = VersionNudgeEmitter.BuildFragment(responseNode, CapacitorVersion.CurrentDisplay());
+                    // update_check=false opts out of ALL kcap update nudging, including the
+                    // in-agent one — skip emission entirely rather than let a server that still
+                    // sends `version` sneak the fragment past a locally-disabled preference.
+                    var updateCheckOff  = AppConfig.ResolvedProfile?.Profile?.UpdateCheck is false;
+                    var nudgeFragment   = updateCheckOff
+                        ? null
+                        : VersionNudgeEmitter.BuildFragment(responseNode, CapacitorVersion.CurrentDisplay());
                     // join the parallel memory-index fetch, bounded by the remaining
                     // hook budget so a slow fetch can't delay the hook (fail-open → null).
                     var memoryFragment = await AwaitMemoryFragmentAsync(memoryIndexTask, processStart);
@@ -660,10 +666,6 @@ public static class ClaudeHookCommand {
             }
 
             resp.Dispose();
-
-            if (updateCheckTask is not null) {
-                await updateCheckTask;
-            }
 
             return 0;
         }
@@ -814,10 +816,6 @@ public static class ClaudeHookCommand {
 
                 break;
             }
-        }
-
-        if (updateCheckTask is not null) {
-            await updateCheckTask;
         }
 
         return 0;

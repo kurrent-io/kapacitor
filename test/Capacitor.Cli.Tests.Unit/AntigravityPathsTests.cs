@@ -76,18 +76,67 @@ public class AntigravityPathsTests {
             .IsEqualTo(Path.Combine("/repo", ".agents", "plugins", "kcap", "hooks.json"));
     }
 
+    // G2 gateway: EITHER product root means installed. The agy-only row (GUI absent, CLI present)
+    // is the one this fix exists for — before it, that machine was undetected and nothing installed.
     [Test]
-    public async Task IsInstalled_true_only_when_data_root_exists() {
+    [Arguments(false, false, false)] // neither root
+    [Arguments(true,  false, true)]  // GUI only
+    [Arguments(false, true,  true)]  // agy CLI only  <-- the gateway case
+    [Arguments(true,  true,  true)]  // both
+    public async Task IsInstalled_is_true_when_EITHER_product_root_exists(
+            bool gui, bool cli, bool expected) {
         var home = Path.Combine(Path.GetTempPath(), "kcap-ag-" + Guid.NewGuid().ToString("N"));
         try {
             // geminiCliHome: "" forces home-based resolution (no env read).
-            await Assert.That(AntigravityPaths.IsInstalled(home: home, geminiCliHome: "")).IsFalse();
+            if (gui) Directory.CreateDirectory(Path.Combine(home, ".gemini", "antigravity"));
+            if (cli) Directory.CreateDirectory(Path.Combine(home, ".gemini", "antigravity-cli"));
 
-            Directory.CreateDirectory(Path.Combine(home, ".gemini", "antigravity"));
-            await Assert.That(AntigravityPaths.IsInstalled(home: home, geminiCliHome: "")).IsTrue();
+            await Assert.That(AntigravityPaths.IsInstalled(home: home, geminiCliHome: "")).IsEqualTo(expected);
         } finally {
             if (Directory.Exists(home)) Directory.Delete(home, recursive: true);
         }
+    }
+
+    [Test]
+    public async Task CliConfigRoot_is_antigravity_cli_under_gemini_home() {
+        await Assert.That(AntigravityPaths.CliConfigRoot(home: "/h", geminiCliHome: P))
+            .IsEqualTo(Path.Combine(GeminiRoot, "antigravity-cli"));
+    }
+
+    // Import enumerates both roots, GUI first. Order is fixed so the log lines and any
+    // first-wins behaviour are deterministic.
+    [Test]
+    public async Task BrainProductRoots_are_gui_then_cli() {
+        var roots = AntigravityPaths.BrainProductRoots(home: "/h", geminiCliHome: P);
+        await Assert.That(roots.Count).IsEqualTo(2);
+        await Assert.That(roots[0]).IsEqualTo(Path.Combine(GeminiRoot, "antigravity"));
+        await Assert.That(roots[1]).IsEqualTo(Path.Combine(GeminiRoot, "antigravity-cli"));
+    }
+
+    // The root-explicit helpers must resolve under the given product root verbatim — this is what
+    // lets a CLI-root conversation's transcript/messages resolve under antigravity-cli, not the GUI.
+    [Test]
+    public async Task Under_helpers_resolve_beneath_the_given_product_root() {
+        var cli = Path.Combine(GeminiRoot, "antigravity-cli");
+        const string id = "abc-123";
+        await Assert.That(AntigravityPaths.BrainDirUnder(cli, id))
+            .IsEqualTo(Path.Combine(cli, "brain", id));
+        await Assert.That(AntigravityPaths.TranscriptFullPathUnder(cli, id))
+            .IsEqualTo(Path.Combine(cli, "brain", id, ".system_generated", "logs", "transcript_full.jsonl"));
+        await Assert.That(AntigravityPaths.MessagesDirUnder(cli, id))
+            .IsEqualTo(Path.Combine(cli, "brain", id, ".system_generated", "messages"));
+    }
+
+    // The GUI-fixed convenience overloads must equal the Under() form anchored at the GUI root —
+    // so pre-existing callers (live capture-adjacent) are byte-identical after the refactor.
+    [Test]
+    public async Task GUI_overloads_equal_the_Under_form_at_the_GUI_root() {
+        var gui = AntigravityPaths.Root(home: "/h", geminiCliHome: P);
+        const string id = "abc-123";
+        await Assert.That(AntigravityPaths.TranscriptFullPath(id, home: "/h", geminiCliHome: P))
+            .IsEqualTo(AntigravityPaths.TranscriptFullPathUnder(gui, id));
+        await Assert.That(AntigravityPaths.MessagesDir(id, home: "/h", geminiCliHome: P))
+            .IsEqualTo(AntigravityPaths.MessagesDirUnder(gui, id));
     }
 
     // the watcher sees a dashless session id but must resolve the

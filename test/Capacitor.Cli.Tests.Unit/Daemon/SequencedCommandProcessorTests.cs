@@ -143,14 +143,16 @@ public class SequencedCommandProcessorTests {
         await p.SubmitAsync(item, () => { runs++; return Task.FromResult(new CommandOutcome(CommandOutcomeKind.LaunchExecuted)); });
         await Assert.That(runs).IsEqualTo(1);                                    // no re-execution
 
-        // Two acks now: [0] the proactive settle ack from the lane, [1] the duplicate-replay ack.
-        // Both are Processed and carry the SAME cached outcome — the duplicate path is unchanged.
+        // Two acks: [0] the proactive settle ack from the lane, [1] the duplicate-replay ack. Both are
+        // Processed and carry the SAME cached outcome. Settlement lost-ack redelivery (D1): [1] is now the FROZEN ack [0] published
+        // (get-or-freeze), not a fresh build — so it is byte-identical rather than merely equal-by-value.
         await Assert.That(h.Acks).HasCount().EqualTo(2);
         await Assert.That(h.Acks[0].State).IsEqualTo(CommandAckState.Processed);  // proactive
         var ack = h.Acks[1];                                                      // duplicate replay
         await Assert.That(ack.State).IsEqualTo(CommandAckState.Processed);
         await Assert.That(ack.OutcomeKind).IsEqualTo(CommandOutcomeKind.LaunchExecuted);
-        await Assert.That(ack.CurrentState).IsEqualTo(AgentLiveness.Live);       // read live at ack time
+        await Assert.That(ack.CurrentState).IsEqualTo(AgentLiveness.Live);       // the frozen liveness
+        await Assert.That(ack).IsEqualTo(h.Acks[0]);                            // D1: the same frozen value
     }
 
     [Test] public async Task Different_command_id_at_an_accepted_seq_is_a_duplicate_collision() {
@@ -257,8 +259,10 @@ public class SequencedCommandProcessorTests {
         await p.SubmitAsync(item, () => Task.FromResult(new CommandOutcome(CommandOutcomeKind.LaunchExecuted, "a1", "sess")));
         await p.SubmitAsync(item, () => Task.FromResult(new CommandOutcome(CommandOutcomeKind.LaunchExecuted)));
 
-        await Assert.That(reads).IsEqualTo(2);          // proactive settle ack + duplicate replay ack
-        await Assert.That(readsUnderLock).IsEqualTo(0); // neither one held _lock
+        // Settlement lost-ack redelivery (D1): the terminal ack is FROZEN once (get-or-freeze), so the duplicate replay reuses the
+        // published ack instead of reading liveness again — one read total, not two.
+        await Assert.That(reads).IsEqualTo(1);          // the single freeze read; the duplicate reused it
+        await Assert.That(readsUnderLock).IsEqualTo(0); // and it did NOT hold _lock
     }
 
     // The ordering the lock move must NOT break: the cache records the outcome BEFORE the ack is built, so
@@ -444,6 +448,34 @@ public class SequencedCommandProcessorTests {
         await Assert.That(p.LastProcessedSeq).IsEqualTo(2L);
     }
 
+    // Settlement lost-ack redelivery (D1) deferred-freeze containment: a throwing liveness read AND a
+    // throwing logger TOGETHER must still not fault SubmitAsync. The deferred-freeze diagnostic routes
+    // through the contained LogQuietly, so a throwing logger provider (a supported input) cannot let the
+    // exception escape; the outcome stays committed with no ack, and a later re-delivery (liveness
+    // recovered) completes the freeze and sends.
+    [Test] public async Task A_throwing_liveness_and_a_throwing_logger_together_still_defer_without_faulting() {
+        var throwLiveness = 1;
+        var acks = new List<CommandAck>();
+        await using var p = new SequencedCommandProcessor(
+            "e1",
+            _ => { if (Interlocked.Exchange(ref throwLiveness, 0) == 1) throw new InvalidOperationException("liveness blip"); return AgentLiveness.Live; },
+            a => { lock (acks) acks.Add(a); return Task.CompletedTask; },
+            _ => Task.CompletedTask,
+            new ThrowingLogger());
+
+        // Proactive freeze: liveness throws → the deferred-freeze catch logs through the THROWING logger.
+        // Neither the lane nor the submitter may fault.
+        await p.SubmitAsync(new SequencedItem(SequencedKind.Launch, "e1", 1, "cmd1", "a1"),
+            () => Task.FromResult(new CommandOutcome(CommandOutcomeKind.LaunchExecuted, "a1", "sess")));
+        await Assert.That(p.LastProcessedSeq).IsEqualTo(1L);   // committed despite the double throw
+        await Assert.That(acks).IsEmpty();                     // freeze deferred, no ack
+
+        // Liveness recovered: a re-delivery completes the freeze and sends (the success path logs nothing).
+        p.RedeliverUnretiredProcessedAcks();
+        await Assert.That(acks).HasCount().EqualTo(1);
+        await Assert.That(acks[0].State).IsEqualTo(CommandAckState.Processed);
+    }
+
     // Rejections are captured under _lock and sent after release, so no transport delegate runs inside
     // the processor's critical section. Asserted directly rather than by timing.
     [Test] public async Task Rejection_sends_do_not_run_inside_the_processor_lock() {
@@ -507,5 +539,116 @@ public class SequencedCommandProcessorTests {
         await Assert.That(h.Acks).HasCount().EqualTo(2);                              // proactive + duplicate replay
         await Assert.That(h.Acks[0].RejectionReason).IsNull();
         await Assert.That(h.Acks[1].RejectionReason).IsNull();
+    }
+
+    // ── Settlement lost-ack redelivery (D1): freeze the terminal ack + re-deliver unretired outcomes ──────────────────────────
+
+    /// <summary>Task 6 (the freeze proof): the terminal ack is published ONCE. A duplicate replay reuses
+    /// the frozen value, so a liveness that CHANGED between the two sends can never make them disagree —
+    /// the whole point of the freeze, and what lets the server tolerate duplicate acks (D2″).</summary>
+    [Test] public async Task The_terminal_ack_is_frozen_so_a_replay_never_reflects_a_changed_liveness() {
+        var livenesses = new Queue<AgentLiveness>([AgentLiveness.Live, AgentLiveness.Dead, AgentLiveness.NotFound]);
+        var acks = new List<CommandAck>();
+        await using var p = new SequencedCommandProcessor(
+            "e1",
+            _ => livenesses.Count > 0 ? livenesses.Dequeue() : AgentLiveness.NotFound,
+            a => { lock (acks) acks.Add(a); return Task.CompletedTask; },
+            _ => Task.CompletedTask, NullLogger.Instance);
+
+        var item = new SequencedItem(SequencedKind.Launch, "e1", 1, "cmd1", "a1");
+        await p.SubmitAsync(item, () => Task.FromResult(new CommandOutcome(CommandOutcomeKind.LaunchExecuted, "a1", "sess")));
+        // The proactive freeze dequeued Live. A duplicate would dequeue Dead next IF it re-read — but it
+        // reuses the winner, so Dead is never consumed.
+        await p.SubmitAsync(item, () => Task.FromResult(new CommandOutcome(CommandOutcomeKind.LaunchExecuted)));
+
+        await Assert.That(acks).HasCount().EqualTo(2);
+        await Assert.That(acks[0].CurrentState).IsEqualTo(AgentLiveness.Live);   // proactive freeze
+        await Assert.That(acks[1].CurrentState).IsEqualTo(AgentLiveness.Live);   // duplicate: FROZEN, not Dead
+        await Assert.That(acks[0]).IsEqualTo(acks[1]);                            // byte-identical DTO
+        await Assert.That(livenesses.Count).IsEqualTo(2);                        // only ONE liveness read total
+    }
+
+    /// <summary>Task 6 (deferred freeze) + Task 7 (retry on re-delivery): a throwing liveness read must not
+    /// abandon the item — the outcome stays committed Processed with NO ack, and a later re-delivery
+    /// completes the freeze and sends. A second re-delivery re-sends the SAME frozen value verbatim.</summary>
+    [Test] public async Task A_throwing_liveness_defers_the_freeze_and_a_later_redelivery_completes_it() {
+        var throwOnce = 1;
+        var acks = new List<CommandAck>();
+        await using var p = new SequencedCommandProcessor(
+            "e1",
+            _ => { if (Interlocked.Exchange(ref throwOnce, 0) == 1) throw new InvalidOperationException("liveness blip"); return AgentLiveness.Live; },
+            a => { lock (acks) acks.Add(a); return Task.CompletedTask; },
+            _ => Task.CompletedTask, NullLogger.Instance);
+
+        var item = new SequencedItem(SequencedKind.Launch, "e1", 1, "cmd1", "a1");
+        await p.SubmitAsync(item, () => Task.FromResult(new CommandOutcome(CommandOutcomeKind.LaunchExecuted, "a1", "sess")));
+
+        // Proactive freeze threw → deferred: outcome committed (watermark advanced), but NO ack sent.
+        await Assert.That(p.LastProcessedSeq).IsEqualTo(1L);
+        await Assert.That(acks).IsEmpty();
+
+        // A later status tick / reconnect re-delivers: the freeze now succeeds and the ack goes out.
+        p.RedeliverUnretiredProcessedAcks();
+        await Assert.That(acks).HasCount().EqualTo(1);
+        await Assert.That(acks[0].State).IsEqualTo(CommandAckState.Processed);
+        await Assert.That(acks[0].CurrentState).IsEqualTo(AgentLiveness.Live);
+
+        // A subsequent re-delivery re-sends the SAME frozen value verbatim (no further liveness read).
+        p.RedeliverUnretiredProcessedAcks();
+        await Assert.That(acks).HasCount().EqualTo(2);
+        await Assert.That(acks[1]).IsEqualTo(acks[0]);
+    }
+
+    /// <summary>Task 7 (re-deliver only the unretired suffix; a validated prefix stops it): a re-delivery
+    /// re-sends every unretired terminal ack; a validated AckProcessedPrefix evicts the retired entries so
+    /// their re-sends stop, leaving only the unretired suffix.</summary>
+    [Test] public async Task Redelivery_re_sends_the_unretired_suffix_and_a_validated_prefix_stops_it() {
+        var h = new Harness(); await using var p = h.P();
+        await p.SubmitAsync(h.Launch(1), () => Task.FromResult(new CommandOutcome(CommandOutcomeKind.LaunchExecuted)));
+        await p.SubmitAsync(h.Launch(2), () => Task.FromResult(new CommandOutcome(CommandOutcomeKind.LaunchExecuted)));
+        await Assert.That(h.Acks).HasCount().EqualTo(2);                 // two proactive settle acks
+
+        // A re-delivery re-sends BOTH unretired terminal acks.
+        p.RedeliverUnretiredProcessedAcks();
+        await Assert.That(h.Acks).HasCount().EqualTo(4);
+
+        // The server confirms the prefix up to 1 → seq 1 is retired (evicted); only seq 2 remains.
+        p.AckPrefix(new AckProcessedPrefix("e1", 1));
+        p.RedeliverUnretiredProcessedAcks();
+        await Assert.That(h.Acks).HasCount().EqualTo(5);                 // +1, only the unretired suffix
+        await Assert.That(h.Acks[4].Seq).IsEqualTo(2L);
+
+        // Confirm the full prefix → nothing left to re-deliver.
+        p.AckPrefix(new AckProcessedPrefix("e1", 2));
+        p.RedeliverUnretiredProcessedAcks();
+        await Assert.That(h.Acks).HasCount().EqualTo(5);                 // no change
+    }
+
+    /// <summary>Task 7 (re-delivery never blocks the lane under a send fault): a throwing sendAck is
+    /// contained both on the proactive settle and on re-delivery, so neither faults; once the transport
+    /// recovers, the next re-delivery lands the frozen ack.</summary>
+    [Test] public async Task Redelivery_swallows_a_send_fault_and_never_throws() {
+        var acks = new List<CommandAck>();
+        var fail = true;
+        await using var p = new SequencedCommandProcessor(
+            "e1", _ => AgentLiveness.Live,
+            a => { if (Volatile.Read(ref fail)) throw new InvalidOperationException("transport down"); lock (acks) acks.Add(a); return Task.CompletedTask; },
+            _ => Task.CompletedTask, NullLogger.Instance);
+
+        // Proactive settle: the send throws but is contained, so the submit completes and the ack freezes.
+        await p.SubmitAsync(new SequencedItem(SequencedKind.Launch, "e1", 1, "cmd1", "a1"),
+            () => Task.FromResult(new CommandOutcome(CommandOutcomeKind.LaunchExecuted)));
+        await Assert.That(p.LastProcessedSeq).IsEqualTo(1L);
+        await Assert.That(acks).IsEmpty();
+
+        // A re-delivery while the transport is still down must not throw either.
+        p.RedeliverUnretiredProcessedAcks();                            // no throw
+        await Assert.That(acks).IsEmpty();
+
+        // Transport recovers; the next re-delivery lands the frozen ack.
+        Volatile.Write(ref fail, false);
+        p.RedeliverUnretiredProcessedAcks();
+        await Assert.That(acks).HasCount().EqualTo(1);
+        await Assert.That(acks[0].State).IsEqualTo(CommandAckState.Processed);
     }
 }

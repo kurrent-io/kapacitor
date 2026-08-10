@@ -7,7 +7,8 @@ namespace Capacitor.Cli.Tests.Unit.Acp;
 /// <summary>
 /// The tripwire detects a suppression failure. It is not the containment, so its residual (selective
 /// notification loss) degrades detection rather than the boundary — but everything it DOES claim to
-/// catch is pinned here, including the two shapes a membership-only check would miss.
+/// catch is pinned here, and so is what it deliberately tolerates (kiro-cli's benign re-announce of
+/// an injected server).
 /// </summary>
 public class KiroMcpSurfaceMonitorTests {
     const string Channel = "kcap-flow-result-abc";
@@ -39,14 +40,33 @@ public class KiroMcpSurfaceMonitorTests {
     }
 
     /// <summary>
-    /// The COUNT rule. A duplicate of an injected name is inside the injected set, so a
-    /// membership-only check admits it — this is the case that distinguishes the two.
+    /// kiro-cli 2.16.0 announces the injected result channel's initialization twice for one spawned
+    /// server, on every reviewer launch. Injected names carry per-launch GUIDs, so a repeat under one
+    /// cannot be the operator's global config standing a server up — treating it as a violation reaped
+    /// every reviewer while the surface was exactly the injected set.
     /// </summary>
     [Test]
-    public async Task ASecondInitializationOfAnInjectedName_IsAViolation() {
+    public async Task ARepeatedInitializationOfAnInjectedName_IsBenign() {
         var m = Monitor(Channel);
         m.Observe(Note(KiroMcpSurfaceMonitor.InitializedMethod, Channel));
         m.Observe(Note(KiroMcpSurfaceMonitor.InitializedMethod, Channel));
+
+        await Assert.That(m.Violation).IsNull();
+        await Assert.That(m.ResultChannelReady).IsTrue();
+    }
+
+    /// <summary>Tolerating repeats must not soften the actual boundary: a name outside the injected
+    /// set still trips after any number of benign re-announces.</summary>
+    [Test]
+    public async Task AnUnexpectedName_AfterABenignRepeat_StillTrips() {
+        var m = Monitor(Channel, "kcap-review-xyz");
+        m.Observe(Note(KiroMcpSurfaceMonitor.InitializedMethod, Channel));
+        m.Observe(Note(KiroMcpSurfaceMonitor.InitializedMethod, Channel));
+        m.Observe(Note(KiroMcpSurfaceMonitor.InitializedMethod, "kcap-review-xyz"));
+        m.Observe(Note(KiroMcpSurfaceMonitor.InitializedMethod, "kcap-review-xyz"));
+        await Assert.That(m.Violation).IsNull();          // control: healthy up to here
+
+        m.Observe(Note(KiroMcpSurfaceMonitor.InitializedMethod, "kcap-flows"));
 
         await Assert.That(m.Violation).IsNotNull();
         await Assert.That(m.Violation!).StartsWith("kiro_reviewer_mcp_surface_unexpected");

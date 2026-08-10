@@ -591,7 +591,8 @@ static class ImportCommand {
             bool                          needOrgPick             = false,
             string?                       storedOrg               = null,
             bool                          autoSkipExclusions      = false,
-            string?                       defaultVisibility       = null
+            string?                       defaultVisibility       = null,
+            bool                          reimport                = false
         ) {
         using var httpClient = await HttpClientExtensions.CreateAuthenticatedClientAsync(baseUrl);
         var       display    = ImportDisplay.Create();
@@ -880,7 +881,8 @@ static class ImportCommand {
             BaseUrl: baseUrl,
             MinLines: minLines,
             ExcludedRepos: excludedRepos,
-            ExcludedPaths: excludedPaths
+            ExcludedPaths: excludedPaths,
+            Reimport: reimport
         );
 
         IReadOnlyList<SessionClassification>[] classificationsPerSource;

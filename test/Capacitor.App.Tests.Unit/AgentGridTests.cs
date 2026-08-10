@@ -55,8 +55,9 @@ public class AgentGridTests {
 
     static AgentStatusDto Dto(
             string id = "a", string kind = "agent", string vendor = "claude", string? repoPath = "/repos/kcap-cli",
-            string status = "Running", string? requester = null, DateTime? createdAt = null, string? model = null) =>
-        new(id, kind, vendor, repoPath, status, null, null, requester, createdAt ?? DateTime.UtcNow, model);
+            string status = "Running", string? requester = null, DateTime? createdAt = null, string? model = null,
+            string? requesterDisplay = null) =>
+        new(id, kind, vendor, repoPath, status, null, null, requester, createdAt ?? DateTime.UtcNow, model, requesterDisplay);
 
     static AgentRowViewModel NewRow(
             AgentStatusDto dto, AgentActionService? actions = null, IObservable<long>? ticker = null,
@@ -117,6 +118,18 @@ public class AgentGridTests {
     public async Task Requester_present_renders_verbatim() {
         var row = NewRow(Dto(requester: "alice"));
         await Assert.That(row.Requester).IsEqualTo("alice");
+    }
+
+    [Test]
+    public async Task RequesterDisplay_present_takes_precedence_over_the_opaque_requester_id() {
+        var row = NewRow(Dto(requester: "github:12345", requesterDisplay: "Ada Lovelace"));
+        await Assert.That(row.Requester).IsEqualTo("Ada Lovelace");
+    }
+
+    [Test]
+    public async Task RequesterDisplay_blank_falls_back_to_the_opaque_requester_id() {
+        var row = NewRow(Dto(requester: "github:12345", requesterDisplay: "   "));
+        await Assert.That(row.Requester).IsEqualTo("github:12345");
     }
 
     [Test]

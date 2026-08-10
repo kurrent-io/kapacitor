@@ -41,17 +41,40 @@ mcp sessions:
   cd into your project before spawning. Requires `kcap login`.
 
 mcp flows:
-  Exposes four tools — start_review_flow, submit_review_round,
-  get_review_flow_status, close_review_flow — for agents to start and
-  interact with review flows. Requester context (session ID, cwd, repo
+  Exposes the review-flow and generic-flow tools for agents to start and
+  interact with hosted flows. Requester context (session ID, cwd, repo
   root, owner/name) is resolved automatically at startup. Requires
   `kcap login`.
 
-    Tools:
-      start_review_flow      Start a new AI-powered review flow.
-      submit_review_round    Submit a follow-up round with updated context.
+    Review-flow tools (reserved spec-review / code-review aliases):
+      start_review_flow      Start a review flow. Optional `vendor` picks the
+                             reviewer harness (lowercase token: claude, codex,
+                             cursor, copilot, gemini, kiro, opencode, antigravity, pi) —
+                             independent of the driver; omit to use the definition's
+                             authored vendor or your saved preference. Optional
+                             `model` pins the reviewer's model (REQUIRES `vendor`).
+                             Optional `mode: context-only` reviews without a workspace.
+      submit_review_round    Submit a follow-up round (reuses the pinned vendor/model).
       get_review_flow_status Get the status and last result of a flow.
       close_review_flow      Close a completed review flow.
+
+    Generic-flow tools (catalog + dynamic definitions):
+      start_flow             Start a catalog flow by `definition_id`, or an inline
+                             `definition_yaml` dynamic flow. `vendor`/`model` apply to
+                             single-participant catalog definitions only (rejected for
+                             multi-participant and definition_yaml).
+      send_to_participant    Address a message to a named participant role.
+      get_flow_status        Get status, rounds, and pending messages.
+      close_flow             Close a flow run.
+
+  The reviewer vendor is chosen independently of the driver harness. Pass the
+  lowercase canonical token; naming a reviewer is never inferred from the driver.
+  The tokens above are the protocol vocabulary — availability is per daemon: the
+  server rejects a vendor no connected daemon advertises as an unattended reviewer
+  with `reviewer_vendor_unavailable`, rather than silently substituting another.
+  A `model` override requires a server on the v3 flow-start protocol and a daemon
+  advertising a runtime model resolver for that vendor; otherwise the reviewer runs
+  on the vendor's default model. `default`/`auto` are rejected as model values.
 
   Claude Code auto-registers `kcap-flows` via the plugin's `.mcp.json`.
   `kcap setup` / `kcap plugin install --codex` register it conservatively

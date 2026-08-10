@@ -15,13 +15,20 @@ internal enum GeminiReviewerDecision {
 /// Whether THIS daemon may run Gemini as an unattended review-flow reviewer. Two conditions, both
 /// fail-closed, and the type is pure so both are testable without a vendor or a process.
 ///
-/// <para><b>Why a capability at all.</b> An unattended reviewer runs in a daemon-owned worktree with the
-/// daemon's own HOME, so prompt-injected repository content that reaches the model's tool use gets code
-/// execution with the daemon user's full authority — durable credential compromise included. That risk lands
-/// on the DAEMON OPERATOR, who is not necessarily the person requesting the review: a caller can ask for
-/// <c>vendor: "gemini"</c> without owning the host being exposed. So the decision belongs in daemon-local
-/// configuration, and <b>enabling it is the operator's consent event</b>. A non-default plus documentation
-/// would be informed guidance, not consent.</para>
+/// <para><b>The risk, which is real and unchanged.</b> An unattended reviewer runs in a daemon-owned
+/// worktree with the daemon's own HOME, so prompt-injected repository content that reaches the model's tool
+/// use gets code execution with the daemon user's full authority — durable credential compromise included.
+/// That lands on the DAEMON OPERATOR, who is not necessarily the person requesting the review.</para>
+///
+/// <para><b>Why that is nevertheless no longer an opt-in.</b> The reviewer vendor is caller-chosen, and
+/// Claude, Codex, Cursor and Copilot have never been gated — each with the same full authority. Wherever
+/// one of those is also ADVERTISED, a caller blocked from <c>vendor: "gemini"</c> simply asked for one of
+/// them, so the gate cost the operator a service-unit edit without narrowing the capability class reachable
+/// — though not literally nothing, since a Gemini reviewer burns the operator's own Gemini credentials.
+/// Where only gated vendors are advertised, the flip does widen what a non-operator can cause to run. The
+/// switch is now an opt-OUT (<c>KCAP_GEMINI_UNATTENDED_REVIEWER=0</c>); the decision that actually scopes
+/// this is whether to permit unattended reviews on the daemon at all, which is <c>kcap daemon consent</c> —
+/// note that DEFAULTS TO ALLOW, so it scopes nothing until configured.</para>
 ///
 /// <para><b>Why the build is gated, and why by affirmation.</b> The security mechanism is the vendor's MCP
 /// allowlist behaving as an exclusive exact-match gate that the repository's own settings cannot widen. That
@@ -86,11 +93,13 @@ internal static class GeminiReviewerCapability {
             GeminiReviewerDecision decision, string? installedVersion, string? minimumVersion) =>
         decision switch {
             GeminiReviewerDecision.Disabled =>
-                "gemini_unattended_reviewer_disabled: this daemon has not enabled Gemini as an unattended "
-              + "review-flow reviewer. Enabling it accepts that a review grants prompt-injected repository "
-              + "content code execution with this daemon user's authority, including its credentials — set "
-              + "KCAP_GEMINI_UNATTENDED_REVIEWER=1 in the daemon's environment (not on the server) only if "
-              + "that is acceptable.",
+                "gemini_unattended_reviewer_disabled: this daemon has EXPLICITLY disabled Gemini as an "
+              + "unattended review-flow reviewer. Unset KCAP_GEMINI_UNATTENDED_REVIEWER in the daemon's "
+              + "environment (not on the server) to restore the default, which is enabled — or set it "
+              + "to 1. Worth knowing before you re-enable: a Gemini review grants prompt-injected "
+              + "repository content code execution with this daemon user's authority. That is a real "
+              + "risk, but it is the same posture as the never-gated Claude, Codex, Cursor and Copilot "
+              + "reviewers, so this switch narrows nothing a requester cannot route around.",
 
             GeminiReviewerDecision.VersionUnresolved =>
                 "gemini_reviewer_version_unresolved: the installed gemini version could not be "
@@ -100,10 +109,10 @@ internal static class GeminiReviewerCapability {
 
             GeminiReviewerDecision.VersionNoMinimum =>
                 "gemini_reviewer_version_no_minimum: this daemon has no recorded minimum gemini "
-              + "version, so there is nothing to check the installed build against. The usual cause is "
-              + "enabling the reviewer against an already-running daemon — it records a minimum at "
-              + "startup, so restart it with KCAP_GEMINI_UNATTENDED_REVIEWER set. To set one now "
-              + "without restarting, run `kcap daemon reviewer affirm --vendor gemini`.",
+              + "version, so there is nothing to check the installed build against. A daemon records "
+              + "one automatically at startup, so the usual cause is that the version probe failed "
+              + "then — check that `gemini --version` succeeds for the daemon user, and restart. To "
+              + "record one now without restarting, run `kcap daemon reviewer affirm --vendor gemini`.",
 
             GeminiReviewerDecision.VersionIncomparable =>
                 $"gemini_reviewer_version_incomparable: gemini {Describe(installedVersion)} and this "

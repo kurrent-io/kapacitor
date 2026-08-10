@@ -182,7 +182,7 @@ public class ServiceEnvironmentTests {
     }
 
     /// <summary>A flag the installing environment never set must not appear — capture carries an
-    /// existing opt-in into the unit, it never manufactures one.</summary>
+    /// existing choice into the unit, it never manufactures one.</summary>
     [Test]
     public async Task Build_never_invents_a_consent_flag() {
         var env = ServiceEnvironment.Build(
@@ -192,6 +192,36 @@ public class ServiceEnvironmentTests {
 
         foreach (var key in ServiceEnvironment.ReviewerConsentKeys)
             await Assert.That(env.ContainsKey(key)).IsFalse();
+    }
+
+    /// <summary>
+    /// EVERY reviewer's opt-out reaches a service unit, on BOTH platforms, with a DISABLING value.
+    ///
+    /// <para>This is the one test standing behind the ungating's load-bearing claim: unattended reviewers
+    /// default to enabled, so the operator's explicit opt-out is the compensating control, and it is only
+    /// real if it survives the supported install path. Before the flip a dropped variable meant a reviewer
+    /// that could not be turned on — safe. Now it means one that cannot be turned OFF.</para>
+    ///
+    /// <para>Ranges over the registry rather than four literals deliberately: a vendor added later is
+    /// covered here the day it is added, which a hardcoded list would not do. The sibling test above
+    /// asserts the enabling direction; this one asserts the direction that now matters.</para>
+    /// </summary>
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Every_reviewer_opt_out_survives_a_service_install(bool isWindows) {
+        var source = new Dictionary<string, string> { ["PATH"] = "/usr/bin" };
+        foreach (var key in ServiceEnvironment.ReviewerConsentKeys) source[key] = "0";
+
+        var env = ServiceEnvironment.Build(profileName: null, source: source, isWindows: isWindows);
+
+        await Assert.That(ServiceEnvironment.ReviewerConsentKeys).IsNotEmpty()
+            .Because("an empty registry would make every assertion below vacuously true");
+
+        foreach (var key in ServiceEnvironment.ReviewerConsentKeys)
+            await Assert.That(env.TryGetValue(key, out var v) ? v : null).IsEqualTo("0")
+                .Because($"{key} is the operator's only lever for turning that reviewer off; a supervised "
+                       + "daemon reads it from the unit or not at all");
     }
 
     [Test]

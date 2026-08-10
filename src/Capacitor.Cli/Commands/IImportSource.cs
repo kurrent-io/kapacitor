@@ -25,13 +25,19 @@ internal sealed record DiscoveredSession(
 /// <summary>
 /// Dependencies passed to ClassifyAsync. ExcludedRepos / ExcludedPaths are
 /// the user's profile-level exclusions, applied identically across sources.
+/// Reimport carries the effective <c>--reimport</c> flag: when true, a source
+/// that skips already-loaded sessions via a local completeness ledger must
+/// bypass that ledger so the selected sessions re-classify as New/Partial and
+/// re-send (idempotent server-side). Only OpenCode keeps such a ledger today;
+/// every other source already re-classifies each run and ignores this field.
 /// </summary>
 internal sealed record ClassifyContext(
     HttpClient                  HttpClient,
     string                      BaseUrl,
     int                         MinLines,
     IReadOnlyList<string>?      ExcludedRepos,
-    IReadOnlyList<string>?      ExcludedPaths);
+    IReadOnlyList<string>?      ExcludedPaths,
+    bool                        Reimport = false);
 
 /// <summary>
 /// Dependencies passed to ImportSessionAsync. ForcePrivate carries the

@@ -241,6 +241,82 @@ public class WorktreeManagerTests {
         }
     }
 
+    /// <summary>The submodule arrives as plain content — dirty and untracked files included, so this
+    /// cannot pass against a pinned-commit checkout — and with no .git of its own.</summary>
+    [Test]
+    public async Task BorrowedSnapshot_CarriesSubmoduleFilesAsPlainContentWithoutItsGit() {
+        var (subUpstream, sub)     = MakeUpstreamWithSideRef("refs/pull/91/head", out _);
+        var (superUpstream, super) = MakeUpstreamWithSideRef("refs/pull/92/head", out _);
+        var root = Path.Combine(Path.GetTempPath(), "kcap-borrowed-sub-" + Guid.NewGuid().ToString("N")[..8]);
+        try {
+            File.WriteAllText(Path.Combine(sub, "lib.txt"), "sub-tracked");
+            Git(sub, "add", "lib.txt");
+            Git(sub, "commit", "-m", "sub content");
+
+            Git(super, "-c", "protocol.file.allow=always", "submodule", "add", sub, "vendored");
+            Git(super, "commit", "-m", "add submodule");
+
+            // Dirty + untracked inside the submodule: the whole point of borrowing is that the
+            // reviewer sees the developer's actual working tree, not the pinned commit.
+            File.WriteAllText(Path.Combine(super, "vendored", "lib.txt"), "sub-dirty");
+            File.WriteAllText(Path.Combine(super, "vendored", "scratch.txt"), "sub-untracked");
+
+            var manager = new WorktreeManager(
+                new DaemonConfig { WorktreeRoot = root }, NullLogger<WorktreeManager>.Instance);
+            var snapshot = await manager.CreateBorrowedSnapshotAsync(super, "review", CancellationToken.None);
+
+            try {
+                await Assert.That(File.ReadAllText(Path.Combine(snapshot.Path, "vendored", "lib.txt")))
+                    .IsEqualTo("sub-dirty");
+                await Assert.That(File.ReadAllText(Path.Combine(snapshot.Path, "vendored", "scratch.txt")))
+                    .IsEqualTo("sub-untracked");
+                // No git identity for the submodule inside the snapshot, in either shape.
+                await Assert.That(File.Exists(Path.Combine(snapshot.Path, "vendored", ".git"))).IsFalse();
+                await Assert.That(Directory.Exists(Path.Combine(snapshot.Path, "vendored", ".git"))).IsFalse();
+                // The superproject's own snapshot .git is still the independent one.
+                await Assert.That(Directory.Exists(Path.Combine(snapshot.Path, ".git"))).IsTrue();
+            } finally {
+                await WorktreeManager.RemoveAsync(snapshot);
+            }
+        } finally {
+            foreach (var dir in new[] { root, sub, super, subUpstream, superUpstream })
+                try { Directory.Delete(dir, true); } catch { /* best-effort */ }
+        }
+    }
+
+    /// <summary>
+    /// A gitlink whose working-tree directory is a SYMLINK must not cause git to be invoked outside
+    /// the source tree. ContainedPath is lexical — Path.GetFullPath does not resolve links — so the
+    /// escaped path passes containment while `git -C` follows the link and enumerates a directory the
+    /// snapshot has no right to read. The per-file guards downstream cannot retroactively undo a
+    /// directory-level traversal that already happened.
+    /// </summary>
+    [Test]
+    public async Task BorrowedSnapshot_RefusesSubmodulePathThatIsASymlink() {
+        var (_, super) = MakeUpstreamWithSideRef("refs/pull/93/head", out _);
+        var outside = Path.Combine(Path.GetTempPath(), "kcap-outside-" + Guid.NewGuid().ToString("N")[..8]);
+        var root    = Path.Combine(Path.GetTempPath(), "kcap-borrowed-lnk-" + Guid.NewGuid().ToString("N")[..8]);
+        try {
+            Directory.CreateDirectory(outside);
+            File.WriteAllText(Path.Combine(outside, "secret.txt"), "must-not-be-snapshotted");
+
+            // Forge a gitlink entry whose path is a symlink to a directory outside the source.
+            Directory.CreateSymbolicLink(Path.Combine(super, "vendored"), outside);
+            Git(super, "update-index", "--add", "--cacheinfo",
+                "160000," + new string('a', 40) + ",vendored");
+
+            var manager = new WorktreeManager(
+                new DaemonConfig { WorktreeRoot = root }, NullLogger<WorktreeManager>.Instance);
+
+            var ex = await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+                await manager.CreateBorrowedSnapshotAsync(super, "review", CancellationToken.None));
+            await Assert.That(ex!.Message).StartsWith("borrowed_snapshot_symlink_unsupported");
+        } finally {
+            try { Directory.Delete(root, true); } catch { /* best-effort */ }
+            try { Directory.Delete(outside, true); } catch { /* best-effort */ }
+        }
+    }
+
     [Test]
     public async Task BorrowedSnapshot_IsIndependent_CopiesDirtyContext_AndRefreshesPristinely() {
         var (upstream, clone) = MakeUpstreamWithSideRef("refs/pull/88/head", out _);

@@ -1200,6 +1200,128 @@ public class LocalPermissionBridgeTests {
         await Assert.That(LocalPermissionBridge.IsAddressInUse(new HttpListenerException(errorCode)))
             .IsEqualTo(expected);
     }
+
+    /// <summary>
+    /// The borrowed reviewer's delivery path. Its sandbox redirects HOME to a per-launch state dir,
+    /// so the result channel cannot load a token store — it POSTs here instead and the daemon, which
+    /// runs unsandboxed and holds the real credential, forwards. The forwarder lives on the GRANT so
+    /// revoking the reviewer closes the submit path in the same operation that closes the read path.
+    /// </summary>
+    [Test]
+    public async Task Reviewer_flow_result_capability_forwards_the_body_then_dies_with_the_token() {
+        var (bridge, _) = CreateBridge();
+        await bridge.StartAsync(CancellationToken.None);
+
+        try {
+            string? forwardedPath = null;
+            string? forwarded     = null;
+            var reviewerUrl = bridge.RegisterReviewerToken([],
+                submitForwarder: (apiPath, body, _) => {
+                    forwardedPath = apiPath;
+                    forwarded     = body;
+                    return Task.FromResult((200, "{\"status\":\"accepted\"}"));
+                });
+
+            using var client = CreateClient();
+            var response = await client.PostAsync($"{reviewerUrl}/flow-result",
+                new StringContent("{\"kind\":\"clean\"}", Encoding.UTF8, "application/json"));
+
+            await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.OK);
+            await Assert.That(forwarded).IsEqualTo("{\"kind\":\"clean\"}");
+            // The upstream path is the bridge's own constant, not anything the caller supplied.
+            await Assert.That(forwardedPath).IsEqualTo("/api/flows/reviewer/result");
+            await Assert.That(await response.Content.ReadAsStringAsync())
+                .IsEqualTo("{\"status\":\"accepted\"}");
+
+            // Fail-safe on revoke: a live submit path outliving the reviewer would let a lingering
+            // child process report into a flow whose participant the server already reaped.
+            bridge.RevokeReviewerToken(reviewerUrl);
+            var afterRevoke = await client.PostAsync($"{reviewerUrl}/flow-result",
+                new StringContent("{\"kind\":\"clean\"}", Encoding.UTF8, "application/json"));
+            await Assert.That(afterRevoke.StatusCode).IsEqualTo(HttpStatusCode.NotFound);
+        } finally {
+            await bridge.StopAsync(CancellationToken.None);
+        }
+    }
+
+    /// <summary>
+    /// The submit body is attacker-controlled: the POSTing process is a sandboxed vendor child. An
+    /// unbounded ReadToEndAsync would let it exhaust the daemon's memory, so the bridge caps the read
+    /// itself rather than trusting Content-Length — which a chunked or lying client need not honour.
+    /// The forwarder must never run for a rejected body.
+    /// </summary>
+    [Test]
+    public async Task Oversized_submit_body_is_rejected_without_reaching_the_forwarder() {
+        var (bridge, _) = CreateBridge();
+        await bridge.StartAsync(CancellationToken.None);
+
+        try {
+            var forwarded = 0;
+            var reviewerUrl = bridge.RegisterReviewerToken([],
+                submitForwarder: (_, _, _) => {
+                    forwarded++;
+                    return Task.FromResult((200, "{}"));
+                });
+
+            using var client = CreateClient();
+            var oversized = new string('x', LocalPermissionBridge.MaxSubmitBodyBytes + 1024);
+            var response = await client.PostAsync($"{reviewerUrl}/flow-result",
+                new StringContent(oversized, Encoding.UTF8, "application/json"));
+
+            await Assert.That((int)response.StatusCode).IsEqualTo(413);
+            await Assert.That(forwarded).IsEqualTo(0);
+        } finally {
+            await bridge.StopAsync(CancellationToken.None);
+        }
+    }
+
+    /// <summary>A body just under the cap still goes through, so the guard cannot pass by rejecting
+    /// everything — the failure mode a bare size check invites.</summary>
+    [Test]
+    public async Task Submit_body_just_under_the_cap_still_reaches_the_forwarder() {
+        var (bridge, _) = CreateBridge();
+        await bridge.StartAsync(CancellationToken.None);
+
+        try {
+            string? forwarded = null;
+            var reviewerUrl = bridge.RegisterReviewerToken([],
+                submitForwarder: (_, body, _) => {
+                    forwarded = body;
+                    return Task.FromResult((200, "{}"));
+                });
+
+            using var client = CreateClient();
+            var payload = new string('y', LocalPermissionBridge.MaxSubmitBodyBytes - 1024);
+            var response = await client.PostAsync($"{reviewerUrl}/flow-result",
+                new StringContent(payload, Encoding.UTF8, "application/json"));
+
+            await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.OK);
+            await Assert.That(forwarded).IsEqualTo(payload);
+        } finally {
+            await bridge.StopAsync(CancellationToken.None);
+        }
+    }
+
+    /// <summary>A grant minted without a forwarder (every non-borrowed reviewer) must not expose a
+    /// submit path at all — not a 500, not an empty 200. Pins that the capability is scoped to the
+    /// launches that actually need it rather than opening on every reviewer token.</summary>
+    [Test]
+    public async Task Reviewer_without_a_submit_forwarder_has_no_flow_result_capability() {
+        var (bridge, _) = CreateBridge();
+        await bridge.StartAsync(CancellationToken.None);
+
+        try {
+            var reviewerUrl = bridge.RegisterReviewerToken(["kcap-review"]);
+
+            using var client = CreateClient();
+            var response = await client.PostAsync($"{reviewerUrl}/flow-result",
+                new StringContent("{\"kind\":\"clean\"}", Encoding.UTF8, "application/json"));
+
+            await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.NotFound);
+        } finally {
+            await bridge.StopAsync(CancellationToken.None);
+        }
+    }
 }
 
 sealed class CapturingLogger : ILogger<LocalPermissionBridge> {

@@ -987,7 +987,11 @@ public class AcpHostedAgentRuntimeFactoryTests {
             ServerUrl    = "http://kcap.test",
             McpAllowlist = allowlist,
             ReviewContextCapabilityUrl =
-                "http://127.0.0.1:1234/0123456789abcdef0123456789abcdef/review-context/workspace-mcp-configs"
+                "http://127.0.0.1:1234/0123456789abcdef0123456789abcdef/review-context/workspace-mcp-configs",
+            // A borrowed launch must carry a delivery capability or AcpReviewFlowMcp.Build
+            // refuses it. Set on the shared helper so every borrowed fixture below stays constructable.
+            FlowResultCapabilityUrl =
+                "http://127.0.0.1:1234/0123456789abcdef0123456789abcdef"
         };
 
     /// <summary>A factory whose connectionSource INCREMENTS a counter (never throws — a throw would
@@ -2189,9 +2193,14 @@ public class AcpHostedAgentRuntimeFactoryTests {
     /// actually diagnosed.</para>
     /// </summary>
     [Test]
-    public async Task Gemini_ADisabledDaemon_ExplainsWhyItIsWithheld() {
+    public async Task Gemini_AnExplicitlyDisabledDaemon_ExplainsWhyItIsWithheld() {
         IHostedAgentRuntimeFactory disabled = new AcpHostedAgentRuntimeFactory(
-            AcpVendorDescriptors.Gemini, new DaemonConfig(), NullLoggerFactory.Instance,
+            AcpVendorDescriptors.Gemini,
+            // Explicit now: the reviewer switch defaults to ENABLED, so a bare DaemonConfig no longer
+            // reaches this arm — it falls through to the version floor, which is the correct behaviour
+            // and is asserted separately.
+            new DaemonConfig { GeminiUnattendedReviewerEnabled = false },
+            NullLoggerFactory.Instance,
             new CaptureServerConnection(), resolveVendorVersion: _ => GeminiBuild);
 
         var support = disabled.DescribeUnattendedSupport();
@@ -2200,8 +2209,25 @@ public class AcpHostedAgentRuntimeFactoryTests {
         // The operator's actual next action has to be IN the text — a reason that only says "disabled"
         // leaves them exactly where the coded server error already did.
         await Assert.That(support.WithheldReason).IsNotNull();
-        await Assert.That(support.WithheldReason!).Contains("KCAP_GEMINI_UNATTENDED_REVIEWER=1");
+        await Assert.That(support.WithheldReason!).Contains("KCAP_GEMINI_UNATTENDED_REVIEWER");
         await Assert.That(support.WithheldReason!).StartsWith("gemini_unattended_reviewer_disabled");
+    }
+
+    /// <summary>
+    /// The change this default flip is FOR, asserted at the advertisement seam rather than only at the
+    /// launch boundary: a daemon with nothing configured no longer withholds the reviewer for lack of an
+    /// opt-in. It may still withhold it for a version reason — that gate is untouched — but the refusal
+    /// must not be the consent one.
+    /// </summary>
+    [Test]
+    public async Task Gemini_ADefaultDaemon_IsNotWithheldForLackOfAnOptIn() {
+        IHostedAgentRuntimeFactory standard = new AcpHostedAgentRuntimeFactory(
+            AcpVendorDescriptors.Gemini, new DaemonConfig(), NullLoggerFactory.Instance,
+            new CaptureServerConnection(), resolveVendorVersion: _ => GeminiBuild);
+
+        var reason = standard.DescribeUnattendedSupport().WithheldReason;
+
+        await Assert.That(reason ?? "").DoesNotContain("unattended_reviewer_disabled");
     }
 
     /// <summary>A build NEWER than the recorded minimum is advertised, withholding nothing. This
