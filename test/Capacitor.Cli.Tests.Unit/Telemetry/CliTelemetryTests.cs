@@ -13,6 +13,14 @@ namespace Capacitor.Cli.Tests.Unit.Telemetry;
 // Initialize-set state), which the same lock covers.
 [NotInParallel(nameof(TelemetryState) + "." + nameof(TelemetryState.PathOverride))]
 public class CliTelemetryTests {
+    // CliTelemetry holds process-global static state (Enabled, TestSink, ...). A prior test
+    // elsewhere in the suite (e.g. one that persists `telemetry off`) can leave Enabled=false
+    // behind via CliTelemetry.DiscardAndDisable — reset before touching TestSink so every test
+    // here starts from pristine state rather than inheriting whatever ran before it. This
+    // subsumes the ad hoc CliTelemetry.Reset() call some tests below used to make individually.
+    [Before(Test)]
+    public void ResetTelemetry() => CliTelemetry.Reset();
+
     static string NewStatePath() =>
         Path.Combine(Path.GetTempPath(), $"kcap-facade-{Guid.NewGuid():N}", "telemetry.json");
 
@@ -21,6 +29,11 @@ public class CliTelemetryTests {
         var sink = new List<TelemetryEvent>();
         CliTelemetry.TestSink = sink;
         CliTelemetry.Initialize(command, serverUrl, loggedIn: false);
+
+        if (!CliTelemetry.Enabled)
+            throw new InvalidOperationException(
+                "CliTelemetry did not enable — static state leaked from an earlier test. " +
+                "Capture helpers must call CliTelemetry.Reset() before assigning TestSink.");
 
         return sink;
     }
@@ -106,7 +119,9 @@ public class CliTelemetryTests {
     // a correctly-skipped capture look identical from the outside unless state is asserted.
     [Test]
     public async Task Capture_before_initialize_is_inert() {
-        CliTelemetry.Reset();
+        // No CliTelemetry.Initialize call in this test — [Before(Test)]'s Reset() above is what
+        // makes "uninitialised" actually mean uninitialised, rather than inheriting Enabled=true
+        // from whatever the previous test in the run left behind.
         var sink = new List<TelemetryEvent>();
         CliTelemetry.TestSink = sink;
 

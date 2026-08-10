@@ -14,12 +14,25 @@ namespace Capacitor.Cli.Tests.Unit.Telemetry;
 // shared static serialises against every other one.
 [NotInParallel(nameof(TelemetryState) + "." + nameof(TelemetryState.PathOverride))]
 public class SetupFunnelTests {
+    // CliTelemetry holds process-global static state (Enabled, TestSink, ...). A prior test
+    // elsewhere in the suite (e.g. one that persists `telemetry off`) can leave Enabled=false
+    // behind via CliTelemetry.DiscardAndDisable — reset before touching TestSink so every test
+    // here starts from pristine state rather than inheriting whatever ran before it.
+    [Before(Test)]
+    public void ResetTelemetry() => CliTelemetry.Reset();
+
     static List<TelemetryEvent> StartCapturing() {
         TelemetryState.PathOverride =
             Path.Combine(Path.GetTempPath(), $"kcap-funnel-{Guid.NewGuid():N}", "telemetry.json");
         var sink = new List<TelemetryEvent>();
         CliTelemetry.TestSink = sink;
         CliTelemetry.Initialize("setup", null, loggedIn: false);
+
+        if (!CliTelemetry.Enabled)
+            throw new InvalidOperationException(
+                "CliTelemetry did not enable — static state leaked from an earlier test. " +
+                "Capture helpers must call CliTelemetry.Reset() before assigning TestSink.");
+
         sink.Clear();   // drop cli_first_run
 
         return sink;

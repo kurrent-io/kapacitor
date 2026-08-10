@@ -26,6 +26,15 @@ public static class CliTelemetry {
 
     public static bool Enabled { get; private set; }
 
+    /// <summary>
+    /// Restores every static below to its pristine, never-initialized state. Every test that
+    /// touches these statics (assigns <see cref="TestSink"/>, calls <see cref="Initialize"/>,
+    /// or drives a code path that reaches <see cref="DiscardAndDisable"/>) must call this FIRST —
+    /// before assigning <see cref="TestSink"/> — because a prior test in the same process can
+    /// leave <see cref="Enabled"/> false: <see cref="DiscardAndDisable"/> is real production
+    /// behaviour (it runs whenever telemetry is persisted to "off"), not a test artifact, so its
+    /// effects are exactly the kind of thing a later test must not silently inherit.
+    /// </summary>
     public static void Reset() {
         _client = null; _deviceId = null; _orgGroup = null;
         _shared = new JsonObject(); Enabled = false; TestSink = null;
