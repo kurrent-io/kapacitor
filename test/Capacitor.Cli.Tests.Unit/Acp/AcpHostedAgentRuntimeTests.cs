@@ -581,6 +581,22 @@ public class AcpHostedAgentRuntimeTests {
         await Assert.That(h.Runtime.Verdict!.Reason).IsEqualTo("second-reason");
     }
 
+    /// <summary>ReadVerdict is a load-bearing PRODUCTION read (the finalizer decides LaunchFailed off
+    /// it), and its test-signal hook fires before the lock — a throwing hook must never make it throw
+    /// or skip the read. Asserts a faulting hook is swallowed and the current verdict still returns.</summary>
+    [Test]
+    public async Task ReadVerdict_swallows_a_throwing_test_hook_and_still_returns_the_verdict() {
+        await using var h = new Harness();
+
+        h.Runtime.TryStartReap("kiro_reviewer_mcp_surface_unexpected: violation", () => Task.CompletedTask);
+        h.Runtime.BeforeReadVerdictLockForTest = () => throw new InvalidOperationException("hook-fault");
+
+        var verdict = h.Runtime.ReadVerdict(); // must not throw despite the faulting hook
+
+        await Assert.That(verdict).IsNotNull();
+        await Assert.That(verdict!.Reason).Contains("kiro_reviewer_mcp_surface_unexpected");
+    }
+
     /// <summary>The window bit must be read BEFORE the starter runs. Here the starter itself
     /// settles the marker synchronously (standing in for production's _cts.Cancel() eventually
     /// settling it via ProcessAdmittedTurnAsync's finally) — a snapshot taken anywhere other than

@@ -338,7 +338,14 @@ internal sealed partial class AcpHostedAgentRuntime : IHostedAgentRuntime, IAcpT
     internal Action? BeforeReadVerdictLockForTest;
 
     internal TerminationVerdict? ReadVerdict() {
-        BeforeReadVerdictLockForTest?.Invoke();
+        // GUARDED: the hook is a fire-and-forget TEST signal (null in production). ReadVerdict is a
+        // load-bearing PRODUCTION read — the finalizer calls it to decide whether to send LaunchFailed
+        // for a launch-window reap — so a throwing hook (test contamination / a stray assignment) must
+        // never make it throw and skip the verdict observation. It still FIRES before the lock (the
+        // barrier's happy-path hook never throws), it just can't break the read.
+        try { BeforeReadVerdictLockForTest?.Invoke(); }
+        catch (Exception ex) { _logger.LogDebug(ex, "ACP: BeforeReadVerdictLockForTest hook threw; continuing to read the verdict."); }
+
         lock (_reapLock) return Verdict;
     }
 
