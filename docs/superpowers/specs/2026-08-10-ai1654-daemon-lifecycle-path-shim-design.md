@@ -1,6 +1,6 @@
 # AI-1654 — Daemon lifecycle management + PATH shim (desktop supervisor slice 3)
 
-**Date:** 2026-08-10 (revised same day after spec-review round 1, Codex reviewer)
+**Date:** 2026-08-10 (revised after spec-review rounds 1–2, Codex reviewer)
 **Status:** Approved design.
 **Issue:** AI-1654. Umbrella spec: [2026-07-31-desktop-supervisor-app-design.md](2026-07-31-desktop-supervisor-app-design.md) §4 "Lifecycle" and §11.
 **Prior slices:** control IPC + consent (AI-1623/AI-1648), app shell (AI-1650), tray/agents/stop (AI-1651), consent prompts + Activity (AI-1652). AI-1653 (bundling/signing) has NOT landed — this slice keeps the dev-time CLI seam and records constraints on AI-1653.
@@ -13,13 +13,13 @@ The app can attach to a daemon and start one ad hoc (`kcap daemon start -d`), bu
 
 | # | Decision |
 |---|----------|
-| 1 | **Everything through the CLI (approach A).** The app shells the resolved `kcap` for every service operation (`daemon service install/start/uninstall`, `daemon stop`) and for detection (`daemon service status --json`, `--version`). No plist/launchctl knowledge in the app. Rejected: moving service machinery into `Capacitor.Cli.Core` for in-proc use (code churn, two callers to keep consistent, wrong growth axis — the app grows as an IPC client, not by absorbing operational internals); hybrid in-proc reads (splits plist layout knowledge across projects). |
-| 2 | **Auto-install on startup attach failure** (Docker Desktop model): no unit file present + a *valid* profile (§4.1) → the app silently installs and starts the LaunchAgent, then **verifies the outcome and rolls back a unit that did not take ownership** (§4.2). Arms once per app run, at startup only — never on mid-session drops, so the app never fights a user who deliberately stopped or uninstalled the service. |
-| 3 | **Takeover offer on version mismatch only.** Same-version foreign setups (npm unit, manual `daemon start`) keep working untouched. The offer is a dialog — never silent (umbrella §4). The dialog **discloses that the existing service unit will be replaced and its baked settings re-captured**; the app does not attempt to restore a replaced foreign unit on failure (reconstructing plists would require exactly the plist knowledge decision 1 excludes) — a mid-sequence failure surfaces an honest recoverable state instead (§6). |
-| 4 | **PATH shim only when no `kcap` resolves on the user's login-shell PATH**, and never over an existing filesystem entry: install is `lstat`-checked and non-forcing (§5). An existing npm install is never shadowed or replaced. Denial is remembered; the app works without the shim (terminal features degrade, umbrella §11). |
+| 1 | **Everything through the CLI (approach A).** The app shells the resolved `kcap` for every service operation and for detection. No plist/launchctl knowledge in the app. The CLI changes in this slice: (a) `daemon service status --json` (§3.4); (b) two behavioral hardenings the lifecycle guarantees require — `service status` queries launchd even when the plist is absent (an orphaned loaded job must be visible), and `service uninstall` propagates a `bootout` failure (non-zero exit, plist retained) instead of deleting the file over a still-loaded job (§3.4). Rejected: moving service machinery into `Capacitor.Cli.Core` for in-proc use; hybrid in-proc reads. |
+| 2 | **Auto-install on startup attach failure** (Docker Desktop model): no unit file present + a valid profile + a known terminal PATH (§4.1) → the app silently installs and starts the LaunchAgent, then runs **ownership-verified post-mutation verification with rollback** (§4.2). Auto-action eligibility exists only during the startup phase and closes permanently on the first terminal attach outcome of *any* kind (§3.2) — a daemon the user stops mid-session is never fought. |
+| 3 | **Takeover offer on version mismatch only.** Same-version foreign setups keep working untouched. The offer is a dialog — never silent (umbrella §4). Every unit rewrite's dialog **discloses that the existing service unit will be replaced and its baked settings re-captured** (regardless of provenance, §4.3); the app does not attempt to restore a replaced unit on failure (reconstructing plists would require exactly the plist knowledge decision 1 excludes) — a mid-sequence failure surfaces branch-specific recovery from re-queried evidence (§6). |
+| 4 | **PATH shim only when no `kcap` resolves on the user's terminal PATH**, and never over an existing filesystem entry: install is `lstat`-checked and non-forcing (§5). An existing npm install is never shadowed or replaced. Denial is remembered; the app works without the shim (terminal features degrade, umbrella §11). |
 | 5 | **The tray Start action becomes service-aware** (§4.4). Prevents a user-clicked Start from spawning a detached daemon that races the installed LaunchAgent for the name lock. |
-| 6 | **Zero daemon and zero wire-protocol changes.** One additive client-side change in `Capacitor.Cli.Core`: `LocalControlEvent.Unreachable` gains an optional `DaemonVersion` carried from the already-received hello reply (§4.3) — without it, the incompatible old daemon (the takeover offer's primary audience) could never receive the offer the umbrella promises. |
-| 7 | **Every CLI child the app spawns runs with a pinned profile and a terminal-grade PATH**: `KCAP_PROFILE=<resolved name>` in the child env, login-shell `PATH` (§3.6) injected, `--profile` additionally passed to `service install`. Without this, the child's repo-aware profile resolution can capture a different tenant into the unit, and `ServiceEnvironment.Capture` would bake the GUI app's minimal launchd PATH into the unit — producing a daemon that cannot find `claude`/`codex` (the exact failure the PATH capture exists to prevent). |
+| 6 | **Zero daemon and zero wire-protocol changes.** One additive client-side change in `Capacitor.Cli.Core`: the hello reply's `DaemonVersion` is propagated end to end — `CycleOutcome` → `LocalControlEvent.Unreachable` → `AttachStatus` — with the client's transition dedupe keyed on `(reason, daemonVersion)` so a version change while incompatible re-emits (§4.3). Without this, the incompatible old daemon (the takeover offer's primary audience) could never receive the offer the umbrella promises, and the app could never see the value. |
+| 7 | **Every CLI child the app spawns runs with a pinned profile** (`KCAP_PROFILE` env overlay; `--profile` additionally on `service install`) **and, when known, the terminal PATH** (§3.6). Without the pin, the child's repo-aware profile resolution can capture a different tenant into the unit; without the PATH, `ServiceEnvironment.Capture` bakes the GUI app's minimal launchd PATH into the unit — a daemon that cannot find `claude`/`codex`. Because the baked PATH is load-bearing, **silent mutations require a known terminal PATH** (unknown → no auto-install/auto-start); dialoged mutations disclose a degraded PATH and proceed only with that consent. |
 
 ## 3. Components
 
@@ -39,17 +39,18 @@ The app does **not** compute the daemon install target itself (the naïve "sibli
 
 The state machine of this slice (§4). Subscribes to the existing `AttachStatus`/`Snapshots` streams, queries service state via the CLI, and shells the CLI for mutations. Concurrency contract (all load-bearing):
 
-- **One async operation gate** serializes every lifecycle mutation — startup auto-install/start, takeover accept, and the user Start action all acquire it; none can interleave.
-- **Evidence is revalidated inside the gate immediately before mutating**: fresh `service status --json`, current attach state, current version pair. A takeover acceptance whose evidence no longer matches (version changed, unit changed, daemon now unreachable/reachable differently) aborts with a message instead of acting on stale consent.
-- **A connection-generation token** invalidates stale continuations: a status query started against generation *n* is discarded if the attach stream has moved to generation *n+1* (e.g. `Unreachable` → query in flight → `Connected`).
+- **One startup-phase state, shared by lifecycle and shim.** The phase ends — permanently, for this app run — at the first terminal attach outcome: `Connected`, or `Unreachable(daemon_incompatible)`, or the completed §4.2 `daemon_unreachable` branch (including its verification), or the no-CLI/no-profile/unknown-PATH determination. Auto-actions are eligible only while the phase is open; the shim auto-offer waits for it to close. A `Connected → daemon_unreachable` or `daemon_incompatible → daemon_unreachable` transition after the phase closed performs **zero** lifecycle mutation.
+- **One async operation gate** serializes every lifecycle mutation — startup auto-install/start, takeover accept, the reinstall affordance, and the user Start action all acquire it; none can interleave.
+- **Evidence is revalidated inside the gate immediately before mutating**: fresh `service status --json`, current attach state, current version pair. A takeover acceptance whose evidence no longer matches aborts with a message instead of acting on stale consent.
+- **A connection-generation token** invalidates stale continuations: a status query started against generation *n* is discarded if the attach stream has moved on. Verification (§4.2) counts only attach events observed strictly **after** the mutation began — the `AttachStatus` behavior-subject's replayed current value never satisfies it.
 - **The once-per-run arm is claimed before the first await** on the startup path.
-- **The controller subscribes before the attach pump starts** (constructed and wired before `DaemonClientService.Start()`), so an early `Unreachable`→`Connected` transition cannot be missed.
+- **The controller subscribes before the attach pump starts**, so an early transition cannot be missed.
 
 ### 3.3 `PathShimInstaller` (app, new)
 
 Detection + one-prompt symlink install (§5). Small interface; macOS implementation now, no-op elsewhere (AI-1657 keeps Windows open).
 
-### 3.4 `kcap daemon service status --json` (CLI, the one addition)
+### 3.4 CLI: `service status --json` + two hardenings
 
 ```json
 {
@@ -57,52 +58,64 @@ Detection + one-prompt symlink install (§5). Small interface; macOS implementat
   "unit_present": true,
   "state": "not_installed" | "installed" | "running",
   "binary_path": "/path/baked/into/unit/kcap-daemon",
-  "install_binary_path": "/path/this/cli/would/bake/kcap-daemon"
+  "install_binary_path": "/path/this/cli/would/bake/kcap-daemon",
+  "job_pid": 1234,
+  "daemon_pid": 1234
 }
 ```
 
-- `state` is the existing `ServiceState` mapping, unchanged — including its quirk that a present-but-unloaded plist reports `not_installed` (a failed `launchctl print` maps to `NotInstalled` regardless of the file).
-- `unit_present` disambiguates exactly that quirk: `true` iff the plist file exists. The four reachable combinations and their §4 actions are all defined; `state=not_installed` alone never means "no unit".
+- `state` keeps the existing `ServiceState` mapping, with one hardening: **the launchd query runs even when the plist is absent**, so an orphaned loaded job (bootout failed, file deleted) is reported as `unit_present=false, state=running/installed` instead of an unconditional `not_installed`. A present-but-unloaded plist still reports `not_installed` with `unit_present=true` — the four (`unit_present`, job) combinations are all representable and all have defined §4 actions.
 - `binary_path`: the unit's baked `ProgramArguments[0]` when `unit_present`, else null.
-- `install_binary_path`: what an install by **this** CLI would bake — `ResolveDaemonBinary()`, i.e. the `kcap-daemon` sibling of the running native binary (correct through the npm launcher, `KCAP_APP_CLI_PATH`, and the future bundle alike); null when the sibling is missing.
-- Provenance comparisons between `binary_path` and `install_binary_path` are made on canonicalized paths (symlinks resolved), case-sensitivity per platform.
+- `install_binary_path`: what an install by **this** CLI would bake — `ResolveDaemonBinary()` (correct through the npm launcher, `KCAP_APP_CLI_PATH`, and the future bundle alike); null when the sibling is missing. Comparisons are made on canonicalized paths.
+- `job_pid`: the pid from `launchctl print` (present alongside `state = running`), null otherwise.
+- `daemon_pid`: the name's PID-file owner (same read `daemon stop` uses), null when absent/unusable. `job_pid == daemon_pid` (both non-null) is the **ownership** predicate: the launchd job *is* the daemon holding the name.
+- **`service uninstall` hardening:** the `bootout` result is checked; on failure the plist is **retained** and the command exits non-zero with the label still loaded — never a deleted file over a live KeepAlive job silently reported as success.
 
-snake_case via a source-generated JSON context (AOT rule). Without `--json` the human output is unchanged. Errors stay non-zero exit + stderr. Help text (`help-usage.txt`) and the README's daemon-service section update in the same PR.
+snake_case via a source-generated JSON context (AOT rule). Without `--json` the human output is unchanged. Help text (`help-usage.txt`) and the README's daemon-service section update in the same PR.
 
 ### 3.5 App state store
 
-`~/.config/kcap/app-state.json` (via `PathHelpers.ConfigPath`), app-owned. One **serialized store service** owns the file — the lifecycle controller and shim installer both go through it, so concurrent read-modify-write cannot lose updates. Holds: takeover-decline pairs (§4.3), shim offer/denial state (§5). Missing/corrupt → defaults, no crash — same degradation philosophy as the daemon's `consent.json`. Nothing secret lives in it.
+`~/.config/kcap/app-state.json` (via `PathHelpers.ConfigPath`), app-owned. One **serialized store service** owns the file — controller and shim installer both go through it. Writes are **atomic** (temp file + rename); a crash mid-write can only yield the old or the new file, and missing/corrupt → defaults, no crash. One-shot claims (shim offered, decline pairs) are **persisted before the dialog is shown**; if the persist itself fails, the claim holds in memory for this run (no re-offer now, possible re-offer next launch — accepted and logged). Nothing secret lives in it.
 
-### 3.6 Process + login-shell seams (app)
+### 3.6 Process + shell-environment seams (app)
 
-- `IProcessRunner` grows to return `(ExitCode, Stdout, Stderr)` with a bounded timeout and cancellation per call (today it returns `(ExitCode, Stderr)` and discards stdout, which cannot serve `--version`, `status --json`, or `command -v`). All fakes and existing callers updated.
-- A **login-shell probe** service runs `$SHELL -l -c '…'` with a bounded timeout, falling back to `/bin/zsh` (the macOS default) when `$SHELL` is unset or the probe fails to execute. Used once at startup to capture the user's terminal `PATH` (injected into every spawned CLI child, decision 7) and by shim detection (§5). A probe that fails or times out yields *unknown*: children are spawned without the injected PATH (an honest degradation, logged), and the shim auto-offer is suppressed (the menu item remains).
+**`IProcessRunner`** grows to `(ExitCode, Stdout, Stderr)` with per-call **environment overlay** (adds/overrides specific variables — `KCAP_PROFILE`, `PATH` — without replacing the rest), cancellation, and timeout. Two distinct policies, preserving today's semantics where they are load-bearing:
+
+- **External cancellation** (app shutdown) abandons the *wait*, never the child — `daemon start -d` must survive the app quitting (existing behavior, kept).
+- **Internal timeout on mutating calls** kills the **entire process tree** (the npm launcher synchronously owns a native child which spawns `launchctl`; killing the top process is not enough), then **awaits its exit**, then reconciles actual service state via a fresh status query before any further mutation — a late child must never complete a mutation after the gate has moved on.
+
+**Terminal-PATH probe.** A GUI app inherits launchd's minimal PATH; what users mean by "the terminal" on macOS is an *interactive login* shell — `zsh -l -c` reads `.zprofile` but not `.zshrc`, where nvm/npm and agent paths commonly live. The probe therefore runs `$SHELL -lic 'printf "<sentinel>%s<sentinel>" "$PATH"'` (stdin `/dev/null`, bounded timeout), parsing between sentinels so startup chatter cannot corrupt the value; on failure/timeout it retries with `-lc`; `$SHELL` unset/unusable falls back to `/bin/zsh`. Both failing → **unknown**: silent mutations are suppressed (decision 7), dialoged mutations disclose the degraded PATH, queries still run. The same probe answers shim detection (`command -v kcap`, §5) and is re-run for post-install verification there.
 
 ## 4. Lifecycle state machine
 
-### 4.1 Auto-install gate: "a valid profile"
+### 4.1 Silent-mutation gate
 
-Auto-install requires a **durable, usable daemon configuration**, not merely a resolved profile object: a named profile whose server URL is a valid absolute `http`/`https` URL (the daemon rejects an empty/invalid URL and exits non-zero — under `KeepAlive SuccessfulExit=false` an unstartable unit would spin). The app resolves the profile name once, revalidates inside the mutation gate immediately before installing, and pins it explicitly (`--profile <name>` + `KCAP_PROFILE`, decision 7) so the spawned CLI cannot capture a different repo-bound profile.
+Silent auto-install requires **all** of: a named profile whose server URL is a valid absolute `http`/`https` URL (the daemon rejects an empty/invalid URL and exits non-zero — under `KeepAlive SuccessfulExit=false` an unstartable unit would spin); a known terminal PATH (decision 7); the startup phase still open (§3.2). The profile is revalidated inside the operation gate immediately before installing and pinned explicitly (`--profile` + `KCAP_PROFILE`) so the spawned CLI cannot capture a different repo-bound profile.
 
-### 4.2 Startup (arms once per app run)
+### 4.2 Startup branch (runs at most once, only while the startup phase is open)
 
-The attach loop runs exactly as today. On the **first** `Unreachable(daemon_unreachable)`, the controller (inside the gate, generation-checked) queries `service status --json` and acts on positive evidence only:
+On the **first** `Unreachable(daemon_unreachable)` while the phase is open, the controller (inside the gate, generation-checked) queries `service status --json` and acts on positive evidence only:
 
-| `unit_present` | `state` | Action |
+| `unit_present` | job | Action |
 |---|---|---|
-| — | `running` | Nothing. launchd thinks its job is up; existing backoff keeps retrying. A wedged daemon stays a manual-UX case — no blind kickstart. |
-| true | `installed` | `kcap daemon service start` |
-| true | `not_installed` | Nothing automatic. A present-but-unloaded plist is a broken or foreign state; silently rewriting it is takeover territory. Surface it ("service unit present but not loaded — reinstall from the app menu or terminal") with a manual affordance. |
-| false | — (valid profile, §4.1) | `kcap daemon service install --name <X> --profile <P>` — silent auto-install; `RunAtLoad` starts it — then **post-install verification** (below). |
-| false | — (no valid profile) | Nothing. Today's Stopped UX. The wizard (AI-1655) owns fresh machines. |
+| — | `running` | Nothing. launchd thinks its job is up; existing backoff keeps retrying. A wedged daemon stays a manual-UX case. |
+| true | `installed`, `daemon_pid` null | `kcap daemon service start` (kickstart), then **post-start verification** (below). A non-null `daemon_pid` means some process owns the name while the unit's job is down — kickstarting would spin against the lock: surface the coexistence instead (§4.4 affordance). |
+| true | `not_installed` (present-but-unloaded plist) | Nothing automatic. Surfaced with the **reinstall affordance** (§4.4) — a dialoged operation, because the unit may be foreign and the name may be lock-held. |
+| false | — (silent-mutation gate §4.1 passes) | `kcap daemon service install --name <X> --profile <P>` → **post-install verification**. |
+| false | — (gate fails) | Nothing. Today's Stopped UX (plus the §6 honest reason). The wizard (AI-1655) owns fresh machines. |
 
-**Post-install verification (closes the TOCTOU on the name lock).** "No unit file" does not prove no daemon owns the name: a manual daemon may be starting, wedged pre-IPC, or started between the query and the bootstrap. The freshly bootstrapped job would then exit non-zero on the held lock and `KeepAlive` would respin it silently. So after `service install`, the controller watches a bounded window (15 s) for the conjunction *attach `Connected`* AND *`service status` = `running`*:
+**Post-mutation verification (closes the name-lock TOCTOU).** "No unit file" does not prove no daemon owns the name: a manual daemon may be starting, wedged pre-IPC, or started between query and bootstrap; the bootstrapped job would exit non-zero on the held lock and `KeepAlive` would respin it silently. Worse, *two liveness signals are not ownership*: the app can be `Connected` to a manual daemon while the launchd contender is transiently `running` before losing the lock. Verification therefore requires, within a bounded window (15 s), the conjunction of:
 
-- Both → healthy; done.
-- Attach `Connected` but service job not `running` → the app attached to a daemon the unit does not own (a manual daemon won the lock): `kcap daemon service uninstall` (boots out and deletes only the unit — never touches the manual daemon's process), log the outcome, continue attached. Skew handling (§4.3) applies to the connected daemon as usual.
-- No attach and the job is not settling into `running` → `service uninstall` (rollback), surface the install failure with the manual Start affordance. The rollback removes the spinning job — no retrying unit may remain.
+1. a **fresh** attach `Connected` — observed strictly after the mutation began (never the replayed value), and, when the mutation installed a unit, at the expected version (the shelled CLI's own); and
+2. **ownership**: `job_pid == daemon_pid`, both non-null, from a fresh status query.
 
-After any action the controller kicks `RestartLoopAsync()` (the `StartDaemonAsync` pattern). Mid-session unreachable never auto-acts: crash recovery is launchd's job, and deliberate stops aren't fought.
+Outcomes:
+
+- Conjunction holds → healthy; done.
+- Fresh `Connected` but ownership fails (a manual daemon won the lock) → for a unit **this operation just wrote**: `service uninstall` (rollback; the hardened uninstall makes a failed bootout visible instead of orphaning the job), log, stay attached to the manual daemon; skew handling (§4.3) applies to it as usual. For a **pre-existing** unit (post-start verification): do not destroy it silently — `service stop` the job and surface the coexistence with the dialoged affordance.
+- Deadline with anything else — including *no fresh attach while the job still reads `running`* (a spin sampled between crashes) → same rollback/surface split as above; the error shows once (once-per-run guard) with manual recovery offered. After rollback, a re-queried status must show the label gone — a failed rollback is surfaced as such (§6), never reported as clean.
+
+After any action the controller kicks `RestartLoopAsync()`. Once the startup phase closes, unreachable events never mutate anything: crash recovery is launchd's job, and deliberate stops aren't fought.
 
 The daemon name is resolved once via the existing `DaemonNameResolver` chain, so the watched, started, and installed daemon can never diverge.
 
@@ -111,37 +124,39 @@ The daemon name is resolved once via the existing `DaemonNameResolver` chain, so
 **Triggers** (both feed one code path):
 
 - On every `Connected`: the snapshot's `Daemon.Version` differs from the cached CLI version.
-- On `Unreachable(daemon_incompatible)` carrying a hello `DaemonVersion` (decision 6) that differs: an old external daemon that fails the capability gate is *exactly* the takeover audience — without this trigger the umbrella's promise ("hello detects the mismatch, app offers takeover") is unreachable. `daemon_unreachable` still never triggers lifecycle offers — transport silence is not version evidence.
+- On `Unreachable(daemon_incompatible)` carrying a hello `DaemonVersion` (decision 6) that differs: an old external daemon that fails the capability gate is *exactly* the takeover audience. The version propagates `CycleOutcome → Unreachable → AttachStatus`, and the client's transition dedupe keys on `(reason, daemonVersion)` so null→v1 or v1→v2 while incompatible re-emits. `daemon_unreachable` never triggers offers — transport silence is not version evidence.
 
-**Provenance** (from a fresh `service status --json` inside the gate): `unit_present` && canonical `binary_path` == canonical `install_binary_path` → **app-managed** ("Restart daemon to update" — self-skew after an app update while the old daemon still runs). Anything else → **foreign** ("Take over management", with the replacement disclosure of decision 3).
+**Classification** (fresh `service status --json` inside the gate): `unit_present` && canonical `binary_path` == canonical `install_binary_path` → **same-binary target** — the unit already runs the binary this app would install, so the dialog reads "Restart daemon to update". Anything else → **different-binary** — "Take over management". Path equality is *not* installer provenance (a terminal install with the same native CLI produces the same paths, and `ServiceInstall` records no marker); therefore **both** dialog copies carry the decision-3 disclosure that the unit will be rewritten and its baked settings re-captured.
 
 **Accept path** — one sequence, branched on who actually owns the name (evidence revalidated first; §3.2):
 
 | Evidence | Sequence |
 |---|---|
-| `state=running` (the unit's job owns the daemon) | `service install` — its bootout → rewrite → bootstrap stops the job it owns and starts the replacement. |
-| `unit_present` but `state≠running` while a daemon is reachable (loaded-or-stale unit + manual daemon coexisting under one name) | `service uninstall` **first** (a raw `daemon stop` with any unit present is a documented no-op success — it prints "managed by launchd" and exits 0 without stopping anything) → `daemon stop --name <X>` → **verify the stop took effect** (below) → `service install`. |
-| `unit_present=false` (manual daemon) | `daemon stop --name <X>` → verify → `service install`. |
+| Ownership holds (`job_pid == daemon_pid`, job `running`) | `service install` — its bootout → rewrite → bootstrap stops the job it owns and starts the replacement. |
+| `unit_present` but the unit's job does not own the reachable daemon (loaded-or-stale unit + manual daemon coexisting) | `service uninstall` **first** (a raw `daemon stop` with any unit present is a documented no-op success) → `daemon stop --name <X>` → **stop verification** → `service install`. |
+| `unit_present=false` (manual daemon) | `daemon stop --name <X>` → stop verification → `service install`. |
 
-**Stop verification:** the CLI's stop reports success after a best-effort ≤5 s wait; the controller does not trust it as proof. It polls (bounded, ~10 s) until the attach is gone and a fresh dial fails, before installing. Timeout → abort the takeover with an honest error; nothing has been installed over the live daemon (the foreign unit, if any, was already removed — disclosed in the dialog; the recovery surface is §6).
+**Stop verification:** the CLI's stop reports success after a best-effort ≤5 s wait; the controller does not trust it. It polls (bounded, ~10 s) until the attach is gone and a fresh dial fails, before installing. Timeout → abort; **the daemon was not proven stopped** and the recovery surface says exactly that (§6).
 
-**Post-mutation verification:** same as §4.2 — the takeover install is also followed by the bounded attach+`running` check with `service uninstall` rollback, covering a concurrent manual start racing the bootstrap.
+**Post-mutation verification:** identical to §4.2 (fresh attach at expected version + ownership), covering a concurrent manual start racing the bootstrap.
 
-**Decline** is remembered per `(daemonVersion, cliVersion)` pair in the app state store: declining once means no nag on any later launch; a new pair (either side changed) asks again. At most one skew dialog per app run; the dialog never stacks with the shim offer (§5 ordering).
+**Decline** is remembered per `(daemonVersion, cliVersion)` pair in the app state store (claim persisted before the dialog, §3.5): declining once means no nag on any later launch; a new pair asks again. At most one skew dialog per app run; dialogs never stack (§5 ordering).
 
-### 4.4 Service-aware Start action
+### 4.4 User actions
 
-The user Start action runs inside the same gate with a fresh status query: `unit_present && state=installed` → `service start`; `unit_present && state=not_installed` → no silent mutation — surface the §4.2 "present but not loaded" affordance (an explicit reinstall is one more click, but a Start click is not consent to rewrite a unit); `unit_present=false` → today's detached `daemon start -d`; `state=running` → just kick reattach.
+**Start** runs inside the gate with a fresh status query: `unit_present && state=installed && daemon_pid null` → `service start` + post-start verification (§4.2); `unit_present=false` → today's detached `daemon start -d` (abandon-wait semantics preserved, §3.6); job `running` → just kick reattach; anything else → the reinstall affordance below (a Start click is not consent to rewrite a unit).
+
+**Reinstall affordance** (present-but-unloaded plist, or surfaced coexistence): a **dialoged** operation reusing the takeover machinery verbatim — same operation gate, same in-gate revalidation, same decision-3 replacement disclosure (plus the degraded-PATH disclosure when the probe is unknown), same ownership-branched sequence, same stop and post-mutation verification. It is takeover with a different entry point, not a second code path.
 
 ## 5. PATH shim (macOS)
 
-**Detection.** A GUI app inherits launchd's minimal PATH, not the user's terminal PATH — so detection uses the login-shell probe (§3.6): `command -v kcap`. The shim is considered when the probe *positively* finds nothing (probe failure = unknown = no auto-offer) **and** the resolver has an absolute CLI path to link to.
+**Detection.** Via the terminal-PATH probe (§3.6): `command -v kcap`. The shim is considered when the probe *positively* finds nothing (unknown → no auto-offer) **and** the resolver has an absolute CLI path to link to.
 
 **Pre-flight (unprivileged).** `lstat /usr/local/bin/kcap`:
 
 - absent → installable;
 - a symlink already resolving to the selected CLI → already installed; success, no prompt;
-- anything else (foreign symlink, regular file, directory, broken link) → **conflict**: never overwritten, surfaced with the path and what was found. Login-shell detection missing it does not prove the destination is free — the entry may be outside PATH or non-executable.
+- anything else (foreign symlink, regular file, directory, broken link) → **conflict**: never overwritten, surfaced with the path and what was found. Detection missing it does not prove the destination is free — the entry may be outside PATH or non-executable.
 
 **Install.** One admin prompt; the target is passed as argv, never interpolated into script source:
 
@@ -151,52 +166,56 @@ osascript -e 'on run argv' \
           -e 'end run' -- <target>
 ```
 
-`ln -s` is deliberately non-forcing: if anything appeared at the destination between pre-flight and elevation, creation fails as a conflict instead of clobbering it (decision 4). `quoted form of` handles POSIX quoting; paths with spaces/quotes/backslashes must round-trip, newline-containing paths are rejected outright before prompting.
+`ln -s` is deliberately non-forcing: anything appearing at the destination between pre-flight and elevation fails as a conflict instead of being clobbered (decision 4). `quoted form of` handles POSIX quoting; paths containing CR or LF are rejected before prompting; spaces/quotes/backslashes must round-trip.
 
-**Post-install verification.** Re-run the login-shell probe. If `kcap` still doesn't resolve (login PATH omits `/usr/local/bin`), say so — the link exists but their shell config doesn't look there; show the line to add. Never report success on the symlink alone.
+**Post-install verification.** Re-run the probe. If `kcap` still doesn't resolve (login PATH omits `/usr/local/bin`), say so and show the line to add. Never report success on the symlink alone.
 
-**Cancel vs failure.** A user cancel surfaces as AppleScript error `-128`; the controller distinguishes it by the `-128` code in stderr (locale-stable), not by exit code alone. Cancel → recorded, never auto-offered again. Non-cancel failure → show the error **with a copyable `sudo` equivalent** (`sudo mkdir -p /usr/local/bin && sudo ln -s '<target>' /usr/local/bin/kcap` — the osascript line is not reusable outside elevation); the menu item stays.
+**Cancel vs failure.** A user cancel surfaces as AppleScript error `-128`, detected by the `-128` code in stderr (locale-stable). Cancel → recorded, never auto-offered again. Non-cancel failure → show the error **with a copyable fallback rendered through a real POSIX single-quote escaper** (`'` → `'"'"'`): `sudo mkdir -p /usr/local/bin && sudo ln -s <escaped-target> /usr/local/bin/kcap`. The menu item stays.
 
-**Offer surface.** The auto-offer happens at most **once ever** (persisted as offered in the app state store regardless of outcome — accept, cancel, failure, or deferred), on first app run, after the startup attach has reached its **first terminal outcome**: `Connected`, or the §4.2 branch has completed (including verification), or the no-CLI/no-profile determination — each path signals the same "startup decision complete" latch, so an immediate `Connected` (which never enters §4.2) still releases the offer. Dialogs are serialized: the shim offer never appears while the skew dialog is up. An **"Install command-line tool…"** tray-menu item stays available while the shim is applicable-but-absent.
+**Offer surface.** The auto-offer happens at most **once ever** — the offered claim is persisted (atomically, before the dialog; §3.5) regardless of outcome — on first app run, after the startup phase (§3.2) closes; an immediate `Connected` closes the phase and releases the offer just like the completed unreachable branch. Dialogs are serialized: the shim offer never appears while the skew dialog is up. An **"Install command-line tool…"** tray-menu item stays available while the shim is applicable-but-absent.
 
 **Constraint recorded for AI-1653:** the bundled CLI must live at a **stable path inside the .app bundle across auto-updates**, or the symlink breaks on every update.
 
 ## 6. Error handling
 
-The controller acts only on positive evidence, degrades honestly, never loops:
+The controller acts only on positive evidence, degrades honestly, never loops — and **recovery surfaces are derived from re-queried evidence after the failure, never from an assumed normalized state** (a stop-verification timeout means the daemon was *not* proven stopped; a bootstrap failure leaves a written plist with an unloaded job; a failed bootout leaves a loaded job the hardened status can now see):
 
 - **No CLI resolves** → lifecycle features off; tray keeps today's Stopped UX plus an honest status line ("kcap CLI not found").
-- **`service status` fails or emits unparseable JSON** → treated as *unknown*: no auto-install, no takeover offer, reason logged. Unknown never triggers mutations.
-- **Auto-install/start fails, or post-install verification rolls back** → stderr/outcome surfaces through the same message lane as `StartDaemonAsync` failures; the once-per-run guard means it shows once and stops; manual Start/retry remains.
-- **Takeover aborts mid-sequence** (stop verification timeout, or install fails after the stop) → the dialog's disclosed worst case: daemon stopped, no service unit. Surfaced as Stopped with the error text and both recoveries offered (Start = detached start; retry takeover). The version pair is **not** marked declined — the next qualifying trigger re-offers.
+- **`service status` fails or emits unparseable JSON** → *unknown*: no auto-install, no takeover offer, reason logged. Unknown never triggers mutations.
+- **Terminal-PATH probe unknown** → silent mutations suppressed with an honest status line; dialoged mutations disclose and require consent; queries unaffected.
+- **Auto-install/start fails, or post-mutation verification rolls back** → outcome surfaces through the same message lane as `StartDaemonAsync` failures; the once-per-run guard means it shows once and stops; manual recovery reflects the re-queried state.
+- **Takeover/reinstall aborts mid-sequence** → re-query attach + unit + job + ownership; render the branch-specific state (e.g. "daemon still running, unit removed", "unit written but not started", "stop could not be confirmed") with the recoveries that are actually valid for it. The version pair is **not** marked declined — the next qualifying trigger re-offers.
+- **Rollback itself fails** (hardened uninstall reports the label still loaded) → surfaced as exactly that, with terminal guidance; never reported as clean.
 - **Stale-consent abort** (evidence changed between dialog and accept) → nothing mutated; one-line explanation; re-offer on the next qualifying trigger.
 - **`--version` query fails / malformed / `unknown`** → skew detection disabled for the run, logged. No dialogs on garbage.
-- **Login-shell probe fails/times out** → children spawn without injected PATH (logged); shim auto-offer suppressed; menu item remains.
-- **App state store missing/corrupt** → defaults (offer again rather than never).
+- **App state store missing/corrupt** → defaults (offer again rather than never); write failure → in-memory claim for this run, logged (§3.5).
 
 ## 7. Testing
 
 TUnit throughout; controller and shim are plain services driven through `IProcessRunner` fakes — no real launchctl/osascript in CI. Windows CI leg: build path assertions with `Path.Combine` (known separator trap).
 
-- **CLI:** `service status --json` — the full state grid: plist absent; plist present + `launchctl print` failing (→ `not_installed` with `unit_present=true` and non-null `binary_path`); loaded-inactive; running. `install_binary_path` from `ResolveDaemonBinary` present/missing. snake_case contract; human output unchanged without the flag.
-- **Lifecycle controller — startup:** the §4.2 matrix including the present-but-unloaded row (no mutation); once-per-run arming claimed pre-await (second unreachable: nothing; mid-session unreachable: nothing; `daemon_unreachable` only — `daemon_incompatible` routes to §4.3, never to install); profile gate (§4.1): null/invalid server URL, missing profile, repo-bound child resolution defeated by `--profile`/`KCAP_PROFILE` (assert exact child argv+env); post-install verification: healthy, attach-without-running (→ uninstall, manual daemon untouched — assert no `daemon stop` issued), no-attach spin (→ uninstall rollback, error surfaced once).
-- **Lifecycle controller — skew/takeover:** trigger matrix (equal versions → nothing; snapshot mismatch; `daemon_incompatible` + hello version mismatch → offer; `daemon_unreachable` → never); provenance via canonical `binary_path` vs `install_binary_path` (npm-launcher shape, symlinked paths, missing target); the three accept sequences as exact argv order, including uninstall-before-stop for the coexisting-unit case; stop verification (drops attach → proceeds; timeout → abort, no install); post-mutation verification rollback; decline persistence within/across runs, new pair re-offers; stale-consent abort (version/unit changed between offer and accept → no mutation).
-- **Races (deterministic, via generation token + gate):** status query resolving after `Connected` → discarded; user Start racing auto-install → serialized, second sees fresh evidence; dialog accept after generation change → abort; controller subscribed before pump → synthetic immediate-`Unreachable` handled.
-- **Process/probe seams:** `IProcessRunner` returns stdout; timeout kills and reports; `--version` parsing (strips `kcap ` prefix, rejects multiline/garbage, asserts `--no-update-check` in argv); login-shell probe argv, `$SHELL` unset → `/bin/zsh`, probe timeout → unknown semantics (no PATH injection, no auto-offer).
-- **Shim:** pre-flight lstat shapes (absent / correct symlink / foreign symlink / file / dir / broken link — only absent proceeds, correct symlink short-circuits as success); osascript argv passes target as argv (never interpolated), hostile paths round-trip, newline path rejected; `-128` in stderr → cancel persisted; other failure → `sudo` fallback text; post-install probe re-run (not-on-PATH → guidance, no false success); offered-once latch across outcomes; auto-offer waits for the startup latch incl. the immediate-`Connected` path; menu-item visibility.
-- **App state store:** serialized concurrent writes (controller + shim) lose nothing; missing/corrupt → defaults.
+- **CLI:** `service status --json` — the full grid: plist absent (with and without an orphaned loaded job — the hardened launchd query); plist present + print failing (`not_installed`, `unit_present=true`, non-null `binary_path`); loaded-inactive; running with `job_pid` parsed; `daemon_pid` from the PID file (absent/unusable → null); `install_binary_path` present/missing. Hardened `uninstall`: injected bootout failure → non-zero exit, plist retained. snake_case contract; human output unchanged without `--json`.
+- **Startup phase & arming:** `Connected` first → later `daemon_unreachable` mutates nothing; `daemon_incompatible` first → later `daemon_unreachable` mutates nothing; the completed unreachable branch closes the phase; arm claimed pre-await; mid-session unreachable inert; the §4.2 matrix including the `daemon_pid`-gated kickstart row and the present-but-unloaded row (no silent mutation).
+- **Verification & ownership:** replayed `Connected` never satisfies verification; fresh `Connected` at wrong version fails it; fresh `Connected` + pid mismatch (manual daemon B owns lock, launchd job A transiently running) → correct rollback branch, manual daemon untouched (no `daemon stop` issued); deadline with job still `running` and no fresh attach → rollback; post-rollback re-query shows label gone, and an injected rollback failure is surfaced not swallowed; post-start (pre-existing unit) failure → `service stop` + surface, never uninstall.
+- **Skew/takeover:** trigger matrix (equal → nothing; snapshot mismatch; `daemon_incompatible` + hello version → offer; version change while incompatible re-emits — null→v1, v1→v2 — through `CycleOutcome → Unreachable → AttachStatus`; `daemon_unreachable` → never); same-binary vs different-binary classification (npm-launcher shape, symlinked paths, equal-path terminal-installed unit gets the recapture disclosure too); the three accept sequences as exact argv order including uninstall-before-stop; stop verification (drops attach → proceeds; timeout → abort, no install, honest "not proven stopped" state); post-mutation verification; decline persisted before dialog, across runs, new pair re-offers; stale-consent abort.
+- **Reinstall affordance:** enters the same gate/revalidation/disclosure/sequence as takeover (shared code path asserted); triggered from present-but-unloaded and coexistence surfaces.
+- **Races:** status query resolving after `Connected` → discarded; user Start racing auto-install → serialized; dialog accept after generation change → abort; subscribe-before-pump.
+- **Process/probe seams:** stdout returned; env overlay adds `KCAP_PROFILE`/`PATH` without replacing the environment; external cancellation abandons wait (detached start survives; shutdown during `daemon start -d`); internal timeout kills the whole tree, awaits exit, and forces a state reconcile before the next mutation (late-child-mutation test); `--version` parsing (prefix strip, multiline reject, `--no-update-check` in argv); probe `-lic` sentinel parse robust to chatter, `.zshrc`-only PATH found, `-lc` fallback, `$SHELL` unset → `/bin/zsh`, both fail → unknown semantics (silent mutations off, dialogs disclose).
+- **Shim:** pre-flight lstat shapes (absent / correct symlink / foreign symlink / file / dir / broken link); target passed as argv, hostile paths round-trip, CR/LF rejected; `-128` → cancel persisted; non-cancel failure → POSIX-escaped `sudo` fallback (round-trip test with spaces, single/double quotes, backslashes); post-install probe re-run (not-on-PATH → guidance, no false success); offered-once claim persisted before dialog, held in memory on write failure; auto-offer waits for the startup phase incl. the immediate-`Connected` path; menu-item visibility.
+- **App state store:** serialized concurrent writes lose nothing; atomic replace (truncated temp never corrupts the live file); missing/corrupt → defaults.
 - **E2E stays manual** (no bundle to automate against yet). Checklist for the PR:
-  1. Fresh run, valid profile, no unit → unit appears in `~/Library/LaunchAgents`, daemon attaches; plist env carries the login-shell PATH and pinned `KCAP_PROFILE`.
+  1. Fresh run, valid profile, no unit → unit appears in `~/Library/LaunchAgents`, daemon attaches; plist env carries the terminal PATH and pinned `KCAP_PROFILE`.
   2. Manual `kcap daemon start` racing first app launch → no spinning LaunchAgent remains; manual daemon still alive; app attached.
-  3. `kcap daemon service stop` in a terminal mid-session → app shows Stopped, does NOT auto-restart; relaunch app → auto-starts.
-  4. npm-installed unit on an older version → takeover dialog (foreign copy, disclosure shown); accept → unit rewritten, new version attaches; decline → no re-prompt after app restart.
-  5. Loaded-stopped unit + manual daemon under the same name, older version → accept runs uninstall → stop → install; no spin; ends attached to the new daemon.
+  3. `kcap daemon service stop` in a terminal mid-session → app shows Stopped, does NOT auto-restart; relaunch app → auto-starts (unit present, no lock owner).
+  4. npm-installed unit on an older version → takeover dialog (different-binary copy, disclosure shown); accept → unit rewritten, new version attaches; decline → no re-prompt after app restart.
+  5. Loaded-stopped unit + manual daemon under the same name, older version → accept runs uninstall → stop → install; no spin; ends attached and ownership-verified.
   6. Old daemon that fails the hello capability gate → takeover offer still appears (incompatible trigger).
-  7. Shim: no `kcap` on PATH → offer; accept → `/usr/local/bin/kcap` works in a new terminal; deny → no re-offer, menu item present. Pre-existing file at the destination → conflict message, file untouched.
+  7. Machine whose `kcap`/nvm paths live only in `.zshrc` → probe finds them; no spurious shim offer; installed unit's PATH resolves `claude`.
+  8. Shim: no `kcap` on PATH → offer; accept → `/usr/local/bin/kcap` works in a new terminal; deny → no re-offer, menu item present. Pre-existing file at the destination → conflict message, file untouched.
 
 ## 8. Scope boundaries
 
 - **AI-1653 keeps:** bundling, the bundle-relative resolver arm, the stable-in-bundle-path constraint (§5), auto-update atomicity, signing/notarization.
 - **AI-1655 keeps:** the wizard, and the **consent default flip to `prompt`** — explicitly not this PR.
 - **AI-1657 keeps:** Windows control channel; the shim interface and the already-cross-platform `IServiceManager` leave it open.
-- Zero daemon and wire-protocol changes; one additive Core client field (decision 6). One PR (references AI-1654 and its GitHub issue per repo convention; README + help-text updates ride along).
+- Zero daemon and wire-protocol changes; CLI changes per decision 1; one additive Core client propagation (decision 6). One PR (references AI-1654 and its GitHub issue per repo convention; README + help-text updates ride along).
