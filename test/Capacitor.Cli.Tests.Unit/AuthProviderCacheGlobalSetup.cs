@@ -28,9 +28,11 @@ public class AuthProviderCacheGlobalSetup {
     public static void PinStore() => AuthProviderCache.OverridePathForTesting = StoreFile;
 
     [BeforeEvery(Test)]
-    public static void ClearBetweenTests() {
-        try { File.Delete(StoreFile); } catch { /* best effort */ }
-    }
+    public static void ClearBetweenTests() =>
+        // Not best-effort: a swallowed sharing violation (a handle outliving a prior test on Windows)
+        // would leave the stale entry in place and silently reintroduce the very leak this hook exists
+        // to prevent. Bounded-retry the transient case; throw with a named cause on a persistent one.
+        SharedConfigDirCleanup.ClearWithRetry("the auth-provider cache", () => File.Delete(StoreFile));
 
     [After(Assembly)]
     public static void CleanupStore() {
