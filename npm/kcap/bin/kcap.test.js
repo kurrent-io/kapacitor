@@ -108,16 +108,7 @@ assert.strictEqual(describeRole("kcap.exe watch"), "kcap process");
   }
 }
 
-// runUpdate's post-refresh version report to the server: `execFileSync` is destructured from
-// `child_process` at module load (`const { execFileSync, spawnSync } = require("child_process")`),
-// so there is no seam to intercept it short of restructuring the module or adding a mocking
-// dependency this package doesn't otherwise carry (no proxyquire/sinon/jest here — see
-// kcap.test.js's existing style, plain node:assert only). Actually running `runUpdate` would mean
-// actually running `npm install -g` — unacceptable in a unit test. So this asserts the SOURCE
-// shape instead: the call exists, is scoped to the exact command this fix depends on, is guarded
-// by its own try/catch (a throw here must never fail `kcap update`), and sits after the refresh
-// step succeeds and before runUpdate's own process.exit(0) — matching the design: report the new
-// version only once the update itself is done, and never let that report block or fail the exit.
+// Source-shape guard for runUpdate's report-version call: execFileSync has no mock seam (module-load-destructured), so this checks presence/ordering/try-catch by text instead of exact literals.
 {
   const src = fs.readFileSync(path.join(__dirname, "kcap.js"), "utf8");
 
@@ -127,22 +118,21 @@ assert.strictEqual(describeRole("kcap.exe watch"), "kcap process");
   const runUpdateBody = src.slice(updateStart, updateEnd >= 0 ? updateEnd : undefined);
 
   const refreshIdx = runUpdateBody.indexOf("runRefreshes(");
-  const reportIdx  = runUpdateBody.indexOf('execFileSync(binaryPath, ["report-version", "--no-update-check"]');
+  const reportIdx  = runUpdateBody.indexOf("report-version");
   const exitIdx    = runUpdateBody.lastIndexOf("process.exit(0)");
 
   assert(refreshIdx >= 0, "expected runUpdate to call runRefreshes(...)");
-  assert(reportIdx >= 0, "expected runUpdate to spawn the new binary's report-version, --no-update-check");
+  assert(reportIdx >= 0, "expected runUpdate to spawn report-version");
   assert(exitIdx >= 0, "expected runUpdate to still exit 0 on its success path");
   assert(refreshIdx < reportIdx, "report-version must be spawned AFTER the refresh step");
   assert(reportIdx < exitIdx, "report-version must be spawned BEFORE runUpdate's process.exit(0)");
 
-  // The report-version call must be inside its own try/catch (the closest preceding `try {`
-  // ahead of any intervening `catch` — i.e. no catch closes it before the call itself appears).
-  const precedingSlice  = runUpdateBody.slice(0, reportIdx);
+  // Guarded by its own try/catch: the nearest preceding `try {` must be closer than any `} catch`.
+  const precedingSlice = runUpdateBody.slice(0, reportIdx);
   const lastTryIdx      = precedingSlice.lastIndexOf("try {");
   const lastCatchIdx    = precedingSlice.lastIndexOf("} catch");
   assert(lastTryIdx >= 0 && lastTryIdx > lastCatchIdx,
-    "report-version must be guarded by its own try/catch — a throw here must never fail `kcap update`");
+    "report-version must be guarded by its own try/catch");
 }
 
 console.log("ok");

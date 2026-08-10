@@ -35,6 +35,7 @@ public class ReportVersionCommandTests : IDisposable {
     public void Cleanup() {
         AppConfig.ResetResolvedStateForTesting();
         HttpClientExtensions.ResetProviderCacheForTesting();
+        Environment.SetEnvironmentVariable("KCAP_URL", null);
 
         var cfg = AppConfig.GetConfigPath();
         if (File.Exists(cfg)) File.Delete(cfg);
@@ -165,6 +166,51 @@ public class ReportVersionCommandTests : IDisposable {
             .RespondWith(Response.Create().WithStatusCode(200).WithDelay(TimeSpan.FromSeconds(10)));
 
         await SeedValidTokenAsync("report-version-slow");
+
+        var sw     = Stopwatch.StartNew();
+        var result = await ReportVersionCommand.HandleAsync(_server.Urls[0]);
+        sw.Stop();
+
+        await Assert.That(result).IsEqualTo(0);
+        await Assert.That(sw.Elapsed).IsLessThan(TimeSpan.FromSeconds(8));
+    }
+
+    /// <summary>
+    /// Regression for the wrong-host bug: <c>CreateClientWithAuthStatusAsync</c>'s own baseUrl
+    /// fallback also consults <c>KCAP_URL</c>, so the probe URL must be built from that SAME
+    /// resolved value — not recomputed without it — or the client authenticates against one host
+    /// while the GET (carrying the bearer token) goes to another.
+    /// </summary>
+    [Test]
+    public async Task NoBaseUrl_FallsBackToKcapUrlEnvVar_NotLocalhost() {
+        StubDiscovery("None");
+        _server.Given(Request.Create().WithPath(ProbePath).UsingGet())
+            .RespondWith(Response.Create().WithStatusCode(200));
+
+        var previous = Environment.GetEnvironmentVariable("KCAP_URL");
+        Environment.SetEnvironmentVariable("KCAP_URL", _server.Urls[0]);
+        try {
+            var result = await ReportVersionCommand.HandleAsync(null);
+
+            await Assert.That(result).IsEqualTo(0);
+
+            var requests = _server.LogEntries.Where(e => e.RequestMessage.Path == ProbePath).ToList();
+            await Assert.That(requests.Count).IsEqualTo(1);
+        } finally {
+            Environment.SetEnvironmentVariable("KCAP_URL", previous);
+        }
+    }
+
+    /// <summary>Discovery itself has no deadline; the command's own budget must still bound it.</summary>
+    [Test]
+    public async Task SlowDiscovery_StillReturnsZero_WithinBudget() {
+        _server.Given(Request.Create().WithPath("/auth/config").UsingGet())
+            .RespondWith(Response.Create().WithStatusCode(200)
+                .WithHeader("Content-Type", "application/json")
+                .WithBody("""{"provider":"github_app"}""")
+                .WithDelay(TimeSpan.FromSeconds(10)));
+
+        await SeedValidTokenAsync("report-version-slow-discovery");
 
         var sw     = Stopwatch.StartNew();
         var result = await ReportVersionCommand.HandleAsync(_server.Urls[0]);
